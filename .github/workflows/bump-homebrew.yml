@@ -76,6 +76,16 @@ jobs:
         ref: ${{ steps.meta.outputs.tag }}
         fetch-depth: 0
 
+    # Conceptually: generator script comes from main (latest stable
+    # code, including bug fixes); pyproject.toml stays at the tag (so
+    # `uv pip compile` resolves the deps the wheel was built against).
+    # Also makes the workflow work for bootstrap tags cut before the
+    # generator existed (e.g., v0.1.0).
+    - name: Overlay generator from main
+      run: |
+        git fetch origin main
+        git checkout origin/main -- packaging/homebrew/generate.py
+
     - name: Install uv
       uses: astral-sh/setup-uv@v8.1.0
       with:
