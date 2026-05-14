@@ -1,0 +1,178 @@
+name: Bump Homebrew formula
+
+# ---------------------------------------------------------------------
+# Regenerates the Homebrew formula and opens two PRs on every release:
+#
+#   1. Sawmonabo/sidekick-usages : updates packaging/homebrew/sidekick-usages.rb
+#      (in-tree source-of-truth template). Uses GITHUB_TOKEN.
+#   2. Sawmonabo/homebrew-tap    : updates Formula/sidekick-usages.rb
+#      (what end users install). Uses HOMEBREW_TAP_TOKEN secret.
+#
+# One-time setup (required before this workflow can write to the tap):
+#
+#   1. Create a fine-grained PAT at github.com/settings/personal-access-tokens
+#      with these settings:
+#        - Resource owner:    Sawmonabo
+#        - Repository access: Only select repositories -> Sawmonabo/homebrew-tap
+#        - Permissions:       Contents (Read/Write), Pull requests (Read/Write)
+#   2. Add it as a repo secret in sidekick-usages:
+#        Settings -> Secrets and variables -> Actions -> New repository secret
+#        Name: HOMEBREW_TAP_TOKEN, Value: <the PAT>
+#
+# Trigger:
+#   - Fires after `Publish to PyPI` (publish.yml) completes successfully
+#     on a tag push. We piggy-back on that workflow because its `build`
+#     job already proves the wheel installs from the new tag, and by
+#     the time it's green the GitHub-archive tarball is settled.
+#   - Or manually via workflow_dispatch for testing / re-runs.
+# ---------------------------------------------------------------------
+
+on:
+  workflow_run:
+    workflows: [Publish to PyPI]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to regenerate (e.g. 0.2.0)
+        required: true
+        type: string
+
+concurrency:
+  group: bump-homebrew-${{ github.event.workflow_run.head_branch || inputs.version }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bump:
+    name: Regenerate and open PRs
+    runs-on: ubuntu-latest
+    # Run only when the upstream workflow was triggered by a `v*` tag
+    # push and finished successfully. workflow_dispatch always runs.
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       startsWith(github.event.workflow_run.head_branch, 'v'))
+    steps:
+    - name: Determine version + branch name
+      id: meta
+      run: |
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          VER="${{ inputs.version }}"
+        else
+          REF="${{ github.event.workflow_run.head_branch }}"
+          VER="${REF#v}"
+        fi
+        echo "version=${VER}" >> "$GITHUB_OUTPUT"
+        echo "tag=v${VER}" >> "$GITHUB_OUTPUT"
+        echo "branch=bump/homebrew-${VER}" >> "$GITHUB_OUTPUT"
+
+    - name: Checkout sidekick-usages at tag
+      uses: actions/checkout@v6
+      with:
+        ref: ${{ steps.meta.outputs.tag }}
+        fetch-depth: 0
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v8.1.0
+      with:
+        enable-cache: true
+        cache-dependency-glob: '**/pyproject.toml'
+
+    - name: Set up Python 3.14
+      run: uv python install 3.14
+
+    - name: Generate formula
+      run: |
+        uv run packaging/homebrew/generate.py \
+          --version "${{ steps.meta.outputs.version }}" \
+          --output /tmp/sidekick-usages.rb
+        echo "--- preview ---"
+        head -25 /tmp/sidekick-usages.rb
+
+    # ----- PR #1: sidekick-usages (in-tree template sync) ---------------
+    - name: Stage template update in sidekick-usages
+      id: stage_intree
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        # Branch off main, not the tag, so the bump targets the live
+        # codebase (which may already have post-release commits).
+        git fetch origin main
+        git checkout -b ${{ steps.meta.outputs.branch }} origin/main
+        cp /tmp/sidekick-usages.rb packaging/homebrew/sidekick-usages.rb
+        if git diff --quiet; then
+          echo "changed=false" >> "$GITHUB_OUTPUT"
+          echo "::notice::No template changes for v${{ steps.meta.outputs.version }}"
+        else
+          git add packaging/homebrew/sidekick-usages.rb
+          git commit -m "chore(homebrew): regenerate template for v${{ steps.meta.outputs.version }}"
+          git push -fu origin ${{ steps.meta.outputs.branch }}
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Open PR against sidekick-usages
+      if: steps.stage_intree.outputs.changed == 'true'
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        gh pr create \
+          --base main \
+          --head ${{ steps.meta.outputs.branch }} \
+          --title "chore(homebrew): regenerate template for v${{ steps.meta.outputs.version }}" \
+          --body "Automated regeneration of \`packaging/homebrew/sidekick-usages.rb\` for v${{ steps.meta.outputs.version }}.\n\nGenerated by \`packaging/homebrew/generate.py\` from this workflow run." \
+          || echo "PR may already exist; continuing."
+
+    # ----- PR #2: homebrew-tap (consumer-facing formula) ----------------
+    - name: Checkout homebrew-tap
+      uses: actions/checkout@v6
+      with:
+        repository: Sawmonabo/homebrew-tap
+        path: _tap
+        token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+    - name: Stage formula update in homebrew-tap
+      id: stage_tap
+      working-directory: _tap
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        git checkout -b ${{ steps.meta.outputs.branch }}
+        cp /tmp/sidekick-usages.rb Formula/sidekick-usages.rb
+        if git diff --quiet; then
+          echo "changed=false" >> "$GITHUB_OUTPUT"
+          echo "::notice::No tap formula changes for v${{ steps.meta.outputs.version }}"
+        else
+          git add Formula/sidekick-usages.rb
+          git commit -m "sidekick-usages v${{ steps.meta.outputs.version }}"
+          git push -fu origin ${{ steps.meta.outputs.branch }}
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Open PR against homebrew-tap
+      if: steps.stage_tap.outputs.changed == 'true'
+      working-directory: _tap
+      env:
+        GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+      run: |
+        gh pr create \
+          --repo Sawmonabo/homebrew-tap \
+          --base main \
+          --head ${{ steps.meta.outputs.branch }} \
+          --title "sidekick-usages v${{ steps.meta.outputs.version }}" \
+          --body "Automated bump from https://github.com/Sawmonabo/sidekick-usages/releases/tag/v${{ steps.meta.outputs.version }}.\n\nTap CI will verify \`brew install --build-from-source\` + \`brew test\` on macOS." \
+          || echo "PR may already exist; continuing."
+
+    - name: Summary
+      run: |
+        {
+          echo "## Homebrew bump v${{ steps.meta.outputs.version }}"
+          echo ""
+          echo "| Target | Changed? |"
+          echo "|---|---|"
+          echo "| sidekick-usages (in-tree template) | ${{ steps.stage_intree.outputs.changed }} |"
+          echo "| homebrew-tap (consumer formula) | ${{ steps.stage_tap.outputs.changed }} |"
+        } >> "$GITHUB_STEP_SUMMARY"
