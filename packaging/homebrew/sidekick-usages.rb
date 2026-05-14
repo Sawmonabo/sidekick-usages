@@ -21,7 +21,7 @@ class SidekickUsages < Formula
   desc "Check Claude Code and Codex CLI usage across multiple accounts"
   homepage "https://github.com/Sawmonabo/sidekick-usages"
   url "https://github.com/Sawmonabo/sidekick-usages/archive/refs/tags/v0.1.0.tar.gz"
-  sha256 "REPLACE_WITH_SHA256_OF_TAGGED_TARBALL_AT_RELEASE_TIME"
+  sha256 "0eef1f1d347e700a9afb996ef54fa4c0a2d03baa247406c606dd5bd77bb0d214"
   license "Apache-2.0"
   head "https://github.com/Sawmonabo/sidekick-usages.git", branch: "main"
 
