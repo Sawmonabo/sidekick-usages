@@ -1,0 +1,232 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sidekick-usages"
+version = "0.1.0"
+description = "Check Claude Code and Codex CLI usage across multiple accounts in one command."
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.14"
+authors = [{name = "Sawmonabo"}]
+keywords = [
+  "claude",
+  "codex",
+  "claude-code",
+  "codex-cli",
+  "oauth",
+  "usage",
+  "rate-limit",
+  "cli",
+  "tui"
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: MacOS",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.14",
+  "Programming Language :: Python :: Implementation :: CPython",
+  "Topic :: Software Development",
+  "Topic :: Utilities"
+]
+dependencies = ["typer>=0.15", "rich>=13.9"]
+
+[project.urls]
+Homepage = "https://github.com/Sawmonabo/sidekick-usages"
+Repository = "https://github.com/Sawmonabo/sidekick-usages"
+Issues = "https://github.com/Sawmonabo/sidekick-usages/issues"
+Changelog = "https://github.com/Sawmonabo/sidekick-usages/blob/main/CHANGELOG.md"
+
+[project.scripts]
+sidekick-usages = "sidekick_usages.cli:app"
+
+[dependency-groups]
+dev = ["ty>=0.0.35"]
+lint = [
+  "bandit[toml]>=1.9.2",
+  "codespell>=2.4.1",
+  "commitizen>=4.10.1",
+  "pre-commit>=4.5.1",
+  "pyupgrade>=3.21.2",
+  "ruff>=0.15.12"
+]
+test = ["pytest>=9.0.2", "pytest-cov>=7.0.0"]
+
+[tool.uv]
+default-groups = ["dev", "lint", "test"]
+
+[tool.hatch]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sidekick_usages"]
+
+# ---------------------------------------------------------------------
+# Lint / format
+# ---------------------------------------------------------------------
+[tool.ruff]
+target-version = "py314"
+line-length = 79
+src = ["src", "tests"]
+cache-dir = ".cache/ruff"
+# Local agent infra committed alongside the package is not project code.
+extend-exclude = [".claude/", ".codex/"]
+
+[tool.ruff.lint]
+select = [
+  "B",  # bugbear
+  "C",  # complexity
+  "C4",  # comprehensions
+  "C90",  # McCabe complexity (replaces "C")
+  "E",  # pycodestyle errors
+  "F",  # pyflakes
+  "I",  # isort
+  "ICN",  # import conventions
+  "ISC",  # implicit string concatenation
+  "N",  # pep8-naming
+  "PL",  # pylint
+  "PT",  # pytest
+  "RET",  # flake8-return
+  "RUF",  # ruff-specific rules
+  "SIM",  # flake8-simplify
+  "T20",  # flake8-print
+  "TID",  # flake8-tidy-imports
+  "UP",  # pyupgrade
+  "W"  # pycodestyle warnings
+]
+ignore = [
+  "E501",  # line too long (handled by formatter)
+  "B008",  # function call in default argument (typer uses this idiom)
+  "B905"  # zip without explicit strict
+]
+extend-ignore = ["E203"]
+
+[tool.ruff.lint.pylint]
+max-args = 9
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = []
+
+[tool.ruff.lint.isort]
+known-first-party = ["sidekick_usages"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+docstring-code-format = true
+docstring-code-line-length = 79
+
+# ---------------------------------------------------------------------
+# Type checking (ty — Astral's static type checker)
+# ---------------------------------------------------------------------
+[tool.ty]
+
+[tool.ty.environment]
+python-version = "3.14"
+python = ".venv"
+
+[tool.ty.src]
+include = ["src/", "tests/"]
+
+[tool.ty.rules]
+possibly-unresolved-reference = "error"
+possibly-missing-attribute = "error"
+possibly-missing-import = "error"
+possibly-missing-implicit-call = "error"
+division-by-zero = "warn"
+
+[tool.ty.terminal]
+error-on-warning = true
+output-format = "full"
+
+[[tool.ty.overrides]]
+include = ["tests/**"]
+
+[tool.ty.overrides.rules]
+possibly-unresolved-reference = "warn"
+
+# ---------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "9.0.0"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-ra -v --tb=short --strict-markers --strict-config"
+cache_dir = ".cache/pytest"
+
+[tool.coverage]
+
+[tool.coverage.run]
+data_file = ".cache/coverage/.coverage"
+source = ["src/sidekick_usages"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = [
+  "pragma: no cover",
+  "if __name__ == .__main__.:",
+  "if TYPE_CHECKING:",
+  "raise NotImplementedError"
+]
+
+# ---------------------------------------------------------------------
+# Security scanning
+# ---------------------------------------------------------------------
+[tool.bandit]
+exclude_dirs = ["tests", ".venv", "venv"]
+# Each skip below documents WHY the rule conflicts with a project
+# idiom rather than masking a real vulnerability. See
+# https://bandit.readthedocs.io/en/latest/plugins/index.html
+skips = [
+  "B101",  # assert_used: acceptable in tests and dev code
+  # B310 (urllib_urlopen): scheme is validated at the application
+  # layer via HttpClient._require_https, which raises ValueError
+  # for any non-HTTPS URL before urlopen is reached. Bandit's
+  # static analysis cannot see the validator. The audit it asks
+  # for is performed by that helper.
+  "B310",
+  # B404 (import subprocess): this CLI's purpose is invoking other
+  # CLIs (claude, codex, /usr/bin/security, powershell). Refusing
+  # to import subprocess would break the project.
+  "B404",
+  # B603 (subprocess call without shell=True): every subprocess
+  # call uses a list argv (never shell=True) and argv[0] is either
+  # an absolute path or resolved via shutil.which. The flagged
+  # call pattern is the SAFE pattern; the alternative
+  # (shell=True) would be worse.
+  "B603"
+]
+targets = ["src"]
+
+# ---------------------------------------------------------------------
+# Commitizen (conventional commits + version bumping)
+# ---------------------------------------------------------------------
+[tool.commitizen]
+name = "cz_conventional_commits"
+version = "0.1.0"
+version_files = ["src/sidekick_usages/__init__.py:__version__"]
+tag_format = "v$version"
+update_changelog_on_bump = true
+changelog_incremental = true
+major_version_zero = true
+allowed_prefixes = ["Merge", "Revert", "chore", "build", "ci"]
+
+[tool.commitizen.customize]
+message_template = "{{change_type}}{% if scope %}({{scope}}){% endif %}{% if is_breaking %}!{% endif %}: {{subject}}{% if body %}\n\n{{body}}{% endif %}{% if footer %}\n\n{{footer}}{% endif %}"
+
+# ---------------------------------------------------------------------
+# Codespell
+# ---------------------------------------------------------------------
+[tool.codespell]
+skip = "*.lock,*.json,.git"
+ignore-words-list = "mot,aks"
+check-filenames = true

@@ -1,0 +1,109 @@
+# Pre-commit hooks configuration for sidekick-usages
+# See https://pre-commit.com for more information
+# Run `pre-commit install --install-hooks` to set up hooks
+# Run `pre-commit install --hook-type commit-msg` for commitizen
+
+default_language_version:
+  python: python3.14
+
+default_install_hook_types:
+- pre-commit
+- commit-msg
+
+repos:
+- repo: https://github.com/pre-commit/pre-commit-hooks
+  rev: v5.0.0
+  hooks:
+  - id: check-added-large-files
+    args: [--maxkb=1000]
+  - id: check-ast
+    name: check python ast
+  - id: check-case-conflict
+  - id: check-executables-have-shebangs
+  - id: check-json
+  - id: check-merge-conflict
+  - id: check-shebang-scripts-are-executable
+  - id: check-symlinks
+  - id: check-toml
+  - id: check-yaml
+    args: [--unsafe]
+  - id: debug-statements
+  - id: destroyed-symlinks
+  - id: detect-private-key
+  - id: end-of-file-fixer
+  - id: fix-byte-order-marker
+  - id: mixed-line-ending
+    args: [--fix=lf]
+  - id: name-tests-test
+    args: [--pytest-test-first]
+    files: ^tests/
+    exclude: ^tests/(conftest\.py|fixtures/|helpers/)
+  - id: no-commit-to-branch
+    args: [--branch, main, --branch, master]
+  - id: trailing-whitespace
+    args: [--markdown-linebreak-ext=md]
+- repo: https://github.com/asottile/pyupgrade
+  rev: v3.21.2
+  hooks:
+  - id: pyupgrade
+    args: [--py314-plus]
+- repo: https://github.com/astral-sh/ruff-pre-commit
+  rev: v0.15.5
+  hooks:
+      # Linter must run before formatter (--fix can produce unformatted code)
+  - id: ruff
+    name: ruff lint
+    args: [--fix, --exit-non-zero-on-fix]
+  - id: ruff-format
+    name: ruff format
+- repo: local
+  hooks:
+  - id: ty
+    name: ty type check
+    entry: uv run ty check src/ tests/
+    language: system
+    types: [python]
+    pass_filenames: false
+- repo: https://github.com/PyCQA/bandit
+  rev: 1.8.0
+  hooks:
+  - id: bandit
+    name: bandit security scan
+    args: [-c, pyproject.toml]
+    additional_dependencies: ['bandit[toml]']
+- repo: https://github.com/owenlamont/uv-secure
+  rev: 0.15.2
+  hooks:
+  - id: uv-secure
+    name: uv-secure vulnerability scan
+- repo: https://github.com/commitizen-tools/commitizen
+  rev: v4.1.0
+  hooks:
+  - id: commitizen
+    name: commitizen check
+    stages: [commit-msg]
+- repo: https://github.com/codespell-project/codespell
+  rev: v2.3.0
+  hooks:
+  - id: codespell
+    name: codespell
+    args: ['--skip=*.lock,*.json', '--ignore-words-list=mot,aks']
+    types_or: [python, markdown, rst, text]
+- repo: https://github.com/macisamuele/language-formatters-pre-commit-hooks
+  rev: v2.14.0
+  hooks:
+  - id: pretty-format-toml
+    args: [--autofix, --no-sort]
+        # uv.lock is rewritten by `uv sync` in its own format; if we
+        # reshape it here, the next CI sync flips it back and we churn.
+    exclude: ^uv\.lock$
+  - id: pretty-format-yaml
+    args: [--autofix, --indent=2]
+
+ci:
+  autofix_prs: true
+  autoupdate_schedule: monthly
+  skip:
+    # These require network access or heavy dependencies
+  - uv-secure
+  - ty

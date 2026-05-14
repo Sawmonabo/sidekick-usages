@@ -1,0 +1,160 @@
+name: Publish to PyPI
+
+on:
+  push:
+    tags:
+    - v*
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # ---- Re-run quality gates against the tagged commit -----------------
+  # Tags can be cut from a feature branch that didn't run CI yet,
+  # so we re-verify everything before building artifacts.
+  verify:
+    name: Verify tag passes CI
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v5
+      with:
+        enable-cache: true
+
+    - name: Set up Python 3.14
+      run: uv python install 3.14
+
+    - name: Install all dependency groups
+      run: uv sync --all-groups
+
+    - name: Run pre-commit hooks
+      env:
+        SKIP: no-commit-to-branch
+      run: uv run pre-commit run --all-files --show-diff-on-failure
+
+    - name: pytest
+      run: |
+        uv pip install -e .
+        uv run pytest
+
+  # ---- Build wheel + sdist --------------------------------------------
+  build:
+    name: Build distributions
+    runs-on: ubuntu-latest
+    needs: verify
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v5
+
+    - name: Set up Python 3.14
+      run: uv python install 3.14
+
+    - name: Verify tag matches pyproject version
+      run: |
+        TAG_VERSION="${GITHUB_REF_NAME#v}"
+        PROJECT_VERSION=$(uv run python -c \
+          "import tomllib, pathlib; \
+           print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
+        if [ "$TAG_VERSION" != "$PROJECT_VERSION" ]; then
+          echo "::error::Tag $GITHUB_REF_NAME does not match project version $PROJECT_VERSION"
+          exit 1
+        fi
+        echo "Tag $GITHUB_REF_NAME matches project version $PROJECT_VERSION"
+
+    - name: Build
+      run: uv build
+
+    - name: Smoke-test the wheel
+      run: |
+        uv venv verify-env
+        uv pip install --python verify-env/bin/python dist/*.whl
+        verify-env/bin/sidekick-usages --version
+
+    - name: Upload distributions
+      uses: actions/upload-artifact@v4
+      with:
+        name: dist
+        path: dist/
+        retention-days: 7
+
+  # ---- Publish to PyPI (Trusted Publishing via OIDC) ------------------
+  # One-time setup at:
+  #   https://pypi.org/manage/account/publishing/
+  # Configure a pending publisher with:
+  #   PyPI Project Name: sidekick-usages
+  #   Owner: Sawmonabo
+  #   Repository name: sidekick-usages
+  #   Workflow name: publish.yml
+  #   Environment name: pypi
+  publish-pypi:
+    name: Publish to PyPI
+    runs-on: ubuntu-latest
+    needs: build
+    environment:
+      name: pypi
+      url: https://pypi.org/p/sidekick-usages
+    permissions:
+      id-token: write  # required for OIDC
+    steps:
+    - name: Download distributions
+      uses: actions/download-artifact@v4
+      with:
+        name: dist
+        path: dist/
+
+    - name: Publish to PyPI
+      uses: pypa/gh-action-pypi-publish@release/v1
+      with:
+        packages-dir: dist/
+          # No 'password:' — Trusted Publishing handles auth via OIDC.
+        print-hash: true
+
+  # ---- Create GitHub Release with built artifacts ---------------------
+  github-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: publish-pypi
+    permissions:
+      contents: write  # required to create releases
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download distributions
+      uses: actions/download-artifact@v4
+      with:
+        name: dist
+        path: dist/
+
+    - name: Extract changelog entry for this version
+      id: changelog
+      run: |
+        VERSION="${GITHUB_REF_NAME#v}"
+        # Pull the section between "## [VERSION]" and the next "## [" header.
+        awk -v ver="$VERSION" '
+          $0 ~ "^## \\[" ver "\\]" { found=1; next }
+          found && /^## \[/ { exit }
+          found { print }
+        ' CHANGELOG.md > release_notes.md
+        # Fallback if changelog section is empty
+        if [ ! -s release_notes.md ]; then
+          echo "Release $GITHUB_REF_NAME" > release_notes.md
+        fi
+        echo "notes_file=release_notes.md" >> "$GITHUB_OUTPUT"
+
+    - name: Create release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ github.ref_name }}
+        name: ${{ github.ref_name }}
+        body_path: ${{ steps.changelog.outputs.notes_file }}
+        draft: false
+        prerelease: ${{ contains(github.ref_name, '-') }}
+        files: |
+          dist/*.whl
+          dist/*.tar.gz
+        fail_on_unmatched_files: true
