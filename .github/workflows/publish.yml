@@ -83,9 +83,12 @@ jobs:
         retention-days: 7
 
   # ---- Publish to PyPI (Trusted Publishing via OIDC) ------------------
-  # One-time setup at:
+  # Gated behind the repo variable PYPI_PUBLISHING_ENABLED so tagging
+  # before the pypi.org trusted publisher is configured won't fail CI.
+  # To enable: set vars.PYPI_PUBLISHING_ENABLED=true in repo settings
+  # AND configure a pending publisher at
   #   https://pypi.org/manage/account/publishing/
-  # Configure a pending publisher with:
+  # with:
   #   PyPI Project Name: sidekick-usages
   #   Owner: Sawmonabo
   #   Repository name: sidekick-usages
@@ -95,6 +98,7 @@ jobs:
     name: Publish to PyPI
     runs-on: ubuntu-latest
     needs: build
+    if: vars.PYPI_PUBLISHING_ENABLED == 'true'
     environment:
       name: pypi
       url: https://pypi.org/p/sidekick-usages
@@ -115,10 +119,13 @@ jobs:
         print-hash: true
 
   # ---- Create GitHub Release with built artifacts ---------------------
+  # Skipped alongside publish-pypi when PYPI_PUBLISHING_ENABLED is unset;
+  # use `gh release create` manually in that case.
   github-release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
     needs: publish-pypi
+    if: vars.PYPI_PUBLISHING_ENABLED == 'true'
     permissions:
       contents: write  # required to create releases
     steps:
