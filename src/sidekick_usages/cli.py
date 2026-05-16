@@ -6,6 +6,7 @@ with ``@app.command()``. State lives in a module-level
 inject fakes by overwriting ``_ctx``.
 """
 
+import subprocess
 import sys
 from dataclasses import dataclass
 from typing import Annotated
@@ -32,6 +33,14 @@ from sidekick_usages.providers.base import Provider
 from sidekick_usages.render import account_header, usage_report
 from sidekick_usages.store import Account, AccountStore
 from sidekick_usages.token_input import TokenInput
+from sidekick_usages.update import (
+    InstallMethod,
+    detect_install_method,
+    fetch_latest_release,
+    is_newer,
+    manual_instructions,
+    upgrade_command_for,
+)
 
 
 # ---------------------------------------------------------------------
@@ -642,6 +651,81 @@ def reset_cmd(
             f"[green]Cleared {cleared} account(s) and removed "
             f"config file.[/green]"
         )
+
+
+# ---------------------------------------------------------------------
+# check-update / update
+# ---------------------------------------------------------------------
+@app.command("check-update")
+def check_update_cmd() -> None:
+    """Check whether a newer release is available on GitHub."""
+    app_ctx = _get_ctx()
+    try:
+        latest = fetch_latest_release(app_ctx.http)
+    except ForbiddenError as e:
+        app_ctx.err_console.print(
+            "[yellow]GitHub rate limit reached; try again later.[/yellow]"
+        )
+        if e.api_message:
+            app_ctx.err_console.print(f"[dim]{e.api_message}[/dim]")
+        raise typer.Exit(code=1) from None
+    except UsageError as e:
+        app_ctx.err_console.print(f"[red]Could not check: {e}[/red]")
+        raise typer.Exit(code=1) from None
+    except ValueError as e:
+        app_ctx.err_console.print(
+            f"[red]Unexpected GitHub response: {e}[/red]"
+        )
+        raise typer.Exit(code=1) from None
+
+    if is_newer(latest, __version__):
+        app_ctx.console.print(
+            f"[green]New version {latest} available[/green] "
+            f"(currently {__version__}). "
+            "Run [bold]sidekick-usages update[/bold] to upgrade."
+        )
+    else:
+        app_ctx.console.print(f"[dim]Up to date ({__version__}).[/dim]")
+
+
+@app.command("update")
+def update_cmd(
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            help="Print the upgrade command without running it.",
+        ),
+    ] = False,
+) -> None:
+    """Upgrade sidekick-usages to the latest release.
+
+    Detects the install method from ``sys.executable`` and invokes
+    the matching upgrade command. Refuses to guess when the install
+    method can't be determined — falls back to manual instructions.
+    """
+    app_ctx = _get_ctx()
+    method = detect_install_method()
+    if method is InstallMethod.UNKNOWN:
+        app_ctx.err_console.print(f"[yellow]{manual_instructions()}[/yellow]")
+        raise typer.Exit(code=1)
+
+    argv = upgrade_command_for(method)
+    app_ctx.console.print(f"[dim]$ {' '.join(argv)}[/dim]")
+    if dry_run:
+        return
+
+    try:
+        subprocess.run(argv, check=True)
+    except FileNotFoundError as e:
+        app_ctx.err_console.print(
+            f"[red]Upgrade tool {argv[0]!r} not found on PATH.[/red] "
+            f"Install {argv[0]!r} and retry, or run a different "
+            "upgrade path manually."
+        )
+        raise typer.Exit(code=1) from e
+    except subprocess.CalledProcessError as e:
+        raise typer.Exit(code=e.returncode) from e
 
 
 # ---------------------------------------------------------------------
