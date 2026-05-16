@@ -176,6 +176,23 @@ jobs:
           --body "Automated bump from https://github.com/Sawmonabo/sidekick-usages/releases/tag/v${{ steps.meta.outputs.version }}.\n\nTap CI will verify \`brew install --build-from-source\` + \`brew test\` on macOS." \
           || echo "PR may already exist; continuing."
 
+    # Wait for tap CI (`brew install --build-from-source` + `brew test`
+    # on macOS) and squash-merge when green. Inline-wait keeps merge
+    # logic adjacent to PR-creation in one workflow surface (vs. the
+    # alternative of `gh pr merge --auto` + tap-side branch protection,
+    # which spreads config across three places). A failing tap CI fails
+    # this step — no silent auto-merge of a broken formula.
+    - name: Wait for tap CI then merge
+      if: steps.stage_tap.outputs.changed == 'true'
+      env:
+        GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+      run: |
+        PR_URL=$(gh pr view ${{ steps.meta.outputs.branch }} \
+          --repo Sawmonabo/homebrew-tap --json url -q .url)
+        echo "Watching $PR_URL"
+        gh pr checks "$PR_URL" --watch
+        gh pr merge "$PR_URL" --squash --delete-branch
+
     - name: Summary
       run: |
         {
