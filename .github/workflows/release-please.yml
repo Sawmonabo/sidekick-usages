@@ -5,6 +5,16 @@ name: Release Please
 # release: release-please tags `vX.Y.Z`, updates CHANGELOG.md, bumps the
 # version in pyproject.toml, and creates the GitHub Release. The tag
 # push then triggers publish.yml.
+#
+# The action authenticates with a fine-grained PAT (`RELEASE_PLEASE_TOKEN`)
+# rather than the default `GITHUB_TOKEN`. This is deliberate: GitHub
+# refuses to fire downstream workflows for events caused by GITHUB_TOKEN
+# (anti-recursion guard), so a default-token tag push would NOT trigger
+# publish.yml. A PAT push is attributed to a real user and does cascade.
+#
+# To rotate: create a new fine-grained PAT (Contents R/W + Pull requests
+# R/W on this repo only), update the RELEASE_PLEASE_TOKEN secret, revoke
+# the old PAT. PAT expiry is the silent-failure mode here.
 on:
   push:
     branches: [main]
@@ -23,4 +33,4 @@ jobs:
       with:
         config-file: release-please-config.json
         manifest-file: .release-please-manifest.json
-        token: ${{ secrets.GITHUB_TOKEN }}
+        token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
