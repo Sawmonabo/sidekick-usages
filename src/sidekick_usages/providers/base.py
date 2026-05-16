@@ -25,12 +25,17 @@ class DetectedCredentials:
         ``None`` when unknown.
     :ivar plan: Plan tag (``"max"``, ``"plus"``, etc.). May be
         ``"unknown"`` when the local creds don't expose it.
+    :ivar scopes: OAuth scope list when surfaced by the local
+        credentials file (Claude's ``~/.claude/.credentials.json``
+        exposes ``scopes``; not all providers do). ``None`` when
+        unknown.
     """
 
     access_token: str
     refresh_token: str | None = None
     expires_at: int | None = None
     plan: str = "unknown"
+    scopes: list[str] | None = None
 
 
 class Provider(ABC):
