@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0](https://github.com/Sawmonabo/sidekick-usages/compare/v0.2.0...v0.3.0) (2026-05-16)
+
+
+### Added
+
+* add check-update and update commands (and switch release-please to a PAT) ([#10](https://github.com/Sawmonabo/sidekick-usages/issues/10)) ([d9f3420](https://github.com/Sawmonabo/sidekick-usages/commit/d9f3420123909d4bf2dffc63a87750d767cc1b89))
+
 ## [0.2.0](https://github.com/Sawmonabo/sidekick-usages/compare/v0.1.0...v0.2.0) (2026-05-16)
 
 
