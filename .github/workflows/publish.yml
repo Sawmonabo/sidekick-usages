@@ -137,28 +137,15 @@ jobs:
         name: dist
         path: dist/
 
-    - name: Extract changelog entry for this version
-      id: changelog
-      run: |
-        VERSION="${GITHUB_REF_NAME#v}"
-        # Pull the section between "## [VERSION]" and the next "## [" header.
-        awk -v ver="$VERSION" '
-          $0 ~ "^## \\[" ver "\\]" { found=1; next }
-          found && /^## \[/ { exit }
-          found { print }
-        ' CHANGELOG.md > release_notes.md
-        # Fallback if changelog section is empty
-        if [ ! -s release_notes.md ]; then
-          echo "Release $GITHUB_REF_NAME" > release_notes.md
-        fi
-        echo "notes_file=release_notes.md" >> "$GITHUB_OUTPUT"
-
-    - name: Create release
+    # release-please created the GitHub Release (with notes from CHANGELOG.md)
+    # when it merged the release PR. softprops updates that existing release
+    # in place to attach the built dist files; we deliberately omit `body`
+    # so the release-please-generated notes are preserved.
+    - name: Attach distributions to release
       uses: softprops/action-gh-release@v3
       with:
         tag_name: ${{ github.ref_name }}
         name: ${{ github.ref_name }}
-        body_path: ${{ steps.changelog.outputs.notes_file }}
         draft: false
         prerelease: ${{ contains(github.ref_name, '-') }}
         files: |
