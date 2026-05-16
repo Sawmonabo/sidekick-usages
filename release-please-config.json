@@ -6,6 +6,7 @@
       "package-name": "sidekick-usages",
       "changelog-path": "CHANGELOG.md",
       "include-v-in-tag": true,
+      "include-component-in-tag": false,
       "draft": false,
       "prerelease": false,
       "changelog-sections": [
