@@ -44,6 +44,14 @@ class Account:
     :ivar expires_at: Unix timestamp when ``access_token`` expires.
         ``None`` if unknown.
     :ivar plan: Subscription type tag (``"max"``, ``"plus"``, etc.).
+    :ivar scopes: OAuth scope list when known (read from the local
+        credentials file at detect-time). ``None`` means the scopes
+        are unknown — typical when the token was pasted via
+        ``--token`` instead of auto-detected. Drives the
+        client-side gate that mirrors Claude Code's ``hT()`` check:
+        when scopes are known and do not include
+        ``user:profile``, the usage endpoint is skipped because the
+        token cannot read it anyway.
     """
 
     label: str
@@ -52,6 +60,7 @@ class Account:
     refresh_token: str | None = None
     expires_at: int | None = None
     plan: str = "unknown"
+    scopes: list[str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize for JSON storage.
@@ -65,6 +74,7 @@ class Account:
             "refresh_token": self.refresh_token,
             "expires_at": self.expires_at,
             "plan": self.plan,
+            "scopes": self.scopes,
         }
 
     @classmethod
@@ -90,6 +100,7 @@ class Account:
                 refresh_token=data.get("refresh_token"),
                 expires_at=data.get("expires_at"),
                 plan=data.get("plan", "unknown"),
+                scopes=data.get("scopes"),
             )
         # Legacy cc-usage.py format: {"token": ..., "plan": ...}
         return cls(

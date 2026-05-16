@@ -1,0 +1,26 @@
+name: Release Please
+
+# Opens (and updates) a release PR that accumulates Conventional Commit
+# messages from main since the last release. Merging that PR cuts the
+# release: release-please tags `vX.Y.Z`, updates CHANGELOG.md, bumps the
+# version in pyproject.toml, and creates the GitHub Release. The tag
+# push then triggers publish.yml.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    name: Open or merge release PR
+    runs-on: ubuntu-latest
+    steps:
+    - uses: googleapis/release-please-action@v4
+      with:
+        config-file: release-please-config.json
+        manifest-file: .release-please-manifest.json
+        token: ${{ secrets.GITHUB_TOKEN }}

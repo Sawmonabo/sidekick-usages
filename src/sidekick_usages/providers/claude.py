@@ -18,6 +18,7 @@ import os
 import platform
 import re
 import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -31,14 +32,38 @@ from sidekick_usages.store import Account
 from sidekick_usages.token_input import TokenInput
 
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+MESSAGES_URL = "https://api.anthropic.com/v1/messages"
 USER_AGENT = "claude-code/2.0.32"
 ANTHROPIC_BETA = "oauth-2025-04-20"
+ANTHROPIC_API_VERSION = "2023-06-01"
 
+#: Scope on the OAuth token that unlocks ``/api/oauth/usage``.
+#: Tokens minted by ``claude setup-token`` lack this scope by design
+#: (long-lived tokens are inference-only); for those, fetch_usage
+#: routes to :meth:`_fetch_via_headers` instead.
+PROFILE_SCOPE = "user:profile"
+
+#: Smallest / cheapest model usable for the header probe. ~2 tokens
+#: per call (1 input "quota" + 1 max-output). The model is only
+#: there to make ``/v1/messages`` a valid request — we discard the
+#: completion and read only the response headers.
+PROBE_MODEL = "claude-haiku-4-5-20251001"
+
+#: OAuth-endpoint response keys + render labels (full-scope path).
 BUCKETS: tuple[tuple[str, str], ...] = (
     ("five_hour", "5h"),
     ("seven_day", "7d"),
     ("seven_day_opus", "7d Opus"),
     ("seven_day_oauth_apps", "7d OAuth"),
+)
+
+#: Response-header prefixes + render labels (inference-only path).
+#: Anthropic also returns an ``-overage-*`` bucket on the same
+#: response; we skip it to match the login-token path, which never
+#: surfaces overage as a separate bucket either.
+HEADER_BUCKETS: tuple[tuple[str, str], ...] = (
+    ("anthropic-ratelimit-unified-5h", "5h"),
+    ("anthropic-ratelimit-unified-7d", "7d"),
 )
 
 
@@ -170,11 +195,25 @@ class ClaudeProvider(Provider):
             token = oauth["accessToken"]
         except KeyError:
             return None
+        raw_scopes = oauth.get("scopes")
+        # Tolerate older creds that omit ``scopes`` or store junk in
+        # it — only trust a real ``list[str]``, otherwise leave None
+        # so the CLI's gate falls back to "attempt and learn from
+        # 403". Build via comprehension so the type narrows from
+        # ``list[object]`` to ``list[str]`` for the static checker.
+        scopes: list[str] | None
+        if isinstance(raw_scopes, list) and all(
+            isinstance(s, str) for s in raw_scopes
+        ):
+            scopes = [s for s in raw_scopes if isinstance(s, str)]
+        else:
+            scopes = None
         return DetectedCredentials(
             access_token=token,
             refresh_token=oauth.get("refreshToken"),
             expires_at=oauth.get("expiresAt"),
             plan=oauth.get("subscriptionType") or "unknown",
+            scopes=scopes,
         )
 
     # -- usage fetch -----------------------------------------------
@@ -183,11 +222,31 @@ class ClaudeProvider(Provider):
         account: Account,
         http: HttpClient,
     ) -> UsageReport:
-        """Hit the OAuth usage endpoint and parse the response.
+        """Fetch usage windows for one Claude account.
+
+        Two paths converge here. Routing mirrors Claude Code's own
+        binary: ``hT()`` (full-scope) calls the OAuth usage endpoint;
+        ``UgK()`` (inference-only) probes ``/v1/messages`` and reads
+        the unified rate-limit response headers.
 
         :param account: Account to query.
         :param http: Shared HTTP client.
         :return: Parsed :class:`UsageReport`.
+        """
+        if account.scopes is not None and PROFILE_SCOPE not in account.scopes:
+            return self._fetch_via_headers(account, http)
+        return self._fetch_via_oauth_endpoint(account, http)
+
+    def _fetch_via_oauth_endpoint(
+        self,
+        account: Account,
+        http: HttpClient,
+    ) -> UsageReport:
+        """Hit ``/api/oauth/usage`` (requires ``user:profile``).
+
+        :param account: Account to query.
+        :param http: Shared HTTP client.
+        :return: Parsed :class:`UsageReport` with up to four buckets.
         """
         data = http.get_json(
             USAGE_URL,
@@ -214,6 +273,81 @@ class ClaudeProvider(Provider):
             windows=windows,
             plan=account.plan,
             raw=data,
+        )
+
+    def _fetch_via_headers(
+        self,
+        account: Account,
+        http: HttpClient,
+    ) -> UsageReport:
+        """Probe ``/v1/messages`` and parse unified rate-limit headers.
+
+        For inference-only tokens (``claude setup-token`` outputs).
+        Mirrors Claude Code's startup probe (``de1()`` / ``UgK()``):
+        a ~2-token POST whose response headers carry the
+        ``anthropic-ratelimit-unified-{5h,7d}-{utilization,reset}``
+        values that drive the binary's in-memory usage UI. The
+        completion body is discarded.
+
+        :param account: Account to query.
+        :param http: Shared HTTP client.
+        :return: Parsed :class:`UsageReport` with 5h and 7d windows.
+        """
+        response_headers = http.post_capture_headers(
+            MESSAGES_URL,
+            {
+                "model": PROBE_MODEL,
+                "max_tokens": 1,
+                "messages": [{"role": "user", "content": "quota"}],
+            },
+            {
+                "Authorization": f"Bearer {account.access_token}",
+                "anthropic-version": ANTHROPIC_API_VERSION,
+                "anthropic-beta": ANTHROPIC_BETA,
+                "User-Agent": USER_AGENT,
+            },
+        )
+        windows: list[UsageWindow] = []
+        for prefix, label in HEADER_BUCKETS:
+            window = self._parse_header_window(prefix, label, response_headers)
+            if window is not None:
+                windows.append(window)
+        return UsageReport(
+            windows=windows,
+            plan=account.plan,
+            raw={"response_headers": dict(response_headers)},
+        )
+
+    @staticmethod
+    def _parse_header_window(
+        prefix: str,
+        label: str,
+        response_headers: dict[str, str],
+    ) -> UsageWindow | None:
+        """Build one :class:`UsageWindow` from header pair, or None.
+
+        :param prefix: Header-name prefix, e.g.
+            ``"anthropic-ratelimit-unified-5h"``.
+        :param label: Display label (``"5h"`` / ``"7d"``).
+        :param response_headers: Lowercase-keyed response headers.
+        :return: A window, or ``None`` when either header is absent
+            or non-numeric (defensive: header schema is undocumented
+            and could drift).
+        """
+        util_raw = response_headers.get(f"{prefix}-utilization")
+        reset_raw = response_headers.get(f"{prefix}-reset")
+        if util_raw is None or reset_raw is None:
+            return None
+        try:
+            utilization = float(util_raw)
+            reset_unix = int(float(reset_raw))
+        except TypeError, ValueError:
+            return None
+        resets_at = datetime.fromtimestamp(reset_unix, tz=UTC).isoformat()
+        return UsageWindow(
+            name=label,
+            utilization=utilization,
+            resets_at=resets_at,
         )
 
     # -- refresh ---------------------------------------------------

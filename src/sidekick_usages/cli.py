@@ -20,6 +20,7 @@ from rich.text import Text
 from sidekick_usages import __version__
 from sidekick_usages.errors import (
     AuthError,
+    ForbiddenError,
     RateLimitError,
     TransientError,
     UnsupportedOperationError,
@@ -192,8 +193,66 @@ def _do_check() -> None:
         raise typer.Exit(code=exit_code)
 
 
-def _fetch_and_render(acct: Account) -> bool:
+#: Scope required to read the OAuth usage endpoint. Matches the
+#: ``gLH`` constant in the Claude Code binary; the in-tree ``hT()``
+#: predicate gates ``/api/oauth/usage`` on whether the stored
+#: credentials' ``scopes`` array contains exactly this string.
+_USAGE_REQUIRED_SCOPE = "user:profile"
+
+
+def _handle_runtime_forbidden(
+    acct: Account,
+    provider: Provider,
+    err: ForbiddenError,
+) -> bool:
+    """Handle a 403 raised during ``check`` for an unknown-scope acct.
+
+    The OAuth usage endpoint refused this token. If the 403 is the
+    canonical "needs ``user:profile``" case and we have no scope
+    info on file, self-heal ``scopes=[]`` so the provider routes to
+    the header probe (which works for inference-only tokens), then
+    retry the fetch. Any other 403 (different scope, different
+    endpoint shape) is surfaced as a per-account error block.
+
+    :param acct: Account whose request 403'd.
+    :param provider: Provider for ``acct``.
+    :param err: Parsed forbidden error.
+    :return: True when the retry rendered real usage, False when
+        rendered as an error.
+    """
+    app_ctx = _get_ctx()
+    if (
+        acct.scopes is None
+        and err.required_scope == _USAGE_REQUIRED_SCOPE
+        and provider.id == "claude"
+    ):
+        acct.scopes = []
+        app_ctx.store.upsert(acct)
+        app_ctx.store.save()
+        try:
+            report = provider.fetch_usage(acct, app_ctx.http)
+        except UsageError as retry_err:
+            _print_error_block(acct, f"Header probe failed: {retry_err}")
+            return False
+        app_ctx.console.print(usage_report(acct, report))
+        return True
+    detail = err.api_message or str(err)
+    msg = f"Forbidden (HTTP 403): {detail}"
+    if err.required_scope:
+        msg += f"\n  Required scope: {err.required_scope}."
+    _print_error_block(acct, msg)
+    return False
+
+
+def _fetch_and_render(acct: Account) -> bool:  # noqa: PLR0911
     """Fetch one account's usage; on 401, try refresh once.
+
+    Each ``except`` branch renders a different error block and
+    returns False so the outer ``check`` loop can move on to the
+    next account. The branches are flat (no shared cleanup) so
+    consolidating them into one ``return`` would obscure flow
+    rather than clarify it — keeping the 7-branch shape and
+    silencing PLR0911 on purpose.
 
     :param acct: Account to query.
     :return: True on success, False on any error.
@@ -222,6 +281,8 @@ def _fetch_and_render(acct: Account) -> bool:
                 pass
         _print_auth_error_block(acct)
         return False
+    except ForbiddenError as e:
+        return _handle_runtime_forbidden(acct, provider, e)
     except RateLimitError as e:
         suffix = (
             f"Server asked to wait {e.retry_after}s."
@@ -289,6 +350,7 @@ def add_cmd(
 
     refresh: str | None = None
     expires_at: int | None = None
+    scopes: list[str] | None = None
 
     if not token:
         detected = prov.detect_credentials()
@@ -296,6 +358,7 @@ def add_cmd(
             token = detected.access_token
             refresh = detected.refresh_token
             expires_at = detected.expires_at
+            scopes = detected.scopes
             if not plan:
                 plan = detected.plan
             app_ctx.console.print(
@@ -316,7 +379,7 @@ def add_cmd(
     if existing is not None:
         _upsert_existing(existing, label, plan, force)
         return
-    _insert_new(prov, token, refresh, expires_at, label, plan, force)
+    _insert_new(prov, token, refresh, expires_at, scopes, label, plan, force)
 
 
 # ---------------------------------------------------------------------
@@ -506,7 +569,7 @@ def setup_token_cmd(
     if existing is not None:
         _upsert_existing(existing, label, plan, force)
         return
-    _insert_new(prov, token, None, None, label, plan, force)
+    _insert_new(prov, token, None, None, None, label, plan, force)
 
 
 # ---------------------------------------------------------------------
@@ -664,6 +727,7 @@ def _insert_new(
     token: str,
     refresh: str | None,
     expires_at: int | None,
+    scopes: list[str] | None,
     label_override: str | None,
     plan: str | None,
     force: bool,
@@ -674,6 +738,8 @@ def _insert_new(
     :param token: Validated access token.
     :param refresh: Optional refresh token.
     :param expires_at: Optional expiry timestamp.
+    :param scopes: OAuth scopes from the local creds file when
+        auto-detected, otherwise ``None`` (paste-mode unknown).
     :param label_override: User-supplied label, if any.
     :param plan: Plan tag, if any.
     :param force: Overwrite an existing target label.
@@ -697,6 +763,7 @@ def _insert_new(
         refresh_token=refresh,
         expires_at=expires_at,
         plan=plan or "unknown",
+        scopes=scopes,
     )
 
     warning: str | None = None
@@ -707,6 +774,24 @@ def _insert_new(
             "[red]Token rejected by API (HTTP 401).[/red]"
         )
         raise typer.Exit(code=1) from e
+    except ForbiddenError as e:
+        # OAuth usage endpoint refused — likely an inference-only
+        # token (e.g. ``claude setup-token``). Self-heal scopes=[]
+        # so fetch_usage routes to the header probe, then retry to
+        # validate that path works too. The probe also primes the
+        # in-memory ``acct`` so a follow-up ``check`` returns
+        # usage immediately without re-paying the discovery 403.
+        if e.required_scope == _USAGE_REQUIRED_SCOPE and acct.scopes is None:
+            acct.scopes = []
+            try:
+                provider.fetch_usage(acct, app_ctx.http)
+            except UsageError as retry_err:
+                warning = (
+                    f"Token saved, but the header probe also "
+                    f"failed: {retry_err}"
+                )
+        else:
+            _print_forbidden(provider, e)
     except RateLimitError as e:
         wait = (
             f"retry in {e.retry_after}s."
@@ -780,6 +865,33 @@ def _print_auth_error_block(acct: Account) -> None:
         f"  Log in to {display} again, then [bold]"
         f"sidekick-usages refresh {acct.label}[/bold]."
     )
+
+
+def _print_forbidden(provider: Provider, err: ForbiddenError) -> None:
+    """Render an unexpected 403 from the usage endpoint at add-time.
+
+    Reached only when the 403 doesn't fit the canonical
+    inference-only self-heal case — i.e. a different missing
+    scope, or the response carried no parseable scope name. The
+    token is still saved by the caller; this just surfaces what
+    the API said so the user can investigate.
+
+    :param provider: Provider the token was being added for.
+    :param err: The parsed forbidden error carrying API body and
+        required-scope details.
+    """
+    app_ctx = _get_ctx()
+    detail = (
+        f"required scope {err.required_scope!r}"
+        if err.required_scope
+        else "no scope name returned"
+    )
+    app_ctx.console.print(
+        f"[yellow]Note: {provider.display_name} usage endpoint "
+        f"returned HTTP 403 ({detail}).[/yellow]"
+    )
+    if err.api_message:
+        app_ctx.console.print(f"[yellow]API: {err.api_message}[/yellow]")
 
 
 # ---------------------------------------------------------------------

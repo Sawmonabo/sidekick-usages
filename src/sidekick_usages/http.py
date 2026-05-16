@@ -7,6 +7,7 @@ react meaningfully.
 """
 
 import json
+import re
 import secrets
 import time
 import urllib.error
@@ -18,9 +19,17 @@ from typing import Any, cast
 
 from sidekick_usages.errors import (
     AuthError,
+    ForbiddenError,
     RateLimitError,
     TransientError,
 )
+
+#: Regex extracting the scope name from Anthropic's 403 message,
+#: e.g. ``"OAuth token does not meet scope requirement user:profile"``.
+#: Conservative match: any non-whitespace run after the literal phrase
+#: ``scope requirement``. Soft-failure on parse miss is intentional —
+#: the rest of the error is still surfaced via ``api_message``.
+_SCOPE_REQUIREMENT_RE = re.compile(r"scope requirement (\S+)")
 
 #: Exclusive upper bound for the HTTP 5xx server-error range.
 #: :class:`http.HTTPStatus` enumerates only assigned codes (max is
@@ -70,6 +79,8 @@ class HttpClient:
         :return: Decoded JSON payload.
         :raises ValueError: When the URL is not HTTPS.
         :raises AuthError: On HTTP 401.
+        :raises ForbiddenError: On HTTP 403 (token authentic but
+            unauthorized for this endpoint — e.g. scope missing).
         :raises RateLimitError: On 429 after retries exhausted.
         :raises TransientError: On 5xx or network errors after
             retries exhausted.
@@ -85,6 +96,78 @@ class HttpClient:
                     raise AuthError(
                         "Token expired or invalid (HTTP 401)."
                     ) from e
+                if e.code == HTTPStatus.FORBIDDEN:
+                    raise self._build_forbidden(e) from e
+                if (
+                    e.code == HTTPStatus.TOO_MANY_REQUESTS
+                    or HTTPStatus.INTERNAL_SERVER_ERROR
+                    <= e.code
+                    < SERVER_ERROR_END
+                ):
+                    last_retry_after = self._retry_after(e)
+                    if attempt >= self.max_retries:
+                        if e.code == HTTPStatus.TOO_MANY_REQUESTS:
+                            raise RateLimitError(
+                                "Rate limited (HTTP 429) after "
+                                f"{attempt + 1} attempts.",
+                                retry_after=last_retry_after,
+                            ) from e
+                        raise TransientError(
+                            f"HTTP {e.code} {e.reason} after "
+                            f"{attempt + 1} attempts."
+                        ) from e
+                    self._sleep(self._backoff(attempt, last_retry_after))
+                    attempt += 1
+                    continue
+                raise TransientError(f"HTTP {e.code}: {e.reason}") from e
+            except urllib.error.URLError as e:
+                if attempt >= self.max_retries:
+                    raise TransientError(f"Network error: {e.reason}") from e
+                self._sleep(self._backoff(attempt, None))
+                attempt += 1
+
+    def post_capture_headers(
+        self,
+        url: str,
+        json_body: dict[str, Any],
+        headers: dict[str, str],
+    ) -> dict[str, str]:
+        """POST a JSON body and return the response headers.
+
+        Used to probe ``/v1/messages`` for the
+        ``anthropic-ratelimit-unified-*`` headers — Claude Code itself
+        does the same to populate its rate-limit state without needing
+        the ``user:profile`` OAuth scope. The response body is drained
+        but discarded; only headers carry the load-bearing data.
+
+        :param url: Endpoint URL (must use ``https://``).
+        :param json_body: Dict to JSON-encode as the request body.
+        :param headers: Request headers (Authorization, beta, ...).
+            ``Content-Type: application/json`` is added automatically.
+        :return: Response headers with lowercase keys. Callers should
+            use lowercase header names when reading the dict.
+        :raises ValueError: When the URL is not HTTPS.
+        :raises AuthError: On HTTP 401.
+        :raises ForbiddenError: On HTTP 403.
+        :raises RateLimitError: On 429 after retries exhausted.
+        :raises TransientError: On 5xx or network errors after
+            retries exhausted.
+        """
+        self._require_https(url)
+        body_bytes = json.dumps(json_body).encode("utf-8")
+        full_headers = {"Content-Type": "application/json", **headers}
+        attempt = 0
+        last_retry_after: int | None = None
+        while True:
+            try:
+                return self._post_for_headers(url, body_bytes, full_headers)
+            except urllib.error.HTTPError as e:
+                if e.code == HTTPStatus.UNAUTHORIZED:
+                    raise AuthError(
+                        "Token expired or invalid (HTTP 401)."
+                    ) from e
+                if e.code == HTTPStatus.FORBIDDEN:
+                    raise self._build_forbidden(e) from e
                 if (
                     e.code == HTTPStatus.TOO_MANY_REQUESTS
                     or HTTPStatus.INTERNAL_SERVER_ERROR
@@ -129,6 +212,7 @@ class HttpClient:
         :return: Decoded JSON payload.
         :raises ValueError: When the URL is not HTTPS.
         :raises AuthError: On HTTP 401.
+        :raises ForbiddenError: On HTTP 403.
         :raises TransientError: On other errors after retries.
         """
         self._require_https(url)
@@ -157,6 +241,8 @@ class HttpClient:
         except urllib.error.HTTPError as e:
             if e.code == HTTPStatus.UNAUTHORIZED:
                 raise AuthError("Refresh rejected (HTTP 401).") from e
+            if e.code == HTTPStatus.FORBIDDEN:
+                raise self._build_forbidden(e) from e
             raise TransientError(f"HTTP {e.code}: {e.reason}") from e
         except urllib.error.URLError as e:
             raise TransientError(f"Network error: {e.reason}") from e
@@ -193,6 +279,74 @@ class HttpClient:
         with urllib.request.urlopen(req, timeout=self.timeout) as r:
             payload = json.loads(r.read().decode("utf-8"))
             return cast("dict[str, Any]", payload)
+
+    def _post_for_headers(
+        self,
+        url: str,
+        body: bytes,
+        headers: dict[str, str],
+    ) -> dict[str, str]:
+        """Issue one POST and return response headers, draining body.
+
+        :param url: Endpoint URL.
+        :param body: Pre-encoded request body bytes.
+        :param headers: Request headers.
+        :return: Response headers normalized to lowercase keys.
+        """
+        req = urllib.request.Request(
+            url,
+            data=body,
+            headers=headers,
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=self.timeout) as r:
+            r.read()
+            return {k.lower(): v for k, v in r.headers.items()}
+
+    @staticmethod
+    def _build_forbidden(
+        err: urllib.error.HTTPError,
+    ) -> ForbiddenError:
+        """Parse a 403 response body into a :class:`ForbiddenError`.
+
+        Anthropic returns a JSON body with a user-facing message
+        (e.g. ``"OAuth token does not meet scope requirement
+        user:profile"``) that the caller wants to surface to the
+        user. When the body is missing or malformed, fall back to
+        a generic message — the typed exception is still raised so
+        the CLI hard-fails rather than saving an unusable token.
+
+        :param err: The HTTPError carrying the response.
+        :return: A populated :class:`ForbiddenError`.
+        """
+        api_message: str | None = None
+        try:
+            raw = err.read()
+            if raw:
+                payload = json.loads(raw.decode("utf-8"))
+                # Anthropic envelope: {"error": {"message": "..."}}.
+                # Be permissive: also accept top-level "message".
+                err_obj = payload.get("error") or {}
+                api_message = err_obj.get("message") or payload.get("message")
+        except OSError, ValueError, AttributeError:
+            api_message = None
+
+        required_scope: str | None = None
+        if api_message:
+            match = _SCOPE_REQUIREMENT_RE.search(api_message)
+            if match:
+                required_scope = match.group(1)
+
+        summary = (
+            f"HTTP 403 Forbidden: {api_message}"
+            if api_message
+            else "HTTP 403 Forbidden (no body)."
+        )
+        return ForbiddenError(
+            summary,
+            api_message=api_message,
+            required_scope=required_scope,
+        )
 
     @staticmethod
     def _retry_after(err: urllib.error.HTTPError) -> int | None:
