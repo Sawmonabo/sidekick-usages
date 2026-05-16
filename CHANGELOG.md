@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0](https://github.com/Sawmonabo/sidekick-usages/compare/v0.1.0...v0.2.0) (2026-05-16)
+
+
+### Added
+
+* **homebrew:** automate formula regeneration on tag push ([#4](https://github.com/Sawmonabo/sidekick-usages/issues/4)) ([847a2e3](https://github.com/Sawmonabo/sidekick-usages/commit/847a2e363cce96962fa152001c12b9e222329769))
+
+
+### Fixed
+
+* fetch usage via response headers when scopes lack user:profile ([#6](https://github.com/Sawmonabo/sidekick-usages/issues/6)) ([fadb145](https://github.com/Sawmonabo/sidekick-usages/commit/fadb1452bdbfb37cf7cd889e991466a45c0d0fa0))
+* **homebrew:** overlay generate.py from main before running ([#5](https://github.com/Sawmonabo/sidekick-usages/issues/5)) ([923c655](https://github.com/Sawmonabo/sidekick-usages/commit/923c655d94a2970cc9e86f418f14f5e03d393df6))
+
 ## [0.1.0] — 2026-05-13
 
 Initial release.
