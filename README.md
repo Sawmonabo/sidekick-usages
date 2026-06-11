@@ -138,6 +138,16 @@ then run `sidekick-usages refresh <label>` to pull the new token. For
 Codex, this usually happens automatically — but if the refresh token
 has also been revoked, you'll need to `codex login` again.
 
+If a Claude account still 401s after a clean refresh — or for any
+other non-obvious Claude-provider behavior — see
+[docs/debugging-claude.md](./docs/debugging-claude.md), a running log
+of debugging techniques and root causes for the Claude provider. The
+first entry covers the 401 case: direct-`/v1/messages`-probe
+technique, how to read `anthropic-organization-id` /
+`overage-disabled-reason` headers to verify a token's account, and
+the two non-expiry causes (whitespace in stored bytes, stale
+`account.scopes`) that masquerade as expired tokens.
+
 **"Rate limited (HTTP 429)"**
 The provider's API is throttling you. The tool retries automatically
 with backoff; if it still fails after a few attempts, wait the duration
