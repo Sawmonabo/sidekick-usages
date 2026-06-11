@@ -188,7 +188,7 @@ def _repo_root():
         )
         if result.returncode == 0:
             return result.stdout.strip()
-    except OSError, subprocess.SubprocessError:
+    except (OSError, subprocess.SubprocessError):
         pass
     return None
 
@@ -386,7 +386,7 @@ def _scan_configured_worktree_aliases():
             timeout=5,
             check=False,
         )
-    except OSError, subprocess.SubprocessError:
+    except (OSError, subprocess.SubprocessError):
         return frozenset()
     if result.returncode != 0:
         return frozenset()
@@ -851,11 +851,10 @@ def _check_worktree_path(command, _depth=0):
     return None
 
 
-tool_input = os.environ.get("CLAUDE_TOOL_INPUT", "{}")
 try:
-    data = json.loads(tool_input)
-    command = data.get("command", "")
-except json.JSONDecodeError, AttributeError:
+    data = json.load(sys.stdin)
+    command = data.get("tool_input", {}).get("command", "")
+except (json.JSONDecodeError, AttributeError):
     sys.exit(0)
 
 for pattern, reason in DENY_PATTERNS:
