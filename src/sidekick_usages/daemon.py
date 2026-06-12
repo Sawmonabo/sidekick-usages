@@ -13,6 +13,8 @@ SERVICE_NAME = "sidekick-usages-refresh"
 LAUNCHD_LABEL = "com.sidekick-usages.refresh"
 CRON_BEGIN = "# sidekick-usages refresh begin"
 CRON_END = "# sidekick-usages refresh end"
+DAEMON_DIR_NAME = "sidekick-usages"
+WINDOWS_DAEMON_SUBDIR = "sidekick-usages\\daemon"
 
 
 @dataclass(frozen=True)
@@ -254,9 +256,15 @@ class LaunchdBackend(SchedulerBackend):
         """Return the LaunchAgent plist path."""
         return self.agent_dir / f"{LAUNCHD_LABEL}.plist"
 
+    @property
+    def log_dir(self) -> Path:
+        """Return the user LaunchAgent log directory."""
+        return self.platform_info.home / "Library" / "Logs" / DAEMON_DIR_NAME
+
     def install(self) -> DaemonOperationResult:
         """Write and bootstrap the LaunchAgent."""
         self.agent_dir.mkdir(parents=True, exist_ok=True)
+        self.log_dir.mkdir(parents=True, exist_ok=True)
         self.plist_path.write_text(self._plist_text())
         target = f"gui/{self.platform_info.uid}"
         self.runner.run(
@@ -306,6 +314,10 @@ class LaunchdBackend(SchedulerBackend):
             "  </array>\n"
             "  <key>StartInterval</key>\n"
             "  <integer>1800</integer>\n"
+            "  <key>StandardOutPath</key>\n"
+            f"  <string>{xml_escape(str(self.log_dir / 'refresh.out.log'))}</string>\n"
+            "  <key>StandardErrorPath</key>\n"
+            f"  <string>{xml_escape(str(self.log_dir / 'refresh.err.log'))}</string>\n"
             "  <key>RunAtLoad</key>\n"
             "  <true/>\n"
             "</dict>\n"
@@ -313,10 +325,143 @@ class LaunchdBackend(SchedulerBackend):
         )
 
 
+class HiddenWindowsLauncher:
+    """Generate silent Windows-side launcher artifacts for scheduled refresh."""
+
+    def __init__(
+        self,
+        command: tuple[str, ...],
+        platform_info: PlatformInfo,
+    ) -> None:
+        self.command = command
+        self.platform_info = platform_info
+
+    def install_preamble(self) -> str:
+        """Return PowerShell that writes wrapper artifacts under LOCALAPPDATA."""
+        return "\n".join(
+            (
+                "$daemonDir = Join-Path $env:LOCALAPPDATA "
+                f"{ps_quote(WINDOWS_DAEMON_SUBDIR)}",
+                "New-Item -ItemType Directory -Force -Path $daemonDir | Out-Null",
+                "$vbsPath = Join-Path $daemonDir 'refresh.vbs'",
+                "$ps1Path = Join-Path $daemonDir 'refresh.ps1'",
+                "$outPath = Join-Path $daemonDir 'refresh.out.log'",
+                "$errPath = Join-Path $daemonDir 'refresh.err.log'",
+                "$vbs = " + ps_here_string(self._vbs_text()),
+                "$ps1 = " + ps_here_string(self._ps1_text()),
+                "Set-Content -Path $vbsPath -Value $vbs -Encoding ASCII",
+                "Set-Content -Path $ps1Path -Value $ps1 -Encoding UTF8",
+            )
+        )
+
+    @staticmethod
+    def action_script() -> str:
+        """Return PowerShell that creates a hidden scheduled task action."""
+        return (
+            "$action = New-ScheduledTaskAction -Execute 'wscript.exe' "
+            "-Argument ('//B //Nologo \"' + $vbsPath + '\"')"
+        )
+
+    @staticmethod
+    def status_script() -> str:
+        """Return PowerShell that reports wrapper and log paths."""
+        return "\n".join(
+            (
+                "$daemonDir = Join-Path $env:LOCALAPPDATA "
+                f"{ps_quote(WINDOWS_DAEMON_SUBDIR)}",
+                "$vbsPath = Join-Path $daemonDir 'refresh.vbs'",
+                "$outPath = Join-Path $daemonDir 'refresh.out.log'",
+                "$errPath = Join-Path $daemonDir 'refresh.err.log'",
+                "Get-ScheduledTask -TaskName "
+                f"{ps_quote(SERVICE_NAME)} -ErrorAction Stop",
+                "Get-ScheduledTaskInfo -TaskName "
+                f"{ps_quote(SERVICE_NAME)} -ErrorAction Stop",
+                "Write-Output ('WrapperPath: ' + $vbsPath)",
+                "Write-Output ('StdoutPath: ' + $outPath)",
+                "Write-Output ('StderrPath: ' + $errPath)",
+            )
+        )
+
+    @staticmethod
+    def uninstall_script() -> str:
+        """Return PowerShell that removes task and generated launcher files."""
+        return "\n".join(
+            (
+                "Unregister-ScheduledTask "
+                f"-TaskName {ps_quote(SERVICE_NAME)} "
+                "-Confirm:$false -ErrorAction SilentlyContinue",
+                "$daemonDir = Join-Path $env:LOCALAPPDATA "
+                f"{ps_quote(WINDOWS_DAEMON_SUBDIR)}",
+                "$paths = @(",
+                "  (Join-Path $daemonDir 'refresh.vbs'),",
+                "  (Join-Path $daemonDir 'refresh.ps1')",
+                ")",
+                "foreach ($path in $paths) {",
+                "  Remove-Item -LiteralPath $path "
+                "-Force -ErrorAction SilentlyContinue",
+                "}",
+                "Remove-Item -LiteralPath $daemonDir "
+                "-Force -ErrorAction SilentlyContinue",
+            )
+        )
+
+    def _task_command(self) -> tuple[str, ...]:
+        """Return the command argv executed by the PowerShell wrapper."""
+        if self.platform_info.is_wsl:
+            distro = self.platform_info.wsl_distro or "Ubuntu"
+            return (
+                "wsl.exe",
+                "-d",
+                distro,
+                "--",
+                "bash",
+                "-lc",
+                shlex.join(self.command),
+            )
+        return self.command
+
+    @staticmethod
+    def _vbs_text() -> str:
+        """Return the VBScript shim that launches PowerShell hidden."""
+        return "\n".join(
+            (
+                'Set shell = CreateObject("WScript.Shell")',
+                'Set fso = CreateObject("Scripting.FileSystemObject")',
+                "scriptDir = fso.GetParentFolderName(WScript.ScriptFullName)",
+                'scriptPath = fso.BuildPath(scriptDir, "refresh.ps1")',
+                'command = "powershell.exe -NoProfile -ExecutionPolicy '
+                'Bypass -File " & Chr(34) & scriptPath & Chr(34)',
+                "code = shell.Run(command, 0, True)",
+                "WScript.Quit code",
+            )
+        )
+
+    def _ps1_text(self) -> str:
+        """Return the PowerShell refresh wrapper with file logging."""
+        command = " ".join(ps_quote(arg) for arg in self._task_command())
+        return "\n".join(
+            (
+                "$ErrorActionPreference = 'Continue'",
+                "$daemonDir = Split-Path -Parent $MyInvocation.MyCommand.Path",
+                "$stdoutPath = Join-Path $daemonDir 'refresh.out.log'",
+                "$stderrPath = Join-Path $daemonDir 'refresh.err.log'",
+                f"& {command} >> $stdoutPath 2>> $stderrPath",
+                "$code = if ($LASTEXITCODE -is [int]) { $LASTEXITCODE } "
+                "else { 0 }",
+                "exit $code",
+            )
+        )
+
+
 class TaskSchedulerBackend(SchedulerBackend):
     """Windows Task Scheduler backend, including WSL launch mode."""
 
     id = "task-scheduler"
+
+    @property
+    def launcher(self) -> HiddenWindowsLauncher:
+        """Return the silent Windows launcher helper."""
+        return HiddenWindowsLauncher(self.command, self.platform_info)
 
     def install(self) -> DaemonOperationResult:
         """Register the scheduled task for the current user."""
@@ -329,20 +474,14 @@ class TaskSchedulerBackend(SchedulerBackend):
 
     def status(self) -> DaemonOperationResult:
         """Return scheduled task status."""
-        script = (
-            f"Get-ScheduledTask -TaskName {ps_quote(SERVICE_NAME)}; "
-            f"Get-ScheduledTaskInfo -TaskName {ps_quote(SERVICE_NAME)}"
-        )
+        script = self.launcher.status_script()
         result = self.runner.run(self._powershell(script))
         message = result.stdout or result.stderr or "task status checked"
         return DaemonOperationResult(self.id, message, _exit(result))
 
     def uninstall(self) -> DaemonOperationResult:
         """Unregister the scheduled task."""
-        script = (
-            "Unregister-ScheduledTask "
-            f"-TaskName {ps_quote(SERVICE_NAME)} -Confirm:$false"
-        )
+        script = self.launcher.uninstall_script()
         result = self.runner.run(self._powershell(script))
         return _result_from_command(
             self.id,
@@ -352,31 +491,23 @@ class TaskSchedulerBackend(SchedulerBackend):
 
     def _install_script(self) -> str:
         """Build the PowerShell registration script."""
-        execute, argument = self._task_action()
-        return (
-            "$trigger = New-ScheduledTaskTrigger "
-            "-Once -At (Get-Date).AddMinutes(5) "
-            "-RepetitionInterval (New-TimeSpan -Minutes 30); "
-            "$action = New-ScheduledTaskAction "
-            f"-Execute {ps_quote(execute)} -Argument {ps_quote(argument)}; "
-            "Register-ScheduledTask "
-            f"-TaskName {ps_quote(SERVICE_NAME)} "
-            "-Trigger $trigger -Action $action "
-            "-Description 'Refresh sidekick-usages provider tokens' "
-            "-Force"
-        )
-
-    def _task_action(self) -> tuple[str, str]:
-        """Return Windows task executable and arguments."""
-        if self.platform_info.is_wsl:
-            distro = self.platform_info.wsl_distro or "Ubuntu"
-            command = shlex.join(self.command)
-            return (
-                "wsl.exe",
-                f"-d {distro} -- bash -lc {shlex.quote(command)}",
+        return "\n".join(
+            (
+                self.launcher.install_preamble(),
+                "$trigger = New-ScheduledTaskTrigger "
+                "-Once -At (Get-Date).AddMinutes(5) "
+                "-RepetitionInterval (New-TimeSpan -Minutes 30)",
+                self.launcher.action_script(),
+                "$settings = New-ScheduledTaskSettingsSet "
+                "-MultipleInstances IgnoreNew",
+                "$settings.Hidden = $true",
+                "Register-ScheduledTask "
+                f"-TaskName {ps_quote(SERVICE_NAME)} "
+                "-Trigger $trigger -Action $action -Settings $settings "
+                "-Description 'Silently refresh sidekick-usages provider tokens' "
+                "-Force",
             )
-        executable = self.command[0]
-        return executable, shlex.join(self.command[1:])
+        )
 
     @staticmethod
     def _powershell(script: str) -> tuple[str, ...]:
@@ -466,6 +597,13 @@ def resolve_maintenance_command() -> tuple[str, ...]:
 def ps_quote(value: str) -> str:
     """Quote a string as a PowerShell single-quoted literal."""
     return "'" + value.replace("'", "''") + "'"
+
+
+def ps_here_string(value: str) -> str:
+    """Quote a string as a PowerShell single-quoted here-string."""
+    if "\n'@" in value or value.startswith("'@"):
+        raise ValueError("PowerShell here-string terminator in value")
+    return "@'\n" + value.rstrip() + "\n'@"
 
 
 def xml_escape(value: str) -> str:

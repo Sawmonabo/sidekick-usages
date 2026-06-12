@@ -163,11 +163,11 @@ Run `sidekick-usages --help` or `sidekick-usages <cmd> --help` for the
 full option list on each command.
 
 `daemon install --backend auto` picks a user-level scheduler for the
-host: Windows Task Scheduler on Windows, Windows Task Scheduler via
-`wsl.exe` inside WSL, launchd on macOS, user-level systemd on native
-Linux/Ubuntu, and cron if systemd is unavailable. The daemon never
-copies the current global Claude or Codex login into saved labels; it
-only uses refresh tokens already stored in sidekick-usages.
+host: Windows Task Scheduler on Windows, Windows Task Scheduler via a
+silent `wscript.exe` wrapper inside WSL, launchd on macOS, user-level
+systemd on native Linux/Ubuntu, and cron if systemd is unavailable. The
+daemon never copies the current global Claude or Codex login into saved
+labels; it only uses refresh tokens already stored in sidekick-usages.
 
 For the complete token-maintenance model, scheduler backend details,
 and operational troubleshooting, see

@@ -119,8 +119,8 @@ the current platform:
 
 | Platform | Default backend |
 | --- | --- |
-| Windows native | Windows Task Scheduler |
-| WSL | Windows Task Scheduler invoking `wsl.exe` |
+| Windows native | Windows Task Scheduler via a silent `wscript.exe` wrapper |
+| WSL | Windows Task Scheduler via a silent `wscript.exe` wrapper |
 | macOS | launchd LaunchAgent |
 | Native Linux or Ubuntu with user systemd | systemd user timer |
 | Linux without user systemd | cron |
@@ -170,19 +170,43 @@ crontab block. Uninstall removes only the sidekick-marked block.
 
 ### WSL
 
-The WSL default installs a Windows scheduled task that runs:
+The WSL default installs a Windows scheduled task that runs a
+sidekick-owned VBScript wrapper with `wscript.exe`:
+
+```powershell
+wscript.exe //B //Nologo %LOCALAPPDATA%\sidekick-usages\daemon\refresh.vbs
+```
+
+The wrapper runs PowerShell hidden, and that PowerShell script runs:
 
 ```powershell
 wsl.exe -d <distro-name> -- bash -lc 'sidekick-usages refresh --all --quiet'
 ```
 
 This keeps refreshes working even when the distro is not already
-running. `daemon status` and `daemon uninstall` use the same Task
-Scheduler backend.
+running, while avoiding the visible terminal flash that direct
+`wsl.exe` scheduled tasks can create. `daemon status` and
+`daemon uninstall` use the same Task Scheduler backend.
+
+Generated Windows-side files live under:
+
+```text
+%LOCALAPPDATA%\sidekick-usages\daemon\
+```
+
+The wrapper appends output to:
+
+```text
+refresh.out.log
+refresh.err.log
+```
 
 ### Windows native
 
-The Windows backend uses PowerShell and Task Scheduler:
+The Windows backend uses PowerShell and Task Scheduler, but the
+scheduled task action points at `wscript.exe`, not the console
+executable directly. This prevents periodic refreshes from flashing a
+terminal window.
 
 ```powershell
 Register-ScheduledTask
@@ -197,12 +221,20 @@ The task name is:
 sidekick-usages-refresh
 ```
 
+Generated launcher and log files live under:
+
+```text
+%LOCALAPPDATA%\sidekick-usages\daemon\
+```
+
 ### macOS
 
 The launchd backend writes:
 
 ```text
 ~/Library/LaunchAgents/com.sidekick-usages.refresh.plist
+~/Library/Logs/sidekick-usages/refresh.out.log
+~/Library/Logs/sidekick-usages/refresh.err.log
 ```
 
 Useful native commands:
@@ -328,6 +360,9 @@ testable:
   base class.
 - `SystemdBackend`, `CronBackend`, `LaunchdBackend`, and
   `TaskSchedulerBackend` implement OS-specific scheduling.
+- `HiddenWindowsLauncher` generates the Windows/WSL no-console
+  launcher artifacts and preserves scheduler exit codes through the
+  wrapper process.
 - `SystemCommandRunner` is injected so tests can verify generated
   commands without touching the host scheduler.
 
