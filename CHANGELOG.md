@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1](https://github.com/Sawmonabo/sidekick-usages/compare/v0.4.0...v0.4.1) (2026-06-12)
+
+
+### Fixed
+
+* **ci:** clean homebrew tag checkout before staging ([7f85adc](https://github.com/Sawmonabo/sidekick-usages/commit/7f85adc0c83f0d0fcbc675186c65d301892eb575))
+* **ci:** wait for tap checks before watching ([eb88d17](https://github.com/Sawmonabo/sidekick-usages/commit/eb88d1797577b8d2051251c6fadf6ff6d81b5a1c))
+* **homebrew:** derive formula resources from resolver ([0c2a733](https://github.com/Sawmonabo/sidekick-usages/commit/0c2a733e80304b40635ef5e2386532cbfd5c812d))
+
 ## [0.4.0](https://github.com/Sawmonabo/sidekick-usages/compare/v0.3.0...v0.4.0) (2026-06-12)
 
 
