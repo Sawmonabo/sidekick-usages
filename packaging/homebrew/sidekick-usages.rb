@@ -17,8 +17,8 @@ class SidekickUsages < Formula
 
   desc "Check Claude Code and Codex CLI usage across multiple accounts"
   homepage "https://github.com/Sawmonabo/sidekick-usages"
-  url "https://github.com/Sawmonabo/sidekick-usages/archive/refs/tags/v0.3.0.tar.gz"
-  sha256 "23345afecf065d026954d40dcaef34c644a0d292a4bae892f5736b20cad893a0"
+  url "https://github.com/Sawmonabo/sidekick-usages/archive/refs/tags/v0.4.0.tar.gz"
+  sha256 "c82f0a92153b3124d53a12cee9ae175fd67a1f25b09c3c8d6575d0e6f3e6fc21"
   license "Apache-2.0"
   head "https://github.com/Sawmonabo/sidekick-usages.git", branch: "main"
 
@@ -28,11 +28,6 @@ class SidekickUsages < Formula
   resource "annotated-doc" do
     url "https://files.pythonhosted.org/packages/57/ba/046ceea27344560984e26a590f90bc7f4a75b06701f653222458922b558c/annotated_doc-0.0.4.tar.gz"
     sha256 "fbcda96e87e9c92ad167c2e53839e57503ecfda18804ea28102353485033faa4"
-  end
-
-  resource "click" do
-    url "https://files.pythonhosted.org/packages/bb/63/f9e1ea081ce35720d8b92acde70daaedace594dc93b693c869e0d5910718/click-8.3.3.tar.gz"
-    sha256 "398329ad4837b2ff7cbe1dd166a4c0f8900c3ca3a218de04466f38f6497f18a2"
   end
 
   resource "markdown-it-py" do
@@ -61,8 +56,8 @@ class SidekickUsages < Formula
   end
 
   resource "typer" do
-    url "https://files.pythonhosted.org/packages/e4/51/9aed62104cea109b820bbd6c14245af756112017d309da813ef107d42e7e/typer-0.25.1.tar.gz"
-    sha256 "9616eb8853a09ffeabab1698952f33c6f29ffdbceb4eaeecf571880e8d7664cc"
+    url "https://files.pythonhosted.org/packages/5e/ed/ef06584ccdd5c410df0837951ecd7e15d9a6144ea1bd4c73cecab1a89891/typer-0.26.7.tar.gz"
+    sha256 "e314a34c617e419c091b2830dda3ea1f257134ff593061a8f5b9717ab8dddb3a"
   end
 
   def install
