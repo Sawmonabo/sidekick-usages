@@ -8,20 +8,24 @@ Windows Credential Manager / ``%APPDATA%/Claude/...``). Calls
 ``seven_day_oauth_apps`` buckets.
 
 ``setup-token`` runs ``claude setup-token`` and scrapes the printed
-token. There is no refresh-token flow — Claude tokens from
-``setup-token`` last one year, and tokens from ``claude login``
-should be refreshed by re-running ``claude login``.
+token. Claude login tokens include refresh tokens and can be renewed
+through Claude Code's OAuth token endpoint; setup-token outputs do not
+carry refresh tokens and must be replaced manually when rejected.
 """
 
 import json
 import os
 import platform
 import re
+import shutil
 import subprocess
+import tempfile
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from sidekick_usages.errors import AuthError
 from sidekick_usages.http import HttpClient
 from sidekick_usages.providers.base import (
     DetectedCredentials,
@@ -33,7 +37,10 @@ from sidekick_usages.token_input import TokenInput
 
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 MESSAGES_URL = "https://api.anthropic.com/v1/messages"
-USER_AGENT = "claude-code/2.0.32"
+OAUTH_REFRESH_ENDPOINT = "https://platform.claude.com/v1/oauth/token"
+OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+OAUTH_REFRESH_EXPIRES_IN_SECONDS = 31_536_000
+USER_AGENT = "claude-code/2.1.174"
 ANTHROPIC_BETA = "oauth-2025-04-20"
 ANTHROPIC_API_VERSION = "2023-06-01"
 
@@ -42,6 +49,13 @@ ANTHROPIC_API_VERSION = "2023-06-01"
 #: (long-lived tokens are inference-only); for those, fetch_usage
 #: routes to :meth:`_fetch_via_headers` instead.
 PROFILE_SCOPE = "user:profile"
+DEFAULT_REFRESH_SCOPES: tuple[str, ...] = (
+    "user:profile",
+    "user:inference",
+    "user:sessions:claude_code",
+    "user:mcp_servers",
+    "user:file_upload",
+)
 
 #: Smallest / cheapest model usable for the header probe. ~2 tokens
 #: per call (1 input "quota" + 1 max-output). The model is only
@@ -78,12 +92,18 @@ class ClaudeProvider(Provider):
         """No state of its own; uses injected helpers per call."""
 
     # -- credential detection --------------------------------------
-    def detect_credentials(self) -> DetectedCredentials | None:
+    def detect_credentials(
+        self,
+        credential_home: Path | None = None,
+    ) -> DetectedCredentials | None:
         """Read credentials from the local Claude Code install.
 
+        :param credential_home: Ignored; Claude Code does not expose
+            a CODEX_HOME-style account state directory.
         :return: Detected credentials, or ``None`` when no login
             is found on this machine.
         """
+        del credential_home
         system = platform.system()
         if system == "Darwin":
             return self._from_macos_keychain()
@@ -339,7 +359,7 @@ class ClaudeProvider(Provider):
         if util_raw is None or reset_raw is None:
             return None
         try:
-            utilization = float(util_raw)
+            utilization = float(util_raw) * 100
             reset_unix = int(float(reset_raw))
         except TypeError, ValueError:
             return None
@@ -356,17 +376,116 @@ class ClaudeProvider(Provider):
         account: Account,
         http: HttpClient,
     ) -> bool:
-        """Claude doesn't expose a refresh endpoint we can call here.
+        """Exchange a Claude OAuth refresh token for a new access token.
 
-        ``claude login`` and ``claude setup-token`` are the only
-        supported ways to get a new token, and both are interactive.
-        Return False so the CLI emits the standard "re-login" hint.
-
-        :param account: Account whose token failed (unused).
-        :param http: Shared HTTP client (unused).
-        :return: Always False.
+        :param account: Account whose token failed. Mutated in-place
+            on success.
+        :param http: Shared HTTP client.
+        :return: True on success, False if no refresh token is
+            available, the refresh is rejected, or the response is
+            unusable.
         """
-        return False
+        if not account.refresh_token:
+            return False
+        if self._refresh_via_cli(account):
+            return True
+        return self._refresh_via_http(account, http)
+
+    def _refresh_via_cli(self, account: Account) -> bool:
+        """Ask Claude Code to refresh in an isolated temporary home."""
+        if not account.refresh_token:
+            return False
+        claude_bin = shutil.which("claude")
+        if claude_bin is None:
+            return False
+        scopes = self._refresh_scopes(account)
+        with tempfile.TemporaryDirectory(
+            prefix="sidekick-claude-refresh-"
+        ) as temp_home:
+            env = os.environ.copy()
+            env["HOME"] = temp_home
+            env["CLAUDE_CODE_OAUTH_REFRESH_TOKEN"] = account.refresh_token
+            env["CLAUDE_CODE_OAUTH_SCOPES"] = " ".join(scopes)
+            env.pop("CLAUDE_CODE_OAUTH_TOKEN", None)
+            env.pop("ANTHROPIC_API_KEY", None)
+            try:
+                result = subprocess.run(
+                    [claude_bin, "auth", "login", "--claudeai"],
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                    check=False,
+                )
+            except FileNotFoundError, subprocess.SubprocessError:
+                return False
+
+            creds_path = Path(temp_home) / ".claude" / ".credentials.json"
+            if result.returncode != 0 and not creds_path.exists():
+                detail = self._redact_tokens(
+                    (result.stderr or result.stdout).strip()
+                )
+                if not detail:
+                    detail = f"exit code {result.returncode}"
+                raise AuthError(f"Claude CLI refresh failed: {detail}")
+            try:
+                detected = self._parse_blob(json.loads(creds_path.read_text()))
+            except OSError, json.JSONDecodeError:
+                return False
+            if detected is None:
+                return False
+            account.access_token = detected.access_token
+            account.refresh_token = detected.refresh_token
+            account.expires_at = detected.expires_at
+            if detected.plan != "unknown":
+                account.plan = detected.plan
+            if detected.scopes is not None:
+                account.scopes = detected.scopes
+            return True
+
+    def _redact_tokens(self, text: str) -> str:
+        """Remove Claude OAuth token values from captured CLI output."""
+        return self.token_pattern.sub("[redacted]", text)
+
+    def _refresh_via_http(
+        self,
+        account: Account,
+        http: HttpClient,
+    ) -> bool:
+        """Fallback direct token exchange when Claude Code is unavailable."""
+        try:
+            scopes = self._refresh_scopes(account)
+            response = http.post_json(
+                OAUTH_REFRESH_ENDPOINT,
+                json_body={
+                    "grant_type": "refresh_token",
+                    "refresh_token": account.refresh_token,
+                    "client_id": os.environ.get(
+                        "CLAUDE_CODE_OAUTH_CLIENT_ID",
+                        OAUTH_CLIENT_ID,
+                    ),
+                    "scope": " ".join(scopes),
+                    "expires_in": OAUTH_REFRESH_EXPIRES_IN_SECONDS,
+                },
+            )
+        except AuthError:
+            return False
+        new_token = response.get("access_token")
+        if not isinstance(new_token, str):
+            return False
+        account.access_token = new_token
+        new_refresh = response.get("refresh_token")
+        if isinstance(new_refresh, str):
+            account.refresh_token = new_refresh
+        expires_in = response.get("expires_in")
+        if isinstance(expires_in, int):
+            account.expires_at = int((time.time() + expires_in) * 1000)
+        return True
+
+    @staticmethod
+    def _refresh_scopes(account: Account) -> tuple[str, ...] | list[str]:
+        """Return saved scopes or Claude Code's default OAuth scope set."""
+        return account.scopes if account.scopes else DEFAULT_REFRESH_SCOPES
 
     # -- setup-token -----------------------------------------------
     def run_setup_token(self) -> str | None:

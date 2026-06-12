@@ -225,27 +225,37 @@ class HttpClient:
         }
         if headers:
             full_headers.update(headers)
-        req = urllib.request.Request(
-            url,
-            data=body,
-            headers=full_headers,
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(
-                req,
-                timeout=self.timeout,
-            ) as r:
-                payload = json.loads(r.read().decode("utf-8"))
-                return cast("dict[str, Any]", payload)
-        except urllib.error.HTTPError as e:
-            if e.code == HTTPStatus.UNAUTHORIZED:
-                raise AuthError("Refresh rejected (HTTP 401).") from e
-            if e.code == HTTPStatus.FORBIDDEN:
-                raise self._build_forbidden(e) from e
-            raise TransientError(f"HTTP {e.code}: {e.reason}") from e
-        except urllib.error.URLError as e:
-            raise TransientError(f"Network error: {e.reason}") from e
+        return self._post_json_bytes(url, body, full_headers)
+
+    def post_json(
+        self,
+        url: str,
+        json_body: dict[str, Any],
+        headers: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """POST a JSON body and parse a JSON response.
+
+        Used for OAuth refresh endpoints that follow Claude Code's
+        JSON request shape.
+
+        :param url: Endpoint URL (must use ``https://``).
+        :param json_body: Dict to JSON-encode as the request body.
+        :param headers: Optional extra headers.
+        :return: Decoded JSON payload.
+        :raises ValueError: When the URL is not HTTPS.
+        :raises AuthError: On HTTP 401.
+        :raises ForbiddenError: On HTTP 403.
+        :raises TransientError: On other errors.
+        """
+        self._require_https(url)
+        body = json.dumps(json_body).encode("utf-8")
+        full_headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        if headers:
+            full_headers.update(headers)
+        return self._post_json_bytes(url, body, full_headers)
 
     # -- internals --------------------------------------------------
     @staticmethod
@@ -263,6 +273,85 @@ class HttpClient:
             raise ValueError(
                 f"Refusing non-HTTPS URL scheme {scheme!r}: {url!r}"
             )
+
+    def _post_json_bytes(
+        self,
+        url: str,
+        body: bytes,
+        headers: dict[str, str],
+    ) -> dict[str, Any]:
+        """POST bytes and decode a JSON response, with retry/backoff."""
+        attempt = 0
+        while True:
+            try:
+                return self._post_request_json(url, body, headers)
+            except urllib.error.HTTPError as e:
+                attempt = self._handle_post_http_error(e, attempt)
+            except urllib.error.URLError as e:
+                if attempt >= self.max_retries:
+                    raise TransientError(f"Network error: {e.reason}") from e
+                self._sleep(self._backoff(attempt, None))
+                attempt += 1
+
+    def _post_request_json(
+        self,
+        url: str,
+        body: bytes,
+        headers: dict[str, str],
+    ) -> dict[str, Any]:
+        """Issue one byte POST and decode the JSON response."""
+        req = urllib.request.Request(
+            url,
+            data=body,
+            headers=headers,
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=self.timeout) as r:
+            payload = json.loads(r.read().decode("utf-8"))
+            return cast("dict[str, Any]", payload)
+
+    def _handle_post_http_error(
+        self,
+        err: urllib.error.HTTPError,
+        attempt: int,
+    ) -> int:
+        """Raise terminal POST errors or sleep and return next attempt."""
+        if err.code == HTTPStatus.UNAUTHORIZED:
+            raise AuthError("Refresh rejected (HTTP 401).") from err
+        if err.code == HTTPStatus.FORBIDDEN:
+            raise self._build_forbidden(err) from err
+        if not self._is_retryable_status(err.code):
+            raise TransientError(f"HTTP {err.code}: {err.reason}") from err
+
+        retry_after = self._retry_after(err)
+        if attempt >= self.max_retries:
+            self._raise_exhausted_http_error(err, attempt, retry_after)
+        self._sleep(self._backoff(attempt, retry_after))
+        return attempt + 1
+
+    @staticmethod
+    def _is_retryable_status(code: int) -> bool:
+        """Return whether a status should be retried."""
+        return (
+            code == HTTPStatus.TOO_MANY_REQUESTS
+            or HTTPStatus.INTERNAL_SERVER_ERROR <= code < SERVER_ERROR_END
+        )
+
+    @staticmethod
+    def _raise_exhausted_http_error(
+        err: urllib.error.HTTPError,
+        attempt: int,
+        retry_after: int | None,
+    ) -> None:
+        """Raise the typed error after all retries are exhausted."""
+        if err.code == HTTPStatus.TOO_MANY_REQUESTS:
+            raise RateLimitError(
+                f"Rate limited (HTTP 429) after {attempt + 1} attempts.",
+                retry_after=retry_after,
+            ) from err
+        raise TransientError(
+            f"HTTP {err.code} {err.reason} after {attempt + 1} attempts."
+        ) from err
 
     def _request(
         self,

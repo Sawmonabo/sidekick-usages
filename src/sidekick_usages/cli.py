@@ -6,10 +6,14 @@ with ``@app.command()``. State lives in a module-level
 inject fakes by overwriting ``_ctx``.
 """
 
+import os
+import re
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
-from typing import Annotated
+from pathlib import Path
+from typing import Annotated, Any
 
 import typer
 from rich.console import Console
@@ -19,6 +23,12 @@ from rich.table import Table
 from rich.text import Text
 
 from sidekick_usages import __version__
+from sidekick_usages.daemon import DaemonManager
+from sidekick_usages.doctor import (
+    DoctorService,
+    doctor_exit_code,
+    render_doctor,
+)
 from sidekick_usages.errors import (
     AuthError,
     ForbiddenError,
@@ -28,10 +38,26 @@ from sidekick_usages.errors import (
     UsageError,
 )
 from sidekick_usages.http import HttpClient
-from sidekick_usages.providers import PROVIDERS, get_provider
-from sidekick_usages.providers.base import Provider
+from sidekick_usages.maintenance import (
+    REFRESH_FAILED,
+    REFRESH_OK,
+    TokenMaintenanceService,
+    record_refresh_failure,
+    record_refresh_success,
+    refresh_exit_code,
+)
+from sidekick_usages.providers import PROVIDERS
+from sidekick_usages.providers.base import DetectedCredentials, Provider
+from sidekick_usages.providers.codex import (
+    CodexProvider,
+    auth_blob_matches_account,
+    default_codex_home,
+    ensure_file_auth_home,
+    read_auth_blob,
+    write_account_auth_file,
+)
 from sidekick_usages.render import account_header, usage_report
-from sidekick_usages.store import Account, AccountStore
+from sidekick_usages.store import CONFIG_DIR, Account, AccountStore
 from sidekick_usages.token_input import TokenInput
 from sidekick_usages.update import (
     InstallMethod,
@@ -64,6 +90,24 @@ class AppContext:
     console: Console
     err_console: Console
     only: str | None = None
+
+
+@dataclass
+class _CredentialFields:
+    """Normalized credential metadata ready to save."""
+
+    token: str
+    refresh_token: str | None = None
+    expires_at: int | None = None
+    scopes: list[str] | None = None
+    provider_account_id: str | None = None
+    source_codex_home: Path | None = None
+    codex_id_token: str | None = None
+    codex_last_refresh: str | None = None
+
+
+CODEX_CACHE_DIR = CONFIG_DIR / "codex"
+_SAFE_CODEX_CACHE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
 def _build_default_context() -> AppContext:
@@ -123,6 +167,12 @@ app = typer.Typer(
     pretty_exceptions_show_locals=False,
     add_completion=False,
 )
+
+daemon_app = typer.Typer(
+    help="Install, inspect, or remove scheduled token refresh.",
+    rich_markup_mode="rich",
+)
+app.add_typer(daemon_app, name="daemon")
 
 
 def _version_callback(value: bool) -> None:
@@ -253,15 +303,8 @@ def _handle_runtime_forbidden(
     return False
 
 
-def _fetch_and_render(acct: Account) -> bool:  # noqa: PLR0911
+def _fetch_and_render(acct: Account) -> bool:
     """Fetch one account's usage; on 401, try refresh once.
-
-    Each ``except`` branch renders a different error block and
-    returns False so the outer ``check`` loop can move on to the
-    next account. The branches are flat (no shared cleanup) so
-    consolidating them into one ``return`` would obscure flow
-    rather than clarify it — keeping the 7-branch shape and
-    silencing PLR0911 on purpose.
 
     :param acct: Account to query.
     :return: True on success, False on any error.
@@ -274,38 +317,205 @@ def _fetch_and_render(acct: Account) -> bool:  # noqa: PLR0911
             f"Unknown provider '{acct.provider_id}'.",
         )
         return False
+    if not _refresh_known_expired(acct, provider):
+        return False
     try:
-        report = provider.fetch_usage(acct, app_ctx.http)
-        app_ctx.console.print(usage_report(acct, report))
+        return _fetch_usage_and_render(acct, provider)
+    except AuthError as e:
+        return _refresh_after_auth_and_render(acct, provider, e)
+    except ForbiddenError as e:
+        return _retry_or_handle_forbidden(acct, provider, e)
+    except UsageError as e:
+        return _handle_fetch_error(acct, provider, e)
+
+
+def _fetch_usage_and_render(acct: Account, provider: Provider) -> bool:
+    """Fetch and render usage for one account.
+
+    :param acct: Account to query.
+    :param provider: Provider for ``acct``.
+    :return: True after rendering usage.
+    """
+    app_ctx = _get_ctx()
+    before_fetch = acct.to_dict()
+    report = provider.fetch_usage(acct, app_ctx.http)
+    if report.plan and report.plan not in ("unknown", acct.plan):
+        acct.plan = report.plan
+    if acct.to_dict() != before_fetch:
+        app_ctx.store.upsert(acct)
+        app_ctx.store.save()
+    app_ctx.console.print(usage_report(acct, report))
+    return True
+
+
+def _refresh_known_expired(acct: Account, provider: Provider) -> bool:
+    """Refresh a known-expired account before its first fetch.
+
+    :param acct: Account about to be queried.
+    :param provider: Provider for ``acct``.
+    :return: False only when refresh itself errors.
+    """
+    if not _should_refresh_before_fetch(acct, provider):
         return True
-    except AuthError:
-        if provider.refresh_token(acct, app_ctx.http):
-            app_ctx.store.upsert(acct)
-            app_ctx.store.save()
-            try:
-                report = provider.fetch_usage(acct, app_ctx.http)
-                app_ctx.console.print(usage_report(acct, report))
-                return True
-            except AuthError:
-                pass
+    try:
+        refreshed = _refresh_and_save(acct, provider)
+    except UsageError as e:
+        _print_error_block(acct, f"Token refresh failed: {e}")
+        return False
+    if not refreshed:
         _print_auth_error_block(acct)
         return False
-    except ForbiddenError as e:
-        return _handle_runtime_forbidden(acct, provider, e)
-    except RateLimitError as e:
-        suffix = (
-            f"Server asked to wait {e.retry_after}s."
-            if e.retry_after
-            else "Try again in a moment."
-        )
-        _print_error_block(
-            acct,
-            f"Rate limited (HTTP 429). {suffix}",
-        )
+    return True
+
+
+def _refresh_after_auth_and_render(
+    acct: Account,
+    provider: Provider,
+    err: AuthError,
+) -> bool:
+    """Refresh after a 401, then retry usage once.
+
+    :param acct: Account whose fetch returned 401.
+    :param provider: Provider for ``acct``.
+    :param err: Original auth error to render if refresh cannot help.
+    :return: True on successful retry, otherwise False.
+    """
+    try:
+        refreshed = _refresh_and_save(acct, provider)
+    except UsageError as refresh_err:
+        _print_error_block(acct, f"Token refresh failed: {refresh_err}")
         return False
-    except TransientError as e:
-        _print_error_block(acct, str(e))
+    if not refreshed:
+        return _handle_fetch_error(acct, provider, err)
+    try:
+        return _fetch_usage_and_render(acct, provider)
+    except UsageError as retry_err:
+        return _handle_fetch_error(acct, provider, retry_err)
+
+
+def _should_refresh_before_fetch(acct: Account, provider: Provider) -> bool:
+    """Return whether a known-expired account should refresh first.
+
+    :param acct: Account about to be queried.
+    :param provider: Provider for ``acct``.
+    :return: True when a provider-specific expiry is already stale.
+    """
+    if acct.expires_at is None:
         return False
+    if provider.id == "claude":
+        return acct.expires_at <= int(time.time() * 1000)
+    if provider.id == "codex":
+        return acct.expires_at <= int(time.time()) + 60
+    return False
+
+
+def _refresh_and_save(acct: Account, provider: Provider) -> bool:
+    """Refresh an account token and persist any successful mutation.
+
+    :param acct: Account to refresh.
+    :param provider: Provider for ``acct``.
+    :return: True when refresh succeeded.
+    """
+    app_ctx = _get_ctx()
+    try:
+        refreshed = provider.refresh_token(acct, app_ctx.http)
+    except UsageError as e:
+        record_refresh_failure(acct, str(e))
+        app_ctx.store.upsert(acct)
+        app_ctx.store.save()
+        raise
+    if not refreshed:
+        record_refresh_failure(acct, "Refresh token unavailable or rejected.")
+        app_ctx.store.upsert(acct)
+        app_ctx.store.save()
+        return False
+    record_refresh_success(acct)
+    app_ctx.store.upsert(acct)
+    app_ctx.store.save()
+    return True
+
+
+def _handle_fetch_error(
+    acct: Account,
+    provider: Provider,
+    err: UsageError,
+) -> bool:
+    """Render one fetch failure as a per-account result.
+
+    :param acct: Account whose fetch failed.
+    :param provider: Provider for ``acct``.
+    :param err: Typed usage error to render.
+    :return: Always False unless a forbidden self-heal succeeds.
+    """
+    if isinstance(err, AuthError):
+        _print_auth_error_block(acct)
+        return False
+    if isinstance(err, ForbiddenError):
+        return _handle_runtime_forbidden(acct, provider, err)
+    if isinstance(err, RateLimitError):
+        return _handle_rate_limit(acct, err)
+    if isinstance(err, TransientError):
+        return _handle_transient(acct, err)
+    _print_error_block(acct, str(err))
+    return False
+
+
+def _retry_or_handle_forbidden(
+    acct: Account,
+    provider: Provider,
+    err: ForbiddenError,
+) -> bool:
+    """Retry transient Codex 403s, otherwise render the error."""
+    if not _should_retry_bodyless_forbidden(acct, provider, err):
+        return _handle_fetch_error(acct, provider, err)
+    try:
+        return _fetch_usage_and_render(acct, provider)
+    except UsageError as retry_err:
+        return _handle_fetch_error(acct, provider, retry_err)
+
+
+def _should_retry_bodyless_forbidden(
+    acct: Account,
+    provider: Provider,
+    err: ForbiddenError,
+) -> bool:
+    """Return whether a bodyless 403 should be retried once."""
+    del acct
+    return (
+        provider.id == "codex"
+        and err.api_message is None
+        and err.required_scope is None
+    )
+
+
+def _handle_rate_limit(acct: Account, err: RateLimitError) -> bool:
+    """Render a per-account rate-limit error.
+
+    :param acct: Account whose request was rate-limited.
+    :param err: Rate-limit error with optional retry delay.
+    :return: False.
+    """
+    suffix = (
+        f"Server asked to wait {err.retry_after}s."
+        if err.retry_after
+        else "Try again in a moment."
+    )
+    _print_error_block(
+        acct,
+        f"Rate limited (HTTP 429). {suffix}",
+    )
+    return False
+
+
+def _handle_transient(acct: Account, err: TransientError) -> bool:
+    """Render a per-account transient error.
+
+    :param acct: Account whose request failed transiently.
+    :param err: Transient error to display.
+    :return: False.
+    """
+    _print_error_block(acct, str(err))
+    return False
 
 
 # ---------------------------------------------------------------------
@@ -340,6 +550,16 @@ def add_cmd(
             help="Override the auto-detected plan tag.",
         ),
     ] = None,
+    codex_home: Annotated[
+        Path | None,
+        typer.Option(
+            "--codex-home",
+            help=(
+                "Read Codex credentials from this source CODEX_HOME, "
+                "then copy them into sidekick's private cache."
+            ),
+        ),
+    ] = None,
     force: Annotated[
         bool,
         typer.Option(
@@ -360,14 +580,21 @@ def add_cmd(
     refresh: str | None = None
     expires_at: int | None = None
     scopes: list[str] | None = None
+    provider_account_id: str | None = None
+    codex_id_token: str | None = None
+    codex_last_refresh: str | None = None
+    normalized_codex_home = _normalize_codex_home(prov, codex_home)
 
     if not token:
-        detected = prov.detect_credentials()
+        detected = prov.detect_credentials(normalized_codex_home)
         if detected:
             token = detected.access_token
+            provider_account_id = detected.provider_account_id
             refresh = detected.refresh_token
             expires_at = detected.expires_at
             scopes = detected.scopes
+            codex_id_token = detected.id_token
+            codex_last_refresh = detected.last_refresh
             if not plan:
                 plan = detected.plan
             app_ctx.console.print(
@@ -385,10 +612,32 @@ def add_cmd(
             app_ctx.console.print(f"[green]Got token from {src}.[/green]")
 
     existing = app_ctx.store.find_by_token(token)
+    fields = _CredentialFields(
+        token=token,
+        refresh_token=refresh,
+        expires_at=expires_at,
+        scopes=scopes,
+        provider_account_id=provider_account_id,
+        source_codex_home=normalized_codex_home,
+        codex_id_token=codex_id_token,
+        codex_last_refresh=codex_last_refresh,
+    )
     if existing is not None:
-        _upsert_existing(existing, label, plan, force)
+        _upsert_existing(
+            existing,
+            label,
+            plan,
+            force,
+            fields=fields,
+        )
         return
-    _insert_new(prov, token, refresh, expires_at, scopes, label, plan, force)
+    _insert_new(
+        prov,
+        fields,
+        label,
+        plan,
+        force,
+    )
 
 
 # ---------------------------------------------------------------------
@@ -480,14 +729,72 @@ def rename_cmd(
 # ---------------------------------------------------------------------
 @app.command("refresh")
 def refresh_cmd(
-    label: Annotated[str, typer.Argument(help="Account label.")],
+    label: Annotated[
+        str | None,
+        typer.Argument(help="Account label."),
+    ] = None,
+    all_accounts: Annotated[
+        bool,
+        typer.Option(
+            "--all",
+            help="Refresh every due account using saved refresh tokens.",
+        ),
+    ] = False,
+    quiet: Annotated[
+        bool,
+        typer.Option(
+            "--quiet",
+            help="Only print accounts needing manual action.",
+        ),
+    ] = False,
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help="With --all, refresh even if tokens are still fresh.",
+        ),
+    ] = False,
+    from_codex_home: Annotated[
+        Path | None,
+        typer.Option(
+            "--from-codex-home",
+            help=(
+                "Read Codex credentials from this CODEX_HOME instead "
+                "of the saved/default home."
+            ),
+        ),
+    ] = None,
+    replace_identity: Annotated[
+        bool,
+        typer.Option(
+            "--replace-identity",
+            help=(
+                "Allow replacing the saved provider account id with the "
+                "current local login."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Replace a saved account's token with the local CLI login.
 
-    Reads the current login from the provider's local install
-    (macOS Keychain, Linux files, or Windows Credential Manager)
-    and writes the new access token into the saved account.
+    With a label, reads the current login from the provider's local
+    install and writes the new access token into that saved account.
+    With ``--all``, uses only saved refresh tokens and never adopts
+    the current global provider login.
     """
+    label = _validate_refresh_args(
+        label,
+        all_accounts=all_accounts,
+        quiet=quiet,
+        force=force,
+        from_codex_home=from_codex_home,
+        replace_identity=replace_identity,
+    )
+    if all_accounts:
+        _refresh_all_cmd(quiet=quiet, force=force)
+        return
+    if label is None:
+        raise AssertionError("refresh label validation failed")
     app_ctx = _get_ctx()
     acct = app_ctx.store.get(label)
     if acct is None:
@@ -501,7 +808,12 @@ def refresh_cmd(
             f"[red]Unknown provider '{acct.provider_id}' for '{label}'.[/red]"
         )
         raise typer.Exit(code=1)
-    detected = provider.detect_credentials()
+    credential_home = _refresh_credential_home(
+        acct,
+        provider,
+        from_codex_home,
+    )
+    detected = provider.detect_credentials(credential_home)
     if not detected:
         app_ctx.err_console.print(
             f"[red]No {provider.display_name} token found "
@@ -509,16 +821,402 @@ def refresh_cmd(
             f"[/red]"
         )
         raise typer.Exit(code=1)
-    acct.access_token = detected.access_token
-    if detected.refresh_token:
-        acct.refresh_token = detected.refresh_token
-    if detected.expires_at:
-        acct.expires_at = detected.expires_at
-    if detected.plan and detected.plan != "unknown":
-        acct.plan = detected.plan
+    _ensure_refresh_identity_matches(
+        acct,
+        detected,
+        label,
+        replace_identity=replace_identity,
+    )
+    _apply_detected_credentials(acct, detected, provider, credential_home)
+    record_refresh_success(acct)
     app_ctx.store.upsert(acct)
     app_ctx.store.save()
     app_ctx.console.print(f"[green]Updated token for '{label}'.[/green]")
+
+
+def _validate_refresh_args(
+    label: str | None,
+    *,
+    all_accounts: bool,
+    quiet: bool,
+    force: bool,
+    from_codex_home: Path | None,
+    replace_identity: bool,
+) -> str | None:
+    """Validate refresh command mode and return a narrowed label."""
+    if all_accounts:
+        if label is not None:
+            _usage_error("--all cannot be combined with an account label.")
+        if from_codex_home is not None:
+            _usage_error("--from-codex-home only applies to a label refresh.")
+        if replace_identity:
+            _usage_error("--replace-identity only applies to a label refresh.")
+        return None
+    if label is None:
+        _usage_error("Pass an account label or use --all.")
+    if quiet:
+        _usage_error("--quiet only applies with --all.")
+    if force:
+        _usage_error("--force only applies with --all.")
+    return label
+
+
+def _refresh_all_cmd(*, quiet: bool, force: bool) -> None:
+    """Run scheduler-safe saved-token refresh for all accounts."""
+    app_ctx = _get_ctx()
+    accounts = list(app_ctx.store)
+    if not accounts:
+        _print_no_accounts(None)
+        raise typer.Exit(code=1)
+    service = TokenMaintenanceService(
+        app_ctx.store,
+        app_ctx.http,
+        app_ctx.providers,
+    )
+    outcomes = service.refresh_all(force=force)
+    for outcome in outcomes:
+        if quiet and outcome.exit_code == 0:
+            continue
+        if outcome.status == REFRESH_OK:
+            app_ctx.console.print(f"[green]{outcome.label}: refreshed[/green]")
+        elif outcome.status == REFRESH_FAILED:
+            app_ctx.console.print(
+                f"[red]{outcome.label}: {outcome.message}[/red]"
+            )
+        elif not quiet:
+            app_ctx.console.print(
+                f"[dim]{outcome.label}: skipped ({outcome.message})[/dim]"
+            )
+    code = refresh_exit_code(outcomes)
+    if code:
+        raise typer.Exit(code=code)
+
+
+def _usage_error(message: str) -> None:
+    """Print a CLI usage error and exit."""
+    app_ctx = _get_ctx()
+    app_ctx.err_console.print(f"[red]{message}[/red]")
+    raise typer.Exit(code=2)
+
+
+# ---------------------------------------------------------------------
+# doctor
+# ---------------------------------------------------------------------
+@app.command("doctor")
+def doctor_cmd(
+    auth: Annotated[
+        bool,
+        typer.Option(
+            "--auth",
+            help="Show auth/token diagnostics. Currently the default.",
+        ),
+    ] = False,
+    provider_id: Annotated[
+        str | None,
+        typer.Option(
+            "--provider",
+            help="Filter diagnostics to one provider.",
+        ),
+    ] = None,
+    label: Annotated[
+        str | None,
+        typer.Option(
+            "--label",
+            help="Filter diagnostics to one saved account label.",
+        ),
+    ] = None,
+    json_output: Annotated[
+        bool,
+        typer.Option(
+            "--json",
+            help="Emit machine-readable JSON diagnostics.",
+        ),
+    ] = False,
+) -> None:
+    """Report what is healthy and what needs login."""
+    del auth
+    app_ctx = _get_ctx()
+    if provider_id is not None and provider_id not in app_ctx.providers:
+        app_ctx.err_console.print(
+            f"[red]Unknown provider {provider_id!r}.[/red]"
+        )
+        raise typer.Exit(code=2)
+    service = DoctorService(
+        app_ctx.store,
+        app_ctx.providers,
+        TokenMaintenanceService(
+            app_ctx.store, app_ctx.http, app_ctx.providers
+        ),
+    )
+    diagnostics = service.diagnostics(provider_id=provider_id, label=label)
+    if not diagnostics:
+        app_ctx.err_console.print("[yellow]No matching accounts.[/yellow]")
+        raise typer.Exit(code=1)
+    render_doctor(diagnostics, app_ctx.console, json_output=json_output)
+    code = doctor_exit_code(diagnostics)
+    if code:
+        raise typer.Exit(code=code)
+
+
+# ---------------------------------------------------------------------
+# daemon
+# ---------------------------------------------------------------------
+@daemon_app.command("install")
+def daemon_install_cmd(
+    backend: Annotated[
+        str,
+        typer.Option(
+            "--backend",
+            help="Scheduler backend: auto, systemd, cron, launchd, task-scheduler.",
+        ),
+    ] = "auto",
+) -> None:
+    """Install scheduled saved-token refresh for the current user."""
+    _run_daemon_operation("install", backend)
+
+
+@daemon_app.command("status")
+def daemon_status_cmd(
+    backend: Annotated[
+        str,
+        typer.Option(
+            "--backend",
+            help="Scheduler backend: auto, systemd, cron, launchd, task-scheduler.",
+        ),
+    ] = "auto",
+) -> None:
+    """Inspect scheduled saved-token refresh for the current user."""
+    _run_daemon_operation("status", backend)
+
+
+@daemon_app.command("uninstall")
+def daemon_uninstall_cmd(
+    backend: Annotated[
+        str,
+        typer.Option(
+            "--backend",
+            help="Scheduler backend: auto, systemd, cron, launchd, task-scheduler.",
+        ),
+    ] = "auto",
+) -> None:
+    """Remove scheduled saved-token refresh for the current user."""
+    _run_daemon_operation("uninstall", backend)
+
+
+def _run_daemon_operation(operation: str, backend: str) -> None:
+    """Run one daemon manager operation and render its result."""
+    app_ctx = _get_ctx()
+    manager = DaemonManager()
+    try:
+        if operation == "install":
+            result = manager.install(backend)
+        elif operation == "status":
+            result = manager.status(backend)
+        else:
+            result = manager.uninstall(backend)
+    except ValueError as e:
+        app_ctx.err_console.print(f"[red]{e}[/red]")
+        raise typer.Exit(code=3) from e
+    style = "green" if result.exit_code == 0 else "red"
+    app_ctx.console.print(
+        f"[{style}]{result.backend}: {result.message}[/{style}]"
+    )
+    if result.exit_code:
+        raise typer.Exit(code=result.exit_code)
+
+
+def _ensure_refresh_identity_matches(
+    acct: Account,
+    detected: DetectedCredentials,
+    label: str,
+    *,
+    replace_identity: bool,
+) -> None:
+    """Reject manual refresh when the active local login is a different account.
+
+    :param acct: Saved account being refreshed.
+    :param detected: Credentials detected from the local provider login.
+    :param label: User-facing account label.
+    :param replace_identity: Whether the user explicitly allowed an
+        account-id replacement.
+    :raises typer.Exit: When both sides expose account ids and they differ.
+    """
+    saved_id = acct.provider_account_id
+    detected_id = detected.provider_account_id
+    if replace_identity or saved_id is None or detected_id is None:
+        return
+    if saved_id == detected_id:
+        return
+    app_ctx = _get_ctx()
+    app_ctx.err_console.print(
+        "[red]Refusing to refresh "
+        f"'{label}' with a different provider account.[/red]\n"
+        f"  Saved account id:   {saved_id}\n"
+        f"  Current login id:   {detected_id}\n"
+        "  Log into the matching provider account, or rerun with "
+        "--replace-identity to intentionally replace this label."
+    )
+    raise typer.Exit(code=1)
+
+
+# ---------------------------------------------------------------------
+# codex-login / codex-export
+# ---------------------------------------------------------------------
+@app.command("codex-login")
+def codex_login_cmd(
+    label: Annotated[str, typer.Argument(help="Account label to update.")],
+    codex_home: Annotated[
+        Path | None,
+        typer.Option(
+            "--codex-home",
+            help=(
+                "Advanced: run login against this source CODEX_HOME "
+                "before importing a private sidekick copy."
+            ),
+        ),
+    ] = None,
+    device_auth: Annotated[
+        bool,
+        typer.Option(
+            "--device-auth",
+            help="Use Codex CLI device authentication.",
+        ),
+    ] = False,
+    replace_identity: Annotated[
+        bool,
+        typer.Option(
+            "--replace-identity",
+            help=(
+                "Allow replacing the saved provider account id with the "
+                "login from this Codex home."
+            ),
+        ),
+    ] = False,
+) -> None:
+    """Run ``codex login`` and import a private sidekick auth copy."""
+    app_ctx = _get_ctx()
+    provider = _require_codex_provider()
+    source_home = codex_home.expanduser() if codex_home is not None else None
+    if source_home is not None:
+        ensure_file_auth_home(source_home)
+
+    argv = ["codex", "login"]
+    if device_auth:
+        argv.append("--device-auth")
+    try:
+        if source_home is None:
+            subprocess.run(argv, check=True)
+        else:
+            env = os.environ.copy()
+            env["CODEX_HOME"] = str(source_home)
+            subprocess.run(argv, check=True, env=env)
+    except FileNotFoundError as e:
+        app_ctx.err_console.print(
+            "[red]Codex CLI executable 'codex' was not found on PATH.[/red]"
+        )
+        raise typer.Exit(code=1) from e
+    except subprocess.CalledProcessError as e:
+        raise typer.Exit(code=e.returncode) from e
+
+    detected = provider.detect_credentials(source_home)
+    if detected is None:
+        source = source_home or default_codex_home()
+        app_ctx.err_console.print(
+            f"[red]Codex login finished, but no auth.json was found in "
+            f"{source}.[/red]"
+        )
+        raise typer.Exit(code=1)
+
+    acct = app_ctx.store.get(label)
+    if acct is not None and acct.provider_id != "codex":
+        app_ctx.err_console.print(
+            f"[red]'{label}' is a {acct.provider_id} account, not codex.[/red]"
+        )
+        raise typer.Exit(code=1)
+    if acct is None:
+        acct = Account(
+            label=label,
+            provider_id="codex",
+            access_token=detected.access_token,
+        )
+    else:
+        _ensure_refresh_identity_matches(
+            acct,
+            detected,
+            label,
+            replace_identity=replace_identity,
+        )
+    _apply_detected_credentials(acct, detected, provider, source_home)
+    app_ctx.store.upsert(acct)
+    app_ctx.store.save()
+    app_ctx.console.print(f"[green]Updated Codex login for '{label}'.[/green]")
+
+
+@app.command("codex-export")
+def codex_export_cmd(
+    label: Annotated[str, typer.Argument(help="Saved Codex account label.")],
+    codex_home: Annotated[
+        Path,
+        typer.Option(
+            "--codex-home",
+            help="Target isolated Codex CODEX_HOME.",
+        ),
+    ],
+    source_codex_home: Annotated[
+        Path | None,
+        typer.Option(
+            "--source-codex-home",
+            help=(
+                "Optional source CODEX_HOME whose auth.json belongs to "
+                "this account."
+            ),
+        ),
+    ] = None,
+) -> None:
+    """Export a saved Codex account into a file-backed Codex home."""
+    app_ctx = _get_ctx()
+    provider = _require_codex_provider()
+    acct = app_ctx.store.get(label)
+    if acct is None:
+        app_ctx.err_console.print(
+            f"[yellow]No account named '{label}'.[/yellow]"
+        )
+        raise typer.Exit(code=1)
+    if acct.provider_id != "codex":
+        app_ctx.err_console.print(
+            f"[red]'{label}' is a {acct.provider_id} account, not codex.[/red]"
+        )
+        raise typer.Exit(code=1)
+
+    source_blob = _matching_codex_auth_blob(
+        acct,
+        source_codex_home,
+        Path(acct.codex_home).expanduser() if acct.codex_home else None,
+        default_codex_home(),
+    )
+    if source_blob is not None:
+        _apply_matching_codex_blob(acct, source_blob, provider)
+    elif not acct.codex_id_token and acct.refresh_token:
+        _refresh_and_save(acct, provider)
+
+    if not write_account_auth_file(
+        acct,
+        codex_home.expanduser(),
+        source_blob=source_blob,
+    ):
+        app_ctx.err_console.print(
+            "[red]Cannot export a complete Codex auth file for "
+            f"'{label}'.[/red]\n"
+            "  Missing Codex id_token or account id metadata. Run "
+            f"`sidekick-usages codex-login {label}` once for that account."
+        )
+        raise typer.Exit(code=1)
+
+    app_ctx.store.upsert(acct)
+    app_ctx.store.save()
+    app_ctx.console.print(
+        f"[green]Exported '{label}' to Codex home {codex_home}.[/green]"
+    )
 
 
 # ---------------------------------------------------------------------
@@ -575,10 +1273,11 @@ def setup_token_cmd(
         raise typer.Exit(code=1)
 
     existing = app_ctx.store.find_by_token(token)
+    fields = _CredentialFields(token=token)
     if existing is not None:
         _upsert_existing(existing, label, plan, force)
         return
-    _insert_new(prov, token, None, None, None, label, plan, force)
+    _insert_new(prov, fields, label, plan, force)
 
 
 # ---------------------------------------------------------------------
@@ -731,6 +1430,136 @@ def update_cmd(
 # ---------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------
+def _normalize_codex_home(
+    provider: Provider,
+    codex_home: Path | None,
+) -> Path | None:
+    """Validate and normalize a Codex home option."""
+    if codex_home is None:
+        return None
+    if provider.id != "codex":
+        app_ctx = _get_ctx()
+        app_ctx.err_console.print(
+            "[red]--codex-home can only be used with the codex provider.[/red]"
+        )
+        raise typer.Exit(code=1)
+    return codex_home.expanduser()
+
+
+def _sidekick_codex_home(label: str) -> Path:
+    """Return sidekick's private Codex auth cache dir for a label."""
+    safe = _SAFE_CODEX_CACHE_NAME_RE.sub("_", label).strip("._-")
+    if not safe:
+        safe = "account"
+    return CODEX_CACHE_DIR / safe
+
+
+def _codex_source_blob(
+    provider: Provider,
+    source_home: Path | None,
+) -> dict[str, Any] | None:
+    """Read a Codex source auth blob only for the real provider."""
+    if isinstance(provider, CodexProvider):
+        return read_auth_blob(source_home)
+    return None
+
+
+def _refresh_credential_home(
+    acct: Account,
+    provider: Provider,
+    from_codex_home: Path | None,
+) -> Path | None:
+    """Pick the credential home for a manual refresh."""
+    del acct
+    if from_codex_home is not None:
+        return _normalize_codex_home(provider, from_codex_home)
+    return None
+
+
+def _apply_detected_credentials(
+    acct: Account,
+    detected: DetectedCredentials,
+    provider: Provider,
+    credential_home: Path | None,
+) -> None:
+    """Copy detected local credentials onto a saved account."""
+    acct.access_token = detected.access_token
+    if detected.refresh_token:
+        acct.refresh_token = detected.refresh_token
+    if detected.expires_at:
+        acct.expires_at = detected.expires_at
+    if detected.provider_account_id is not None:
+        acct.provider_account_id = detected.provider_account_id
+    if detected.plan and detected.plan != "unknown":
+        acct.plan = detected.plan
+    if detected.scopes is not None:
+        acct.scopes = detected.scopes
+    if provider.id == "codex":
+        if detected.id_token is not None:
+            acct.codex_id_token = detected.id_token
+        if detected.last_refresh is not None:
+            acct.codex_last_refresh = detected.last_refresh
+        _write_sidekick_codex_cache(acct, provider, credential_home)
+
+
+def _write_sidekick_codex_cache(
+    acct: Account,
+    provider: Provider,
+    source_home: Path | None,
+) -> bool:
+    """Write sidekick's private copy of a Codex auth bundle."""
+    if provider.id != "codex":
+        return False
+    return write_account_auth_file(
+        acct,
+        _sidekick_codex_home(acct.label),
+        source_blob=_codex_source_blob(provider, source_home),
+    )
+
+
+def _require_codex_provider() -> Provider:
+    """Return the configured Codex provider or exit."""
+    app_ctx = _get_ctx()
+    provider = app_ctx.providers.get("codex")
+    if provider is None:
+        app_ctx.err_console.print(
+            "[red]Codex provider is not registered.[/red]"
+        )
+        raise typer.Exit(code=1)
+    return provider
+
+
+def _matching_codex_auth_blob(
+    acct: Account,
+    *homes: Path | None,
+) -> dict[str, Any] | None:
+    """Find a source Codex auth.json that belongs to ``acct``."""
+    seen: set[str] = set()
+    for home in homes:
+        if home is None:
+            continue
+        normalized = home.expanduser()
+        key = str(normalized)
+        if key in seen:
+            continue
+        seen.add(key)
+        blob = read_auth_blob(normalized)
+        if blob is not None and auth_blob_matches_account(blob, acct):
+            return blob
+    return None
+
+
+def _apply_matching_codex_blob(
+    acct: Account,
+    blob: dict[str, Any],
+    provider: Provider,
+) -> None:
+    """Apply metadata from a matching Codex auth blob to ``acct``."""
+    detected = CodexProvider._parse_blob(blob)
+    if detected is not None:
+        _apply_detected_credentials(acct, detected, provider, None)
+
+
 def _resolve_provider(provider_id: str) -> Provider:
     """Resolve a provider id, raising a Typer exit on miss.
 
@@ -738,11 +1567,14 @@ def _resolve_provider(provider_id: str) -> Provider:
     :return: The matching :class:`Provider`.
     """
     app_ctx = _get_ctx()
-    try:
-        return get_provider(provider_id)
-    except KeyError as e:
-        app_ctx.err_console.print(f"[red]{e}[/red]")
-        raise typer.Exit(code=1) from e
+    provider = app_ctx.providers.get(provider_id)
+    if provider is None:
+        app_ctx.err_console.print(
+            f"[red]Unknown provider {provider_id!r}. "
+            f"Known: {', '.join(sorted(app_ctx.providers))}.[/red]"
+        )
+        raise typer.Exit(code=1)
+    return provider
 
 
 def _prompt_for_token(provider: Provider) -> str | None:
@@ -777,6 +1609,8 @@ def _upsert_existing(
     label_override: str | None,
     plan: str | None,
     force: bool,
+    *,
+    fields: _CredentialFields | None = None,
 ) -> None:
     """Idempotent path: token already saved.
 
@@ -797,8 +1631,16 @@ def _upsert_existing(
             raise typer.Exit(code=1)
         app_ctx.store.rename(existing.label, target)
     acct = app_ctx.store.get(target)
-    if acct is not None and plan:
-        acct.plan = plan
+    if acct is not None:
+        if plan:
+            acct.plan = plan
+        if fields is not None:
+            _apply_credential_fields(acct, fields)
+            _write_sidekick_codex_cache(
+                acct,
+                _resolve_provider(acct.provider_id),
+                fields.source_codex_home,
+            )
         app_ctx.store.upsert(acct)
     app_ctx.store.save()
     app_ctx.console.print(
@@ -806,12 +1648,28 @@ def _upsert_existing(
     )
 
 
+def _apply_credential_fields(
+    acct: Account,
+    fields: _CredentialFields,
+) -> None:
+    """Apply optional detected credential fields to an existing account."""
+    if fields.provider_account_id is not None:
+        acct.provider_account_id = fields.provider_account_id
+    if fields.refresh_token is not None:
+        acct.refresh_token = fields.refresh_token
+    if fields.expires_at is not None:
+        acct.expires_at = fields.expires_at
+    if fields.scopes is not None:
+        acct.scopes = fields.scopes
+    if fields.codex_id_token is not None:
+        acct.codex_id_token = fields.codex_id_token
+    if fields.codex_last_refresh is not None:
+        acct.codex_last_refresh = fields.codex_last_refresh
+
+
 def _insert_new(
     provider: Provider,
-    token: str,
-    refresh: str | None,
-    expires_at: int | None,
-    scopes: list[str] | None,
+    fields: _CredentialFields,
     label_override: str | None,
     plan: str | None,
     force: bool,
@@ -819,11 +1677,7 @@ def _insert_new(
     """Fresh-token path: not yet stored.
 
     :param provider: Provider this token belongs to.
-    :param token: Validated access token.
-    :param refresh: Optional refresh token.
-    :param expires_at: Optional expiry timestamp.
-    :param scopes: OAuth scopes from the local creds file when
-        auto-detected, otherwise ``None`` (paste-mode unknown).
+    :param fields: Normalized credential metadata.
     :param label_override: User-supplied label, if any.
     :param plan: Plan tag, if any.
     :param force: Overwrite an existing target label.
@@ -843,11 +1697,14 @@ def _insert_new(
     acct = Account(
         label=label,
         provider_id=provider.id,
-        access_token=token,
-        refresh_token=refresh,
-        expires_at=expires_at,
+        access_token=fields.token,
+        provider_account_id=fields.provider_account_id,
+        refresh_token=fields.refresh_token,
+        expires_at=fields.expires_at,
         plan=plan or "unknown",
-        scopes=scopes,
+        scopes=fields.scopes,
+        codex_id_token=fields.codex_id_token,
+        codex_last_refresh=fields.codex_last_refresh,
     )
 
     warning: str | None = None
@@ -889,6 +1746,7 @@ def _insert_new(
         warning = f"Could not validate token ({e}). Saved anyway."
 
     app_ctx.store.upsert(acct)
+    _write_sidekick_codex_cache(acct, provider, fields.source_codex_home)
     app_ctx.store.save()
 
     app_ctx.console.print(f"[green]Saved '{label}'.[/green]")

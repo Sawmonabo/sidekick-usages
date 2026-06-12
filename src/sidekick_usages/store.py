@@ -38,11 +38,16 @@ class Account:
     :ivar label: Friendly user-visible name (e.g. ``personal-max``).
     :ivar provider_id: Which provider this belongs to
         (``"claude"`` or ``"codex"``).
+    :ivar provider_account_id: Provider-native account/workspace id
+        needed by APIs that bind requests to an account separate from
+        the bearer token. Codex uses this as ``ChatGPT-Account-Id``.
     :ivar access_token: OAuth access token used as the Bearer auth.
-    :ivar refresh_token: Refresh token for providers that need it
-        (Codex). ``None`` for providers that do not (Claude).
-    :ivar expires_at: Unix timestamp when ``access_token`` expires.
-        ``None`` if unknown.
+    :ivar refresh_token: Refresh token for providers/account types
+        that expose one. ``None`` for pasted or long-lived tokens
+        without refresh support.
+    :ivar expires_at: Provider-native Unix timestamp when
+        ``access_token`` expires (Claude uses milliseconds; Codex uses
+        seconds). ``None`` if unknown.
     :ivar plan: Subscription type tag (``"max"``, ``"plus"``, etc.).
     :ivar scopes: OAuth scope list when known (read from the local
         credentials file at detect-time). ``None`` means the scopes
@@ -52,15 +57,38 @@ class Account:
         when scopes are known and do not include
         ``user:profile``, the usage endpoint is skipped because the
         token cannot read it anyway.
+    :ivar codex_home: Sidekick-owned per-account Codex auth cache
+        directory. This is not the user's default ``~/.codex`` root;
+        it is an internal copy used so sidekick-usages can query
+        multiple Codex accounts without changing global Codex state.
+    :ivar codex_id_token: Codex ``auth.json`` id token. The Codex CLI
+        needs this alongside the access/refresh tokens when we write
+        a complete file-backed auth store.
+    :ivar codex_last_refresh: Last refresh timestamp from Codex
+        ``auth.json``. Preserved when known so exported auth files
+        stay close to the CLI's native shape.
+    :ivar last_refresh_at: ISO-8601 UTC timestamp for the last
+        refresh attempt sidekick-usages made for this account.
+    :ivar last_refresh_status: Result tag for the last refresh
+        attempt (``"ok"``, ``"skipped"``, or ``"failed"``).
+    :ivar last_refresh_error: Redacted human-readable error from the
+        last failed refresh attempt, or ``None`` after a success.
     """
 
     label: str
     provider_id: str
     access_token: str
+    provider_account_id: str | None = None
     refresh_token: str | None = None
     expires_at: int | None = None
     plan: str = "unknown"
     scopes: list[str] | None = None
+    codex_home: str | None = None
+    codex_id_token: str | None = None
+    codex_last_refresh: str | None = None
+    last_refresh_at: str | None = None
+    last_refresh_status: str | None = None
+    last_refresh_error: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize for JSON storage.
@@ -70,11 +98,18 @@ class Account:
         """
         return {
             "provider_id": self.provider_id,
+            "provider_account_id": self.provider_account_id,
             "access_token": self.access_token,
             "refresh_token": self.refresh_token,
             "expires_at": self.expires_at,
             "plan": self.plan,
             "scopes": self.scopes,
+            "codex_home": self.codex_home,
+            "codex_id_token": self.codex_id_token,
+            "codex_last_refresh": self.codex_last_refresh,
+            "last_refresh_at": self.last_refresh_at,
+            "last_refresh_status": self.last_refresh_status,
+            "last_refresh_error": self.last_refresh_error,
         }
 
     @classmethod
@@ -96,11 +131,18 @@ class Account:
             return cls(
                 label=label,
                 provider_id=data.get("provider_id", "claude"),
+                provider_account_id=data.get("provider_account_id"),
                 access_token=data["access_token"],
                 refresh_token=data.get("refresh_token"),
                 expires_at=data.get("expires_at"),
                 plan=data.get("plan", "unknown"),
                 scopes=data.get("scopes"),
+                codex_home=data.get("codex_home"),
+                codex_id_token=data.get("codex_id_token"),
+                codex_last_refresh=data.get("codex_last_refresh"),
+                last_refresh_at=data.get("last_refresh_at"),
+                last_refresh_status=data.get("last_refresh_status"),
+                last_refresh_error=data.get("last_refresh_error"),
             )
         # Legacy cc-usage.py format: {"token": ..., "plan": ...}
         return cls(

@@ -182,7 +182,7 @@ exclude_lines = [
 # Security scanning
 # ---------------------------------------------------------------------
 [tool.bandit]
-exclude_dirs = ["tests", ".venv", "venv"]
+exclude_dirs = ["tests", ".venv", "venv", ".claude"]
 # Each skip below documents WHY the rule conflicts with a project
 # idiom rather than masking a real vulnerability. See
 # https://bandit.readthedocs.io/en/latest/plugins/index.html
@@ -212,7 +212,7 @@ targets = ["src"]
 # ---------------------------------------------------------------------
 [tool.commitizen]
 name = "cz_conventional_commits"
-version = "0.1.0"
+version = "0.3.0"
 version_files = ["src/sidekick_usages/__init__.py:__version__"]
 tag_format = "v$version"
 update_changelog_on_bump = true
