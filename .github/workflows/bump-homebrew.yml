@@ -209,7 +209,9 @@ jobs:
           sleep 15
         done
         gh pr checks "$PR_URL" --watch
-        gh pr merge "$PR_URL" --squash --delete-branch
+        gh pr merge "$PR_URL" --repo Sawmonabo/homebrew-tap --squash
+        git -C _tap push origin --delete ${{ steps.meta.outputs.branch }} \
+          || echo "::notice::Tap branch was already removed."
 
     - name: Summary
       run: |
