@@ -109,6 +109,10 @@ jobs:
       run: |
         git config user.name "github-actions[bot]"
         git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        # `uv run` can refresh uv.lock when generating from an older
+        # release tag. The generated formula lives in /tmp, so discard
+        # tag-checkout mutations before switching to main.
+        git reset --hard
         # Branch off main, not the tag, so the bump targets the live
         # codebase (which may already have post-release commits).
         git fetch origin main
