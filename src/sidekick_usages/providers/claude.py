@@ -8,9 +8,9 @@ Windows Credential Manager / ``%APPDATA%/Claude/...``). Calls
 ``seven_day_oauth_apps`` buckets.
 
 ``setup-token`` runs ``claude setup-token`` and scrapes the printed
-token. There is no refresh-token flow — Claude tokens from
-``setup-token`` last one year, and tokens from ``claude login``
-should be refreshed by re-running ``claude login``.
+token. Claude login tokens include refresh tokens and can be renewed
+through Claude Code's OAuth token endpoint; setup-token outputs do not
+carry refresh tokens and must be replaced manually when rejected.
 """
 
 import json
@@ -18,10 +18,12 @@ import os
 import platform
 import re
 import subprocess
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from sidekick_usages.errors import AuthError
 from sidekick_usages.http import HttpClient
 from sidekick_usages.providers.base import (
     DetectedCredentials,
@@ -33,6 +35,8 @@ from sidekick_usages.token_input import TokenInput
 
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 MESSAGES_URL = "https://api.anthropic.com/v1/messages"
+OAUTH_REFRESH_ENDPOINT = "https://api.anthropic.com/v1/oauth/token"
+OAUTH_CLIENT_ID = "https://claude.ai/oauth/claude-code-client-metadata"
 USER_AGENT = "claude-code/2.0.32"
 ANTHROPIC_BETA = "oauth-2025-04-20"
 ANTHROPIC_API_VERSION = "2023-06-01"
@@ -78,12 +82,18 @@ class ClaudeProvider(Provider):
         """No state of its own; uses injected helpers per call."""
 
     # -- credential detection --------------------------------------
-    def detect_credentials(self) -> DetectedCredentials | None:
+    def detect_credentials(
+        self,
+        credential_home: Path | None = None,
+    ) -> DetectedCredentials | None:
         """Read credentials from the local Claude Code install.
 
+        :param credential_home: Ignored; Claude Code does not expose
+            a CODEX_HOME-style account state directory.
         :return: Detected credentials, or ``None`` when no login
             is found on this machine.
         """
+        del credential_home
         system = platform.system()
         if system == "Darwin":
             return self._from_macos_keychain()
@@ -356,17 +366,43 @@ class ClaudeProvider(Provider):
         account: Account,
         http: HttpClient,
     ) -> bool:
-        """Claude doesn't expose a refresh endpoint we can call here.
+        """Exchange a Claude OAuth refresh token for a new access token.
 
-        ``claude login`` and ``claude setup-token`` are the only
-        supported ways to get a new token, and both are interactive.
-        Return False so the CLI emits the standard "re-login" hint.
-
-        :param account: Account whose token failed (unused).
-        :param http: Shared HTTP client (unused).
-        :return: Always False.
+        :param account: Account whose token failed. Mutated in-place
+            on success.
+        :param http: Shared HTTP client.
+        :return: True on success, False if no refresh token is
+            available, the refresh is rejected, or the response is
+            unusable.
         """
-        return False
+        if not account.refresh_token:
+            return False
+        try:
+            response = http.post_json(
+                OAUTH_REFRESH_ENDPOINT,
+                json_body={
+                    "grant_type": "refresh_token",
+                    "refresh_token": account.refresh_token,
+                    "client_id": OAUTH_CLIENT_ID,
+                },
+                headers={
+                    "anthropic-beta": ANTHROPIC_BETA,
+                    "User-Agent": USER_AGENT,
+                },
+            )
+        except AuthError:
+            return False
+        new_token = response.get("access_token")
+        if not isinstance(new_token, str):
+            return False
+        account.access_token = new_token
+        new_refresh = response.get("refresh_token")
+        if isinstance(new_refresh, str):
+            account.refresh_token = new_refresh
+        expires_in = response.get("expires_in")
+        if isinstance(expires_in, int):
+            account.expires_at = int((time.time() + expires_in) * 1000)
+        return True
 
     # -- setup-token -----------------------------------------------
     def run_setup_token(self) -> str | None:

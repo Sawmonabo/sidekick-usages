@@ -112,3 +112,37 @@ def test_account_from_dict_tolerates_missing_scopes_field() -> None:
     }
     restored = Account.from_dict("legacy", legacy)
     assert restored.scopes is None
+
+
+def test_account_roundtrips_provider_account_id() -> None:
+    """Provider account identity survives persistence for Codex."""
+    original = Account(
+        label="codex-pro",
+        provider_id="codex",
+        access_token="eyJ.access.sig",
+        provider_account_id="acct_123",
+    )
+
+    restored = Account.from_dict(original.label, original.to_dict())
+
+    assert restored.provider_account_id == "acct_123"
+
+
+def test_account_roundtrips_codex_auth_home_metadata() -> None:
+    """Codex per-account auth homes survive persistence."""
+    original = Account(
+        label="codex-pro",
+        provider_id="codex",
+        access_token="eyJ.access.sig",
+        provider_account_id="acct_123",
+        refresh_token="refresh-123",
+        codex_home="/home/me/.codex-pro",
+        codex_id_token="id-token-123",
+        codex_last_refresh="2026-06-12T00:00:00Z",
+    )
+
+    restored = Account.from_dict(original.label, original.to_dict())
+
+    assert restored.codex_home == "/home/me/.codex-pro"
+    assert restored.codex_id_token == "id-token-123"
+    assert restored.codex_last_refresh == "2026-06-12T00:00:00Z"

@@ -18,6 +18,7 @@ guide the user to ``claude /login``.
 import io
 import json
 import urllib.error
+import urllib.request
 from collections.abc import Iterator
 from email.message import Message
 from unittest.mock import patch
@@ -177,3 +178,60 @@ def test_500_still_raises_transient_error(
     patched_urlopen.side_effect = _http_error(500)
     with pytest.raises(TransientError):
         client.get_json("https://api.anthropic.com/x", {})
+
+
+class _JsonResponse:
+    """Minimal context-manager response for POST JSON tests."""
+
+    def __init__(self, payload: dict[str, object]) -> None:
+        """:param payload: JSON payload returned by ``read``."""
+        self._payload = payload
+
+    def __enter__(self) -> _JsonResponse:
+        """:return: Self, matching urllib response context managers."""
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        """:param args: Unused exception triple."""
+
+    def read(self) -> bytes:
+        """:return: Encoded JSON response body."""
+        return json.dumps(self._payload).encode("utf-8")
+
+
+def test_post_json_sends_json_body_and_headers(
+    client: HttpClient,
+    patched_urlopen,
+) -> None:
+    """``post_json`` sends a JSON request and decodes JSON response."""
+    patched_urlopen.return_value = _JsonResponse({"access_token": "new"})
+
+    response = client.post_json(
+        "https://api.anthropic.com/v1/oauth/token",
+        json_body={"grant_type": "refresh_token"},
+        headers={"anthropic-beta": "oauth-2025-04-20"},
+    )
+
+    assert response == {"access_token": "new"}
+    request = patched_urlopen.call_args.args[0]
+    assert isinstance(request, urllib.request.Request)
+    assert request.get_method() == "POST"
+    assert request.get_header("Content-type") == "application/json"
+    assert request.get_header("Accept") == "application/json"
+    assert request.get_header("Anthropic-beta") == "oauth-2025-04-20"
+    assert json.loads(request.data.decode("utf-8")) == {
+        "grant_type": "refresh_token"
+    }
+
+
+def test_post_json_401_raises_auth_error(
+    client: HttpClient,
+    patched_urlopen,
+) -> None:
+    """401 from a JSON OAuth POST is still an auth failure."""
+    patched_urlopen.side_effect = _http_error(401)
+    with pytest.raises(AuthError):
+        client.post_json(
+            "https://api.anthropic.com/v1/oauth/token",
+            json_body={"grant_type": "refresh_token"},
+        )

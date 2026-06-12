@@ -247,6 +247,56 @@ class HttpClient:
         except urllib.error.URLError as e:
             raise TransientError(f"Network error: {e.reason}") from e
 
+    def post_json(
+        self,
+        url: str,
+        json_body: dict[str, Any],
+        headers: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """POST a JSON body and parse a JSON response.
+
+        Used for OAuth refresh endpoints that follow Claude Code's
+        JSON request shape.
+
+        :param url: Endpoint URL (must use ``https://``).
+        :param json_body: Dict to JSON-encode as the request body.
+        :param headers: Optional extra headers.
+        :return: Decoded JSON payload.
+        :raises ValueError: When the URL is not HTTPS.
+        :raises AuthError: On HTTP 401.
+        :raises ForbiddenError: On HTTP 403.
+        :raises TransientError: On other errors.
+        """
+        self._require_https(url)
+        body = json.dumps(json_body).encode("utf-8")
+        full_headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        if headers:
+            full_headers.update(headers)
+        req = urllib.request.Request(
+            url,
+            data=body,
+            headers=full_headers,
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(
+                req,
+                timeout=self.timeout,
+            ) as r:
+                payload = json.loads(r.read().decode("utf-8"))
+                return cast("dict[str, Any]", payload)
+        except urllib.error.HTTPError as e:
+            if e.code == HTTPStatus.UNAUTHORIZED:
+                raise AuthError("Refresh rejected (HTTP 401).") from e
+            if e.code == HTTPStatus.FORBIDDEN:
+                raise self._build_forbidden(e) from e
+            raise TransientError(f"HTTP {e.code}: {e.reason}") from e
+        except urllib.error.URLError as e:
+            raise TransientError(f"Network error: {e.reason}") from e
+
     # -- internals --------------------------------------------------
     @staticmethod
     def _require_https(url: str) -> None:

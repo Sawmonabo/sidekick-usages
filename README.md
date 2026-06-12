@@ -50,8 +50,14 @@ pipx install sidekick-usages
 # Add an account (auto-detects your local Claude Code login)
 sidekick-usages add claude
 
-# Add a Codex account
+# Add one Codex account from the default Codex CLI login.
+# This copies the current ~/.codex auth into sidekick's private cache.
 sidekick-usages add codex
+
+# Add/update another Codex account:
+# run normal Codex login, then import the current ~/.codex auth.
+sidekick-usages codex-login sabossedgh@fortressinfosec.com
+sidekick-usages codex-login a.sawmon@ymail.com
 
 # Generate a long-lived token for Claude (one-year)
 sidekick-usages setup-token claude
@@ -82,17 +88,26 @@ directly — the same one the provider's CLI hits when you run
   Linux `~/.claude/.credentials.json`, or Windows Credential Manager.
 - Token shape: `sk-ant-oat01-…` (OAuth access token)
 - Buckets reported: 5-hour, 7-day, 7-day Opus, 7-day OAuth apps
+- Claude login tokens with a stored refresh token are refreshed
+  automatically when they expire or return 401. `setup-token` outputs
+  do not include refresh tokens and must be replaced manually if
+  rejected.
 
 **Codex CLI**
 
 - Endpoint: `https://chatgpt.com/backend-api/codex/usage`
-- Credentials: `~/.codex/auth.json`
+- Credentials: Codex itself keeps the active/default login at
+  `~/.codex/auth.json`. `sidekick-usages` imports that login into
+  its own per-account cache under
+  `~/.config/sidekick-usages/codex/<label>/auth.json` so other apps
+  that expect `~/.codex` keep working.
 - Token shape: JWT (`eyJ…`)
 - Buckets reported: primary 5-hour window, secondary 7-day window,
   plus per-model additional rate limits.
-- Codex tokens expire roughly hourly; `sidekick-usages` automatically
-  refreshes them via the stored refresh token when a request returns
-  401, and writes the new access token back to the local config.
+- Codex tokens expire roughly hourly and refresh automatically via the
+  stored refresh token before expiry or when a request returns 401.
+  Rotated tokens are written back to sidekick's private per-account
+  cache, not to global `~/.codex`.
 
 ## Security
 
@@ -115,10 +130,14 @@ directly — the same one the provider's CLI hits when you run
 | `sidekick-usages check`                  | Same as above, named explicitly.                                                   |
 | `sidekick-usages --only <provider>`      | Filter to one provider.                                                            |
 | `sidekick-usages add <provider>`         | Save a new account. Auto-detects from local CLI, or accepts `--token`. Idempotent. |
+| `sidekick-usages add codex --codex-home <path>` | Advanced: import from a specific source `CODEX_HOME`, then copy into sidekick's private cache. |
+| `sidekick-usages codex-login <label>` | Run normal `codex login`, then save/update the label from `~/.codex`. |
+| `sidekick-usages codex-export <label> --codex-home <path>` | Advanced: write a saved Codex account into another file-backed Codex home when complete auth metadata is available. |
 | `sidekick-usages list`                   | Show saved accounts with masked tokens.                                            |
 | `sidekick-usages remove <label>`         | Delete one account.                                                                |
 | `sidekick-usages rename <old> <new>`     | Rename an account.                                                                 |
-| `sidekick-usages refresh <label>`        | Pull the current local token into a saved account.                                 |
+| `sidekick-usages refresh <label>`        | Pull the saved/default local token into a saved account.                           |
+| `sidekick-usages refresh <label> --from-codex-home <path>` | Pull a Codex token from a specific `CODEX_HOME`.                     |
 | `sidekick-usages setup-token <provider>` | Run the provider's long-lived token generator (Claude only).                       |
 | `sidekick-usages reset`                  | Wipe all saved accounts.                                                           |
 | `sidekick-usages reset --provider <id>`  | Wipe one provider's accounts.                                                      |
@@ -133,10 +152,20 @@ You haven't run `add` yet. Run `sidekick-usages add claude` (or `codex`)
 after logging into the CLI normally.
 
 **"Token expired or invalid (HTTP 401)"**
-Your token was revoked or rolled. Log into the provider's CLI again,
-then run `sidekick-usages refresh <label>` to pull the new token. For
-Codex, this usually happens automatically — but if the refresh token
-has also been revoked, you'll need to `codex login` again.
+For saved Claude/Codex accounts with a refresh token, `sidekick-usages`
+tries to renew the access token automatically and writes the new token
+back to its config. If the refresh token is missing, expired, or
+revoked, log into the provider's CLI again, then run
+`sidekick-usages refresh <label>` to pull the current local token.
+
+For multiple Codex accounts, `~/.codex` remains the normal active
+Codex login used by other apps. To update a sidekick label, sign into
+the desired account with normal Codex login and run
+`sidekick-usages refresh <label>`, or let
+`sidekick-usages codex-login <label>` run the login flow for you.
+Sidekick copies the resulting auth bundle into its private
+per-account cache. Use `--from-codex-home` only for advanced imports
+from a non-default source.
 
 If a Claude account still 401s after a clean refresh — or for any
 other non-obvious Claude-provider behavior — see
@@ -171,16 +200,22 @@ Schema:
   "personal-max": {
     "provider_id": "claude",
     "access_token": "sk-ant-oat01-...",
-    "refresh_token": null,
-    "expires_at": null,
-    "plan": "max"
+    "refresh_token": "...",
+    "expires_at": 1781245745398,
+    "plan": "max",
+    "scopes": ["user:profile", "user:inference"]
   },
   "codex-plus": {
     "provider_id": "codex",
     "access_token": "eyJ...",
+    "provider_account_id": "...",
     "refresh_token": "...",
     "expires_at": 1715750400,
-    "plan": "plus"
+    "plan": "plus",
+    "scopes": null,
+    "codex_home": "/home/me/.config/sidekick-usages/codex/codex-plus",
+    "codex_id_token": "...",
+    "codex_last_refresh": "2026-06-12T00:00:00Z"
   }
 }
 ```
@@ -199,8 +234,8 @@ uv sync --group dev
 uv pip install -e .
 
 # Run lint / type-check / tests
-uv run ruff check src/
-uv run mypy src/sidekick_usages
+uv run ruff check src/ tests/
+uv run ty check src/ tests/
 uv run pytest
 
 # Build wheel
@@ -213,7 +248,7 @@ The codebase follows these conventions:
 - Sphinx-style docstrings (`:param:` / `:return:` / `:raises:` / `:ivar:`)
 - PEP 604 union syntax everywhere (`str | None`)
 - `from __future__ import annotations` at the top of every module
-- mypy strict mode
+- ty with warnings treated as errors
 
 ## License
 

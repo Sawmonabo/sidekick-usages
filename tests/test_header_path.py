@@ -30,9 +30,10 @@ _REF_7D_UTILIZATION = 0.737
 class _FakeHttp(HttpClient):
     """Records calls and returns canned data for both HTTP methods.
 
-    Inherits from :class:`HttpClient` so ty / mypy accept it as the
-    ``http`` argument to provider methods. The base ``__init__`` is
-    called with defaults; the canned-response state is added on top.
+    Inherits from :class:`HttpClient` so the static checker accepts it
+    as the ``http`` argument to provider methods. The base
+    ``__init__`` is called with defaults; the canned-response state is
+    added on top.
     Mocking at this boundary keeps these tests out of the urllib
     layer (covered by :mod:`test_http_errors` instead).
     """

@@ -93,3 +93,4 @@ scratch/
 # Agent runtime state (not shared across machines)
 # ---------------------------------------------------------------------
 .claude/tmp/
+.agents/tmp/
