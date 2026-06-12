@@ -194,6 +194,20 @@ jobs:
         PR_URL=$(gh pr view ${{ steps.meta.outputs.branch }} \
           --repo Sawmonabo/homebrew-tap --json url -q .url)
         echo "Watching $PR_URL"
+        for attempt in $(seq 1 20); do
+          CHECK_COUNT=$(gh pr view "$PR_URL" \
+            --json statusCheckRollup \
+            --jq '.statusCheckRollup | length')
+          if [ "$CHECK_COUNT" -gt 0 ]; then
+            break
+          fi
+          if [ "$attempt" -eq 20 ]; then
+            echo "::error::No tap CI checks appeared for $PR_URL"
+            exit 1
+          fi
+          echo "No tap CI checks reported yet; waiting..."
+          sleep 15
+        done
         gh pr checks "$PR_URL" --watch
         gh pr merge "$PR_URL" --squash --delete-branch
 
