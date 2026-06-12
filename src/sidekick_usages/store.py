@@ -73,6 +73,23 @@ class Account:
         attempt (``"ok"``, ``"skipped"``, or ``"failed"``).
     :ivar last_refresh_error: Redacted human-readable error from the
         last failed refresh attempt, or ``None`` after a success.
+    :ivar heartbeat_enabled: Whether daemon maintenance may send an
+        intentional tiny provider request to open an inactive usage
+        window for this account.
+    :ivar heartbeat_5h_reset_at: Cached reset timestamp for a known
+        active 5h usage window. Used to avoid repeated heartbeat
+        probes before the current window expires.
+    :ivar heartbeat_window_resets: Cached reset timestamps keyed by
+        heartbeat target id. Used for providers with multiple windows
+        such as Codex standard and Codex Spark.
+    :ivar heartbeat_targets: Explicit daemon heartbeat target ids for
+        this account. ``None`` means the provider default target set.
+    :ivar last_heartbeat_at: ISO-8601 UTC timestamp for the last
+        heartbeat attempt sidekick-usages made for this account.
+    :ivar last_heartbeat_status: Result tag for the last heartbeat
+        attempt (``"warmed"``, ``"active"``, ``"failed"``, etc.).
+    :ivar last_heartbeat_error: Redacted human-readable error from
+        the last failed heartbeat attempt, or ``None`` after success.
     """
 
     label: str
@@ -89,6 +106,13 @@ class Account:
     last_refresh_at: str | None = None
     last_refresh_status: str | None = None
     last_refresh_error: str | None = None
+    heartbeat_enabled: bool = False
+    heartbeat_5h_reset_at: str | None = None
+    heartbeat_window_resets: dict[str, str] | None = None
+    heartbeat_targets: list[str] | None = None
+    last_heartbeat_at: str | None = None
+    last_heartbeat_status: str | None = None
+    last_heartbeat_error: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize for JSON storage.
@@ -110,6 +134,13 @@ class Account:
             "last_refresh_at": self.last_refresh_at,
             "last_refresh_status": self.last_refresh_status,
             "last_refresh_error": self.last_refresh_error,
+            "heartbeat_enabled": self.heartbeat_enabled,
+            "heartbeat_5h_reset_at": self.heartbeat_5h_reset_at,
+            "heartbeat_window_resets": self.heartbeat_window_resets,
+            "heartbeat_targets": self.heartbeat_targets,
+            "last_heartbeat_at": self.last_heartbeat_at,
+            "last_heartbeat_status": self.last_heartbeat_status,
+            "last_heartbeat_error": self.last_heartbeat_error,
         }
 
     @classmethod
@@ -143,6 +174,15 @@ class Account:
                 last_refresh_at=data.get("last_refresh_at"),
                 last_refresh_status=data.get("last_refresh_status"),
                 last_refresh_error=data.get("last_refresh_error"),
+                heartbeat_enabled=bool(data.get("heartbeat_enabled", False)),
+                heartbeat_5h_reset_at=data.get("heartbeat_5h_reset_at"),
+                heartbeat_window_resets=_str_dict(
+                    data.get("heartbeat_window_resets")
+                ),
+                heartbeat_targets=_str_list(data.get("heartbeat_targets")),
+                last_heartbeat_at=data.get("last_heartbeat_at"),
+                last_heartbeat_status=data.get("last_heartbeat_status"),
+                last_heartbeat_error=data.get("last_heartbeat_error"),
             )
         # Legacy cc-usage.py format: {"token": ..., "plan": ...}
         return cls(
@@ -366,3 +406,23 @@ class AccountStore:
         while f"{base}-{i}" in self._accounts:
             i += 1
         return f"{base}-{i}"
+
+
+def _str_dict(value: object) -> dict[str, str] | None:
+    """Return a string-only dict from persisted JSON."""
+    if not isinstance(value, dict):
+        return None
+    result = {
+        str(key): str(item)
+        for key, item in value.items()
+        if isinstance(key, str) and isinstance(item, str)
+    }
+    return result or None
+
+
+def _str_list(value: object) -> list[str] | None:
+    """Return a string-only list from persisted JSON."""
+    if not isinstance(value, list):
+        return None
+    result = [item for item in value if isinstance(item, str)]
+    return result or None

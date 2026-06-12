@@ -7,6 +7,7 @@ from sidekick_usages.daemon import (
     DaemonManager,
     PlatformInfo,
     SystemCommandRunner,
+    resolve_maintenance_command,
 )
 
 
@@ -44,6 +45,94 @@ def _platform(
     )
 
 
+def test_wsl_task_scheduler_uses_hidden_windows_wrapper(
+    tmp_path: Path,
+) -> None:
+    """WSL scheduled refresh runs through a Windows-local hidden wrapper."""
+    runner = RecordingRunner()
+    manager = DaemonManager(
+        command=("sidekick-usages", "maintain", "--quiet"),
+        platform_info=_platform(tmp_path, is_wsl=True),
+        runner=runner,
+    )
+
+    result = manager.install("task-scheduler")
+
+    assert result.backend == "task-scheduler"
+    script = runner.calls[0][0][-1]
+    assert "New-ScheduledTaskAction -Execute 'wscript.exe'" in script
+    assert "//B //Nologo" in script
+    assert "$env:LOCALAPPDATA" in script
+    assert "Set-Content -Path $vbsPath" in script
+    assert "Set-Content -Path $ps1Path" in script
+    assert "wsl.exe" in script
+    assert "'-d' 'Ubuntu'" in script
+    assert "sidekick-usages maintain --quiet" in script
+    assert "shell.Run(command, 0, True)" in script
+    assert "WScript.Quit code" in script
+    assert "refresh.out.log" in script
+    assert "refresh.err.log" in script
+    assert "New-ScheduledTaskAction -Execute 'wsl.exe'" not in script
+
+
+def test_windows_task_scheduler_uses_hidden_windows_wrapper(
+    tmp_path: Path,
+) -> None:
+    """Native Windows scheduled refresh also avoids direct console launch."""
+    runner = RecordingRunner()
+    manager = DaemonManager(
+        command=(
+            "C:\\Program Files\\sidekick\\sidekick-usages.exe",
+            "maintain",
+            "--quiet",
+        ),
+        platform_info=_platform(tmp_path, system="Windows"),
+        runner=runner,
+    )
+
+    result = manager.install("task-scheduler")
+
+    assert result.backend == "task-scheduler"
+    script = runner.calls[0][0][-1]
+    assert "New-ScheduledTaskAction -Execute 'wscript.exe'" in script
+    assert "$env:LOCALAPPDATA" in script
+    assert "Set-Content -Path $vbsPath" in script
+    assert "Set-Content -Path $ps1Path" in script
+    assert "sidekick-usages.exe" in script
+    assert "shell.Run(command, 0, True)" in script
+    assert "WScript.Quit code" in script
+    assert "'maintain' '--quiet'" in script
+    assert "refresh.out.log" in script
+    assert "refresh.err.log" in script
+    assert (
+        "New-ScheduledTaskAction "
+        "-Execute 'C:\\Program Files\\sidekick\\sidekick-usages.exe'"
+    ) not in script
+
+
+def test_task_scheduler_uninstall_removes_generated_launcher_artifacts(
+    tmp_path: Path,
+) -> None:
+    """Task Scheduler uninstall removes generated wrappers, not logs."""
+    runner = RecordingRunner()
+    manager = DaemonManager(
+        command=("sidekick-usages", "maintain", "--quiet"),
+        platform_info=_platform(tmp_path, is_wsl=True),
+        runner=runner,
+    )
+
+    result = manager.uninstall("task-scheduler")
+
+    assert result.backend == "task-scheduler"
+    script = runner.calls[0][0][-1]
+    assert "Unregister-ScheduledTask" in script
+    assert "refresh.vbs" in script
+    assert "refresh.ps1" in script
+    assert "refresh.out.log" not in script
+    assert "refresh.err.log" not in script
+    assert "Remove-Item -LiteralPath $daemonDir" in script
+
+
 def test_daemon_manager_auto_selects_wsl_task_scheduler(
     tmp_path: Path,
 ) -> None:
@@ -61,8 +150,8 @@ def test_daemon_manager_auto_selects_wsl_task_scheduler(
     assert runner.calls
     argv, _ = runner.calls[0]
     assert argv[0] == "powershell.exe"
-    assert "wsl.exe" in argv[-1]
-    assert "-d Ubuntu" in argv[-1]
+    assert "wscript.exe" in argv[-1]
+    assert "refresh.vbs" in argv[-1]
 
 
 def test_systemd_backend_writes_user_service_and_timer(
@@ -71,7 +160,7 @@ def test_systemd_backend_writes_user_service_and_timer(
     """Systemd backend writes reusable user-level unit files."""
     runner = RecordingRunner()
     manager = DaemonManager(
-        command=("sidekick-usages", "refresh", "--all", "--quiet"),
+        command=("sidekick-usages", "maintain", "--quiet"),
         platform_info=_platform(tmp_path),
         runner=runner,
     )
@@ -93,7 +182,7 @@ def test_systemd_backend_writes_user_service_and_timer(
         / "user"
         / "sidekick-usages-refresh.timer"
     )
-    assert "sidekick-usages refresh --all --quiet" in service.read_text()
+    assert "sidekick-usages maintain --quiet" in service.read_text()
     assert "OnUnitActiveSec=30m" in timer.read_text()
     assert runner.calls[-1][0] == (
         "systemctl",
@@ -125,4 +214,24 @@ def test_launchd_backend_writes_launch_agent(tmp_path: Path) -> None:
     text = plist.read_text()
     assert "<integer>1800</integer>" in text
     assert "<string>sidekick-usages</string>" in text
+    assert "<key>StandardOutPath</key>" in text
+    assert "<key>StandardErrorPath</key>" in text
     assert runner.calls[0][0][:3] == ("launchctl", "bootstrap", "gui/501")
+
+
+def test_default_maintenance_command_runs_maintain_quiet(monkeypatch) -> None:
+    """New daemon installs run the combined maintenance command."""
+    monkeypatch.setattr(
+        "sidekick_usages.daemon.shutil.which",
+        lambda name: (
+            "/usr/local/bin/sidekick-usages"
+            if name == "sidekick-usages"
+            else None
+        ),
+    )
+
+    assert resolve_maintenance_command() == (
+        "/usr/local/bin/sidekick-usages",
+        "maintain",
+        "--quiet",
+    )
