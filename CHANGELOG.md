@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0](https://github.com/Sawmonabo/sidekick-usages/compare/v0.3.0...v0.4.0) (2026-06-12)
+
+
+### Added
+
+* **auth:** add token maintenance daemon ([f966394](https://github.com/Sawmonabo/sidekick-usages/commit/f966394e317e011f1983facacbb664040c43abdc))
+
+
+### Fixed
+
+* **hooks:** restore command-guard PreToolUse enforcement ([1915b5a](https://github.com/Sawmonabo/sidekick-usages/commit/1915b5a6572d9db3dda2ce4753f1a0635d3b704c))
+
+
+### Docs
+
+* add Claude provider debugging log and link from README ([0398c50](https://github.com/Sawmonabo/sidekick-usages/commit/0398c50c62089827e14a5a5fb26f29eca0711ff9))
+
 ## [0.3.0](https://github.com/Sawmonabo/sidekick-usages/compare/v0.2.0...v0.3.0) (2026-05-16)
 
 
