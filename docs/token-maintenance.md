@@ -173,7 +173,7 @@ crontab block. Uninstall removes only the sidekick-marked block.
 The WSL default installs a Windows scheduled task that runs:
 
 ```powershell
-wsl.exe -d <DistroName> -- bash -lc 'sidekick-usages refresh --all --quiet'
+wsl.exe -d <distro-name> -- bash -lc 'sidekick-usages refresh --all --quiet'
 ```
 
 This keeps refreshes working even when the distro is not already

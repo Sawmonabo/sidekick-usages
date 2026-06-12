@@ -8,7 +8,6 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from xml.sax.saxutils import escape
 
 SERVICE_NAME = "sidekick-usages-refresh"
 LAUNCHD_LABEL = "com.sidekick-usages.refresh"
@@ -291,7 +290,7 @@ class LaunchdBackend(SchedulerBackend):
     def _plist_text(self) -> str:
         """Build the LaunchAgent plist."""
         args = "\n".join(
-            f"    <string>{escape(arg)}</string>" for arg in self.command
+            f"    <string>{xml_escape(arg)}</string>" for arg in self.command
         )
         return (
             '<?xml version="1.0" encoding="UTF-8"?>\n'
@@ -467,6 +466,16 @@ def resolve_maintenance_command() -> tuple[str, ...]:
 def ps_quote(value: str) -> str:
     """Quote a string as a PowerShell single-quoted literal."""
     return "'" + value.replace("'", "''") + "'"
+
+
+def xml_escape(value: str) -> str:
+    """Escape text for launchd plist string elements."""
+    return (
+        value.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
 
 
 def _detect_wsl() -> bool:

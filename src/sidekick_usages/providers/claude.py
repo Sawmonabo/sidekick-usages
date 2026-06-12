@@ -17,6 +17,7 @@ import json
 import os
 import platform
 import re
+import shutil
 import subprocess
 import tempfile
 import time
@@ -394,6 +395,9 @@ class ClaudeProvider(Provider):
         """Ask Claude Code to refresh in an isolated temporary home."""
         if not account.refresh_token:
             return False
+        claude_bin = shutil.which("claude")
+        if claude_bin is None:
+            return False
         scopes = self._refresh_scopes(account)
         with tempfile.TemporaryDirectory(
             prefix="sidekick-claude-refresh-"
@@ -406,7 +410,7 @@ class ClaudeProvider(Provider):
             env.pop("ANTHROPIC_API_KEY", None)
             try:
                 result = subprocess.run(
-                    ["claude", "auth", "login", "--claudeai"],
+                    [claude_bin, "auth", "login", "--claudeai"],
                     env=env,
                     capture_output=True,
                     text=True,

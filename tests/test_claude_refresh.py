@@ -10,6 +10,7 @@ import pytest
 
 from sidekick_usages.errors import AuthError
 from sidekick_usages.http import HttpClient
+from sidekick_usages.providers import claude as claude_module
 from sidekick_usages.providers.claude import ClaudeProvider
 from sidekick_usages.store import Account
 
@@ -60,6 +61,7 @@ def _acct(refresh_token: str | None = "refresh-old") -> Account:
 
 def _disable_cli_refresh(monkeypatch: Any) -> None:
     """Make CLI-backed refresh unavailable for direct-HTTP tests."""
+    monkeypatch.setattr(claude_module.shutil, "which", lambda name: None)
 
     def _raise_not_found(*args: object, **kwargs: object) -> None:
         del args, kwargs
@@ -85,6 +87,11 @@ def test_claude_refresh_uses_cli_refresh_token_login(
     """Claude refresh delegates to Claude Code in an isolated HOME."""
     http = _FakeHttp(response_json={"access_token": "http-unused"})
     acct = _acct()
+    monkeypatch.setattr(
+        claude_module.shutil,
+        "which",
+        lambda name: "/usr/bin/claude" if name == "claude" else None,
+    )
 
     def _run(
         cmd: list[str],
@@ -95,7 +102,7 @@ def test_claude_refresh_uses_cli_refresh_token_login(
         timeout: int,
         check: bool,
     ) -> subprocess.CompletedProcess[str]:
-        assert cmd == ["claude", "auth", "login", "--claudeai"]
+        assert cmd == ["/usr/bin/claude", "auth", "login", "--claudeai"]
         assert env["CLAUDE_CODE_OAUTH_REFRESH_TOKEN"] == "refresh-old"
         assert env["CLAUDE_CODE_OAUTH_SCOPES"] == (
             "user:profile user:inference user:sessions:claude_code "
@@ -177,6 +184,11 @@ def test_claude_refresh_cli_rejection_does_not_fallback_to_http(
     """A real Claude CLI rejection is the authoritative refresh result."""
     http = _FakeHttp(response_json={"access_token": "http-unused"})
     acct = _acct()
+    monkeypatch.setattr(
+        claude_module.shutil,
+        "which",
+        lambda name: "/usr/bin/claude" if name == "claude" else None,
+    )
 
     def _run(
         cmd: list[str],
