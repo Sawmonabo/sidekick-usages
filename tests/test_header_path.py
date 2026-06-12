@@ -25,6 +25,8 @@ from sidekick_usages.store import Account
 #: rate-limit headers in ``anthropics/claude-code`` issue #12829.
 _REF_5H_UTILIZATION = 0.0184
 _REF_7D_UTILIZATION = 0.737
+_REF_5H_UTILIZATION_PERCENT = 1.84
+_REF_7D_UTILIZATION_PERCENT = 73.7
 
 
 class _FakeHttp(HttpClient):
@@ -147,13 +149,13 @@ def test_fetch_via_headers_sends_one_token_probe_body() -> None:
 
 # -- _fetch_via_headers: header parsing ---------------------------
 def test_fetch_via_headers_parses_5h_and_7d_windows() -> None:
-    """Both windows are surfaced with utilization + ISO reset."""
+    """Header-path fractions are normalized to display percentages."""
     http = _FakeHttp(response_headers=_LIVE_HEADERS)
     report = ClaudeProvider()._fetch_via_headers(_acct([]), http)
     names = {w.name: w for w in report.windows}
     assert set(names) == {"5h", "7d"}
-    assert names["5h"].utilization == _REF_5H_UTILIZATION
-    assert names["7d"].utilization == _REF_7D_UTILIZATION
+    assert round(names["5h"].utilization, 2) == _REF_5H_UTILIZATION_PERCENT
+    assert round(names["7d"].utilization, 1) == _REF_7D_UTILIZATION_PERCENT
     assert names["5h"].resets_at is not None
     assert names["5h"].resets_at.endswith("+00:00")
 

@@ -112,6 +112,14 @@ def _store(tmp_path: Path, account: Account) -> AccountStore:
     return store
 
 
+def _store_many(tmp_path: Path, accounts: Iterable[Account]) -> AccountStore:
+    """Build a temp account store containing multiple accounts."""
+    store = AccountStore(tmp_path / "accounts.json")
+    for account in accounts:
+        store.upsert(account)
+    return store
+
+
 def _empty_store(tmp_path: Path) -> AccountStore:
     """Build an empty temp account store."""
     return AccountStore(tmp_path / "accounts.json")
@@ -131,6 +139,27 @@ def _install_ctx(
             store=store,
             http=HttpClient(),
             providers={provider.id: provider},
+            console=Console(file=stdout, force_terminal=False),
+            err_console=Console(file=stderr, force_terminal=False),
+        )
+    )
+    return store, stdout, stderr
+
+
+def _install_many_ctx(
+    tmp_path: Path,
+    providers: dict[str, Provider],
+    accounts: Iterable[Account],
+) -> tuple[AccountStore, io.StringIO, io.StringIO]:
+    """Install an isolated CLI context with multiple saved accounts."""
+    store = _store_many(tmp_path, accounts)
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    cli.set_context(
+        cli.AppContext(
+            store=store,
+            http=HttpClient(),
+            providers=providers,
             console=Console(file=stdout, force_terminal=False),
             err_console=Console(file=stderr, force_terminal=False),
         )
@@ -374,6 +403,76 @@ def test_refresh_command_replace_identity_allows_provider_account_id_mismatch(
     assert saved.access_token == "eyJ-current.access.sig"
     assert saved.refresh_token == "refresh-current"
     assert saved.provider_account_id == "acct_current"
+
+
+def test_refresh_all_refreshes_due_tokens_without_detecting_local_credentials(
+    tmp_path: Path,
+) -> None:
+    """Bulk maintenance refresh uses saved refresh tokens only."""
+    acct = _acct(expires_at=int(time.time() * 1000) - 1_000)
+    provider = _FakeProvider(
+        detected=DetectedCredentials(access_token="sk-ant-oat01-local")
+    )
+    store, stdout, stderr = _install_many_ctx(
+        tmp_path,
+        {"claude": provider},
+        [acct],
+    )
+
+    result = CliRunner().invoke(cli.app, ["refresh", "--all", "--quiet"])
+
+    assert result.exit_code == 0
+    assert stdout.getvalue() == ""
+    assert stderr.getvalue() == ""
+    assert provider.refresh_calls == 1
+    assert provider.credential_homes == []
+    saved = store.get("team")
+    assert saved is not None
+    assert saved.access_token == "sk-ant-oat01-refreshed"
+    assert saved.last_refresh_status == "ok"
+    assert saved.last_refresh_error is None
+
+
+def test_refresh_all_skips_fresh_tokens_unless_forced(
+    tmp_path: Path,
+) -> None:
+    """Bulk maintenance avoids needless refreshes until forced."""
+    acct = _acct(expires_at=int(time.time() * 1000) + 3_600_000)
+    provider = _FakeProvider()
+    _install_many_ctx(tmp_path, {"claude": provider}, [acct])
+
+    result = CliRunner().invoke(cli.app, ["refresh", "--all"])
+
+    assert result.exit_code == 0
+    assert provider.refresh_calls == 0
+
+    forced = CliRunner().invoke(cli.app, ["refresh", "--all", "--force"])
+
+    assert forced.exit_code == 0
+    assert provider.refresh_calls == 1
+
+
+def test_refresh_all_persists_failed_refresh_diagnostic(
+    tmp_path: Path,
+) -> None:
+    """Rejected refresh tokens are recorded for doctor and exit 1."""
+    acct = _acct(expires_at=int(time.time() * 1000) - 1_000)
+    provider = _FakeProvider(refresh_ok=False)
+    store, stdout, _ = _install_many_ctx(
+        tmp_path,
+        {"claude": provider},
+        [acct],
+    )
+
+    result = CliRunner().invoke(cli.app, ["refresh", "--all", "--quiet"])
+
+    assert result.exit_code == 1
+    assert "team" in stdout.getvalue()
+    saved = store.get("team")
+    assert saved is not None
+    assert saved.access_token == "sk-ant-oat01-old"
+    assert saved.last_refresh_status == "failed"
+    assert saved.last_refresh_error is not None
 
 
 def test_expired_account_refreshes_before_first_fetch(tmp_path: Path) -> None:

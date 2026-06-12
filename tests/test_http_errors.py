@@ -28,9 +28,13 @@ import pytest
 from sidekick_usages.errors import (
     AuthError,
     ForbiddenError,
+    RateLimitError,
     TransientError,
 )
 from sidekick_usages.http import HttpClient
+
+POST_JSON_RETRY_CALLS = 2
+RETRY_AFTER_SECONDS = 7
 
 
 def _http_error(
@@ -235,3 +239,43 @@ def test_post_json_401_raises_auth_error(
             "https://api.anthropic.com/v1/oauth/token",
             json_body={"grant_type": "refresh_token"},
         )
+
+
+def test_post_json_retries_429_before_returning(
+    patched_urlopen,
+) -> None:
+    """``post_json`` retries rate-limited token refresh requests."""
+    sleeps: list[float] = []
+    client = HttpClient(max_retries=1, sleep=sleeps.append)
+    patched_urlopen.side_effect = [
+        _http_error(429, headers={"Retry-After": "0"}),
+        _JsonResponse({"access_token": "new"}),
+    ]
+
+    response = client.post_json(
+        "https://api.anthropic.com/v1/oauth/token",
+        json_body={"grant_type": "refresh_token"},
+    )
+
+    assert response == {"access_token": "new"}
+    assert patched_urlopen.call_count == POST_JSON_RETRY_CALLS
+    assert sleeps == [0.0]
+
+
+def test_post_json_429_exhausts_to_rate_limit_error(
+    patched_urlopen,
+) -> None:
+    """``post_json`` preserves rate-limit semantics after retries."""
+    client = HttpClient(max_retries=0, sleep=lambda _: None)
+    patched_urlopen.side_effect = _http_error(
+        429,
+        headers={"Retry-After": str(RETRY_AFTER_SECONDS)},
+    )
+
+    with pytest.raises(RateLimitError) as exc:
+        client.post_json(
+            "https://api.anthropic.com/v1/oauth/token",
+            json_body={"grant_type": "refresh_token"},
+        )
+
+    assert exc.value.retry_after == RETRY_AFTER_SECONDS

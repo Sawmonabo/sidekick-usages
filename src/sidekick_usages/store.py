@@ -67,6 +67,12 @@ class Account:
     :ivar codex_last_refresh: Last refresh timestamp from Codex
         ``auth.json``. Preserved when known so exported auth files
         stay close to the CLI's native shape.
+    :ivar last_refresh_at: ISO-8601 UTC timestamp for the last
+        refresh attempt sidekick-usages made for this account.
+    :ivar last_refresh_status: Result tag for the last refresh
+        attempt (``"ok"``, ``"skipped"``, or ``"failed"``).
+    :ivar last_refresh_error: Redacted human-readable error from the
+        last failed refresh attempt, or ``None`` after a success.
     """
 
     label: str
@@ -80,6 +86,9 @@ class Account:
     codex_home: str | None = None
     codex_id_token: str | None = None
     codex_last_refresh: str | None = None
+    last_refresh_at: str | None = None
+    last_refresh_status: str | None = None
+    last_refresh_error: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize for JSON storage.
@@ -98,6 +107,9 @@ class Account:
             "codex_home": self.codex_home,
             "codex_id_token": self.codex_id_token,
             "codex_last_refresh": self.codex_last_refresh,
+            "last_refresh_at": self.last_refresh_at,
+            "last_refresh_status": self.last_refresh_status,
+            "last_refresh_error": self.last_refresh_error,
         }
 
     @classmethod
@@ -128,6 +140,9 @@ class Account:
                 codex_home=data.get("codex_home"),
                 codex_id_token=data.get("codex_id_token"),
                 codex_last_refresh=data.get("codex_last_refresh"),
+                last_refresh_at=data.get("last_refresh_at"),
+                last_refresh_status=data.get("last_refresh_status"),
+                last_refresh_error=data.get("last_refresh_error"),
             )
         # Legacy cc-usage.py format: {"token": ..., "plan": ...}
         return cls(

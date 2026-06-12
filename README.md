@@ -65,6 +65,12 @@ sidekick-usages setup-token claude
 # Check usage for everything
 sidekick-usages
 
+# Check auth/token health without rotating anything
+sidekick-usages doctor
+
+# Keep saved refresh-token accounts fresh in the background
+sidekick-usages daemon install
+
 # Just one provider
 sidekick-usages --only claude
 
@@ -81,7 +87,7 @@ sidekick-usages reset --provider codex
 directly — the same one the provider's CLI hits when you run
 `/status`. No scraping, no headless browsers, no API keys.
 
-**Claude Code**
+### Claude Code
 
 - Endpoint: `https://api.anthropic.com/api/oauth/usage`
 - Credentials: macOS Keychain item `Claude Code-credentials`,
@@ -89,11 +95,14 @@ directly — the same one the provider's CLI hits when you run
 - Token shape: `sk-ant-oat01-…` (OAuth access token)
 - Buckets reported: 5-hour, 7-day, 7-day Opus, 7-day OAuth apps
 - Claude login tokens with a stored refresh token are refreshed
-  automatically when they expire or return 401. `setup-token` outputs
-  do not include refresh tokens and must be replaced manually if
+  automatically when they expire or return 401. Sidekick asks the
+  installed `claude auth login --claudeai` flow to refresh inside a
+  temporary `HOME`, imports the rotated credentials, and does not
+  overwrite your normal `~/.claude` login. `setup-token` outputs do
+  not include refresh tokens and must be replaced manually if
   rejected.
 
-**Codex CLI**
+### Codex CLI
 
 - Endpoint: `https://chatgpt.com/backend-api/codex/usage`
 - Credentials: Codex itself keeps the active/default login at
@@ -138,12 +147,31 @@ directly — the same one the provider's CLI hits when you run
 | `sidekick-usages rename <old> <new>`     | Rename an account.                                                                 |
 | `sidekick-usages refresh <label>`        | Pull the saved/default local token into a saved account.                           |
 | `sidekick-usages refresh <label> --from-codex-home <path>` | Pull a Codex token from a specific `CODEX_HOME`.                     |
+| `sidekick-usages refresh --all`           | Refresh due accounts from saved refresh tokens only; never imports current global CLI login. |
+| `sidekick-usages refresh --all --quiet`   | Scheduler-safe maintenance mode: only prints accounts that need manual action.     |
+| `sidekick-usages refresh --all --force`   | Refresh every account with a saved refresh token, even if still fresh.             |
+| `sidekick-usages doctor`                  | Show auth/token health, usage route, auto-refreshability, and manual action items. |
+| `sidekick-usages doctor --json`           | Emit machine-readable doctor output with secrets redacted.                         |
+| `sidekick-usages daemon install`          | Install a user-level scheduler that runs `refresh --all --quiet` every 30 minutes. |
+| `sidekick-usages daemon status`           | Inspect the installed scheduler.                                                   |
+| `sidekick-usages daemon uninstall`        | Remove the installed scheduler.                                                    |
 | `sidekick-usages setup-token <provider>` | Run the provider's long-lived token generator (Claude only).                       |
 | `sidekick-usages reset`                  | Wipe all saved accounts.                                                           |
 | `sidekick-usages reset --provider <id>`  | Wipe one provider's accounts.                                                      |
 
 Run `sidekick-usages --help` or `sidekick-usages <cmd> --help` for the
 full option list on each command.
+
+`daemon install --backend auto` picks a user-level scheduler for the
+host: Windows Task Scheduler on Windows, Windows Task Scheduler via
+`wsl.exe` inside WSL, launchd on macOS, user-level systemd on native
+Linux/Ubuntu, and cron if systemd is unavailable. The daemon never
+copies the current global Claude or Codex login into saved labels; it
+only uses refresh tokens already stored in sidekick-usages.
+
+For the complete token-maintenance model, scheduler backend details,
+and operational troubleshooting, see
+[docs/token-maintenance.md](./docs/token-maintenance.md).
 
 ## Troubleshooting
 
@@ -154,8 +182,12 @@ after logging into the CLI normally.
 **"Token expired or invalid (HTTP 401)"**
 For saved Claude/Codex accounts with a refresh token, `sidekick-usages`
 tries to renew the access token automatically and writes the new token
-back to its config. If the refresh token is missing, expired, or
-revoked, log into the provider's CLI again, then run
+back to its config. Claude refresh is delegated to the installed
+Claude Code binary in an isolated temporary home because Claude's
+platform token endpoint is sensitive to the official client flow. If
+the refresh token is missing, expired, revoked, or the CLI reports
+`Claude CLI refresh failed`, log into the provider's CLI again as that
+same account, then run
 `sidekick-usages refresh <label>` to pull the current local token.
 
 For multiple Codex accounts, `~/.codex` remains the normal active
@@ -203,7 +235,10 @@ Schema:
     "refresh_token": "...",
     "expires_at": 1781245745398,
     "plan": "max",
-    "scopes": ["user:profile", "user:inference"]
+    "scopes": ["user:profile", "user:inference"],
+    "last_refresh_at": "2026-06-12T13:14:22.459000Z",
+    "last_refresh_status": "ok",
+    "last_refresh_error": null
   },
   "codex-plus": {
     "provider_id": "codex",
@@ -215,7 +250,10 @@ Schema:
     "scopes": null,
     "codex_home": "/home/me/.config/sidekick-usages/codex/codex-plus",
     "codex_id_token": "...",
-    "codex_last_refresh": "2026-06-12T00:00:00Z"
+    "codex_last_refresh": "2026-06-12T00:00:00Z",
+    "last_refresh_at": null,
+    "last_refresh_status": null,
+    "last_refresh_error": null
   }
 }
 ```

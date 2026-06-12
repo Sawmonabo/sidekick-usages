@@ -23,6 +23,12 @@ from rich.table import Table
 from rich.text import Text
 
 from sidekick_usages import __version__
+from sidekick_usages.daemon import DaemonManager
+from sidekick_usages.doctor import (
+    DoctorService,
+    doctor_exit_code,
+    render_doctor,
+)
 from sidekick_usages.errors import (
     AuthError,
     ForbiddenError,
@@ -32,6 +38,14 @@ from sidekick_usages.errors import (
     UsageError,
 )
 from sidekick_usages.http import HttpClient
+from sidekick_usages.maintenance import (
+    REFRESH_FAILED,
+    REFRESH_OK,
+    TokenMaintenanceService,
+    record_refresh_failure,
+    record_refresh_success,
+    refresh_exit_code,
+)
 from sidekick_usages.providers import PROVIDERS
 from sidekick_usages.providers.base import DetectedCredentials, Provider
 from sidekick_usages.providers.codex import (
@@ -153,6 +167,12 @@ app = typer.Typer(
     pretty_exceptions_show_locals=False,
     add_completion=False,
 )
+
+daemon_app = typer.Typer(
+    help="Install, inspect, or remove scheduled token refresh.",
+    rich_markup_mode="rich",
+)
+app.add_typer(daemon_app, name="daemon")
 
 
 def _version_callback(value: bool) -> None:
@@ -338,9 +358,12 @@ def _refresh_known_expired(acct: Account, provider: Provider) -> bool:
     if not _should_refresh_before_fetch(acct, provider):
         return True
     try:
-        _refresh_and_save(acct, provider)
+        refreshed = _refresh_and_save(acct, provider)
     except UsageError as e:
         _print_error_block(acct, f"Token refresh failed: {e}")
+        return False
+    if not refreshed:
+        _print_auth_error_block(acct)
         return False
     return True
 
@@ -394,8 +417,19 @@ def _refresh_and_save(acct: Account, provider: Provider) -> bool:
     :return: True when refresh succeeded.
     """
     app_ctx = _get_ctx()
-    if not provider.refresh_token(acct, app_ctx.http):
+    try:
+        refreshed = provider.refresh_token(acct, app_ctx.http)
+    except UsageError as e:
+        record_refresh_failure(acct, str(e))
+        app_ctx.store.upsert(acct)
+        app_ctx.store.save()
+        raise
+    if not refreshed:
+        record_refresh_failure(acct, "Refresh token unavailable or rejected.")
+        app_ctx.store.upsert(acct)
+        app_ctx.store.save()
         return False
+    record_refresh_success(acct)
     app_ctx.store.upsert(acct)
     app_ctx.store.save()
     return True
@@ -695,7 +729,31 @@ def rename_cmd(
 # ---------------------------------------------------------------------
 @app.command("refresh")
 def refresh_cmd(
-    label: Annotated[str, typer.Argument(help="Account label.")],
+    label: Annotated[
+        str | None,
+        typer.Argument(help="Account label."),
+    ] = None,
+    all_accounts: Annotated[
+        bool,
+        typer.Option(
+            "--all",
+            help="Refresh every due account using saved refresh tokens.",
+        ),
+    ] = False,
+    quiet: Annotated[
+        bool,
+        typer.Option(
+            "--quiet",
+            help="Only print accounts needing manual action.",
+        ),
+    ] = False,
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help="With --all, refresh even if tokens are still fresh.",
+        ),
+    ] = False,
     from_codex_home: Annotated[
         Path | None,
         typer.Option(
@@ -719,12 +777,24 @@ def refresh_cmd(
 ) -> None:
     """Replace a saved account's token with the local CLI login.
 
-    Reads the current login from the provider's local install
-    (macOS Keychain, Linux files, or Windows Credential Manager)
-    and writes the new access token into the saved account. When the
-    provider exposes stable account ids, the detected login must match
-    the saved account unless ``--replace-identity`` is passed.
+    With a label, reads the current login from the provider's local
+    install and writes the new access token into that saved account.
+    With ``--all``, uses only saved refresh tokens and never adopts
+    the current global provider login.
     """
+    label = _validate_refresh_args(
+        label,
+        all_accounts=all_accounts,
+        quiet=quiet,
+        force=force,
+        from_codex_home=from_codex_home,
+        replace_identity=replace_identity,
+    )
+    if all_accounts:
+        _refresh_all_cmd(quiet=quiet, force=force)
+        return
+    if label is None:
+        raise AssertionError("refresh label validation failed")
     app_ctx = _get_ctx()
     acct = app_ctx.store.get(label)
     if acct is None:
@@ -758,9 +828,201 @@ def refresh_cmd(
         replace_identity=replace_identity,
     )
     _apply_detected_credentials(acct, detected, provider, credential_home)
+    record_refresh_success(acct)
     app_ctx.store.upsert(acct)
     app_ctx.store.save()
     app_ctx.console.print(f"[green]Updated token for '{label}'.[/green]")
+
+
+def _validate_refresh_args(
+    label: str | None,
+    *,
+    all_accounts: bool,
+    quiet: bool,
+    force: bool,
+    from_codex_home: Path | None,
+    replace_identity: bool,
+) -> str | None:
+    """Validate refresh command mode and return a narrowed label."""
+    if all_accounts:
+        if label is not None:
+            _usage_error("--all cannot be combined with an account label.")
+        if from_codex_home is not None:
+            _usage_error("--from-codex-home only applies to a label refresh.")
+        if replace_identity:
+            _usage_error("--replace-identity only applies to a label refresh.")
+        return None
+    if label is None:
+        _usage_error("Pass an account label or use --all.")
+    if quiet:
+        _usage_error("--quiet only applies with --all.")
+    if force:
+        _usage_error("--force only applies with --all.")
+    return label
+
+
+def _refresh_all_cmd(*, quiet: bool, force: bool) -> None:
+    """Run scheduler-safe saved-token refresh for all accounts."""
+    app_ctx = _get_ctx()
+    accounts = list(app_ctx.store)
+    if not accounts:
+        _print_no_accounts(None)
+        raise typer.Exit(code=1)
+    service = TokenMaintenanceService(
+        app_ctx.store,
+        app_ctx.http,
+        app_ctx.providers,
+    )
+    outcomes = service.refresh_all(force=force)
+    for outcome in outcomes:
+        if quiet and outcome.exit_code == 0:
+            continue
+        if outcome.status == REFRESH_OK:
+            app_ctx.console.print(f"[green]{outcome.label}: refreshed[/green]")
+        elif outcome.status == REFRESH_FAILED:
+            app_ctx.console.print(
+                f"[red]{outcome.label}: {outcome.message}[/red]"
+            )
+        elif not quiet:
+            app_ctx.console.print(
+                f"[dim]{outcome.label}: skipped ({outcome.message})[/dim]"
+            )
+    code = refresh_exit_code(outcomes)
+    if code:
+        raise typer.Exit(code=code)
+
+
+def _usage_error(message: str) -> None:
+    """Print a CLI usage error and exit."""
+    app_ctx = _get_ctx()
+    app_ctx.err_console.print(f"[red]{message}[/red]")
+    raise typer.Exit(code=2)
+
+
+# ---------------------------------------------------------------------
+# doctor
+# ---------------------------------------------------------------------
+@app.command("doctor")
+def doctor_cmd(
+    auth: Annotated[
+        bool,
+        typer.Option(
+            "--auth",
+            help="Show auth/token diagnostics. Currently the default.",
+        ),
+    ] = False,
+    provider_id: Annotated[
+        str | None,
+        typer.Option(
+            "--provider",
+            help="Filter diagnostics to one provider.",
+        ),
+    ] = None,
+    label: Annotated[
+        str | None,
+        typer.Option(
+            "--label",
+            help="Filter diagnostics to one saved account label.",
+        ),
+    ] = None,
+    json_output: Annotated[
+        bool,
+        typer.Option(
+            "--json",
+            help="Emit machine-readable JSON diagnostics.",
+        ),
+    ] = False,
+) -> None:
+    """Report what is healthy and what needs login."""
+    del auth
+    app_ctx = _get_ctx()
+    if provider_id is not None and provider_id not in app_ctx.providers:
+        app_ctx.err_console.print(
+            f"[red]Unknown provider {provider_id!r}.[/red]"
+        )
+        raise typer.Exit(code=2)
+    service = DoctorService(
+        app_ctx.store,
+        app_ctx.providers,
+        TokenMaintenanceService(
+            app_ctx.store, app_ctx.http, app_ctx.providers
+        ),
+    )
+    diagnostics = service.diagnostics(provider_id=provider_id, label=label)
+    if not diagnostics:
+        app_ctx.err_console.print("[yellow]No matching accounts.[/yellow]")
+        raise typer.Exit(code=1)
+    render_doctor(diagnostics, app_ctx.console, json_output=json_output)
+    code = doctor_exit_code(diagnostics)
+    if code:
+        raise typer.Exit(code=code)
+
+
+# ---------------------------------------------------------------------
+# daemon
+# ---------------------------------------------------------------------
+@daemon_app.command("install")
+def daemon_install_cmd(
+    backend: Annotated[
+        str,
+        typer.Option(
+            "--backend",
+            help="Scheduler backend: auto, systemd, cron, launchd, task-scheduler.",
+        ),
+    ] = "auto",
+) -> None:
+    """Install scheduled saved-token refresh for the current user."""
+    _run_daemon_operation("install", backend)
+
+
+@daemon_app.command("status")
+def daemon_status_cmd(
+    backend: Annotated[
+        str,
+        typer.Option(
+            "--backend",
+            help="Scheduler backend: auto, systemd, cron, launchd, task-scheduler.",
+        ),
+    ] = "auto",
+) -> None:
+    """Inspect scheduled saved-token refresh for the current user."""
+    _run_daemon_operation("status", backend)
+
+
+@daemon_app.command("uninstall")
+def daemon_uninstall_cmd(
+    backend: Annotated[
+        str,
+        typer.Option(
+            "--backend",
+            help="Scheduler backend: auto, systemd, cron, launchd, task-scheduler.",
+        ),
+    ] = "auto",
+) -> None:
+    """Remove scheduled saved-token refresh for the current user."""
+    _run_daemon_operation("uninstall", backend)
+
+
+def _run_daemon_operation(operation: str, backend: str) -> None:
+    """Run one daemon manager operation and render its result."""
+    app_ctx = _get_ctx()
+    manager = DaemonManager()
+    try:
+        if operation == "install":
+            result = manager.install(backend)
+        elif operation == "status":
+            result = manager.status(backend)
+        else:
+            result = manager.uninstall(backend)
+    except ValueError as e:
+        app_ctx.err_console.print(f"[red]{e}[/red]")
+        raise typer.Exit(code=3) from e
+    style = "green" if result.exit_code == 0 else "red"
+    app_ctx.console.print(
+        f"[{style}]{result.backend}: {result.message}[/{style}]"
+    )
+    if result.exit_code:
+        raise typer.Exit(code=result.exit_code)
 
 
 def _ensure_refresh_identity_matches(

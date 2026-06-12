@@ -14,7 +14,12 @@ stays self-contained and skimmable.
   technique, response-header decoding
   (`anthropic-organization-id`, `overage-disabled-reason`), and the
   two false leads (cosmetic plan tag, stale `account.scopes`).
-- _Add new entries here as they come up._
+- [Claude refresh token fails with HTTP 400, 403, or 429](#claude-refresh-token-fails-with-http-400-403-or-429)
+  — saved OAuth access token is expired, but direct refresh does not
+  behave like the installed Claude Code binary. Covers the
+  `platform.claude.com` token endpoint, the Claude Code client id,
+  and the isolated-`HOME` CLI refresh path.
+- *Add new entries here as they come up.*
 
 ## Conventions for adding entries
 
@@ -38,6 +43,110 @@ the reusable content; the secret it was applied to is not.
 
 Add a one-line summary to the [Index](#index) above with an anchor
 link to the new section.
+
+---
+
+## Claude refresh token fails with HTTP 400, 403, or 429
+
+A saved Claude login account has both `access_token` and
+`refresh_token`, but `sidekick-usages check` cannot renew it.
+
+### Symptom
+
+Any of these errors during the refresh step:
+
+```text
+Token refresh failed: HTTP 400: Bad Request
+Token refresh failed: Rate limited (HTTP 429) after 4 attempts.
+Token refresh failed: HTTP 403 Forbidden (no body).
+Token refresh failed: Claude CLI refresh failed: Login failed: Request failed with status code 400
+```
+
+### Don't be fooled
+
+The `sk-ant-ort01-...` refresh token can be real and still fail if
+the refresh request does not match Claude Code's own OAuth client
+flow. Claude Code 2.1.174 uses:
+
+- token endpoint: `https://platform.claude.com/v1/oauth/token`
+- client id: `9d1c250a-e61b-44d9-88ed-5944d1962f5e`
+- JSON body fields: `grant_type`, `refresh_token`, `client_id`,
+  `scope`, and sometimes `expires_in`
+
+Older direct-refresh code used `https://api.anthropic.com/v1/oauth/token`
+with the metadata-document client id
+`https://claude.ai/oauth/claude-code-client-metadata`. That request
+shape is not equivalent to the installed CLI.
+
+Even after matching the visible body fields, Python `urllib` requests
+can still hit edge behavior that the Claude binary does not: dummy
+token probes returned Cloudflare 1010 without the Claude Code user
+agent and Anthropic `rate_limit_error` 429 with it. The installed
+`claude auth login --claudeai` path succeeded with the same saved
+refresh token in an isolated temporary `HOME`.
+
+### Diagnostic
+
+Use the installed Claude binary itself, but isolate it from your real
+`~/.claude` login:
+
+```bash
+tmp="$(mktemp -d)"
+CLAUDE_CODE_OAUTH_REFRESH_TOKEN='sk-ant-ort01-<REDACTED>' \
+CLAUDE_CODE_OAUTH_SCOPES='user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload' \
+HOME="$tmp" \
+claude auth login --claudeai
+
+jq '{expiresAt: .claudeAiOauth.expiresAt,
+     scopes: .claudeAiOauth.scopes,
+     subscriptionType: .claudeAiOauth.subscriptionType}' \
+  "$tmp/.claude/.credentials.json"
+```
+
+- **`Login successful.` and a temp credentials file exists** -> the
+  refresh token is valid; `sidekick-usages` must import the rotated
+  temp credentials and save them.
+- **`Login failed: Request failed with status code 400`** -> Claude
+  Code itself rejected the refresh token. Treat it as expired,
+  revoked, or bound to a login you no longer have.
+
+### Root causes
+
+1. Direct refresh request shape drifted from Claude Code's current
+   OAuth client metadata.
+2. The platform token endpoint behaves differently for the official
+   Claude binary than for Python `urllib`, even with similar visible
+   JSON fields.
+3. Some saved refresh tokens are genuinely dead. In that case the
+   installed Claude binary rejects them too, usually with status 400.
+
+### Fix
+
+Current `sidekick-usages` refreshes saved Claude OAuth accounts by
+running:
+
+```text
+claude auth login --claudeai
+```
+
+inside a temporary `HOME` with
+`CLAUDE_CODE_OAUTH_REFRESH_TOKEN` and `CLAUDE_CODE_OAUTH_SCOPES` set
+from the saved account. It then parses the temporary
+`.claude/.credentials.json`, imports the rotated access/refresh
+tokens into `~/.config/sidekick-usages/accounts.json`, and removes
+the temporary home. Your real `~/.claude` login is not overwritten.
+
+If sidekick reports `Claude CLI refresh failed`, the saved refresh
+token is dead according to Claude Code itself. Log into the matching
+Claude account normally, then run:
+
+```bash
+sidekick-usages refresh "your-label"
+```
+
+Do not blindly refresh a different saved Claude label while logged
+into the wrong Claude account; that overwrites the label with the
+currently active local Claude login.
 
 ---
 

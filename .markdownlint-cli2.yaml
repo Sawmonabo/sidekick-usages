@@ -4,6 +4,13 @@ ignores:
 - '**/CLAUDE.md'
 - .claude/**
 config:
+  line-length:
+    code_blocks: false
+    tables: false
+  no-duplicate-heading:
+    siblings_only: true
+  emphasis-style:
+    style: asterisk
   table-column-style: false # MD060 — disable pipe-spacing enforcement for "compact" style
   blanks-around-lists: false # MD032 — disable blank lines around lists enforcement
   fenced-code-language: false # MD040 — disable fenced code block language specification enforcement

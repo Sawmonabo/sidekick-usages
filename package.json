@@ -1,0 +1,12 @@
+{
+  "name": "sidekick-usages",
+  "version": "0.3.0",
+  "private": true,
+  "description": "Development tooling for sidekick-usages.",
+  "scripts": {
+    "lint:markdown": "markdownlint-cli2 README.md docs/**/*.md"
+  },
+  "devDependencies": {
+    "markdownlint-cli2": "^0.22.1"
+  }
+}
