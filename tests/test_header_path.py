@@ -11,6 +11,8 @@ lack ``user:profile`` (so ``/api/oauth/usage`` returns 403).
 
 from typing import Any
 
+from sidekick_usages.heartbeat import HEARTBEAT_ACTIVE, HEARTBEAT_WARMED
+from sidekick_usages.heartbeat.claude import ClaudeHeartbeat
 from sidekick_usages.http import HttpClient
 from sidekick_usages.providers.claude import (
     ANTHROPIC_BETA,
@@ -243,3 +245,61 @@ def test_fetch_usage_routes_unknown_scope_to_oauth_path() -> None:
     http = _FakeHttp(response_json={})
     ClaudeProvider().fetch_usage(_acct(None), http)
     assert http.calls == [("GET", USAGE_URL)]
+
+
+# -- heartbeat/window warming -------------------------------------
+def test_claude_oauth_heartbeat_skips_active_five_hour() -> None:
+    """Full-scope heartbeat reads usage and skips when 5h is active."""
+    http = _FakeHttp(
+        response_json={
+            "five_hour": {
+                "utilization": 0.25,
+                "resets_at": "2026-06-12T18:00:00Z",
+            },
+        }
+    )
+
+    result = ClaudeHeartbeat().run(
+        _acct(["user:profile", "user:inference"]),
+        http,
+    )
+
+    assert result.status == HEARTBEAT_ACTIVE
+    assert result.warmed is False
+    assert result.reset_at == "2026-06-12T18:00:00Z"
+    assert http.calls == [("GET", USAGE_URL)]
+
+
+def test_claude_oauth_heartbeat_warms_inactive_five_hour() -> None:
+    """Full-scope heartbeat probes messages only when 5h is inactive."""
+    http = _FakeHttp(
+        response_json={"five_hour": {"utilization": 0, "resets_at": None}},
+        response_headers=_LIVE_HEADERS,
+    )
+
+    result = ClaudeHeartbeat().run(
+        _acct(["user:profile", "user:inference"]),
+        http,
+    )
+
+    assert result.status == HEARTBEAT_WARMED
+    assert result.warmed is True
+    assert result.reset_at is not None
+    assert http.calls == [("GET", USAGE_URL), ("POST", MESSAGES_URL)]
+    assert http.last_post_body == {
+        "model": PROBE_MODEL,
+        "max_tokens": 1,
+        "messages": [{"role": "user", "content": "quota"}],
+    }
+
+
+def test_claude_inference_heartbeat_uses_header_probe() -> None:
+    """Inference-only tokens can only warm by sending the tiny probe."""
+    http = _FakeHttp(response_headers=_LIVE_HEADERS)
+
+    result = ClaudeHeartbeat().run(_acct(["user:inference"]), http)
+
+    assert result.status == HEARTBEAT_WARMED
+    assert result.warmed is True
+    assert result.reset_at is not None
+    assert http.calls == [("POST", MESSAGES_URL)]

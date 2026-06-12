@@ -47,7 +47,10 @@ def test_doctor_json_reports_refreshability_and_redacts_tokens(
         refresh_token="secret-refresh-token",
         expires_at=int(time.time() * 1000) + 3_600_000,
         plan="team",
-        scopes=["user:profile"],
+        scopes=["user:profile", "user:inference"],
+        heartbeat_enabled=True,
+        heartbeat_5h_reset_at="2026-06-12T18:00:00Z",
+        last_heartbeat_status="active",
     )
     setup = Account(
         label="setup",
@@ -66,8 +69,13 @@ def test_doctor_json_reports_refreshability_and_redacts_tokens(
     accounts = {item["label"]: item for item in payload["accounts"]}
     assert accounts["team"]["can_auto_refresh"] is True
     assert accounts["team"]["usage_route"] == "/api/oauth/usage"
+    assert accounts["team"]["heartbeat_supported"] is True
+    assert accounts["team"]["heartbeat_enabled"] is True
+    assert accounts["team"]["heartbeat_5h_reset_at"] == "2026-06-12T18:00:00Z"
+    assert accounts["team"]["last_heartbeat_status"] == "active"
     assert accounts["setup"]["can_auto_refresh"] is False
     assert accounts["setup"]["usage_route"] == "/v1/messages headers"
+    assert accounts["setup"]["heartbeat_supported"] is True
     rendered = stdout.getvalue()
     assert "secret-refresh-token" not in rendered
     assert "sk-ant-oat01-secret-access-token-value" not in rendered
@@ -96,6 +104,7 @@ def test_doctor_reports_previous_refresh_rejection(
     out = stdout.getvalue()
     assert "dead" in out
     assert "manual action: yes" in out
+    assert "heartbeat supported:" in out
     assert "Claude CLI refresh failed" in out
 
 

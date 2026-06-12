@@ -7,6 +7,10 @@ from typing import Any
 
 from rich.console import Console
 
+from sidekick_usages.heartbeat import (
+    HeartbeatProvider,
+    heartbeat_supported_label,
+)
 from sidekick_usages.maintenance import (
     TokenMaintenanceService,
     expiry_epoch_seconds,
@@ -35,6 +39,15 @@ class AccountDiagnostic:
     last_refresh_at: str | None
     last_refresh_status: str | None
     last_refresh_error: str | None
+    heartbeat_supported: bool
+    heartbeat_enabled: bool
+    heartbeat: str
+    heartbeat_5h_reset_at: str | None
+    heartbeat_window_resets: dict[str, str] | None
+    heartbeat_targets: list[str] | None
+    last_heartbeat_at: str | None
+    last_heartbeat_status: str | None
+    last_heartbeat_error: str | None
     manual_action_required: bool
 
 
@@ -45,15 +58,18 @@ class DoctorService:
         self,
         store: AccountStore,
         providers: dict[str, Provider],
+        heartbeat_providers: dict[str, HeartbeatProvider],
         maintenance: TokenMaintenanceService,
     ) -> None:
         """:param store: Account store to inspect.
 
         :param providers: Registered provider map.
+        :param heartbeat_providers: Registered heartbeat provider map.
         :param maintenance: Refresh policy service for expiry state.
         """
         self.store = store
         self.providers = providers
+        self.heartbeat_providers = heartbeat_providers
         self.maintenance = maintenance
 
     def diagnostics(
@@ -73,6 +89,7 @@ class DoctorService:
     def _diagnostic(self, account: Account) -> AccountDiagnostic:
         """Build one account diagnostic."""
         provider = self.providers.get(account.provider_id)
+        heartbeat_provider = self.heartbeat_providers.get(account.provider_id)
         expiry_state = self.maintenance.expiry_state(account)
         can_auto_refresh = bool(provider and account.refresh_token)
         manual_action_required = _manual_action_required(
@@ -95,6 +112,17 @@ class DoctorService:
             last_refresh_at=account.last_refresh_at,
             last_refresh_status=account.last_refresh_status,
             last_refresh_error=account.last_refresh_error,
+            heartbeat_supported=bool(
+                heartbeat_provider and heartbeat_provider.supports(account)
+            ),
+            heartbeat_enabled=account.heartbeat_enabled,
+            heartbeat=heartbeat_supported_label(account, heartbeat_provider),
+            heartbeat_5h_reset_at=account.heartbeat_5h_reset_at,
+            heartbeat_window_resets=account.heartbeat_window_resets,
+            heartbeat_targets=account.heartbeat_targets,
+            last_heartbeat_at=account.last_heartbeat_at,
+            last_heartbeat_status=account.last_heartbeat_status,
+            last_heartbeat_error=account.last_heartbeat_error,
             manual_action_required=manual_action_required,
         )
 
@@ -133,29 +161,74 @@ def render_doctor(
             f" · {diagnostic.plan}" if diagnostic.plan != "unknown" else ""
         )
         console.print(f"{diagnostic.label}  [{diagnostic.provider}{suffix}]")
-        console.print(f"  usage route: {diagnostic.usage_route}")
+        _render_auth_diagnostic(diagnostic, console)
+        _render_heartbeat_diagnostic(diagnostic, console)
+        _render_manual_action(diagnostic, console)
+
+
+def _render_auth_diagnostic(
+    diagnostic: AccountDiagnostic,
+    console: Console,
+) -> None:
+    """Render auth and refresh status for one account."""
+    console.print(f"  usage route: {diagnostic.usage_route}")
+    console.print(
+        "  refresh token: "
+        + ("present" if diagnostic.has_refresh_token else "none")
+    )
+    console.print(
+        "  auto-refresh: " + ("yes" if diagnostic.can_auto_refresh else "no")
+    )
+    if diagnostic.expires_at_local:
+        console.print(f"  expires: {diagnostic.expires_at_local}")
+    else:
+        console.print("  expires: unknown")
+    if diagnostic.identity_fingerprint:
+        console.print(f"  identity: {diagnostic.identity_fingerprint}")
+    if diagnostic.last_refresh_status:
+        console.print(f"  last refresh: {diagnostic.last_refresh_status}")
+    if diagnostic.last_refresh_error:
+        console.print(f"  error: {diagnostic.last_refresh_error}")
+
+
+def _render_heartbeat_diagnostic(
+    diagnostic: AccountDiagnostic,
+    console: Console,
+) -> None:
+    """Render heartbeat status for one account."""
+    console.print(
+        "  heartbeat supported: "
+        + ("yes" if diagnostic.heartbeat_supported else "no")
+    )
+    console.print(f"  heartbeat: {diagnostic.heartbeat}")
+    console.print(
+        "  heartbeat enabled: "
+        + ("yes" if diagnostic.heartbeat_enabled else "no")
+    )
+    if diagnostic.heartbeat_5h_reset_at:
+        console.print(f"  cached 5h reset: {diagnostic.heartbeat_5h_reset_at}")
+    if diagnostic.heartbeat_window_resets:
+        for target_id, reset_at in diagnostic.heartbeat_window_resets.items():
+            console.print(f"  cached {target_id} reset: {reset_at}")
+    if diagnostic.heartbeat_targets:
         console.print(
-            "  refresh token: "
-            + ("present" if diagnostic.has_refresh_token else "none")
+            "  heartbeat targets: " + ", ".join(diagnostic.heartbeat_targets)
         )
-        console.print(
-            "  auto-refresh: "
-            + ("yes" if diagnostic.can_auto_refresh else "no")
-        )
-        if diagnostic.expires_at_local:
-            console.print(f"  expires: {diagnostic.expires_at_local}")
-        else:
-            console.print("  expires: unknown")
-        if diagnostic.identity_fingerprint:
-            console.print(f"  identity: {diagnostic.identity_fingerprint}")
-        if diagnostic.last_refresh_status:
-            console.print(f"  last refresh: {diagnostic.last_refresh_status}")
-        if diagnostic.last_refresh_error:
-            console.print(f"  error: {diagnostic.last_refresh_error}")
-        console.print(
-            "  manual action: "
-            + ("yes" if diagnostic.manual_action_required else "no")
-        )
+    if diagnostic.last_heartbeat_status:
+        console.print(f"  last heartbeat: {diagnostic.last_heartbeat_status}")
+    if diagnostic.last_heartbeat_error:
+        console.print(f"  heartbeat error: {diagnostic.last_heartbeat_error}")
+
+
+def _render_manual_action(
+    diagnostic: AccountDiagnostic,
+    console: Console,
+) -> None:
+    """Render manual-action summary for one account."""
+    console.print(
+        "  manual action: "
+        + ("yes" if diagnostic.manual_action_required else "no")
+    )
 
 
 def doctor_exit_code(diagnostics: list[AccountDiagnostic]) -> int:

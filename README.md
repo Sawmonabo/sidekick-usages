@@ -68,8 +68,14 @@ sidekick-usages
 # Check auth/token health without rotating anything
 sidekick-usages doctor
 
-# Keep saved refresh-token accounts fresh in the background
+# Keep saved refresh-token accounts fresh in the background.
+# This also runs heartbeat for accounts where you explicitly enable it.
 sidekick-usages daemon install
+
+# Optional: warm inactive 5h windows for one account.
+# This sends a real tiny model request, so it is off by default.
+sidekick-usages heartbeat enable SAbossedgh@fortressinfosec@org
+sidekick-usages heartbeat --all --quiet
 
 # Just one provider
 sidekick-usages --only claude
@@ -101,6 +107,11 @@ directly — the same one the provider's CLI hits when you run
   overwrite your normal `~/.claude` login. `setup-token` outputs do
   not include refresh tokens and must be replaced manually if
   rejected.
+- Optional heartbeat/window warming supports Claude saved accounts. When
+  enabled per account, sidekick checks whether the 5-hour window is
+  inactive and sends one tiny Claude request only when needed. This is not
+  free extra quota; it is a real model request and consumes a small amount
+  of provider quota.
 
 ### Codex CLI
 
@@ -117,6 +128,14 @@ directly — the same one the provider's CLI hits when you run
   stored refresh token before expiry or when a request returns 401.
   Rotated tokens are written back to sidekick's private per-account
   cache, not to global `~/.codex`.
+- Optional heartbeat/window warming supports saved Codex ChatGPT-login
+  accounts. When enabled per account, sidekick reads the Codex usage
+  endpoint first, sends one tiny streaming
+  `https://chatgpt.com/backend-api/codex/responses` request only when
+  the target 5-hour window is inactive, then reads usage again to cache
+  the reset time. The default `standard` target uses `gpt-5.4-mini` for
+  the primary Codex window. The separate `spark` target is explicit and
+  uses `gpt-5.3-codex-spark`.
 
 ## Security
 
@@ -150,9 +169,15 @@ directly — the same one the provider's CLI hits when you run
 | `sidekick-usages refresh --all`           | Refresh due accounts from saved refresh tokens only; never imports current global CLI login. |
 | `sidekick-usages refresh --all --quiet`   | Scheduler-safe maintenance mode: only prints accounts that need manual action.     |
 | `sidekick-usages refresh --all --force`   | Refresh every account with a saved refresh token, even if still fresh.             |
+| `sidekick-usages heartbeat <label>`       | One-shot warm an inactive usage window for a saved account.                        |
+| `sidekick-usages heartbeat enable <label>` | Opt one supported account into daemon heartbeat.                                  |
+| `sidekick-usages heartbeat disable <label>` | Turn daemon heartbeat off for one account.                                       |
+| `sidekick-usages heartbeat status`         | Show heartbeat support, enablement, cached reset, and last result.                |
+| `sidekick-usages heartbeat --all --quiet`  | Scheduler-safe heartbeat for enabled accounts only.                               |
+| `sidekick-usages maintain --quiet`         | Scheduler-safe maintenance: refresh due tokens, then heartbeat enabled accounts.  |
 | `sidekick-usages doctor`                  | Show auth/token health, usage route, auto-refreshability, and manual action items. |
 | `sidekick-usages doctor --json`           | Emit machine-readable doctor output with secrets redacted.                         |
-| `sidekick-usages daemon install`          | Install a user-level scheduler that runs `refresh --all --quiet` every 30 minutes. |
+| `sidekick-usages daemon install`          | Install a user-level scheduler that runs `maintain --quiet` every 30 minutes.      |
 | `sidekick-usages daemon status`           | Inspect the installed scheduler.                                                   |
 | `sidekick-usages daemon uninstall`        | Remove the installed scheduler.                                                    |
 | `sidekick-usages setup-token <provider>` | Run the provider's long-lived token generator (Claude only).                       |
@@ -168,10 +193,14 @@ silent `wscript.exe` wrapper inside WSL, launchd on macOS, user-level
 systemd on native Linux/Ubuntu, and cron if systemd is unavailable. The
 daemon never copies the current global Claude or Codex login into saved
 labels; it only uses refresh tokens already stored in sidekick-usages.
+Heartbeat is also credential-local: it uses only saved account tokens
+and never adopts the current global provider login.
 
 For the complete token-maintenance model, scheduler backend details,
 and operational troubleshooting, see
 [docs/token-maintenance.md](./docs/token-maintenance.md).
+For optional usage-window heartbeat, see
+[docs/heartbeat.md](./docs/heartbeat.md).
 
 ## Troubleshooting
 
@@ -238,7 +267,14 @@ Schema:
     "scopes": ["user:profile", "user:inference"],
     "last_refresh_at": "2026-06-12T13:14:22.459000Z",
     "last_refresh_status": "ok",
-    "last_refresh_error": null
+    "last_refresh_error": null,
+    "heartbeat_enabled": false,
+    "heartbeat_5h_reset_at": null,
+    "heartbeat_window_resets": null,
+    "heartbeat_targets": null,
+    "last_heartbeat_at": null,
+    "last_heartbeat_status": null,
+    "last_heartbeat_error": null
   },
   "codex-plus": {
     "provider_id": "codex",
@@ -253,7 +289,14 @@ Schema:
     "codex_last_refresh": "2026-06-12T00:00:00Z",
     "last_refresh_at": null,
     "last_refresh_status": null,
-    "last_refresh_error": null
+    "last_refresh_error": null,
+    "heartbeat_enabled": false,
+    "heartbeat_5h_reset_at": null,
+    "heartbeat_window_resets": null,
+    "heartbeat_targets": null,
+    "last_heartbeat_at": null,
+    "last_heartbeat_status": null,
+    "last_heartbeat_error": null
   }
 }
 ```

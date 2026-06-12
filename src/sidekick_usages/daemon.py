@@ -583,13 +583,12 @@ def resolve_maintenance_command() -> tuple[str, ...]:
     """Return the command schedulers should run periodically."""
     executable = shutil.which("sidekick-usages")
     if executable:
-        return (executable, "refresh", "--all", "--quiet")
+        return (executable, "maintain", "--quiet")
     return (
         sys.executable,
         "-m",
         "sidekick_usages",
-        "refresh",
-        "--all",
+        "maintain",
         "--quiet",
     )
 

@@ -13,14 +13,16 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, NoReturn
 
+import click
 import typer
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Confirm
 from rich.table import Table
 from rich.text import Text
+from typer.core import TyperGroup
 
 from sidekick_usages import __version__
 from sidekick_usages.daemon import DaemonManager
@@ -37,10 +39,23 @@ from sidekick_usages.errors import (
     UnsupportedOperationError,
     UsageError,
 )
+from sidekick_usages.heartbeat import (
+    HEARTBEAT_PROVIDERS,
+    HeartbeatOutcome,
+    HeartbeatProvider,
+    HeartbeatService,
+    heartbeat_exit_code,
+    heartbeat_supported_label,
+    render_heartbeat_outcomes,
+    render_heartbeat_status,
+)
 from sidekick_usages.http import HttpClient
 from sidekick_usages.maintenance import (
+    EXIT_MANUAL_ACTION,
+    EXIT_SYSTEM_ERROR,
     REFRESH_FAILED,
     REFRESH_OK,
+    RefreshOutcome,
     TokenMaintenanceService,
     record_refresh_failure,
     record_refresh_success,
@@ -79,6 +94,7 @@ class AppContext:
     :ivar store: Account store (loaded lazily on first use).
     :ivar http: Shared HTTP client with retry/backoff.
     :ivar providers: Provider registry (mutable for tests).
+    :ivar heartbeat_providers: Heartbeat provider registry (mutable for tests).
     :ivar console: Rich console for stdout.
     :ivar err_console: Rich console pinned to stderr.
     :ivar only: Provider filter applied to ``check`` (``--only``).
@@ -89,6 +105,7 @@ class AppContext:
     providers: dict[str, Provider]
     console: Console
     err_console: Console
+    heartbeat_providers: dict[str, HeartbeatProvider] | None = None
     only: str | None = None
 
 
@@ -119,6 +136,7 @@ def _build_default_context() -> AppContext:
         store=AccountStore().load(),
         http=HttpClient(),
         providers=PROVIDERS,
+        heartbeat_providers=HEARTBEAT_PROVIDERS,
         console=Console(),
         err_console=Console(stderr=True),
     )
@@ -143,6 +161,11 @@ def _get_ctx() -> AppContext:
     if _ContextState.ctx is None:
         _ContextState.ctx = _build_default_context()
     return _ContextState.ctx
+
+
+def _heartbeat_providers(app_ctx: AppContext) -> dict[str, HeartbeatProvider]:
+    """Return injected or default heartbeat providers."""
+    return app_ctx.heartbeat_providers or HEARTBEAT_PROVIDERS
 
 
 def set_context(ctx: AppContext) -> None:
@@ -173,6 +196,37 @@ daemon_app = typer.Typer(
     rich_markup_mode="rich",
 )
 app.add_typer(daemon_app, name="daemon")
+
+
+class _HeartbeatGroup(TyperGroup):
+    """Treat an unknown heartbeat subcommand as an account label."""
+
+    label_command_name = "run-label"
+
+    def resolve_command(
+        self,
+        ctx: click.Context,
+        args: list[str],
+    ) -> tuple[str | None, click.Command | None, list[str]]:
+        """Resolve known subcommands, falling back to heartbeat <label>."""
+        try:
+            return super().resolve_command(ctx, args)
+        except click.UsageError:
+            if args and not args[0].startswith("-"):
+                command = self.get_command(ctx, self.label_command_name)
+                if command is not None:
+                    return self.label_command_name, command, args
+            raise
+
+
+heartbeat_app = typer.Typer(
+    cls=_HeartbeatGroup,
+    help="Warm inactive usage windows for opted-in accounts.",
+    rich_markup_mode="rich",
+    invoke_without_command=True,
+    context_settings={"allow_extra_args": True},
+)
+app.add_typer(heartbeat_app, name="heartbeat")
 
 
 def _version_callback(value: bool) -> None:
@@ -664,9 +718,13 @@ def list_cmd() -> None:
     table.add_column("Label", no_wrap=True)
     table.add_column("Provider", no_wrap=True)
     table.add_column("Plan", no_wrap=True)
+    table.add_column("Heartbeat", no_wrap=True)
     table.add_column("Token", no_wrap=True, style="dim")
 
     for acct in accounts:
+        heartbeat_provider = _heartbeat_providers(app_ctx).get(
+            acct.provider_id
+        )
         prov_color = "magenta" if acct.provider_id == "claude" else "cyan"
         plan_text = (
             Text(acct.plan, style="dim")
@@ -677,6 +735,7 @@ def list_cmd() -> None:
             acct.label,
             Text(acct.provider_id, style=prov_color),
             plan_text,
+            heartbeat_supported_label(acct, heartbeat_provider),
             acct.masked_token(),
         )
     app_ctx.console.print(table)
@@ -892,7 +951,273 @@ def _refresh_all_cmd(*, quiet: bool, force: bool) -> None:
         raise typer.Exit(code=code)
 
 
-def _usage_error(message: str) -> None:
+# ---------------------------------------------------------------------
+# heartbeat / maintain
+# ---------------------------------------------------------------------
+@heartbeat_app.callback()
+def heartbeat_cmd(
+    ctx: typer.Context,
+    all_accounts: Annotated[
+        bool,
+        typer.Option(
+            "--all",
+            help="Warm every enabled account with an inactive 5h window.",
+        ),
+    ] = False,
+    quiet: Annotated[
+        bool,
+        typer.Option(
+            "--quiet",
+            help="Only print accounts needing manual action.",
+        ),
+    ] = False,
+    provider_id: Annotated[
+        str | None,
+        typer.Option(
+            "--provider",
+            help="With --all, filter to one provider.",
+        ),
+    ] = None,
+    target_id: Annotated[
+        str | None,
+        typer.Option(
+            "--target",
+            help="Heartbeat target to warm: standard, spark, or all.",
+        ),
+    ] = None,
+) -> None:
+    """Warm inactive usage windows without changing token refresh policy."""
+    if ctx.invoked_subcommand is not None:
+        return
+    args = list(ctx.args)
+    label = args[0] if args else None
+    if len(args) > 1:
+        _usage_error("Pass at most one account label.")
+    if all_accounts:
+        outcomes = _heartbeat_service().heartbeat_all(
+            provider_id=provider_id,
+            target_id=target_id,
+        )
+        _render_heartbeat_outcomes(outcomes, quiet=quiet)
+        code = heartbeat_exit_code(outcomes)
+        if code:
+            raise typer.Exit(code=code)
+        return
+    if provider_id is not None:
+        _usage_error("--provider only applies with --all.")
+    if quiet:
+        _usage_error("--quiet only applies with --all.")
+    if label is None:
+        _usage_error("Pass an account label or use --all.")
+    _run_heartbeat_label(label, target_id=target_id)
+
+
+@heartbeat_app.command("run-label", hidden=True)
+def heartbeat_label_cmd(
+    label: Annotated[str, typer.Argument(help="Account label to warm.")],
+    target_id: Annotated[
+        str | None,
+        typer.Option(
+            "--target",
+            help="Heartbeat target to warm: standard, spark, or all.",
+        ),
+    ] = None,
+) -> None:
+    """Hidden target for the heartbeat <label> fallback parser."""
+    _run_heartbeat_label(label, target_id=target_id)
+
+
+def _run_heartbeat_label(label: str, *, target_id: str | None = None) -> None:
+    """Run a one-shot heartbeat for one account label."""
+    app_ctx = _get_ctx()
+    account = app_ctx.store.get(label)
+    if account is None:
+        app_ctx.err_console.print(
+            f"[yellow]No account named '{label}'.[/yellow]"
+        )
+        raise typer.Exit(code=1)
+    outcome = _heartbeat_service().heartbeat_account(
+        account,
+        require_enabled=False,
+        target_id=target_id,
+    )
+    _render_heartbeat_outcomes([outcome], quiet=False)
+    if outcome.exit_code:
+        raise typer.Exit(code=outcome.exit_code)
+
+
+@heartbeat_app.command("enable")
+def heartbeat_enable_cmd(
+    label: Annotated[str, typer.Argument(help="Account label to enable.")],
+    target_id: Annotated[
+        str | None,
+        typer.Option(
+            "--target",
+            help="Daemon target to enable: standard, spark, or all.",
+        ),
+    ] = None,
+) -> None:
+    """Enable daemon heartbeat for one supported account."""
+    app_ctx = _get_ctx()
+    outcome = _heartbeat_service().enable(
+        app_ctx.store.get(label),
+        target_id=target_id,
+    )
+    _render_heartbeat_outcomes([outcome], quiet=False)
+    if outcome.exit_code:
+        raise typer.Exit(code=outcome.exit_code)
+
+
+@heartbeat_app.command("disable")
+def heartbeat_disable_cmd(
+    label: Annotated[str, typer.Argument(help="Account label to disable.")],
+    target_id: Annotated[
+        str | None,
+        typer.Option(
+            "--target",
+            help="Daemon target to disable: standard, spark, or all.",
+        ),
+    ] = None,
+) -> None:
+    """Disable daemon heartbeat for one account."""
+    app_ctx = _get_ctx()
+    outcome = _heartbeat_service().disable(
+        app_ctx.store.get(label),
+        target_id=target_id,
+    )
+    _render_heartbeat_outcomes([outcome], quiet=False)
+    if outcome.exit_code:
+        raise typer.Exit(code=outcome.exit_code)
+
+
+@heartbeat_app.command("status")
+def heartbeat_status_cmd(
+    provider_id: Annotated[
+        str | None,
+        typer.Option("--provider", help="Filter to one provider."),
+    ] = None,
+    label: Annotated[
+        str | None,
+        typer.Option("--label", help="Filter to one account label."),
+    ] = None,
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Emit machine-readable JSON."),
+    ] = False,
+) -> None:
+    """Show heartbeat support and latest diagnostics."""
+    app_ctx = _get_ctx()
+    accounts = list(app_ctx.store)
+    if provider_id is not None:
+        accounts = [a for a in accounts if a.provider_id == provider_id]
+    if label is not None:
+        accounts = [a for a in accounts if a.label == label]
+    if not accounts:
+        app_ctx.err_console.print("[yellow]No matching accounts.[/yellow]")
+        raise typer.Exit(code=1)
+    render_heartbeat_status(
+        accounts,
+        _heartbeat_providers(app_ctx),
+        app_ctx.console,
+        json_output=json_output,
+    )
+
+
+@app.command("maintain")
+def maintain_cmd(
+    quiet: Annotated[
+        bool,
+        typer.Option("--quiet", help="Only print manual-action failures."),
+    ] = False,
+) -> None:
+    """Run scheduler-safe token refresh, then opted-in heartbeat."""
+    app_ctx = _get_ctx()
+    accounts = list(app_ctx.store)
+    if not accounts:
+        _print_no_accounts(None)
+        raise typer.Exit(code=1)
+
+    refresh_service = TokenMaintenanceService(
+        app_ctx.store,
+        app_ctx.http,
+        app_ctx.providers,
+    )
+    refresh_outcomes = refresh_service.refresh_all()
+    _render_refresh_outcomes(refresh_outcomes, quiet=quiet)
+
+    heartbeat_outcomes = HeartbeatService(
+        app_ctx.store,
+        app_ctx.http,
+        _heartbeat_providers(app_ctx),
+    ).heartbeat_all()
+    _render_heartbeat_outcomes(heartbeat_outcomes, quiet=quiet)
+
+    code = _combined_exit_code(
+        refresh_exit_code(refresh_outcomes),
+        heartbeat_exit_code(heartbeat_outcomes),
+    )
+    if code:
+        raise typer.Exit(code=code)
+
+
+def _render_refresh_outcomes(
+    outcomes: list[RefreshOutcome],
+    *,
+    quiet: bool,
+) -> None:
+    """Render refresh outcomes using existing command wording."""
+    app_ctx = _get_ctx()
+    for outcome in outcomes:
+        if quiet and outcome.exit_code == 0:
+            continue
+        if outcome.status == REFRESH_OK:
+            app_ctx.console.print(f"[green]{outcome.label}: refreshed[/green]")
+        elif outcome.status == REFRESH_FAILED:
+            app_ctx.console.print(
+                f"[red]{outcome.label}: {outcome.message}[/red]"
+            )
+        elif not quiet:
+            app_ctx.console.print(
+                f"[dim]{outcome.label}: skipped ({outcome.message})[/dim]"
+            )
+
+
+def _render_heartbeat_outcomes(
+    outcomes: list[HeartbeatOutcome],
+    *,
+    quiet: bool,
+) -> None:
+    """Render heartbeat outcomes for manual or scheduled runs."""
+    app_ctx = _get_ctx()
+    render_heartbeat_outcomes(
+        outcomes,
+        console=app_ctx.console,
+        err_console=app_ctx.err_console,
+        quiet=quiet,
+    )
+
+
+def _heartbeat_service() -> HeartbeatService:
+    """Build a heartbeat service from the active app context."""
+    app_ctx = _get_ctx()
+    return HeartbeatService(
+        app_ctx.store,
+        app_ctx.http,
+        _heartbeat_providers(app_ctx),
+    )
+
+
+def _combined_exit_code(left: int, right: int) -> int:
+    """Return the highest-priority maintenance exit code."""
+    exit_codes = (left, right)
+    if EXIT_SYSTEM_ERROR in exit_codes:
+        return EXIT_SYSTEM_ERROR
+    if EXIT_MANUAL_ACTION in exit_codes:
+        return EXIT_MANUAL_ACTION
+    return 0
+
+
+def _usage_error(message: str) -> NoReturn:
     """Print a CLI usage error and exit."""
     app_ctx = _get_ctx()
     app_ctx.err_console.print(f"[red]{message}[/red]")
@@ -944,6 +1269,7 @@ def doctor_cmd(
     service = DoctorService(
         app_ctx.store,
         app_ctx.providers,
+        _heartbeat_providers(app_ctx),
         TokenMaintenanceService(
             app_ctx.store, app_ctx.http, app_ctx.providers
         ),
