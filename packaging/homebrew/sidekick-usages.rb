@@ -17,8 +17,8 @@ class SidekickUsages < Formula
 
   desc "Check Claude Code and Codex CLI usage across multiple accounts"
   homepage "https://github.com/Sawmonabo/sidekick-usages"
-  url "https://github.com/Sawmonabo/sidekick-usages/archive/refs/tags/v0.4.1.tar.gz"
-  sha256 "ec14d255761d019d5f19c6aababfe6ae3e0ab1c8439ea665383129dc2863986f"
+  url "https://github.com/Sawmonabo/sidekick-usages/archive/refs/tags/v0.5.0.tar.gz"
+  sha256 "317697bd59c48c876b044ccaeb2fecc8e8de59eacdd02746410040ee889e291b"
   license "Apache-2.0"
   head "https://github.com/Sawmonabo/sidekick-usages.git", branch: "main"
 
@@ -28,6 +28,11 @@ class SidekickUsages < Formula
   resource "annotated-doc" do
     url "https://files.pythonhosted.org/packages/57/ba/046ceea27344560984e26a590f90bc7f4a75b06701f653222458922b558c/annotated_doc-0.0.4.tar.gz"
     sha256 "fbcda96e87e9c92ad167c2e53839e57503ecfda18804ea28102353485033faa4"
+  end
+
+  resource "click" do
+    url "https://files.pythonhosted.org/packages/9b/98/518d8e5081007684232226f475082b30087d0f585e8457db087298259f49/click-8.4.1.tar.gz"
+    sha256 "918b5633eddf6b41c32d4f454bf0de810065c74e3f7dbf8ee5452f8be88d3e96"
   end
 
   resource "markdown-it-py" do
