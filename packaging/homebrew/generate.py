@@ -31,21 +31,6 @@ import sys
 import tomllib
 import urllib.request
 
-#: Runtime deps the wheel pulls in. Listed explicitly (rather than
-#: discovered) so the order of ``resource`` blocks in the formula is
-#: stable across releases and reviewers can diff by version, not by
-#: shuffled order.
-RUNTIME_DEPS: tuple[str, ...] = (
-    "annotated-doc",
-    "click",
-    "markdown-it-py",
-    "mdurl",
-    "pygments",
-    "rich",
-    "shellingham",
-    "typer",
-)
-
 PYPI_JSON_URL = "https://pypi.org/pypi/{pkg}/{ver}/json"
 GH_ARCHIVE_URL = (
     "https://github.com/Sawmonabo/sidekick-usages"
@@ -65,17 +50,38 @@ def project_version() -> str:
     return str(data["project"]["version"])
 
 
-def resolved_versions(deps: tuple[str, ...]) -> dict[str, str]:
+def parse_resolved_versions(output: str) -> list[tuple[str, str]]:
+    """Parse package pins from ``uv pip compile`` output.
+
+    ``uv`` only emits packages that are part of the current resolved
+    dependency graph. Keeping this list dynamic prevents the Homebrew
+    generator from drifting when a dependency adds or removes a
+    transitive dependency.
+
+    :param output: Raw stdout from ``uv pip compile``.
+    :return: Ordered ``(normalized_name, version)`` tuples.
+    """
+    versions: list[tuple[str, str]] = []
+    for raw in output.splitlines():
+        # Strip inline comments (`# via foo`)
+        line = raw.split("#", 1)[0].strip()
+        if not line or "==" not in line:
+            continue
+        name, ver = line.split("==", 1)
+        normalized = name.strip().lower().replace("_", "-")
+        # Drop environment markers / extras after the version
+        version = ver.split(" ", 1)[0].split(";", 1)[0].strip()
+        versions.append((normalized, version))
+    return versions
+
+
+def resolved_versions() -> list[tuple[str, str]]:
     """Resolve runtime deps to pinned versions via ``uv pip compile``.
 
-    :param deps: PEP 503-normalized names of the runtime deps to
-        resolve. Anything in ``uv pip compile``'s output that is
-        outside this set is ignored.
-    :return: A mapping of name -> version (e.g. ``{"click": "8.3.3"}``)
-        covering every name in ``deps``.
-    :raises RuntimeError: If any name in ``deps`` is missing from
-        ``uv pip compile``'s output (likely a typo or pyproject drift),
-        or if the ``uv`` binary is not on PATH.
+    :return: Ordered ``(name, version)`` tuples for every package in the
+        project runtime dependency closure.
+    :raises RuntimeError: If ``uv`` is not on PATH or no runtime
+        packages are resolved.
     """
     uv_bin = shutil.which("uv")
     if uv_bin is None:
@@ -93,25 +99,13 @@ def resolved_versions(deps: tuple[str, ...]) -> dict[str, str]:
         text=True,
         check=True,
     )
-    versions: dict[str, str] = {}
-    for raw in proc.stdout.splitlines():
-        # Strip inline comments (`# via foo`)
-        line = raw.split("#", 1)[0].strip()
-        if not line or "==" not in line:
-            continue
-        name, ver = line.split("==", 1)
-        normalized = name.strip().lower().replace("_", "-")
-        # Drop environment markers / extras after the version
-        ver = ver.split(" ", 1)[0].split(";", 1)[0].strip()
-        versions[normalized] = ver
 
-    missing = sorted(set(deps) - set(versions))
-    if missing:
+    versions = parse_resolved_versions(proc.stdout)
+    if not versions:
         raise RuntimeError(
-            f"`uv pip compile` did not resolve {missing}. "
-            f"Available: {sorted(versions)}"
+            "`uv pip compile` did not resolve runtime packages."
         )
-    return {pkg: versions[pkg] for pkg in deps}
+    return versions
 
 
 def pypi_sdist(pkg: str, ver: str) -> tuple[str, str]:
@@ -243,14 +237,13 @@ def main() -> int:
     sys.stderr.write(f"    sha256 = {archive}\n")
 
     sys.stderr.write("==> Resolving runtime deps via `uv pip compile`\n")
-    versions = resolved_versions(RUNTIME_DEPS)
-    for pkg, ver in versions.items():
+    versions = resolved_versions()
+    for pkg, ver in versions:
         sys.stderr.write(f"    {pkg}=={ver}\n")
 
     sys.stderr.write("==> Fetching PyPI sdist URLs/SHAs\n")
     resources: list[tuple[str, str, str]] = []
-    for pkg in RUNTIME_DEPS:
-        ver = versions[pkg]
+    for pkg, ver in versions:
         url, sha = pypi_sdist(pkg, ver)
         resources.append((pkg, url, sha))
 
