@@ -818,6 +818,34 @@ def rename_cmd(
 
 
 # ---------------------------------------------------------------------
+# set-plan
+# ---------------------------------------------------------------------
+@app.command("set-plan")
+def set_plan_cmd(label: str, plan: str) -> None:
+    """Manually set an account's plan tag.
+
+    For credentials the usage API cannot introspect (e.g. inference-
+    only Claude tokens), this is the supported way to correct the
+    plan chip.
+    """
+    app_ctx = _get_ctx()
+    value = plan.strip().lower()
+    if not value:
+        app_ctx.err_console.print("[red]Plan must not be empty.[/red]")
+        raise typer.Exit(code=1)
+    acct = app_ctx.store.get(label)
+    if acct is None:
+        app_ctx.err_console.print(f"[red]No account labeled '{label}'.[/red]")
+        raise typer.Exit(code=1)
+    acct.plan = value
+    app_ctx.store.upsert(acct)
+    app_ctx.store.save()
+    app_ctx.console.print(
+        f"Set [bold]{label}[/bold] plan to [bold]{value}[/bold]."
+    )
+
+
+# ---------------------------------------------------------------------
 # refresh
 # ---------------------------------------------------------------------
 @app.command("refresh")
