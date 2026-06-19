@@ -10,6 +10,7 @@ separately; Codex folds cached tokens into ``input_tokens``).
 import json
 from datetime import datetime
 from pathlib import Path
+from typing import cast
 
 #: Claude's machine-wide pre-aggregated stats (all Claude Code usage
 #: on this machine, not just sidekick-managed accounts).
@@ -70,3 +71,115 @@ def claude_lifetime_output() -> tuple[int, str | None]:
                     total += out
     since = data.get("firstSessionDate")
     return (total, since if isinstance(since, str) else None)
+
+
+#: Codex session logs and the sidekick-side incremental cache.
+_CODEX_SESSIONS_DIR = Path.home() / ".codex" / "sessions"
+_CODEX_CACHE_FILE = (
+    Path.home() / ".config" / "sidekick-usages" / "codex-lifetime-cache.json"
+)
+
+
+def _total_token_usage(record: object) -> dict[str, object] | None:
+    """Return ``payload.info.total_token_usage`` if present."""
+    if not isinstance(record, dict):
+        return None
+    d: dict[str, object] = cast("dict[str, object]", record)
+    payload = d.get("payload")
+    if not isinstance(payload, dict):
+        return None
+    p: dict[str, object] = cast("dict[str, object]", payload)
+    info = p.get("info")
+    if not isinstance(info, dict):
+        return None
+    i: dict[str, object] = cast("dict[str, object]", info)
+    usage = i.get("total_token_usage")
+    return (
+        cast("dict[str, object]", usage) if isinstance(usage, dict) else None
+    )
+
+
+def _max_output_in_rollout(path: Path) -> int:
+    """Return the max cumulative ``output_tokens`` in one rollout."""
+    best = 0
+    try:
+        with path.open() as handle:
+            for line in handle:
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                usage = _total_token_usage(record)
+                if usage is not None:
+                    out = usage.get("output_tokens")
+                    if isinstance(out, int) and out > best:
+                        best = out
+    except OSError:
+        return 0
+    return best
+
+
+def _rollout_date(filename: str) -> str | None:
+    """Extract ``YYYY-MM-DD`` from a ``rollout-...`` filename."""
+    stem = filename.removeprefix("rollout-")
+    date = stem[:10]
+    return date if len(date) == 10 and date[4] == "-" else None  # noqa: PLR2004
+
+
+def _load_codex_cache() -> dict[str, object]:
+    try:
+        return json.loads(_CODEX_CACHE_FILE.read_text())
+    except OSError, json.JSONDecodeError:
+        return {}
+
+
+def _save_codex_cache(cache: dict[str, object]) -> None:
+    try:
+        _CODEX_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _CODEX_CACHE_FILE.write_text(json.dumps(cache))
+    except OSError:
+        pass
+
+
+def codex_lifetime_output() -> tuple[int, str | None]:
+    """Sum Codex lifetime output tokens across all rollout logs.
+
+    Per file uses the maximum cumulative ``output_tokens`` (the
+    session total) and sums across files. Closed sessions are
+    immutable, so results are cached per filename+mtime; only new or
+    still-growing files are re-read.
+
+    :return: ``(output_total, since)`` — ``(0, None)`` if no logs.
+    """
+    files = sorted(_CODEX_SESSIONS_DIR.glob("**/rollout-*.jsonl"))
+    if not files:
+        return (0, None)
+    cache = _load_codex_cache()
+    raw_entries = cache.get("files")
+    entries: dict[str, object] = (
+        cast("dict[str, object]", raw_entries)
+        if isinstance(raw_entries, dict)
+        else {}
+    )
+    total = 0
+    changed = False
+    for path in files:
+        key = path.name
+        mtime = path.stat().st_mtime
+        raw_cached = entries.get(key)
+        cached: dict[str, object] | None = (
+            cast("dict[str, object]", raw_cached)
+            if isinstance(raw_cached, dict)
+            else None
+        )
+        if cached is not None and cached.get("mtime") == mtime:
+            output_val = cached.get("output", 0)
+            output = output_val if isinstance(output_val, int) else 0
+        else:
+            output = _max_output_in_rollout(path)
+            entries[key] = {"mtime": mtime, "output": output}
+            changed = True
+        total += output
+    if changed:
+        _save_codex_cache({"files": entries})
+    return (total, _rollout_date(files[0].name))

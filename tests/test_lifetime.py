@@ -1,4 +1,5 @@
 import json
+import os
 
 from sidekick_usages import lifetime
 
@@ -38,3 +39,47 @@ def test_claude_lifetime_output_sums_model_output(tmp_path, monkeypatch):
 def test_claude_lifetime_output_missing_file(tmp_path, monkeypatch):
     monkeypatch.setattr(lifetime, "_CLAUDE_STATS_FILE", tmp_path / "none.json")
     assert lifetime.claude_lifetime_output() == (0, None)
+
+
+def _rollout(dir_, date, outputs):
+    dir_.mkdir(parents=True, exist_ok=True)
+    path = dir_ / f"rollout-{date}T00-00-00-abc.jsonl"
+    lines = [
+        json.dumps(
+            {"payload": {"info": {"total_token_usage": {"output_tokens": o}}}}
+        )
+        for o in outputs
+    ]
+    path.write_text("\n".join(lines) + "\n")
+    return path
+
+
+def test_codex_lifetime_sums_per_file_max(tmp_path, monkeypatch):
+    sessions = tmp_path / "sessions"
+    _rollout(sessions / "2026" / "03", "2026-03-30", [10, 50, 30])  # max 50
+    _rollout(sessions / "2026" / "06", "2026-06-18", [5, 200])  # max 200
+    monkeypatch.setattr(lifetime, "_CODEX_SESSIONS_DIR", sessions)
+    monkeypatch.setattr(lifetime, "_CODEX_CACHE_FILE", tmp_path / "c.json")
+    assert lifetime.codex_lifetime_output() == (250, "2026-03-30")
+
+
+def test_codex_lifetime_empty(tmp_path, monkeypatch):
+    monkeypatch.setattr(lifetime, "_CODEX_SESSIONS_DIR", tmp_path / "none")
+    monkeypatch.setattr(lifetime, "_CODEX_CACHE_FILE", tmp_path / "c.json")
+    assert lifetime.codex_lifetime_output() == (0, None)
+
+
+def test_codex_lifetime_uses_cache(tmp_path, monkeypatch):
+    sessions = tmp_path / "sessions"
+    path = _rollout(sessions, "2026-03-30", [42])
+    cache_file = tmp_path / "c.json"
+    monkeypatch.setattr(lifetime, "_CODEX_SESSIONS_DIR", sessions)
+    monkeypatch.setattr(lifetime, "_CODEX_CACHE_FILE", cache_file)
+
+    assert lifetime.codex_lifetime_output() == (42, "2026-03-30")
+    assert cache_file.exists()
+    # Corrupt the file body but keep mtime: a cache hit ignores it.
+    st = path.stat()
+    path.write_text("not json\n")
+    os.utime(path, (st.st_atime, st.st_mtime))
+    assert lifetime.codex_lifetime_output() == (42, "2026-03-30")
