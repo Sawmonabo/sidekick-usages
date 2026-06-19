@@ -770,3 +770,18 @@ def test_codex_export_writes_saved_credentials_to_home(
     saved = store.get("team")
     assert saved is not None
     assert saved.codex_home == str(codex_home)
+
+
+def test_check_renders_grouped_overview(tmp_path, monkeypatch):
+    """`check` collects successes and prints one grouped overview."""
+    import sidekick_usages.cli as cli_mod  # noqa: PLC0415
+
+    monkeypatch.setattr(cli_mod, "claude_lifetime_output", lambda: (1, None))
+    acct = _acct(plan="max")
+    provider = _FakeProvider(fetch_results=[_report()])
+    _, stdout, _ = _install_ctx(tmp_path, provider, acct)
+
+    result = CliRunner().invoke(cli.app, ["check"])
+
+    assert result.exit_code == 0
+    assert "CLAUDE" in stdout.getvalue()

@@ -11,7 +11,7 @@ import re
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated, Any, NoReturn
 
@@ -50,6 +50,10 @@ from sidekick_usages.heartbeat import (
     render_heartbeat_status,
 )
 from sidekick_usages.http import HttpClient
+from sidekick_usages.lifetime import (
+    claude_lifetime_output,
+    codex_lifetime_output,
+)
 from sidekick_usages.maintenance import (
     EXIT_MANUAL_ACTION,
     EXIT_SYSTEM_ERROR,
@@ -71,7 +75,8 @@ from sidekick_usages.providers.codex import (
     read_auth_blob,
     write_account_auth_file,
 )
-from sidekick_usages.render import account_header, usage_report
+from sidekick_usages.render import account_header, usage_overview
+from sidekick_usages.report import UsageReport
 from sidekick_usages.store import CONFIG_DIR, Account, AccountStore
 from sidekick_usages.token_input import TokenInput
 from sidekick_usages.update import (
@@ -107,6 +112,7 @@ class AppContext:
     err_console: Console
     heartbeat_providers: dict[str, HeartbeatProvider] | None = None
     only: str | None = None
+    collected: list[tuple[Account, UsageReport]] = field(default_factory=list)
 
 
 @dataclass
@@ -283,11 +289,12 @@ def check_cmd() -> None:
 
 
 def _do_check() -> None:
-    """Render all (filtered) accounts.
+    """Fetch all (filtered) accounts and render the grouped overview.
 
     Exits with code 1 if any account failed.
     """
     app_ctx = _get_ctx()
+    app_ctx.collected.clear()
     accounts = list(app_ctx.store)
     if app_ctx.only:
         accounts = [a for a in accounts if a.provider_id == app_ctx.only]
@@ -296,14 +303,41 @@ def _do_check() -> None:
         raise typer.Exit(code=1)
 
     exit_code = 0
-    for i, acct in enumerate(accounts):
-        if i:
-            app_ctx.console.print()
-        ok = _fetch_and_render(acct)
-        if not ok:
+    for acct in accounts:
+        if not _fetch_and_render(acct):
             exit_code = 1
+
+    if app_ctx.collected:
+        app_ctx.console.print(
+            usage_overview(
+                app_ctx.collected,
+                _lifetime_for(app_ctx.collected),
+                width=app_ctx.console.size.width,
+            )
+        )
     if exit_code:
         raise typer.Exit(code=exit_code)
+
+
+def _collect(acct: Account, report: UsageReport) -> None:
+    """Stash a successful report for the end-of-run grouped render."""
+    _get_ctx().collected.append((acct, report))
+
+
+def _lifetime_for(
+    pairs: list[tuple[Account, UsageReport]],
+) -> dict[str, tuple[int, str | None]]:
+    """Look up lifetime output per provider present in ``pairs``."""
+    sources = {
+        "claude": claude_lifetime_output,
+        "codex": codex_lifetime_output,
+    }
+    providers = {acct.provider_id for acct, _ in pairs}
+    return {
+        provider_id: source()
+        for provider_id, source in sources.items()
+        if provider_id in providers
+    }
 
 
 #: Scope required to read the OAuth usage endpoint. Matches the
@@ -347,7 +381,7 @@ def _handle_runtime_forbidden(
         except UsageError as retry_err:
             _print_error_block(acct, f"Header probe failed: {retry_err}")
             return False
-        app_ctx.console.print(usage_report(acct, report))
+        _collect(acct, report)
         return True
     detail = err.api_message or str(err)
     msg = f"Forbidden (HTTP 403): {detail}"
@@ -398,7 +432,7 @@ def _fetch_usage_and_render(acct: Account, provider: Provider) -> bool:
     if acct.to_dict() != before_fetch:
         app_ctx.store.upsert(acct)
         app_ctx.store.save()
-    app_ctx.console.print(usage_report(acct, report))
+    _collect(acct, report)
     return True
 
 
