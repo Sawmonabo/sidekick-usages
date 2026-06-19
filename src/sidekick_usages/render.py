@@ -11,10 +11,13 @@ import re
 from datetime import UTC, datetime
 
 from rich.console import Group, RenderableType
+from rich.panel import Panel
+from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 
-from sidekick_usages.report import UsageReport
+from sidekick_usages.lifetime import format_since, format_tokens
+from sidekick_usages.report import UsageReport, UsageWindow
 from sidekick_usages.store import Account
 
 BAR_WIDTH = 18
@@ -313,3 +316,252 @@ def usage_report(
         )
 
     return Group(account_header(acct), table)
+
+
+def _dot(provider_id: str) -> Text:
+    return Text("●", style=PROVIDER_COLORS.get(provider_id, "dim"))
+
+
+def _plan_text(acct: Account) -> Text:
+    """Plan chip, suppressed for empty/unknown (matches legacy tag)."""
+    if not acct.plan or acct.plan == "unknown":
+        return Text("")
+    return Text(acct.plan, style=PLAN_COLORS.get(acct.plan, "grey42"))
+
+
+def _panel_columns(
+    reports: list[UsageReport],
+) -> tuple[list[str], list[tuple[str, list[str]]]]:
+    """Derive the column model for one provider from live data.
+
+    :return: ``(primary_lengths, named_groups)`` where primary are the
+        main-group lengths (aligned ``5h``/``7d`` columns) and each
+        named group is ``(label, lengths)``. Lengths sorted ascending.
+    """
+    main: dict[str, int] = {}
+    groups: dict[str, dict[str, int]] = {}
+    for report in reports:
+        for window in report.windows:
+            length, group = _classify_window(window.name)
+            hours = _length_hours(length)
+            if group == "":
+                main[length] = hours
+            else:
+                groups.setdefault(group, {})[length] = hours
+    primary = sorted(main, key=lambda x: main[x])
+    named = [
+        (group, sorted(lengths, key=lambda x: lengths[x]))
+        for group, lengths in sorted(groups.items())
+    ]
+    return primary, named
+
+
+def _window_index(report: UsageReport) -> dict[tuple[str, str], UsageWindow]:
+    """Map ``(group, length) -> window`` for one report."""
+    index: dict[tuple[str, str], UsageWindow] = {}
+    for window in report.windows:
+        length, group = _classify_window(window.name)
+        index[(group, length)] = window
+    return index
+
+
+def _util_cell(window: UsageWindow | None) -> Text:
+    if window is None:
+        return Text("")
+    return _heat_tile(round(window.utilization))
+
+
+def _reset_or_blank(window: UsageWindow | None) -> Text:
+    if window is None:
+        return Text("")
+    return _reset_cell(window.resets_at)
+
+
+def _panel_width(
+    namew: int,
+    primary: list[str],
+    named: list[tuple[str, list[str]]],
+) -> int:
+    """Total rendered width of one provider panel (borders included)."""
+    n_cols = 3 + len(primary)
+    sum_w = 1 + namew + 4 + _TILE_WIDTH * len(primary)
+    for _group, lengths in named:
+        n_cols += 1 + len(lengths)
+        sum_w += 5 + _TILE_WIDTH * len(lengths)
+    inner = sum_w + 2 * (n_cols - 1)
+    return inner + 2  # rounded-panel left/right border
+
+
+def _build_table(
+    namew: int,
+    primary: list[str],
+    named: list[tuple[str, list[str]]],
+) -> Table:
+    table = Table(
+        box=None,
+        show_header=False,  # header is added manually as a styled row
+        padding=(0, 1),
+        pad_edge=False,
+    )
+    table.add_column(width=1)  # dot
+    table.add_column(width=namew)  # name
+    table.add_column(width=4)  # plan
+    for _length in primary:
+        table.add_column(width=_TILE_WIDTH, justify="center")
+    for _group, lengths in named:
+        table.add_column(width=5, justify="center")  # group label
+        for _length in lengths:
+            table.add_column(width=_TILE_WIDTH, justify="center")
+    header: list[Text] = [Text(""), Text(""), Text("")]
+    for length in primary:
+        header.append(Text(length, style="grey42"))
+    for group, lengths in named:
+        header.append(Text(group, style="grey46"))
+        for length in lengths:
+            header.append(Text(length, style="grey42"))
+    table.add_row(*header)
+    return table
+
+
+def _provider_panel(
+    provider_id: str,
+    pairs: list[tuple[Account, UsageReport]],
+    namew: int,
+    prov_lifetime: tuple[int, str | None] | None,
+) -> Panel:
+    primary, named = _panel_columns([r for _, r in pairs])
+    table = _build_table(namew, primary, named)
+    for acct, report in pairs:
+        index = _window_index(report)
+        util_row: list[Text] = [
+            _dot(provider_id),
+            Text(acct.label, style="grey85"),
+            _plan_text(acct),
+        ]
+        reset_row: list[Text] = [Text(""), Text(""), Text("")]
+        for length in primary:
+            window = index.get(("", length))
+            util_row.append(_util_cell(window))
+            reset_row.append(_reset_or_blank(window))
+        for group, lengths in named:
+            util_row.append(Text(""))
+            reset_row.append(Text(""))
+            for length in lengths:
+                window = index.get((group, length))
+                util_row.append(_util_cell(window))
+                reset_row.append(_reset_or_blank(window))
+        table.add_row(*util_row)
+        table.add_row(*reset_row)
+        table.add_row(*([Text("")] * len(util_row)))
+    color = PROVIDER_COLORS.get(provider_id, "white")
+    title = Text(f" {provider_id.upper()} ", style=f"bold {color}")
+    subtitle = None
+    if prov_lifetime is not None:
+        total, since = prov_lifetime
+        subtitle = Text()
+        subtitle.append(f"{format_tokens(total)} output", style="grey54")
+        since_str = format_since(since)
+        if since_str:
+            subtitle.append(f"  ·  since {since_str} ", style="grey35")
+    return Panel(
+        table,
+        title=title,
+        title_align="left",
+        subtitle=subtitle,
+        subtitle_align="right",
+        border_style=color,
+        padding=(0, 0),
+        expand=True,
+    )
+
+
+def _top_strip(n_accounts: int, n_providers: int) -> Group:
+    title = Text()
+    title.append("sidekick", style="bold grey85")
+    title.append(" usages", style="bold grey62")
+    summary = Text(
+        f"{n_accounts} accounts · {n_providers} providers",
+        style="grey42",
+    )
+    grid = Table.grid(expand=True)
+    grid.add_column(justify="left")
+    grid.add_column(justify="right")
+    grid.add_row(title, summary)
+    return Group(grid, Rule(style="grey23"))
+
+
+def _legend() -> Text:
+    legend = Text()
+    for label, sample in (
+        ("<40", 20),
+        ("40-69", 55),
+        ("70-89", 80),
+        ("≥90", 95),
+    ):
+        band = _heat_band(sample)
+        fg, bg = band if band else (_IDLE_FG, "default")
+        legend.append(f" {label} ", style=f"{fg} on {bg}")
+        legend.append("  ")
+    legend.append("   dim = resets in", style="grey42")
+    return legend
+
+
+def _provider_order(pairs: list[tuple[Account, UsageReport]]) -> list[str]:
+    order: list[str] = []
+    for acct, _ in pairs:
+        if acct.provider_id not in order:
+            order.append(acct.provider_id)
+    return order
+
+
+def _legacy_overview(
+    pairs: list[tuple[Account, UsageReport]],
+) -> RenderableType:
+    """Stacked per-account fallback for narrow terminals (no wrap)."""
+    blocks: list[RenderableType] = []
+    for index, (acct, report) in enumerate(pairs):
+        if index:
+            blocks.append(Text(""))
+        blocks.append(usage_report(acct, report))
+    return Group(*blocks)
+
+
+def usage_overview(
+    pairs: list[tuple[Account, UsageReport]],
+    lifetime: dict[str, tuple[int, str | None]],
+    *,
+    width: int,
+) -> RenderableType:
+    """Render all accounts as provider-grouped framed heat panels.
+
+    :param pairs: ``(Account, UsageReport)`` for every fetched account.
+    :param lifetime: ``provider_id -> (output_total, since)``.
+    :param width: Target terminal width; below the binding panel
+        width the layout degrades to the legacy stacked view.
+    :return: A Rich renderable.
+    """
+    if not pairs:
+        return Text("No usage to display.", style="dim")
+    namew = max(len(acct.label) for acct, _ in pairs)
+    order = _provider_order(pairs)
+    required = 0
+    for provider_id in order:
+        reports = [r for a, r in pairs if a.provider_id == provider_id]
+        primary, named = _panel_columns(reports)
+        required = max(required, _panel_width(namew, primary, named))
+    if width < required:
+        return _legacy_overview(pairs)
+    parts: list[RenderableType] = [
+        _top_strip(len(pairs), len(order)),
+        Text(""),
+    ]
+    for provider_id in order:
+        prov_pairs = [(a, r) for a, r in pairs if a.provider_id == provider_id]
+        parts.append(
+            _provider_panel(
+                provider_id, prov_pairs, namew, lifetime.get(provider_id)
+            )
+        )
+        parts.append(Text(""))
+    parts.append(_legend())
+    return Group(*parts)
