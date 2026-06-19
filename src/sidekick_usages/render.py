@@ -45,6 +45,48 @@ PROVIDER_COLORS: dict[str, str] = {
     "codex": "cyan",
 }
 
+#: Heat bands as (lower-bound-inclusive percent, fg hex, bg hex).
+#: Thresholds match the legacy ``_utilization_color`` bands.
+_HEAT_BANDS: list[tuple[int, str, str]] = [
+    (90, "#ffe6e6", "#b03030"),
+    (70, "#fff4e0", "#9c6f12"),
+    (40, "#e2fbff", "#1b6a87"),
+    (1, "#dfffe9", "#1d5e35"),
+]
+
+#: Foreground for a zero-utilization (idle) cell — no fill.
+_IDLE_FG = "grey39"
+
+#: Fixed width of one window tile.
+_TILE_WIDTH = 6
+
+
+def _heat_band(pct: int) -> tuple[str, str] | None:
+    """Return ``(fg, bg)`` for a utilization percent, or None at 0.
+
+    :param pct: Rounded utilization 0-100.
+    :return: ``(fg_hex, bg_hex)`` for a filled tile, or ``None`` for
+        a zero cell (rendered as a fill-less ``·``).
+    """
+    for threshold, fg, bg in _HEAT_BANDS:
+        if pct >= threshold:
+            return (fg, bg)
+    return None
+
+
+def _heat_tile(pct: int) -> Text:
+    """Build one fixed-width heat tile.
+
+    :param pct: Rounded utilization 0-100.
+    :return: A ``Text`` of width ``_TILE_WIDTH``: a faint centered
+        ``·`` at 0, otherwise ``NN%`` centered on the band color.
+    """
+    band = _heat_band(pct)
+    if band is None:
+        return Text(f"{'·':^{_TILE_WIDTH}}", style=_IDLE_FG)
+    fg, bg = band
+    return Text(f"{f'{pct}%':^{_TILE_WIDTH}}", style=f"{fg} on {bg}")
+
 
 def _utilization_color(pct: float) -> str:
     """Pick a Rich color name based on a utilization percentage.
