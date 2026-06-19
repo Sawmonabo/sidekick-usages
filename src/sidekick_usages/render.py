@@ -7,6 +7,7 @@ renderable — Rich's stock :class:`rich.progress.BarColumn` uses
 rectangular blocks which look bulky for this multi-line layout.
 """
 
+import re
 from datetime import UTC, datetime
 
 from rich.console import Group, RenderableType
@@ -59,6 +60,41 @@ _IDLE_FG = "grey39"
 
 #: Fixed width of one window tile.
 _TILE_WIDTH = 6
+
+#: Matches a window length token such as ``5h`` or ``7d``.
+_LENGTH_RE = re.compile(r"\d+[hd]")
+
+
+def _classify_window(name: str) -> tuple[str, str]:
+    """Split a window name into ``(length, group)``.
+
+    The length is the first ``\\d+[hd]`` token anywhere in the name;
+    the remaining text, trimmed, is the group label (``""`` = the
+    provider's main limit; e.g. ``"Spark"`` / ``"Opus"`` for named
+    groups). No hardcoded provider tables.
+
+    :param name: Raw ``UsageWindow.name``.
+    :return: ``(length, group)``.
+    """
+    match = _LENGTH_RE.search(name)
+    if match is None:
+        return (name.strip(), "")
+    length = match.group(0)
+    group = (name[: match.start()] + name[match.end() :]).strip()
+    return (length, group)
+
+
+def _length_hours(length: str) -> int:
+    """Return a sort key (in hours) for a length token.
+
+    :param length: A token like ``"5h"`` or ``"7d"``.
+    :return: Hours (``"7d"`` -> 168), or 0 if unparseable.
+    """
+    match = _LENGTH_RE.fullmatch(length)
+    if match is None:
+        return 0
+    value = int(length[:-1])
+    return value * 24 if length[-1] == "d" else value
 
 
 def _heat_band(pct: int) -> tuple[str, str] | None:

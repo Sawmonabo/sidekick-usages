@@ -1,5 +1,7 @@
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from sidekick_usages import render
 
 
@@ -44,3 +46,24 @@ def test_reset_cell_is_centered_dim():
     assert cell.plain == f"{'3h 50m':^{render._TILE_WIDTH}}"
     assert cell.style == "grey42"
     assert render._reset_cell(None).plain == f"{'':^{render._TILE_WIDTH}}"
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("5h", ("5h", "")),
+        ("7d", ("7d", "")),
+        ("7d Opus", ("7d", "Opus")),
+        ("7d OAuth", ("7d", "OAuth")),
+        ("Spark 5h", ("5h", "Spark")),
+        ("Spark 7d", ("7d", "Spark")),
+    ],
+)
+def test_classify_window(name, expected):
+    assert render._classify_window(name) == expected
+
+
+def test_length_hours_orders_5h_before_7d():
+    assert render._length_hours("5h") == 5  # noqa: PLR2004
+    assert render._length_hours("7d") == 168  # noqa: PLR2004
+    assert render._length_hours("5h") < render._length_hours("7d")
