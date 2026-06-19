@@ -1,6 +1,6 @@
 # Design Spec — Usage TUI Redesign ("Framed Panels" heatmap)
 
-- **Status:** Design locked (visual direction approved); pending spec sign-off → `writing-plans`.
+- **Status:** **Spec approved & signed off 2026-06-19** → proceeding to `writing-plans`. Plan-detection fix (§9.2) folded **into this branch** per sign-off.
 - **Date:** 2026-06-19
 - **Branch:** `feat/usage-tui-redesign`
 - **Visual reference (not shipped):** scratchpad `variants.py` → `framed.svg`, previewed faithfully via Rich `export_svg` in the browser.
@@ -151,7 +151,7 @@ Window names arrive as free strings on `UsageWindow.name` (e.g. `"5h"`, `"7d"`, 
 ## 9. Out of scope / follow-ups
 
 1. **Per-account token spend** (5h / 7d / lifetime): **excluded.** Not safely recoverable without cross-account leakage. (Codex *current-window* per-account attribution via a `resets_at` fingerprint join is technically possible; Claude has no equivalent. Deferred as a distinct future feature, not part of this redesign.)
-2. **Plan-detection bug:** account `SAbossedgh@fortressinfosec` is stored as plan `unknown` but is actually `max`. **This redesign is presentation-only** and will faithfully display whatever the store holds. Fixing detection touches account config/detection logic, not rendering. **Recommend a separate follow-up task.** ← *needs user confirmation (see below).*
+2. ~~Plan-detection bug (was proposed as a separate follow-up)~~ → **Now IN SCOPE for this branch (sign-off decision 2026-06-19).** Account `SAbossedgh@fortressinfosec` is stored as plan `unknown` but is actually `max`; with the existing `_account_tag` suppression it would otherwise render a **blank** plan tag, marring the very showcase we're polishing. This branch will fix `unknown → max` so the panel matches the approved mockup. **Open for `writing-plans`:** investigate *why* it reads `unknown` (a missing plan-mapping entry vs. genuinely undetectable from available account data) and size the fix; keep the detection change in **separate commits** from the rendering change so it can be reviewed/reverted independently.
 3. **Lifetime-token perf:** caching strategy for Codex rollout summing — to be settled in `writing-plans`.
 
 ---
@@ -164,6 +164,7 @@ Window names arrive as free strings on `UsageWindow.name` (e.g. `"5h"`, `"7d"`, 
 
 ---
 
-## Open question for sign-off
+## Sign-off — RESOLVED (2026-06-19)
 
-**Plan-detection:** keep this redesign presentation-only and file the `unknown → max` detection fix as a **separate** follow-up (recommended), or fold the fix into this branch? *(Recommendation: separate — it's a different layer and would broaden the diff/risk.)*
+- **Spec approved.** Proceeding to `writing-plans`.
+- **Plan-detection:** decision = **fold the `unknown → max` fix into this branch** (so the new TUI shows the correct `max` tag on launch). Tracked as §9.2; detection work kept in separate commits from the rendering work.
