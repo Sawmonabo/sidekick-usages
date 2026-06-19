@@ -150,6 +150,46 @@ def _format_reset(iso: str | None) -> Text:
     )
 
 
+def _format_reset_compact(iso: str | None) -> str:
+    """Compact relative countdown: ``45m`` / ``3h 50m`` / ``1d 15h``.
+
+    No ``↻`` glyph and no absolute timestamp (those are dropped from
+    the matrix per the spec).
+
+    :param iso: ISO-8601 timestamp or ``None``.
+    :return: A compact string, ``"now"`` if already due, or ``""``
+        when missing/unparseable.
+    """
+    if not iso:
+        return ""
+    try:
+        dt = datetime.fromisoformat(iso)
+    except ValueError:
+        return ""
+    secs = round((dt - datetime.now(UTC)).total_seconds())
+    if secs <= 0:
+        return "now"
+    if secs < _SECONDS_PER_HOUR:
+        return f"{secs // 60}m"
+    if secs < _SECONDS_PER_DAY:
+        hours, minutes = divmod(secs // 60, 60)
+        return f"{hours}h {minutes}m"
+    days, remainder = divmod(secs, _SECONDS_PER_DAY)
+    return f"{days}d {remainder // _SECONDS_PER_HOUR}h"
+
+
+def _reset_cell(iso: str | None) -> Text:
+    """Build one fixed-width, dim, centered reset-countdown cell.
+
+    :param iso: ISO-8601 timestamp or ``None``.
+    :return: A ``Text`` of width ``_TILE_WIDTH``.
+    """
+    return Text(
+        f"{_format_reset_compact(iso):^{_TILE_WIDTH}}",
+        style="grey42",
+    )
+
+
 def _account_tag(acct: Account) -> Text:
     """Build the ``[provider · plan]`` colored tag.
 
