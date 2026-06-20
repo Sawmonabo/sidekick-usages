@@ -336,3 +336,25 @@ def test_legacy_mode_renders_failures():
     )
     out = buf.getvalue()
     assert "token expired" in out
+
+
+def test_panels_have_interior_top_padding():
+    out = _render_at(200, _worst_case_pairs())
+    lines = out.splitlines()
+    tops = [i for i, line in enumerate(lines) if line.lstrip().startswith("╭")]
+    assert tops  # at least one panel
+    for i in tops:
+        inner = lines[i + 1]
+        # the row right under the top border is blank between the borders
+        assert inner.lstrip().startswith("│")
+        assert inner.strip("│ ") == ""
+
+
+def test_named_panel_separates_caption_from_header():
+    out = _render_at(200, _worst_case_pairs())
+    lines = out.splitlines()
+    cap = next(
+        i for i, line in enumerate(lines) if "GPT-5.3-Codex-Spark" in line
+    )
+    assert lines[cap + 1].strip("│ ") == ""  # blank separator
+    assert "5h" in lines[cap + 2]  # header follows
