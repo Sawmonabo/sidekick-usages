@@ -144,6 +144,12 @@ _LIFETIME: dict[str, tuple[int, str | None]] = {
     "codex": (212_000_000, "2026-03-30"),
 }
 
+#: The documented panel floor (spec §8/§10). The Framed-Panels redesign
+#: must render as real panels — not the legacy fallback — for the worst-case
+#: store at this width. If a change pushes the binding panel width past it,
+#: the floor guard below fails instead of the layout silently degrading.
+_PANEL_FLOOR = 85
+
 
 def _render_at(width: int, pairs: list[tuple[Account, UsageReport]]) -> str:
     buf = io.StringIO()
@@ -160,20 +166,25 @@ def _panel_line_widths(out: str) -> set[int]:
     }
 
 
-def test_panels_share_one_width_and_guard_at_boundary():
-    pairs = _worst_case_pairs()
-    wide = _render_at(200, pairs)  # panels pin to natural required < 200
-    widths = _panel_line_widths(wide)
-    assert len(widths) == 1  # equal width, one shared right edge
-    required = widths.pop()
-    longest = max(len(line) for line in wide.split("\n"))
-    assert longest <= required  # nothing overflows the shared width
-    at = _render_at(required, pairs)  # exactly required -> still panels
-    assert "CLAUDE" in at
-    assert "CODEX" in at
-    narrower = _render_at(required - 1, pairs)  # one col short -> legacy
-    assert "CLAUDE" not in narrower
-    assert "a.sawmon@gmail" in narrower
+def test_panels_share_one_width():
+    # measure-then-pin: every provider panel is pinned to the single
+    # binding width, so all panel border/interior lines share one right edge.
+    out = _render_at(200, _worst_case_pairs())
+    widths = _panel_line_widths(out)
+    assert len(widths) == 1
+
+
+def test_worst_case_renders_as_panels_at_floor():
+    # The widest real store (30-char Codex name + Spark block) must render
+    # as framed panels at the documented floor, with nothing wrapping past
+    # the frame and the longest account name intact on one row. Fails if the
+    # binding width grows past the floor (a real regression); still passes if
+    # the layout gets tighter (an improvement must not break the guard).
+    out = _render_at(_PANEL_FLOOR, _worst_case_pairs())
+    assert "CLAUDE" in out  # panel path, not legacy
+    assert "CODEX" in out
+    assert max(len(line) for line in out.split("\n")) <= _PANEL_FLOOR
+    assert "SAbossedgh@fortressinfosec@org" in out  # longest name, intact
 
 
 def test_overview_shows_titles_and_lifetime():
@@ -185,11 +196,11 @@ def test_overview_shows_titles_and_lifetime():
     assert "GPT-5.3-Codex-Spark" in out
 
 
-def test_overview_degrades_below_80_to_legacy():
-    # Below the binding panel width the renderer falls back to the
+def test_overview_degrades_below_floor_to_legacy():
+    # Well below the binding panel width the renderer falls back to the
     # legacy stacked view instead of squeezing/wrapping the panels.
-    # Discriminator: the uppercase panel title only exists on the
-    # panel path; the legacy tag uses the lowercase provider id.
+    # Discriminator: the uppercase panel title only exists on the panel
+    # path; the legacy tag uses the lowercase provider id.
     out = _render_at(70, _worst_case_pairs())
     assert "CLAUDE" not in out
     assert "a.sawmon@gmail" in out
