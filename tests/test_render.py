@@ -46,6 +46,16 @@ def test_format_reset_compact_buckets():
     assert render._format_reset_compact(_iso_in(days=1, hours=15)) == "1d 15h"
 
 
+def test_format_reset_compact_tz_naive_does_not_crash():
+    assert render._format_reset_compact("2026-06-19T12:00:00") == ""
+
+
+def test_format_reset_tz_naive_does_not_crash():
+    out = render._format_reset("2026-06-19T12:00:00")
+    # tz-naive -> swallowed -> passthrough dim text, not a crash
+    assert "2026-06-19T12:00:00" in out.plain
+
+
 def test_reset_cell_is_centered_dim():
     cell = render._reset_cell(_iso_in(hours=3, minutes=50))
     assert cell.plain == f"{'3h 50m':^{render._TILE_WIDTH}}"

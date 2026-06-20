@@ -198,9 +198,9 @@ def _format_reset(iso: str | None) -> Text:
         return Text("—", style="dim")
     try:
         dt = datetime.fromisoformat(iso)
-    except ValueError:
+        secs = int((dt - datetime.now(UTC)).total_seconds())
+    except ValueError, TypeError:
         return Text(iso, style="dim")
-    secs = int((dt - datetime.now(UTC)).total_seconds())
     if secs <= 0:
         rel = "any moment"
     elif secs < _SECONDS_PER_HOUR:
@@ -232,9 +232,9 @@ def _format_reset_compact(iso: str | None) -> str:
         return ""
     try:
         dt = datetime.fromisoformat(iso)
-    except ValueError:
+        secs = round((dt - datetime.now(UTC)).total_seconds())
+    except ValueError, TypeError:
         return ""
-    secs = round((dt - datetime.now(UTC)).total_seconds())
     if secs <= 0:
         return "now"
     if secs < _SECONDS_PER_HOUR:
