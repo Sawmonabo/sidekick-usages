@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0](https://github.com/Sawmonabo/sidekick-usages/compare/v0.5.0...v0.6.0) (2026-06-20)
+
+
+### Added
+
+* **cli:** add set-plan command for manual plan overrides ([9c8ea80](https://github.com/Sawmonabo/sidekick-usages/commit/9c8ea8010fb6847fcf01f5a4a82e3dab148b57e6))
+* **cli:** render check as grouped provider overview ([45096b3](https://github.com/Sawmonabo/sidekick-usages/commit/45096b3cde1a160a5fbcd657f4822cebddea827f))
+* **cli:** reroute fetch errors from printed blocks to in-panel FetchFailure records ([3698770](https://github.com/Sawmonabo/sidekick-usages/commit/3698770f4846149b6b9be013aaff37ba16742e6d))
+* **cli:** shell-quote the refresh recovery command label ([0f6beee](https://github.com/Sawmonabo/sidekick-usages/commit/0f6beee171d7e8b50ce2ade0be4d8497e5fdf773))
+* **lifetime:** add cached Codex output summing ([2c56cfa](https://github.com/Sawmonabo/sidekick-usages/commit/2c56cfa040623c0cb808ec0a3703912ebe3ca5b8))
+* **lifetime:** add token formatting + Claude output sum ([adfff0a](https://github.com/Sawmonabo/sidekick-usages/commit/adfff0a5bf4125f36be69b4cdb72e5f5eae92fcc))
+* redesign usage check as framed heat panels ([680deb0](https://github.com/Sawmonabo/sidekick-usages/commit/680deb0349b7bad87c90f3d2398a4f2a1c9ea404))
+* **render:** add a leading blank line above the overview ([73493bf](https://github.com/Sawmonabo/sidekick-usages/commit/73493bf760fae95344a70a203c1254e0c10c417e))
+* **render:** add compact reset-countdown cell ([270f355](https://github.com/Sawmonabo/sidekick-usages/commit/270f3552726ea739a16aa15f02611946dd3cfe2a))
+* **render:** add data-driven window classifier ([66079a8](https://github.com/Sawmonabo/sidekick-usages/commit/66079a85420f1b829424245e88d67a6b59d23e3c))
+* **render:** add FetchFailure + render errors inside provider panels ([b01f456](https://github.com/Sawmonabo/sidekick-usages/commit/b01f456da17d9c2ef9674311c06872551c11ca44))
+* **render:** add heat band + tile helpers ([cd47144](https://github.com/Sawmonabo/sidekick-usages/commit/cd4714487a4365049ab4ec9a69b4aaf359274343))
+* **render:** add panel breathing room and caption separator ([444ca6e](https://github.com/Sawmonabo/sidekick-usages/commit/444ca6e105fb7ed6f95936b8bad2a0514fc45767))
+* **render:** add provider-grouped heat-panel overview ([474627e](https://github.com/Sawmonabo/sidekick-usages/commit/474627ee12631c2c375cdd1100889f8adf2d1dde))
+* **render:** content-width panels with full model-name captions ([c4a62ea](https://github.com/Sawmonabo/sidekick-usages/commit/c4a62ea1f8ba118597d80e7d1c1bf6b174c3789e))
+
+
+### Fixed
+
+* **lifetime:** guard non-dict JSON in stats/cache readers ([c291d43](https://github.com/Sawmonabo/sidekick-usages/commit/c291d4363c6fd2c4c7e2f33390734a929bff4ac0))
+* **render:** harden reset formatters against tz-naive timestamps ([4e219cf](https://github.com/Sawmonabo/sidekick-usages/commit/4e219cff03e8ebc271ad4053aeb2f510cdae6f92))
+
+
+### Docs
+
+* add usage TUI redesign design spec (Framed Panels) ([c861169](https://github.com/Sawmonabo/sidekick-usages/commit/c861169e1ff27a7c4c4656db947df7496be1e30f))
+* add usage TUI redesign implementation plan ([aaf8239](https://github.com/Sawmonabo/sidekick-usages/commit/aaf8239db0b8d6b7db19ebdd3f06e480e0c148fb))
+* mark usage TUI spec approved; fold plan-detection fix into scope ([2aef6e7](https://github.com/Sawmonabo/sidekick-usages/commit/2aef6e76a52935dd2c285128db4d42e89414adda))
+* **spec:** set the panel floor to 85 cols after approved breathing room ([c2919ad](https://github.com/Sawmonabo/sidekick-usages/commit/c2919ad63221aa10f5eac686a5144fdc853fecac))
+
 ## [0.5.0](https://github.com/Sawmonabo/sidekick-usages/compare/v0.4.1...v0.5.0) (2026-06-12)
 
 
