@@ -456,6 +456,9 @@ def _build_table(
             caption.append(blank)
             caption.append(Text(group, style="grey46"))
         table.add_row(*caption)
+        # Blank line separating the model caption from the 5h/7d header.
+        n_cols = 3 + len(primary) + 2 * len(named)
+        table.add_row(*([blank] * n_cols))
     header: list[RenderableType] = [blank, blank, blank]
     header.extend(Text(length, style="grey42") for length in primary)
     for _group, lengths in named:
@@ -478,7 +481,9 @@ def _provider_panel(
     primary, named = _panel_columns([r for _, r in pairs])
     n_cols = 3 + len(primary) + 2 * len(named)
     table = _build_table(namew, primary, named)
-    for acct, report in pairs:
+    for position, (acct, report) in enumerate(pairs):
+        if position:
+            table.add_row(*([Text("")] * n_cols))
         index = _window_index(report)
         util_row: list[RenderableType] = [
             _dot(provider_id),
@@ -511,7 +516,6 @@ def _provider_panel(
             )
         table.add_row(*util_row)
         table.add_row(*reset_row)
-        table.add_row(*([Text("")] * n_cols))
     color = PROVIDER_COLORS.get(provider_id, "white")
     title = Text(f" {provider_id.upper()} ", style=f"bold {color}")
     subtitle = None
@@ -529,7 +533,7 @@ def _provider_panel(
         subtitle=subtitle,
         subtitle_align="right",
         border_style=color,
-        padding=(0, 0),
+        padding=(1, 2),
         expand=False,
     )
 
