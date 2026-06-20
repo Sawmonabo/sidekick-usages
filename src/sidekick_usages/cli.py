@@ -75,7 +75,7 @@ from sidekick_usages.providers.codex import (
     read_auth_blob,
     write_account_auth_file,
 )
-from sidekick_usages.render import account_header, usage_overview
+from sidekick_usages.render import FetchFailure, usage_overview
 from sidekick_usages.report import UsageReport
 from sidekick_usages.store import CONFIG_DIR, Account, AccountStore
 from sidekick_usages.token_input import TokenInput
@@ -113,6 +113,7 @@ class AppContext:
     heartbeat_providers: dict[str, HeartbeatProvider] | None = None
     only: str | None = None
     collected: list[tuple[Account, UsageReport]] = field(default_factory=list)
+    failures: list[tuple[Account, FetchFailure]] = field(default_factory=list)
 
 
 @dataclass
@@ -295,6 +296,7 @@ def _do_check() -> None:
     """
     app_ctx = _get_ctx()
     app_ctx.collected.clear()
+    app_ctx.failures.clear()
     accounts = list(app_ctx.store)
     if app_ctx.only:
         accounts = [a for a in accounts if a.provider_id == app_ctx.only]
@@ -307,11 +309,12 @@ def _do_check() -> None:
         if not _fetch_and_render(acct):
             exit_code = 1
 
-    if app_ctx.collected:
+    if app_ctx.collected or app_ctx.failures:
         app_ctx.console.print(
             usage_overview(
                 app_ctx.collected,
                 _lifetime_for(app_ctx.collected),
+                failures=app_ctx.failures,
                 width=app_ctx.console.size.width,
             )
         )
@@ -379,7 +382,7 @@ def _handle_runtime_forbidden(
         try:
             report = provider.fetch_usage(acct, app_ctx.http)
         except UsageError as retry_err:
-            _print_error_block(acct, f"Header probe failed: {retry_err}")
+            _record_error_block(acct, f"Header probe failed: {retry_err}")
             return False
         _collect(acct, report)
         return True
@@ -387,7 +390,7 @@ def _handle_runtime_forbidden(
     msg = f"Forbidden (HTTP 403): {detail}"
     if err.required_scope:
         msg += f"\n  Required scope: {err.required_scope}."
-    _print_error_block(acct, msg)
+    _record_error_block(acct, msg)
     return False
 
 
@@ -400,7 +403,7 @@ def _fetch_and_render(acct: Account) -> bool:
     app_ctx = _get_ctx()
     provider = app_ctx.providers.get(acct.provider_id)
     if provider is None:
-        _print_error_block(
+        _record_error_block(
             acct,
             f"Unknown provider '{acct.provider_id}'.",
         )
@@ -448,10 +451,10 @@ def _refresh_known_expired(acct: Account, provider: Provider) -> bool:
     try:
         refreshed = _refresh_and_save(acct, provider)
     except UsageError as e:
-        _print_error_block(acct, f"Token refresh failed: {e}")
+        _record_error_block(acct, f"Token refresh failed: {e}")
         return False
     if not refreshed:
-        _print_auth_error_block(acct)
+        _record_auth_failure(acct)
         return False
     return True
 
@@ -471,7 +474,7 @@ def _refresh_after_auth_and_render(
     try:
         refreshed = _refresh_and_save(acct, provider)
     except UsageError as refresh_err:
-        _print_error_block(acct, f"Token refresh failed: {refresh_err}")
+        _record_error_block(acct, f"Token refresh failed: {refresh_err}")
         return False
     if not refreshed:
         return _handle_fetch_error(acct, provider, err)
@@ -536,7 +539,7 @@ def _handle_fetch_error(
     :return: Always False unless a forbidden self-heal succeeds.
     """
     if isinstance(err, AuthError):
-        _print_auth_error_block(acct)
+        _record_auth_failure(acct)
         return False
     if isinstance(err, ForbiddenError):
         return _handle_runtime_forbidden(acct, provider, err)
@@ -544,7 +547,7 @@ def _handle_fetch_error(
         return _handle_rate_limit(acct, err)
     if isinstance(err, TransientError):
         return _handle_transient(acct, err)
-    _print_error_block(acct, str(err))
+    _record_error_block(acct, str(err))
     return False
 
 
@@ -588,7 +591,7 @@ def _handle_rate_limit(acct: Account, err: RateLimitError) -> bool:
         if err.retry_after
         else "Try again in a moment."
     )
-    _print_error_block(
+    _record_error_block(
         acct,
         f"Rate limited (HTTP 429). {suffix}",
     )
@@ -602,7 +605,7 @@ def _handle_transient(acct: Account, err: TransientError) -> bool:
     :param err: Transient error to display.
     :return: False.
     """
-    _print_error_block(acct, str(err))
+    _record_error_block(acct, str(err))
     return False
 
 
@@ -2170,30 +2173,31 @@ def _print_no_accounts(only: str | None) -> None:
     )
 
 
-def _print_error_block(acct: Account, message: str) -> None:
-    """Print an error panel for one account.
-
-    :param acct: Account that errored.
-    :param message: Human-readable error text.
-    """
+def _record_error_block(acct: Account, message: str) -> None:
+    """Record a generic per-account fetch failure for in-panel render."""
     app_ctx = _get_ctx()
-    app_ctx.console.print(account_header(acct))
-    app_ctx.console.print(f"  [red]{message}[/red]")
+    detail = tuple(message.splitlines())
+    app_ctx.failures.append(
+        (acct, FetchFailure(status="error", detail=detail))
+    )
 
 
-def _print_auth_error_block(acct: Account) -> None:
-    """Print the 401 message with a 'refresh' hint.
-
-    :param acct: Account whose token failed auth.
-    """
+def _record_auth_failure(acct: Account) -> None:
+    """Record a 401 as an in-panel failure with a re-login + refresh hint."""
     app_ctx = _get_ctx()
     provider = app_ctx.providers.get(acct.provider_id)
     display = provider.display_name if provider else acct.provider_id
-    app_ctx.console.print(account_header(acct))
-    app_ctx.console.print("  [red]Token expired or invalid (HTTP 401).[/red]")
-    app_ctx.console.print(
-        f"  Log in to {display} again, then [bold]"
-        f"sidekick-usages refresh {acct.label}[/bold]."
+    app_ctx.failures.append(
+        (
+            acct,
+            FetchFailure(
+                status="token expired",
+                detail=(
+                    f"Log in to {display} again, then run:",
+                    f"sidekick-usages refresh {acct.label}",
+                ),
+            ),
+        )
     )
 
 
