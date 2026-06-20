@@ -153,7 +153,10 @@ _PANEL_FLOOR = 85
 
 def _render_at(width: int, pairs: list[tuple[Account, UsageReport]]) -> str:
     buf = io.StringIO()
-    console = Console(width=width, file=buf)
+    # legacy_windows=False keeps Rich's rounded box on every platform.
+    # Without it, Windows CI substitutes the square box (┌ for ╭) and the
+    # panel-corner assertions below fail.
+    console = Console(width=width, file=buf, legacy_windows=False)
     console.print(render.usage_overview(pairs, _LIFETIME, width=width))
     return buf.getvalue()
 
@@ -230,7 +233,11 @@ def test_subtitle_not_truncated_when_wider_than_content():
             ),
         )
     ]
-    lifetime = {"codex": (999_000_000, "2024-01-01")}
+    # Annotated, not inferred: dict is invariant in its value type, so a
+    # str-only literal won't assign to the str | None parameter.
+    lifetime: dict[str, tuple[int, str | None]] = {
+        "codex": (999_000_000, "2024-01-01")
+    }
     buf = io.StringIO()
     console = Console(width=200, file=buf)
     console.print(render.usage_overview(pairs, lifetime, width=200))
