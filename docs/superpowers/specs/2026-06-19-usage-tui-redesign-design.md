@@ -143,6 +143,9 @@ Window names arrive as free strings on `UsageWindow.name` (e.g. `"5h"`, `"7d"`, 
   - **Fix (verified clean):** render the panels with **zero horizontal padding** (`padding=(0,0)`) → Codex = **exactly 80**, the 30-char name (`sabossedgh@fortressinfosec.com`) renders intact on one line, `Spark` intact, no wrapping. A full-width panel at exactly the terminal width is Rich's normal behavior (VT100 deferred-wrap), not an off-by-one risk. *(Elegance alternative for `writing-plans`: instead of zero panel padding — which sits the dot flush to the border — reclaim the same 2 cols from inter-group spacing to keep a 1-col inner margin. Both fit 80; pick in implementation.)*
   - **Why it's tight:** the **shared 30-col name width** (required so the `5h`/`7d` columns align across both providers) is the dominant cost. Account names are shown **verbatim — no elision at ≥80**.
   - **Below 80:** the layout degrades (name column squeezed / Spark truncated). Implementation must detect `width < 80` and degrade deliberately — elide the name column or fall back to the legacy per-account view — **never silently wrap**.
+
+> **Update (2026-06-19):** the implementation chose the "roomier look" alternative noted above — breathing-room padding `(1,2)` (1 row vertical, zero width cost; 2 cols horizontal side margins) was approved during showcase refinement, and the model name column is shown verbatim. The 30-char Codex name `SAbossedgh@fortressinfosec@org` combined with those side margins makes the Codex panel the binding case at **85 cols**, not 80. The renderer already degrades to the legacy stacked view when `width < required`; only the threshold moved from 80 to **85** (behavior unchanged). The original 80-col target, derived with `padding=(0,0)`, was traded for the roomier look per explicit user decision.
+
 - **Truecolor:** required for heat tiles; graceful downsample/fallback per §3.
 - **Real data:** the user's actual configured account labels and plan tags, verbatim (plan tag suppressed only when empty/`unknown`, per existing `_account_tag`).
 
@@ -159,7 +162,7 @@ Window names arrive as free strings on `UsageWindow.name` (e.g. `"5h"`, `"7d"`, 
 ## 10. Validation
 
 - Faithful preview via Rich `export_svg` → browser (used throughout design); reuse to verify implementation against the approved mockup.
-- **Width regression guard (required):** a test that renders the widest real case (Codex + Spark, longest name) at `Console(width=80, expand=True)` and asserts no physical line wraps and the longest name appears intact on one line. This is the exact failure mode found during design — make it a permanent test.
+- **Width regression guard (required):** a test that renders the widest real case (Codex + Spark, 30-char name) at `Console(width=85)` and asserts no physical line wraps past 85 and the longest account name appears intact on one row. This is the exact failure mode found during design — make it a permanent test. (Floor updated from 80 to 85; see §8 update above.)
 - Recommend **snapshot tests** of rendered output (text + styles) for the grouped renderer, heat bands, window classification, and zero/active cells.
 
 ---
