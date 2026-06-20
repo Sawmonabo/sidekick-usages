@@ -727,6 +727,7 @@ def usage_overview(
         panel.expand = True
         panel.width = required
     parts: list[RenderableType] = [
+        Text(""),  # leading blank line — separate the TUI from the prompt
         _top_strip(len(pairs) + len(fails), len(order), required),
         Text(""),
     ]
