@@ -126,6 +126,24 @@ def test_auth_failure_is_recorded_not_printed(tmp_path: Path) -> None:
     assert stdout.getvalue() == ""
 
 
+def test_refresh_command_quotes_spaced_label(tmp_path: Path) -> None:
+    """A label with spaces is shell-quoted in the recorded refresh command."""
+    acct = _acct(label="my work acct")
+    provider = _FakeProvider(
+        fetch_results=[AuthError("Token expired")],
+        refresh_ok=False,
+    )
+    _install_ctx(tmp_path, provider, acct)
+
+    result = cli._fetch_and_render(acct)
+
+    assert result is False
+    failures = cli._get_ctx().failures
+    assert len(failures) == 1
+    _, failure = failures[0]
+    assert failure.detail[-1] == "sidekick-usages refresh 'my work acct'"
+
+
 def test_generic_error_is_recorded(tmp_path: Path) -> None:
     """A transient error records a FetchFailure with the message."""
     acct = _acct()

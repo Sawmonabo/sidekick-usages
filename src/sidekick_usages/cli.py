@@ -8,6 +8,7 @@ inject fakes by overwriting ``_ctx``.
 
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -2194,7 +2195,7 @@ def _record_auth_failure(acct: Account) -> None:
                 status="token expired",
                 detail=(
                     f"Log in to {display} again, then run:",
-                    f"sidekick-usages refresh {acct.label}",
+                    f"sidekick-usages refresh {shlex.quote(acct.label)}",
                 ),
             ),
         )
