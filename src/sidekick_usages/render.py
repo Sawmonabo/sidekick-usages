@@ -8,6 +8,7 @@ rectangular blocks which look bulky for this multi-line layout.
 """
 
 import re
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from rich.console import Console, Group, RenderableType
@@ -77,6 +78,20 @@ _PANEL_CHROME = 6
 
 #: Matches a window length token such as ``5h`` or ``7d``.
 _LENGTH_RE = re.compile(r"\d+[hd]")
+
+
+@dataclass(frozen=True)
+class FetchFailure:
+    """One account's terminal fetch failure, rendered in-panel.
+
+    :ivar status: Short label shown in the data area (e.g. ``token
+        expired``), prefixed with a ``⚠`` glyph by the renderer.
+    :ivar detail: Zero or more recovery lines shown below the status
+        (e.g. the re-login instruction and the ``refresh`` command).
+    """
+
+    status: str
+    detail: tuple[str, ...]
 
 
 def _classify_window(name: str) -> tuple[str, str]:
@@ -475,47 +490,56 @@ def _build_table(
 def _provider_panel(
     provider_id: str,
     pairs: list[tuple[Account, UsageReport]],
+    failures: list[tuple[Account, FetchFailure]],
     namew: int,
     prov_lifetime: tuple[int, str | None] | None,
 ) -> Panel:
-    primary, named = _panel_columns([r for _, r in pairs])
-    n_cols = 3 + len(primary) + 2 * len(named)
-    table = _build_table(namew, primary, named)
-    for position, (acct, report) in enumerate(pairs):
-        if position:
-            table.add_row(*([Text("")] * n_cols))
-        index = _window_index(report)
-        util_row: list[RenderableType] = [
-            _dot(provider_id),
-            Text(acct.label, style="grey85"),
-            _plan_text(acct),
-        ]
-        reset_row: list[RenderableType] = [Text(""), Text(""), Text("")]
-        for length in primary:
-            window = index.get(("", length))
-            util_row.append(_util_cell(window))
-            reset_row.append(_reset_or_blank(window))
-        for group, lengths in named:
-            util_row.append(_rule_cell())
-            util_row.append(
-                _model_subgrid(
-                    [
-                        _util_cell(index.get((group, length)))
-                        for length in lengths
-                    ]
+    blocks: list[RenderableType] = []
+    if pairs:
+        primary, named = _panel_columns([r for _, r in pairs])
+        n_cols = 3 + len(primary) + 2 * len(named)
+        table = _build_table(namew, primary, named)
+        for position, (acct, report) in enumerate(pairs):
+            if position:
+                table.add_row(*([Text("")] * n_cols))
+            index = _window_index(report)
+            util_row: list[RenderableType] = [
+                _dot(provider_id),
+                Text(acct.label, style="grey85"),
+                _plan_text(acct),
+            ]
+            reset_row: list[RenderableType] = [Text(""), Text(""), Text("")]
+            for length in primary:
+                window = index.get(("", length))
+                util_row.append(_util_cell(window))
+                reset_row.append(_reset_or_blank(window))
+            for group, lengths in named:
+                util_row.append(_rule_cell())
+                util_row.append(
+                    _model_subgrid(
+                        [
+                            _util_cell(index.get((group, length)))
+                            for length in lengths
+                        ]
+                    )
                 )
-            )
-            reset_row.append(_rule_cell())
-            reset_row.append(
-                _model_subgrid(
-                    [
-                        _reset_or_blank(index.get((group, length)))
-                        for length in lengths
-                    ]
+                reset_row.append(_rule_cell())
+                reset_row.append(
+                    _model_subgrid(
+                        [
+                            _reset_or_blank(index.get((group, length)))
+                            for length in lengths
+                        ]
+                    )
                 )
-            )
-        table.add_row(*util_row)
-        table.add_row(*reset_row)
+            table.add_row(*util_row)
+            table.add_row(*reset_row)
+        blocks.append(table)
+    if failures:
+        if blocks:
+            blocks.append(Text(""))  # gap between successes and failures
+        blocks.append(_error_table(provider_id, failures, namew))
+    content: RenderableType = blocks[0] if len(blocks) == 1 else Group(*blocks)
     color = PROVIDER_COLORS.get(provider_id, "white")
     title = Text(f" {provider_id.upper()} ", style=f"bold {color}")
     subtitle = None
@@ -527,7 +551,7 @@ def _provider_panel(
         if since_str:
             subtitle.append(f"  ·  since {since_str} ", style="grey35")
     return Panel(
-        table,
+        content,
         title=title,
         title_align="left",
         subtitle=subtitle,
@@ -536,6 +560,41 @@ def _provider_panel(
         padding=(1, 2),
         expand=False,
     )
+
+
+def _error_table(
+    provider_id: str,
+    failures: list[tuple[Account, FetchFailure]],
+    namew: int,
+) -> Table:
+    """Build the ``[dot, name, plan, rest]`` failure sub-table.
+
+    Dot/name/plan column widths match :func:`_build_table` so failure
+    rows align under the success matrix. ``rest`` stacks the status
+    line and any recovery detail lines.
+    """
+    rows: list[tuple[Account, Group]] = []
+    rest_w = 1
+    for acct, fail in failures:
+        status = Text(f"⚠ {fail.status}", style="yellow")
+        detail = [Text(line, style="grey54") for line in fail.detail]
+        rest_w = max(rest_w, status.cell_len, *(t.cell_len for t in detail))
+        rows.append((acct, Group(status, *detail)))
+    table = Table(box=None, show_header=False, padding=(0, 1), pad_edge=False)
+    table.add_column(width=1)  # dot
+    table.add_column(width=namew)  # name
+    table.add_column(width=4)  # plan
+    table.add_column(width=rest_w, justify="left")  # rest
+    for position, (acct, rest) in enumerate(rows):
+        if position:
+            table.add_row(Text(""), Text(""), Text(""), Text(""))
+        table.add_row(
+            _dot(provider_id),
+            Text(acct.label, style="grey85"),
+            _plan_text(acct),
+            rest,
+        )
+    return table
 
 
 def _panel_min_width(measure: Console, panel: Panel) -> int:
@@ -586,16 +645,33 @@ def _legend() -> Text:
     return legend
 
 
-def _provider_order(pairs: list[tuple[Account, UsageReport]]) -> list[str]:
+def _provider_order(
+    pairs: list[tuple[Account, UsageReport]],
+    failures: list[tuple[Account, FetchFailure]] | None = None,
+) -> list[str]:
     order: list[str] = []
-    for acct, _ in pairs:
+    rows: list[Account] = [a for a, _ in pairs]
+    if failures:
+        rows += [a for a, _ in failures]
+    for acct in rows:
         if acct.provider_id not in order:
             order.append(acct.provider_id)
     return order
 
 
+def _failure_block(acct: Account, fail: FetchFailure) -> Group:
+    """Stacked (non-panel) failure block for the legacy narrow view."""
+    lines: list[RenderableType] = [
+        account_header(acct),
+        Text(f"  ⚠ {fail.status}", style="yellow"),
+    ]
+    lines.extend(Text(f"  {line}", style="grey54") for line in fail.detail)
+    return Group(*lines)
+
+
 def _legacy_overview(
     pairs: list[tuple[Account, UsageReport]],
+    failures: list[tuple[Account, FetchFailure]] | None = None,
 ) -> RenderableType:
     """Stacked per-account fallback for narrow terminals (no wrap)."""
     blocks: list[RenderableType] = []
@@ -603,6 +679,10 @@ def _legacy_overview(
         if index:
             blocks.append(Text(""))
         blocks.append(usage_report(acct, report))
+    for acct, fail in failures or ():
+        if blocks:
+            blocks.append(Text(""))
+        blocks.append(_failure_block(acct, fail))
     return Group(*blocks)
 
 
@@ -610,25 +690,31 @@ def usage_overview(
     pairs: list[tuple[Account, UsageReport]],
     lifetime: dict[str, tuple[int, str | None]],
     *,
+    failures: list[tuple[Account, FetchFailure]] | None = None,
     width: int,
 ) -> RenderableType:
     """Render all accounts as provider-grouped framed heat panels.
 
     :param pairs: ``(Account, UsageReport)`` for every fetched account.
     :param lifetime: ``provider_id -> (output_total, since)``.
+    :param failures: ``(Account, FetchFailure)`` for each account whose
+        fetch failed.
     :param width: Target terminal width; below the binding panel
         width the layout degrades to the legacy stacked view.
     :return: A Rich renderable.
     """
-    if not pairs:
+    fails = failures or []
+    if not pairs and not fails:
         return Text("No usage to display.", style="dim")
-    namew = max(len(acct.label) for acct, _ in pairs)
-    order = _provider_order(pairs)
+    labels = [a.label for a, _ in pairs] + [a.label for a, _ in fails]
+    namew = max(len(s) for s in labels)
+    order = _provider_order(pairs, fails)
     measure = Console(width=10_000)
     panels = [
         _provider_panel(
             pid,
             [(a, r) for a, r in pairs if a.provider_id == pid],
+            [(a, f) for a, f in fails if a.provider_id == pid],
             namew,
             lifetime.get(pid),
         )
@@ -636,12 +722,12 @@ def usage_overview(
     ]
     required = max(_panel_min_width(measure, p) for p in panels)
     if width < required:
-        return _legacy_overview(pairs)
+        return _legacy_overview(pairs, fails)
     for panel in panels:
         panel.expand = True
         panel.width = required
     parts: list[RenderableType] = [
-        _top_strip(len(pairs), len(order), required),
+        _top_strip(len(pairs) + len(fails), len(order), required),
         Text(""),
     ]
     for panel in panels:

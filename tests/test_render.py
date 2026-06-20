@@ -5,6 +5,7 @@ import pytest
 from rich.console import Console
 
 from sidekick_usages import render
+from sidekick_usages.render import FetchFailure
 from sidekick_usages.report import UsageReport, UsageWindow
 from sidekick_usages.store import Account
 
@@ -215,3 +216,113 @@ def test_subtitle_not_truncated_when_wider_than_content():
     out = buf.getvalue()
     assert "…" not in out
     assert "999M output" in out
+
+
+def test_failure_renders_in_provider_panel():
+    iso = _iso_in(hours=3)
+    pairs = [
+        (
+            _acct("acct-ok", "codex", "pro"),
+            _report(("5h", 8, iso), ("7d", 45, iso)),
+        )
+    ]
+    failures = [
+        (
+            _acct("a.sawmon@ymail.com", "codex", "pro"),
+            FetchFailure(
+                "token expired",
+                (
+                    "Log in to Codex CLI again, then run:",
+                    "sidekick-usages refresh a.sawmon@ymail.com",
+                ),
+            ),
+        )
+    ]
+    buf = io.StringIO()
+    console = Console(width=200, file=buf)
+    console.print(
+        render.usage_overview(pairs, _LIFETIME, failures=failures, width=200)
+    )
+    out = buf.getvalue()
+    assert "⚠ token expired" in out
+    assert "Log in to Codex CLI again, then run:" in out
+    assert "sidekick-usages refresh a.sawmon@ymail.com" in out
+    first = next(line for line in out.splitlines() if line.strip())
+    assert first.lstrip().startswith("sidekick")
+
+
+def test_all_failed_provider_has_no_orphan_header():
+    failures = [
+        (
+            _acct("a.sawmon@ymail.com", "codex", "pro"),
+            FetchFailure("token expired", ("retry later",)),
+        )
+    ]
+    buf = io.StringIO()
+    console = Console(width=200, file=buf)
+    console.print(
+        render.usage_overview([], _LIFETIME, failures=failures, width=200)
+    )
+    out = buf.getvalue()
+    assert "⚠ token expired" in out
+    assert "5h" not in out  # no orphan matrix header
+
+
+def test_failures_widen_shared_panels():
+    iso = _iso_in(hours=3)
+    pairs = [
+        (
+            _acct("SAbossedgh@fortressinfosec", "claude", "max"),
+            _report(("5h", 94, iso), ("7d", 61, iso)),
+        )
+    ]
+    failures = [
+        (
+            _acct("sabossedgh@fortressinfosec.com", "codex", "pro"),
+            FetchFailure(
+                "token expired",
+                (
+                    "Log in to Codex CLI again, then run:",
+                    "sidekick-usages refresh sabossedgh@fortressinfosec.com",
+                ),
+            ),
+        )
+    ]
+    buf = io.StringIO()
+    console = Console(width=200, file=buf)
+    console.print(
+        render.usage_overview(pairs, _LIFETIME, failures=failures, width=200)
+    )
+    out = buf.getvalue()
+    widths = _panel_line_widths(out)
+    assert len(widths) == 1
+    assert "sidekick-usages refresh sabossedgh@fortressinfosec.com" in out
+
+
+def test_failures_default_keeps_existing_render():
+    out = _render_at(200, _worst_case_pairs())
+    assert "CLAUDE" in out
+    assert "CODEX" in out
+
+
+def test_legacy_mode_renders_failures():
+    iso = _iso_in(hours=3)
+    pairs = [
+        (
+            _acct("acct-ok", "codex", "pro"),
+            _report(("5h", 8, iso), ("7d", 45, iso)),
+        )
+    ]
+    failures = [
+        (
+            _acct("a.sawmon@ymail.com", "codex", "pro"),
+            FetchFailure("token expired", ("retry later",)),
+        )
+    ]
+    buf = io.StringIO()
+    console = Console(width=40, file=buf)
+    console.print(
+        render.usage_overview(pairs, _LIFETIME, failures=failures, width=40)
+    )
+    out = buf.getvalue()
+    assert "token expired" in out
