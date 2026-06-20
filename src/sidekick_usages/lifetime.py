@@ -61,6 +61,8 @@ def claude_lifetime_output() -> tuple[int, str | None]:
         data = json.loads(_CLAUDE_STATS_FILE.read_text())
     except OSError, json.JSONDecodeError:
         return (0, None)
+    if not isinstance(data, dict):
+        return (0, None)
     total = 0
     model_usage = data.get("modelUsage")
     if isinstance(model_usage, dict):
@@ -128,9 +130,10 @@ def _rollout_date(filename: str) -> str | None:
 
 def _load_codex_cache() -> dict[str, object]:
     try:
-        return json.loads(_CODEX_CACHE_FILE.read_text())
+        data = json.loads(_CODEX_CACHE_FILE.read_text())
     except OSError, json.JSONDecodeError:
         return {}
+    return data if isinstance(data, dict) else {}
 
 
 def _save_codex_cache(cache: dict[str, object]) -> None:

@@ -41,6 +41,20 @@ def test_claude_lifetime_output_missing_file(tmp_path, monkeypatch):
     assert lifetime.claude_lifetime_output() == (0, None)
 
 
+def test_claude_lifetime_non_dict_json_returns_zero(tmp_path, monkeypatch):
+    f = tmp_path / "stats-cache.json"
+    f.write_text("[]")
+    monkeypatch.setattr(lifetime, "_CLAUDE_STATS_FILE", f)
+    assert lifetime.claude_lifetime_output() == (0, None)
+
+
+def test_load_codex_cache_non_dict_json_returns_empty(tmp_path, monkeypatch):
+    f = tmp_path / "cache.json"
+    f.write_text("[1, 2, 3]")
+    monkeypatch.setattr(lifetime, "_CODEX_CACHE_FILE", f)
+    assert lifetime._load_codex_cache() == {}
+
+
 def _rollout(dir_, date, outputs):
     dir_.mkdir(parents=True, exist_ok=True)
     path = dir_ / f"rollout-{date}T00-00-00-abc.jsonl"
