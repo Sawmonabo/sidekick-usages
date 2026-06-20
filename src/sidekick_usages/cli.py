@@ -8,10 +8,11 @@ inject fakes by overwriting ``_ctx``.
 
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated, Any, NoReturn
 
@@ -50,6 +51,10 @@ from sidekick_usages.heartbeat import (
     render_heartbeat_status,
 )
 from sidekick_usages.http import HttpClient
+from sidekick_usages.lifetime import (
+    claude_lifetime_output,
+    codex_lifetime_output,
+)
 from sidekick_usages.maintenance import (
     EXIT_MANUAL_ACTION,
     EXIT_SYSTEM_ERROR,
@@ -71,7 +76,8 @@ from sidekick_usages.providers.codex import (
     read_auth_blob,
     write_account_auth_file,
 )
-from sidekick_usages.render import account_header, usage_report
+from sidekick_usages.render import FetchFailure, usage_overview
+from sidekick_usages.report import UsageReport
 from sidekick_usages.store import CONFIG_DIR, Account, AccountStore
 from sidekick_usages.token_input import TokenInput
 from sidekick_usages.update import (
@@ -107,6 +113,8 @@ class AppContext:
     err_console: Console
     heartbeat_providers: dict[str, HeartbeatProvider] | None = None
     only: str | None = None
+    collected: list[tuple[Account, UsageReport]] = field(default_factory=list)
+    failures: list[tuple[Account, FetchFailure]] = field(default_factory=list)
 
 
 @dataclass
@@ -283,11 +291,13 @@ def check_cmd() -> None:
 
 
 def _do_check() -> None:
-    """Render all (filtered) accounts.
+    """Fetch all (filtered) accounts and render the grouped overview.
 
     Exits with code 1 if any account failed.
     """
     app_ctx = _get_ctx()
+    app_ctx.collected.clear()
+    app_ctx.failures.clear()
     accounts = list(app_ctx.store)
     if app_ctx.only:
         accounts = [a for a in accounts if a.provider_id == app_ctx.only]
@@ -296,14 +306,42 @@ def _do_check() -> None:
         raise typer.Exit(code=1)
 
     exit_code = 0
-    for i, acct in enumerate(accounts):
-        if i:
-            app_ctx.console.print()
-        ok = _fetch_and_render(acct)
-        if not ok:
+    for acct in accounts:
+        if not _fetch_and_render(acct):
             exit_code = 1
+
+    if app_ctx.collected or app_ctx.failures:
+        app_ctx.console.print(
+            usage_overview(
+                app_ctx.collected,
+                _lifetime_for(app_ctx.collected),
+                failures=app_ctx.failures,
+                width=app_ctx.console.size.width,
+            )
+        )
     if exit_code:
         raise typer.Exit(code=exit_code)
+
+
+def _collect(acct: Account, report: UsageReport) -> None:
+    """Stash a successful report for the end-of-run grouped render."""
+    _get_ctx().collected.append((acct, report))
+
+
+def _lifetime_for(
+    pairs: list[tuple[Account, UsageReport]],
+) -> dict[str, tuple[int, str | None]]:
+    """Look up lifetime output per provider present in ``pairs``."""
+    sources = {
+        "claude": claude_lifetime_output,
+        "codex": codex_lifetime_output,
+    }
+    providers = {acct.provider_id for acct, _ in pairs}
+    return {
+        provider_id: source()
+        for provider_id, source in sources.items()
+        if provider_id in providers
+    }
 
 
 #: Scope required to read the OAuth usage endpoint. Matches the
@@ -345,15 +383,15 @@ def _handle_runtime_forbidden(
         try:
             report = provider.fetch_usage(acct, app_ctx.http)
         except UsageError as retry_err:
-            _print_error_block(acct, f"Header probe failed: {retry_err}")
+            _record_error_block(acct, f"Header probe failed: {retry_err}")
             return False
-        app_ctx.console.print(usage_report(acct, report))
+        _collect(acct, report)
         return True
     detail = err.api_message or str(err)
     msg = f"Forbidden (HTTP 403): {detail}"
     if err.required_scope:
         msg += f"\n  Required scope: {err.required_scope}."
-    _print_error_block(acct, msg)
+    _record_error_block(acct, msg)
     return False
 
 
@@ -366,7 +404,7 @@ def _fetch_and_render(acct: Account) -> bool:
     app_ctx = _get_ctx()
     provider = app_ctx.providers.get(acct.provider_id)
     if provider is None:
-        _print_error_block(
+        _record_error_block(
             acct,
             f"Unknown provider '{acct.provider_id}'.",
         )
@@ -398,7 +436,7 @@ def _fetch_usage_and_render(acct: Account, provider: Provider) -> bool:
     if acct.to_dict() != before_fetch:
         app_ctx.store.upsert(acct)
         app_ctx.store.save()
-    app_ctx.console.print(usage_report(acct, report))
+    _collect(acct, report)
     return True
 
 
@@ -414,10 +452,10 @@ def _refresh_known_expired(acct: Account, provider: Provider) -> bool:
     try:
         refreshed = _refresh_and_save(acct, provider)
     except UsageError as e:
-        _print_error_block(acct, f"Token refresh failed: {e}")
+        _record_error_block(acct, f"Token refresh failed: {e}")
         return False
     if not refreshed:
-        _print_auth_error_block(acct)
+        _record_auth_failure(acct)
         return False
     return True
 
@@ -437,7 +475,7 @@ def _refresh_after_auth_and_render(
     try:
         refreshed = _refresh_and_save(acct, provider)
     except UsageError as refresh_err:
-        _print_error_block(acct, f"Token refresh failed: {refresh_err}")
+        _record_error_block(acct, f"Token refresh failed: {refresh_err}")
         return False
     if not refreshed:
         return _handle_fetch_error(acct, provider, err)
@@ -502,7 +540,7 @@ def _handle_fetch_error(
     :return: Always False unless a forbidden self-heal succeeds.
     """
     if isinstance(err, AuthError):
-        _print_auth_error_block(acct)
+        _record_auth_failure(acct)
         return False
     if isinstance(err, ForbiddenError):
         return _handle_runtime_forbidden(acct, provider, err)
@@ -510,7 +548,7 @@ def _handle_fetch_error(
         return _handle_rate_limit(acct, err)
     if isinstance(err, TransientError):
         return _handle_transient(acct, err)
-    _print_error_block(acct, str(err))
+    _record_error_block(acct, str(err))
     return False
 
 
@@ -554,7 +592,7 @@ def _handle_rate_limit(acct: Account, err: RateLimitError) -> bool:
         if err.retry_after
         else "Try again in a moment."
     )
-    _print_error_block(
+    _record_error_block(
         acct,
         f"Rate limited (HTTP 429). {suffix}",
     )
@@ -568,7 +606,7 @@ def _handle_transient(acct: Account, err: TransientError) -> bool:
     :param err: Transient error to display.
     :return: False.
     """
-    _print_error_block(acct, str(err))
+    _record_error_block(acct, str(err))
     return False
 
 
@@ -781,6 +819,34 @@ def rename_cmd(
         raise typer.Exit(code=1)
     app_ctx.store.save()
     app_ctx.console.print(f"[green]Renamed '{old}' → '{new}'.[/green]")
+
+
+# ---------------------------------------------------------------------
+# set-plan
+# ---------------------------------------------------------------------
+@app.command("set-plan")
+def set_plan_cmd(label: str, plan: str) -> None:
+    """Manually set an account's plan tag.
+
+    For credentials the usage API cannot introspect (e.g. inference-
+    only Claude tokens), this is the supported way to correct the
+    plan chip.
+    """
+    app_ctx = _get_ctx()
+    value = plan.strip().lower()
+    if not value:
+        app_ctx.err_console.print("[red]Plan must not be empty.[/red]")
+        raise typer.Exit(code=1)
+    acct = app_ctx.store.get(label)
+    if acct is None:
+        app_ctx.err_console.print(f"[red]No account labeled '{label}'.[/red]")
+        raise typer.Exit(code=1)
+    acct.plan = value
+    app_ctx.store.upsert(acct)
+    app_ctx.store.save()
+    app_ctx.console.print(
+        f"Set [bold]{label}[/bold] plan to [bold]{value}[/bold]."
+    )
 
 
 # ---------------------------------------------------------------------
@@ -2108,30 +2174,31 @@ def _print_no_accounts(only: str | None) -> None:
     )
 
 
-def _print_error_block(acct: Account, message: str) -> None:
-    """Print an error panel for one account.
-
-    :param acct: Account that errored.
-    :param message: Human-readable error text.
-    """
+def _record_error_block(acct: Account, message: str) -> None:
+    """Record a generic per-account fetch failure for in-panel render."""
     app_ctx = _get_ctx()
-    app_ctx.console.print(account_header(acct))
-    app_ctx.console.print(f"  [red]{message}[/red]")
+    detail = tuple(message.splitlines())
+    app_ctx.failures.append(
+        (acct, FetchFailure(status="error", detail=detail))
+    )
 
 
-def _print_auth_error_block(acct: Account) -> None:
-    """Print the 401 message with a 'refresh' hint.
-
-    :param acct: Account whose token failed auth.
-    """
+def _record_auth_failure(acct: Account) -> None:
+    """Record a 401 as an in-panel failure with a re-login + refresh hint."""
     app_ctx = _get_ctx()
     provider = app_ctx.providers.get(acct.provider_id)
     display = provider.display_name if provider else acct.provider_id
-    app_ctx.console.print(account_header(acct))
-    app_ctx.console.print("  [red]Token expired or invalid (HTTP 401).[/red]")
-    app_ctx.console.print(
-        f"  Log in to {display} again, then [bold]"
-        f"sidekick-usages refresh {acct.label}[/bold]."
+    app_ctx.failures.append(
+        (
+            acct,
+            FetchFailure(
+                status="token expired",
+                detail=(
+                    f"Log in to {display} again, then run:",
+                    f"sidekick-usages refresh {shlex.quote(acct.label)}",
+                ),
+            ),
+        )
     )
 
 
