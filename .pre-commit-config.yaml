@@ -87,7 +87,7 @@ repos:
   hooks:
   - id: codespell
     name: codespell
-    args: ['--skip=*.lock,*.json', '--ignore-words-list=mot,aks']
+    args: ['--skip=*.lock,*.json', '--ignore-words-list=mot,aks,unparseable']
     types_or: [python, markdown, rst, text]
 - repo: https://github.com/macisamuele/language-formatters-pre-commit-hooks
   rev: v2.14.0
