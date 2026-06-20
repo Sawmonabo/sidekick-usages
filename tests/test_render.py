@@ -22,10 +22,10 @@ def test_heat_band_picks_inclusive_lower_bounds():
     assert render._heat_band(0) is None
 
 
-def test_heat_tile_zero_is_centered_dot_no_fill():
+def test_heat_tile_zero_is_grey_filled_percent():
     tile = render._heat_tile(0)
-    assert tile.plain == f"{'·':^{render._TILE_WIDTH}}"
-    assert tile.style == render._IDLE_FG
+    assert tile.plain == f"{'0%':^{render._TILE_WIDTH}}"
+    assert tile.style == f"{render._ZERO_FG} on {render._ZERO_BG}"
 
 
 def test_heat_tile_nonzero_is_centered_percent_on_band():
@@ -111,8 +111,8 @@ def _worst_case_pairs():
             _report(
                 ("5h", 8, iso),
                 ("7d", 45, iso),
-                ("Spark 5h", 0, iso),
-                ("Spark 7d", 0, iso),
+                ("GPT-5.3-Codex-Spark 5h", 0, iso),
+                ("GPT-5.3-Codex-Spark 7d", 0, iso),
             ),
         ),
         (
@@ -120,8 +120,8 @@ def _worst_case_pairs():
             _report(
                 ("5h", 0, iso),
                 ("7d", 0, iso),
-                ("Spark 5h", 0, iso),
-                ("Spark 7d", 0, iso),
+                ("GPT-5.3-Codex-Spark 5h", 0, iso),
+                ("GPT-5.3-Codex-Spark 7d", 0, iso),
             ),
         ),
     ]
@@ -141,21 +141,37 @@ def _render_at(width: int, pairs: list[tuple[Account, UsageReport]]) -> str:
     return buf.getvalue()
 
 
-def test_width_guard_fits_80_columns():
-    out = _render_at(80, _worst_case_pairs())
-    lines = out.split("\n")
-    assert max(len(line) for line in lines) <= 80  # noqa: PLR2004
-    # longest name intact on a single physical line, not elided
-    assert any("sabossedgh@fortressinfosec.com" in line for line in lines)
+def _panel_line_widths(out: str) -> set[int]:
+    # ``line and`` guards the blank separator lines: "" is a substring
+    # of every string, so "" in "╭│╰" is True and would count width 0.
+    return {
+        len(line) for line in out.split("\n") if line and line[:1] in "╭│╰"
+    }
+
+
+def test_panels_share_one_width_and_guard_at_boundary():
+    pairs = _worst_case_pairs()
+    wide = _render_at(200, pairs)  # panels pin to natural required < 200
+    widths = _panel_line_widths(wide)
+    assert len(widths) == 1  # equal width, one shared right edge
+    required = widths.pop()
+    longest = max(len(line) for line in wide.split("\n"))
+    assert longest <= required  # nothing overflows the shared width
+    at = _render_at(required, pairs)  # exactly required -> still panels
+    assert "CLAUDE" in at
+    assert "CODEX" in at
+    narrower = _render_at(required - 1, pairs)  # one col short -> legacy
+    assert "CLAUDE" not in narrower
+    assert "a.sawmon@gmail" in narrower
 
 
 def test_overview_shows_titles_and_lifetime():
-    out = _render_at(80, _worst_case_pairs())
+    out = _render_at(120, _worst_case_pairs())
     assert "CLAUDE" in out
     assert "CODEX" in out
     assert "424M output" in out
     assert "since Mar 30" in out
-    assert "Spark" in out
+    assert "GPT-5.3-Codex-Spark" in out
 
 
 def test_overview_degrades_below_80_to_legacy():
@@ -171,3 +187,31 @@ def test_overview_degrades_below_80_to_legacy():
 def test_overview_empty_pairs():
     out = _render_at(80, [])
     assert "No usage" in out
+
+
+def test_named_group_caption_row_and_rule_present():
+    out = _render_at(200, _worst_case_pairs())
+    cap = next(
+        line for line in out.split("\n") if "GPT-5.3-Codex-Spark" in line
+    )
+    assert "%" not in cap  # caption sits above the tiles, not inline
+    assert "│" in out  # the model rule is drawn on data rows
+
+
+def test_subtitle_not_truncated_when_wider_than_content():
+    pairs = [
+        (
+            _acct("x", "codex", "pro"),
+            _report(
+                ("5h", 5, _iso_in(hours=1)),
+                ("7d", 9, _iso_in(days=1)),
+            ),
+        )
+    ]
+    lifetime = {"codex": (999_000_000, "2024-01-01")}
+    buf = io.StringIO()
+    console = Console(width=200, file=buf)
+    console.print(render.usage_overview(pairs, lifetime, width=200))
+    out = buf.getvalue()
+    assert "…" not in out
+    assert "999M output" in out

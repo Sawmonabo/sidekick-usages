@@ -10,9 +10,8 @@ rectangular blocks which look bulky for this multi-line layout.
 import re
 from datetime import UTC, datetime
 
-from rich.console import Group, RenderableType
+from rich.console import Console, Group, RenderableType
 from rich.panel import Panel
-from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 
@@ -61,8 +60,20 @@ _HEAT_BANDS: list[tuple[int, str, str]] = [
 #: Foreground for a zero-utilization (idle) cell — no fill.
 _IDLE_FG = "grey39"
 
+#: Foreground/background for a present-but-zero (0%) utilization cell.
+_ZERO_FG = "#cdd3d8"
+_ZERO_BG = "#353a40"
+
 #: Fixed width of one window tile.
 _TILE_WIDTH = 6
+
+#: Color of the ``│`` rule separating primary from a named-group column.
+_RULE_STYLE = "#356f78"
+
+#: Corners + dashes + spaces framing a title/subtitle on the panel border.
+#: ``Panel`` measurement ignores the subtitle, so the panel's minimum width
+#: is floored by ``len(label) + _PANEL_CHROME`` to keep it from truncating.
+_PANEL_CHROME = 6
 
 #: Matches a window length token such as ``5h`` or ``7d``.
 _LENGTH_RE = re.compile(r"\d+[hd]")
@@ -117,12 +128,15 @@ def _heat_tile(pct: int) -> Text:
     """Build one fixed-width heat tile.
 
     :param pct: Rounded utilization 0-100.
-    :return: A ``Text`` of width ``_TILE_WIDTH``: a faint centered
-        ``·`` at 0, otherwise ``NN%`` centered on the band color.
+    :return: A ``Text`` of width ``_TILE_WIDTH``: a neutral-grey
+        centered ``0%`` at 0, otherwise ``NN%`` centered on the band
+        color.
     """
     band = _heat_band(pct)
     if band is None:
-        return Text(f"{'·':^{_TILE_WIDTH}}", style=_IDLE_FG)
+        return Text(
+            f"{'0%':^{_TILE_WIDTH}}", style=f"{_ZERO_FG} on {_ZERO_BG}"
+        )
     fg, bg = band
     return Text(f"{f'{pct}%':^{_TILE_WIDTH}}", style=f"{fg} on {bg}")
 
@@ -377,19 +391,38 @@ def _reset_or_blank(window: UsageWindow | None) -> Text:
     return _reset_cell(window.resets_at)
 
 
-def _panel_width(
-    namew: int,
-    primary: list[str],
-    named: list[tuple[str, list[str]]],
-) -> int:
-    """Total rendered width of one provider panel (borders included)."""
-    n_cols = 3 + len(primary)
-    sum_w = 1 + namew + 4 + _TILE_WIDTH * len(primary)
-    for _group, lengths in named:
-        n_cols += 1 + len(lengths)
-        sum_w += 5 + _TILE_WIDTH * len(lengths)
-    inner = sum_w + 2 * (n_cols - 1)
-    return inner + 2  # rounded-panel left/right border
+def _rule_cell() -> Text:
+    """The ``│`` separating the primary tiles from a named-group column."""
+    return Text("│", style=_RULE_STYLE)
+
+
+def _model_width(name: str, n_lengths: int) -> int:
+    """Width of a named group's MODEL column.
+
+    Wide enough for either the full model name or its length tiles
+    (so a long name like ``GPT-5.3-Codex-Spark`` is never truncated;
+    Rich has no colspan, so the name lives in one wide column).
+
+    :param name: The group/model label shown as the caption.
+    :param n_lengths: How many length tiles sit under the caption.
+    :return: ``max(len(name), tiles)`` in cells.
+    """
+    tiles = _TILE_WIDTH * n_lengths + 2 * (n_lengths - 1)
+    return max(len(name), tiles)
+
+
+def _model_subgrid(cells: list[Text]) -> Table:
+    """Lay out one named group's length cells inside a MODEL cell.
+
+    :param cells: One ``Text`` per length (label, tile, or reset).
+    :return: A borderless ``Table.grid`` of centered ``_TILE_WIDTH``
+        columns matching the primary tile spacing.
+    """
+    grid = Table.grid(padding=(0, 1))
+    for _ in cells:
+        grid.add_column(width=_TILE_WIDTH, justify="center")
+    grid.add_row(*cells)
+    return grid
 
 
 def _build_table(
@@ -408,17 +441,30 @@ def _build_table(
     table.add_column(width=4)  # plan
     for _length in primary:
         table.add_column(width=_TILE_WIDTH, justify="center")
-    for _group, lengths in named:
-        table.add_column(width=5, justify="center")  # group label
-        for _length in lengths:
-            table.add_column(width=_TILE_WIDTH, justify="center")
-    header: list[Text] = [Text(""), Text(""), Text("")]
-    for length in primary:
-        header.append(Text(length, style="grey42"))
     for group, lengths in named:
-        header.append(Text(group, style="grey46"))
-        for length in lengths:
-            header.append(Text(length, style="grey42"))
+        table.add_column(width=1, justify="center")  # rule
+        table.add_column(
+            width=_model_width(group, len(lengths)), justify="left"
+        )  # MODEL (wide)
+    blank = Text("")
+    if named:
+        # Caption row: the model name sits above its tiles; the rule
+        # cell is blank so no ``│`` is drawn on this row.
+        caption: list[Text] = [blank, blank, blank]
+        caption.extend(blank for _ in primary)
+        for group, _lengths in named:
+            caption.append(blank)
+            caption.append(Text(group, style="grey46"))
+        table.add_row(*caption)
+    header: list[RenderableType] = [blank, blank, blank]
+    header.extend(Text(length, style="grey42") for length in primary)
+    for _group, lengths in named:
+        header.append(_rule_cell())
+        header.append(
+            _model_subgrid(
+                [Text(length, style="grey42") for length in lengths]
+            )
+        )
     table.add_row(*header)
     return table
 
@@ -430,29 +476,42 @@ def _provider_panel(
     prov_lifetime: tuple[int, str | None] | None,
 ) -> Panel:
     primary, named = _panel_columns([r for _, r in pairs])
+    n_cols = 3 + len(primary) + 2 * len(named)
     table = _build_table(namew, primary, named)
     for acct, report in pairs:
         index = _window_index(report)
-        util_row: list[Text] = [
+        util_row: list[RenderableType] = [
             _dot(provider_id),
             Text(acct.label, style="grey85"),
             _plan_text(acct),
         ]
-        reset_row: list[Text] = [Text(""), Text(""), Text("")]
+        reset_row: list[RenderableType] = [Text(""), Text(""), Text("")]
         for length in primary:
             window = index.get(("", length))
             util_row.append(_util_cell(window))
             reset_row.append(_reset_or_blank(window))
         for group, lengths in named:
-            util_row.append(Text(""))
-            reset_row.append(Text(""))
-            for length in lengths:
-                window = index.get((group, length))
-                util_row.append(_util_cell(window))
-                reset_row.append(_reset_or_blank(window))
+            util_row.append(_rule_cell())
+            util_row.append(
+                _model_subgrid(
+                    [
+                        _util_cell(index.get((group, length)))
+                        for length in lengths
+                    ]
+                )
+            )
+            reset_row.append(_rule_cell())
+            reset_row.append(
+                _model_subgrid(
+                    [
+                        _reset_or_blank(index.get((group, length)))
+                        for length in lengths
+                    ]
+                )
+            )
         table.add_row(*util_row)
         table.add_row(*reset_row)
-        table.add_row(*([Text("")] * len(util_row)))
+        table.add_row(*([Text("")] * n_cols))
     color = PROVIDER_COLORS.get(provider_id, "white")
     title = Text(f" {provider_id.upper()} ", style=f"bold {color}")
     subtitle = None
@@ -471,23 +530,40 @@ def _provider_panel(
         subtitle_align="right",
         border_style=color,
         padding=(0, 0),
-        expand=True,
+        expand=False,
     )
 
 
-def _top_strip(n_accounts: int, n_providers: int) -> Group:
+def _panel_min_width(measure: Console, panel: Panel) -> int:
+    """Natural width of a panel, floored by its title/subtitle.
+
+    ``Panel`` measurement ignores the title/subtitle text, so a long
+    subtitle would otherwise be truncated once the panel is pinned to
+    its content width. Floor the result by ``label + _PANEL_CHROME``
+    for each border label so neither is clipped.
+
+    :param measure: A wide throwaway ``Console`` used only to measure.
+    :param panel: A panel built with ``expand=False`` (natural width).
+    :return: The minimum width that fits content, title, and subtitle.
+    """
+    width = measure.measure(panel).maximum
+    for label in (panel.title, panel.subtitle):
+        if label is not None:
+            width = max(width, measure.measure(label).maximum + _PANEL_CHROME)
+    return width
+
+
+def _top_strip(n_accounts: int, n_providers: int, width: int) -> Group:
     title = Text()
     title.append("sidekick", style="bold grey85")
     title.append(" usages", style="bold grey62")
     summary = Text(
-        f"{n_accounts} accounts · {n_providers} providers",
-        style="grey42",
+        f"{n_accounts} accounts · {n_providers} providers", style="grey42"
     )
-    grid = Table.grid(expand=True)
-    grid.add_column(justify="left")
-    grid.add_column(justify="right")
-    grid.add_row(title, summary)
-    return Group(grid, Rule(style="grey23"))
+    pad = max(1, width - title.cell_len - summary.cell_len)
+    header = Text.assemble(title, " " * pad, summary)
+    divider = Text("─" * width, style="grey23")
+    return Group(header, divider)
 
 
 def _legend() -> Text:
@@ -544,24 +620,29 @@ def usage_overview(
         return Text("No usage to display.", style="dim")
     namew = max(len(acct.label) for acct, _ in pairs)
     order = _provider_order(pairs)
-    required = 0
-    for provider_id in order:
-        reports = [r for a, r in pairs if a.provider_id == provider_id]
-        primary, named = _panel_columns(reports)
-        required = max(required, _panel_width(namew, primary, named))
+    measure = Console(width=10_000)
+    panels = [
+        _provider_panel(
+            pid,
+            [(a, r) for a, r in pairs if a.provider_id == pid],
+            namew,
+            lifetime.get(pid),
+        )
+        for pid in order
+    ]
+    required = max(_panel_min_width(measure, p) for p in panels)
     if width < required:
         return _legacy_overview(pairs)
+    for panel in panels:
+        panel.expand = True
+        panel.width = required
     parts: list[RenderableType] = [
-        _top_strip(len(pairs), len(order)),
+        _top_strip(len(pairs), len(order), required),
         Text(""),
     ]
-    for provider_id in order:
-        prov_pairs = [(a, r) for a, r in pairs if a.provider_id == provider_id]
-        parts.append(
-            _provider_panel(
-                provider_id, prov_pairs, namew, lifetime.get(provider_id)
-            )
-        )
+    for panel in panels:
+        parts.append(panel)
         parts.append(Text(""))
     parts.append(_legend())
+    parts.append(Text(""))  # #6: trailing newline after the legend
     return Group(*parts)
