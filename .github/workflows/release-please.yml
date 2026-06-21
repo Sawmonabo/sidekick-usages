@@ -30,7 +30,39 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: googleapis/release-please-action@v4
+      id: release
       with:
         config-file: release-please-config.json
         manifest-file: .release-please-manifest.json
         token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+
+    # release-please bumps pyproject.toml and __init__.py but never uv.lock, so
+    # the committed lockfile lags one version behind every release until some
+    # `uv` command regenerates it locally -- which then surfaces as an annoying
+    # uncommitted change. Regenerate and commit it here instead.
+    #
+    # Gated on `release_created` so the push below cannot loop: that push
+    # re-triggers this workflow, but with no release cut the guard is false and
+    # these steps are skipped. The PAT (not GITHUB_TOKEN) attributes the push to
+    # a real user, matching how the release tag is pushed.
+    - uses: actions/checkout@v4
+      if: ${{ steps.release.outputs.release_created }}
+      with:
+        ref: main
+        token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+        fetch-depth: 0
+    - uses: astral-sh/setup-uv@v8.1.0
+      if: ${{ steps.release.outputs.release_created }}
+    - name: Sync uv.lock to the released version
+      if: ${{ steps.release.outputs.release_created }}
+      run: |
+        uv lock
+        if git diff --quiet uv.lock; then
+          echo "uv.lock already in sync with ${{ steps.release.outputs.tag_name }}"
+          exit 0
+        fi
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        git add uv.lock
+        git commit -m "chore(release): sync uv.lock for ${{ steps.release.outputs.tag_name }}"
+        git push origin HEAD:main
