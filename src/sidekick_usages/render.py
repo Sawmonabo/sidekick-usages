@@ -16,6 +16,11 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from sidekick_usages.branding import (
+    FULL_HEADER_MIN_WIDTH,
+    PROVIDER_COLORS,
+    brand_header,
+)
 from sidekick_usages.lifetime import format_since, format_tokens
 from sidekick_usages.report import UsageReport, UsageWindow
 from sidekick_usages.store import Account
@@ -41,12 +46,6 @@ PLAN_COLORS: dict[str, str] = {
     "plus": "green",
     "enterprise": "yellow",
     "business": "yellow",
-}
-
-#: Provider tag colors.
-PROVIDER_COLORS: dict[str, str] = {
-    "claude": "magenta",
-    "codex": "cyan",
 }
 
 #: Heat bands as (lower-bound-inclusive percent, fg hex, bg hex).
@@ -541,7 +540,14 @@ def _provider_panel(
         blocks.append(_error_table(provider_id, failures, namew))
     content: RenderableType = blocks[0] if len(blocks) == 1 else Group(*blocks)
     color = PROVIDER_COLORS.get(provider_id, "white")
-    title = Text(f" {provider_id.upper()} ", style=f"bold {color}")
+    account_count = len(pairs) + len(failures)
+    account_noun = "account" if account_count == 1 else "accounts"
+    title = Text()
+    title.append(provider_id.upper(), style=f"bold {color}")
+    title.append(
+        f" · {account_count} {account_noun}",
+        style="grey54",
+    )
     subtitle = None
     if prov_lifetime is not None:
         total, since = prov_lifetime
@@ -614,19 +620,6 @@ def _panel_min_width(measure: Console, panel: Panel) -> int:
         if label is not None:
             width = max(width, measure.measure(label).maximum + _PANEL_CHROME)
     return width
-
-
-def _top_strip(n_accounts: int, n_providers: int, width: int) -> Group:
-    title = Text()
-    title.append("sidekick", style="bold grey85")
-    title.append(" usages", style="bold grey62")
-    summary = Text(
-        f"{n_accounts} accounts · {n_providers} providers", style="grey42"
-    )
-    pad = max(1, width - title.cell_len - summary.cell_len)
-    header = Text.assemble(title, " " * pad, summary)
-    divider = Text("─" * width, style="grey23")
-    return Group(header, divider)
 
 
 def _legend() -> Text:
@@ -720,15 +713,22 @@ def usage_overview(
         )
         for pid in order
     ]
-    required = max(_panel_min_width(measure, p) for p in panels)
+    required = max(
+        FULL_HEADER_MIN_WIDTH,
+        *(_panel_min_width(measure, panel) for panel in panels),
+    )
     if width < required:
-        return _legacy_overview(pairs, fails)
+        return Group(
+            brand_header(width),
+            Text(""),
+            _legacy_overview(pairs, fails),
+        )
     for panel in panels:
         panel.expand = True
         panel.width = required
     parts: list[RenderableType] = [
         Text(""),  # leading blank line — separate the TUI from the prompt
-        _top_strip(len(pairs) + len(fails), len(order), required),
+        brand_header(required),
         Text(""),
     ]
     for panel in panels:

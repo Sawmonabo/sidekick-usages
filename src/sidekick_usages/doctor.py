@@ -7,6 +7,7 @@ from typing import Any
 
 from rich.console import Console
 
+from sidekick_usages.branding import brand_header
 from sidekick_usages.heartbeat import (
     HeartbeatProvider,
     heartbeat_supported_label,
@@ -154,6 +155,12 @@ def render_doctor(
         )
         return
 
+    console.print(
+        brand_header(
+            console.size.width,
+            section="doctor · account diagnostics",
+        )
+    )
     for index, diagnostic in enumerate(diagnostics):
         if index:
             console.print()

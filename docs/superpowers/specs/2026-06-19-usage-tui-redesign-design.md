@@ -2,6 +2,10 @@
 
 - **Status:** **Spec approved & signed off 2026-06-19** → proceeding to `writing-plans`. Plan-detection fix (§9.2) folded **into this branch** per sign-off.
 - **Date:** 2026-06-19
+- **Masthead refinement:** **Approved 2026-07-09** — add the robot logo,
+  remove the global account/provider summary, and show each provider's account
+  count in its panel title. Existing failure rows remain the only failure-status
+  treatment.
 - **Branch:** `feat/usage-tui-redesign`
 - **Visual reference (not shipped):** scratchpad `variants.py` → `framed.svg`, previewed faithfully via Rich `export_svg` in the browser.
 
@@ -25,30 +29,40 @@ Problems the user called out:
 A heatmap matrix where a cell's **background color encodes utilization**, organized into two clearly separated provider panels.
 
 ```
-sidekick usages                                  5 accounts · 2 providers
-────────────────────────────────────────────────────────────────────────
+      o
+     .-.
+  .--┴-┴--.    sidekick usages
+  | O   O |   >> A multi-account usage dashboard for Claude Code and Codex CLI.
+  | ||||| |   >> Limits + resets + account status, one terminal.
+  '--___--'
+─────────────────────────────────────────────────────────────────────────────────────
 
-╭─ CLAUDE ───────────────────────────────────────────────────────────────╮
-│                                          5h     7d                       │
-│ ● SAbossedgh@fortressinfosec      max   [94%]  [61%]                     │
-│                                          3h 50m 1d 15h                    │
-│ ● SAbossedgh@fortressinfosec@org  team  [12%]  [73%]                     │
-│ ...                                                                      │
-╰──────────────────────────────  424M output · since Dec 28 ──────────────╯
+╭─ CLAUDE · 3 accounts ──────────────────────────────────────────────────╮
+│                                          5h     7d                     │
+│ ● SAbossedgh@fortressinfosec      max   [94%]  [61%]                   │
+│                                         3h 50m 1d 15h                  │
+│ ● SAbossedgh@fortressinfosec@org  team  [12%]  [73%]                   │
+│ ...                                                                    │
+╰──────────────────────────────  424M output · since Dec 28 ─────────────╯
 
-╭─ CODEX ────────────────────────────────────────────────────────────────╮
-│                          5h     7d    Spark  5h     7d                   │
-│ ● a.sawmon@ymail.com pro [8%]  [45%]         [·]   [·]                    │
-│ ...                                                                      │
-╰──────────────────────────────  212M output · since Mar 30 ──────────────╯
+╭─ CODEX · 2 accounts ───────────────────────────────────────────────────╮
+│                          5h     7d    Spark  5h     7d                 │
+│ ● a.sawmon@ymail.com pro [8%]  [45%]         [·]   [·]                 │
+│ ...                                                                    │
+╰──────────────────────────────  212M output · since Mar 30 ─────────────╯
 
  <40   40-69   70-89   ≥90      dim = resets in
 ```
 
 **Structure:**
-- **Top strip** (outside panels): `sidekick usages` title (bold) + right-aligned `N accounts · M providers` summary + a dim horizontal rule.
+- **Robot masthead** (outside panels): the six-line robot logo, `sidekick
+  usages` title, two lines of stable product copy, and a dim horizontal rule.
+  There is no global `N accounts · M providers` summary.
 - **One rounded panel per provider**, border in the provider color (Claude = magenta, Codex = cyan):
-  - **Panel title** (left): provider name, bold, provider color.
+  - **Panel title** (left): provider name plus the number of successful and
+    failed accounts represented in that panel, with correct singular/plural
+    wording (`1 account`, `2 accounts`). No alert or `needs attention` suffix is
+    added; existing failure rows retain that responsibility.
   - **Panel footer/subtitle** (right): lifetime **output** tokens across all accounts + `· since <date>`, in a single faint tone (see §6).
   - **Body:** a borderless matrix table.
 - **Per account = a 2-row group** with a blank separator row between accounts:
@@ -128,10 +142,49 @@ Window names arrive as free strings on `UsageWindow.name` (e.g. `"5h"`, `"7d"`, 
 - **`report.py`** (`UsageWindow`, `UsageReport`): structurally unchanged. Optionally add a small pure helper to classify `name → (length, group)` (§4), or keep it in the renderer.
 - **`render.py`:**
   - Add heat helpers: `band(pct) → (fg,bg)`, utilization tile cell, compact reset cell.
-  - **New provider-grouped entry point.** Today `usage_report(acct, report)` renders a single account. The new top-level renderer takes **all `(Account, UsageReport)` pairs**, groups by provider, and emits: top strip → one `Panel` per provider (title + matrix + footer) → legend. Per-account `usage_report`/`account_header` may be retained for error/empty blocks.
+  - **New provider-grouped entry point.** Today
+    `usage_report(acct, report)` renders a single account. The new top-level
+    renderer takes **all `(Account, UsageReport)` pairs**, groups by provider,
+    and emits: robot masthead → one `Panel` per provider (provider-local account
+    count + matrix + footer) → legend. Per-account
+    `usage_report`/`account_header` may be retained for error/empty blocks.
   - Reset formatting → compact relative (§5).
 - **NEW lifetime-tokens code** (module or functions): read `stats-cache.json` (Claude) and sum rollouts (Codex); return per-provider `(output_total, since_date)`. Caching considered (§6).
 - **Caller (`cli` / main entry):** switch from the per-account print loop to the new grouped renderer; thread the lifetime-token lookups into the panel footers.
+
+### 7.1 Shared application branding refinement (2026-07-09)
+
+The masthead is an application component, not usage-renderer-owned text:
+
+- `branding.py` is the single source of truth for the six robot rows, product
+  name and copy, provider colors, styles, spacing, and responsive layouts. It
+  depends only on Rich and the standard library, so rendering it cannot load
+  accounts, credentials, providers, or network clients.
+- `brand_header(width, section=...)` selects the full 79-cell masthead, the
+  robot-and-title narrow form, or a title-only fallback. All forms are composed
+  from the same canonical constants.
+- `brand_line(section)` provides the compact status treatment used by
+  `check-update`.
+- `cli_help.py` adapts Typer command and group help once. Root, nested-group,
+  and leaf help prepend the shared header before `Usage:` without initializing
+  application state. The heartbeat label-fallback group retains its special
+  parsing behavior by extending the branded group class.
+- `render.py`, `doctor.py`, `heartbeat/render.py`, and `cli.py` consume these
+  public renderers. None repeats the logo or product copy.
+
+Branding is deliberately attached at presentation boundaries rather than a
+global before-command hook:
+
+| Surface | Treatment |
+| --- | --- |
+| Default/check and no-account check | Responsive masthead |
+| Root, group, and command help | Responsive masthead before `Usage:` |
+| Doctor, list, heartbeat status, daemon status | Masthead plus section label |
+| Successful `check-update` | Compact brand line |
+| JSON, quiet/scheduled, version, mutations, early errors | No branding |
+
+This keeps machine-readable and automation-oriented contracts byte-compatible
+while giving human-facing overview and status screens a consistent identity.
 
 ---
 
@@ -145,6 +198,12 @@ Window names arrive as free strings on `UsageWindow.name` (e.g. `"5h"`, `"7d"`, 
   - **Below 80:** the layout degrades (name column squeezed / Spark truncated). Implementation must detect `width < 80` and degrade deliberately — elide the name column or fall back to the legacy per-account view — **never silently wrap**.
 
 > **Update (2026-06-19):** the implementation chose the "roomier look" alternative noted above — breathing-room padding `(1,2)` (1 row vertical, zero width cost; 2 cols horizontal side margins) was approved during showcase refinement, and the model name column is shown verbatim. The 30-char Codex name `SAbossedgh@fortressinfosec@org` combined with those side margins makes the Codex panel the binding case at **85 cols**, not 80. The renderer already degrades to the legacy stacked view when `width < required`; only the threshold moved from 80 to **85** (behavior unchanged). The original 80-col target, derived with `padding=(0,0)`, was traded for the roomier look per explicit user decision.
+
+**Masthead update (2026-07-09):** The longest robot/product-copy line is
+**79 cells**. It therefore fits inside the existing 85-column worst-case
+overview. For smaller account sets, 79 becomes the framed view's minimum
+width; narrower terminals continue to use the existing legacy stacked view
+instead of wrapping or cropping the logo.
 
 - **Truecolor:** required for heat tiles; graceful downsample/fallback per §3.
 - **Real data:** the user's actual configured account labels and plan tags, verbatim (plan tag suppressed only when empty/`unknown`, per existing `_account_tag`).
@@ -171,3 +230,6 @@ Window names arrive as free strings on `UsageWindow.name` (e.g. `"5h"`, `"7d"`, 
 
 - **Spec approved.** Proceeding to `writing-plans`.
 - **Plan-detection:** decision = **fold the `unknown → max` fix into this branch** (so the new TUI shows the correct `max` tag on launch). Tracked as §9.2; detection work kept in separate commits from the rendering work.
+- **Masthead refinement approved 2026-07-09.** Use the robot masthead and
+  provider-local account counts exactly as shown in §2. Do not add separate
+  alert-count or `needs attention` wording to panel titles.

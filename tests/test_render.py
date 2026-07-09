@@ -184,28 +184,59 @@ def test_worst_case_renders_as_panels_at_floor():
     # binding width grows past the floor (a real regression); still passes if
     # the layout gets tighter (an improvement must not break the guard).
     out = _render_at(_PANEL_FLOOR, _worst_case_pairs())
-    assert "CLAUDE" in out  # panel path, not legacy
-    assert "CODEX" in out
+    assert "╭─ CLAUDE · 3 accounts ─" in out  # panel path, not legacy
+    assert "╭─ CODEX · 2 accounts ─" in out
     assert max(len(line) for line in out.split("\n")) <= _PANEL_FLOOR
     assert "SAbossedgh@fortressinfosec@org" in out  # longest name, intact
 
 
-def test_overview_shows_titles_and_lifetime():
+def test_overview_shows_robot_masthead_titles_and_lifetime():
     out = _render_at(120, _worst_case_pairs())
-    assert "CLAUDE" in out
-    assert "CODEX" in out
+    assert "      o" in out
+    assert "     .-." in out
+    assert "  .--┴-┴--.    sidekick usages" in out
+    assert (
+        "  | O   O |   >> A multi-account usage dashboard for "
+        "Claude Code and Codex CLI."
+    ) in out
+    assert (
+        "  | ||||| |   >> Limits + resets + account status, one terminal."
+        in out
+    )
+    assert "  '--___--'" in out
+    assert "5 accounts · 2 providers" not in out
+    assert "╭─ CLAUDE · 3 accounts ─" in out
+    assert "╭─ CODEX · 2 accounts ─" in out
     assert "424M output" in out
     assert "since Mar 30" in out
     assert "GPT-5.3-Codex-Spark" in out
+
+
+def test_provider_title_uses_singular_account_count():
+    pairs = [
+        (
+            _acct("only", "codex", "pro"),
+            _report(
+                ("5h", 5, _iso_in(hours=1)),
+                ("7d", 9, _iso_in(days=1)),
+            ),
+        )
+    ]
+    out = _render_at(120, pairs)
+    assert "╭─ CODEX · 1 account ─" in out
+    assert "CODEX · 1 accounts" not in out
 
 
 def test_overview_degrades_below_floor_to_legacy():
     # Well below the binding panel width the renderer falls back to the
     # legacy stacked view instead of squeezing/wrapping the panels.
     # Discriminator: the uppercase panel title only exists on the panel
-    # path; the legacy tag uses the lowercase provider id.
+    # path; the legacy tag uses the lowercase provider id. Branding keeps the
+    # complete robot but drops the wide product copy.
     out = _render_at(70, _worst_case_pairs())
     assert "CLAUDE" not in out
+    assert ".--┴-┴--.  sidekick usages" in out
+    assert "A multi-account usage dashboard" not in out
     assert "a.sawmon@gmail" in out
 
 
@@ -275,8 +306,10 @@ def test_failure_renders_in_provider_panel():
     assert "⚠ token expired" in out
     assert "Log in to Codex CLI again, then run:" in out
     assert "sidekick-usages refresh a.sawmon@ymail.com" in out
+    assert "╭─ CODEX · 2 accounts ─" in out
+    assert "needs attention" not in out
     first = next(line for line in out.splitlines() if line.strip())
-    assert first.lstrip().startswith("sidekick")
+    assert first.strip() == "o"
 
 
 def test_all_failed_provider_has_no_orphan_header():
@@ -293,6 +326,8 @@ def test_all_failed_provider_has_no_orphan_header():
     )
     out = buf.getvalue()
     assert "⚠ token expired" in out
+    assert "╭─ CODEX · 1 account ─" in out
+    assert "needs attention" not in out
     assert "5h" not in out  # no orphan matrix header
 
 
@@ -325,12 +360,6 @@ def test_failures_widen_shared_panels():
     widths = _panel_line_widths(out)
     assert len(widths) == 1
     assert "sidekick-usages refresh sabossedgh@fortressinfosec.com" in out
-
-
-def test_failures_default_keeps_existing_render():
-    out = _render_at(200, _worst_case_pairs())
-    assert "CLAUDE" in out
-    assert "CODEX" in out
 
 
 def test_legacy_mode_renders_failures():

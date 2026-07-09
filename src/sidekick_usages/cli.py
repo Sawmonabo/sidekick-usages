@@ -23,9 +23,10 @@ from rich.panel import Panel
 from rich.prompt import Confirm
 from rich.table import Table
 from rich.text import Text
-from typer.core import TyperGroup
 
 from sidekick_usages import __version__
+from sidekick_usages.branding import PROVIDER_COLORS, brand_header, brand_line
+from sidekick_usages.cli_help import BrandedTyper, BrandedTyperGroup
 from sidekick_usages.daemon import DaemonManager
 from sidekick_usages.doctor import (
     DoctorService,
@@ -187,26 +188,24 @@ def set_context(ctx: AppContext) -> None:
 # ---------------------------------------------------------------------
 # Typer app and global options
 # ---------------------------------------------------------------------
-app = typer.Typer(
+app = BrandedTyper(
     name="sidekick-usages",
-    help=(
-        "Check Claude Code and Codex CLI usage across multiple "
-        "accounts in one command."
-    ),
+    cls=BrandedTyperGroup,
     rich_markup_mode="rich",
     no_args_is_help=False,
     pretty_exceptions_show_locals=False,
     add_completion=False,
 )
 
-daemon_app = typer.Typer(
+daemon_app = BrandedTyper(
+    cls=BrandedTyperGroup,
     help="Install, inspect, or remove scheduled token refresh.",
     rich_markup_mode="rich",
 )
 app.add_typer(daemon_app, name="daemon")
 
 
-class _HeartbeatGroup(TyperGroup):
+class _HeartbeatGroup(BrandedTyperGroup):
     """Treat an unknown heartbeat subcommand as an account label."""
 
     label_command_name = "run-label"
@@ -227,7 +226,7 @@ class _HeartbeatGroup(TyperGroup):
             raise
 
 
-heartbeat_app = typer.Typer(
+heartbeat_app = BrandedTyper(
     cls=_HeartbeatGroup,
     help="Warm inactive usage windows for opted-in accounts.",
     rich_markup_mode="rich",
@@ -302,7 +301,7 @@ def _do_check() -> None:
     if app_ctx.only:
         accounts = [a for a in accounts if a.provider_id == app_ctx.only]
     if not accounts:
-        _print_no_accounts(app_ctx.only)
+        _print_no_accounts(app_ctx.only, branded=True)
         raise typer.Exit(code=1)
 
     exit_code = 0
@@ -739,14 +738,18 @@ def add_cmd(
 def list_cmd() -> None:
     """List every saved account."""
     app_ctx = _get_ctx()
+    app_ctx.console.print(
+        brand_header(
+            app_ctx.console.size.width,
+            section="saved accounts",
+        )
+    )
     accounts = list(app_ctx.store)
     if not accounts:
         app_ctx.console.print("[dim](no accounts saved)[/dim]")
         return
 
     table = Table(
-        title="[bold]Saved accounts[/bold]",
-        title_justify="left",
         show_header=True,
         header_style="bold",
         box=None,
@@ -763,7 +766,7 @@ def list_cmd() -> None:
         heartbeat_provider = _heartbeat_providers(app_ctx).get(
             acct.provider_id
         )
-        prov_color = "magenta" if acct.provider_id == "claude" else "cyan"
+        prov_color = PROVIDER_COLORS.get(acct.provider_id, "dim")
         plan_text = (
             Text(acct.plan, style="dim")
             if acct.plan == "unknown"
@@ -1410,6 +1413,13 @@ def _run_daemon_operation(operation: str, backend: str) -> None:
         app_ctx.err_console.print(f"[red]{e}[/red]")
         raise typer.Exit(code=3) from e
     style = "green" if result.exit_code == 0 else "red"
+    if operation == "status" and result.exit_code == 0:
+        app_ctx.console.print(
+            brand_header(
+                app_ctx.console.size.width,
+                section="daemon status",
+            )
+        )
     app_ctx.console.print(
         f"[{style}]{result.backend}: {result.message}[/{style}]"
     )
@@ -1769,6 +1779,8 @@ def check_update_cmd() -> None:
         )
         raise typer.Exit(code=1) from None
 
+    app_ctx.console.print(brand_line("update status"))
+    app_ctx.console.print()
     if is_newer(latest, __version__):
         app_ctx.console.print(
             f"[green]New version {latest} available[/green] "
@@ -2153,12 +2165,20 @@ def _insert_new(
 # ---------------------------------------------------------------------
 # Error rendering
 # ---------------------------------------------------------------------
-def _print_no_accounts(only: str | None) -> None:
+def _print_no_accounts(
+    only: str | None,
+    *,
+    branded: bool = False,
+) -> None:
     """Print the 'no accounts saved' hint.
 
     :param only: Provider filter that produced no results.
+    :param branded: Whether to prepend the interactive application header.
     """
     app_ctx = _get_ctx()
+    if branded:
+        app_ctx.err_console.print(brand_header(app_ctx.err_console.size.width))
+        app_ctx.err_console.print()
     scope = f" for {only}" if only else ""
     app_ctx.err_console.print(
         Panel(

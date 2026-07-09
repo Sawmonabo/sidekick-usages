@@ -9,6 +9,7 @@ from rich.console import Console
 from typer.testing import CliRunner
 
 from sidekick_usages import cli
+from sidekick_usages.branding import ROBOT_LINES
 from sidekick_usages.http import HttpClient
 from sidekick_usages.providers import PROVIDERS
 from sidekick_usages.store import Account, AccountStore
@@ -106,6 +107,8 @@ def test_doctor_reports_previous_refresh_rejection(
     assert "manual action: yes" in out
     assert "heartbeat supported:" in out
     assert "Claude CLI refresh failed" in out
+    assert out.count(ROBOT_LINES[2]) == 1
+    assert "doctor · account diagnostics" in out
 
 
 def test_doctor_filters_by_provider_and_label(tmp_path: Path) -> None:

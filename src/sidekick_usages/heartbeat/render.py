@@ -4,6 +4,7 @@ import json
 
 from rich.console import Console
 
+from sidekick_usages.branding import brand_header
 from sidekick_usages.heartbeat.base import HeartbeatProvider
 from sidekick_usages.heartbeat.domain import (
     HEARTBEAT_ACTIVE,
@@ -89,6 +90,12 @@ def render_heartbeat_status(
         )
         return
 
+    console.print(
+        brand_header(
+            console.size.width,
+            section="heartbeat status",
+        )
+    )
     for index, account in enumerate(accounts):
         if index:
             console.print()

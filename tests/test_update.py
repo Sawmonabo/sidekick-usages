@@ -19,6 +19,7 @@ import pytest
 from typer.testing import CliRunner
 
 from sidekick_usages import __version__, cli
+from sidekick_usages.branding import ROBOT_LINES
 from sidekick_usages.errors import ForbiddenError
 from sidekick_usages.http import HttpClient
 from sidekick_usages.providers import PROVIDERS
@@ -252,6 +253,7 @@ def test_check_update_reports_up_to_date() -> None:
     result = CliRunner().invoke(cli.app, ["check-update"])
     assert result.exit_code == 0
     assert "up to date" in result.stdout.lower()
+    assert "sidekick usages · update status" in result.stdout
 
 
 def test_check_update_handles_rate_limit() -> None:
@@ -260,6 +262,9 @@ def test_check_update_handles_rate_limit() -> None:
     result = CliRunner().invoke(cli.app, ["check-update"])
     assert result.exit_code == 1
     assert "rate limit" in result.stderr.lower()
+    assert "sidekick usages · update status" not in (
+        result.stdout + result.stderr
+    )
 
 
 # -- CLI: update -------------------------------------------------
@@ -276,6 +281,7 @@ def test_update_dry_run_prints_command_without_running() -> None:
         result = CliRunner().invoke(cli.app, ["update", "--dry-run"])
     assert result.exit_code == 0
     assert "uv tool upgrade sidekick-usages" in result.stdout
+    assert ROBOT_LINES[2] not in result.stdout
     run.assert_not_called()
 
 

@@ -481,9 +481,8 @@ If it is missing, run `claude auth login` and retry `add` or `refresh`.
 
 - `src/sidekick_usages/`: Typer CLI, provider adapters, storage, rendering,
   refresh, heartbeat, doctor, daemon, and update logic.
-- `tests/`: 172 pytest cases covering CLI behavior, providers, HTTP errors,
-  storage, rendering, maintenance, packaging, and cross-platform schedulers at
-  this snapshot.
+- `tests/`: focused pytest coverage for CLI behavior, providers, HTTP errors,
+  storage, rendering, maintenance, packaging, and cross-platform schedulers.
 - `docs/`: operational guides plus the usage-TUI design and implementation
   record.
 - `packaging/homebrew/`: formula generator and in-tree formula copy.
@@ -519,8 +518,8 @@ percentage is configured.
 
 The direct README Markdown command passes at this snapshot. The repository-wide
 `npm run lint:markdown` also scans the tracked historical TUI plan/spec under
-`docs/superpowers/`; those two files currently carry a 95-error Markdown lint
-baseline, primarily long lines, which is outside this README change.
+`docs/superpowers/`; those records contain pre-existing Markdown lint findings,
+primarily long lines.
 
 Ruff targets Python 3.14, double quotes, LF endings, and a 79-column formatter
 width; `E501` is intentionally ignored, so 79 columns is not a hard lint error.

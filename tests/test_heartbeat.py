@@ -1,6 +1,7 @@
 """Heartbeat/window-warming behavior tests."""
 
 import io
+import json
 import time
 from collections.abc import Iterable
 from pathlib import Path
@@ -10,6 +11,7 @@ from rich.console import Console
 from typer.testing import CliRunner
 
 from sidekick_usages import cli
+from sidekick_usages.branding import ROBOT_LINES
 from sidekick_usages.heartbeat import (
     HEARTBEAT_ACTIVE,
     HEARTBEAT_DISABLED,
@@ -374,9 +376,33 @@ def test_heartbeat_enable_disable_and_status_cli(tmp_path: Path) -> None:
     saved = store.get("team")
     assert saved is not None
     assert saved.heartbeat_enabled is False
-    assert "enabled" in stdout.getvalue()
-    assert "heartbeat: on" in stdout.getvalue()
-    assert "disabled" in stdout.getvalue()
+    rendered = stdout.getvalue()
+    assert "enabled" in rendered
+    assert "heartbeat: on" in rendered
+    assert "disabled" in rendered
+    assert rendered.count(ROBOT_LINES[2]) == 1
+    assert "heartbeat status" in rendered
+
+
+def test_heartbeat_status_json_remains_machine_readable(
+    tmp_path: Path,
+) -> None:
+    provider = _FakeHeartbeatProvider()
+    _, stdout, _ = _install_ctx(
+        tmp_path,
+        [_acct()],
+        {"claude": provider},
+    )
+
+    result = CliRunner().invoke(
+        cli.app,
+        ["heartbeat", "status", "--json"],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(stdout.getvalue())
+    assert payload["accounts"][0]["label"] == "team"
+    assert ROBOT_LINES[2] not in stdout.getvalue()
 
 
 def test_heartbeat_label_cli_runs_one_shot_when_disabled(
