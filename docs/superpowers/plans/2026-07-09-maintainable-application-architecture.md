@@ -368,7 +368,7 @@ unrecorded chat-only disposition.
 
 | Change set | Question | Research recommendation | Disposition | Approval date | Design commit | Approved design SHA-256 |
 |---|---|---|---|---|---|---|
-| CS-07 | Boundary-validation dependency | Pydantic 2.13.4 `TypeAdapter`; Homebrew Rust/maturin proof remains a release gate | **GO** | 2026-07-10 | Pending decision commit | Pending decision commit |
+| CS-07 | Boundary-validation dependency | Pydantic 2.13.4 `TypeAdapter`; Homebrew Rust/maturin proof remains a release gate | **GO** | 2026-07-10 | `986e1f7` | `3db51ef2abb86390ab55b6a31a8303f4d18df22f2599a5112d30e494353e44c4` |
 
 ## 6. Testing strategy
 
