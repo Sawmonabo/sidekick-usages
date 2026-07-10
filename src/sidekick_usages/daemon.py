@@ -13,11 +13,17 @@ from typing import assert_never
 
 from sidekick_usages.core.types import ExitCode
 from sidekick_usages.errors import UsageError
+from sidekick_usages.scheduler_quiescence import (
+    CRON_BEGIN,
+    CRON_END,
+    LAUNCHD_LABEL,
+    SERVICE_NAME,
+    SchedulerProbeResult,
+    SchedulerQuiescenceAssessment,
+    assess_scheduler_quiescence,
+    powershell_command,
+)
 
-SERVICE_NAME = "sidekick-usages-refresh"
-LAUNCHD_LABEL = "com.sidekick-usages.refresh"
-CRON_BEGIN = "# sidekick-usages refresh begin"
-CRON_END = "# sidekick-usages refresh end"
 DAEMON_DIR_NAME = "sidekick-usages"
 WINDOWS_DAEMON_SUBDIR = "sidekick-usages\\daemon"
 
@@ -484,7 +490,7 @@ class TaskSchedulerBackend(SchedulerBackend):
 
     def install(self) -> DaemonOperationResult:
         """Register the scheduled task for the current user."""
-        result = self.runner.run(self._powershell(self._install_script()))
+        result = self.runner.run(powershell_command(self._install_script()))
         return _result_from_command(
             self.id,
             result,
@@ -494,14 +500,14 @@ class TaskSchedulerBackend(SchedulerBackend):
     def status(self) -> DaemonOperationResult:
         """Return scheduled task status."""
         script = self.launcher.status_script()
-        result = self.runner.run(self._powershell(script))
+        result = self.runner.run(powershell_command(script))
         message = result.stdout or result.stderr or "task status checked"
         return DaemonOperationResult(self.id, message, _exit(result))
 
     def uninstall(self) -> DaemonOperationResult:
         """Unregister the scheduled task."""
         script = self.launcher.uninstall_script()
-        result = self.runner.run(self._powershell(script))
+        result = self.runner.run(powershell_command(script))
         return _result_from_command(
             self.id,
             result,
@@ -527,18 +533,6 @@ class TaskSchedulerBackend(SchedulerBackend):
                 "tokens' "
                 "-Force",
             )
-        )
-
-    @staticmethod
-    def _powershell(script: str) -> tuple[str, ...]:
-        """Return a PowerShell command argv."""
-        return (
-            "powershell.exe",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            script,
         )
 
 
@@ -597,6 +591,26 @@ class DaemonManager:
     def uninstall(self, backend: str = "auto") -> DaemonOperationResult:
         """Uninstall the selected backend."""
         return self.backend(backend).uninstall()
+
+    def assess_quiescence(self) -> SchedulerQuiescenceAssessment:
+        """Inspect every scheduler backend that can coexist on this host."""
+
+        def probe(argv: tuple[str, ...]) -> SchedulerProbeResult:
+            result = self.runner.run(argv)
+            return SchedulerProbeResult(
+                result.returncode,
+                result.stdout,
+                result.stderr,
+            )
+
+        return assess_scheduler_quiescence(
+            system=self.platform_info.system,
+            home=self.platform_info.home,
+            uid=self.platform_info.uid,
+            is_wsl=self.platform_info.is_wsl,
+            has_user_systemd=self.platform_info.has_user_systemd,
+            probe=probe,
+        )
 
     def backend(self, requested: str) -> SchedulerBackend:
         """Build a backend instance by name or auto-detection."""

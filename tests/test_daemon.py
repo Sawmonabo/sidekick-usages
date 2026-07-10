@@ -14,6 +14,12 @@ from sidekick_usages.daemon import (
     resolve_maintenance_command,
 )
 from sidekick_usages.errors import UsageError
+from sidekick_usages.scheduler_quiescence import (
+    CRON_BEGIN,
+    CRON_END,
+    SchedulerBackendId,
+    SchedulerBackendState,
+)
 
 
 class RecordingRunner(SystemCommandRunner):
@@ -54,6 +60,33 @@ class RecordingDaemonManager(DaemonManager):
         return DaemonOperationResult(backend, "removed")
 
 
+class QuiescenceRunner(SystemCommandRunner):
+    """Return scripted read-only results by scheduler backend."""
+
+    def __init__(
+        self,
+        results: dict[SchedulerBackendId, CommandResult],
+    ) -> None:
+        self.results = results
+        self.calls: list[SchedulerBackendId] = []
+
+    def run(
+        self,
+        argv: tuple[str, ...],
+        *,
+        input_text: str | None = None,
+    ) -> CommandResult:
+        del input_text
+        backend = {
+            "systemctl": SchedulerBackendId.SYSTEMD,
+            "crontab": SchedulerBackendId.CRON,
+            "launchctl": SchedulerBackendId.LAUNCHD,
+            "powershell.exe": SchedulerBackendId.TASK_SCHEDULER,
+        }[argv[0]]
+        self.calls.append(backend)
+        return self.results[backend]
+
+
 def _platform(
     tmp_path: Path,
     *,
@@ -70,6 +103,30 @@ def _platform(
         wsl_distro="Ubuntu" if is_wsl else None,
         has_user_systemd=has_user_systemd,
     )
+
+
+def _absent_scheduler_results() -> dict[SchedulerBackendId, CommandResult]:
+    """Return successful native probes with no Sidekick schedule."""
+    return {
+        SchedulerBackendId.SYSTEMD: CommandResult(
+            returncode=0,
+            stdout=(
+                "LoadState=not-found\nActiveState=inactive\nUnitFileState=\n"
+            ),
+            stderr="",
+        ),
+        SchedulerBackendId.CRON: CommandResult(0, "", ""),
+        SchedulerBackendId.LAUNCHD: CommandResult(
+            returncode=0,
+            stdout="gui domain contains unrelated services",
+            stderr="",
+        ),
+        SchedulerBackendId.TASK_SCHEDULER: CommandResult(
+            returncode=0,
+            stdout="sidekick-schedule-absent\n",
+            stderr="",
+        ),
+    }
 
 
 @pytest.mark.parametrize(
@@ -297,3 +354,124 @@ def test_default_maintenance_command_runs_maintain_quiet(monkeypatch) -> None:
         "maintain",
         "--quiet",
     )
+
+
+@pytest.mark.parametrize(
+    ("system", "is_wsl", "expected"),
+    [
+        (
+            "Linux",
+            False,
+            (SchedulerBackendId.SYSTEMD, SchedulerBackendId.CRON),
+        ),
+        (
+            "Darwin",
+            False,
+            (SchedulerBackendId.LAUNCHD, SchedulerBackendId.CRON),
+        ),
+        ("Windows", False, (SchedulerBackendId.TASK_SCHEDULER,)),
+        (
+            "Linux",
+            True,
+            (
+                SchedulerBackendId.SYSTEMD,
+                SchedulerBackendId.CRON,
+                SchedulerBackendId.TASK_SCHEDULER,
+            ),
+        ),
+    ],
+)
+def test_quiescence_checks_every_coexisting_backend(
+    tmp_path: Path,
+    system: str,
+    is_wsl: bool,
+    expected: tuple[SchedulerBackendId, ...],
+) -> None:
+    runner = QuiescenceRunner(_absent_scheduler_results())
+    manager = DaemonManager(
+        platform_info=_platform(tmp_path, system=system, is_wsl=is_wsl),
+        runner=runner,
+    )
+
+    assessment = manager.assess_quiescence()
+
+    assert tuple(item.backend for item in assessment.observations) == expected
+    assert tuple(item.state for item in assessment.observations) == (
+        SchedulerBackendState.ABSENT,
+    ) * len(expected)
+    assert runner.calls == list(expected)
+    assert assessment.quiescent is True
+    assert assessment.write_blocked is False
+
+
+def test_coexisting_installed_and_active_schedules_all_block(
+    tmp_path: Path,
+) -> None:
+    results = _absent_scheduler_results()
+    results[SchedulerBackendId.SYSTEMD] = CommandResult(
+        returncode=0,
+        stdout=(
+            "ActiveState=active\nUnitFileState=enabled\nLoadState=loaded\n"
+        ),
+        stderr="",
+    )
+    results[SchedulerBackendId.CRON] = CommandResult(
+        returncode=0,
+        stdout=f"{CRON_BEGIN}\njob\n{CRON_END}\n",
+        stderr="",
+    )
+    runner = QuiescenceRunner(results)
+    manager = DaemonManager(
+        platform_info=_platform(tmp_path),
+        runner=runner,
+    )
+
+    assessment = manager.assess_quiescence()
+
+    assert tuple(item.state for item in assessment.observations) == (
+        SchedulerBackendState.INSTALLED,
+        SchedulerBackendState.INSTALLED,
+    )
+    assert runner.calls == [
+        SchedulerBackendId.SYSTEMD,
+        SchedulerBackendId.CRON,
+    ]
+    assert assessment.write_blocked is True
+
+
+def test_unassessable_wsl_backends_block_without_short_circuit_or_raw_errors(
+    tmp_path: Path,
+) -> None:
+    raw_error = "synthetic native scheduler detail"
+    results = {
+        backend: CommandResult(7, "", raw_error)
+        for backend in (
+            SchedulerBackendId.SYSTEMD,
+            SchedulerBackendId.CRON,
+            SchedulerBackendId.TASK_SCHEDULER,
+        )
+    }
+    runner = QuiescenceRunner(results)
+    manager = DaemonManager(
+        platform_info=_platform(tmp_path, is_wsl=True),
+        runner=runner,
+    )
+
+    first = manager.assess_quiescence()
+    second = manager.assess_quiescence()
+
+    expected_backends = [
+        SchedulerBackendId.SYSTEMD,
+        SchedulerBackendId.CRON,
+        SchedulerBackendId.TASK_SCHEDULER,
+    ]
+    assert tuple(item.state for item in first.observations) == (
+        SchedulerBackendState.UNASSESSABLE,
+    ) * len(expected_backends)
+    assert runner.calls == expected_backends * 2
+    assert first == second
+    assert first.write_blocked is True
+    assert raw_error not in repr(first)
+    assert {item.message for item in first.observations} == {
+        "Sidekick schedule status could not be assessed."
+    }
