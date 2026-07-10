@@ -7,6 +7,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+import pytest
 from rich.console import Console
 from typer.testing import CliRunner
 
@@ -53,10 +54,11 @@ class _FakeHeartbeatProvider(HeartbeatProvider):
         )
         self._heartbeat_supported = heartbeat_supported
         self.heartbeat_results = list(heartbeat_results)
+        self.supports_calls: list[str] = []
         self.heartbeat_calls: list[tuple[str, str]] = []
 
     def supports(self, account: Account) -> bool:
-        del account
+        self.supports_calls.append(account.label)
         return self._heartbeat_supported
 
     def inspect_window(
@@ -403,6 +405,27 @@ def test_heartbeat_status_json_remains_machine_readable(
     payload = json.loads(stdout.getvalue())
     assert payload["accounts"][0]["label"] == "team"
     assert ROBOT_LINES[2] not in stdout.getvalue()
+
+
+def test_empty_heartbeat_registry_remains_unsupported(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An explicitly empty registry must not activate default providers."""
+    default_provider = _FakeHeartbeatProvider()
+    monkeypatch.setattr(
+        cli,
+        "HEARTBEAT_PROVIDERS",
+        {"claude": default_provider},
+    )
+    _, stdout, _ = _install_ctx(tmp_path, [_acct()], {})
+
+    result = CliRunner().invoke(cli.app, ["heartbeat", "status"])
+
+    assert result.exit_code == 0
+    assert "heartbeat: unsupported" in stdout.getvalue()
+    assert "supported: no" in stdout.getvalue()
+    assert default_provider.supports_calls == []
 
 
 def test_heartbeat_label_cli_runs_one_shot_when_disabled(

@@ -565,11 +565,20 @@ behavior and daemon output remain unchanged.
 
 **Work:**
 
-- [ ] Refresh callers of `_heartbeat_providers` and registry defaults.
-- [ ] Replace truth-value fallback with an explicit `is None` decision.
-- [ ] Remove optional state only if all real composition callers provide the
+- [x] Refresh callers of `_heartbeat_providers` and registry defaults.
+- [x] Replace truth-value fallback with an explicit `is None` decision.
+- [x] Remove optional state only if all real composition callers provide the
       registry explicitly.
-- [ ] Preserve the empty mapping as a deliberate injected capability set.
+- [x] Preserve the empty mapping as a deliberate injected capability set.
+
+**Execution record:** Completed on 2026-07-09 against
+`0e318a6ba2d6c094d8099dab4940ab7c2ac16374`. The optional context field is
+retained because `None` remains the explicit production-default signal. An
+empty injected mapping now reaches the heartbeat command unchanged. The
+focused heartbeat suite passes all 18 cases, and the full suite passes all
+195 cases with branch coverage. Ruff, formatting, `ty`, pre-commit, and the
+package build pass. The Markdown gate remains at the exact 93-finding
+pre-CS-05 baseline and adds no finding.
 
 **Load-bearing test:** Inject an empty registry, exercise a heartbeat command
 or service resolution, assert the documented unsupported result, and prove no

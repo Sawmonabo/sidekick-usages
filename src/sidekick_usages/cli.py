@@ -174,7 +174,9 @@ def _get_ctx() -> AppContext:
 
 def _heartbeat_providers(app_ctx: AppContext) -> dict[str, HeartbeatProvider]:
     """Return injected or default heartbeat providers."""
-    return app_ctx.heartbeat_providers or HEARTBEAT_PROVIDERS
+    if app_ctx.heartbeat_providers is None:
+        return HEARTBEAT_PROVIDERS
+    return app_ctx.heartbeat_providers
 
 
 def set_context(ctx: AppContext) -> None:
