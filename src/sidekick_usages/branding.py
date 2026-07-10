@@ -9,10 +9,12 @@ help rendering can use it without loading credentials.
 from rich.console import Group, RenderableType
 from rich.text import Text
 
+from sidekick_usages.core.types import ProviderId
+
 #: Provider colors shared by the robot and provider-specific usage panels.
 PROVIDER_COLORS: dict[str, str] = {
-    "claude": "magenta",
-    "codex": "cyan",
+    ProviderId.CLAUDE: "magenta",
+    ProviderId.CODEX: "cyan",
 }
 
 #: Canonical robot art. No other source module should define these rows.
@@ -75,8 +77,8 @@ def _robot_rows() -> list[Text]:
     """
     rows = [Text(line, style=_ROBOT_STYLE) for line in ROBOT_LINES]
     eye_row = rows[3]
-    eye_row.stylize(PROVIDER_COLORS["claude"], 4, 5)
-    eye_row.stylize(PROVIDER_COLORS["codex"], 8, 9)
+    eye_row.stylize(PROVIDER_COLORS[ProviderId.CLAUDE], 4, 5)
+    eye_row.stylize(PROVIDER_COLORS[ProviderId.CODEX], 8, 9)
     return rows
 
 
@@ -99,8 +101,8 @@ def _append_speech(row: Text, message: str, *, style: str) -> None:
     :param style: Rich style for the product-copy sentence.
     """
     row.append("   ")
-    row.append(">", style=PROVIDER_COLORS["claude"])
-    row.append(">", style=PROVIDER_COLORS["codex"])
+    row.append(">", style=PROVIDER_COLORS[ProviderId.CLAUDE])
+    row.append(">", style=PROVIDER_COLORS[ProviderId.CODEX])
     row.append(f" {message}", style=style)
 
 

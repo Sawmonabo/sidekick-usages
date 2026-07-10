@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from sidekick_usages.clock import Clock
+from sidekick_usages.core.types import ProviderId
 from sidekick_usages.errors import (
     AuthError,
     UnsupportedOperationError,
@@ -62,7 +63,7 @@ TOKEN_RE = re.compile(
 class CodexProvider(Provider):
     """Codex CLI integration."""
 
-    id = "codex"
+    id = ProviderId.CODEX
     display_name = "Codex CLI"
     token_pattern = TOKEN_RE
 
@@ -305,7 +306,7 @@ def write_account_auth_file(
         from, such as ``auth_mode``.
     :return: True when a complete auth file was written.
     """
-    if account.provider_id != "codex" or not account.refresh_token:
+    if account.provider_id != ProviderId.CODEX or not account.refresh_token:
         return False
     existing = source_blob or read_auth_blob(codex_home) or {}
     existing_tokens = _auth_tokens(existing)

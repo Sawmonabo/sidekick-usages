@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from sidekick_usages.clock import Clock
+from sidekick_usages.core.types import ExitCode, ProviderId
 from sidekick_usages.errors import UsageError
 from sidekick_usages.http import HttpClient
 from sidekick_usages.providers.base import Provider
@@ -21,8 +22,6 @@ REFRESH_FAILED = "failed"
 
 CLAUDE_REFRESH_MARGIN_SECONDS = 30 * 60
 CODEX_REFRESH_MARGIN_SECONDS = 10 * 60
-EXIT_MANUAL_ACTION = 1
-EXIT_SYSTEM_ERROR = 2
 
 
 @dataclass(frozen=True)
@@ -33,7 +32,7 @@ class RefreshOutcome:
     provider_id: str
     status: str
     message: str
-    exit_code: int = 0
+    exit_code: ExitCode = ExitCode.SUCCESS
     refreshed: bool = False
     action_required: bool = False
 
@@ -96,7 +95,7 @@ class TokenMaintenanceService:
             return self._record_failed(
                 account,
                 f"Unknown provider '{account.provider_id}'.",
-                exit_code=EXIT_SYSTEM_ERROR,
+                exit_code=ExitCode.SYSTEM_ERROR,
             )
 
         should_refresh, expiry_state = self._refresh_decision(
@@ -115,7 +114,7 @@ class TokenMaintenanceService:
             return self._record_failed(
                 account,
                 "No refresh token saved; log in manually.",
-                exit_code=EXIT_MANUAL_ACTION,
+                exit_code=ExitCode.MANUAL_ACTION,
             )
 
         try:
@@ -124,14 +123,14 @@ class TokenMaintenanceService:
             return self._record_failed(
                 account,
                 str(e),
-                exit_code=EXIT_MANUAL_ACTION,
+                exit_code=ExitCode.MANUAL_ACTION,
             )
 
         if not refreshed:
             return self._record_failed(
                 account,
                 "Refresh token unavailable or rejected.",
-                exit_code=EXIT_MANUAL_ACTION,
+                exit_code=ExitCode.MANUAL_ACTION,
             )
 
         record_refresh_success(account, self.clock.now())
@@ -185,7 +184,7 @@ class TokenMaintenanceService:
         account: Account,
         message: str,
         *,
-        exit_code: int,
+        exit_code: ExitCode,
     ) -> RefreshOutcome:
         """Persist a failed refresh diagnostic and return its outcome."""
         record_refresh_failure(account, message, self.clock.now())
@@ -197,15 +196,15 @@ class TokenMaintenanceService:
             status=REFRESH_FAILED,
             message=message,
             exit_code=exit_code,
-            action_required=exit_code == EXIT_MANUAL_ACTION,
+            action_required=exit_code == ExitCode.MANUAL_ACTION,
         )
 
 
 def refresh_margin_seconds(provider_id: str) -> int:
     """Return the provider-specific proactive refresh margin."""
-    if provider_id == "claude":
+    if provider_id == ProviderId.CLAUDE:
         return CLAUDE_REFRESH_MARGIN_SECONDS
-    if provider_id == "codex":
+    if provider_id == ProviderId.CODEX:
         return CODEX_REFRESH_MARGIN_SECONDS
     return CODEX_REFRESH_MARGIN_SECONDS
 
@@ -214,7 +213,7 @@ def expiry_epoch_seconds(account: Account) -> float | None:
     """Normalize provider-native expiry units to Unix seconds."""
     if account.expires_at is None:
         return None
-    if account.provider_id == "claude":
+    if account.provider_id == ProviderId.CLAUDE:
         return account.expires_at / 1000
     return float(account.expires_at)
 
@@ -237,13 +236,15 @@ def record_refresh_failure(
     account.last_refresh_error = message
 
 
-def refresh_exit_code(outcomes: list[RefreshOutcome]) -> int:
+def refresh_exit_code(outcomes: list[RefreshOutcome]) -> ExitCode:
     """Collapse per-account outcomes into the documented CLI exit code."""
-    if any(outcome.exit_code == EXIT_SYSTEM_ERROR for outcome in outcomes):
-        return EXIT_SYSTEM_ERROR
-    if any(outcome.exit_code == EXIT_MANUAL_ACTION for outcome in outcomes):
-        return EXIT_MANUAL_ACTION
-    return 0
+    if any(outcome.exit_code == ExitCode.SYSTEM_ERROR for outcome in outcomes):
+        return ExitCode.SYSTEM_ERROR
+    if any(
+        outcome.exit_code == ExitCode.MANUAL_ACTION for outcome in outcomes
+    ):
+        return ExitCode.MANUAL_ACTION
+    return ExitCode.SUCCESS
 
 
 def _utc_z(value: datetime) -> str:

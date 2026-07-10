@@ -8,6 +8,7 @@ from typer.testing import CliRunner
 
 from sidekick_usages import cli
 from sidekick_usages.branding import ROBOT_LINES
+from sidekick_usages.core.types import ExitCode
 from sidekick_usages.daemon import DaemonOperation, DaemonOperationResult
 from sidekick_usages.http import HttpClient
 from sidekick_usages.providers import build_provider_registry
@@ -90,7 +91,7 @@ def test_daemon_header_is_limited_to_successful_status(
     monkeypatch,
 ) -> None:
     class FakeDaemonManager:
-        status_exit_code = 0
+        status_exit_code = ExitCode.SUCCESS
 
         def run(
             self,
@@ -99,7 +100,9 @@ def test_daemon_header_is_limited_to_successful_status(
         ) -> DaemonOperationResult:
             if operation is DaemonOperation.STATUS:
                 message = (
-                    "healthy" if self.status_exit_code == 0 else "missing"
+                    "healthy"
+                    if self.status_exit_code is ExitCode.SUCCESS
+                    else "missing"
                 )
                 return DaemonOperationResult(
                     backend,
@@ -129,7 +132,7 @@ def test_daemon_header_is_limited_to_successful_status(
     assert ROBOT_LINES[2] not in output
     assert output.strip() == "auto: installed"
 
-    FakeDaemonManager.status_exit_code = 1
+    FakeDaemonManager.status_exit_code = ExitCode.MANUAL_ACTION
     failed_stdout, _ = _install_context(tmp_path / "failed-status", [])
     result = CliRunner().invoke(cli.app, ["daemon", "status"])
     assert result.exit_code == 1

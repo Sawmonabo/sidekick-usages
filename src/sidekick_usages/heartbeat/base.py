@@ -2,6 +2,7 @@
 
 from abc import ABC, abstractmethod
 
+from sidekick_usages.core.types import ProviderId
 from sidekick_usages.heartbeat.domain import (
     HEARTBEAT_ACTIVE,
     HEARTBEAT_WARMED,
@@ -27,7 +28,7 @@ class HeartbeatProvider(ABC):
     the current window, and how to send the smallest valid request.
     """
 
-    id: str = ""
+    id: ProviderId
     display_name: str = ""
 
     @abstractmethod

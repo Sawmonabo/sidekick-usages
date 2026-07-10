@@ -1,5 +1,6 @@
 """Codex-specific usage-window heartbeat adapter."""
 
+from sidekick_usages.core.types import ProviderId
 from sidekick_usages.errors import UsageError
 from sidekick_usages.heartbeat.base import HeartbeatProvider, warmed
 from sidekick_usages.heartbeat.domain import (
@@ -31,7 +32,7 @@ SPARK_TARGET = HeartbeatTarget(
 class CodexHeartbeat(HeartbeatProvider):
     """Window warming for saved Codex/ChatGPT accounts."""
 
-    id = "codex"
+    id = ProviderId.CODEX
     display_name = "Codex CLI"
 
     def __init__(self, usage_provider: CodexProvider) -> None:

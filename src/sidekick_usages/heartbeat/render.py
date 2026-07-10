@@ -5,6 +5,7 @@ import json
 from rich.console import Console
 
 from sidekick_usages.branding import brand_header
+from sidekick_usages.core.types import ExitCode
 from sidekick_usages.heartbeat.base import HeartbeatProvider
 from sidekick_usages.heartbeat.domain import (
     HEARTBEAT_ACTIVE,
@@ -45,7 +46,7 @@ def render_heartbeat_outcome(
 ) -> None:
     """Render one heartbeat outcome."""
     label = _outcome_label(outcome)
-    if quiet and outcome.exit_code == 0:
+    if quiet and outcome.exit_code == ExitCode.SUCCESS:
         return
     if outcome.status == HEARTBEAT_WARMED:
         console.print(f"[green]{label}: warmed[/green]")

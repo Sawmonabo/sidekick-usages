@@ -5,6 +5,7 @@ registry factory.
 """
 
 from sidekick_usages.clock import Clock
+from sidekick_usages.core.types import ProviderId
 from sidekick_usages.providers.base import (
     DetectedCredentials,
     Provider,
@@ -17,8 +18,8 @@ def build_provider_registry(clock: Clock) -> dict[str, Provider]:
     """Build providers that share one application wall clock."""
     # Insertion order controls the default rendering order.
     return {
-        "claude": ClaudeProvider(clock),
-        "codex": CodexProvider(clock),
+        ProviderId.CLAUDE: ClaudeProvider(clock),
+        ProviderId.CODEX: CodexProvider(clock),
     }
 
 

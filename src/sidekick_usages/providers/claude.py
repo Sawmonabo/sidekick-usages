@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from sidekick_usages.clock import Clock
+from sidekick_usages.core.types import ProviderId
 from sidekick_usages.errors import AuthError
 from sidekick_usages.http import HttpClient
 from sidekick_usages.providers.base import (
@@ -84,7 +85,7 @@ HEADER_BUCKETS: tuple[tuple[str, str], ...] = (
 class ClaudeProvider(Provider):
     """Claude Code integration."""
 
-    id = "claude"
+    id = ProviderId.CLAUDE
     display_name = "Claude Code"
     token_pattern = re.compile(r"sk-ant-oat01-[A-Za-z0-9_\-]+")
 

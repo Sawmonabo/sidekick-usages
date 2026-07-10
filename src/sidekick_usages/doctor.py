@@ -8,6 +8,7 @@ from rich.console import Console
 
 from sidekick_usages.branding import brand_header
 from sidekick_usages.clock import Clock
+from sidekick_usages.core.types import ExitCode, ProviderId
 from sidekick_usages.heartbeat import (
     HeartbeatProvider,
     heartbeat_supported_label,
@@ -140,11 +141,11 @@ class DoctorService:
 
 def usage_route(account: Account) -> str:
     """Return the provider route sidekick-usages will use for usage."""
-    if account.provider_id == "claude":
+    if account.provider_id == ProviderId.CLAUDE:
         if account.scopes is not None and PROFILE_SCOPE not in account.scopes:
             return "/v1/messages headers"
         return "/api/oauth/usage"
-    if account.provider_id == "codex":
+    if account.provider_id == ProviderId.CODEX:
         return "/backend-api/codex/usage"
     return "unknown"
 
@@ -248,9 +249,11 @@ def _render_manual_action(
     )
 
 
-def doctor_exit_code(diagnostics: list[AccountDiagnostic]) -> int:
+def doctor_exit_code(diagnostics: list[AccountDiagnostic]) -> ExitCode:
     """Return 1 when doctor found an account needing manual action."""
-    return 1 if any(d.manual_action_required for d in diagnostics) else 0
+    if any(d.manual_action_required for d in diagnostics):
+        return ExitCode.MANUAL_ACTION
+    return ExitCode.SUCCESS
 
 
 def _manual_action_required(

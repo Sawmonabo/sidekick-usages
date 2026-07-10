@@ -9,6 +9,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 
+from sidekick_usages.core.types import ProviderId
 from sidekick_usages.http import HttpClient
 from sidekick_usages.report import UsageReport
 from sidekick_usages.store import Account
@@ -56,7 +57,7 @@ class Provider(ABC):
     """
 
     #: Stable provider id, used as a dict/config key.
-    id: str = ""
+    id: ProviderId
 
     #: Human-readable provider name for error messages and help.
     display_name: str = ""

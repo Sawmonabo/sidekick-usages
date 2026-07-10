@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime
 
+from sidekick_usages.core.types import ProviderId
 from sidekick_usages.heartbeat.base import HeartbeatProvider, warmed
 from sidekick_usages.heartbeat.domain import (
     HeartbeatProbeResult,
@@ -28,7 +29,7 @@ FIVE_HOUR_HEADER_PREFIX = "anthropic-ratelimit-unified-5h"
 class ClaudeHeartbeat(HeartbeatProvider):
     """Window warming for Claude OAuth and setup-token accounts."""
 
-    id = "claude"
+    id = ProviderId.CLAUDE
     display_name = "Claude Code"
 
     def supports(self, account: Account) -> bool:

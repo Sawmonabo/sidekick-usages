@@ -13,6 +13,7 @@ from typer.testing import CliRunner
 
 from sidekick_usages import cli
 from sidekick_usages.clock import Clock
+from sidekick_usages.core.types import ProviderId
 from sidekick_usages.errors import AuthError, ForbiddenError, RateLimitError
 from sidekick_usages.http import HttpClient
 from sidekick_usages.providers.base import DetectedCredentials, Provider
@@ -31,7 +32,7 @@ _CODEX_NOW_SECONDS = int(REFERENCE_TIME.timestamp())
 class _FakeProvider(Provider):
     """Provider test double with scripted fetch/refresh behavior."""
 
-    id = "claude"
+    id = ProviderId.CLAUDE
     display_name = "Claude Code"
     token_pattern = re.compile(r".+")
 
@@ -44,7 +45,7 @@ class _FakeProvider(Provider):
         provider_account_id_on_fetch: str | None = None,
     ) -> None:
         """:param fetch_results: Values or exceptions returned in order."""
-        self.id = provider_id
+        self.id = ProviderId(provider_id)
         self.display_name = (
             "Codex CLI" if provider_id == "codex" else "Claude Code"
         )

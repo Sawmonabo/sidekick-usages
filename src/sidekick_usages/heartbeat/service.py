@@ -3,6 +3,7 @@
 from datetime import UTC, datetime
 
 from sidekick_usages.clock import Clock
+from sidekick_usages.core.types import ExitCode
 from sidekick_usages.errors import UsageError
 from sidekick_usages.heartbeat.base import HeartbeatProvider
 from sidekick_usages.heartbeat.domain import (
@@ -14,11 +15,7 @@ from sidekick_usages.heartbeat.domain import (
     HeartbeatOutcome,
 )
 from sidekick_usages.http import HttpClient
-from sidekick_usages.maintenance import (
-    EXIT_MANUAL_ACTION,
-    EXIT_SYSTEM_ERROR,
-    expiry_epoch_seconds,
-)
+from sidekick_usages.maintenance import expiry_epoch_seconds
 from sidekick_usages.store import Account, AccountStore
 
 
@@ -85,7 +82,7 @@ class HeartbeatService:
             return self._record_failed(
                 account,
                 str(e),
-                exit_code=EXIT_SYSTEM_ERROR,
+                exit_code=ExitCode.SYSTEM_ERROR,
                 reference_time=reference_time,
             )
 
@@ -109,7 +106,7 @@ class HeartbeatService:
             return self._record_failed(
                 account,
                 str(e),
-                exit_code=EXIT_MANUAL_ACTION,
+                exit_code=ExitCode.MANUAL_ACTION,
                 reference_time=self.clock.now(),
             )
 
@@ -124,12 +121,16 @@ class HeartbeatService:
         self.store.save()
         if result.status == HEARTBEAT_FAILED:
             exit_code = (
-                EXIT_MANUAL_ACTION
+                ExitCode.MANUAL_ACTION
                 if result.action_required
-                else EXIT_SYSTEM_ERROR
+                else ExitCode.SYSTEM_ERROR
             )
         else:
-            exit_code = EXIT_MANUAL_ACTION if result.action_required else 0
+            exit_code = (
+                ExitCode.MANUAL_ACTION
+                if result.action_required
+                else ExitCode.SUCCESS
+            )
         return HeartbeatOutcome(
             label=account.label,
             provider_id=account.provider_id,
@@ -170,7 +171,7 @@ class HeartbeatService:
             return self._record_failed(
                 account,
                 f"Unknown provider '{account.provider_id}'.",
-                exit_code=EXIT_SYSTEM_ERROR,
+                exit_code=ExitCode.SYSTEM_ERROR,
                 reference_time=reference_time,
             )
         blocked = self._auth_blocker(account, reference_time)
@@ -178,7 +179,7 @@ class HeartbeatService:
             return self._record_failed(
                 account,
                 blocked,
-                exit_code=EXIT_MANUAL_ACTION,
+                exit_code=ExitCode.MANUAL_ACTION,
                 reference_time=reference_time,
             )
         if provider.supports(account):
@@ -202,7 +203,7 @@ class HeartbeatService:
                 status=HEARTBEAT_FAILED,
                 message=f"Unknown provider '{account.provider_id}'.",
                 action_required=True,
-                exit_code=EXIT_SYSTEM_ERROR,
+                exit_code=ExitCode.SYSTEM_ERROR,
             )
         if not provider.supports(account):
             return self._unsupported_outcome(account, provider)
@@ -215,7 +216,7 @@ class HeartbeatService:
                 status=HEARTBEAT_FAILED,
                 message=str(e),
                 action_required=False,
-                exit_code=EXIT_SYSTEM_ERROR,
+                exit_code=ExitCode.SYSTEM_ERROR,
             )
         account.heartbeat_enabled = True
         if target_id is None:
@@ -253,7 +254,7 @@ class HeartbeatService:
                     status=HEARTBEAT_FAILED,
                     message=f"Unknown provider '{account.provider_id}'.",
                     action_required=True,
-                    exit_code=EXIT_SYSTEM_ERROR,
+                    exit_code=ExitCode.SYSTEM_ERROR,
                 )
             try:
                 selected = _selected_provider_targets(
@@ -267,7 +268,7 @@ class HeartbeatService:
                     provider_id=account.provider_id,
                     status=HEARTBEAT_FAILED,
                     message=str(e),
-                    exit_code=EXIT_SYSTEM_ERROR,
+                    exit_code=ExitCode.SYSTEM_ERROR,
                 )
             current = account.heartbeat_targets or list(
                 provider.default_target_ids(account)
@@ -336,7 +337,7 @@ class HeartbeatService:
             status=HEARTBEAT_UNSUPPORTED,
             message=provider.unsupported_message(account),
             action_required=True,
-            exit_code=EXIT_MANUAL_ACTION,
+            exit_code=ExitCode.MANUAL_ACTION,
         )
 
     def _record_failed(
@@ -344,7 +345,7 @@ class HeartbeatService:
         account: Account,
         message: str,
         *,
-        exit_code: int,
+        exit_code: ExitCode,
         reference_time: datetime,
     ) -> HeartbeatOutcome:
         account.last_heartbeat_at = _utc_z(reference_time)
@@ -357,7 +358,7 @@ class HeartbeatService:
             provider_id=account.provider_id,
             status=HEARTBEAT_FAILED,
             message=message,
-            action_required=exit_code == EXIT_MANUAL_ACTION,
+            action_required=exit_code == ExitCode.MANUAL_ACTION,
             exit_code=exit_code,
         )
 
@@ -377,13 +378,15 @@ class HeartbeatService:
         return provider.default_target_ids(account)
 
 
-def heartbeat_exit_code(outcomes: list[HeartbeatOutcome]) -> int:
+def heartbeat_exit_code(outcomes: list[HeartbeatOutcome]) -> ExitCode:
     """Collapse per-account heartbeat outcomes to a CLI exit code."""
-    if any(outcome.exit_code == EXIT_SYSTEM_ERROR for outcome in outcomes):
-        return EXIT_SYSTEM_ERROR
-    if any(outcome.exit_code == EXIT_MANUAL_ACTION for outcome in outcomes):
-        return EXIT_MANUAL_ACTION
-    return 0
+    if any(outcome.exit_code == ExitCode.SYSTEM_ERROR for outcome in outcomes):
+        return ExitCode.SYSTEM_ERROR
+    if any(
+        outcome.exit_code == ExitCode.MANUAL_ACTION for outcome in outcomes
+    ):
+        return ExitCode.MANUAL_ACTION
+    return ExitCode.SUCCESS
 
 
 def heartbeat_supported_label(
@@ -458,7 +461,7 @@ def _missing_account() -> HeartbeatOutcome:
         provider_id="unknown",
         status=HEARTBEAT_FAILED,
         message="Account not found.",
-        exit_code=EXIT_SYSTEM_ERROR,
+        exit_code=ExitCode.SYSTEM_ERROR,
     )
 
 

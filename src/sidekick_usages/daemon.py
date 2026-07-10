@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import assert_never
 
+from sidekick_usages.core.types import ExitCode
 from sidekick_usages.errors import UsageError
 
 SERVICE_NAME = "sidekick-usages-refresh"
@@ -44,7 +45,7 @@ class DaemonOperationResult:
 
     backend: str
     message: str
-    exit_code: int = 0
+    exit_code: ExitCode = ExitCode.SUCCESS
 
 
 @dataclass(frozen=True)
@@ -230,11 +231,14 @@ class CronBackend(SchedulerBackend):
         result = self.runner.run(("crontab", "-l"))
         if result.returncode != 0:
             return DaemonOperationResult(
-                self.id, "cron entry not installed", 1
+                self.id,
+                "cron entry not installed",
+                ExitCode.MANUAL_ACTION,
             )
         installed = CRON_BEGIN in result.stdout and CRON_END in result.stdout
         message = "cron entry installed" if installed else "cron entry missing"
-        return DaemonOperationResult(self.id, message, 0 if installed else 1)
+        exit_code = ExitCode.SUCCESS if installed else ExitCode.MANUAL_ACTION
+        return DaemonOperationResult(self.id, message, exit_code)
 
     def uninstall(self) -> DaemonOperationResult:
         """Remove the marked crontab block."""
@@ -688,12 +692,14 @@ def _result_from_command(
     if result.returncode == 0:
         return DaemonOperationResult(backend, success_message)
     message = result.stderr or result.stdout or success_message
-    return DaemonOperationResult(backend, message, 3)
+    return DaemonOperationResult(backend, message, ExitCode.SCHEDULER_ERROR)
 
 
-def _exit(result: CommandResult) -> int:
+def _exit(result: CommandResult) -> ExitCode:
     """Map a command return code to the scheduler error code."""
-    return 0 if result.returncode == 0 else 3
+    if result.returncode == 0:
+        return ExitCode.SUCCESS
+    return ExitCode.SCHEDULER_ERROR
 
 
 def _replace_marked_block(text: str, block: str) -> str:

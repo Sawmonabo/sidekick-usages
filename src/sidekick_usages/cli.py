@@ -33,6 +33,7 @@ from sidekick_usages.branding import (
 )
 from sidekick_usages.cli_help import BrandedTyper, BrandedTyperGroup
 from sidekick_usages.clock import Clock, SystemClock
+from sidekick_usages.core.types import ExitCode
 from sidekick_usages.daemon import DaemonManager, DaemonOperation
 from sidekick_usages.doctor import (
     DoctorService,
@@ -63,8 +64,6 @@ from sidekick_usages.lifetime import (
     codex_lifetime_output,
 )
 from sidekick_usages.maintenance import (
-    EXIT_MANUAL_ACTION,
-    EXIT_SYSTEM_ERROR,
     REFRESH_FAILED,
     REFRESH_OK,
     RefreshOutcome,
@@ -299,7 +298,7 @@ def main(
             f"[red]Unknown provider {only!r}. "
             f"Known: {', '.join(sorted(app_ctx.providers))}.[/red]"
         )
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=ExitCode.MANUAL_ACTION)
     app_ctx.only = only
     if ctx.invoked_subcommand is None:
         _do_check()
@@ -327,12 +326,12 @@ def _do_check() -> None:
         accounts = [a for a in accounts if a.provider_id == app_ctx.only]
     if not accounts:
         _print_no_accounts(app_ctx.only, branded=True)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=ExitCode.MANUAL_ACTION)
 
-    exit_code = 0
+    exit_code = ExitCode.SUCCESS
     for acct in accounts:
         if not _fetch_and_render(acct):
-            exit_code = 1
+            exit_code = ExitCode.MANUAL_ACTION
 
     if app_ctx.collected or app_ctx.failures:
         app_ctx.console.print(
@@ -735,7 +734,7 @@ def add_cmd(
                 app_ctx.err_console.print(
                     "[red]No valid token provided. Cancelled.[/red]"
                 )
-                raise typer.Exit(code=1)
+                raise typer.Exit(code=ExitCode.MANUAL_ACTION)
             src = "stdin" if not sys.stdin.isatty() else "prompt"
             app_ctx.console.print(f"[green]Got token from {src}.[/green]")
 
@@ -837,7 +836,7 @@ def remove_cmd(
         app_ctx.err_console.print(
             f"[yellow]No account named '{label}'.[/yellow]"
         )
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=ExitCode.MANUAL_ACTION)
     app_ctx.store.save()
     app_ctx.console.print(f"[green]Removed '{label}'.[/green]")
 
@@ -857,7 +856,7 @@ def rename_cmd(
             f"[yellow]Cannot rename: '{old}' is missing or "
             f"'{new}' already exists.[/yellow]"
         )
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=ExitCode.MANUAL_ACTION)
     app_ctx.store.save()
     app_ctx.console.print(f"[green]Renamed '{old}' → '{new}'.[/green]")
 
@@ -877,11 +876,11 @@ def set_plan_cmd(label: str, plan: str) -> None:
     value = plan.strip().lower()
     if not value:
         app_ctx.err_console.print("[red]Plan must not be empty.[/red]")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=ExitCode.MANUAL_ACTION)
     acct = app_ctx.store.get(label)
     if acct is None:
         app_ctx.err_console.print(f"[red]No account labeled '{label}'.[/red]")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=ExitCode.MANUAL_ACTION)
     acct.plan = value
     app_ctx.store.upsert(acct)
     app_ctx.store.save()
@@ -967,13 +966,13 @@ def refresh_cmd(
         app_ctx.err_console.print(
             f"[yellow]No account named '{label}'.[/yellow]"
         )
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=ExitCode.MANUAL_ACTION)
     provider = app_ctx.providers.get(acct.provider_id)
     if provider is None:
         app_ctx.err_console.print(
             f"[red]Unknown provider '{acct.provider_id}' for '{label}'.[/red]"
         )
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=ExitCode.MANUAL_ACTION)
     credential_home = _refresh_credential_home(
         provider,
         from_codex_home,
@@ -985,7 +984,7 @@ def refresh_cmd(
             f"locally. Run the appropriate login command first."
             f"[/red]"
         )
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=ExitCode.MANUAL_ACTION)
     _ensure_refresh_identity_matches(
         acct,
         detected,
@@ -1040,7 +1039,7 @@ def _refresh_all_cmd(*, quiet: bool, force: bool) -> None:
     accounts = list(app_ctx.store)
     if not accounts:
         _print_no_accounts(None)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=ExitCode.MANUAL_ACTION)
     service = TokenMaintenanceService(
         app_ctx.store,
         app_ctx.http,
@@ -1049,7 +1048,7 @@ def _refresh_all_cmd(*, quiet: bool, force: bool) -> None:
     )
     outcomes = service.refresh_all(force=force)
     for outcome in outcomes:
-        if quiet and outcome.exit_code == 0:
+        if quiet and outcome.exit_code is ExitCode.SUCCESS:
             continue
         if outcome.status == REFRESH_OK:
             app_ctx.console.print(f"[green]{outcome.label}: refreshed[/green]")
@@ -1150,7 +1149,7 @@ def _run_heartbeat_label(label: str, *, target_id: str | None = None) -> None:
         app_ctx.err_console.print(
             f"[yellow]No account named '{label}'.[/yellow]"
         )
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=ExitCode.MANUAL_ACTION)
     outcome = _heartbeat_service().heartbeat_account(
         account,
         require_enabled=False,
@@ -1229,7 +1228,7 @@ def heartbeat_status_cmd(
         accounts = [a for a in accounts if a.label == label]
     if not accounts:
         app_ctx.err_console.print("[yellow]No matching accounts.[/yellow]")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=ExitCode.MANUAL_ACTION)
     render_heartbeat_status(
         accounts,
         app_ctx.heartbeat_providers,
@@ -1250,7 +1249,7 @@ def maintain_cmd(
     accounts = list(app_ctx.store)
     if not accounts:
         _print_no_accounts(None)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=ExitCode.MANUAL_ACTION)
 
     refresh_service = TokenMaintenanceService(
         app_ctx.store,
@@ -1285,7 +1284,7 @@ def _render_refresh_outcomes(
     """Render refresh outcomes using existing command wording."""
     app_ctx = _get_ctx()
     for outcome in outcomes:
-        if quiet and outcome.exit_code == 0:
+        if quiet and outcome.exit_code is ExitCode.SUCCESS:
             continue
         if outcome.status == REFRESH_OK:
             app_ctx.console.print(f"[green]{outcome.label}: refreshed[/green]")
@@ -1325,21 +1324,23 @@ def _heartbeat_service() -> HeartbeatService:
     )
 
 
-def _combined_exit_code(left: int, right: int) -> int:
+def _combined_exit_code(left: ExitCode, right: ExitCode) -> ExitCode:
     """Return the highest-priority maintenance exit code."""
     exit_codes = (left, right)
-    if EXIT_SYSTEM_ERROR in exit_codes:
-        return EXIT_SYSTEM_ERROR
-    if EXIT_MANUAL_ACTION in exit_codes:
-        return EXIT_MANUAL_ACTION
-    return 0
+    if ExitCode.SCHEDULER_ERROR in exit_codes:
+        return ExitCode.SCHEDULER_ERROR
+    if ExitCode.SYSTEM_ERROR in exit_codes:
+        return ExitCode.SYSTEM_ERROR
+    if ExitCode.MANUAL_ACTION in exit_codes:
+        return ExitCode.MANUAL_ACTION
+    return ExitCode.SUCCESS
 
 
 def _usage_error(message: str) -> NoReturn:
     """Print a CLI usage error and exit."""
     app_ctx = _get_ctx()
     app_ctx.err_console.print(f"[red]{message}[/red]")
-    raise typer.Exit(code=2)
+    raise typer.Exit(code=ExitCode.SYSTEM_ERROR)
 
 
 # ---------------------------------------------------------------------
@@ -1375,7 +1376,7 @@ def doctor_cmd(
         app_ctx.err_console.print(
             f"[red]Unknown provider {provider_id!r}.[/red]"
         )
-        raise typer.Exit(code=2)
+        raise typer.Exit(code=ExitCode.SYSTEM_ERROR)
     service = DoctorService(
         app_ctx.store,
         app_ctx.providers,
@@ -1391,7 +1392,7 @@ def doctor_cmd(
     diagnostics = service.diagnostics(provider_id=provider_id, label=label)
     if not diagnostics:
         app_ctx.err_console.print("[yellow]No matching accounts.[/yellow]")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=ExitCode.MANUAL_ACTION)
     render_doctor(diagnostics, app_ctx.console, json_output=json_output)
     code = doctor_exit_code(diagnostics)
     if code:
@@ -1454,9 +1455,12 @@ def _run_daemon_operation(
         result = manager.run(operation, backend)
     except (UsageError, ValueError) as e:
         app_ctx.err_console.print(f"[red]{e}[/red]")
-        raise typer.Exit(code=3) from e
-    style = "green" if result.exit_code == 0 else "red"
-    if operation is DaemonOperation.STATUS and result.exit_code == 0:
+        raise typer.Exit(code=ExitCode.SCHEDULER_ERROR) from e
+    style = "green" if result.exit_code is ExitCode.SUCCESS else "red"
+    if (
+        operation is DaemonOperation.STATUS
+        and result.exit_code is ExitCode.SUCCESS
+    ):
         app_ctx.console.print(
             brand_header(
                 app_ctx.console.size.width,
@@ -1501,7 +1505,7 @@ def _ensure_refresh_identity_matches(
         "  Log into the matching provider account, or rerun with "
         "--replace-identity to intentionally replace this label."
     )
-    raise typer.Exit(code=1)
+    raise typer.Exit(code=ExitCode.MANUAL_ACTION)
 
 
 # ---------------------------------------------------------------------
@@ -1559,7 +1563,7 @@ def codex_login_cmd(
         app_ctx.err_console.print(
             "[red]Codex CLI executable 'codex' was not found on PATH.[/red]"
         )
-        raise typer.Exit(code=1) from e
+        raise typer.Exit(code=ExitCode.MANUAL_ACTION) from e
     except subprocess.CalledProcessError as e:
         raise typer.Exit(code=e.returncode) from e
 
@@ -1570,14 +1574,14 @@ def codex_login_cmd(
             f"[red]Codex login finished, but no auth.json was found in "
             f"{source}.[/red]"
         )
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=ExitCode.MANUAL_ACTION)
 
     acct = app_ctx.store.get(label)
     if acct is not None and acct.provider_id != "codex":
         app_ctx.err_console.print(
             f"[red]'{label}' is a {acct.provider_id} account, not codex.[/red]"
         )
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=ExitCode.MANUAL_ACTION)
     if acct is None:
         acct = Account(
             label=label,
@@ -1634,12 +1638,12 @@ def codex_export_cmd(
         app_ctx.err_console.print(
             f"[yellow]No account named '{label}'.[/yellow]"
         )
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=ExitCode.MANUAL_ACTION)
     if acct.provider_id != "codex":
         app_ctx.err_console.print(
             f"[red]'{label}' is a {acct.provider_id} account, not codex.[/red]"
         )
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=ExitCode.MANUAL_ACTION)
     reference_time = app_ctx.clock.now()
 
     source_blob = _matching_codex_auth_blob(
@@ -1671,7 +1675,7 @@ def codex_export_cmd(
             "  Missing Codex id_token or account id metadata. Run "
             f"`sidekick-usages codex-login {label}` once for that account."
         )
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=ExitCode.MANUAL_ACTION)
 
     app_ctx.store.upsert(acct)
     app_ctx.store.save()
@@ -1723,7 +1727,7 @@ def setup_token_cmd(
         token = prov.run_setup_token()
     except UnsupportedOperationError as e:
         app_ctx.err_console.print(f"[red]{e}[/red]")
-        raise typer.Exit(code=1) from e
+        raise typer.Exit(code=ExitCode.MANUAL_ACTION) from e
 
     if not token:
         app_ctx.err_console.print(
@@ -1731,7 +1735,7 @@ def setup_token_cmd(
             f"`sidekick-usages add {prov.id}` with --token."
             f"[/red]"
         )
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=ExitCode.MANUAL_ACTION)
 
     existing = app_ctx.store.find_by_token(token)
     fields = _CredentialFields(token=token)
@@ -1786,7 +1790,7 @@ def reset_cmd(
             app_ctx.err_console.print(
                 f"[red]Unknown provider {provider!r}.[/red]"
             )
-            raise typer.Exit(code=1)
+            raise typer.Exit(code=ExitCode.MANUAL_ACTION)
         targets = app_ctx.store.filter_by_provider(provider)
         count = len(targets)
         scope = f"{count} {provider} account(s)"
@@ -1812,7 +1816,7 @@ def reset_cmd(
             console=app_ctx.console,
         ):
             app_ctx.console.print("Cancelled.")
-            raise typer.Exit(code=1)
+            raise typer.Exit(code=ExitCode.MANUAL_ACTION)
 
     if provider:
         cleared = app_ctx.store.reset_provider(provider)
@@ -1842,15 +1846,15 @@ def check_update_cmd() -> None:
         )
         if e.api_message:
             app_ctx.err_console.print(f"[dim]{e.api_message}[/dim]")
-        raise typer.Exit(code=1) from None
+        raise typer.Exit(code=ExitCode.MANUAL_ACTION) from None
     except UsageError as e:
         app_ctx.err_console.print(f"[red]Could not check: {e}[/red]")
-        raise typer.Exit(code=1) from None
+        raise typer.Exit(code=ExitCode.MANUAL_ACTION) from None
     except ValueError as e:
         app_ctx.err_console.print(
             f"[red]Unexpected GitHub response: {e}[/red]"
         )
-        raise typer.Exit(code=1) from None
+        raise typer.Exit(code=ExitCode.MANUAL_ACTION) from None
 
     app_ctx.console.print(update_status_line())
     app_ctx.console.print()
@@ -1884,7 +1888,7 @@ def update_cmd(
     method = detect_install_method()
     if method is InstallMethod.UNKNOWN:
         app_ctx.err_console.print(f"[yellow]{manual_instructions()}[/yellow]")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=ExitCode.MANUAL_ACTION)
 
     argv = upgrade_command_for(method)
     app_ctx.console.print(f"[dim]$ {' '.join(argv)}[/dim]")
@@ -1899,7 +1903,7 @@ def update_cmd(
             f"Install {argv[0]!r} and retry, or run a different "
             "upgrade path manually."
         )
-        raise typer.Exit(code=1) from e
+        raise typer.Exit(code=ExitCode.MANUAL_ACTION) from e
     except subprocess.CalledProcessError as e:
         raise typer.Exit(code=e.returncode) from e
 
@@ -1919,7 +1923,7 @@ def _normalize_codex_home(
         app_ctx.err_console.print(
             "[red]--codex-home can only be used with the codex provider.[/red]"
         )
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=ExitCode.MANUAL_ACTION)
     return codex_home.expanduser()
 
 
@@ -2016,7 +2020,7 @@ def _require_codex_provider() -> Provider:
         app_ctx.err_console.print(
             "[red]Codex provider is not registered.[/red]"
         )
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=ExitCode.MANUAL_ACTION)
     return provider
 
 
@@ -2074,7 +2078,7 @@ def _resolve_provider(provider_id: str) -> Provider:
             f"[red]Unknown provider {provider_id!r}. "
             f"Known: {', '.join(sorted(app_ctx.providers))}.[/red]"
         )
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=ExitCode.MANUAL_ACTION)
     return provider
 
 
@@ -2132,7 +2136,7 @@ def _upsert_existing(
                 f"'{existing.label}', but '{target}' already "
                 f"exists too. Use --force to overwrite.[/yellow]"
             )
-            raise typer.Exit(code=1)
+            raise typer.Exit(code=ExitCode.MANUAL_ACTION)
         app_ctx.store.rename(existing.label, target)
     acct = app_ctx.store.get(target)
     if acct is not None:
@@ -2201,7 +2205,7 @@ def _insert_new(
             f"[yellow]Account '{label}' already exists. Use "
             f"--force or pass --label.[/yellow]"
         )
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=ExitCode.MANUAL_ACTION)
 
     acct = Account(
         label=label,
@@ -2223,7 +2227,7 @@ def _insert_new(
         app_ctx.err_console.print(
             "[red]Token rejected by API (HTTP 401).[/red]"
         )
-        raise typer.Exit(code=1) from e
+        raise typer.Exit(code=ExitCode.MANUAL_ACTION) from e
     except ForbiddenError as e:
         # OAuth usage endpoint refused — likely an inference-only
         # token (e.g. ``claude setup-token``). Self-heal scopes=[]

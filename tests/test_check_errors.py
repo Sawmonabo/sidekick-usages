@@ -9,6 +9,7 @@ from rich.console import Console
 from typer.testing import CliRunner
 
 from sidekick_usages import cli
+from sidekick_usages.core.types import ProviderId
 from sidekick_usages.errors import AuthError, TransientError
 from sidekick_usages.http import HttpClient
 from sidekick_usages.providers.base import DetectedCredentials, Provider
@@ -20,7 +21,7 @@ from tests.test_support import FixedClock, make_application_paths
 class _FakeProvider(Provider):
     """Provider test double with scripted fetch/refresh behavior."""
 
-    id = "codex"
+    id = ProviderId.CODEX
     display_name = "Codex CLI"
     token_pattern = re.compile(r".+")
 
@@ -30,7 +31,7 @@ class _FakeProvider(Provider):
         refresh_ok: bool = True,
         provider_id: str = "codex",
     ) -> None:
-        self.id = provider_id
+        self.id = ProviderId(provider_id)
         self.display_name = (
             "Codex CLI" if provider_id == "codex" else "Claude Code"
         )

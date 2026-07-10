@@ -12,6 +12,7 @@ from typer.testing import CliRunner
 from sidekick_usages import cli
 from sidekick_usages.branding import ROBOT_LINES
 from sidekick_usages.clock import Clock
+from sidekick_usages.core.types import ProviderId
 from sidekick_usages.heartbeat import (
     HEARTBEAT_ACTIVE,
     HEARTBEAT_DISABLED,
@@ -47,7 +48,7 @@ def _codex_heartbeat() -> CodexHeartbeat:
 class _FakeHeartbeatProvider(HeartbeatProvider):
     """Provider test double with scripted heartbeat and refresh behavior."""
 
-    id = "claude"
+    id = ProviderId.CLAUDE
     display_name = "Claude Code"
 
     def __init__(
@@ -57,7 +58,7 @@ class _FakeHeartbeatProvider(HeartbeatProvider):
         heartbeat_supported: bool = True,
         heartbeat_results: Iterable[HeartbeatProbeResult] = (),
     ) -> None:
-        self.id = provider_id
+        self.id = ProviderId(provider_id)
         self.display_name = (
             "Codex CLI" if provider_id == "codex" else "Claude Code"
         )
@@ -100,7 +101,7 @@ class _FakeHeartbeatProvider(HeartbeatProvider):
 class _FakeRefreshProvider(Provider):
     """Provider test double for maintain refresh ordering."""
 
-    id = "claude"
+    id = ProviderId.CLAUDE
     display_name = "Claude Code"
 
     def __init__(self) -> None:

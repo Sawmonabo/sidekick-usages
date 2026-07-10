@@ -2,6 +2,8 @@
 
 from dataclasses import dataclass
 
+from sidekick_usages.core.types import ExitCode
+
 HEARTBEAT_WARMED = "warmed"
 HEARTBEAT_ACTIVE = "active"
 HEARTBEAT_DISABLED = "disabled"
@@ -51,6 +53,6 @@ class HeartbeatOutcome:
     message: str
     warmed: bool = False
     action_required: bool = False
-    exit_code: int = 0
+    exit_code: ExitCode = ExitCode.SUCCESS
     target_id: str | None = None
     target_label: str | None = None
