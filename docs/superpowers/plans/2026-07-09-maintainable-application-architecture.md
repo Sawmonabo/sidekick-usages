@@ -2295,46 +2295,46 @@ initializer is thin and is not a barrel for private helpers.
 
 **Work:**
 
-- [ ] Make `cli/__init__.py` re-export only `app` and `run`.
-- [ ] Make `create_app()` registration-only with explicit registration
+- [x] Make `cli/__init__.py` re-export only `app` and `run`.
+- [x] Make `create_app()` registration-only with explicit registration
       functions, no dynamic discovery, no command-to-global-app imports, and
       no runtime composition.
-- [ ] Build the strict store-backed `AppContext` and separate typed
+- [x] Build the strict store-backed `AppContext` and separate typed
       `PersistenceContext`, `DoctorContext`, `DaemonContext`, and
       `UpdateContext` exactly as defined above.
-- [ ] Keep raw paths, clocks, HTTP, provider and heartbeat registries,
+- [x] Keep raw paths, clocks, HTTP, provider and heartbeat registries,
       scheduler backends, consoles, flags, collected results, failures, and
       broad optional state out of every operational context.
-- [ ] Add `InvocationContext` to `ctx.obj` with lazy typed `require_*()`
+- [x] Add `InvocationContext` to `ctx.obj` with lazy typed `require_*()`
       accessors; remove the module singleton, mutable class state,
       `set_context()`, and implicit current-context lookup.
-- [ ] Implement PEP 695 `Composed[T]` with `ExitStack` ownership transfer,
+- [x] Implement PEP 695 `Composed[T]` with `ExitStack` ownership transfer,
       close-once behavior, LIFO partial cleanup, and original-error
       preservation when cleanup also fails.
-- [ ] Default provider and heartbeat registries only on `None`; copy and
+- [x] Default provider and heartbeat registries only on `None`; copy and
       preserve an explicitly injected empty mapping.
-- [ ] Add `TokenPromptSpec` as immutable non-secret application metadata and
+- [x] Add `TokenPromptSpec` as immutable non-secret application metadata and
       expose it through `CredentialService`, never a raw provider adapter.
-- [ ] Keep token prompts in `cli/token_input.py`; delegate setup-token execution
+- [x] Keep token prompts in `cli/token_input.py`; delegate setup-token execution
       through `ClaudeSetupToken`, never provider internals or a registry.
-- [ ] Prompt only when local detection returns exactly the typed missing state;
+- [x] Prompt only when local detection returns exactly the typed missing state;
       all other credential failures render without prompting.
-- [ ] Add `HeartbeatService.support_label(account)` and
+- [x] Add `HeartbeatService.support_label(account)` and
       `support_labels(accounts)`, plus `LifetimeCollector`, `UpdateService`,
       and `ClaudeSetupToken`; do not expose their raw registries, callables,
       HTTP, subprocess, or cache inputs to commands.
-- [ ] Handle `DoctorReady`, `DoctorBlocked`, and `DoctorFailed` exhaustively;
+- [x] Handle `DoctorReady`, `DoctorBlocked`, and `DoctorFailed` exhaustively;
       blocked and failed states render without constructing `AccountStore`.
-- [ ] Keep root, nested, and leaf help plus version on a no-composition path.
-- [ ] Move complete command clusters while preserving every current command,
+- [x] Keep root, nested, and leaf help plus version on a no-composition path.
+- [x] Move complete command clusters while preserving every current command,
       option, help entry, output channel, and exit contract.
-- [ ] Preserve `sidekick_usages.cli:app` and `python -m sidekick_usages`.
-- [ ] Delete `cli.py`, `cli_help.py`, and top-level `token_input.py` in the
+- [x] Preserve `sidekick_usages.cli:app` and `python -m sidekick_usages`.
+- [x] Delete `cli.py`, `cli_help.py`, and top-level `token_input.py` in the
       same atomic change; retain no stale compatibility module.
-- [ ] Make the package verifier inspect source, sdist, and exactly one fresh
+- [x] Make the package verifier inspect source, sdist, and exactly one fresh
       wheel, install that wheel outside the checkout with source leakage
       cleared, and exercise both entry paths.
-- [ ] Keep `cli/app.py` near or below 200 lines, keep cohesive modules below
+- [x] Keep `cli/app.py` near or below 200 lines, keep cohesive modules below
       the 800-line target where practical, and never exceed the 1000-line hard
       limit.
 
@@ -2384,6 +2384,25 @@ initializer is thin and is not a barrel for private helpers.
 - Add one small typed `InvocationContext` harness only if at least three
   command-test modules need it. It is explicit, non-autouse, constructs no real
   resources, and supplies only the composer needed by each test.
+
+**Execution record:** Commit `7b7f102` first narrowed the command-facing
+service seams used by the final composition root. Commit `154d605` then
+performed the atomic CLI module-to-package conversion, moved every complete
+command cluster to its named owner, added typed lazy composition and
+close-once resource ownership, preserved no-composition help and version
+paths, and removed every stale flat module. Commits `729bb05` and `2280924`
+made the resulting behavior checks portable across the supported host
+permission models without weakening the native filesystem contract.
+
+The completed tree passed 676 tests with four intentional platform skips,
+Ruff, `ty`, the complete pre-commit and security gates, Markdown lint, exact
+source/sdist/wheel member checks, and isolated execution through both installed
+entry points. Independent review replayed composition failure cleanup,
+doctor read-race handling, explicit empty registries, command registration,
+and installed-artifact behavior and found no remaining ownership or lifecycle
+defect. GitHub Actions run `29103135843` passed Python 3.14 tests on Linux,
+macOS, and Windows, released-v0.6.0 compatibility, and both Homebrew source
+builds, followed by the final wheel and source-distribution build.
 
 **Acceptance:** The flat CLI is gone; command ownership matches the table;
 normal, persistence, doctor, daemon, and update composition are strict and
