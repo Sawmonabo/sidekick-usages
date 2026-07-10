@@ -140,6 +140,22 @@ working APIs and the repository's qualified private-file primitive. An
 additional atomic-write package would not strengthen handle identity, DACL
 validation, or multi-artifact recovery.
 
+## WSL2 qualification evidence
+
+The native checkpoint was also exercised on the project's actual WSL2 host,
+not a simulated platform value. The host reported Ubuntu 22.04 on the
+Microsoft WSL2 6.6.87.2 kernel, `WSL_DISTRO_NAME=Ubuntu-22.04`, an active WSL
+interop channel, and the checkout on `/dev/sdd` ext4. A real Sidekick
+filesystem facade created below the protected checkout hierarchy classified
+the volume as ext4 and proved the already-private parent without mutation.
+
+The focused native filesystem and scheduler suite passed 26 tests with only
+the four intentional macOS/Windows native skips. It exercised the WSL ext4
+allowlist, explicit 9p/DrvFS rejection policy, current directory and authority
+permissions, Windows Task Scheduler wrapper generation, backend selection,
+and fail-closed multi-backend quiescence behavior. No real account,
+credential, daemon, or scheduler state was read or written.
+
 ## Primary sources
 
 - [Apple `statfs(2)` and `fstatfs(2)` manual](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/statfs.2.html)
@@ -176,8 +192,12 @@ validation, or multi-artifact recovery.
 
 ## Verification requirement
 
-The correction is not complete from one host's evidence. A new pushed matrix
-must pass real macOS APFS qualification, the Windows pywin32/DACL suite, Linux,
-the WSL harness, and both Homebrew source builds. Any subsequent native failure
-remains a release blocker and must be recorded here before the CS-14 native
-gate is closed.
+The correction closed on commit `327520422055bc21fe933d5f7f43ddc572301e25`
+through [CI run 29093341499](https://github.com/Sawmonabo/sidekick-usages/actions/runs/29093341499).
+The run passed Python 3.14 tests and exact-wheel verification on native Linux,
+macOS/APFS, and Windows/NTFS; the pre-commit gate; the actual released-v0.6.0
+compatibility harness; current-source Homebrew builds on Linux and macOS; and
+the final exact wheel and sdist build. The WSL2/ext4 proof recorded above
+passed on the same source lineage. CS-14's native writer gate is therefore
+closed. Any future native regression remains a release blocker rather than a
+reason to weaken the qualified contracts.

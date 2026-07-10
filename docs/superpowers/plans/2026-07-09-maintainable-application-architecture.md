@@ -246,7 +246,7 @@ the implementation sequence explicit.
 | recursive JSON vocabulary | `serialization/json.py` |
 | `store.py:AccountStore` | `persistence/account_store.py` |
 | persisted record parsing | `persistence/schemas.py` |
-| schema and location migration | `persistence/migrations.py` |
+| schema and location migration | `persistence/migrations/` |
 | `http.py` | `http/client.py` and `http/retry.py` |
 | Sidekick-owned path reconstruction | `paths.py` |
 | application wall-time acquisition | `clock.py` |
@@ -346,10 +346,9 @@ artifact grammar, explicit command, or rollback proof recorded in the design.
 
 ### 5.2 Provider-command release contract
 
-At the start of CS-20, record the actual first release carrying the provider
-hierarchy as release `R`. If no intervening release changes the
-current 0.6.0 baseline, the expected `R` is 0.7.0. Do not hard-code that
-assumption before refreshing Release Please and package state.
+The live tag, Release Please manifest, and project version were refreshed
+before implementation and remain 0.6.0. The first release carrying the
+provider hierarchy is therefore release `R = 0.7.0`.
 
 In release `R`:
 
@@ -359,8 +358,8 @@ In release `R`:
   Please generates the matching changelog entry; and
 - keep JSON, quiet, scheduled, and other machine stdout unchanged.
 
-Keep aliases through the next minor release and remove them in the following
-minor release. Record the actual version numbers before publishing `R`.
+Keep aliases throughout the 0.8.x minor line and remove them in 0.9.0. Record
+the implementation date separately from the eventual 0.7.0 tag date.
 
 ### 5.3 Operator decision ledger
 
@@ -1753,7 +1752,7 @@ input.
       mutation; prove normal current operation preserves those valid states.
 - [x] Keep `paths.py` discovery-only and persistence free of provider imports.
 - [x] Leave physical locations unchanged.
-- [ ] Keep the versioned writer disabled until native Linux, macOS, Windows,
+- [x] Keep the versioned writer disabled until native Linux, macOS, Windows,
       WSL, exact-wheel, and twice-repeated actual-v0.6.0 gates all pass.
 
 **Load-bearing tests:**
@@ -1987,21 +1986,21 @@ change belongs here.
 
 **Work:**
 
-- [ ] Put `CODEX_HOME`, `auth.json`, JWT claims, identity matching, imports,
+- [x] Put `CODEX_HOME`, `auth.json`, JWT claims, identity matching, imports,
       exports, private per-account copies, permissions, and Codex-native time
       formatting in `codex/auth.py`.
-- [ ] Put usage requests and response conversion in `codex/usage.py`.
-- [ ] Put untrusted auth, JWT, refresh, and usage shapes in
+- [x] Put usage requests and response conversion in `codex/usage.py`.
+- [x] Put untrusted auth, JWT, refresh, and usage shapes in
       `codex/schemas.py` by moving current parsing unchanged; strict validator
       adoption and changed failures belong exclusively to CS-17A.
-- [ ] Put the concrete heartbeat adapter under Codex ownership.
-- [ ] Keep the user's active Codex login read-only during saved-account
+- [x] Put the concrete heartbeat adapter under Codex ownership.
+- [x] Keep the user's active Codex login read-only during saved-account
       maintenance.
-- [ ] Build the explicit provider registry at composition; remove dynamic or
+- [x] Build the explicit provider registry at composition; remove dynamic or
       unused lookup surfaces.
-- [ ] Delete `heartbeat/registry.py`, `heartbeat/claude.py`, and
+- [x] Delete `heartbeat/registry.py`, `heartbeat/claude.py`, and
       `heartbeat/codex.py` only after their ownership moves completely.
-- [ ] Keep package initializers thin and avoid private parser re-exports.
+- [x] Keep package initializers thin and avoid private parser re-exports.
 
 **Load-bearing tests:**
 
@@ -2040,34 +2039,34 @@ native relocation in this task.
 
 **Contract checkpoint:**
 
-- [ ] Select one typed refresh result consumed by usage, maintenance, and
+- [x] Select one typed refresh result consumed by usage, maintenance, and
       credential coordination. Success carries the refreshed credentials or
       explicit update; failures remain typed outcomes or errors. Boolean plus
       hidden mutation is forbidden.
-- [ ] Define provider-safe error fields that can cross into persistence,
+- [x] Define provider-safe error fields that can cross into persistence,
       doctor, maintenance, and presentation without raw payloads, tokens, or
       full identities.
-- [ ] Confirm Claude setup-token as a narrow Claude facade/capability and
+- [x] Confirm Claude setup-token as a narrow Claude facade/capability and
       remove `run_setup_token()` from the generic provider contract.
-- [ ] Update the current `setup-token <provider>` command to invoke the narrow
+- [x] Update the current `setup-token <provider>` command to invoke the narrow
       Claude facade and return the existing typed unsupported result for every
       other provider; never rely on a missing generic method.
 
 **Work:**
 
-- [ ] Apply the approved validator to Claude and Codex credential, auth, JWT,
+- [x] Apply the approved validator to Claude and Codex credential, auth, JWT,
       refresh, and usage payloads at their owning boundaries.
-- [ ] Distinguish missing, unreadable, malformed, incomplete, expired,
+- [x] Distinguish missing, unreadable, malformed, incomplete, expired,
       rejected, and identity-mismatched provider state.
-- [ ] Normalize all provider-native expiry units before core.
-- [ ] Translate provider/schema failures into safe typed application outcomes
+- [x] Normalize all provider-native expiry units before core.
+- [x] Translate provider/schema failures into safe typed application outcomes
       before any persistence or presentation boundary.
-- [ ] Preserve provider-specific diagnostic detail only when it is redacted
+- [x] Preserve provider-specific diagnostic detail only when it is redacted
       and actionable.
-- [ ] Remove unchecked casts and permissive defaults at provider boundaries.
-- [ ] Update usage and maintenance to consume the typed refresh contract with
+- [x] Remove unchecked casts and permissive defaults at provider boundaries.
+- [x] Update usage and maintenance to consume the typed refresh contract with
       no Boolean compatibility shim.
-- [ ] Update current add, refresh, Codex login/export, and related CLI paths to
+- [x] Update current add, refresh, Codex login/export, and related CLI paths to
       consume typed detection/error states without temporary compatibility
       unions or truthiness fallbacks.
 
@@ -2107,6 +2106,8 @@ coordination.
 
 - Create `src/sidekick_usages/credentials/__init__.py`.
 - Create `src/sidekick_usages/credentials/service.py`.
+- Create focused persistence transaction and journal-schema modules for
+  private-bundle and account-authority coordination.
 - Modify provider facades and the current CLI commands.
 - Split credential cases out of `tests/test_cli_refresh.py` only when the
   resulting service and command tests are more cohesive.
@@ -2123,6 +2124,16 @@ coordination.
       details inside provider packages.
 - [ ] Keep prompts, confirmations, and token input in CLI adapters.
 - [ ] Persist one complete account update or none.
+- [x] Journal a bounded deterministic tuple of private-bundle mutations,
+      reject duplicate destinations, validate every target, and commit account
+      authority last under the existing account lock.
+- [x] Represent source guards and target authority expectations separately so
+      the transaction supports both in-place credential refresh and later
+      compatibility-to-canonical relocation.
+- [x] Recover the complete tuple in one fresh-process decision: authority at
+      the base state rolls every private mutation back; authority at the
+      target state rolls every mutation forward; a third authority fails
+      closed.
 - [ ] Preserve diagnostic state without converting rejection into Boolean
       false or generic absence.
 - [ ] Sanitize provider failures before persistence, doctor, maintenance,
@@ -2139,10 +2150,22 @@ coordination.
 - Provider rejection remains an authentication outcome.
 - Codex import/export delegates to auth ownership and preserves active login.
 - A persistence failure leaves no claimed successful credential update.
+- Failures at every durable checkpoint recover to old account plus old bundles
+  or new account plus new bundles, never a split generation.
+- Multiple private bundles commit and recover as one unit with deterministic
+  ordering and duplicate-destination rejection.
 - CLI prompts select service inputs but do not implement provider parsing.
 - One synthetic-secret propagation test crosses provider, credential service,
   persistence, doctor/maintenance, and human/JSON error channels and proves
   raw token, body, and full identity values are absent everywhere.
+
+**Execution record:** Commit `43b3121` introduced the bounded non-secret
+journal, portable duplicate-destination checks, source-guard revalidation,
+multi-bundle old/new recovery, authority-last commit, and credential-aware
+account-store mutation. The exact staged snapshot passed 35 focused tests,
+Ruff, `ty`, and isolated exact-wheel verification. The complete transaction
+suite also passed under native Windows CPython 3.14 on NTFS, including the
+case-insensitive and trailing-dot/space namespace contract.
 
 **Acceptance:** One canonical credential model and one provider-neutral
 coordination service exist. No command reaches provider-private parsers.
@@ -2167,6 +2190,8 @@ land separately in CS-20.
 - Move `cli_help.py` to `cli/help.py`.
 - Move `token_input.py` to `cli/token_input.py`.
 - Create the approved provider-neutral `cli/commands/` modules.
+- Create `cli/commands/permissions.py` for the independent permission-repair
+  command group.
 - Create current-surface Claude and Codex command adapters.
 - Delete `src/sidekick_usages/cli.py` atomically.
 - Update `src/sidekick_usages/__main__.py`.
@@ -2184,6 +2209,7 @@ land separately in CS-20.
 | `maintenance.py` | `maintain` and maintenance result presentation |
 | `doctor.py` | `doctor` and diagnostic presentation |
 | `migrate.py` | explicit account migration and rollback preparation |
+| `permissions.py` | explicit permission-repair preview and execution |
 | `daemon.py` | install, status, uninstall |
 | `updates.py` | `check-update`, `update` |
 | `claude.py` | current top-level `setup-token` adapter |
@@ -2233,7 +2259,8 @@ There is no second refresh command or duplicated option validation.
   and preserves the original error.
 - An explicitly empty provider registry remains empty through composition.
 - JSON, quiet, scheduled, and current human output remain stable.
-- Source and wheel contain `cli/` and no stale `cli.py` or `cli_help.py`.
+- Source and wheel contain `cli/` and no stale `cli.py`, `cli_help.py`, or
+  top-level `token_input.py`.
 - Source and isolated-wheel entry points both work.
 
 **Recovery:** Revert the complete package conversion. No provider hierarchy,
@@ -2254,9 +2281,13 @@ tests under a NO-GO disposition.
 **Files when GO:**
 
 - Modify `src/sidekick_usages/paths.py`.
-- Modify `src/sidekick_usages/persistence/migrations.py`.
-- Modify `src/sidekick_usages/providers/codex/auth.py` only for the approved
-  port implementation.
+- Convert `src/sidekick_usages/persistence/migrations.py` atomically to a thin
+  `persistence/migrations/` facade with focused `service.py`, `account.py`,
+  `location.py`, and `ports.py` modules. The service remains the sole writer;
+  location assessment remains pure.
+- Add `src/sidekick_usages/providers/codex/auth_migration.py` for the concrete
+  migration port rather than expanding the existing auth module past its
+  cohesive size target.
 - Modify `src/sidekick_usages/doctor.py` for read-only assessment and guidance.
 - Modify final composition in `src/sidekick_usages/cli/app.py` and the typed
   doctor composition path.
@@ -2279,6 +2310,14 @@ tests under a NO-GO disposition.
       collisions, and partial destinations.
 - [ ] Prove idempotence and concurrency behavior before enabling writes.
 - [ ] Copy and validate every required private auth bundle.
+- [ ] Reuse the CS-18 multi-bundle journal and authority-last transaction;
+      do not loop a single-bundle writer or create a second migration writer.
+- [ ] Acquire distinct compatibility and canonical locks in deterministic
+      resolved-path order, then recheck scheduler quiescence and both source
+      states while locked.
+- [ ] Revalidate the compatibility authority immediately before and after the
+      canonical commit because released v0.6.0 does not honor the new lock;
+      classify a race as a typed conflict or partial state.
 - [ ] Preserve account and auth permissions.
 - [ ] Atomically commit rewritten account state last.
 - [ ] Retain every old durable source and backup; delete nothing automatically.
@@ -2321,6 +2360,9 @@ tests under a NO-GO disposition.
 - Help and version bypass discovery and assessment.
 - Linux, macOS, Windows, and WSL behavior passes the approved platform matrix.
 - Persistence remains the sole coordinator and imports no provider package.
+- No migration module crosses the 1000-line hard limit; modules near the
+  approximately 800-line review threshold receive an explicit cohesion
+  review.
 - Only `paths.py` imports `platformdirs`.
 - Review-branch commits require focused local gates; merge/release activation
   requires Linux, macOS, Windows, WSL, and rollback evidence recorded in the

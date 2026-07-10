@@ -578,6 +578,7 @@ src/sidekick_usages/
 │       ├── doctor.py
 │       ├── daemon.py
 │       ├── migrate.py
+│       ├── permissions.py
 │       ├── updates.py
 │       ├── claude.py
 │       └── codex.py
@@ -596,17 +597,33 @@ src/sidekick_usages/
 │       ├── __init__.py
 │       ├── provider.py
 │       ├── auth.py
+│       ├── auth_migration.py
 │       ├── usage.py
 │       ├── heartbeat.py
 │       └── schemas.py
 ├── persistence/
 │   ├── __init__.py
 │   ├── account_store.py
+│   ├── artifacts.py
+│   ├── assessment.py
+│   ├── credential_transaction_schema.py
+│   ├── credential_transactions.py
 │   ├── errors.py
 │   ├── schemas.py
-│   ├── migrations.py
+│   ├── migrations/
+│   │   ├── __init__.py
+│   │   ├── service.py
+│   │   ├── account.py
+│   │   ├── location.py
+│   │   └── ports.py
 │   ├── filesystem.py
+│   ├── inventory.py
 │   ├── locking.py
+│   ├── observations.py
+│   ├── private_credentials.py
+│   ├── transaction.py
+│   ├── transforms.py
+│   ├── v060.py
 │   └── _platform/
 │       ├── __init__.py
 │       ├── macos.py
@@ -845,8 +862,8 @@ automatically.
 
 #### Location-migration ownership
 
-`paths.py` performs discovery only. `persistence/migrations.py` owns the
-Sidekick durable-state location-migration workflow and receives
+`paths.py` performs discovery only. `persistence/migrations/service.py` owns
+the Sidekick durable-state location-migration workflow and receives
 `ApplicationPaths` explicitly. It exposes:
 
 - a read-only assessment describing every candidate, selected generation,
@@ -855,11 +872,12 @@ Sidekick durable-state location-migration workflow and receives
   provider-owned private-auth validation and copying, persisted-path rewriting,
   permission enforcement, and final atomic account-state commit.
 
-`persistence/migrations.py` defines and consumes a narrow typed
+`persistence/migrations/ports.py` defines the narrow typed
 `PrivateAuthMigrator` port for assessment, validated copy, permission
-enforcement, and destination-collision reporting. The Codex auth adapter
-implements that port. The current composition root injects the implementation;
-the persistence package never imports a provider package directly.
+enforcement, and destination-collision reporting. The concrete Codex
+`auth_migration.py` adapter implements that port. The current composition root
+injects the implementation; the persistence package never imports a provider
+package directly.
 
 The Codex auth adapter remains the owner of `auth.json` validation and
 credential-file semantics. The migration coordinator does not adopt
@@ -1640,6 +1658,8 @@ Provider-neutral commands remain grouped by workflow:
 | `heartbeat.py` | heartbeat group and label fallback |
 | `maintenance.py` | `maintain` and saved-token refresh |
 | `doctor.py` | `doctor` |
+| `migrate.py` | account migration and rollback preparation |
+| `permissions.py` | permission-repair preview and execution |
 | `daemon.py` | daemon install, status, and uninstall |
 | `updates.py` | `check-update` and `update` |
 
@@ -1672,11 +1692,11 @@ Compatibility commands are thin delegates to the same application services.
 They do not duplicate command workflows or provider operations, and they are
 removed when the approved deprecation period ends.
 
-Let the first release containing the provider command hierarchy be release
-`R`. Deprecated aliases ship in `R`, remain available through the next minor
-release, and are removed in the following minor release. The changelog and help
-mark them deprecated in `R`; deprecation messaging never contaminates JSON,
-quiet, scheduled, or other machine-readable stdout.
+The live 0.6.0 tag, project version, and Release Please manifest establish the
+first provider-hierarchy release as `R = 0.7.0`. Deprecated aliases ship in
+0.7.0, remain available throughout 0.8.x, and are removed in 0.9.0. The
+changelog and help mark them deprecated in 0.7.0; deprecation messaging never
+contaminates JSON, quiet, scheduled, or other machine-readable stdout.
 
 ## 9. Application services
 
@@ -1730,6 +1750,17 @@ a presentation type.
 Provider-specific file and protocol details remain in provider packages.
 Terminal prompts remain in CLI adapters.
 
+Credential persistence uses one crash-recoverable, provider-neutral
+transaction under the account lock. A bounded deterministic tuple of private
+bundle writes is journaled together, duplicate destinations are rejected,
+every target bundle is validated, and account authority is committed last.
+The journal distinguishes source guards from target authority expectations so
+the same boundary supports in-place refresh and compatibility-to-canonical
+relocation. Fresh-process recovery rolls the entire tuple back when authority
+is at the base generation, rolls it forward when authority is at the target
+generation, and fails closed on any third authority. Provider refresh remains
+pure and cannot write a private bundle before the application commits.
+
 Credential states distinguish:
 
 - missing;
@@ -1765,11 +1796,13 @@ maintenance-specific thresholds.
 - atomic writes where supported;
 - explicit persistence errors.
 
-`persistence/migrations.py` owns both explicitly supported stored-schema
-migrations and the durable-state location-migration coordinator defined in
-section 4.2. It does not discover paths, parse provider-native homes, or own
-Codex auth schemas. It consumes the injected `PrivateAuthMigrator` port and
-never imports a provider package.
+The `persistence/migrations/` package owns both explicitly supported
+stored-schema migrations and the durable-state location-migration coordinator
+defined in section 4.2. Its thin initializer preserves the public migration
+facade; `service.py` is the sole writer, `account.py` owns current generation
+transitions, `location.py` owns pure assessment/planning, and `ports.py` owns
+the injected interfaces. It does not discover paths, parse provider-native
+homes, or own Codex auth schemas, and it never imports a provider package.
 
 The common operation is explicit:
 
@@ -2175,7 +2208,8 @@ closed.
 
 ##### Explicit migration and rollback surfaces
 
-`persistence/migrations.py` is the sole assessment and execution owner.
+`persistence/migrations/service.py` is the sole assessment and execution
+owner.
 `AccountStore.load()` is read-only with respect to migration and accepts only
 the current schema. Composition assesses before constructing the store.
 
@@ -2249,6 +2283,13 @@ After native relocation, rollback preparation additionally materializes the
 latest reverse document at the v0.6.0 compatibility path and asks the injected
 `PrivateAuthMigrator` to validate and copy every Sidekick-owned Codex bundle
 before account paths commit. External/provider-native homes remain unchanged.
+Distinct compatibility and canonical roots are locked in deterministic
+resolved-path order. Because the released writer does not honor the new lock,
+the retained compatibility authority is fingerprinted and revalidated
+immediately before and after canonical authority commit. A detected released
+writer race is a typed conflict or resumable partial state, never silent
+success. Native relocation reuses the CS-18 multi-bundle journal so every
+bundle and the rewritten authority recover as one unit.
 
 ##### Prototype receipt and reset
 
@@ -3146,6 +3187,10 @@ state through `doctor`, and never silently merges, overwrites, or deletes a
 compatibility or prototype store. Disposable caches may be regenerated only
 after their lifecycle classification is explicit. Schema migration and
 filesystem-location migration do not run as one opaque operation.
+Compatibility and canonical locks are acquired in deterministic resolved-path
+order, all sources are revalidated while held, and the compatibility authority
+is fingerprint-checked around the canonical commit to detect a concurrent
+released writer that does not understand the new lock.
 
 `Account.codex_home` is persisted and may point either to a Sidekick-owned
 private auth bundle or an external/source `CODEX_HOME`. Migration copies
@@ -3330,7 +3375,8 @@ Native-location migration acceptance additionally requires:
   through `doctor`;
 - `doctor` can render the read-only migration assessment without a successfully
   loaded account store;
-- `persistence/migrations.py` is the only durable-state location-migration
+- `persistence/migrations/service.py` is the only durable-state
+  location-migration
   coordinator, while `paths.py` remains side-effect-free discovery;
 - equal private-Codex roots produce no relocation during the initial
   compatibility-preserving centralization;
@@ -3590,8 +3636,8 @@ Add focused checks for:
 - no duplicate Sidekick-owned `Path.home()` reconstruction;
 - no import-time Sidekick path discovery;
 - no durable-state location-migration coordinator outside
-  `persistence/migrations.py`;
-- no provider-package import from `persistence/migrations.py`;
+  `persistence/migrations/service.py`;
+- no provider-package import from `persistence/migrations/`;
 - the location-migration coordinator consumes the narrow
   `PrivateAuthMigrator` port instead of provider auth internals;
 - no private-Codex root reconstruction outside `paths.py`;
@@ -3972,10 +4018,11 @@ on 2026-07-10:
 25. Preserve generation-aware account-source precedence: canonical and
     existing-Sidekick authoritative stores reconcile explicitly, while the
     prototype store remains an import-only fallback.
-26. Make `persistence/migrations.py` the sole durable-state location-migration
-    coordinator, keep `paths.py` discovery-only, and consume an injected
-    `PrivateAuthMigrator` port so provider auth semantics remain with provider
-    adapters without introducing a persistence-to-provider import.
+26. Make `persistence/migrations/service.py` the sole durable-state
+    location-migration coordinator, keep `paths.py` discovery-only, and
+    consume an injected `PrivateAuthMigrator` port so provider auth semantics
+    remain with provider adapters without introducing a
+    persistence-to-provider import.
 27. Use a strict, two-field schema-version-one account envelope and require an
     explicit migration command; normal store loading never rewrites an older
     schema or imports the prototype automatically.

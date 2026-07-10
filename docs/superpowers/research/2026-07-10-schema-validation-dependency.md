@@ -520,6 +520,40 @@ coverage number. Assert Sidekick's stable path/code/message contract and
 observable behavior. Do not add copy-paste tests for every field when one clear
 parameterized case makes the same regression fail.
 
+## CS-17A implementation follow-up
+
+The provider-package implementation retained boundary-local Pydantic adapters,
+strict scalar validation, explicit extra-field policy, and Sidekick-owned
+error projection. Provider failures now distinguish missing, unreadable,
+malformed, incomplete, expired, rejected, identity-mismatched, and unsupported
+state without retaining rejected values or validation exceptions.
+
+Native source failures also require the same closed classification. Apple's
+Security documentation distinguishes an absent keychain item
+(`errSecItemNotFound`, OSStatus `-25300`) from an inaccessible locked item
+(`errSecInteractionNotAllowed`, OSStatus `-25308`). The macOS Claude adapter
+therefore treats only the shell exit corresponding to `-25300` as `MISSING`;
+other nonzero `security find-generic-password` exits are `UNREADABLE`. Mapping
+every nonzero exit to absence would conceal a real access failure and could
+incorrectly prompt for replacement credentials.
+
+The saved-account refresh subprocess requires a stronger isolation boundary
+than changing `HOME`. Anthropic documents that Linux and Windows credentials
+move under `CLAUDE_CONFIG_DIR` when it is set, while macOS credentials remain
+in the system Keychain. Anthropic also documents `%USERPROFILE%\.claude` as the
+default Windows credential location. A caller-provided `CLAUDE_CONFIG_DIR` or
+unchanged Windows profile can therefore defeat a temporary `HOME`; on macOS,
+no documented per-invocation Keychain namespace exists.
+
+The implementation consequence is fail-closed and platform-specific: saved
+CLI refresh is not attempted on macOS, and supported file-backed platforms
+must replace every relevant config/profile variable with an invocation-owned
+directory instead of inheriting user state. Provider subprocess output is an
+untrusted secret-bearing boundary, so Sidekick returns structured outcomes
+with Sidekick-owned messages rather than forwarding output after a token
+pattern blacklist. Unused refresh output is discarded and setup-token capture
+is bounded.
+
 ## Operator disposition
 
 | Field | Value |
@@ -597,6 +631,14 @@ an immutable release or tagged source.
 - [Official Homebrew Pydantic formula source][homebrew-pydantic-source]
 - [OSV API documentation][osv-api]
 
+### Provider source classification
+
+- [Apple `errSecItemNotFound` documentation][apple-item-not-found]
+- [Apple Security framework keychain pitfalls][apple-keychain-pitfalls]
+- [Anthropic credential management][anthropic-credentials]
+- [Anthropic Claude configuration-directory behavior][anthropic-directory]
+- [Anthropic environment-variable reference][anthropic-environment]
+
 [python-json]: https://docs.python.org/3.14/library/json.html
 [pydantic-adapter]: https://pydantic.dev/docs/validation/latest/concepts/type_adapter/
 [pydantic-strict]: https://pydantic.dev/docs/validation/latest/concepts/strict_mode/
@@ -627,3 +669,8 @@ an immutable release or tagged source.
 [homebrew-pydantic]: https://formulae.brew.sh/formula/pydantic
 [homebrew-pydantic-source]: https://raw.githubusercontent.com/Homebrew/homebrew-core/HEAD/Formula/p/pydantic.rb
 [osv-api]: https://google.github.io/osv.dev/api/
+[apple-item-not-found]: https://developer.apple.com/documentation/security/errsecitemnotfound
+[apple-keychain-pitfalls]: https://developer.apple.com/forums/thread/724013
+[anthropic-credentials]: https://code.claude.com/docs/en/team
+[anthropic-directory]: https://code.claude.com/docs/en/claude-directory
+[anthropic-environment]: https://code.claude.com/docs/en/env-vars
