@@ -45,8 +45,9 @@ from sidekick_usages.persistence.schemas import (
 )
 from sidekick_usages.persistence.transforms import prototype_to_version_one
 
-AUTHORITY_PATH = Path("/qualified/sidekick/accounts.json")
-PROTOTYPE_PATH = Path("/qualified/prototype/accounts.json")
+_QUALIFIED_ROOT = Path.cwd() / "qualified-test-root"
+AUTHORITY_PATH = _QUALIFIED_ROOT / "sidekick" / "accounts.json"
+PROTOTYPE_PATH = _QUALIFIED_ROOT / "prototype" / "accounts.json"
 GENERATION_ZERO = encode_generation_zero(GenerationZeroDocument(()))
 VERSION_ONE = encode_version_one(VersionOneDocument(()))
 PROTOTYPE = b'{"primary":{"token":"test-only-secret","plan":"max"}}'

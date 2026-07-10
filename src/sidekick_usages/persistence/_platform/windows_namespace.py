@@ -1,6 +1,7 @@
 """Windows namespace identity and local-NTFS qualification."""
 
 import ntpath
+import stat
 import sys
 from pathlib import Path
 
@@ -49,8 +50,8 @@ if sys.platform == "win32":
             candidate = parent
         attributes = path_attributes(candidate)
         if attributes is None or (
-            attributes & win32file.FILE_ATTRIBUTE_REPARSE_POINT
-            or not attributes & win32file.FILE_ATTRIBUTE_DIRECTORY
+            attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT
+            or not attributes & stat.FILE_ATTRIBUTE_DIRECTORY
         ):
             raise _native_error(NativeFailureKind.UNSAFE)
         return candidate

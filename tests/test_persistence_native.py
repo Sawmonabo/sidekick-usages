@@ -392,8 +392,7 @@ def test_windows_requires_non_reparse_fixed_ntfs_with_persistent_acls(
         windows_namespace,
         "path_attributes",
         lambda _path: (
-            win32file.FILE_ATTRIBUTE_DIRECTORY
-            | win32file.FILE_ATTRIBUTE_REPARSE_POINT
+            stat.FILE_ATTRIBUTE_DIRECTORY | stat.FILE_ATTRIBUTE_REPARSE_POINT
         ),
     )
     with pytest.raises(NativeFilesystemError) as exc_info:

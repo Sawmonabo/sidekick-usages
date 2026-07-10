@@ -475,7 +475,7 @@ if sys.platform == "win32":
                 0,
                 private_security_attributes(directory=False),
                 win32file.CREATE_NEW,
-                win32file.FILE_ATTRIBUTE_NORMAL,
+                stat.FILE_ATTRIBUTE_NORMAL,
                 None,
             )
             try:

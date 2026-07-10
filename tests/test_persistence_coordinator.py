@@ -377,7 +377,7 @@ class RecordingPrivateCredentials:
             self.events.append("credentials:repair")
         locked_precondition()
         return PrivateCredentialRepairResult(
-            root=Path("/test/private-codex"),
+            root=Path.cwd() / "test-private-codex",
             account_parent_repaired=True,
             directories_repaired=1,
             files_repaired=1,
