@@ -34,6 +34,18 @@ jobs:
     - name: Install all dependency groups
       run: uv sync --all-groups
 
+    - name: Set up Node.js 22
+      uses: actions/setup-node@v6
+      with:
+        node-version: 22
+        cache: npm
+
+    - name: Validate documentation toolchain
+      run: |
+        npm ci
+        npm audit --audit-level=moderate
+        npm run lint:markdown
+
     - name: Cache pre-commit environments
       uses: actions/cache@v5
       with:
