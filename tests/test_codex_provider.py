@@ -422,7 +422,12 @@ def test_refresh_returns_complete_replacement_without_hidden_mutation() -> (
 @pytest.mark.parametrize("field_name", ["refresh_token", "id_token"])
 @pytest.mark.parametrize(
     "invalid_value",
-    [None, "", 42, "é" * 131_073],
+    [
+        None,
+        "",
+        42,
+        pytest.param("é" * 131_073, id="oversized-utf8"),
+    ],
 )
 def test_refresh_rejects_invalid_present_optional_tokens(
     field_name: str,

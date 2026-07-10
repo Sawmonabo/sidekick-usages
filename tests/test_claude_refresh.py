@@ -290,6 +290,7 @@ def test_refresh_rejection_is_typed_and_secret_safe(
 def test_cli_rejection_is_authoritative_and_does_not_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(provider_module.platform, "system", lambda: "Linux")
     monkeypatch.setattr(
         provider_module.shutil,
         "which",
