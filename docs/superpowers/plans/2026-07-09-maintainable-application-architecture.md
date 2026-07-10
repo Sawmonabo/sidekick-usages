@@ -309,26 +309,37 @@ branch.
 
 ### 5.1 Stored-schema recovery contract
 
-The versioned persistence task uses this explicit recovery policy:
+The approved design authority contains the complete normative contract. The
+implementation-critical summary is:
 
-1. The current unversioned account map is schema generation zero.
-2. The new document is an envelope containing `schema_version` and `accounts`.
-3. Before the first automatic generation-zero rewrite, create one
-   byte-for-byte sibling backup using exclusive creation.
-4. Give the backup the same credential-protective permissions as the source.
-5. Never overwrite an existing non-equivalent backup.
-6. Write the migrated document to a same-directory temporary file, flush it,
-   and atomically replace the authoritative file where supported.
-7. Retain the source backup; never delete it automatically in this migration.
-8. Make recovery instructions visible through typed migration output and
-   `doctor` without exposing credentials.
-9. After any post-upgrade write, prepare a reverse-compatible latest-state
-   document before downgrade; the original backup alone is not lossless.
+1. The historical unversioned account map is generation zero. Version one is
+   a strict two-field envelope containing integer `schema_version` and
+   `accounts`.
+2. Normal application loading is read-only with respect to migration. Only
+   `sidekick-usages migrate accounts` may transform generation zero or import
+   the prototype, and prototype reimport requires its explicit option.
+3. Every source and rollback snapshot is immutable and content-addressed over
+   its exact bytes. Equivalent artifacts are reused only after exact protected
+   byte verification; conflicting or unsafe artifacts fail closed.
+4. The lock, same-directory temporary, flush, synchronization, no-replace
+   backup publication, authoritative replacement, reopen, and verification
+   sequence is platform-qualified. Unsupported filesystems, locking,
+   permissions, or durability primitives stop the write.
+5. POSIX systems use private modes and directory synchronization; macOS also
+   requests `F_FULLFSYNC`; native Windows uses the approved pywin32 copy,
+   replacement, buffer-flush, and security APIs.
+6. `doctor` performs read-only assessment and reports typed safe recovery
+   actions without loading invalid state or exposing credential values.
+7. `migrate prepare-rollback --target v0.6.0` snapshots the latest version-one
+   authority, emits a strict generation-zero reverse transformation, and runs
+   the actual released v0.6.0 reader before declaring rollback prepared.
+8. Full reset removes every Sidekick-owned credential-bearing account
+   authority, snapshot, and secret temporary under the lock, while retaining
+   the non-secret lock and prototype receipts. Partial deletion is reported as
+   `reset_incomplete`.
 
-The implementation must finalize the exact backup filename and Windows
-equivalent after the persistence spike, then inline those details in the
-design before automatic migration is enabled. If safe backup and recovery
-behavior cannot be proven, stored-schema auto-migration remains disabled.
+CS-14 must implement this contract without weakening any bound, platform gate,
+artifact grammar, explicit command, or rollback proof recorded in the design.
 
 ### 5.2 Provider-command release contract
 
@@ -350,8 +361,8 @@ minor release. Record the actual version numbers before publishing `R`.
 
 ### 5.3 Operator decision ledger
 
-Each CS-07, CS-08, CS-09, and CS-10 research commit pauses for operator
-disposition. When a decision is recorded, update both the design authority and
+Each CS-07, CS-08, CS-09, and CS-10 decision is recorded before dependent
+mutation. When a decision is recorded, update both the design authority and
 this tracked ledger with:
 
 - change-set id and question;
@@ -366,11 +377,17 @@ ledger distinguishes later authorized decisions from accidental design drift.
 No production dependency, writer, or native migration may rely on an
 unrecorded chat-only disposition.
 
+On 2026-07-10 the operator granted standing GO authorization for every
+plan-defined CS checkpoint once its concrete choice is inlined,
+evidence-backed, and recorded. This removes procedural pauses but does not
+weaken the ledger, tests, platform proof, or fail-closed gates.
+
 | Change set | Question | Research recommendation | Disposition | Approval date | Design commit | Approved design SHA-256 |
 |---|---|---|---|---|---|---|
 | CS-07 | Boundary-validation dependency | Pydantic 2.13.4 `TypeAdapter`; Homebrew Rust/maturin proof remains a release gate | **GO** | 2026-07-10 | `986e1f7` | `3db51ef2abb86390ab55b6a31a8303f4d18df22f2599a5112d30e494353e44c4` |
 | CS-08 | Pooled transport and sole retry owner | urllib3 2.7.0 with retries disabled plus one focused Sidekick executor | **GO** | 2026-07-10 | `90883d8` | `9e73ed80cbb278b22fbb25c0468fe75ccc8be71d3345844791c756485f05a865` |
 | CS-09 | Native application-path discovery | platformdirs 4.10.0 privately behind `paths.py`; physical relocation remains off | **GO** | 2026-07-10 | `90883d8` | `9e73ed80cbb278b22fbb25c0468fe75ccc8be71d3345844791c756485f05a865` |
+| CS-10 | Stored-schema, durability, migration, and rollback | Strict schema v1; explicit migration; immutable content-addressed snapshots; Portalocker 3.2.0; pywin32 312 on Windows; verified v0.6.0 reverse preparation | **GO** | 2026-07-10 | `PENDING` | `PENDING` |
 
 ## 6. Testing strategy
 
@@ -465,10 +482,10 @@ The platform gate has two stages:
 2. Linux, macOS, and Windows CI plus recorded WSL evidence must pass before
    merge to a release branch or publication.
 
-For schema and native-location work, activation means release exposure of an
-automatic writer or migration. No release containing that behavior may be
-published before the platform matrix and rollback harness pass. Record CI run
-URLs and immutable WSL evidence in the final parity record.
+For schema and native-location work, activation means release exposure of a
+new-schema writer or an explicit migration command. No release containing that
+behavior may be published before the platform matrix and rollback harness
+pass. Record CI run URLs and immutable WSL evidence in the final parity record.
 
 ## 7. Global task protocol
 
@@ -1017,27 +1034,27 @@ NO-GO disposition.
 
 **Work:**
 
-- [ ] Capture exact synthetic examples of the current unversioned Sidekick
+- [x] Capture exact synthetic examples of the current unversioned Sidekick
       account map and the prototype `cc-usage` shape.
-- [ ] Define the first versioned envelope with exactly two top-level fields:
+- [x] Define the first versioned envelope with exactly two top-level fields:
       `schema_version` and `accounts`.
-- [ ] Define strict schemas for every supported input generation and reject
+- [x] Define strict schemas for every supported input generation and reject
       unknown future versions.
-- [ ] Finalize the generation-zero backup filename and Windows permission
+- [x] Finalize the generation-zero backup filename and Windows permission
       behavior described in section 5.1.
-- [ ] Define the atomic same-directory write, flush, replacement, directory
+- [x] Define the atomic same-directory write, flush, replacement, directory
       durability, and partial-write recovery sequence per supported platform.
-- [ ] Define behavior when an equivalent or conflicting backup already exists.
-- [ ] Define old-binary rollback instructions and how `doctor` reports them
+- [x] Define behavior when an equivalent or conflicting backup already exists.
+- [x] Define old-binary rollback instructions and how `doctor` reports them
       without printing secrets.
-- [ ] Define how rollback works after a later native-location migration and
+- [x] Define how rollback works after a later native-location migration and
       after new writes exist only in the canonical generation.
-- [ ] Design a lossless reverse transformation or rollback-preparation surface
+- [x] Design a lossless reverse transformation or rollback-preparation surface
       that converts the latest supported state for `v0.6.0`; restoring only
       the pre-upgrade backup is insufficient after new writes.
-- [ ] Define whether schema migration occurs automatically at load or through
-      an explicit pre-load coordinator step; choose one owner only.
-- [ ] Inline the complete contract and obtain approval before CS-14 writes it.
+- [x] Define migration as an explicit command after pre-load assessment, owned
+      only by `persistence/migrations.py`; normal loading never migrates.
+- [x] Inline the complete contract and obtain approval before CS-14 writes it.
 
 **Required contract tests to design now:**
 
@@ -1056,16 +1073,22 @@ NO-GO disposition.
 user can recover after binary rollback without guessing which generation is
 authoritative.
 
-**STOP gate:** Automatic schema migration remains disabled. Do not treat
+**STOP gate:** Normal-load schema migration remains prohibited. Do not treat
 atomic replacement alone as rollback support.
 
-**Decision authority:** After committing the contract, set this change set to
-`WAITING FOR OPERATOR DECISION`. Record operator-approved GO or NO-GO,
-including the exact rollback-preparation surface and any intentionally
-unrepresentable field policy, in the design authority. CS-14 automatic writing
-requires a recorded GO. Clock, HTTP, compatibility paths, core, and lifetime
-work may continue after NO-GO; persistence-dependent work waits for a revised
-approved contract.
+**Execution record:** The design authority now includes the complete
+generation-zero and prototype corpus; strict version-one envelope and field
+contract; JSON bounds and deterministic bytes; exact artifact grammar;
+qualified POSIX, macOS, Windows, and WSL protocols; explicit migration and
+prototype import; full-reset behavior; and lossless v0.6.0 rollback
+preparation. The tracked research records the official platform evidence and
+the buy-versus-adopt analysis. The selected runtime boundaries for CS-14 are
+Portalocker 3.2.0 and `pywin32==312; sys_platform == "win32"`.
+
+**Operator decision:** **GO, approved 2026-07-10**. There is no intentionally
+unrepresentable version-one field. Normal loading remains read-only with
+respect to migration, and no schema writer may ship before the platform and
+released-v0.6.0 compatibility gates pass.
 
 **Commit:** `docs(persistence): define schema migration recovery contract`
 
@@ -1256,21 +1279,21 @@ with compatibility paths under either disposition.
 
 **Work:**
 
-- [ ] Implement frozen `AccountLocations`, `PrivateCodexLocations`, and
+- [x] Implement frozen `AccountLocations`, `PrivateCodexLocations`, and
       `ApplicationPaths` exactly as approved.
-- [ ] Resolve current canonical and existing Sidekick paths to the same
+- [x] Resolve current canonical and existing Sidekick paths to the same
       compatibility locations in this task.
-- [ ] Retain the distinct prototype account source.
-- [ ] Inject the account path into `AccountStore` and the lifetime cache path
+- [x] Retain the distinct prototype account source.
+- [x] Inject the account path into `AccountStore` and the lifetime cache path
       into its owner.
-- [ ] Inject the existing and canonical private Codex roots into the current
+- [x] Inject the existing and canonical private Codex roots into the current
       credential workflow.
-- [ ] Remove Sidekick-owned import-time path singletons and duplicate
+- [x] Remove Sidekick-owned import-time path singletons and duplicate
       `Path.home()` reconstruction.
-- [ ] Keep Claude/Codex native homes provider-owned and daemon installation
+- [x] Keep Claude/Codex native homes provider-owned and daemon installation
       paths daemon-owned.
-- [ ] Ensure discovery creates no directory or file.
-- [ ] Do not add or import `platformdirs` unless CS-09 and later CS-19 approve
+- [x] Ensure discovery creates no directory or file.
+- [x] Do not add or import `platformdirs` unless CS-09 and later CS-19 approve
       native relocation.
 
 **Load-bearing tests:**
@@ -1292,6 +1315,14 @@ before. No migration runs and no directory is created by discovery.
 
 **Recovery:** Code-only revert; no file moved.
 
+**Execution record:** Commit `21ee01c` added the frozen compatibility-path
+values and injected them through store, lifetime, and current Codex credential
+composition without relocating data or importing platformdirs. Focused tests
+proved exact compatibility paths, deduplication, prototype separation,
+side-effect-free discovery, and injected consumer behavior. The isolated
+staged-tree suite passed 202 tests; the combined quality gate later passed 205
+tests, Ruff, formatting, and `ty`.
+
 **Commit:** `refactor(paths): inject current sidekick-owned paths`
 
 ### 8.15 CS-12A — Establish proven shared type vocabulary
@@ -1307,20 +1338,26 @@ before. No migration runs and no directory is created by discovery.
 
 **Work:**
 
-- [ ] Add only shared aliases or enums with current cross-feature consumers,
+- [x] Add only shared aliases or enums with current cross-feature consumers,
       such as proven `ProviderId` and exit/status vocabulary.
-- [ ] Leave `Account`, `DetectedCredentials`, `UsageWindow`, and `UsageReport`
+- [x] Leave `Account`, `DetectedCredentials`, `UsageWindow`, and `UsageReport`
       in their current owners until CS-13 can normalize all time-bearing and
       provider-shaped fields atomically.
-- [ ] Keep validation, provider parsing, persistence, Rich, Typer, HTTP, paths,
+- [x] Keep validation, provider parsing, persistence, Rich, Typer, HTTP, paths,
       settings, filesystem, and clocks out of core.
-- [ ] Keep secret-bearing credential fields out of default representations.
+- [x] Keep secret-bearing credential fields out of default representations.
 
 **Load-bearing tests:** Selected enums/aliases preserve their documented string
 or integer boundary behavior, reject unsupported closed values where intended,
 and satisfy current consumers. Import checks prove the narrow core boundary.
 
 **Recovery:** Atomic behavior-preserving model-move revert.
+
+**Execution record:** Commit `e63a4fa` added only the proven `ProviderId`
+`StrEnum` and `ExitCode` `IntEnum`, migrated their cross-feature consumers, and
+kept models and infrastructure out of `core/`. Two boundary tests pin the
+closed string/integer behavior and one import test pins the narrow package
+boundary. Ruff, formatting, `ty`, and the 205-test suite passed before push.
 
 **Commit:** `refactor(core): centralize proven shared types`
 
@@ -1447,12 +1484,18 @@ CS-12, CS-13, and CS-13A.
 - Create `src/sidekick_usages/persistence/account_store.py`.
 - Create `src/sidekick_usages/persistence/schemas.py`.
 - Create `src/sidekick_usages/persistence/migrations.py`.
+- Create `src/sidekick_usages/persistence/filesystem.py`.
+- Create `src/sidekick_usages/persistence/locking.py`.
 - Delete `src/sidekick_usages/store.py` atomically.
 - Modify every store consumer and test import.
 - Modify `src/sidekick_usages/doctor.py` and its tests for pre-load schema
   assessment and recovery guidance.
-- Modify `pyproject.toml` and `uv.lock` only if the approved validator has not
-  already entered through CS-11.
+- Add the migration surfaces to the current CLI adapter; CS-18A later moves
+  them atomically to `cli/commands/migrate.py`.
+- Modify the reset owner so full reset implements the approved credential-
+  artifact transaction.
+- Modify `pyproject.toml` and `uv.lock` for Portalocker 3.2.0 and native-Windows
+  pywin32 312. Retain the already approved validator from CS-11.
 - Add cohesive persistence and schema-migration tests.
 
 **Work:**
@@ -1463,18 +1506,30 @@ CS-12, CS-13, and CS-13A.
 - [ ] Reject malformed, unreadable, partially migrated, and unknown future
       state with typed actionable errors.
 - [ ] Implement pure schema transformations before filesystem coordination.
-- [ ] Implement the approved exclusive backup and recovery contract.
-- [ ] Implement same-directory atomic writes and credential-protective
-      permissions where supported.
+- [ ] Implement the approved immutable content-addressed backup, snapshot,
+      receipt, reset, and recovery contracts.
+- [ ] Implement the qualified same-directory atomic write, synchronization,
+      replacement, security, and reopen-verification protocols in focused
+      filesystem and locking modules.
+- [ ] Fail closed on unsupported hard locks, remote/network filesystems, WSL
+      Windows mounts, unsafe final objects, ambiguous permissions, and
+      unavailable durability primitives.
 - [ ] Add explicit `persist(account)` and replace every production
       `upsert(account)` plus `save()` sequence.
 - [ ] Keep internal in-memory mutations private and unambiguously named.
 - [ ] Reuse `filter_by_provider()` rather than retaining manual duplicates.
 - [ ] Define read-only stored-schema assessment in
       `persistence/migrations.py` without activating native relocation.
+- [ ] Add explicit `migrate accounts` and `migrate prepare-rollback --target
+      v0.6.0` commands with safe output, daemon-stop verification, confirmation,
+      and non-interactive `--yes` behavior.
 - [ ] Let `doctor` assess generation zero, current generation, malformed
       input, backup state, and interrupted migration without constructing or
       loading `AccountStore`.
+- [ ] Make normal composition stop with the exact migration action instead of
+      transforming generation zero or importing the prototype during load.
+- [ ] Prove reverse preparation with the actual local v0.6.0 release reader
+      pinned to commit `6a413b2772c3c11e9ef45a78a06ab79bfc0ca44c`.
 - [ ] Keep `paths.py` discovery-only and persistence free of provider imports.
 - [ ] Leave physical locations unchanged.
 
@@ -1488,7 +1543,11 @@ CS-12, CS-13, and CS-13A.
 - A literal string such as `"false"` cannot coerce to Boolean true.
 - Migration interruption at each approved checkpoint is recoverable and
   idempotent.
-- Backup equivalence, collision, and permissions follow CS-10.
+- Backup equivalence, digest naming, collision, permissions, and unsafe-object
+  rejection follow CS-10.
+- Full reset deletes all managed credential artifacts or reports
+  `reset_incomplete`; it retains the lock and prototype receipts and never
+  reimports or deletes the external prototype.
 - `persist()` updates memory and durable state together; failed writes leave
   the last valid file and in-memory contract consistent.
 - Callers cannot accidentally perform a public in-memory-only update.
@@ -1501,6 +1560,9 @@ CS-12, CS-13, and CS-13A.
   change, runs the approved rollback preparation, and proves the released old
   binary reads the latest representable state.
 - Source and wheel contain `persistence/` and no stale `store.py`.
+- Native Linux, macOS, and Windows jobs exercise their platform-specific
+  durability and permission implementation. Recorded WSL evidence covers its
+  Linux-filesystem success and Windows-mount rejection paths.
 
 **Acceptance:** Malformed or failed migration never appears as an empty valid
 store. The old physical location remains authoritative. The approved reverse
@@ -1867,6 +1929,7 @@ land separately in CS-20.
 | `heartbeat.py` | group, label fallback, enable, disable, status |
 | `maintenance.py` | `maintain` and maintenance result presentation |
 | `doctor.py` | `doctor` and diagnostic presentation |
+| `migrate.py` | explicit account migration and rollback preparation |
 | `daemon.py` | install, status, uninstall |
 | `updates.py` | `check-update`, `update` |
 | `claude.py` | current top-level `setup-token` adapter |

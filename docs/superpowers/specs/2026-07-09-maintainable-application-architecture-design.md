@@ -576,6 +576,7 @@ src/sidekick_usages/
 │       ├── maintenance.py
 │       ├── doctor.py
 │       ├── daemon.py
+│       ├── migrate.py
 │       ├── updates.py
 │       ├── claude.py
 │       └── codex.py
@@ -601,7 +602,9 @@ src/sidekick_usages/
 │   ├── __init__.py
 │   ├── account_store.py
 │   ├── schemas.py
-│   └── migrations.py
+│   ├── migrations.py
+│   ├── filesystem.py
+│   └── locking.py
 ├── credentials/
 │   ├── __init__.py
 │   └── service.py
@@ -1530,6 +1533,461 @@ named as such and are not exposed as ambiguous durable operations.
 
 Migration either succeeds and writes valid state, or raises a typed error.
 Malformed data never becomes an apparently valid empty store.
+
+#### Approved stored-schema and recovery contract
+
+**Decision:** **GO — OPERATOR APPROVED 2026-07-10**. Use the explicit,
+versioned, crash-recoverable protocol in this section. Adopt Portalocker 3.2.0
+for the participating-process hard lock and pywin32 312 as a direct
+Windows-only dependency for native file and DACL operations. Do not use a
+generic atomic-write dependency. The self-contained evidence record is
+[Persistence Durability and Rollback Research][persistence-research].
+
+This decision authorizes the contract and later implementation. It does not
+enable the versioned writer before the native platform, built-artifact, and
+actual-v0.6.0 recovery gates pass.
+
+##### Supported stored inputs
+
+The prototype import input is a uniform top-level label map whose records have
+exactly two required, non-empty strict strings:
+
+```json
+{
+  "claude-max-1": {
+    "token": "test-only-claude-access-token",
+    "plan": "max"
+  }
+}
+```
+
+It is accepted only from `AccountLocations.prototype_cc_usage`, only when no
+authoritative Sidekick account file exists, and only through the explicit
+migration command. Mixed prototype/current records, extra fields, wrong types,
+and empty tokens fail. The prototype file is never modified or deleted.
+
+The unversioned Sidekick map is generation zero. One closed historical schema
+supports every released writer without an ambiguous union:
+
+| Release family | Required or permitted fields | Missing-field default |
+|---|---|---|
+| v0.1.0 | Required `provider_id`, `access_token`, `refresh_token`, `expires_at`, `plan` | None; all five keys must exist |
+| v0.2.0-v0.3.0 | Adds `scopes` | `null` |
+| v0.4.0-v0.4.1 | Adds `provider_account_id`, `codex_home`, `codex_id_token`, `codex_last_refresh`, `last_refresh_at`, `last_refresh_status`, `last_refresh_error` | `null` |
+| v0.5.0-v0.6.0 | Adds `heartbeat_enabled`, `heartbeat_5h_reset_at`, `heartbeat_window_resets`, `heartbeat_targets`, `last_heartbeat_at`, `last_heartbeat_status`, `last_heartbeat_error` | `false` for enabled; otherwise `null` |
+
+All present generation-zero scalars and containers are strict. A string such
+as `"false"` is not Boolean true, Boolean is not an integer, and a mixed list
+or mapping never filters invalid elements. Unknown fields fail.
+`provider_id` is exactly `claude` or `codex`.
+
+The current complete synthetic generation-zero corpus is:
+
+```json
+{
+  "claude-max-1": {
+    "provider_id": "claude",
+    "provider_account_id": null,
+    "access_token": "test-only-claude-access-token",
+    "refresh_token": "test-only-claude-refresh-token",
+    "expires_at": 1783771200000,
+    "plan": "max",
+    "scopes": ["user:profile"],
+    "codex_home": null,
+    "codex_id_token": null,
+    "codex_last_refresh": null,
+    "last_refresh_at": "2026-07-10T12:00:00Z",
+    "last_refresh_status": "ok",
+    "last_refresh_error": null,
+    "heartbeat_enabled": false,
+    "heartbeat_5h_reset_at": null,
+    "heartbeat_window_resets": null,
+    "heartbeat_targets": null,
+    "last_heartbeat_at": null,
+    "last_heartbeat_status": null,
+    "last_heartbeat_error": null
+  },
+  "codex-plus-1": {
+    "provider_id": "codex",
+    "provider_account_id": "acct_test_only",
+    "access_token": "test-only-codex-access-token",
+    "refresh_token": "test-only-codex-refresh-token",
+    "expires_at": 1783771200,
+    "plan": "plus",
+    "scopes": null,
+    "codex_home": "/synthetic/sidekick/codex/codex-plus-1",
+    "codex_id_token": "test-only-codex-id-token",
+    "codex_last_refresh": "2026-07-10T12:00:00Z",
+    "last_refresh_at": null,
+    "last_refresh_status": null,
+    "last_refresh_error": null,
+    "heartbeat_enabled": true,
+    "heartbeat_5h_reset_at": "2026-07-10T17:00:00Z",
+    "heartbeat_window_resets": {
+      "standard": "2026-07-10T17:00:00Z"
+    },
+    "heartbeat_targets": ["standard"],
+    "last_heartbeat_at": "2026-07-10T12:00:00Z",
+    "last_heartbeat_status": "active",
+    "last_heartbeat_error": null
+  }
+}
+```
+
+##### Version-one schema
+
+The first versioned document uses strict integer version `1` and exactly two
+top-level fields in this order:
+
+```json
+{
+  "schema_version": 1,
+  "accounts": {}
+}
+```
+
+`accounts` preserves insertion order. Every version-one record emits the same
+20 fields shown in the complete generation-zero corpus and in that order.
+`provider_id` is the Pydantic discriminator:
+
+- Claude requires `provider_account_id`, `codex_home`, `codex_id_token`, and
+  `codex_last_refresh` to be null;
+- Codex requires `scopes` to be null;
+- shared optional values remain explicit nulls; and
+- provider-incompatible non-null combinations fail.
+
+The version-one output for the corpus above is the exact two-field envelope
+whose `accounts` value contains those two records, except:
+
+- Claude `expires_at` is `"2026-07-11T12:00:00.000000Z"`;
+- Codex `expires_at` is `"2026-07-11T12:00:00.000000Z"`; and
+- every non-null Sidekick-owned refresh, heartbeat, and reset timestamp is
+  canonicalized to six fractional digits and UTC `Z`.
+
+All Sidekick-owned version-one times use exactly:
+
+```text
+YYYY-MM-DDTHH:MM:SS.ffffffZ
+```
+
+Claude expiry precision must be an exact millisecond; Codex expiry precision
+must be an exact second. That makes the reverse provider-native integer
+conversion exact. `codex_last_refresh` remains a bounded provider-native
+string because the Codex auth-file boundary owns its meaning.
+
+Refresh status is null, `ok`, `skipped`, or `failed`. Persisted heartbeat
+status is null or a member of the current closed heartbeat vocabulary. Adding
+a field or persisted state requires schema version two and an amendment to
+this recovery contract; it is never added to version one as a permissive
+optional extra.
+
+Every valid version-one field is losslessly representable by the actual
+v0.6.0 store. There is no intentionally unrepresentable field policy.
+
+##### JSON lexical and deterministic-output rules
+
+The persistence boundary enforces:
+
+- UTF-8 without a byte-order mark;
+- a 16 MiB maximum document before unbounded allocation;
+- object root;
+- duplicate-key rejection at every nesting level;
+- rejection of `NaN`, positive infinity, and negative infinity;
+- no more than 512 accounts;
+- labels preserved without Unicode normalization, non-empty, without control
+  or NUL characters, and no more than 512 encoded UTF-8 bytes;
+- non-empty token values no larger than 256 KiB;
+- diagnostic strings no larger than 4 KiB; and
+- named finite per-field list, map, and string bounds in `schemas.py`.
+
+Root dispatch treats a strict integer `schema_version` member as an envelope.
+Integer `1` requires exactly `schema_version` and `accounts`; any other integer
+is an unknown future schema and never falls back. An object-valued generation-
+zero account label literally named `schema_version` remains eligible for the
+generation-zero schema. Prototype dispatch is never attempted at the
+authoritative Sidekick path.
+
+Serialization uses UTF-8, `ensure_ascii=False`, two-space indentation, LF on
+every platform, one trailing newline, fixed envelope/field order, and account
+insertion order. It does not sort labels.
+
+Backup equivalence is exact byte equality with a matching digest-derived
+filename. Validated semantic equality is reserved for later canonical-versus-
+compatibility location reconciliation and never authorizes backup overwrite.
+
+##### Durable artifacts
+
+For authoritative account path `<accounts>`, persistence owns only these exact
+sibling artifacts:
+
+| Artifact | Naming contract | Contains credentials | Lifecycle |
+|---|---|---:|---|
+| Lock | `<accounts>.lock` | No | Persistent sidecar; never migration-state evidence |
+| Generation-zero backup | `<accounts>.v0.<sha256>.bak` | Yes | Immutable until full reset |
+| Version-one rollback snapshot | `<accounts>.v1.<sha256>.bak` | Yes | Immutable until full reset |
+| Prototype receipt | `<accounts>.prototype.<sha256>.receipt` | No | Immutable and retained across reset |
+| Temporary | `.<accounts>.<purpose>.<random>.tmp` | Possibly | Never authoritative; cleanup under the lock only |
+
+The digest is 64 lowercase hexadecimal characters over exact bytes. Artifact
+discovery accepts only this grammar and never touches a glob result outside the
+injected account parent.
+
+Before any generation-zero rewrite:
+
+1. acquire the persistence lock;
+2. open the source without following the final object and require a regular,
+   protected, single-link file;
+3. bounded-read, validate, and fingerprint the exact source;
+4. derive the immutable backup filename from SHA-256;
+5. if that backup exists, require exact protected byte equality;
+6. otherwise create a private same-directory temporary copy;
+7. write or copy, flush, synchronize, reopen, and digest-verify it;
+8. publish it through an atomic no-replace operation;
+9. harden the namespace through the qualified platform action; and
+10. reopen and revalidate the published backup.
+
+No non-equivalent, unreadable, unsafe, or malformed backup is overwritten,
+renamed, or deleted automatically.
+
+Authoritative commit then:
+
+1. validates the complete transformed document in memory;
+2. serializes deterministic bytes;
+3. creates a private same-directory temporary file;
+4. writes, flushes, synchronizes, reopens, and validates it;
+5. revalidates source identity and exact digest;
+6. replaces through the qualified platform primitive;
+7. hardens the namespace;
+8. reopens the authoritative path without following the final object; and
+9. verifies exact bytes, current schema, identity, and permissions before
+   reporting success.
+
+A failure after replacement but before confirmed hardening is
+`durability_uncertain`. Sidekick never performs a blind reverse write; a fresh
+assessment selects the actually observed validated authority.
+
+##### Platform behavior
+
+On Linux, POSIX systems, and WSL's Linux filesystem:
+
+- new state directories use `0o700`;
+- credentials, backups, temporaries, and locks use `0o600` from creation;
+- file data is flushed and synchronized before publication;
+- atomic `link()` publishes a no-replace backup;
+- `rename()`/`os.replace()` commits authoritative replacement;
+- the parent directory is synchronized after publication, replacement,
+  cleanup, and credential deletion; and
+- final symlinks, non-regular files, and link counts other than one fail.
+
+macOS follows that namespace protocol and requests `F_FULLFSYNC` for account
+files and backups when available. An I/O failure is terminal; it is not treated
+as absence of the feature.
+
+Windows uses pywin32 so Sidekick does not reproduce security-critical native
+signatures with local `ctypes`:
+
+- `CopyFileW(..., TRUE)` creates a private security-preserving backup copy;
+- `MoveFileExW` without replace publishes the immutable backup;
+- `ReplaceFileW` replaces an existing authority while preserving its DACL and
+  selected metadata;
+- `FlushFileBuffers` hardens file data;
+- `win32security` assesses owner, SIDs, inheritance, and effective DACL; and
+- every partial/sharing failure triggers full candidate reassessment.
+
+The accepted Windows DACL allows the current user, LocalSystem, and
+Administrators. A null DACL, unassessable owner/inheritance, reparse-point final
+object, or broad credential read/write for Everyone, Anonymous, Guests,
+Authenticated Users, or Builtin Users fails closed. Enterprise inheritance
+that cannot be classified receives repair guidance and is never stripped
+silently.
+
+The first writer supports only qualified local filesystems on native Linux,
+macOS, Windows, and WSL's Linux filesystem. Remote/network shares,
+cross-device paths, WSL Windows-mounted paths, unsupported hard locks,
+unassessable permissions, and unavailable synchronization fail with a typed
+unsupported-filesystem or permission state.
+
+##### Explicit migration and rollback surfaces
+
+`persistence/migrations.py` is the sole assessment and execution owner.
+`AccountStore.load()` is read-only with respect to migration and accepts only
+the current schema. Composition assesses before constructing the store.
+
+Normal command behavior is:
+
+| Assessment | Behavior |
+|---|---|
+| No candidate | Empty current in-memory store; first authorized persist creates version one |
+| Current version one | Construct `AccountStore` |
+| Generation zero | `migration_required` with exact command |
+| Eligible prototype only | `prototype_import_required` with exact command |
+| Malformed, unreadable, unsafe, conflicting, or partial | Fail closed with doctor action |
+| Unknown future version | `future_schema`; require compatible software |
+
+Help and version bypass assessment. Doctor consumes only the read-only
+assessment and never constructs `AccountStore` from invalid state.
+
+The authorized surfaces are:
+
+```text
+sidekick-usages migrate accounts [--yes] [--reimport-prototype]
+sidekick-usages migrate prepare-rollback --target v0.6.0 [--yes]
+```
+
+Both commands acquire the lock, require the installed Sidekick scheduler to be
+stopped, print only safe path/generation/count/backup data, and require terminal
+confirmation unless `--yes` is explicit. Prototype reimport is never automatic
+and requires the explicit option and confirmation.
+
+Rollback preparation supports exactly the released v0.6.0 target initially:
+
+1. validate latest version one;
+2. publish its exact content-addressed v1 snapshot;
+3. reverse every field to the strict v0.6.0 generation-zero representation;
+4. commit that generation zero through the durable protocol;
+5. run the actual isolated v0.6.0 reader against the exact file; and
+6. report `rollback_prepared` and the safe snapshot basename.
+
+After preparation, generation zero is authoritative. If v0.6.0 changes it, a
+later re-upgrade migrates that current file and never silently restores a
+retained version-one snapshot. Content-addressed artifacts make repeated
+upgrade/downgrade cycles idempotent.
+
+After native relocation, rollback preparation additionally materializes the
+latest reverse document at the v0.6.0 compatibility path and asks the injected
+`PrivateAuthMigrator` to validate and copy every Sidekick-owned Codex bundle
+before account paths commit. External/provider-native homes remain unchanged.
+
+##### Prototype receipt and reset
+
+A successful prototype import publishes a validated non-secret receipt whose
+name contains the exact prototype digest. The prototype remains unchanged.
+
+Full reset is a credential-destruction transaction under the lock. It removes:
+
+- the authoritative account document;
+- every valid Sidekick-managed v0/v1 account backup or snapshot;
+- owned secret-bearing account temporaries; and
+- referenced Sidekick-owned private Codex bundles once the credential
+  coordinator owns that operation.
+
+It retains the non-secret lock and prototype receipts and never deletes the
+external prototype. If any credential artifact cannot be removed, reset returns
+`reset_incomplete` and does not claim all accounts were deleted.
+
+A provider-scoped reset cannot delete shared historical backups without
+destroying the other provider's recovery state. Only full reset, or a separately
+approved explicit prune workflow, removes those shared historical copies.
+
+After reset, a matching receipt prevents stale prototype credentials from
+reappearing. A changed prototype is reported as available but still requires
+explicit `--reimport-prototype`.
+
+##### Assessment and error vocabulary
+
+Persistence owns a closed assessment vocabulary:
+
+```text
+empty
+current
+migration_required
+prototype_import_required
+prototype_imported
+malformed_json
+duplicate_key
+invalid_schema
+future_schema
+unreadable
+unsafe_permissions
+unsupported_filesystem
+store_locked
+source_changed
+backup_conflict
+interrupted_artifacts
+replace_failed
+durability_uncertain
+legacy_writer_detected
+rollback_required
+rollback_prepared
+reset_incomplete
+```
+
+Human and JSON output expose only the owned code, known generation, safe path,
+validated account count, safe artifact basename, write-blocked flag, exact next
+command, and bounded Sidekick-authored message. Tokens, raw records, full
+provider identities, raw validation errors, native exceptions, and third-party
+exception graphs never cross the boundary.
+
+##### Persistence dependency and module ownership
+
+The dependency decision is:
+
+| Option | Fit | Decision |
+|---|---|---|
+| Portalocker 3.2.0 | Mature cross-platform hard lock; fail-closed native behavior behind an owned adapter | **GO** |
+| filelock 3.29.7 | Strong maintenance and Python 3.14 support, but Unix can fall back to `SoftFileLock` on `ENOSYS` | NO-GO for this boundary |
+| pywin32 312 | Maintained CPython 3.14 native Windows file and DACL bindings | **GO on Windows** |
+| `atomicwrites` | Archived, old, and insufficient Windows/durability behavior | NO-GO |
+| Portalocker `open_atomic()` | Create-only; no replacement, namespace hardening, ACL, source comparison, or recovery states | NO-GO as writer |
+| SQLite | Robust exemplar but incompatible with the approved JSON/v0.6.0 contract | NO-GO as storage |
+
+Declare exact reviewed dependencies:
+
+```text
+portalocker==3.2.0
+pywin32==312; sys_platform == "win32"
+```
+
+pywin32 is direct because Sidekick consumes its APIs independently of
+Portalocker's Windows closure. Both remain private to `persistence/`.
+
+The cohesive package owns:
+
+```text
+persistence/
+├── __init__.py
+├── account_store.py
+├── schemas.py
+├── migrations.py
+├── filesystem.py
+└── locking.py
+```
+
+`filesystem.py` owns only qualified commit, synchronization, identity, and
+permission behavior. `locking.py` owns only Portalocker acquisition and
+Sidekick error translation. They are concrete infrastructure boundaries, not
+generic utilities. No third-party type crosses `persistence/__init__.py`.
+
+##### Required proof
+
+The few load-bearing suites are:
+
+1. one table-driven lexical/schema suite covering prototype, every historical
+   generation-zero field set, exact version one, duplicate keys, non-standard
+   constants, strict types, extras, bounds, and future versions;
+2. one pure forward/reverse suite proving deterministic output and lossless
+   v0.6.0 representation;
+3. one parameterized interruption suite over source validation; backup
+   temporary create/write/sync/publish/harden; output temporary
+   create/write/sync; source revalidation; replace return; namespace hardening;
+   and final reopen/validation;
+4. one real two-process lock/source-change suite with a simulated
+   non-participating legacy writer;
+5. one permission/link/filesystem suite per supported native platform;
+6. one reset/prototype-receipt suite proving deleted credentials never
+   reappear and partial deletion is not success;
+7. one actual-v0.6.0 repeated upgrade/downgrade harness with a change written
+   on both sides; and
+8. one human/JSON doctor secrecy table for every assessment state.
+
+Every interruption test starts a fresh assessment and authorized resume. It
+asserts one unambiguous authority, no accepted partial artifact, preserved
+source bytes, idempotent final bytes, and no empty-store fallback.
+
+Native evidence uses the exact built wheel and final dependency lock on local
+Linux, macOS/APFS, Windows/NTFS as a normal user, and WSL2's Linux filesystem.
+It records OS, filesystem, Python, dependency versions, wheel hash, and result.
+A hosted Linux pass is not evidence for macOS, Windows, or WSL.
 
 ## 10. Shared HTTP infrastructure
 
@@ -2908,8 +3366,9 @@ baseline and are mirrored in the implementation-plan ledger.
 
 ## 21. Approved decisions
 
-The baseline decisions below were approved on 2026-07-09; the Pydantic,
-urllib3/retry, and platformdirs selections were approved on 2026-07-10:
+The baseline decisions below were approved on 2026-07-09. The Pydantic,
+urllib3/retry, platformdirs, and persistence-contract selections were approved
+on 2026-07-10:
 
 1. Use `core/`, not `domain/`, for shared product models, types, and pure
    cross-feature policy.
@@ -2961,10 +3420,26 @@ urllib3/retry, and platformdirs selections were approved on 2026-07-10:
     coordinator, keep `paths.py` discovery-only, and consume an injected
     `PrivateAuthMigrator` port so provider auth semantics remain with provider
     adapters without introducing a persistence-to-provider import.
+27. Use a strict, two-field schema-version-one account envelope and require an
+    explicit migration command; normal store loading never rewrites an older
+    schema or imports the prototype automatically.
+28. Protect schema changes and downgrade preparation with immutable,
+    content-addressed generation-zero and version-one snapshots, and use a
+    non-secret content-addressed receipt to make prototype imports explicit.
+29. Make rollback preparation for the actual v0.6.0 release lossless for every
+    version-one state and verify the emitted generation-zero document with the
+    released old reader before reporting success.
+30. Adopt Portalocker 3.2.0 for the process lock and pywin32 312 on native
+    Windows for qualified security and durability primitives; do not recreate
+    those operating-system boundaries through local `ctypes` declarations.
+31. Enable durable writes only on qualified local filesystems with assessable
+    permissions, locking, synchronization, and replacement semantics; fail
+    closed on unsupported or ambiguous environments.
 
 ## Sign-off — APPROVED
 
-Approved by the operator on 2026-07-09.
+Approved by the operator on 2026-07-09, with the dependency and persistence
+decisions above approved on 2026-07-10.
 
 Next, write the matching implementation plan at:
 
@@ -3020,5 +3495,6 @@ docs/superpowers/plans/
 [platformdirs-platforms]: https://platformdirs.readthedocs.io/en/latest/platforms.html
 [platformdirs-pypi]: https://pypi.org/project/platformdirs/
 [paths-research]: ../research/2026-07-10-application-path-discovery-dependency.md
+[persistence-research]: ../research/2026-07-10-persistence-durability-and-rollback.md
 [schema-research]: ../research/2026-07-10-schema-validation-dependency.md
 [usage-tui-design]: ./2026-06-19-usage-tui-redesign-design.md
