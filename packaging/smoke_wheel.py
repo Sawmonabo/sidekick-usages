@@ -142,16 +142,21 @@ def verify_wheel_members(wheel: Path) -> None:
         )
 
 
-def _run(command: list[str], *, cwd: Path, env: dict[str, str]) -> None:
-    """Run a verifier subprocess with useful failure diagnostics."""
+def _run(
+    command: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str],
+) -> subprocess.CompletedProcess[str]:
+    """Run a UTF-8 verifier subprocess with useful failure diagnostics."""
     try:
-        subprocess.run(
+        return subprocess.run(
             command,
             cwd=cwd,
             env=env,
             check=True,
             capture_output=True,
-            text=True,
+            encoding="utf-8",
         )
     except subprocess.CalledProcessError as error:
         detail = (error.stderr or error.stdout or "no output").strip()
@@ -191,6 +196,9 @@ def _clean_subprocess_env() -> dict[str, str]:
         {
             "COLUMNS": "120",
             "NO_COLOR": "1",
+            # Captured standard streams are pipes, where Python honors this
+            # override on Windows as well as POSIX hosts.
+            "PYTHONIOENCODING": "utf-8",
             "PYTHONNOUSERSITE": "1",
             "TERM": "dumb",
         }
@@ -267,11 +275,18 @@ def verify_installed_wheel(wheel: Path) -> None:
         )
         for entry_point in entry_points:
             for arguments in smoke_arguments:
-                _run(
+                result = _run(
                     [*entry_point, *arguments],
                     cwd=run_dir,
                     env=env,
                 )
+                if arguments == ("--help",) and (
+                    "┴" not in result.stdout
+                    or "sidekick usages" not in result.stdout
+                ):
+                    raise WheelVerificationError(
+                        "Root help omitted the Unicode robot header."
+                    )
 
         if Path(env["HOME"]).exists():
             raise WheelVerificationError(

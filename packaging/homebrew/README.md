@@ -45,35 +45,43 @@ opens pull requests for:
 - this repository's in-tree formula copy
 - the external `Sawmonabo/homebrew-tap` formula
 
-For local verification or workflow reruns from a checkout of the release tag,
-generate the release formula with:
+Current Homebrew requires formulae to live in a tap. For local verification or
+workflow reruns from a checkout of the release tag, create an ephemeral no-git
+tap and generate the release formula into its `Formula/` directory:
 
 ```bash
-uv run packaging/homebrew/generate.py --output /tmp/sidekick-usages.rb
-diff /tmp/sidekick-usages.rb packaging/homebrew/sidekick-usages.rb
+brew tap-new --no-git sidekick-usages/ci
+FORMULA_PATH="$(brew --repository sidekick-usages/ci)/Formula/sidekick-usages.rb"
+uv run packaging/homebrew/generate.py --output "$FORMULA_PATH"
+diff "$FORMULA_PATH" packaging/homebrew/sidekick-usages.rb
 ```
 
 Then test the generated formula with Homebrew:
 
 ```bash
-brew install --build-from-source /tmp/sidekick-usages.rb
-brew test sidekick-usages
-brew audit --strict sidekick-usages
-brew uninstall sidekick-usages
+brew install --build-from-source sidekick-usages/ci/sidekick-usages
+brew test sidekick-usages/ci/sidekick-usages
+brew audit --strict sidekick-usages/ci/sidekick-usages
+brew uninstall sidekick-usages/ci/sidekick-usages
+brew untap sidekick-usages/ci
 ```
 
 CI tests unreleased source without rewriting the released formula template. It
 creates a `git archive` of the checked-out commit and passes it explicitly:
 
 ```bash
+brew tap-new --no-git sidekick-usages/ci
+FORMULA_PATH="$(brew --repository sidekick-usages/ci)/Formula/sidekick-usages.rb"
 git archive --format=tar.gz \
   --prefix=sidekick-usages-source/ \
   --output=/tmp/sidekick-usages-source.tar.gz HEAD
 uv run packaging/homebrew/generate.py \
   --source-archive /tmp/sidekick-usages-source.tar.gz \
-  --output /tmp/sidekick-usages.rb
-brew install --build-from-source /tmp/sidekick-usages.rb
-brew test /tmp/sidekick-usages.rb
+  --output "$FORMULA_PATH"
+brew install --build-from-source sidekick-usages/ci/sidekick-usages
+brew test sidekick-usages/ci/sidekick-usages
+brew uninstall sidekick-usages/ci/sidekick-usages
+brew untap sidekick-usages/ci
 ```
 
 The checked-in formula remains tied to its released tag. Only the release

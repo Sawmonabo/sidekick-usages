@@ -1,6 +1,7 @@
 """Release artifact and dependency packaging contracts."""
 
 import importlib.util
+import sys
 import tomllib
 import zipfile
 from pathlib import Path
@@ -75,6 +76,22 @@ def test_exact_wheel_selection_and_member_contract(tmp_path: Path) -> None:
         smoke_wheel.require_exact_distribution_set(artifacts)
 
 
+def test_isolated_subprocess_preserves_unicode_output(
+    tmp_path: Path,
+) -> None:
+    """Captured CLI output is explicitly UTF-8 at both pipe boundaries."""
+    env = smoke_wheel._isolated_command_env(tmp_path / "absent-home")
+
+    result = smoke_wheel._run(
+        [sys.executable, "-c", 'print("┴ robot")'],
+        cwd=tmp_path,
+        env=env,
+    )
+
+    assert env["PYTHONIOENCODING"] == "utf-8"
+    assert result.stdout == "┴ robot\n"
+
+
 def test_workflows_use_the_cross_platform_exact_wheel_verifier() -> None:
     """CI and publish share the verifier and contain no wheel glob install."""
     ci = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text()
@@ -93,8 +110,14 @@ def test_workflows_use_the_cross_platform_exact_wheel_verifier() -> None:
     )
     assert "setup-sandbox: ${{ runner.os == 'Linux' }}" in ci
     assert "--source-archive /tmp/sidekick-usages-source.tar.gz" in ci
-    assert "brew install --build-from-source" in ci
-    assert "brew test /tmp/sidekick-usages.rb" in ci
+    assert "brew tap-new --no-git sidekick-usages/ci" in ci
+    assert "$(brew --repository sidekick-usages/ci)/Formula/" in ci
+    assert (
+        "brew install --build-from-source\n"
+        "        sidekick-usages/ci/sidekick-usages" in ci
+    )
+    assert "brew test sidekick-usages/ci/sidekick-usages" in ci
+    assert "/tmp/sidekick-usages.rb" not in ci
     assert "packaging/smoke_wheel.py" in publish
     assert '--wheel "${{ steps.artifacts.outputs.wheel }}"' in publish
     assert "*.whl" not in ci

@@ -117,19 +117,23 @@ jobs:
         --prefix=sidekick-usages-source/
         --output=/tmp/sidekick-usages-source.tar.gz HEAD
 
+    - name: Create ephemeral source-build tap
+      run: brew tap-new --no-git sidekick-usages/ci
+
     - name: Generate current-source formula
       run: >-
         uv run packaging/homebrew/generate.py
         --source-archive /tmp/sidekick-usages-source.tar.gz
-        --output /tmp/sidekick-usages.rb
+        --output
+        "$(brew --repository sidekick-usages/ci)/Formula/sidekick-usages.rb"
 
     - name: Install from source
       run: >-
         brew install --build-from-source
-        /tmp/sidekick-usages.rb
+        sidekick-usages/ci/sidekick-usages
 
     - name: Test installed formula
-      run: brew test /tmp/sidekick-usages.rb
+      run: brew test sidekick-usages/ci/sidekick-usages
 
   build:
     name: Build wheel + sdist
