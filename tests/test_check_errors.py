@@ -160,8 +160,8 @@ def test_check_renders_partial_success_and_typed_auth_recovery(
 
     assert result.exit_code == ExitCode.MANUAL_ACTION
     out = stdout.getvalue()
-    assert "╭─ CLAUDE · 1 account ─" in out
-    assert "╭─ CODEX · 1 account ─" in out
+    assert "CLAUDE · 1 account" in out
+    assert "CODEX · 1 account" in out
     assert "⚠ token expired" in out
     assert "Log in to Codex CLI again, then run:" in out
     assert "sidekick-usages refresh 'my work account'" in out
@@ -184,8 +184,8 @@ def test_check_provider_filter_uses_only_selected_accounts(
     assert claude.fetch_calls == 0
     assert codex.fetch_calls == 1
     out = stdout.getvalue()
-    assert "╭─ CODEX · 1 account ─" in out
-    assert "╭─ CLAUDE" not in out
+    assert "CODEX · 1 account" in out
+    assert "CLAUDE ·" not in out
 
 
 def test_lifetime_failure_renders_and_forces_system_error(

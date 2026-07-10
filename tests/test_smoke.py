@@ -15,6 +15,7 @@ from sidekick_usages.core.models import Account, ClaudeCredentials
 from sidekick_usages.core.types import AccountLabel
 from sidekick_usages.http import HttpClient
 from sidekick_usages.persistence.account_store import AccountStore
+from sidekick_usages.persistence.filesystem import PersistenceFilesystem
 from tests.test_support import make_account_store, make_application_paths
 
 
@@ -33,10 +34,12 @@ def test_failed_composition_closes_initialized_pool_and_preserves_error(
     pool = Mock()
     monkeypatch.setattr(client, "_direct_manager", pool)
     monkeypatch.setattr(cli, "HttpClient", lambda *, clock: client)
+    paths = make_application_paths(tmp_path)
+    PersistenceFilesystem(paths.accounts.canonical).repair_parent_permissions()
     monkeypatch.setattr(
         cli,
         "discover_application_paths",
-        lambda: make_application_paths(tmp_path),
+        lambda: paths,
     )
     failure = RuntimeError("composition sentinel")
 
