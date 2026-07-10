@@ -13,9 +13,15 @@ from collections.abc import Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
 
+import pytest
+
 from sidekick_usages.core.models import Account, ClaudeCredentials
 from sidekick_usages.core.types import AccountLabel, HeartbeatStatus
 from sidekick_usages.http import HttpClient, HttpOperation
+from sidekick_usages.providers.base import (
+    ProviderBoundaryError,
+    ProviderFailureKind,
+)
 from sidekick_usages.providers.claude import ClaudeProvider
 from sidekick_usages.providers.claude.heartbeat import ClaudeHeartbeat
 from sidekick_usages.providers.claude.usage import (
@@ -200,26 +206,25 @@ def test_fetch_via_headers_returns_empty_windows_on_empty_response() -> None:
     assert report.windows == ()
 
 
-def test_fetch_via_headers_skips_non_numeric_utilization() -> None:
-    """Garbage utilization value skips that window, no crash."""
-    headers = {
-        **_LIVE_HEADERS,
-        "anthropic-ratelimit-unified-5h-utilization": "not-a-float",
-    }
-    http = _FakeHttp(response_headers=headers)
-    report = _provider().fetch_usage(_acct(()), http)
-    assert [w.name for w in report.windows] == ["7d"]
+@pytest.mark.parametrize(
+    ("header", "value"),
+    [
+        ("anthropic-ratelimit-unified-5h-utilization", "not-a-float"),
+        ("anthropic-ratelimit-unified-7d-reset", "tomorrow"),
+    ],
+)
+def test_fetch_via_headers_rejects_malformed_window_atomically(
+    header: str,
+    value: str,
+) -> None:
+    """Malformed provider numbers become one safe typed failure."""
+    http = _FakeHttp(response_headers={**_LIVE_HEADERS, header: value})
 
+    with pytest.raises(ProviderBoundaryError) as exc_info:
+        _provider().fetch_usage(_acct(()), http)
 
-def test_fetch_via_headers_skips_non_numeric_reset() -> None:
-    """Garbage reset value skips that window, no crash."""
-    headers = {
-        **_LIVE_HEADERS,
-        "anthropic-ratelimit-unified-7d-reset": "tomorrow",
-    }
-    http = _FakeHttp(response_headers=headers)
-    report = _provider().fetch_usage(_acct(()), http)
-    assert [w.name for w in report.windows] == ["5h"]
+    assert exc_info.value.failure.kind is ProviderFailureKind.MALFORMED
+    assert value not in repr(exc_info.value.failure)
 
 
 # -- fetch_usage: scope-based routing -----------------------------
@@ -263,6 +268,35 @@ def test_fetch_usage_routes_unknown_scope_to_oauth_path() -> None:
     http = _FakeHttp(response_json={})
     _provider().fetch_usage(_acct(None), http)
     assert http.calls == [("GET", USAGE_URL)]
+
+
+@pytest.mark.parametrize("heartbeat", [False, True])
+def test_oauth_boundaries_reject_malformed_window_safely(
+    *,
+    heartbeat: bool,
+) -> None:
+    """Usage and heartbeat never turn an invalid reset into absence."""
+    raw_value = "raw-provider-reset-value"
+    http = _FakeHttp(
+        response_json={
+            "five_hour": {
+                "utilization": 0.25,
+                "resets_at": raw_value,
+            }
+        }
+    )
+    account = _acct(("user:profile", "user:inference"))
+
+    def invoke_boundary() -> object:
+        if heartbeat:
+            return ClaudeHeartbeat().run(account, http)
+        return _provider().fetch_usage(account, http)
+
+    with pytest.raises(ProviderBoundaryError) as exc_info:
+        invoke_boundary()
+
+    assert exc_info.value.failure.kind is ProviderFailureKind.MALFORMED
+    assert raw_value not in repr(exc_info.value.failure)
 
 
 # -- heartbeat/window warming -------------------------------------

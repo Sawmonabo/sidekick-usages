@@ -1,53 +1,62 @@
-"""Tests for Claude OAuth refresh support."""
+"""Claude credential-boundary and refresh behavior tests."""
 
 import json
 import subprocess
+import sys
 from collections.abc import Mapping
-from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
 
-from sidekick_usages.core.expiry import KnownExpiry, UnknownExpiry
-from sidekick_usages.core.models import Account, ClaudeCredentials
+from sidekick_usages.core.expiry import KnownExpiry
+from sidekick_usages.core.models import (
+    Account,
+    ClaudeCredentials,
+    DetectedCredentials,
+)
 from sidekick_usages.core.types import AccountLabel
-from sidekick_usages.errors import AuthError, InvalidPayloadError
+from sidekick_usages.errors import AuthError
 from sidekick_usages.http import HttpClient, HttpOperation
+from sidekick_usages.providers.base import (
+    ProviderBoundaryError,
+    ProviderFailure,
+    ProviderFailureKind,
+    RefreshSuccess,
+)
 from sidekick_usages.providers.claude import ClaudeProvider
-from sidekick_usages.providers.claude import provider as claude_provider_module
+from sidekick_usages.providers.claude import credentials as credentials_module
+from sidekick_usages.providers.claude import provider as provider_module
 from sidekick_usages.providers.claude.provider import (
     SetupTokenSuccess,
     SetupTokenTimedOut,
+    SetupTokenUnreadable,
+)
+from sidekick_usages.providers.claude.schemas import (
+    oauth_usage_windows,
+    parse_credentials_blob,
 )
 from sidekick_usages.serialization import JsonObject
 from tests.test_support import REFERENCE_TIME, FixedClock
 
 CLI_REFRESH_TIMEOUT_SECONDS = 60
 SETUP_TOKEN_TIMEOUT_SECONDS = 600
-CLI_EXPIRES_AT_MS = 1_781_270_062_459
-_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
-
-
-def _provider() -> ClaudeProvider:
-    return ClaudeProvider(FixedClock())
+_FUTURE_EXPIRY = REFERENCE_TIME + timedelta(hours=1)
+_FUTURE_EXPIRY_MS = int(_FUTURE_EXPIRY.timestamp() * 1000)
 
 
 class _FakeHttp(HttpClient):
-    """Records JSON POST calls and returns a canned response."""
+    """Record Claude refresh requests and return one scripted result."""
 
     def __init__(
         self,
-        response_json: JsonObject | None = None,
-        raise_on_post: Exception | None = None,
+        response: JsonObject | None = None,
+        failure: Exception | None = None,
     ) -> None:
-        """:param response_json: Canned JSON response."""
         super().__init__()
-        self.response_json: JsonObject = response_json or {}
-        self.raise_on_post = raise_on_post
-        self.calls: list[tuple[str, str]] = []
-        self.last_body: JsonObject | None = None
-        self.last_headers: dict[str, str] | None = None
+        self.response = response or {}
+        self.failure = failure
+        self.body: JsonObject | None = None
 
     def post_json(
         self,
@@ -57,374 +66,608 @@ class _FakeHttp(HttpClient):
         *,
         operation: HttpOperation,
     ) -> JsonObject:
-        """Stand-in for :meth:`HttpClient.post_json`."""
-        self.calls.append(("POST", url))
+        del url, headers
         assert operation is HttpOperation.CLAUDE_REFRESH
-        self.last_body = json_body
-        self.last_headers = dict(headers or {})
-        if self.raise_on_post is not None:
-            raise self.raise_on_post
-        return self.response_json
+        self.body = json_body
+        if self.failure is not None:
+            raise self.failure
+        return self.response
 
 
-def _acct(refresh_token: str | None = "refresh-old") -> Account:
-    """Build a minimal Claude account for refresh tests."""
+def _provider() -> ClaudeProvider:
+    return ClaudeProvider(FixedClock())
+
+
+def _account(
+    *,
+    refresh_token: str | None = "refresh-old",
+    scopes: tuple[str, ...] | None = None,
+) -> Account:
     return Account(
-        label=AccountLabel("team"),
+        label=AccountLabel("claude-team"),
         credentials=ClaudeCredentials(
             access_token="sk-ant-oat01-old",
             refresh_token=refresh_token,
+            scopes=scopes,
         ),
     )
 
 
 def _disable_cli_refresh(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make CLI-backed refresh unavailable for direct-HTTP tests."""
-    monkeypatch.setattr(
-        claude_provider_module.shutil,
-        "which",
-        lambda name: None,
-    )
-
-    def _raise_not_found(*args: object, **kwargs: object) -> None:
-        del args, kwargs
-        raise FileNotFoundError
-
-    monkeypatch.setattr(subprocess, "run", _raise_not_found)
+    monkeypatch.setattr(provider_module.shutil, "which", lambda _name: None)
 
 
-def test_claude_refresh_returns_false_without_refresh_token() -> None:
-    """Claude refresh is skipped when nothing can be exchanged."""
-    http = _FakeHttp()
-    acct = _acct(refresh_token=None)
-
-    assert _provider().refresh_token(acct, http) is False
-
-    assert http.calls == []
-    assert acct.access_token == "sk-ant-oat01-old"
-
-
-def test_claude_refresh_uses_cli_refresh_token_login(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Claude refresh delegates to Claude Code in an isolated HOME."""
-    http = _FakeHttp(response_json={"access_token": "http-unused"})
-    acct = _acct()
-    monkeypatch.setattr(
-        claude_provider_module.shutil,
-        "which",
-        lambda name: "/usr/bin/claude" if name == "claude" else None,
-    )
-
-    def _run(
-        cmd: list[str],
-        *,
-        env: dict[str, str],
-        capture_output: bool,
-        text: bool,
-        timeout: int,
-        check: bool,
-    ) -> subprocess.CompletedProcess[str]:
-        assert cmd == ["/usr/bin/claude", "auth", "login", "--claudeai"]
-        assert env["CLAUDE_CODE_OAUTH_REFRESH_TOKEN"] == "refresh-old"
-        assert env["CLAUDE_CODE_OAUTH_SCOPES"] == (
-            "user:profile user:inference user:sessions:claude_code "
-            "user:mcp_servers user:file_upload"
-        )
-        assert capture_output is True
-        assert text is True
-        assert timeout == CLI_REFRESH_TIMEOUT_SECONDS
-        assert check is False
-        creds_path = Path(env["HOME"]) / ".claude" / ".credentials.json"
-        creds_path.parent.mkdir(parents=True)
-        creds_path.write_text(
-            json.dumps(
-                {
-                    "claudeAiOauth": {
-                        "accessToken": "sk-ant-oat01-cli",
-                        "refreshToken": "sk-ant-ort01-cli",
-                        "expiresAt": CLI_EXPIRES_AT_MS,
-                        "subscriptionType": "team",
-                        "scopes": [
-                            "user:file_upload",
-                            "user:inference",
-                            "user:mcp_servers",
-                            "user:profile",
-                            "user:sessions:claude_code",
-                        ],
-                    }
-                }
-            )
-        )
-        return subprocess.CompletedProcess(cmd, 0, "Login successful\n", "")
-
-    monkeypatch.setattr(subprocess, "run", _run)
-
-    assert _provider().refresh_token(acct, http) is True
-
-    assert http.calls == []
-    assert acct.access_token == "sk-ant-oat01-cli"
-    assert acct.refresh_token == "sk-ant-ort01-cli"
-    assert acct.expiry == KnownExpiry(
-        _EPOCH + timedelta(milliseconds=CLI_EXPIRES_AT_MS)
-    )
-    assert acct.plan == "team"
-    assert acct.scopes == (
-        "user:file_upload",
-        "user:inference",
-        "user:mcp_servers",
-        "user:profile",
-        "user:sessions:claude_code",
-    )
-
-
-def test_claude_refresh_posts_saved_refresh_token(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Direct HTTP fallback mirrors Claude Code's refresh contract."""
-    _disable_cli_refresh(monkeypatch)
-    http = _FakeHttp(response_json={"access_token": "sk-ant-oat01-new"})
-    acct = _acct()
-    credentials = acct.credentials
+def _credentials(result: RefreshSuccess) -> ClaudeCredentials:
+    credentials = result.credentials
     assert isinstance(credentials, ClaudeCredentials)
-    acct.credentials = replace(
-        credentials,
-        expiry=KnownExpiry(REFERENCE_TIME + timedelta(days=1)),
-    )
-
-    assert _provider().refresh_token(acct, http) is True
-
-    assert http.calls == [
-        ("POST", "https://platform.claude.com/v1/oauth/token")
-    ]
-    assert http.last_body == {
-        "grant_type": "refresh_token",
-        "refresh_token": "refresh-old",
-        "client_id": "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
-        "scope": (
-            "user:profile user:inference user:sessions:claude_code "
-            "user:mcp_servers user:file_upload"
-        ),
-        "expires_in": 31_536_000,
-    }
-    assert http.last_headers is not None
-    assert "anthropic-beta" not in http.last_headers
-    assert isinstance(acct.expiry, UnknownExpiry)
+    return credentials
 
 
-def test_claude_refresh_cli_rejection_does_not_fallback_to_http(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A real Claude CLI rejection is the authoritative refresh result."""
-    http = _FakeHttp(response_json={"access_token": "http-unused"})
-    acct = _acct()
-    monkeypatch.setattr(
-        claude_provider_module.shutil,
-        "which",
-        lambda name: "/usr/bin/claude" if name == "claude" else None,
-    )
+def test_refresh_missing_token_is_explicit_and_does_not_mutate() -> None:
+    account = _account(refresh_token=None)
+    original = account.credentials
 
-    def _run(
-        cmd: list[str],
-        *,
-        env: dict[str, str],
-        capture_output: bool,
-        text: bool,
-        timeout: int,
-        check: bool,
-    ) -> subprocess.CompletedProcess[str]:
-        del env, capture_output, text, timeout, check
-        return subprocess.CompletedProcess(
-            cmd,
-            1,
-            "",
-            "Login failed: Request failed with status code 400\n",
-        )
+    result = _provider().refresh_credentials(account, _FakeHttp())
 
-    monkeypatch.setattr(subprocess, "run", _run)
-
-    with pytest.raises(AuthError) as exc:
-        _provider().refresh_token(acct, http)
-
-    assert "Claude CLI refresh failed" in str(exc.value)
-    assert "status code 400" in str(exc.value)
-    assert http.calls == []
+    assert isinstance(result, ProviderFailure)
+    assert result.kind is ProviderFailureKind.MISSING
+    assert account.credentials is original
 
 
 @pytest.mark.parametrize(
-    ("scopes", "expected"),
-    [
-        ((), ""),
-        (("user:inference", "user:profile"), "user:inference user:profile"),
-    ],
+    ("include_refresh_token", "expected_refresh_token"),
+    [(True, "refresh-cli"), (False, "refresh-old")],
 )
-def test_claude_refresh_preserves_known_scope_state(
+def test_cli_refresh_is_isolated_and_returns_complete_replacement(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    scopes: tuple[str, ...],
-    expected: str,
+    include_refresh_token: bool,
+    expected_refresh_token: str,
 ) -> None:
-    """Known-empty and populated scope sets remain distinguishable."""
-    _disable_cli_refresh(monkeypatch)
-    http = _FakeHttp(response_json={"access_token": "sk-ant-oat01-new"})
-    acct = _acct()
-    credentials = acct.credentials
-    assert isinstance(credentials, ClaudeCredentials)
-    acct.credentials = replace(
-        credentials,
-        scopes=scopes,
+    account = _account(scopes=("saved:scope",))
+    original = account.credentials
+    active_home = tmp_path / "active"
+    active_home.mkdir()
+    sentinel = active_home / "credentials-must-not-change"
+    sentinel.write_text("active")
+    monkeypatch.setattr(provider_module.platform, "system", lambda: "Linux")
+    for variable in (
+        "HOME",
+        "USERPROFILE",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "XDG_CONFIG_HOME",
+        "CLAUDE_CONFIG_DIR",
+    ):
+        monkeypatch.setenv(variable, str(active_home))
+    monkeypatch.setattr(
+        provider_module.shutil,
+        "which",
+        lambda name: "/usr/bin/claude" if name == "claude" else None,
     )
 
-    assert _provider().refresh_token(acct, http) is True
+    def run(
+        command: list[str],
+        *,
+        env: dict[str, str],
+        cwd: Path,
+        stdout: int,
+        stderr: int,
+        timeout: int,
+        check: bool,
+    ) -> subprocess.CompletedProcess[bytes]:
+        assert command == ["/usr/bin/claude", "auth", "login", "--claudeai"]
+        assert env["CLAUDE_CODE_OAUTH_REFRESH_TOKEN"] == "refresh-old"
+        config_dir = Path(env["CLAUDE_CONFIG_DIR"])
+        assert config_dir == Path(env["HOME"]) / ".claude"
+        assert cwd == Path(env["HOME"])
+        assert env["USERPROFILE"] == env["HOME"]
+        assert Path(env["APPDATA"]).is_relative_to(cwd)
+        assert Path(env["LOCALAPPDATA"]).is_relative_to(cwd)
+        assert Path(env["XDG_CONFIG_HOME"]).is_relative_to(cwd)
+        assert str(active_home) not in env.values()
+        assert stdout == subprocess.DEVNULL
+        assert stderr == subprocess.DEVNULL
+        assert check is False
+        assert timeout == CLI_REFRESH_TIMEOUT_SECONDS
+        path = config_dir / ".credentials.json"
+        path.parent.mkdir(parents=True)
+        oauth: JsonObject = {
+            "accessToken": "sk-ant-oat01-cli",
+            "expiresAt": _FUTURE_EXPIRY_MS,
+            "subscriptionType": "team",
+            "scopes": [],
+        }
+        if include_refresh_token:
+            oauth["refreshToken"] = "refresh-cli"
+        path.write_text(
+            json.dumps(
+                {
+                    "claudeAiOauth": oauth,
+                }
+            )
+        )
+        return subprocess.CompletedProcess(command, 0)
 
-    assert http.last_body is not None
-    assert http.last_body["scope"] == expected
+    monkeypatch.setattr(provider_module.subprocess, "run", run)
+
+    result = _provider().refresh_credentials(account, _FakeHttp())
+
+    assert isinstance(result, RefreshSuccess)
+    refreshed = _credentials(result)
+    assert refreshed.access_token == "sk-ant-oat01-cli"
+    assert refreshed.refresh_token == expected_refresh_token
+    assert refreshed.expiry == KnownExpiry(_FUTURE_EXPIRY)
+    assert refreshed.scopes == ()
+    assert result.plan == "team"
+    assert account.credentials is original
+    assert sentinel.read_text() == "active"
 
 
-def test_claude_refresh_updates_tokens_and_millisecond_expiry(
+def test_macos_refresh_uses_http_without_invoking_cli(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Successful refresh mutates account token metadata in-place."""
-    _disable_cli_refresh(monkeypatch)
-    clock = FixedClock()
+    monkeypatch.setattr(provider_module.platform, "system", lambda: "Darwin")
+
+    def unexpected_cli_lookup(_name: str) -> str | None:
+        pytest.fail("macOS saved-account refresh must not invoke Claude CLI")
+
+    monkeypatch.setattr(provider_module.shutil, "which", unexpected_cli_lookup)
     http = _FakeHttp(
-        response_json={
+        {
+            "access_token": "sk-ant-oat01-new",
+            "refresh_token": "refresh-new",
+        }
+    )
+
+    result = _provider().refresh_credentials(_account(), http)
+
+    assert isinstance(result, RefreshSuccess)
+    assert _credentials(result).access_token == "sk-ant-oat01-new"
+    assert http.body is not None
+
+
+@pytest.mark.parametrize(
+    ("scopes", "expected_scope"),
+    [
+        ((), ""),
+        (
+            ("user:inference", "user:profile"),
+            "user:inference user:profile",
+        ),
+    ],
+)
+def test_http_refresh_preserves_scope_state_and_returns_new_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+    scopes: tuple[str, ...],
+    expected_scope: str,
+) -> None:
+    _disable_cli_refresh(monkeypatch)
+    account = _account(scopes=scopes)
+    original = account.credentials
+    http = _FakeHttp(
+        {
             "access_token": "sk-ant-oat01-new",
             "refresh_token": "refresh-new",
             "expires_in": 60,
         }
     )
-    acct = _acct()
 
-    assert ClaudeProvider(clock).refresh_token(acct, http) is True
+    result = _provider().refresh_credentials(account, http)
 
-    assert acct.access_token == "sk-ant-oat01-new"
-    assert acct.refresh_token == "refresh-new"
-    assert acct.expiry == KnownExpiry(REFERENCE_TIME + timedelta(seconds=60))
-    assert clock.calls == 1
+    assert isinstance(result, RefreshSuccess)
+    refreshed = _credentials(result)
+    assert refreshed.access_token == "sk-ant-oat01-new"
+    assert refreshed.refresh_token == "refresh-new"
+    assert refreshed.expiry == KnownExpiry(
+        REFERENCE_TIME + timedelta(seconds=60)
+    )
+    assert refreshed.scopes == scopes
+    assert http.body is not None
+    assert http.body["scope"] == expected_scope
+    assert account.credentials is original
 
 
-def test_claude_refresh_returns_false_on_auth_error(
+def test_refresh_rejection_is_typed_and_secret_safe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Rejected refresh tokens leave the account untouched."""
     _disable_cli_refresh(monkeypatch)
-    http = _FakeHttp(raise_on_post=AuthError("Refresh rejected"))
-    acct = _acct()
+    account = _account()
+    original = account.credentials
+    raw_secret = "sk-ant-oat01-rejected-secret"
 
-    assert _provider().refresh_token(acct, http) is False
+    result = _provider().refresh_credentials(
+        account,
+        _FakeHttp(failure=AuthError(raw_secret)),
+    )
 
-    assert acct.access_token == "sk-ant-oat01-old"
-    assert acct.refresh_token == "refresh-old"
+    assert isinstance(result, ProviderFailure)
+    assert result.kind is ProviderFailureKind.REJECTED
+    assert raw_secret not in repr(result)
+    assert account.credentials is original
 
 
-def test_claude_refresh_returns_false_without_access_token(
+def test_cli_rejection_is_authoritative_and_does_not_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Malformed refresh responses do not partially update the account."""
-    _disable_cli_refresh(monkeypatch)
-    http = _FakeHttp(response_json={"refresh_token": "refresh-new"})
-    acct = _acct()
+    monkeypatch.setattr(
+        provider_module.shutil,
+        "which",
+        lambda _name: "/usr/bin/claude",
+    )
 
-    assert _provider().refresh_token(acct, http) is False
+    def run(
+        command: list[str],
+        **_kwargs: object,
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            command,
+            1,
+            "",
+            "rejected sk-ant-oat01-raw-secret",
+        )
 
-    assert acct.access_token == "sk-ant-oat01-old"
-    assert acct.refresh_token == "refresh-old"
+    monkeypatch.setattr(provider_module.subprocess, "run", run)
+    account = _account()
+    original = account.credentials
+    http = _FakeHttp({"access_token": "sk-ant-oat01-http-unused"})
+
+    result = _provider().refresh_credentials(account, http)
+
+    assert isinstance(result, ProviderFailure)
+    assert result.kind is ProviderFailureKind.REJECTED
+    assert "raw-secret" not in repr(result)
+    assert http.body is None
+    assert account.credentials is original
 
 
 @pytest.mark.parametrize(
-    "response",
+    ("response", "kind"),
     [
-        {"access_token": "sk-ant-oat01-new", "refresh_token": ""},
-        {"access_token": "sk-ant-oat01-new", "refresh_token": 42},
-        {"access_token": "sk-ant-oat01-new", "expires_in": True},
+        ({"refresh_token": "refresh-new"}, ProviderFailureKind.INCOMPLETE),
+        (
+            {
+                "access_token": "sk-ant-oat01-new",
+                "refresh_token": "",
+            },
+            ProviderFailureKind.MALFORMED,
+        ),
+        (
+            {
+                "access_token": "sk-ant-oat01-new",
+                "expires_in": True,
+            },
+            ProviderFailureKind.MALFORMED,
+        ),
     ],
 )
-def test_claude_refresh_rejects_malformed_optional_fields_atomically(
+def test_malformed_refresh_is_atomic_and_safe(
     monkeypatch: pytest.MonkeyPatch,
     response: JsonObject,
+    kind: ProviderFailureKind,
 ) -> None:
-    """Malformed optional refresh metadata cannot rotate credentials."""
     _disable_cli_refresh(monkeypatch)
-    acct = _acct()
-    original = acct.credentials
+    account = _account()
+    original = account.credentials
+    raw_identity = "long.account.name@example.test"
+    response["provider_identity"] = raw_identity
 
-    with pytest.raises(InvalidPayloadError):
-        _provider().refresh_token(acct, _FakeHttp(response_json=response))
+    with pytest.raises(ProviderBoundaryError) as exc_info:
+        _provider().refresh_credentials(account, _FakeHttp(response))
 
-    assert acct.credentials is original
+    assert exc_info.value.failure.kind is kind
+    rendered = repr(exc_info.value.failure)
+    assert raw_identity not in rendered
+    assert "sk-ant-oat01-new" not in rendered
+    assert account.credentials is original
 
 
-def test_setup_token_capture_filters_the_token_from_safe_output(
+@pytest.mark.parametrize(
+    ("payload", "expected_kind"),
+    [
+        (None, ProviderFailureKind.MISSING),
+        (b"{", ProviderFailureKind.MALFORMED),
+        (
+            b'{"claudeAiOauth":{"refreshToken":"refresh-only"}}',
+            ProviderFailureKind.INCOMPLETE,
+        ),
+        (
+            json.dumps(
+                {
+                    "claudeAiOauth": {
+                        "accessToken": "sk-ant-oat01-expired",
+                        "expiresAt": int(
+                            (REFERENCE_TIME - timedelta(seconds=1)).timestamp()
+                            * 1000
+                        ),
+                    }
+                }
+            ).encode(),
+            ProviderFailureKind.EXPIRED,
+        ),
+        (
+            json.dumps(
+                {
+                    "claudeAiOauth": {
+                        "accessToken": "sk-ant-oat01-detected",
+                        "expiresAt": _FUTURE_EXPIRY_MS,
+                        "scopes": ["user:inference", "user:profile"],
+                    }
+                }
+            ).encode(),
+            None,
+        ),
+    ],
+)
+def test_detection_distinguishes_credential_source_states(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    payload: bytes | None,
+    expected_kind: ProviderFailureKind | None,
+) -> None:
+    monkeypatch.setattr(credentials_module.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(credentials_module.Path, "home", lambda: tmp_path)
+    path = tmp_path / ".claude" / ".credentials.json"
+    if payload is not None:
+        path.parent.mkdir(parents=True)
+        path.write_bytes(payload)
+
+    result = _provider().detect_credentials()
+
+    if expected_kind is None:
+        assert isinstance(result, DetectedCredentials)
+        assert result.access_token == "sk-ant-oat01-detected"
+        assert result.scopes == ("user:inference", "user:profile")
+        return
+    assert isinstance(result, ProviderFailure)
+    assert result.kind is expected_kind
+
+
+def test_detection_reports_unreadable_credentials(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Capture returns the first token while redacting every token line."""
-    first_token = "sk-ant-oat01-synthetic-token"
-    second_token = "sk-ant-oat01-other-synthetic-token"
+    monkeypatch.setattr(credentials_module.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(credentials_module.Path, "home", lambda: tmp_path)
+    path = tmp_path / ".claude" / ".credentials.json"
+    path.parent.mkdir(parents=True)
+    path.write_text("{}")
+
+    def unreadable(_path: Path) -> bytes:
+        raise PermissionError
+
+    monkeypatch.setattr(credentials_module, "_read_bounded", unreadable)
+
+    result = _provider().detect_credentials()
+
+    assert isinstance(result, ProviderFailure)
+    assert result.kind is ProviderFailureKind.UNREADABLE
+
+
+@pytest.mark.parametrize(
+    ("primary_state", "expected_kind"),
+    [
+        ("malformed", ProviderFailureKind.MALFORMED),
+        ("unreadable", ProviderFailureKind.UNREADABLE),
+        ("expired", ProviderFailureKind.EXPIRED),
+    ],
+)
+def test_detection_never_bypasses_a_nonmissing_primary_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    primary_state: str,
+    expected_kind: ProviderFailureKind,
+) -> None:
+    monkeypatch.setattr(credentials_module.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(credentials_module.Path, "home", lambda: tmp_path)
+    primary = tmp_path / ".claude" / ".credentials.json"
+    fallback = tmp_path / ".config" / "claude" / ".credentials.json"
+    primary.parent.mkdir(parents=True)
+    if primary_state == "malformed":
+        primary.write_text("{")
+    else:
+        primary.write_text(
+            json.dumps(
+                {
+                    "claudeAiOauth": {
+                        "accessToken": "sk-ant-oat01-primary",
+                        "expiresAt": (
+                            _FUTURE_EXPIRY_MS
+                            if primary_state == "unreadable"
+                            else 1
+                        ),
+                    }
+                }
+            )
+        )
+    fallback.parent.mkdir(parents=True)
+    fallback.write_text(
+        json.dumps(
+            {
+                "claudeAiOauth": {
+                    "accessToken": "sk-ant-oat01-fallback",
+                    "expiresAt": _FUTURE_EXPIRY_MS,
+                }
+            }
+        )
+    )
+    if primary_state == "unreadable":
+        read_bounded = credentials_module._read_bounded
+
+        def read_with_primary_failure(path: Path) -> bytes:
+            if path == primary:
+                raise PermissionError
+            return read_bounded(path)
+
+        monkeypatch.setattr(
+            credentials_module,
+            "_read_bounded",
+            read_with_primary_failure,
+        )
+
+    result = _provider().detect_credentials()
+
+    assert isinstance(result, ProviderFailure)
+    assert result.kind is expected_kind
+
+
+@pytest.mark.parametrize(
+    ("return_code", "expected"),
+    [
+        ((-25300) % 256, ProviderFailureKind.MISSING),
+        (1, ProviderFailureKind.UNREADABLE),
+    ],
+)
+def test_macos_keychain_distinguishes_absence_from_access_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    return_code: int,
+    expected: ProviderFailureKind,
+) -> None:
     monkeypatch.setattr(
-        claude_provider_module.shutil,
+        credentials_module.platform,
+        "system",
+        lambda: "Darwin",
+    )
+
+    def fail(*_args: object, **_kwargs: object) -> None:
+        raise subprocess.CalledProcessError(return_code, ["security"])
+
+    monkeypatch.setattr(credentials_module.subprocess, "run", fail)
+
+    result = _provider().detect_credentials()
+
+    assert isinstance(result, ProviderFailure)
+    assert result.kind is expected
+
+
+def test_credential_validation_aggregates_only_safe_paths() -> None:
+    raw_identity = "long.account.name@example.test"
+
+    with pytest.raises(ProviderBoundaryError) as exc_info:
+        parse_credentials_blob(
+            {
+                "claudeAiOauth": {
+                    "accessToken": 42,
+                    "scopes": ["user:profile", 7],
+                    "identity": raw_identity,
+                }
+            }
+        )
+
+    rendered = str(exc_info.value)
+    assert "claudeAiOauth.accessToken" in rendered
+    assert "claudeAiOauth.scopes.1" in rendered
+    assert raw_identity not in rendered
+
+
+@pytest.mark.parametrize(
+    ("plan", "expected_kind"),
+    [("é" * 128, None), ("é" * 129, ProviderFailureKind.MALFORMED)],
+)
+def test_subscription_plan_uses_its_utf8_byte_limit(
+    plan: str,
+    expected_kind: ProviderFailureKind | None,
+) -> None:
+    blob: JsonObject = {
+        "claudeAiOauth": {
+            "accessToken": "sk-ant-oat01-plan-boundary",
+            "subscriptionType": plan,
+        }
+    }
+
+    if expected_kind is None:
+        assert parse_credentials_blob(blob).plan == plan
+        return
+    with pytest.raises(ProviderBoundaryError) as exc_info:
+        parse_credentials_blob(blob)
+    assert exc_info.value.failure.kind is expected_kind
+
+
+def test_huge_usage_integer_becomes_a_safe_boundary_failure() -> None:
+    with pytest.raises(ProviderBoundaryError) as exc_info:
+        oauth_usage_windows(
+            {
+                "five_hour": {
+                    "utilization": 10**400,
+                    "resets_at": None,
+                }
+            }
+        )
+
+    assert exc_info.value.failure.kind is ProviderFailureKind.MALFORMED
+    assert exc_info.value.failure.fields == ("five_hour.utilization",)
+
+
+def test_manual_token_normalization_is_provider_owned_and_safe() -> None:
+    provider = _provider()
+
+    valid = provider.credentials_from_token("sk-ant-oat01-manual")
+    invalid = provider.credentials_from_token("raw-secret-invalid")
+
+    assert isinstance(valid, DetectedCredentials)
+    assert valid.access_token == "sk-ant-oat01-manual"
+    assert isinstance(invalid, ProviderFailure)
+    assert invalid.kind is ProviderFailureKind.MALFORMED
+    assert "raw-secret-invalid" not in repr(invalid)
+
+
+def test_setup_token_capture_returns_no_arbitrary_process_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_token = "sk-ant-oat01-synthetic-token"
+    raw_secret = "oauth-code=arbitrary-secret-sentinel"
+    monkeypatch.setattr(
+        provider_module.shutil,
         "which",
         lambda name: "/usr/bin/claude" if name == "claude" else None,
     )
 
-    def _run(
+    def capture(
         command: list[str],
-        *,
-        capture_output: bool,
-        text: bool,
         timeout: int,
-        check: bool,
-    ) -> subprocess.CompletedProcess[str]:
+    ) -> provider_module._CapturedSetupOutput:
         assert command == ["/usr/bin/claude", "setup-token"]
-        assert capture_output is True
-        assert text is True
         assert timeout == SETUP_TOKEN_TIMEOUT_SECONDS
-        assert check is False
-        return subprocess.CompletedProcess(
-            command,
+        return provider_module._CapturedSetupOutput(
             0,
-            (
-                "Opening browser\n"
-                f"Token: {first_token}\n"
-                f"Rotated token: {second_token}\n"
-                "Complete\n"
-            ),
-            "",
+            f"{raw_secret}\nToken: {first_token}\n".encode(),
         )
 
-    monkeypatch.setattr(claude_provider_module.subprocess, "run", _run)
+    monkeypatch.setattr(
+        ClaudeProvider,
+        "_capture_setup_output",
+        staticmethod(capture),
+    )
 
     result = _provider().capture_setup_token()
 
-    assert result == SetupTokenSuccess(
-        first_token,
-        ("Opening browser", "Complete", ""),
+    assert result == SetupTokenSuccess(first_token)
+    assert first_token not in repr(result)
+    assert raw_secret not in repr(result)
+    assert not hasattr(result, "output_lines")
+
+
+def test_setup_token_process_timeout_is_explicit() -> None:
+    result = ClaudeProvider._capture_setup_output(
+        [
+            sys.executable,
+            "-c",
+            "import time; time.sleep(1)",
+        ],
+        0,
     )
 
+    assert isinstance(result, SetupTokenTimedOut)
 
-def test_setup_token_capture_reports_its_bounded_timeout(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A browser flow exceeding the deadline remains an explicit state."""
-    monkeypatch.setattr(
-        claude_provider_module.shutil,
-        "which",
-        lambda name: "/usr/bin/claude" if name == "claude" else None,
+
+def test_setup_token_process_output_is_bounded() -> None:
+    result = ClaudeProvider._capture_setup_output(
+        [
+            sys.executable,
+            "-c",
+            "import sys; sys.stdout.buffer.write(b'x' * 1048577)",
+        ],
+        SETUP_TOKEN_TIMEOUT_SECONDS,
     )
 
-    def _run(
-        command: list[str],
-        *,
-        capture_output: bool,
-        text: bool,
-        timeout: int,
-        check: bool,
-    ) -> subprocess.CompletedProcess[str]:
-        del capture_output, text, check
-        raise subprocess.TimeoutExpired(command, timeout)
-
-    monkeypatch.setattr(claude_provider_module.subprocess, "run", _run)
-
-    assert isinstance(
-        _provider().capture_setup_token(),
-        SetupTokenTimedOut,
-    )
+    assert isinstance(result, SetupTokenUnreadable)

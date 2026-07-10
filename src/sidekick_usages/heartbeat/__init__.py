@@ -8,7 +8,6 @@ from sidekick_usages.heartbeat.models import (
     UsageWindowState,
 )
 from sidekick_usages.heartbeat.ports import HeartbeatProvider
-from sidekick_usages.heartbeat.registry import build_heartbeat_registry
 from sidekick_usages.heartbeat.render import (
     render_heartbeat_outcomes,
     render_heartbeat_status,
@@ -27,7 +26,6 @@ __all__ = [
     "HeartbeatStatus",
     "HeartbeatTarget",
     "UsageWindowState",
-    "build_heartbeat_registry",
     "heartbeat_exit_code",
     "heartbeat_supported_label",
     "render_heartbeat_outcomes",

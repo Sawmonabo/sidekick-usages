@@ -43,6 +43,15 @@ def make_account_store(
     accounts: Iterable[Account] = (),
 ) -> AccountStore:
     """Build a loaded transactional store with a live private observer."""
+    store, _private = make_account_store_with_private(root, accounts)
+    return store
+
+
+def make_account_store_with_private(
+    root: Path,
+    accounts: Iterable[Account] = (),
+) -> tuple[AccountStore, PrivateCredentialTree]:
+    """Build a store and the exact private tree injected into it."""
     paths = make_application_paths(root)
     PersistenceFilesystem(paths.accounts.canonical).repair_parent_permissions()
     private_credentials = PrivateCredentialTree(
@@ -53,10 +62,11 @@ def make_account_store(
     store = AccountStore(
         paths.accounts,
         orphaned_credentials_observer=private_credentials.observe,
+        private_credentials=private_credentials,
     ).load()
     for account in accounts:
         store.persist(account)
-    return store
+    return store, private_credentials
 
 
 @dataclass(slots=True)

@@ -10,12 +10,13 @@ from sidekick_usages import cli
 from sidekick_usages.branding import ROBOT_LINES
 from sidekick_usages.core.models import Account, ClaudeCredentials
 from sidekick_usages.core.types import AccountLabel, ExitCode
+from sidekick_usages.credentials import CredentialService
 from sidekick_usages.daemon import DaemonOperation, DaemonOperationResult
 from sidekick_usages.http import HttpClient
-from sidekick_usages.providers import build_provider_registry
+from sidekick_usages.providers.registry import build_provider_registry
 from tests.test_support import (
     FixedClock,
-    make_account_store,
+    make_account_store_with_private,
     make_application_paths,
 )
 
@@ -25,21 +26,33 @@ def _install_context(
     accounts: list[Account],
 ) -> tuple[io.StringIO, io.StringIO]:
     paths = make_application_paths(tmp_path)
-    store = make_account_store(tmp_path, accounts)
+    store, private_credentials = make_account_store_with_private(
+        tmp_path,
+        accounts,
+    )
     stdout = io.StringIO()
     stderr = io.StringIO()
     clock = FixedClock()
+    http = HttpClient()
+    providers = build_provider_registry(clock)
     cli.set_context(
         cli.AppContext(
             store=store,
-            http=HttpClient(),
-            providers=build_provider_registry(clock),
+            http=http,
+            providers=providers,
             heartbeat_providers={},
             private_codex_locations=paths.private_codex,
             lifetime_sources={},
             console=Console(file=stdout, width=85, force_terminal=False),
             err_console=Console(file=stderr, width=85, force_terminal=False),
             clock=clock,
+            credentials=CredentialService(
+                store,
+                http,
+                providers,
+                private_credentials,
+                clock=clock,
+            ),
         )
     )
     return stdout, stderr

@@ -11,7 +11,7 @@ from sidekick_usages.heartbeat.ports import HeartbeatProvider, warmed
 from sidekick_usages.http import HttpClient, HttpOperation
 from sidekick_usages.providers.claude.schemas import (
     header_reset,
-    provider_time,
+    oauth_usage_window,
 )
 from sidekick_usages.providers.claude.usage import (
     ANTHROPIC_API_VERSION,
@@ -75,17 +75,16 @@ class ClaudeHeartbeat(HeartbeatProvider):
                 "anthropic-beta": ANTHROPIC_BETA,
             },
         )
-        window = data.get(FIVE_HOUR_KEY)
-        if not isinstance(window, dict):
+        window = oauth_usage_window(data.get(FIVE_HOUR_KEY), "5h")
+        if window is None:
             return UsageWindowState(
                 active=False,
                 message="5h window missing",
             )
-        reset_at = provider_time(window.get("resets_at"))
-        if reset_at is not None:
+        if window.resets_at is not None:
             return UsageWindowState(
                 active=True,
-                reset_at=reset_at,
+                reset_at=window.resets_at,
                 message="5h window already active",
             )
         return UsageWindowState(active=False, message="5h window inactive")

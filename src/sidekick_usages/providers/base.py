@@ -6,15 +6,63 @@ services and commands to dispatch through a shared capability contract.
 
 import re
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 
 from sidekick_usages.core.models import (
     Account,
+    Credentials,
     DetectedCredentials,
     UsageReport,
 )
 from sidekick_usages.core.types import ProviderId
+from sidekick_usages.errors import UsageError
 from sidekick_usages.http import HttpClient
+
+
+class ProviderFailureKind(StrEnum):
+    """Closed safe failure states owned by provider integrations."""
+
+    MISSING = "missing"
+    UNREADABLE = "unreadable"
+    MALFORMED = "malformed"
+    INCOMPLETE = "incomplete"
+    EXPIRED = "expired"
+    REJECTED = "rejected"
+    IDENTITY_MISMATCH = "identity_mismatch"
+    UNSUPPORTED = "unsupported"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ProviderFailure:
+    """Secret-safe provider failure suitable for application boundaries."""
+
+    provider_id: ProviderId
+    kind: ProviderFailureKind
+    message: str
+    action_required: bool = True
+    fields: tuple[str, ...] = ()
+
+
+class ProviderBoundaryError(UsageError):
+    """An untrusted provider payload violated its owning schema."""
+
+    def __init__(self, failure: ProviderFailure) -> None:
+        super().__init__(failure.message)
+        self.failure = failure
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class RefreshSuccess:
+    """Validated replacement credentials from one provider refresh."""
+
+    credentials: Credentials = field(repr=False)
+    plan: str | None = None
+
+
+type CredentialDetection = DetectedCredentials | ProviderFailure
+type RefreshResult = RefreshSuccess | ProviderFailure
 
 
 class Provider(ABC):
@@ -37,15 +85,18 @@ class Provider(ABC):
     def detect_credentials(
         self,
         credential_home: Path | None = None,
-    ) -> DetectedCredentials | None:
+    ) -> CredentialDetection:
         """Read OAuth credentials from the local provider install.
 
         :param credential_home: Optional provider state directory to
             inspect instead of the default install location. Providers
             that do not support multiple state homes may ignore it.
-        :return: Detected credentials, or ``None`` when no local
-            login is found.
+        :return: Detected credentials or one explicit safe failure.
         """
+
+    @abstractmethod
+    def credentials_from_token(self, token: str) -> CredentialDetection:
+        """Validate one manually supplied token at its owning boundary."""
 
     @abstractmethod
     def fetch_usage(
@@ -64,28 +115,15 @@ class Provider(ABC):
         """
 
     @abstractmethod
-    def refresh_token(
+    def refresh_credentials(
         self,
         account: Account,
         http: HttpClient,
-    ) -> bool:
-        """Refresh the access token using the stored refresh token.
-
-        Providers or account types without refresh support should
-        return ``False`` immediately and let the caller raise an auth
-        error.
+    ) -> RefreshResult:
+        """Return refreshed credentials without mutating ``account``.
 
         :param account: Account whose token to refresh. Mutated
-            in-place on success.
+            only by the application after a successful result.
         :param http: Shared HTTP client.
-        :return: True on successful refresh, False otherwise.
-        """
-
-    @abstractmethod
-    def run_setup_token(self) -> str | None:
-        """Run the provider's long-lived token generator.
-
-        :return: A token string, or ``None`` on failure.
-        :raises UnsupportedOperationError: When the provider has no
-            equivalent of ``claude setup-token`` (Codex).
+        :return: Validated replacement credentials or a safe failure.
         """

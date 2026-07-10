@@ -7,7 +7,7 @@ from sidekick_usages.providers.claude.credentials import (
 )
 from sidekick_usages.providers.claude.schemas import (
     header_usage_window,
-    oauth_usage_window,
+    oauth_usage_windows,
 )
 
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
@@ -18,12 +18,6 @@ ANTHROPIC_API_VERSION = "2023-06-01"
 PROFILE_SCOPE = "user:profile"
 PROBE_MODEL = "claude-haiku-4-5-20251001"
 
-OAUTH_BUCKETS: tuple[tuple[str, str], ...] = (
-    ("five_hour", "5h"),
-    ("seven_day", "7d"),
-    ("seven_day_opus", "7d Opus"),
-    ("seven_day_oauth_apps", "7d OAuth"),
-)
 HEADER_BUCKETS: tuple[tuple[str, str], ...] = (
     ("anthropic-ratelimit-unified-5h", "5h"),
     ("anthropic-ratelimit-unified-7d", "7d"),
@@ -55,11 +49,7 @@ def fetch_via_oauth_endpoint(
             "anthropic-beta": ANTHROPIC_BETA,
         },
     )
-    windows = tuple(
-        window
-        for key, label in OAUTH_BUCKETS
-        if (window := oauth_usage_window(data.get(key), label)) is not None
-    )
+    windows = oauth_usage_windows(data)
     return UsageReport(windows=windows, plan=account.plan)
 
 

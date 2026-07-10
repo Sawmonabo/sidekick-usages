@@ -1,4 +1,4 @@
-"""Tests for Codex auth, refresh, and usage parsing."""
+"""Load-bearing Codex auth, refresh, usage, and isolation tests."""
 
 import base64
 import json
@@ -8,56 +8,72 @@ from pathlib import Path
 
 import pytest
 
-from sidekick_usages.core.expiry import InvalidExpiry, KnownExpiry
-from sidekick_usages.core.models import Account, CodexCredentials
-from sidekick_usages.core.types import AccountLabel, ProviderId, RefreshStatus
-from sidekick_usages.errors import InvalidPayloadError
-from sidekick_usages.http import HttpClient, HttpOperation
-from sidekick_usages.maintenance import TokenMaintenanceService
-from sidekick_usages.persistence.errors import (
-    DurabilityUncertainError,
-    PrivateCredentialCollisionError,
+import sidekick_usages.providers.codex.schemas as schemas_module
+from sidekick_usages.core.expiry import KnownExpiry
+from sidekick_usages.core.models import (
+    Account,
+    CodexCredentials,
+    DetectedCredentials,
 )
+from sidekick_usages.core.types import AccountLabel
+from sidekick_usages.errors import AuthError
+from sidekick_usages.http import HttpClient, HttpOperation
 from sidekick_usages.persistence.private_credentials import (
-    PrivateCredentialOwnership,
     PrivateCredentialTree,
 )
-from sidekick_usages.providers.codex import (
-    CodexProvider,
-    write_private_account_auth_bundle,
+from sidekick_usages.providers.base import (
+    ProviderBoundaryError,
+    ProviderFailure,
+    ProviderFailureKind,
+    RefreshSuccess,
 )
+from sidekick_usages.providers.codex.auth import (
+    PreparedCodexAuthBundle,
+    auth_blob_account_id,
+    prepare_export_bundle,
+    prepare_private_bundle,
+)
+from sidekick_usages.providers.codex.provider import CodexProvider
+from sidekick_usages.providers.codex.schemas import validate_refresh_payload
 from sidekick_usages.serialization import JsonObject
-from tests.test_support import REFERENCE_TIME, FixedClock, make_account_store
+from tests.test_support import REFERENCE_TIME, FixedClock
 
 DETECTED_EXP = 1_800_000_000
 REFRESH_EXP = 1_900_000_000
-PRIMARY_USED = 12
-SECONDARY_USED = 34
-EXTRA_PRIMARY_USED = 56
-EXTRA_SECONDARY_USED = 78
 PRIMARY_RESET = 1_770_003_600
-SECONDARY_RESET = 1_770_604_800
-EXTRA_PRIMARY_RESET = 1_770_007_200
-EXTRA_SECONDARY_RESET = 1_770_691_200
-
-
-def _provider() -> CodexProvider:
-    return CodexProvider(FixedClock())
+PRIMARY_USED = 12
+EXTRA_SECONDARY_USED = 78
 
 
 def _jwt(payload: dict[str, object]) -> str:
-    """Build an unsigned JWT-shaped fixture for parser tests."""
+    """Build an unsigned JWT-shaped provider fixture."""
     header = {"alg": "none", "typ": "JWT"}
 
-    def enc(value: Mapping[str, object]) -> str:
+    def encode(value: Mapping[str, object]) -> str:
         raw = json.dumps(value, separators=(",", ":")).encode()
         return base64.urlsafe_b64encode(raw).decode().rstrip("=")
 
-    return f"{enc(header)}.{enc(payload)}.sig"
+    return f"{encode(header)}.{encode(payload)}.sig"
 
 
-def _acct(*, auth_home: str | None = None) -> Account:
-    """Build a Codex account fixture."""
+def _access_token(
+    *,
+    account_id: str = "acct_123",
+    expiry: int = REFRESH_EXP,
+    plan: str = "pro",
+) -> str:
+    return _jwt(
+        {
+            "exp": expiry,
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": account_id,
+                "chatgpt_plan_type": plan,
+            },
+        }
+    )
+
+
+def _account(*, auth_home: str | None = None) -> Account:
     return Account(
         label=AccountLabel("codex-pro"),
         credentials=CodexCredentials(
@@ -72,10 +88,10 @@ def _acct(*, auth_home: str | None = None) -> Account:
 
 
 class _UsageHttp(HttpClient):
-    """HTTP fake that records GET headers and returns one payload."""
+    """Record GET headers and return one usage payload."""
 
     def __init__(self, payload: JsonObject) -> None:
-        self.payload: JsonObject = payload
+        self.payload = payload
         self.headers: dict[str, str] | None = None
 
     def get_json(
@@ -89,10 +105,15 @@ class _UsageHttp(HttpClient):
 
 
 class _RefreshHttp(HttpClient):
-    """HTTP fake that records POST form data and returns one payload."""
+    """Record refresh form data and return or raise one result."""
 
-    def __init__(self, payload: JsonObject) -> None:
-        self.payload: JsonObject = payload
+    def __init__(
+        self,
+        payload: JsonObject | None = None,
+        error: AuthError | None = None,
+    ) -> None:
+        self.payload = payload or {}
+        self.error = error
         self.data: dict[str, str] | None = None
 
     def post_form(
@@ -106,51 +127,12 @@ class _RefreshHttp(HttpClient):
         del url, headers
         assert operation is HttpOperation.CODEX_REFRESH
         self.data = dict(data)
+        if self.error is not None:
+            raise self.error
         return self.payload
 
 
-class _FailingPrivateWriter:
-    """Fail after refresh staging reaches the private durability boundary."""
-
-    def classify_bundle(self, bundle_path: Path) -> PrivateCredentialOwnership:
-        del bundle_path
-        return PrivateCredentialOwnership.CANONICAL
-
-    def read_bundle_file(
-        self,
-        bundle_path: Path,
-        basename: str,
-    ) -> bytes | None:
-        del bundle_path, basename
-        return json.dumps(
-            {
-                "tokens": {
-                    "access_token": "access-old",
-                    "refresh_token": "refresh-old",
-                    "id_token": "id-old",
-                    "account_id": "acct_123",
-                }
-            }
-        ).encode()
-
-    def bundle_present(self, bundle_path: Path) -> bool:
-        del bundle_path
-        return True
-
-    def write_bundle(
-        self,
-        bundle_path: Path,
-        files: Mapping[str, bytes],
-        *,
-        expected_bundle_present: bool,
-        expected_files: Mapping[str, bytes | None],
-    ) -> Path:
-        del bundle_path, files, expected_bundle_present, expected_files
-        raise DurabilityUncertainError("codex-pro")
-
-
 def _usage_payload() -> JsonObject:
-    """Return the current Codex usage endpoint shape."""
     return {
         "plan_type": "pro",
         "rate_limit": {
@@ -159,8 +141,8 @@ def _usage_payload() -> JsonObject:
                 "reset_at": PRIMARY_RESET,
             },
             "secondary_window": {
-                "used_percent": SECONDARY_USED,
-                "reset_at": SECONDARY_RESET,
+                "used_percent": 34,
+                "reset_at": 1_770_604_800,
             },
         },
         "additional_rate_limits": [
@@ -168,12 +150,12 @@ def _usage_payload() -> JsonObject:
                 "limit_name": "gpt-5.1-codex",
                 "rate_limit": {
                     "primary_window": {
-                        "used_percent": EXTRA_PRIMARY_USED,
-                        "reset_at": EXTRA_PRIMARY_RESET,
+                        "used_percent": 56,
+                        "reset_at": 1_770_007_200,
                     },
                     "secondary_window": {
                         "used_percent": EXTRA_SECONDARY_USED,
-                        "reset_at": EXTRA_SECONDARY_RESET,
+                        "reset_at": 1_770_691_200,
                     },
                 },
             }
@@ -181,88 +163,13 @@ def _usage_payload() -> JsonObject:
     }
 
 
-def test_parse_blob_extracts_account_id_expiry_and_plan() -> None:
-    """Codex auth.json supplies the account binding and JWT metadata."""
-    access = _jwt(
-        {
-            "exp": DETECTED_EXP,
-            "https://api.openai.com/auth": {
-                "chatgpt_plan_type": "pro",
-                "chatgpt_account_id": "acct_from_claim",
-            },
-        }
-    )
-    detected = CodexProvider._parse_blob(
-        {
-            "tokens": {
-                "access_token": access,
-                "refresh_token": "refresh-123",
-                "account_id": "acct_from_tokens",
-            }
-        }
-    )
-
-    assert detected is not None
-    assert detected.access_token == access
-    assert detected.refresh_token == "refresh-123"
-    assert detected.provider_account_id == "acct_from_tokens"
-    assert detected.expiry == KnownExpiry(
-        datetime.fromtimestamp(DETECTED_EXP, UTC)
-    )
-    assert detected.plan == "pro"
-
-
-def test_parse_blob_preserves_codex_auth_file_metadata() -> None:
-    """Codex auth metadata is needed to write isolated CODEX_HOME files."""
-    access = _jwt(
-        {
-            "exp": DETECTED_EXP,
-            "https://api.openai.com/auth": {
-                "chatgpt_plan_type": "pro",
-                "chatgpt_account_id": "acct_from_claim",
-            },
-        }
-    )
-
-    detected = CodexProvider._parse_blob(
-        {
-            "last_refresh": "2026-06-12T00:00:00Z",
-            "tokens": {
-                "access_token": access,
-                "refresh_token": "refresh-123",
-                "id_token": "id-token-123",
-            },
-        }
-    )
-
-    assert detected is not None
-    assert detected.id_token == "id-token-123"
-    assert detected.last_refresh == "2026-06-12T00:00:00Z"
-
-
-def test_parse_blob_marks_an_undecodable_access_token_expiry_invalid() -> None:
-    """A present malformed JWT cannot masquerade as absent expiry data."""
-    detected = CodexProvider._parse_blob(
-        {"tokens": {"access_token": "not-a-jwt"}}
-    )
-
-    assert detected is not None
-    assert isinstance(detected.expiry, InvalidExpiry)
-
-
-def test_detect_credentials_reads_explicit_codex_home(tmp_path: Path) -> None:
-    """A saved account can point at its own CODEX_HOME."""
+def test_detection_validates_auth_identity_expiry_and_metadata(
+    tmp_path: Path,
+) -> None:
+    """One valid auth source yields normalized provider-owned state."""
     codex_home = tmp_path / "codex-a"
     codex_home.mkdir()
-    access = _jwt(
-        {
-            "exp": DETECTED_EXP,
-            "https://api.openai.com/auth": {
-                "chatgpt_account_id": "acct_home",
-                "chatgpt_plan_type": "pro",
-            },
-        }
-    )
+    access = _access_token(expiry=DETECTED_EXP)
     (codex_home / "auth.json").write_text(
         json.dumps(
             {
@@ -276,166 +183,453 @@ def test_detect_credentials_reads_explicit_codex_home(tmp_path: Path) -> None:
         )
     )
 
-    detected = _provider().detect_credentials(codex_home)
+    result = CodexProvider(FixedClock()).detect_credentials(codex_home)
 
-    assert detected is not None
-    assert detected.access_token == access
-    assert detected.refresh_token == "refresh-home"
-    assert detected.provider_account_id == "acct_home"
-    assert detected.id_token == "id-token-home"
-    assert detected.last_refresh == "2026-06-12T00:00:00Z"
-
-
-def test_fetch_usage_sends_codex_account_and_beta_headers() -> None:
-    """Codex usage requires both account id and OpenAI-Beta headers."""
-    http = _UsageHttp(_usage_payload())
-
-    _provider().fetch_usage(_acct(), http)
-
-    assert http.headers is not None
-    assert http.headers["ChatGPT-Account-Id"] == "acct_123"
-    assert http.headers["OpenAI-Beta"] == "codex"
-
-
-def test_fetch_usage_parses_current_rate_limit_shape() -> None:
-    """Current Codex payload renders 5h, 7d, and additional windows."""
-    report = _provider().fetch_usage(
-        _acct(),
-        _UsageHttp(_usage_payload()),
+    assert isinstance(result, DetectedCredentials)
+    assert result.access_token == access
+    assert result.refresh_token == "refresh-home"
+    assert result.provider_account_id == "acct_123"
+    assert result.id_token == "id-token-home"
+    assert result.last_refresh == "2026-06-12T00:00:00Z"
+    assert result.expiry == KnownExpiry(
+        datetime.fromtimestamp(DETECTED_EXP, UTC)
     )
-
-    by_name = {window.name: window for window in report.windows}
-    assert report.plan == "pro"
-    assert by_name["5h"].utilization == PRIMARY_USED
-    assert by_name["7d"].utilization == SECONDARY_USED
-    assert by_name["gpt-5.1-codex 5h"].utilization == EXTRA_PRIMARY_USED
-    assert by_name["gpt-5.1-codex 7d"].utilization == EXTRA_SECONDARY_USED
-    assert by_name["5h"].resets_at == datetime.fromtimestamp(
-        PRIMARY_RESET, tz=UTC
-    )
-
-
-def test_refresh_posts_codex_client_id_and_updates_metadata() -> None:
-    """Codex refresh uses the installed CLI client id and rotates tokens."""
-    access = _jwt(
-        {
-            "exp": REFRESH_EXP,
-            "https://api.openai.com/auth": {
-                "chatgpt_account_id": "acct_new",
-                "chatgpt_plan_type": "pro",
-            },
-        }
-    )
-    http = _RefreshHttp(
-        {
-            "access_token": access,
-            "refresh_token": "refresh-new",
-        }
-    )
-    acct = _acct()
-
-    assert _provider().refresh_token(acct, http) is True
-
-    assert http.data == {
-        "grant_type": "refresh_token",
-        "refresh_token": "refresh-old",
-        "client_id": "app_EMoamEEZ73f0CkXaXp7hrann",
-    }
-    assert acct.access_token == access
-    assert acct.refresh_token == "refresh-new"
-    assert acct.expiry == KnownExpiry(datetime.fromtimestamp(REFRESH_EXP, UTC))
-    assert acct.provider_account_id == "acct_new"
+    assert result.plan == "pro"
 
 
 @pytest.mark.parametrize(
-    "payload",
+    ("content", "expected_kind"),
     [
-        {
-            "access_token": _jwt({"exp": "invalid"}),
-            "refresh_token": "refresh-new",
-        },
-        {"access_token": "not-a-jwt", "refresh_token": "refresh-new"},
-        {
-            "access_token": _jwt({"exp": REFRESH_EXP}),
-            "refresh_token": 42,
-        },
-        {
-            "access_token": _jwt({"exp": REFRESH_EXP}),
-            "id_token": [],
-        },
+        (None, ProviderFailureKind.MISSING),
+        (b"{", ProviderFailureKind.MALFORMED),
+        (
+            b'{"tokens":{"refresh_token":"refresh-only"}}',
+            ProviderFailureKind.INCOMPLETE,
+        ),
+        (
+            json.dumps(
+                {"tokens": {"access_token": _access_token(expiry=1)}}
+            ).encode(),
+            ProviderFailureKind.EXPIRED,
+        ),
+        (
+            json.dumps(
+                {
+                    "tokens": {
+                        "access_token": _access_token(),
+                        "refresh_token": None,
+                    }
+                }
+            ).encode(),
+            ProviderFailureKind.MALFORMED,
+        ),
+        (
+            json.dumps(
+                {
+                    "tokens": {
+                        "access_token": _access_token(),
+                        "id_token": None,
+                    }
+                }
+            ).encode(),
+            ProviderFailureKind.MALFORMED,
+        ),
+        (
+            json.dumps(
+                {
+                    "tokens": {
+                        "access_token": _access_token(),
+                        "account_id": "acct_other",
+                    }
+                }
+            ).encode(),
+            ProviderFailureKind.IDENTITY_MISMATCH,
+        ),
     ],
 )
-def test_refresh_rejects_malformed_metadata_before_replacing_credentials(
-    payload: JsonObject,
+def test_detection_distinguishes_safe_source_failures(
+    tmp_path: Path,
+    content: bytes | None,
+    expected_kind: ProviderFailureKind,
 ) -> None:
-    """Malformed refresh metadata cannot partially rotate credentials."""
-    http = _RefreshHttp(payload)
-    acct = _acct()
-    original = acct.credentials
+    codex_home = tmp_path / "codex"
+    codex_home.mkdir()
+    if content is not None:
+        (codex_home / "auth.json").write_bytes(content)
 
-    with pytest.raises(InvalidPayloadError):
-        _provider().refresh_token(acct, http)
+    result = CodexProvider(FixedClock()).detect_credentials(codex_home)
 
-    assert acct.credentials is original
+    assert isinstance(result, ProviderFailure)
+    assert result.kind is expected_kind
+    assert "refresh-only" not in repr(result)
+    assert "eyJ" not in repr(result)
 
 
-def test_refresh_keeps_external_codex_home_read_only(tmp_path: Path) -> None:
-    """Provider refresh never writes an unowned provider-native home."""
-    codex_home = tmp_path / "codex-pro"
+@pytest.mark.parametrize(
+    ("declared_id", "claim_id", "expected"),
+    [
+        ("acct_123", "acct_123", "acct_123"),
+        ("acct_123", None, "acct_123"),
+        (None, "acct_123", "acct_123"),
+        (
+            "acct_declared",
+            "acct_claimed",
+            ProviderFailureKind.IDENTITY_MISMATCH,
+        ),
+    ],
+)
+def test_auth_identity_resolution_never_prefers_a_conflict(
+    declared_id: str | None,
+    claim_id: str | None,
+    expected: str | ProviderFailureKind,
+) -> None:
+    tokens: JsonObject = {}
+    if declared_id is not None:
+        tokens["account_id"] = declared_id
+    if claim_id is not None:
+        tokens["access_token"] = _access_token(account_id=claim_id)
+    blob: JsonObject = {"tokens": tokens}
+
+    if isinstance(expected, ProviderFailureKind):
+        with pytest.raises(ProviderBoundaryError) as exc_info:
+            auth_blob_account_id(blob)
+        assert exc_info.value.failure.kind is expected
+        return
+    assert auth_blob_account_id(blob) == expected
+
+
+@pytest.mark.parametrize(
+    ("plan", "last_refresh", "expected_kind"),
+    [
+        ("é" * 128, "timestamp", None),
+        ("é" * 129, "timestamp", ProviderFailureKind.MALFORMED),
+        ("pro", "é" * 2048, None),
+        ("pro", "é" * 2049, ProviderFailureKind.MALFORMED),
+    ],
+)
+def test_auth_semantic_strings_use_utf8_byte_limits(
+    tmp_path: Path,
+    plan: str,
+    last_refresh: str,
+    expected_kind: ProviderFailureKind | None,
+) -> None:
+    codex_home = tmp_path / "codex-bounds"
     codex_home.mkdir()
     (codex_home / "auth.json").write_text(
         json.dumps(
             {
-                "auth_mode": "chatgpt",
-                "last_refresh": "2026-06-11T00:00:00Z",
-                "tokens": {
-                    "access_token": "access-old",
-                    "refresh_token": "refresh-old",
-                    "id_token": "id-old",
-                    "account_id": "acct_123",
-                },
+                "last_refresh": last_refresh,
+                "tokens": {"access_token": _access_token(plan=plan)},
             }
         )
     )
-    access = _jwt(
-        {
-            "exp": REFRESH_EXP,
-            "https://api.openai.com/auth": {
-                "chatgpt_account_id": "acct_new",
-                "chatgpt_plan_type": "pro",
-            },
-        }
+
+    result = CodexProvider(FixedClock()).detect_credentials(codex_home)
+
+    if expected_kind is None:
+        assert isinstance(result, DetectedCredentials)
+        assert result.plan == plan
+        return
+    assert isinstance(result, ProviderFailure)
+    assert result.kind is expected_kind
+
+
+def test_detection_reports_unreadable_auth(tmp_path: Path) -> None:
+    auth_path = tmp_path / "auth.json"
+    auth_path.mkdir()
+
+    result = CodexProvider(FixedClock()).detect_credentials(auth_path)
+
+    assert isinstance(result, ProviderFailure)
+    assert result.kind is ProviderFailureKind.UNREADABLE
+    assert str(auth_path) not in repr(result)
+
+
+def test_usage_validates_current_shape_and_required_headers() -> None:
+    """Current usage becomes normalized windows with account-bound headers."""
+    http = _UsageHttp(_usage_payload())
+
+    report = CodexProvider(FixedClock()).fetch_usage(_account(), http)
+
+    assert http.headers is not None
+    assert http.headers["ChatGPT-Account-Id"] == "acct_123"
+    assert http.headers["OpenAI-Beta"] == "codex"
+    by_name = {window.name: window for window in report.windows}
+    assert report.plan == "pro"
+    assert by_name["5h"].utilization == PRIMARY_USED
+    assert by_name["gpt-5.1-codex 7d"].utilization == EXTRA_SECONDARY_USED
+    assert by_name["5h"].resets_at == datetime.fromtimestamp(
+        PRIMARY_RESET,
+        tz=UTC,
     )
+
+
+def test_usage_rejects_malformed_window_without_exposing_input() -> None:
+    raw_secret = "raw-token-body-should-never-escape"
+    payload = _usage_payload()
+    rate_limit = payload["rate_limit"]
+    assert isinstance(rate_limit, dict)
+    primary = rate_limit["primary_window"]
+    assert isinstance(primary, dict)
+    primary["used_percent"] = raw_secret
+
+    with pytest.raises(ProviderBoundaryError) as caught:
+        CodexProvider(FixedClock()).fetch_usage(
+            _account(), _UsageHttp(payload)
+        )
+
+    assert caught.value.failure.kind is ProviderFailureKind.MALFORMED
+    assert caught.value.failure.fields == (
+        "rate_limit.primary_window.used_percent",
+    )
+    assert raw_secret not in repr(caught.value)
+    assert raw_secret not in repr(caught.value.failure)
+
+
+def test_refresh_returns_complete_replacement_without_hidden_mutation() -> (
+    None
+):
+    """A refresh carries replacement state and leaves its input untouched."""
+    account = _account()
+    original = account.credentials
     http = _RefreshHttp(
         {
-            "access_token": access,
+            "access_token": _access_token(),
             "refresh_token": "refresh-new",
             "id_token": "id-new",
             "expires_in": 60,
         }
     )
-    acct = _acct(auth_home=str(codex_home))
-    clock = FixedClock()
 
-    assert CodexProvider(clock).refresh_token(acct, http) is True
+    result = CodexProvider(FixedClock()).refresh_credentials(account, http)
 
-    saved_auth = json.loads((codex_home / "auth.json").read_text())
-    assert saved_auth["auth_mode"] == "chatgpt"
-    assert saved_auth["tokens"]["access_token"] == "access-old"
-    assert saved_auth["tokens"]["refresh_token"] == "refresh-old"
-    assert acct.access_token == access
-    assert acct.refresh_token == "refresh-new"
-    assert acct.expiry == KnownExpiry(
+    assert isinstance(result, RefreshSuccess)
+    assert account.credentials is original
+    assert http.data == {
+        "grant_type": "refresh_token",
+        "refresh_token": "refresh-old",
+        "client_id": "app_EMoamEEZ73f0CkXaXp7hrann",
+    }
+    assert result.credentials.access_token == _access_token()
+    assert result.credentials.refresh_token == "refresh-new"
+    assert result.credentials.expiry == KnownExpiry(
         REFERENCE_TIME.replace(microsecond=0) + timedelta(seconds=60)
     )
-    assert acct.codex_last_refresh == "2026-06-12T12:34:56.789000Z"
-    assert clock.calls == 1
+    assert result.plan == "pro"
+    assert "access_token" not in repr(result)
 
 
-def test_refresh_writes_rotated_tokens_to_canonical_private_home(
+@pytest.mark.parametrize("field_name", ["refresh_token", "id_token"])
+@pytest.mark.parametrize(
+    "invalid_value",
+    [None, "", 42, "é" * 131_073],
+)
+def test_refresh_rejects_invalid_present_optional_tokens(
+    field_name: str,
+    invalid_value: JsonObject | str | int | None,
+) -> None:
+    account = _account()
+    payload: JsonObject = {"access_token": _access_token()}
+    payload[field_name] = invalid_value
+
+    result = CodexProvider(FixedClock()).refresh_credentials(
+        account,
+        _RefreshHttp(payload),
+    )
+
+    assert isinstance(result, ProviderFailure)
+    assert result.kind is ProviderFailureKind.MALFORMED
+
+
+def test_refresh_payload_representation_hides_every_token() -> None:
+    access_token = _access_token(account_id="acct_repr")
+    refresh_token = "refresh-repr-secret"
+    id_token = "id-repr-secret"
+
+    payload = validate_refresh_payload(
+        {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "id_token": id_token,
+        }
+    )
+
+    rendered = repr(payload)
+    assert access_token not in rendered
+    assert refresh_token not in rendered
+    assert id_token not in rendered
+
+
+def test_oversized_access_token_is_rejected_before_jwt_decode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unexpected_decode(*_args: object, **_kwargs: object) -> bytes:
+        pytest.fail("oversized access tokens must not reach base64 decoding")
+
+    monkeypatch.setattr(schemas_module, "b64decode", unexpected_decode)
+
+    result = CodexProvider(FixedClock()).credentials_from_token("x" * 262_145)
+
+    assert isinstance(result, ProviderFailure)
+    assert result.kind is ProviderFailureKind.MALFORMED
+
+
+@pytest.mark.parametrize(
+    ("http", "expected_kind"),
+    [
+        (
+            _RefreshHttp({"refresh_token": "raw-secret"}),
+            ProviderFailureKind.INCOMPLETE,
+        ),
+        (
+            _RefreshHttp({"access_token": _jwt({"exp": "invalid"})}),
+            ProviderFailureKind.MALFORMED,
+        ),
+        (
+            _RefreshHttp(
+                {"access_token": _access_token(), "expires_in": None}
+            ),
+            ProviderFailureKind.MALFORMED,
+        ),
+        (
+            _RefreshHttp({"access_token": _jwt({"exp": REFRESH_EXP})}),
+            ProviderFailureKind.INCOMPLETE,
+        ),
+        (
+            _RefreshHttp(
+                {"access_token": _access_token(account_id="acct_other")}
+            ),
+            ProviderFailureKind.IDENTITY_MISMATCH,
+        ),
+        (
+            _RefreshHttp(error=AuthError("raw-rejection-body")),
+            ProviderFailureKind.REJECTED,
+        ),
+    ],
+)
+def test_refresh_failures_are_typed_atomic_and_secret_safe(
+    http: _RefreshHttp,
+    expected_kind: ProviderFailureKind,
+) -> None:
+    account = _account()
+    original = account.credentials
+
+    result = CodexProvider(FixedClock()).refresh_credentials(account, http)
+
+    assert isinstance(result, ProviderFailure)
+    assert result.kind is expected_kind
+    assert account.credentials is original
+    assert "raw-secret" not in repr(result)
+    assert "raw-rejection-body" not in repr(result)
+
+
+def test_refresh_keeps_external_codex_home_read_only(tmp_path: Path) -> None:
+    """Saved-account refresh never writes a provider-native login home."""
+    codex_home = tmp_path / "external-codex"
+    codex_home.mkdir()
+    auth_path = codex_home / "auth.json"
+    original = b'{"tokens":{"access_token":"active-login"}}'
+    auth_path.write_bytes(original)
+    account = _account(auth_home=str(codex_home))
+
+    result = CodexProvider(FixedClock()).refresh_credentials(
+        account,
+        _RefreshHttp({"access_token": _access_token()}),
+    )
+
+    assert isinstance(result, RefreshSuccess)
+    assert auth_path.read_bytes() == original
+    assert account.access_token == "access-old"
+
+
+@pytest.mark.parametrize(
+    "collision",
+    [
+        "active-directory",
+        "active-auth-file",
+        "active-symlink",
+        "source-directory",
+        "source-auth-file",
+        "source-symlink",
+    ],
+)
+def test_export_rejects_protected_auth_path_collisions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    collision: str,
+) -> None:
+    active_home = tmp_path / "active-codex"
+    active_home.mkdir()
+    active_auth = active_home / "auth.json"
+    active_auth.write_bytes(b"active-login-sentinel")
+    source_home = tmp_path / "source-codex"
+    source_home.mkdir()
+    source_auth = source_home / "auth.json"
+    source_auth.write_bytes(b"source-login-sentinel")
+    active_alias = tmp_path / "active-alias"
+    source_alias = tmp_path / "source-alias"
+    if collision == "active-symlink":
+        try:
+            active_alias.symlink_to(active_home, target_is_directory=True)
+        except OSError:
+            pytest.skip("directory symlinks are unavailable")
+    elif collision == "source-symlink":
+        try:
+            source_alias.symlink_to(source_home, target_is_directory=True)
+        except OSError:
+            pytest.skip("directory symlinks are unavailable")
+    configured = (
+        active_auth if collision == "active-auth-file" else active_home
+    )
+    monkeypatch.setenv("CODEX_HOME", str(configured))
+    target = {
+        "active-directory": active_home,
+        "active-auth-file": active_home,
+        "active-symlink": active_alias,
+        "source-directory": source_home,
+        "source-auth-file": source_home,
+        "source-symlink": source_alias,
+    }[collision]
+    if collision == "source-auth-file":
+        sources = (source_auth,)
+    elif collision.startswith("source-"):
+        sources = (source_home,)
+    else:
+        sources = ()
+
+    result = prepare_export_bundle(
+        _account(),
+        target,
+        source_homes=sources,
+        existing_config=None,
+        reference_time=REFERENCE_TIME,
+    )
+
+    assert isinstance(result, ProviderFailure)
+    assert result.kind is ProviderFailureKind.UNSUPPORTED
+    assert active_auth.read_bytes() == b"active-login-sentinel"
+    assert source_auth.read_bytes() == b"source-login-sentinel"
+
+
+def test_export_requires_a_home_directory_target(
     tmp_path: Path,
 ) -> None:
-    """Owned refresh uses the durable shared-lock credential writer."""
+    result = prepare_export_bundle(
+        _account(),
+        tmp_path / "isolated" / "auth.json",
+        source_homes=(),
+        existing_config=None,
+        reference_time=REFERENCE_TIME,
+    )
+
+    assert isinstance(result, ProviderFailure)
+    assert result.kind is ProviderFailureKind.UNSUPPORTED
+
+
+def test_refresh_does_not_write_the_canonical_private_bundle(
+    tmp_path: Path,
+) -> None:
+    """Provider refresh stays pure until credential coordination commits."""
     app_root = tmp_path / "sidekick-usages"
     accounts = app_root / "accounts.json"
     private_root = app_root / "codex"
@@ -448,7 +642,6 @@ def test_refresh_writes_rotated_tokens_to_canonical_private_home(
                 {
                     "auth_mode": "chatgpt",
                     "future_metadata": {"preserve": True},
-                    "last_refresh": "2026-06-11T00:00:00Z",
                     "tokens": {
                         "access_token": "access-old",
                         "refresh_token": "refresh-old",
@@ -462,104 +655,88 @@ def test_refresh_writes_rotated_tokens_to_canonical_private_home(
         expected_bundle_present=False,
         expected_files={"auth.json": None},
     )
-    access = _jwt(
-        {
-            "exp": REFRESH_EXP,
-            "https://api.openai.com/auth": {
-                "chatgpt_account_id": "acct_new",
-                "chatgpt_plan_type": "pro",
-            },
-        }
+    original_bundle = (codex_home / "auth.json").read_bytes()
+    account = _account(auth_home=str(codex_home))
+
+    result = CodexProvider(FixedClock()).refresh_credentials(
+        account,
+        _RefreshHttp(
+            {
+                "access_token": _access_token(),
+                "refresh_token": "refresh-new",
+            }
+        ),
     )
-    http = _RefreshHttp(
-        {
-            "access_token": access,
-            "refresh_token": "refresh-new",
-            "expires_in": 60,
-        }
-    )
-    acct = _acct(auth_home=str(codex_home))
 
-    assert CodexProvider(FixedClock(), tree).refresh_token(acct, http) is True
-
-    saved_auth = json.loads((codex_home / "auth.json").read_text())
-    assert saved_auth["future_metadata"] == {"preserve": True}
-    assert saved_auth["tokens"] == {
-        "access_token": access,
-        "refresh_token": "refresh-new",
-        "id_token": "id-old",
-        "account_id": "acct_new",
-    }
+    assert isinstance(result, RefreshSuccess)
+    assert (codex_home / "auth.json").read_bytes() == original_bundle
+    assert account.access_token == "access-old"
+    assert isinstance(result.credentials, CodexCredentials)
+    assert result.credentials.access_token == _access_token()
+    assert result.credentials.refresh_token == "refresh-new"
+    assert result.credentials.auth_home == str(codex_home)
 
 
-def test_private_writer_rejects_existing_bundle_for_another_account(
+def test_private_bundle_preparation_is_pure_and_secret_safe(
     tmp_path: Path,
 ) -> None:
-    """A label collision cannot overwrite another account's credential."""
-    app_root = tmp_path / "sidekick-usages"
-    accounts = app_root / "accounts.json"
-    private_root = app_root / "codex"
-    codex_home = private_root / "shared-label"
-    tree = PrivateCredentialTree(private_root, account_path=accounts)
-    tree.write_bundle(
-        codex_home,
-        {
-            "auth.json": b'{"tokens":{"account_id":"acct_other"}}',
-        },
-        expected_bundle_present=False,
-        expected_files={"auth.json": None},
-    )
-
-    with pytest.raises(PrivateCredentialCollisionError):
-        write_private_account_auth_bundle(
-            _acct(auth_home=str(codex_home)),
-            tree,
-            codex_home,
-            reference_time=REFERENCE_TIME,
+    """Credential coordination can stage exact bytes without hidden writes."""
+    source_home = tmp_path / "source"
+    source_home.mkdir()
+    (source_home / "auth.json").write_text(
+        json.dumps(
+            {
+                "auth_mode": "chatgpt",
+                "tokens": {
+                    "access_token": _access_token(),
+                    "refresh_token": "source-refresh",
+                    "id_token": "source-id",
+                    "account_id": "acct_123",
+                },
+            }
         )
+    )
+    account = _account()
+    original = account.credentials
+    bundle_path = tmp_path / "private" / "codex-pro"
 
-    assert b"acct_other" in (codex_home / "auth.json").read_bytes()
+    result = prepare_private_bundle(
+        account,
+        bundle_path,
+        source_home=source_home,
+        reference_time=REFERENCE_TIME,
+    )
+
+    assert isinstance(result, PreparedCodexAuthBundle)
+    assert result.bundle_path == bundle_path
+    assert account.credentials is original
+    assert not bundle_path.exists()
+    assert set(result.file_map()) == {"auth.json", "config.toml"}
+    assert "source-id" not in repr(result)
 
 
-def test_failed_private_write_preserves_stored_credentials_and_records_failure(
+def test_private_preparation_rejects_mismatched_source_material(
     tmp_path: Path,
 ) -> None:
-    """A failed bundle commit cannot persist staged token rotation."""
-    codex_home = tmp_path / "codex" / "codex-pro"
-    account = _acct(auth_home=str(codex_home))
-    store = make_account_store(tmp_path, [account])
-    access = _jwt(
-        {
-            "exp": REFRESH_EXP,
-            "https://api.openai.com/auth": {
-                "chatgpt_account_id": "acct_123",
-            },
+    source_home = tmp_path / "source"
+    source_home.mkdir()
+    codex_home = tmp_path / "private" / "codex-pro"
+    source_blob: JsonObject = {
+        "tokens": {
+            "access_token": _access_token(account_id="acct_other"),
+            "refresh_token": "other-refresh",
+            "id_token": "other-id",
         }
-    )
-    http = _RefreshHttp(
-        {
-            "access_token": access,
-            "refresh_token": "refresh-new",
-            "id_token": "id-new",
-        }
-    )
-    provider = CodexProvider(FixedClock(), _FailingPrivateWriter())
-    service = TokenMaintenanceService(
-        store,
-        http,
-        {ProviderId.CODEX: provider},
-        clock=FixedClock(),
-    )
-    stored = store.get("codex-pro")
-    assert stored is not None
+    }
+    (source_home / "auth.json").write_text(json.dumps(source_blob))
 
-    outcome = service.refresh_account(stored, force=True)
+    result = prepare_private_bundle(
+        _account(auth_home=str(codex_home)),
+        codex_home,
+        source_home=source_home,
+        reference_time=REFERENCE_TIME,
+    )
 
-    assert outcome.status is RefreshStatus.FAILED
-    saved = store.get("codex-pro")
-    assert saved is not None
-    assert saved.access_token == "access-old"
-    assert saved.refresh_token == "refresh-old"
-    assert saved.plan == "unknown"
-    assert saved.last_refresh_status is RefreshStatus.FAILED
-    assert saved.last_refresh_error is not None
+    assert isinstance(result, ProviderFailure)
+    assert result.kind is ProviderFailureKind.IDENTITY_MISMATCH
+    assert not codex_home.exists()

@@ -7,6 +7,7 @@ from typing import ClassVar
 from sidekick_usages.core.models import UsageReport
 from sidekick_usages.core.types import AccountLabel, ProviderId
 from sidekick_usages.persistence.errors import PersistenceCode
+from sidekick_usages.providers.base import ProviderFailure
 
 
 class FetchFailureKind(StrEnum):
@@ -72,6 +73,15 @@ class RefreshRejectedFailure(FetchFailure):
 
     kind: ClassVar[FetchFailureKind] = FetchFailureKind.REFRESH_REJECTED
 
+    provider_failure: ProviderFailure | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ProviderPayloadFailure(FetchFailure):
+    """A provider boundary rejected malformed external data."""
+
+    provider_failure: ProviderFailure
+
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ForbiddenFailure(FetchFailure):
@@ -123,6 +133,7 @@ __all__ = [
     "ForbiddenFailure",
     "InvalidExpiryFailure",
     "PersistenceFailure",
+    "ProviderPayloadFailure",
     "RateLimitFailure",
     "RefreshRejectedFailure",
     "TransientFailure",

@@ -21,10 +21,12 @@ from sidekick_usages.core.types import (
     HeartbeatStatus,
     RefreshStatus,
 )
-from sidekick_usages.heartbeat import build_heartbeat_registry
 from sidekick_usages.http import HttpClient
 from sidekick_usages.persistence.account_store import AccountStore
-from sidekick_usages.providers import build_provider_registry
+from sidekick_usages.providers.registry import (
+    build_heartbeat_registry,
+    build_provider_registry,
+)
 from tests.test_support import (
     REFERENCE_TIME,
     FixedClock,

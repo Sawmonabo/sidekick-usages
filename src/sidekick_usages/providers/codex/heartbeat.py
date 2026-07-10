@@ -1,4 +1,4 @@
-"""Codex-specific usage-window heartbeat adapter."""
+"""Codex-owned usage-window heartbeat adapter."""
 
 from datetime import datetime
 
@@ -12,7 +12,8 @@ from sidekick_usages.heartbeat.models import (
 )
 from sidekick_usages.heartbeat.ports import HeartbeatProvider, warmed
 from sidekick_usages.http import HttpClient, HttpOperation
-from sidekick_usages.providers.codex import USER_AGENT, CodexProvider
+from sidekick_usages.providers.codex.provider import CodexProvider
+from sidekick_usages.providers.codex.usage import USER_AGENT
 from sidekick_usages.serialization import JsonObject
 
 CODEX_RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses"
@@ -45,14 +46,16 @@ class CodexHeartbeat(HeartbeatProvider):
         return account.provider_id == self.id and bool(account.access_token)
 
     def supported_targets(
-        self, account: Account
+        self,
+        account: Account,
     ) -> tuple[HeartbeatTarget, ...]:
-        """Codex exposes a standard window plus a separate Spark window."""
+        """Return the standard and separate Spark windows."""
         if not self.supports(account):
             return ()
         return (STANDARD_TARGET, SPARK_TARGET)
 
     def unsupported_message(self, account: Account) -> str:
+        """Return the missing-access detail for Codex accounts."""
         if not account.access_token:
             return "Codex heartbeat requires a saved access token."
         return super().unsupported_message(account)
@@ -90,7 +93,7 @@ class CodexHeartbeat(HeartbeatProvider):
         http: HttpClient,
         target: HeartbeatTarget,
     ) -> HeartbeatProbeResult:
-        """Send one tiny Codex Responses request, then refresh usage state."""
+        """Warm one Codex window and then refresh its usage state."""
         account_id = _account_id(account)
         http.post_capture_headers(
             CODEX_RESPONSES_URL,
@@ -119,7 +122,6 @@ class CodexHeartbeat(HeartbeatProvider):
 
 
 def _account_id(account: Account) -> str:
-    """Return the saved ChatGPT account id required by Codex backend."""
     if account.provider_account_id:
         return account.provider_account_id
     raise UsageError(
@@ -128,48 +130,50 @@ def _account_id(account: Account) -> str:
     )
 
 
-def _primary_window(report: UsageReport) -> UsageWindow | None:
-    """Return Codex's primary 5h window from a usage report."""
-    for window in report.windows:
-        if window.name == FIVE_HOUR_WINDOW:
-            return window
-    return None
-
-
-def _spark_window(report: UsageReport) -> UsageWindow | None:
-    """Return Codex Spark's separate 5h window from a usage report."""
-    for window in report.windows:
-        lower_name = window.name.lower()
-        if "spark" in lower_name and lower_name.endswith(" 5h"):
-            return window
-    return None
-
-
 def _target_window(
     report: UsageReport,
     target_id: str,
 ) -> UsageWindow | None:
-    """Return the usage window associated with a heartbeat target."""
     if target_id == SPARK_TARGET.id:
         return _spark_window(report)
     return _primary_window(report)
 
 
+def _primary_window(report: UsageReport) -> UsageWindow | None:
+    return next(
+        (
+            window
+            for window in report.windows
+            if window.name == FIVE_HOUR_WINDOW
+        ),
+        None,
+    )
+
+
+def _spark_window(report: UsageReport) -> UsageWindow | None:
+    return next(
+        (
+            window
+            for window in report.windows
+            if "spark" in window.name.lower()
+            and window.name.lower().endswith(" 5h")
+        ),
+        None,
+    )
+
+
 def _window_reset(report: UsageReport, target_id: str) -> datetime | None:
-    """Return the 5h reset timestamp after warming, when available."""
     window = _target_window(report, target_id)
     return window.resets_at if window else None
 
 
 def _target_model(target_id: str) -> str:
-    """Return the model that warms one Codex usage target."""
     if target_id == SPARK_TARGET.id:
         return SPARK_HEARTBEAT_MODEL
     return CODEX_STANDARD_HEARTBEAT_MODEL
 
 
 def _heartbeat_body(model: str) -> JsonObject:
-    """Build the smallest Codex Responses request shape we can justify."""
     return {
         "model": model,
         "instructions": "Reply with exactly: ok",
@@ -188,3 +192,13 @@ def _heartbeat_body(model: str) -> JsonObject:
         "stream": True,
         "include": [],
     }
+
+
+__all__ = [
+    "CODEX_RESPONSES_URL",
+    "CODEX_STANDARD_HEARTBEAT_MODEL",
+    "SPARK_HEARTBEAT_MODEL",
+    "SPARK_TARGET",
+    "STANDARD_TARGET",
+    "CodexHeartbeat",
+]

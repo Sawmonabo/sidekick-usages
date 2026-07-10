@@ -1,5 +1,7 @@
 """Focused provider-metadata and compatibility-store tests."""
 
+import base64
+import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
@@ -15,15 +17,15 @@ from sidekick_usages.core.models import (
 from sidekick_usages.core.types import (
     AccountLabel,
     HeartbeatStatus,
-    ProviderId,
     RefreshStatus,
 )
 from sidekick_usages.persistence.errors import InvalidSchemaError
+from sidekick_usages.providers.base import ProviderBoundaryError
 from sidekick_usages.providers.claude.schemas import (
     claude_expiry,
     parse_credentials_blob,
 )
-from sidekick_usages.providers.codex import _jwt_expiry
+from sidekick_usages.providers.codex.schemas import jwt_expiry
 from sidekick_usages.serialization import JsonValue, decode_json_object
 from tests.test_support import make_account_store
 
@@ -43,56 +45,45 @@ def test_claude_parser_preserves_known_scope_order() -> None:
     assert detected.scopes == ("user:inference", "user:profile")
 
 
-@pytest.mark.parametrize(
-    "scopes",
-    [None, "not-a-list", ["user:inference", 42]],
-)
-def test_claude_parser_treats_absent_or_malformed_scopes_as_unknown(
-    scopes: JsonValue,
-) -> None:
-    """Malformed scope metadata never becomes a partially trusted list."""
-    oauth: dict[str, JsonValue] = {"accessToken": "sk-ant-oat01-abc"}
-    if scopes is not None:
-        oauth["scopes"] = scopes
+def test_claude_parser_preserves_absent_scopes_as_unknown() -> None:
+    """An absent scope field remains distinct from a known-empty list."""
+    detected = parse_credentials_blob(
+        {"claudeAiOauth": {"accessToken": "sk-ant-oat01-abc"}}
+    )
 
-    detected = parse_credentials_blob({"claudeAiOauth": oauth})
-
-    assert detected is not None
     assert detected.scopes is None
 
 
-@pytest.mark.parametrize(
-    ("provider_id", "native_value", "is_valid"),
-    [
-        (ProviderId.CLAUDE, 1_800_000_000_000, True),
-        (ProviderId.CODEX, 1_800_000_000, True),
-        (ProviderId.CLAUDE, True, False),
-        (ProviderId.CODEX, True, False),
-        (ProviderId.CLAUDE, -1, False),
-        (ProviderId.CODEX, -1, False),
-        (ProviderId.CLAUDE, "invalid", False),
-        (ProviderId.CODEX, "invalid", False),
-    ],
-)
-def test_provider_native_expiry_units_converge_and_fail_closed(
-    provider_id: ProviderId,
-    native_value: JsonValue,
-    *,
-    is_valid: bool,
-) -> None:
-    """Provider epochs converge; malformed values remain explicitly invalid."""
-    expiry = (
-        claude_expiry(native_value)
-        if provider_id is ProviderId.CLAUDE
-        else _jwt_expiry({"exp": native_value})
+@pytest.mark.parametrize("scopes", ["not-a-list", ["user:inference", 42]])
+def test_claude_parser_rejects_malformed_scopes(scopes: JsonValue) -> None:
+    """Malformed scope metadata cannot become partially trusted state."""
+    with pytest.raises(ProviderBoundaryError):
+        parse_credentials_blob(
+            {
+                "claudeAiOauth": {
+                    "accessToken": "sk-ant-oat01-abc",
+                    "scopes": scopes,
+                }
+            }
+        )
+
+
+def _jwt(payload: dict[str, object]) -> str:
+    encoded = base64.urlsafe_b64encode(json.dumps(payload).encode())
+    return f"e30.{encoded.decode().rstrip('=')}.sig"
+
+
+def test_provider_native_expiry_units_converge_and_fail_closed() -> None:
+    """Provider-native epochs converge and malformed values stay invalid."""
+    expected = KnownExpiry(
+        datetime(1970, 1, 1, tzinfo=UTC) + timedelta(seconds=1_800_000_000)
     )
 
-    if is_valid:
-        assert expiry == KnownExpiry(
-            datetime(1970, 1, 1, tzinfo=UTC) + timedelta(seconds=1_800_000_000)
-        )
-    else:
-        assert isinstance(expiry, InvalidExpiry)
+    assert claude_expiry(1_800_000_000_000) == expected
+    assert jwt_expiry(_jwt({"exp": 1_800_000_000})) == expected
+    assert isinstance(claude_expiry(True), InvalidExpiry)
+    with pytest.raises(ProviderBoundaryError):
+        jwt_expiry(_jwt({"exp": True}))
 
 
 def test_store_round_trips_exact_provider_state(tmp_path: Path) -> None:

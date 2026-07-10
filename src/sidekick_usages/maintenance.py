@@ -8,7 +8,7 @@ label.
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import assert_never
+from typing import Protocol, assert_never
 
 from sidekick_usages.clock import Clock
 from sidekick_usages.core.expiry import (
@@ -26,13 +26,21 @@ from sidekick_usages.core.types import (
     ProviderId,
     RefreshStatus,
 )
-from sidekick_usages.errors import UsageError
-from sidekick_usages.http import HttpClient
+from sidekick_usages.credentials import CredentialRefreshResult
+from sidekick_usages.errors import RateLimitError, TransientError, UsageError
 from sidekick_usages.persistence.account_store import AccountStore
-from sidekick_usages.providers.base import Provider
+from sidekick_usages.persistence.errors import PersistenceError
+from sidekick_usages.providers.base import ProviderFailure, ProviderFailureKind
 
 CLAUDE_REFRESH_MARGIN_SECONDS = 30 * 60
 CODEX_REFRESH_MARGIN_SECONDS = 10 * 60
+
+
+class CredentialRefresher(Protocol):
+    """Saved-credential refresh capability required by maintenance."""
+
+    def refresh_saved(self, account: Account) -> CredentialRefreshResult:
+        """Refresh and durably persist one saved account."""
 
 
 @dataclass(frozen=True)
@@ -46,6 +54,9 @@ class RefreshOutcome:
     exit_code: ExitCode = ExitCode.SUCCESS
     refreshed: bool = False
     action_required: bool = False
+    provider_failure: ProviderFailure | None = None
+    operational_error: UsageError | None = None
+    persistence_error: PersistenceError | None = None
 
 
 class TokenMaintenanceService:
@@ -54,21 +65,18 @@ class TokenMaintenanceService:
     def __init__(
         self,
         store: AccountStore,
-        http: HttpClient,
-        providers: dict[ProviderId, Provider],
+        credentials: CredentialRefresher,
         *,
         clock: Clock,
     ) -> None:
         """:param store: Account store to update after each attempt.
 
-        :param http: Shared HTTP client passed to providers.
-        :param providers: Provider registry.
+        :param credentials: Canonical credential coordinator.
         :param clock: Aware UTC application wall clock.
         """
         self.store = store
-        self.http = http
-        self.providers = providers
         self.clock = clock
+        self.credentials = credentials
 
     def refresh_all(
         self,
@@ -101,14 +109,6 @@ class TokenMaintenanceService:
         :param force: Refresh even if the token is still fresh.
         :return: A scheduler-friendly outcome.
         """
-        provider = self.providers.get(account.provider_id)
-        if provider is None:
-            return self._record_failed(
-                account,
-                f"Unknown provider '{account.provider_id}'.",
-                exit_code=ExitCode.SYSTEM_ERROR,
-            )
-
         if force:
             should_refresh, expiry = (True, None)
         else:
@@ -131,25 +131,69 @@ class TokenMaintenanceService:
                 "No refresh token saved; log in manually.",
                 exit_code=ExitCode.MANUAL_ACTION,
             )
+        return self._refresh_due_account(account)
 
+    def _refresh_due_account(
+        self,
+        account: Account,
+    ) -> RefreshOutcome:
+        """Refresh one policy-approved account through its configured path."""
         try:
-            refreshed = provider.refresh_token(account, self.http)
-        except UsageError as e:
+            result = self.credentials.refresh_saved(account)
+        except PersistenceError as error:
+            return RefreshOutcome(
+                label=account.label,
+                provider_id=account.provider_id,
+                status=RefreshStatus.FAILED,
+                message="Refreshed credentials could not be persisted.",
+                exit_code=ExitCode.SYSTEM_ERROR,
+                persistence_error=error,
+            )
+        except RateLimitError as error:
             return self._record_failed(
                 account,
-                str(e),
-                exit_code=ExitCode.MANUAL_ACTION,
+                "Provider refresh was rate-limited; retry later.",
+                exit_code=ExitCode.SYSTEM_ERROR,
+                operational_error=RateLimitError(
+                    "Provider refresh was rate-limited; retry later.",
+                    retry_after=error.retry_after,
+                ),
             )
-
-        if not refreshed:
+        except TransientError:
             return self._record_failed(
                 account,
-                "Refresh token unavailable or rejected.",
-                exit_code=ExitCode.MANUAL_ACTION,
+                "Provider refresh is temporarily unavailable.",
+                exit_code=ExitCode.SYSTEM_ERROR,
+                operational_error=TransientError(
+                    "Provider refresh is temporarily unavailable."
+                ),
             )
+        except UsageError:
+            return self._record_failed(
+                account,
+                "Provider refresh could not be completed safely.",
+                exit_code=ExitCode.SYSTEM_ERROR,
+                operational_error=UsageError(
+                    "Provider refresh could not be completed safely."
+                ),
+            )
+        if isinstance(result, ProviderFailure):
+            exit_code = (
+                ExitCode.SYSTEM_ERROR
+                if result.kind is ProviderFailureKind.UNSUPPORTED
+                else ExitCode.MANUAL_ACTION
+            )
+            return self._record_failed(
+                account,
+                result.message,
+                exit_code=exit_code,
+                provider_failure=result,
+            )
+        return self._success_outcome(account)
 
-        record_refresh_success(account, self.clock.now())
-        self.store.persist(account)
+    @staticmethod
+    def _success_outcome(account: Account) -> RefreshOutcome:
+        """Return one scheduler-facing successful refresh outcome."""
         return RefreshOutcome(
             label=account.label,
             provider_id=account.provider_id,
@@ -203,6 +247,8 @@ class TokenMaintenanceService:
         message: str,
         *,
         exit_code: ExitCode,
+        provider_failure: ProviderFailure | None = None,
+        operational_error: UsageError | None = None,
     ) -> RefreshOutcome:
         """Persist a failed refresh diagnostic and return its outcome."""
         record_refresh_failure(account, message, self.clock.now())
@@ -214,6 +260,8 @@ class TokenMaintenanceService:
             message=message,
             exit_code=exit_code,
             action_required=exit_code == ExitCode.MANUAL_ACTION,
+            provider_failure=provider_failure,
+            operational_error=operational_error,
         )
 
 
@@ -224,13 +272,6 @@ def refresh_margin_seconds(provider_id: ProviderId) -> int:
     if provider_id == ProviderId.CODEX:
         return CODEX_REFRESH_MARGIN_SECONDS
     assert_never(provider_id)
-
-
-def record_refresh_success(account: Account, reference_time: datetime) -> None:
-    """Mark an account's latest refresh as successful."""
-    account.last_refresh_at = reference_time
-    account.last_refresh_status = RefreshStatus.OK
-    account.last_refresh_error = None
 
 
 def record_refresh_failure(

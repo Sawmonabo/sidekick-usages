@@ -19,7 +19,6 @@ from sidekick_usages.core.models import (
     Account,
     ClaudeCredentials,
     CodexCredentials,
-    DetectedCredentials,
     UsageReport,
 )
 from sidekick_usages.core.types import (
@@ -27,6 +26,7 @@ from sidekick_usages.core.types import (
     HeartbeatStatus,
     ProviderId,
 )
+from sidekick_usages.credentials import CredentialService
 from sidekick_usages.heartbeat import (
     HeartbeatProbeResult,
     HeartbeatProvider,
@@ -34,19 +34,27 @@ from sidekick_usages.heartbeat import (
     HeartbeatTarget,
     UsageWindowState,
 )
-from sidekick_usages.heartbeat.codex import (
+from sidekick_usages.http import HttpClient, HttpOperation
+from sidekick_usages.persistence.account_store import AccountStore
+from sidekick_usages.providers.base import (
+    CredentialDetection,
+    Provider,
+    ProviderFailure,
+    ProviderFailureKind,
+    RefreshResult,
+    RefreshSuccess,
+)
+from sidekick_usages.providers.codex import CodexProvider
+from sidekick_usages.providers.codex.heartbeat import (
     SPARK_HEARTBEAT_MODEL,
     CodexHeartbeat,
 )
-from sidekick_usages.http import HttpClient, HttpOperation
-from sidekick_usages.persistence.account_store import AccountStore
-from sidekick_usages.providers.base import Provider
-from sidekick_usages.providers.codex import CodexProvider
 from sidekick_usages.serialization import JsonObject
 from tests.test_support import (
     REFERENCE_TIME,
     FixedClock,
     make_account_store,
+    make_account_store_with_private,
     make_application_paths,
 )
 
@@ -149,9 +157,21 @@ class _FakeRefreshProvider(Provider):
     def detect_credentials(
         self,
         credential_home: Path | None = None,
-    ) -> DetectedCredentials | None:
+    ) -> CredentialDetection:
         del credential_home
-        return None
+        return ProviderFailure(
+            provider_id=self.id,
+            kind=ProviderFailureKind.MISSING,
+            message="No test credentials.",
+        )
+
+    def credentials_from_token(self, token: str) -> CredentialDetection:
+        del token
+        return ProviderFailure(
+            provider_id=self.id,
+            kind=ProviderFailureKind.UNSUPPORTED,
+            message="Manual test credentials are unsupported.",
+        )
 
     def fetch_usage(
         self,
@@ -161,22 +181,20 @@ class _FakeRefreshProvider(Provider):
         del account, http
         return UsageReport()
 
-    def refresh_token(
+    def refresh_credentials(
         self,
         account: Account,
         http: HttpClient,
-    ) -> bool:
+    ) -> RefreshResult:
         del http
         self.refresh_calls += 1
-        account.credentials = replace(
-            account.credentials,
-            access_token="refreshed-token",
-            expiry=KnownExpiry(REFERENCE_TIME + timedelta(hours=1)),
+        return RefreshSuccess(
+            credentials=replace(
+                account.credentials,
+                access_token="refreshed-token",
+                expiry=KnownExpiry(REFERENCE_TIME + timedelta(hours=1)),
+            ),
         )
-        return True
-
-    def run_setup_token(self) -> str | None:
-        return None
 
 
 def _store(tmp_path: Path, accounts: Iterable[Account]) -> AccountStore:
@@ -231,20 +249,33 @@ def _install_ctx(
     clock: Clock | None = None,
 ) -> tuple[AccountStore, io.StringIO, io.StringIO]:
     paths = make_application_paths(tmp_path)
-    store = _store(tmp_path, accounts)
+    store, private_credentials = make_account_store_with_private(
+        tmp_path,
+        accounts,
+    )
     stdout = io.StringIO()
     stderr = io.StringIO()
+    active_clock = clock or FixedClock()
+    http = HttpClient()
+    provider_registry = providers or {}
     cli.set_context(
         cli.AppContext(
             store=store,
-            http=HttpClient(),
-            providers=providers or {},
+            http=http,
+            providers=provider_registry,
             private_codex_locations=paths.private_codex,
             lifetime_sources={},
             console=Console(file=stdout, force_terminal=False),
             err_console=Console(file=stderr, force_terminal=False),
-            clock=clock or FixedClock(),
+            clock=active_clock,
             heartbeat_providers=heartbeat_providers,
+            credentials=CredentialService(
+                store,
+                http,
+                provider_registry,
+                private_credentials,
+                clock=active_clock,
+            ),
         )
     )
     return store, stdout, stderr

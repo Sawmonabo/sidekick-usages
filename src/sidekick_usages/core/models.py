@@ -50,7 +50,7 @@ type Credentials = ClaudeCredentials | CodexCredentials
 class DetectedCredentials:
     """Validated credentials extracted from a provider-owned source."""
 
-    credentials: Credentials
+    credentials: Credentials = field(repr=False)
     plan: str = "unknown"
 
     @property

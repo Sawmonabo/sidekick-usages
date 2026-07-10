@@ -1,6 +1,19 @@
-"""Claude payload parsing and provider-native time conversion."""
+"""Strict Claude payload validation and boundary normalization."""
 
+import math
+import re
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal, InvalidOperation
+from typing import Annotated
+
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    ValidationError,
+)
 
 from sidekick_usages.core.expiry import (
     Expiry,
@@ -13,38 +26,292 @@ from sidekick_usages.core.models import (
     DetectedCredentials,
     UsageWindow,
 )
-from sidekick_usages.errors import InvalidPayloadError
+from sidekick_usages.core.time import as_utc
+from sidekick_usages.core.types import ProviderId
+from sidekick_usages.providers.base import (
+    ProviderBoundaryError,
+    ProviderFailure,
+    ProviderFailureKind,
+)
 from sidekick_usages.serialization import JsonObject, JsonValue
 
+CLAUDE_TOKEN_PATTERN = re.compile(
+    r"sk-ant-oat01-[A-Za-z0-9_-]+",
+    re.ASCII,
+)
 
-def parse_credentials_blob(
-    blob: JsonObject,
-) -> DetectedCredentials | None:
-    """Parse one Claude Code credential object without coercion."""
-    oauth = blob.get("claudeAiOauth")
-    if not isinstance(oauth, dict):
-        return None
-    token = oauth.get("accessToken")
-    if not isinstance(token, str) or not token:
-        return None
-    raw_scopes = oauth.get("scopes")
-    scopes: tuple[str, ...] | None
-    if isinstance(raw_scopes, list) and all(
-        isinstance(scope, str) for scope in raw_scopes
+_MAX_TOKEN_BYTES = 262_144
+_MAX_METADATA_BYTES = 4_096
+_MAX_PLAN_BYTES = 256
+_MAX_SCOPES = 128
+_MAX_UTILIZATION_PERCENT = 100
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+_SAFE_PATH_SEGMENTS = frozenset(
+    {
+        "accessToken",
+        "claudeAiOauth",
+        "expiresAt",
+        "expires_in",
+        "five_hour",
+        "refreshToken",
+        "refresh_token",
+        "resets_at",
+        "scopes",
+        "seven_day",
+        "seven_day_oauth_apps",
+        "seven_day_opus",
+        "subscriptionType",
+        "utilization",
+    }
+)
+_OAUTH_USAGE_BUCKETS: tuple[tuple[str, str], ...] = (
+    ("five_hour", "5h"),
+    ("seven_day", "7d"),
+    ("seven_day_opus", "7d Opus"),
+    ("seven_day_oauth_apps", "7d OAuth"),
+)
+
+
+def _bounded_string(value: str, maximum: int) -> str:
+    try:
+        encoded = value.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise ValueError from error
+    if not encoded or len(encoded) > maximum:
+        raise ValueError
+    return value
+
+
+def _token(value: str) -> str:
+    return _bounded_string(value, _MAX_TOKEN_BYTES)
+
+
+def _metadata(value: str) -> str:
+    return _bounded_string(value, _MAX_METADATA_BYTES)
+
+
+def _plan(value: str) -> str:
+    return _bounded_string(value, _MAX_PLAN_BYTES)
+
+
+def _scopes(value: list[str]) -> list[str]:
+    if len(value) > _MAX_SCOPES or len(value) != len(set(value)):
+        raise ValueError
+    return value
+
+
+def _utilization(value: int | float) -> int | float:
+    try:
+        numeric = float(value)
+    except OverflowError as error:
+        raise ValueError from error
+    if (
+        not math.isfinite(numeric)
+        or not 0 <= numeric <= _MAX_UTILIZATION_PERCENT
     ):
-        scopes = tuple(scope for scope in raw_scopes if isinstance(scope, str))
+        raise ValueError
+    return value
+
+
+def _expires_in(value: int) -> int:
+    if value < 0:
+        raise ValueError
+    return value
+
+
+type _Token = Annotated[str, AfterValidator(_token)]
+type _Metadata = Annotated[str, AfterValidator(_metadata)]
+type _Plan = Annotated[str, AfterValidator(_plan)]
+type _Scopes = Annotated[list[_Metadata], AfterValidator(_scopes)]
+type _Utilization = Annotated[
+    int | float,
+    AfterValidator(_utilization),
+]
+type _ExpiresIn = Annotated[int, AfterValidator(_expires_in)]
+
+
+class _ClaudeOAuthCredentials(BaseModel):
+    """Private strict model for Claude's credential object."""
+
+    model_config = ConfigDict(strict=True, extra="ignore", frozen=True)
+
+    access_token: _Token = Field(alias="accessToken", repr=False)
+    refresh_token: _Token | None = Field(
+        default=None,
+        alias="refreshToken",
+        repr=False,
+    )
+    expires_at: JsonValue | None = Field(default=None, alias="expiresAt")
+    subscription_type: _Plan | None = Field(
+        default=None,
+        alias="subscriptionType",
+    )
+    scopes: _Scopes | None = None
+
+
+class _ClaudeCredentialsEnvelope(BaseModel):
+    """Private strict model for Claude's credential envelope."""
+
+    model_config = ConfigDict(strict=True, extra="ignore", frozen=True)
+
+    oauth: _ClaudeOAuthCredentials = Field(alias="claudeAiOauth")
+
+
+class _ClaudeRefreshResponse(BaseModel):
+    """Private strict model for Claude's refresh response."""
+
+    model_config = ConfigDict(strict=True, extra="ignore", frozen=True)
+
+    access_token: _Token = Field(repr=False)
+    refresh_token: _Token | None = Field(default=None, repr=False)
+    expires_in: _ExpiresIn | None = None
+
+
+class _ClaudeUsageWindow(BaseModel):
+    """Private strict model for one Claude OAuth usage window."""
+
+    model_config = ConfigDict(strict=True, extra="ignore", frozen=True)
+
+    utilization: _Utilization
+    resets_at: _Metadata | None
+
+
+class _ClaudeUsageResponse(BaseModel):
+    """Private strict model for Claude's OAuth usage response."""
+
+    model_config = ConfigDict(strict=True, extra="ignore", frozen=True)
+
+    five_hour: _ClaudeUsageWindow | None = None
+    seven_day: _ClaudeUsageWindow | None = None
+    seven_day_opus: _ClaudeUsageWindow | None = None
+    seven_day_oauth_apps: _ClaudeUsageWindow | None = None
+
+
+class _ClaudeHeaderWindow(BaseModel):
+    """Private strict model for one unified rate-limit header pair."""
+
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
+
+    utilization: _Metadata
+    reset: _Metadata
+
+
+class _ClaudeHeaderReset(BaseModel):
+    """Private strict model for one unified reset header."""
+
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
+
+    reset: _Metadata
+
+
+_CREDENTIALS_ADAPTER = TypeAdapter(_ClaudeCredentialsEnvelope)
+_REFRESH_ADAPTER = TypeAdapter(_ClaudeRefreshResponse)
+_USAGE_ADAPTER = TypeAdapter(_ClaudeUsageResponse)
+_USAGE_WINDOW_ADAPTER = TypeAdapter(_ClaudeUsageWindow)
+_HEADER_WINDOW_ADAPTER = TypeAdapter(_ClaudeHeaderWindow)
+_HEADER_RESET_ADAPTER = TypeAdapter(_ClaudeHeaderReset)
+_HEADERS_ADAPTER = TypeAdapter(
+    dict[str, str],
+    config=ConfigDict(strict=True),
+)
+_EXPIRES_IN_ADAPTER = TypeAdapter(
+    _ExpiresIn,
+    config=ConfigDict(strict=True),
+)
+_SETUP_TOKEN_ADAPTER = TypeAdapter(
+    Annotated[str, AfterValidator(_token)],
+    config=ConfigDict(strict=True),
+)
+
+
+def claude_failure(
+    kind: ProviderFailureKind,
+    message: str,
+    *,
+    action_required: bool = True,
+    fields: tuple[str, ...] = (),
+) -> ProviderFailure:
+    """Build one secret-safe Claude provider failure."""
+    return ProviderFailure(
+        provider_id=ProviderId.CLAUDE,
+        kind=kind,
+        message=message,
+        action_required=action_required,
+        fields=fields,
+    )
+
+
+def _safe_paths(error: ValidationError) -> tuple[str, ...]:
+    details = error.errors(include_input=False, include_url=False)
+    if not details:
+        return ("payload",)
+    result: list[str] = []
+    for detail in details:
+        path = tuple(
+            segment
+            for segment in detail["loc"]
+            if isinstance(segment, int) or segment in _SAFE_PATH_SEGMENTS
+        )
+        rendered = (
+            ".".join(str(segment) for segment in path) if path else "payload"
+        )
+        if rendered not in result:
+            result.append(rendered)
+    return tuple(result)
+
+
+def _validation_kind(error: ValidationError) -> ProviderFailureKind:
+    details = error.errors(include_input=False, include_url=False)
+    if any(detail["type"] == "missing" for detail in details):
+        return ProviderFailureKind.INCOMPLETE
+    return ProviderFailureKind.MALFORMED
+
+
+def _validate[T](
+    adapter: TypeAdapter[T],
+    value: object,
+    *,
+    boundary: str,
+) -> T:
+    try:
+        result = adapter.validate_python(value, strict=True)
+    except ValidationError as validation_error:
+        kind = _validation_kind(validation_error)
+        adjective = (
+            "incomplete"
+            if kind is ProviderFailureKind.INCOMPLETE
+            else "invalid"
+        )
+        fields = _safe_paths(validation_error)
+        error = ProviderBoundaryError(
+            claude_failure(
+                kind,
+                f"Claude {boundary} data is {adjective} at "
+                f"{', '.join(fields)}.",
+                fields=fields,
+            )
+        )
     else:
-        scopes = None
-    refresh = oauth.get("refreshToken")
-    plan = oauth.get("subscriptionType")
+        return result
+    raise error from None
+
+
+def parse_credentials_blob(blob: JsonObject) -> DetectedCredentials:
+    """Validate and normalize one Claude Code credential object."""
+    validated = _validate(
+        _CREDENTIALS_ADAPTER,
+        blob,
+        boundary="credential",
+    )
+    oauth = validated.oauth
     return DetectedCredentials(
         credentials=ClaudeCredentials(
-            access_token=token,
-            refresh_token=refresh if isinstance(refresh, str) else None,
-            expiry=claude_expiry(oauth.get("expiresAt")),
-            scopes=scopes,
+            access_token=oauth.access_token,
+            refresh_token=oauth.refresh_token,
+            expiry=claude_expiry(oauth.expires_at),
+            scopes=None if oauth.scopes is None else tuple(oauth.scopes),
         ),
-        plan=plan if isinstance(plan, str) and plan else "unknown",
+        plan=oauth.subscription_type or "unknown",
     )
 
 
@@ -55,34 +322,97 @@ def claude_expiry(value: JsonValue | None) -> Expiry:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         return InvalidExpiry()
     try:
-        return KnownExpiry(
-            datetime(1970, 1, 1, tzinfo=UTC) + timedelta(milliseconds=value)
-        )
+        return KnownExpiry(_EPOCH + timedelta(milliseconds=value))
     except OverflowError:
         return InvalidExpiry()
 
 
 def refresh_expiry(value: JsonValue, reference_time: datetime) -> Expiry:
     """Normalize Claude refresh-relative expiry metadata."""
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise InvalidPayloadError
-    normalized = reference_time.astimezone(UTC)
+    validated = _validate(
+        _EXPIRES_IN_ADAPTER,
+        value,
+        boundary="refresh expiry",
+    )
+    normalized = as_utc(reference_time)
     normalized = normalized.replace(
         microsecond=(normalized.microsecond // 1000) * 1000
     )
-    return KnownExpiry(normalized + timedelta(seconds=value))
+    try:
+        return KnownExpiry(normalized + timedelta(seconds=validated))
+    except OverflowError:
+        raise ProviderBoundaryError(
+            claude_failure(
+                ProviderFailureKind.MALFORMED,
+                "Claude refresh expiry is outside the supported range.",
+            )
+        ) from None
+
+
+def parse_refresh_credentials(
+    value: JsonObject,
+    previous: ClaudeCredentials,
+    reference_time: datetime | None,
+) -> ClaudeCredentials:
+    """Validate a refresh response and build replacement credentials."""
+    validated = _validate(
+        _REFRESH_ADAPTER,
+        value,
+        boundary="refresh",
+    )
+    if "refresh_token" in value and validated.refresh_token is None:
+        raise ProviderBoundaryError(
+            claude_failure(
+                ProviderFailureKind.MALFORMED,
+                "Claude refresh data is invalid at refresh_token.",
+            )
+        ) from None
+    if "expires_in" in value and validated.expires_in is None:
+        raise ProviderBoundaryError(
+            claude_failure(
+                ProviderFailureKind.MALFORMED,
+                "Claude refresh data is invalid at expires_in.",
+            )
+        ) from None
+    expiry: Expiry = UnknownExpiry()
+    if validated.expires_in is not None:
+        if reference_time is None:
+            raise ValueError("reference_time is required with expires_in")
+        expiry = refresh_expiry(validated.expires_in, reference_time)
+    return ClaudeCredentials(
+        access_token=validated.access_token,
+        refresh_token=(
+            validated.refresh_token
+            if validated.refresh_token is not None
+            else previous.refresh_token
+        ),
+        expiry=expiry,
+        scopes=previous.scopes,
+    )
 
 
 def provider_time(value: JsonValue | None) -> datetime | None:
     """Normalize one optional Claude response timestamp."""
-    if not isinstance(value, str) or not value:
+    if value is None:
         return None
+    if not isinstance(value, str) or not value:
+        raise ProviderBoundaryError(
+            claude_failure(
+                ProviderFailureKind.MALFORMED,
+                "Claude usage data has an invalid reset timestamp.",
+            )
+        ) from None
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
-        return None
-    if parsed.tzinfo is None or parsed.utcoffset() is None:
-        return None
+        parsed = None
+    if parsed is None or parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ProviderBoundaryError(
+            claude_failure(
+                ProviderFailureKind.MALFORMED,
+                "Claude usage data has an invalid reset timestamp.",
+            )
+        ) from None
     return parsed.astimezone(UTC)
 
 
@@ -90,20 +420,44 @@ def oauth_usage_window(
     value: JsonValue | None,
     label: str,
 ) -> UsageWindow | None:
-    """Parse one OAuth usage bucket when present."""
-    if not isinstance(value, dict) or not value:
+    """Validate and normalize one optional OAuth usage bucket."""
+    if value is None:
         return None
-    utilization_value = value.get("utilization")
-    utilization = (
-        float(utilization_value)
-        if isinstance(utilization_value, int | float | str)
-        else 0.0
+    validated = _validate(
+        _USAGE_WINDOW_ADAPTER,
+        value,
+        boundary="usage",
     )
     return UsageWindow(
         name=label,
-        utilization=utilization,
-        resets_at=provider_time(value.get("resets_at")),
+        utilization=float(validated.utilization),
+        resets_at=provider_time(validated.resets_at),
     )
+
+
+def oauth_usage_windows(
+    value: JsonObject,
+) -> tuple[UsageWindow, ...]:
+    """Validate and normalize all requested OAuth usage buckets."""
+    validated = _validate(_USAGE_ADAPTER, value, boundary="usage")
+    windows_by_key = {
+        "five_hour": validated.five_hour,
+        "seven_day": validated.seven_day,
+        "seven_day_opus": validated.seven_day_opus,
+        "seven_day_oauth_apps": validated.seven_day_oauth_apps,
+    }
+    result: list[UsageWindow] = []
+    for key, label in _OAUTH_USAGE_BUCKETS:
+        window = windows_by_key[key]
+        if window is not None:
+            result.append(
+                UsageWindow(
+                    name=label,
+                    utilization=float(window.utilization),
+                    resets_at=provider_time(window.resets_at),
+                )
+            )
+    return tuple(result)
 
 
 def header_usage_window(
@@ -111,20 +465,36 @@ def header_usage_window(
     label: str,
     response_headers: dict[str, str],
 ) -> UsageWindow | None:
-    """Parse one unified rate-limit header pair when numeric."""
-    util_raw = response_headers.get(f"{prefix}-utilization")
-    reset_raw = response_headers.get(f"{prefix}-reset")
+    """Validate one unified rate-limit header pair when present."""
+    headers = _validate(
+        _HEADERS_ADAPTER,
+        response_headers,
+        boundary="header",
+    )
+    util_raw = headers.get(f"{prefix}-utilization")
+    reset_raw = headers.get(f"{prefix}-reset")
+    if util_raw is None and reset_raw is None:
+        return None
     if util_raw is None or reset_raw is None:
-        return None
-    try:
-        utilization = float(util_raw) * 100
-        reset_unix = int(float(reset_raw))
-    except TypeError, ValueError:
-        return None
+        raise ProviderBoundaryError(
+            claude_failure(
+                ProviderFailureKind.INCOMPLETE,
+                "Claude rate-limit headers are incomplete.",
+            )
+        ) from None
+    validated = _validate(
+        _HEADER_WINDOW_ADAPTER,
+        {"utilization": util_raw, "reset": reset_raw},
+        boundary="header",
+    )
+    utilization = _header_decimal(validated.utilization)
+    if not Decimal(0) <= utilization <= Decimal(1):
+        raise _invalid_header()
+    reset_unix = _header_epoch(validated.reset)
     return UsageWindow(
         name=label,
-        utilization=utilization,
-        resets_at=datetime.fromtimestamp(reset_unix, tz=UTC),
+        utilization=float(utilization * 100),
+        resets_at=_from_epoch(reset_unix),
     )
 
 
@@ -132,12 +502,72 @@ def header_reset(
     response_headers: dict[str, str],
     prefix: str,
 ) -> datetime | None:
-    """Parse one unified Claude rate-limit reset header."""
-    reset_raw = response_headers.get(f"{prefix}-reset")
+    """Validate one unified Claude rate-limit reset header."""
+    headers = _validate(
+        _HEADERS_ADAPTER,
+        response_headers,
+        boundary="header",
+    )
+    reset_raw = headers.get(f"{prefix}-reset")
     if reset_raw is None:
         return None
+    validated = _validate(
+        _HEADER_RESET_ADAPTER,
+        {"reset": reset_raw},
+        boundary="header",
+    )
+    return _from_epoch(_header_epoch(validated.reset))
+
+
+def _header_decimal(value: str) -> Decimal:
     try:
-        reset_unix = int(float(reset_raw))
-    except TypeError, ValueError:
-        return None
-    return datetime.fromtimestamp(reset_unix, tz=UTC)
+        parsed = Decimal(value)
+    except InvalidOperation:
+        raise _invalid_header() from None
+    if not parsed.is_finite():
+        raise _invalid_header()
+    return parsed
+
+
+def _header_epoch(value: str) -> int:
+    parsed = _header_decimal(value)
+    if parsed != parsed.to_integral_value() or parsed < 0:
+        raise _invalid_header()
+    return int(parsed)
+
+
+def _from_epoch(value: int) -> datetime:
+    try:
+        return datetime.fromtimestamp(value, tz=UTC)
+    except OSError, OverflowError, ValueError:
+        raise _invalid_header() from None
+
+
+def _invalid_header() -> ProviderBoundaryError:
+    return ProviderBoundaryError(
+        claude_failure(
+            ProviderFailureKind.MALFORMED,
+            "Claude rate-limit headers contain invalid numeric data.",
+        )
+    )
+
+
+def validate_setup_token(value: str) -> str:
+    """Validate one token captured from Claude's setup-token process."""
+    try:
+        validated = _SETUP_TOKEN_ADAPTER.validate_python(value, strict=True)
+    except ValidationError:
+        raise ProviderBoundaryError(
+            claude_failure(
+                ProviderFailureKind.MALFORMED,
+                "Claude setup-token returned an invalid token.",
+            )
+        ) from None
+    if CLAUDE_TOKEN_PATTERN.fullmatch(validated) is None:
+        raise ProviderBoundaryError(
+            claude_failure(
+                ProviderFailureKind.MALFORMED,
+                "Claude setup-token returned an invalid token.",
+            )
+        ) from None
+    return validated

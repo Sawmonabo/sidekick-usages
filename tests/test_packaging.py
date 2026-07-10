@@ -58,14 +58,26 @@ def test_exact_wheel_selection_and_member_contract(tmp_path: Path) -> None:
     """Ambiguous artifacts and stale module/package collisions fail closed."""
     assert {
         "sidekick_usages/heartbeat/base.py",
+        "sidekick_usages/heartbeat/codex.py",
         "sidekick_usages/heartbeat/domain.py",
+        "sidekick_usages/heartbeat/registry.py",
+        "sidekick_usages/providers/codex.py",
         "sidekick_usages/store.py",
     } <= smoke_wheel.FORBIDDEN_WHEEL_MEMBERS
     assert {
+        "sidekick_usages/credentials/codex.py",
+        "sidekick_usages/credentials/models.py",
+        "sidekick_usages/credentials/service.py",
         "sidekick_usages/heartbeat/models.py",
         "sidekick_usages/heartbeat/ports.py",
         "sidekick_usages/persistence/_compat/v060-reader.zip",
         "sidekick_usages/persistence/transaction.py",
+        "sidekick_usages/providers/codex/auth.py",
+        "sidekick_usages/providers/codex/heartbeat.py",
+        "sidekick_usages/providers/codex/provider.py",
+        "sidekick_usages/providers/codex/schemas.py",
+        "sidekick_usages/providers/codex/usage.py",
+        "sidekick_usages/providers/registry.py",
     } <= smoke_wheel.REQUIRED_WHEEL_MEMBERS
     artifacts = tmp_path / "artifacts"
     artifacts.mkdir()

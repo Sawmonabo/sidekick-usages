@@ -24,7 +24,7 @@ from sidekick_usages import __version__, cli
 from sidekick_usages.branding import ROBOT_LINES
 from sidekick_usages.errors import ForbiddenError
 from sidekick_usages.http import HttpClient
-from sidekick_usages.providers import build_provider_registry
+from sidekick_usages.providers.registry import build_provider_registry
 from sidekick_usages.serialization import JsonObject
 from sidekick_usages.update import (
     PACKAGE_NAME,

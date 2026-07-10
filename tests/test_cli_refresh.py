@@ -23,18 +23,45 @@ from sidekick_usages.core.models import (
     UsageReport,
     UsageWindow,
 )
-from sidekick_usages.core.types import AccountLabel, ProviderId, RefreshStatus
+from sidekick_usages.core.types import (
+    AccountLabel,
+    ExitCode,
+    ProviderId,
+    RefreshStatus,
+)
+from sidekick_usages.credentials import CredentialService
+from sidekick_usages.credentials.codex import private_codex_home
 from sidekick_usages.http import HttpClient
 from sidekick_usages.persistence.account_store import AccountStore
-from sidekick_usages.providers.base import Provider
+from sidekick_usages.providers.base import (
+    CredentialDetection,
+    Provider,
+    ProviderFailure,
+    ProviderFailureKind,
+    RefreshResult,
+    RefreshSuccess,
+)
+from sidekick_usages.providers.claude import provider as claude_provider_module
+from sidekick_usages.providers.claude.provider import ClaudeProvider
+from sidekick_usages.providers.codex import auth as codex_auth_module
+from sidekick_usages.providers.codex.provider import CodexProvider
 from tests.test_support import (
     REFERENCE_TIME,
     FixedClock,
-    make_account_store,
+    make_account_store_with_private,
     make_application_paths,
 )
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_default_codex_home(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Prevent CLI tests from reading the developer's active Codex login."""
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "missing-default"))
 
 
 def test_private_codex_cache_keys_do_not_collapse_distinct_labels(
@@ -43,8 +70,8 @@ def test_private_codex_cache_keys_do_not_collapse_distinct_labels(
     """Legacy-equivalent sanitized labels receive distinct durable keys."""
     locations = make_application_paths(tmp_path).private_codex
 
-    first = cli._sidekick_codex_home(locations, "a b")
-    second = cli._sidekick_codex_home(locations, "a@b")
+    first = private_codex_home(locations.canonical, "a b")
+    second = private_codex_home(locations.canonical, "a@b")
 
     assert first != second
     assert first.parent == second.parent == locations.canonical
@@ -81,10 +108,24 @@ class _FakeProvider(Provider):
     def detect_credentials(
         self,
         credential_home: Path | None = None,
-    ) -> DetectedCredentials | None:
+    ) -> CredentialDetection:
         """:return: Scripted detected local credentials."""
         self.credential_homes.append(credential_home)
-        return self.detected
+        if self.detected is not None:
+            return self.detected
+        return ProviderFailure(
+            provider_id=self.id,
+            kind=ProviderFailureKind.MISSING,
+            message="No test credentials.",
+        )
+
+    def credentials_from_token(self, token: str) -> CredentialDetection:
+        credentials = (
+            ClaudeCredentials(access_token=token)
+            if self.id is ProviderId.CLAUDE
+            else CodexCredentials(access_token=token)
+        )
+        return DetectedCredentials(credentials=credentials)
 
     def fetch_usage(
         self,
@@ -108,19 +149,23 @@ class _FakeProvider(Provider):
             raise result
         return result
 
-    def refresh_token(
+    def refresh_credentials(
         self,
         account: Account,
         http: HttpClient,
-    ) -> bool:
-        """Optionally mutate account like a successful provider refresh."""
+    ) -> RefreshResult:
+        """Return one scripted immutable credential refresh."""
         del http
         self.refresh_calls += 1
         if not self.refresh_ok:
-            return False
+            return ProviderFailure(
+                provider_id=self.id,
+                kind=ProviderFailureKind.REJECTED,
+                message="Test refresh rejected.",
+            )
         credentials = account.credentials
         if isinstance(credentials, CodexCredentials):
-            account.credentials = replace(
+            updated = replace(
                 credentials,
                 access_token="sk-ant-oat01-refreshed",
                 refresh_token="refresh-new",
@@ -131,17 +176,13 @@ class _FakeProvider(Provider):
                 account_id="acct_refreshed",
             )
         else:
-            account.credentials = replace(
+            updated = replace(
                 credentials,
                 access_token="sk-ant-oat01-refreshed",
                 refresh_token="refresh-new",
                 expiry=KnownExpiry(REFERENCE_TIME + timedelta(seconds=60)),
             )
-        return True
-
-    def run_setup_token(self) -> str | None:
-        """:return: None; not used by these tests."""
-        return None
+        return RefreshSuccess(credentials=updated)
 
 
 def _report() -> UsageReport:
@@ -150,21 +191,6 @@ def _report() -> UsageReport:
         windows=(UsageWindow(name="5h", utilization=0.1, resets_at=None),),
         plan="team",
     )
-
-
-def _store(tmp_path: Path, account: Account) -> AccountStore:
-    """Build a temp account store containing one account."""
-    return make_account_store(tmp_path, (account,))
-
-
-def _store_many(tmp_path: Path, accounts: Iterable[Account]) -> AccountStore:
-    """Build a temp account store containing multiple accounts."""
-    return make_account_store(tmp_path, accounts)
-
-
-def _empty_store(tmp_path: Path) -> AccountStore:
-    """Build an empty temp account store."""
-    return make_account_store(tmp_path)
 
 
 def _install_ctx(
@@ -176,20 +202,30 @@ def _install_ctx(
 ) -> tuple[AccountStore, io.StringIO, io.StringIO]:
     """Install an isolated CLI context for refresh-flow tests."""
     paths = make_application_paths(tmp_path)
-    store = _store(tmp_path, account)
+    store, private = make_account_store_with_private(tmp_path, (account,))
+    app_clock = clock or FixedClock()
+    http = HttpClient()
+    providers: dict[ProviderId, Provider] = {provider.id: provider}
     stdout = io.StringIO()
     stderr = io.StringIO()
     cli.set_context(
         cli.AppContext(
             store=store,
-            http=HttpClient(),
-            providers={provider.id: provider},
+            http=http,
+            providers=providers,
             heartbeat_providers={},
             private_codex_locations=paths.private_codex,
             lifetime_sources={},
             console=Console(file=stdout, force_terminal=False),
             err_console=Console(file=stderr, force_terminal=False),
-            clock=clock or FixedClock(),
+            clock=app_clock,
+            credentials=CredentialService(
+                store,
+                http,
+                providers,
+                private,
+                clock=app_clock,
+            ),
         )
     )
     return store, stdout, stderr
@@ -204,20 +240,29 @@ def _install_many_ctx(
 ) -> tuple[AccountStore, io.StringIO, io.StringIO]:
     """Install an isolated CLI context with multiple saved accounts."""
     paths = make_application_paths(tmp_path)
-    store = _store_many(tmp_path, accounts)
+    store, private = make_account_store_with_private(tmp_path, accounts)
+    app_clock = clock or FixedClock()
+    http = HttpClient()
     stdout = io.StringIO()
     stderr = io.StringIO()
     cli.set_context(
         cli.AppContext(
             store=store,
-            http=HttpClient(),
+            http=http,
             providers=providers,
             heartbeat_providers={},
             private_codex_locations=paths.private_codex,
             lifetime_sources={},
             console=Console(file=stdout, force_terminal=False),
             err_console=Console(file=stderr, force_terminal=False),
-            clock=clock or FixedClock(),
+            clock=app_clock,
+            credentials=CredentialService(
+                store,
+                http,
+                providers,
+                private,
+                clock=app_clock,
+            ),
         )
     )
     return store, stdout, stderr
@@ -231,20 +276,30 @@ def _install_empty_ctx(
 ) -> tuple[AccountStore, io.StringIO, io.StringIO]:
     """Install an isolated CLI context with no saved accounts."""
     paths = make_application_paths(tmp_path)
-    store = _empty_store(tmp_path)
+    store, private = make_account_store_with_private(tmp_path)
+    app_clock = clock or FixedClock()
+    http = HttpClient()
+    providers: dict[ProviderId, Provider] = {provider.id: provider}
     stdout = io.StringIO()
     stderr = io.StringIO()
     cli.set_context(
         cli.AppContext(
             store=store,
-            http=HttpClient(),
-            providers={provider.id: provider},
+            http=http,
+            providers=providers,
             heartbeat_providers={},
             private_codex_locations=paths.private_codex,
             lifetime_sources={},
             console=Console(file=stdout, force_terminal=False),
             err_console=Console(file=stderr, force_terminal=False),
-            clock=clock or FixedClock(),
+            clock=app_clock,
+            credentials=CredentialService(
+                store,
+                http,
+                providers,
+                private,
+                clock=app_clock,
+            ),
         )
     )
     return store, stdout, stderr
@@ -257,8 +312,8 @@ def _codex_cache_dir(tmp_path: Path) -> Path:
 
 def _codex_cache_home(tmp_path: Path, label: str = "team") -> Path:
     """Return the deterministic collision-resistant private bundle path."""
-    locations = make_application_paths(tmp_path).private_codex
-    return cli._sidekick_codex_home(locations, label)
+    root = make_application_paths(tmp_path).private_codex.canonical
+    return private_codex_home(root, label)
 
 
 def _acct(
@@ -384,7 +439,7 @@ def test_refresh_command_persists_detected_provider_account_id(
     tmp_path: Path,
 ) -> None:
     """Manual refresh records the Codex account id used by usage fetch."""
-    acct = _codex_acct()
+    acct = _codex_acct(provider_account_id="acct_current")
     detected = _detected(
         access_token="eyJ-current.access.sig",
         provider_id="codex",
@@ -392,6 +447,8 @@ def test_refresh_command_persists_detected_provider_account_id(
         expiry=_seconds(1_770_000_000),
         plan="pro",
         provider_account_id="acct_current",
+        id_token="id-token-current",
+        last_refresh="2026-06-12T00:00:00Z",
     )
     provider = _FakeProvider(
         detected=detected,
@@ -505,6 +562,8 @@ def test_refresh_command_rejects_provider_account_id_mismatch(
         expiry=_seconds(1_770_000_000),
         plan="pro",
         provider_account_id="acct_current",
+        id_token="id-token-current",
+        last_refresh="2026-06-12T00:00:00Z",
     )
     provider = _FakeProvider(
         detected=detected,
@@ -534,6 +593,8 @@ def test_refresh_command_replace_identity_allows_provider_account_id_mismatch(
         expiry=_seconds(1_770_000_000),
         plan="pro",
         provider_account_id="acct_current",
+        id_token="id-token-current",
+        last_refresh="2026-06-12T00:00:00Z",
     )
     provider = _FakeProvider(
         detected=detected,
@@ -705,7 +766,7 @@ def test_codex_login_runs_plain_cli_and_imports_private_cache(
             call["env"] = env
         calls.append(call)
 
-    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    monkeypatch.setattr(codex_auth_module.subprocess, "run", fake_run)
 
     result = CliRunner().invoke(
         cli.app,
@@ -729,6 +790,7 @@ def test_codex_login_runs_plain_cli_and_imports_private_cache(
 
 def test_codex_export_writes_saved_credentials_to_home(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Saved Codex credentials can be exported into an isolated home."""
     codex_home = tmp_path / "codex-team"
@@ -740,6 +802,7 @@ def test_codex_export_writes_saved_credentials_to_home(
         last_refresh="2026-06-12T00:00:00Z",
     )
     provider = _FakeProvider(provider_id="codex")
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "missing-default"))
     store, _, _ = _install_ctx(tmp_path, provider, acct)
 
     result = CliRunner().invoke(
@@ -759,4 +822,131 @@ def test_codex_export_writes_saved_credentials_to_home(
     }
     saved = store.get("team")
     assert saved is not None
-    assert saved.codex_home == str(codex_home)
+    assert saved.codex_home is None
+
+
+@pytest.mark.parametrize(
+    ("source_account_id", "expected_exit"),
+    [
+        ("acct_current", ExitCode.SUCCESS),
+        ("acct_other", ExitCode.MANUAL_ACTION),
+    ],
+)
+def test_codex_export_reads_default_source_without_mutating_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    source_account_id: str,
+    expected_exit: ExitCode,
+) -> None:
+    source_home = tmp_path / "default-codex"
+    source_home.mkdir()
+    source_auth = source_home / "auth.json"
+    source_auth.write_text(
+        json.dumps(
+            {
+                "future_metadata": {"preserve": True},
+                "tokens": {
+                    "account_id": source_account_id,
+                    "id_token": "id-from-default-source",
+                },
+            }
+        )
+    )
+    original_source = source_auth.read_bytes()
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
+    target_home = tmp_path / "exported-codex"
+    account = _codex_acct(
+        access_token="eyJ-current.access.sig",
+        refresh_token="refresh-current",
+        provider_account_id="acct_current",
+        id_token=None,
+    )
+    provider = _FakeProvider(provider_id="codex")
+    _install_ctx(tmp_path, provider, account)
+
+    result = CliRunner().invoke(
+        cli.app,
+        ["codex-export", "team", "--codex-home", str(target_home)],
+    )
+
+    assert result.exit_code == expected_exit
+    assert source_auth.read_bytes() == original_source
+    assert provider.refresh_calls == 0
+    if expected_exit is ExitCode.SUCCESS:
+        exported = json.loads((target_home / "auth.json").read_text())
+        assert exported["tokens"]["id_token"] == "id-from-default-source"
+    else:
+        assert target_home.is_dir()
+        assert not (target_home / "auth.json").exists()
+        assert not (target_home / "config.toml").exists()
+
+
+def test_setup_token_delegates_only_to_claude_capability(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The flat command uses Claude's narrow setup-token capability."""
+    token = "sk-ant-oat01-synthetic-setup-token"
+    raw_secret = "oauth-code=must-not-reach-terminal"
+    provider = ClaudeProvider(FixedClock())
+    monkeypatch.setattr(
+        claude_provider_module.shutil,
+        "which",
+        lambda name: "/usr/bin/claude" if name == "claude" else None,
+    )
+
+    def capture(
+        command: list[str],
+        timeout: int,
+    ) -> claude_provider_module._CapturedSetupOutput:
+        assert command == ["/usr/bin/claude", "setup-token"]
+        assert timeout > 0
+        return claude_provider_module._CapturedSetupOutput(
+            0,
+            f"{raw_secret}\nToken: {token}\n".encode(),
+        )
+
+    monkeypatch.setattr(
+        ClaudeProvider,
+        "_capture_setup_output",
+        staticmethod(capture),
+    )
+    monkeypatch.setattr(
+        provider,
+        "fetch_usage",
+        lambda account, http: UsageReport(),
+    )
+    store, stdout, stderr = _install_many_ctx(
+        tmp_path,
+        {ProviderId.CLAUDE: provider},
+        (),
+    )
+
+    result = CliRunner().invoke(
+        cli.app,
+        ["setup-token", "claude", "--label", "setup"],
+    )
+
+    assert result.exit_code == 0
+    assert raw_secret not in result.output
+    assert raw_secret not in stdout.getvalue()
+    assert raw_secret not in stderr.getvalue()
+    saved = store.get("setup")
+    assert saved is not None
+    assert saved.access_token == token
+
+
+def test_setup_token_codex_returns_typed_unsupported_outcome(
+    tmp_path: Path,
+) -> None:
+    """Codex setup-token fails cleanly without a generic provider method."""
+    _, _, stderr = _install_many_ctx(
+        tmp_path,
+        {ProviderId.CODEX: CodexProvider(FixedClock())},
+        (),
+    )
+
+    result = CliRunner().invoke(cli.app, ["setup-token", "codex"])
+
+    assert result.exit_code == 1
+    assert "doesn't expose a long-lived token generator" in stderr.getvalue()

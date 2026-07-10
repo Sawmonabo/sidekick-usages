@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 from datetime import datetime, timedelta
+from typing import Protocol
 
 from sidekick_usages.clock import Clock
 from sidekick_usages.core.expiry import (
@@ -17,6 +18,7 @@ from sidekick_usages.core.models import (
     UsageReport,
 )
 from sidekick_usages.core.types import ProviderId
+from sidekick_usages.credentials import CredentialUpdateResult
 from sidekick_usages.errors import (
     AuthError,
     ForbiddenError,
@@ -25,10 +27,20 @@ from sidekick_usages.errors import (
     UsageError,
 )
 from sidekick_usages.http import HttpClient
-from sidekick_usages.maintenance import TokenMaintenanceService
+from sidekick_usages.maintenance import (
+    CredentialRefresher,
+    TokenMaintenanceService,
+)
 from sidekick_usages.persistence.account_store import AccountStore
-from sidekick_usages.persistence.errors import PersistenceError
-from sidekick_usages.providers.base import Provider
+from sidekick_usages.persistence.errors import (
+    PersistenceError,
+    SourceChangedError,
+)
+from sidekick_usages.providers.base import (
+    Provider,
+    ProviderBoundaryError,
+    ProviderFailure,
+)
 from sidekick_usages.usage.models import (
     AccountUsage,
     AuthenticationFailure,
@@ -36,6 +48,7 @@ from sidekick_usages.usage.models import (
     ForbiddenFailure,
     InvalidExpiryFailure,
     PersistenceFailure,
+    ProviderPayloadFailure,
     RateLimitFailure,
     RefreshRejectedFailure,
     TransientFailure,
@@ -47,6 +60,19 @@ _CODEX_USAGE_REFRESH_MARGIN = timedelta(seconds=60)
 _CLAUDE_USAGE_REQUIRED_SCOPE = "user:profile"
 
 
+class CredentialCoordinator(CredentialRefresher, Protocol):
+    """Credential mutations required by usage orchestration."""
+
+    def persist_provider_update(
+        self,
+        account: Account,
+        *,
+        expected_credentials: Credentials,
+        expected_plan: str,
+    ) -> CredentialUpdateResult:
+        """Persist provider-discovered credentials and plan atomically."""
+
+
 class UsageCheckService:
     """Select accounts and return explicit usage-check outcomes."""
 
@@ -55,6 +81,7 @@ class UsageCheckService:
         store: AccountStore,
         http: HttpClient,
         providers: dict[ProviderId, Provider],
+        credentials: CredentialCoordinator,
         *,
         clock: Clock,
     ) -> None:
@@ -63,16 +90,17 @@ class UsageCheckService:
         :param store: Loaded transactional account store.
         :param http: Shared provider HTTP facade.
         :param providers: Closed provider adapter registry.
+        :param credentials: Canonical credential coordinator.
         :param clock: Aware application wall clock.
         """
         self._store = store
         self._http = http
         self._providers = providers
+        self._credentials = credentials
         self._clock = clock
         self._maintenance = TokenMaintenanceService(
             store,
-            http,
-            providers,
+            credentials,
             clock=clock,
         )
 
@@ -125,15 +153,15 @@ class UsageCheckService:
                     "account."
                 ),
             )
-        if (
-            isinstance(expiry, ExpiredExpiry)
-            or (
-                isinstance(expiry, ValidExpiry)
-                and provider.id is ProviderId.CODEX
-                and expiry.at <= reference_time + _CODEX_USAGE_REFRESH_MARGIN
-            )
-        ) and (failure := self._refresh(account)) is not None:
-            return failure
+        if isinstance(expiry, ExpiredExpiry) or (
+            isinstance(expiry, ValidExpiry)
+            and provider.id is ProviderId.CODEX
+            and expiry.at <= reference_time + _CODEX_USAGE_REFRESH_MARGIN
+        ):
+            refreshed = self._refresh(account)
+            if isinstance(refreshed, FetchFailure):
+                return refreshed
+            account = refreshed
         return self._fetch(account, provider, allow_auth_refresh=True)
 
     def _fetch(
@@ -156,6 +184,14 @@ class UsageCheckService:
             )
         except ForbiddenError as error:
             return self._handle_forbidden(account, provider, error)
+        except ProviderBoundaryError as error:
+            return ProviderPayloadFailure(
+                label=account.label,
+                provider_id=account.provider_id,
+                plan=account.plan,
+                message=error.failure.message,
+                provider_failure=error.failure,
+            )
         except UsageError as error:
             return self._failure_from_error(account, error)
 
@@ -180,7 +216,13 @@ class UsageCheckService:
         if (
             account.credentials != before_credentials
             or account.plan != before_plan
-        ) and (failure := self._persist(account)) is not None:
+        ) and (
+            failure := self._persist_provider_update(
+                account,
+                expected_credentials=before_credentials,
+                expected_plan=before_plan,
+            )
+        ) is not None:
             return failure
         return AccountUsage(
             label=account.label,
@@ -199,9 +241,14 @@ class UsageCheckService:
     ) -> AccountUsage | FetchFailure:
         if not allow_refresh:
             return self._failure_from_error(account, error)
-        if (failure := self._refresh(account)) is not None:
-            return failure
-        return self._fetch(account, provider, allow_auth_refresh=False)
+        refreshed = self._refresh(account)
+        if isinstance(refreshed, FetchFailure):
+            return refreshed
+        return self._fetch(
+            refreshed,
+            provider,
+            allow_auth_refresh=False,
+        )
 
     def _handle_forbidden(
         self,
@@ -216,8 +263,16 @@ class UsageCheckService:
             and credentials.scopes is None
             and error.required_scope == _CLAUDE_USAGE_REQUIRED_SCOPE
         ):
+            before_credentials = account.credentials
+            before_plan = account.plan
             account.credentials = replace(credentials, scopes=())
-            if (failure := self._persist(account)) is not None:
+            if (
+                failure := self._persist_provider_update(
+                    account,
+                    expected_credentials=before_credentials,
+                    expected_plan=before_plan,
+                )
+            ) is not None:
                 return failure
             return self._fetch(
                 account,
@@ -226,25 +281,64 @@ class UsageCheckService:
             )
         return self._failure_from_error(account, error)
 
-    def _refresh(self, account: Account) -> FetchFailure | None:
+    def _refresh(self, account: Account) -> Account | FetchFailure:
         try:
             outcome = self._maintenance.refresh_account(account, force=True)
         except PersistenceError as error:
             return self._persistence_failure(account, error)
         if outcome.refreshed:
-            return None
+            refreshed = self._store.get(str(account.label))
+            if (
+                refreshed is None
+                or refreshed.provider_id is not account.provider_id
+            ):
+                return self._persistence_failure(
+                    account,
+                    SourceChangedError(),
+                )
+            return refreshed
+        if outcome.persistence_error is not None:
+            return self._persistence_failure(
+                account,
+                outcome.persistence_error,
+            )
+        if outcome.operational_error is not None:
+            return self._failure_from_error(
+                account,
+                outcome.operational_error,
+            )
         return RefreshRejectedFailure(
             label=account.label,
             provider_id=account.provider_id,
             plan=account.plan,
             message=outcome.message,
+            provider_failure=outcome.provider_failure,
         )
 
-    def _persist(self, account: Account) -> PersistenceFailure | None:
+    def _persist_provider_update(
+        self,
+        account: Account,
+        *,
+        expected_credentials: Credentials,
+        expected_plan: str,
+    ) -> FetchFailure | None:
+        """Delegate provider-discovered mutation to credential authority."""
         try:
-            self._store.persist(account)
+            result = self._credentials.persist_provider_update(
+                account,
+                expected_credentials=expected_credentials,
+                expected_plan=expected_plan,
+            )
         except PersistenceError as error:
             return self._persistence_failure(account, error)
+        if isinstance(result, ProviderFailure):
+            return ProviderPayloadFailure(
+                label=account.label,
+                provider_id=account.provider_id,
+                plan=account.plan,
+                message=result.message,
+                provider_failure=result,
+            )
         return None
 
     @staticmethod
@@ -311,4 +405,4 @@ class UsageCheckService:
         )
 
 
-__all__ = ["UsageCheckService"]
+__all__ = ["CredentialCoordinator", "UsageCheckService"]

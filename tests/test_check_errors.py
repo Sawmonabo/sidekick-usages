@@ -13,11 +13,11 @@ from sidekick_usages.core.models import (
     Account,
     ClaudeCredentials,
     CodexCredentials,
-    DetectedCredentials,
     UsageReport,
     UsageWindow,
 )
 from sidekick_usages.core.types import AccountLabel, ExitCode, ProviderId
+from sidekick_usages.credentials import CredentialService
 from sidekick_usages.errors import AuthError, TransientError
 from sidekick_usages.http import HttpClient
 from sidekick_usages.lifetime import (
@@ -26,10 +26,17 @@ from sidekick_usages.lifetime import (
     LifetimeResult,
 )
 from sidekick_usages.persistence.account_store import AccountStore
-from sidekick_usages.providers.base import Provider
+from sidekick_usages.providers.base import (
+    CredentialDetection,
+    Provider,
+    ProviderFailure,
+    ProviderFailureKind,
+    RefreshResult,
+    RefreshSuccess,
+)
 from tests.test_support import (
     FixedClock,
-    make_account_store,
+    make_account_store_with_private,
     make_application_paths,
 )
 
@@ -58,8 +65,21 @@ class _FakeProvider(Provider):
     def detect_credentials(
         self,
         credential_home: Path | None = None,
-    ) -> DetectedCredentials | None:
-        return None
+    ) -> CredentialDetection:
+        del credential_home
+        return ProviderFailure(
+            provider_id=self.id,
+            kind=ProviderFailureKind.MISSING,
+            message="No test credentials.",
+        )
+
+    def credentials_from_token(self, token: str) -> CredentialDetection:
+        del token
+        return ProviderFailure(
+            provider_id=self.id,
+            kind=ProviderFailureKind.UNSUPPORTED,
+            message="Manual test credentials are unsupported.",
+        )
 
     def fetch_usage(
         self,
@@ -78,16 +98,19 @@ class _FakeProvider(Provider):
             raise result
         return result
 
-    def refresh_token(
+    def refresh_credentials(
         self,
         account: Account,
         http: HttpClient,
-    ) -> bool:
+    ) -> RefreshResult:
         del http
-        return self.refresh_ok
-
-    def run_setup_token(self) -> str | None:
-        return None
+        if not self.refresh_ok:
+            return ProviderFailure(
+                provider_id=self.id,
+                kind=ProviderFailureKind.REJECTED,
+                message="Test refresh rejected.",
+            )
+        return RefreshSuccess(credentials=account.credentials)
 
 
 def _acct(
@@ -119,20 +142,35 @@ def _install_ctx(
     width: int = 200,
 ) -> tuple[AccountStore, io.StringIO, io.StringIO]:
     paths = make_application_paths(tmp_path)
-    store = make_account_store(tmp_path, accounts)
+    store, private_credentials = make_account_store_with_private(
+        tmp_path,
+        accounts,
+    )
     stdout = io.StringIO()
     stderr = io.StringIO()
+    clock = FixedClock()
+    http = HttpClient()
+    provider_registry: dict[ProviderId, Provider] = {
+        provider.id: provider for provider in providers
+    }
     cli.set_context(
         cli.AppContext(
             store=store,
-            http=HttpClient(),
-            providers={provider.id: provider for provider in providers},
+            http=http,
+            providers=provider_registry,
             heartbeat_providers={},
             private_codex_locations=paths.private_codex,
             lifetime_sources=lifetime_sources or {},
             console=Console(file=stdout, width=width, force_terminal=False),
             err_console=Console(file=stderr, force_terminal=False),
-            clock=FixedClock(),
+            clock=clock,
+            credentials=CredentialService(
+                store,
+                http,
+                provider_registry,
+                private_credentials,
+                clock=clock,
+            ),
         )
     )
     return store, stdout, stderr
