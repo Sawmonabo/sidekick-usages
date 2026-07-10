@@ -10,6 +10,7 @@ from typing import Any
 from sidekick_usages.http import HttpClient
 from sidekick_usages.providers.codex import CodexProvider
 from sidekick_usages.store import Account
+from tests._support import REFERENCE_TIME, FixedClock
 
 DETECTED_EXP = 1_800_000_000
 REFRESH_EXP = 1_900_000_000
@@ -21,6 +22,10 @@ PRIMARY_RESET = 1_770_003_600
 SECONDARY_RESET = 1_770_604_800
 EXTRA_PRIMARY_RESET = 1_770_007_200
 EXTRA_SECONDARY_RESET = 1_770_691_200
+
+
+def _provider() -> CodexProvider:
+    return CodexProvider(FixedClock())
 
 
 def _jwt(payload: dict[str, object]) -> str:
@@ -198,7 +203,7 @@ def test_detect_credentials_reads_explicit_codex_home(tmp_path: Path) -> None:
         )
     )
 
-    detected = CodexProvider().detect_credentials(codex_home)
+    detected = _provider().detect_credentials(codex_home)
 
     assert detected is not None
     assert detected.access_token == access
@@ -212,7 +217,7 @@ def test_fetch_usage_sends_codex_account_and_beta_headers() -> None:
     """Codex usage requires both account id and OpenAI-Beta headers."""
     http = _UsageHttp(_usage_payload())
 
-    CodexProvider().fetch_usage(_acct(), http)
+    _provider().fetch_usage(_acct(), http)
 
     assert http.headers is not None
     assert http.headers["ChatGPT-Account-Id"] == "acct_123"
@@ -221,7 +226,7 @@ def test_fetch_usage_sends_codex_account_and_beta_headers() -> None:
 
 def test_fetch_usage_parses_current_rate_limit_shape() -> None:
     """Current Codex payload renders 5h, 7d, and additional windows."""
-    report = CodexProvider().fetch_usage(
+    report = _provider().fetch_usage(
         _acct(),
         _UsageHttp(_usage_payload()),
     )
@@ -260,7 +265,7 @@ def test_refresh_posts_codex_client_id_and_updates_metadata() -> None:
     )
     acct = _acct()
 
-    assert CodexProvider().refresh_token(acct, http) is True
+    assert _provider().refresh_token(acct, http) is True
 
     assert http.data == {
         "grant_type": "refresh_token",
@@ -305,12 +310,14 @@ def test_refresh_writes_rotated_tokens_to_saved_codex_home(tmp_path) -> None:
             "access_token": access,
             "refresh_token": "refresh-new",
             "id_token": "id-new",
+            "expires_in": 60,
         }
     )
     acct = _acct()
     acct.codex_home = str(codex_home)
+    clock = FixedClock()
 
-    assert CodexProvider().refresh_token(acct, http) is True
+    assert CodexProvider(clock).refresh_token(acct, http) is True
 
     saved_auth = json.loads((codex_home / "auth.json").read_text())
     assert saved_auth["auth_mode"] == "chatgpt"
@@ -318,4 +325,7 @@ def test_refresh_writes_rotated_tokens_to_saved_codex_home(tmp_path) -> None:
     assert saved_auth["tokens"]["refresh_token"] == "refresh-new"
     assert saved_auth["tokens"]["id_token"] == "id-new"
     assert saved_auth["tokens"]["account_id"] == "acct_new"
-    assert saved_auth["last_refresh"] != "2026-06-11T00:00:00Z"
+    assert acct.expires_at == int(REFERENCE_TIME.timestamp()) + 60
+    assert acct.codex_last_refresh == "2026-06-12T12:34:56.789000Z"
+    assert saved_auth["last_refresh"] == acct.codex_last_refresh
+    assert clock.calls == 1

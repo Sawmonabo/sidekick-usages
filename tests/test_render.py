@@ -1,5 +1,5 @@
 import io
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 
 import pytest
 from rich.console import Console
@@ -8,10 +8,11 @@ from sidekick_usages import render
 from sidekick_usages.render import FetchFailure
 from sidekick_usages.report import UsageReport, UsageWindow
 from sidekick_usages.store import Account
+from tests._support import REFERENCE_TIME
 
 
-def _iso_in(**delta):
-    return (datetime.now(UTC) + timedelta(**delta)).isoformat()
+def _iso_after(**delta: float) -> str:
+    return (REFERENCE_TIME + timedelta(**delta)).isoformat()
 
 
 def test_heat_band_picks_inclusive_lower_bounds():
@@ -36,31 +37,48 @@ def test_heat_tile_nonzero_is_centered_percent_on_band():
 
 
 def test_format_reset_compact_buckets():
-    assert render._format_reset_compact(None) == ""
-    assert render._format_reset_compact("not-a-date") == ""
-    assert render._format_reset_compact(_iso_in(minutes=-5)) == "now"
-    assert render._format_reset_compact(_iso_in(minutes=45)) == "45m"
+    assert render._format_reset_compact(None, REFERENCE_TIME) == ""
+    assert render._format_reset_compact("not-a-date", REFERENCE_TIME) == ""
     assert (
-        render._format_reset_compact(_iso_in(hours=3, minutes=50)) == "3h 50m"
+        render._format_reset_compact(
+            _iso_after(minutes=-5),
+            REFERENCE_TIME,
+        )
+        == "now"
     )
-    assert render._format_reset_compact(_iso_in(days=1, hours=15)) == "1d 15h"
-
-
-def test_format_reset_compact_tz_naive_does_not_crash():
-    assert render._format_reset_compact("2026-06-19T12:00:00") == ""
-
-
-def test_format_reset_tz_naive_does_not_crash():
-    out = render._format_reset("2026-06-19T12:00:00")
-    # tz-naive -> swallowed -> passthrough dim text, not a crash
-    assert "2026-06-19T12:00:00" in out.plain
+    assert (
+        render._format_reset_compact(
+            _iso_after(minutes=45),
+            REFERENCE_TIME,
+        )
+        == "45m"
+    )
+    assert (
+        render._format_reset_compact(
+            _iso_after(hours=3, minutes=50),
+            REFERENCE_TIME,
+        )
+        == "3h 50m"
+    )
+    assert (
+        render._format_reset_compact(
+            _iso_after(days=1, hours=15),
+            REFERENCE_TIME,
+        )
+        == "1d 15h"
+    )
 
 
 def test_reset_cell_is_centered_dim():
-    cell = render._reset_cell(_iso_in(hours=3, minutes=50))
+    cell = render._reset_cell(
+        _iso_after(hours=3, minutes=50),
+        REFERENCE_TIME,
+    )
     assert cell.plain == f"{'3h 50m':^{render._TILE_WIDTH}}"
     assert cell.style == "grey42"
-    assert render._reset_cell(None).plain == f"{'':^{render._TILE_WIDTH}}"
+    assert render._reset_cell(None, REFERENCE_TIME).plain == (
+        f"{'':^{render._TILE_WIDTH}}"
+    )
 
 
 @pytest.mark.parametrize(
@@ -102,7 +120,7 @@ def _report(*windows):
 def _worst_case_pairs():
     # 3 Claude + 2 Codex; the reserved 30-char name + Spark block is the
     # binding width case.
-    iso = _iso_in(hours=3, minutes=50)
+    iso = _iso_after(hours=3, minutes=50)
     claude = [
         (
             _acct("short.account@example.test"),
@@ -169,9 +187,34 @@ def _render_at(
             _LIFETIME,
             failures=failures,
             width=width,
+            reference_time=REFERENCE_TIME,
         )
     )
     return buf.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("width", "expected"),
+    [(200, "3h 50m"), (70, "(in 3h 50m)")],
+)
+def test_overview_uses_explicit_reference_time(
+    width: int,
+    expected: str,
+) -> None:
+    pairs = [
+        (
+            _acct("fixed-time"),
+            _report(
+                (
+                    "5h",
+                    1,
+                    _iso_after(hours=3, minutes=50),
+                )
+            ),
+        )
+    ]
+
+    assert expected in _render_at(width, pairs)
 
 
 def _panel_line_widths(out: str) -> set[int]:
@@ -230,8 +273,8 @@ def test_provider_title_uses_singular_account_count():
         (
             _acct("only", "codex", "pro"),
             _report(
-                ("5h", 5, _iso_in(hours=1)),
-                ("7d", 9, _iso_in(days=1)),
+                ("5h", 5, _iso_after(hours=1)),
+                ("7d", 9, _iso_after(days=1)),
             ),
         )
     ]
@@ -272,8 +315,8 @@ def test_subtitle_not_truncated_when_wider_than_content():
         (
             _acct("x", "codex", "pro"),
             _report(
-                ("5h", 5, _iso_in(hours=1)),
-                ("7d", 9, _iso_in(days=1)),
+                ("5h", 5, _iso_after(hours=1)),
+                ("7d", 9, _iso_after(days=1)),
             ),
         )
     ]
@@ -284,14 +327,21 @@ def test_subtitle_not_truncated_when_wider_than_content():
     }
     buf = io.StringIO()
     console = Console(width=200, file=buf)
-    console.print(render.usage_overview(pairs, lifetime, width=200))
+    console.print(
+        render.usage_overview(
+            pairs,
+            lifetime,
+            width=200,
+            reference_time=REFERENCE_TIME,
+        )
+    )
     out = buf.getvalue()
     assert "…" not in out
     assert "999M output" in out
 
 
 def test_failure_renders_in_provider_panel():
-    iso = _iso_in(hours=3)
+    iso = _iso_after(hours=3)
     pairs = [
         (
             _acct("acct-ok", "codex", "pro"),
@@ -335,7 +385,7 @@ def test_all_failed_provider_has_no_orphan_header():
 
 
 def test_failures_widen_shared_panels():
-    iso = _iso_in(hours=3)
+    iso = _iso_after(hours=3)
     pairs = [
         (
             _acct("short.account@example.test", "claude", "max"),
@@ -357,7 +407,13 @@ def test_failures_widen_shared_panels():
     buf = io.StringIO()
     console = Console(width=200, file=buf)
     console.print(
-        render.usage_overview(pairs, _LIFETIME, failures=failures, width=200)
+        render.usage_overview(
+            pairs,
+            _LIFETIME,
+            failures=failures,
+            width=200,
+            reference_time=REFERENCE_TIME,
+        )
     )
     out = buf.getvalue()
     widths = _panel_line_widths(out)
@@ -366,7 +422,7 @@ def test_failures_widen_shared_panels():
 
 
 def test_legacy_mode_renders_failures():
-    iso = _iso_in(hours=3)
+    iso = _iso_after(hours=3)
     pairs = [
         (
             _acct("acct-ok", "codex", "pro"),
@@ -382,7 +438,13 @@ def test_legacy_mode_renders_failures():
     buf = io.StringIO()
     console = Console(width=40, file=buf)
     console.print(
-        render.usage_overview(pairs, _LIFETIME, failures=failures, width=40)
+        render.usage_overview(
+            pairs,
+            _LIFETIME,
+            failures=failures,
+            width=40,
+            reference_time=REFERENCE_TIME,
+        )
     )
     out = buf.getvalue()
     assert "token expired" in out

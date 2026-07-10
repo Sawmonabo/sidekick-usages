@@ -1,9 +1,8 @@
 """Policy and persistence for optional usage-window heartbeat."""
 
-import time
-from collections.abc import Callable
 from datetime import UTC, datetime
 
+from sidekick_usages.clock import Clock
 from sidekick_usages.errors import UsageError
 from sidekick_usages.heartbeat.base import HeartbeatProvider
 from sidekick_usages.heartbeat.domain import (
@@ -32,12 +31,12 @@ class HeartbeatService:
         http: HttpClient,
         providers: dict[str, HeartbeatProvider],
         *,
-        now: Callable[[], float] | None = None,
+        clock: Clock,
     ) -> None:
         self.store = store
         self.http = http
         self.providers = providers
-        self._now = now or time.time
+        self.clock = clock
 
     def heartbeat_all(
         self,
@@ -73,8 +72,9 @@ class HeartbeatService:
         if early is not None:
             return early
         assert account is not None
+        reference_time = self.clock.now()
 
-        ready = self._ready_provider(account)
+        ready = self._ready_provider(account, reference_time)
         if isinstance(ready, HeartbeatOutcome):
             return ready
         provider = ready
@@ -86,11 +86,12 @@ class HeartbeatService:
                 account,
                 str(e),
                 exit_code=EXIT_SYSTEM_ERROR,
+                reference_time=reference_time,
             )
 
         cached = _future_reset(
             _target_reset(account, target.id),
-            self._now(),
+            reference_time,
         )
         if cached is not None:
             return HeartbeatOutcome(
@@ -109,9 +110,10 @@ class HeartbeatService:
                 account,
                 str(e),
                 exit_code=EXIT_MANUAL_ACTION,
+                reference_time=self.clock.now(),
             )
 
-        account.last_heartbeat_at = _now_utc_z()
+        account.last_heartbeat_at = _utc_z(self.clock.now())
         account.last_heartbeat_status = result.status
         account.last_heartbeat_error = (
             result.message if result.status == HEARTBEAT_FAILED else None
@@ -160,6 +162,7 @@ class HeartbeatService:
     def _ready_provider(
         self,
         account: Account,
+        reference_time: datetime,
     ) -> HeartbeatProvider | HeartbeatOutcome:
         """Return a supported provider or the failure outcome to persist."""
         provider = self.providers.get(account.provider_id)
@@ -168,17 +171,19 @@ class HeartbeatService:
                 account,
                 f"Unknown provider '{account.provider_id}'.",
                 exit_code=EXIT_SYSTEM_ERROR,
+                reference_time=reference_time,
             )
-        blocked = self._auth_blocker(account)
+        blocked = self._auth_blocker(account, reference_time)
         if blocked is not None:
             return self._record_failed(
                 account,
                 blocked,
                 exit_code=EXIT_MANUAL_ACTION,
+                reference_time=reference_time,
             )
         if provider.supports(account):
             return provider
-        return self._record_unsupported(account, provider)
+        return self._record_unsupported(account, provider, reference_time)
 
     def enable(
         self,
@@ -291,12 +296,16 @@ class HeartbeatService:
             message="disabled",
         )
 
-    def _auth_blocker(self, account: Account) -> str | None:
+    def _auth_blocker(
+        self,
+        account: Account,
+        reference_time: datetime,
+    ) -> str | None:
         """Return a user-action blocker for accounts that should not warm."""
         if account.last_refresh_status == "failed":
             return "Last token refresh failed; log in before heartbeat."
         expires_at = expiry_epoch_seconds(account)
-        if expires_at is not None and expires_at <= self._now():
+        if expires_at is not None and expires_at <= reference_time.timestamp():
             return (
                 "Access token is expired; refresh or log in before heartbeat."
             )
@@ -306,9 +315,10 @@ class HeartbeatService:
         self,
         account: Account,
         provider: HeartbeatProvider,
+        reference_time: datetime,
     ) -> HeartbeatOutcome:
         outcome = self._unsupported_outcome(account, provider)
-        account.last_heartbeat_at = _now_utc_z()
+        account.last_heartbeat_at = _utc_z(reference_time)
         account.last_heartbeat_status = HEARTBEAT_UNSUPPORTED
         account.last_heartbeat_error = outcome.message
         self.store.upsert(account)
@@ -335,8 +345,9 @@ class HeartbeatService:
         message: str,
         *,
         exit_code: int,
+        reference_time: datetime,
     ) -> HeartbeatOutcome:
-        account.last_heartbeat_at = _now_utc_z()
+        account.last_heartbeat_at = _utc_z(reference_time)
         account.last_heartbeat_status = HEARTBEAT_FAILED
         account.last_heartbeat_error = message
         self.store.upsert(account)
@@ -451,7 +462,7 @@ def _missing_account() -> HeartbeatOutcome:
     )
 
 
-def _future_reset(value: str | None, now: float) -> str | None:
+def _future_reset(value: str | None, reference_time: datetime) -> str | None:
     """Return ``value`` when it parses to a future timestamp."""
     if not value:
         return None
@@ -462,11 +473,11 @@ def _future_reset(value: str | None, now: float) -> str | None:
         return None
     if reset_at.tzinfo is None:
         reset_at = reset_at.replace(tzinfo=UTC)
-    if reset_at.timestamp() > now:
+    if reset_at > reference_time:
         return value
     return None
 
 
-def _now_utc_z() -> str:
-    """Return an ISO UTC timestamp with a Z suffix."""
-    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+def _utc_z(value: datetime) -> str:
+    """Return an aware timestamp in the existing UTC-Z representation."""
+    return value.isoformat().replace("+00:00", "Z")

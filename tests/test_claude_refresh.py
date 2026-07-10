@@ -2,7 +2,6 @@
 
 import json
 import subprocess
-import time
 from pathlib import Path
 from typing import Any
 
@@ -13,9 +12,14 @@ from sidekick_usages.http import HttpClient
 from sidekick_usages.providers import claude as claude_module
 from sidekick_usages.providers.claude import ClaudeProvider
 from sidekick_usages.store import Account
+from tests._support import REFERENCE_TIME, FixedClock
 
 CLI_REFRESH_TIMEOUT_SECONDS = 60
 CLI_EXPIRES_AT_MS = 1_781_270_062_459
+
+
+def _provider() -> ClaudeProvider:
+    return ClaudeProvider(FixedClock())
 
 
 class _FakeHttp(HttpClient):
@@ -75,7 +79,7 @@ def test_claude_refresh_returns_false_without_refresh_token() -> None:
     http = _FakeHttp()
     acct = _acct(refresh_token=None)
 
-    assert ClaudeProvider().refresh_token(acct, http) is False
+    assert _provider().refresh_token(acct, http) is False
 
     assert http.calls == []
     assert acct.access_token == "sk-ant-oat01-old"
@@ -137,7 +141,7 @@ def test_claude_refresh_uses_cli_refresh_token_login(
 
     monkeypatch.setattr(subprocess, "run", _run)
 
-    assert ClaudeProvider().refresh_token(acct, http) is True
+    assert _provider().refresh_token(acct, http) is True
 
     assert http.calls == []
     assert acct.access_token == "sk-ant-oat01-cli"
@@ -159,7 +163,7 @@ def test_claude_refresh_posts_saved_refresh_token(monkeypatch: Any) -> None:
     http = _FakeHttp(response_json={"access_token": "sk-ant-oat01-new"})
     acct = _acct()
 
-    assert ClaudeProvider().refresh_token(acct, http) is True
+    assert _provider().refresh_token(acct, http) is True
 
     assert http.calls == [
         ("POST", "https://platform.claude.com/v1/oauth/token")
@@ -210,7 +214,7 @@ def test_claude_refresh_cli_rejection_does_not_fallback_to_http(
     monkeypatch.setattr(subprocess, "run", _run)
 
     with pytest.raises(AuthError) as exc:
-        ClaudeProvider().refresh_token(acct, http)
+        _provider().refresh_token(acct, http)
 
     assert "Claude CLI refresh failed" in str(exc.value)
     assert "status code 400" in str(exc.value)
@@ -224,7 +228,7 @@ def test_claude_refresh_uses_saved_scopes(monkeypatch: Any) -> None:
     acct = _acct()
     acct.scopes = ["user:inference", "user:profile"]
 
-    assert ClaudeProvider().refresh_token(acct, http) is True
+    assert _provider().refresh_token(acct, http) is True
 
     assert http.last_body is not None
     assert http.last_body["scope"] == "user:inference user:profile"
@@ -235,7 +239,7 @@ def test_claude_refresh_updates_tokens_and_millisecond_expiry(
 ) -> None:
     """Successful refresh mutates account token metadata in-place."""
     _disable_cli_refresh(monkeypatch)
-    before_ms = int(time.time() * 1000)
+    clock = FixedClock()
     http = _FakeHttp(
         response_json={
             "access_token": "sk-ant-oat01-new",
@@ -245,13 +249,12 @@ def test_claude_refresh_updates_tokens_and_millisecond_expiry(
     )
     acct = _acct()
 
-    assert ClaudeProvider().refresh_token(acct, http) is True
+    assert ClaudeProvider(clock).refresh_token(acct, http) is True
 
-    after_ms = int(time.time() * 1000)
     assert acct.access_token == "sk-ant-oat01-new"
     assert acct.refresh_token == "refresh-new"
-    assert acct.expires_at is not None
-    assert before_ms + 60_000 <= acct.expires_at <= after_ms + 60_000
+    assert acct.expires_at == int((REFERENCE_TIME.timestamp() + 60) * 1000)
+    assert clock.calls == 1
 
 
 def test_claude_refresh_returns_false_on_auth_error(monkeypatch: Any) -> None:
@@ -260,7 +263,7 @@ def test_claude_refresh_returns_false_on_auth_error(monkeypatch: Any) -> None:
     http = _FakeHttp(raise_on_post=AuthError("Refresh rejected"))
     acct = _acct()
 
-    assert ClaudeProvider().refresh_token(acct, http) is False
+    assert _provider().refresh_token(acct, http) is False
 
     assert acct.access_token == "sk-ant-oat01-old"
     assert acct.refresh_token == "refresh-old"
@@ -274,7 +277,7 @@ def test_claude_refresh_returns_false_without_access_token(
     http = _FakeHttp(response_json={"refresh_token": "refresh-new"})
     acct = _acct()
 
-    assert ClaudeProvider().refresh_token(acct, http) is False
+    assert _provider().refresh_token(acct, http) is False
 
     assert acct.access_token == "sk-ant-oat01-old"
     assert acct.refresh_token == "refresh-old"

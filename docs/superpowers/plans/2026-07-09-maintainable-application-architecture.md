@@ -1083,16 +1083,45 @@ approved contract.
 
 **Work:**
 
-- [ ] Define the narrow `Clock` protocol and production `SystemClock` returning
+- [x] Define the narrow `Clock` protocol and production `SystemClock` returning
       aware UTC `datetime` values.
-- [ ] Construct one application wall clock at the current composition root.
-- [ ] Inject it into current services and provider adapters that acquire time.
-- [ ] Pass an explicit reference time into current renderers instead of
+- [x] Construct one application wall clock at the current composition root.
+- [x] Inject it into current services and provider adapters that acquire time.
+- [x] Pass an explicit reference time into current renderers instead of
       allowing them to call `datetime.now()`.
-- [ ] Leave persistence and provider-native string encoders at their current
+- [x] Leave persistence and provider-native string encoders at their current
       boundaries until CS-13 normalizes models and expiry.
-- [ ] Do not put sleeping, monotonic time, scheduler behavior, parsing, or
+- [x] Do not put sleeping, monotonic time, scheduler behavior, parsing, or
       timestamp formatting in `clock.py`.
+
+**Execution record:** Completed on 2026-07-10 against
+`601ee7c88ce4907e31449cc2b570e5ffaf20cccd`. The composition root now creates
+one `SystemClock`, builds both provider adapters from it, and builds heartbeat
+adapters from those same provider instances. Provider and heartbeat registries
+are required dependencies rather than import-time singletons or optional
+fallbacks. Maintenance, heartbeat, doctor, provider refresh, manual credential
+cache writes, CLI expiry policy, and renderer reset labels now receive either
+the injected clock or one explicitly sampled aware reference time.
+
+The change intentionally preserves every current boundary representation:
+Claude relative expiry remains epoch milliseconds using
+`int((timestamp + expires_in) * 1000)`; Codex relative expiry remains epoch
+seconds using `int(timestamp) + expires_in`; provider-native reset strings and
+JWT expiry values remain pass-through data; and persisted audit timestamps
+retain the existing UTC `Z` encoding. No stored schema, migration, sleep,
+monotonic deadline, retry, parsing, or timestamp-formatting responsibility was
+added to `clock.py`. An exact source scan leaves direct wall-time acquisition
+only in `SystemClock.now()`.
+
+Test work stayed focused: one production-clock contract test was added; the
+existing maintenance, heartbeat, doctor, provider, CLI, and renderer tests were
+made deterministic and strengthened around exact timestamps and one-sample
+decisions; and two redundant timezone-naive crash checks were removed. A
+single typed fixed/counting clock now serves the test suite after the repeated
+fixture passed the rule-of-three threshold. The previously inert
+target-specific heartbeat cache case now evaluates a genuinely future reset.
+The full suite passes all 200 cases with branch coverage. Ruff, formatting,
+`ty`, pre-commit, repository-wide Markdown lint, and the package build pass.
 
 **Load-bearing tests:**
 

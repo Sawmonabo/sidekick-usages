@@ -13,7 +13,7 @@ from sidekick_usages.heartbeat.domain import (
     HeartbeatTarget,
     UsageWindowState,
 )
-from sidekick_usages.heartbeat.registry import HEARTBEAT_PROVIDERS
+from sidekick_usages.heartbeat.registry import build_heartbeat_registry
 from sidekick_usages.heartbeat.render import (
     render_heartbeat_outcomes,
     render_heartbeat_status,
@@ -29,7 +29,6 @@ __all__ = [
     "HEARTBEAT_DISABLED",
     "HEARTBEAT_ENABLED",
     "HEARTBEAT_FAILED",
-    "HEARTBEAT_PROVIDERS",
     "HEARTBEAT_UNSUPPORTED",
     "HEARTBEAT_WARMED",
     "HeartbeatOutcome",
@@ -38,6 +37,7 @@ __all__ = [
     "HeartbeatService",
     "HeartbeatTarget",
     "UsageWindowState",
+    "build_heartbeat_registry",
     "heartbeat_exit_code",
     "heartbeat_supported_label",
     "render_heartbeat_outcomes",

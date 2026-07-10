@@ -2,7 +2,6 @@
 
 import io
 import json
-import time
 from pathlib import Path
 
 from rich.console import Console
@@ -10,31 +9,37 @@ from typer.testing import CliRunner
 
 from sidekick_usages import cli
 from sidekick_usages.branding import ROBOT_LINES
+from sidekick_usages.heartbeat import build_heartbeat_registry
 from sidekick_usages.http import HttpClient
-from sidekick_usages.providers import PROVIDERS
+from sidekick_usages.providers import build_provider_registry
 from sidekick_usages.store import Account, AccountStore
+from tests._support import REFERENCE_TIME, FixedClock
 
 
 def _install_ctx(
     tmp_path: Path,
     accounts: list[Account],
-) -> tuple[AccountStore, io.StringIO, io.StringIO]:
+) -> tuple[AccountStore, io.StringIO, io.StringIO, FixedClock]:
     """Install an isolated CLI context for doctor tests."""
     store = AccountStore(tmp_path / "accounts.json")
     for account in accounts:
         store.upsert(account)
     stdout = io.StringIO()
     stderr = io.StringIO()
+    clock = FixedClock()
+    providers = build_provider_registry(clock)
     cli.set_context(
         cli.AppContext(
             store=store,
             http=HttpClient(),
-            providers=PROVIDERS,
+            providers=providers,
             console=Console(file=stdout, force_terminal=False),
             err_console=Console(file=stderr, force_terminal=False),
+            clock=clock,
+            heartbeat_providers=build_heartbeat_registry(providers),
         )
     )
-    return store, stdout, stderr
+    return store, stdout, stderr, clock
 
 
 def test_doctor_json_reports_refreshability_and_redacts_tokens(
@@ -46,7 +51,7 @@ def test_doctor_json_reports_refreshability_and_redacts_tokens(
         provider_id="claude",
         access_token="sk-ant-oat01-secret-access-token-value",
         refresh_token="secret-refresh-token",
-        expires_at=int(time.time() * 1000) + 3_600_000,
+        expires_at=int(REFERENCE_TIME.timestamp() * 1000) + 3_600_000,
         plan="team",
         scopes=["user:profile", "user:inference"],
         heartbeat_enabled=True,
@@ -61,7 +66,7 @@ def test_doctor_json_reports_refreshability_and_redacts_tokens(
         plan="max",
         scopes=[],
     )
-    _, stdout, _ = _install_ctx(tmp_path, [oauth, setup])
+    _, stdout, _, clock = _install_ctx(tmp_path, [oauth, setup])
 
     result = CliRunner().invoke(cli.app, ["doctor", "--json"])
 
@@ -69,6 +74,7 @@ def test_doctor_json_reports_refreshability_and_redacts_tokens(
     payload = json.loads(stdout.getvalue())
     accounts = {item["label"]: item for item in payload["accounts"]}
     assert accounts["team"]["can_auto_refresh"] is True
+    assert accounts["team"]["expiry_state"] == "fresh"
     assert accounts["team"]["usage_route"] == "/api/oauth/usage"
     assert accounts["team"]["heartbeat_supported"] is True
     assert accounts["team"]["heartbeat_enabled"] is True
@@ -77,6 +83,7 @@ def test_doctor_json_reports_refreshability_and_redacts_tokens(
     assert accounts["setup"]["can_auto_refresh"] is False
     assert accounts["setup"]["usage_route"] == "/v1/messages headers"
     assert accounts["setup"]["heartbeat_supported"] is True
+    assert clock.calls == 1
     rendered = stdout.getvalue()
     assert "secret-refresh-token" not in rendered
     assert "sk-ant-oat01-secret-access-token-value" not in rendered
@@ -91,13 +98,12 @@ def test_doctor_reports_previous_refresh_rejection(
         provider_id="claude",
         access_token="sk-ant-oat01-old-token-value",
         refresh_token="refresh-token",
-        expires_at=int(time.time() * 1000) - 1_000,
         plan="team",
         scopes=["user:profile"],
         last_refresh_status="failed",
         last_refresh_error="Claude CLI refresh failed: status code 400",
     )
-    _, stdout, _ = _install_ctx(tmp_path, [account])
+    _, stdout, _, _ = _install_ctx(tmp_path, [account])
 
     result = CliRunner().invoke(cli.app, ["doctor"])
 
@@ -124,10 +130,9 @@ def test_doctor_filters_by_provider_and_label(tmp_path: Path) -> None:
         provider_id="codex",
         access_token="eyJ.codex.token",
         refresh_token="codex-refresh",
-        expires_at=int(time.time()) + 3_600,
         plan="pro",
     )
-    _, stdout, _ = _install_ctx(tmp_path, [claude, codex])
+    _, stdout, _, _ = _install_ctx(tmp_path, [claude, codex])
 
     result = CliRunner().invoke(
         cli.app,

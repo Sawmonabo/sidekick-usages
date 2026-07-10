@@ -20,13 +20,13 @@ import os
 import platform
 import re
 import stat
-import time
 from base64 import urlsafe_b64decode
 from binascii import Error as B64Error
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
+from sidekick_usages.clock import Clock
 from sidekick_usages.errors import (
     AuthError,
     UnsupportedOperationError,
@@ -66,8 +66,9 @@ class CodexProvider(Provider):
     display_name = "Codex CLI"
     token_pattern = TOKEN_RE
 
-    def __init__(self) -> None:
-        """No state of its own."""
+    def __init__(self, clock: Clock) -> None:
+        """Use an injected wall clock for refreshed credentials."""
+        self.clock = clock
 
     # -- credential detection --------------------------------------
     def detect_credentials(
@@ -190,11 +191,18 @@ class CodexProvider(Provider):
             )
         except AuthError:
             return False
-        if not _apply_refresh_response(account, response):
+        new_token = response.get("access_token")
+        if not isinstance(new_token, str):
             return False
-        account.codex_last_refresh = _now_utc_z()
+        reference_time = self.clock.now()
+        _apply_refresh_response(account, response, new_token, reference_time)
+        account.codex_last_refresh = _utc_z(reference_time)
         if account.codex_home:
-            write_account_auth_file(account, Path(account.codex_home))
+            write_account_auth_file(
+                account,
+                Path(account.codex_home),
+                reference_time=reference_time,
+            )
         return True
 
     # -- setup-token -----------------------------------------------
@@ -280,6 +288,7 @@ def write_account_auth_file(
     account: Account,
     codex_home: Path,
     *,
+    reference_time: datetime,
     source_blob: dict[str, Any] | None = None,
 ) -> bool:
     """Write a CLI-compatible Codex auth.json for one saved account.
@@ -291,6 +300,7 @@ def write_account_auth_file(
 
     :param account: Saved Codex account.
     :param codex_home: Target Codex home.
+    :param reference_time: Aware UTC time for a missing refresh timestamp.
     :param source_blob: Optional existing auth blob to preserve fields
         from, such as ``auth_mode``.
     :return: True when a complete auth file was written.
@@ -306,7 +316,11 @@ def write_account_auth_file(
 
     blob = dict(existing)
     blob["auth_mode"] = _auth_mode(existing)
-    blob["last_refresh"] = _auth_last_refresh(account, existing)
+    blob["last_refresh"] = _auth_last_refresh(
+        account,
+        existing,
+        reference_time,
+    )
     blob["tokens"] = _updated_auth_tokens(
         existing_tokens,
         account,
@@ -378,6 +392,7 @@ def _auth_mode(existing: dict[str, Any]) -> str:
 def _auth_last_refresh(
     account: Account,
     existing: dict[str, Any],
+    reference_time: datetime,
 ) -> str:
     """Resolve the last_refresh value for auth.json."""
     if account.codex_last_refresh:
@@ -385,7 +400,7 @@ def _auth_last_refresh(
     existing_last_refresh = existing.get("last_refresh")
     if isinstance(existing_last_refresh, str):
         return existing_last_refresh
-    return _now_utc_z()
+    return _utc_z(reference_time)
 
 
 def _updated_auth_tokens(
@@ -410,11 +425,10 @@ def _updated_auth_tokens(
 def _apply_refresh_response(
     account: Account,
     response: dict[str, Any],
-) -> bool:
+    new_token: str,
+    reference_time: datetime,
+) -> None:
     """Apply a successful OAuth refresh response to an account."""
-    new_token = response.get("access_token")
-    if not isinstance(new_token, str):
-        return False
     account.access_token = new_token
     account_id = _account_id_from_token(new_token)
     if account_id:
@@ -428,19 +442,19 @@ def _apply_refresh_response(
     new_id_token = response.get("id_token")
     if isinstance(new_id_token, str):
         account.codex_id_token = new_id_token
-    _apply_refresh_expiry(account, response, new_token)
-    return True
+    _apply_refresh_expiry(account, response, new_token, reference_time)
 
 
 def _apply_refresh_expiry(
     account: Account,
     response: dict[str, Any],
     new_token: str,
+    reference_time: datetime,
 ) -> None:
     """Apply refresh expiry metadata to an account."""
     expires_in = response.get("expires_in")
     if isinstance(expires_in, int):
-        account.expires_at = int(time.time()) + expires_in
+        account.expires_at = int(reference_time.timestamp()) + expires_in
         return
     exp = _jwt_exp(_decode_jwt_payload(new_token))
     if exp is not None:
@@ -463,9 +477,9 @@ def _decode_jwt_payload(token: str) -> dict[str, Any] | None:
     return decoded
 
 
-def _now_utc_z() -> str:
+def _utc_z(value: datetime) -> str:
     """Return a Codex auth.json-style UTC timestamp."""
-    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    return value.isoformat().replace("+00:00", "Z")
 
 
 def _auth_claims(payload: dict[str, Any] | None) -> dict[str, Any]:

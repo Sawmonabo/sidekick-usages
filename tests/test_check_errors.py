@@ -14,6 +14,7 @@ from sidekick_usages.http import HttpClient
 from sidekick_usages.providers.base import DetectedCredentials, Provider
 from sidekick_usages.report import UsageReport, UsageWindow
 from sidekick_usages.store import Account, AccountStore
+from tests._support import FixedClock
 
 
 class _FakeProvider(Provider):
@@ -98,8 +99,10 @@ def _install_ctx(
             store=store,
             http=HttpClient(),
             providers={provider.id: provider},
+            heartbeat_providers={},
             console=Console(file=stdout, width=width, force_terminal=False),
             err_console=Console(file=stderr, force_terminal=False),
+            clock=FixedClock(),
         )
     )
     return store, stdout, stderr
@@ -180,8 +183,10 @@ def test_check_renders_error_in_panel(tmp_path: Path, monkeypatch) -> None:
             store=store,
             http=HttpClient(),
             providers={provider.id: provider},
+            heartbeat_providers={},
             console=Console(file=stdout, width=200, force_terminal=False),
             err_console=Console(file=stderr, force_terminal=False),
+            clock=FixedClock(),
         )
     )
 

@@ -22,7 +22,7 @@ from sidekick_usages import __version__, cli
 from sidekick_usages.branding import ROBOT_LINES
 from sidekick_usages.errors import ForbiddenError
 from sidekick_usages.http import HttpClient
-from sidekick_usages.providers import PROVIDERS
+from sidekick_usages.providers import build_provider_registry
 from sidekick_usages.store import AccountStore
 from sidekick_usages.update import (
     PACKAGE_NAME,
@@ -34,6 +34,7 @@ from sidekick_usages.update import (
     parse_version,
     upgrade_command_for,
 )
+from tests._support import FixedClock
 
 
 class _FakeHttp(HttpClient):
@@ -227,13 +228,16 @@ def _install_fake_ctx(http: HttpClient) -> None:
 
     :param http: HTTP stand-in to wire into the CLI context.
     """
+    clock = FixedClock()
     cli.set_context(
         cli.AppContext(
             store=AccountStore(),
             http=http,
-            providers=PROVIDERS,
+            providers=build_provider_registry(clock),
+            heartbeat_providers={},
             console=cli.Console(),
             err_console=cli.Console(stderr=True),
+            clock=clock,
         )
     )
 

@@ -20,11 +20,11 @@ import re
 import shutil
 import subprocess
 import tempfile
-import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from sidekick_usages.clock import Clock
 from sidekick_usages.errors import AuthError
 from sidekick_usages.http import HttpClient
 from sidekick_usages.providers.base import (
@@ -88,8 +88,9 @@ class ClaudeProvider(Provider):
     display_name = "Claude Code"
     token_pattern = re.compile(r"sk-ant-oat01-[A-Za-z0-9_\-]+")
 
-    def __init__(self) -> None:
-        """No state of its own; uses injected helpers per call."""
+    def __init__(self, clock: Clock) -> None:
+        """Use an injected wall clock for refresh expiry."""
+        self.clock = clock
 
     # -- credential detection --------------------------------------
     def detect_credentials(
@@ -479,7 +480,8 @@ class ClaudeProvider(Provider):
             account.refresh_token = new_refresh
         expires_in = response.get("expires_in")
         if isinstance(expires_in, int):
-            account.expires_at = int((time.time() + expires_in) * 1000)
+            expires_at = self.clock.now().timestamp() + expires_in
+            account.expires_at = int(expires_at * 1000)
         return True
 
     @staticmethod

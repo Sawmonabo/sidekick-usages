@@ -3,8 +3,8 @@
 import io
 import json
 import re
-import time
 from collections.abc import Iterable
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -12,11 +12,16 @@ from rich.console import Console
 from typer.testing import CliRunner
 
 from sidekick_usages import cli
+from sidekick_usages.clock import Clock
 from sidekick_usages.errors import AuthError, ForbiddenError, RateLimitError
 from sidekick_usages.http import HttpClient
 from sidekick_usages.providers.base import DetectedCredentials, Provider
 from sidekick_usages.report import UsageReport, UsageWindow
 from sidekick_usages.store import Account, AccountStore
+from tests._support import REFERENCE_TIME, FixedClock
+
+_CLAUDE_NOW_MS = int(REFERENCE_TIME.timestamp() * 1000)
+_CODEX_NOW_SECONDS = int(REFERENCE_TIME.timestamp())
 
 
 class _FakeProvider(Provider):
@@ -85,10 +90,10 @@ class _FakeProvider(Provider):
         account.access_token = "sk-ant-oat01-refreshed"
         account.refresh_token = "refresh-new"
         if self.id == "codex":
-            account.expires_at = int(time.time()) + 60
+            account.expires_at = _CODEX_NOW_SECONDS + 60
             account.provider_account_id = "acct_refreshed"
         else:
-            account.expires_at = int(time.time() * 1000) + 60_000
+            account.expires_at = _CLAUDE_NOW_MS + 60_000
         return True
 
     def run_setup_token(self) -> str | None:
@@ -129,6 +134,8 @@ def _install_ctx(
     tmp_path: Path,
     provider: _FakeProvider,
     account: Account,
+    *,
+    clock: Clock | None = None,
 ) -> tuple[AccountStore, io.StringIO, io.StringIO]:
     """Install an isolated CLI context for refresh-flow tests."""
     store = _store(tmp_path, account)
@@ -139,8 +146,10 @@ def _install_ctx(
             store=store,
             http=HttpClient(),
             providers={provider.id: provider},
+            heartbeat_providers={},
             console=Console(file=stdout, force_terminal=False),
             err_console=Console(file=stderr, force_terminal=False),
+            clock=clock or FixedClock(),
         )
     )
     return store, stdout, stderr
@@ -150,6 +159,8 @@ def _install_many_ctx(
     tmp_path: Path,
     providers: dict[str, Provider],
     accounts: Iterable[Account],
+    *,
+    clock: Clock | None = None,
 ) -> tuple[AccountStore, io.StringIO, io.StringIO]:
     """Install an isolated CLI context with multiple saved accounts."""
     store = _store_many(tmp_path, accounts)
@@ -160,8 +171,10 @@ def _install_many_ctx(
             store=store,
             http=HttpClient(),
             providers=providers,
+            heartbeat_providers={},
             console=Console(file=stdout, force_terminal=False),
             err_console=Console(file=stderr, force_terminal=False),
+            clock=clock or FixedClock(),
         )
     )
     return store, stdout, stderr
@@ -170,6 +183,8 @@ def _install_many_ctx(
 def _install_empty_ctx(
     tmp_path: Path,
     provider: _FakeProvider,
+    *,
+    clock: Clock | None = None,
 ) -> tuple[AccountStore, io.StringIO, io.StringIO]:
     """Install an isolated CLI context with no saved accounts."""
     store = _empty_store(tmp_path)
@@ -180,8 +195,10 @@ def _install_empty_ctx(
             store=store,
             http=HttpClient(),
             providers={provider.id: provider},
+            heartbeat_providers={},
             console=Console(file=stdout, force_terminal=False),
             err_console=Console(file=stderr, force_terminal=False),
+            clock=clock or FixedClock(),
         )
     )
     return store, stdout, stderr
@@ -290,7 +307,13 @@ def test_refresh_command_imports_default_codex_login_to_private_cache(
         ),
         provider_id="codex",
     )
-    store, _, _ = _install_ctx(tmp_path, provider, acct)
+    clock = FixedClock()
+    store, _, _ = _install_ctx(
+        tmp_path,
+        provider,
+        acct,
+        clock=clock,
+    )
 
     result = CliRunner().invoke(cli.app, ["refresh", "team"])
 
@@ -301,11 +324,13 @@ def test_refresh_command_imports_default_codex_login_to_private_cache(
     assert saved.codex_home == str(cache_dir / "team")
     assert saved.codex_id_token == "id-token-current"
     assert saved.codex_last_refresh == "2026-06-12T00:00:00Z"
+    assert saved.last_refresh_at == "2026-06-12T12:34:56.789000Z"
     cached = json.loads((cache_dir / "team" / "auth.json").read_text())
     assert cached["tokens"]["access_token"] == "eyJ-current.access.sig"
     assert cached["tokens"]["refresh_token"] == "refresh-current"
     assert cached["tokens"]["id_token"] == "id-token-current"
     assert cached["tokens"]["account_id"] == "acct_current"
+    assert clock.calls == 1
 
 
 def test_refresh_command_from_codex_home_overrides_saved_home(
@@ -409,14 +434,16 @@ def test_refresh_all_refreshes_due_tokens_without_detecting_local_credentials(
     tmp_path: Path,
 ) -> None:
     """Bulk maintenance refresh uses saved refresh tokens only."""
-    acct = _acct(expires_at=int(time.time() * 1000) - 1_000)
+    acct = _acct(expires_at=_CLAUDE_NOW_MS - 1_000)
     provider = _FakeProvider(
         detected=DetectedCredentials(access_token="sk-ant-oat01-local")
     )
+    clock = FixedClock()
     store, stdout, stderr = _install_many_ctx(
         tmp_path,
         {"claude": provider},
         [acct],
+        clock=clock,
     )
 
     result = CliRunner().invoke(cli.app, ["refresh", "--all", "--quiet"])
@@ -429,6 +456,7 @@ def test_refresh_all_refreshes_due_tokens_without_detecting_local_credentials(
     saved = store.get("team")
     assert saved is not None
     assert saved.access_token == "sk-ant-oat01-refreshed"
+    assert saved.last_refresh_at == "2026-06-12T12:34:56.789000Z"
     assert saved.last_refresh_status == "ok"
     assert saved.last_refresh_error is None
 
@@ -437,26 +465,35 @@ def test_refresh_all_skips_fresh_tokens_unless_forced(
     tmp_path: Path,
 ) -> None:
     """Bulk maintenance avoids needless refreshes until forced."""
-    acct = _acct(expires_at=int(time.time() * 1000) + 3_600_000)
+    acct = _acct(expires_at=_CLAUDE_NOW_MS + 3_600_000)
     provider = _FakeProvider()
-    _install_many_ctx(tmp_path, {"claude": provider}, [acct])
+    clock = FixedClock()
+    _install_many_ctx(
+        tmp_path,
+        {"claude": provider},
+        [acct],
+        clock=clock,
+    )
 
     result = CliRunner().invoke(cli.app, ["refresh", "--all"])
 
     assert result.exit_code == 0
     assert provider.refresh_calls == 0
+    assert clock.calls == 1
+    clock.calls = 0
 
     forced = CliRunner().invoke(cli.app, ["refresh", "--all", "--force"])
 
     assert forced.exit_code == 0
     assert provider.refresh_calls == 1
+    assert clock.calls == 1
 
 
 def test_refresh_all_persists_failed_refresh_diagnostic(
     tmp_path: Path,
 ) -> None:
     """Rejected refresh tokens are recorded for doctor and exit 1."""
-    acct = _acct(expires_at=int(time.time() * 1000) - 1_000)
+    acct = _acct(expires_at=_CLAUDE_NOW_MS - 1_000)
     provider = _FakeProvider(refresh_ok=False)
     store, stdout, _ = _install_many_ctx(
         tmp_path,
@@ -477,7 +514,7 @@ def test_refresh_all_persists_failed_refresh_diagnostic(
 
 def test_expired_account_refreshes_before_first_fetch(tmp_path: Path) -> None:
     """Known-expired accounts refresh before spending a usage request."""
-    acct = _acct(expires_at=int(time.time() * 1000) - 1_000)
+    acct = _acct(expires_at=_CLAUDE_NOW_MS - 1_000)
     provider = _FakeProvider(fetch_results=[_report()])
     store, _, _ = _install_ctx(tmp_path, provider, acct)
 
@@ -495,7 +532,7 @@ def test_expired_codex_account_refreshes_before_first_fetch(
 ) -> None:
     """Codex uses seconds-based expiry for proactive refresh."""
     acct = _acct(
-        expires_at=int(time.time()) - 1,
+        expires_at=_CODEX_NOW_SECONDS - 1,
         provider_id="codex",
     )
     provider = _FakeProvider(fetch_results=[_report()], provider_id="codex")
@@ -776,10 +813,26 @@ def test_check_renders_grouped_overview(tmp_path, monkeypatch):
     """`check` collects successes and prints one grouped overview."""
     monkeypatch.setattr(cli, "claude_lifetime_output", lambda: (1, None))
     acct = _acct(plan="max")
-    provider = _FakeProvider(fetch_results=[_report()])
-    _, stdout, _ = _install_ctx(tmp_path, provider, acct)
+    report = UsageReport(
+        windows=[
+            UsageWindow(
+                name="5h",
+                utilization=0.1,
+                resets_at=(
+                    REFERENCE_TIME + timedelta(hours=3, minutes=50)
+                ).isoformat(),
+            )
+        ],
+        plan="team",
+        raw={},
+    )
+    provider = _FakeProvider(fetch_results=[report])
+    clock = FixedClock()
+    _, stdout, _ = _install_ctx(tmp_path, provider, acct, clock=clock)
 
     result = CliRunner().invoke(cli.app, ["check"])
 
     assert result.exit_code == 0
     assert "CLAUDE" in stdout.getvalue()
+    assert "3h 50m" in stdout.getvalue()
+    assert clock.calls == 1

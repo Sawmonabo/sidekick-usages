@@ -22,6 +22,7 @@ from sidekick_usages.providers.claude import (
     ClaudeProvider,
 )
 from sidekick_usages.store import Account
+from tests._support import FixedClock
 
 #: Reference utilization values quoted verbatim from the unified
 #: rate-limit headers in ``anthropics/claude-code`` issue #12829.
@@ -29,6 +30,10 @@ _REF_5H_UTILIZATION = 0.0184
 _REF_7D_UTILIZATION = 0.737
 _REF_5H_UTILIZATION_PERCENT = 1.84
 _REF_7D_UTILIZATION_PERCENT = 73.7
+
+
+def _provider() -> ClaudeProvider:
+    return ClaudeProvider(FixedClock())
 
 
 class _FakeHttp(HttpClient):
@@ -112,7 +117,7 @@ _LIVE_HEADERS = {
 def test_fetch_via_headers_targets_messages_endpoint() -> None:
     """The probe POSTs to ``/v1/messages``, not ``/api/oauth/usage``."""
     http = _FakeHttp(response_headers=_LIVE_HEADERS)
-    ClaudeProvider()._fetch_via_headers(_acct([]), http)
+    _provider()._fetch_via_headers(_acct([]), http)
     assert http.calls == [("POST", MESSAGES_URL)]
 
 
@@ -125,7 +130,7 @@ def test_fetch_via_headers_sends_bearer_auth_and_beta() -> None:
     http = _FakeHttp(response_headers=_LIVE_HEADERS)
     acct = _acct([])
     acct.access_token = "sk-ant-oat01-secret"
-    ClaudeProvider()._fetch_via_headers(acct, http)
+    _provider()._fetch_via_headers(acct, http)
     assert http.last_post_headers is not None
     assert (
         http.last_post_headers["Authorization"] == "Bearer sk-ant-oat01-secret"
@@ -141,7 +146,7 @@ def test_fetch_via_headers_sends_one_token_probe_body() -> None:
     server-side changes.
     """
     http = _FakeHttp(response_headers=_LIVE_HEADERS)
-    ClaudeProvider()._fetch_via_headers(_acct([]), http)
+    _provider()._fetch_via_headers(_acct([]), http)
     assert http.last_post_body == {
         "model": PROBE_MODEL,
         "max_tokens": 1,
@@ -153,7 +158,7 @@ def test_fetch_via_headers_sends_one_token_probe_body() -> None:
 def test_fetch_via_headers_parses_5h_and_7d_windows() -> None:
     """Header-path fractions are normalized to display percentages."""
     http = _FakeHttp(response_headers=_LIVE_HEADERS)
-    report = ClaudeProvider()._fetch_via_headers(_acct([]), http)
+    report = _provider()._fetch_via_headers(_acct([]), http)
     names = {w.name: w for w in report.windows}
     assert set(names) == {"5h", "7d"}
     assert round(names["5h"].utilization, 2) == _REF_5H_UTILIZATION_PERCENT
@@ -166,7 +171,7 @@ def test_fetch_via_headers_omits_window_when_headers_missing() -> None:
     """Missing 5h headers omit the 5h window — don't synthesize zeros."""
     headers = {k: v for k, v in _LIVE_HEADERS.items() if "-5h-" not in k}
     http = _FakeHttp(response_headers=headers)
-    report = ClaudeProvider()._fetch_via_headers(_acct([]), http)
+    report = _provider()._fetch_via_headers(_acct([]), http)
     assert [w.name for w in report.windows] == ["7d"]
 
 
@@ -178,7 +183,7 @@ def test_fetch_via_headers_returns_empty_windows_on_empty_response() -> None:
     empty report (renderer shows no bars) rather than throwing.
     """
     http = _FakeHttp(response_headers={})
-    report = ClaudeProvider()._fetch_via_headers(_acct([]), http)
+    report = _provider()._fetch_via_headers(_acct([]), http)
     assert report.windows == []
 
 
@@ -189,7 +194,7 @@ def test_fetch_via_headers_skips_non_numeric_utilization() -> None:
         "anthropic-ratelimit-unified-5h-utilization": "not-a-float",
     }
     http = _FakeHttp(response_headers=headers)
-    report = ClaudeProvider()._fetch_via_headers(_acct([]), http)
+    report = _provider()._fetch_via_headers(_acct([]), http)
     assert [w.name for w in report.windows] == ["7d"]
 
 
@@ -200,7 +205,7 @@ def test_fetch_via_headers_skips_non_numeric_reset() -> None:
         "anthropic-ratelimit-unified-7d-reset": "tomorrow",
     }
     http = _FakeHttp(response_headers=headers)
-    report = ClaudeProvider()._fetch_via_headers(_acct([]), http)
+    report = _provider()._fetch_via_headers(_acct([]), http)
     assert [w.name for w in report.windows] == ["5h"]
 
 
@@ -208,14 +213,14 @@ def test_fetch_via_headers_skips_non_numeric_reset() -> None:
 def test_fetch_usage_routes_inference_only_to_header_path() -> None:
     """scopes lacking ``user:profile`` → header path."""
     http = _FakeHttp(response_headers=_LIVE_HEADERS)
-    ClaudeProvider().fetch_usage(_acct(["user:inference"]), http)
+    _provider().fetch_usage(_acct(["user:inference"]), http)
     assert http.calls == [("POST", MESSAGES_URL)]
 
 
 def test_fetch_usage_routes_empty_scopes_to_header_path() -> None:
     """scopes=[] (self-heal sentinel) → header path."""
     http = _FakeHttp(response_headers=_LIVE_HEADERS)
-    ClaudeProvider().fetch_usage(_acct([]), http)
+    _provider().fetch_usage(_acct([]), http)
     assert http.calls == [("POST", MESSAGES_URL)]
 
 
@@ -229,7 +234,7 @@ def test_fetch_usage_routes_full_scope_to_oauth_path() -> None:
             },
         }
     )
-    ClaudeProvider().fetch_usage(
+    _provider().fetch_usage(
         _acct(["user:profile", "user:inference"]),
         http,
     )
@@ -243,7 +248,7 @@ def test_fetch_usage_routes_unknown_scope_to_oauth_path() -> None:
     retries via the header path. See ``_handle_runtime_forbidden``.
     """
     http = _FakeHttp(response_json={})
-    ClaudeProvider().fetch_usage(_acct(None), http)
+    _provider().fetch_usage(_acct(None), http)
     assert http.calls == [("GET", USAGE_URL)]
 
 

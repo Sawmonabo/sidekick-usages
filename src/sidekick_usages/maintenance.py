@@ -6,11 +6,10 @@ current global Claude or Codex CLI login into an arbitrary account
 label.
 """
 
-import time
-from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 
+from sidekick_usages.clock import Clock
 from sidekick_usages.errors import UsageError
 from sidekick_usages.http import HttpClient
 from sidekick_usages.providers.base import Provider
@@ -48,18 +47,18 @@ class TokenMaintenanceService:
         http: HttpClient,
         providers: dict[str, Provider],
         *,
-        now: Callable[[], float] | None = None,
+        clock: Clock,
     ) -> None:
         """:param store: Account store to update after each attempt.
 
         :param http: Shared HTTP client passed to providers.
         :param providers: Provider registry.
-        :param now: Optional time provider returning Unix seconds.
+        :param clock: Aware UTC application wall clock.
         """
         self.store = store
         self.http = http
         self.providers = providers
-        self._now = now or time.time
+        self.clock = clock
 
     def refresh_all(
         self,
@@ -100,12 +99,16 @@ class TokenMaintenanceService:
                 exit_code=EXIT_SYSTEM_ERROR,
             )
 
-        if not self.should_refresh(account, force=force):
+        should_refresh, expiry_state = self._refresh_decision(
+            account,
+            force=force,
+        )
+        if not should_refresh:
             return RefreshOutcome(
                 label=account.label,
                 provider_id=account.provider_id,
                 status=REFRESH_SKIPPED,
-                message=self.expiry_state(account),
+                message=expiry_state or "unknown",
             )
 
         if not account.refresh_token:
@@ -131,7 +134,7 @@ class TokenMaintenanceService:
                 exit_code=EXIT_MANUAL_ACTION,
             )
 
-        record_refresh_success(account)
+        record_refresh_success(account, self.clock.now())
         self.store.upsert(account)
         self.store.save()
         return RefreshOutcome(
@@ -144,18 +147,33 @@ class TokenMaintenanceService:
 
     def should_refresh(self, account: Account, *, force: bool = False) -> bool:
         """Return whether maintenance should refresh this account."""
-        if force:
-            return True
-        if not account.refresh_token:
-            return False
-        return self.expiry_state(account) in {"expired", "near_expiry"}
+        should_refresh, _ = self._refresh_decision(account, force=force)
+        return should_refresh
 
-    def expiry_state(self, account: Account) -> str:
+    def _refresh_decision(
+        self,
+        account: Account,
+        *,
+        force: bool,
+    ) -> tuple[bool, str | None]:
+        """Return one refresh decision and its sampled expiry state."""
+        if force:
+            return (True, None)
+        expiry_state = self.expiry_state(account, self.clock.now())
+        if not account.refresh_token:
+            return (False, expiry_state)
+        return (expiry_state in {"expired", "near_expiry"}, expiry_state)
+
+    def expiry_state(
+        self,
+        account: Account,
+        reference_time: datetime,
+    ) -> str:
         """Classify account expiry relative to provider refresh margins."""
         expires_at = expiry_epoch_seconds(account)
         if expires_at is None:
             return "unknown"
-        now = self._now()
+        now = reference_time.timestamp()
         if expires_at <= now:
             return "expired"
         if expires_at <= now + refresh_margin_seconds(account.provider_id):
@@ -170,7 +188,7 @@ class TokenMaintenanceService:
         exit_code: int,
     ) -> RefreshOutcome:
         """Persist a failed refresh diagnostic and return its outcome."""
-        record_refresh_failure(account, message)
+        record_refresh_failure(account, message, self.clock.now())
         self.store.upsert(account)
         self.store.save()
         return RefreshOutcome(
@@ -201,16 +219,20 @@ def expiry_epoch_seconds(account: Account) -> float | None:
     return float(account.expires_at)
 
 
-def record_refresh_success(account: Account) -> None:
+def record_refresh_success(account: Account, reference_time: datetime) -> None:
     """Mark an account's latest refresh as successful."""
-    account.last_refresh_at = _now_utc_z()
+    account.last_refresh_at = _utc_z(reference_time)
     account.last_refresh_status = REFRESH_OK
     account.last_refresh_error = None
 
 
-def record_refresh_failure(account: Account, message: str) -> None:
+def record_refresh_failure(
+    account: Account,
+    message: str,
+    reference_time: datetime,
+) -> None:
     """Mark an account's latest refresh as failed."""
-    account.last_refresh_at = _now_utc_z()
+    account.last_refresh_at = _utc_z(reference_time)
     account.last_refresh_status = REFRESH_FAILED
     account.last_refresh_error = message
 
@@ -224,6 +246,6 @@ def refresh_exit_code(outcomes: list[RefreshOutcome]) -> int:
     return 0
 
 
-def _now_utc_z() -> str:
-    """Return an ISO UTC timestamp with a Z suffix."""
-    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+def _utc_z(value: datetime) -> str:
+    """Return an aware timestamp in the existing UTC-Z representation."""
+    return value.isoformat().replace("+00:00", "Z")

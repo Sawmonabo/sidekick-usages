@@ -10,8 +10,9 @@ from sidekick_usages import cli
 from sidekick_usages.branding import ROBOT_LINES
 from sidekick_usages.daemon import DaemonOperation, DaemonOperationResult
 from sidekick_usages.http import HttpClient
-from sidekick_usages.providers import PROVIDERS
+from sidekick_usages.providers import build_provider_registry
 from sidekick_usages.store import Account, AccountStore
+from tests._support import FixedClock
 
 
 def _install_context(
@@ -23,13 +24,16 @@ def _install_context(
         store.upsert(account)
     stdout = io.StringIO()
     stderr = io.StringIO()
+    clock = FixedClock()
     cli.set_context(
         cli.AppContext(
             store=store,
             http=HttpClient(),
-            providers=PROVIDERS,
+            providers=build_provider_registry(clock),
+            heartbeat_providers={},
             console=Console(file=stdout, width=85, force_terminal=False),
             err_console=Console(file=stderr, width=85, force_terminal=False),
+            clock=clock,
         )
     )
     return stdout, stderr

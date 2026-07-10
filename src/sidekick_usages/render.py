@@ -9,7 +9,7 @@ rectangular blocks which look bulky for this multi-line layout.
 
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 
 from rich.console import Console, Group, RenderableType
 from rich.panel import Panel
@@ -187,17 +187,18 @@ def _braille_bar(pct: float, width: int = BAR_WIDTH) -> Text:
     return bar
 
 
-def _format_reset(iso: str | None) -> Text:
+def _format_reset(iso: str | None, reference_time: datetime) -> Text:
     """Render a reset timestamp as ``<local> (<relative>)``.
 
     :param iso: ISO-8601 timestamp from the API, possibly ``None``.
+    :param reference_time: Aware wall time for relative formatting.
     :return: A dim Rich ``Text`` (or em-dash for missing data).
     """
     if not iso:
         return Text("—", style="dim")
     try:
         dt = datetime.fromisoformat(iso)
-        secs = int((dt - datetime.now(UTC)).total_seconds())
+        secs = int((dt - reference_time).total_seconds())
     except ValueError, TypeError:
         return Text(iso, style="dim")
     if secs <= 0:
@@ -217,13 +218,17 @@ def _format_reset(iso: str | None) -> Text:
     )
 
 
-def _format_reset_compact(iso: str | None) -> str:
+def _format_reset_compact(
+    iso: str | None,
+    reference_time: datetime,
+) -> str:
     """Compact relative countdown: ``45m`` / ``3h 50m`` / ``1d 15h``.
 
     No ``↻`` glyph and no absolute timestamp (those are dropped from
     the matrix per the spec).
 
     :param iso: ISO-8601 timestamp or ``None``.
+    :param reference_time: Aware wall time for relative formatting.
     :return: A compact string, ``"now"`` if already due, or ``""``
         when missing/unparseable.
     """
@@ -231,7 +236,7 @@ def _format_reset_compact(iso: str | None) -> str:
         return ""
     try:
         dt = datetime.fromisoformat(iso)
-        secs = round((dt - datetime.now(UTC)).total_seconds())
+        secs = round((dt - reference_time).total_seconds())
     except ValueError, TypeError:
         return ""
     if secs <= 0:
@@ -245,14 +250,15 @@ def _format_reset_compact(iso: str | None) -> str:
     return f"{days}d {remainder // _SECONDS_PER_HOUR}h"
 
 
-def _reset_cell(iso: str | None) -> Text:
+def _reset_cell(iso: str | None, reference_time: datetime) -> Text:
     """Build one fixed-width, dim, centered reset-countdown cell.
 
     :param iso: ISO-8601 timestamp or ``None``.
+    :param reference_time: Aware wall time for relative formatting.
     :return: A ``Text`` of width ``_TILE_WIDTH``.
     """
     return Text(
-        f"{_format_reset_compact(iso):^{_TILE_WIDTH}}",
+        f"{_format_reset_compact(iso, reference_time):^{_TILE_WIDTH}}",
         style="grey42",
     )
 
@@ -297,6 +303,7 @@ def account_header(acct: Account) -> Text:
 def usage_report(
     acct: Account,
     report: UsageReport,
+    reference_time: datetime,
 ) -> RenderableType:
     """Render the full per-account block.
 
@@ -306,6 +313,7 @@ def usage_report(
 
     :param acct: Account being reported on.
     :param report: Parsed usage data.
+    :param reference_time: Aware wall time for relative reset labels.
     :return: A Rich ``Group`` ready to print or nest in a panel.
     """
     windows = report.active_windows()
@@ -340,7 +348,7 @@ def usage_report(
             f" {w.name}",
             _braille_bar(w.utilization),
             pct_text,
-            _format_reset(w.resets_at),
+            _format_reset(w.resets_at, reference_time),
         )
 
     return Group(account_header(acct), table)
@@ -399,10 +407,13 @@ def _util_cell(window: UsageWindow | None) -> Text:
     return _heat_tile(round(window.utilization))
 
 
-def _reset_or_blank(window: UsageWindow | None) -> Text:
+def _reset_or_blank(
+    window: UsageWindow | None,
+    reference_time: datetime,
+) -> Text:
     if window is None:
         return Text("")
-    return _reset_cell(window.resets_at)
+    return _reset_cell(window.resets_at, reference_time)
 
 
 def _rule_cell() -> Text:
@@ -492,6 +503,7 @@ def _provider_panel(
     failures: list[tuple[Account, FetchFailure]],
     namew: int,
     prov_lifetime: tuple[int, str | None] | None,
+    reference_time: datetime,
 ) -> Panel:
     blocks: list[RenderableType] = []
     if pairs:
@@ -511,7 +523,7 @@ def _provider_panel(
             for length in primary:
                 window = index.get(("", length))
                 util_row.append(_util_cell(window))
-                reset_row.append(_reset_or_blank(window))
+                reset_row.append(_reset_or_blank(window, reference_time))
             for group, lengths in named:
                 util_row.append(_rule_cell())
                 util_row.append(
@@ -526,7 +538,10 @@ def _provider_panel(
                 reset_row.append(
                     _model_subgrid(
                         [
-                            _reset_or_blank(index.get((group, length)))
+                            _reset_or_blank(
+                                index.get((group, length)),
+                                reference_time,
+                            )
                             for length in lengths
                         ]
                     )
@@ -665,13 +680,15 @@ def _failure_block(acct: Account, fail: FetchFailure) -> Group:
 def _legacy_overview(
     pairs: list[tuple[Account, UsageReport]],
     failures: list[tuple[Account, FetchFailure]] | None = None,
+    *,
+    reference_time: datetime,
 ) -> RenderableType:
     """Stacked per-account fallback for narrow terminals (no wrap)."""
     blocks: list[RenderableType] = []
     for index, (acct, report) in enumerate(pairs):
         if index:
             blocks.append(Text(""))
-        blocks.append(usage_report(acct, report))
+        blocks.append(usage_report(acct, report, reference_time))
     for acct, fail in failures or ():
         if blocks:
             blocks.append(Text(""))
@@ -685,6 +702,7 @@ def usage_overview(
     *,
     failures: list[tuple[Account, FetchFailure]] | None = None,
     width: int,
+    reference_time: datetime,
 ) -> RenderableType:
     """Render all accounts as provider-grouped framed heat panels.
 
@@ -694,6 +712,7 @@ def usage_overview(
         fetch failed.
     :param width: Target terminal width; below the binding panel
         width the layout degrades to the legacy stacked view.
+    :param reference_time: Aware wall time shared by every reset label.
     :return: A Rich renderable.
     """
     fails = failures or []
@@ -710,6 +729,7 @@ def usage_overview(
             [(a, f) for a, f in fails if a.provider_id == pid],
             namew,
             lifetime.get(pid),
+            reference_time,
         )
         for pid in order
     ]
@@ -721,7 +741,11 @@ def usage_overview(
         return Group(
             brand_header(width),
             Text(""),
-            _legacy_overview(pairs, fails),
+            _legacy_overview(
+                pairs,
+                fails,
+                reference_time=reference_time,
+            ),
         )
     for panel in panels:
         panel.expand = True

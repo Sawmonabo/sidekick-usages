@@ -9,6 +9,7 @@ from typer.testing import CliRunner
 from sidekick_usages import cli
 from sidekick_usages.http import HttpClient
 from sidekick_usages.store import Account, AccountStore
+from tests._support import FixedClock
 
 
 def _ctx(tmp_path: Path, account: Account) -> AccountStore:
@@ -20,8 +21,10 @@ def _ctx(tmp_path: Path, account: Account) -> AccountStore:
             store=store,
             http=HttpClient(),
             providers={},
+            heartbeat_providers={},
             console=Console(file=io.StringIO(), force_terminal=False),
             err_console=Console(file=io.StringIO(), force_terminal=False),
+            clock=FixedClock(),
         )
     )
     return store

@@ -10,8 +10,8 @@ import re
 import shlex
 import subprocess
 import sys
-import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any, NoReturn
 
@@ -30,6 +30,7 @@ from sidekick_usages.branding import (
     update_status_line,
 )
 from sidekick_usages.cli_help import BrandedTyper, BrandedTyperGroup
+from sidekick_usages.clock import Clock, SystemClock
 from sidekick_usages.daemon import DaemonManager, DaemonOperation
 from sidekick_usages.doctor import (
     DoctorService,
@@ -45,10 +46,10 @@ from sidekick_usages.errors import (
     UsageError,
 )
 from sidekick_usages.heartbeat import (
-    HEARTBEAT_PROVIDERS,
     HeartbeatOutcome,
     HeartbeatProvider,
     HeartbeatService,
+    build_heartbeat_registry,
     heartbeat_exit_code,
     heartbeat_supported_label,
     render_heartbeat_outcomes,
@@ -70,7 +71,7 @@ from sidekick_usages.maintenance import (
     record_refresh_success,
     refresh_exit_code,
 )
-from sidekick_usages.providers import PROVIDERS
+from sidekick_usages.providers import build_provider_registry
 from sidekick_usages.providers.base import DetectedCredentials, Provider
 from sidekick_usages.providers.codex import (
     CodexProvider,
@@ -105,6 +106,7 @@ class AppContext:
     :ivar http: Shared HTTP client with retry/backoff.
     :ivar providers: Provider registry (mutable for tests).
     :ivar heartbeat_providers: Heartbeat provider registry (mutable for tests).
+    :ivar clock: Invocation-scoped application wall clock.
     :ivar console: Rich console for stdout.
     :ivar err_console: Rich console pinned to stderr.
     :ivar only: Provider filter applied to ``check`` (``--only``).
@@ -113,9 +115,10 @@ class AppContext:
     store: AccountStore
     http: HttpClient
     providers: dict[str, Provider]
+    heartbeat_providers: dict[str, HeartbeatProvider]
     console: Console
     err_console: Console
-    heartbeat_providers: dict[str, HeartbeatProvider] | None = None
+    clock: Clock
     only: str | None = None
     collected: list[tuple[Account, UsageReport]] = field(default_factory=list)
     failures: list[tuple[Account, FetchFailure]] = field(default_factory=list)
@@ -147,13 +150,16 @@ def _build_default_context() -> AppContext:
 
     :return: An :class:`AppContext` wired with real dependencies.
     """
+    clock = SystemClock()
+    providers = build_provider_registry(clock)
     return AppContext(
         store=AccountStore().load(),
         http=HttpClient(),
-        providers=PROVIDERS,
-        heartbeat_providers=HEARTBEAT_PROVIDERS,
+        providers=providers,
+        heartbeat_providers=build_heartbeat_registry(providers),
         console=Console(),
         err_console=Console(stderr=True),
+        clock=clock,
     )
 
 
@@ -176,13 +182,6 @@ def _get_ctx() -> AppContext:
     if _ContextState.ctx is None:
         _ContextState.ctx = _build_default_context()
     return _ContextState.ctx
-
-
-def _heartbeat_providers(app_ctx: AppContext) -> dict[str, HeartbeatProvider]:
-    """Return injected or default heartbeat providers."""
-    if app_ctx.heartbeat_providers is None:
-        return HEARTBEAT_PROVIDERS
-    return app_ctx.heartbeat_providers
 
 
 def set_context(ctx: AppContext) -> None:
@@ -324,6 +323,7 @@ def _do_check() -> None:
                 _lifetime_for(app_ctx.collected),
                 failures=app_ctx.failures,
                 width=app_ctx.console.size.width,
+                reference_time=app_ctx.clock.now(),
             )
         )
     if exit_code:
@@ -454,7 +454,10 @@ def _refresh_known_expired(acct: Account, provider: Provider) -> bool:
     :param provider: Provider for ``acct``.
     :return: False only when refresh itself errors.
     """
-    if not _should_refresh_before_fetch(acct, provider):
+    if acct.expires_at is None:
+        return True
+    reference_time = _get_ctx().clock.now()
+    if not _should_refresh_before_fetch(acct, provider, reference_time):
         return True
     try:
         refreshed = _refresh_and_save(acct, provider)
@@ -492,19 +495,25 @@ def _refresh_after_auth_and_render(
         return _handle_fetch_error(acct, provider, retry_err)
 
 
-def _should_refresh_before_fetch(acct: Account, provider: Provider) -> bool:
+def _should_refresh_before_fetch(
+    acct: Account,
+    provider: Provider,
+    reference_time: datetime,
+) -> bool:
     """Return whether a known-expired account should refresh first.
 
     :param acct: Account about to be queried.
     :param provider: Provider for ``acct``.
+    :param reference_time: Aware wall time for the expiry decision.
     :return: True when a provider-specific expiry is already stale.
     """
     if acct.expires_at is None:
         return False
+    now = reference_time.timestamp()
     if provider.id == "claude":
-        return acct.expires_at <= int(time.time() * 1000)
+        return acct.expires_at <= int(now * 1000)
     if provider.id == "codex":
-        return acct.expires_at <= int(time.time()) + 60
+        return acct.expires_at <= int(now) + 60
     return False
 
 
@@ -519,16 +528,20 @@ def _refresh_and_save(acct: Account, provider: Provider) -> bool:
     try:
         refreshed = provider.refresh_token(acct, app_ctx.http)
     except UsageError as e:
-        record_refresh_failure(acct, str(e))
+        record_refresh_failure(acct, str(e), app_ctx.clock.now())
         app_ctx.store.upsert(acct)
         app_ctx.store.save()
         raise
     if not refreshed:
-        record_refresh_failure(acct, "Refresh token unavailable or rejected.")
+        record_refresh_failure(
+            acct,
+            "Refresh token unavailable or rejected.",
+            app_ctx.clock.now(),
+        )
         app_ctx.store.upsert(acct)
         app_ctx.store.save()
         return False
-    record_refresh_success(acct)
+    record_refresh_success(acct, app_ctx.clock.now())
     app_ctx.store.upsert(acct)
     app_ctx.store.save()
     return True
@@ -719,6 +732,7 @@ def add_cmd(
         codex_id_token=codex_id_token,
         codex_last_refresh=codex_last_refresh,
     )
+    reference_time = app_ctx.clock.now()
     if existing is not None:
         _upsert_existing(
             existing,
@@ -726,6 +740,7 @@ def add_cmd(
             plan,
             force,
             fields=fields,
+            reference_time=reference_time,
         )
         return
     _insert_new(
@@ -734,6 +749,7 @@ def add_cmd(
         label,
         plan,
         force,
+        reference_time=reference_time,
     )
 
 
@@ -769,9 +785,7 @@ def list_cmd() -> None:
     table.add_column("Token", no_wrap=True, style="dim")
 
     for acct in accounts:
-        heartbeat_provider = _heartbeat_providers(app_ctx).get(
-            acct.provider_id
-        )
+        heartbeat_provider = app_ctx.heartbeat_providers.get(acct.provider_id)
         prov_color = PROVIDER_COLORS.get(acct.provider_id, "dim")
         plan_text = (
             Text(acct.plan, style="dim")
@@ -960,8 +974,15 @@ def refresh_cmd(
         label,
         replace_identity=replace_identity,
     )
-    _apply_detected_credentials(acct, detected, provider, credential_home)
-    record_refresh_success(acct)
+    reference_time = app_ctx.clock.now()
+    _apply_detected_credentials(
+        acct,
+        detected,
+        provider,
+        credential_home,
+        reference_time=reference_time,
+    )
+    record_refresh_success(acct, reference_time)
     app_ctx.store.upsert(acct)
     app_ctx.store.save()
     app_ctx.console.print(f"[green]Updated token for '{label}'.[/green]")
@@ -1005,6 +1026,7 @@ def _refresh_all_cmd(*, quiet: bool, force: bool) -> None:
         app_ctx.store,
         app_ctx.http,
         app_ctx.providers,
+        clock=app_ctx.clock,
     )
     outcomes = service.refresh_all(force=force)
     for outcome in outcomes:
@@ -1191,7 +1213,7 @@ def heartbeat_status_cmd(
         raise typer.Exit(code=1)
     render_heartbeat_status(
         accounts,
-        _heartbeat_providers(app_ctx),
+        app_ctx.heartbeat_providers,
         app_ctx.console,
         json_output=json_output,
     )
@@ -1215,6 +1237,7 @@ def maintain_cmd(
         app_ctx.store,
         app_ctx.http,
         app_ctx.providers,
+        clock=app_ctx.clock,
     )
     refresh_outcomes = refresh_service.refresh_all()
     _render_refresh_outcomes(refresh_outcomes, quiet=quiet)
@@ -1222,7 +1245,8 @@ def maintain_cmd(
     heartbeat_outcomes = HeartbeatService(
         app_ctx.store,
         app_ctx.http,
-        _heartbeat_providers(app_ctx),
+        app_ctx.heartbeat_providers,
+        clock=app_ctx.clock,
     ).heartbeat_all()
     _render_heartbeat_outcomes(heartbeat_outcomes, quiet=quiet)
 
@@ -1277,7 +1301,8 @@ def _heartbeat_service() -> HeartbeatService:
     return HeartbeatService(
         app_ctx.store,
         app_ctx.http,
-        _heartbeat_providers(app_ctx),
+        app_ctx.heartbeat_providers,
+        clock=app_ctx.clock,
     )
 
 
@@ -1335,10 +1360,14 @@ def doctor_cmd(
     service = DoctorService(
         app_ctx.store,
         app_ctx.providers,
-        _heartbeat_providers(app_ctx),
+        app_ctx.heartbeat_providers,
         TokenMaintenanceService(
-            app_ctx.store, app_ctx.http, app_ctx.providers
+            app_ctx.store,
+            app_ctx.http,
+            app_ctx.providers,
+            clock=app_ctx.clock,
         ),
+        clock=app_ctx.clock,
     )
     diagnostics = service.diagnostics(provider_id=provider_id, label=label)
     if not diagnostics:
@@ -1543,7 +1572,14 @@ def codex_login_cmd(
             label,
             replace_identity=replace_identity,
         )
-    _apply_detected_credentials(acct, detected, provider, source_home)
+    reference_time = app_ctx.clock.now()
+    _apply_detected_credentials(
+        acct,
+        detected,
+        provider,
+        source_home,
+        reference_time=reference_time,
+    )
     app_ctx.store.upsert(acct)
     app_ctx.store.save()
     app_ctx.console.print(f"[green]Updated Codex login for '{label}'.[/green]")
@@ -1584,6 +1620,7 @@ def codex_export_cmd(
             f"[red]'{label}' is a {acct.provider_id} account, not codex.[/red]"
         )
         raise typer.Exit(code=1)
+    reference_time = app_ctx.clock.now()
 
     source_blob = _matching_codex_auth_blob(
         acct,
@@ -1592,13 +1629,19 @@ def codex_export_cmd(
         default_codex_home(),
     )
     if source_blob is not None:
-        _apply_matching_codex_blob(acct, source_blob, provider)
+        _apply_matching_codex_blob(
+            acct,
+            source_blob,
+            provider,
+            reference_time=reference_time,
+        )
     elif not acct.codex_id_token and acct.refresh_token:
         _refresh_and_save(acct, provider)
 
     if not write_account_auth_file(
         acct,
         codex_home.expanduser(),
+        reference_time=reference_time,
         source_blob=source_blob,
     ):
         app_ctx.err_console.print(
@@ -1671,10 +1714,24 @@ def setup_token_cmd(
 
     existing = app_ctx.store.find_by_token(token)
     fields = _CredentialFields(token=token)
+    reference_time = app_ctx.clock.now()
     if existing is not None:
-        _upsert_existing(existing, label, plan, force)
+        _upsert_existing(
+            existing,
+            label,
+            plan,
+            force,
+            reference_time=reference_time,
+        )
         return
-    _insert_new(prov, fields, label, plan, force)
+    _insert_new(
+        prov,
+        fields,
+        label,
+        plan,
+        force,
+        reference_time=reference_time,
+    )
 
 
 # ---------------------------------------------------------------------
@@ -1878,6 +1935,8 @@ def _apply_detected_credentials(
     detected: DetectedCredentials,
     provider: Provider,
     credential_home: Path | None,
+    *,
+    reference_time: datetime,
 ) -> None:
     """Copy detected local credentials onto a saved account."""
     acct.access_token = detected.access_token
@@ -1896,13 +1955,20 @@ def _apply_detected_credentials(
             acct.codex_id_token = detected.id_token
         if detected.last_refresh is not None:
             acct.codex_last_refresh = detected.last_refresh
-        _write_sidekick_codex_cache(acct, provider, credential_home)
+        _write_sidekick_codex_cache(
+            acct,
+            provider,
+            credential_home,
+            reference_time=reference_time,
+        )
 
 
 def _write_sidekick_codex_cache(
     acct: Account,
     provider: Provider,
     source_home: Path | None,
+    *,
+    reference_time: datetime,
 ) -> bool:
     """Write sidekick's private copy of a Codex auth bundle."""
     if provider.id != "codex":
@@ -1910,6 +1976,7 @@ def _write_sidekick_codex_cache(
     return write_account_auth_file(
         acct,
         _sidekick_codex_home(acct.label),
+        reference_time=reference_time,
         source_blob=_codex_source_blob(provider, source_home),
     )
 
@@ -1950,11 +2017,19 @@ def _apply_matching_codex_blob(
     acct: Account,
     blob: dict[str, Any],
     provider: Provider,
+    *,
+    reference_time: datetime,
 ) -> None:
     """Apply metadata from a matching Codex auth blob to ``acct``."""
     detected = CodexProvider._parse_blob(blob)
     if detected is not None:
-        _apply_detected_credentials(acct, detected, provider, None)
+        _apply_detected_credentials(
+            acct,
+            detected,
+            provider,
+            None,
+            reference_time=reference_time,
+        )
 
 
 def _resolve_provider(provider_id: str) -> Provider:
@@ -2008,6 +2083,7 @@ def _upsert_existing(
     force: bool,
     *,
     fields: _CredentialFields | None = None,
+    reference_time: datetime,
 ) -> None:
     """Idempotent path: token already saved.
 
@@ -2015,6 +2091,8 @@ def _upsert_existing(
     :param label_override: New label requested by the user, if any.
     :param plan: Plan to apply, if any.
     :param force: Overwrite an existing target label.
+    :param fields: Detected credential metadata, when available.
+    :param reference_time: Aware time shared by credential file writes.
     """
     app_ctx = _get_ctx()
     target = label_override or existing.label
@@ -2037,6 +2115,7 @@ def _upsert_existing(
                 acct,
                 _resolve_provider(acct.provider_id),
                 fields.source_codex_home,
+                reference_time=reference_time,
             )
         app_ctx.store.upsert(acct)
     app_ctx.store.save()
@@ -2070,6 +2149,8 @@ def _insert_new(
     label_override: str | None,
     plan: str | None,
     force: bool,
+    *,
+    reference_time: datetime,
 ) -> None:
     """Fresh-token path: not yet stored.
 
@@ -2078,6 +2159,7 @@ def _insert_new(
     :param label_override: User-supplied label, if any.
     :param plan: Plan tag, if any.
     :param force: Overwrite an existing target label.
+    :param reference_time: Aware time shared by credential file writes.
     """
     app_ctx = _get_ctx()
     label = label_override or app_ctx.store.generate_label(
@@ -2143,7 +2225,12 @@ def _insert_new(
         warning = f"Could not validate token ({e}). Saved anyway."
 
     app_ctx.store.upsert(acct)
-    _write_sidekick_codex_cache(acct, provider, fields.source_codex_home)
+    _write_sidekick_codex_cache(
+        acct,
+        provider,
+        fields.source_codex_home,
+        reference_time=reference_time,
+    )
     app_ctx.store.save()
 
     app_ctx.console.print(f"[green]Saved '{label}'.[/green]")

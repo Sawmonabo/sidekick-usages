@@ -2,17 +2,16 @@
 
 import io
 import json
-import time
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
-import pytest
 from rich.console import Console
 from typer.testing import CliRunner
 
 from sidekick_usages import cli
 from sidekick_usages.branding import ROBOT_LINES
+from sidekick_usages.clock import Clock
 from sidekick_usages.heartbeat import (
     HEARTBEAT_ACTIVE,
     HEARTBEAT_DISABLED,
@@ -29,10 +28,16 @@ from sidekick_usages.heartbeat.codex import (
 )
 from sidekick_usages.http import HttpClient
 from sidekick_usages.providers.base import DetectedCredentials, Provider
+from sidekick_usages.providers.codex import CodexProvider
 from sidekick_usages.report import UsageReport
 from sidekick_usages.store import Account, AccountStore
+from tests._support import REFERENCE_TIME, FixedClock
 
 CODEX_USAGE_FETCHES_FOR_WARM = 2
+
+
+def _codex_heartbeat() -> CodexHeartbeat:
+    return CodexHeartbeat(CodexProvider(FixedClock()))
 
 
 class _FakeHeartbeatProvider(HeartbeatProvider):
@@ -120,7 +125,7 @@ class _FakeRefreshProvider(Provider):
         del http
         self.refresh_calls += 1
         account.access_token = "refreshed-token"
-        account.expires_at = int(time.time() * 1000) + 3_600_000
+        account.expires_at = int((REFERENCE_TIME.timestamp() + 3600) * 1000)
         return True
 
     def run_setup_token(self) -> str | None:
@@ -166,6 +171,7 @@ def _install_ctx(
     accounts: Iterable[Account],
     heartbeat_providers: dict[str, HeartbeatProvider],
     providers: dict[str, Provider] | None = None,
+    clock: Clock | None = None,
 ) -> tuple[AccountStore, io.StringIO, io.StringIO]:
     store = _store(tmp_path, accounts)
     stdout = io.StringIO()
@@ -177,6 +183,7 @@ def _install_ctx(
             providers=providers or {},
             console=Console(file=stdout, force_terminal=False),
             err_console=Console(file=stderr, force_terminal=False),
+            clock=clock or FixedClock(),
             heartbeat_providers=heartbeat_providers,
         )
     )
@@ -253,7 +260,12 @@ def test_heartbeat_all_skips_disabled_accounts(tmp_path: Path) -> None:
     """Scheduler mode only probes accounts explicitly enabled."""
     provider = _FakeHeartbeatProvider()
     store = _store(tmp_path, [_acct(heartbeat_enabled=False)])
-    service = HeartbeatService(store, HttpClient(), {"claude": provider})
+    service = HeartbeatService(
+        store,
+        HttpClient(),
+        {"claude": provider},
+        clock=FixedClock(),
+    )
 
     outcomes = service.heartbeat_all()
 
@@ -265,7 +277,12 @@ def test_heartbeat_label_runs_even_when_disabled(tmp_path: Path) -> None:
     """Explicit label mode is a one-shot warm request."""
     provider = _FakeHeartbeatProvider()
     store = _store(tmp_path, [_acct(heartbeat_enabled=False)])
-    service = HeartbeatService(store, HttpClient(), {"claude": provider})
+    service = HeartbeatService(
+        store,
+        HttpClient(),
+        {"claude": provider},
+        clock=FixedClock(),
+    )
 
     outcome = service.heartbeat_account(
         store.get("team"), require_enabled=False
@@ -279,14 +296,16 @@ def test_heartbeat_label_runs_even_when_disabled(tmp_path: Path) -> None:
     assert saved.heartbeat_5h_reset_at == "2026-06-12T18:00:00Z"
 
 
-def test_heartbeat_uses_cached_future_reset(tmp_path: Path) -> None:
-    """Daemon ticks do not send repeated probes before the cached reset."""
+def test_heartbeat_decision_samples_clock_once(tmp_path: Path) -> None:
+    """Auth and cached-reset checks share one heartbeat reference time."""
     provider = _FakeHeartbeatProvider()
+    clock = FixedClock()
     store = _store(
         tmp_path,
         [
             _acct(
                 heartbeat_enabled=True,
+                expires_at=int((REFERENCE_TIME.timestamp() + 3600) * 1000),
                 heartbeat_5h_reset_at="2026-06-12T18:00:00Z",
             )
         ],
@@ -295,18 +314,20 @@ def test_heartbeat_uses_cached_future_reset(tmp_path: Path) -> None:
         store,
         HttpClient(),
         {"claude": provider},
-        now=lambda: 1_781_280_000.0,
+        clock=clock,
     )
 
     outcome = service.heartbeat_account(store.get("team"))
 
     assert outcome.status == HEARTBEAT_ACTIVE
     assert provider.heartbeat_calls == []
+    assert clock.calls == 1
 
 
 def test_heartbeat_cache_is_target_specific(tmp_path: Path) -> None:
     """A cached Spark reset must not suppress a standard Codex warm."""
     provider = _FakeHeartbeatProvider(provider_id="codex")
+    clock = FixedClock()
     store = _store(
         tmp_path,
         [
@@ -323,7 +344,7 @@ def test_heartbeat_cache_is_target_specific(tmp_path: Path) -> None:
         store,
         HttpClient(),
         {"codex": provider},
-        now=lambda: 1_781_280_000.0,
+        clock=clock,
     )
 
     outcome = service.heartbeat_account(
@@ -347,7 +368,13 @@ def test_heartbeat_persists_failure_per_account(tmp_path: Path) -> None:
         ]
     )
     store = _store(tmp_path, [_acct(heartbeat_enabled=True)])
-    service = HeartbeatService(store, HttpClient(), {"claude": provider})
+    clock = FixedClock()
+    service = HeartbeatService(
+        store,
+        HttpClient(),
+        {"claude": provider},
+        clock=clock,
+    )
 
     outcome = service.heartbeat_account(store.get("team"))
 
@@ -355,6 +382,7 @@ def test_heartbeat_persists_failure_per_account(tmp_path: Path) -> None:
     assert outcome.action_required is True
     saved = AccountStore(store.path).load().get("team")
     assert saved is not None
+    assert saved.last_heartbeat_at == "2026-06-12T12:34:56.789000Z"
     assert saved.last_heartbeat_status == HEARTBEAT_FAILED
     assert saved.last_heartbeat_error == "rate limited"
 
@@ -409,15 +437,8 @@ def test_heartbeat_status_json_remains_machine_readable(
 
 def test_empty_heartbeat_registry_remains_unsupported(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An explicitly empty registry must not activate default providers."""
-    default_provider = _FakeHeartbeatProvider()
-    monkeypatch.setattr(
-        cli,
-        "HEARTBEAT_PROVIDERS",
-        {"claude": default_provider},
-    )
     _, stdout, _ = _install_ctx(tmp_path, [_acct()], {})
 
     result = CliRunner().invoke(cli.app, ["heartbeat", "status"])
@@ -425,7 +446,6 @@ def test_empty_heartbeat_registry_remains_unsupported(
     assert result.exit_code == 0
     assert "heartbeat: unsupported" in stdout.getvalue()
     assert "supported: no" in stdout.getvalue()
-    assert default_provider.supports_calls == []
 
 
 def test_heartbeat_label_cli_runs_one_shot_when_disabled(
@@ -475,7 +495,7 @@ def test_heartbeat_enable_accepts_codex_with_saved_account_id(
     store, stdout, _ = _install_ctx(
         tmp_path,
         [_acct(provider_id="codex", provider_account_id="acct-codex")],
-        {"codex": CodexHeartbeat()},
+        {"codex": _codex_heartbeat()},
     )
 
     result = CliRunner().invoke(cli.app, ["heartbeat", "enable", "team"])
@@ -507,7 +527,7 @@ def test_codex_heartbeat_warms_standard_window_with_mini() -> None:
         ]
     )
 
-    result = CodexHeartbeat().run(account, http)
+    result = _codex_heartbeat().run(account, http)
 
     assert result.status == HEARTBEAT_WARMED
     assert result.reset_at == "2026-06-12T18:00:00Z"
@@ -579,7 +599,7 @@ def test_codex_heartbeat_warms_spark_window_with_spark_model() -> None:
         ]
     )
 
-    result = CodexHeartbeat().run(account, http, target_id="spark")
+    result = _codex_heartbeat().run(account, http, target_id="spark")
 
     assert result.status == HEARTBEAT_WARMED
     assert result.reset_at == "2026-06-12T19:00:00Z"
@@ -602,7 +622,7 @@ def test_codex_heartbeat_fails_when_target_window_stays_inactive() -> None:
         ]
     )
 
-    result = CodexHeartbeat().run(account, http)
+    result = _codex_heartbeat().run(account, http)
 
     assert result.status == HEARTBEAT_FAILED
     assert result.warmed is False
@@ -614,7 +634,7 @@ def test_codex_heartbeat_can_enable_all_targets(tmp_path: Path) -> None:
     store, stdout, _ = _install_ctx(
         tmp_path,
         [_acct(provider_id="codex", provider_account_id="acct-codex")],
-        {"codex": CodexHeartbeat()},
+        {"codex": _codex_heartbeat()},
     )
 
     result = CliRunner().invoke(
@@ -649,7 +669,7 @@ def test_codex_heartbeat_skips_when_usage_window_is_active() -> None:
         ]
     )
 
-    result = CodexHeartbeat().run(account, http)
+    result = _codex_heartbeat().run(account, http)
 
     assert result.status == HEARTBEAT_ACTIVE
     assert result.reset_at == "2026-06-12T18:00:00Z"
@@ -658,7 +678,7 @@ def test_codex_heartbeat_skips_when_usage_window_is_active() -> None:
 
 def test_maintain_refreshes_before_heartbeat(tmp_path: Path) -> None:
     """The scheduler command refreshes tokens before window warming."""
-    now = int(time.time() * 1000)
+    clock = FixedClock()
     refresh_provider = _FakeRefreshProvider()
     heartbeat_provider = _FakeHeartbeatProvider()
     _install_ctx(
@@ -667,11 +687,12 @@ def test_maintain_refreshes_before_heartbeat(tmp_path: Path) -> None:
             _acct(
                 heartbeat_enabled=True,
                 refresh_token="refresh-token",
-                expires_at=now - 60_000,
+                expires_at=int(REFERENCE_TIME.timestamp() * 1000) - 60_000,
             )
         ],
         {"claude": heartbeat_provider},
         providers={"claude": refresh_provider},
+        clock=clock,
     )
 
     result = CliRunner().invoke(cli.app, ["maintain", "--quiet"])

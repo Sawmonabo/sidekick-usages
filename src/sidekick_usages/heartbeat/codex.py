@@ -34,9 +34,9 @@ class CodexHeartbeat(HeartbeatProvider):
     id = "codex"
     display_name = "Codex CLI"
 
-    def __init__(self, usage_provider: CodexProvider | None = None) -> None:
+    def __init__(self, usage_provider: CodexProvider) -> None:
         """Build an adapter around the normal Codex usage provider."""
-        self._usage_provider = usage_provider or CodexProvider()
+        self._usage_provider = usage_provider
 
     def supports(self, account: Account) -> bool:
         """Codex can warm saved ChatGPT OAuth accounts."""

@@ -1,9 +1,10 @@
 """Provider registry.
 
-Importing this module gives you a name -> instance map. Adding a
-new provider means importing it here and adding to ``PROVIDERS``.
+Adding a provider means importing it here and adding it to the explicit
+registry factory.
 """
 
+from sidekick_usages.clock import Clock
 from sidekick_usages.providers.base import (
     DetectedCredentials,
     Provider,
@@ -11,14 +12,18 @@ from sidekick_usages.providers.base import (
 from sidekick_usages.providers.claude import ClaudeProvider
 from sidekick_usages.providers.codex import CodexProvider
 
-# Insertion order matters: it controls the default rendering order
-# when listing across providers.
-PROVIDERS: dict[str, Provider] = {
-    "claude": ClaudeProvider(),
-    "codex": CodexProvider(),
-}
+
+def build_provider_registry(clock: Clock) -> dict[str, Provider]:
+    """Build providers that share one application wall clock."""
+    # Insertion order controls the default rendering order.
+    return {
+        "claude": ClaudeProvider(clock),
+        "codex": CodexProvider(clock),
+    }
+
+
 __all__ = [
-    "PROVIDERS",
     "DetectedCredentials",
     "Provider",
+    "build_provider_registry",
 ]

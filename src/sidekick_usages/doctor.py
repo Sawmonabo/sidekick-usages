@@ -7,6 +7,7 @@ from datetime import datetime
 from rich.console import Console
 
 from sidekick_usages.branding import brand_header
+from sidekick_usages.clock import Clock
 from sidekick_usages.heartbeat import (
     HeartbeatProvider,
     heartbeat_supported_label,
@@ -60,17 +61,20 @@ class DoctorService:
         providers: dict[str, Provider],
         heartbeat_providers: dict[str, HeartbeatProvider],
         maintenance: TokenMaintenanceService,
+        clock: Clock,
     ) -> None:
         """:param store: Account store to inspect.
 
         :param providers: Registered provider map.
         :param heartbeat_providers: Registered heartbeat provider map.
         :param maintenance: Refresh policy service for expiry state.
+        :param clock: Aware UTC application wall clock.
         """
         self.store = store
         self.providers = providers
         self.heartbeat_providers = heartbeat_providers
         self.maintenance = maintenance
+        self.clock = clock
 
     def diagnostics(
         self,
@@ -84,13 +88,20 @@ class DoctorService:
             accounts = [a for a in accounts if a.provider_id == provider_id]
         if label is not None:
             accounts = [a for a in accounts if a.label == label]
-        return [self._diagnostic(account) for account in accounts]
+        reference_time = self.clock.now()
+        return [
+            self._diagnostic(account, reference_time) for account in accounts
+        ]
 
-    def _diagnostic(self, account: Account) -> AccountDiagnostic:
+    def _diagnostic(
+        self,
+        account: Account,
+        reference_time: datetime,
+    ) -> AccountDiagnostic:
         """Build one account diagnostic."""
         provider = self.providers.get(account.provider_id)
         heartbeat_provider = self.heartbeat_providers.get(account.provider_id)
-        expiry_state = self.maintenance.expiry_state(account)
+        expiry_state = self.maintenance.expiry_state(account, reference_time)
         can_auto_refresh = bool(provider and account.refresh_token)
         manual_action_required = _manual_action_required(
             account,
