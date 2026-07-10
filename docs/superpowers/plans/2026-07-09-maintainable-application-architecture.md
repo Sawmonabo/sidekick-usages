@@ -175,6 +175,15 @@ passes. These gate repairs change no application behavior and should remain
 separate review commits from the daemon safety fix when publication is
 authorized.
 
+The first [CS-01 publication run][cs01-publication-ci] then passed Linux,
+macOS, and pre-commit but exposed two Windows-only failures in existing
+failure-panel tests. Those cases constructed `Console` directly and bypassed
+the test module's established `legacy_windows=False` renderer, so Rich changed
+rounded corners to its safe square Windows form. The product title, counts,
+failure content, and layout remained correct. Both cases now reuse the existing
+cross-platform render helper while retaining their strict panel, count,
+failure-content, and no-orphan-header assertions.
+
 ### 3.2 Current dependency and packaging baseline
 
 The current direct runtime dependencies are:
@@ -2373,3 +2382,4 @@ commits. Never squash unrelated user-data, dependency, presentation, and
 mechanical-gate changes into one review.
 
 [publication-ci]: https://github.com/Sawmonabo/sidekick-usages/actions/runs/29064704915
+[cs01-publication-ci]: https://github.com/Sawmonabo/sidekick-usages/actions/runs/29065786820
