@@ -4,9 +4,10 @@ import io
 import json
 from collections.abc import Iterable, Mapping
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
 from rich.console import Console
 from typer.testing import CliRunner
 
@@ -56,6 +57,30 @@ _ROUNDTRIP_AUDIT_TIME = datetime(2026, 6, 12, 13, tzinfo=UTC)
 
 def _codex_heartbeat() -> CodexHeartbeat:
     return CodexHeartbeat(CodexProvider(FixedClock()))
+
+
+def test_heartbeat_reset_models_require_aware_utc_datetimes() -> None:
+    """Heartbeat boundary results normalize aware time and reject naive."""
+    offset = REFERENCE_TIME.astimezone(timezone(timedelta(hours=-4)))
+    results = (
+        UsageWindowState(active=True, reset_at=offset),
+        HeartbeatProbeResult(
+            status=HeartbeatStatus.ACTIVE,
+            message="active",
+            warmed=False,
+            reset_at=offset,
+        ),
+    )
+
+    assert tuple(result.reset_at for result in results) == (
+        REFERENCE_TIME,
+        REFERENCE_TIME,
+    )
+    with pytest.raises(ValueError, match="timezone-aware"):
+        UsageWindowState(
+            active=True,
+            reset_at=REFERENCE_TIME.replace(tzinfo=None),
+        )
 
 
 class _FakeHeartbeatProvider(HeartbeatProvider):

@@ -212,7 +212,7 @@ class CodexProvider(Provider):
         except AuthError:
             return False
         new_token = response.get("access_token")
-        if not isinstance(new_token, str):
+        if not isinstance(new_token, str) or not new_token:
             return False
         reference_time = self.clock.now()
         updated, plan = _updated_refresh_credentials(
@@ -468,6 +468,14 @@ def _updated_refresh_credentials(
     plan = _plan_from_token(new_token)
     new_refresh = response.get("refresh_token")
     new_id_token = response.get("id_token")
+    if "refresh_token" in response and (
+        not isinstance(new_refresh, str) or not new_refresh
+    ):
+        raise InvalidPayloadError
+    if "id_token" in response and (
+        not isinstance(new_id_token, str) or not new_id_token
+    ):
+        raise InvalidPayloadError
     return (
         replace(
             credentials,
@@ -547,8 +555,8 @@ def _claim_str(claims: JsonObject, key: str) -> str | None:
 
 def _jwt_expiry(payload: JsonObject | None) -> Expiry:
     """Normalize a strict Unix-seconds expiry from decoded JWT claims."""
-    if not payload:
-        return UnknownExpiry()
+    if payload is None:
+        return InvalidExpiry()
     exp = payload.get("exp")
     if exp is None:
         return UnknownExpiry()

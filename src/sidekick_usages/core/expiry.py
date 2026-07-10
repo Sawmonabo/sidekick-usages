@@ -1,17 +1,11 @@
 """Provider-neutral access-token expiry values and classification."""
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import ClassVar, assert_never
 
+from sidekick_usages.core.time import as_utc
 from sidekick_usages.core.types import ExpiryState
-
-
-def _aware_utc(value: datetime) -> datetime:
-    """Return ``value`` in UTC, rejecting a naive timestamp."""
-    if value.tzinfo is None or value.utcoffset() is None:
-        raise ValueError("Expiry timestamps must be timezone-aware.")
-    return value.astimezone(UTC)
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,7 +15,7 @@ class KnownExpiry:
     at: datetime
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "at", _aware_utc(self.at))
+        object.__setattr__(self, "at", as_utc(self.at))
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,7 +43,7 @@ class ValidExpiry:
     state: ClassVar[ExpiryState] = ExpiryState.VALID
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "at", _aware_utc(self.at))
+        object.__setattr__(self, "at", as_utc(self.at))
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,7 +54,7 @@ class ExpiredExpiry:
     state: ClassVar[ExpiryState] = ExpiryState.EXPIRED
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "at", _aware_utc(self.at))
+        object.__setattr__(self, "at", as_utc(self.at))
 
 
 type ClassifiedExpiry = (
@@ -80,7 +74,7 @@ def classify_expiry(
     :returns: A discriminated classified expiry.
     :raises ValueError: If ``now`` is naive.
     """
-    reference_time = _aware_utc(now)
+    reference_time = as_utc(now)
     if isinstance(expiry, KnownExpiry):
         if expiry.at <= reference_time:
             return ExpiredExpiry(expiry.at)

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from sidekick_usages.core.expiry import KnownExpiry
+from sidekick_usages.core.expiry import InvalidExpiry, KnownExpiry
 from sidekick_usages.core.models import Account, CodexCredentials
 from sidekick_usages.core.types import AccountLabel
 from sidekick_usages.errors import InvalidPayloadError
@@ -188,6 +188,16 @@ def test_parse_blob_preserves_codex_auth_file_metadata() -> None:
     assert detected.last_refresh == "2026-06-12T00:00:00Z"
 
 
+def test_parse_blob_marks_an_undecodable_access_token_expiry_invalid() -> None:
+    """A present malformed JWT cannot masquerade as absent expiry data."""
+    detected = CodexProvider._parse_blob(
+        {"tokens": {"access_token": "not-a-jwt"}}
+    )
+
+    assert detected is not None
+    assert isinstance(detected.expiry, InvalidExpiry)
+
+
 def test_detect_credentials_reads_explicit_codex_home(tmp_path: Path) -> None:
     """A saved account can point at its own CODEX_HOME."""
     codex_home = tmp_path / "codex-a"
@@ -285,14 +295,29 @@ def test_refresh_posts_codex_client_id_and_updates_metadata() -> None:
     assert acct.provider_account_id == "acct_new"
 
 
-def test_refresh_rejects_invalid_expiry_before_replacing_credentials() -> None:
-    """A malformed refresh cannot partially rotate Codex credentials."""
-    http = _RefreshHttp(
+@pytest.mark.parametrize(
+    "payload",
+    [
         {
             "access_token": _jwt({"exp": "invalid"}),
             "refresh_token": "refresh-new",
-        }
-    )
+        },
+        {"access_token": "not-a-jwt", "refresh_token": "refresh-new"},
+        {
+            "access_token": _jwt({"exp": REFRESH_EXP}),
+            "refresh_token": 42,
+        },
+        {
+            "access_token": _jwt({"exp": REFRESH_EXP}),
+            "id_token": [],
+        },
+    ],
+)
+def test_refresh_rejects_malformed_metadata_before_replacing_credentials(
+    payload: JsonObject,
+) -> None:
+    """Malformed refresh metadata cannot partially rotate credentials."""
+    http = _RefreshHttp(payload)
     acct = _acct()
     original = acct.credentials
 

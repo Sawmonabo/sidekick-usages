@@ -520,11 +520,15 @@ class ClaudeProvider(Provider):
         except AuthError:
             return False
         new_token = response.get("access_token")
-        if not isinstance(new_token, str):
+        if not isinstance(new_token, str) or not new_token:
             return False
         new_refresh = response.get("refresh_token")
+        if "refresh_token" in response and (
+            not isinstance(new_refresh, str) or not new_refresh
+        ):
+            raise InvalidPayloadError
         expires_in = response.get("expires_in")
-        expiry = credentials.expiry
+        expiry: Expiry = UnknownExpiry()
         if expires_in is not None:
             if (
                 isinstance(expires_in, bool)
@@ -555,7 +559,7 @@ class ClaudeProvider(Provider):
     def _refresh_scopes(account: Account) -> tuple[str, ...]:
         """Return saved scopes or Claude Code's default OAuth scope set."""
         scopes = _claude_credentials(account).scopes
-        return scopes if scopes else DEFAULT_REFRESH_SCOPES
+        return DEFAULT_REFRESH_SCOPES if scopes is None else scopes
 
     # -- setup-token -----------------------------------------------
     def run_setup_token(self) -> str | None:

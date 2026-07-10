@@ -21,6 +21,7 @@ REQUIRED_WHEEL_MEMBERS = frozenset(
         "sidekick_usages/cli.py",
         "sidekick_usages/core/expiry.py",
         "sidekick_usages/core/models.py",
+        "sidekick_usages/core/time.py",
         "sidekick_usages/core/types.py",
         "sidekick_usages/http/__init__.py",
         "sidekick_usages/http/client.py",

@@ -2,24 +2,18 @@
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime
 from types import MappingProxyType
 from typing import ClassVar
 
 from sidekick_usages.core.expiry import Expiry, UnknownExpiry
+from sidekick_usages.core.time import as_utc
 from sidekick_usages.core.types import (
     AccountLabel,
     HeartbeatStatus,
     ProviderId,
     RefreshStatus,
 )
-
-
-def _aware_utc(value: datetime) -> datetime:
-    """Return ``value`` in UTC, rejecting a naive timestamp."""
-    if value.tzinfo is None or value.utcoffset() is None:
-        raise ValueError("Runtime timestamps must be timezone-aware.")
-    return value.astimezone(UTC)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -139,7 +133,7 @@ class Account:
         if name in self._AWARE_TIME_FIELDS and value is not None:
             if not isinstance(value, datetime):
                 raise TypeError(f"{name} must be a datetime or None.")
-            value = _aware_utc(value)
+            value = as_utc(value)
         elif name == "heartbeat_window_resets" and value is not None:
             if not isinstance(value, Mapping):
                 raise TypeError(
@@ -154,7 +148,7 @@ class Account:
                         "heartbeat_window_resets must map strings to "
                         "datetimes."
                     )
-                normalized[target_id] = _aware_utc(reset_at)
+                normalized[target_id] = as_utc(reset_at)
             value = MappingProxyType(normalized)
         object.__setattr__(self, name, value)
 
@@ -227,7 +221,7 @@ class UsageWindow:
             object.__setattr__(
                 self,
                 "resets_at",
-                _aware_utc(self.resets_at),
+                as_utc(self.resets_at),
             )
 
     @property

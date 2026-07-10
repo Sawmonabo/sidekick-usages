@@ -9,10 +9,10 @@ from pathlib import Path
 
 import pytest
 
-from sidekick_usages.core.expiry import KnownExpiry
+from sidekick_usages.core.expiry import KnownExpiry, UnknownExpiry
 from sidekick_usages.core.models import Account, ClaudeCredentials
 from sidekick_usages.core.types import AccountLabel
-from sidekick_usages.errors import AuthError
+from sidekick_usages.errors import AuthError, InvalidPayloadError
 from sidekick_usages.http import HttpClient, HttpOperation
 from sidekick_usages.providers import claude as claude_module
 from sidekick_usages.providers.claude import ClaudeProvider
@@ -176,6 +176,12 @@ def test_claude_refresh_posts_saved_refresh_token(
     _disable_cli_refresh(monkeypatch)
     http = _FakeHttp(response_json={"access_token": "sk-ant-oat01-new"})
     acct = _acct()
+    credentials = acct.credentials
+    assert isinstance(credentials, ClaudeCredentials)
+    acct.credentials = replace(
+        credentials,
+        expiry=KnownExpiry(REFERENCE_TIME + timedelta(days=1)),
+    )
 
     assert _provider().refresh_token(acct, http) is True
 
@@ -194,6 +200,7 @@ def test_claude_refresh_posts_saved_refresh_token(
     }
     assert http.last_headers is not None
     assert "anthropic-beta" not in http.last_headers
+    assert isinstance(acct.expiry, UnknownExpiry)
 
 
 def test_claude_refresh_cli_rejection_does_not_fallback_to_http(
@@ -235,10 +242,19 @@ def test_claude_refresh_cli_rejection_does_not_fallback_to_http(
     assert http.calls == []
 
 
-def test_claude_refresh_uses_saved_scopes(
+@pytest.mark.parametrize(
+    ("scopes", "expected"),
+    [
+        ((), ""),
+        (("user:inference", "user:profile"), "user:inference user:profile"),
+    ],
+)
+def test_claude_refresh_preserves_known_scope_state(
     monkeypatch: pytest.MonkeyPatch,
+    scopes: tuple[str, ...],
+    expected: str,
 ) -> None:
-    """Claude refresh asks for the same scopes saved with the account."""
+    """Known-empty and populated scope sets remain distinguishable."""
     _disable_cli_refresh(monkeypatch)
     http = _FakeHttp(response_json={"access_token": "sk-ant-oat01-new"})
     acct = _acct()
@@ -246,13 +262,13 @@ def test_claude_refresh_uses_saved_scopes(
     assert isinstance(credentials, ClaudeCredentials)
     acct.credentials = replace(
         credentials,
-        scopes=("user:inference", "user:profile"),
+        scopes=scopes,
     )
 
     assert _provider().refresh_token(acct, http) is True
 
     assert http.last_body is not None
-    assert http.last_body["scope"] == "user:inference user:profile"
+    assert http.last_body["scope"] == expected
 
 
 def test_claude_refresh_updates_tokens_and_millisecond_expiry(
@@ -304,3 +320,26 @@ def test_claude_refresh_returns_false_without_access_token(
 
     assert acct.access_token == "sk-ant-oat01-old"
     assert acct.refresh_token == "refresh-old"
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        {"access_token": "sk-ant-oat01-new", "refresh_token": ""},
+        {"access_token": "sk-ant-oat01-new", "refresh_token": 42},
+        {"access_token": "sk-ant-oat01-new", "expires_in": True},
+    ],
+)
+def test_claude_refresh_rejects_malformed_optional_fields_atomically(
+    monkeypatch: pytest.MonkeyPatch,
+    response: JsonObject,
+) -> None:
+    """Malformed optional refresh metadata cannot rotate credentials."""
+    _disable_cli_refresh(monkeypatch)
+    acct = _acct()
+    original = acct.credentials
+
+    with pytest.raises(InvalidPayloadError):
+        _provider().refresh_token(acct, _FakeHttp(response_json=response))
+
+    assert acct.credentials is original
