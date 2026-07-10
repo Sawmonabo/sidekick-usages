@@ -36,7 +36,13 @@ classifiers = [
   "Topic :: Software Development",
   "Topic :: Utilities"
 ]
-dependencies = ["click>=8.1", "typer>=0.15", "rich>=13.9"]
+dependencies = [
+  "click>=8.1",
+  "pydantic==2.13.4",
+  "rich>=13.9",
+  "typer>=0.15",
+  "urllib3==2.7.0"
+]
 
 [project.urls]
 Homepage = "https://github.com/Sawmonabo/sidekick-usages"
@@ -182,12 +188,6 @@ exclude_dirs = ["tests", ".venv", "venv", ".claude"]
 # https://bandit.readthedocs.io/en/latest/plugins/index.html
 skips = [
   "B101",  # assert_used: acceptable in tests and dev code
-  # B310 (urllib_urlopen): scheme is validated at the application
-  # layer via HttpClient._require_https, which raises ValueError
-  # for any non-HTTPS URL before urlopen is reached. Bandit's
-  # static analysis cannot see the validator. The audit it asks
-  # for is performed by that helper.
-  "B310",
   # B404 (import subprocess): this CLI's purpose is invoking other
   # CLIs (claude, codex, /usr/bin/security, powershell). Refusing
   # to import subprocess would break the project.

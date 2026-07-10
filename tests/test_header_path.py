@@ -9,11 +9,12 @@ they have ``user:inference`` (enough to call ``/v1/messages``) but
 lack ``user:profile`` (so ``/api/oauth/usage`` returns 403).
 """
 
+from collections.abc import Mapping
 from typing import Any
 
 from sidekick_usages.heartbeat import HEARTBEAT_ACTIVE, HEARTBEAT_WARMED
 from sidekick_usages.heartbeat.claude import ClaudeHeartbeat
-from sidekick_usages.http import HttpClient
+from sidekick_usages.http import HttpClient, HttpOperation
 from sidekick_usages.providers.claude import (
     ANTHROPIC_BETA,
     MESSAGES_URL,
@@ -21,6 +22,7 @@ from sidekick_usages.providers.claude import (
     USAGE_URL,
     ClaudeProvider,
 )
+from sidekick_usages.serialization import JsonObject
 from sidekick_usages.store import Account
 from tests.test_support import FixedClock
 
@@ -43,8 +45,7 @@ class _FakeHttp(HttpClient):
     as the ``http`` argument to provider methods. The base
     ``__init__`` is called with defaults; the canned-response state is
     added on top.
-    Mocking at this boundary keeps these tests out of the urllib
-    layer (covered by :mod:`test_http_errors` instead).
+    Mocking at this boundary keeps these provider tests transport-agnostic.
     """
 
     def __init__(
@@ -58,28 +59,34 @@ class _FakeHttp(HttpClient):
         """
         super().__init__()
         self.response_headers = response_headers or {}
-        self.response_json = response_json or {}
+        self.response_json: JsonObject = response_json or {}
         self.calls: list[tuple[str, str]] = []
-        self.last_post_body: dict[str, Any] | None = None
+        self.last_post_body: JsonObject | None = None
         self.last_post_headers: dict[str, str] | None = None
 
     def post_capture_headers(
         self,
         url: str,
-        json_body: dict[str, Any],
-        headers: dict[str, str],
+        json_body: JsonObject,
+        headers: Mapping[str, str],
+        *,
+        operation: HttpOperation,
     ) -> dict[str, str]:
         """Stand-in for :meth:`HttpClient.post_capture_headers`."""
+        assert operation in {
+            HttpOperation.CLAUDE_PROBE,
+            HttpOperation.CLAUDE_HEARTBEAT,
+        }
         self.calls.append(("POST", url))
         self.last_post_body = json_body
-        self.last_post_headers = headers
+        self.last_post_headers = dict(headers)
         return self.response_headers
 
     def get_json(
         self,
         url: str,
-        headers: dict[str, str],
-    ) -> dict[str, Any]:
+        headers: Mapping[str, str],
+    ) -> JsonObject:
         """Stand-in for :meth:`HttpClient.get_json`."""
         del headers
         self.calls.append(("GET", url))

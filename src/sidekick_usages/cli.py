@@ -11,6 +11,7 @@ import shlex
 import subprocess
 import sys
 from collections.abc import Callable
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 from datetime import datetime
 from functools import partial
@@ -161,23 +162,27 @@ def _build_default_context() -> AppContext:
     paths = discover_application_paths()
     clock = SystemClock()
     providers = build_provider_registry(clock)
-    return AppContext(
-        store=AccountStore(paths.accounts).load(),
-        http=HttpClient(),
-        providers=providers,
-        heartbeat_providers=build_heartbeat_registry(providers),
-        private_codex_locations=paths.private_codex,
-        lifetime_sources={
-            "claude": claude_lifetime_output,
-            "codex": partial(
-                codex_lifetime_output,
-                paths.lifetime_cache_file,
-            ),
-        },
-        console=Console(),
-        err_console=Console(stderr=True),
-        clock=clock,
-    )
+    with ExitStack() as cleanup:
+        http = cleanup.enter_context(HttpClient(clock=clock))
+        context = AppContext(
+            store=AccountStore(paths.accounts).load(),
+            http=http,
+            providers=providers,
+            heartbeat_providers=build_heartbeat_registry(providers),
+            private_codex_locations=paths.private_codex,
+            lifetime_sources={
+                "claude": claude_lifetime_output,
+                "codex": partial(
+                    codex_lifetime_output,
+                    paths.lifetime_cache_file,
+                ),
+            },
+            console=Console(),
+            err_console=Console(stderr=True),
+            clock=clock,
+        )
+        cleanup.pop_all()
+        return context
 
 
 class _ContextState:
@@ -293,6 +298,7 @@ def main(
 ) -> None:
     """Default invocation runs ``check`` if no subcommand is given."""
     app_ctx = _get_ctx()
+    ctx.call_on_close(app_ctx.http.close)
     if only is not None and only not in app_ctx.providers:
         app_ctx.err_console.print(
             f"[red]Unknown provider {only!r}. "
@@ -440,7 +446,7 @@ def _fetch_and_render(acct: Account) -> bool:
     except AuthError as e:
         return _refresh_after_auth_and_render(acct, provider, e)
     except ForbiddenError as e:
-        return _retry_or_handle_forbidden(acct, provider, e)
+        return _handle_fetch_error(acct, provider, e)
     except UsageError as e:
         return _handle_fetch_error(acct, provider, e)
 
@@ -589,32 +595,6 @@ def _handle_fetch_error(
     return False
 
 
-def _retry_or_handle_forbidden(
-    acct: Account,
-    provider: Provider,
-    err: ForbiddenError,
-) -> bool:
-    """Retry transient Codex 403s, otherwise render the error."""
-    if not _should_retry_bodyless_forbidden(provider, err):
-        return _handle_fetch_error(acct, provider, err)
-    try:
-        return _fetch_usage_and_render(acct, provider)
-    except UsageError as retry_err:
-        return _handle_fetch_error(acct, provider, retry_err)
-
-
-def _should_retry_bodyless_forbidden(
-    provider: Provider,
-    err: ForbiddenError,
-) -> bool:
-    """Return whether a bodyless 403 should be retried once."""
-    return (
-        provider.id == "codex"
-        and err.api_message is None
-        and err.required_scope is None
-    )
-
-
 def _handle_rate_limit(acct: Account, err: RateLimitError) -> bool:
     """Render a per-account rate-limit error.
 
@@ -624,7 +604,7 @@ def _handle_rate_limit(acct: Account, err: RateLimitError) -> bool:
     """
     suffix = (
         f"Server asked to wait {err.retry_after}s."
-        if err.retry_after
+        if err.retry_after is not None
         else "Try again in a moment."
     )
     _record_error_block(
@@ -2249,7 +2229,7 @@ def _insert_new(
     except RateLimitError as e:
         wait = (
             f"retry in {e.retry_after}s."
-            if e.retry_after
+            if e.retry_after is not None
             else "retry shortly."
         )
         warning = (

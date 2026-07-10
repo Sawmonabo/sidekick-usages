@@ -33,7 +33,7 @@ from sidekick_usages.errors import (
     UnsupportedOperationError,
     UsageError,
 )
-from sidekick_usages.http import HttpClient
+from sidekick_usages.http import HttpClient, HttpOperation
 from sidekick_usages.providers.base import (
     DetectedCredentials,
     Provider,
@@ -159,10 +159,12 @@ class CodexProvider(Provider):
             rate_limit = data
         windows = _rate_limit_windows(rate_limit)
         windows.extend(_additional_rate_limit_windows(data))
+        raw: dict[str, object] = {}
+        raw.update(data)
         return UsageReport(
             windows=windows,
             plan=_response_plan(data),
-            raw=data,
+            raw=raw,
         )
 
     # -- refresh ---------------------------------------------------
@@ -189,6 +191,7 @@ class CodexProvider(Provider):
                     "refresh_token": account.refresh_token,
                     "client_id": OAUTH_CLIENT_ID,
                 },
+                operation=HttpOperation.CODEX_REFRESH,
             )
         except AuthError:
             return False

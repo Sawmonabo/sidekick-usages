@@ -114,8 +114,21 @@ def test_doctor_help_does_not_advertise_removed_auth_option() -> None:
     assert "--auth" not in click.unstyle(result.output)
 
 
-def test_version_remains_one_unbranded_line() -> None:
-    result = CliRunner().invoke(cli.app, ["--version"])
-    assert result.exit_code == 0
-    assert result.output == f"sidekick-usages {cli.__version__}\n"
-    assert ROBOT_LINES[2] not in result.output
+def test_version_is_exact_and_does_not_build_application_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The eager version path stays unbranded and skips operational state."""
+    builds = 0
+
+    def fail_build() -> None:
+        nonlocal builds
+        builds += 1
+        raise AssertionError("informational path built application context")
+
+    monkeypatch.setattr(cli._ContextState, "ctx", None)
+    monkeypatch.setattr(cli, "_build_default_context", fail_build)
+    version_result = CliRunner().invoke(cli.app, ["--version"])
+
+    assert version_result.exit_code == 0
+    assert version_result.output == f"sidekick-usages {cli.__version__}\n"
+    assert builds == 0

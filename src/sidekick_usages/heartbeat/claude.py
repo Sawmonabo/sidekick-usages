@@ -9,7 +9,7 @@ from sidekick_usages.heartbeat.domain import (
     HeartbeatTarget,
     UsageWindowState,
 )
-from sidekick_usages.http import HttpClient
+from sidekick_usages.http import HttpClient, HttpOperation
 from sidekick_usages.providers.claude import (
     ANTHROPIC_API_VERSION,
     ANTHROPIC_BETA,
@@ -105,6 +105,7 @@ class ClaudeHeartbeat(HeartbeatProvider):
                 "anthropic-beta": ANTHROPIC_BETA,
                 "User-Agent": USER_AGENT,
             },
+            operation=HttpOperation.CLAUDE_HEARTBEAT,
         )
         return warmed(
             _parse_header_reset(headers, FIVE_HOUR_HEADER_PREFIX), target

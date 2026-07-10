@@ -7,8 +7,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from sidekick_usages.http import HttpClient
+from sidekick_usages.http import HttpClient, HttpOperation
 from sidekick_usages.providers.codex import CodexProvider
+from sidekick_usages.serialization import JsonObject
 from sidekick_usages.store import Account
 from tests.test_support import REFERENCE_TIME, FixedClock
 
@@ -57,16 +58,16 @@ class _UsageHttp(HttpClient):
     """HTTP fake that records GET headers and returns one payload."""
 
     def __init__(self, payload: dict[str, Any]) -> None:
-        self.payload = payload
+        self.payload: JsonObject = payload
         self.headers: dict[str, str] | None = None
 
     def get_json(
         self,
         url: str,
-        headers: dict[str, str],
-    ) -> dict[str, Any]:
+        headers: Mapping[str, str],
+    ) -> JsonObject:
         del url
-        self.headers = headers
+        self.headers = dict(headers)
         return self.payload
 
 
@@ -74,17 +75,20 @@ class _RefreshHttp(HttpClient):
     """HTTP fake that records POST form data and returns one payload."""
 
     def __init__(self, payload: dict[str, Any]) -> None:
-        self.payload = payload
+        self.payload: JsonObject = payload
         self.data: dict[str, str] | None = None
 
     def post_form(
         self,
         url: str,
-        data: dict[str, str],
-        headers: dict[str, str] | None = None,
-    ) -> dict[str, Any]:
+        data: Mapping[str, str],
+        headers: Mapping[str, str] | None = None,
+        *,
+        operation: HttpOperation,
+    ) -> JsonObject:
         del url, headers
-        self.data = data
+        assert operation is HttpOperation.CODEX_REFRESH
+        self.data = dict(data)
         return self.payload
 
 

@@ -27,7 +27,7 @@ from typing import Any
 from sidekick_usages.clock import Clock
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.errors import AuthError
-from sidekick_usages.http import HttpClient
+from sidekick_usages.http import HttpClient, HttpOperation
 from sidekick_usages.providers.base import (
     DetectedCredentials,
     Provider,
@@ -282,19 +282,29 @@ class ClaudeProvider(Provider):
         windows: list[UsageWindow] = []
         for key, label in BUCKETS:
             window = data.get(key)
-            if not window:
+            if not isinstance(window, dict) or not window:
                 continue
+            utilization_value = window.get("utilization")
+            utilization = (
+                float(utilization_value)
+                if isinstance(utilization_value, int | float | str)
+                else 0.0
+            )
+            resets_value = window.get("resets_at")
+            resets_at = resets_value if isinstance(resets_value, str) else None
             windows.append(
                 UsageWindow(
                     name=label,
-                    utilization=float(window.get("utilization") or 0),
-                    resets_at=window.get("resets_at"),
+                    utilization=utilization,
+                    resets_at=resets_at,
                 )
             )
+        raw: dict[str, object] = {}
+        raw.update(data)
         return UsageReport(
             windows=windows,
             plan=account.plan,
-            raw=data,
+            raw=raw,
         )
 
     def _fetch_via_headers(
@@ -328,6 +338,7 @@ class ClaudeProvider(Provider):
                 "anthropic-beta": ANTHROPIC_BETA,
                 "User-Agent": USER_AGENT,
             },
+            operation=HttpOperation.CLAUDE_PROBE,
         )
         windows: list[UsageWindow] = []
         for prefix, label in HEADER_BUCKETS:
@@ -469,6 +480,7 @@ class ClaudeProvider(Provider):
                     "scope": " ".join(scopes),
                     "expires_in": OAUTH_REFRESH_EXPIRES_IN_SECONDS,
                 },
+                operation=HttpOperation.CLAUDE_REFRESH,
             )
         except AuthError:
             return False

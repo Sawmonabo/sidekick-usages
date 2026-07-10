@@ -2,7 +2,7 @@
 
 import io
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -27,10 +27,11 @@ from sidekick_usages.heartbeat.codex import (
     SPARK_HEARTBEAT_MODEL,
     CodexHeartbeat,
 )
-from sidekick_usages.http import HttpClient
+from sidekick_usages.http import HttpClient, HttpOperation
 from sidekick_usages.providers.base import DetectedCredentials, Provider
 from sidekick_usages.providers.codex import CodexProvider
 from sidekick_usages.report import UsageReport
+from sidekick_usages.serialization import JsonObject
 from sidekick_usages.store import Account, AccountStore
 from tests.test_support import (
     REFERENCE_TIME,
@@ -202,16 +203,16 @@ class _FakeCodexHttp(HttpClient):
     """Tiny HTTP double for Codex heartbeat protocol tests."""
 
     def __init__(self, usage_responses: Iterable[dict[str, Any]]) -> None:
-        self.usage_responses = list(usage_responses)
+        self.usage_responses: list[JsonObject] = list(usage_responses)
         self.get_calls: list[tuple[str, dict[str, str]]] = []
-        self.post_calls: list[tuple[str, dict[str, Any], dict[str, str]]] = []
+        self.post_calls: list[tuple[str, JsonObject, dict[str, str]]] = []
 
     def get_json(
         self,
         url: str,
-        headers: dict[str, str],
-    ) -> dict[str, Any]:
-        self.get_calls.append((url, headers))
+        headers: Mapping[str, str],
+    ) -> JsonObject:
+        self.get_calls.append((url, dict(headers)))
         if not self.usage_responses:
             raise AssertionError("unexpected Codex usage fetch")
         return self.usage_responses.pop(0)
@@ -219,10 +220,13 @@ class _FakeCodexHttp(HttpClient):
     def post_capture_headers(
         self,
         url: str,
-        json_body: dict[str, Any],
-        headers: dict[str, str],
+        json_body: JsonObject,
+        headers: Mapping[str, str],
+        *,
+        operation: HttpOperation,
     ) -> dict[str, str]:
-        self.post_calls.append((url, json_body, headers))
+        assert operation is HttpOperation.CODEX_HEARTBEAT
+        self.post_calls.append((url, json_body, dict(headers)))
         return {}
 
 

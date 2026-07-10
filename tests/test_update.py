@@ -12,6 +12,7 @@ Two surfaces are covered:
 """
 
 import subprocess
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -24,6 +25,7 @@ from sidekick_usages.branding import ROBOT_LINES
 from sidekick_usages.errors import ForbiddenError
 from sidekick_usages.http import HttpClient
 from sidekick_usages.providers import build_provider_registry
+from sidekick_usages.serialization import JsonObject
 from sidekick_usages.store import AccountStore
 from sidekick_usages.update import (
     PACKAGE_NAME,
@@ -56,21 +58,27 @@ class _FakeHttp(HttpClient):
             returning. Used to simulate rate-limit / network errors.
         """
         super().__init__()
-        self.response_json = response_json or {}
+        self.response_json: JsonObject = response_json or {}
         self.raise_on_get = raise_on_get
         self.calls: list[tuple[str, str]] = []
+        self.close_calls = 0
 
     def get_json(
         self,
         url: str,
-        headers: dict[str, str],
-    ) -> dict[str, Any]:
+        headers: Mapping[str, str],
+    ) -> JsonObject:
         """Stand-in for :meth:`HttpClient.get_json`."""
         del headers
         self.calls.append(("GET", url))
         if self.raise_on_get is not None:
             raise self.raise_on_get
         return self.response_json
+
+    def close(self) -> None:
+        """Record invocation teardown before closing the fake client."""
+        self.close_calls += 1
+        super().close()
 
 
 # -- parse_version -----------------------------------------------
@@ -249,14 +257,13 @@ def _install_fake_ctx(http: HttpClient, root: Path) -> None:
 
 def test_check_update_reports_newer_version(tmp_path: Path) -> None:
     """An advancing ``tag_name`` prints the upgrade hint."""
-    _install_fake_ctx(
-        _FakeHttp(response_json={"tag_name": "v99.0.0"}),
-        tmp_path,
-    )
+    http = _FakeHttp(response_json={"tag_name": "v99.0.0"})
+    _install_fake_ctx(http, tmp_path)
     result = CliRunner().invoke(cli.app, ["check-update"])
     assert result.exit_code == 0
     assert "99.0.0" in result.stdout
     assert "update" in result.stdout.lower()
+    assert http.close_calls == 1
 
 
 def test_check_update_reports_up_to_date(tmp_path: Path) -> None:

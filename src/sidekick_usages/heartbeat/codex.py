@@ -9,9 +9,10 @@ from sidekick_usages.heartbeat.domain import (
     HeartbeatTarget,
     UsageWindowState,
 )
-from sidekick_usages.http import HttpClient
+from sidekick_usages.http import HttpClient, HttpOperation
 from sidekick_usages.providers.codex import USER_AGENT, CodexProvider
 from sidekick_usages.report import UsageReport, UsageWindow
+from sidekick_usages.serialization import JsonObject
 from sidekick_usages.store import Account
 
 CODEX_RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses"
@@ -100,6 +101,7 @@ class CodexHeartbeat(HeartbeatProvider):
                 "ChatGPT-Account-ID": account_id,
                 "User-Agent": USER_AGENT,
             },
+            operation=HttpOperation.CODEX_HEARTBEAT,
         )
         reset_at = _window_reset(
             self._usage_provider.fetch_usage(account, http),
@@ -166,7 +168,7 @@ def _target_model(target_id: str) -> str:
     return CODEX_STANDARD_HEARTBEAT_MODEL
 
 
-def _heartbeat_body(model: str) -> dict[str, object]:
+def _heartbeat_body(model: str) -> JsonObject:
     """Build the smallest Codex Responses request shape we can justify."""
     return {
         "model": model,

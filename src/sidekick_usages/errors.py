@@ -60,6 +60,33 @@ class TransientError(UsageError):
     """A 5xx or network failure that persisted across retries."""
 
 
+class InsecureUrlError(UsageError):
+    """An HTTP operation targeted a forbidden URL scheme."""
+
+    def __init__(self) -> None:
+        super().__init__("HTTP requests require an HTTPS URL.")
+
+
+class InvalidPayloadError(UsageError):
+    """An HTTP request or response payload failed its boundary."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "HTTP payload is invalid or exceeds its allowed size."
+        )
+
+
+class HttpStatusError(UsageError):
+    """An HTTP response had a permanent, non-auth failure status.
+
+    :param status_code: Numeric response status without response details.
+    """
+
+    def __init__(self, status_code: int) -> None:
+        super().__init__(f"HTTP request failed with status {status_code}.")
+        self.status_code = status_code
+
+
 class UnsupportedOperationError(UsageError):
     """Provider does not support the requested operation.
 

@@ -14,7 +14,7 @@ from typer.testing import CliRunner
 from sidekick_usages import cli
 from sidekick_usages.clock import Clock
 from sidekick_usages.core.types import ProviderId
-from sidekick_usages.errors import AuthError, ForbiddenError, RateLimitError
+from sidekick_usages.errors import AuthError, RateLimitError
 from sidekick_usages.http import HttpClient
 from sidekick_usages.providers.base import DetectedCredentials, Provider
 from sidekick_usages.report import UsageReport, UsageWindow
@@ -656,26 +656,6 @@ def test_retry_rate_limit_after_refresh_is_rendered_per_account(
     _install_ctx(tmp_path, provider, acct)
 
     assert cli._fetch_and_render(acct) is False
-
-
-def test_codex_bodyless_forbidden_retries_once(tmp_path: Path) -> None:
-    """A transient Codex 403 with no API body is retried once."""
-    acct = _acct(provider_id="codex", plan="pro")
-    provider = _FakeProvider(
-        fetch_results=[
-            ForbiddenError("HTTP 403 Forbidden"),
-            _report(),
-        ],
-        provider_id="codex",
-    )
-    _install_ctx(tmp_path, provider, acct)
-
-    assert cli._fetch_and_render(acct) is True
-
-    assert provider.fetch_tokens == [
-        "sk-ant-oat01-old",
-        "sk-ant-oat01-old",
-    ]
 
 
 def test_auth_error_does_not_adopt_current_local_credentials(

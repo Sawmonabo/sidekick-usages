@@ -2,15 +2,17 @@
 
 import json
 import subprocess
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from sidekick_usages.errors import AuthError
-from sidekick_usages.http import HttpClient
+from sidekick_usages.http import HttpClient, HttpOperation
 from sidekick_usages.providers import claude as claude_module
 from sidekick_usages.providers.claude import ClaudeProvider
+from sidekick_usages.serialization import JsonObject
 from sidekick_usages.store import Account
 from tests.test_support import REFERENCE_TIME, FixedClock
 
@@ -32,22 +34,25 @@ class _FakeHttp(HttpClient):
     ) -> None:
         """:param response_json: Canned JSON response."""
         super().__init__()
-        self.response_json = response_json or {}
+        self.response_json: JsonObject = response_json or {}
         self.raise_on_post = raise_on_post
         self.calls: list[tuple[str, str]] = []
-        self.last_body: dict[str, Any] | None = None
+        self.last_body: JsonObject | None = None
         self.last_headers: dict[str, str] | None = None
 
     def post_json(
         self,
         url: str,
-        json_body: dict[str, Any],
-        headers: dict[str, str] | None = None,
-    ) -> dict[str, Any]:
+        json_body: JsonObject,
+        headers: Mapping[str, str] | None = None,
+        *,
+        operation: HttpOperation,
+    ) -> JsonObject:
         """Stand-in for :meth:`HttpClient.post_json`."""
         self.calls.append(("POST", url))
+        assert operation is HttpOperation.CLAUDE_REFRESH
         self.last_body = json_body
-        self.last_headers = headers or {}
+        self.last_headers = dict(headers or {})
         if self.raise_on_post is not None:
             raise self.raise_on_post
         return self.response_json
