@@ -2129,19 +2129,19 @@ coordination.
 
 **Work:**
 
-- [ ] Move credential detection, identity matching, application, refresh,
+- [x] Move credential detection, identity matching, application, refresh,
       import, export, and persistence coordination out of the CLI.
-- [ ] Define typed outcomes for missing, unreadable, malformed, incomplete,
+- [x] Define typed outcomes for missing, unreadable, malformed, incomplete,
       expired, rejected, identity mismatch, and unsupported states.
-- [ ] Preserve explicit `replace_identity`; never infer consent from a token
+- [x] Preserve explicit `replace_identity`; never infer consent from a token
       or local login.
-- [ ] Keep Claude and Codex files, schemas, subprocess calls, and protocol
+- [x] Keep Claude and Codex files, schemas, subprocess calls, and protocol
       details inside provider packages.
-- [ ] Keep provider-neutral credential sources and results in
+- [x] Keep provider-neutral credential sources and results in
       `credentials/models.py`, orchestration in `credentials/service.py`, and
       Codex private-bundle coordination in `credentials/codex.py`.
-- [ ] Keep prompts, confirmations, and token input in CLI adapters.
-- [ ] Persist one complete account update or none.
+- [x] Keep prompts, confirmations, and token input in CLI adapters.
+- [x] Persist one complete account update or none.
 - [x] Journal a bounded deterministic tuple of private-bundle mutations,
       reject duplicate destinations, validate every target, and commit account
       authority last under the existing account lock.
@@ -2152,12 +2152,12 @@ coordination.
       the base state rolls every private mutation back; authority at the
       target state rolls every mutation forward; a third authority fails
       closed.
-- [ ] Preserve diagnostic state without converting rejection into Boolean
+- [x] Preserve diagnostic state without converting rejection into Boolean
       false or generic absence.
-- [ ] Sanitize provider failures before persistence, doctor, maintenance,
+- [x] Sanitize provider failures before persistence, doctor, maintenance,
       human output, or JSON output; never persist a raw token, response body,
       or full provider identity as an error.
-- [ ] Keep the active provider login unchanged during saved-account work.
+- [x] Keep the active provider login unchanged during saved-account work.
 
 **Load-bearing tests:**
 
@@ -2180,10 +2180,18 @@ coordination.
 **Execution record:** Commit `43b3121` introduced the bounded non-secret
 journal, portable duplicate-destination checks, source-guard revalidation,
 multi-bundle old/new recovery, authority-last commit, and credential-aware
-account-store mutation. The exact staged snapshot passed 35 focused tests,
-Ruff, `ty`, and isolated exact-wheel verification. The complete transaction
-suite also passed under native Windows CPython 3.14 on NTFS, including the
-case-insensitive and trailing-dot/space namespace contract.
+account-store mutation. Commit `d8617b3` added the provider-neutral service,
+closed typed outcomes, exact identity policy, active-login isolation,
+provider-owned parsing, safe diagnostics, and one coherent account-plus-auth
+commit for manual, detected, refreshed, imported, exported, and usage-derived
+updates. Commit `13804b1` made the two host-sensitive provider checks exercise
+their intended branches without weakening their inputs. The resulting tree
+passed the complete Linux, macOS, and Windows Python 3.14 matrix, the released
+`v0.6.0` compatibility reader, pre-commit and security gates, both Homebrew
+source builds, and exact wheel/sdist verification. Independent rereview also
+replayed the real-store regressions for active-home non-adoption, canonical
+bundle ownership, and atomic Codex identity self-healing and found no split
+generation or secret-safety defect.
 
 **Acceptance:** One canonical credential model and one provider-neutral
 coordination service exist. No command reaches provider-private parsers.
@@ -2404,22 +2412,38 @@ tests under a NO-GO disposition.
 - Modify `src/sidekick_usages/paths.py`.
 - Convert `src/sidekick_usages/persistence/migrations.py` atomically to a thin
   `persistence/migrations/` facade with focused `service.py`, `account.py`,
-  `location.py`, and `ports.py` modules. The service remains the sole writer;
-  location assessment remains pure.
+  `errors.py`, `location.py`, and `ports.py` modules. Move and extend
+  `persistence/migration_errors.py` into that package in the same change. The
+  service remains the sole writer; location assessment remains pure.
+- Modify `src/sidekick_usages/persistence/credential_transaction_schema.py`,
+  `credential_transactions.py`, and `private_credentials.py` for the
+  migration-only version-two journal and bounded relative private-bundle
+  paths. Runtime version-one recovery remains strict and unchanged.
 - Add `src/sidekick_usages/providers/codex/auth_migration.py` for the concrete
   migration port rather than expanding the existing auth module past its
   cohesive size target.
 - Modify `src/sidekick_usages/doctor.py` for read-only assessment and guidance.
-- Modify final composition in `src/sidekick_usages/cli/app.py` and the typed
-  doctor composition path.
+- Modify final composition in `src/sidekick_usages/cli/app.py`, typed
+  composition in `cli/context.py`, and the explicit
+  `cli/commands/migrate.py` owner.
 - Modify `pyproject.toml` and `uv.lock` to add the approved direct
   `platformdirs` dependency.
-- Add focused path/location migration tests and doctor cases.
+- Modify `packaging/smoke_wheel.py`, `tests/test_packaging.py`, and the
+  released-v0.6 compatibility harness for the final package and dependency
+  contract.
+- Add focused path/location migration tests, doctor cases, and exact artifact
+  checks.
 
 **Required internal order:**
 
 - [ ] Freeze exact canonical paths from CS-09 evidence.
 - [ ] Implement side-effect-free, generation-aware read-only assessment.
+- [ ] Keep location state orthogonal to one file's schema assessment. Define
+      immutable `LocationCandidate`, `RuntimePersistenceSelection`,
+      `LocationMigrationAssessment`, `LocationMigrationPlan`, and
+      `LocationMigrationResult` models in `migrations/location.py`; compare
+      deterministic rewritten account and private-bundle state rather than
+      raw account-file bytes.
 - [ ] Define the narrow `PrivateAuthMigrator` port in persistence and implement
       it in Codex auth in this conditional change set only.
 - [ ] Make normal executable composition assess locations before store load.
@@ -2431,6 +2455,11 @@ tests under a NO-GO disposition.
       collisions, and partial destinations.
 - [ ] Prove idempotence and concurrency behavior before enabling writes.
 - [ ] Copy and validate every required private auth bundle.
+- [ ] Support bounded nested Sidekick-owned bundle descendants, not just
+      direct children. Journal version two stores at most eight safe relative
+      components, 255 UTF-8 bytes per component, and 1024 UTF-8 bytes joined;
+      reject absolute or anchored paths, traversal, symlink escapes, portable
+      aliases, platform-reserved names, and path collisions.
 - [ ] Reuse the CS-18 multi-bundle journal and authority-last transaction;
       do not loop a single-bundle writer or create a second migration writer.
 - [ ] Acquire distinct compatibility and canonical locks in deterministic
@@ -2465,6 +2494,10 @@ tests under a NO-GO disposition.
 - [ ] Retain every old durable source and backup; delete nothing automatically.
 - [ ] Treat lifetime cache independently and regenerate it only after its
       lifecycle is proven.
+- [ ] Register `migrate locations [--yes]` as the sole explicit relocation
+      surface. Keep `migrate accounts` schema/prototype-only; normal
+      composition may select proven canonical state but never starts a
+      relocation implicitly.
 - [ ] Repeat the CS-14 compatibility harness after native relocation: make a
       new canonical write, run the approved rollback preparation into the
       compatibility generation, and prove the actual `v0.6.0` binary reads the
@@ -2486,10 +2519,12 @@ tests under a NO-GO disposition.
 
 - Equal old and canonical roots require no relocation.
 - Distinct roots preserve each account's relative destination.
-- Existing-root descendants migrate.
+- Existing-root direct and bounded nested descendants migrate.
 - External and provider-native homes remain untouched.
 - Already-canonical homes remain canonical.
 - Misleading sibling prefixes and symlink escapes are rejected.
+- Traversal, over-depth, overlong, platform-reserved, case-folding, and
+  trailing-dot/space relative-path aliases are rejected.
 - Equivalent destinations are idempotent; conflicting or partial destinations
   are typed failures.
 - Account paths change only after all required copies validate.
@@ -2512,6 +2547,12 @@ tests under a NO-GO disposition.
 - Migration generation-zero before/after-authority recovery passes while the
   runtime credential commit remains version-one-only and an architecture check
   enforces its sole migration caller.
+
+**Explicit command acceptance:** `migrate locations` previews the same closed
+assessment used by doctor, requires confirmation unless `--yes` is supplied,
+coordinates all private-bundle work before account authority, and is the only
+surface allowed to activate canonical native storage. Help and version still
+perform no path discovery or assessment.
 
 **Operational acceptance:**
 

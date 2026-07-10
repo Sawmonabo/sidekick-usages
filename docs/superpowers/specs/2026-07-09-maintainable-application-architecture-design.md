@@ -614,6 +614,7 @@ src/sidekick_usages/
 │   │   ├── __init__.py
 │   │   ├── service.py
 │   │   ├── account.py
+│   │   ├── errors.py
 │   │   ├── location.py
 │   │   └── ports.py
 │   ├── filesystem.py
@@ -896,11 +897,13 @@ the Sidekick durable-state location-migration workflow and receives
   permission enforcement, and final atomic account-state commit.
 
 `persistence/migrations/ports.py` defines the narrow typed
-`PrivateAuthMigrator` port for assessment, validated copy, permission
-enforcement, and destination-collision reporting. The concrete Codex
-`auth_migration.py` adapter implements that port. The current composition root
-injects the implementation; the persistence package never imports a provider
-package directly.
+`PrivateAuthMigrator` port for assessment, exact-byte preparation, persisted
+path rewriting, permission requirements, and destination-collision reporting.
+The adapter never independently writes. The persistence service commits its
+prepared private-bundle tuple through the shared authority-last transaction.
+The concrete Codex `auth_migration.py` adapter implements that port. The
+current composition root injects the implementation; the persistence package
+never imports a provider package directly.
 
 The Codex auth adapter remains the owner of `auth.json` validation and
 credential-file semantics. The migration coordinator does not adopt
@@ -1800,7 +1803,7 @@ across a generic utility module:
 | `heartbeat.py` | heartbeat group, label fallback, enable, disable, status, heartbeat outcome output, and heartbeat exit reduction |
 | `maintenance.py` | `maintain`, quiet/scheduled filtering, combined maintenance output, and combined exit reduction |
 | `doctor.py` | `doctor`, exhaustive `DoctorState` handling, filtering, diagnostic output, and doctor exit reduction |
-| `migrate.py` | account migration, rollback preparation, preview, confirmation, success output, and persistence error mapping |
+| `migrate.py` | account migration, native-location migration, rollback preparation, preview, confirmation, success output, and persistence error mapping |
 | `permissions.py` | permission-repair preview, confirmation, execution, and result output |
 | `daemon.py` | daemon group, install, status, uninstall, backend validation, result output, and scheduler exit mapping |
 | `updates.py` | `check-update`, `update`, update result output, and update exit mapping |
@@ -1998,7 +2001,8 @@ The `persistence/migrations/` package owns both explicitly supported
 stored-schema migrations and the durable-state location-migration coordinator
 defined in section 4.2. Its thin initializer preserves the public migration
 facade; `service.py` is the sole writer, `account.py` owns current generation
-transitions, `location.py` owns pure assessment/planning, and `ports.py` owns
+transitions, `errors.py` owns the existing and new migration-only error
+vocabulary, `location.py` owns pure assessment/planning, and `ports.py` owns
 the injected interfaces. It does not discover paths, parse provider-native
 homes, or own Codex auth schemas, and it never imports a provider package.
 
@@ -2430,6 +2434,7 @@ The authorized surfaces are:
 
 ```text
 sidekick-usages migrate accounts [--yes] [--reimport-prototype]
+sidekick-usages migrate locations [--yes]
 sidekick-usages migrate prepare-rollback --target v0.6.0 [--yes]
 sidekick-usages permissions repair [--yes]
 ```
@@ -2442,6 +2447,13 @@ bounded owner-controlled bootstrap needed to make the released account parent
 lockable, then acquires the same normal lock before any credential-tree repair.
 Prototype reimport is never automatic and requires the explicit option and
 confirmation.
+
+`migrate accounts` remains limited to stored-schema and prototype transitions.
+`migrate locations` is the only command that may activate the native data
+location and relocate Sidekick-owned private auth. Normal application
+composition may select an already proven canonical authority, but it never
+starts a location migration implicitly. Preview and doctor expose the same
+closed location assessment before either command asks for confirmation.
 
 The lock budget is exactly five seconds with a 100 ms check interval. The
 filesystem adapter securely creates or opens and validates the persistent
@@ -2518,10 +2530,19 @@ The runtime `PrivateCredentialTransaction.commit()` API remains version-one
 only. CS-19 adds a separately named migration commit whose target generation
 is explicit and payload-validated. Credential journal version two records a
 base generation coherent with absent/present base authority plus the target
-generation. Divergent-source recovery accepts only version-two journals. The
-decoder continues to accept version-one journals with an implicit version-one
-target for ordinary strict recovery. Only `persistence/migrations/service.py`
-may invoke the migration commit.
+generation. Version two also replaces the version-one bundle basename with a
+validated relative bundle path: at most eight non-empty components, at most
+255 UTF-8 bytes per component, and at most 1024 UTF-8 bytes for the joined
+POSIX-form path. Every component passes the existing safe-basename and
+portable-namespace rules; absolute paths, anchors, drives, `.`/`..`, empty
+components, separators inside components, traversal, symlink escapes,
+case-folding aliases, trailing-dot/space aliases, and platform-reserved names
+fail closed. The transaction resolves the path below the bound private root
+and reconstructs no destination from unchecked text. Version one retains its
+single-basename grammar unchanged. Divergent-source recovery accepts only
+version-two journals. The decoder continues to accept version-one journals
+with an implicit version-one target for ordinary strict recovery. Only
+`persistence/migrations/service.py` may invoke the migration commit.
 
 ##### Prototype receipt and reset
 
@@ -3424,6 +3445,23 @@ order, all sources are revalidated while held, and the compatibility authority
 is fingerprint-checked around the canonical commit to detect a concurrent
 released writer that does not understand the new lock.
 
+Location state is orthogonal to the schema state of any one account file.
+`persistence/migrations/location.py` owns immutable `LocationCandidate`,
+`RuntimePersistenceSelection`, `LocationMigrationAssessment`,
+`LocationMigrationPlan`, and `LocationMigrationResult` models. A candidate
+contains its role, safe path, and existing `PersistenceAssessment`; the
+overall assessment selects empty, compatibility, canonical, or blocked
+runtime authority and carries the safe source, destination, private-auth
+summary, artifact basename, issues, write-blocked state, and exact next
+command. It distinguishes equivalent, conflicting, malformed, unreadable,
+and partial location states without adding those meanings to
+`PersistenceCode`. Semantic equivalence compares the deterministic rewritten
+account authority and every referenced private bundle, not raw account-file
+bytes. Account equality without private-bundle coherence is partial. After
+CS-19, `DoctorReady` and `DoctorBlocked` carry this location assessment, which
+contains the selected candidate's schema assessment; a blocked state still
+constructs no `AccountStore`.
+
 `Account.codex_home` is persisted and may point either to a Sidekick-owned
 private auth bundle or an external/source `CODEX_HOME`. Migration copies
 private auth bundles first and rewrites only paths proven to be descendants of
@@ -3435,6 +3473,13 @@ import in persistence. Auth files retain owner-only permissions. Updated
 account state is committed atomically only after every required copy and
 validation succeeds; old data remains in place. Partial destinations and
 conflicting bundles are typed failures visible in `doctor`.
+
+“Descendant” includes bounded nested Sidekick-owned paths, not only direct
+children. The relative path uses the version-two grammar above and is proven
+with resolved containment, never string-prefix comparison. The provider
+adapter prepares exact source bytes and rewritten account paths but performs
+no write; the persistence transaction validates every destination namespace,
+copies the complete deterministic tuple, and publishes account authority last.
 
 This phase does not add `pydantic-settings`, a global settings singleton, or an
 empty configuration package.
