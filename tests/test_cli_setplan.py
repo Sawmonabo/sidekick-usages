@@ -7,8 +7,10 @@ from rich.console import Console
 from typer.testing import CliRunner
 
 from sidekick_usages import cli
+from sidekick_usages.core.models import Account, ClaudeCredentials
+from sidekick_usages.core.types import AccountLabel
 from sidekick_usages.http import HttpClient
-from sidekick_usages.store import Account, AccountStore
+from sidekick_usages.store import AccountStore
 from tests.test_support import FixedClock, make_application_paths
 
 
@@ -35,7 +37,9 @@ def _ctx(tmp_path: Path, account: Account) -> AccountStore:
 
 def _acct(label: str, plan: str) -> Account:
     return Account(
-        label=label, provider_id="claude", access_token="t", plan=plan
+        label=AccountLabel(label),
+        credentials=ClaudeCredentials(access_token="t"),
+        plan=plan,
     )
 
 

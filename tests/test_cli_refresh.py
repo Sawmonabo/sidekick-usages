@@ -4,29 +4,37 @@ import io
 import json
 import re
 from collections.abc import Iterable
-from datetime import timedelta
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
 
+import pytest
 from rich.console import Console
 from typer.testing import CliRunner
 
 from sidekick_usages import cli
 from sidekick_usages.clock import Clock
-from sidekick_usages.core.types import ProviderId
+from sidekick_usages.core.expiry import Expiry, KnownExpiry, UnknownExpiry
+from sidekick_usages.core.models import (
+    Account,
+    ClaudeCredentials,
+    CodexCredentials,
+    DetectedCredentials,
+    UsageReport,
+    UsageWindow,
+)
+from sidekick_usages.core.types import AccountLabel, ProviderId, RefreshStatus
 from sidekick_usages.errors import AuthError, RateLimitError
 from sidekick_usages.http import HttpClient
-from sidekick_usages.providers.base import DetectedCredentials, Provider
-from sidekick_usages.report import UsageReport, UsageWindow
-from sidekick_usages.store import Account, AccountStore
+from sidekick_usages.providers.base import Provider
+from sidekick_usages.store import AccountStore
 from tests.test_support import (
     REFERENCE_TIME,
     FixedClock,
     make_application_paths,
 )
 
-_CLAUDE_NOW_MS = int(REFERENCE_TIME.timestamp() * 1000)
-_CODEX_NOW_SECONDS = int(REFERENCE_TIME.timestamp())
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 
 class _FakeProvider(Provider):
@@ -74,7 +82,12 @@ class _FakeProvider(Provider):
         del http
         self.fetch_tokens.append(account.access_token)
         if self.provider_account_id_on_fetch is not None:
-            account.provider_account_id = self.provider_account_id_on_fetch
+            credentials = account.credentials
+            assert isinstance(credentials, CodexCredentials)
+            account.credentials = replace(
+                credentials,
+                account_id=self.provider_account_id_on_fetch,
+            )
         if not self.fetch_results:
             return _report()
         result = self.fetch_results.pop(0)
@@ -92,13 +105,25 @@ class _FakeProvider(Provider):
         self.refresh_calls += 1
         if not self.refresh_ok:
             return False
-        account.access_token = "sk-ant-oat01-refreshed"
-        account.refresh_token = "refresh-new"
-        if self.id == "codex":
-            account.expires_at = _CODEX_NOW_SECONDS + 60
-            account.provider_account_id = "acct_refreshed"
+        credentials = account.credentials
+        if isinstance(credentials, CodexCredentials):
+            account.credentials = replace(
+                credentials,
+                access_token="sk-ant-oat01-refreshed",
+                refresh_token="refresh-new",
+                expiry=KnownExpiry(
+                    REFERENCE_TIME.replace(microsecond=0)
+                    + timedelta(seconds=60)
+                ),
+                account_id="acct_refreshed",
+            )
         else:
-            account.expires_at = _CLAUDE_NOW_MS + 60_000
+            account.credentials = replace(
+                credentials,
+                access_token="sk-ant-oat01-refreshed",
+                refresh_token="refresh-new",
+                expiry=KnownExpiry(REFERENCE_TIME + timedelta(seconds=60)),
+            )
         return True
 
     def run_setup_token(self) -> str | None:
@@ -109,9 +134,8 @@ class _FakeProvider(Provider):
 def _report() -> UsageReport:
     """Build a one-window usage report."""
     return UsageReport(
-        windows=[UsageWindow(name="5h", utilization=0.1, resets_at=None)],
+        windows=(UsageWindow(name="5h", utilization=0.1, resets_at=None),),
         plan="team",
-        raw={},
     )
 
 
@@ -165,7 +189,7 @@ def _install_ctx(
 
 def _install_many_ctx(
     tmp_path: Path,
-    providers: dict[str, Provider],
+    providers: dict[ProviderId, Provider],
     accounts: Iterable[Account],
     *,
     clock: Clock | None = None,
@@ -227,37 +251,107 @@ def _acct(
     *,
     access_token: str = "sk-ant-oat01-old",
     refresh_token: str | None = "refresh-old",
-    expires_at: int | None = None,
-    scopes: list[str] | None = None,
-    provider_id: str = "claude",
+    expiry: Expiry | None = None,
+    scopes: tuple[str, ...] | None = None,
+    plan: str = "team",
+) -> Account:
+    """Build a Claude account fixture."""
+    return Account(
+        label=AccountLabel("team"),
+        credentials=ClaudeCredentials(
+            access_token=access_token,
+            refresh_token=refresh_token,
+            expiry=expiry or UnknownExpiry(),
+            scopes=scopes,
+        ),
+        plan=plan,
+    )
+
+
+def _codex_acct(
+    *,
+    access_token: str = "sk-ant-oat01-old",
+    refresh_token: str | None = "refresh-old",
+    expiry: Expiry | None = None,
     plan: str = "team",
     codex_home: str | None = None,
+    provider_account_id: str | None = None,
+    id_token: str | None = None,
+    last_refresh: str | None = None,
 ) -> Account:
-    """Build an account fixture."""
+    """Build a Codex account fixture."""
     return Account(
-        label="team",
-        provider_id=provider_id,
-        access_token=access_token,
-        refresh_token=refresh_token,
-        expires_at=expires_at,
+        label=AccountLabel("team"),
+        credentials=CodexCredentials(
+            access_token=access_token,
+            refresh_token=refresh_token,
+            expiry=expiry or UnknownExpiry(),
+            account_id=provider_account_id,
+            auth_home=codex_home,
+            id_token=id_token,
+            auth_last_refresh=last_refresh,
+        ),
         plan=plan,
-        scopes=scopes,
-        codex_home=codex_home,
     )
+
+
+def _detected(
+    *,
+    access_token: str,
+    provider_id: str = "claude",
+    refresh_token: str | None = None,
+    expiry: Expiry | None = None,
+    plan: str = "unknown",
+    scopes: tuple[str, ...] | None = None,
+    provider_account_id: str | None = None,
+    id_token: str | None = None,
+    last_refresh: str | None = None,
+) -> DetectedCredentials:
+    """Build one provider-compatible detected credential result."""
+    provider = ProviderId(provider_id)
+    expiry_value = expiry or UnknownExpiry()
+    credentials = (
+        ClaudeCredentials(
+            access_token=access_token,
+            refresh_token=refresh_token,
+            expiry=expiry_value,
+            scopes=scopes,
+        )
+        if provider is ProviderId.CLAUDE
+        else CodexCredentials(
+            access_token=access_token,
+            refresh_token=refresh_token,
+            expiry=expiry_value,
+            account_id=provider_account_id,
+            id_token=id_token,
+            auth_last_refresh=last_refresh,
+        )
+    )
+    return DetectedCredentials(credentials=credentials, plan=plan)
+
+
+def _seconds(value: int) -> KnownExpiry:
+    """Build a strict whole-second expiry fixture."""
+    return KnownExpiry(_EPOCH + timedelta(seconds=value))
+
+
+def _milliseconds(value: int) -> KnownExpiry:
+    """Build a strict whole-millisecond expiry fixture."""
+    return KnownExpiry(_EPOCH + timedelta(milliseconds=value))
 
 
 def test_refresh_command_persists_detected_empty_scopes(
     tmp_path: Path,
 ) -> None:
     """Manual refresh can clear stale scope metadata with ``[]``."""
-    acct = _acct(scopes=["user:profile"])
+    acct = _acct(scopes=("user:profile",))
     provider = _FakeProvider(
-        detected=DetectedCredentials(
+        detected=_detected(
             access_token="sk-ant-oat01-current",
             refresh_token="refresh-current",
-            expires_at=1770000000000,
+            expiry=_milliseconds(1_770_000_000_000),
             plan="team",
-            scopes=[],
+            scopes=(),
         )
     )
     store, _, _ = _install_ctx(tmp_path, provider, acct)
@@ -269,21 +363,22 @@ def test_refresh_command_persists_detected_empty_scopes(
     assert saved is not None
     assert saved.access_token == "sk-ant-oat01-current"
     assert saved.refresh_token == "refresh-current"
-    assert saved.scopes == []
+    assert saved.scopes == ()
 
 
 def test_refresh_command_persists_detected_provider_account_id(
     tmp_path: Path,
 ) -> None:
     """Manual refresh records the Codex account id used by usage fetch."""
-    acct = _acct(provider_id="codex")
-    detected = DetectedCredentials(
+    acct = _codex_acct()
+    detected = _detected(
         access_token="eyJ-current.access.sig",
+        provider_id="codex",
         refresh_token="refresh-current",
-        expires_at=1_770_000_000,
+        expiry=_seconds(1_770_000_000),
         plan="pro",
+        provider_account_id="acct_current",
     )
-    detected.provider_account_id = "acct_current"
     provider = _FakeProvider(
         detected=detected,
         provider_id="codex",
@@ -304,13 +399,16 @@ def test_refresh_command_imports_default_codex_login_to_private_cache(
     """Refreshing a Codex label reads default login and caches a copy."""
     cache_dir = _codex_cache_dir(tmp_path)
     old_home = tmp_path / "old-external-home"
-    acct = _acct(provider_id="codex", codex_home=str(old_home))
-    acct.provider_account_id = "acct_current"
+    acct = _codex_acct(
+        codex_home=str(old_home),
+        provider_account_id="acct_current",
+    )
     provider = _FakeProvider(
-        detected=DetectedCredentials(
+        detected=_detected(
             access_token="eyJ-current.access.sig",
+            provider_id="codex",
             refresh_token="refresh-current",
-            expires_at=1_770_000_000,
+            expiry=_seconds(1_770_000_000),
             plan="pro",
             provider_account_id="acct_current",
             id_token="id-token-current",
@@ -335,7 +433,7 @@ def test_refresh_command_imports_default_codex_login_to_private_cache(
     assert saved.codex_home == str(cache_dir / "team")
     assert saved.codex_id_token == "id-token-current"
     assert saved.codex_last_refresh == "2026-06-12T00:00:00Z"
-    assert saved.last_refresh_at == "2026-06-12T12:34:56.789000Z"
+    assert saved.last_refresh_at == REFERENCE_TIME
     cached = json.loads((cache_dir / "team" / "auth.json").read_text())
     assert cached["tokens"]["access_token"] == "eyJ-current.access.sig"
     assert cached["tokens"]["refresh_token"] == "refresh-current"
@@ -351,13 +449,16 @@ def test_refresh_command_from_codex_home_overrides_saved_home(
     cache_dir = _codex_cache_dir(tmp_path)
     old_home = tmp_path / "codex-old"
     source_home = tmp_path / "codex-source"
-    acct = _acct(provider_id="codex", codex_home=str(old_home))
-    acct.provider_account_id = "acct_current"
+    acct = _codex_acct(
+        codex_home=str(old_home),
+        provider_account_id="acct_current",
+    )
     provider = _FakeProvider(
-        detected=DetectedCredentials(
+        detected=_detected(
             access_token="eyJ-current.access.sig",
+            provider_id="codex",
             refresh_token="refresh-current",
-            expires_at=1_770_000_000,
+            expiry=_seconds(1_770_000_000),
             plan="pro",
             provider_account_id="acct_current",
             id_token="id-token-current",
@@ -383,12 +484,12 @@ def test_refresh_command_rejects_provider_account_id_mismatch(
     tmp_path: Path,
 ) -> None:
     """Manual refresh refuses to copy the wrong Codex login into a label."""
-    acct = _acct(provider_id="codex")
-    acct.provider_account_id = "acct_saved"
-    detected = DetectedCredentials(
+    acct = _codex_acct(provider_account_id="acct_saved")
+    detected = _detected(
         access_token="eyJ-current.access.sig",
+        provider_id="codex",
         refresh_token="refresh-current",
-        expires_at=1_770_000_000,
+        expiry=_seconds(1_770_000_000),
         plan="pro",
         provider_account_id="acct_current",
     )
@@ -412,12 +513,12 @@ def test_refresh_command_replace_identity_allows_provider_account_id_mismatch(
     tmp_path: Path,
 ) -> None:
     """Explicit replacement recovers a label that already has bad identity."""
-    acct = _acct(provider_id="codex")
-    acct.provider_account_id = "acct_saved"
-    detected = DetectedCredentials(
+    acct = _codex_acct(provider_account_id="acct_saved")
+    detected = _detected(
         access_token="eyJ-current.access.sig",
+        provider_id="codex",
         refresh_token="refresh-current",
-        expires_at=1_770_000_000,
+        expiry=_seconds(1_770_000_000),
         plan="pro",
         provider_account_id="acct_current",
     )
@@ -444,14 +545,14 @@ def test_refresh_all_refreshes_due_tokens_without_detecting_local_credentials(
     tmp_path: Path,
 ) -> None:
     """Bulk maintenance refresh uses saved refresh tokens only."""
-    acct = _acct(expires_at=_CLAUDE_NOW_MS - 1_000)
+    acct = _acct(expiry=KnownExpiry(REFERENCE_TIME - timedelta(seconds=1)))
     provider = _FakeProvider(
-        detected=DetectedCredentials(access_token="sk-ant-oat01-local")
+        detected=_detected(access_token="sk-ant-oat01-local")
     )
     clock = FixedClock()
     store, stdout, stderr = _install_many_ctx(
         tmp_path,
-        {"claude": provider},
+        {ProviderId.CLAUDE: provider},
         [acct],
         clock=clock,
     )
@@ -466,8 +567,8 @@ def test_refresh_all_refreshes_due_tokens_without_detecting_local_credentials(
     saved = store.get("team")
     assert saved is not None
     assert saved.access_token == "sk-ant-oat01-refreshed"
-    assert saved.last_refresh_at == "2026-06-12T12:34:56.789000Z"
-    assert saved.last_refresh_status == "ok"
+    assert saved.last_refresh_at == REFERENCE_TIME
+    assert saved.last_refresh_status is RefreshStatus.OK
     assert saved.last_refresh_error is None
 
 
@@ -475,12 +576,12 @@ def test_refresh_all_skips_fresh_tokens_unless_forced(
     tmp_path: Path,
 ) -> None:
     """Bulk maintenance avoids needless refreshes until forced."""
-    acct = _acct(expires_at=_CLAUDE_NOW_MS + 3_600_000)
+    acct = _acct(expiry=KnownExpiry(REFERENCE_TIME + timedelta(hours=1)))
     provider = _FakeProvider()
     clock = FixedClock()
     _install_many_ctx(
         tmp_path,
-        {"claude": provider},
+        {ProviderId.CLAUDE: provider},
         [acct],
         clock=clock,
     )
@@ -503,11 +604,11 @@ def test_refresh_all_persists_failed_refresh_diagnostic(
     tmp_path: Path,
 ) -> None:
     """Rejected refresh tokens are recorded for doctor and exit 1."""
-    acct = _acct(expires_at=_CLAUDE_NOW_MS - 1_000)
+    acct = _acct(expiry=KnownExpiry(REFERENCE_TIME - timedelta(seconds=1)))
     provider = _FakeProvider(refresh_ok=False)
     store, stdout, _ = _install_many_ctx(
         tmp_path,
-        {"claude": provider},
+        {ProviderId.CLAUDE: provider},
         [acct],
     )
 
@@ -518,13 +619,13 @@ def test_refresh_all_persists_failed_refresh_diagnostic(
     saved = store.get("team")
     assert saved is not None
     assert saved.access_token == "sk-ant-oat01-old"
-    assert saved.last_refresh_status == "failed"
+    assert saved.last_refresh_status is RefreshStatus.FAILED
     assert saved.last_refresh_error is not None
 
 
 def test_expired_account_refreshes_before_first_fetch(tmp_path: Path) -> None:
     """Known-expired accounts refresh before spending a usage request."""
-    acct = _acct(expires_at=_CLAUDE_NOW_MS - 1_000)
+    acct = _acct(expiry=KnownExpiry(REFERENCE_TIME - timedelta(seconds=1)))
     provider = _FakeProvider(fetch_results=[_report()])
     store, _, _ = _install_ctx(tmp_path, provider, acct)
 
@@ -541,9 +642,8 @@ def test_expired_codex_account_refreshes_before_first_fetch(
     tmp_path: Path,
 ) -> None:
     """Codex uses seconds-based expiry for proactive refresh."""
-    acct = _acct(
-        expires_at=_CODEX_NOW_SECONDS - 1,
-        provider_id="codex",
+    acct = _codex_acct(
+        expiry=KnownExpiry(REFERENCE_TIME - timedelta(seconds=1)),
     )
     provider = _FakeProvider(fetch_results=[_report()], provider_id="codex")
     store, _, _ = _install_ctx(tmp_path, provider, acct)
@@ -562,7 +662,7 @@ def test_auth_error_refreshes_and_retries_unknown_expiry(
     tmp_path: Path,
 ) -> None:
     """Unknown-expiry accounts still refresh after a 401 response."""
-    acct = _acct(expires_at=None)
+    acct = _acct()
     provider = _FakeProvider(
         fetch_results=[AuthError("Token expired"), _report()]
     )
@@ -582,19 +682,18 @@ def test_auth_error_refreshes_and_retries_unknown_expiry(
 
 def test_successful_fetch_persists_reported_plan(tmp_path: Path) -> None:
     """Provider-reported plans are saved for future account headers."""
-    acct = _acct(provider_id="codex", plan="unknown")
+    acct = _codex_acct(plan="unknown")
     provider = _FakeProvider(
         fetch_results=[
             UsageReport(
-                windows=[
+                windows=(
                     UsageWindow(
                         name="5h",
                         utilization=0.1,
                         resets_at=None,
-                    )
-                ],
+                    ),
+                ),
                 plan="pro",
-                raw={},
             )
         ],
         provider_id="codex",
@@ -610,19 +709,18 @@ def test_successful_fetch_persists_reported_plan(tmp_path: Path) -> None:
 
 def test_successful_fetch_persists_provider_account_id(tmp_path: Path) -> None:
     """Provider-filled account ids are saved for older Codex entries."""
-    acct = _acct(provider_id="codex", plan="pro")
+    acct = _codex_acct(plan="pro")
     provider = _FakeProvider(
         fetch_results=[
             UsageReport(
-                windows=[
+                windows=(
                     UsageWindow(
                         name="5h",
                         utilization=0.1,
                         resets_at=None,
-                    )
-                ],
+                    ),
+                ),
                 plan="unknown",
-                raw={},
             )
         ],
         provider_id="codex",
@@ -646,7 +744,7 @@ def test_retry_rate_limit_after_refresh_is_rendered_per_account(
     tmp_path: Path,
 ) -> None:
     """A retry failure after refresh returns False instead of escaping."""
-    acct = _acct(expires_at=None)
+    acct = _acct()
     provider = _FakeProvider(
         fetch_results=[
             AuthError("Token expired"),
@@ -662,10 +760,10 @@ def test_auth_error_does_not_adopt_current_local_credentials(
     tmp_path: Path,
 ) -> None:
     """Failed refresh does not blindly copy the current local Claude login."""
-    acct = _acct(expires_at=None)
+    acct = _acct()
     provider = _FakeProvider(
         fetch_results=[AuthError("Token expired")],
-        detected=DetectedCredentials(access_token="sk-ant-oat01-current"),
+        detected=_detected(access_token="sk-ant-oat01-current"),
         refresh_ok=False,
     )
     store, _, _ = _install_ctx(tmp_path, provider, acct)
@@ -683,10 +781,11 @@ def test_add_codex_uses_default_login_and_writes_private_cache(
     """Adding Codex from default login copies auth into private cache."""
     cache_dir = _codex_cache_dir(tmp_path)
     provider = _FakeProvider(
-        detected=DetectedCredentials(
+        detected=_detected(
             access_token="eyJ-current.access.sig",
+            provider_id="codex",
             refresh_token="refresh-current",
-            expires_at=1_770_000_000,
+            expiry=_seconds(1_770_000_000),
             plan="pro",
             provider_account_id="acct_current",
             id_token="id-token-current",
@@ -715,15 +814,16 @@ def test_add_codex_uses_default_login_and_writes_private_cache(
 
 def test_codex_login_runs_plain_cli_and_imports_private_cache(
     tmp_path: Path,
-    monkeypatch: Any,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """codex-login leaves global ~/.codex as source for other apps."""
     cache_dir = _codex_cache_dir(tmp_path)
     provider = _FakeProvider(
-        detected=DetectedCredentials(
+        detected=_detected(
             access_token="eyJ-current.access.sig",
+            provider_id="codex",
             refresh_token="refresh-current",
-            expires_at=1_770_000_000,
+            expiry=_seconds(1_770_000_000),
             plan="pro",
             provider_account_id="acct_current",
             id_token="id-token-current",
@@ -771,14 +871,13 @@ def test_codex_export_writes_saved_credentials_to_home(
 ) -> None:
     """Saved Codex credentials can be exported into an isolated home."""
     codex_home = tmp_path / "codex-team"
-    acct = _acct(
-        provider_id="codex",
+    acct = _codex_acct(
         access_token="eyJ-current.access.sig",
         refresh_token="refresh-current",
+        provider_account_id="acct_current",
+        id_token="id-token-current",
+        last_refresh="2026-06-12T00:00:00Z",
     )
-    acct.provider_account_id = "acct_current"
-    acct.codex_id_token = "id-token-current"
-    acct.codex_last_refresh = "2026-06-12T00:00:00Z"
     provider = _FakeProvider(provider_id="codex")
     store, _, _ = _install_ctx(tmp_path, provider, acct)
 
@@ -807,17 +906,14 @@ def test_check_renders_grouped_overview(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "claude_lifetime_output", lambda: (1, None))
     acct = _acct(plan="max")
     report = UsageReport(
-        windows=[
+        windows=(
             UsageWindow(
                 name="5h",
                 utilization=0.1,
-                resets_at=(
-                    REFERENCE_TIME + timedelta(hours=3, minutes=50)
-                ).isoformat(),
-            )
-        ],
+                resets_at=REFERENCE_TIME + timedelta(hours=3, minutes=50),
+            ),
+        ),
         plan="team",
-        raw={},
     )
     provider = _FakeProvider(fetch_results=[report])
     clock = FixedClock()

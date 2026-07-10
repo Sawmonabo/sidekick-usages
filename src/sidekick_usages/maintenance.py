@@ -7,18 +7,29 @@ label.
 """
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
+from typing import assert_never
 
 from sidekick_usages.clock import Clock
-from sidekick_usages.core.types import ExitCode, ProviderId
+from sidekick_usages.core.expiry import (
+    ClassifiedExpiry,
+    ExpiredExpiry,
+    InvalidExpiry,
+    UnknownExpiry,
+    ValidExpiry,
+    classify_expiry,
+)
+from sidekick_usages.core.models import Account
+from sidekick_usages.core.types import (
+    AccountLabel,
+    ExitCode,
+    ProviderId,
+    RefreshStatus,
+)
 from sidekick_usages.errors import UsageError
 from sidekick_usages.http import HttpClient
 from sidekick_usages.providers.base import Provider
-from sidekick_usages.store import Account, AccountStore
-
-REFRESH_OK = "ok"
-REFRESH_SKIPPED = "skipped"
-REFRESH_FAILED = "failed"
+from sidekick_usages.store import AccountStore
 
 CLAUDE_REFRESH_MARGIN_SECONDS = 30 * 60
 CODEX_REFRESH_MARGIN_SECONDS = 10 * 60
@@ -28,9 +39,9 @@ CODEX_REFRESH_MARGIN_SECONDS = 10 * 60
 class RefreshOutcome:
     """Result of one saved-token maintenance refresh."""
 
-    label: str
-    provider_id: str
-    status: str
+    label: AccountLabel
+    provider_id: ProviderId
+    status: RefreshStatus
     message: str
     exit_code: ExitCode = ExitCode.SUCCESS
     refreshed: bool = False
@@ -44,7 +55,7 @@ class TokenMaintenanceService:
         self,
         store: AccountStore,
         http: HttpClient,
-        providers: dict[str, Provider],
+        providers: dict[ProviderId, Provider],
         *,
         clock: Clock,
     ) -> None:
@@ -62,7 +73,7 @@ class TokenMaintenanceService:
     def refresh_all(
         self,
         *,
-        provider_id: str | None = None,
+        provider_id: ProviderId | None = None,
         force: bool = False,
     ) -> list[RefreshOutcome]:
         """Refresh all matching accounts that are due.
@@ -98,16 +109,20 @@ class TokenMaintenanceService:
                 exit_code=ExitCode.SYSTEM_ERROR,
             )
 
-        should_refresh, expiry_state = self._refresh_decision(
-            account,
-            force=force,
-        )
+        if force:
+            should_refresh, expiry = (True, None)
+        else:
+            should_refresh, expiry = self._refresh_decision(
+                account,
+                force=False,
+                reference_time=self.clock.now(),
+            )
         if not should_refresh:
             return RefreshOutcome(
                 label=account.label,
                 provider_id=account.provider_id,
-                status=REFRESH_SKIPPED,
-                message=expiry_state or "unknown",
+                status=RefreshStatus.SKIPPED,
+                message=_skipped_message(expiry),
             )
 
         if not account.refresh_token:
@@ -139,14 +154,18 @@ class TokenMaintenanceService:
         return RefreshOutcome(
             label=account.label,
             provider_id=account.provider_id,
-            status=REFRESH_OK,
+            status=RefreshStatus.OK,
             message="refreshed",
             refreshed=True,
         )
 
     def should_refresh(self, account: Account, *, force: bool = False) -> bool:
         """Return whether maintenance should refresh this account."""
-        should_refresh, _ = self._refresh_decision(account, force=force)
+        should_refresh, _ = self._refresh_decision(
+            account,
+            force=force,
+            reference_time=self.clock.now(),
+        )
         return should_refresh
 
     def _refresh_decision(
@@ -154,30 +173,30 @@ class TokenMaintenanceService:
         account: Account,
         *,
         force: bool,
-    ) -> tuple[bool, str | None]:
+        reference_time: datetime,
+    ) -> tuple[bool, ClassifiedExpiry | None]:
         """Return one refresh decision and its sampled expiry state."""
         if force:
             return (True, None)
-        expiry_state = self.expiry_state(account, self.clock.now())
+        expiry = self.expiry(account, reference_time)
         if not account.refresh_token:
-            return (False, expiry_state)
-        return (expiry_state in {"expired", "near_expiry"}, expiry_state)
+            return (isinstance(expiry, InvalidExpiry), expiry)
+        if isinstance(expiry, ExpiredExpiry | InvalidExpiry):
+            return (True, expiry)
+        if isinstance(expiry, ValidExpiry):
+            margin = timedelta(
+                seconds=refresh_margin_seconds(account.provider_id)
+            )
+            return (expiry.at <= reference_time + margin, expiry)
+        return (False, expiry)
 
-    def expiry_state(
+    def expiry(
         self,
         account: Account,
         reference_time: datetime,
-    ) -> str:
-        """Classify account expiry relative to provider refresh margins."""
-        expires_at = expiry_epoch_seconds(account)
-        if expires_at is None:
-            return "unknown"
-        now = reference_time.timestamp()
-        if expires_at <= now:
-            return "expired"
-        if expires_at <= now + refresh_margin_seconds(account.provider_id):
-            return "near_expiry"
-        return "fresh"
+    ) -> ClassifiedExpiry:
+        """Classify account expiry against one explicit reference time."""
+        return classify_expiry(account.expiry, now=reference_time)
 
     def _record_failed(
         self,
@@ -193,35 +212,26 @@ class TokenMaintenanceService:
         return RefreshOutcome(
             label=account.label,
             provider_id=account.provider_id,
-            status=REFRESH_FAILED,
+            status=RefreshStatus.FAILED,
             message=message,
             exit_code=exit_code,
             action_required=exit_code == ExitCode.MANUAL_ACTION,
         )
 
 
-def refresh_margin_seconds(provider_id: str) -> int:
+def refresh_margin_seconds(provider_id: ProviderId) -> int:
     """Return the provider-specific proactive refresh margin."""
     if provider_id == ProviderId.CLAUDE:
         return CLAUDE_REFRESH_MARGIN_SECONDS
     if provider_id == ProviderId.CODEX:
         return CODEX_REFRESH_MARGIN_SECONDS
-    return CODEX_REFRESH_MARGIN_SECONDS
-
-
-def expiry_epoch_seconds(account: Account) -> float | None:
-    """Normalize provider-native expiry units to Unix seconds."""
-    if account.expires_at is None:
-        return None
-    if account.provider_id == ProviderId.CLAUDE:
-        return account.expires_at / 1000
-    return float(account.expires_at)
+    assert_never(provider_id)
 
 
 def record_refresh_success(account: Account, reference_time: datetime) -> None:
     """Mark an account's latest refresh as successful."""
-    account.last_refresh_at = _utc_z(reference_time)
-    account.last_refresh_status = REFRESH_OK
+    account.last_refresh_at = reference_time
+    account.last_refresh_status = RefreshStatus.OK
     account.last_refresh_error = None
 
 
@@ -231,8 +241,8 @@ def record_refresh_failure(
     reference_time: datetime,
 ) -> None:
     """Mark an account's latest refresh as failed."""
-    account.last_refresh_at = _utc_z(reference_time)
-    account.last_refresh_status = REFRESH_FAILED
+    account.last_refresh_at = reference_time
+    account.last_refresh_status = RefreshStatus.FAILED
     account.last_refresh_error = message
 
 
@@ -247,6 +257,12 @@ def refresh_exit_code(outcomes: list[RefreshOutcome]) -> ExitCode:
     return ExitCode.SUCCESS
 
 
-def _utc_z(value: datetime) -> str:
-    """Return an aware timestamp in the existing UTC-Z representation."""
-    return value.isoformat().replace("+00:00", "Z")
+def _skipped_message(expiry: ClassifiedExpiry | None) -> str:
+    """Return stable human detail for a skipped refresh."""
+    if expiry is None:
+        return "unknown"
+    if isinstance(expiry, ValidExpiry):
+        return "fresh"
+    if isinstance(expiry, UnknownExpiry):
+        return "unknown"
+    return expiry.state.value

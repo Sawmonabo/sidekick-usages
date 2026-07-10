@@ -1,19 +1,19 @@
 """Codex-specific usage-window heartbeat adapter."""
 
-from sidekick_usages.core.types import ProviderId
+from datetime import datetime
+
+from sidekick_usages.core.models import Account, UsageReport, UsageWindow
+from sidekick_usages.core.types import HeartbeatStatus, ProviderId
 from sidekick_usages.errors import UsageError
 from sidekick_usages.heartbeat.base import HeartbeatProvider, warmed
 from sidekick_usages.heartbeat.domain import (
-    HEARTBEAT_FAILED,
     HeartbeatProbeResult,
     HeartbeatTarget,
     UsageWindowState,
 )
 from sidekick_usages.http import HttpClient, HttpOperation
 from sidekick_usages.providers.codex import USER_AGENT, CodexProvider
-from sidekick_usages.report import UsageReport, UsageWindow
 from sidekick_usages.serialization import JsonObject
-from sidekick_usages.store import Account
 
 CODEX_RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses"
 CODEX_STANDARD_HEARTBEAT_MODEL = "gpt-5.4-mini"
@@ -110,7 +110,7 @@ class CodexHeartbeat(HeartbeatProvider):
         if reset_at:
             return warmed(reset_at, target)
         return HeartbeatProbeResult(
-            status=HEARTBEAT_FAILED,
+            status=HeartbeatStatus.FAILED,
             message=f"{target.label} did not become active after warm",
             warmed=False,
             target_id=target.id,
@@ -155,7 +155,7 @@ def _target_window(
     return _primary_window(report)
 
 
-def _window_reset(report: UsageReport, target_id: str) -> str | None:
+def _window_reset(report: UsageReport, target_id: str) -> datetime | None:
     """Return the 5h reset timestamp after warming, when available."""
     window = _target_window(report, target_id)
     return window.resets_at if window else None

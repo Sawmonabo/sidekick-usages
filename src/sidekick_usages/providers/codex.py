@@ -22,24 +22,38 @@ import re
 import stat
 from base64 import urlsafe_b64decode
 from binascii import Error as B64Error
-from datetime import UTC, datetime
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, cast
 
 from sidekick_usages.clock import Clock
+from sidekick_usages.core.expiry import (
+    Expiry,
+    InvalidExpiry,
+    KnownExpiry,
+    UnknownExpiry,
+)
+from sidekick_usages.core.models import (
+    Account,
+    CodexCredentials,
+    DetectedCredentials,
+    UsageReport,
+    UsageWindow,
+)
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.errors import (
     AuthError,
+    InvalidPayloadError,
     UnsupportedOperationError,
     UsageError,
 )
 from sidekick_usages.http import HttpClient, HttpOperation
-from sidekick_usages.providers.base import (
-    DetectedCredentials,
-    Provider,
+from sidekick_usages.providers.base import Provider
+from sidekick_usages.serialization import (
+    JsonObject,
+    JsonValue,
+    decode_json_object,
 )
-from sidekick_usages.report import UsageReport, UsageWindow
-from sidekick_usages.store import Account
 
 USAGE_URL = "https://chatgpt.com/backend-api/codex/usage"
 OAUTH_REFRESH_ENDPOINT = "https://auth.openai.com/oauth/token"
@@ -91,16 +105,17 @@ class CodexProvider(Provider):
 
     @staticmethod
     def _parse_blob(
-        blob: dict[str, Any],
+        blob: JsonObject,
     ) -> DetectedCredentials | None:
         """Pull credentials out of a Codex auth.json blob.
 
         :param blob: Parsed auth.json contents.
         :return: ``DetectedCredentials`` or ``None`` on missing keys.
         """
-        tokens = blob.get("tokens") or {}
+        tokens_value = blob.get("tokens")
+        tokens = tokens_value if isinstance(tokens_value, dict) else {}
         access = tokens.get("access_token")
-        if not access:
+        if not isinstance(access, str) or not access:
             return None
         token_claims = _decode_jwt_payload(access)
         auth_claims = _auth_claims(token_claims)
@@ -112,15 +127,17 @@ class CodexProvider(Provider):
         id_token = tokens.get("id_token")
         last_refresh = blob.get("last_refresh")
         return DetectedCredentials(
-            access_token=access,
-            provider_account_id=account_id,
-            refresh_token=refresh if isinstance(refresh, str) else None,
-            expires_at=_jwt_exp(token_claims),
-            plan=plan,
-            id_token=id_token if isinstance(id_token, str) else None,
-            last_refresh=(
-                last_refresh if isinstance(last_refresh, str) else None
+            credentials=CodexCredentials(
+                access_token=access,
+                account_id=account_id,
+                refresh_token=refresh if isinstance(refresh, str) else None,
+                expiry=_jwt_expiry(token_claims),
+                id_token=id_token if isinstance(id_token, str) else None,
+                auth_last_refresh=(
+                    last_refresh if isinstance(last_refresh, str) else None
+                ),
             ),
+            plan=plan,
         )
 
     # -- usage fetch -----------------------------------------------
@@ -135,10 +152,11 @@ class CodexProvider(Provider):
         :param http: Shared HTTP client.
         :return: Parsed :class:`UsageReport`.
         """
-        account_id = account.provider_account_id
+        credentials = _codex_credentials(account)
+        account_id = credentials.account_id
         if not account_id:
             account_id = _account_id_from_token(account.access_token)
-            account.provider_account_id = account_id
+            account.credentials = replace(credentials, account_id=account_id)
         if not account_id:
             raise UsageError(
                 "Missing Codex account id. Log in to Codex again, then "
@@ -159,12 +177,9 @@ class CodexProvider(Provider):
             rate_limit = data
         windows = _rate_limit_windows(rate_limit)
         windows.extend(_additional_rate_limit_windows(data))
-        raw: dict[str, object] = {}
-        raw.update(data)
         return UsageReport(
-            windows=windows,
+            windows=tuple(windows),
             plan=_response_plan(data),
-            raw=raw,
         )
 
     # -- refresh ---------------------------------------------------
@@ -181,14 +196,15 @@ class CodexProvider(Provider):
         :return: True on success, False if no refresh token is
             available or the exchange failed.
         """
-        if not account.refresh_token:
+        credentials = _codex_credentials(account)
+        if not credentials.refresh_token:
             return False
         try:
             response = http.post_form(
                 OAUTH_REFRESH_ENDPOINT,
                 data={
                     "grant_type": "refresh_token",
-                    "refresh_token": account.refresh_token,
+                    "refresh_token": credentials.refresh_token,
                     "client_id": OAUTH_CLIENT_ID,
                 },
                 operation=HttpOperation.CODEX_REFRESH,
@@ -199,8 +215,18 @@ class CodexProvider(Provider):
         if not isinstance(new_token, str):
             return False
         reference_time = self.clock.now()
-        _apply_refresh_response(account, response, new_token, reference_time)
-        account.codex_last_refresh = _utc_z(reference_time)
+        updated, plan = _updated_refresh_credentials(
+            credentials,
+            response,
+            new_token,
+            reference_time,
+        )
+        account.credentials = replace(
+            updated,
+            auth_last_refresh=_utc_z(reference_time),
+        )
+        if plan:
+            account.plan = plan
         if account.codex_home:
             write_account_auth_file(
                 account,
@@ -245,7 +271,7 @@ def codex_auth_path(credential_home: Path | None = None) -> Path:
 
 def read_auth_blob(
     credential_home: Path | None = None,
-) -> dict[str, Any] | None:
+) -> JsonObject | None:
     """Read a Codex auth.json blob.
 
     :param credential_home: Optional Codex state directory.
@@ -255,10 +281,9 @@ def read_auth_blob(
     if not path.exists():
         return None
     try:
-        blob = json.loads(path.read_text())
-    except json.JSONDecodeError, OSError:
+        return decode_json_object(path.read_bytes())
+    except InvalidPayloadError, OSError:
         return None
-    return blob if isinstance(blob, dict) else None
 
 
 def ensure_file_auth_home(codex_home: Path) -> None:
@@ -293,7 +318,7 @@ def write_account_auth_file(
     codex_home: Path,
     *,
     reference_time: datetime,
-    source_blob: dict[str, Any] | None = None,
+    source_blob: JsonObject | None = None,
 ) -> bool:
     """Write a CLI-compatible Codex auth.json for one saved account.
 
@@ -309,8 +334,12 @@ def write_account_auth_file(
         from, such as ``auth_mode``.
     :return: True when a complete auth file was written.
     """
-    if account.provider_id != ProviderId.CODEX or not account.refresh_token:
+    if (
+        account.provider_id is not ProviderId.CODEX
+        or not account.refresh_token
+    ):
         return False
+    credentials = _codex_credentials(account)
     existing = source_blob or read_auth_blob(codex_home) or {}
     existing_tokens = _auth_tokens(existing)
     id_token = _auth_id_token(account, existing_tokens)
@@ -337,15 +366,18 @@ def write_account_auth_file(
     path.write_text(json.dumps(blob, indent=2))
     if platform.system() != "Windows":
         os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
-    account.codex_home = str(codex_home.expanduser())
-    account.codex_id_token = id_token
-    account.codex_last_refresh = str(blob["last_refresh"])
-    account.provider_account_id = account_id
+    account.credentials = replace(
+        credentials,
+        auth_home=str(codex_home.expanduser()),
+        id_token=id_token,
+        auth_last_refresh=str(blob["last_refresh"]),
+        account_id=account_id,
+    )
     return True
 
 
 def auth_blob_matches_account(
-    blob: dict[str, Any],
+    blob: JsonObject,
     account: Account,
 ) -> bool:
     """Return whether a Codex auth blob belongs to ``account``."""
@@ -363,15 +395,14 @@ def auth_blob_matches_account(
     )
 
 
-def _auth_tokens(existing: dict[str, Any]) -> dict[str, Any]:
+def _auth_tokens(existing: JsonObject) -> JsonObject:
     """Return a mutable copy of auth.json tokens."""
     tokens = existing.get("tokens")
     return dict(tokens) if isinstance(tokens, dict) else {}
 
 
 def _auth_id_token(
-    account: Account,
-    existing_tokens: dict[str, Any],
+    account: Account, existing_tokens: JsonObject
 ) -> str | None:
     """Resolve the id token needed for Codex CLI auth.json."""
     if account.codex_id_token:
@@ -387,7 +418,7 @@ def _auth_account_id(account: Account) -> str | None:
     return _account_id_from_token(account.access_token)
 
 
-def _auth_mode(existing: dict[str, Any]) -> str:
+def _auth_mode(existing: JsonObject) -> str:
     """Resolve auth mode for auth.json."""
     auth_mode = existing.get("auth_mode")
     return auth_mode if isinstance(auth_mode, str) else "chatgpt"
@@ -395,7 +426,7 @@ def _auth_mode(existing: dict[str, Any]) -> str:
 
 def _auth_last_refresh(
     account: Account,
-    existing: dict[str, Any],
+    existing: JsonObject,
     reference_time: datetime,
 ) -> str:
     """Resolve the last_refresh value for auth.json."""
@@ -408,11 +439,11 @@ def _auth_last_refresh(
 
 
 def _updated_auth_tokens(
-    existing_tokens: dict[str, Any],
+    existing_tokens: JsonObject,
     account: Account,
     id_token: str,
     account_id: str,
-) -> dict[str, Any]:
+) -> JsonObject:
     """Build the auth.json tokens object for a saved account."""
     tokens = dict(existing_tokens)
     tokens.update(
@@ -426,46 +457,63 @@ def _updated_auth_tokens(
     return tokens
 
 
-def _apply_refresh_response(
-    account: Account,
-    response: dict[str, Any],
+def _updated_refresh_credentials(
+    credentials: CodexCredentials,
+    response: JsonObject,
     new_token: str,
     reference_time: datetime,
-) -> None:
-    """Apply a successful OAuth refresh response to an account."""
-    account.access_token = new_token
-    account_id = _account_id_from_token(new_token)
-    if account_id:
-        account.provider_account_id = account_id
+) -> tuple[CodexCredentials, str | None]:
+    """Build one validated atomic Codex credential refresh."""
+    account_id = _account_id_from_token(new_token) or credentials.account_id
     plan = _plan_from_token(new_token)
-    if plan:
-        account.plan = plan
     new_refresh = response.get("refresh_token")
-    if isinstance(new_refresh, str):
-        account.refresh_token = new_refresh
     new_id_token = response.get("id_token")
-    if isinstance(new_id_token, str):
-        account.codex_id_token = new_id_token
-    _apply_refresh_expiry(account, response, new_token, reference_time)
+    return (
+        replace(
+            credentials,
+            access_token=new_token,
+            account_id=account_id,
+            refresh_token=(
+                new_refresh
+                if isinstance(new_refresh, str)
+                else credentials.refresh_token
+            ),
+            id_token=(
+                new_id_token
+                if isinstance(new_id_token, str)
+                else credentials.id_token
+            ),
+            expiry=_refresh_expiry(response, new_token, reference_time),
+        ),
+        plan,
+    )
 
 
-def _apply_refresh_expiry(
-    account: Account,
-    response: dict[str, Any],
+def _refresh_expiry(
+    response: JsonObject,
     new_token: str,
     reference_time: datetime,
-) -> None:
-    """Apply refresh expiry metadata to an account."""
+) -> Expiry:
+    """Normalize refreshed Codex expiry without floating-point epochs."""
     expires_in = response.get("expires_in")
-    if isinstance(expires_in, int):
-        account.expires_at = int(reference_time.timestamp()) + expires_in
-        return
-    exp = _jwt_exp(_decode_jwt_payload(new_token))
-    if exp is not None:
-        account.expires_at = exp
+    if expires_in is not None:
+        if (
+            isinstance(expires_in, bool)
+            or not isinstance(expires_in, int)
+            or expires_in < 0
+        ):
+            raise InvalidPayloadError
+        if reference_time.tzinfo is None or reference_time.utcoffset() is None:
+            raise ValueError("Codex refresh time must be timezone-aware.")
+        base = reference_time.astimezone(UTC).replace(microsecond=0)
+        return KnownExpiry(base + timedelta(seconds=expires_in))
+    expiry = _jwt_expiry(_decode_jwt_payload(new_token))
+    if isinstance(expiry, InvalidExpiry):
+        raise InvalidPayloadError
+    return expiry
 
 
-def _decode_jwt_payload(token: str) -> dict[str, Any] | None:
+def _decode_jwt_payload(token: str) -> JsonObject | None:
     """Decode a JWT payload without validating the signature."""
     parts = token.split(".")
     if len(parts) < JWT_MIN_PARTS:
@@ -473,12 +521,9 @@ def _decode_jwt_payload(token: str) -> dict[str, Any] | None:
     payload = parts[1] + "=" * (-len(parts[1]) % 4)
     try:
         raw = urlsafe_b64decode(payload)
-        decoded = json.loads(raw.decode("utf-8"))
-    except B64Error, UnicodeDecodeError, json.JSONDecodeError:
+        return decode_json_object(raw)
+    except B64Error, InvalidPayloadError:
         return None
-    if not isinstance(decoded, dict):
-        return None
-    return decoded
 
 
 def _utc_z(value: datetime) -> str:
@@ -486,7 +531,7 @@ def _utc_z(value: datetime) -> str:
     return value.isoformat().replace("+00:00", "Z")
 
 
-def _auth_claims(payload: dict[str, Any] | None) -> dict[str, Any]:
+def _auth_claims(payload: JsonObject | None) -> JsonObject:
     """Return the nested OpenAI auth claim from a JWT payload."""
     if not payload:
         return {}
@@ -494,18 +539,27 @@ def _auth_claims(payload: dict[str, Any] | None) -> dict[str, Any]:
     return claims if isinstance(claims, dict) else {}
 
 
-def _claim_str(claims: dict[str, Any], key: str) -> str | None:
+def _claim_str(claims: JsonObject, key: str) -> str | None:
     """Read one string claim defensively."""
     value = claims.get(key)
     return value if isinstance(value, str) and value else None
 
 
-def _jwt_exp(payload: dict[str, Any] | None) -> int | None:
-    """Extract a Unix-seconds expiry from decoded JWT claims."""
+def _jwt_expiry(payload: JsonObject | None) -> Expiry:
+    """Normalize a strict Unix-seconds expiry from decoded JWT claims."""
     if not payload:
-        return None
+        return UnknownExpiry()
     exp = payload.get("exp")
-    return exp if isinstance(exp, int) else None
+    if exp is None:
+        return UnknownExpiry()
+    if isinstance(exp, bool) or not isinstance(exp, int) or exp < 0:
+        return InvalidExpiry()
+    try:
+        return KnownExpiry(
+            datetime(1970, 1, 1, tzinfo=UTC) + timedelta(seconds=exp)
+        )
+    except OverflowError:
+        return InvalidExpiry()
 
 
 def _account_id_from_token(token: str) -> str | None:
@@ -524,22 +578,21 @@ def _plan_from_token(token: str) -> str | None:
     )
 
 
-def _usage_window(name: str, window: object) -> UsageWindow | None:
+def _usage_window(name: str, window: JsonValue | None) -> UsageWindow | None:
     """Convert one Codex rate-limit window into a UsageWindow."""
     if not isinstance(window, dict):
         return None
-    window_data = cast("dict[str, Any]", window)
-    reset = window_data.get("resets_at")
-    if not isinstance(reset, str):
-        reset = _epoch_to_iso(window_data.get("reset_at"))
+    reset = _provider_time(window.get("resets_at"))
+    if reset is None:
+        reset = _epoch_to_time(window.get("reset_at"))
     return UsageWindow(
         name=name,
-        utilization=float(window_data.get("used_percent") or 0),
+        utilization=_utilization(window.get("used_percent")),
         resets_at=reset,
     )
 
 
-def _rate_limit_windows(rate_limit: dict[str, Any]) -> list[UsageWindow]:
+def _rate_limit_windows(rate_limit: JsonObject) -> list[UsageWindow]:
     """Parse standard Codex 5h and 7d windows."""
     windows: list[UsageWindow] = []
     primary = _usage_window("5h", rate_limit.get("primary_window"))
@@ -551,25 +604,27 @@ def _rate_limit_windows(rate_limit: dict[str, Any]) -> list[UsageWindow]:
     return windows
 
 
-def _additional_rate_limit_windows(data: dict[str, Any]) -> list[UsageWindow]:
+def _additional_rate_limit_windows(data: JsonObject) -> list[UsageWindow]:
     """Parse provider-specific extra Codex rate-limit windows."""
     windows: list[UsageWindow] = []
-    for extra in data.get("additional_rate_limits") or []:
+    extras = data.get("additional_rate_limits")
+    if not isinstance(extras, list):
+        return windows
+    for extra in extras:
         if not isinstance(extra, dict):
             continue
-        extra_data = cast("dict[str, Any]", extra)
-        label = extra_data.get("limit_name") or extra_data.get("label")
-        label = label or extra_data.get("model") or "?"
-        extra_rate_limit = extra_data.get("rate_limit")
+        label = extra.get("limit_name") or extra.get("label")
+        label = label or extra.get("model") or "?"
+        extra_rate_limit = extra.get("rate_limit")
         if isinstance(extra_rate_limit, dict):
             windows.extend(
                 _rate_limit_windows_with_prefix(
                     str(label),
-                    cast("dict[str, Any]", extra_rate_limit),
+                    extra_rate_limit,
                 )
             )
             continue
-        legacy_extra = _usage_window(str(label), extra_data)
+        legacy_extra = _usage_window(str(label), extra)
         if legacy_extra:
             windows.append(legacy_extra)
     return windows
@@ -577,7 +632,7 @@ def _additional_rate_limit_windows(data: dict[str, Any]) -> list[UsageWindow]:
 
 def _rate_limit_windows_with_prefix(
     label: str,
-    rate_limit: dict[str, Any],
+    rate_limit: JsonObject,
 ) -> list[UsageWindow]:
     """Parse extra 5h and 7d windows under a named limit."""
     windows: list[UsageWindow] = []
@@ -592,14 +647,48 @@ def _rate_limit_windows_with_prefix(
     return windows
 
 
-def _epoch_to_iso(value: object) -> str | None:
-    """Convert epoch seconds into an ISO timestamp for rendering."""
-    if not isinstance(value, (int, float)):
+def _epoch_to_time(value: JsonValue | None) -> datetime | None:
+    """Convert provider epoch seconds into an aware UTC timestamp."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
         return None
-    return datetime.fromtimestamp(value, tz=UTC).isoformat()
+    try:
+        return datetime.fromtimestamp(value, tz=UTC)
+    except OverflowError, OSError, ValueError:
+        return None
 
 
-def _response_plan(data: dict[str, Any]) -> str | None:
+def _response_plan(data: JsonObject) -> str | None:
     """Extract plan from old or current Codex usage response shapes."""
     plan = data.get("plan_type") or data.get("plan")
     return plan if isinstance(plan, str) else None
+
+
+def _provider_time(value: JsonValue | None) -> datetime | None:
+    """Normalize one optional Codex response timestamp."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed.astimezone(UTC)
+
+
+def _utilization(value: JsonValue | None) -> float:
+    """Return one numeric utilization percentage."""
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
+        return 0.0
+    try:
+        return float(value)
+    except ValueError:
+        return 0.0
+
+
+def _codex_credentials(account: Account) -> CodexCredentials:
+    """Return Codex credentials or reject an incompatible account."""
+    credentials = account.credentials
+    if isinstance(credentials, CodexCredentials):
+        return credentials
+    raise UsageError(f"Account {account.label!r} is not a Codex account.")

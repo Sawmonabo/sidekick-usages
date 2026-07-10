@@ -13,27 +13,39 @@ through Claude Code's OAuth token endpoint; setup-token outputs do not
 carry refresh tokens and must be replaced manually when rejected.
 """
 
-import json
 import os
 import platform
 import re
 import shutil
 import subprocess
 import tempfile
-from datetime import UTC, datetime
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
 
 from sidekick_usages.clock import Clock
-from sidekick_usages.core.types import ProviderId
-from sidekick_usages.errors import AuthError
-from sidekick_usages.http import HttpClient, HttpOperation
-from sidekick_usages.providers.base import (
-    DetectedCredentials,
-    Provider,
+from sidekick_usages.core.expiry import (
+    Expiry,
+    InvalidExpiry,
+    KnownExpiry,
+    UnknownExpiry,
 )
-from sidekick_usages.report import UsageReport, UsageWindow
-from sidekick_usages.store import Account
+from sidekick_usages.core.models import (
+    Account,
+    ClaudeCredentials,
+    DetectedCredentials,
+    UsageReport,
+    UsageWindow,
+)
+from sidekick_usages.core.types import ProviderId
+from sidekick_usages.errors import AuthError, InvalidPayloadError, UsageError
+from sidekick_usages.http import HttpClient, HttpOperation
+from sidekick_usages.providers.base import Provider
+from sidekick_usages.serialization import (
+    JsonObject,
+    JsonValue,
+    decode_json_object,
+)
 from sidekick_usages.token_input import TokenInput
 
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
@@ -134,11 +146,13 @@ class ClaudeProvider(Provider):
                 check=True,
                 timeout=10,
             )
-            return self._parse_blob(json.loads(result.stdout.strip()))
+            return self._parse_blob(
+                decode_json_object(result.stdout.strip().encode("utf-8"))
+            )
         except (
             subprocess.CalledProcessError,
             subprocess.TimeoutExpired,
-            json.JSONDecodeError,
+            InvalidPayloadError,
         ):
             return None
 
@@ -151,8 +165,8 @@ class ClaudeProvider(Provider):
             if not path.exists():
                 continue
             try:
-                return self._parse_blob(json.loads(path.read_text()))
-            except json.JSONDecodeError:
+                return self._parse_blob(decode_json_object(path.read_bytes()))
+            except InvalidPayloadError:
                 continue
         return None
 
@@ -166,8 +180,8 @@ class ClaudeProvider(Provider):
             if not path.exists():
                 continue
             try:
-                return self._parse_blob(json.loads(path.read_text()))
-            except json.JSONDecodeError:
+                return self._parse_blob(decode_json_object(path.read_bytes()))
+            except InvalidPayloadError:
                 continue
         try:
             ps_script = (
@@ -194,10 +208,12 @@ class ClaudeProvider(Provider):
             )
             out = result.stdout.strip()
             if out:
-                return self._parse_blob(json.loads(out))
+                return self._parse_blob(
+                    decode_json_object(out.encode("utf-8"))
+                )
         except (
             subprocess.SubprocessError,
-            json.JSONDecodeError,
+            InvalidPayloadError,
             FileNotFoundError,
         ):
             pass
@@ -205,17 +221,18 @@ class ClaudeProvider(Provider):
 
     @staticmethod
     def _parse_blob(
-        blob: dict[str, Any],
+        blob: JsonObject,
     ) -> DetectedCredentials | None:
         """Pull credentials out of a Claude Code creds dict.
 
         :param blob: Parsed credentials dict.
         :return: ``DetectedCredentials`` or ``None`` on missing keys.
         """
-        try:
-            oauth = blob["claudeAiOauth"]
-            token = oauth["accessToken"]
-        except KeyError:
+        oauth = blob.get("claudeAiOauth")
+        if not isinstance(oauth, dict):
+            return None
+        token = oauth.get("accessToken")
+        if not isinstance(token, str) or not token:
             return None
         raw_scopes = oauth.get("scopes")
         # Tolerate older creds that omit ``scopes`` or store junk in
@@ -223,19 +240,23 @@ class ClaudeProvider(Provider):
         # so the CLI's gate falls back to "attempt and learn from
         # 403". Build via comprehension so the type narrows from
         # ``list[object]`` to ``list[str]`` for the static checker.
-        scopes: list[str] | None
+        scopes: tuple[str, ...] | None
         if isinstance(raw_scopes, list) and all(
             isinstance(s, str) for s in raw_scopes
         ):
-            scopes = [s for s in raw_scopes if isinstance(s, str)]
+            scopes = tuple(s for s in raw_scopes if isinstance(s, str))
         else:
             scopes = None
+        refresh = oauth.get("refreshToken")
+        plan = oauth.get("subscriptionType")
         return DetectedCredentials(
-            access_token=token,
-            refresh_token=oauth.get("refreshToken"),
-            expires_at=oauth.get("expiresAt"),
-            plan=oauth.get("subscriptionType") or "unknown",
-            scopes=scopes,
+            credentials=ClaudeCredentials(
+                access_token=token,
+                refresh_token=refresh if isinstance(refresh, str) else None,
+                expiry=_claude_expiry(oauth.get("expiresAt")),
+                scopes=scopes,
+            ),
+            plan=plan if isinstance(plan, str) and plan else "unknown",
         )
 
     # -- usage fetch -----------------------------------------------
@@ -255,7 +276,11 @@ class ClaudeProvider(Provider):
         :param http: Shared HTTP client.
         :return: Parsed :class:`UsageReport`.
         """
-        if account.scopes is not None and PROFILE_SCOPE not in account.scopes:
+        credentials = _claude_credentials(account)
+        if (
+            credentials.scopes is not None
+            and PROFILE_SCOPE not in credentials.scopes
+        ):
             return self._fetch_via_headers(account, http)
         return self._fetch_via_oauth_endpoint(account, http)
 
@@ -290,8 +315,7 @@ class ClaudeProvider(Provider):
                 if isinstance(utilization_value, int | float | str)
                 else 0.0
             )
-            resets_value = window.get("resets_at")
-            resets_at = resets_value if isinstance(resets_value, str) else None
+            resets_at = _provider_time(window.get("resets_at"))
             windows.append(
                 UsageWindow(
                     name=label,
@@ -299,12 +323,9 @@ class ClaudeProvider(Provider):
                     resets_at=resets_at,
                 )
             )
-        raw: dict[str, object] = {}
-        raw.update(data)
         return UsageReport(
-            windows=windows,
+            windows=tuple(windows),
             plan=account.plan,
-            raw=raw,
         )
 
     def _fetch_via_headers(
@@ -346,9 +367,8 @@ class ClaudeProvider(Provider):
             if window is not None:
                 windows.append(window)
         return UsageReport(
-            windows=windows,
+            windows=tuple(windows),
             plan=account.plan,
-            raw={"response_headers": dict(response_headers)},
         )
 
     @staticmethod
@@ -376,7 +396,7 @@ class ClaudeProvider(Provider):
             reset_unix = int(float(reset_raw))
         except TypeError, ValueError:
             return None
-        resets_at = datetime.fromtimestamp(reset_unix, tz=UTC).isoformat()
+        resets_at = datetime.fromtimestamp(reset_unix, tz=UTC)
         return UsageWindow(
             name=label,
             utilization=utilization,
@@ -398,7 +418,8 @@ class ClaudeProvider(Provider):
             available, the refresh is rejected, or the response is
             unusable.
         """
-        if not account.refresh_token:
+        credentials = _claude_credentials(account)
+        if not credentials.refresh_token:
             return False
         if self._refresh_via_cli(account):
             return True
@@ -406,7 +427,8 @@ class ClaudeProvider(Provider):
 
     def _refresh_via_cli(self, account: Account) -> bool:
         """Ask Claude Code to refresh in an isolated temporary home."""
-        if not account.refresh_token:
+        credentials = _claude_credentials(account)
+        if not credentials.refresh_token:
             return False
         claude_bin = shutil.which("claude")
         if claude_bin is None:
@@ -417,7 +439,7 @@ class ClaudeProvider(Provider):
         ) as temp_home:
             env = os.environ.copy()
             env["HOME"] = temp_home
-            env["CLAUDE_CODE_OAUTH_REFRESH_TOKEN"] = account.refresh_token
+            env["CLAUDE_CODE_OAUTH_REFRESH_TOKEN"] = credentials.refresh_token
             env["CLAUDE_CODE_OAUTH_SCOPES"] = " ".join(scopes)
             env.pop("CLAUDE_CODE_OAUTH_TOKEN", None)
             env.pop("ANTHROPIC_API_KEY", None)
@@ -442,18 +464,30 @@ class ClaudeProvider(Provider):
                     detail = f"exit code {result.returncode}"
                 raise AuthError(f"Claude CLI refresh failed: {detail}")
             try:
-                detected = self._parse_blob(json.loads(creds_path.read_text()))
-            except OSError, json.JSONDecodeError:
+                detected = self._parse_blob(
+                    decode_json_object(creds_path.read_bytes())
+                )
+            except OSError, InvalidPayloadError:
                 return False
             if detected is None:
                 return False
-            account.access_token = detected.access_token
-            account.refresh_token = detected.refresh_token
-            account.expires_at = detected.expires_at
+            if not isinstance(
+                detected.credentials, ClaudeCredentials
+            ) or isinstance(detected.credentials.expiry, InvalidExpiry):
+                raise InvalidPayloadError
+            account.credentials = replace(
+                credentials,
+                access_token=detected.credentials.access_token,
+                refresh_token=detected.credentials.refresh_token,
+                expiry=detected.credentials.expiry,
+                scopes=(
+                    detected.credentials.scopes
+                    if detected.credentials.scopes is not None
+                    else credentials.scopes
+                ),
+            )
             if detected.plan != "unknown":
                 account.plan = detected.plan
-            if detected.scopes is not None:
-                account.scopes = detected.scopes
             return True
 
     def _redact_tokens(self, text: str) -> str:
@@ -466,13 +500,14 @@ class ClaudeProvider(Provider):
         http: HttpClient,
     ) -> bool:
         """Fallback direct token exchange when Claude Code is unavailable."""
+        credentials = _claude_credentials(account)
         try:
             scopes = self._refresh_scopes(account)
             response = http.post_json(
                 OAUTH_REFRESH_ENDPOINT,
                 json_body={
                     "grant_type": "refresh_token",
-                    "refresh_token": account.refresh_token,
+                    "refresh_token": credentials.refresh_token,
                     "client_id": os.environ.get(
                         "CLAUDE_CODE_OAUTH_CLIENT_ID",
                         OAUTH_CLIENT_ID,
@@ -487,20 +522,40 @@ class ClaudeProvider(Provider):
         new_token = response.get("access_token")
         if not isinstance(new_token, str):
             return False
-        account.access_token = new_token
         new_refresh = response.get("refresh_token")
-        if isinstance(new_refresh, str):
-            account.refresh_token = new_refresh
         expires_in = response.get("expires_in")
-        if isinstance(expires_in, int):
-            expires_at = self.clock.now().timestamp() + expires_in
-            account.expires_at = int(expires_at * 1000)
+        expiry = credentials.expiry
+        if expires_in is not None:
+            if (
+                isinstance(expires_in, bool)
+                or not isinstance(expires_in, int)
+                or expires_in < 0
+            ):
+                raise InvalidPayloadError
+            reference_time = self.clock.now().astimezone(UTC)
+            reference_time = reference_time.replace(
+                microsecond=(reference_time.microsecond // 1000) * 1000
+            )
+            expiry = KnownExpiry(
+                reference_time + timedelta(seconds=expires_in)
+            )
+        account.credentials = replace(
+            credentials,
+            access_token=new_token,
+            refresh_token=(
+                new_refresh
+                if isinstance(new_refresh, str)
+                else credentials.refresh_token
+            ),
+            expiry=expiry,
+        )
         return True
 
     @staticmethod
-    def _refresh_scopes(account: Account) -> tuple[str, ...] | list[str]:
+    def _refresh_scopes(account: Account) -> tuple[str, ...]:
         """Return saved scopes or Claude Code's default OAuth scope set."""
-        return account.scopes if account.scopes else DEFAULT_REFRESH_SCOPES
+        scopes = _claude_credentials(account).scopes
+        return scopes if scopes else DEFAULT_REFRESH_SCOPES
 
     # -- setup-token -----------------------------------------------
     def run_setup_token(self) -> str | None:
@@ -514,3 +569,38 @@ class ClaudeProvider(Provider):
             ["claude", "setup-token"],
             cli_name=self.display_name,
         )
+
+
+def _claude_credentials(account: Account) -> ClaudeCredentials:
+    """Return Claude credentials or reject an incompatible account."""
+    credentials = account.credentials
+    if isinstance(credentials, ClaudeCredentials):
+        return credentials
+    raise UsageError(f"Account {account.label!r} is not a Claude account.")
+
+
+def _claude_expiry(value: JsonValue | None) -> Expiry:
+    """Normalize Claude's native millisecond expiry metadata."""
+    if value is None:
+        return UnknownExpiry()
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return InvalidExpiry()
+    try:
+        return KnownExpiry(
+            datetime(1970, 1, 1, tzinfo=UTC) + timedelta(milliseconds=value)
+        )
+    except OverflowError:
+        return InvalidExpiry()
+
+
+def _provider_time(value: JsonValue | None) -> datetime | None:
+    """Normalize one optional Claude response timestamp."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed.astimezone(UTC)

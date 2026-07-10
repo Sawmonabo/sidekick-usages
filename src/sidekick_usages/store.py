@@ -1,9 +1,4 @@
-"""Account model and AccountStore CRUD.
-
-Accounts now carry a ``provider_id`` field so a single store can hold
-Claude Code and Codex CLI accounts side by side. The on-disk format
-is JSON keyed by label, with provider id and other fields inside.
-"""
+"""Compatibility account codec and account-store CRUD."""
 
 import contextlib
 import json
@@ -11,189 +6,377 @@ import os
 import platform
 import stat
 from collections.abc import Iterator
-from dataclasses import dataclass
-from typing import Any
+from datetime import UTC, datetime, timedelta
 
-from sidekick_usages.errors import UsageError
+from sidekick_usages.core.expiry import (
+    InvalidExpiry,
+    KnownExpiry,
+    UnknownExpiry,
+)
+from sidekick_usages.core.models import (
+    Account,
+    ClaudeCredentials,
+    CodexCredentials,
+)
+from sidekick_usages.core.types import (
+    AccountLabel,
+    HeartbeatStatus,
+    ProviderId,
+    RefreshStatus,
+)
+from sidekick_usages.errors import InvalidPayloadError, UsageError
 from sidekick_usages.paths import AccountLocations
+from sidekick_usages.serialization import (
+    JsonObject,
+    JsonValue,
+    decode_json_object,
+)
 
-#: Minimum token length required to render a partial mask
-#: (``prefix…suffix``). Below this we render ``"(missing)"`` because
-#: a mask would either reveal too much of a short token or be
-#: indistinguishable from the original.
-_MIN_TOKEN_LENGTH_FOR_MASKING = 30
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+_MICROSECONDS_PER_SECOND = 1_000_000
+_MICROSECONDS_PER_MILLISECOND = 1_000
 
 
-@dataclass
-class Account:
-    """A single saved AI assistant account.
+def _invalid_account(label: str, detail: str) -> UsageError:
+    """Build a redacted compatibility-state failure."""
+    return UsageError(f"Account {label!r} is invalid: {detail}.")
 
-    :ivar label: Friendly user-visible name (e.g. ``personal-max``).
-    :ivar provider_id: Which provider this belongs to
-        (``"claude"`` or ``"codex"``).
-    :ivar provider_account_id: Provider-native account/workspace id
-        needed by APIs that bind requests to an account separate from
-        the bearer token. Codex uses this as ``ChatGPT-Account-Id``.
-    :ivar access_token: OAuth access token used as the Bearer auth.
-    :ivar refresh_token: Refresh token for providers/account types
-        that expose one. ``None`` for pasted or long-lived tokens
-        without refresh support.
-    :ivar expires_at: Provider-native Unix timestamp when
-        ``access_token`` expires (Claude uses milliseconds; Codex uses
-        seconds). ``None`` if unknown.
-    :ivar plan: Subscription type tag (``"max"``, ``"plus"``, etc.).
-    :ivar scopes: OAuth scope list when known (read from the local
-        credentials file at detect-time). ``None`` means the scopes
-        are unknown — typical when the token was pasted via
-        ``--token`` instead of auto-detected. Drives the
-        client-side gate that mirrors Claude Code's ``hT()`` check:
-        when scopes are known and do not include
-        ``user:profile``, the usage endpoint is skipped because the
-        token cannot read it anyway.
-    :ivar codex_home: Sidekick-owned per-account Codex auth cache
-        directory. This is not the user's default ``~/.codex`` root;
-        it is an internal copy used so sidekick-usages can query
-        multiple Codex accounts without changing global Codex state.
-    :ivar codex_id_token: Codex ``auth.json`` id token. The Codex CLI
-        needs this alongside the access/refresh tokens when we write
-        a complete file-backed auth store.
-    :ivar codex_last_refresh: Last refresh timestamp from Codex
-        ``auth.json``. Preserved when known so exported auth files
-        stay close to the CLI's native shape.
-    :ivar last_refresh_at: ISO-8601 UTC timestamp for the last
-        refresh attempt sidekick-usages made for this account.
-    :ivar last_refresh_status: Result tag for the last refresh
-        attempt (``"ok"``, ``"skipped"``, or ``"failed"``).
-    :ivar last_refresh_error: Redacted human-readable error from the
-        last failed refresh attempt, or ``None`` after a success.
-    :ivar heartbeat_enabled: Whether daemon maintenance may send an
-        intentional tiny provider request to open an inactive usage
-        window for this account.
-    :ivar heartbeat_5h_reset_at: Cached reset timestamp for a known
-        active 5h usage window. Used to avoid repeated heartbeat
-        probes before the current window expires.
-    :ivar heartbeat_window_resets: Cached reset timestamps keyed by
-        heartbeat target id. Used for providers with multiple windows
-        such as Codex standard and Codex Spark.
-    :ivar heartbeat_targets: Explicit daemon heartbeat target ids for
-        this account. ``None`` means the provider default target set.
-    :ivar last_heartbeat_at: ISO-8601 UTC timestamp for the last
-        heartbeat attempt sidekick-usages made for this account.
-    :ivar last_heartbeat_status: Result tag for the last heartbeat
-        attempt (``"warmed"``, ``"active"``, ``"failed"``, etc.).
-    :ivar last_heartbeat_error: Redacted human-readable error from
-        the last failed heartbeat attempt, or ``None`` after success.
-    """
 
-    label: str
-    provider_id: str
-    access_token: str
+def _validated_label(value: str) -> AccountLabel:
+    """Validate a label at the account-store boundary."""
+    try:
+        return AccountLabel(value)
+    except ValueError as error:
+        raise _invalid_account(value, str(error).removesuffix(".")) from error
+
+
+def _optional_string(
+    data: JsonObject,
+    key: str,
+    label: str,
+) -> str | None:
+    value = data.get(key)
+    if value is None or isinstance(value, str):
+        return value
+    raise _invalid_account(label, f"{key} must be a string or null")
+
+
+def _required_string(data: JsonObject, key: str, label: str) -> str:
+    value = data.get(key)
+    if isinstance(value, str) and value:
+        return value
+    raise _invalid_account(label, f"{key} must be a non-empty string")
+
+
+def _optional_strings(
+    data: JsonObject,
+    key: str,
+    label: str,
+) -> tuple[str, ...] | None:
+    value = data.get(key)
+    if value is None:
+        return None
+    if isinstance(value, list) and all(
+        isinstance(item, str) for item in value
+    ):
+        return tuple(item for item in value if isinstance(item, str))
+    raise _invalid_account(label, f"{key} must be a string list or null")
+
+
+def _optional_time(
+    data: JsonObject,
+    key: str,
+    label: str,
+) -> datetime | None:
+    value = _optional_string(data, key, label)
+    if value is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise _invalid_account(
+            label, f"{key} must be an ISO timestamp"
+        ) from error
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise _invalid_account(label, f"{key} must be timezone-aware")
+    return parsed.astimezone(UTC)
+
+
+def _optional_time_map(
+    data: JsonObject,
+    key: str,
+    label: str,
+) -> dict[str, datetime] | None:
+    value = data.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise _invalid_account(label, f"{key} must be an object or null")
+    result: dict[str, datetime] = {}
+    for target_id, item in value.items():
+        if not isinstance(item, str):
+            raise _invalid_account(label, f"{key} values must be timestamps")
+        try:
+            parsed = datetime.fromisoformat(item.replace("Z", "+00:00"))
+        except ValueError as error:
+            raise _invalid_account(
+                label, f"{key} values must be timestamps"
+            ) from error
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise _invalid_account(label, f"{key} values must be aware")
+        result[target_id] = parsed.astimezone(UTC)
+    return result
+
+
+def _native_expiry(
+    provider_id: ProviderId,
+    value: JsonValue | None,
+    label: str,
+) -> KnownExpiry | UnknownExpiry:
+    if value is None:
+        return UnknownExpiry()
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise _invalid_account(
+            label, "expires_at must be a non-negative integer"
+        )
+    try:
+        delta = (
+            timedelta(milliseconds=value)
+            if provider_id is ProviderId.CLAUDE
+            else timedelta(seconds=value)
+        )
+        return KnownExpiry(_EPOCH + delta)
+    except OverflowError as error:
+        raise _invalid_account(label, "expires_at is out of range") from error
+
+
+def _encode_native_expiry(account: Account) -> int | None:
+    expiry = account.expiry
+    if isinstance(expiry, UnknownExpiry):
+        return None
+    if isinstance(expiry, InvalidExpiry):
+        raise _invalid_account(
+            str(account.label), "expiry cannot be serialized"
+        )
+    delta = expiry.at - _EPOCH
+    microseconds = (
+        delta.days * 86_400 + delta.seconds
+    ) * _MICROSECONDS_PER_SECOND + delta.microseconds
+    unit = (
+        _MICROSECONDS_PER_MILLISECOND
+        if account.provider_id is ProviderId.CLAUDE
+        else _MICROSECONDS_PER_SECOND
+    )
+    if microseconds < 0 or microseconds % unit:
+        raise _invalid_account(
+            str(account.label),
+            "expiry precision is not representable by its provider",
+        )
+    return microseconds // unit
+
+
+def _format_time(value: datetime | None) -> str | None:
+    """Encode a Sidekick-owned compatibility timestamp."""
+    if value is None:
+        return None
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise UsageError("Cannot serialize a naive account timestamp.")
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _account_from_record(label_value: str, data: JsonObject) -> Account:
+    """Decode one generation-zero or prototype account record."""
+    label = _validated_label(label_value)
+    if "access_token" not in data:
+        credentials = ClaudeCredentials(
+            access_token=_required_string(data, "token", label_value),
+        )
+        return Account(
+            label=label,
+            credentials=credentials,
+            plan=_required_string(data, "plan", label_value),
+        )
+
+    provider_value = data.get("provider_id", ProviderId.CLAUDE.value)
+    if not isinstance(provider_value, str):
+        raise _invalid_account(label_value, "provider_id must be a string")
+    try:
+        provider_id = ProviderId(provider_value)
+    except ValueError as error:
+        raise _invalid_account(
+            label_value, "provider_id is unsupported"
+        ) from error
+
+    access_token = _required_string(data, "access_token", label_value)
+    refresh_token = _optional_string(data, "refresh_token", label_value)
+    expiry = _native_expiry(provider_id, data.get("expires_at"), label_value)
+    if provider_id is ProviderId.CLAUDE:
+        for key in (
+            "provider_account_id",
+            "codex_home",
+            "codex_id_token",
+            "codex_last_refresh",
+        ):
+            if data.get(key) is not None:
+                raise _invalid_account(
+                    label_value,
+                    f"{key} is incompatible with Claude",
+                )
+        credentials = ClaudeCredentials(
+            access_token=access_token,
+            refresh_token=refresh_token,
+            expiry=expiry,
+            scopes=_optional_strings(data, "scopes", label_value),
+        )
+    else:
+        if data.get("scopes") is not None:
+            raise _invalid_account(
+                label_value, "scopes is incompatible with Codex"
+            )
+        credentials = CodexCredentials(
+            access_token=access_token,
+            refresh_token=refresh_token,
+            expiry=expiry,
+            account_id=_optional_string(
+                data, "provider_account_id", label_value
+            ),
+            auth_home=_optional_string(data, "codex_home", label_value),
+            id_token=_optional_string(data, "codex_id_token", label_value),
+            auth_last_refresh=_optional_string(
+                data,
+                "codex_last_refresh",
+                label_value,
+            ),
+        )
+
+    refresh_status_value = _optional_string(
+        data,
+        "last_refresh_status",
+        label_value,
+    )
+    heartbeat_status_value = _optional_string(
+        data,
+        "last_heartbeat_status",
+        label_value,
+    )
+    heartbeat_enabled = data.get("heartbeat_enabled", False)
+    if not isinstance(heartbeat_enabled, bool):
+        raise _invalid_account(
+            label_value, "heartbeat_enabled must be Boolean"
+        )
+    try:
+        refresh_status = (
+            RefreshStatus(refresh_status_value)
+            if refresh_status_value is not None
+            else None
+        )
+        heartbeat_status = (
+            HeartbeatStatus(heartbeat_status_value)
+            if heartbeat_status_value is not None
+            else None
+        )
+    except ValueError as error:
+        raise _invalid_account(
+            label_value, "stored status is unsupported"
+        ) from error
+
+    return Account(
+        label=label,
+        credentials=credentials,
+        plan=_required_string(data, "plan", label_value),
+        last_refresh_at=_optional_time(data, "last_refresh_at", label_value),
+        last_refresh_status=refresh_status,
+        last_refresh_error=_optional_string(
+            data,
+            "last_refresh_error",
+            label_value,
+        ),
+        heartbeat_enabled=heartbeat_enabled,
+        heartbeat_5h_reset_at=_optional_time(
+            data,
+            "heartbeat_5h_reset_at",
+            label_value,
+        ),
+        heartbeat_window_resets=_optional_time_map(
+            data,
+            "heartbeat_window_resets",
+            label_value,
+        ),
+        heartbeat_targets=_optional_strings(
+            data,
+            "heartbeat_targets",
+            label_value,
+        ),
+        last_heartbeat_at=_optional_time(
+            data,
+            "last_heartbeat_at",
+            label_value,
+        ),
+        last_heartbeat_status=heartbeat_status,
+        last_heartbeat_error=_optional_string(
+            data,
+            "last_heartbeat_error",
+            label_value,
+        ),
+    )
+
+
+def _account_to_record(account: Account) -> JsonObject:
+    """Encode one account in the released generation-zero field order."""
+    credentials = account.credentials
     provider_account_id: str | None = None
-    refresh_token: str | None = None
-    expires_at: int | None = None
-    plan: str = "unknown"
-    scopes: list[str] | None = None
+    scopes: list[JsonValue] | None = None
     codex_home: str | None = None
     codex_id_token: str | None = None
     codex_last_refresh: str | None = None
-    last_refresh_at: str | None = None
-    last_refresh_status: str | None = None
-    last_refresh_error: str | None = None
-    heartbeat_enabled: bool = False
-    heartbeat_5h_reset_at: str | None = None
-    heartbeat_window_resets: dict[str, str] | None = None
-    heartbeat_targets: list[str] | None = None
-    last_heartbeat_at: str | None = None
-    last_heartbeat_status: str | None = None
-    last_heartbeat_error: str | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        """Serialize for JSON storage.
-
-        :return: Plain dict; label is the parent key so it isn't
-            duplicated inside.
-        """
-        return {
-            "provider_id": self.provider_id,
-            "provider_account_id": self.provider_account_id,
-            "access_token": self.access_token,
-            "refresh_token": self.refresh_token,
-            "expires_at": self.expires_at,
-            "plan": self.plan,
-            "scopes": self.scopes,
-            "codex_home": self.codex_home,
-            "codex_id_token": self.codex_id_token,
-            "codex_last_refresh": self.codex_last_refresh,
-            "last_refresh_at": self.last_refresh_at,
-            "last_refresh_status": self.last_refresh_status,
-            "last_refresh_error": self.last_refresh_error,
-            "heartbeat_enabled": self.heartbeat_enabled,
-            "heartbeat_5h_reset_at": self.heartbeat_5h_reset_at,
-            "heartbeat_window_resets": self.heartbeat_window_resets,
-            "heartbeat_targets": self.heartbeat_targets,
-            "last_heartbeat_at": self.last_heartbeat_at,
-            "last_heartbeat_status": self.last_heartbeat_status,
-            "last_heartbeat_error": self.last_heartbeat_error,
+    if isinstance(credentials, ClaudeCredentials):
+        if credentials.scopes is not None:
+            scopes = list(credentials.scopes)
+    else:
+        provider_account_id = credentials.account_id
+        codex_home = credentials.auth_home
+        codex_id_token = credentials.id_token
+        codex_last_refresh = credentials.auth_last_refresh
+    resets: dict[str, JsonValue] | None = None
+    if account.heartbeat_window_resets is not None:
+        resets = {
+            target_id: _format_time(reset_at)
+            for target_id, reset_at in account.heartbeat_window_resets.items()
         }
-
-    @classmethod
-    def from_dict(
-        cls,
-        label: str,
-        data: dict[str, Any],
-    ) -> Account:
-        """Reverse of :meth:`to_dict`.
-
-        Accepts both the new schema and the legacy ``cc-usage`` schema
-        (``{"token": ..., "plan": ...}``) for migration.
-
-        :param label: Label this account is stored under.
-        :param data: Dict read from the config file.
-        :return: Reconstructed ``Account``.
-        """
-        if "access_token" in data:
-            return cls(
-                label=label,
-                provider_id=data.get("provider_id", "claude"),
-                provider_account_id=data.get("provider_account_id"),
-                access_token=data["access_token"],
-                refresh_token=data.get("refresh_token"),
-                expires_at=data.get("expires_at"),
-                plan=data.get("plan", "unknown"),
-                scopes=data.get("scopes"),
-                codex_home=data.get("codex_home"),
-                codex_id_token=data.get("codex_id_token"),
-                codex_last_refresh=data.get("codex_last_refresh"),
-                last_refresh_at=data.get("last_refresh_at"),
-                last_refresh_status=data.get("last_refresh_status"),
-                last_refresh_error=data.get("last_refresh_error"),
-                heartbeat_enabled=bool(data.get("heartbeat_enabled", False)),
-                heartbeat_5h_reset_at=data.get("heartbeat_5h_reset_at"),
-                heartbeat_window_resets=_str_dict(
-                    data.get("heartbeat_window_resets")
-                ),
-                heartbeat_targets=_str_list(data.get("heartbeat_targets")),
-                last_heartbeat_at=data.get("last_heartbeat_at"),
-                last_heartbeat_status=data.get("last_heartbeat_status"),
-                last_heartbeat_error=data.get("last_heartbeat_error"),
-            )
-        # Legacy cc-usage.py format: {"token": ..., "plan": ...}
-        return cls(
-            label=label,
-            provider_id="claude",
-            access_token=data.get("token", ""),
-            plan=data.get("plan", "unknown"),
-        )
-
-    def masked_token(self) -> str:
-        """Render the token with the middle redacted for display.
-
-        :return: Something like ``sk-ant-oat01-abcd…xyz123`` or
-            ``(missing)`` if no token is set.
-        """
-        if len(self.access_token) <= _MIN_TOKEN_LENGTH_FOR_MASKING:
-            return "(missing)"
-        return self.access_token[:18] + "…" + self.access_token[-6:]
+    return {
+        "provider_id": account.provider_id.value,
+        "provider_account_id": provider_account_id,
+        "access_token": account.access_token,
+        "refresh_token": account.refresh_token,
+        "expires_at": _encode_native_expiry(account),
+        "plan": account.plan,
+        "scopes": scopes,
+        "codex_home": codex_home,
+        "codex_id_token": codex_id_token,
+        "codex_last_refresh": codex_last_refresh,
+        "last_refresh_at": _format_time(account.last_refresh_at),
+        "last_refresh_status": (
+            account.last_refresh_status.value
+            if account.last_refresh_status is not None
+            else None
+        ),
+        "last_refresh_error": account.last_refresh_error,
+        "heartbeat_enabled": account.heartbeat_enabled,
+        "heartbeat_5h_reset_at": _format_time(account.heartbeat_5h_reset_at),
+        "heartbeat_window_resets": resets,
+        "heartbeat_targets": (
+            list(account.heartbeat_targets)
+            if account.heartbeat_targets is not None
+            else None
+        ),
+        "last_heartbeat_at": _format_time(account.last_heartbeat_at),
+        "last_heartbeat_status": (
+            account.last_heartbeat_status.value
+            if account.last_heartbeat_status is not None
+            else None
+        ),
+        "last_heartbeat_error": account.last_heartbeat_error,
+    }
 
 
 class AccountStore:
@@ -230,15 +413,15 @@ class AccountStore:
             self._loaded = True
             return self
         try:
-            raw = json.loads(self.path.read_text())
-        except json.JSONDecodeError as e:
-            raise UsageError(
-                f"Config file is corrupt: {self.path} ({e})"
-            ) from e
-        self._accounts = {
-            label: Account.from_dict(label, data)
-            for label, data in raw.items()
-        }
+            raw = decode_json_object(self.path.read_bytes())
+        except InvalidPayloadError as error:
+            raise UsageError(f"Config file is corrupt: {self.path}") from error
+        accounts: dict[str, Account] = {}
+        for label, value in raw.items():
+            if not isinstance(value, dict):
+                raise _invalid_account(label, "record must be an object")
+            accounts[label] = _account_from_record(label, value)
+        self._accounts = accounts
         self._loaded = True
         return self
 
@@ -246,7 +429,8 @@ class AccountStore:
         """Persist current state to disk with 600 perms on Unix."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
-            label: acct.to_dict() for label, acct in self._accounts.items()
+            label: _account_to_record(acct)
+            for label, acct in self._accounts.items()
         }
         self.path.write_text(json.dumps(payload, indent=2))
         if platform.system() != "Windows":
@@ -255,13 +439,18 @@ class AccountStore:
     def _migrate_from_prototype(self) -> None:
         """Copy the prototype cc-usage config into the current location."""
         try:
-            raw = json.loads(self.locations.prototype_cc_usage.read_text())
-        except json.JSONDecodeError, OSError:
-            return
-        migrated = {
-            label: Account.from_dict(label, data).to_dict()
-            for label, data in raw.items()
-        }
+            raw = decode_json_object(
+                self.locations.prototype_cc_usage.read_bytes()
+            )
+        except (OSError, InvalidPayloadError) as error:
+            raise UsageError("Prototype account file is invalid.") from error
+        migrated: dict[str, JsonObject] = {}
+        for label, value in raw.items():
+            if not isinstance(value, dict):
+                raise _invalid_account(label, "record must be an object")
+            migrated[label] = _account_to_record(
+                _account_from_record(label, value)
+            )
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(json.dumps(migrated, indent=2))
         if platform.system() != "Windows":
@@ -285,20 +474,25 @@ class AccountStore:
         """
         return self._accounts.get(label)
 
-    def find_by_token(self, token: str) -> Account | None:
+    def find_by_token(
+        self,
+        provider_id: ProviderId,
+        token: str,
+    ) -> Account | None:
         """Look up an account by exact access-token match.
 
         Used by ``add`` to make the operation idempotent.
 
+        :param provider_id: Provider whose token namespace to search.
         :param token: OAuth access token to search for.
         :return: ``Account`` or ``None``.
         """
         for acct in self._accounts.values():
-            if acct.access_token == token:
+            if acct.provider_id is provider_id and acct.access_token == token:
                 return acct
         return None
 
-    def filter_by_provider(self, provider_id: str) -> list[Account]:
+    def filter_by_provider(self, provider_id: ProviderId) -> list[Account]:
         """Return accounts for one provider in insertion order.
 
         :param provider_id: Provider id (``"claude"`` or ``"codex"``).
@@ -337,13 +531,14 @@ class AccountStore:
         """
         if old not in self._accounts:
             return False
-        if new in self._accounts and new != old:
+        new_label = _validated_label(new)
+        if new_label in self._accounts and new_label != old:
             return False
         new_map: dict[str, Account] = {}
         for label, acct in self._accounts.items():
             if label == old:
-                acct.label = new
-                new_map[new] = acct
+                acct.label = new_label
+                new_map[new_label] = acct
             else:
                 new_map[label] = acct
         self._accounts = new_map
@@ -360,7 +555,7 @@ class AccountStore:
             self.path.unlink()
         return count
 
-    def reset_provider(self, provider_id: str) -> int:
+    def reset_provider(self, provider_id: ProviderId) -> int:
         """Drop accounts for one provider, keep the rest.
 
         :param provider_id: Provider id to clear.
@@ -379,7 +574,11 @@ class AccountStore:
             self.reset()
         return len(targets)
 
-    def generate_label(self, provider_id: str, plan: str) -> str:
+    def generate_label(
+        self,
+        provider_id: ProviderId,
+        plan: str,
+    ) -> AccountLabel:
         """Build a unique default label from provider + plan.
 
         ``claude`` + ``max`` -> ``claude-max-1``, then ``-2``, etc.
@@ -393,24 +592,4 @@ class AccountStore:
         i = 1
         while f"{base}-{i}" in self._accounts:
             i += 1
-        return f"{base}-{i}"
-
-
-def _str_dict(value: object) -> dict[str, str] | None:
-    """Return a string-only dict from persisted JSON."""
-    if not isinstance(value, dict):
-        return None
-    result = {
-        str(key): str(item)
-        for key, item in value.items()
-        if isinstance(key, str) and isinstance(item, str)
-    }
-    return result or None
-
-
-def _str_list(value: object) -> list[str] | None:
-    """Return a string-only list from persisted JSON."""
-    if not isinstance(value, list):
-        return None
-    result = [item for item in value if isinstance(item, str)]
-    return result or None
+        return _validated_label(f"{base}-{i}")

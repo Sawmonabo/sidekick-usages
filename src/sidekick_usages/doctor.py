@@ -1,25 +1,37 @@
 """Read-only account diagnostics for ``sidekick-usages doctor``."""
 
 import json
-from dataclasses import asdict, dataclass
-from datetime import datetime
+from collections.abc import Mapping
+from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from rich.console import Console
 
 from sidekick_usages.branding import brand_header
 from sidekick_usages.clock import Clock
-from sidekick_usages.core.types import ExitCode, ProviderId
+from sidekick_usages.core.expiry import (
+    ClassifiedExpiry,
+    ExpiredExpiry,
+    InvalidExpiry,
+    ValidExpiry,
+)
+from sidekick_usages.core.models import Account
+from sidekick_usages.core.types import (
+    AccountLabel,
+    ExitCode,
+    ExpiryState,
+    HeartbeatStatus,
+    ProviderId,
+    RefreshStatus,
+)
 from sidekick_usages.heartbeat import (
     HeartbeatProvider,
     heartbeat_supported_label,
 )
-from sidekick_usages.maintenance import (
-    TokenMaintenanceService,
-    expiry_epoch_seconds,
-)
+from sidekick_usages.maintenance import TokenMaintenanceService
 from sidekick_usages.providers.base import Provider
 from sidekick_usages.providers.claude import PROFILE_SCOPE
-from sidekick_usages.store import Account, AccountStore
+from sidekick_usages.store import AccountStore
 
 _IDENTITY_FULL_MAX_LENGTH = 12
 
@@ -28,27 +40,27 @@ _IDENTITY_FULL_MAX_LENGTH = 12
 class AccountDiagnostic:
     """Public doctor data for one account."""
 
-    label: str
-    provider: str
+    label: AccountLabel
+    provider: ProviderId
     plan: str
     usage_route: str
     has_refresh_token: bool
-    expires_at: int | None
+    expires_at: datetime | None
     expires_at_local: str | None
     identity_fingerprint: str | None
     can_auto_refresh: bool
-    expiry_state: str
-    last_refresh_at: str | None
-    last_refresh_status: str | None
+    expiry_state: ExpiryState
+    last_refresh_at: datetime | None
+    last_refresh_status: RefreshStatus | None
     last_refresh_error: str | None
     heartbeat_supported: bool
     heartbeat_enabled: bool
     heartbeat: str
-    heartbeat_5h_reset_at: str | None
-    heartbeat_window_resets: dict[str, str] | None
-    heartbeat_targets: list[str] | None
-    last_heartbeat_at: str | None
-    last_heartbeat_status: str | None
+    heartbeat_5h_reset_at: datetime | None
+    heartbeat_window_resets: Mapping[str, datetime] | None
+    heartbeat_targets: tuple[str, ...] | None
+    last_heartbeat_at: datetime | None
+    last_heartbeat_status: HeartbeatStatus | None
     last_heartbeat_error: str | None
     manual_action_required: bool
 
@@ -59,8 +71,8 @@ class DoctorService:
     def __init__(
         self,
         store: AccountStore,
-        providers: dict[str, Provider],
-        heartbeat_providers: dict[str, HeartbeatProvider],
+        providers: dict[ProviderId, Provider],
+        heartbeat_providers: dict[ProviderId, HeartbeatProvider],
         maintenance: TokenMaintenanceService,
         clock: Clock,
     ) -> None:
@@ -80,7 +92,7 @@ class DoctorService:
     def diagnostics(
         self,
         *,
-        provider_id: str | None = None,
+        provider_id: ProviderId | None = None,
         label: str | None = None,
     ) -> list[AccountDiagnostic]:
         """Return diagnostics for accounts matching optional filters."""
@@ -102,12 +114,12 @@ class DoctorService:
         """Build one account diagnostic."""
         provider = self.providers.get(account.provider_id)
         heartbeat_provider = self.heartbeat_providers.get(account.provider_id)
-        expiry_state = self.maintenance.expiry_state(account, reference_time)
+        expiry = self.maintenance.expiry(account, reference_time)
         can_auto_refresh = bool(provider and account.refresh_token)
         manual_action_required = _manual_action_required(
             account,
             can_auto_refresh=can_auto_refresh,
-            expiry_state=expiry_state,
+            expiry=expiry,
             provider_known=provider is not None,
         )
         return AccountDiagnostic(
@@ -116,11 +128,11 @@ class DoctorService:
             plan=account.plan,
             usage_route=usage_route(account),
             has_refresh_token=bool(account.refresh_token),
-            expires_at=account.expires_at,
-            expires_at_local=_expires_at_local(account),
+            expires_at=_expiry_time(expiry),
+            expires_at_local=_expires_at_local(expiry),
             identity_fingerprint=_identity_fingerprint(account),
             can_auto_refresh=can_auto_refresh,
-            expiry_state=expiry_state,
+            expiry_state=expiry.state,
             last_refresh_at=account.last_refresh_at,
             last_refresh_status=account.last_refresh_status,
             last_refresh_error=account.last_refresh_error,
@@ -160,7 +172,12 @@ def render_doctor(
     if json_output:
         console.print(
             json.dumps(
-                {"accounts": [asdict(d) for d in diagnostics]},
+                {
+                    "accounts": [
+                        _diagnostic_dict(diagnostic)
+                        for diagnostic in diagnostics
+                    ]
+                },
                 indent=2,
             )
         )
@@ -224,10 +241,15 @@ def _render_heartbeat_diagnostic(
         + ("yes" if diagnostic.heartbeat_enabled else "no")
     )
     if diagnostic.heartbeat_5h_reset_at:
-        console.print(f"  cached 5h reset: {diagnostic.heartbeat_5h_reset_at}")
+        console.print(
+            "  cached 5h reset: "
+            + _format_machine_time(diagnostic.heartbeat_5h_reset_at)
+        )
     if diagnostic.heartbeat_window_resets:
         for target_id, reset_at in diagnostic.heartbeat_window_resets.items():
-            console.print(f"  cached {target_id} reset: {reset_at}")
+            console.print(
+                f"  cached {target_id} reset: {_format_machine_time(reset_at)}"
+            )
     if diagnostic.heartbeat_targets:
         console.print(
             "  heartbeat targets: " + ", ".join(diagnostic.heartbeat_targets)
@@ -260,23 +282,25 @@ def _manual_action_required(
     account: Account,
     *,
     can_auto_refresh: bool,
-    expiry_state: str,
+    expiry: ClassifiedExpiry,
     provider_known: bool,
 ) -> bool:
     """Return whether the user needs to log in or fix config."""
     if not provider_known:
         return True
-    if account.last_refresh_status == "failed":
+    if account.last_refresh_status is RefreshStatus.FAILED:
         return True
-    return expiry_state == "expired" and not can_auto_refresh
+    if isinstance(expiry, InvalidExpiry):
+        return True
+    return isinstance(expiry, ExpiredExpiry) and not can_auto_refresh
 
 
-def _expires_at_local(account: Account) -> str | None:
+def _expires_at_local(expiry: ClassifiedExpiry) -> str | None:
     """Render expiry as a local ISO timestamp."""
-    expires_at = expiry_epoch_seconds(account)
+    expires_at = _expiry_time(expiry)
     if expires_at is None:
         return None
-    return datetime.fromtimestamp(expires_at).astimezone().isoformat()
+    return expires_at.astimezone().isoformat()
 
 
 def _identity_fingerprint(account: Account) -> str | None:
@@ -287,3 +311,73 @@ def _identity_fingerprint(account: Account) -> str | None:
     if len(value) <= _IDENTITY_FULL_MAX_LENGTH:
         return value
     return f"{value[:8]}…{value[-4:]}"
+
+
+def _expiry_time(expiry: ClassifiedExpiry) -> datetime | None:
+    """Return the authoritative time from a classified expiry."""
+    if isinstance(expiry, ValidExpiry | ExpiredExpiry):
+        return expiry.at
+    return None
+
+
+def _format_machine_time(value: datetime) -> str:
+    """Encode one doctor JSON timestamp as canonical UTC text."""
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _optional_machine_time(value: datetime | None) -> str | None:
+    """Encode an optional doctor JSON timestamp."""
+    return _format_machine_time(value) if value is not None else None
+
+
+def _diagnostic_dict(diagnostic: AccountDiagnostic) -> dict[str, object]:
+    """Build one secret-free JSON-ready doctor record."""
+    resets = diagnostic.heartbeat_window_resets
+    return {
+        "label": diagnostic.label,
+        "provider": diagnostic.provider.value,
+        "plan": diagnostic.plan,
+        "usage_route": diagnostic.usage_route,
+        "has_refresh_token": diagnostic.has_refresh_token,
+        "expires_at": _optional_machine_time(diagnostic.expires_at),
+        "expires_at_local": diagnostic.expires_at_local,
+        "identity_fingerprint": diagnostic.identity_fingerprint,
+        "can_auto_refresh": diagnostic.can_auto_refresh,
+        "expiry_state": diagnostic.expiry_state.value,
+        "last_refresh_at": _optional_machine_time(diagnostic.last_refresh_at),
+        "last_refresh_status": (
+            diagnostic.last_refresh_status.value
+            if diagnostic.last_refresh_status is not None
+            else None
+        ),
+        "last_refresh_error": diagnostic.last_refresh_error,
+        "heartbeat_supported": diagnostic.heartbeat_supported,
+        "heartbeat_enabled": diagnostic.heartbeat_enabled,
+        "heartbeat": diagnostic.heartbeat,
+        "heartbeat_5h_reset_at": _optional_machine_time(
+            diagnostic.heartbeat_5h_reset_at
+        ),
+        "heartbeat_window_resets": (
+            {
+                target_id: _format_machine_time(reset_at)
+                for target_id, reset_at in resets.items()
+            }
+            if resets is not None
+            else None
+        ),
+        "heartbeat_targets": (
+            list(diagnostic.heartbeat_targets)
+            if diagnostic.heartbeat_targets is not None
+            else None
+        ),
+        "last_heartbeat_at": _optional_machine_time(
+            diagnostic.last_heartbeat_at
+        ),
+        "last_heartbeat_status": (
+            diagnostic.last_heartbeat_status.value
+            if diagnostic.last_heartbeat_status is not None
+            else None
+        ),
+        "last_heartbeat_error": diagnostic.last_heartbeat_error,
+        "manual_action_required": diagnostic.manual_action_required,
+    }

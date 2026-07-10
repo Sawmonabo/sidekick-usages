@@ -1,17 +1,16 @@
 """Abstract provider adapter for usage-window heartbeat."""
 
 from abc import ABC, abstractmethod
+from datetime import datetime
 
-from sidekick_usages.core.types import ProviderId
+from sidekick_usages.core.models import Account
+from sidekick_usages.core.types import HeartbeatStatus, ProviderId
 from sidekick_usages.heartbeat.domain import (
-    HEARTBEAT_ACTIVE,
-    HEARTBEAT_WARMED,
     HeartbeatProbeResult,
     HeartbeatTarget,
     UsageWindowState,
 )
 from sidekick_usages.http import HttpClient
-from sidekick_usages.store import Account
 
 STANDARD_HEARTBEAT_TARGET = HeartbeatTarget(
     id="standard",
@@ -88,7 +87,7 @@ class HeartbeatProvider(ABC):
         state = self.inspect_window(account, http, target)
         if state.active:
             return HeartbeatProbeResult(
-                status=HEARTBEAT_ACTIVE,
+                status=HeartbeatStatus.ACTIVE,
                 message=state.message,
                 warmed=False,
                 reset_at=state.reset_at,
@@ -118,12 +117,12 @@ class HeartbeatProvider(ABC):
 
 
 def warmed(
-    reset_at: str | None,
+    reset_at: datetime | None,
     target: HeartbeatTarget | None = None,
 ) -> HeartbeatProbeResult:
     """Build a standard warmed result."""
     return HeartbeatProbeResult(
-        status=HEARTBEAT_WARMED,
+        status=HeartbeatStatus.WARMED,
         message="warmed",
         warmed=True,
         reset_at=reset_at,

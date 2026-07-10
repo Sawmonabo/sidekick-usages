@@ -11,8 +11,8 @@ from sidekick_usages.providers.codex import CodexProvider
 
 
 def build_heartbeat_registry(
-    providers: Mapping[str, Provider],
-) -> dict[str, HeartbeatProvider]:
+    providers: Mapping[ProviderId, Provider],
+) -> dict[ProviderId, HeartbeatProvider]:
     """Build heartbeat adapters from the composed provider registry."""
     codex = providers.get(ProviderId.CODEX)
     if not isinstance(codex, CodexProvider):

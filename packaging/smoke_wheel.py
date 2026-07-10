@@ -19,6 +19,9 @@ REQUIRED_WHEEL_MEMBERS = frozenset(
         "sidekick_usages/__init__.py",
         "sidekick_usages/__main__.py",
         "sidekick_usages/cli.py",
+        "sidekick_usages/core/expiry.py",
+        "sidekick_usages/core/models.py",
+        "sidekick_usages/core/types.py",
         "sidekick_usages/http/__init__.py",
         "sidekick_usages/http/client.py",
         "sidekick_usages/http/retry.py",
@@ -26,7 +29,12 @@ REQUIRED_WHEEL_MEMBERS = frozenset(
         "sidekick_usages/serialization/json.py",
     }
 )
-FORBIDDEN_WHEEL_MEMBERS = frozenset({"sidekick_usages/http.py"})
+FORBIDDEN_WHEEL_MEMBERS = frozenset(
+    {
+        "sidekick_usages/http.py",
+        "sidekick_usages/report.py",
+    }
+)
 
 
 class WheelVerificationError(RuntimeError):

@@ -2,6 +2,7 @@
 
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -33,6 +34,8 @@ def test_importing_core_does_not_load_outer_layers() -> None:
 import json
 import sys
 import sidekick_usages.core
+import sidekick_usages.core.expiry
+import sidekick_usages.core.models
 
 forbidden = (
     "pydantic",
@@ -62,3 +65,8 @@ print(json.dumps(loaded))
     )
 
     assert completed.stdout.strip() == "[]"
+
+    package_root = Path(__file__).parents[1] / "src" / "sidekick_usages"
+    assert (package_root / "core" / "expiry.py").is_file()
+    assert (package_root / "core" / "models.py").is_file()
+    assert not (package_root / "report.py").exists()

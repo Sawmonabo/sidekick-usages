@@ -3,8 +3,9 @@
 import io
 import json
 from collections.abc import Iterable, Mapping
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
 
 from rich.console import Console
 from typer.testing import CliRunner
@@ -12,15 +13,24 @@ from typer.testing import CliRunner
 from sidekick_usages import cli
 from sidekick_usages.branding import ROBOT_LINES
 from sidekick_usages.clock import Clock
-from sidekick_usages.core.types import ProviderId
+from sidekick_usages.core.expiry import KnownExpiry, UnknownExpiry
+from sidekick_usages.core.models import (
+    Account,
+    ClaudeCredentials,
+    CodexCredentials,
+    DetectedCredentials,
+    UsageReport,
+)
+from sidekick_usages.core.types import (
+    AccountLabel,
+    HeartbeatStatus,
+    ProviderId,
+)
 from sidekick_usages.heartbeat import (
-    HEARTBEAT_ACTIVE,
-    HEARTBEAT_DISABLED,
-    HEARTBEAT_FAILED,
-    HEARTBEAT_WARMED,
     HeartbeatProbeResult,
     HeartbeatProvider,
     HeartbeatService,
+    HeartbeatTarget,
     UsageWindowState,
 )
 from sidekick_usages.heartbeat.codex import (
@@ -28,11 +38,10 @@ from sidekick_usages.heartbeat.codex import (
     CodexHeartbeat,
 )
 from sidekick_usages.http import HttpClient, HttpOperation
-from sidekick_usages.providers.base import DetectedCredentials, Provider
+from sidekick_usages.providers.base import Provider
 from sidekick_usages.providers.codex import CodexProvider
-from sidekick_usages.report import UsageReport
 from sidekick_usages.serialization import JsonObject
-from sidekick_usages.store import Account, AccountStore
+from sidekick_usages.store import AccountStore
 from tests.test_support import (
     REFERENCE_TIME,
     FixedClock,
@@ -40,6 +49,9 @@ from tests.test_support import (
 )
 
 CODEX_USAGE_FETCHES_FOR_WARM = 2
+_STANDARD_RESET = datetime(2026, 6, 12, 18, tzinfo=UTC)
+_SPARK_RESET = datetime(2026, 6, 12, 19, tzinfo=UTC)
+_ROUNDTRIP_AUDIT_TIME = datetime(2026, 6, 12, 13, tzinfo=UTC)
 
 
 def _codex_heartbeat() -> CodexHeartbeat:
@@ -55,13 +67,13 @@ class _FakeHeartbeatProvider(HeartbeatProvider):
     def __init__(
         self,
         *,
-        provider_id: str = "claude",
+        provider_id: ProviderId = ProviderId.CLAUDE,
         heartbeat_supported: bool = True,
         heartbeat_results: Iterable[HeartbeatProbeResult] = (),
     ) -> None:
-        self.id = ProviderId(provider_id)
+        self.id = provider_id
         self.display_name = (
-            "Codex CLI" if provider_id == "codex" else "Claude Code"
+            "Codex CLI" if provider_id is ProviderId.CODEX else "Claude Code"
         )
         self._heartbeat_supported = heartbeat_supported
         self.heartbeat_results = list(heartbeat_results)
@@ -76,7 +88,7 @@ class _FakeHeartbeatProvider(HeartbeatProvider):
         self,
         account: Account,
         http: HttpClient,
-        target: object,
+        target: HeartbeatTarget,
     ) -> UsageWindowState:
         del account, http, target
         return UsageWindowState(active=False)
@@ -85,17 +97,17 @@ class _FakeHeartbeatProvider(HeartbeatProvider):
         self,
         account: Account,
         http: HttpClient,
-        target: object,
+        target: HeartbeatTarget,
     ) -> HeartbeatProbeResult:
         del http, target
         self.heartbeat_calls.append((account.label, account.access_token))
         if self.heartbeat_results:
             return self.heartbeat_results.pop(0)
         return HeartbeatProbeResult(
-            status=HEARTBEAT_WARMED,
+            status=HeartbeatStatus.WARMED,
             message="warmed",
             warmed=True,
-            reset_at="2026-06-12T18:00:00Z",
+            reset_at=_STANDARD_RESET,
         )
 
 
@@ -130,8 +142,11 @@ class _FakeRefreshProvider(Provider):
     ) -> bool:
         del http
         self.refresh_calls += 1
-        account.access_token = "refreshed-token"
-        account.expires_at = int((REFERENCE_TIME.timestamp() + 3600) * 1000)
+        account.credentials = replace(
+            account.credentials,
+            access_token="refreshed-token",
+            expiry=KnownExpiry(REFERENCE_TIME + timedelta(hours=1)),
+        )
         return True
 
     def run_setup_token(self) -> str | None:
@@ -148,22 +163,35 @@ def _store(tmp_path: Path, accounts: Iterable[Account]) -> AccountStore:
 def _acct(
     label: str = "team",
     *,
-    provider_id: str = "claude",
+    provider_id: ProviderId = ProviderId.CLAUDE,
     provider_account_id: str | None = None,
     heartbeat_enabled: bool = False,
-    heartbeat_5h_reset_at: str | None = None,
-    heartbeat_window_resets: dict[str, str] | None = None,
-    heartbeat_targets: list[str] | None = None,
+    heartbeat_5h_reset_at: datetime | None = None,
+    heartbeat_window_resets: dict[str, datetime] | None = None,
+    heartbeat_targets: tuple[str, ...] | None = None,
     refresh_token: str | None = "refresh-token",
-    expires_at: int | None = None,
+    expiry_at: datetime | None = None,
 ) -> Account:
+    expiry = (
+        KnownExpiry(expiry_at) if expiry_at is not None else UnknownExpiry()
+    )
+    credentials = (
+        ClaudeCredentials(
+            access_token="old-token",
+            refresh_token=refresh_token,
+            expiry=expiry,
+        )
+        if provider_id is ProviderId.CLAUDE
+        else CodexCredentials(
+            access_token="old-token",
+            refresh_token=refresh_token,
+            expiry=expiry,
+            account_id=provider_account_id,
+        )
+    )
     return Account(
-        label=label,
-        provider_id=provider_id,
-        access_token="old-token",
-        provider_account_id=provider_account_id,
-        refresh_token=refresh_token,
-        expires_at=expires_at,
+        label=AccountLabel(label),
+        credentials=credentials,
         plan="team",
         heartbeat_enabled=heartbeat_enabled,
         heartbeat_5h_reset_at=heartbeat_5h_reset_at,
@@ -175,8 +203,8 @@ def _acct(
 def _install_ctx(
     tmp_path: Path,
     accounts: Iterable[Account],
-    heartbeat_providers: dict[str, HeartbeatProvider],
-    providers: dict[str, Provider] | None = None,
+    heartbeat_providers: dict[ProviderId, HeartbeatProvider],
+    providers: dict[ProviderId, Provider] | None = None,
     clock: Clock | None = None,
 ) -> tuple[AccountStore, io.StringIO, io.StringIO]:
     paths = make_application_paths(tmp_path)
@@ -202,7 +230,7 @@ def _install_ctx(
 class _FakeCodexHttp(HttpClient):
     """Tiny HTTP double for Codex heartbeat protocol tests."""
 
-    def __init__(self, usage_responses: Iterable[dict[str, Any]]) -> None:
+    def __init__(self, usage_responses: Iterable[JsonObject]) -> None:
         self.usage_responses: list[JsonObject] = list(usage_responses)
         self.get_calls: list[tuple[str, dict[str, str]]] = []
         self.post_calls: list[tuple[str, JsonObject, dict[str, str]]] = []
@@ -237,19 +265,19 @@ def test_account_roundtrips_heartbeat_metadata(tmp_path: Path) -> None:
         [
             _acct(
                 heartbeat_enabled=True,
-                heartbeat_5h_reset_at="2026-06-12T18:00:00Z",
+                heartbeat_5h_reset_at=_STANDARD_RESET,
                 heartbeat_window_resets={
-                    "standard": "2026-06-12T18:00:00Z",
-                    "spark": "2026-06-12T19:00:00Z",
+                    "standard": _STANDARD_RESET,
+                    "spark": _SPARK_RESET,
                 },
-                heartbeat_targets=["standard", "spark"],
+                heartbeat_targets=("standard", "spark"),
             )
         ],
     )
     account = store.get("team")
     assert account is not None
-    account.last_heartbeat_at = "2026-06-12T13:00:00Z"
-    account.last_heartbeat_status = HEARTBEAT_WARMED
+    account.last_heartbeat_at = _ROUNDTRIP_AUDIT_TIME
+    account.last_heartbeat_status = HeartbeatStatus.WARMED
     account.last_heartbeat_error = None
     store.save()
 
@@ -257,14 +285,14 @@ def test_account_roundtrips_heartbeat_metadata(tmp_path: Path) -> None:
 
     assert restored is not None
     assert restored.heartbeat_enabled is True
-    assert restored.heartbeat_5h_reset_at == "2026-06-12T18:00:00Z"
+    assert restored.heartbeat_5h_reset_at == _STANDARD_RESET
     assert restored.heartbeat_window_resets == {
-        "standard": "2026-06-12T18:00:00Z",
-        "spark": "2026-06-12T19:00:00Z",
+        "standard": _STANDARD_RESET,
+        "spark": _SPARK_RESET,
     }
-    assert restored.heartbeat_targets == ["standard", "spark"]
-    assert restored.last_heartbeat_at == "2026-06-12T13:00:00Z"
-    assert restored.last_heartbeat_status == HEARTBEAT_WARMED
+    assert restored.heartbeat_targets == ("standard", "spark")
+    assert restored.last_heartbeat_at == _ROUNDTRIP_AUDIT_TIME
+    assert restored.last_heartbeat_status is HeartbeatStatus.WARMED
     assert restored.last_heartbeat_error is None
 
 
@@ -275,14 +303,14 @@ def test_heartbeat_all_skips_disabled_accounts(tmp_path: Path) -> None:
     service = HeartbeatService(
         store,
         HttpClient(),
-        {"claude": provider},
+        {ProviderId.CLAUDE: provider},
         clock=FixedClock(),
     )
 
     outcomes = service.heartbeat_all()
 
     assert provider.heartbeat_calls == []
-    assert outcomes[0].status == HEARTBEAT_DISABLED
+    assert outcomes[0].status is HeartbeatStatus.DISABLED
 
 
 def test_heartbeat_label_runs_even_when_disabled(tmp_path: Path) -> None:
@@ -292,7 +320,7 @@ def test_heartbeat_label_runs_even_when_disabled(tmp_path: Path) -> None:
     service = HeartbeatService(
         store,
         HttpClient(),
-        {"claude": provider},
+        {ProviderId.CLAUDE: provider},
         clock=FixedClock(),
     )
 
@@ -300,12 +328,12 @@ def test_heartbeat_label_runs_even_when_disabled(tmp_path: Path) -> None:
         store.get("team"), require_enabled=False
     )
 
-    assert outcome.status == HEARTBEAT_WARMED
+    assert outcome.status is HeartbeatStatus.WARMED
     assert provider.heartbeat_calls == [("team", "old-token")]
     saved = AccountStore(store.locations).load().get("team")
     assert saved is not None
-    assert saved.last_heartbeat_status == HEARTBEAT_WARMED
-    assert saved.heartbeat_5h_reset_at == "2026-06-12T18:00:00Z"
+    assert saved.last_heartbeat_status is HeartbeatStatus.WARMED
+    assert saved.heartbeat_5h_reset_at == _STANDARD_RESET
 
 
 def test_heartbeat_decision_samples_clock_once(tmp_path: Path) -> None:
@@ -317,37 +345,37 @@ def test_heartbeat_decision_samples_clock_once(tmp_path: Path) -> None:
         [
             _acct(
                 heartbeat_enabled=True,
-                expires_at=int((REFERENCE_TIME.timestamp() + 3600) * 1000),
-                heartbeat_5h_reset_at="2026-06-12T18:00:00Z",
+                expiry_at=REFERENCE_TIME + timedelta(hours=1),
+                heartbeat_5h_reset_at=_STANDARD_RESET,
             )
         ],
     )
     service = HeartbeatService(
         store,
         HttpClient(),
-        {"claude": provider},
+        {ProviderId.CLAUDE: provider},
         clock=clock,
     )
 
     outcome = service.heartbeat_account(store.get("team"))
 
-    assert outcome.status == HEARTBEAT_ACTIVE
+    assert outcome.status is HeartbeatStatus.ACTIVE
     assert provider.heartbeat_calls == []
     assert clock.calls == 1
 
 
 def test_heartbeat_cache_is_target_specific(tmp_path: Path) -> None:
     """A cached Spark reset must not suppress a standard Codex warm."""
-    provider = _FakeHeartbeatProvider(provider_id="codex")
+    provider = _FakeHeartbeatProvider(provider_id=ProviderId.CODEX)
     clock = FixedClock()
     store = _store(
         tmp_path,
         [
             _acct(
-                provider_id="codex",
+                provider_id=ProviderId.CODEX,
                 heartbeat_enabled=True,
                 heartbeat_window_resets={
-                    "spark": "2026-06-12T18:00:00Z",
+                    "spark": _STANDARD_RESET,
                 },
             )
         ],
@@ -355,7 +383,7 @@ def test_heartbeat_cache_is_target_specific(tmp_path: Path) -> None:
     service = HeartbeatService(
         store,
         HttpClient(),
-        {"codex": provider},
+        {ProviderId.CODEX: provider},
         clock=clock,
     )
 
@@ -363,7 +391,7 @@ def test_heartbeat_cache_is_target_specific(tmp_path: Path) -> None:
         store.get("team"), target_id="standard"
     )
 
-    assert outcome.status == HEARTBEAT_WARMED
+    assert outcome.status is HeartbeatStatus.WARMED
     assert provider.heartbeat_calls == [("team", "old-token")]
 
 
@@ -372,7 +400,7 @@ def test_heartbeat_persists_failure_per_account(tmp_path: Path) -> None:
     provider = _FakeHeartbeatProvider(
         heartbeat_results=[
             HeartbeatProbeResult(
-                status=HEARTBEAT_FAILED,
+                status=HeartbeatStatus.FAILED,
                 message="rate limited",
                 action_required=True,
                 warmed=False,
@@ -384,18 +412,18 @@ def test_heartbeat_persists_failure_per_account(tmp_path: Path) -> None:
     service = HeartbeatService(
         store,
         HttpClient(),
-        {"claude": provider},
+        {ProviderId.CLAUDE: provider},
         clock=clock,
     )
 
     outcome = service.heartbeat_account(store.get("team"))
 
-    assert outcome.status == HEARTBEAT_FAILED
+    assert outcome.status is HeartbeatStatus.FAILED
     assert outcome.action_required is True
     saved = AccountStore(store.locations).load().get("team")
     assert saved is not None
-    assert saved.last_heartbeat_at == "2026-06-12T12:34:56.789000Z"
-    assert saved.last_heartbeat_status == HEARTBEAT_FAILED
+    assert saved.last_heartbeat_at == REFERENCE_TIME
+    assert saved.last_heartbeat_status is HeartbeatStatus.FAILED
     assert saved.last_heartbeat_error == "rate limited"
 
 
@@ -405,7 +433,7 @@ def test_heartbeat_enable_disable_and_status_cli(tmp_path: Path) -> None:
     store, stdout, _ = _install_ctx(
         tmp_path,
         [_acct()],
-        {"claude": provider},
+        {ProviderId.CLAUDE: provider},
     )
 
     enabled = CliRunner().invoke(cli.app, ["heartbeat", "enable", "team"])
@@ -433,7 +461,7 @@ def test_heartbeat_status_json_remains_machine_readable(
     _, stdout, _ = _install_ctx(
         tmp_path,
         [_acct()],
-        {"claude": provider},
+        {ProviderId.CLAUDE: provider},
     )
 
     result = CliRunner().invoke(
@@ -468,7 +496,7 @@ def test_heartbeat_label_cli_runs_one_shot_when_disabled(
     store, stdout, _ = _install_ctx(
         tmp_path,
         [_acct("team", heartbeat_enabled=False)],
-        {"claude": provider},
+        {ProviderId.CLAUDE: provider},
     )
 
     result = CliRunner().invoke(cli.app, ["heartbeat", "team"])
@@ -490,7 +518,7 @@ def test_heartbeat_all_quiet_runs_enabled_only(tmp_path: Path) -> None:
             _acct("enabled", heartbeat_enabled=True),
             _acct("disabled", heartbeat_enabled=False),
         ],
-        {"claude": provider},
+        {ProviderId.CLAUDE: provider},
     )
 
     result = CliRunner().invoke(cli.app, ["heartbeat", "--all", "--quiet"])
@@ -506,8 +534,13 @@ def test_heartbeat_enable_accepts_codex_with_saved_account_id(
     """Codex accounts with saved account ids can opt into heartbeat."""
     store, stdout, _ = _install_ctx(
         tmp_path,
-        [_acct(provider_id="codex", provider_account_id="acct-codex")],
-        {"codex": _codex_heartbeat()},
+        [
+            _acct(
+                provider_id=ProviderId.CODEX,
+                provider_account_id="acct-codex",
+            )
+        ],
+        {ProviderId.CODEX: _codex_heartbeat()},
     )
 
     result = CliRunner().invoke(cli.app, ["heartbeat", "enable", "team"])
@@ -522,7 +555,7 @@ def test_heartbeat_enable_accepts_codex_with_saved_account_id(
 def test_codex_heartbeat_warms_standard_window_with_mini() -> None:
     """Codex standard heartbeat uses the cheapest standard-window model."""
     account = _acct(
-        provider_id="codex",
+        provider_id=ProviderId.CODEX,
         provider_account_id="acct-codex",
     )
     http = _FakeCodexHttp(
@@ -541,8 +574,8 @@ def test_codex_heartbeat_warms_standard_window_with_mini() -> None:
 
     result = _codex_heartbeat().run(account, http)
 
-    assert result.status == HEARTBEAT_WARMED
-    assert result.reset_at == "2026-06-12T18:00:00Z"
+    assert result.status is HeartbeatStatus.WARMED
+    assert result.reset_at == _STANDARD_RESET
     assert len(http.get_calls) == CODEX_USAGE_FETCHES_FOR_WARM
     assert len(http.post_calls) == 1
     url, body, headers = http.post_calls[0]
@@ -568,7 +601,7 @@ def test_codex_heartbeat_warms_standard_window_with_mini() -> None:
 def test_codex_heartbeat_warms_spark_window_with_spark_model() -> None:
     """Codex Spark heartbeat targets the separate Spark rate limit."""
     account = _acct(
-        provider_id="codex",
+        provider_id=ProviderId.CODEX,
         provider_account_id="acct-codex",
     )
     http = _FakeCodexHttp(
@@ -613,8 +646,8 @@ def test_codex_heartbeat_warms_spark_window_with_spark_model() -> None:
 
     result = _codex_heartbeat().run(account, http, target_id="spark")
 
-    assert result.status == HEARTBEAT_WARMED
-    assert result.reset_at == "2026-06-12T19:00:00Z"
+    assert result.status is HeartbeatStatus.WARMED
+    assert result.reset_at == _SPARK_RESET
     assert result.target_id == "spark"
     assert len(http.post_calls) == 1
     _, body, _ = http.post_calls[0]
@@ -624,7 +657,7 @@ def test_codex_heartbeat_warms_spark_window_with_spark_model() -> None:
 def test_codex_heartbeat_fails_when_target_window_stays_inactive() -> None:
     """A successful POST is not reported as warmed unless usage confirms it."""
     account = _acct(
-        provider_id="codex",
+        provider_id=ProviderId.CODEX,
         provider_account_id="acct-codex",
     )
     http = _FakeCodexHttp(
@@ -636,7 +669,7 @@ def test_codex_heartbeat_fails_when_target_window_stays_inactive() -> None:
 
     result = _codex_heartbeat().run(account, http)
 
-    assert result.status == HEARTBEAT_FAILED
+    assert result.status is HeartbeatStatus.FAILED
     assert result.warmed is False
     assert "did not become active" in result.message
 
@@ -645,8 +678,13 @@ def test_codex_heartbeat_can_enable_all_targets(tmp_path: Path) -> None:
     """Codex opt-in can include standard and Spark windows."""
     store, stdout, _ = _install_ctx(
         tmp_path,
-        [_acct(provider_id="codex", provider_account_id="acct-codex")],
-        {"codex": _codex_heartbeat()},
+        [
+            _acct(
+                provider_id=ProviderId.CODEX,
+                provider_account_id="acct-codex",
+            )
+        ],
+        {ProviderId.CODEX: _codex_heartbeat()},
     )
 
     result = CliRunner().invoke(
@@ -658,14 +696,14 @@ def test_codex_heartbeat_can_enable_all_targets(tmp_path: Path) -> None:
     saved = store.get("team")
     assert saved is not None
     assert saved.heartbeat_enabled is True
-    assert saved.heartbeat_targets == ["standard", "spark"]
+    assert saved.heartbeat_targets == ("standard", "spark")
     assert "team: enabled" in stdout.getvalue()
 
 
 def test_codex_heartbeat_skips_when_usage_window_is_active() -> None:
     """Codex usage state is inspected before sending a model request."""
     account = _acct(
-        provider_id="codex",
+        provider_id=ProviderId.CODEX,
         provider_account_id="acct-codex",
     )
     http = _FakeCodexHttp(
@@ -683,8 +721,8 @@ def test_codex_heartbeat_skips_when_usage_window_is_active() -> None:
 
     result = _codex_heartbeat().run(account, http)
 
-    assert result.status == HEARTBEAT_ACTIVE
-    assert result.reset_at == "2026-06-12T18:00:00Z"
+    assert result.status is HeartbeatStatus.ACTIVE
+    assert result.reset_at == _STANDARD_RESET
     assert http.post_calls == []
 
 
@@ -699,11 +737,11 @@ def test_maintain_refreshes_before_heartbeat(tmp_path: Path) -> None:
             _acct(
                 heartbeat_enabled=True,
                 refresh_token="refresh-token",
-                expires_at=int(REFERENCE_TIME.timestamp() * 1000) - 60_000,
+                expiry_at=REFERENCE_TIME - timedelta(minutes=1),
             )
         ],
-        {"claude": heartbeat_provider},
-        providers={"claude": refresh_provider},
+        {ProviderId.CLAUDE: heartbeat_provider},
+        providers={ProviderId.CLAUDE: refresh_provider},
         clock=clock,
     )
 

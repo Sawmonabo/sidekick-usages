@@ -1,6 +1,40 @@
 """Closed type vocabulary shared across application features."""
 
+import unicodedata
 from enum import IntEnum, StrEnum
+from typing import Self
+
+_MAX_ACCOUNT_LABEL_BYTES = 512
+
+
+class AccountLabel(str):
+    """Validated account label with exact Unicode identity.
+
+    Labels are intentionally not stripped, case-folded, or Unicode-normalized.
+    """
+
+    def __new__(cls, value: str) -> Self:
+        """Validate and construct an account label.
+
+        :param value: Exact label value to preserve.
+        :returns: Validated label.
+        :raises ValueError: If the label violates the account contract.
+        """
+        if not value:
+            raise ValueError("Account labels must not be empty.")
+        try:
+            encoded = value.encode("utf-8")
+        except UnicodeEncodeError as error:
+            raise ValueError("Account labels must be valid UTF-8.") from error
+        if len(encoded) > _MAX_ACCOUNT_LABEL_BYTES:
+            raise ValueError(
+                "Account labels must not exceed 512 encoded UTF-8 bytes."
+            )
+        if any(unicodedata.category(char) == "Cc" for char in value):
+            raise ValueError(
+                "Account labels must not contain control characters."
+            )
+        return super().__new__(cls, value)
 
 
 class ProviderId(StrEnum):
@@ -8,6 +42,34 @@ class ProviderId(StrEnum):
 
     CLAUDE = "claude"
     CODEX = "codex"
+
+
+class RefreshStatus(StrEnum):
+    """Closed saved-token refresh outcomes."""
+
+    OK = "ok"
+    SKIPPED = "skipped"
+    FAILED = "failed"
+
+
+class HeartbeatStatus(StrEnum):
+    """Closed heartbeat operation and persisted outcomes."""
+
+    WARMED = "warmed"
+    ACTIVE = "active"
+    DISABLED = "disabled"
+    UNSUPPORTED = "unsupported"
+    FAILED = "failed"
+    ENABLED = "enabled"
+
+
+class ExpiryState(StrEnum):
+    """Provider-neutral classified expiry states."""
+
+    VALID = "valid"
+    EXPIRED = "expired"
+    UNKNOWN = "unknown"
+    INVALID = "invalid"
 
 
 class ExitCode(IntEnum):

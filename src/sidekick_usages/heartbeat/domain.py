@@ -1,15 +1,14 @@
 """Domain types for optional usage-window heartbeat."""
 
 from dataclasses import dataclass
+from datetime import datetime
 
-from sidekick_usages.core.types import ExitCode
-
-HEARTBEAT_WARMED = "warmed"
-HEARTBEAT_ACTIVE = "active"
-HEARTBEAT_DISABLED = "disabled"
-HEARTBEAT_UNSUPPORTED = "unsupported"
-HEARTBEAT_FAILED = "failed"
-HEARTBEAT_ENABLED = "enabled"
+from sidekick_usages.core.types import (
+    AccountLabel,
+    ExitCode,
+    HeartbeatStatus,
+    ProviderId,
+)
 
 
 @dataclass(frozen=True)
@@ -26,7 +25,7 @@ class UsageWindowState:
     """Provider-neutral state for the window heartbeat cares about."""
 
     active: bool
-    reset_at: str | None = None
+    reset_at: datetime | None = None
     message: str = "5h window inactive"
 
 
@@ -34,10 +33,10 @@ class UsageWindowState:
 class HeartbeatProbeResult:
     """Provider result after a tiny model request was sent."""
 
-    status: str
+    status: HeartbeatStatus
     message: str
     warmed: bool
-    reset_at: str | None = None
+    reset_at: datetime | None = None
     action_required: bool = False
     target_id: str | None = None
     target_label: str | None = None
@@ -47,9 +46,9 @@ class HeartbeatProbeResult:
 class HeartbeatOutcome:
     """Service-level result for one optional heartbeat action."""
 
-    label: str
-    provider_id: str
-    status: str
+    label: AccountLabel | None
+    provider_id: ProviderId | None
+    status: HeartbeatStatus
     message: str
     warmed: bool = False
     action_required: bool = False

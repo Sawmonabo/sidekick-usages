@@ -3,21 +3,25 @@
 import json
 import subprocess
 from collections.abc import Mapping
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
 
 import pytest
 
+from sidekick_usages.core.expiry import KnownExpiry
+from sidekick_usages.core.models import Account, ClaudeCredentials
+from sidekick_usages.core.types import AccountLabel
 from sidekick_usages.errors import AuthError
 from sidekick_usages.http import HttpClient, HttpOperation
 from sidekick_usages.providers import claude as claude_module
 from sidekick_usages.providers.claude import ClaudeProvider
 from sidekick_usages.serialization import JsonObject
-from sidekick_usages.store import Account
 from tests.test_support import REFERENCE_TIME, FixedClock
 
 CLI_REFRESH_TIMEOUT_SECONDS = 60
 CLI_EXPIRES_AT_MS = 1_781_270_062_459
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 
 def _provider() -> ClaudeProvider:
@@ -29,7 +33,7 @@ class _FakeHttp(HttpClient):
 
     def __init__(
         self,
-        response_json: dict[str, Any] | None = None,
+        response_json: JsonObject | None = None,
         raise_on_post: Exception | None = None,
     ) -> None:
         """:param response_json: Canned JSON response."""
@@ -61,14 +65,15 @@ class _FakeHttp(HttpClient):
 def _acct(refresh_token: str | None = "refresh-old") -> Account:
     """Build a minimal Claude account for refresh tests."""
     return Account(
-        label="team",
-        provider_id="claude",
-        access_token="sk-ant-oat01-old",
-        refresh_token=refresh_token,
+        label=AccountLabel("team"),
+        credentials=ClaudeCredentials(
+            access_token="sk-ant-oat01-old",
+            refresh_token=refresh_token,
+        ),
     )
 
 
-def _disable_cli_refresh(monkeypatch: Any) -> None:
+def _disable_cli_refresh(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make CLI-backed refresh unavailable for direct-HTTP tests."""
     monkeypatch.setattr(claude_module.shutil, "which", lambda name: None)
 
@@ -91,7 +96,7 @@ def test_claude_refresh_returns_false_without_refresh_token() -> None:
 
 
 def test_claude_refresh_uses_cli_refresh_token_login(
-    monkeypatch: Any,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Claude refresh delegates to Claude Code in an isolated HOME."""
     http = _FakeHttp(response_json={"access_token": "http-unused"})
@@ -151,18 +156,22 @@ def test_claude_refresh_uses_cli_refresh_token_login(
     assert http.calls == []
     assert acct.access_token == "sk-ant-oat01-cli"
     assert acct.refresh_token == "sk-ant-ort01-cli"
-    assert acct.expires_at == CLI_EXPIRES_AT_MS
+    assert acct.expiry == KnownExpiry(
+        _EPOCH + timedelta(milliseconds=CLI_EXPIRES_AT_MS)
+    )
     assert acct.plan == "team"
-    assert acct.scopes == [
+    assert acct.scopes == (
         "user:file_upload",
         "user:inference",
         "user:mcp_servers",
         "user:profile",
         "user:sessions:claude_code",
-    ]
+    )
 
 
-def test_claude_refresh_posts_saved_refresh_token(monkeypatch: Any) -> None:
+def test_claude_refresh_posts_saved_refresh_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Direct HTTP fallback mirrors Claude Code's refresh contract."""
     _disable_cli_refresh(monkeypatch)
     http = _FakeHttp(response_json={"access_token": "sk-ant-oat01-new"})
@@ -188,7 +197,7 @@ def test_claude_refresh_posts_saved_refresh_token(monkeypatch: Any) -> None:
 
 
 def test_claude_refresh_cli_rejection_does_not_fallback_to_http(
-    monkeypatch: Any,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A real Claude CLI rejection is the authoritative refresh result."""
     http = _FakeHttp(response_json={"access_token": "http-unused"})
@@ -226,12 +235,19 @@ def test_claude_refresh_cli_rejection_does_not_fallback_to_http(
     assert http.calls == []
 
 
-def test_claude_refresh_uses_saved_scopes(monkeypatch: Any) -> None:
+def test_claude_refresh_uses_saved_scopes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Claude refresh asks for the same scopes saved with the account."""
     _disable_cli_refresh(monkeypatch)
     http = _FakeHttp(response_json={"access_token": "sk-ant-oat01-new"})
     acct = _acct()
-    acct.scopes = ["user:inference", "user:profile"]
+    credentials = acct.credentials
+    assert isinstance(credentials, ClaudeCredentials)
+    acct.credentials = replace(
+        credentials,
+        scopes=("user:inference", "user:profile"),
+    )
 
     assert _provider().refresh_token(acct, http) is True
 
@@ -240,7 +256,7 @@ def test_claude_refresh_uses_saved_scopes(monkeypatch: Any) -> None:
 
 
 def test_claude_refresh_updates_tokens_and_millisecond_expiry(
-    monkeypatch: Any,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Successful refresh mutates account token metadata in-place."""
     _disable_cli_refresh(monkeypatch)
@@ -258,11 +274,13 @@ def test_claude_refresh_updates_tokens_and_millisecond_expiry(
 
     assert acct.access_token == "sk-ant-oat01-new"
     assert acct.refresh_token == "refresh-new"
-    assert acct.expires_at == int((REFERENCE_TIME.timestamp() + 60) * 1000)
+    assert acct.expiry == KnownExpiry(REFERENCE_TIME + timedelta(seconds=60))
     assert clock.calls == 1
 
 
-def test_claude_refresh_returns_false_on_auth_error(monkeypatch: Any) -> None:
+def test_claude_refresh_returns_false_on_auth_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Rejected refresh tokens leave the account untouched."""
     _disable_cli_refresh(monkeypatch)
     http = _FakeHttp(raise_on_post=AuthError("Refresh rejected"))
@@ -275,7 +293,7 @@ def test_claude_refresh_returns_false_on_auth_error(monkeypatch: Any) -> None:
 
 
 def test_claude_refresh_returns_false_without_access_token(
-    monkeypatch: Any,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Malformed refresh responses do not partially update the account."""
     _disable_cli_refresh(monkeypatch)

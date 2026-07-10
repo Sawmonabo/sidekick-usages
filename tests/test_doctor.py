@@ -2,6 +2,7 @@
 
 import io
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from rich.console import Console
@@ -9,10 +10,21 @@ from typer.testing import CliRunner
 
 from sidekick_usages import cli
 from sidekick_usages.branding import ROBOT_LINES
+from sidekick_usages.core.expiry import KnownExpiry
+from sidekick_usages.core.models import (
+    Account,
+    ClaudeCredentials,
+    CodexCredentials,
+)
+from sidekick_usages.core.types import (
+    AccountLabel,
+    HeartbeatStatus,
+    RefreshStatus,
+)
 from sidekick_usages.heartbeat import build_heartbeat_registry
 from sidekick_usages.http import HttpClient
 from sidekick_usages.providers import build_provider_registry
-from sidekick_usages.store import Account, AccountStore
+from sidekick_usages.store import AccountStore
 from tests.test_support import (
     REFERENCE_TIME,
     FixedClock,
@@ -54,24 +66,25 @@ def test_doctor_json_reports_refreshability_and_redacts_tokens(
 ) -> None:
     """Doctor JSON exposes account state without leaking secrets."""
     oauth = Account(
-        label="team",
-        provider_id="claude",
-        access_token="sk-ant-oat01-secret-access-token-value",
-        refresh_token="secret-refresh-token",
-        expires_at=int(REFERENCE_TIME.timestamp() * 1000) + 3_600_000,
+        label=AccountLabel("team"),
+        credentials=ClaudeCredentials(
+            access_token="sk-ant-oat01-secret-access-token-value",
+            refresh_token="secret-refresh-token",
+            expiry=KnownExpiry(REFERENCE_TIME + timedelta(hours=1)),
+            scopes=("user:profile", "user:inference"),
+        ),
         plan="team",
-        scopes=["user:profile", "user:inference"],
         heartbeat_enabled=True,
-        heartbeat_5h_reset_at="2026-06-12T18:00:00Z",
-        last_heartbeat_status="active",
+        heartbeat_5h_reset_at=datetime(2026, 6, 12, 18, tzinfo=UTC),
+        last_heartbeat_status=HeartbeatStatus.ACTIVE,
     )
     setup = Account(
-        label="setup",
-        provider_id="claude",
-        access_token="sk-ant-oat01-setup-token-value",
-        expires_at=None,
+        label=AccountLabel("setup"),
+        credentials=ClaudeCredentials(
+            access_token="sk-ant-oat01-setup-token-value",
+            scopes=(),
+        ),
         plan="max",
-        scopes=[],
     )
     _, stdout, _, clock = _install_ctx(tmp_path, [oauth, setup])
 
@@ -81,7 +94,7 @@ def test_doctor_json_reports_refreshability_and_redacts_tokens(
     payload = json.loads(stdout.getvalue())
     accounts = {item["label"]: item for item in payload["accounts"]}
     assert accounts["team"]["can_auto_refresh"] is True
-    assert accounts["team"]["expiry_state"] == "fresh"
+    assert accounts["team"]["expiry_state"] == "valid"
     assert accounts["team"]["usage_route"] == "/api/oauth/usage"
     assert accounts["team"]["heartbeat_supported"] is True
     assert accounts["team"]["heartbeat_enabled"] is True
@@ -101,13 +114,14 @@ def test_doctor_reports_previous_refresh_rejection(
 ) -> None:
     """Doctor flags accounts after a saved-token refresh fails."""
     account = Account(
-        label="dead",
-        provider_id="claude",
-        access_token="sk-ant-oat01-old-token-value",
-        refresh_token="refresh-token",
+        label=AccountLabel("dead"),
+        credentials=ClaudeCredentials(
+            access_token="sk-ant-oat01-old-token-value",
+            refresh_token="refresh-token",
+            scopes=("user:profile",),
+        ),
         plan="team",
-        scopes=["user:profile"],
-        last_refresh_status="failed",
+        last_refresh_status=RefreshStatus.FAILED,
         last_refresh_error="Claude CLI refresh failed: status code 400",
     )
     _, stdout, _, _ = _install_ctx(tmp_path, [account])
@@ -127,16 +141,16 @@ def test_doctor_reports_previous_refresh_rejection(
 def test_doctor_filters_by_provider_and_label(tmp_path: Path) -> None:
     """Doctor filters are composable."""
     claude = Account(
-        label="claude-team",
-        provider_id="claude",
-        access_token="sk-ant-oat01-claude",
+        label=AccountLabel("claude-team"),
+        credentials=ClaudeCredentials(access_token="sk-ant-oat01-claude"),
         plan="team",
     )
     codex = Account(
-        label="codex-pro",
-        provider_id="codex",
-        access_token="eyJ.codex.token",
-        refresh_token="codex-refresh",
+        label=AccountLabel("codex-pro"),
+        credentials=CodexCredentials(
+            access_token="eyJ.codex.token",
+            refresh_token="codex-refresh",
+        ),
         plan="pro",
     )
     _, stdout, _, _ = _install_ctx(tmp_path, [claude, codex])

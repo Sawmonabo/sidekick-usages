@@ -10,9 +10,11 @@ lack ``user:profile`` (so ``/api/oauth/usage`` returns 403).
 """
 
 from collections.abc import Mapping
-from typing import Any
+from dataclasses import replace
+from datetime import UTC, datetime
 
-from sidekick_usages.heartbeat import HEARTBEAT_ACTIVE, HEARTBEAT_WARMED
+from sidekick_usages.core.models import Account, ClaudeCredentials
+from sidekick_usages.core.types import AccountLabel, HeartbeatStatus
 from sidekick_usages.heartbeat.claude import ClaudeHeartbeat
 from sidekick_usages.http import HttpClient, HttpOperation
 from sidekick_usages.providers.claude import (
@@ -23,7 +25,6 @@ from sidekick_usages.providers.claude import (
     ClaudeProvider,
 )
 from sidekick_usages.serialization import JsonObject
-from sidekick_usages.store import Account
 from tests.test_support import FixedClock
 
 #: Reference utilization values quoted verbatim from the unified
@@ -32,6 +33,8 @@ _REF_5H_UTILIZATION = 0.0184
 _REF_7D_UTILIZATION = 0.737
 _REF_5H_UTILIZATION_PERCENT = 1.84
 _REF_7D_UTILIZATION_PERCENT = 73.7
+_REF_5H_RESET_AT = datetime.fromtimestamp(1778915400, tz=UTC)
+_OAUTH_RESET_AT = datetime(2026, 6, 12, 18, tzinfo=UTC)
 
 
 def _provider() -> ClaudeProvider:
@@ -51,7 +54,7 @@ class _FakeHttp(HttpClient):
     def __init__(
         self,
         response_headers: dict[str, str] | None = None,
-        response_json: dict[str, Any] | None = None,
+        response_json: JsonObject | None = None,
     ) -> None:
         """:param response_headers: Canned headers for POST mock.
 
@@ -93,17 +96,18 @@ class _FakeHttp(HttpClient):
         return self.response_json
 
 
-def _acct(scopes: list[str] | None) -> Account:
+def _acct(scopes: tuple[str, ...] | None) -> Account:
     """Build a minimal Account fixture.
 
-    :param scopes: Scope list (or None) to assign.
+    :param scopes: Scope tuple (or None) to assign.
     :return: Account with sentinel fields.
     """
     return Account(
-        label="t",
-        provider_id="claude",
-        access_token="sk-ant-oat01-test",
-        scopes=scopes,
+        label=AccountLabel("t"),
+        credentials=ClaudeCredentials(
+            access_token="sk-ant-oat01-test",
+            scopes=scopes,
+        ),
     )
 
 
@@ -124,7 +128,7 @@ _LIVE_HEADERS = {
 def test_fetch_via_headers_targets_messages_endpoint() -> None:
     """The probe POSTs to ``/v1/messages``, not ``/api/oauth/usage``."""
     http = _FakeHttp(response_headers=_LIVE_HEADERS)
-    _provider()._fetch_via_headers(_acct([]), http)
+    _provider()._fetch_via_headers(_acct(()), http)
     assert http.calls == [("POST", MESSAGES_URL)]
 
 
@@ -135,8 +139,11 @@ def test_fetch_via_headers_sends_bearer_auth_and_beta() -> None:
     returns 200 on ``/v1/messages`` for ``sk-ant-oat01-`` tokens.
     """
     http = _FakeHttp(response_headers=_LIVE_HEADERS)
-    acct = _acct([])
-    acct.access_token = "sk-ant-oat01-secret"
+    acct = _acct(())
+    acct.credentials = replace(
+        acct.credentials,
+        access_token="sk-ant-oat01-secret",
+    )
     _provider()._fetch_via_headers(acct, http)
     assert http.last_post_headers is not None
     assert (
@@ -153,7 +160,7 @@ def test_fetch_via_headers_sends_one_token_probe_body() -> None:
     server-side changes.
     """
     http = _FakeHttp(response_headers=_LIVE_HEADERS)
-    _provider()._fetch_via_headers(_acct([]), http)
+    _provider()._fetch_via_headers(_acct(()), http)
     assert http.last_post_body == {
         "model": PROBE_MODEL,
         "max_tokens": 1,
@@ -165,33 +172,32 @@ def test_fetch_via_headers_sends_one_token_probe_body() -> None:
 def test_fetch_via_headers_parses_5h_and_7d_windows() -> None:
     """Header-path fractions are normalized to display percentages."""
     http = _FakeHttp(response_headers=_LIVE_HEADERS)
-    report = _provider()._fetch_via_headers(_acct([]), http)
+    report = _provider()._fetch_via_headers(_acct(()), http)
     names = {w.name: w for w in report.windows}
     assert set(names) == {"5h", "7d"}
     assert round(names["5h"].utilization, 2) == _REF_5H_UTILIZATION_PERCENT
     assert round(names["7d"].utilization, 1) == _REF_7D_UTILIZATION_PERCENT
-    assert names["5h"].resets_at is not None
-    assert names["5h"].resets_at.endswith("+00:00")
+    assert names["5h"].resets_at == _REF_5H_RESET_AT
 
 
 def test_fetch_via_headers_omits_window_when_headers_missing() -> None:
     """Missing 5h headers omit the 5h window — don't synthesize zeros."""
     headers = {k: v for k, v in _LIVE_HEADERS.items() if "-5h-" not in k}
     http = _FakeHttp(response_headers=headers)
-    report = _provider()._fetch_via_headers(_acct([]), http)
+    report = _provider()._fetch_via_headers(_acct(()), http)
     assert [w.name for w in report.windows] == ["7d"]
 
 
 def test_fetch_via_headers_returns_empty_windows_on_empty_response() -> None:
-    """No unified headers → empty windows list, no crash.
+    """No unified headers → empty windows tuple, no crash.
 
     Defensive: the unified-* family is undocumented. If Anthropic
     renames or removes the headers, fetch should degrade to an
     empty report (renderer shows no bars) rather than throwing.
     """
     http = _FakeHttp(response_headers={})
-    report = _provider()._fetch_via_headers(_acct([]), http)
-    assert report.windows == []
+    report = _provider()._fetch_via_headers(_acct(()), http)
+    assert report.windows == ()
 
 
 def test_fetch_via_headers_skips_non_numeric_utilization() -> None:
@@ -201,7 +207,7 @@ def test_fetch_via_headers_skips_non_numeric_utilization() -> None:
         "anthropic-ratelimit-unified-5h-utilization": "not-a-float",
     }
     http = _FakeHttp(response_headers=headers)
-    report = _provider()._fetch_via_headers(_acct([]), http)
+    report = _provider()._fetch_via_headers(_acct(()), http)
     assert [w.name for w in report.windows] == ["7d"]
 
 
@@ -212,7 +218,7 @@ def test_fetch_via_headers_skips_non_numeric_reset() -> None:
         "anthropic-ratelimit-unified-7d-reset": "tomorrow",
     }
     http = _FakeHttp(response_headers=headers)
-    report = _provider()._fetch_via_headers(_acct([]), http)
+    report = _provider()._fetch_via_headers(_acct(()), http)
     assert [w.name for w in report.windows] == ["5h"]
 
 
@@ -220,14 +226,14 @@ def test_fetch_via_headers_skips_non_numeric_reset() -> None:
 def test_fetch_usage_routes_inference_only_to_header_path() -> None:
     """scopes lacking ``user:profile`` → header path."""
     http = _FakeHttp(response_headers=_LIVE_HEADERS)
-    _provider().fetch_usage(_acct(["user:inference"]), http)
+    _provider().fetch_usage(_acct(("user:inference",)), http)
     assert http.calls == [("POST", MESSAGES_URL)]
 
 
 def test_fetch_usage_routes_empty_scopes_to_header_path() -> None:
-    """scopes=[] (self-heal sentinel) → header path."""
+    """Known-empty scopes use the inference-only header path."""
     http = _FakeHttp(response_headers=_LIVE_HEADERS)
-    _provider().fetch_usage(_acct([]), http)
+    _provider().fetch_usage(_acct(()), http)
     assert http.calls == [("POST", MESSAGES_URL)]
 
 
@@ -242,7 +248,7 @@ def test_fetch_usage_routes_full_scope_to_oauth_path() -> None:
         }
     )
     _provider().fetch_usage(
-        _acct(["user:profile", "user:inference"]),
+        _acct(("user:profile", "user:inference")),
         http,
     )
     assert http.calls == [("GET", USAGE_URL)]
@@ -272,13 +278,13 @@ def test_claude_oauth_heartbeat_skips_active_five_hour() -> None:
     )
 
     result = ClaudeHeartbeat().run(
-        _acct(["user:profile", "user:inference"]),
+        _acct(("user:profile", "user:inference")),
         http,
     )
 
-    assert result.status == HEARTBEAT_ACTIVE
+    assert result.status is HeartbeatStatus.ACTIVE
     assert result.warmed is False
-    assert result.reset_at == "2026-06-12T18:00:00Z"
+    assert result.reset_at == _OAUTH_RESET_AT
     assert http.calls == [("GET", USAGE_URL)]
 
 
@@ -290,13 +296,13 @@ def test_claude_oauth_heartbeat_warms_inactive_five_hour() -> None:
     )
 
     result = ClaudeHeartbeat().run(
-        _acct(["user:profile", "user:inference"]),
+        _acct(("user:profile", "user:inference")),
         http,
     )
 
-    assert result.status == HEARTBEAT_WARMED
+    assert result.status is HeartbeatStatus.WARMED
     assert result.warmed is True
-    assert result.reset_at is not None
+    assert result.reset_at == _REF_5H_RESET_AT
     assert http.calls == [("GET", USAGE_URL), ("POST", MESSAGES_URL)]
     assert http.last_post_body == {
         "model": PROBE_MODEL,
@@ -309,9 +315,9 @@ def test_claude_inference_heartbeat_uses_header_probe() -> None:
     """Inference-only tokens can only warm by sending the tiny probe."""
     http = _FakeHttp(response_headers=_LIVE_HEADERS)
 
-    result = ClaudeHeartbeat().run(_acct(["user:inference"]), http)
+    result = ClaudeHeartbeat().run(_acct(("user:inference",)), http)
 
-    assert result.status == HEARTBEAT_WARMED
+    assert result.status is HeartbeatStatus.WARMED
     assert result.warmed is True
-    assert result.reset_at is not None
+    assert result.reset_at == _REF_5H_RESET_AT
     assert http.calls == [("POST", MESSAGES_URL)]

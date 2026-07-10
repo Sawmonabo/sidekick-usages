@@ -3,14 +3,18 @@
 import base64
 import json
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
 
+import pytest
+
+from sidekick_usages.core.expiry import KnownExpiry
+from sidekick_usages.core.models import Account, CodexCredentials
+from sidekick_usages.core.types import AccountLabel
+from sidekick_usages.errors import InvalidPayloadError
 from sidekick_usages.http import HttpClient, HttpOperation
 from sidekick_usages.providers.codex import CodexProvider
 from sidekick_usages.serialization import JsonObject
-from sidekick_usages.store import Account
 from tests.test_support import REFERENCE_TIME, FixedClock
 
 DETECTED_EXP = 1_800_000_000
@@ -40,24 +44,25 @@ def _jwt(payload: dict[str, object]) -> str:
     return f"{enc(header)}.{enc(payload)}.sig"
 
 
-def _acct() -> Account:
+def _acct(*, auth_home: str | None = None) -> Account:
     """Build a Codex account fixture."""
-    acct = Account(
-        label="codex-pro",
-        provider_id="codex",
-        access_token="access-old",
-        refresh_token="refresh-old",
-        expires_at=1_700_000_000,
+    return Account(
+        label=AccountLabel("codex-pro"),
+        credentials=CodexCredentials(
+            access_token="access-old",
+            refresh_token="refresh-old",
+            expiry=KnownExpiry(datetime.fromtimestamp(1_700_000_000, UTC)),
+            account_id="acct_123",
+            auth_home=auth_home,
+        ),
         plan="unknown",
     )
-    acct.provider_account_id = "acct_123"
-    return acct
 
 
 class _UsageHttp(HttpClient):
     """HTTP fake that records GET headers and returns one payload."""
 
-    def __init__(self, payload: dict[str, Any]) -> None:
+    def __init__(self, payload: JsonObject) -> None:
         self.payload: JsonObject = payload
         self.headers: dict[str, str] | None = None
 
@@ -74,7 +79,7 @@ class _UsageHttp(HttpClient):
 class _RefreshHttp(HttpClient):
     """HTTP fake that records POST form data and returns one payload."""
 
-    def __init__(self, payload: dict[str, Any]) -> None:
+    def __init__(self, payload: JsonObject) -> None:
         self.payload: JsonObject = payload
         self.data: dict[str, str] | None = None
 
@@ -92,7 +97,7 @@ class _RefreshHttp(HttpClient):
         return self.payload
 
 
-def _usage_payload() -> dict[str, Any]:
+def _usage_payload() -> JsonObject:
     """Return the current Codex usage endpoint shape."""
     return {
         "plan_type": "pro",
@@ -149,7 +154,9 @@ def test_parse_blob_extracts_account_id_expiry_and_plan() -> None:
     assert detected.access_token == access
     assert detected.refresh_token == "refresh-123"
     assert detected.provider_account_id == "acct_from_tokens"
-    assert detected.expires_at == DETECTED_EXP
+    assert detected.expiry == KnownExpiry(
+        datetime.fromtimestamp(DETECTED_EXP, UTC)
+    )
     assert detected.plan == "pro"
 
 
@@ -241,12 +248,8 @@ def test_fetch_usage_parses_current_rate_limit_shape() -> None:
     assert by_name["7d"].utilization == SECONDARY_USED
     assert by_name["gpt-5.1-codex 5h"].utilization == EXTRA_PRIMARY_USED
     assert by_name["gpt-5.1-codex 7d"].utilization == EXTRA_SECONDARY_USED
-    assert (
-        by_name["5h"].resets_at
-        == datetime.fromtimestamp(
-            PRIMARY_RESET,
-            tz=UTC,
-        ).isoformat()
+    assert by_name["5h"].resets_at == datetime.fromtimestamp(
+        PRIMARY_RESET, tz=UTC
     )
 
 
@@ -278,8 +281,25 @@ def test_refresh_posts_codex_client_id_and_updates_metadata() -> None:
     }
     assert acct.access_token == access
     assert acct.refresh_token == "refresh-new"
-    assert acct.expires_at == REFRESH_EXP
+    assert acct.expiry == KnownExpiry(datetime.fromtimestamp(REFRESH_EXP, UTC))
     assert acct.provider_account_id == "acct_new"
+
+
+def test_refresh_rejects_invalid_expiry_before_replacing_credentials() -> None:
+    """A malformed refresh cannot partially rotate Codex credentials."""
+    http = _RefreshHttp(
+        {
+            "access_token": _jwt({"exp": "invalid"}),
+            "refresh_token": "refresh-new",
+        }
+    )
+    acct = _acct()
+    original = acct.credentials
+
+    with pytest.raises(InvalidPayloadError):
+        _provider().refresh_token(acct, http)
+
+    assert acct.credentials is original
 
 
 def test_refresh_writes_rotated_tokens_to_saved_codex_home(tmp_path) -> None:
@@ -317,8 +337,7 @@ def test_refresh_writes_rotated_tokens_to_saved_codex_home(tmp_path) -> None:
             "expires_in": 60,
         }
     )
-    acct = _acct()
-    acct.codex_home = str(codex_home)
+    acct = _acct(auth_home=str(codex_home))
     clock = FixedClock()
 
     assert CodexProvider(clock).refresh_token(acct, http) is True
@@ -329,7 +348,9 @@ def test_refresh_writes_rotated_tokens_to_saved_codex_home(tmp_path) -> None:
     assert saved_auth["tokens"]["refresh_token"] == "refresh-new"
     assert saved_auth["tokens"]["id_token"] == "id-new"
     assert saved_auth["tokens"]["account_id"] == "acct_new"
-    assert acct.expires_at == int(REFERENCE_TIME.timestamp()) + 60
+    assert acct.expiry == KnownExpiry(
+        REFERENCE_TIME.replace(microsecond=0) + timedelta(seconds=60)
+    )
     assert acct.codex_last_refresh == "2026-06-12T12:34:56.789000Z"
     assert saved_auth["last_refresh"] == acct.codex_last_refresh
     assert clock.calls == 1

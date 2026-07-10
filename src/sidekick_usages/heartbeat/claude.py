@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime
 
+from sidekick_usages.core.models import Account
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.heartbeat.base import HeartbeatProvider, warmed
 from sidekick_usages.heartbeat.domain import (
@@ -19,7 +20,7 @@ from sidekick_usages.providers.claude import (
     USAGE_URL,
     USER_AGENT,
 )
-from sidekick_usages.store import Account
+from sidekick_usages.serialization import JsonValue
 
 INFERENCE_SCOPE = "user:inference"
 FIVE_HOUR_KEY = "five_hour"
@@ -76,8 +77,8 @@ class ClaudeHeartbeat(HeartbeatProvider):
         window = data.get(FIVE_HOUR_KEY)
         if not isinstance(window, dict):
             return UsageWindowState(active=False, message="5h window missing")
-        reset_at = window.get("resets_at")
-        if isinstance(reset_at, str) and reset_at:
+        reset_at = _provider_time(window.get("resets_at"))
+        if reset_at is not None:
             return UsageWindowState(
                 active=True,
                 reset_at=reset_at,
@@ -115,7 +116,7 @@ class ClaudeHeartbeat(HeartbeatProvider):
 def _parse_header_reset(
     response_headers: dict[str, str],
     prefix: str,
-) -> str | None:
+) -> datetime | None:
     """Parse a unified Claude rate-limit reset header."""
     reset_raw = response_headers.get(f"{prefix}-reset")
     if reset_raw is None:
@@ -124,4 +125,17 @@ def _parse_header_reset(
         reset_unix = int(float(reset_raw))
     except TypeError, ValueError:
         return None
-    return datetime.fromtimestamp(reset_unix, tz=UTC).isoformat()
+    return datetime.fromtimestamp(reset_unix, tz=UTC)
+
+
+def _provider_time(value: JsonValue | None) -> datetime | None:
+    """Normalize one optional Claude heartbeat timestamp."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed.astimezone(UTC)

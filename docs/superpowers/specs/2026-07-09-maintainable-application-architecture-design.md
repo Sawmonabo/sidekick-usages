@@ -882,6 +882,8 @@ Initial models:
 
 - `Account`;
 - `DetectedCredentials`;
+- `ClaudeCredentials`;
+- `CodexCredentials`;
 - `UsageWindow`;
 - `UsageReport`.
 
@@ -902,6 +904,61 @@ Provider, persistence, and presentation boundaries own their external epoch,
 string, and display representations. Core models never store a formatted time
 merely because an external schema does.
 
+The CS-13 caller analysis fixes the runtime credential representation as two
+immutable, slotted concrete variants:
+
+- `ClaudeCredentials` contains the access token, optional refresh token,
+  provider-neutral expiry, and `scopes: tuple[str, ...] | None`;
+- `CodexCredentials` contains the access token, optional refresh token,
+  provider-neutral expiry, optional provider account identity, optional auth
+  home, optional ID token, and the bounded opaque Codex auth
+  `last_refresh` value; and
+- `type Credentials = ClaudeCredentials | CodexCredentials` is the complete
+  supported union. No abstract credential base, generic provider hierarchy,
+  or speculative capability hook is introduced.
+
+Each credential variant exposes its `ProviderId` as class-level closed
+vocabulary. `Account.provider_id` is derived from the credential variant; it
+is not a second mutable discriminator that can disagree with the stored
+credentials. Claude credentials therefore cannot contain Codex identity or
+auth-file fields, and Codex credentials cannot contain Claude scopes.
+
+`Account` remains a mutable, slotted runtime object because rename, plan,
+refresh-audit, and heartbeat workflows update account state. Its
+`credentials` member is replaced atomically only after a complete provider
+response has been parsed and validated. Tokens are never updated one field at
+a time before expiry or identity validation finishes.
+
+`DetectedCredentials` contains the same immutable `Credentials` union plus
+the detected plan. It may expose provider-neutral read-only properties for
+access token, refresh token, expiry, and provider identity, but it does not
+duplicate every provider field. CLI-only discovery context such as the source
+Codex home remains an application workflow argument rather than becoming core
+credential state.
+
+The credential token, refresh token, and Codex ID token fields use
+`repr=False`. The containing `Account` and `DetectedCredentials`
+representations must therefore remain secret-free without custom redaction at
+each call site.
+
+`CodexCredentials.auth_home` remains a string in core so core does not import
+`pathlib`; the Codex filesystem adapter converts it to `Path`. The Codex auth
+`last_refresh` value is the one deliberate provider-native time exception: it
+remains a bounded opaque string because only the Codex auth-file boundary owns
+its semantics and lossless encoding. It is not classified, compared, or
+formatted by core.
+
+Persistence flattens the runtime credential variant into the approved stored
+record and reconstructs the variant from the persisted provider
+discriminator. The flattened schema is a boundary representation, not a
+reason to permit provider-incompatible fields in the runtime model.
+
+`UsageWindow` and `UsageReport` are immutable, slotted runtime values.
+`UsageWindow.resets_at` is an aware `datetime | None`; `UsageReport.windows`
+uses an immutable tuple. `UsageReport.raw` is deleted. Provider schemas own
+the original payload, and production consumers receive only validated product
+data.
+
 `core/` owns provider-neutral product vocabulary and pure cross-feature policy.
 It does not discover configuration, load external settings sources, resolve
 operating-system paths, perform filesystem or network I/O, or depend on
@@ -909,24 +966,45 @@ infrastructure frameworks. Operational configuration remains with the feature
 or adapter whose behavior it governs and is composed at the application entry
 point.
 
-`Account` may remain mutable while refresh and heartbeat workflows update it,
-but persistence is not one of its methods.
+Persistence is not an `Account` method.
 
 ### 5.2 `core/types.py`
 
 `core/types.py` owns shared type vocabulary, not every annotated class.
 
-Initial candidates:
+Shared types:
 
 - `ProviderId` as a closed `StrEnum`;
-- `AccountLabel` as a PEP 695 alias, `NewType`, or value object after its
-  invariants are confirmed;
-- genuinely cross-feature status or exit enums.
+- `AccountLabel` as a validating, non-normalizing `str` value object;
+- `RefreshStatus`, `HeartbeatStatus`, and `ExpiryState` as closed
+  cross-feature `StrEnum` vocabularies; and
+- `ExitCode` as the existing shared closed exit vocabulary.
 
-A plain alias improves readability but does not create runtime validation.
-`NewType` improves static separation but also does not validate values.
-A value object is justified only when labels have real normalization or
-validation behavior.
+`AccountLabel` subclasses `str` and validates in `__new__`. A valid label is
+non-empty, contains no Unicode control or NUL character, is valid UTF-8, and
+contains no more than 512 encoded UTF-8 bytes. Construction preserves the
+exact Unicode sequence. It never trims, normalizes, case-folds, or otherwise
+changes the label.
+
+A PEP 695 alias and `NewType` were rejected because neither enforces the
+confirmed persistence and command invariants. A wrapper dataclass was rejected
+because labels are real JSON object keys and are passed directly to Rich,
+Typer, shell quoting, dictionaries, and filesystem-boundary helpers. A
+validated `str` value object enforces the invariant without forcing conversion
+at every current string consumer. CLI and persistence boundaries translate
+construction failures into their own typed error vocabulary.
+
+The cross-module status enums contain exactly the current closed values:
+
+- `RefreshStatus`: `ok`, `skipped`, and `failed`;
+- `HeartbeatStatus`: `warmed`, `active`, `disabled`, `unsupported`, `failed`,
+  and `enabled`; and
+- `ExpiryState`: `valid`, `expired`, `unknown`, and `invalid`.
+
+The existing duplicated string constants are removed when callers migrate;
+they do not remain as a second authority. Plan names, provider response
+phrases, presentation-only labels, and maintenance's near-expiry policy remain
+open or feature-local and do not gain enums.
 
 Feature-specific statuses stay with their feature models. Provider wire
 shapes and persisted records never belong in `core/types.py`.
@@ -934,40 +1012,52 @@ shapes and persisted records never belong in `core/types.py`.
 ### 5.3 `core/expiry.py`
 
 Provider adapters normalize expiry into an aware UTC `datetime` before
-constructing core models. `core/expiry.py` then owns only provider-neutral
-classification:
+constructing core models. Stored runtime expiry is a discriminated union:
 
-- valid;
-- expired;
-- unknown; and
-- invalid.
+- `KnownExpiry(at: datetime)` stores one authoritative instant;
+- `UnknownExpiry` stores no instant; and
+- `InvalidExpiry` stores no authoritative instant and forces explicit failure
+  handling.
+
+`type Expiry = KnownExpiry | UnknownExpiry | InvalidExpiry` is the account and
+credential field type. Timed expiry classes reject naive datetimes and
+canonicalize aware inputs to `datetime.UTC`.
+
+Classification is a separate pure result because validity changes as the
+clock advances:
+
+- `ValidExpiry(at: datetime)`;
+- `ExpiredExpiry(at: datetime)`;
+- `UnknownExpiry`; and
+- `InvalidExpiry`.
+
+`type ClassifiedExpiry` is the union of those four results. The valid and
+expired classes always carry an aware UTC instant; unknown and invalid classes
+cannot carry one. A mutable `state` plus optional timestamp object is
+prohibited because it permits contradictory states.
 
 It is consumed by usage checking, maintenance, doctor, and heartbeat
 readiness. Unknown providers and invalid provider-native units fail at the
 provider or schema boundary; they never select a default normalization path.
-Core expiry policy receives the current aware time as an explicit value. It
-does not import the system clock, read configuration, or format timestamps.
+Core expiry policy receives one explicit aware `now` value. A known expiry is
+valid only when `at > now`; equality and every earlier instant are expired.
+The classifier does not import the system clock, read configuration, parse
+provider units, or format timestamps.
 
-An initial shape for caller analysis is:
+An absent or null provider expiry becomes `UnknownExpiry`. A present value
+with the wrong type, a Boolean accepted as an integer, an out-of-range epoch,
+or another malformed representation becomes `InvalidExpiry` or the owning
+typed boundary error; it never becomes epoch zero, unknown, or a plausible
+default. Ordinary persistence and provider-refresh paths reject invalid input
+before producing a usable saved account. Services handed `InvalidExpiry`
+still fail closed: usage does not issue a provider request, heartbeat does not
+warm, maintenance does not report success or fresh state, and doctor reports
+the explicit invalid condition.
 
-```python
-class ExpiryState(StrEnum):
-    VALID = "valid"
-    EXPIRED = "expired"
-    UNKNOWN = "unknown"
-    INVALID = "invalid"
-
-
-@dataclass(frozen=True, slots=True)
-class Expiry:
-    state: ExpiryState
-    at: datetime | None
-```
-
-Do not implement that sketch without checking real callers. If it permits
-nonsense combinations such as `VALID` without a time or `UNKNOWN` with an
-authoritative time, replace it with a discriminated representation or focused
-state classes that make those combinations impossible.
+Maintenance alone applies provider-specific refresh margins to a
+`ValidExpiry.at`. The Codex usage check's proactive refresh margin also remains
+use-case policy. Neither margin becomes a stored expiry state or changes the
+core boundary rule.
 
 ### 5.4 Feature-local models
 
@@ -988,6 +1078,66 @@ model files are not created merely for naming symmetry.
 
 Do not create empty `models.py`, `types.py`, or `schemas.py` files to make
 packages look identical.
+
+### 5.5 CS-13 migration constraints
+
+The atomic model migration preserves these caller-observed distinctions and
+corrects these proven hazards:
+
+- Claude `scopes=None` means unknown scopes, while `scopes=()` means
+  known-empty scopes. Truthiness must not collapse them.
+- A missing detected field usually means no new information; known-empty
+  scopes deliberately clear stale scope metadata.
+- Expiry is inspected by discriminant, never by integer or object truthiness.
+- Credential refresh parses and validates the full response before replacing
+  the immutable credential variant.
+- Token lookup is provider-scoped so equal token strings cannot merge Claude
+  and Codex identities.
+- Account change detection compares typed credential and plan values; it does
+  not serialize the domain object merely to detect mutation.
+- Token masking moves to the account-list renderer; it is presentation
+  behavior rather than an `Account` method.
+- Missing-account outcomes use absent typed identities rather than fabricated
+  label `?` or provider `unknown`; the renderer owns any visual fallback.
+- `heartbeat_5h_reset_at` and `heartbeat_window_resets` both remain in the
+  runtime migration because the approved persisted contract accepts them
+  independently. The reset mapping is defensively copied, normalized, and
+  exposed read-only so later item mutation cannot bypass the aware-UTC
+  invariant. Legitimate updates replace the mapping copy-on-write. Divergent
+  historical records must not be collapsed.
+- The current Codex usage-check margin and the separate Claude and Codex
+  maintenance margins remain with their use cases.
+
+### 5.6 CS-13 load-bearing proof
+
+CS-13 adds or consolidates only these behavior tests:
+
+1. One parameterized `AccountLabel` test proves exact Unicode preservation and
+   rejects empty, control or NUL, unencodable, and 513-byte labels.
+2. One table-driven expiry test covers immediately before, exactly at, and
+   immediately after one explicit `now`, plus unknown and invalid states. One
+   focused assertion proves timed states reject naive datetimes and untimed
+   states cannot carry an authoritative instant. The same invariant test
+   proves mutable audit fields normalize every assignment and the nested
+   heartbeat-reset map cannot be mutated in place.
+3. One two-provider model test proves provider identity is derived from the
+   credential variant and synthetic access, refresh, and ID tokens are absent
+   from `Account` and `DetectedCredentials` representations.
+4. One parameterized provider-boundary test proves Claude milliseconds and
+   Codex seconds for the same instant produce the same `KnownExpiry.at` and
+   malformed native values never become epoch or unknown.
+5. One synthetic two-account compatibility-store round trip proves legacy
+   Claude and Codex units plus audit and reset strings become aware runtime
+   values and encode exactly, including precision rejection.
+6. One existing service-clock test proves a decision samples wall time once.
+   The existing CS-11 monotonic-deadline suite is rerun, not duplicated.
+7. One architecture and built-wheel test proves the new core modules obey the
+   import boundary and neither source nor wheel contains stale `report.py`.
+
+Existing behavior tests are mechanically adapted only where their boundary
+remains distinct. Redundant one-field account round trips, repeated scope
+fixtures, `raw={}` setup, and duplicate clock tests are removed instead of
+being preserved as coverage padding.
 
 ## 6. Schemas, serialization, and runtime validation
 
@@ -1053,6 +1203,40 @@ provider-native epoch units and timestamp strings. Renderers own human display
 formatting. `serialization/json.py` supplies JSON vocabulary; it does not
 become the universal owner of provider, persistence, or presentation time
 formats.
+
+CS-13 fixes the ownership and runtime representation for every existing time
+family:
+
+| Value | Runtime representation | Decode owner | Encode owner |
+|---|---|---|---|
+| Claude token expiry milliseconds | `KnownExpiry` in aware UTC | Claude adapter | Current compatibility store until CS-14 |
+| Codex JWT expiry seconds | `KnownExpiry` in aware UTC | Codex adapter | Current compatibility store until CS-14 |
+| Provider `expires_in` | `KnownExpiry` from one clock sample | Owning provider adapter | Current compatibility store |
+| Usage-window reset | Optional aware `datetime` | Owning provider schema | Usage renderer |
+| Heartbeat reset | Optional aware `datetime` | Heartbeat provider adapter | Heartbeat renderer and store |
+| Refresh and heartbeat audit time | Optional aware `datetime` | Current compatibility store | Current compatibility store and renderers |
+| Codex auth `last_refresh` | Optional bounded opaque `str` | Codex auth adapter | Codex auth adapter |
+| HTTP retry deadline | Monotonic duration only | HTTP retry owner | Never encoded as wall time |
+
+Provider-native integer decoding uses epoch arithmetic with `timedelta`, not a
+floating-point timestamp round trip. Compatibility encoding is exact:
+
+- a Claude expiry must be representable as an exact millisecond;
+- a Codex expiry must be representable as an exact second; and
+- a non-representable runtime value is a typed boundary failure rather than a
+  truncated integer.
+
+When a relative refresh lifetime is converted to an absolute expiry, the
+owning provider quantizes the result to the native precision it can later
+encode exactly. It does not let a higher-precision clock sample enter core and
+silently discard that precision during persistence.
+
+The current store owns legacy millisecond, second, and audit-string conversion
+until CS-14 replaces it with the versioned persistence schema. Provider
+adapters own wire conversion. Renderers receive aware datetimes and an
+explicit reference time and perform only human formatting. Doctor's JSON
+builder owns its canonical machine timestamp strings. Core imports none of
+those encoders.
 
 ### 6.4 Completed build-versus-adopt research
 
@@ -3435,11 +3619,26 @@ on 2026-07-10:
 31. Enable durable writes only on qualified local filesystems with assessable
     permissions, locking, synchronization, and replacement semantics; fail
     closed on unsupported or ambiguous environments.
+32. Use a validating, non-normalizing `AccountLabel(str)` value object that
+    preserves exact Unicode while enforcing the approved label bounds.
+33. Nest the immutable `ClaudeCredentials | CodexCredentials` union inside a
+    mutable `Account`, derive provider identity from the credential variant,
+    and replace refreshed credentials atomically.
+34. Store `KnownExpiry | UnknownExpiry | InvalidExpiry` and classify known
+    instants into focused `ValidExpiry` or `ExpiredExpiry` results using one
+    explicit aware UTC `now`.
+35. Centralize only the proven cross-module `RefreshStatus`,
+    `HeartbeatStatus`, and `ExpiryState` vocabularies; keep open and
+    feature-local statuses out of core.
+36. Normalize runtime expiry, audit, usage-reset, and heartbeat-reset values to
+    aware UTC datetimes while preserving Codex auth `last_refresh` as the one
+    bounded opaque provider-owned string.
 
 ## Sign-off — APPROVED
 
 Approved by the operator on 2026-07-09, with the dependency and persistence
-decisions above approved on 2026-07-10.
+decisions and the CS-13 caller-driven model decisions above approved on
+2026-07-10.
 
 Next, write the matching implementation plan at:
 

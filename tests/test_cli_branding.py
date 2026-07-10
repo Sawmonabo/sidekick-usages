@@ -8,11 +8,12 @@ from typer.testing import CliRunner
 
 from sidekick_usages import cli
 from sidekick_usages.branding import ROBOT_LINES
-from sidekick_usages.core.types import ExitCode
+from sidekick_usages.core.models import Account, ClaudeCredentials
+from sidekick_usages.core.types import AccountLabel, ExitCode
 from sidekick_usages.daemon import DaemonOperation, DaemonOperationResult
 from sidekick_usages.http import HttpClient
 from sidekick_usages.providers import build_provider_registry
-from sidekick_usages.store import Account, AccountStore
+from sidekick_usages.store import AccountStore
 from tests.test_support import FixedClock, make_application_paths
 
 
@@ -47,9 +48,8 @@ def test_list_uses_one_shared_header_for_rows_and_empty_state(
     tmp_path: Path,
 ) -> None:
     account = Account(
-        label="personal",
-        provider_id="claude",
-        access_token="sk-ant-oat01-test-token",
+        label=AccountLabel("personal"),
+        credentials=ClaudeCredentials(access_token="sk-ant-oat01-test-token"),
         plan="max",
     )
     populated, _ = _install_context(tmp_path / "populated", [account])

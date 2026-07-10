@@ -1,13 +1,8 @@
 """Usage-window heartbeat package."""
 
+from sidekick_usages.core.types import HeartbeatStatus
 from sidekick_usages.heartbeat.base import HeartbeatProvider
 from sidekick_usages.heartbeat.domain import (
-    HEARTBEAT_ACTIVE,
-    HEARTBEAT_DISABLED,
-    HEARTBEAT_ENABLED,
-    HEARTBEAT_FAILED,
-    HEARTBEAT_UNSUPPORTED,
-    HEARTBEAT_WARMED,
     HeartbeatOutcome,
     HeartbeatProbeResult,
     HeartbeatTarget,
@@ -25,16 +20,11 @@ from sidekick_usages.heartbeat.service import (
 )
 
 __all__ = [
-    "HEARTBEAT_ACTIVE",
-    "HEARTBEAT_DISABLED",
-    "HEARTBEAT_ENABLED",
-    "HEARTBEAT_FAILED",
-    "HEARTBEAT_UNSUPPORTED",
-    "HEARTBEAT_WARMED",
     "HeartbeatOutcome",
     "HeartbeatProbeResult",
     "HeartbeatProvider",
     "HeartbeatService",
+    "HeartbeatStatus",
     "HeartbeatTarget",
     "UsageWindowState",
     "build_heartbeat_registry",

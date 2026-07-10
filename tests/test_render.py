@@ -1,18 +1,24 @@
 import io
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import pytest
 from rich.console import Console
 
 from sidekick_usages import render
+from sidekick_usages.core.models import (
+    Account,
+    ClaudeCredentials,
+    CodexCredentials,
+    UsageReport,
+    UsageWindow,
+)
+from sidekick_usages.core.types import AccountLabel, ProviderId
 from sidekick_usages.render import FetchFailure
-from sidekick_usages.report import UsageReport, UsageWindow
-from sidekick_usages.store import Account
 from tests.test_support import REFERENCE_TIME
 
 
-def _iso_after(**delta: float) -> str:
-    return (REFERENCE_TIME + timedelta(**delta)).isoformat()
+def _time_after(**delta: float) -> datetime:
+    return REFERENCE_TIME + timedelta(**delta)
 
 
 def test_heat_band_picks_inclusive_lower_bounds():
@@ -38,31 +44,30 @@ def test_heat_tile_nonzero_is_centered_percent_on_band():
 
 def test_format_reset_compact_buckets():
     assert render._format_reset_compact(None, REFERENCE_TIME) == ""
-    assert render._format_reset_compact("not-a-date", REFERENCE_TIME) == ""
     assert (
         render._format_reset_compact(
-            _iso_after(minutes=-5),
+            _time_after(minutes=-5),
             REFERENCE_TIME,
         )
         == "now"
     )
     assert (
         render._format_reset_compact(
-            _iso_after(minutes=45),
+            _time_after(minutes=45),
             REFERENCE_TIME,
         )
         == "45m"
     )
     assert (
         render._format_reset_compact(
-            _iso_after(hours=3, minutes=50),
+            _time_after(hours=3, minutes=50),
             REFERENCE_TIME,
         )
         == "3h 50m"
     )
     assert (
         render._format_reset_compact(
-            _iso_after(days=1, hours=15),
+            _time_after(days=1, hours=15),
             REFERENCE_TIME,
         )
         == "1d 15h"
@@ -71,7 +76,7 @@ def test_format_reset_compact_buckets():
 
 def test_reset_cell_is_centered_dim():
     cell = render._reset_cell(
-        _iso_after(hours=3, minutes=50),
+        _time_after(hours=3, minutes=50),
         REFERENCE_TIME,
     )
     assert cell.plain == f"{'3h 50m':^{render._TILE_WIDTH}}"
@@ -101,66 +106,70 @@ def test_length_hours_orders_5h_before_7d():
 
 
 def _acct(label, provider="claude", plan="max"):
+    provider_id = ProviderId(provider)
+    credentials = (
+        ClaudeCredentials(access_token="t")
+        if provider_id is ProviderId.CLAUDE
+        else CodexCredentials(access_token="t")
+    )
     return Account(
-        label=label,
-        provider_id=provider,
-        access_token="t",
+        label=AccountLabel(label),
+        credentials=credentials,
         plan=plan,
     )
 
 
 def _report(*windows):
     return UsageReport(
-        windows=[UsageWindow(*w) for w in windows],
+        windows=tuple(UsageWindow(*w) for w in windows),
         plan="max",
-        raw={},
     )
 
 
 def _worst_case_pairs():
     # 3 Claude + 2 Codex; the reserved 30-char name + Spark block is the
     # binding width case.
-    iso = _iso_after(hours=3, minutes=50)
+    reset_at = _time_after(hours=3, minutes=50)
     claude = [
         (
             _acct("short.account@example.test"),
-            _report(("5h", 94, iso), ("7d", 61, iso)),
+            _report(("5h", 94, reset_at), ("7d", 61, reset_at)),
         ),
         (
             _acct("team.account@example.test", plan="team"),
-            _report(("5h", 12, iso), ("7d", 73, iso)),
+            _report(("5h", 12, reset_at), ("7d", 73, reset_at)),
         ),
         (
             _acct("third.account@example.test"),
-            _report(("5h", 40, iso), ("7d", 5, iso)),
+            _report(("5h", 40, reset_at), ("7d", 5, reset_at)),
         ),
     ]
     codex = [
         (
             _acct("codex@example.test", "codex", "pro"),
             _report(
-                ("5h", 8, iso),
-                ("7d", 45, iso),
-                ("GPT-5.3-Codex-Spark 5h", 0, iso),
-                ("GPT-5.3-Codex-Spark 7d", 0, iso),
+                ("5h", 8, reset_at),
+                ("7d", 45, reset_at),
+                ("GPT-5.3-Codex-Spark 5h", 0, reset_at),
+                ("GPT-5.3-Codex-Spark 7d", 0, reset_at),
             ),
         ),
         (
             _acct("long.account.name@example.test", "codex", "pro"),
             _report(
-                ("5h", 0, iso),
-                ("7d", 0, iso),
-                ("GPT-5.3-Codex-Spark 5h", 0, iso),
-                ("GPT-5.3-Codex-Spark 7d", 0, iso),
+                ("5h", 0, reset_at),
+                ("7d", 0, reset_at),
+                ("GPT-5.3-Codex-Spark 5h", 0, reset_at),
+                ("GPT-5.3-Codex-Spark 7d", 0, reset_at),
             ),
         ),
     ]
     return claude + codex
 
 
-_LIFETIME: dict[str, tuple[int, str | None]] = {
-    "claude": (424_000_000, "2025-12-28"),
-    "codex": (212_000_000, "2026-03-30"),
+_LIFETIME: dict[ProviderId, tuple[int, str | None]] = {
+    ProviderId.CLAUDE: (424_000_000, "2025-12-28"),
+    ProviderId.CODEX: (212_000_000, "2026-03-30"),
 }
 
 #: The documented panel floor (spec §8/§10). The Framed-Panels redesign
@@ -208,7 +217,7 @@ def test_overview_uses_explicit_reference_time(
                 (
                     "5h",
                     1,
-                    _iso_after(hours=3, minutes=50),
+                    _time_after(hours=3, minutes=50),
                 )
             ),
         )
@@ -273,8 +282,8 @@ def test_provider_title_uses_singular_account_count():
         (
             _acct("only", "codex", "pro"),
             _report(
-                ("5h", 5, _iso_after(hours=1)),
-                ("7d", 9, _iso_after(days=1)),
+                ("5h", 5, _time_after(hours=1)),
+                ("7d", 9, _time_after(days=1)),
             ),
         )
     ]
@@ -315,15 +324,13 @@ def test_subtitle_not_truncated_when_wider_than_content():
         (
             _acct("x", "codex", "pro"),
             _report(
-                ("5h", 5, _iso_after(hours=1)),
-                ("7d", 9, _iso_after(days=1)),
+                ("5h", 5, _time_after(hours=1)),
+                ("7d", 9, _time_after(days=1)),
             ),
         )
     ]
-    # Annotated, not inferred: dict is invariant in its value type, so a
-    # str-only literal won't assign to the str | None parameter.
-    lifetime: dict[str, tuple[int, str | None]] = {
-        "codex": (999_000_000, "2024-01-01")
+    lifetime: dict[ProviderId, tuple[int, str | None]] = {
+        ProviderId.CODEX: (999_000_000, "2024-01-01")
     }
     buf = io.StringIO()
     console = Console(width=200, file=buf)
@@ -341,7 +348,7 @@ def test_subtitle_not_truncated_when_wider_than_content():
 
 
 def test_failure_renders_in_provider_panel():
-    iso = _iso_after(hours=3)
+    iso = _time_after(hours=3)
     pairs = [
         (
             _acct("acct-ok", "codex", "pro"),
@@ -385,7 +392,7 @@ def test_all_failed_provider_has_no_orphan_header():
 
 
 def test_failures_widen_shared_panels():
-    iso = _iso_after(hours=3)
+    iso = _time_after(hours=3)
     pairs = [
         (
             _acct("short.account@example.test", "claude", "max"),
@@ -422,7 +429,7 @@ def test_failures_widen_shared_panels():
 
 
 def test_legacy_mode_renders_failures():
-    iso = _iso_after(hours=3)
+    iso = _time_after(hours=3)
     pairs = [
         (
             _acct("acct-ok", "codex", "pro"),

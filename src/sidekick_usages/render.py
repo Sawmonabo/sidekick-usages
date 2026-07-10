@@ -21,9 +21,9 @@ from sidekick_usages.branding import (
     PROVIDER_COLORS,
     brand_header,
 )
+from sidekick_usages.core.models import Account, UsageReport, UsageWindow
+from sidekick_usages.core.types import ProviderId
 from sidekick_usages.lifetime import format_since, format_tokens
-from sidekick_usages.report import UsageReport, UsageWindow
-from sidekick_usages.store import Account
 
 BAR_WIDTH = 18
 
@@ -187,20 +187,19 @@ def _braille_bar(pct: float, width: int = BAR_WIDTH) -> Text:
     return bar
 
 
-def _format_reset(iso: str | None, reference_time: datetime) -> Text:
+def _format_reset(
+    reset_at: datetime | None,
+    reference_time: datetime,
+) -> Text:
     """Render a reset timestamp as ``<local> (<relative>)``.
 
-    :param iso: ISO-8601 timestamp from the API, possibly ``None``.
+    :param reset_at: Aware provider-normalized reset time, if known.
     :param reference_time: Aware wall time for relative formatting.
     :return: A dim Rich ``Text`` (or em-dash for missing data).
     """
-    if not iso:
+    if reset_at is None:
         return Text("—", style="dim")
-    try:
-        dt = datetime.fromisoformat(iso)
-        secs = int((dt - reference_time).total_seconds())
-    except ValueError, TypeError:
-        return Text(iso, style="dim")
+    secs = int((reset_at - reference_time).total_seconds())
     if secs <= 0:
         rel = "any moment"
     elif secs < _SECONDS_PER_HOUR:
@@ -211,7 +210,7 @@ def _format_reset(iso: str | None, reference_time: datetime) -> Text:
     else:
         d, rem = divmod(secs, _SECONDS_PER_DAY)
         rel = f"in {d}d {rem // _SECONDS_PER_HOUR}h"
-    local = dt.astimezone()
+    local = reset_at.astimezone()
     return Text(
         f"↻ {local.strftime('%a %b %d, %I:%M %p')} ({rel})",
         style="dim",
@@ -219,7 +218,7 @@ def _format_reset(iso: str | None, reference_time: datetime) -> Text:
 
 
 def _format_reset_compact(
-    iso: str | None,
+    reset_at: datetime | None,
     reference_time: datetime,
 ) -> str:
     """Compact relative countdown: ``45m`` / ``3h 50m`` / ``1d 15h``.
@@ -227,18 +226,14 @@ def _format_reset_compact(
     No ``↻`` glyph and no absolute timestamp (those are dropped from
     the matrix per the spec).
 
-    :param iso: ISO-8601 timestamp or ``None``.
+    :param reset_at: Aware provider-normalized reset time, if known.
     :param reference_time: Aware wall time for relative formatting.
     :return: A compact string, ``"now"`` if already due, or ``""``
         when missing/unparseable.
     """
-    if not iso:
+    if reset_at is None:
         return ""
-    try:
-        dt = datetime.fromisoformat(iso)
-        secs = round((dt - reference_time).total_seconds())
-    except ValueError, TypeError:
-        return ""
+    secs = round((reset_at - reference_time).total_seconds())
     if secs <= 0:
         return "now"
     if secs < _SECONDS_PER_HOUR:
@@ -250,15 +245,18 @@ def _format_reset_compact(
     return f"{days}d {remainder // _SECONDS_PER_HOUR}h"
 
 
-def _reset_cell(iso: str | None, reference_time: datetime) -> Text:
+def _reset_cell(
+    reset_at: datetime | None,
+    reference_time: datetime,
+) -> Text:
     """Build one fixed-width, dim, centered reset-countdown cell.
 
-    :param iso: ISO-8601 timestamp or ``None``.
+    :param reset_at: Aware provider-normalized reset time, if known.
     :param reference_time: Aware wall time for relative formatting.
     :return: A ``Text`` of width ``_TILE_WIDTH``.
     """
     return Text(
-        f"{_format_reset_compact(iso, reference_time):^{_TILE_WIDTH}}",
+        f"{_format_reset_compact(reset_at, reference_time):^{_TILE_WIDTH}}",
         style="grey42",
     )
 
@@ -354,7 +352,7 @@ def usage_report(
     return Group(account_header(acct), table)
 
 
-def _dot(provider_id: str) -> Text:
+def _dot(provider_id: ProviderId) -> Text:
     return Text("●", style=PROVIDER_COLORS.get(provider_id, "dim"))
 
 
@@ -498,7 +496,7 @@ def _build_table(
 
 
 def _provider_panel(
-    provider_id: str,
+    provider_id: ProviderId,
     pairs: list[tuple[Account, UsageReport]],
     failures: list[tuple[Account, FetchFailure]],
     namew: int,
@@ -584,7 +582,7 @@ def _provider_panel(
 
 
 def _error_table(
-    provider_id: str,
+    provider_id: ProviderId,
     failures: list[tuple[Account, FetchFailure]],
     namew: int,
 ) -> Table:
@@ -656,8 +654,8 @@ def _legend() -> Text:
 def _provider_order(
     pairs: list[tuple[Account, UsageReport]],
     failures: list[tuple[Account, FetchFailure]] | None = None,
-) -> list[str]:
-    order: list[str] = []
+) -> list[ProviderId]:
+    order: list[ProviderId] = []
     rows: list[Account] = [a for a, _ in pairs]
     if failures:
         rows += [a for a, _ in failures]
@@ -698,7 +696,7 @@ def _legacy_overview(
 
 def usage_overview(
     pairs: list[tuple[Account, UsageReport]],
-    lifetime: dict[str, tuple[int, str | None]],
+    lifetime: dict[ProviderId, tuple[int, str | None]],
     *,
     failures: list[tuple[Account, FetchFailure]] | None = None,
     width: int,

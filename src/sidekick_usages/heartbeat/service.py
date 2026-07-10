@@ -1,22 +1,27 @@
 """Policy and persistence for optional usage-window heartbeat."""
 
-from datetime import UTC, datetime
+from datetime import datetime
 
 from sidekick_usages.clock import Clock
-from sidekick_usages.core.types import ExitCode
+from sidekick_usages.core.expiry import (
+    ExpiredExpiry,
+    InvalidExpiry,
+    classify_expiry,
+)
+from sidekick_usages.core.models import Account
+from sidekick_usages.core.types import (
+    ExitCode,
+    HeartbeatStatus,
+    ProviderId,
+    RefreshStatus,
+)
 from sidekick_usages.errors import UsageError
 from sidekick_usages.heartbeat.base import HeartbeatProvider
 from sidekick_usages.heartbeat.domain import (
-    HEARTBEAT_ACTIVE,
-    HEARTBEAT_DISABLED,
-    HEARTBEAT_ENABLED,
-    HEARTBEAT_FAILED,
-    HEARTBEAT_UNSUPPORTED,
     HeartbeatOutcome,
 )
 from sidekick_usages.http import HttpClient
-from sidekick_usages.maintenance import expiry_epoch_seconds
-from sidekick_usages.store import Account, AccountStore
+from sidekick_usages.store import AccountStore
 
 
 class HeartbeatService:
@@ -26,7 +31,7 @@ class HeartbeatService:
         self,
         store: AccountStore,
         http: HttpClient,
-        providers: dict[str, HeartbeatProvider],
+        providers: dict[ProviderId, HeartbeatProvider],
         *,
         clock: Clock,
     ) -> None:
@@ -38,7 +43,7 @@ class HeartbeatService:
     def heartbeat_all(
         self,
         *,
-        provider_id: str | None = None,
+        provider_id: ProviderId | None = None,
         target_id: str | None = None,
     ) -> list[HeartbeatOutcome]:
         """Heartbeat every enabled matching account."""
@@ -94,8 +99,8 @@ class HeartbeatService:
             return HeartbeatOutcome(
                 label=account.label,
                 provider_id=account.provider_id,
-                status=HEARTBEAT_ACTIVE,
-                message=f"{target.label} active until {cached}",
+                status=HeartbeatStatus.ACTIVE,
+                message=f"{target.label} active until {cached.isoformat()}",
                 target_id=target.id,
                 target_label=target.label,
             )
@@ -110,16 +115,16 @@ class HeartbeatService:
                 reference_time=self.clock.now(),
             )
 
-        account.last_heartbeat_at = _utc_z(self.clock.now())
+        account.last_heartbeat_at = self.clock.now()
         account.last_heartbeat_status = result.status
         account.last_heartbeat_error = (
-            result.message if result.status == HEARTBEAT_FAILED else None
+            result.message if result.status is HeartbeatStatus.FAILED else None
         )
         if result.reset_at:
             _set_target_reset(account, target.id, result.reset_at)
         self.store.upsert(account)
         self.store.save()
-        if result.status == HEARTBEAT_FAILED:
+        if result.status is HeartbeatStatus.FAILED:
             exit_code = (
                 ExitCode.MANUAL_ACTION
                 if result.action_required
@@ -155,7 +160,7 @@ class HeartbeatService:
             return HeartbeatOutcome(
                 label=account.label,
                 provider_id=account.provider_id,
-                status=HEARTBEAT_DISABLED,
+                status=HeartbeatStatus.DISABLED,
                 message="heartbeat disabled",
             )
         return None
@@ -200,7 +205,7 @@ class HeartbeatService:
             return HeartbeatOutcome(
                 label=account.label,
                 provider_id=account.provider_id,
-                status=HEARTBEAT_FAILED,
+                status=HeartbeatStatus.FAILED,
                 message=f"Unknown provider '{account.provider_id}'.",
                 action_required=True,
                 exit_code=ExitCode.SYSTEM_ERROR,
@@ -213,7 +218,7 @@ class HeartbeatService:
             return HeartbeatOutcome(
                 label=account.label,
                 provider_id=account.provider_id,
-                status=HEARTBEAT_FAILED,
+                status=HeartbeatStatus.FAILED,
                 message=str(e),
                 action_required=False,
                 exit_code=ExitCode.SYSTEM_ERROR,
@@ -232,7 +237,7 @@ class HeartbeatService:
         return HeartbeatOutcome(
             label=account.label,
             provider_id=account.provider_id,
-            status=HEARTBEAT_ENABLED,
+            status=HeartbeatStatus.ENABLED,
             message="enabled",
         )
 
@@ -251,7 +256,7 @@ class HeartbeatService:
                 return HeartbeatOutcome(
                     label=account.label,
                     provider_id=account.provider_id,
-                    status=HEARTBEAT_FAILED,
+                    status=HeartbeatStatus.FAILED,
                     message=f"Unknown provider '{account.provider_id}'.",
                     action_required=True,
                     exit_code=ExitCode.SYSTEM_ERROR,
@@ -266,16 +271,16 @@ class HeartbeatService:
                 return HeartbeatOutcome(
                     label=account.label,
                     provider_id=account.provider_id,
-                    status=HEARTBEAT_FAILED,
+                    status=HeartbeatStatus.FAILED,
                     message=str(e),
                     exit_code=ExitCode.SYSTEM_ERROR,
                 )
             current = account.heartbeat_targets or list(
                 provider.default_target_ids(account)
             )
-            account.heartbeat_targets = [
+            account.heartbeat_targets = tuple(
                 item for item in current if item not in selected
-            ]
+            )
             if not account.heartbeat_targets:
                 account.heartbeat_enabled = False
                 account.heartbeat_targets = None
@@ -284,7 +289,7 @@ class HeartbeatService:
             return HeartbeatOutcome(
                 label=account.label,
                 provider_id=account.provider_id,
-                status=HEARTBEAT_DISABLED,
+                status=HeartbeatStatus.DISABLED,
                 message="disabled",
             )
         account.heartbeat_enabled = False
@@ -293,7 +298,7 @@ class HeartbeatService:
         return HeartbeatOutcome(
             label=account.label,
             provider_id=account.provider_id,
-            status=HEARTBEAT_DISABLED,
+            status=HeartbeatStatus.DISABLED,
             message="disabled",
         )
 
@@ -303,10 +308,12 @@ class HeartbeatService:
         reference_time: datetime,
     ) -> str | None:
         """Return a user-action blocker for accounts that should not warm."""
-        if account.last_refresh_status == "failed":
+        if account.last_refresh_status is RefreshStatus.FAILED:
             return "Last token refresh failed; log in before heartbeat."
-        expires_at = expiry_epoch_seconds(account)
-        if expires_at is not None and expires_at <= reference_time.timestamp():
+        expiry = classify_expiry(account.expiry, now=reference_time)
+        if isinstance(expiry, InvalidExpiry):
+            return "Access-token expiry metadata is invalid; log in again."
+        if isinstance(expiry, ExpiredExpiry):
             return (
                 "Access token is expired; refresh or log in before heartbeat."
             )
@@ -319,8 +326,8 @@ class HeartbeatService:
         reference_time: datetime,
     ) -> HeartbeatOutcome:
         outcome = self._unsupported_outcome(account, provider)
-        account.last_heartbeat_at = _utc_z(reference_time)
-        account.last_heartbeat_status = HEARTBEAT_UNSUPPORTED
+        account.last_heartbeat_at = reference_time
+        account.last_heartbeat_status = HeartbeatStatus.UNSUPPORTED
         account.last_heartbeat_error = outcome.message
         self.store.upsert(account)
         self.store.save()
@@ -334,7 +341,7 @@ class HeartbeatService:
         return HeartbeatOutcome(
             label=account.label,
             provider_id=account.provider_id,
-            status=HEARTBEAT_UNSUPPORTED,
+            status=HeartbeatStatus.UNSUPPORTED,
             message=provider.unsupported_message(account),
             action_required=True,
             exit_code=ExitCode.MANUAL_ACTION,
@@ -348,15 +355,15 @@ class HeartbeatService:
         exit_code: ExitCode,
         reference_time: datetime,
     ) -> HeartbeatOutcome:
-        account.last_heartbeat_at = _utc_z(reference_time)
-        account.last_heartbeat_status = HEARTBEAT_FAILED
+        account.last_heartbeat_at = reference_time
+        account.last_heartbeat_status = HeartbeatStatus.FAILED
         account.last_heartbeat_error = message
         self.store.upsert(account)
         self.store.save()
         return HeartbeatOutcome(
             label=account.label,
             provider_id=account.provider_id,
-            status=HEARTBEAT_FAILED,
+            status=HeartbeatStatus.FAILED,
             message=message,
             action_required=exit_code == ExitCode.MANUAL_ACTION,
             exit_code=exit_code,
@@ -396,7 +403,7 @@ def heartbeat_supported_label(
     """Return a compact heartbeat support label for list/doctor output."""
     if provider is None or not provider.supports(account):
         return "unsupported"
-    if account.last_heartbeat_status == HEARTBEAT_FAILED:
+    if account.last_heartbeat_status is HeartbeatStatus.FAILED:
         return "needs-login"
     return "on" if account.heartbeat_enabled else "off"
 
@@ -420,21 +427,21 @@ def _merge_targets(
     provider: HeartbeatProvider,
     account: Account,
     selected: tuple[str, ...],
-) -> list[str]:
+) -> tuple[str, ...]:
     """Merge selected with configured/default targets in provider order."""
     current = account.heartbeat_targets or list(
         provider.default_target_ids(account)
     )
     wanted = set(current)
     wanted.update(selected)
-    return [
+    return tuple(
         target.id
         for target in provider.supported_targets(account)
         if target.id in wanted
-    ]
+    )
 
 
-def _target_reset(account: Account, target_id: str) -> str | None:
+def _target_reset(account: Account, target_id: str) -> datetime | None:
     """Return a cached reset for one target, with legacy field fallback."""
     if account.heartbeat_window_resets:
         value = account.heartbeat_window_resets.get(target_id)
@@ -445,7 +452,11 @@ def _target_reset(account: Account, target_id: str) -> str | None:
     return None
 
 
-def _set_target_reset(account: Account, target_id: str, reset_at: str) -> None:
+def _set_target_reset(
+    account: Account,
+    target_id: str,
+    reset_at: datetime,
+) -> None:
     """Persist one target reset and keep the legacy standard field current."""
     resets = dict(account.heartbeat_window_resets or {})
     resets[target_id] = reset_at
@@ -457,30 +468,19 @@ def _set_target_reset(account: Account, target_id: str, reset_at: str) -> None:
 def _missing_account() -> HeartbeatOutcome:
     """Return a stable missing-account outcome."""
     return HeartbeatOutcome(
-        label="?",
-        provider_id="unknown",
-        status=HEARTBEAT_FAILED,
+        label=None,
+        provider_id=None,
+        status=HeartbeatStatus.FAILED,
         message="Account not found.",
         exit_code=ExitCode.SYSTEM_ERROR,
     )
 
 
-def _future_reset(value: str | None, reference_time: datetime) -> str | None:
-    """Return ``value`` when it parses to a future timestamp."""
-    if not value:
-        return None
-    try:
-        normalized = value.replace("Z", "+00:00")
-        reset_at = datetime.fromisoformat(normalized)
-    except ValueError:
-        return None
-    if reset_at.tzinfo is None:
-        reset_at = reset_at.replace(tzinfo=UTC)
-    if reset_at > reference_time:
-        return value
+def _future_reset(
+    reset_at: datetime | None,
+    reference_time: datetime,
+) -> datetime | None:
+    """Return ``reset_at`` only while it remains in the future."""
+    if reset_at is not None and reset_at > reference_time:
+        return reset_at
     return None
-
-
-def _utc_z(value: datetime) -> str:
-    """Return an aware timestamp in the existing UTC-Z representation."""
-    return value.isoformat().replace("+00:00", "Z")

@@ -1379,53 +1379,98 @@ that stores provider-native integers or formatted timestamps.
 
 **Caller-driven decision checkpoint:**
 
-- [ ] Decide `AccountLabel` as an alias, `NewType`, or value object from real
-      validation and normalization behavior; default to the simplest type
-      that enforces proven invariants.
-- [ ] Decide the smallest account/credential representation that prevents
-      provider-incompatible combinations without a speculative class tree.
-- [ ] Select a discriminated expiry representation that cannot express valid
-      or expired without an aware time, or unknown with an authoritative time.
-- [ ] Decide which refresh, heartbeat, and provider statuses have enough
-      cross-module consumers to move to enums now.
-- [ ] Inline any material refinement to the design before coding it.
+- [x] Use a validating, non-normalizing `AccountLabel(str)` value object. It
+      preserves the exact Unicode sequence and rejects empty labels, Unicode
+      controls including NUL, invalid UTF-8, and values over 512 encoded UTF-8
+      bytes. Do not trim, normalize, or case-fold.
+- [x] Use immutable, slotted `ClaudeCredentials` and `CodexCredentials`
+      variants in one closed `Credentials` union nested in mutable `Account`.
+      Derive `provider_id` from the variant so provider identity and credential
+      shape cannot disagree. `DetectedCredentials` wraps the same union plus
+      plan rather than duplicating optional provider fields.
+- [x] Store `KnownExpiry | UnknownExpiry | InvalidExpiry`. Classify a known
+      aware UTC instant into focused `ValidExpiry` or `ExpiredExpiry` result
+      classes with one explicit `now`; unknown and invalid states have no
+      authoritative timestamp.
+- [x] Move the proven cross-module `RefreshStatus`, `HeartbeatStatus`, and
+      `ExpiryState` vocabularies into `core/types.py`. Keep plan names,
+      provider response phrases, display labels, and maintenance thresholds
+      open or feature-local.
+- [x] Preserve Codex auth `last_refresh` as a bounded opaque string owned only
+      by the Codex auth adapter. Normalize every Sidekick-owned runtime expiry,
+      audit, usage-reset, and heartbeat-reset time to aware UTC datetime.
+- [x] Inline the complete caller, boundary, migration, and test decision into
+      the tracked design before coding.
 
 **Work:**
 
-- [ ] Move `Account`, `DetectedCredentials`, `UsageWindow`, and `UsageReport`
+- [x] Move `Account`, `DetectedCredentials`, `UsageWindow`, and `UsageReport`
       to core only with their final aware-time and provider-neutral fields.
-- [ ] Remove the raw provider JSON dictionary from `UsageReport`; provider
+- [x] Add immutable `ClaudeCredentials` and `CodexCredentials`; mark access,
+      refresh, and ID tokens `repr=False`. Keep `Account` mutable for rename,
+      plan, refresh-audit, and heartbeat state, but replace its credential
+      variant only after complete refresh validation.
+- [x] Keep Codex auth home as a string in core and convert it to `Path` only at
+      the Codex filesystem boundary. Keep CLI discovery context such as source
+      Codex home outside the core model.
+- [x] Remove the raw provider JSON dictionary from `UsageReport`; provider
       schemas retain boundary payloads without leaking them into core.
-- [ ] Normalize all runtime expiry and audit time values to aware UTC
+- [x] Normalize all runtime expiry and audit time values to aware UTC
       datetimes or explicit discriminated states.
-- [ ] Convert Claude milliseconds and Codex seconds at provider boundaries.
-- [ ] Keep legacy stored-unit conversion in the current persistence boundary
+- [x] Convert Claude milliseconds and Codex seconds at provider boundaries.
+- [x] Use exact integer and `timedelta` epoch arithmetic. Reject runtime values
+      that cannot encode exactly as a Claude millisecond or Codex second; never
+      truncate through a float timestamp round trip. Quantize relative refresh
+      expiry at the owning provider boundary to its exact native precision.
+- [x] Keep legacy stored-unit conversion in the current persistence boundary
       until CS-14 writes the versioned schema.
-- [ ] Use the CS-10A clock and acquire one `now` per policy decision before
+- [x] Use the CS-10A clock and acquire one `now` per policy decision before
       passing it to pure expiry logic.
-- [ ] Keep HTTP elapsed deadlines on the separate monotonic source from CS-11.
-- [ ] Keep provider-native, persisted, and human timestamp encoders with their
+- [x] Keep HTTP elapsed deadlines on the separate monotonic source from CS-11.
+- [x] Keep provider-native, persisted, and human timestamp encoders with their
       owners; remove the three `_now_utc_z()` duplicates without creating
       `timestamps.py`.
-- [ ] Ensure secret-bearing fields are absent from default representations.
+- [x] Ensure secret-bearing fields are absent from default representations.
+- [x] Preserve `scopes=None` as unknown and `scopes=()` as known-empty. Do not
+      collapse detected absence, known-empty metadata, or expiry state through
+      truthiness.
+- [x] Scope saved-token lookup by provider so an identical token cannot merge
+      Claude and Codex account state.
+- [x] Compare typed credentials and plan for mutation detection rather than
+      serializing `Account`; move token masking to the account-list renderer.
+- [x] Represent missing outcome identity with typed absence, not fabricated
+      label `?` or provider `unknown`; renderers own visual fallbacks.
+- [x] Preserve both `heartbeat_5h_reset_at` and `heartbeat_window_resets`
+      because the approved persistence contract accepts them independently.
+      Defensively copy and expose the reset map read-only so item mutation
+      cannot bypass aware-UTC normalization; update it copy-on-write.
+- [x] Keep the Codex usage-check refresh margin and the distinct Claude and
+      Codex maintenance margins with their owning use cases.
 
 **Load-bearing tests:**
 
-- Expiry immediately before, exactly at, and immediately after its boundary
-  produces the documented state from one explicit `now`.
-- Malformed or invalid provider expiry input becomes the typed invalid/failure
-  state and never epoch, zero remaining, or a plausible default.
-- Unknown and invalid expiry states cannot carry contradictory authoritative
-  timestamps.
-- Claude and Codex native units normalize to the same runtime representation.
-- Provider-native timestamp encoding, legacy persistence encoding, and human
-  formatting remain separate and behaviorally correct.
-- A service uses one clock sample for one decision.
-- HTTP deadlines remain deterministic when wall time moves.
-- Core model representations never reveal synthetic token values.
-- Import checks prove core has no provider, persistence, HTTP, path,
-  filesystem, settings-loader, Rich, Typer, or clock dependency.
-- Source and wheel contain the core models and no stale `report.py`.
+- One parameterized label-invariant test proves exact Unicode preservation and
+  rejects empty, control or NUL, unencodable, and 513-byte labels.
+- One table-driven expiry test covers immediately before, exactly at, and
+  immediately after one explicit `now`, plus unknown, invalid, naive-time, and
+  impossible-state behavior.
+- One two-provider model test proves provider identity is derived and default
+  `Account` and `DetectedCredentials` representations reveal no synthetic
+  access, refresh, or ID token.
+- One provider-boundary table proves Claude milliseconds and Codex seconds for
+  the same instant converge and malformed native values never become epoch or
+  unknown.
+- One synthetic two-account compatibility-store round trip proves exact
+  legacy units, audit/reset datetime conversion, and precision rejection.
+- One existing service test proves one wall-clock sample per decision. Rerun
+  the existing CS-11 monotonic-deadline suite instead of duplicating it.
+- One architecture and exact-wheel test proves core dependency direction, the
+  presence of the new core models, and the absence of stale `report.py`.
+
+Mechanically adapt existing behavior tests only where they protect a distinct
+contract. Delete redundant one-field round trips, repeated scope cases,
+`raw={}` fixtures, and duplicate clock assertions rather than padding the
+suite.
 
 **Acceptance:** All current account, usage, maintenance, heartbeat, doctor, and
 rendering behavior passes with final runtime time types. No invalid

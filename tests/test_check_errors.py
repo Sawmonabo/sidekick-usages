@@ -9,12 +9,19 @@ from rich.console import Console
 from typer.testing import CliRunner
 
 from sidekick_usages import cli
-from sidekick_usages.core.types import ProviderId
+from sidekick_usages.core.models import (
+    Account,
+    ClaudeCredentials,
+    CodexCredentials,
+    DetectedCredentials,
+    UsageReport,
+    UsageWindow,
+)
+from sidekick_usages.core.types import AccountLabel, ProviderId
 from sidekick_usages.errors import AuthError, TransientError
 from sidekick_usages.http import HttpClient
-from sidekick_usages.providers.base import DetectedCredentials, Provider
-from sidekick_usages.report import UsageReport, UsageWindow
-from sidekick_usages.store import Account, AccountStore
+from sidekick_usages.providers.base import Provider
+from sidekick_usages.store import AccountStore
 from tests.test_support import FixedClock, make_application_paths
 
 
@@ -52,9 +59,8 @@ class _FakeProvider(Provider):
         del http
         if not self.fetch_results:
             return UsageReport(
-                windows=[UsageWindow("5h", 0.0, None)],
+                windows=(UsageWindow("5h", 0.0, None),),
                 plan="pro",
-                raw={},
             )
         result = self.fetch_results.pop(0)
         if isinstance(result, Exception):
@@ -76,10 +82,15 @@ class _FakeProvider(Provider):
 def _acct(
     label: str = "long.account.name@example.test", provider_id: str = "codex"
 ) -> Account:
+    provider = ProviderId(provider_id)
+    credentials = (
+        CodexCredentials(access_token="tok")
+        if provider is ProviderId.CODEX
+        else ClaudeCredentials(access_token="tok")
+    )
     return Account(
-        label=label,
-        provider_id=provider_id,
-        access_token="tok",
+        label=AccountLabel(label),
+        credentials=credentials,
         plan="pro",
     )
 
