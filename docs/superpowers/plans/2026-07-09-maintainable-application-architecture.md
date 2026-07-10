@@ -2419,6 +2419,10 @@ tests under a NO-GO disposition.
   `credential_transactions.py`, and `private_credentials.py` for the
   migration-only version-two journal and bounded relative private-bundle
   paths. Runtime version-one recovery remains strict and unchanged.
+- Extend `persistence/_platform/posix_private.py`, `posix_namespace.py`,
+  `windows_private.py`, `windows_private_tree.py`, and
+  `windows_namespace.py` only as required for race-safe component traversal,
+  identity retention, and portable nested-namespace validation.
 - Add `src/sidekick_usages/providers/codex/auth_migration.py` for the concrete
   migration port rather than expanding the existing auth module past its
   cohesive size target.
@@ -2428,11 +2432,22 @@ tests under a NO-GO disposition.
   `cli/commands/migrate.py` owner.
 - Modify `pyproject.toml` and `uv.lock` to add the approved direct
   `platformdirs` dependency.
-- Modify `packaging/smoke_wheel.py`, `tests/test_packaging.py`, and the
-  released-v0.6 compatibility harness for the final package and dependency
-  contract.
-- Add focused path/location migration tests, doctor cases, and exact artifact
-  checks.
+- Modify `packaging/smoke_wheel.py`, `packaging/verify_v060_compat.py`,
+  `tests/test_packaging.py`, `tests/test_v060_compat.py`, and
+  `tests/test_v060_runtime.py` for the final package, dependency, rollback,
+  and released-reader contract.
+- Update every owner importing the retired flat migration errors:
+  `cli/context.py`, `cli/commands/accounts.py`,
+  `cli/commands/migrate.py`, `cli/commands/permissions.py`,
+  `tests/test_cli_persistence.py`, and
+  `tests/test_persistence_coordinator.py`.
+- Modify `tests/test_paths.py`, `tests/test_doctor.py`,
+  `tests/test_persistence_migrations.py`,
+  `tests/test_persistence_credential_transactions.py`, and
+  `tests/test_persistence_native.py`. Add focused
+  `tests/test_persistence_location.py` and
+  `tests/test_codex_auth_migration.py`; keep exact artifact checks in
+  `tests/test_packaging.py`.
 
 **Required internal order:**
 
@@ -2444,6 +2459,12 @@ tests under a NO-GO disposition.
       `LocationMigrationResult` models in `migrations/location.py`; compare
       deterministic rewritten account and private-bundle state rather than
       raw account-file bytes.
+- [ ] Implement the exact `LocationCode` values `empty`, `prototype_only`,
+      `compatibility_selected`, `canonical_selected`, `equivalent_selected`,
+      `conflict`, `partial`, and `candidate_blocked` through closed selection
+      variants. Type `DoctorReady` over ready location selections and
+      `DoctorBlocked` over blocked selections; never retain an optional
+      selected candidate or the provisional CS-18A assessment union.
 - [ ] Define the narrow `PrivateAuthMigrator` port in persistence and implement
       it in Codex auth in this conditional change set only.
 - [ ] Make normal executable composition assess locations before store load.
@@ -2460,6 +2481,12 @@ tests under a NO-GO disposition.
       components, 255 UTF-8 bytes per component, and 1024 UTF-8 bytes joined;
       reject absolute or anchored paths, traversal, symlink escapes, portable
       aliases, platform-reserved names, and path collisions.
+- [ ] Never rely on resolve-then-write. Traverse POSIX components relative to
+      qualified directory descriptors with no-follow constraints; traverse
+      Windows components through validated handles with reparse checks and
+      owner-only parent creation. Retain or revalidate every intermediate
+      identity throughout staging, commit, recovery, and cleanup; any swap or
+      volume change fails closed with evidence retained.
 - [ ] Reuse the CS-18 multi-bundle journal and authority-last transaction;
       do not loop a single-bundle writer or create a second migration writer.
 - [ ] Acquire distinct compatibility and canonical locks in deterministic
@@ -2495,9 +2522,10 @@ tests under a NO-GO disposition.
 - [ ] Treat lifetime cache independently and regenerate it only after its
       lifecycle is proven.
 - [ ] Register `migrate locations [--yes]` as the sole explicit relocation
-      surface. Keep `migrate accounts` schema/prototype-only; normal
-      composition may select proven canonical state but never starts a
-      relocation implicitly.
+      surface for an existing compatibility generation. Keep `migrate
+      accounts` schema/prototype-only; an all-absent first write creates
+      canonical state without claiming a migration, and normal composition
+      never relocates compatibility data implicitly.
 - [ ] Repeat the CS-14 compatibility harness after native relocation: make a
       new canonical write, run the approved rollback preparation into the
       compatibility generation, and prove the actual `v0.6.0` binary reads the
@@ -2525,6 +2553,9 @@ tests under a NO-GO disposition.
 - Misleading sibling prefixes and symlink escapes are rejected.
 - Traversal, over-depth, overlong, platform-reserved, case-folding, and
   trailing-dot/space relative-path aliases are rejected.
+- Intermediate-directory symlink, reparse-point, identity, and volume swaps at
+  staging, commit, recovery, and cleanup checkpoints fail closed without an
+  out-of-root write.
 - Equivalent destinations are idempotent; conflicting or partial destinations
   are typed failures.
 - Account paths change only after all required copies validate.
@@ -2551,8 +2582,9 @@ tests under a NO-GO disposition.
 **Explicit command acceptance:** `migrate locations` previews the same closed
 assessment used by doctor, requires confirmation unless `--yes` is supplied,
 coordinates all private-bundle work before account authority, and is the only
-surface allowed to activate canonical native storage. Help and version still
-perform no path discovery or assessment.
+surface allowed to relocate an existing compatibility generation. An
+all-absent first write creates canonical native state directly and is not a
+migration. Help and version still perform no path discovery or assessment.
 
 **Operational acceptance:**
 
@@ -2740,7 +2772,9 @@ redesign. Exact approved visual tests remain load-bearing.
       clocks, raw HTTP, registries, scheduler backends, consoles, filters, or
       results in operational contexts.
 - [ ] Enforce the closed `DoctorReady | DoctorBlocked | DoctorFailed` state,
-      registration-only `create_app()`, and no-composition help/version path.
+      the CS-19 ready/blocked location-selection types and exact
+      `LocationCode` vocabulary, registration-only `create_app()`, and the
+      no-composition help/version path.
 - [ ] Enforce explicit `None` registry defaults, close-once `Composed[T]`
       ownership, and no module singleton or `set_context()` compatibility shim.
 - [ ] Enforce no import-time Sidekick path discovery or duplicate

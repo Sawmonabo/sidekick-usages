@@ -757,7 +757,10 @@ compatibility-preserving centralization, `canonical` and
 
 Account sources are generation-aware:
 
-1. the native canonical store is authoritative after native migration;
+1. the native canonical store is authoritative when it is the only
+   authoritative candidate, both authoritative candidates are proven
+   equivalent, an operator completed `migrate locations`, or an all-absent
+   installation performed its first authorized write;
 2. the existing Sidekick store is the compatibility generation; and
 3. the prototype `cc-usage` store is an import-only fallback considered only
    when neither authoritative generation exists.
@@ -917,10 +920,12 @@ migration service is introduced.
 
 For an executable command, runtime composition may assess locations before
 loading the store, but it does not silently relocate data. Compatibility paths
-remain authoritative until CS-19 explicitly activates the approved migration
-protocol. A conflict or partial destination blocks non-diagnostic commands
-while still permitting the read-only composition needed by `doctor`. Help and
-version bypass assessment entirely.
+remain selected after the CS-19 feature is installed until the operator runs
+`migrate locations`; feature activation alone relocates nothing. When every
+candidate is absent, the first authorized write selects canonical storage
+without invoking migration. A conflict or partial destination blocks
+non-diagnostic commands while still permitting the read-only composition
+needed by `doctor`. Help and version bypass assessment entirely.
 
 ## 5. Shared core
 
@@ -1686,12 +1691,12 @@ class PersistenceContext:
 @dataclass(frozen=True, slots=True)
 class DoctorReady:
     service: DoctorService
-    assessment: PersistenceAssessment
+    assessment: LocationMigrationAssessment[ReadyLocationSelection]
 
 
 @dataclass(frozen=True, slots=True)
 class DoctorBlocked:
-    assessment: PersistenceAssessment
+    assessment: LocationMigrationAssessment[BlockedLocationSelection]
 
 
 @dataclass(frozen=True, slots=True)
@@ -1722,6 +1727,11 @@ CRUD and read-only account display. It is not exposed to update, daemon,
 persistence-recovery, or blocked-doctor commands. Provider-specific commands
 use `CredentialService` or the narrow `ClaudeSetupToken` capability; no
 command-facing context receives an entire provider registry for convenience.
+
+CS-18A initially composes the same closed doctor states around one
+`PersistenceAssessment`. The CS-19 GO change atomically replaces those fields
+with the final generic location assessments above; it does not retain a union
+of old and new assessment types or an optional compatibility field.
 
 `DoctorState` is an explicit sum type rather than three optional fields.
 `DoctorReady` alone contains a `DoctorService` and validated persistence
@@ -2449,10 +2459,12 @@ Prototype reimport is never automatic and requires the explicit option and
 confirmation.
 
 `migrate accounts` remains limited to stored-schema and prototype transitions.
-`migrate locations` is the only command that may activate the native data
-location and relocate Sidekick-owned private auth. Normal application
+`migrate locations` is the only command that may relocate an existing
+compatibility generation and its Sidekick-owned private auth. When every
+candidate is absent, the first authorized application write creates canonical
+native state directly and does not claim a migration. Normal application
 composition may select an already proven canonical authority, but it never
-starts a location migration implicitly. Preview and doctor expose the same
+relocates compatibility data implicitly. Preview and doctor expose the same
 closed location assessment before either command asks for confirmation.
 
 The lock budget is exactly five seconds with a 100 ms check interval. The
@@ -2491,7 +2503,8 @@ upgrade/downgrade cycles idempotent.
 
 After native relocation, rollback preparation additionally materializes the
 latest reverse document at the v0.6.0 compatibility path and asks the injected
-`PrivateAuthMigrator` to validate and copy every Sidekick-owned Codex bundle
+`PrivateAuthMigrator` to validate and prepare exact copy operations for every
+Sidekick-owned Codex bundle. Persistence commits those prepared operations
 before account paths commit. External/provider-native homes remain unchanged.
 Distinct compatibility and canonical roots are locked in deterministic
 resolved-path order. Because the released writer does not honor the new lock,
@@ -2538,11 +2551,20 @@ portable-namespace rules; absolute paths, anchors, drives, `.`/`..`, empty
 components, separators inside components, traversal, symlink escapes,
 case-folding aliases, trailing-dot/space aliases, and platform-reserved names
 fail closed. The transaction resolves the path below the bound private root
-and reconstructs no destination from unchecked text. Version one retains its
-single-basename grammar unchanged. Divergent-source recovery accepts only
-version-two journals. The decoder continues to accept version-one journals
-with an implicit version-one target for ordinary strict recovery. Only
-`persistence/migrations/service.py` may invoke the migration commit.
+and reconstructs no destination from unchecked text. This is not a
+resolve-then-write check. On POSIX, every component is opened or created
+descriptor-relative beneath the already qualified root with no-follow and
+directory constraints; the implementation retains or revalidates component
+identities through staging, commit, recovery, and cleanup. On Windows, every
+component is opened with handle-qualified traversal and reparse-point checks;
+creation occurs only beneath an owner-only validated parent, and parent plus
+child handle identities are revalidated before and after mutation. Any
+component replacement, reparse/symlink introduction, volume change, or
+namespace alias retains recovery evidence and fails closed. Version one
+retains its single-basename grammar unchanged. Divergent-source recovery
+accepts only version-two journals. The decoder continues to accept version-one
+journals with an implicit version-one target for ordinary strict recovery.
+Only `persistence/migrations/service.py` may invoke the migration commit.
 
 ##### Prototype receipt and reset
 
@@ -3448,19 +3470,42 @@ released writer that does not understand the new lock.
 Location state is orthogonal to the schema state of any one account file.
 `persistence/migrations/location.py` owns immutable `LocationCandidate`,
 `RuntimePersistenceSelection`, `LocationMigrationAssessment`,
-`LocationMigrationPlan`, and `LocationMigrationResult` models. A candidate
-contains its role, safe path, and existing `PersistenceAssessment`; the
-overall assessment selects empty, compatibility, canonical, or blocked
-runtime authority and carries the safe source, destination, private-auth
-summary, artifact basename, issues, write-blocked state, and exact next
-command. It distinguishes equivalent, conflicting, malformed, unreadable,
-and partial location states without adding those meanings to
-`PersistenceCode`. Semantic equivalence compares the deterministic rewritten
-account authority and every referenced private bundle, not raw account-file
-bytes. Account equality without private-bundle coherence is partial. After
-CS-19, `DoctorReady` and `DoctorBlocked` carry this location assessment, which
-contains the selected candidate's schema assessment; a blocked state still
-constructs no `AccountStore`.
+`LocationMigrationPlan`, and `LocationMigrationResult` models. The stable
+machine discriminator is `LocationCode` with exactly these values:
+
+```text
+empty
+prototype_only
+compatibility_selected
+canonical_selected
+equivalent_selected
+conflict
+partial
+candidate_blocked
+```
+
+`RuntimePersistenceSelection` is a closed union of `EmptySelection`,
+`PrototypeSelection`, `CompatibilitySelection`, `CanonicalSelection`,
+`EquivalentSelection`, `ConflictSelection`, `PartialSelection`, and
+`CandidateBlockedSelection`; every variant fixes exactly one `LocationCode`.
+The ready-selection union contains empty, compatibility, canonical, and
+equivalent. The blocked-selection union contains prototype, conflict, partial,
+and candidate-blocked. Selected variants carry one exact `LocationCandidate`;
+empty has no candidate; conflict and partial carry the involved candidates;
+candidate-blocked carries the candidate and its exact `PersistenceCode` so
+malformed, unreadable, unsafe, and future-schema states remain distinct.
+
+`LocationMigrationAssessment[S: RuntimePersistenceSelection]` carries `S`, all
+observed candidates, the safe source and destination, private-auth summary,
+artifact basename, issues, write-blocked state, and exact next command. It has
+no optional selected-candidate shortcut. `DoctorReady` receives only
+`LocationMigrationAssessment[ReadyLocationSelection]`; `DoctorBlocked`
+receives only `LocationMigrationAssessment[BlockedLocationSelection]` and
+constructs no `AccountStore`. Semantic equivalence compares the deterministic
+rewritten account authority and every referenced private bundle, not raw
+account-file bytes. Account equality without private-bundle coherence is
+partial. Doctor JSON emits `selection.code.value` and each candidate's exact
+schema code; human output is derived from the same typed assessment.
 
 `Account.codex_home` is persisted and may point either to a Sidekick-owned
 private auth bundle or an external/source `CODEX_HOME`. Migration copies
@@ -3468,11 +3513,12 @@ private auth bundles first and rewrites only paths proven to be descendants of
 `ApplicationPaths.private_codex.existing_sidekick`. The destination preserves
 the relative path below `ApplicationPaths.private_codex.canonical`. It never
 rewrites an external or provider-native home. The injected
-`PrivateAuthMigrator` validates and copies bundles without creating a provider
-import in persistence. Auth files retain owner-only permissions. Updated
-account state is committed atomically only after every required copy and
-validation succeeds; old data remains in place. Partial destinations and
-conflicting bundles are typed failures visible in `doctor`.
+`PrivateAuthMigrator` validates bundles and prepares exact copy operations
+without creating a provider import in persistence. It performs no write. Auth
+files retain owner-only permissions. Updated account state is committed
+atomically only after persistence executes and validates every prepared copy;
+old data remains in place. Partial destinations and conflicting bundles are
+typed failures visible in `doctor`.
 
 “Descendant” includes bounded nested Sidekick-owned paths, not only direct
 children. The relative path uses the version-two grammar above and is proven
