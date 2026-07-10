@@ -560,6 +560,7 @@ def test_doctor_renders_blocked_persistence_without_a_store(
 def test_normal_command_reports_exact_migration_action(tmp_path: Path) -> None:
     paths = make_application_paths(tmp_path)
     filesystem = PersistenceFilesystem(paths.accounts.canonical)
+    filesystem.repair_parent_permissions()
     with PersistenceLock(filesystem).hold() as transaction:
         transaction.commit_authority(
             AuthorityGeneration.GENERATION_ZERO,
