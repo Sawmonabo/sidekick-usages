@@ -381,6 +381,16 @@ def test_windows_dacl_rejects_missing_inherited_and_foreign_access() -> None:
         assert exc_info.value.kind is NativeFailureKind.UNSAFE
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows DACL repair")
+def test_windows_repairs_caller_owned_inherited_directory(
+    tmp_path: Path,
+) -> None:
+    filesystem = PersistenceFilesystem(tmp_path / "accounts.json")
+
+    assert filesystem.repair_parent_permissions()
+    assert not filesystem.repair_parent_permissions()
+
+
 @pytest.mark.skipif(
     sys.platform != "win32",
     reason="Windows namespace and volume policy",

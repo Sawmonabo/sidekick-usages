@@ -110,6 +110,21 @@ released-layout permission repair that production exposes before claiming to
 represent a valid Sidekick state. This keeps the test setup honest instead of
 weakening production validation.
 
+Run `29092408594` proved that the explicit repair must distinguish the access
+token's user SID from its default-owner SID. Microsoft documents that Windows
+assigns a new object's owner from `TOKEN_OWNER`, and that an administrator's
+default owner is commonly the built-in Administrators group rather than the
+individual token user. The GitHub Windows runner creates its pytest
+directories under that valid elevated-token ownership, so requiring only the
+token-user SID rejected caller-owned state before repair.
+
+Repair eligibility and subsequent security validation now accept exactly the
+token-user SID or the token's validated default-owner SID. They do not accept
+an arbitrary enabled group. The protected DACL remains unchanged: current
+user, Local System, and built-in Administrators only. A Windows-only native
+test requires an inherited caller-owned directory to harden once and then
+validate without another mutation.
+
 The persistent lock sidecar is empty, but its exclusive byte-range lock can
 extend beyond the current end of file. Windows rejects an overlapping read
 through a second handle even in the locking process. Passive inventory still
@@ -152,6 +167,12 @@ validation, or multi-artifact recovery.
 - [Microsoft byte-range locking guidance](https://learn.microsoft.com/en-us/windows/win32/fileio/locking-and-unlocking-byte-ranges-in-files)
   documents that locks may extend beyond end of file and that overlapping
   access through a second handle fails.
+- [Microsoft owner-of-a-new-object guidance](https://learn.microsoft.com/en-us/windows/win32/secauthz/owner-of-a-new-object)
+  defines the access token's default-owner SID as the owner assigned to a new
+  object.
+- [Microsoft `TOKEN_OWNER` reference](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-token_owner)
+  defines the structure as the default owner for newly created objects and
+  restricts it to a user or group SID already present in the token.
 
 ## Verification requirement
 

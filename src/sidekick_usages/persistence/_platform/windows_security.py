@@ -39,6 +39,34 @@ if sys.platform == "win32":
         except pywintypes.error:
             raise _unsafe() from None
 
+    def _default_owner_sid() -> _win32typing.PySID:
+        """Return the SID Windows uses for newly created object ownership."""
+        try:
+            token = win32security.OpenProcessToken(
+                win32api.GetCurrentProcess(),
+                win32security.TOKEN_QUERY,
+            )
+            try:
+                sid = win32security.GetTokenInformation(
+                    token,
+                    win32security.TokenOwner,
+                )
+                if not sid.IsValid():
+                    raise _unsafe()
+                return sid
+            finally:
+                win32api.CloseHandle(token)
+        except pywintypes.error:
+            raise _unsafe() from None
+
+    def _repair_owner_sids() -> tuple[_win32typing.PySID, ...]:
+        """Return principals that can legitimately own caller-created state."""
+        user = _current_user_sid()
+        default_owner = _default_owner_sid()
+        if default_owner == user:
+            return (user,)
+        return user, default_owner
+
     def _allowed_sids() -> tuple[
         _win32typing.PySID,
         _win32typing.PySID,
@@ -103,7 +131,7 @@ if sys.platform == "win32":
         return attributes
 
     def validate_repair_owner(handle: int) -> None:
-        """Require a valid current-user-owned object before DACL repair."""
+        """Require an object owned by the caller's user or default owner."""
         try:
             descriptor = win32security.GetSecurityInfo(
                 handle,
@@ -113,7 +141,7 @@ if sys.platform == "win32":
             if (
                 not descriptor.IsValid()
                 or descriptor.GetSecurityDescriptorOwner()
-                != _current_user_sid()
+                not in _repair_owner_sids()
             ):
                 raise _unsafe()
         except pywintypes.error:
@@ -200,7 +228,7 @@ if sys.platform == "win32":
         except pywintypes.error:
             raise _unsafe() from None
         if (
-            owner != _current_user_sid()
+            owner not in _repair_owner_sids()
             or dacl is None
             or type(control) is not int
             or not control & win32security.SE_DACL_PROTECTED
