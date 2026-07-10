@@ -11,11 +11,11 @@
 - **Evidence-tree state:** Clean and tracking `origin/develop`
 - **Evidence status:** All decision-relevant evidence and conclusions are
   inlined here; this repository document is the durable design authority
-- **Publication state:** New repository document; add it to Git before any
-  commit or publication
+- **Publication state:** Tracked and approved at execution base
+  `73ce06891747a0571276b35c3f54c7de2c4e188f`
 - **Related design:** [Usage TUI Redesign][usage-tui-design]; this spec does
   not alter its visual contract
-- **Next step:** Write the matching implementation plan before changing code
+- **Next step:** Execute the matching implementation plan in dependency order
 
 ---
 
@@ -452,6 +452,16 @@ No blanket `# type: ignore`, `# nosec`, or `except Exception` pattern was found
 in the inspected tree. That is a property to preserve. The baseline calls for
 staged boundary cleanup, not a broad annotation campaign followed by new
 suppressions.
+
+An implementation refresh on 2026-07-09 resolved the future-annotations
+inconsistency. Python 3.14 evaluates annotations lazily by default, while the
+future import selects the older stringized model and is scheduled for eventual
+deprecation and removal.[python-314-annotations] The repository's configured
+`pyupgrade --py314-plus` gate also removed all five imports present at the
+execution base. The repository therefore uses native Python 3.14 deferred
+annotations and rejects new `from __future__ import annotations` imports. This
+decision updates the repository rule and does not change the audited baseline
+above.
 
 ### 3.12 Required correctness fixes
 
@@ -2508,9 +2518,9 @@ Introduce new mechanical rules from a clean baseline:
 6. enable focused `ANN401` or equivalent enforcement once clean;
 7. enforce the 1000-line hard limit and an approximately 800-line review
    warning;
-8. apply `from __future__ import annotations` consistently while it remains a
-   repository rule, or explicitly revise that rule for Python 3.14 instead of
-   keeping the current 2-of-28 inconsistency;
+8. use native Python 3.14 deferred annotations consistently, remove the legacy
+   stringizing future import, and keep `AGENTS.md` aligned with the enforced
+   `pyupgrade --py314-plus` gate;
 9. reject blanket suppressions.
 
 Do not enable a broad rule set and suppress its findings.
@@ -2798,6 +2808,7 @@ docs/superpowers/plans/
 [python-packages]: https://docs.python.org/3/tutorial/modules.html
 [python-src-layout]: https://packaging.python.org/en/latest/discussions/src-layout-vs-flat-layout/
 [python-typing]: https://docs.python.org/3.14/library/typing.html
+[python-314-annotations]: https://docs.python.org/3.14/reference/compound_stmts.html#annotations
 [python-dataclasses]: https://docs.python.org/3.14/library/dataclasses.html
 [cockburn-hexagonal]: https://alistair.cockburn.us/hexagonal-architecture
 [aws-hexagonal]: https://docs.aws.amazon.com/prescriptive-guidance/latest/cloud-design-patterns/hexagonal-architecture.html

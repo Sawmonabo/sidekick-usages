@@ -6,11 +6,14 @@
 > the stop/go gates, review boundaries, and verification requirements even
 > when a different execution mechanism is used.
 
-- **Status:** Ready for operator review
+- **Status:** Approved
 - **Date:** 2026-07-09
+- **Operator approval date:** 2026-07-09
 - **Repository:** `/home/sabossedgh/dev/sidekick-usages`
 - **Audited branch:** `develop`
 - **Audited commit:** `42cd01eb17c7903b385b1b4e259cf5b0c64126c5`
+- **Execution base:**
+  `73ce06891747a0571276b35c3f54c7de2c4e188f`
 - **Design authority:**
   `docs/superpowers/specs/`
   `2026-07-09-maintainable-application-architecture-design.md`
@@ -138,7 +141,7 @@ At the audited commit:
 - the focused Ruff line-length run reports 15 `E501` findings;
 - production and tests still contain `Any`, `cast(...)`, and ten `# noqa`
   suppressions;
-- only two production modules use future annotations;
+- only two production modules use the legacy future-annotations behavior;
 - the repository-wide Markdown gate reports 93 existing errors in the June
   TUI plan and design; and
 - the new architecture design passes targeted Markdown lint.
@@ -148,6 +151,29 @@ gate red. CS-05 resolves them without changing the approved TUI behavior.
 Until CS-05 lands, run the repository-wide Markdown command and prove that no
 new finding was introduced beyond this recorded baseline. CS-05 must reduce
 the count to zero; every later change set requires a green Markdown gate.
+
+The CS-01 execution refresh also proved that Python 3.14's native deferred
+annotations supersede the repository's future-import instruction. The
+configured `pyupgrade --py314-plus` hook removed all five imports present at
+the execution base. The design now records the current Python documentation,
+`AGENTS.md` requires the native behavior, and CS-06 verifies that the legacy
+stringizing import cannot return.
+
+The first [publication CI run][publication-ci] supplied two additional
+execution-base facts under Python 3.14.6 on Linux, macOS, and Windows:
+
+- pre-commit rewrote the same five legacy future imports and therefore failed
+  its clean-tree gate; and
+- three help-ordering cases failed because CI-enabled Rich styling inserted
+  ANSI sequences inside the expected usage line, not because semantic help
+  content or ordering changed.
+
+The current worktree removes the five imports and makes the existing help test
+exercise CI mode explicitly, normalize styling with Click, and retain the same
+one-header and ordering assertions. The isolated Python 3.14.6 reproduction
+passes. These gate repairs change no application behavior and should remain
+separate review commits from the daemon safety fix when publication is
+authorized.
 
 ### 3.2 Current dependency and packaging baseline
 
@@ -460,13 +486,13 @@ padding the suite.
 
 **Work:**
 
-- [ ] Refresh `develop`, `origin/develop`, worktree state, module counts,
+- [x] Refresh `develop`, `origin/develop`, worktree state, module counts,
       dependencies, command help, and quality baseline.
-- [ ] Confirm the design and plan contain every decision-relevant fact they
+- [x] Confirm the design and plan contain every decision-relevant fact they
       need and reference no ignored or local-only artifact.
-- [ ] Confirm both documents pass targeted Markdown lint and are not ignored.
-- [ ] Add both documents to Git before any production implementation begins.
-- [ ] Record the publication commit as the execution base.
+- [x] Confirm both documents pass targeted Markdown lint and are not ignored.
+- [x] Add both documents to Git before any production implementation begins.
+- [x] Record the publication commit as the execution base.
 
 **Acceptance:**
 
@@ -490,12 +516,18 @@ padding the suite.
 
 **Work:**
 
-- [ ] Search every daemon-operation producer and consumer.
-- [ ] Define closed `DaemonOperation` vocabulary beside daemon operation
+- [x] Search every daemon-operation producer and consumer.
+- [x] Define closed `DaemonOperation` vocabulary beside daemon operation
       behavior; do not place feature-local operations in `core/`.
-- [ ] Parse external strings before dispatch.
-- [ ] Replace the uninstall fallback with exhaustive operation matching.
-- [ ] Raise the existing typed usage error for unexpected input.
+- [x] Parse external strings before dispatch.
+- [x] Replace the uninstall fallback with exhaustive operation matching.
+- [x] Raise the existing typed usage error for unexpected input.
+
+**Execution record:** Completed on 2026-07-09 against execution base
+`73ce06891747a0571276b35c3f54c7de2c4e188f`. The focused daemon, branding,
+and help suite passes 20 tests. Repository Ruff, formatting, `ty`, all 194
+tests with branch coverage, pre-commit, and package build pass. The Markdown
+gate remains at the exact 93-finding pre-CS-05 baseline and adds no finding.
 
 **Load-bearing tests:**
 
@@ -673,8 +705,9 @@ unchanged in behavior.
 - [ ] Remove the unused global `B905` ignore.
 - [ ] Remove each current `# noqa` by fixing the cause; retain only a
       rule-specific, one-line justified suppression when unavoidable.
-- [ ] Add future annotations to modules touched by the migration, then finish
-      repository consistency in CS-22 after package moves stop churning files.
+- [x] Remove legacy future-annotations imports and align `AGENTS.md` with
+      native Python 3.14 deferred annotations. This gate correction was pulled
+      forward during CS-01 after `pyupgrade --py314-plus` enforced it.
 - [ ] Record, but do not broadly enable, annotation rules whose current
       baseline is still noisy.
 
@@ -1933,7 +1966,8 @@ redesign. Exact approved visual tests remain load-bearing.
 - [ ] Eliminate remaining production and test `Any` and unjustified casts.
 - [ ] Replace JSON `Any` with recursive JSON types or boundary schemas.
 - [ ] Type pytest fixtures, monkeypatches, fakes, and helper return values.
-- [ ] Apply future annotations consistently under the repository rule.
+- [ ] Verify native Python 3.14 deferred annotations consistently and reject
+      the legacy stringizing future import.
 - [ ] Complete design sections 3.3 and 3.7 conformance: PEP 695 for new aliases
       and generics, explicit public signatures and optional state,
       standard-library enums/types, and concise Sphinx fields.
@@ -2337,3 +2371,5 @@ production-valid and the plan is updated first. Never split the same-named
 module-to-package conversions or persistent transaction boundaries across
 commits. Never squash unrelated user-data, dependency, presentation, and
 mechanical-gate changes into one review.
+
+[publication-ci]: https://github.com/Sawmonabo/sidekick-usages/actions/runs/29064704915
