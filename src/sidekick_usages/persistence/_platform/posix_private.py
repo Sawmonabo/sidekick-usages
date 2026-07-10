@@ -272,6 +272,22 @@ def _list_names(descriptor: int) -> tuple[str, ...]:
         raise _native_error(NativeFailureKind.UNREADABLE) from None
 
 
+def _namespace_snapshot(
+    descriptor: int,
+) -> tuple[tuple[str, _Identity], ...]:
+    """Capture an exact stable child-name and identity set."""
+    names = _list_names(descriptor)
+    entries: list[tuple[str, _Identity]] = []
+    for name in names:
+        identity = _require_exact_entry(descriptor, name)
+        if identity is None:
+            raise _native_error(NativeFailureKind.CHANGED)
+        entries.append((name, identity))
+    if _list_names(descriptor) != names:
+        raise _native_error(NativeFailureKind.CHANGED)
+    return tuple(entries)
+
+
 def _entry_metadata(
     descriptor: int,
     basename: str,
@@ -576,22 +592,28 @@ def _delete_directory(
         private=True,
     )
     with _owned_descriptor(descriptor, NativeFailureKind.REMOVE):
+        before_namespace = _namespace_snapshot(parent_descriptor)
         metadata = _metadata(descriptor, NativeFailureKind.REMOVE)
         if (metadata.st_dev, metadata.st_ino) != entry.identity or _list_names(
             descriptor
         ):
             raise _native_error(NativeFailureKind.CHANGED)
-        before_links = metadata.st_nlink
         try:
             os.rmdir(basename, dir_fd=parent_descriptor)
         except FileNotFoundError:
             raise _native_error(NativeFailureKind.CHANGED) from None
         except OSError:
             raise _native_error(NativeFailureKind.REMOVE) from None
+        expected_namespace = tuple(
+            member for member in before_namespace if member[0] != basename
+        )
+        after = _metadata(descriptor, NativeFailureKind.REMOVE)
         if (
-            _metadata(descriptor, NativeFailureKind.REMOVE).st_nlink
-            >= before_links
-        ):
+            after.st_dev,
+            after.st_ino,
+        ) != entry.identity or _namespace_snapshot(
+            parent_descriptor
+        ) != expected_namespace:
             raise _native_error(NativeFailureKind.CHANGED)
     _synchronize_namespace(parent_descriptor)
 

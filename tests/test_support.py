@@ -12,6 +12,7 @@ from sidekick_usages.paths import (
     PrivateCodexLocations,
 )
 from sidekick_usages.persistence.account_store import AccountStore
+from sidekick_usages.persistence.filesystem import PersistenceFilesystem
 from sidekick_usages.persistence.private_credentials import (
     PrivateCredentialTree,
 )
@@ -43,6 +44,7 @@ def make_account_store(
 ) -> AccountStore:
     """Build a loaded transactional store with a live private observer."""
     paths = make_application_paths(root)
+    PersistenceFilesystem(paths.accounts.canonical).repair_parent_permissions()
     private_credentials = PrivateCredentialTree(
         paths.private_codex.canonical,
         account_path=paths.accounts.canonical,

@@ -98,7 +98,7 @@ if sys.platform == "win32":
             handle = win32file.CreateFile(
                 str(path),
                 access,
-                win32file.FILE_SHARE_READ,
+                win32file.FILE_SHARE_READ | win32file.FILE_SHARE_WRITE,
                 None,
                 win32file.OPEN_EXISTING,
                 win32file.FILE_ATTRIBUTE_NORMAL

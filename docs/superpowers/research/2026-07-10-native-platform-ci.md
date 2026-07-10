@@ -55,20 +55,21 @@ the macOS-specific contract on Windows. A Darwin-only test exercises real APFS
 qualification so future macOS runners validate the native path rather than
 only a mocked classification result.
 
-Run `29090940639` proved that real descriptor-relative APFS qualification
-works. It also exposed a portable directory-disposition assumption. Linux
-reports zero links for an unlinked directory that remains open through a file
-descriptor; APFS can retain a link count of one. Apple documents directory
-link counts as filesystem-dependent and documents `rmdir` as removing the
-named directory entry. The portable proof therefore combines three facts:
+Runs `29090940639` and `29091775536` proved that real descriptor-relative APFS
+qualification works. They also exposed a portable directory-disposition
+assumption. Linux reports zero links for an unlinked directory that remains
+open through a file descriptor; APFS can retain a link count of one before and
+after successful removal. Apple documents directory link counts as
+filesystem-dependent and documents `rmdir` as removing the named directory
+entry.
 
-1. the held descriptor still has the exact prevalidated device and inode;
-2. its link count strictly decreases after `rmdir`; and
-3. the exact parent-relative basename is proven absent.
-
-The existing injected rename/replacement tests continue to require all three
-facts, so accepting the APFS terminal link count does not weaken the race
-proof.
+The parent is an already validated private directory, so the portable proof
+captures its complete stable child-name and device/inode set immediately
+before removal. After `rmdir`, the implementation requires that exact set
+minus only the intended basename and separately proves that the held victim
+descriptor retains its prevalidated identity. An injected rename/replacement
+adds or changes a parent entry and therefore fails closed without depending on
+filesystem-specific link-count transitions.
 
 ## Windows-native qualification findings
 
@@ -102,6 +103,22 @@ The adapter no longer depends on this wrapper. It uses `MoveFileExW` with
 qualified parent, and the candidate already has the exact private DACL. The
 held candidate identity is then reproved under the final basename.
 
+Run `29091775536` then exposed two Windows-only test and lock boundaries. A
+pytest temporary directory has the runner's ordinary inherited DACL, not the
+exact Sidekick protected DACL. Store fixtures now explicitly apply the same
+released-layout permission repair that production exposes before claiming to
+represent a valid Sidekick state. This keeps the test setup honest instead of
+weakening production validation.
+
+The persistent lock sidecar is empty, but its exclusive byte-range lock can
+extend beyond the current end of file. Windows rejects an overlapping read
+through a second handle even in the locking process. Passive inventory still
+opens and validates the sidecar's exact handle, metadata, DACL, and stable
+zero-byte size, but it no longer issues a data read when the first stable
+metadata snapshot proves size zero. The second metadata snapshot remains
+mandatory. Read handles also share existing write access so they can inspect
+the already-open sidecar; byte-range locking remains the concurrency owner.
+
 No new package is justified. pywin32 remains the maintained Windows binding
 already required by the project, while the corrected operations reuse its
 working APIs and the repository's qualified private-file primitive. An
@@ -132,6 +149,9 @@ validation, or multi-artifact recovery.
   establishes the native replaced-file and replacement-file parameter order.
 - [pywin32 `ReplaceFile` wrapper source](https://github.com/mhammond/pywin32/blob/main/win32/src/win32file.i#L3915-L3942)
   shows the binding's current argument conversions and native call.
+- [Microsoft byte-range locking guidance](https://learn.microsoft.com/en-us/windows/win32/fileio/locking-and-unlocking-byte-ranges-in-files)
+  documents that locks may extend beyond end of file and that overlapping
+  access through a second handle fails.
 
 ## Verification requirement
 

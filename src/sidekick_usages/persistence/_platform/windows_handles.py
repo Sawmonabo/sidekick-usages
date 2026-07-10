@@ -195,7 +195,7 @@ if sys.platform == "win32":
         if before.st_size > limit:
             raise _native_error(NativeFailureKind.TOO_LARGE)
         chunks: list[bytes] = []
-        remaining = limit + 1
+        remaining = 0 if before.st_size == 0 else limit + 1
         try:
             while remaining:
                 chunk = os.read(

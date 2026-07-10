@@ -1,7 +1,6 @@
 """Behavioral tests for Sidekick-owned path composition."""
 
 import json
-import os
 from pathlib import Path
 
 import pytest
@@ -9,6 +8,7 @@ import pytest
 from sidekick_usages.paths import discover_application_paths
 from sidekick_usages.persistence.account_store import AccountStoreStateError
 from sidekick_usages.persistence.errors import PersistenceCode
+from sidekick_usages.persistence.filesystem import PersistenceFilesystem
 from tests.test_support import make_account_store, make_application_paths
 
 
@@ -45,13 +45,16 @@ def test_account_store_does_not_implicitly_import_prototype(
     """Runtime loading leaves prototype migration to the coordinator."""
     paths = make_application_paths(tmp_path)
     prototype_file = paths.accounts.prototype_cc_usage
-    prototype_file.parent.mkdir(parents=True)
     prototype_content = json.dumps(
         {"team": {"token": "secret", "plan": "max"}}
     )
-    prototype_file.write_text(prototype_content)
-    os.chmod(prototype_file.parent, 0o700)
-    os.chmod(prototype_file, 0o600)
+    prototype_filesystem = PersistenceFilesystem(prototype_file)
+    prototype_filesystem._prepare_parent()
+    prototype_filesystem._native.create_private(
+        prototype_file.parent,
+        prototype_file.name,
+        prototype_content.encode(),
+    )
 
     with pytest.raises(AccountStoreStateError) as exc_info:
         make_account_store(tmp_path)
