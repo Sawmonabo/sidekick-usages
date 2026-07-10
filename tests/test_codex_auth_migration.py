@@ -222,6 +222,37 @@ def test_prepare_supports_canonical_to_compatibility_rollback(
     assert not target.exists()
 
 
+@pytest.mark.parametrize("ending", [b"", b"\n", b"\r\n"])
+def test_prepare_accepts_released_private_config_line_endings(
+    tmp_path: Path,
+    ending: bytes,
+) -> None:
+    """Released private configs migrate without rewriting exact bytes."""
+    compatibility = tmp_path / "compatibility"
+    canonical = tmp_path / "canonical"
+    source = compatibility / "account"
+    target = canonical / "account"
+    source.mkdir(parents=True)
+    account = _codex_account("account", source, "acct_released")
+    files = _bundle("acct_released")
+    files[CODEX_CONFIG_FILE] = CODEX_FILE_AUTH_CONFIG.encode() + ending
+
+    result = CodexPrivateAuthMigrator().prepare(
+        _request(
+            (account,),
+            compatibility,
+            PrivateAuthHomeKind.COMPATIBILITY,
+            canonical,
+            PrivateAuthHomeKind.CANONICAL,
+            _snapshot(source, files),
+            _snapshot(target, None),
+        )
+    )
+
+    assert isinstance(result, PreparedPrivateAuthMigration)
+    assert result.copies[0].bundle.files == files
+
+
 def test_semantic_digest_normalizes_roots_and_changes_with_exact_bytes(
     tmp_path: Path,
 ) -> None:
@@ -286,6 +317,13 @@ def test_semantic_digest_normalizes_roots_and_changes_with_exact_bytes(
             {
                 CODEX_AUTH_FILE: b"{malformed",
                 CODEX_CONFIG_FILE: _CONFIG,
+            },
+            PrivateAuthMigrationFailureCode.SOURCE_INVALID,
+        ),
+        (
+            {
+                **_bundle("acct_expected"),
+                CODEX_CONFIG_FILE: b"untrusted_setting = true\n",
             },
             PrivateAuthMigrationFailureCode.SOURCE_INVALID,
         ),

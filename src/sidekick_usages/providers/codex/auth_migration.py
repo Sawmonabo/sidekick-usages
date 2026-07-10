@@ -35,7 +35,10 @@ from sidekick_usages.providers.codex.auth import (
 )
 
 _SOURCE_FILES = frozenset({CODEX_AUTH_FILE, CODEX_CONFIG_FILE})
-_PRIVATE_CONFIG = f"{CODEX_FILE_AUTH_CONFIG}\n".encode()
+_RELEASED_PRIVATE_CONFIGS = frozenset(
+    f"{CODEX_FILE_AUTH_CONFIG}{ending}".encode()
+    for ending in ("", "\n", "\r\n")
+)
 _SEMANTIC_DIGEST_DOMAIN = b"sidekick-usages:private-auth:v1"
 _FRAME_LENGTH_BYTES = 8
 
@@ -237,7 +240,7 @@ def _validated_source(
             (account.label,),
         )
     if set(snapshot.files) != _SOURCE_FILES or (
-        snapshot.files.get(CODEX_CONFIG_FILE) != _PRIVATE_CONFIG
+        snapshot.files.get(CODEX_CONFIG_FILE) not in _RELEASED_PRIVATE_CONFIGS
     ):
         return _failure(
             PrivateAuthMigrationFailureCode.SOURCE_INVALID,
