@@ -253,7 +253,9 @@ the implementation sequence explicit.
 | CLI usage orchestration | `usage/service.py` |
 | usage result objects | `usage/models.py` |
 | `render.py` usage presentation | `usage/render.py` |
+| CLI credential workflow models | `credentials/models.py` |
 | CLI credential orchestration | `credentials/service.py` |
+| Codex auth-to-persistence coordination | `credentials/codex.py` |
 | `heartbeat/domain.py` | `heartbeat/models.py` |
 | `heartbeat/base.py` | `heartbeat/ports.py` |
 | concrete heartbeat adapters | provider packages |
@@ -269,6 +271,13 @@ Top-level `maintenance.py`, `doctor.py`, `daemon.py`, `lifetime.py`, and
 `update.py` remain cohesive feature modules unless implementation evidence
 shows that one has crossed the size limit or gained a distinct responsibility.
 Do not create empty symmetry packages.
+
+`credentials/models.py` contains trusted provider-neutral workflow inputs and
+results, not untrusted schemas. `credentials/codex.py` contains the proven
+application bridge between provider-owned Codex auth preparation and the
+persistence-owned private-bundle transaction. Claude has no equivalent
+private auth-tree responsibility, so the target does not add a speculative
+`credentials/claude.py` for visual symmetry.
 
 ## 5. Dependency graph and release slices
 
@@ -2105,7 +2114,13 @@ coordination.
 **Files:**
 
 - Create `src/sidekick_usages/credentials/__init__.py`.
+- Create `src/sidekick_usages/credentials/models.py` for trusted
+  provider-neutral workflow inputs and results. Do not call these application
+  models schemas.
 - Create `src/sidekick_usages/credentials/service.py`.
+- Create `src/sidekick_usages/credentials/codex.py` for the narrow
+  Codex-auth-to-private-persistence bridge. Do not create a symmetric Claude
+  module without an equivalent responsibility.
 - Create focused persistence transaction and journal-schema modules for
   private-bundle and account-authority coordination.
 - Modify provider facades and the current CLI commands.
@@ -2122,6 +2137,9 @@ coordination.
       or local login.
 - [ ] Keep Claude and Codex files, schemas, subprocess calls, and protocol
       details inside provider packages.
+- [ ] Keep provider-neutral credential sources and results in
+      `credentials/models.py`, orchestration in `credentials/service.py`, and
+      Codex private-bundle coordination in `credentials/codex.py`.
 - [ ] Keep prompts, confirmations, and token input in CLI adapters.
 - [ ] Persist one complete account update or none.
 - [x] Journal a bounded deterministic tuple of private-bundle mutations,
@@ -2189,79 +2207,182 @@ land separately in CS-20.
 - Create `src/sidekick_usages/cli/context.py`.
 - Move `cli_help.py` to `cli/help.py`.
 - Move `token_input.py` to `cli/token_input.py`.
-- Create the approved provider-neutral `cli/commands/` modules.
-- Create `cli/commands/permissions.py` for the independent permission-repair
-  command group.
-- Create current-surface Claude and Codex command adapters.
+- Create `cli/commands/__init__.py`, `usage.py`, `accounts.py`,
+  `credentials.py`, `heartbeat.py`, `maintenance.py`, `doctor.py`,
+  `migrate.py`, `permissions.py`, `daemon.py`, `updates.py`, `claude.py`, and
+  `codex.py`.
 - Delete `src/sidekick_usages/cli.py` atomically.
 - Update `src/sidekick_usages/__main__.py`.
+- Modify `credentials/models.py` and `credentials/service.py` for the safe
+  token-prompt specification.
+- Modify `usage/models.py` and `usage/service.py` so the result carries the
+  single render reference time acquired by the service.
+- Modify `heartbeat/service.py` and its renderer for the narrow
+  `support_label(account)` and `support_labels(accounts)` display capability.
+- Modify `lifetime.py` to add `LifetimeCollector` around the existing typed
+  collectors.
+- Modify `update.py` to add `UpdateService` around release checking, install
+  detection, command selection, and injected command execution.
+- Modify the Claude facade only as needed to expose the narrow
+  `ClaudeSetupToken` capability without widening the generic provider API.
+- Update `packaging/smoke_wheel.py` for the final CLI package contract.
 - Update `AGENTS.md` in the same commit so contributor structure stays true.
 - Update CLI, help, entry-point, and packaging tests.
 
 **Current command ownership:**
 
-| Command module | Registration and option owner |
+| Command module | Exact registration, validation, and output owner |
 |---|---|
-| `usage.py` | default invocation and `check` |
-| `accounts.py` | `list`, `remove`, `rename`, `set-plan`, `reset` |
-| `credentials.py` | `add` and the sole `refresh` registration/parser |
-| `heartbeat.py` | group, label fallback, enable, disable, status |
-| `maintenance.py` | `maintain` and maintenance result presentation |
-| `doctor.py` | `doctor` and diagnostic presentation |
-| `migrate.py` | explicit account migration and rollback preparation |
-| `permissions.py` | explicit permission-repair preview and execution |
-| `daemon.py` | install, status, uninstall |
-| `updates.py` | `check-update`, `update` |
-| `claude.py` | current top-level `setup-token` adapter |
-| `codex.py` | current `codex-login` and `codex-export` adapters |
+| `usage.py` | default invocation, `check`, no-account result, lifetime call, and usage exit reduction |
+| `accounts.py` | `list`, `remove`, `rename`, `set-plan`, `reset`, table rows, and mutation output |
+| `credentials.py` | `add`, sole `refresh` parser, mode validation, missing-only prompt fallback, and credential/refresh output |
+| `heartbeat.py` | group, label fallback, enable, disable, status, outcome output, and exit reduction |
+| `maintenance.py` | `maintain`, quiet/scheduled filtering, combined output, and combined exit reduction |
+| `doctor.py` | `doctor`, exhaustive doctor-state handling, filtering, output, and exit reduction |
+| `migrate.py` | account migration, rollback preparation, preview, confirmation, output, and persistence error mapping |
+| `permissions.py` | permission-repair preview, confirmation, execution, and output |
+| `daemon.py` | daemon group, install, status, uninstall, backend validation, output, and scheduler exit mapping |
+| `updates.py` | `check-update`, `update`, update output, and update exit mapping |
+| `claude.py` | current setup-token adapter and typed setup-token output |
+| `codex.py` | current `codex-login`, `codex-export`, and their output |
 
 `refresh --all` remains parsed and registered only by `credentials.py`; that
 branch delegates to the maintenance service and its outcome presentation.
 There is no second refresh command or duplicated option validation.
 
+`app.py` owns only root construction, the root callback, global options, the
+version callback, production composer wiring, and explicit registration.
+`context.py` owns context models, `Composed[T]`, lazy `ctx.obj` accessors, and
+the five typed composition paths. `help.py` owns only help adaptation, and
+`token_input.py` owns only hidden or piped token acquisition. The commands
+initializer is thin and is not a barrel for private helpers.
+
+**Typed composition contract:**
+
+- `AppContext` contains only the proven direct `AccountStore` persistence
+  service, `UsageCheckService`, `CredentialService`, `HeartbeatService`,
+  `TokenMaintenanceService`, `LifetimeCollector`, and the narrow
+  `ClaudeSetupToken` capability.
+- `PersistenceContext` contains only `PersistenceCommands`.
+- `DoctorContext` contains `DoctorState`, the closed
+  `DoctorReady | DoctorBlocked | DoctorFailed` union. `DoctorReady` carries a
+  `DoctorService` and validated `PersistenceAssessment`; `DoctorBlocked`
+  carries the safe blocked assessment; `DoctorFailed` carries the bounded
+  secret-safe `PersistenceCompositionFailure`.
+- `DaemonContext` contains only `DaemonManager`.
+- `UpdateContext` contains only `UpdateService`.
+- Console and error-console presentation ports, composer callables, and
+  command-local values belong to the lightweight `InvocationContext` in
+  `ctx.obj`, not an operational context.
+- Each `require_app()`, `require_persistence()`, `require_doctor()`,
+  `require_daemon()`, and `require_update()` accessor composes lazily, caches
+  its exact typed value, and registers its owner's close once on the root
+  Click context.
+- Each composer returns a PEP 695 `Composed[T]` that owns a transferred
+  `ExitStack`. A partial construction closes acquired resources once in LIFO
+  order. If cleanup also fails, surface both errors with the original
+  construction failure first; never replace or swallow it.
+- Production defaults are selected only when an injected provider or
+  heartbeat registry is `None`. An explicit empty mapping remains empty.
+
 **Work:**
 
 - [ ] Make `cli/__init__.py` re-export only `app` and `run`.
 - [ ] Make `create_app()` registration-only with explicit registration
-      functions and no dynamic discovery or global-app imports.
-- [ ] Build an invocation-scoped `AppContext` from services, a proven direct
-      account-store need, consoles, and the narrow Claude setup-token facade.
-- [ ] Keep raw paths, clocks, HTTP, provider registries, scheduler backends,
-      flags, collected results, and failures out of `AppContext`.
+      functions, no dynamic discovery, no command-to-global-app imports, and
+      no runtime composition.
+- [ ] Build the strict store-backed `AppContext` and separate typed
+      `PersistenceContext`, `DoctorContext`, `DaemonContext`, and
+      `UpdateContext` exactly as defined above.
+- [ ] Keep raw paths, clocks, HTTP, provider and heartbeat registries,
+      scheduler backends, consoles, flags, collected results, failures, and
+      broad optional state out of every operational context.
+- [ ] Add `InvocationContext` to `ctx.obj` with lazy typed `require_*()`
+      accessors; remove the module singleton, mutable class state,
+      `set_context()`, and implicit current-context lookup.
+- [ ] Implement PEP 695 `Composed[T]` with `ExitStack` ownership transfer,
+      close-once behavior, LIFO partial cleanup, and original-error
+      preservation when cleanup also fails.
+- [ ] Default provider and heartbeat registries only on `None`; copy and
+      preserve an explicitly injected empty mapping.
+- [ ] Add `TokenPromptSpec` as immutable non-secret application metadata and
+      expose it through `CredentialService`, never a raw provider adapter.
 - [ ] Keep token prompts in `cli/token_input.py`; delegate setup-token execution
-      through the narrow Claude facade, never provider internals or a registry.
-- [ ] Define a separate typed doctor composition result: a ready diagnostic
-      service state or a migration-blocked assessment state. Do not use broad
-      optional fields or a service locator.
-- [ ] Let the doctor command render blocked schema/corruption recovery without
-      constructing `AccountStore`.
-- [ ] Own resources transactionally with `ExitStack` or equivalent; transfer
-      ownership only after composition succeeds and close on partial failure.
-- [ ] Use Typer/Click `ctx.obj`; remove the module singleton and `set_context`.
-- [ ] Keep help and version on a no-composition path.
+      through `ClaudeSetupToken`, never provider internals or a registry.
+- [ ] Prompt only when local detection returns exactly the typed missing state;
+      all other credential failures render without prompting.
+- [ ] Add `HeartbeatService.support_label(account)` and
+      `support_labels(accounts)`, plus `LifetimeCollector`, `UpdateService`,
+      and `ClaudeSetupToken`; do not expose their raw registries, callables,
+      HTTP, subprocess, or cache inputs to commands.
+- [ ] Handle `DoctorReady`, `DoctorBlocked`, and `DoctorFailed` exhaustively;
+      blocked and failed states render without constructing `AccountStore`.
+- [ ] Keep root, nested, and leaf help plus version on a no-composition path.
 - [ ] Move complete command clusters while preserving every current command,
       option, help entry, output channel, and exit contract.
 - [ ] Preserve `sidekick_usages.cli:app` and `python -m sidekick_usages`.
-- [ ] Keep `cli/app.py` near or below 200 lines and command modules below 800.
+- [ ] Delete `cli.py`, `cli_help.py`, and top-level `token_input.py` in the
+      same atomic change; retain no stale compatibility module.
+- [ ] Make the package verifier inspect source, sdist, and exactly one fresh
+      wheel, install that wheel outside the checkout with source leakage
+      cleared, and exercise both entry paths.
+- [ ] Keep `cli/app.py` near or below 200 lines, keep cohesive modules below
+      the 800-line target where practical, and never exceed the 1000-line hard
+      limit.
 
 **Load-bearing tests:**
 
 - Root, nested, and leaf help discover the current command surface without
   path discovery, migration assessment, store, credentials, scheduler, or
   HTTP construction.
-- Version remains one undecorated line without composition.
+- Version remains one undecorated line without composition; composer sentinels
+  prove every help/version path calls no `require_*()` accessor.
 - Default invocation and `check` use the same usage service.
 - `refresh` has one registration; its `--all` path delegates to maintenance.
-- Setup-token input stays in CLI and execution uses the narrow Claude facade.
-- Schema-corrupt and migration-blocked doctor output works while
-  `AccountStore` construction is never attempted.
+- Setup-token input stays in CLI and execution uses `ClaudeSetupToken`.
+- Token input fallback occurs for missing local credentials and not for
+  unreadable, malformed, incomplete, expired, rejected, identity-mismatched,
+  or unsupported outcomes.
+- `DoctorReady`, `DoctorBlocked`, and `DoctorFailed` render their exact typed
+  outcomes; blocked and failed paths never attempt `AccountStore` construction.
 - A typed failure after HTTP-pool creation closes every acquired resource once
-  and preserves the original error.
-- An explicitly empty provider registry remains empty through composition.
+  in LIFO order and preserves the original error; repeated close and repeated
+  access still close each resource once.
+- An explicitly empty provider and heartbeat registry remains empty through
+  normal and doctor composition.
+- Account listing and heartbeat status obtain display data through
+  `HeartbeatService`, usage lifetime data through `LifetimeCollector`, updates
+  through `UpdateService`, and prompt metadata through `CredentialService`.
 - JSON, quiet, scheduled, and current human output remain stable.
-- Source and wheel contain `cli/` and no stale `cli.py`, `cli_help.py`, or
-  top-level `token_input.py`.
-- Source and isolated-wheel entry points both work.
+- Every command is registered once by its exact owner; no command module
+  imports the global application.
+- Source, sdist, and wheel contain every required `cli/commands/*.py` owner and
+  no stale `cli.py`, `cli_help.py`, or top-level `token_input.py`.
+- Source and isolated exact-wheel entry points both work outside the checkout.
+
+**Test pruning contract:**
+
+- Retain the fewest tests that protect lifecycle, blocked-state safety,
+  command behavior, output channels, registration uniqueness, or installed
+  artifact behavior.
+- Delete tests for the removed global context, `set_context()`, private CLI
+  orchestration helpers, and the inert `app`-exists smoke.
+- Do not add dataclass-field inventories, import-existence tests, fake-called
+  assertions, full help snapshots, one copied test per `require_*()` method,
+  or compatibility exports solely to preserve old patch targets.
+- Use one clear parameterized test when identical context-access behavior
+  spans multiple context kinds. Keep special lifecycle and doctor-state cases
+  separate because they protect distinct failure modes.
+- Add one small typed `InvocationContext` harness only if at least three
+  command-test modules need it. It is explicit, non-autouse, constructs no real
+  resources, and supplies only the composer needed by each test.
+
+**Acceptance:** The flat CLI is gone; command ownership matches the table;
+normal, persistence, doctor, daemon, and update composition are strict and
+typed; resources close exactly once; help and version compose nothing;
+explicitly empty registries stay empty; the narrow supporting seams prevent
+raw infrastructure from reaching commands; existing public behavior is
+preserved; and source plus built artifacts contain only the final package.
 
 **Recovery:** Revert the complete package conversion. No provider hierarchy,
 deprecation, dependency adoption, or data migration belongs here.
@@ -2572,8 +2693,15 @@ redesign. Exact approved visual tests remain load-bearing.
 - [ ] Enforce no production `timestamps.py` or universal timestamp formatter.
 - [ ] Enforce `core/time.py` as the narrow pure `as_utc()` invariant with no
       parsing, formatting, clock acquisition, or boundary encoding.
-- [ ] Enforce no paths, clocks, raw HTTP, provider registry, or scheduler
-      backend in `AppContext`.
+- [ ] Enforce the exact service-only `AppContext` and narrow
+      `PersistenceContext`, `DoctorContext`, `DaemonContext`, and
+      `UpdateContext` contracts; reject optional composition state, paths,
+      clocks, raw HTTP, registries, scheduler backends, consoles, filters, or
+      results in operational contexts.
+- [ ] Enforce the closed `DoctorReady | DoctorBlocked | DoctorFailed` state,
+      registration-only `create_app()`, and no-composition help/version path.
+- [ ] Enforce explicit `None` registry defaults, close-once `Composed[T]`
+      ownership, and no module singleton or `set_context()` compatibility shim.
 - [ ] Enforce no import-time Sidekick path discovery or duplicate
       Sidekick-owned `Path.home()` reconstruction.
 - [ ] Enforce no private-Codex root reconstruction outside `paths.py`.
@@ -2589,14 +2717,17 @@ redesign. Exact approved visual tests remain load-bearing.
 - [ ] Under a recorded CS-09 NO-GO, enforce absence of `platformdirs`,
       `PrivateAuthMigrator`, and native-migration-only production code.
 - [ ] Enforce no stale same-named module after package conversions.
+- [ ] Enforce every final CLI command owner in source, sdist, and wheel, and
+      reject missing command modules or stale flat CLI/help/token-input files.
 - [ ] Remove blanket or unjustified suppressions and dead gate configuration.
 - [ ] Remove the inert CLI-app existence smoke while retaining the package
       version smoke.
 - [ ] Remove private-helper tests replaced by service tests.
 - [ ] Remove redundant exact-and-order assertions and duplicated render
       fixtures only when the remaining test protects the same behavior.
-- [ ] Introduce one small explicit typed `AppContext` test harness only if
-      three or more final command modules still repeat it.
+- [ ] Introduce one small explicit typed `InvocationContext` test harness only
+      if three or more final command modules still repeat it; keep it
+      non-autouse and composer-specific.
 - [ ] Build the wheel once per CI run or share a verified artifact, install it
       into an isolated environment on every supported OS, and exercise both
       the console script and `python -m sidekick_usages` through that
@@ -2727,8 +2858,16 @@ frameworks, and small diffs do not justify an inadequate architecture.
 | Narrow `core/` and dependency rules | CS-12A, CS-13, CS-22 |
 | Provider-owned Claude and Codex packages | CS-16, CS-17 |
 | Provider-owned heartbeat adapters | CS-16, CS-17 |
+| Credential models, service, and Codex bridge ownership | CS-18 |
 | CLI package and nested commands | CS-18A |
 | Help adapter outside commands | CS-18A |
+| Strict store-backed and narrow recovery contexts | CS-18A, CS-22 |
+| Closed ready/blocked/failed doctor state | CS-18A, CS-22 |
+| Close-once typed invocation resource ownership | CS-18A, CS-22 |
+| Explicit empty-registry semantics at composition | CS-02, CS-18A, CS-22 |
+| Narrow prompt, heartbeat, lifetime, update, and Claude seams | CS-18A |
+| Registration-only app and no-composition help/version | CS-18A, CS-22 |
+| Atomic source, sdist, and wheel CLI conversion | CS-18A, CS-22, CS-23 |
 | Concrete Claude and Codex commands | CS-20 |
 | Compatibility alias lifecycle | CS-20, CS-23 |
 | Boundary-local schemas | CS-07, CS-13, CS-14, CS-17A |
