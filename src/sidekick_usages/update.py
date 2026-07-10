@@ -150,6 +150,22 @@ def _execute_upgrade(command: tuple[str, ...]) -> None:
     subprocess.run(command, check=True)
 
 
+class UpdateToolMissingError(Exception):
+    """The selected package-manager executable is unavailable."""
+
+    def __init__(self, tool: str) -> None:
+        self.tool = tool
+        super().__init__(f"Upgrade tool {tool!r} is unavailable.")
+
+
+class UpdateCommandFailedError(Exception):
+    """The selected package manager returned a non-success status."""
+
+    def __init__(self, return_code: int) -> None:
+        self.return_code = return_code
+        super().__init__(f"Upgrade command exited with {return_code}.")
+
+
 class UpdateService:
     """Own release checks, install detection, and upgrade execution."""
 
@@ -178,8 +194,18 @@ class UpdateService:
         return upgrade_command_for(self.install_method())
 
     def upgrade(self, *, dry_run: bool = False) -> tuple[str, ...]:
-        """Select and optionally execute the exact upgrade command."""
+        """Select and optionally execute the exact upgrade command.
+
+        :raises UpdateToolMissingError: If the selected tool is unavailable.
+        :raises UpdateCommandFailedError: If the tool exits unsuccessfully.
+        """
         command = self.upgrade_command()
-        if not dry_run:
+        if dry_run:
+            return command
+        try:
             self._command_executor(command)
+        except FileNotFoundError as error:
+            raise UpdateToolMissingError(command[0]) from error
+        except subprocess.CalledProcessError as error:
+            raise UpdateCommandFailedError(error.returncode) from error
         return command

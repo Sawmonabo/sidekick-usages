@@ -1,7 +1,9 @@
 """Release artifact and dependency packaging contracts."""
 
 import importlib.util
+import io
 import sys
+import tarfile
 import tomllib
 import zipfile
 from pathlib import Path
@@ -55,7 +57,7 @@ def test_runtime_dependencies_and_lock_match_reviewed_versions() -> None:
 
 
 def test_exact_wheel_selection_and_member_contract(tmp_path: Path) -> None:
-    """Ambiguous artifacts and stale module/package collisions fail closed."""
+    """All artifact forms require the package and reject flat remnants."""
     assert {
         "sidekick_usages/heartbeat/base.py",
         "sidekick_usages/heartbeat/codex.py",
@@ -63,6 +65,9 @@ def test_exact_wheel_selection_and_member_contract(tmp_path: Path) -> None:
         "sidekick_usages/heartbeat/registry.py",
         "sidekick_usages/providers/codex.py",
         "sidekick_usages/store.py",
+        "sidekick_usages/cli.py",
+        "sidekick_usages/cli_help.py",
+        "sidekick_usages/token_input.py",
     } <= smoke_wheel.FORBIDDEN_WHEEL_MEMBERS
     assert {
         "sidekick_usages/credentials/codex.py",
@@ -78,6 +83,7 @@ def test_exact_wheel_selection_and_member_contract(tmp_path: Path) -> None:
         "sidekick_usages/providers/codex/schemas.py",
         "sidekick_usages/providers/codex/usage.py",
         "sidekick_usages/providers/registry.py",
+        *smoke_wheel.REQUIRED_CLI_MEMBERS,
     } <= smoke_wheel.REQUIRED_WHEEL_MEMBERS
     artifacts = tmp_path / "artifacts"
     artifacts.mkdir()
@@ -95,6 +101,23 @@ def test_exact_wheel_selection_and_member_contract(tmp_path: Path) -> None:
         sdist,
     )
     smoke_wheel.verify_wheel_members(wheel)
+    smoke_wheel.verify_source_members()
+
+    archive_root = sdist_name.removesuffix(".tar.gz")
+    with tarfile.open(sdist, mode="w:gz") as archive:
+        for member in smoke_wheel.REQUIRED_CLI_MEMBERS:
+            info = tarfile.TarInfo(f"{archive_root}/src/{member}")
+            archive.addfile(info, io.BytesIO())
+    smoke_wheel.verify_sdist_members(sdist)
+
+    with tarfile.open(sdist, mode="w:gz") as archive:
+        for member in smoke_wheel.REQUIRED_CLI_MEMBERS | {
+            "sidekick_usages/cli.py"
+        }:
+            info = tarfile.TarInfo(f"{archive_root}/src/{member}")
+            archive.addfile(info, io.BytesIO())
+    with pytest.raises(smoke_wheel.WheelVerificationError):
+        smoke_wheel.verify_sdist_members(sdist)
 
     with zipfile.ZipFile(wheel, "a") as archive:
         archive.writestr("sidekick_usages/http.py", "")

@@ -1,6 +1,7 @@
 """Rendering helpers for usage-window heartbeat."""
 
 import json
+from collections.abc import Mapping
 from datetime import UTC, datetime
 
 from rich.console import Console
@@ -8,13 +9,11 @@ from rich.console import Console
 from sidekick_usages.branding import brand_header
 from sidekick_usages.core.models import Account
 from sidekick_usages.core.types import (
+    AccountLabel,
     ExitCode,
     HeartbeatStatus,
-    ProviderId,
 )
 from sidekick_usages.heartbeat.models import HeartbeatOutcome
-from sidekick_usages.heartbeat.ports import HeartbeatProvider
-from sidekick_usages.heartbeat.service import heartbeat_supported_label
 
 
 def render_heartbeat_outcomes(
@@ -71,7 +70,7 @@ def render_heartbeat_outcome(
 
 def render_heartbeat_status(
     accounts: list[Account],
-    providers: dict[ProviderId, HeartbeatProvider],
+    support_labels: Mapping[AccountLabel, str],
     console: Console,
     *,
     json_output: bool = False,
@@ -82,7 +81,7 @@ def render_heartbeat_status(
             json.dumps(
                 {
                     "accounts": [
-                        _heartbeat_status_dict(account, providers)
+                        _heartbeat_status_dict(account, support_labels)
                         for account in accounts
                     ]
                 },
@@ -100,7 +99,7 @@ def render_heartbeat_status(
     for index, account in enumerate(accounts):
         if index:
             console.print()
-        status = _heartbeat_status_dict(account, providers)
+        status = _heartbeat_status_dict(account, support_labels)
         suffix = f" · {account.plan}" if account.plan != "unknown" else ""
         console.print(f"{account.label}  [{account.provider_id}{suffix}]")
         console.print(f"  heartbeat: {status['heartbeat']}")
@@ -131,16 +130,16 @@ def render_heartbeat_status(
 
 def _heartbeat_status_dict(
     account: Account,
-    providers: dict[ProviderId, HeartbeatProvider],
+    support_labels: Mapping[AccountLabel, str],
 ) -> dict[str, object]:
     """Build one account's heartbeat status data for rendering."""
-    provider = providers.get(account.provider_id)
-    supported = bool(provider and provider.supports(account))
+    support_label = support_labels[account.label]
+    supported = support_label != "unsupported"
     return {
         "label": account.label,
         "provider": account.provider_id,
         "plan": account.plan,
-        "heartbeat": heartbeat_supported_label(account, provider),
+        "heartbeat": support_label,
         "heartbeat_supported": supported,
         "heartbeat_enabled": account.heartbeat_enabled,
         "heartbeat_5h_reset_at": _optional_time(account.heartbeat_5h_reset_at),

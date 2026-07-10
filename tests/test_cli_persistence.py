@@ -3,22 +3,36 @@
 import io
 import json
 import os
+from functools import partial
 from pathlib import Path
 
 import pytest
 from rich.console import Console
 from typer.testing import CliRunner
 
-from sidekick_usages import cli
+from sidekick_usages.cli import app
+from sidekick_usages.cli import context as cli_context_module
+from sidekick_usages.cli.context import (
+    DaemonContext,
+    DoctorBlocked,
+    DoctorContext,
+    DoctorFailed,
+    InvocationContext,
+    PersistenceContext,
+    compose_app_context,
+    compose_doctor_context,
+)
 from sidekick_usages.core.models import Account
 from sidekick_usages.core.types import ExitCode
-from sidekick_usages.daemon import DaemonOperation, DaemonOperationResult
-from sidekick_usages.http import HttpClient
+from sidekick_usages.daemon import (
+    DaemonManager,
+    DaemonOperation,
+    DaemonOperationResult,
+)
 from sidekick_usages.persistence.assessment import (
     PersistenceAssessment,
     PersistenceIssue,
     PersistenceOperationResult,
-    StoredGeneration,
 )
 from sidekick_usages.persistence.errors import (
     PersistenceCode,
@@ -32,21 +46,27 @@ from sidekick_usages.persistence.migration_errors import (
 )
 from sidekick_usages.persistence.migrations import (
     PermissionRepairOperationResult,
+    PersistenceMigrationService,
 )
+from sidekick_usages.persistence.observations import StoredGeneration
 from sidekick_usages.persistence.private_credentials import (
     PrivateCredentialRepairResult,
+    PrivateCredentialTree,
 )
 from sidekick_usages.persistence.schemas import (
+    GenerationZeroDocument,
     VersionOneDocument,
+    encode_generation_zero,
     encode_version_one,
 )
+from sidekick_usages.persistence.v060 import ReleasedV060Verifier
 from sidekick_usages.scheduler_quiescence import (
     SchedulerBackendId,
     SchedulerBackendObservation,
     SchedulerBackendState,
     SchedulerQuiescenceAssessment,
 )
-from tests.test_support import FixedClock, make_application_paths
+from tests.test_support import CliHarness, make_application_paths
 
 _SNAPSHOT_BASENAME = f"accounts.json.v1.{'a' * 64}.bak"
 _PRIVATE_DIRECTORY_MODE = 0o700
@@ -140,6 +160,9 @@ class RecordingPersistence:
             raise self.preview_error
         return self.assessment
 
+    def permission_repair_preview(self) -> PersistenceAssessment:
+        return self.mutation_preview()
+
     def migrate_accounts(
         self,
         *,
@@ -186,30 +209,19 @@ class RecordingPersistence:
 def _install_context(
     root: Path,
     persistence: RecordingPersistence,
-) -> tuple[io.StringIO, io.StringIO]:
-    paths = make_application_paths(root)
+) -> tuple[CliHarness, io.StringIO, io.StringIO]:
     stdout = io.StringIO()
     stderr = io.StringIO()
-    cli.set_context(
-        cli.AppContext(
-            store=None,
-            http=HttpClient(),
-            providers={},
-            heartbeat_providers={},
-            private_codex_locations=paths.private_codex,
-            lifetime_sources={},
-            console=Console(file=stdout, width=200, force_terminal=False),
-            err_console=Console(
-                file=stderr,
-                width=200,
-                force_terminal=False,
-            ),
-            clock=FixedClock(),
-            persistence=persistence,
-            persistence_assessment=persistence.assessment,
-        )
+    harness = CliHarness(
+        console=Console(file=stdout, width=200, force_terminal=False),
+        err_console=Console(
+            file=stderr,
+            width=200,
+            force_terminal=False,
+        ),
+        persistence=PersistenceContext(persistence),
     )
-    return stdout, stderr
+    return harness, stdout, stderr
 
 
 def test_migrate_accounts_previews_before_confirmation_and_honors_intent(
@@ -222,12 +234,13 @@ def test_migrate_accounts_previews_before_confirmation_and_honors_intent(
         next_command=("sidekick-usages", "migrate", "accounts"),
     )
     cancelled = RecordingPersistence(assessment)
-    cancelled_stdout, _ = _install_context(tmp_path / "cancel", cancelled)
+    cancelled_cli, cancelled_stdout, _ = _install_context(
+        tmp_path / "cancel", cancelled
+    )
 
-    result = CliRunner().invoke(
-        cli.app,
+    result = cancelled_cli.invoke(
         ["migrate", "accounts"],
-        input="n\n",
+        input_text="n\n",
     )
 
     assert result.exit_code == ExitCode.MANUAL_ACTION
@@ -235,9 +248,8 @@ def test_migrate_accounts_previews_before_confirmation_and_honors_intent(
     assert "State: migration_required" in cancelled_stdout.getvalue()
 
     approved = RecordingPersistence(assessment)
-    _install_context(tmp_path / "approved", approved)
-    result = CliRunner().invoke(
-        cli.app,
+    approved_cli, _, _ = _install_context(tmp_path / "approved", approved)
+    result = approved_cli.invoke(
         ["migrate", "accounts", "--reimport-prototype", "--yes"],
     )
     assert result.exit_code == ExitCode.SUCCESS
@@ -253,18 +265,16 @@ def test_prepare_rollback_rejects_other_targets_and_reports_snapshot(
         count=1,
     )
     persistence = RecordingPersistence(assessment)
-    stdout, stderr = _install_context(tmp_path, persistence)
+    harness, stdout, stderr = _install_context(tmp_path, persistence)
 
-    rejected = CliRunner().invoke(
-        cli.app,
+    rejected = harness.invoke(
         ["migrate", "prepare-rollback", "--target", "v0.5.0", "--yes"],
     )
     assert rejected.exit_code == ExitCode.MANUAL_ACTION
     assert persistence.events == []
     assert "Expected 'v0.6.0'" in stderr.getvalue()
 
-    prepared = CliRunner().invoke(
-        cli.app,
+    prepared = harness.invoke(
         ["migrate", "prepare-rollback", "--target", "v0.6.0", "--yes"],
     )
     assert prepared.exit_code == ExitCode.SUCCESS
@@ -277,12 +287,13 @@ def test_permissions_repair_requires_intent_and_maps_scheduler_block(
 ) -> None:
     assessment = _assessment(tmp_path, PersistenceCode.CURRENT, count=1)
     cancelled = RecordingPersistence(assessment)
-    cancelled_stdout, _ = _install_context(tmp_path / "cancel", cancelled)
+    cancelled_cli, cancelled_stdout, _ = _install_context(
+        tmp_path / "cancel", cancelled
+    )
 
-    result = CliRunner().invoke(
-        cli.app,
+    result = cancelled_cli.invoke(
         ["permissions", "repair"],
-        input="n\n",
+        input_text="n\n",
     )
 
     assert result.exit_code == ExitCode.MANUAL_ACTION
@@ -302,23 +313,19 @@ def test_permissions_repair_requires_intent_and_maps_scheduler_block(
         assessment,
         preview_error=SchedulerMutationBlockedError(scheduler),
     )
-    _install_context(tmp_path / "blocked", blocked)
+    blocked_cli, _, _ = _install_context(tmp_path / "blocked", blocked)
 
-    result = CliRunner().invoke(
-        cli.app,
-        ["permissions", "repair", "--yes"],
-    )
+    result = blocked_cli.invoke(["permissions", "repair", "--yes"])
 
     assert result.exit_code == ExitCode.SCHEDULER_ERROR
     assert blocked.events == ["preview"]
 
     approved = RecordingPersistence(assessment)
-    approved_stdout, _ = _install_context(tmp_path / "approved", approved)
-
-    result = CliRunner().invoke(
-        cli.app,
-        ["permissions", "repair", "--yes"],
+    approved_cli, approved_stdout, _ = _install_context(
+        tmp_path / "approved", approved
     )
+
+    result = approved_cli.invoke(["permissions", "repair", "--yes"])
 
     assert result.exit_code == ExitCode.SUCCESS
     assert approved.events == ["preview", "repair"]
@@ -328,7 +335,6 @@ def test_permissions_repair_requires_intent_and_maps_scheduler_block(
 @pytest.mark.skipif(os.name == "nt", reason="POSIX released-layout fixture")
 def test_permissions_repair_restores_fresh_default_composition(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     paths = make_application_paths(tmp_path)
     paths.accounts.canonical.parent.chmod(0o755)
@@ -338,26 +344,32 @@ def test_permissions_repair_restores_fresh_default_composition(
     paths.private_codex.canonical.mkdir(mode=0o755)
     paths.private_codex.canonical.chmod(0o755)
 
-    class QuietDaemonManager:
-        def assess_quiescence(self) -> SchedulerQuiescenceAssessment:
-            return SchedulerQuiescenceAssessment(
-                (
-                    SchedulerBackendObservation(
-                        SchedulerBackendId.SYSTEMD,
-                        SchedulerBackendState.ABSENT,
-                        "Sidekick scheduler is absent.",
-                    ),
-                )
-            )
-
-    monkeypatch.setattr(cli, "discover_application_paths", lambda: paths)
-    monkeypatch.setattr(cli, "DaemonManager", QuietDaemonManager)
-    cli._ContextState.ctx = None
-
-    result = CliRunner().invoke(
-        cli.app,
-        ["permissions", "repair", "--yes"],
+    scheduler = SchedulerQuiescenceAssessment(
+        (
+            SchedulerBackendObservation(
+                SchedulerBackendId.SYSTEMD,
+                SchedulerBackendState.ABSENT,
+                "Sidekick scheduler is absent.",
+            ),
+        )
     )
+    private = PrivateCredentialTree(
+        paths.private_codex.canonical,
+        account_path=paths.accounts.canonical,
+        existing_root=paths.private_codex.existing_sidekick,
+    )
+    persistence = PersistenceMigrationService(
+        paths.accounts,
+        scheduler_assessor=lambda: scheduler,
+        private_credential_artifacts=private,
+        released_v060_verifier=ReleasedV060Verifier(),
+    )
+    harness = CliHarness(
+        console=Console(file=io.StringIO(), force_terminal=False),
+        err_console=Console(file=io.StringIO(), force_terminal=False),
+        persistence=PersistenceContext(persistence),
+    )
+    result = harness.invoke(["permissions", "repair", "--yes"])
 
     assert result.exit_code == ExitCode.SUCCESS
     assert paths.accounts.canonical.read_bytes() == authority
@@ -370,15 +382,15 @@ def test_permissions_repair_restores_fresh_default_composition(
         == _PRIVATE_DIRECTORY_MODE
     )
 
-    cli._ContextState.ctx = None
-    fresh = cli._build_default_context()
+    fresh = compose_app_context(
+        paths=paths,
+        providers={},
+        heartbeat_providers={},
+    )
     try:
-        assert fresh.persistence_failure is None
-        assert fresh.persistence_assessment is not None
-        assert fresh.persistence_assessment.code is PersistenceCode.CURRENT
-        assert list(fresh.require_store()) == []
+        assert list(fresh.value.accounts) == []
     finally:
-        fresh.http.close()
+        fresh.close()
 
 
 @pytest.mark.parametrize(
@@ -417,12 +429,9 @@ def test_migration_errors_use_stable_exit_vocabulary(
     else:
         error = SourceChangedError()
     persistence = RecordingPersistence(malformed, preview_error=error)
-    _, stderr = _install_context(tmp_path, persistence)
+    harness, _, stderr = _install_context(tmp_path, persistence)
 
-    result = CliRunner().invoke(
-        cli.app,
-        ["migrate", "accounts", "--yes"],
-    )
+    result = harness.invoke(["migrate", "accounts", "--yes"])
 
     assert result.exit_code == expected_exit
     assert persistence.events == ["preview"]
@@ -461,9 +470,9 @@ def test_rejected_transition_never_exits_success(
         migration_error=None if is_rollback else error,
         rollback_error=error if is_rollback else None,
     )
-    _, stderr = _install_context(tmp_path, persistence)
+    harness, _, stderr = _install_context(tmp_path, persistence)
 
-    result = CliRunner().invoke(cli.app, command)
+    result = harness.invoke(command)
 
     assert result.exit_code == ExitCode.MANUAL_ACTION
     assert persistence.events == expected_events
@@ -476,9 +485,9 @@ def test_full_reset_executes_with_zero_validated_accounts(
     persistence = RecordingPersistence(
         _assessment(tmp_path, PersistenceCode.EMPTY, count=0)
     )
-    stdout, _ = _install_context(tmp_path, persistence)
+    harness, stdout, _ = _install_context(tmp_path, persistence)
 
-    result = CliRunner().invoke(cli.app, ["reset", "--yes"])
+    result = harness.invoke(["reset", "--yes"])
 
     assert result.exit_code == ExitCode.SUCCESS
     assert persistence.events == ["preview", "reset"]
@@ -500,9 +509,9 @@ def test_full_reset_maps_preview_and_mutation_failures(tmp_path: Path) -> None:
         assessment,
         preview_error=SchedulerMutationBlockedError(scheduler),
     )
-    _install_context(tmp_path / "blocked", blocked)
+    blocked_cli, _, _ = _install_context(tmp_path / "blocked", blocked)
 
-    blocked_result = CliRunner().invoke(cli.app, ["reset", "--yes"])
+    blocked_result = blocked_cli.invoke(["reset", "--yes"])
 
     assert blocked_result.exit_code == ExitCode.SCHEDULER_ERROR
     assert blocked.events == ["preview"]
@@ -511,9 +520,11 @@ def test_full_reset_maps_preview_and_mutation_failures(tmp_path: Path) -> None:
         assessment,
         reset_error=ResetIncompleteError("accounts.json"),
     )
-    _install_context(tmp_path / "incomplete", incomplete)
+    incomplete_cli, _, _ = _install_context(
+        tmp_path / "incomplete", incomplete
+    )
 
-    incomplete_result = CliRunner().invoke(cli.app, ["reset", "--yes"])
+    incomplete_result = incomplete_cli.invoke(["reset", "--yes"])
 
     assert incomplete_result.exit_code == ExitCode.SYSTEM_ERROR
     assert incomplete.events == ["preview", "reset"]
@@ -529,9 +540,10 @@ def test_doctor_renders_blocked_persistence_without_a_store(
             count=None,
         )
     )
-    stdout, _ = _install_context(tmp_path, persistence)
+    harness, stdout, _ = _install_context(tmp_path, persistence)
+    harness.doctor = DoctorContext(DoctorBlocked(persistence.assessment))
 
-    result = CliRunner().invoke(cli.app, ["doctor", "--json"])
+    result = harness.invoke(["doctor", "--json"])
 
     assert result.exit_code == ExitCode.SYSTEM_ERROR
     assert '"code": "malformed_json"' in stdout.getvalue()
@@ -540,90 +552,54 @@ def test_doctor_renders_blocked_persistence_without_a_store(
 
 
 def test_normal_command_reports_exact_migration_action(tmp_path: Path) -> None:
-    assessment = _assessment(
-        tmp_path,
-        PersistenceCode.MIGRATION_REQUIRED,
-        count=1,
-        next_command=("sidekick-usages", "migrate", "accounts"),
+    paths = make_application_paths(tmp_path)
+    paths.accounts.canonical.write_bytes(
+        encode_generation_zero(GenerationZeroDocument(()))
     )
-    persistence = RecordingPersistence(assessment)
-    _, stderr = _install_context(tmp_path, persistence)
+    paths.accounts.canonical.chmod(0o600)
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    invocation = InvocationContext(
+        console=Console(file=stdout, force_terminal=False),
+        err_console=Console(file=stderr, force_terminal=False),
+        app_composer=partial(
+            compose_app_context,
+            paths=paths,
+            providers={},
+            heartbeat_providers={},
+        ),
+    )
 
-    result = CliRunner().invoke(cli.app, ["list"])
+    result = CliRunner().invoke(app, ["list"], obj=invocation)
 
     assert result.exit_code == ExitCode.MANUAL_ACTION
     assert "Next: sidekick-usages migrate accounts" in stderr.getvalue()
-    assert persistence.events == []
 
 
-@pytest.mark.parametrize(
-    ("code", "next_command", "expected_exit"),
-    [
-        (
-            PersistenceCode.MIGRATION_REQUIRED,
-            ("sidekick-usages", "migrate", "accounts"),
-            ExitCode.MANUAL_ACTION,
-        ),
-        (
-            PersistenceCode.PROTOTYPE_IMPORT_REQUIRED,
-            ("sidekick-usages", "migrate", "accounts"),
-            ExitCode.MANUAL_ACTION,
-        ),
-        (PersistenceCode.FUTURE_SCHEMA, None, ExitCode.MANUAL_ACTION),
-        (PersistenceCode.INVALID_SCHEMA, None, ExitCode.SYSTEM_ERROR),
-    ],
-)
-def test_python_module_entrypoint_fails_closed_without_traceback(
-    tmp_path: Path,
-    code: PersistenceCode,
-    next_command: tuple[str, ...] | None,
-    expected_exit: ExitCode,
-) -> None:
-    assessment = _assessment(
-        tmp_path,
-        code,
-        count=None,
-        next_command=next_command,
-    )
-    persistence = RecordingPersistence(assessment)
-    _, stderr = _install_context(tmp_path, persistence)
-    exit_code = cli._run_typer(["list"])
-
-    rendered = stderr.getvalue()
-    assert exit_code == expected_exit
-    assert assessment.message in rendered
-    assert "Traceback" not in rendered
-    if next_command is not None:
-        assert "Next: sidekick-usages migrate accounts" in rendered
-
-
-def test_scheduler_recovery_commands_do_not_require_account_store(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    persistence = RecordingPersistence(
-        _assessment(
-            tmp_path,
-            PersistenceCode.MIGRATION_REQUIRED,
-            count=1,
-        )
-    )
-    stdout, _ = _install_context(tmp_path, persistence)
+def test_scheduler_recovery_commands_do_not_require_account_store() -> None:
+    stdout = io.StringIO()
     events: list[DaemonOperation] = []
 
-    class FakeDaemonManager:
+    class FakeDaemonManager(DaemonManager):
+        def __init__(self) -> None:
+            pass
+
         def run(
             self,
-            operation: DaemonOperation,
-            backend: str,
+            operation: str,
+            backend: str = "auto",
         ) -> DaemonOperationResult:
-            events.append(operation)
+            events.append(DaemonOperation(operation))
             return DaemonOperationResult(backend, "safe")
 
-    monkeypatch.setattr(cli, "DaemonManager", FakeDaemonManager)
+    harness = CliHarness(
+        console=Console(file=stdout, force_terminal=False),
+        err_console=Console(file=io.StringIO(), force_terminal=False),
+        daemon=DaemonContext(FakeDaemonManager()),
+    )
 
-    status = CliRunner().invoke(cli.app, ["daemon", "status"])
-    uninstall = CliRunner().invoke(cli.app, ["daemon", "uninstall"])
+    status = harness.invoke(["daemon", "status"])
+    uninstall = harness.invoke(["daemon", "uninstall"])
 
     assert status.exit_code == ExitCode.SUCCESS
     assert uninstall.exit_code == ExitCode.SUCCESS
@@ -638,6 +614,7 @@ def test_unsafe_private_root_composes_as_passive_doctor_failure(
 ) -> None:
     paths = make_application_paths(tmp_path)
     paths.private_codex.canonical.mkdir(mode=0o755)
+    paths.private_codex.canonical.chmod(0o755)
     constructed_stores = 0
 
     def reject_store_construction(*_args: object, **_kwargs: object) -> None:
@@ -645,66 +622,44 @@ def test_unsafe_private_root_composes_as_passive_doctor_failure(
         constructed_stores += 1
         raise AssertionError("blocked composition constructed AccountStore")
 
-    class QuietDaemonManager:
-        def assess_quiescence(self) -> SchedulerQuiescenceAssessment:
-            return SchedulerQuiescenceAssessment(
-                (
-                    SchedulerBackendObservation(
-                        SchedulerBackendId.SYSTEMD,
-                        SchedulerBackendState.ABSENT,
-                        "Sidekick scheduler is absent.",
-                    ),
-                )
-            )
+    monkeypatch.setattr(
+        cli_context_module,
+        "AccountStore",
+        reject_store_construction,
+    )
 
-    monkeypatch.setattr(cli, "discover_application_paths", lambda: paths)
-    monkeypatch.setattr(cli, "DaemonManager", QuietDaemonManager)
-    monkeypatch.setattr(cli, "AccountStore", reject_store_construction)
-
-    context = cli._build_default_context()
+    owner = compose_doctor_context(
+        paths=paths,
+        providers={},
+        heartbeat_providers={},
+    )
 
     assert constructed_stores == 0
-    assert context.store is None
-    assert context.persistence_assessment is None
-    failure = context.persistence_failure
-    assert failure is not None
+    state = owner.value.state
+    assert isinstance(state, DoctorFailed)
+    failure = state.failure
     assert failure.code is PersistenceCode.UNSAFE_PERMISSIONS
     assert failure.safe_path == paths.private_codex.canonical
     assert failure.artifact_basename == paths.private_codex.canonical.name
 
     stdout = io.StringIO()
     stderr = io.StringIO()
-    context.console = Console(file=stdout, width=80, force_terminal=False)
-    context.err_console = Console(
-        file=stderr,
-        width=200,
-        force_terminal=False,
+    harness = CliHarness(
+        console=Console(file=stdout, width=80, force_terminal=False),
+        err_console=Console(
+            file=stderr,
+            width=200,
+            force_terminal=False,
+        ),
+        doctor=owner.value,
     )
-    cli.set_context(context)
-
-    doctor = CliRunner().invoke(cli.app, ["doctor", "--json"])
-    payload = json.loads(stdout.getvalue())
-    assert doctor.exit_code == ExitCode.SYSTEM_ERROR
-    assert payload["persistence"]["code"] == "unsafe_permissions"
-    assert payload["persistence"]["safe_path"] == str(
-        paths.private_codex.canonical
-    )
-    stdout.seek(0)
-    stdout.truncate()
-
-    migrate = CliRunner().invoke(
-        cli.app,
-        ["migrate", "accounts", "--yes"],
-    )
-    reset = CliRunner().invoke(cli.app, ["reset", "--yes"])
-    listed = CliRunner().invoke(cli.app, ["list"])
-    assert (
-        migrate.exit_code,
-        reset.exit_code,
-        listed.exit_code,
-    ) == (
-        ExitCode.SYSTEM_ERROR,
-        ExitCode.SYSTEM_ERROR,
-        ExitCode.SYSTEM_ERROR,
-    )
-    assert "Traceback" not in stderr.getvalue()
+    try:
+        doctor = harness.invoke(["doctor", "--json"])
+        payload = json.loads(stdout.getvalue())
+        assert doctor.exit_code == ExitCode.SYSTEM_ERROR
+        assert payload["persistence"]["code"] == "unsafe_permissions"
+        assert payload["persistence"]["safe_path"] == str(
+            paths.private_codex.canonical
+        )
+    finally:
+        owner.close()

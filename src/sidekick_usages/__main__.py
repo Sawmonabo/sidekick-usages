@@ -2,7 +2,7 @@
 
 import sys
 
-from sidekick_usages.cli import _run_typer
+from sidekick_usages.cli import run
 
 if __name__ == "__main__":
-    sys.exit(_run_typer())
+    sys.exit(run())

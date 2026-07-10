@@ -9,9 +9,7 @@ from pathlib import Path
 
 import pytest
 from rich.console import Console
-from typer.testing import CliRunner
 
-from sidekick_usages import cli
 from sidekick_usages.branding import ROBOT_LINES
 from sidekick_usages.clock import Clock
 from sidekick_usages.core.expiry import KnownExpiry, UnknownExpiry
@@ -26,7 +24,6 @@ from sidekick_usages.core.types import (
     HeartbeatStatus,
     ProviderId,
 )
-from sidekick_usages.credentials import CredentialService
 from sidekick_usages.heartbeat import (
     HeartbeatProbeResult,
     HeartbeatProvider,
@@ -52,10 +49,11 @@ from sidekick_usages.providers.codex.heartbeat import (
 from sidekick_usages.serialization import JsonObject
 from tests.test_support import (
     REFERENCE_TIME,
+    CliHarness,
     FixedClock,
     make_account_store,
     make_account_store_with_private,
-    make_application_paths,
+    make_app_context,
 )
 
 CODEX_USAGE_FETCHES_FOR_WARM = 2
@@ -247,8 +245,7 @@ def _install_ctx(
     heartbeat_providers: dict[ProviderId, HeartbeatProvider],
     providers: dict[ProviderId, Provider] | None = None,
     clock: Clock | None = None,
-) -> tuple[AccountStore, io.StringIO, io.StringIO]:
-    paths = make_application_paths(tmp_path)
+) -> tuple[CliHarness, AccountStore, io.StringIO, io.StringIO]:
     store, private_credentials = make_account_store_with_private(
         tmp_path,
         accounts,
@@ -257,28 +254,21 @@ def _install_ctx(
     stderr = io.StringIO()
     active_clock = clock or FixedClock()
     http = HttpClient()
-    provider_registry = providers or {}
-    cli.set_context(
-        cli.AppContext(
-            store=store,
-            http=http,
-            providers=provider_registry,
-            private_codex_locations=paths.private_codex,
-            lifetime_sources={},
-            console=Console(file=stdout, force_terminal=False),
-            err_console=Console(file=stderr, force_terminal=False),
-            clock=active_clock,
+    provider_registry = {} if providers is None else providers
+    harness = CliHarness(
+        console=Console(file=stdout, force_terminal=False),
+        err_console=Console(file=stderr, force_terminal=False),
+        application=make_app_context(
+            store,
+            http,
+            provider_registry,
+            private_credentials,
+            active_clock,
             heartbeat_providers=heartbeat_providers,
-            credentials=CredentialService(
-                store,
-                http,
-                provider_registry,
-                private_credentials,
-                clock=active_clock,
-            ),
-        )
+            lifetime_sources={},
+        ),
     )
-    return store, stdout, stderr
+    return harness, store, stdout, stderr
 
 
 class _FakeCodexHttp(HttpClient):
@@ -512,15 +502,15 @@ def test_heartbeat_persists_failure_per_account(tmp_path: Path) -> None:
 def test_heartbeat_enable_disable_and_status_cli(tmp_path: Path) -> None:
     """Heartbeat config is managed through the CLI."""
     provider = _FakeHeartbeatProvider()
-    store, stdout, _ = _install_ctx(
+    harness, store, stdout, _ = _install_ctx(
         tmp_path,
         [_acct()],
         {ProviderId.CLAUDE: provider},
     )
 
-    enabled = CliRunner().invoke(cli.app, ["heartbeat", "enable", "team"])
-    status = CliRunner().invoke(cli.app, ["heartbeat", "status"])
-    disabled = CliRunner().invoke(cli.app, ["heartbeat", "disable", "team"])
+    enabled = harness.invoke(["heartbeat", "enable", "team"])
+    status = harness.invoke(["heartbeat", "status"])
+    disabled = harness.invoke(["heartbeat", "disable", "team"])
 
     assert enabled.exit_code == 0
     assert status.exit_code == 0
@@ -540,16 +530,13 @@ def test_heartbeat_status_json_remains_machine_readable(
     tmp_path: Path,
 ) -> None:
     provider = _FakeHeartbeatProvider()
-    _, stdout, _ = _install_ctx(
+    harness, _, stdout, _ = _install_ctx(
         tmp_path,
         [_acct()],
         {ProviderId.CLAUDE: provider},
     )
 
-    result = CliRunner().invoke(
-        cli.app,
-        ["heartbeat", "status", "--json"],
-    )
+    result = harness.invoke(["heartbeat", "status", "--json"])
 
     assert result.exit_code == 0
     payload = json.loads(stdout.getvalue())
@@ -561,9 +548,9 @@ def test_empty_heartbeat_registry_remains_unsupported(
     tmp_path: Path,
 ) -> None:
     """An explicitly empty registry must not activate default providers."""
-    _, stdout, _ = _install_ctx(tmp_path, [_acct()], {})
+    harness, _, stdout, _ = _install_ctx(tmp_path, [_acct()], {})
 
-    result = CliRunner().invoke(cli.app, ["heartbeat", "status"])
+    result = harness.invoke(["heartbeat", "status"])
 
     assert result.exit_code == 0
     assert "heartbeat: unsupported" in stdout.getvalue()
@@ -575,13 +562,13 @@ def test_heartbeat_label_cli_runs_one_shot_when_disabled(
 ) -> None:
     """The documented heartbeat <label> form runs a one-shot probe."""
     provider = _FakeHeartbeatProvider()
-    store, stdout, _ = _install_ctx(
+    harness, store, stdout, _ = _install_ctx(
         tmp_path,
         [_acct("team", heartbeat_enabled=False)],
         {ProviderId.CLAUDE: provider},
     )
 
-    result = CliRunner().invoke(cli.app, ["heartbeat", "team"])
+    result = harness.invoke(["heartbeat", "team"])
 
     assert result.exit_code == 0
     assert provider.heartbeat_calls == [("team", "old-token")]
@@ -594,7 +581,7 @@ def test_heartbeat_label_cli_runs_one_shot_when_disabled(
 def test_heartbeat_all_quiet_runs_enabled_only(tmp_path: Path) -> None:
     """Quiet all-account mode is scheduler friendly."""
     provider = _FakeHeartbeatProvider()
-    _, stdout, _ = _install_ctx(
+    harness, _, stdout, _ = _install_ctx(
         tmp_path,
         [
             _acct("enabled", heartbeat_enabled=True),
@@ -603,7 +590,7 @@ def test_heartbeat_all_quiet_runs_enabled_only(tmp_path: Path) -> None:
         {ProviderId.CLAUDE: provider},
     )
 
-    result = CliRunner().invoke(cli.app, ["heartbeat", "--all", "--quiet"])
+    result = harness.invoke(["heartbeat", "--all", "--quiet"])
 
     assert result.exit_code == 0
     assert provider.heartbeat_calls == [("enabled", "old-token")]
@@ -614,7 +601,7 @@ def test_heartbeat_enable_accepts_codex_with_saved_account_id(
     tmp_path: Path,
 ) -> None:
     """Codex accounts with saved account ids can opt into heartbeat."""
-    store, stdout, _ = _install_ctx(
+    harness, store, stdout, _ = _install_ctx(
         tmp_path,
         [
             _acct(
@@ -625,7 +612,7 @@ def test_heartbeat_enable_accepts_codex_with_saved_account_id(
         {ProviderId.CODEX: _codex_heartbeat()},
     )
 
-    result = CliRunner().invoke(cli.app, ["heartbeat", "enable", "team"])
+    result = harness.invoke(["heartbeat", "enable", "team"])
 
     assert result.exit_code == 0
     saved = store.get("team")
@@ -758,7 +745,7 @@ def test_codex_heartbeat_fails_when_target_window_stays_inactive() -> None:
 
 def test_codex_heartbeat_can_enable_all_targets(tmp_path: Path) -> None:
     """Codex opt-in can include standard and Spark windows."""
-    store, stdout, _ = _install_ctx(
+    harness, store, stdout, _ = _install_ctx(
         tmp_path,
         [
             _acct(
@@ -769,8 +756,7 @@ def test_codex_heartbeat_can_enable_all_targets(tmp_path: Path) -> None:
         {ProviderId.CODEX: _codex_heartbeat()},
     )
 
-    result = CliRunner().invoke(
-        cli.app,
+    result = harness.invoke(
         ["heartbeat", "enable", "team", "--target", "all"],
     )
 
@@ -813,7 +799,7 @@ def test_maintain_refreshes_before_heartbeat(tmp_path: Path) -> None:
     clock = FixedClock()
     refresh_provider = _FakeRefreshProvider()
     heartbeat_provider = _FakeHeartbeatProvider()
-    _install_ctx(
+    harness, _, _, _ = _install_ctx(
         tmp_path,
         [
             _acct(
@@ -827,7 +813,7 @@ def test_maintain_refreshes_before_heartbeat(tmp_path: Path) -> None:
         clock=clock,
     )
 
-    result = CliRunner().invoke(cli.app, ["maintain", "--quiet"])
+    result = harness.invoke(["maintain", "--quiet"])
 
     assert result.exit_code == 0
     assert refresh_provider.refresh_calls == 1

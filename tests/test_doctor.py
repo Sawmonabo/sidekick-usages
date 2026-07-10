@@ -6,10 +6,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from rich.console import Console
-from typer.testing import CliRunner
 
-from sidekick_usages import cli
 from sidekick_usages.branding import ROBOT_LINES
+from sidekick_usages.cli.context import DoctorContext, DoctorReady
 from sidekick_usages.core.expiry import KnownExpiry
 from sidekick_usages.core.models import (
     Account,
@@ -21,45 +20,62 @@ from sidekick_usages.core.types import (
     HeartbeatStatus,
     RefreshStatus,
 )
-from sidekick_usages.http import HttpClient
+from sidekick_usages.doctor import DoctorService
 from sidekick_usages.persistence.account_store import AccountStore
+from sidekick_usages.persistence.assessment import PersistenceAssessment
+from sidekick_usages.persistence.errors import PersistenceCode
+from sidekick_usages.persistence.observations import StoredGeneration
 from sidekick_usages.providers.registry import (
     build_heartbeat_registry,
     build_provider_registry,
 )
 from tests.test_support import (
     REFERENCE_TIME,
+    CliHarness,
     FixedClock,
     make_account_store,
-    make_application_paths,
 )
 
 
 def _install_ctx(
     tmp_path: Path,
     accounts: list[Account],
-) -> tuple[AccountStore, io.StringIO, io.StringIO, FixedClock]:
+) -> tuple[CliHarness, AccountStore, io.StringIO, io.StringIO, FixedClock]:
     """Install an isolated CLI context for doctor tests."""
-    paths = make_application_paths(tmp_path)
     store = make_account_store(tmp_path, accounts)
     stdout = io.StringIO()
     stderr = io.StringIO()
     clock = FixedClock()
     providers = build_provider_registry(clock)
-    cli.set_context(
-        cli.AppContext(
-            store=store,
-            http=HttpClient(),
-            providers=providers,
-            private_codex_locations=paths.private_codex,
-            lifetime_sources={},
-            console=Console(file=stdout, force_terminal=False),
-            err_console=Console(file=stderr, force_terminal=False),
-            clock=clock,
-            heartbeat_providers=build_heartbeat_registry(providers),
-        )
+    heartbeat_providers = build_heartbeat_registry(providers)
+    assessment = PersistenceAssessment(
+        code=PersistenceCode.CURRENT,
+        generation=StoredGeneration.VERSION_ONE,
+        schema_version=1,
+        account_count=len(accounts),
+        safe_path=(tmp_path / "accounts.json").resolve(),
+        artifact_basename=None,
+        write_blocked=False,
+        next_command=None,
+        message="Account storage is current.",
+        issues=(),
     )
-    return store, stdout, stderr, clock
+    harness = CliHarness(
+        console=Console(file=stdout, force_terminal=False),
+        err_console=Console(file=stderr, force_terminal=False),
+        doctor=DoctorContext(
+            DoctorReady(
+                DoctorService(
+                    tuple(store),
+                    providers,
+                    heartbeat_providers,
+                    clock,
+                ),
+                assessment,
+            )
+        ),
+    )
+    return harness, store, stdout, stderr, clock
 
 
 def test_doctor_json_reports_refreshability_and_redacts_tokens(
@@ -87,9 +103,9 @@ def test_doctor_json_reports_refreshability_and_redacts_tokens(
         ),
         plan="max",
     )
-    _, stdout, _, clock = _install_ctx(tmp_path, [oauth, setup])
+    harness, _, stdout, _, clock = _install_ctx(tmp_path, [oauth, setup])
 
-    result = CliRunner().invoke(cli.app, ["doctor", "--json"])
+    result = harness.invoke(["doctor", "--json"])
 
     assert result.exit_code == 0
     payload = json.loads(stdout.getvalue())
@@ -125,9 +141,9 @@ def test_doctor_reports_previous_refresh_rejection(
         last_refresh_status=RefreshStatus.FAILED,
         last_refresh_error="Claude CLI refresh failed: status code 400",
     )
-    _, stdout, _, _ = _install_ctx(tmp_path, [account])
+    harness, _, stdout, _, _ = _install_ctx(tmp_path, [account])
 
-    result = CliRunner().invoke(cli.app, ["doctor"])
+    result = harness.invoke(["doctor"])
 
     assert result.exit_code == 1
     out = stdout.getvalue()
@@ -154,10 +170,9 @@ def test_doctor_filters_by_provider_and_label(tmp_path: Path) -> None:
         ),
         plan="pro",
     )
-    _, stdout, _, _ = _install_ctx(tmp_path, [claude, codex])
+    harness, _, stdout, _, _ = _install_ctx(tmp_path, [claude, codex])
 
-    result = CliRunner().invoke(
-        cli.app,
+    result = harness.invoke(
         ["doctor", "--provider", "codex", "--label", "codex-pro"],
     )
 

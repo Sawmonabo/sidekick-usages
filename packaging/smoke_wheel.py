@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import tomllib
 import zipfile
@@ -14,11 +15,33 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PYPROJECT_PATH = REPO_ROOT / "pyproject.toml"
 
+REQUIRED_CLI_MEMBERS = frozenset(
+    {
+        "sidekick_usages/cli/__init__.py",
+        "sidekick_usages/cli/app.py",
+        "sidekick_usages/cli/context.py",
+        "sidekick_usages/cli/help.py",
+        "sidekick_usages/cli/token_input.py",
+        "sidekick_usages/cli/commands/__init__.py",
+        "sidekick_usages/cli/commands/accounts.py",
+        "sidekick_usages/cli/commands/claude.py",
+        "sidekick_usages/cli/commands/codex.py",
+        "sidekick_usages/cli/commands/credentials.py",
+        "sidekick_usages/cli/commands/daemon.py",
+        "sidekick_usages/cli/commands/doctor.py",
+        "sidekick_usages/cli/commands/heartbeat.py",
+        "sidekick_usages/cli/commands/maintenance.py",
+        "sidekick_usages/cli/commands/migrate.py",
+        "sidekick_usages/cli/commands/permissions.py",
+        "sidekick_usages/cli/commands/updates.py",
+        "sidekick_usages/cli/commands/usage.py",
+    }
+)
+
 REQUIRED_WHEEL_MEMBERS = frozenset(
     {
         "sidekick_usages/__init__.py",
         "sidekick_usages/__main__.py",
-        "sidekick_usages/cli.py",
         "sidekick_usages/credentials/__init__.py",
         "sidekick_usages/credentials/codex.py",
         "sidekick_usages/credentials/models.py",
@@ -88,10 +111,14 @@ REQUIRED_WHEEL_MEMBERS = frozenset(
         "sidekick_usages/usage/models.py",
         "sidekick_usages/usage/service.py",
     }
+    | REQUIRED_CLI_MEMBERS
 )
 FORBIDDEN_WHEEL_MEMBERS = frozenset(
     {
         "sidekick_usages/http.py",
+        "sidekick_usages/cli.py",
+        "sidekick_usages/cli_help.py",
+        "sidekick_usages/token_input.py",
         "sidekick_usages/report.py",
         "sidekick_usages/store.py",
         "sidekick_usages/heartbeat/base.py",
@@ -218,6 +245,47 @@ def verify_wheel_members(wheel: Path) -> None:
         )
 
 
+def verify_source_members() -> None:
+    """Verify the checkout has the final package without flat remnants."""
+    package_root = REPO_ROOT / "src"
+    members = frozenset(
+        path.relative_to(package_root).as_posix()
+        for path in package_root.rglob("*")
+        if path.is_file()
+    )
+    missing = sorted(REQUIRED_CLI_MEMBERS - members)
+    forbidden = sorted(FORBIDDEN_WHEEL_MEMBERS & members)
+    if missing or forbidden:
+        raise WheelVerificationError(
+            f"Source member contract failed; missing={missing!r}, "
+            f"forbidden={forbidden!r}."
+        )
+
+
+def verify_sdist_members(sdist: Path) -> None:
+    """Verify the source distribution contains the same CLI contract."""
+    archive_root = sdist.name.removesuffix(".tar.gz")
+    prefix = f"{archive_root}/src/"
+    try:
+        with tarfile.open(sdist, mode="r:gz") as archive:
+            members = frozenset(archive.getnames())
+    except (OSError, tarfile.TarError) as error:
+        raise WheelVerificationError(
+            f"Invalid source distribution archive: {sdist}"
+        ) from error
+    required = frozenset(prefix + member for member in REQUIRED_CLI_MEMBERS)
+    forbidden_contract = frozenset(
+        prefix + member for member in FORBIDDEN_WHEEL_MEMBERS
+    )
+    missing = sorted(required - members)
+    forbidden = sorted(forbidden_contract & members)
+    if missing or forbidden:
+        raise WheelVerificationError(
+            f"Source distribution member contract failed; "
+            f"missing={missing!r}, forbidden={forbidden!r}."
+        )
+
+
 def _run(
     command: list[str],
     *,
@@ -329,6 +397,8 @@ def verify_installed_wheel(wheel: Path) -> None:
 
         origin_check = (
             "import pathlib, sidekick_usages, sys; "
+            "import sidekick_usages.cli.app; "
+            "import sidekick_usages.cli.context; "
             "import sidekick_usages.persistence.filesystem; "
             "import sidekick_usages.persistence.locking; "
             "import sidekick_usages.persistence.private_credentials; "
@@ -398,7 +468,9 @@ authority.unlink()
         smoke_arguments = (
             ("--version",),
             ("--help",),
+            ("daemon", "--help"),
             ("daemon", "status", "--help"),
+            ("doctor", "--help"),
             ("add", "--help"),
         )
         entry_points = (
@@ -460,11 +532,13 @@ def verify_exact_wheel(wheel: Path) -> None:
     :param wheel: Wheel path whose name and sibling wheel set must be exact.
     :raises WheelVerificationError: If any artifact or runtime gate fails.
     """
-    selected, _ = require_exact_distribution_set(wheel.parent)
+    selected, sdist = require_exact_distribution_set(wheel.parent)
     if selected.resolve() != wheel.resolve():
         raise WheelVerificationError(
             f"Selected wheel is not the exact artifact: {wheel}"
         )
+    verify_source_members()
+    verify_sdist_members(sdist)
     verify_wheel_members(selected)
     verify_installed_wheel(selected)
 

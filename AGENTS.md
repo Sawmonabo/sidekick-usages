@@ -2,13 +2,13 @@
 
 ## Project Structure & Module Organization
 
-This Python 3.14 package uses a `src/` layout. `src/sidekick_usages/cli.py`
-defines the Typer entry point; `providers/` contains Claude and Codex adapters;
-and `heartbeat/`, `daemon.py`, and `maintenance.py` own scheduled maintenance.
-Tests in `tests/` generally mirror package modules. Keep operational docs in
-`docs/`, Homebrew packaging in `packaging/homebrew/`, and automation in
-`.github/workflows/`. Do not commit generated distributions, caches, coverage,
-or credential files.
+This Python 3.14 package uses a `src/` layout. `src/sidekick_usages/cli/`
+contains the Typer composition root and cohesive command owners; `providers/`
+contains Claude and Codex adapters; and `heartbeat/`, `daemon.py`, and
+`maintenance.py` own scheduled maintenance. Tests in `tests/` generally mirror
+package modules. Keep operational docs in `docs/`, Homebrew packaging in
+`packaging/homebrew/`, and automation in `.github/workflows/`. Do not commit
+generated distributions, caches, coverage, or credential files.
 
 ## Build, Test, and Development Commands
 

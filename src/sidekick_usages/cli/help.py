@@ -3,7 +3,6 @@
 import shutil
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from typing import Any
 
 import click
 import typer
@@ -18,7 +17,7 @@ _DEFAULT_HELP_WIDTH = 80
 
 
 def _help_width(ctx: click.Context) -> int:
-    """Resolve help width from public Click context and terminal settings."""
+    """Resolve help width from public Click and terminal settings."""
     width = ctx.terminal_width
     if width is None:
         width = shutil.get_terminal_size(
@@ -48,14 +47,11 @@ class _BrandedHelpMixin:
         ctx: click.Context,
         formatter: click.HelpFormatter,
     ) -> int:
-        """Print branding and return the width shared with help content."""
+        """Print branding and return the shared help width."""
         width = _help_width(ctx)
         ctx.terminal_width = width
         formatter.width = width
-        console = Console(
-            width=width,
-            no_color=ctx.color is False,
-        )
+        console = Console(width=width, no_color=ctx.color is False)
         console.print(brand_header(width))
         return width
 
@@ -68,7 +64,7 @@ class BrandedTyperCommand(_BrandedHelpMixin, TyperCommand):
         ctx: click.Context,
         formatter: click.HelpFormatter,
     ) -> None:
-        """Print the shared header, then delegate to Typer's formatter."""
+        """Print the shared header, then delegate to Typer."""
         width = self._print_brand(ctx, formatter)
         with _typer_help_width(width):
             super().format_help(ctx, formatter)
@@ -82,25 +78,28 @@ class BrandedTyperGroup(_BrandedHelpMixin, TyperGroup):
         ctx: click.Context,
         formatter: click.HelpFormatter,
     ) -> None:
-        """Print the shared header, then delegate to Typer's formatter."""
+        """Print the shared header, then delegate to Typer."""
         width = self._print_brand(ctx, formatter)
         with _typer_help_width(width):
             super().format_help(ctx, formatter)
 
 
-class BrandedTyper(typer.Typer):
-    """Typer application that brands leaf help without decorator repetition."""
+def branded_command(
+    application: typer.Typer,
+    name: str | None = None,
+    *,
+    hidden: bool = False,
+) -> Callable[[CommandFunctionType], CommandFunctionType]:
+    """Return a decorator using the shared branded command class."""
+    return application.command(
+        name,
+        cls=BrandedTyperCommand,
+        hidden=hidden,
+    )
 
-    def command(
-        self,
-        name: str | None = None,
-        *,
-        cls: type[TyperCommand] | None = None,
-        **kwargs: Any,
-    ) -> Callable[[CommandFunctionType], CommandFunctionType]:
-        """Register a command using the shared branded class by default."""
-        return super().command(
-            name,
-            cls=cls or BrandedTyperCommand,
-            **kwargs,
-        )
+
+__all__ = [
+    "BrandedTyperCommand",
+    "BrandedTyperGroup",
+    "branded_command",
+]

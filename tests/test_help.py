@@ -1,12 +1,38 @@
 """Meaningful integration checks for shared branded help output."""
 
+from collections.abc import Callable
+from typing import Never
+
 import click
 import pytest
 from rich.cells import cell_len
 from typer.testing import CliRunner
 
-from sidekick_usages import cli
+from sidekick_usages import __version__
 from sidekick_usages.branding import BRAND_DESCRIPTION, ROBOT_LINES
+from sidekick_usages.cli import app
+from sidekick_usages.cli.context import InvocationContext
+
+
+def _sentinel(
+    name: str,
+    calls: list[str],
+) -> Callable[[], Never]:
+    def compose() -> Never:
+        calls.append(name)
+        raise AssertionError(f"Informational path composed {name} context.")
+
+    return compose
+
+
+def _no_composition_context(calls: list[str]) -> InvocationContext:
+    return InvocationContext(
+        app_composer=_sentinel("app", calls),
+        persistence_composer=_sentinel("persistence", calls),
+        doctor_composer=_sentinel("doctor", calls),
+        daemon_composer=_sentinel("daemon", calls),
+        update_composer=_sentinel("update", calls),
+    )
 
 
 @pytest.mark.parametrize(
@@ -21,13 +47,17 @@ from sidekick_usages.branding import BRAND_DESCRIPTION, ROBOT_LINES
 def test_help_is_branded_before_usage_without_loading_state(
     args: list[str],
 ) -> None:
-    cli._ContextState.ctx = None
-    result = CliRunner().invoke(cli.app, args)
+    calls: list[str] = []
+    result = CliRunner().invoke(
+        app,
+        args,
+        obj=_no_composition_context(calls),
+    )
     assert result.exit_code == 0
     assert result.output.count(ROBOT_LINES[2]) == 1
     assert result.output.index(ROBOT_LINES[2]) < result.output.index("Usage:")
     assert "Check Claude Code and Codex CLI usage across" not in result.output
-    assert cli._ContextState.ctx is None
+    assert calls == []
 
 
 @pytest.mark.parametrize(
@@ -45,7 +75,7 @@ def test_leaf_and_nested_help_share_one_header(
     args: list[str],
     usage: str,
 ) -> None:
-    result = CliRunner().invoke(cli.app, args, env={"CI": "true"})
+    result = CliRunner().invoke(app, args, env={"CI": "true"})
     assert result.exit_code == 0
     output = click.unstyle(result.output)
     assert output.count(ROBOT_LINES[2]) == 1
@@ -75,7 +105,7 @@ def test_help_uses_one_width_policy(
     shows_description: bool,
 ) -> None:
     result = CliRunner().invoke(
-        cli.app,
+        app,
         args,
         env={"COLUMNS": "80"},
         terminal_width=width,
@@ -94,18 +124,18 @@ def test_help_uses_one_width_policy(
 def test_help_width_override_does_not_leak_to_errors() -> None:
     runner = CliRunner()
     baseline_error = runner.invoke(
-        cli.app,
+        app,
         ["doctor", "--unknown-option"],
         env={"COLUMNS": "80"},
     )
     help_result = runner.invoke(
-        cli.app,
+        app,
         ["doctor", "--help"],
         env={"COLUMNS": "80"},
         terminal_width=120,
     )
     error_result = runner.invoke(
-        cli.app,
+        app,
         ["doctor", "--unknown-option"],
         env={"COLUMNS": "80"},
     )
@@ -119,27 +149,21 @@ def test_help_width_override_does_not_leak_to_errors() -> None:
 
 
 def test_doctor_help_does_not_advertise_removed_auth_option() -> None:
-    result = CliRunner().invoke(cli.app, ["doctor", "--help"])
+    result = CliRunner().invoke(app, ["doctor", "--help"])
 
     assert result.exit_code == 0
     assert "--auth" not in click.unstyle(result.output)
 
 
-def test_version_is_exact_and_does_not_build_application_context(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_version_is_exact_and_does_not_compose_any_context() -> None:
     """The eager version path stays unbranded and skips operational state."""
-    builds = 0
-
-    def fail_build() -> None:
-        nonlocal builds
-        builds += 1
-        raise AssertionError("informational path built application context")
-
-    monkeypatch.setattr(cli._ContextState, "ctx", None)
-    monkeypatch.setattr(cli, "_build_default_context", fail_build)
-    version_result = CliRunner().invoke(cli.app, ["--version"])
+    calls: list[str] = []
+    version_result = CliRunner().invoke(
+        app,
+        ["--version"],
+        obj=_no_composition_context(calls),
+    )
 
     assert version_result.exit_code == 0
-    assert version_result.output == f"sidekick-usages {cli.__version__}\n"
-    assert builds == 0
+    assert version_result.output == f"sidekick-usages {__version__}\n"
+    assert calls == []

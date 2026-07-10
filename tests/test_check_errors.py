@@ -6,9 +6,7 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 
 from rich.console import Console
-from typer.testing import CliRunner
 
-from sidekick_usages import cli
 from sidekick_usages.core.models import (
     Account,
     ClaudeCredentials,
@@ -17,7 +15,6 @@ from sidekick_usages.core.models import (
     UsageWindow,
 )
 from sidekick_usages.core.types import AccountLabel, ExitCode, ProviderId
-from sidekick_usages.credentials import CredentialService
 from sidekick_usages.errors import AuthError, TransientError
 from sidekick_usages.http import HttpClient
 from sidekick_usages.lifetime import (
@@ -35,9 +32,10 @@ from sidekick_usages.providers.base import (
     RefreshSuccess,
 )
 from tests.test_support import (
+    CliHarness,
     FixedClock,
     make_account_store_with_private,
-    make_application_paths,
+    make_app_context,
 )
 
 
@@ -140,8 +138,7 @@ def _install_ctx(
     ]
     | None = None,
     width: int = 200,
-) -> tuple[AccountStore, io.StringIO, io.StringIO]:
-    paths = make_application_paths(tmp_path)
+) -> tuple[CliHarness, AccountStore, io.StringIO, io.StringIO]:
     store, private_credentials = make_account_store_with_private(
         tmp_path,
         accounts,
@@ -153,27 +150,22 @@ def _install_ctx(
     provider_registry: dict[ProviderId, Provider] = {
         provider.id: provider for provider in providers
     }
-    cli.set_context(
-        cli.AppContext(
-            store=store,
-            http=http,
-            providers=provider_registry,
+    harness = CliHarness(
+        console=Console(file=stdout, width=width, force_terminal=False),
+        err_console=Console(file=stderr, force_terminal=False),
+        application=make_app_context(
+            store,
+            http,
+            provider_registry,
+            private_credentials,
+            clock,
             heartbeat_providers={},
-            private_codex_locations=paths.private_codex,
-            lifetime_sources=lifetime_sources or {},
-            console=Console(file=stdout, width=width, force_terminal=False),
-            err_console=Console(file=stderr, force_terminal=False),
-            clock=clock,
-            credentials=CredentialService(
-                store,
-                http,
-                provider_registry,
-                private_credentials,
-                clock=clock,
+            lifetime_sources=(
+                {} if lifetime_sources is None else lifetime_sources
             ),
-        )
+        ),
     )
-    return store, stdout, stderr
+    return harness, store, stdout, stderr
 
 
 def test_check_renders_partial_success_and_typed_auth_recovery(
@@ -185,7 +177,7 @@ def test_check_renders_partial_success_and_typed_auth_recovery(
         fetch_results=[AuthError("Token expired")],
         refresh_ok=False,
     )
-    _, stdout, _ = _install_ctx(
+    harness, _, stdout, _ = _install_ctx(
         tmp_path,
         (claude, codex),
         (
@@ -194,7 +186,7 @@ def test_check_renders_partial_success_and_typed_auth_recovery(
         ),
     )
 
-    result = CliRunner().invoke(cli.app, ["check"])
+    result = harness.invoke(["check"])
 
     assert result.exit_code == ExitCode.MANUAL_ACTION
     out = stdout.getvalue()
@@ -210,13 +202,13 @@ def test_check_provider_filter_uses_only_selected_accounts(
 ) -> None:
     claude = _FakeProvider(provider_id="claude")
     codex = _FakeProvider()
-    _, stdout, _ = _install_ctx(
+    harness, _, stdout, _ = _install_ctx(
         tmp_path,
         (claude, codex),
         (_acct("claude", "claude"), _acct("codex")),
     )
 
-    result = CliRunner().invoke(cli.app, ["--only", "codex", "check"])
+    result = harness.invoke(["--only", "codex", "check"])
 
     assert result.exit_code == ExitCode.SUCCESS
     assert claude.fetch_calls == 0
@@ -233,7 +225,7 @@ def test_lifetime_failure_renders_and_forces_system_error(
     provider = _FakeProvider(
         fetch_results=[TransientError("provider unavailable")]
     )
-    _, stdout, _ = _install_ctx(
+    harness, _, stdout, _ = _install_ctx(
         tmp_path,
         (provider,),
         (acct,),
@@ -244,7 +236,7 @@ def test_lifetime_failure_renders_and_forces_system_error(
         },
     )
 
-    result = CliRunner().invoke(cli.app, ["check"])
+    result = harness.invoke(["check"])
 
     assert result.exit_code == ExitCode.SYSTEM_ERROR
     out = stdout.getvalue()

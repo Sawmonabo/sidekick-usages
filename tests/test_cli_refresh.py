@@ -10,9 +10,8 @@ from pathlib import Path
 
 import pytest
 from rich.console import Console
-from typer.testing import CliRunner
 
-from sidekick_usages import cli
+from sidekick_usages.cli.token_input import TokenInput
 from sidekick_usages.clock import Clock
 from sidekick_usages.core.expiry import Expiry, KnownExpiry, UnknownExpiry
 from sidekick_usages.core.models import (
@@ -29,7 +28,6 @@ from sidekick_usages.core.types import (
     ProviderId,
     RefreshStatus,
 )
-from sidekick_usages.credentials import CredentialService
 from sidekick_usages.credentials.codex import private_codex_home
 from sidekick_usages.http import HttpClient
 from sidekick_usages.persistence.account_store import AccountStore
@@ -41,14 +39,17 @@ from sidekick_usages.providers.base import (
     RefreshResult,
     RefreshSuccess,
 )
+from sidekick_usages.providers.claude import ClaudeSetupToken
 from sidekick_usages.providers.claude import provider as claude_provider_module
 from sidekick_usages.providers.claude.provider import ClaudeProvider
 from sidekick_usages.providers.codex import auth as codex_auth_module
 from sidekick_usages.providers.codex.provider import CodexProvider
 from tests.test_support import (
     REFERENCE_TIME,
+    CliHarness,
     FixedClock,
     make_account_store_with_private,
+    make_app_context,
     make_application_paths,
 )
 
@@ -87,7 +88,7 @@ class _FakeProvider(Provider):
     def __init__(
         self,
         fetch_results: Iterable[UsageReport | Exception] = (),
-        detected: DetectedCredentials | None = None,
+        detected: DetectedCredentials | ProviderFailure | None = None,
         refresh_ok: bool = True,
         provider_id: str = "claude",
         provider_account_id_on_fetch: str | None = None,
@@ -199,36 +200,28 @@ def _install_ctx(
     account: Account,
     *,
     clock: Clock | None = None,
-) -> tuple[AccountStore, io.StringIO, io.StringIO]:
+) -> tuple[CliHarness, AccountStore, io.StringIO, io.StringIO]:
     """Install an isolated CLI context for refresh-flow tests."""
-    paths = make_application_paths(tmp_path)
     store, private = make_account_store_with_private(tmp_path, (account,))
-    app_clock = clock or FixedClock()
+    app_clock = FixedClock() if clock is None else clock
     http = HttpClient()
     providers: dict[ProviderId, Provider] = {provider.id: provider}
     stdout = io.StringIO()
     stderr = io.StringIO()
-    cli.set_context(
-        cli.AppContext(
-            store=store,
-            http=http,
-            providers=providers,
+    harness = CliHarness(
+        console=Console(file=stdout, force_terminal=False),
+        err_console=Console(file=stderr, force_terminal=False),
+        application=make_app_context(
+            store,
+            http,
+            providers,
+            private,
+            app_clock,
             heartbeat_providers={},
-            private_codex_locations=paths.private_codex,
             lifetime_sources={},
-            console=Console(file=stdout, force_terminal=False),
-            err_console=Console(file=stderr, force_terminal=False),
-            clock=app_clock,
-            credentials=CredentialService(
-                store,
-                http,
-                providers,
-                private,
-                clock=app_clock,
-            ),
-        )
+        ),
     )
-    return store, stdout, stderr
+    return harness, store, stdout, stderr
 
 
 def _install_many_ctx(
@@ -237,35 +230,29 @@ def _install_many_ctx(
     accounts: Iterable[Account],
     *,
     clock: Clock | None = None,
-) -> tuple[AccountStore, io.StringIO, io.StringIO]:
+    claude_setup_token: ClaudeSetupToken | None = None,
+) -> tuple[CliHarness, AccountStore, io.StringIO, io.StringIO]:
     """Install an isolated CLI context with multiple saved accounts."""
-    paths = make_application_paths(tmp_path)
     store, private = make_account_store_with_private(tmp_path, accounts)
-    app_clock = clock or FixedClock()
+    app_clock = FixedClock() if clock is None else clock
     http = HttpClient()
     stdout = io.StringIO()
     stderr = io.StringIO()
-    cli.set_context(
-        cli.AppContext(
-            store=store,
-            http=http,
-            providers=providers,
+    harness = CliHarness(
+        console=Console(file=stdout, force_terminal=False),
+        err_console=Console(file=stderr, force_terminal=False),
+        application=make_app_context(
+            store,
+            http,
+            providers,
+            private,
+            app_clock,
             heartbeat_providers={},
-            private_codex_locations=paths.private_codex,
             lifetime_sources={},
-            console=Console(file=stdout, force_terminal=False),
-            err_console=Console(file=stderr, force_terminal=False),
-            clock=app_clock,
-            credentials=CredentialService(
-                store,
-                http,
-                providers,
-                private,
-                clock=app_clock,
-            ),
-        )
+            claude_setup_token=claude_setup_token,
+        ),
     )
-    return store, stdout, stderr
+    return harness, store, stdout, stderr
 
 
 def _install_empty_ctx(
@@ -273,36 +260,28 @@ def _install_empty_ctx(
     provider: _FakeProvider,
     *,
     clock: Clock | None = None,
-) -> tuple[AccountStore, io.StringIO, io.StringIO]:
+) -> tuple[CliHarness, AccountStore, io.StringIO, io.StringIO]:
     """Install an isolated CLI context with no saved accounts."""
-    paths = make_application_paths(tmp_path)
     store, private = make_account_store_with_private(tmp_path)
-    app_clock = clock or FixedClock()
+    app_clock = FixedClock() if clock is None else clock
     http = HttpClient()
     providers: dict[ProviderId, Provider] = {provider.id: provider}
     stdout = io.StringIO()
     stderr = io.StringIO()
-    cli.set_context(
-        cli.AppContext(
-            store=store,
-            http=http,
-            providers=providers,
+    harness = CliHarness(
+        console=Console(file=stdout, force_terminal=False),
+        err_console=Console(file=stderr, force_terminal=False),
+        application=make_app_context(
+            store,
+            http,
+            providers,
+            private,
+            app_clock,
             heartbeat_providers={},
-            private_codex_locations=paths.private_codex,
             lifetime_sources={},
-            console=Console(file=stdout, force_terminal=False),
-            err_console=Console(file=stderr, force_terminal=False),
-            clock=app_clock,
-            credentials=CredentialService(
-                store,
-                http,
-                providers,
-                private,
-                clock=app_clock,
-            ),
-        )
+        ),
     )
-    return store, stdout, stderr
+    return harness, store, stdout, stderr
 
 
 def _codex_cache_dir(tmp_path: Path) -> Path:
@@ -423,9 +402,9 @@ def test_refresh_command_persists_detected_empty_scopes(
             scopes=(),
         )
     )
-    store, _, _ = _install_ctx(tmp_path, provider, acct)
+    harness, store, _, _ = _install_ctx(tmp_path, provider, acct)
 
-    result = CliRunner().invoke(cli.app, ["refresh", "team"])
+    result = harness.invoke(["refresh", "team"])
 
     assert result.exit_code == 0
     saved = store.get("team")
@@ -454,9 +433,9 @@ def test_refresh_command_persists_detected_provider_account_id(
         detected=detected,
         provider_id="codex",
     )
-    store, _, _ = _install_ctx(tmp_path, provider, acct)
+    harness, store, _, _ = _install_ctx(tmp_path, provider, acct)
 
-    result = CliRunner().invoke(cli.app, ["refresh", "team"])
+    result = harness.invoke(["refresh", "team"])
 
     assert result.exit_code == 0
     saved = store.get("team")
@@ -487,14 +466,14 @@ def test_refresh_command_imports_default_codex_login_to_private_cache(
         provider_id="codex",
     )
     clock = FixedClock()
-    store, _, _ = _install_ctx(
+    harness, store, _, _ = _install_ctx(
         tmp_path,
         provider,
         acct,
         clock=clock,
     )
 
-    result = CliRunner().invoke(cli.app, ["refresh", "team"])
+    result = harness.invoke(["refresh", "team"])
 
     assert result.exit_code == 0
     assert provider.credential_homes == [None]
@@ -536,10 +515,9 @@ def test_refresh_command_from_codex_home_overrides_saved_home(
         ),
         provider_id="codex",
     )
-    store, _, _ = _install_ctx(tmp_path, provider, acct)
+    harness, store, _, _ = _install_ctx(tmp_path, provider, acct)
 
-    result = CliRunner().invoke(
-        cli.app,
+    result = harness.invoke(
         ["refresh", "team", "--from-codex-home", str(source_home)],
     )
 
@@ -569,9 +547,9 @@ def test_refresh_command_rejects_provider_account_id_mismatch(
         detected=detected,
         provider_id="codex",
     )
-    store, _, _ = _install_ctx(tmp_path, provider, acct)
+    harness, store, _, _ = _install_ctx(tmp_path, provider, acct)
 
-    result = CliRunner().invoke(cli.app, ["refresh", "team"])
+    result = harness.invoke(["refresh", "team"])
 
     assert result.exit_code == 1
     saved = store.get("team")
@@ -600,10 +578,9 @@ def test_refresh_command_replace_identity_allows_provider_account_id_mismatch(
         detected=detected,
         provider_id="codex",
     )
-    store, _, _ = _install_ctx(tmp_path, provider, acct)
+    harness, store, _, _ = _install_ctx(tmp_path, provider, acct)
 
-    result = CliRunner().invoke(
-        cli.app,
+    result = harness.invoke(
         ["refresh", "team", "--replace-identity"],
     )
 
@@ -624,14 +601,14 @@ def test_refresh_all_refreshes_due_tokens_without_detecting_local_credentials(
         detected=_detected(access_token="sk-ant-oat01-local")
     )
     clock = FixedClock()
-    store, stdout, stderr = _install_many_ctx(
+    harness, store, stdout, stderr = _install_many_ctx(
         tmp_path,
         {ProviderId.CLAUDE: provider},
         [acct],
         clock=clock,
     )
 
-    result = CliRunner().invoke(cli.app, ["refresh", "--all", "--quiet"])
+    result = harness.invoke(["refresh", "--all", "--quiet"])
 
     assert result.exit_code == 0
     assert stdout.getvalue() == ""
@@ -653,21 +630,21 @@ def test_refresh_all_skips_fresh_tokens_unless_forced(
     acct = _acct(expiry=KnownExpiry(REFERENCE_TIME + timedelta(hours=1)))
     provider = _FakeProvider()
     clock = FixedClock()
-    _install_many_ctx(
+    harness, _, _, _ = _install_many_ctx(
         tmp_path,
         {ProviderId.CLAUDE: provider},
         [acct],
         clock=clock,
     )
 
-    result = CliRunner().invoke(cli.app, ["refresh", "--all"])
+    result = harness.invoke(["refresh", "--all"])
 
     assert result.exit_code == 0
     assert provider.refresh_calls == 0
     assert clock.calls == 1
     clock.calls = 0
 
-    forced = CliRunner().invoke(cli.app, ["refresh", "--all", "--force"])
+    forced = harness.invoke(["refresh", "--all", "--force"])
 
     assert forced.exit_code == 0
     assert provider.refresh_calls == 1
@@ -680,13 +657,13 @@ def test_refresh_all_persists_failed_refresh_diagnostic(
     """Rejected refresh tokens are recorded for doctor and exit 1."""
     acct = _acct(expiry=KnownExpiry(REFERENCE_TIME - timedelta(seconds=1)))
     provider = _FakeProvider(refresh_ok=False)
-    store, stdout, _ = _install_many_ctx(
+    harness, store, stdout, _ = _install_many_ctx(
         tmp_path,
         {ProviderId.CLAUDE: provider},
         [acct],
     )
 
-    result = CliRunner().invoke(cli.app, ["refresh", "--all", "--quiet"])
+    result = harness.invoke(["refresh", "--all", "--quiet"])
 
     assert result.exit_code == 1
     assert "team" in stdout.getvalue()
@@ -714,12 +691,9 @@ def test_add_codex_uses_default_login_and_writes_private_cache(
         ),
         provider_id="codex",
     )
-    store, _, _ = _install_empty_ctx(tmp_path, provider)
+    harness, store, _, _ = _install_empty_ctx(tmp_path, provider)
 
-    result = CliRunner().invoke(
-        cli.app,
-        ["add", "codex", "--label", "team"],
-    )
+    result = harness.invoke(["add", "codex", "--label", "team"])
 
     assert result.exit_code == 0
     assert provider.credential_homes == [None]
@@ -732,6 +706,48 @@ def test_add_codex_uses_default_login_and_writes_private_cache(
     assert saved.codex_last_refresh == "2026-06-12T00:00:00Z"
     cached = json.loads((cache_home / "auth.json").read_text())
     assert cached["tokens"]["access_token"] == "eyJ-current.access.sig"
+
+
+@pytest.mark.parametrize("failure_kind", list(ProviderFailureKind))
+def test_add_prompts_only_for_missing_local_credentials(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_kind: ProviderFailureKind,
+) -> None:
+    """Only an absent local login authorizes interactive token fallback."""
+    provider = _FakeProvider(
+        detected=ProviderFailure(
+            provider_id=ProviderId.CLAUDE,
+            kind=failure_kind,
+            message=f"Synthetic {failure_kind} credential failure.",
+        )
+    )
+    harness, store, _, _ = _install_empty_ctx(tmp_path, provider)
+    prompt_calls = 0
+
+    def read_token(
+        _input: TokenInput,
+        prompt: str = "Paste OAuth token",
+    ) -> str:
+        nonlocal prompt_calls
+        del prompt
+        prompt_calls += 1
+        return "sk-ant-oat01-prompted-test-token"
+
+    monkeypatch.setattr(TokenInput, "read", read_token)
+
+    result = harness.invoke(["add", "claude", "--label", "prompted"])
+
+    saved = store.get("prompted")
+    if failure_kind is ProviderFailureKind.MISSING:
+        assert result.exit_code == ExitCode.SUCCESS
+        assert prompt_calls == 1
+        assert saved is not None
+        assert saved.access_token == "sk-ant-oat01-prompted-test-token"
+    else:
+        assert result.exit_code == ExitCode.MANUAL_ACTION
+        assert prompt_calls == 0
+        assert saved is None
 
 
 def test_codex_login_runs_plain_cli_and_imports_private_cache(
@@ -752,7 +768,7 @@ def test_codex_login_runs_plain_cli_and_imports_private_cache(
         ),
         provider_id="codex",
     )
-    store, _, _ = _install_empty_ctx(tmp_path, provider)
+    harness, store, _, _ = _install_empty_ctx(tmp_path, provider)
     calls: list[dict[str, object]] = []
 
     def fake_run(
@@ -768,10 +784,7 @@ def test_codex_login_runs_plain_cli_and_imports_private_cache(
 
     monkeypatch.setattr(codex_auth_module.subprocess, "run", fake_run)
 
-    result = CliRunner().invoke(
-        cli.app,
-        ["codex-login", "team"],
-    )
+    result = harness.invoke(["codex-login", "team"])
 
     assert result.exit_code == 0
     assert len(calls) == 1
@@ -803,10 +816,9 @@ def test_codex_export_writes_saved_credentials_to_home(
     )
     provider = _FakeProvider(provider_id="codex")
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "missing-default"))
-    store, _, _ = _install_ctx(tmp_path, provider, acct)
+    harness, store, _, _ = _install_ctx(tmp_path, provider, acct)
 
-    result = CliRunner().invoke(
-        cli.app,
+    result = harness.invoke(
         ["codex-export", "team", "--codex-home", str(codex_home)],
     )
 
@@ -862,10 +874,9 @@ def test_codex_export_reads_default_source_without_mutating_it(
         id_token=None,
     )
     provider = _FakeProvider(provider_id="codex")
-    _install_ctx(tmp_path, provider, account)
+    harness, _, _, _ = _install_ctx(tmp_path, provider, account)
 
-    result = CliRunner().invoke(
-        cli.app,
+    result = harness.invoke(
         ["codex-export", "team", "--codex-home", str(target_home)],
     )
 
@@ -885,7 +896,7 @@ def test_setup_token_delegates_only_to_claude_capability(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The flat command uses Claude's narrow setup-token capability."""
+    """The setup-token command uses Claude's narrow capability."""
     token = "sk-ant-oat01-synthetic-setup-token"
     raw_secret = "oauth-code=must-not-reach-terminal"
     provider = ClaudeProvider(FixedClock())
@@ -916,14 +927,14 @@ def test_setup_token_delegates_only_to_claude_capability(
         "fetch_usage",
         lambda account, http: UsageReport(),
     )
-    store, stdout, stderr = _install_many_ctx(
+    harness, store, stdout, stderr = _install_many_ctx(
         tmp_path,
         {ProviderId.CLAUDE: provider},
         (),
+        claude_setup_token=provider,
     )
 
-    result = CliRunner().invoke(
-        cli.app,
+    result = harness.invoke(
         ["setup-token", "claude", "--label", "setup"],
     )
 
@@ -940,13 +951,13 @@ def test_setup_token_codex_returns_typed_unsupported_outcome(
     tmp_path: Path,
 ) -> None:
     """Codex setup-token fails cleanly without a generic provider method."""
-    _, _, stderr = _install_many_ctx(
+    harness, _, _, stderr = _install_many_ctx(
         tmp_path,
         {ProviderId.CODEX: CodexProvider(FixedClock())},
         (),
     )
 
-    result = CliRunner().invoke(cli.app, ["setup-token", "codex"])
+    result = harness.invoke(["setup-token", "codex"])
 
     assert result.exit_code == 1
     assert "doesn't expose a long-lived token generator" in stderr.getvalue()

@@ -4,6 +4,11 @@ import ast
 from collections.abc import Iterator
 from pathlib import Path
 
+import click
+from typer.main import get_command
+
+from sidekick_usages.cli.app import create_app
+
 
 def _source_imports(
     source: str,
@@ -108,3 +113,75 @@ def test_codex_credential_bridge_is_the_only_provider_specific_owner() -> None:
     ]
 
     assert owners == [Path("codex.py")]
+
+
+def test_cli_command_surface_is_registered_once_by_focused_owners() -> None:
+    """Application assembly exposes the complete intentional command tree."""
+    root = get_command(create_app())
+    assert isinstance(root, click.Group)
+    assert set(root.commands) == {
+        "add",
+        "check",
+        "check-update",
+        "codex-export",
+        "codex-login",
+        "daemon",
+        "doctor",
+        "heartbeat",
+        "list",
+        "maintain",
+        "migrate",
+        "permissions",
+        "refresh",
+        "remove",
+        "rename",
+        "reset",
+        "set-plan",
+        "setup-token",
+        "update",
+    }
+    nested = {
+        name: set(command.commands)
+        for name, command in root.commands.items()
+        if isinstance(command, click.Group)
+    }
+    assert nested == {
+        "daemon": {"install", "status", "uninstall"},
+        "heartbeat": {"disable", "enable", "run-label", "status"},
+        "migrate": {"accounts", "prepare-rollback"},
+        "permissions": {"repair"},
+    }
+
+
+def test_command_owners_never_import_the_global_application() -> None:
+    """Command registration stays directed toward an injected Typer app."""
+    commands = (
+        Path(__file__).parents[1]
+        / "src"
+        / "sidekick_usages"
+        / "cli"
+        / "commands"
+    )
+    violations: list[str] = []
+    for source in sorted(commands.glob("*.py")):
+        tree = ast.parse(source.read_text(), filename=str(source))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.ImportFrom)
+                and (
+                    node.module == "sidekick_usages.cli.app"
+                    or (
+                        node.module == "sidekick_usages.cli"
+                        and any(alias.name == "app" for alias in node.names)
+                    )
+                )
+            ) or (
+                isinstance(node, ast.Import)
+                and any(
+                    alias.name == "sidekick_usages.cli.app"
+                    for alias in node.names
+                )
+            ):
+                violations.append(f"{source.name}:{node.lineno}")
+
+    assert violations == []

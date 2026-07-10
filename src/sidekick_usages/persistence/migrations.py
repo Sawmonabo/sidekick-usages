@@ -24,10 +24,13 @@ from sidekick_usages.persistence.assessment import (
     AuthorityKind,
     PersistenceAssessment,
     PersistenceCode,
+    PersistenceCompositionFailure,
     PersistenceObservation,
     PersistenceOperationResult,
     assess_persistence,
     make_operation_result,
+    recovery_guidance,
+    recovery_next_command,
 )
 from sidekick_usages.persistence.errors import (
     InvalidSchemaError,
@@ -187,6 +190,22 @@ class PersistenceMigrationService:
         """Require quiescence and return a pre-confirmation assessment."""
         self._require_scheduler_quiescence()
         return self.assess()
+
+    def permission_repair_preview(
+        self,
+    ) -> PersistenceAssessment | PersistenceCompositionFailure:
+        """Return repair scope even when unsafe permissions block it."""
+        try:
+            return self.mutation_preview()
+        except UnsafeManagedFileError as error:
+            return PersistenceCompositionFailure(
+                code=error.code,
+                safe_path=self.path,
+                artifact_basename=error.artifact_basename,
+                message=str(error),
+                next_command=recovery_next_command(error.code),
+                guidance=recovery_guidance(error.code),
+            )
 
     def repair_permissions(self) -> PermissionRepairOperationResult:
         """Repair a released layout and return its fresh assessment."""
