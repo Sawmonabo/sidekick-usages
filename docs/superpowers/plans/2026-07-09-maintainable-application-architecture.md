@@ -603,13 +603,28 @@ production provider ran.
 
 **Work:**
 
-- [ ] Search `_help_width` and every terminal-width calculation.
-- [ ] Make the existing help-width concept the one policy for help, masthead,
+- [x] Search `_help_width` and every terminal-width calculation.
+- [x] Make the existing help-width concept the one policy for help, masthead,
       dividers, and option layout.
-- [ ] Keep the policy in the help/presentation boundary, not `core/`.
-- [ ] Keep the approved 85-column usage-overview floor separate; it governs a
+- [x] Keep the policy in the help/presentation boundary, not `core/`.
+- [x] Keep the approved 85-column usage-overview floor separate; it governs a
       different rendering decision.
-- [ ] Ensure help and version still bypass runtime composition.
+- [x] Ensure help and version still bypass runtime composition.
+
+**Execution record:** Completed on 2026-07-09 against
+`d4e8172509b49cc16e0540f97fe97581ca4efde6`. Typer's locked 0.25.1 Rich help
+constructs its own console from `rich_utils.MAX_WIDTH`; the current 0.26.8
+release retains that seam. The CLI adapter now resolves width once, applies it
+to Click, the masthead, and Typer's Rich console, then restores Typer state in
+`finally`. The focused help, branding, and usage-render suite passes all 45
+cases, including 40-, 85-, and 120-column help plus non-leaking error output.
+The independent usage-overview floor remains unchanged. The full suite passes
+all 198 cases with branch coverage; Ruff, formatting, `ty`, pre-commit, and the
+package build pass. A clean wheel installation resolved Typer 0.26.8 and ran
+help and version successfully. The Markdown gate remains at the exact
+93-finding pre-CS-05 baseline and adds no finding. See the canonical
+[Typer 0.26.8 release notes][typer-0268-release] and
+[Rich console source][typer-0268-rich-width].
 
 **Load-bearing tests:**
 
@@ -2392,3 +2407,5 @@ mechanical-gate changes into one review.
 
 [publication-ci]: https://github.com/Sawmonabo/sidekick-usages/actions/runs/29064704915
 [cs01-publication-ci]: https://github.com/Sawmonabo/sidekick-usages/actions/runs/29065786820
+[typer-0268-release]: https://typer.tiangolo.com/release-notes/#0268
+[typer-0268-rich-width]: https://github.com/fastapi/typer/blob/0.26.8/typer/rich_utils.py

@@ -1,12 +1,14 @@
 """Typer adapters that prepend shared branding to human-facing help."""
 
 import shutil
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from typing import Any
 
 import click
 import typer
 from rich.console import Console
+from typer import rich_utils
 from typer.core import TyperCommand, TyperGroup
 from typer.models import CommandFunctionType
 
@@ -27,18 +29,35 @@ def _help_width(ctx: click.Context) -> int:
     return max(1, width)
 
 
+@contextmanager
+def _typer_help_width(width: int) -> Iterator[None]:
+    """Apply one width to Typer's Rich help console for this render."""
+    previous_width = rich_utils.MAX_WIDTH
+    rich_utils.MAX_WIDTH = width
+    try:
+        yield
+    finally:
+        rich_utils.MAX_WIDTH = previous_width
+
+
 class _BrandedHelpMixin:
     """Shared prelude used by Typer command and group help renderers."""
 
     @staticmethod
-    def _print_brand(ctx: click.Context) -> None:
-        """Print branding without initializing application state."""
+    def _print_brand(
+        ctx: click.Context,
+        formatter: click.HelpFormatter,
+    ) -> int:
+        """Print branding and return the width shared with help content."""
         width = _help_width(ctx)
+        ctx.terminal_width = width
+        formatter.width = width
         console = Console(
             width=width,
             no_color=ctx.color is False,
         )
         console.print(brand_header(width))
+        return width
 
 
 class BrandedTyperCommand(_BrandedHelpMixin, TyperCommand):
@@ -50,8 +69,9 @@ class BrandedTyperCommand(_BrandedHelpMixin, TyperCommand):
         formatter: click.HelpFormatter,
     ) -> None:
         """Print the shared header, then delegate to Typer's formatter."""
-        self._print_brand(ctx)
-        super().format_help(ctx, formatter)
+        width = self._print_brand(ctx, formatter)
+        with _typer_help_width(width):
+            super().format_help(ctx, formatter)
 
 
 class BrandedTyperGroup(_BrandedHelpMixin, TyperGroup):
@@ -63,8 +83,9 @@ class BrandedTyperGroup(_BrandedHelpMixin, TyperGroup):
         formatter: click.HelpFormatter,
     ) -> None:
         """Print the shared header, then delegate to Typer's formatter."""
-        self._print_brand(ctx)
-        super().format_help(ctx, formatter)
+        width = self._print_brand(ctx, formatter)
+        with _typer_help_width(width):
+            super().format_help(ctx, formatter)
 
 
 class BrandedTyper(typer.Typer):
