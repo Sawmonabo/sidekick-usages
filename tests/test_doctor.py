@@ -13,7 +13,11 @@ from sidekick_usages.heartbeat import build_heartbeat_registry
 from sidekick_usages.http import HttpClient
 from sidekick_usages.providers import build_provider_registry
 from sidekick_usages.store import Account, AccountStore
-from tests.test_support import REFERENCE_TIME, FixedClock
+from tests.test_support import (
+    REFERENCE_TIME,
+    FixedClock,
+    make_application_paths,
+)
 
 
 def _install_ctx(
@@ -21,7 +25,8 @@ def _install_ctx(
     accounts: list[Account],
 ) -> tuple[AccountStore, io.StringIO, io.StringIO, FixedClock]:
     """Install an isolated CLI context for doctor tests."""
-    store = AccountStore(tmp_path / "accounts.json")
+    paths = make_application_paths(tmp_path)
+    store = AccountStore(paths.accounts)
     for account in accounts:
         store.upsert(account)
     stdout = io.StringIO()
@@ -33,6 +38,8 @@ def _install_ctx(
             store=store,
             http=HttpClient(),
             providers=providers,
+            private_codex_locations=paths.private_codex,
+            lifetime_sources={},
             console=Console(file=stdout, force_terminal=False),
             err_console=Console(file=stderr, force_terminal=False),
             clock=clock,

@@ -14,7 +14,7 @@ from sidekick_usages.http import HttpClient
 from sidekick_usages.providers.base import DetectedCredentials, Provider
 from sidekick_usages.report import UsageReport, UsageWindow
 from sidekick_usages.store import Account, AccountStore
-from tests.test_support import FixedClock
+from tests.test_support import FixedClock, make_application_paths
 
 
 class _FakeProvider(Provider):
@@ -90,7 +90,8 @@ def _install_ctx(
     *,
     width: int = 80,
 ) -> tuple[AccountStore, io.StringIO, io.StringIO]:
-    store = AccountStore(tmp_path / "accounts.json")
+    paths = make_application_paths(tmp_path)
+    store = AccountStore(paths.accounts)
     store.upsert(account)
     stdout = io.StringIO()
     stderr = io.StringIO()
@@ -100,6 +101,8 @@ def _install_ctx(
             http=HttpClient(),
             providers={provider.id: provider},
             heartbeat_providers={},
+            private_codex_locations=paths.private_codex,
+            lifetime_sources={},
             console=Console(file=stdout, width=width, force_terminal=False),
             err_console=Console(file=stderr, force_terminal=False),
             clock=FixedClock(),
@@ -176,7 +179,8 @@ def test_check_renders_error_in_panel(tmp_path: Path, monkeypatch) -> None:
     )
     stdout = io.StringIO()
     stderr = io.StringIO()
-    store = AccountStore(tmp_path / "accounts.json")
+    paths = make_application_paths(tmp_path)
+    store = AccountStore(paths.accounts)
     store.upsert(acct)
     cli.set_context(
         cli.AppContext(
@@ -184,6 +188,8 @@ def test_check_renders_error_in_panel(tmp_path: Path, monkeypatch) -> None:
             http=HttpClient(),
             providers={provider.id: provider},
             heartbeat_providers={},
+            private_codex_locations=paths.private_codex,
+            lifetime_sources={},
             console=Console(file=stdout, width=200, force_terminal=False),
             err_console=Console(file=stderr, force_terminal=False),
             clock=FixedClock(),

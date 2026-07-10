@@ -12,17 +12,10 @@ import platform
 import stat
 from collections.abc import Iterator
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from sidekick_usages.errors import UsageError
-
-CONFIG_DIR = Path.home() / ".config" / "sidekick-usages"
-CONFIG_FILE = CONFIG_DIR / "accounts.json"
-
-# Legacy path from the cc-usage.py prototype. We auto-migrate the
-# first time the new store is loaded so users keep their data.
-LEGACY_CONFIG_FILE = Path.home() / ".config" / "cc-usage" / "accounts.json"
+from sidekick_usages.paths import AccountLocations
 
 #: Minimum token length required to render a partial mask
 #: (``prefix…suffix``). Below this we render ``"(missing)"`` because
@@ -210,9 +203,10 @@ class AccountStore:
     (guaranteed in Python 3.7+).
     """
 
-    def __init__(self, path: Path = CONFIG_FILE) -> None:
-        """:param path: Path to the JSON config file."""
-        self.path = path
+    def __init__(self, locations: AccountLocations) -> None:
+        """:param locations: Account-store compatibility locations."""
+        self.locations = locations
+        self.path = locations.canonical
         self._accounts: dict[str, Account] = {}
         self._loaded = False
 
@@ -220,17 +214,18 @@ class AccountStore:
     def load(self) -> AccountStore:
         """Read accounts from disk if not already loaded.
 
-        If the new config file does not exist but the legacy
-        ``~/.config/cc-usage/accounts.json`` does, migrate its
-        contents into the new path automatically. The legacy file is
-        left in place — we never delete user data.
+        If the selected account file does not exist but the configured
+        cc-usage prototype file does, migrate its contents into the
+        selected path automatically. The prototype file is left in
+        place — we never delete user data.
 
         :return: ``self`` (for chaining).
         """
         if self._loaded:
             return self
-        if not self.path.exists() and LEGACY_CONFIG_FILE.exists():
-            self._migrate_from_legacy()
+        prototype_path = self.locations.prototype_cc_usage
+        if not self.path.exists() and prototype_path.exists():
+            self._migrate_from_prototype()
         if not self.path.exists():
             self._loaded = True
             return self
@@ -257,10 +252,10 @@ class AccountStore:
         if platform.system() != "Windows":
             os.chmod(self.path, stat.S_IRUSR | stat.S_IWUSR)
 
-    def _migrate_from_legacy(self) -> None:
-        """Copy legacy cc-usage config into the new location."""
+    def _migrate_from_prototype(self) -> None:
+        """Copy the prototype cc-usage config into the current location."""
         try:
-            raw = json.loads(LEGACY_CONFIG_FILE.read_text())
+            raw = json.loads(self.locations.prototype_cc_usage.read_text())
         except json.JSONDecodeError, OSError:
             return
         migrated = {

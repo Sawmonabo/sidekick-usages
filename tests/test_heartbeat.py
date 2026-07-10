@@ -31,7 +31,11 @@ from sidekick_usages.providers.base import DetectedCredentials, Provider
 from sidekick_usages.providers.codex import CodexProvider
 from sidekick_usages.report import UsageReport
 from sidekick_usages.store import Account, AccountStore
-from tests.test_support import REFERENCE_TIME, FixedClock
+from tests.test_support import (
+    REFERENCE_TIME,
+    FixedClock,
+    make_application_paths,
+)
 
 CODEX_USAGE_FETCHES_FOR_WARM = 2
 
@@ -133,7 +137,7 @@ class _FakeRefreshProvider(Provider):
 
 
 def _store(tmp_path: Path, accounts: Iterable[Account]) -> AccountStore:
-    store = AccountStore(tmp_path / "accounts.json")
+    store = AccountStore(make_application_paths(tmp_path).accounts)
     for account in accounts:
         store.upsert(account)
     return store
@@ -173,6 +177,7 @@ def _install_ctx(
     providers: dict[str, Provider] | None = None,
     clock: Clock | None = None,
 ) -> tuple[AccountStore, io.StringIO, io.StringIO]:
+    paths = make_application_paths(tmp_path)
     store = _store(tmp_path, accounts)
     stdout = io.StringIO()
     stderr = io.StringIO()
@@ -181,6 +186,8 @@ def _install_ctx(
             store=store,
             http=HttpClient(),
             providers=providers or {},
+            private_codex_locations=paths.private_codex,
+            lifetime_sources={},
             console=Console(file=stdout, force_terminal=False),
             err_console=Console(file=stderr, force_terminal=False),
             clock=clock or FixedClock(),
@@ -241,7 +248,7 @@ def test_account_roundtrips_heartbeat_metadata(tmp_path: Path) -> None:
     account.last_heartbeat_error = None
     store.save()
 
-    restored = AccountStore(store.path).load().get("team")
+    restored = AccountStore(store.locations).load().get("team")
 
     assert restored is not None
     assert restored.heartbeat_enabled is True
@@ -290,7 +297,7 @@ def test_heartbeat_label_runs_even_when_disabled(tmp_path: Path) -> None:
 
     assert outcome.status == HEARTBEAT_WARMED
     assert provider.heartbeat_calls == [("team", "old-token")]
-    saved = AccountStore(store.path).load().get("team")
+    saved = AccountStore(store.locations).load().get("team")
     assert saved is not None
     assert saved.last_heartbeat_status == HEARTBEAT_WARMED
     assert saved.heartbeat_5h_reset_at == "2026-06-12T18:00:00Z"
@@ -380,7 +387,7 @@ def test_heartbeat_persists_failure_per_account(tmp_path: Path) -> None:
 
     assert outcome.status == HEARTBEAT_FAILED
     assert outcome.action_required is True
-    saved = AccountStore(store.path).load().get("team")
+    saved = AccountStore(store.locations).load().get("team")
     assert saved is not None
     assert saved.last_heartbeat_at == "2026-06-12T12:34:56.789000Z"
     assert saved.last_heartbeat_status == HEARTBEAT_FAILED

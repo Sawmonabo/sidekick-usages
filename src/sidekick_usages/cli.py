@@ -10,8 +10,10 @@ import re
 import shlex
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 from typing import Annotated, Any, NoReturn
 
@@ -71,6 +73,10 @@ from sidekick_usages.maintenance import (
     record_refresh_success,
     refresh_exit_code,
 )
+from sidekick_usages.paths import (
+    PrivateCodexLocations,
+    discover_application_paths,
+)
 from sidekick_usages.providers import build_provider_registry
 from sidekick_usages.providers.base import DetectedCredentials, Provider
 from sidekick_usages.providers.codex import (
@@ -83,7 +89,7 @@ from sidekick_usages.providers.codex import (
 )
 from sidekick_usages.render import FetchFailure, usage_overview
 from sidekick_usages.report import UsageReport
-from sidekick_usages.store import CONFIG_DIR, Account, AccountStore
+from sidekick_usages.store import Account, AccountStore
 from sidekick_usages.token_input import TokenInput
 from sidekick_usages.update import (
     InstallMethod,
@@ -106,6 +112,8 @@ class AppContext:
     :ivar http: Shared HTTP client with retry/backoff.
     :ivar providers: Provider registry (mutable for tests).
     :ivar heartbeat_providers: Heartbeat provider registry (mutable for tests).
+    :ivar private_codex_locations: Private Codex credential roots.
+    :ivar lifetime_sources: Configured lifetime collectors by provider id.
     :ivar clock: Invocation-scoped application wall clock.
     :ivar console: Rich console for stdout.
     :ivar err_console: Rich console pinned to stderr.
@@ -116,6 +124,8 @@ class AppContext:
     http: HttpClient
     providers: dict[str, Provider]
     heartbeat_providers: dict[str, HeartbeatProvider]
+    private_codex_locations: PrivateCodexLocations
+    lifetime_sources: dict[str, Callable[[], tuple[int, str | None]]]
     console: Console
     err_console: Console
     clock: Clock
@@ -138,7 +148,6 @@ class _CredentialFields:
     codex_last_refresh: str | None = None
 
 
-CODEX_CACHE_DIR = CONFIG_DIR / "codex"
 _SAFE_CODEX_CACHE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 _DAEMON_BACKEND_HELP = (
     "Scheduler backend: auto, systemd, cron, launchd, task-scheduler."
@@ -150,13 +159,22 @@ def _build_default_context() -> AppContext:
 
     :return: An :class:`AppContext` wired with real dependencies.
     """
+    paths = discover_application_paths()
     clock = SystemClock()
     providers = build_provider_registry(clock)
     return AppContext(
-        store=AccountStore().load(),
+        store=AccountStore(paths.accounts).load(),
         http=HttpClient(),
         providers=providers,
         heartbeat_providers=build_heartbeat_registry(providers),
+        private_codex_locations=paths.private_codex,
+        lifetime_sources={
+            "claude": claude_lifetime_output,
+            "codex": partial(
+                codex_lifetime_output,
+                paths.lifetime_cache_file,
+            ),
+        },
         console=Console(),
         err_console=Console(stderr=True),
         clock=clock,
@@ -320,7 +338,10 @@ def _do_check() -> None:
         app_ctx.console.print(
             usage_overview(
                 app_ctx.collected,
-                _lifetime_for(app_ctx.collected),
+                _lifetime_for(
+                    app_ctx.collected,
+                    app_ctx.lifetime_sources,
+                ),
                 failures=app_ctx.failures,
                 width=app_ctx.console.size.width,
                 reference_time=app_ctx.clock.now(),
@@ -337,12 +358,9 @@ def _collect(acct: Account, report: UsageReport) -> None:
 
 def _lifetime_for(
     pairs: list[tuple[Account, UsageReport]],
+    sources: dict[str, Callable[[], tuple[int, str | None]]],
 ) -> dict[str, tuple[int, str | None]]:
     """Look up lifetime output per provider present in ``pairs``."""
-    sources = {
-        "claude": claude_lifetime_output,
-        "codex": codex_lifetime_output,
-    }
     providers = {acct.provider_id for acct, _ in pairs}
     return {
         provider_id: source()
@@ -980,6 +998,7 @@ def refresh_cmd(
         detected,
         provider,
         credential_home,
+        app_ctx.private_codex_locations,
         reference_time=reference_time,
     )
     record_refresh_success(acct, reference_time)
@@ -1578,6 +1597,7 @@ def codex_login_cmd(
         detected,
         provider,
         source_home,
+        app_ctx.private_codex_locations,
         reference_time=reference_time,
     )
     app_ctx.store.upsert(acct)
@@ -1633,6 +1653,7 @@ def codex_export_cmd(
             acct,
             source_blob,
             provider,
+            app_ctx.private_codex_locations,
             reference_time=reference_time,
         )
     elif not acct.codex_id_token and acct.refresh_token:
@@ -1902,12 +1923,15 @@ def _normalize_codex_home(
     return codex_home.expanduser()
 
 
-def _sidekick_codex_home(label: str) -> Path:
+def _sidekick_codex_home(
+    locations: PrivateCodexLocations,
+    label: str,
+) -> Path:
     """Return sidekick's private Codex auth cache dir for a label."""
     safe = _SAFE_CODEX_CACHE_NAME_RE.sub("_", label).strip("._-")
     if not safe:
         safe = "account"
-    return CODEX_CACHE_DIR / safe
+    return locations.canonical / safe
 
 
 def _codex_source_blob(
@@ -1935,6 +1959,7 @@ def _apply_detected_credentials(
     detected: DetectedCredentials,
     provider: Provider,
     credential_home: Path | None,
+    private_codex_locations: PrivateCodexLocations,
     *,
     reference_time: datetime,
 ) -> None:
@@ -1959,6 +1984,7 @@ def _apply_detected_credentials(
             acct,
             provider,
             credential_home,
+            private_codex_locations,
             reference_time=reference_time,
         )
 
@@ -1967,6 +1993,7 @@ def _write_sidekick_codex_cache(
     acct: Account,
     provider: Provider,
     source_home: Path | None,
+    private_codex_locations: PrivateCodexLocations,
     *,
     reference_time: datetime,
 ) -> bool:
@@ -1975,7 +2002,7 @@ def _write_sidekick_codex_cache(
         return False
     return write_account_auth_file(
         acct,
-        _sidekick_codex_home(acct.label),
+        _sidekick_codex_home(private_codex_locations, acct.label),
         reference_time=reference_time,
         source_blob=_codex_source_blob(provider, source_home),
     )
@@ -2017,6 +2044,7 @@ def _apply_matching_codex_blob(
     acct: Account,
     blob: dict[str, Any],
     provider: Provider,
+    private_codex_locations: PrivateCodexLocations,
     *,
     reference_time: datetime,
 ) -> None:
@@ -2028,6 +2056,7 @@ def _apply_matching_codex_blob(
             detected,
             provider,
             None,
+            private_codex_locations,
             reference_time=reference_time,
         )
 
@@ -2115,6 +2144,7 @@ def _upsert_existing(
                 acct,
                 _resolve_provider(acct.provider_id),
                 fields.source_codex_home,
+                app_ctx.private_codex_locations,
                 reference_time=reference_time,
             )
         app_ctx.store.upsert(acct)
@@ -2229,6 +2259,7 @@ def _insert_new(
         acct,
         provider,
         fields.source_codex_home,
+        app_ctx.private_codex_locations,
         reference_time=reference_time,
     )
     app_ctx.store.save()

@@ -9,11 +9,12 @@ from typer.testing import CliRunner
 from sidekick_usages import cli
 from sidekick_usages.http import HttpClient
 from sidekick_usages.store import Account, AccountStore
-from tests.test_support import FixedClock
+from tests.test_support import FixedClock, make_application_paths
 
 
 def _ctx(tmp_path: Path, account: Account) -> AccountStore:
-    store = AccountStore(tmp_path / "accounts.json")
+    paths = make_application_paths(tmp_path)
+    store = AccountStore(paths.accounts)
     store.upsert(account)
     store.save()
     cli.set_context(
@@ -22,6 +23,8 @@ def _ctx(tmp_path: Path, account: Account) -> AccountStore:
             http=HttpClient(),
             providers={},
             heartbeat_providers={},
+            private_codex_locations=paths.private_codex,
+            lifetime_sources={},
             console=Console(file=io.StringIO(), force_terminal=False),
             err_console=Console(file=io.StringIO(), force_terminal=False),
             clock=FixedClock(),
@@ -42,7 +45,11 @@ def test_set_plan_updates_and_persists(tmp_path):
     result = CliRunner().invoke(cli.app, ["set-plan", "acme", "max"])
 
     assert result.exit_code == 0
-    saved = AccountStore(tmp_path / "accounts.json").load().get("acme")
+    saved = (
+        AccountStore(make_application_paths(tmp_path).accounts)
+        .load()
+        .get("acme")
+    )
     assert saved is not None
     assert saved.plan == "max"
 

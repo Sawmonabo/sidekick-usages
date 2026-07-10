@@ -79,11 +79,8 @@ def claude_lifetime_output() -> tuple[int, str | None]:
     return (total, since if isinstance(since, str) else None)
 
 
-#: Codex session logs and the sidekick-side incremental cache.
+#: Codex session logs. This provider-native source remains Codex-owned.
 _CODEX_SESSIONS_DIR = Path.home() / ".codex" / "sessions"
-_CODEX_CACHE_FILE = (
-    Path.home() / ".config" / "sidekick-usages" / "codex-lifetime-cache.json"
-)
 
 
 def _total_token_usage(record: object) -> dict[str, object] | None:
@@ -134,23 +131,23 @@ def _rollout_date(filename: str) -> str | None:
     return value if value.startswith("-", len("YYYY")) else None
 
 
-def _load_codex_cache() -> dict[str, object]:
+def _load_codex_cache(cache_file: Path) -> dict[str, object]:
     try:
-        data = json.loads(_CODEX_CACHE_FILE.read_text())
+        data = json.loads(cache_file.read_text())
     except OSError, json.JSONDecodeError:
         return {}
     return data if isinstance(data, dict) else {}
 
 
-def _save_codex_cache(cache: dict[str, object]) -> None:
+def _save_codex_cache(cache_file: Path, cache: dict[str, object]) -> None:
     try:
-        _CODEX_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _CODEX_CACHE_FILE.write_text(json.dumps(cache))
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        cache_file.write_text(json.dumps(cache))
     except OSError:
         pass
 
 
-def codex_lifetime_output() -> tuple[int, str | None]:
+def codex_lifetime_output(cache_file: Path) -> tuple[int, str | None]:
     """Sum Codex lifetime output tokens across all rollout logs.
 
     Per file uses the maximum cumulative ``output_tokens`` (the
@@ -158,12 +155,13 @@ def codex_lifetime_output() -> tuple[int, str | None]:
     immutable, so results are cached per filename+mtime; only new or
     still-growing files are re-read.
 
+    :param cache_file: Sidekick-owned incremental cache location.
     :return: ``(output_total, since)`` — ``(0, None)`` if no logs.
     """
     files = sorted(_CODEX_SESSIONS_DIR.glob("**/rollout-*.jsonl"))
     if not files:
         return (0, None)
-    cache = _load_codex_cache()
+    cache = _load_codex_cache(cache_file)
     raw_entries = cache.get("files")
     entries: dict[str, object] = (
         cast("dict[str, object]", raw_entries)
@@ -190,5 +188,5 @@ def codex_lifetime_output() -> tuple[int, str | None]:
             changed = True
         total += output
     if changed:
-        _save_codex_cache({"files": entries})
+        _save_codex_cache(cache_file, {"files": entries})
     return (total, _rollout_date(files[0].name))

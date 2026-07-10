@@ -12,6 +12,7 @@ Two surfaces are covered:
 """
 
 import subprocess
+from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
@@ -34,7 +35,7 @@ from sidekick_usages.update import (
     parse_version,
     upgrade_command_for,
 )
-from tests.test_support import FixedClock
+from tests.test_support import FixedClock, make_application_paths
 
 
 class _FakeHttp(HttpClient):
@@ -223,18 +224,22 @@ def test_manual_instructions_lists_three_paths() -> None:
 
 
 # -- CLI: check-update -------------------------------------------
-def _install_fake_ctx(http: HttpClient) -> None:
+def _install_fake_ctx(http: HttpClient, root: Path) -> None:
     """Inject a context with a fake HTTP client.
 
     :param http: HTTP stand-in to wire into the CLI context.
+    :param root: Test-owned root for Sidekick application paths.
     """
+    paths = make_application_paths(root)
     clock = FixedClock()
     cli.set_context(
         cli.AppContext(
-            store=AccountStore(),
+            store=AccountStore(paths.accounts),
             http=http,
             providers=build_provider_registry(clock),
             heartbeat_providers={},
+            private_codex_locations=paths.private_codex,
+            lifetime_sources={},
             console=cli.Console(),
             err_console=cli.Console(stderr=True),
             clock=clock,
@@ -242,27 +247,36 @@ def _install_fake_ctx(http: HttpClient) -> None:
     )
 
 
-def test_check_update_reports_newer_version() -> None:
+def test_check_update_reports_newer_version(tmp_path: Path) -> None:
     """An advancing ``tag_name`` prints the upgrade hint."""
-    _install_fake_ctx(_FakeHttp(response_json={"tag_name": "v99.0.0"}))
+    _install_fake_ctx(
+        _FakeHttp(response_json={"tag_name": "v99.0.0"}),
+        tmp_path,
+    )
     result = CliRunner().invoke(cli.app, ["check-update"])
     assert result.exit_code == 0
     assert "99.0.0" in result.stdout
     assert "update" in result.stdout.lower()
 
 
-def test_check_update_reports_up_to_date() -> None:
+def test_check_update_reports_up_to_date(tmp_path: Path) -> None:
     """When ``tag_name`` matches __version__, no upgrade hint."""
-    _install_fake_ctx(_FakeHttp(response_json={"tag_name": f"v{__version__}"}))
+    _install_fake_ctx(
+        _FakeHttp(response_json={"tag_name": f"v{__version__}"}),
+        tmp_path,
+    )
     result = CliRunner().invoke(cli.app, ["check-update"])
     assert result.exit_code == 0
     assert "up to date" in result.stdout.lower()
     assert "sidekick usages · update status" in result.stdout
 
 
-def test_check_update_handles_rate_limit() -> None:
+def test_check_update_handles_rate_limit(tmp_path: Path) -> None:
     """A 403 is rendered as a hint and exits 1 (not a crash)."""
-    _install_fake_ctx(_FakeHttp(raise_on_get=ForbiddenError("API rate limit")))
+    _install_fake_ctx(
+        _FakeHttp(raise_on_get=ForbiddenError("API rate limit")),
+        tmp_path,
+    )
     result = CliRunner().invoke(cli.app, ["check-update"])
     assert result.exit_code == 1
     assert "rate limit" in result.stderr.lower()
@@ -272,9 +286,9 @@ def test_check_update_handles_rate_limit() -> None:
 
 
 # -- CLI: update -------------------------------------------------
-def test_update_dry_run_prints_command_without_running() -> None:
+def test_update_dry_run_prints_command_without_running(tmp_path: Path) -> None:
     """``--dry-run`` echoes the argv and never calls subprocess."""
-    _install_fake_ctx(_FakeHttp())
+    _install_fake_ctx(_FakeHttp(), tmp_path)
     with (
         patch(
             "sidekick_usages.cli.detect_install_method",
@@ -289,9 +303,11 @@ def test_update_dry_run_prints_command_without_running() -> None:
     run.assert_not_called()
 
 
-def test_update_invokes_subprocess_for_detected_method() -> None:
+def test_update_invokes_subprocess_for_detected_method(
+    tmp_path: Path,
+) -> None:
     """Without ``--dry-run``, the detected argv is executed."""
-    _install_fake_ctx(_FakeHttp())
+    _install_fake_ctx(_FakeHttp(), tmp_path)
     with (
         patch(
             "sidekick_usages.cli.detect_install_method",
@@ -309,9 +325,11 @@ def test_update_invokes_subprocess_for_detected_method() -> None:
     assert argv == ("uv", "tool", "upgrade", PACKAGE_NAME)
 
 
-def test_update_unknown_method_exits_with_instructions() -> None:
+def test_update_unknown_method_exits_with_instructions(
+    tmp_path: Path,
+) -> None:
     """UNKNOWN exits 1 and emits the manual-upgrade hint."""
-    _install_fake_ctx(_FakeHttp())
+    _install_fake_ctx(_FakeHttp(), tmp_path)
     with patch(
         "sidekick_usages.cli.detect_install_method",
         return_value=InstallMethod.UNKNOWN,

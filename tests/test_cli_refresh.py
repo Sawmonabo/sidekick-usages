@@ -18,7 +18,11 @@ from sidekick_usages.http import HttpClient
 from sidekick_usages.providers.base import DetectedCredentials, Provider
 from sidekick_usages.report import UsageReport, UsageWindow
 from sidekick_usages.store import Account, AccountStore
-from tests.test_support import REFERENCE_TIME, FixedClock
+from tests.test_support import (
+    REFERENCE_TIME,
+    FixedClock,
+    make_application_paths,
+)
 
 _CLAUDE_NOW_MS = int(REFERENCE_TIME.timestamp() * 1000)
 _CODEX_NOW_SECONDS = int(REFERENCE_TIME.timestamp())
@@ -112,14 +116,14 @@ def _report() -> UsageReport:
 
 def _store(tmp_path: Path, account: Account) -> AccountStore:
     """Build a temp account store containing one account."""
-    store = AccountStore(tmp_path / "accounts.json")
+    store = AccountStore(make_application_paths(tmp_path).accounts)
     store.upsert(account)
     return store
 
 
 def _store_many(tmp_path: Path, accounts: Iterable[Account]) -> AccountStore:
     """Build a temp account store containing multiple accounts."""
-    store = AccountStore(tmp_path / "accounts.json")
+    store = AccountStore(make_application_paths(tmp_path).accounts)
     for account in accounts:
         store.upsert(account)
     return store
@@ -127,7 +131,7 @@ def _store_many(tmp_path: Path, accounts: Iterable[Account]) -> AccountStore:
 
 def _empty_store(tmp_path: Path) -> AccountStore:
     """Build an empty temp account store."""
-    return AccountStore(tmp_path / "accounts.json")
+    return AccountStore(make_application_paths(tmp_path).accounts)
 
 
 def _install_ctx(
@@ -138,6 +142,7 @@ def _install_ctx(
     clock: Clock | None = None,
 ) -> tuple[AccountStore, io.StringIO, io.StringIO]:
     """Install an isolated CLI context for refresh-flow tests."""
+    paths = make_application_paths(tmp_path)
     store = _store(tmp_path, account)
     stdout = io.StringIO()
     stderr = io.StringIO()
@@ -147,6 +152,8 @@ def _install_ctx(
             http=HttpClient(),
             providers={provider.id: provider},
             heartbeat_providers={},
+            private_codex_locations=paths.private_codex,
+            lifetime_sources={},
             console=Console(file=stdout, force_terminal=False),
             err_console=Console(file=stderr, force_terminal=False),
             clock=clock or FixedClock(),
@@ -163,6 +170,7 @@ def _install_many_ctx(
     clock: Clock | None = None,
 ) -> tuple[AccountStore, io.StringIO, io.StringIO]:
     """Install an isolated CLI context with multiple saved accounts."""
+    paths = make_application_paths(tmp_path)
     store = _store_many(tmp_path, accounts)
     stdout = io.StringIO()
     stderr = io.StringIO()
@@ -172,6 +180,8 @@ def _install_many_ctx(
             http=HttpClient(),
             providers=providers,
             heartbeat_providers={},
+            private_codex_locations=paths.private_codex,
+            lifetime_sources={},
             console=Console(file=stdout, force_terminal=False),
             err_console=Console(file=stderr, force_terminal=False),
             clock=clock or FixedClock(),
@@ -187,6 +197,7 @@ def _install_empty_ctx(
     clock: Clock | None = None,
 ) -> tuple[AccountStore, io.StringIO, io.StringIO]:
     """Install an isolated CLI context with no saved accounts."""
+    paths = make_application_paths(tmp_path)
     store = _empty_store(tmp_path)
     stdout = io.StringIO()
     stderr = io.StringIO()
@@ -196,6 +207,8 @@ def _install_empty_ctx(
             http=HttpClient(),
             providers={provider.id: provider},
             heartbeat_providers={},
+            private_codex_locations=paths.private_codex,
+            lifetime_sources={},
             console=Console(file=stdout, force_terminal=False),
             err_console=Console(file=stderr, force_terminal=False),
             clock=clock or FixedClock(),
@@ -204,11 +217,9 @@ def _install_empty_ctx(
     return store, stdout, stderr
 
 
-def _set_codex_cache_dir(tmp_path: Path, monkeypatch: Any) -> Path:
-    """Point sidekick's Codex cache at a temp directory."""
-    cache_dir = tmp_path / "sidekick-codex-cache"
-    monkeypatch.setattr(cli, "CODEX_CACHE_DIR", cache_dir)
-    return cache_dir
+def _codex_cache_dir(tmp_path: Path) -> Path:
+    """Return the injected private Codex root for a test context."""
+    return make_application_paths(tmp_path).private_codex.canonical
 
 
 def _acct(
@@ -288,10 +299,9 @@ def test_refresh_command_persists_detected_provider_account_id(
 
 def test_refresh_command_imports_default_codex_login_to_private_cache(
     tmp_path: Path,
-    monkeypatch: Any,
 ) -> None:
     """Refreshing a Codex label reads default login and caches a copy."""
-    cache_dir = _set_codex_cache_dir(tmp_path, monkeypatch)
+    cache_dir = _codex_cache_dir(tmp_path)
     old_home = tmp_path / "old-external-home"
     acct = _acct(provider_id="codex", codex_home=str(old_home))
     acct.provider_account_id = "acct_current"
@@ -335,10 +345,9 @@ def test_refresh_command_imports_default_codex_login_to_private_cache(
 
 def test_refresh_command_from_codex_home_overrides_saved_home(
     tmp_path: Path,
-    monkeypatch: Any,
 ) -> None:
     """Manual refresh can explicitly read a non-default source home."""
-    cache_dir = _set_codex_cache_dir(tmp_path, monkeypatch)
+    cache_dir = _codex_cache_dir(tmp_path)
     old_home = tmp_path / "codex-old"
     source_home = tmp_path / "codex-source"
     acct = _acct(provider_id="codex", codex_home=str(old_home))
@@ -623,7 +632,11 @@ def test_successful_fetch_persists_provider_account_id(tmp_path: Path) -> None:
 
     assert cli._fetch_and_render(acct) is True
 
-    saved = AccountStore(tmp_path / "accounts.json").load().get("team")
+    saved = (
+        AccountStore(make_application_paths(tmp_path).accounts)
+        .load()
+        .get("team")
+    )
     assert saved is not None
     assert saved.provider_account_id == "acct_from_token"
 
@@ -685,10 +698,9 @@ def test_auth_error_does_not_adopt_current_local_credentials(
 
 def test_add_codex_uses_default_login_and_writes_private_cache(
     tmp_path: Path,
-    monkeypatch: Any,
 ) -> None:
     """Adding Codex from default login copies auth into private cache."""
-    cache_dir = _set_codex_cache_dir(tmp_path, monkeypatch)
+    cache_dir = _codex_cache_dir(tmp_path)
     provider = _FakeProvider(
         detected=DetectedCredentials(
             access_token="eyJ-current.access.sig",
@@ -725,7 +737,7 @@ def test_codex_login_runs_plain_cli_and_imports_private_cache(
     monkeypatch: Any,
 ) -> None:
     """codex-login leaves global ~/.codex as source for other apps."""
-    cache_dir = _set_codex_cache_dir(tmp_path, monkeypatch)
+    cache_dir = _codex_cache_dir(tmp_path)
     provider = _FakeProvider(
         detected=DetectedCredentials(
             access_token="eyJ-current.access.sig",

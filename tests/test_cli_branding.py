@@ -12,14 +12,15 @@ from sidekick_usages.daemon import DaemonOperation, DaemonOperationResult
 from sidekick_usages.http import HttpClient
 from sidekick_usages.providers import build_provider_registry
 from sidekick_usages.store import Account, AccountStore
-from tests.test_support import FixedClock
+from tests.test_support import FixedClock, make_application_paths
 
 
 def _install_context(
     tmp_path: Path,
     accounts: list[Account],
 ) -> tuple[io.StringIO, io.StringIO]:
-    store = AccountStore(tmp_path / "accounts.json")
+    paths = make_application_paths(tmp_path)
+    store = AccountStore(paths.accounts)
     for account in accounts:
         store.upsert(account)
     stdout = io.StringIO()
@@ -31,6 +32,8 @@ def _install_context(
             http=HttpClient(),
             providers=build_provider_registry(clock),
             heartbeat_providers={},
+            private_codex_locations=paths.private_codex,
+            lifetime_sources={},
             console=Console(file=stdout, width=85, force_terminal=False),
             err_console=Console(file=stderr, width=85, force_terminal=False),
             clock=clock,

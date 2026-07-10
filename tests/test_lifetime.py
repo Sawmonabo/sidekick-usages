@@ -2,6 +2,7 @@ import json
 import os
 
 from sidekick_usages import lifetime
+from tests.test_support import make_application_paths
 
 
 def test_format_tokens():
@@ -48,11 +49,10 @@ def test_claude_lifetime_non_dict_json_returns_zero(tmp_path, monkeypatch):
     assert lifetime.claude_lifetime_output() == (0, None)
 
 
-def test_load_codex_cache_non_dict_json_returns_empty(tmp_path, monkeypatch):
+def test_load_codex_cache_non_dict_json_returns_empty(tmp_path):
     f = tmp_path / "cache.json"
     f.write_text("[1, 2, 3]")
-    monkeypatch.setattr(lifetime, "_CODEX_CACHE_FILE", f)
-    assert lifetime._load_codex_cache() == {}
+    assert lifetime._load_codex_cache(f) == {}
 
 
 def _rollout(dir_, date, outputs):
@@ -73,27 +73,27 @@ def test_codex_lifetime_sums_per_file_max(tmp_path, monkeypatch):
     _rollout(sessions / "2026" / "03", "2026-03-30", [10, 50, 30])  # max 50
     _rollout(sessions / "2026" / "06", "2026-06-18", [5, 200])  # max 200
     monkeypatch.setattr(lifetime, "_CODEX_SESSIONS_DIR", sessions)
-    monkeypatch.setattr(lifetime, "_CODEX_CACHE_FILE", tmp_path / "c.json")
-    assert lifetime.codex_lifetime_output() == (250, "2026-03-30")
+    assert lifetime.codex_lifetime_output(tmp_path / "c.json") == (
+        250,
+        "2026-03-30",
+    )
 
 
 def test_codex_lifetime_empty(tmp_path, monkeypatch):
     monkeypatch.setattr(lifetime, "_CODEX_SESSIONS_DIR", tmp_path / "none")
-    monkeypatch.setattr(lifetime, "_CODEX_CACHE_FILE", tmp_path / "c.json")
-    assert lifetime.codex_lifetime_output() == (0, None)
+    assert lifetime.codex_lifetime_output(tmp_path / "c.json") == (0, None)
 
 
 def test_codex_lifetime_uses_cache(tmp_path, monkeypatch):
     sessions = tmp_path / "sessions"
     path = _rollout(sessions, "2026-03-30", [42])
-    cache_file = tmp_path / "c.json"
+    cache_file = make_application_paths(tmp_path).lifetime_cache_file
     monkeypatch.setattr(lifetime, "_CODEX_SESSIONS_DIR", sessions)
-    monkeypatch.setattr(lifetime, "_CODEX_CACHE_FILE", cache_file)
 
-    assert lifetime.codex_lifetime_output() == (42, "2026-03-30")
+    assert lifetime.codex_lifetime_output(cache_file) == (42, "2026-03-30")
     assert cache_file.exists()
     # Corrupt the file body but keep mtime: a cache hit ignores it.
     st = path.stat()
     path.write_text("not json\n")
     os.utime(path, (st.st_atime, st.st_mtime))
-    assert lifetime.codex_lifetime_output() == (42, "2026-03-30")
+    assert lifetime.codex_lifetime_output(cache_file) == (42, "2026-03-30")
