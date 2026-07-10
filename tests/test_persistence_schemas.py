@@ -140,7 +140,7 @@ def test_encoder_preserves_account_order_and_exact_record_shape() -> None:
     root = _version_one_root()
     accounts = root["accounts"]
     assert isinstance(accounts, dict)
-    accounts["caf\N{LATIN SMALL LETTER E WITH ACUTE}"] = accounts.pop(
+    accounts["account-\N{LATIN SMALL LETTER E WITH ACUTE}"] = accounts.pop(
         "claude-max-1"
     )
     document = decode_version_one(_payload(root))
@@ -154,19 +154,19 @@ def test_encoder_preserves_account_order_and_exact_record_shape() -> None:
     assert encode_version_one(decode_version_one(encoded)) == encoded
     assert list(decoded) == ["schema_version", "accounts"]
     assert list(decoded["accounts"]) == [
-        "caf\N{LATIN SMALL LETTER E WITH ACUTE}",
+        "account-\N{LATIN SMALL LETTER E WITH ACUTE}",
         "codex-plus-1",
     ]
     assert list(
-        decoded["accounts"]["caf\N{LATIN SMALL LETTER E WITH ACUTE}"]
+        decoded["accounts"]["account-\N{LATIN SMALL LETTER E WITH ACUTE}"]
     ) == list(_record(ProviderId.CLAUDE))
     assert (
-        decoded["accounts"]["caf\N{LATIN SMALL LETTER E WITH ACUTE}"][
+        decoded["accounts"]["account-\N{LATIN SMALL LETTER E WITH ACUTE}"][
             "codex_home"
         ]
         is None
     )
-    assert b"caf\xc3\xa9" in encoded
+    assert b"account-\xc3\xa9" in encoded
     assert b"\\u00e9" not in encoded
 
 
