@@ -154,6 +154,17 @@ def _protected_filesystem(path: Path) -> PersistenceFilesystem:
     return filesystem
 
 
+def _write_protected_artifact(path: Path, payload: bytes) -> None:
+    """Seed one synthetic managed artifact through native protection."""
+    filesystem = _protected_filesystem(path)
+    with PersistenceLock(filesystem).hold() as transaction:
+        transaction.commit_authority(
+            AuthorityGeneration.VERSION_ONE,
+            payload,
+            AuthorityExpectation.ABSENT,
+        )
+
+
 def _seed_migration_state(
     tmp_path: Path,
     *,
@@ -366,10 +377,15 @@ def test_successful_migration_publishes_exact_target_lineage_before_cleanup(
             target_digest,
         )
     )
+    conflicting_lineage = _authority_payload(
+        _claude_account("conflicting-lineage")
+    )
+    if collision:
+        _write_protected_artifact(
+            lineage,
+            conflicting_lineage,
+        )
     with PersistenceLock(fixture.target).hold() as transaction:
-        if collision:
-            lineage.write_bytes(b"test-only-conflicting-lineage")
-            lineage.chmod(0o600)
 
         def commit() -> FileSnapshot:
             return PrivateCredentialTransaction(
@@ -397,7 +413,7 @@ def test_successful_migration_publishes_exact_target_lineage_before_cleanup(
             assert final.data == fixture.target_payload
 
     if collision:
-        assert lineage.read_bytes() == b"test-only-conflicting-lineage"
+        assert lineage.read_bytes() == conflicting_lineage
         assert fixture.tree.transaction_directory_present()
     else:
         assert lineage.read_bytes() == fixture.target_payload
@@ -656,8 +672,10 @@ def test_divergent_migration_retains_evidence_on_private_uncertainty(
                 authority.fingerprint.digest,
             )
         )
-        lineage.write_bytes(b"test-only-conflicting-lineage")
-        lineage.chmod(0o600)
+        _write_protected_artifact(
+            lineage,
+            _authority_payload(_claude_account("conflicting-lineage")),
+        )
     changed_source = _change_migration_source(fixture)
 
     with (

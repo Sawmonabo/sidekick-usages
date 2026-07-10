@@ -33,6 +33,7 @@ from sidekick_usages.persistence.private_credentials import (
     PrivateCredentialOwnership,
     PrivateCredentialTree,
 )
+from tests.test_support import make_application_paths
 
 if sys.platform == "win32":
     import win32file
@@ -452,8 +453,13 @@ def test_private_bundle_ownership_distinguishes_compatibility_and_external(
 def test_relative_bundle_observation_is_complete_and_absence_is_distinct(
     tmp_path: Path,
 ) -> None:
-    root = tmp_path / "sidekick" / "codex"
-    tree = PrivateCredentialTree(root, account_path=tmp_path / "accounts.json")
+    paths = make_application_paths(tmp_path / "sidekick")
+    PersistenceFilesystem(paths.accounts.canonical).repair_parent_permissions()
+    root = paths.private_codex.canonical
+    tree = PrivateCredentialTree(
+        root,
+        account_path=paths.accounts.canonical,
+    )
     assert tree.read_relative_bundle("teams/missing") is None
 
     bundle = tree.write_bundle(

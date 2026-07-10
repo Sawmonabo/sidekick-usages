@@ -5,6 +5,7 @@ import io
 import json
 import pathlib
 import re
+import sys
 import urllib.request
 
 import pytest
@@ -40,10 +41,10 @@ urllib3==2.7.0 ; python_version >= "3.14"
     ]
 
 
-def test_locked_homebrew_closure_contains_every_host_runtime_dependency() -> (
+def test_locked_runtime_closure_contains_every_host_runtime_dependency() -> (
     None
 ):
-    """Formula resolution cannot omit a direct non-Windows dependency."""
+    """Formula resolution cannot omit a direct host dependency."""
     resolved = dict(homebrew_generator.resolved_versions())
 
     assert {
@@ -55,7 +56,10 @@ def test_locked_homebrew_closure_contains_every_host_runtime_dependency() -> (
         "typer",
         "urllib3",
     } <= resolved.keys()
-    assert "pywin32" not in resolved
+    if sys.platform == "win32":
+        assert resolved["pywin32"] == "312"
+    else:
+        assert "pywin32" not in resolved
 
 
 def test_pydantic_core_source_build_policy_is_exact_and_fail_closed() -> None:
