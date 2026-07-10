@@ -151,13 +151,25 @@ _LIFETIME: dict[str, tuple[int, str | None]] = {
 _PANEL_FLOOR = 85
 
 
-def _render_at(width: int, pairs: list[tuple[Account, UsageReport]]) -> str:
+def _render_at(
+    width: int,
+    pairs: list[tuple[Account, UsageReport]],
+    *,
+    failures: list[tuple[Account, FetchFailure]] | None = None,
+) -> str:
     buf = io.StringIO()
     # legacy_windows=False keeps Rich's rounded box on every platform.
     # Without it, Windows CI substitutes the square box (┌ for ╭) and the
     # panel-corner assertions below fail.
     console = Console(width=width, file=buf, legacy_windows=False)
-    console.print(render.usage_overview(pairs, _LIFETIME, width=width))
+    console.print(
+        render.usage_overview(
+            pairs,
+            _LIFETIME,
+            failures=failures,
+            width=width,
+        )
+    )
     return buf.getvalue()
 
 
@@ -297,12 +309,7 @@ def test_failure_renders_in_provider_panel():
             ),
         )
     ]
-    buf = io.StringIO()
-    console = Console(width=200, file=buf)
-    console.print(
-        render.usage_overview(pairs, _LIFETIME, failures=failures, width=200)
-    )
-    out = buf.getvalue()
+    out = _render_at(200, pairs, failures=failures)
     assert "⚠ token expired" in out
     assert "Log in to Codex CLI again, then run:" in out
     assert "sidekick-usages refresh a.sawmon@ymail.com" in out
@@ -319,12 +326,7 @@ def test_all_failed_provider_has_no_orphan_header():
             FetchFailure("token expired", ("retry later",)),
         )
     ]
-    buf = io.StringIO()
-    console = Console(width=200, file=buf)
-    console.print(
-        render.usage_overview([], _LIFETIME, failures=failures, width=200)
-    )
-    out = buf.getvalue()
+    out = _render_at(200, [], failures=failures)
     assert "⚠ token expired" in out
     assert "╭─ CODEX · 1 account ─" in out
     assert "needs attention" not in out
