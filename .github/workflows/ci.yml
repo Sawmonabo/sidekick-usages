@@ -56,6 +56,8 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
     - uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
 
     - name: Install uv
       uses: astral-sh/setup-uv@v8.1.0
@@ -84,6 +86,32 @@ jobs:
         name: coverage-xml
         path: coverage.xml
         retention-days: 7
+
+  v060-compatibility:
+    name: Released v0.6.0 compatibility
+    runs-on: ubuntu-latest
+    needs: pre-commit
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v8.1.0
+      with:
+        enable-cache: true
+        cache-dependency-glob: '**/pyproject.toml'
+
+    - name: Set up Python 3.14
+      run: uv python install 3.14
+
+    - name: Install package + test dependencies
+      run: uv sync --all-groups
+
+    - name: Verify actual released reader and writer twice
+      run: |
+        uv run pytest tests/test_v060_compat.py
+        uv run python packaging/verify_v060_compat.py
 
   homebrew-source:
     name: Homebrew source build (${{ matrix.os }})
@@ -138,7 +166,7 @@ jobs:
   build:
     name: Build wheel + sdist
     runs-on: ubuntu-latest
-    needs: [pre-commit, test, homebrew-source]
+    needs: [pre-commit, test, v060-compatibility, homebrew-source]
     steps:
     - uses: actions/checkout@v6
 
