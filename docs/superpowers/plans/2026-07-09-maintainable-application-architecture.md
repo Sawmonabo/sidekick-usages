@@ -626,6 +626,13 @@ help and version successfully. The Markdown gate remains at the exact
 [Typer 0.26.8 release notes][typer-0268-release] and
 [Rich console source][typer-0268-rich-width].
 
+**Windows CI follow-up (2026-07-10):** Rich/Typer's error panel is 79 cells
+when the Windows runner reports `COLUMNS=80`, while the same baseline is 80
+cells on Linux. The isolation test now compares the error-panel widths before
+and after a 120-column help render. This directly proves that scoped Typer
+state does not leak without treating a platform-specific baseline as product
+behavior. No production code or help-width policy changed.
+
 **Load-bearing tests:**
 
 - At narrow width, the masthead degrades without wrapping and help agrees.

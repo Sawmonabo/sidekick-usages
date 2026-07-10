@@ -82,6 +82,11 @@ def test_help_uses_one_width_policy(
 
 def test_help_width_override_does_not_leak_to_errors() -> None:
     runner = CliRunner()
+    baseline_error = runner.invoke(
+        cli.app,
+        ["doctor", "--unknown-option"],
+        env={"COLUMNS": "80"},
+    )
     help_result = runner.invoke(
         cli.app,
         ["doctor", "--help"],
@@ -94,9 +99,12 @@ def test_help_width_override_does_not_leak_to_errors() -> None:
         env={"COLUMNS": "80"},
     )
 
+    assert baseline_error.exit_code == click.UsageError.exit_code
     assert help_result.exit_code == 0
     assert error_result.exit_code == click.UsageError.exit_code
-    assert set(_panel_widths(error_result.output)) == {80}
+    baseline_widths = _panel_widths(baseline_error.output)
+    assert baseline_widths
+    assert _panel_widths(error_result.output) == baseline_widths
 
 
 def test_doctor_help_does_not_advertise_removed_auth_option() -> None:
