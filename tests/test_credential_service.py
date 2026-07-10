@@ -26,6 +26,7 @@ from sidekick_usages.credentials import (
     CredentialService,
     LocalCredentialSource,
     TokenCredentialSource,
+    TokenPromptSpec,
 )
 from sidekick_usages.credentials import codex as credential_codex
 from sidekick_usages.credentials.codex import private_codex_home
@@ -281,6 +282,40 @@ def test_source_failures_remain_distinct_and_tokens_are_secret_safe(
             token=secret,
         )
     )
+
+
+def test_prompt_spec_exposes_only_bounded_token_entry_metadata(
+    tmp_path: Path,
+) -> None:
+    provider = _Provider(
+        ProviderId.CLAUDE,
+        ProviderFailure(
+            provider_id=ProviderId.CLAUDE,
+            kind=ProviderFailureKind.MISSING,
+            message="No local credentials.",
+        ),
+    )
+    service, store, private = _service(tmp_path, provider)
+
+    spec = service.prompt_spec(ProviderId.CLAUDE)
+
+    assert isinstance(spec, TokenPromptSpec)
+    assert spec.provider_id is ProviderId.CLAUDE
+    assert spec.display_name == "Test provider"
+    assert spec.token_pattern.fullmatch("test-token") is not None
+    assert spec.setup_hint is not None
+    assert "setup-token claude" in spec.setup_hint
+    assert not hasattr(spec, "fetch_usage")
+
+    unavailable = CredentialService(
+        store,
+        HttpClient(),
+        {},
+        private,
+        clock=FixedClock(),
+    ).prompt_spec(ProviderId.CLAUDE)
+    assert isinstance(unavailable, ProviderFailure)
+    assert unavailable.kind is ProviderFailureKind.UNSUPPORTED
 
 
 @pytest.mark.parametrize(

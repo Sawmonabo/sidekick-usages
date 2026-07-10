@@ -1,10 +1,12 @@
 """Immutable application results for account usage checks."""
 
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 from typing import ClassVar
 
 from sidekick_usages.core.models import UsageReport
+from sidekick_usages.core.time import as_utc
 from sidekick_usages.core.types import AccountLabel, ProviderId
 from sidekick_usages.persistence.errors import PersistenceCode
 from sidekick_usages.providers.base import ProviderFailure
@@ -121,8 +123,17 @@ class PersistenceFailure(FetchFailure):
 class UsageCheckResult:
     """Complete successes and failures from one usage check."""
 
-    usages: tuple[AccountUsage, ...] = ()
-    failures: tuple[FetchFailure, ...] = ()
+    usages: tuple[AccountUsage, ...]
+    failures: tuple[FetchFailure, ...]
+    reference_time: datetime
+
+    def __post_init__(self) -> None:
+        """Normalize the shared render reference to aware UTC."""
+        object.__setattr__(
+            self,
+            "reference_time",
+            as_utc(self.reference_time),
+        )
 
 
 __all__ = [

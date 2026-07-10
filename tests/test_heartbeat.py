@@ -367,6 +367,34 @@ def test_heartbeat_all_skips_disabled_accounts(tmp_path: Path) -> None:
     assert outcomes[0].status is HeartbeatStatus.DISABLED
 
 
+def test_heartbeat_service_owns_support_display_and_explicit_empty_mapping(
+    tmp_path: Path,
+) -> None:
+    account = _acct()
+    store = _store(tmp_path, [account])
+    injected: dict[ProviderId, HeartbeatProvider] = {}
+    empty = HeartbeatService(
+        store,
+        HttpClient(),
+        injected,
+        clock=FixedClock(),
+    )
+    injected[ProviderId.CLAUDE] = _FakeHeartbeatProvider()
+
+    assert empty.support_label(account) == "unsupported"
+    assert empty.support_labels((account,)) == {"team": "unsupported"}
+
+    configured = HeartbeatService(
+        store,
+        HttpClient(),
+        injected,
+        clock=FixedClock(),
+    )
+    assert configured.support_label(account) == "off"
+    account.last_heartbeat_status = HeartbeatStatus.FAILED
+    assert configured.support_labels((account,)) == {"team": "needs-login"}
+
+
 def test_heartbeat_label_runs_even_when_disabled(tmp_path: Path) -> None:
     """Explicit label mode is a one-shot warm request."""
     provider = _FakeHeartbeatProvider()

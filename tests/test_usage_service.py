@@ -308,6 +308,7 @@ def _service(
     http: HttpClient,
     *providers: ScriptedProvider,
     refresher: CredentialCoordinator | None = None,
+    clock: FixedClock | None = None,
 ) -> UsageCheckService:
     credential_refresher = refresher or ScriptedCredentialCoordinator(store)
     return UsageCheckService(
@@ -315,7 +316,7 @@ def _service(
         http,
         {provider.id: provider for provider in providers},
         credential_refresher,
-        clock=FixedClock(),
+        clock=clock or FixedClock(),
     )
 
 
@@ -332,8 +333,14 @@ def test_filter_selects_store_accounts_and_returns_immutable_results(
         ProviderId.CODEX,
         {"codex-one": [_report()], "codex-two": [_report()]},
     )
+    clock = FixedClock()
 
-    result = _service(store, http, codex).check(ProviderId.CODEX)
+    result = _service(
+        store,
+        http,
+        codex,
+        clock=clock,
+    ).check(ProviderId.CODEX)
 
     assert [usage.label for usage in result.usages] == [
         "codex-one",
@@ -342,6 +349,8 @@ def test_filter_selects_store_accounts_and_returns_immutable_results(
     assert result.failures == ()
     assert store.filters == [ProviderId.CODEX]
     assert store.iterations == 0
+    assert result.reference_time == REFERENCE_TIME
+    assert clock.calls == 1
     assert AccountUsage.__dataclass_params__.frozen is True
 
 

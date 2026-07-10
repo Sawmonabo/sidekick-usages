@@ -83,3 +83,15 @@ class ExitCode(IntEnum):
     MANUAL_ACTION = 1
     SYSTEM_ERROR = 2
     SCHEDULER_ERROR = 3
+
+
+def highest_exit_code(*codes: ExitCode) -> ExitCode:
+    """Return the highest-priority application process outcome."""
+    for candidate in (
+        ExitCode.SCHEDULER_ERROR,
+        ExitCode.SYSTEM_ERROR,
+        ExitCode.MANUAL_ACTION,
+    ):
+        if candidate in codes:
+            return candidate
+    return ExitCode.SUCCESS

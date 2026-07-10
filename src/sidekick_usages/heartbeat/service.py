@@ -1,5 +1,6 @@
 """Policy and persistence for optional usage-window heartbeat."""
 
+from collections.abc import Iterable
 from datetime import datetime
 
 from sidekick_usages.clock import Clock
@@ -10,6 +11,7 @@ from sidekick_usages.core.expiry import (
 )
 from sidekick_usages.core.models import Account
 from sidekick_usages.core.types import (
+    AccountLabel,
     ExitCode,
     HeartbeatStatus,
     ProviderId,
@@ -37,8 +39,24 @@ class HeartbeatService:
     ) -> None:
         self.store = store
         self.http = http
-        self.providers = providers
+        self._providers = dict(providers)
         self.clock = clock
+
+    def support_label(self, account: Account) -> str:
+        """Return display-ready support state without exposing adapters."""
+        return heartbeat_supported_label(
+            account,
+            self._providers.get(account.provider_id),
+        )
+
+    def support_labels(
+        self,
+        accounts: Iterable[Account],
+    ) -> dict[AccountLabel, str]:
+        """Return support state keyed by exact account label."""
+        return {
+            account.label: self.support_label(account) for account in accounts
+        }
 
     def heartbeat_all(
         self,
@@ -170,7 +188,7 @@ class HeartbeatService:
         reference_time: datetime,
     ) -> HeartbeatProvider | HeartbeatOutcome:
         """Return a supported provider or the failure outcome to persist."""
-        provider = self.providers.get(account.provider_id)
+        provider = self._providers.get(account.provider_id)
         if provider is None:
             return self._record_failed(
                 account,
@@ -199,7 +217,7 @@ class HeartbeatService:
         """Enable daemon heartbeat for one supported account."""
         if account is None:
             return _missing_account()
-        provider = self.providers.get(account.provider_id)
+        provider = self._providers.get(account.provider_id)
         if provider is None:
             return HeartbeatOutcome(
                 label=account.label,
@@ -249,7 +267,7 @@ class HeartbeatService:
         if account is None:
             return _missing_account()
         if target_id is not None:
-            provider = self.providers.get(account.provider_id)
+            provider = self._providers.get(account.provider_id)
             if provider is None:
                 return HeartbeatOutcome(
                     label=account.label,
@@ -369,7 +387,7 @@ class HeartbeatService:
         target_id: str | None,
     ) -> tuple[str | None, ...]:
         """Return target ids to process for one account."""
-        provider = self.providers.get(account.provider_id)
+        provider = self._providers.get(account.provider_id)
         if provider is None:
             return (target_id,)
         if target_id is not None:

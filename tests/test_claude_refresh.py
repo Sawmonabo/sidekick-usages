@@ -24,7 +24,7 @@ from sidekick_usages.providers.base import (
     ProviderFailureKind,
     RefreshSuccess,
 )
-from sidekick_usages.providers.claude import ClaudeProvider
+from sidekick_usages.providers.claude import ClaudeProvider, ClaudeSetupToken
 from sidekick_usages.providers.claude import credentials as credentials_module
 from sidekick_usages.providers.claude import provider as provider_module
 from sidekick_usages.providers.claude.provider import (
@@ -640,7 +640,8 @@ def test_setup_token_capture_returns_no_arbitrary_process_output(
         staticmethod(capture),
     )
 
-    result = _provider().capture_setup_token()
+    capability: ClaudeSetupToken = _provider()
+    result = capability.capture_setup_token()
 
     assert result == SetupTokenSuccess(first_token)
     assert first_token not in repr(result)

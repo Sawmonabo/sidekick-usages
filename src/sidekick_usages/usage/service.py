@@ -127,7 +127,11 @@ class UsageCheckService:
                 usages.append(outcome)
             else:
                 failures.append(outcome)
-        return UsageCheckResult(tuple(usages), tuple(failures))
+        return UsageCheckResult(
+            tuple(usages),
+            tuple(failures),
+            reference_time,
+        )
 
     def _check_account(
         self,

@@ -14,6 +14,7 @@ from sidekick_usages.credentials.models import (
     CredentialUpdateSuccess,
     LocalCredentialSource,
     TokenCredentialSource,
+    TokenPromptSpec,
 )
 from sidekick_usages.credentials.service import CredentialService
 
@@ -32,4 +33,5 @@ __all__ = [
     "CredentialUpdateSuccess",
     "LocalCredentialSource",
     "TokenCredentialSource",
+    "TokenPromptSpec",
 ]

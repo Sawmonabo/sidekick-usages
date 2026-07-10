@@ -40,6 +40,7 @@ from sidekick_usages.core.types import (
     ExitCode,
     ProviderId,
     RefreshStatus,
+    highest_exit_code,
 )
 from sidekick_usages.credentials import (
     CredentialService,
@@ -625,7 +626,7 @@ def _run_usage_check() -> None:
     if any(
         isinstance(result, LifetimeFailure) for result in lifetime.values()
     ):
-        exit_code = _combined_exit_code(exit_code, ExitCode.SYSTEM_ERROR)
+        exit_code = highest_exit_code(exit_code, ExitCode.SYSTEM_ERROR)
 
     app_ctx.console.print(
         usage_overview(
@@ -633,7 +634,7 @@ def _run_usage_check() -> None:
             lifetime,
             failures=result.failures,
             width=app_ctx.console.size.width,
-            reference_time=app_ctx.clock.now(),
+            reference_time=result.reference_time,
         )
     )
     if exit_code:
@@ -1245,7 +1246,7 @@ def maintain_cmd(
     ).heartbeat_all()
     _render_heartbeat_outcomes(heartbeat_outcomes, quiet=quiet)
 
-    code = _combined_exit_code(
+    code = highest_exit_code(
         refresh_exit_code(refresh_outcomes),
         heartbeat_exit_code(heartbeat_outcomes),
     )
@@ -1299,18 +1300,6 @@ def _heartbeat_service() -> HeartbeatService:
         app_ctx.heartbeat_providers,
         clock=app_ctx.clock,
     )
-
-
-def _combined_exit_code(left: ExitCode, right: ExitCode) -> ExitCode:
-    """Return the highest-priority maintenance exit code."""
-    exit_codes = (left, right)
-    if ExitCode.SCHEDULER_ERROR in exit_codes:
-        return ExitCode.SCHEDULER_ERROR
-    if ExitCode.SYSTEM_ERROR in exit_codes:
-        return ExitCode.SYSTEM_ERROR
-    if ExitCode.MANUAL_ACTION in exit_codes:
-        return ExitCode.MANUAL_ACTION
-    return ExitCode.SUCCESS
 
 
 def _usage_error(message: str) -> NoReturn:
@@ -1690,7 +1679,7 @@ def doctor_cmd(
     )
     code = account_doctor_exit_code(diagnostics)
     if assessment is not None:
-        code = _combined_exit_code(
+        code = highest_exit_code(
             code,
             persistence_doctor_exit_code(assessment.code),
         )

@@ -1,23 +1,13 @@
-"""Self-update support for the CLI.
+"""Release checks and installation-aware self-update operations.
 
-Two surfaces:
-
-* :func:`fetch_latest_release` — GETs the GitHub Releases ``/latest``
-  endpoint and returns the version string with the leading ``v``
-  stripped. Used by the ``check-update`` subcommand.
-* :func:`detect_install_method` + :func:`upgrade_command_for` —
-  inspect ``sys.executable`` to pick the upgrade invocation
-  (``uv tool upgrade``, ``pipx upgrade``, ``brew upgrade``). Used by
-  the ``update`` subcommand.
-
-Version comparison is intentionally lightweight (tuple of ints).
-release-please is configured with ``prerelease: false`` so we never
-see PEP-440 pre-release or build-metadata segments and don't need
-the ``packaging`` dependency.
+Version comparison is intentionally lightweight because Release Please is
+configured to publish only stable numeric versions.
 """
 
 import enum
+import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 from sidekick_usages.http import HttpClient
@@ -150,3 +140,46 @@ def manual_instructions() -> str:
         "  pipx upgrade sidekick-usages\n"
         "  brew upgrade sidekick-usages"
     )
+
+
+type _CommandExecutor = Callable[[tuple[str, ...]], None]
+
+
+def _execute_upgrade(command: tuple[str, ...]) -> None:
+    """Execute one already selected upgrade command."""
+    subprocess.run(command, check=True)
+
+
+class UpdateService:
+    """Own release checks, install detection, and upgrade execution."""
+
+    def __init__(
+        self,
+        http: HttpClient,
+        *,
+        executable: str | Path | None = None,
+        command_executor: _CommandExecutor = _execute_upgrade,
+    ) -> None:
+        """Bind update operations to injected infrastructure."""
+        self._http = http
+        self._executable = executable
+        self._command_executor = command_executor
+
+    def latest_release(self) -> str:
+        """Return the latest published Sidekick version."""
+        return fetch_latest_release(self._http)
+
+    def install_method(self) -> InstallMethod:
+        """Return the detected installation mechanism."""
+        return detect_install_method(self._executable)
+
+    def upgrade_command(self) -> tuple[str, ...]:
+        """Return the exact upgrade command or reject an unknown install."""
+        return upgrade_command_for(self.install_method())
+
+    def upgrade(self, *, dry_run: bool = False) -> tuple[str, ...]:
+        """Select and optionally execute the exact upgrade command."""
+        command = self.upgrade_command()
+        if not dry_run:
+            self._command_executor(command)
+        return command

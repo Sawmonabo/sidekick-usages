@@ -6,6 +6,7 @@ failures distinct from a valid zero-token total.
 """
 
 import json
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
 from enum import StrEnum
@@ -13,6 +14,7 @@ from pathlib import Path, PurePosixPath
 from stat import S_ISDIR
 from typing import Never
 
+from sidekick_usages.core.types import ProviderId
 from sidekick_usages.errors import InvalidPayloadError
 from sidekick_usages.serialization import (
     JsonObject,
@@ -69,8 +71,32 @@ class LifetimeFailure:
 
 
 type LifetimeResult = LifetimeTotal | LifetimeUnavailable | LifetimeFailure
+type _LifetimeSource = Callable[[], LifetimeResult]
 type _CodexCache = dict[str, tuple[int, int]]
 type _CodexSources = tuple[list[Path], date]
+
+
+class LifetimeCollector:
+    """Collect configured provider lifetime totals without presentation."""
+
+    def __init__(
+        self,
+        sources: Mapping[ProviderId, _LifetimeSource],
+    ) -> None:
+        """Own an exact copy of the configured provider sources."""
+        self._sources = dict(sources)
+
+    def collect(
+        self,
+        provider_ids: Iterable[ProviderId],
+    ) -> dict[ProviderId, LifetimeResult]:
+        """Collect configured sources selected by provider id."""
+        selected = frozenset(provider_ids)
+        return {
+            provider_id: source()
+            for provider_id, source in self._sources.items()
+            if provider_id in selected
+        }
 
 
 #: Claude's machine-wide pre-aggregated stats (all Claude Code usage

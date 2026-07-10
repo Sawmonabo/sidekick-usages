@@ -32,6 +32,7 @@ from sidekick_usages.credentials.models import (
     CredentialUpdateSuccess,
     LocalCredentialSource,
     TokenCredentialSource,
+    TokenPromptSpec,
 )
 from sidekick_usages.errors import (
     AuthError,
@@ -56,6 +57,9 @@ from sidekick_usages.providers.base import (
 )
 
 _CLAUDE_USAGE_REQUIRED_SCOPE = "user:profile"
+_CLAUDE_SETUP_HINT = (
+    "Run `sidekick-usages setup-token claude` to generate one."
+)
 
 
 def _failure(
@@ -125,6 +129,36 @@ class CredentialService:
             private_credentials,
             clock=clock,
         )
+
+    def prompt_spec(
+        self,
+        provider_id: ProviderId,
+    ) -> TokenPromptSpec | ProviderFailure:
+        """Return safe token-entry metadata without exposing an adapter."""
+        provider = self._providers.get(provider_id)
+        if provider is None:
+            return _failure(
+                provider_id,
+                ProviderFailureKind.UNSUPPORTED,
+                f"Provider '{provider_id}' is not registered.",
+            )
+        try:
+            return TokenPromptSpec(
+                provider_id=provider.id,
+                display_name=provider.display_name,
+                token_pattern=provider.token_pattern,
+                setup_hint=(
+                    _CLAUDE_SETUP_HINT
+                    if provider.id is ProviderId.CLAUDE
+                    else None
+                ),
+            )
+        except TypeError, UnicodeError, ValueError:
+            return _failure(
+                provider_id,
+                ProviderFailureKind.MALFORMED,
+                "Provider token prompt metadata is invalid.",
+            )
 
     def resolve(self, source: CredentialSource) -> CredentialDetection:
         """Resolve one source through its owning provider boundary."""

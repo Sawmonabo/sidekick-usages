@@ -9,7 +9,7 @@ from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from threading import Event, Thread
-from typing import IO
+from typing import IO, Protocol
 
 from sidekick_usages.clock import Clock
 from sidekick_usages.core.models import (
@@ -106,6 +106,13 @@ type SetupTokenCapture = (
 type _SetupProcessResult = (
     _CapturedSetupOutput | SetupTokenTimedOut | SetupTokenUnreadable
 )
+
+
+class ClaudeSetupToken(Protocol):
+    """Narrow structural capability for Claude setup-token capture."""
+
+    def capture_setup_token(self, timeout: int = 600) -> SetupTokenCapture:
+        """Capture one typed Claude setup-token outcome."""
 
 
 class ClaudeProvider(Provider):
@@ -465,6 +472,7 @@ def _terminate_process(process: subprocess.Popen[bytes]) -> None:
 
 __all__ = [
     "ClaudeProvider",
+    "ClaudeSetupToken",
     "SetupTokenCapture",
     "SetupTokenMissing",
     "SetupTokenRejected",

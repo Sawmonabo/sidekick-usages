@@ -8,7 +8,9 @@ from pathlib import Path
 import pytest
 
 from sidekick_usages import lifetime
+from sidekick_usages.core.types import ProviderId
 from sidekick_usages.lifetime import (
+    LifetimeCollector,
     LifetimeFailure,
     LifetimeFailureKind,
     LifetimeTotal,
@@ -33,6 +35,33 @@ def _rollout(directory: Path, source_date: str, outputs: list[int]) -> Path:
     ]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
+
+
+def test_collector_owns_selection_and_preserves_explicit_empty_sources() -> (
+    None
+):
+    calls: list[ProviderId] = []
+
+    def claude() -> LifetimeTotal:
+        calls.append(ProviderId.CLAUDE)
+        return LifetimeTotal(10, None)
+
+    def codex() -> LifetimeUnavailable:
+        calls.append(ProviderId.CODEX)
+        return LifetimeUnavailable()
+
+    sources = {
+        ProviderId.CLAUDE: claude,
+        ProviderId.CODEX: codex,
+    }
+    collector = LifetimeCollector(sources)
+    sources.clear()
+
+    assert collector.collect((ProviderId.CODEX,)) == {
+        ProviderId.CODEX: LifetimeUnavailable()
+    }
+    assert calls == [ProviderId.CODEX]
+    assert LifetimeCollector({}).collect(tuple(ProviderId)) == {}
 
 
 @pytest.mark.parametrize(("outputs", "expected"), [([], 0), ([100, 200], 300)])

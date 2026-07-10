@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from sidekick_usages.core import ExitCode, ProviderId
+from sidekick_usages.core import ExitCode, ProviderId, highest_exit_code
 
 
 def test_provider_ids_preserve_the_closed_string_boundary() -> None:
@@ -26,6 +26,23 @@ def test_exit_codes_preserve_the_closed_process_boundary() -> None:
     ) == (0, 1, 2, 3)
     with pytest.raises(ValueError, match="4"):
         ExitCode(4)
+    assert highest_exit_code() is ExitCode.SUCCESS
+    assert (
+        highest_exit_code(
+            ExitCode.MANUAL_ACTION,
+            ExitCode.SUCCESS,
+            ExitCode.SCHEDULER_ERROR,
+            ExitCode.SYSTEM_ERROR,
+        )
+        is ExitCode.SCHEDULER_ERROR
+    )
+    assert (
+        highest_exit_code(
+            ExitCode.MANUAL_ACTION,
+            ExitCode.SYSTEM_ERROR,
+        )
+        is ExitCode.SYSTEM_ERROR
+    )
 
 
 def test_importing_core_does_not_load_outer_layers() -> None:

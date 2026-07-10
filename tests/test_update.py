@@ -14,7 +14,6 @@ Two surfaces are covered:
 import subprocess
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -29,6 +28,7 @@ from sidekick_usages.serialization import JsonObject
 from sidekick_usages.update import (
     PACKAGE_NAME,
     InstallMethod,
+    UpdateService,
     detect_install_method,
     fetch_latest_release,
     is_newer,
@@ -52,7 +52,7 @@ class _FakeHttp(HttpClient):
 
     def __init__(
         self,
-        response_json: dict[str, Any] | None = None,
+        response_json: JsonObject | None = None,
         raise_on_get: Exception | None = None,
     ) -> None:
         """:param response_json: Canned body to return from ``get_json``.
@@ -122,7 +122,35 @@ def test_is_newer_returns_false_for_older() -> None:
 def test_fetch_latest_release_strips_v_prefix() -> None:
     """``tag_name: v0.3.0`` becomes ``0.3.0``."""
     http = _FakeHttp(response_json={"tag_name": "v0.3.0"})
-    assert fetch_latest_release(http) == "0.3.0"
+    assert UpdateService(http).latest_release() == "0.3.0"
+
+
+def test_update_service_owns_detection_selection_and_execution() -> None:
+    """The command boundary needs no executable or subprocess access."""
+    commands: list[tuple[str, ...]] = []
+    service = UpdateService(
+        _FakeHttp(),
+        executable=(
+            "/home/user/.local/share/uv/tools/sidekick-usages/bin/python"
+        ),
+        command_executor=commands.append,
+    )
+    expected = ("uv", "tool", "upgrade", PACKAGE_NAME)
+
+    assert service.install_method() is InstallMethod.UV
+    assert service.upgrade(dry_run=True) == expected
+    assert commands == []
+    assert service.upgrade() == expected
+    assert commands == [expected]
+
+    unknown = UpdateService(
+        _FakeHttp(),
+        executable="/usr/bin/python",
+        command_executor=commands.append,
+    )
+    with pytest.raises(ValueError, match="install method"):
+        unknown.upgrade()
+    assert commands == [expected]
 
 
 def test_fetch_latest_release_targets_releases_endpoint() -> None:
