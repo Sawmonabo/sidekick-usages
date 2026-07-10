@@ -781,7 +781,7 @@ All web sources were accessed on 2026-07-10.
 - [pip pooled retry session](https://github.com/pypa/pip/blob/main/src/pip/_internal/network/session.py)
 - [OpenAI Python base client](https://github.com/openai/openai-python/blob/main/src/openai/_base_client.py)
 - [Stripe Python HTTP client](https://github.com/stripe/stripe-python/blob/master/stripe/_http_client.py)
-- [Stripe Python requestor/idempotency handling](https://github.com/stripe/stripe-python/blob/master/stripe/_api_requestor.py)
+- [Stripe Python request/idempotency handling](https://github.com/stripe/stripe-python/blob/master/stripe/_api_requestor.py)
 
 ### Repository evidence
 
