@@ -22,10 +22,6 @@ from sidekick_usages.persistence.assessment import (
     operation_exit_code,
     passive_priority,
 )
-from sidekick_usages.persistence.migrations import (
-    prototype_to_version_one,
-    version_one_to_v060,
-)
 from sidekick_usages.persistence.schemas import (
     GenerationZeroDocument,
     PrototypeReceipt,
@@ -33,6 +29,10 @@ from sidekick_usages.persistence.schemas import (
     decode_prototype,
     encode_generation_zero,
     encode_version_one,
+)
+from sidekick_usages.persistence.transforms import (
+    prototype_to_version_one,
+    version_one_to_v060,
 )
 
 SAFE_PATH = Path("/synthetic/sidekick/accounts.json")
@@ -119,6 +119,7 @@ def _prototype(
     readable = state not in {
         ArtifactState.UNSAFE,
         ArtifactState.UNREADABLE,
+        ArtifactState.BOUND_EXCEEDED,
     }
     return ArtifactObservation(
         ArtifactKind.PROTOTYPE,
@@ -389,15 +390,36 @@ def test_backup_relations_distinguish_history_from_rollback_proof(
                 (_prototype(state),),
                 code,
                 None,
-                None,
+                command,
                 id=state.value,
             )
-            for state, code in (
-                (ArtifactState.UNSAFE, PersistenceCode.UNSAFE_PERMISSIONS),
-                (ArtifactState.UNREADABLE, PersistenceCode.UNREADABLE),
-                (ArtifactState.DUPLICATE_KEY, PersistenceCode.DUPLICATE_KEY),
-                (ArtifactState.MALFORMED_JSON, PersistenceCode.MALFORMED_JSON),
-                (ArtifactState.INVALID_SCHEMA, PersistenceCode.INVALID_SCHEMA),
+            for state, code, command in (
+                (
+                    ArtifactState.UNSAFE,
+                    PersistenceCode.UNSAFE_PERMISSIONS,
+                    ("sidekick-usages", "permissions", "repair"),
+                ),
+                (ArtifactState.UNREADABLE, PersistenceCode.UNREADABLE, None),
+                (
+                    ArtifactState.BOUND_EXCEEDED,
+                    PersistenceCode.INVALID_SCHEMA,
+                    None,
+                ),
+                (
+                    ArtifactState.DUPLICATE_KEY,
+                    PersistenceCode.DUPLICATE_KEY,
+                    None,
+                ),
+                (
+                    ArtifactState.MALFORMED_JSON,
+                    PersistenceCode.MALFORMED_JSON,
+                    None,
+                ),
+                (
+                    ArtifactState.INVALID_SCHEMA,
+                    PersistenceCode.INVALID_SCHEMA,
+                    None,
+                ),
             )
         ],
     ],
@@ -414,6 +436,20 @@ def test_prototype_receipt_matrix_requires_exact_bytes(
 
     assert (assessment.code, assessment.account_count) == (code, count)
     assert assessment.next_command == command
+
+
+def test_receipt_bound_excess_is_invalid_without_fabricated_content() -> None:
+    """An oversized receipt remains a byte-free invalid-schema fact."""
+    receipt = ArtifactObservation(
+        ArtifactKind.PROTOTYPE_RECEIPT,
+        "accounts.prototype.receipt.json",
+        ArtifactState.BOUND_EXCEEDED,
+    )
+
+    assessment = assess_persistence(_observe(_absent(), receipt))
+
+    assert assessment.code is PersistenceCode.INVALID_SCHEMA
+    assert receipt.content is None
 
 
 def test_issue_order_is_priority_then_artifact_class_then_basename() -> None:

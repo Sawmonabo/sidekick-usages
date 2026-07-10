@@ -1,8 +1,8 @@
-"""Tests for per-account fetch errors recorded and rendered in panels."""
+"""Command-boundary tests for typed usage-check outcomes."""
 
 import io
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 from rich.console import Console
@@ -24,11 +24,14 @@ from sidekick_usages.lifetime import (
     LifetimeFailure,
     LifetimeFailureKind,
     LifetimeResult,
-    LifetimeUnavailable,
 )
+from sidekick_usages.persistence.account_store import AccountStore
 from sidekick_usages.providers.base import Provider
-from sidekick_usages.store import AccountStore
-from tests.test_support import FixedClock, make_application_paths
+from tests.test_support import (
+    FixedClock,
+    make_account_store,
+    make_application_paths,
+)
 
 
 class _FakeProvider(Provider):
@@ -50,6 +53,7 @@ class _FakeProvider(Provider):
         )
         self.fetch_results = list(fetch_results)
         self.refresh_ok = refresh_ok
+        self.fetch_calls = 0
 
     def detect_credentials(
         self,
@@ -63,6 +67,7 @@ class _FakeProvider(Provider):
         http: HttpClient,
     ) -> UsageReport:
         del http
+        self.fetch_calls += 1
         if not self.fetch_results:
             return UsageReport(
                 windows=(UsageWindow("5h", 0.0, None),),
@@ -103,24 +108,28 @@ def _acct(
 
 def _install_ctx(
     tmp_path: Path,
-    provider: _FakeProvider,
-    account: Account,
+    providers: tuple[_FakeProvider, ...],
+    accounts: tuple[Account, ...],
     *,
-    width: int = 80,
+    lifetime_sources: dict[
+        ProviderId,
+        Callable[[], LifetimeResult],
+    ]
+    | None = None,
+    width: int = 200,
 ) -> tuple[AccountStore, io.StringIO, io.StringIO]:
     paths = make_application_paths(tmp_path)
-    store = AccountStore(paths.accounts)
-    store.upsert(account)
+    store = make_account_store(tmp_path, accounts)
     stdout = io.StringIO()
     stderr = io.StringIO()
     cli.set_context(
         cli.AppContext(
             store=store,
             http=HttpClient(),
-            providers={provider.id: provider},
+            providers={provider.id: provider for provider in providers},
             heartbeat_providers={},
             private_codex_locations=paths.private_codex,
-            lifetime_sources={},
+            lifetime_sources=lifetime_sources or {},
             console=Console(file=stdout, width=width, force_terminal=False),
             err_console=Console(file=stderr, force_terminal=False),
             clock=FixedClock(),
@@ -129,122 +138,77 @@ def _install_ctx(
     return store, stdout, stderr
 
 
-def test_auth_failure_is_recorded_not_printed(tmp_path: Path) -> None:
-    """A 401 with refresh_ok=False records a FetchFailure, prints nothing."""
-    acct = _acct()
-    provider = _FakeProvider(
-        fetch_results=[AuthError("Token expired")],
-        refresh_ok=False,
-    )
-    _, stdout, _ = _install_ctx(tmp_path, provider, acct)
-
-    result = cli._fetch_and_render(acct)
-
-    assert result is False
-    failures = cli._get_ctx().failures
-    assert len(failures) == 1
-    _, failure = failures[0]
-    assert failure.status == "token expired"
-    assert failure.detail[-1] == f"sidekick-usages refresh {acct.label}"
-    # Nothing printed at fetch time — output is empty
-    assert stdout.getvalue() == ""
-
-
-def test_refresh_command_quotes_spaced_label(tmp_path: Path) -> None:
-    """A label with spaces is shell-quoted in the recorded refresh command."""
-    acct = _acct(label="my work acct")
-    provider = _FakeProvider(
-        fetch_results=[AuthError("Token expired")],
-        refresh_ok=False,
-    )
-    _install_ctx(tmp_path, provider, acct)
-
-    result = cli._fetch_and_render(acct)
-
-    assert result is False
-    failures = cli._get_ctx().failures
-    assert len(failures) == 1
-    _, failure = failures[0]
-    assert failure.detail[-1] == "sidekick-usages refresh 'my work acct'"
-
-
-def test_generic_error_is_recorded(tmp_path: Path) -> None:
-    """A transient error records a FetchFailure with the message."""
-    acct = _acct()
-    provider = _FakeProvider(fetch_results=[TransientError("boom")])
-    _, stdout, _ = _install_ctx(tmp_path, provider, acct)
-
-    result = cli._fetch_and_render(acct)
-
-    assert result is False
-    failures = cli._get_ctx().failures
-    assert len(failures) == 1
-    _, failure = failures[0]
-    assert failure.status == "error"
-    assert "boom" in failure.detail
-    assert stdout.getvalue() == ""
-
-
-def test_check_collects_lifetime_when_every_usage_fetch_fails(
+def test_check_renders_partial_success_and_typed_auth_recovery(
     tmp_path: Path,
 ) -> None:
-    """Full check: always-401 account exits 1 and renders error in panel."""
-    acct = _acct()
-    provider = _FakeProvider(
+    """Success and failure remain visible in their provider panels."""
+    claude = _FakeProvider(provider_id="claude")
+    codex = _FakeProvider(
         fetch_results=[AuthError("Token expired")],
         refresh_ok=False,
     )
-    stdout = io.StringIO()
-    stderr = io.StringIO()
-    paths = make_application_paths(tmp_path)
-    store = AccountStore(paths.accounts)
-    store.upsert(acct)
-    calls = 0
-
-    def collect_lifetime() -> LifetimeResult:
-        nonlocal calls
-        calls += 1
-        return LifetimeUnavailable()
-
-    cli.set_context(
-        cli.AppContext(
-            store=store,
-            http=HttpClient(),
-            providers={provider.id: provider},
-            heartbeat_providers={},
-            private_codex_locations=paths.private_codex,
-            lifetime_sources={ProviderId.CODEX: collect_lifetime},
-            console=Console(file=stdout, width=200, force_terminal=False),
-            err_console=Console(file=stderr, force_terminal=False),
-            clock=FixedClock(),
-        )
+    _, stdout, _ = _install_ctx(
+        tmp_path,
+        (claude, codex),
+        (
+            _acct("claude-account", "claude"),
+            _acct("my work account"),
+        ),
     )
 
     result = CliRunner().invoke(cli.app, ["check"])
 
-    assert result.exit_code == 1
-    assert calls == 1
+    assert result.exit_code == ExitCode.MANUAL_ACTION
     out = stdout.getvalue()
+    assert "╭─ CLAUDE · 1 account ─" in out
+    assert "╭─ CODEX · 1 account ─" in out
     assert "⚠ token expired" in out
-    assert "sidekick-usages refresh" in out
-    assert "lifetime unavailable" in out
-    # The error appears INSIDE the panel — after the top strip
-    assert out.index("sidekick usages") < out.index("token expired")
+    assert "Log in to Codex CLI again, then run:" in out
+    assert "sidekick-usages refresh 'my work account'" in out
+
+
+def test_check_provider_filter_uses_only_selected_accounts(
+    tmp_path: Path,
+) -> None:
+    claude = _FakeProvider(provider_id="claude")
+    codex = _FakeProvider()
+    _, stdout, _ = _install_ctx(
+        tmp_path,
+        (claude, codex),
+        (_acct("claude", "claude"), _acct("codex")),
+    )
+
+    result = CliRunner().invoke(cli.app, ["--only", "codex", "check"])
+
+    assert result.exit_code == ExitCode.SUCCESS
+    assert claude.fetch_calls == 0
+    assert codex.fetch_calls == 1
+    out = stdout.getvalue()
+    assert "╭─ CODEX · 1 account ─" in out
+    assert "╭─ CLAUDE" not in out
 
 
 def test_lifetime_failure_renders_and_forces_system_error(
     tmp_path: Path,
 ) -> None:
     acct = _acct()
-    provider = _FakeProvider()
-    _, stdout, _ = _install_ctx(tmp_path, provider, acct, width=200)
-    cli._get_ctx().lifetime_sources = {
-        ProviderId.CODEX: lambda: LifetimeFailure(
-            LifetimeFailureKind.SOURCE_UNREADABLE
-        )
-    }
+    provider = _FakeProvider(
+        fetch_results=[TransientError("provider unavailable")]
+    )
+    _, stdout, _ = _install_ctx(
+        tmp_path,
+        (provider,),
+        (acct,),
+        lifetime_sources={
+            ProviderId.CODEX: lambda: LifetimeFailure(
+                LifetimeFailureKind.SOURCE_UNREADABLE
+            )
+        },
+    )
 
     result = CliRunner().invoke(cli.app, ["check"])
 
     assert result.exit_code == ExitCode.SYSTEM_ERROR
-    assert "lifetime source unreadable" in stdout.getvalue()
+    out = stdout.getvalue()
+    assert "provider unavailable" in out
+    assert "lifetime source unreadable" in out

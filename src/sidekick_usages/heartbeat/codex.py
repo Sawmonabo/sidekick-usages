@@ -5,12 +5,12 @@ from datetime import datetime
 from sidekick_usages.core.models import Account, UsageReport, UsageWindow
 from sidekick_usages.core.types import HeartbeatStatus, ProviderId
 from sidekick_usages.errors import UsageError
-from sidekick_usages.heartbeat.base import HeartbeatProvider, warmed
-from sidekick_usages.heartbeat.domain import (
+from sidekick_usages.heartbeat.models import (
     HeartbeatProbeResult,
     HeartbeatTarget,
     UsageWindowState,
 )
+from sidekick_usages.heartbeat.ports import HeartbeatProvider, warmed
 from sidekick_usages.http import HttpClient, HttpOperation
 from sidekick_usages.providers.codex import USER_AGENT, CodexProvider
 from sidekick_usages.serialization import JsonObject

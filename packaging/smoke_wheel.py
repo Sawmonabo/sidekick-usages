@@ -26,14 +26,63 @@ REQUIRED_WHEEL_MEMBERS = frozenset(
         "sidekick_usages/http/__init__.py",
         "sidekick_usages/http/client.py",
         "sidekick_usages/http/retry.py",
+        "sidekick_usages/heartbeat/models.py",
+        "sidekick_usages/heartbeat/ports.py",
+        "sidekick_usages/persistence/__init__.py",
+        "sidekick_usages/persistence/_compat/v060-reader.zip",
+        "sidekick_usages/persistence/_platform/__init__.py",
+        "sidekick_usages/persistence/_platform/macos.py",
+        "sidekick_usages/persistence/_platform/posix.py",
+        "sidekick_usages/persistence/_platform/posix_files.py",
+        "sidekick_usages/persistence/_platform/posix_mounts.py",
+        "sidekick_usages/persistence/_platform/posix_namespace.py",
+        "sidekick_usages/persistence/_platform/posix_private.py",
+        "sidekick_usages/persistence/_platform/windows.py",
+        "sidekick_usages/persistence/_platform/windows_files.py",
+        "sidekick_usages/persistence/_platform/windows_handles.py",
+        "sidekick_usages/persistence/_platform/windows_namespace.py",
+        "sidekick_usages/persistence/_platform/windows_private.py",
+        "sidekick_usages/persistence/_platform/windows_private_tree.py",
+        "sidekick_usages/persistence/_platform/windows_security.py",
+        "sidekick_usages/persistence/_recovery.py",
+        "sidekick_usages/persistence/_schema_models.py",
+        "sidekick_usages/persistence/account_store.py",
+        "sidekick_usages/persistence/artifacts.py",
+        "sidekick_usages/persistence/assessment.py",
+        "sidekick_usages/persistence/errors.py",
+        "sidekick_usages/persistence/filesystem.py",
+        "sidekick_usages/persistence/inventory.py",
+        "sidekick_usages/persistence/locking.py",
+        "sidekick_usages/persistence/migration_errors.py",
+        "sidekick_usages/persistence/migrations.py",
+        "sidekick_usages/persistence/observations.py",
+        "sidekick_usages/persistence/private_credentials.py",
+        "sidekick_usages/persistence/schemas.py",
+        "sidekick_usages/persistence/transaction.py",
+        "sidekick_usages/persistence/transforms.py",
+        "sidekick_usages/persistence/v060.py",
+        "sidekick_usages/providers/claude/__init__.py",
+        "sidekick_usages/providers/claude/credentials.py",
+        "sidekick_usages/providers/claude/heartbeat.py",
+        "sidekick_usages/providers/claude/provider.py",
+        "sidekick_usages/providers/claude/schemas.py",
+        "sidekick_usages/providers/claude/usage.py",
         "sidekick_usages/serialization/__init__.py",
         "sidekick_usages/serialization/json.py",
+        "sidekick_usages/usage/__init__.py",
+        "sidekick_usages/usage/models.py",
+        "sidekick_usages/usage/service.py",
     }
 )
 FORBIDDEN_WHEEL_MEMBERS = frozenset(
     {
         "sidekick_usages/http.py",
         "sidekick_usages/report.py",
+        "sidekick_usages/store.py",
+        "sidekick_usages/heartbeat/base.py",
+        "sidekick_usages/heartbeat/claude.py",
+        "sidekick_usages/heartbeat/domain.py",
+        "sidekick_usages/providers/claude.py",
     }
 )
 
@@ -262,12 +311,68 @@ def verify_installed_wheel(wheel: Path) -> None:
 
         origin_check = (
             "import pathlib, sidekick_usages, sys; "
+            "import sidekick_usages.persistence.filesystem; "
+            "import sidekick_usages.persistence.locking; "
+            "import sidekick_usages.persistence.private_credentials; "
+            "import sidekick_usages.persistence.transaction; "
             "origin = pathlib.Path(sidekick_usages.__file__).resolve(); "
             "prefix = pathlib.Path(sys.prefix).resolve(); "
             "assert origin.is_relative_to(prefix), (origin, prefix)"
         )
         _run(
             [str(python), "-c", origin_check],
+            cwd=run_dir,
+            env=env,
+        )
+
+        compatibility_check = """
+from pathlib import Path
+
+from sidekick_usages.core.models import Account, ClaudeCredentials
+from sidekick_usages.core.types import AccountLabel
+from sidekick_usages.persistence.artifacts import (
+    FileFingerprint,
+    FileIdentity,
+    FileSnapshot,
+    sha256_digest,
+)
+from sidekick_usages.persistence.schemas import encode_generation_zero
+from sidekick_usages.persistence.transforms import (
+    accounts_to_version_one,
+    version_one_to_v060,
+)
+from sidekick_usages.persistence.v060 import ReleasedV060Verifier
+
+account = Account(
+    label=AccountLabel("claude-wheel-测试"),
+    credentials=ClaudeCredentials(
+        access_token="test-only-wheel-access",
+        refresh_token="test-only-wheel-refresh",
+    ),
+    plan="team",
+)
+payload = encode_generation_zero(
+    version_one_to_v060(accounts_to_version_one((account,)))
+)
+authority = Path("synthetic-accounts.json").resolve()
+authority.write_bytes(payload)
+metadata = authority.stat()
+expected = FileSnapshot(
+    FileFingerprint(
+        FileIdentity(metadata.st_dev, metadata.st_ino),
+        sha256_digest(payload),
+        len(payload),
+    ),
+    metadata.st_nlink,
+    payload,
+)
+verifier = ReleasedV060Verifier()
+verifier.preflight()
+verifier.verify(authority, expected)
+authority.unlink()
+"""
+        _run(
+            [str(python), "-c", compatibility_check],
             cwd=run_dir,
             env=env,
         )

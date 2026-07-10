@@ -14,12 +14,17 @@ from sidekick_usages.core.models import Account, ClaudeCredentials
 from sidekick_usages.core.types import AccountLabel
 from sidekick_usages.errors import AuthError, InvalidPayloadError
 from sidekick_usages.http import HttpClient, HttpOperation
-from sidekick_usages.providers import claude as claude_module
 from sidekick_usages.providers.claude import ClaudeProvider
+from sidekick_usages.providers.claude import provider as claude_provider_module
+from sidekick_usages.providers.claude.provider import (
+    SetupTokenSuccess,
+    SetupTokenTimedOut,
+)
 from sidekick_usages.serialization import JsonObject
 from tests.test_support import REFERENCE_TIME, FixedClock
 
 CLI_REFRESH_TIMEOUT_SECONDS = 60
+SETUP_TOKEN_TIMEOUT_SECONDS = 600
 CLI_EXPIRES_AT_MS = 1_781_270_062_459
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
@@ -75,7 +80,11 @@ def _acct(refresh_token: str | None = "refresh-old") -> Account:
 
 def _disable_cli_refresh(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make CLI-backed refresh unavailable for direct-HTTP tests."""
-    monkeypatch.setattr(claude_module.shutil, "which", lambda name: None)
+    monkeypatch.setattr(
+        claude_provider_module.shutil,
+        "which",
+        lambda name: None,
+    )
 
     def _raise_not_found(*args: object, **kwargs: object) -> None:
         del args, kwargs
@@ -102,7 +111,7 @@ def test_claude_refresh_uses_cli_refresh_token_login(
     http = _FakeHttp(response_json={"access_token": "http-unused"})
     acct = _acct()
     monkeypatch.setattr(
-        claude_module.shutil,
+        claude_provider_module.shutil,
         "which",
         lambda name: "/usr/bin/claude" if name == "claude" else None,
     )
@@ -210,7 +219,7 @@ def test_claude_refresh_cli_rejection_does_not_fallback_to_http(
     http = _FakeHttp(response_json={"access_token": "http-unused"})
     acct = _acct()
     monkeypatch.setattr(
-        claude_module.shutil,
+        claude_provider_module.shutil,
         "which",
         lambda name: "/usr/bin/claude" if name == "claude" else None,
     )
@@ -343,3 +352,79 @@ def test_claude_refresh_rejects_malformed_optional_fields_atomically(
         _provider().refresh_token(acct, _FakeHttp(response_json=response))
 
     assert acct.credentials is original
+
+
+def test_setup_token_capture_filters_the_token_from_safe_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Capture returns the first token while redacting every token line."""
+    first_token = "sk-ant-oat01-synthetic-token"
+    second_token = "sk-ant-oat01-other-synthetic-token"
+    monkeypatch.setattr(
+        claude_provider_module.shutil,
+        "which",
+        lambda name: "/usr/bin/claude" if name == "claude" else None,
+    )
+
+    def _run(
+        command: list[str],
+        *,
+        capture_output: bool,
+        text: bool,
+        timeout: int,
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        assert command == ["/usr/bin/claude", "setup-token"]
+        assert capture_output is True
+        assert text is True
+        assert timeout == SETUP_TOKEN_TIMEOUT_SECONDS
+        assert check is False
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            (
+                "Opening browser\n"
+                f"Token: {first_token}\n"
+                f"Rotated token: {second_token}\n"
+                "Complete\n"
+            ),
+            "",
+        )
+
+    monkeypatch.setattr(claude_provider_module.subprocess, "run", _run)
+
+    result = _provider().capture_setup_token()
+
+    assert result == SetupTokenSuccess(
+        first_token,
+        ("Opening browser", "Complete", ""),
+    )
+
+
+def test_setup_token_capture_reports_its_bounded_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A browser flow exceeding the deadline remains an explicit state."""
+    monkeypatch.setattr(
+        claude_provider_module.shutil,
+        "which",
+        lambda name: "/usr/bin/claude" if name == "claude" else None,
+    )
+
+    def _run(
+        command: list[str],
+        *,
+        capture_output: bool,
+        text: bool,
+        timeout: int,
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        del capture_output, text, check
+        raise subprocess.TimeoutExpired(command, timeout)
+
+    monkeypatch.setattr(claude_provider_module.subprocess, "run", _run)
+
+    assert isinstance(
+        _provider().capture_setup_token(),
+        SetupTokenTimedOut,
+    )

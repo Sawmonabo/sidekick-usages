@@ -18,17 +18,19 @@ from sidekick_usages.core.types import (
     ProviderId,
     RefreshStatus,
 )
-from sidekick_usages.errors import UsageError
-from sidekick_usages.providers.claude import ClaudeProvider, _claude_expiry
+from sidekick_usages.persistence.errors import InvalidSchemaError
+from sidekick_usages.providers.claude.schemas import (
+    claude_expiry,
+    parse_credentials_blob,
+)
 from sidekick_usages.providers.codex import _jwt_expiry
 from sidekick_usages.serialization import JsonValue, decode_json_object
-from sidekick_usages.store import AccountStore
-from tests.test_support import make_application_paths
+from tests.test_support import make_account_store
 
 
 def test_claude_parser_preserves_known_scope_order() -> None:
     """A valid provider scope list remains ordered and immutable."""
-    detected = ClaudeProvider._parse_blob(
+    detected = parse_credentials_blob(
         {
             "claudeAiOauth": {
                 "accessToken": "sk-ant-oat01-abc",
@@ -53,7 +55,7 @@ def test_claude_parser_treats_absent_or_malformed_scopes_as_unknown(
     if scopes is not None:
         oauth["scopes"] = scopes
 
-    detected = ClaudeProvider._parse_blob({"claudeAiOauth": oauth})
+    detected = parse_credentials_blob({"claudeAiOauth": oauth})
 
     assert detected is not None
     assert detected.scopes is None
@@ -80,7 +82,7 @@ def test_provider_native_expiry_units_converge_and_fail_closed(
 ) -> None:
     """Provider epochs converge; malformed values remain explicitly invalid."""
     expiry = (
-        _claude_expiry(native_value)
+        claude_expiry(native_value)
         if provider_id is ProviderId.CLAUDE
         else _jwt_expiry({"exp": native_value})
     )
@@ -105,7 +107,6 @@ def test_store_round_trips_exact_provider_state(tmp_path: Path) -> None:
     reset_time = datetime(2026, 6, 12, 9, tzinfo=eastern)
     audit_time_utc = audit_time.astimezone(UTC)
     reset_time_utc = reset_time.astimezone(UTC)
-    store = AccountStore(make_application_paths(tmp_path).accounts)
     claude_account = Account(
         label=AccountLabel("claude-team"),
         credentials=ClaudeCredentials(
@@ -132,21 +133,23 @@ def test_store_round_trips_exact_provider_state(tmp_path: Path) -> None:
         last_heartbeat_at=audit_time,
         last_heartbeat_status=HeartbeatStatus.WARMED,
     )
-    store.upsert(claude_account)
-    store.upsert(codex_account)
-    store.save()
+    store = make_account_store(tmp_path, (claude_account, codex_account))
 
     raw = decode_json_object(store.path.read_bytes())
-    claude_record = raw["claude-team"]
-    codex_record = raw["codex-pro"]
+    records = raw["accounts"]
+    assert isinstance(records, dict)
+    claude_record = records["claude-team"]
+    codex_record = records["codex-pro"]
     assert isinstance(claude_record, dict)
     assert isinstance(codex_record, dict)
-    assert claude_record["expires_at"] == claude_expiry_ms
-    assert codex_record["expires_at"] == codex_expiry_seconds
+    assert claude_record["expires_at"] == "2027-01-15T08:00:00.123000Z"
+    assert codex_record["expires_at"] == "2030-03-17T17:46:40.000000Z"
     assert claude_record["last_refresh_at"] == "2026-06-12T12:34:56.789000Z"
-    assert claude_record["heartbeat_5h_reset_at"] == "2026-06-12T13:00:00Z"
+    assert (
+        claude_record["heartbeat_5h_reset_at"] == "2026-06-12T13:00:00.000000Z"
+    )
 
-    restored = AccountStore(make_application_paths(tmp_path).accounts).load()
+    restored = make_account_store(tmp_path)
     claude = restored.get("claude-team")
     codex = restored.get("codex-pro")
 
@@ -169,7 +172,7 @@ def test_store_round_trips_exact_provider_state(tmp_path: Path) -> None:
         claude_account.credentials,
         expiry=KnownExpiry(claude_expiry + timedelta(microseconds=1)),
     )
-    with pytest.raises(UsageError, match="precision"):
-        store.save()
-    with pytest.raises(UsageError, match="Account labels"):
+    with pytest.raises(InvalidSchemaError):
+        store.persist(claude_account)
+    with pytest.raises(ValueError, match="Account labels"):
         restored.rename("claude-team", "invalid\x00label")

@@ -22,9 +22,11 @@ import re
 import stat
 from base64 import urlsafe_b64decode
 from binascii import Error as B64Error
+from collections.abc import Mapping
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Protocol
 
 from sidekick_usages.clock import Clock
 from sidekick_usages.core.expiry import (
@@ -48,6 +50,12 @@ from sidekick_usages.errors import (
     UsageError,
 )
 from sidekick_usages.http import HttpClient, HttpOperation
+from sidekick_usages.persistence.errors import (
+    PrivateCredentialCollisionError,
+)
+from sidekick_usages.persistence.private_credentials import (
+    PrivateCredentialOwnership,
+)
 from sidekick_usages.providers.base import Provider
 from sidekick_usages.serialization import (
     JsonObject,
@@ -74,6 +82,33 @@ TOKEN_RE = re.compile(
 )
 
 
+class PrivateAuthBundleWriter(Protocol):
+    """Provider-neutral writer for one Sidekick-owned private bundle."""
+
+    def write_bundle(
+        self,
+        bundle_path: Path,
+        files: Mapping[str, bytes],
+        *,
+        expected_bundle_present: bool,
+        expected_files: Mapping[str, bytes | None],
+    ) -> Path:
+        """Durably write a bundle under the shared account lock."""
+
+    def classify_bundle(self, bundle_path: Path) -> PrivateCredentialOwnership:
+        """Classify requested bundle ownership without filesystem mutation."""
+
+    def read_bundle_file(
+        self,
+        bundle_path: Path,
+        basename: str,
+    ) -> bytes | None:
+        """Read one proven canonical bundle file when present."""
+
+    def bundle_present(self, bundle_path: Path) -> bool:
+        """Return whether a proven canonical bundle has descendants."""
+
+
 class CodexProvider(Provider):
     """Codex CLI integration."""
 
@@ -81,9 +116,14 @@ class CodexProvider(Provider):
     display_name = "Codex CLI"
     token_pattern = TOKEN_RE
 
-    def __init__(self, clock: Clock) -> None:
-        """Use an injected wall clock for refreshed credentials."""
+    def __init__(
+        self,
+        clock: Clock,
+        private_auth_writer: PrivateAuthBundleWriter | None = None,
+    ) -> None:
+        """Use injected time and private credential persistence."""
         self.clock = clock
+        self._private_auth_writer = private_auth_writer
 
     # -- credential detection --------------------------------------
     def detect_credentials(
@@ -199,6 +239,9 @@ class CodexProvider(Provider):
         credentials = _codex_credentials(account)
         if not credentials.refresh_token:
             return False
+        existing_account_id = credentials.account_id or _account_id_from_token(
+            credentials.access_token
+        )
         try:
             response = http.post_form(
                 OAUTH_REFRESH_ENDPOINT,
@@ -221,18 +264,25 @@ class CodexProvider(Provider):
             new_token,
             reference_time,
         )
-        account.credentials = replace(
+        staged_credentials = replace(
             updated,
             auth_last_refresh=_utc_z(reference_time),
         )
-        if plan:
-            account.plan = plan
-        if account.codex_home:
-            write_account_auth_file(
-                account,
-                Path(account.codex_home),
+        staged = replace(
+            account,
+            credentials=staged_credentials,
+            plan=plan or account.plan,
+        )
+        if staged.codex_home and self._private_auth_writer is not None:
+            write_private_account_auth_bundle(
+                staged,
+                self._private_auth_writer,
+                Path(staged.codex_home),
                 reference_time=reference_time,
+                existing_account_id=existing_account_id,
             )
+        account.credentials = staged.credentials
+        account.plan = staged.plan
         return True
 
     # -- setup-token -----------------------------------------------
@@ -334,19 +384,101 @@ def write_account_auth_file(
         from, such as ``auth_mode``.
     :return: True when a complete auth file was written.
     """
+    existing = source_blob or read_auth_blob(codex_home) or {}
+    prepared = _prepared_auth_blob(account, existing, reference_time)
+    if prepared is None:
+        return False
+    blob, id_token, account_id = prepared
+
+    ensure_file_auth_home(codex_home)
+    path = codex_auth_path(codex_home)
+    path.write_text(json.dumps(blob, indent=2))
+    if platform.system() != "Windows":
+        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+    _record_auth_home(
+        account,
+        codex_home,
+        blob,
+        id_token,
+        account_id,
+    )
+    return True
+
+
+def write_private_account_auth_bundle(
+    account: Account,
+    writer: PrivateAuthBundleWriter,
+    codex_home: Path,
+    *,
+    reference_time: datetime,
+    source_blob: JsonObject | None = None,
+    existing_account_id: str | None = None,
+) -> bool:
+    """Write a Sidekick-owned Codex bundle through the native boundary."""
+    if (
+        writer.classify_bundle(codex_home)
+        is not PrivateCredentialOwnership.CANONICAL
+    ):
+        return False
+    existing_auth = writer.read_bundle_file(codex_home, CODEX_AUTH_FILE)
+    existing_blob: JsonObject | None = None
+    if existing_auth is None:
+        if writer.bundle_present(codex_home):
+            raise PrivateCredentialCollisionError(codex_home.name)
+    else:
+        try:
+            existing_blob = decode_json_object(existing_auth)
+        except InvalidPayloadError:
+            raise PrivateCredentialCollisionError(codex_home.name) from None
+        owned_account_id = existing_account_id or account.provider_account_id
+        if (
+            owned_account_id is None
+            or _auth_blob_account_id(existing_blob) != owned_account_id
+        ):
+            raise PrivateCredentialCollisionError(codex_home.name)
+    prepared = _prepared_auth_blob(
+        account,
+        source_blob if source_blob is not None else existing_blob or {},
+        reference_time,
+    )
+    if prepared is None:
+        return False
+    blob, id_token, account_id = prepared
+    durable_home = writer.write_bundle(
+        codex_home,
+        {
+            CODEX_CONFIG_FILE: f"{CODEX_FILE_AUTH_CONFIG}\n".encode(),
+            CODEX_AUTH_FILE: json.dumps(blob, indent=2).encode(),
+        },
+        expected_bundle_present=existing_auth is not None,
+        expected_files={CODEX_AUTH_FILE: existing_auth},
+    )
+    _record_auth_home(
+        account,
+        durable_home,
+        blob,
+        id_token,
+        account_id,
+    )
+    return True
+
+
+def _prepared_auth_blob(
+    account: Account,
+    existing: JsonObject,
+    reference_time: datetime,
+) -> tuple[JsonObject, str, str] | None:
+    """Build one complete CLI-compatible Codex auth document."""
     if (
         account.provider_id is not ProviderId.CODEX
         or not account.refresh_token
     ):
-        return False
-    credentials = _codex_credentials(account)
-    existing = source_blob or read_auth_blob(codex_home) or {}
+        return None
     existing_tokens = _auth_tokens(existing)
     id_token = _auth_id_token(account, existing_tokens)
     account_id = _auth_account_id(account)
     if not id_token or not account_id:
-        return False
-
+        return None
     blob = dict(existing)
     blob["auth_mode"] = _auth_mode(existing)
     blob["last_refresh"] = _auth_last_refresh(
@@ -360,12 +492,18 @@ def write_account_auth_file(
         id_token,
         account_id,
     )
+    return blob, id_token, account_id
 
-    ensure_file_auth_home(codex_home)
-    path = codex_auth_path(codex_home)
-    path.write_text(json.dumps(blob, indent=2))
-    if platform.system() != "Windows":
-        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+
+def _record_auth_home(
+    account: Account,
+    codex_home: Path,
+    blob: JsonObject,
+    id_token: str,
+    account_id: str,
+) -> None:
+    """Record metadata only after a complete auth bundle is durable."""
+    credentials = _codex_credentials(account)
     account.credentials = replace(
         credentials,
         auth_home=str(codex_home.expanduser()),
@@ -373,7 +511,6 @@ def write_account_auth_file(
         auth_last_refresh=str(blob["last_refresh"]),
         account_id=account_id,
     )
-    return True
 
 
 def auth_blob_matches_account(
@@ -381,18 +518,23 @@ def auth_blob_matches_account(
     account: Account,
 ) -> bool:
     """Return whether a Codex auth blob belongs to ``account``."""
+    return bool(
+        account.provider_account_id
+        and _auth_blob_account_id(blob) == account.provider_account_id
+    )
+
+
+def _auth_blob_account_id(blob: JsonObject) -> str | None:
+    """Return the provider account id proven by one Codex auth blob."""
     tokens = blob.get("tokens")
     if not isinstance(tokens, dict):
-        return False
+        return None
     account_id = tokens.get("account_id")
     if not isinstance(account_id, str):
         access = tokens.get("access_token")
         if isinstance(access, str):
             account_id = _account_id_from_token(access)
-    return bool(
-        account.provider_account_id
-        and account_id == account.provider_account_id
-    )
+    return account_id if isinstance(account_id, str) else None
 
 
 def _auth_tokens(existing: JsonObject) -> JsonObject:

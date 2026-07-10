@@ -14,7 +14,6 @@ from sidekick_usages.persistence.errors import (
     SchemaIssue,
     SchemaIssueCode,
 )
-from sidekick_usages.persistence.migrations import prototype_to_version_one
 from sidekick_usages.persistence.schemas import (
     MAX_ACCOUNTS,
     MAX_DOCUMENT_BYTES,
@@ -30,6 +29,7 @@ from sidekick_usages.persistence.schemas import (
     encode_prototype_receipt,
     encode_version_one,
 )
+from sidekick_usages.persistence.transforms import prototype_to_version_one
 from sidekick_usages.serialization import JsonObject, JsonValue
 
 EXPIRY = "2026-07-11T12:00:00.000000Z"

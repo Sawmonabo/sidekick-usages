@@ -28,8 +28,8 @@ from sidekick_usages.core.types import (
 )
 from sidekick_usages.errors import UsageError
 from sidekick_usages.http import HttpClient
+from sidekick_usages.persistence.account_store import AccountStore
 from sidekick_usages.providers.base import Provider
-from sidekick_usages.store import AccountStore
 
 CLAUDE_REFRESH_MARGIN_SECONDS = 30 * 60
 CODEX_REFRESH_MARGIN_SECONDS = 10 * 60
@@ -149,8 +149,7 @@ class TokenMaintenanceService:
             )
 
         record_refresh_success(account, self.clock.now())
-        self.store.upsert(account)
-        self.store.save()
+        self.store.persist(account)
         return RefreshOutcome(
             label=account.label,
             provider_id=account.provider_id,
@@ -207,8 +206,7 @@ class TokenMaintenanceService:
     ) -> RefreshOutcome:
         """Persist a failed refresh diagnostic and return its outcome."""
         record_refresh_failure(account, message, self.clock.now())
-        self.store.upsert(account)
-        self.store.save()
+        self.store.persist(account)
         return RefreshOutcome(
             label=account.label,
             provider_id=account.provider_id,

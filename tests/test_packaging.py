@@ -34,15 +34,39 @@ def test_runtime_dependencies_and_lock_match_reviewed_versions() -> None:
 
     assert "click>=8.1" in dependencies
     assert "pydantic==2.13.4" in dependencies
+    assert "portalocker==3.2.0" in dependencies
+    assert "pywin32==312; sys_platform == 'win32'" in dependencies
+    assert all(
+        not dependency.startswith("pywin32==312")
+        or dependency.endswith("sys_platform == 'win32'")
+        for dependency in dependencies
+    )
     assert "urllib3==2.7.0" in dependencies
+    assert set(pyproject["dependency-groups"]["dev"]) == {
+        "ty>=0.0.35",
+        "types-pywin32==312.0.0.20260609; sys_platform == 'win32'",
+    }
+    assert locked["portalocker"] == "3.2.0"
     assert locked["pydantic"] == "2.13.4"
     assert locked["pydantic-core"] == "2.46.4"
+    assert locked["pywin32"] == "312"
     assert locked["urllib3"] == "2.7.0"
     assert "B310" not in pyproject["tool"]["bandit"]["skips"]
 
 
 def test_exact_wheel_selection_and_member_contract(tmp_path: Path) -> None:
     """Ambiguous artifacts and stale module/package collisions fail closed."""
+    assert {
+        "sidekick_usages/heartbeat/base.py",
+        "sidekick_usages/heartbeat/domain.py",
+        "sidekick_usages/store.py",
+    } <= smoke_wheel.FORBIDDEN_WHEEL_MEMBERS
+    assert {
+        "sidekick_usages/heartbeat/models.py",
+        "sidekick_usages/heartbeat/ports.py",
+        "sidekick_usages/persistence/_compat/v060-reader.zip",
+        "sidekick_usages/persistence/transaction.py",
+    } <= smoke_wheel.REQUIRED_WHEEL_MEMBERS
     artifacts = tmp_path / "artifacts"
     artifacts.mkdir()
     wheel_name, sdist_name = smoke_wheel.expected_artifact_names()

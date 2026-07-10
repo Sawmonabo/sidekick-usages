@@ -2094,7 +2094,14 @@ a securely opened parent directory and descriptor-relative names:
 - `rename()`/`os.replace()` commits authoritative replacement;
 - the parent directory is synchronized after publication, replacement,
   cleanup, and credential deletion; and
-- final symlinks, non-regular files, and link counts other than one fail.
+- final symlinks, non-regular files, and unexpected link counts fail.
+
+Deletion holds the exact validated victim descriptor across the
+descriptor-relative unlink. Success requires the held inode's link count to
+fall by exactly one and the deleted basename to remain absent. A private-tree
+directory deletion likewise proves that the held directory, rather than a
+same-name replacement, became unlinked. Namespace replacement never produces
+false reset success.
 
 macOS follows that namespace protocol and requests `F_FULLFSYNC` for account
 files and backups when available. An I/O failure is terminal; it is not treated
@@ -2126,6 +2133,23 @@ object, or broad credential read/write for Everyone, Anonymous, Guests,
 Authenticated Users, or Builtin Users fails closed. Enterprise inheritance
 that cannot be classified receives repair guidance and is never stripped
 silently.
+
+Released v0.6 installations may have current-user-owned application and
+private-Codex root directories at `0755` even though credential files and
+per-account leaves are private. Passive assessment fails closed and never
+changes them. Doctor reports the structured next command
+`sidekick-usages permissions repair`; it does not prescribe recursive shell
+permission changes.
+
+The confirmed repair operation preflights the exact owner-controlled local
+application root, rejects group/other-writable or linked/reparse state, holds
+and identity-verifies the object while applying `0700` or the exact protected
+Windows DACL, and then acquires the normal persistent account lock. Under that
+lock it revalidates the account parent, repairs only the complete validated
+private credential tree, performs a strict rescan, and reassesses persistence.
+It preserves credential bytes and unrelated children. Windows uses the
+adopted pywin32 security boundary and exact current-user, LocalSystem, and
+Administrators SIDs; it never shells out to `icacls` or `Set-Acl`.
 
 Stable source identity is `(st_dev, st_ino)` from the open final handle on
 POSIX and Windows, combined on every platform with SHA-256 over bounded exact
@@ -2166,20 +2190,26 @@ Normal command behavior is:
 | Malformed, unreadable, unsafe, conflicting, or partial | Fail closed with doctor action |
 | Unknown future version | `future_schema`; require compatible software |
 
-Help and version bypass assessment. Doctor consumes only the read-only
-assessment and never constructs `AccountStore` from invalid state.
+Help and version bypass assessment. Doctor consumes a read-only validated
+account snapshot from persistence and never constructs `AccountStore`, even
+for empty or current state.
 
 The authorized surfaces are:
 
 ```text
 sidekick-usages migrate accounts [--yes] [--reimport-prototype]
 sidekick-usages migrate prepare-rollback --target v0.6.0 [--yes]
+sidekick-usages permissions repair [--yes]
 ```
 
-Both commands acquire the lock, require the installed Sidekick scheduler to be
-stopped, print only safe path/generation/count/backup data, and require terminal
-confirmation unless `--yes` is explicit. Prototype reimport is never automatic
-and requires the explicit option and confirmation.
+These mutation commands require the installed Sidekick scheduler to be
+stopped, print only safe path/generation/count/artifact data, and require
+terminal confirmation unless `--yes` is explicit. Migration and rollback
+acquire the normal lock before mutation. Permission repair uses only the
+bounded owner-controlled bootstrap needed to make the released account parent
+lockable, then acquires the same normal lock before any credential-tree repair.
+Prototype reimport is never automatic and requires the explicit option and
+confirmation.
 
 The lock budget is exactly five seconds with a 100 ms check interval. The
 filesystem adapter securely creates or opens and validates the persistent
@@ -2236,8 +2266,7 @@ Full reset is a credential-destruction transaction under the lock. It removes:
 - the authoritative account document;
 - every valid Sidekick-managed v0/v1 account backup or snapshot;
 - owned secret-bearing account temporaries; and
-- referenced Sidekick-owned private Codex bundles once the credential
-  coordinator owns that operation.
+- every Sidekick-owned private Codex bundle in the bound private root.
 
 It retains the non-secret lock and prototype receipts and never deletes the
 external prototype. If any credential artifact cannot be removed, reset returns
@@ -2251,6 +2280,10 @@ when the immediate failed operation returned `reset_incomplete`.
 A provider-scoped reset cannot delete shared historical backups without
 destroying the other provider's recovery state. Only full reset, or a separately
 approved explicit prune workflow, removes those shared historical copies.
+
+All Sidekick-owned private credential writes, permission repair, and deletion
+participate in the same persistent account lock. A writer cannot recreate a
+bundle between reset's absence proof and authority-last deletion.
 
 After reset, a matching receipt prevents stale prototype credentials from
 reappearing. A changed prototype is reported as available but still requires

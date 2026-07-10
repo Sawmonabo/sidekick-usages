@@ -10,12 +10,24 @@ import pytest
 
 from sidekick_usages.core.expiry import InvalidExpiry, KnownExpiry
 from sidekick_usages.core.models import Account, CodexCredentials
-from sidekick_usages.core.types import AccountLabel
+from sidekick_usages.core.types import AccountLabel, ProviderId, RefreshStatus
 from sidekick_usages.errors import InvalidPayloadError
 from sidekick_usages.http import HttpClient, HttpOperation
-from sidekick_usages.providers.codex import CodexProvider
+from sidekick_usages.maintenance import TokenMaintenanceService
+from sidekick_usages.persistence.errors import (
+    DurabilityUncertainError,
+    PrivateCredentialCollisionError,
+)
+from sidekick_usages.persistence.private_credentials import (
+    PrivateCredentialOwnership,
+    PrivateCredentialTree,
+)
+from sidekick_usages.providers.codex import (
+    CodexProvider,
+    write_private_account_auth_bundle,
+)
 from sidekick_usages.serialization import JsonObject
-from tests.test_support import REFERENCE_TIME, FixedClock
+from tests.test_support import REFERENCE_TIME, FixedClock, make_account_store
 
 DETECTED_EXP = 1_800_000_000
 REFRESH_EXP = 1_900_000_000
@@ -95,6 +107,46 @@ class _RefreshHttp(HttpClient):
         assert operation is HttpOperation.CODEX_REFRESH
         self.data = dict(data)
         return self.payload
+
+
+class _FailingPrivateWriter:
+    """Fail after refresh staging reaches the private durability boundary."""
+
+    def classify_bundle(self, bundle_path: Path) -> PrivateCredentialOwnership:
+        del bundle_path
+        return PrivateCredentialOwnership.CANONICAL
+
+    def read_bundle_file(
+        self,
+        bundle_path: Path,
+        basename: str,
+    ) -> bytes | None:
+        del bundle_path, basename
+        return json.dumps(
+            {
+                "tokens": {
+                    "access_token": "access-old",
+                    "refresh_token": "refresh-old",
+                    "id_token": "id-old",
+                    "account_id": "acct_123",
+                }
+            }
+        ).encode()
+
+    def bundle_present(self, bundle_path: Path) -> bool:
+        del bundle_path
+        return True
+
+    def write_bundle(
+        self,
+        bundle_path: Path,
+        files: Mapping[str, bytes],
+        *,
+        expected_bundle_present: bool,
+        expected_files: Mapping[str, bytes | None],
+    ) -> Path:
+        del bundle_path, files, expected_bundle_present, expected_files
+        raise DurabilityUncertainError("codex-pro")
 
 
 def _usage_payload() -> JsonObject:
@@ -327,8 +379,8 @@ def test_refresh_rejects_malformed_metadata_before_replacing_credentials(
     assert acct.credentials is original
 
 
-def test_refresh_writes_rotated_tokens_to_saved_codex_home(tmp_path) -> None:
-    """Refresh rotation is persisted to the account's isolated auth.json."""
+def test_refresh_keeps_external_codex_home_read_only(tmp_path: Path) -> None:
+    """Provider refresh never writes an unowned provider-native home."""
     codex_home = tmp_path / "codex-pro"
     codex_home.mkdir()
     (codex_home / "auth.json").write_text(
@@ -369,13 +421,145 @@ def test_refresh_writes_rotated_tokens_to_saved_codex_home(tmp_path) -> None:
 
     saved_auth = json.loads((codex_home / "auth.json").read_text())
     assert saved_auth["auth_mode"] == "chatgpt"
-    assert saved_auth["tokens"]["access_token"] == access
-    assert saved_auth["tokens"]["refresh_token"] == "refresh-new"
-    assert saved_auth["tokens"]["id_token"] == "id-new"
-    assert saved_auth["tokens"]["account_id"] == "acct_new"
+    assert saved_auth["tokens"]["access_token"] == "access-old"
+    assert saved_auth["tokens"]["refresh_token"] == "refresh-old"
+    assert acct.access_token == access
+    assert acct.refresh_token == "refresh-new"
     assert acct.expiry == KnownExpiry(
         REFERENCE_TIME.replace(microsecond=0) + timedelta(seconds=60)
     )
     assert acct.codex_last_refresh == "2026-06-12T12:34:56.789000Z"
-    assert saved_auth["last_refresh"] == acct.codex_last_refresh
     assert clock.calls == 1
+
+
+def test_refresh_writes_rotated_tokens_to_canonical_private_home(
+    tmp_path: Path,
+) -> None:
+    """Owned refresh uses the durable shared-lock credential writer."""
+    app_root = tmp_path / "sidekick-usages"
+    accounts = app_root / "accounts.json"
+    private_root = app_root / "codex"
+    codex_home = private_root / "codex-pro"
+    tree = PrivateCredentialTree(private_root, account_path=accounts)
+    tree.write_bundle(
+        codex_home,
+        {
+            "auth.json": json.dumps(
+                {
+                    "auth_mode": "chatgpt",
+                    "future_metadata": {"preserve": True},
+                    "last_refresh": "2026-06-11T00:00:00Z",
+                    "tokens": {
+                        "access_token": "access-old",
+                        "refresh_token": "refresh-old",
+                        "id_token": "id-old",
+                        "account_id": "acct_123",
+                    },
+                }
+            ).encode(),
+            "config.toml": b'cli_auth_credentials_store = "file"\n',
+        },
+        expected_bundle_present=False,
+        expected_files={"auth.json": None},
+    )
+    access = _jwt(
+        {
+            "exp": REFRESH_EXP,
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": "acct_new",
+                "chatgpt_plan_type": "pro",
+            },
+        }
+    )
+    http = _RefreshHttp(
+        {
+            "access_token": access,
+            "refresh_token": "refresh-new",
+            "expires_in": 60,
+        }
+    )
+    acct = _acct(auth_home=str(codex_home))
+
+    assert CodexProvider(FixedClock(), tree).refresh_token(acct, http) is True
+
+    saved_auth = json.loads((codex_home / "auth.json").read_text())
+    assert saved_auth["future_metadata"] == {"preserve": True}
+    assert saved_auth["tokens"] == {
+        "access_token": access,
+        "refresh_token": "refresh-new",
+        "id_token": "id-old",
+        "account_id": "acct_new",
+    }
+
+
+def test_private_writer_rejects_existing_bundle_for_another_account(
+    tmp_path: Path,
+) -> None:
+    """A label collision cannot overwrite another account's credential."""
+    app_root = tmp_path / "sidekick-usages"
+    accounts = app_root / "accounts.json"
+    private_root = app_root / "codex"
+    codex_home = private_root / "shared-label"
+    tree = PrivateCredentialTree(private_root, account_path=accounts)
+    tree.write_bundle(
+        codex_home,
+        {
+            "auth.json": b'{"tokens":{"account_id":"acct_other"}}',
+        },
+        expected_bundle_present=False,
+        expected_files={"auth.json": None},
+    )
+
+    with pytest.raises(PrivateCredentialCollisionError):
+        write_private_account_auth_bundle(
+            _acct(auth_home=str(codex_home)),
+            tree,
+            codex_home,
+            reference_time=REFERENCE_TIME,
+        )
+
+    assert b"acct_other" in (codex_home / "auth.json").read_bytes()
+
+
+def test_failed_private_write_preserves_stored_credentials_and_records_failure(
+    tmp_path: Path,
+) -> None:
+    """A failed bundle commit cannot persist staged token rotation."""
+    codex_home = tmp_path / "codex" / "codex-pro"
+    account = _acct(auth_home=str(codex_home))
+    store = make_account_store(tmp_path, [account])
+    access = _jwt(
+        {
+            "exp": REFRESH_EXP,
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": "acct_123",
+            },
+        }
+    )
+    http = _RefreshHttp(
+        {
+            "access_token": access,
+            "refresh_token": "refresh-new",
+            "id_token": "id-new",
+        }
+    )
+    provider = CodexProvider(FixedClock(), _FailingPrivateWriter())
+    service = TokenMaintenanceService(
+        store,
+        http,
+        {ProviderId.CODEX: provider},
+        clock=FixedClock(),
+    )
+    stored = store.get("codex-pro")
+    assert stored is not None
+
+    outcome = service.refresh_account(stored, force=True)
+
+    assert outcome.status is RefreshStatus.FAILED
+    saved = store.get("codex-pro")
+    assert saved is not None
+    assert saved.access_token == "access-old"
+    assert saved.refresh_token == "refresh-old"
+    assert saved.plan == "unknown"
+    assert saved.last_refresh_status is RefreshStatus.FAILED
+    assert saved.last_refresh_error is not None

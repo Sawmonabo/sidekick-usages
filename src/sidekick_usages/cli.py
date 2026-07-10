@@ -5,6 +5,7 @@ with ``@app.command()``. State lives in a lazily initialized
 :class:`AppContext`; tests inject fakes through :func:`set_context`.
 """
 
+import hashlib
 import os
 import re
 import shlex
@@ -12,11 +13,11 @@ import subprocess
 import sys
 from collections.abc import Callable
 from contextlib import ExitStack
-from dataclasses import dataclass, field, replace
-from datetime import datetime, timedelta
+from dataclasses import dataclass, replace
+from datetime import datetime
 from functools import partial
 from pathlib import Path
-from typing import Annotated, NoReturn
+from typing import Annotated, NoReturn, Protocol, assert_never
 
 import click
 import typer
@@ -35,18 +36,14 @@ from sidekick_usages.branding import (
 from sidekick_usages.cli_help import BrandedTyper, BrandedTyperGroup
 from sidekick_usages.clock import Clock, SystemClock
 from sidekick_usages.core.expiry import (
-    ExpiredExpiry,
     InvalidExpiry,
     UnknownExpiry,
-    ValidExpiry,
-    classify_expiry,
 )
 from sidekick_usages.core.models import (
     Account,
     ClaudeCredentials,
     CodexCredentials,
     DetectedCredentials,
-    UsageReport,
 )
 from sidekick_usages.core.types import (
     AccountLabel,
@@ -57,8 +54,10 @@ from sidekick_usages.core.types import (
 from sidekick_usages.daemon import DaemonManager, DaemonOperation
 from sidekick_usages.doctor import (
     DoctorService,
-    doctor_exit_code,
     render_doctor,
+)
+from sidekick_usages.doctor import (
+    doctor_exit_code as account_doctor_exit_code,
 )
 from sidekick_usages.errors import (
     AuthError,
@@ -88,7 +87,6 @@ from sidekick_usages.lifetime import (
 from sidekick_usages.maintenance import (
     RefreshOutcome,
     TokenMaintenanceService,
-    record_refresh_failure,
     record_refresh_success,
     refresh_exit_code,
 )
@@ -96,8 +94,46 @@ from sidekick_usages.paths import (
     PrivateCodexLocations,
     discover_application_paths,
 )
+from sidekick_usages.persistence.account_store import AccountStore
+from sidekick_usages.persistence.assessment import (
+    PersistenceAssessment,
+    PersistenceCompositionFailure,
+    PersistenceOperationResult,
+    operation_exit_code,
+    recovery_guidance,
+    recovery_next_command,
+)
+from sidekick_usages.persistence.assessment import (
+    doctor_exit_code as persistence_doctor_exit_code,
+)
+from sidekick_usages.persistence.errors import (
+    ManagedFileReadError,
+    PersistenceCode,
+    PersistenceError,
+    UnsafeManagedFileError,
+    UnsupportedFilesystemError,
+)
+from sidekick_usages.persistence.migration_errors import (
+    PersistenceMigrationStateError,
+    PrototypeReimportRequiredError,
+    SchedulerMutationBlockedError,
+)
+from sidekick_usages.persistence.migrations import (
+    PermissionRepairOperationResult,
+    PersistenceMigrationService,
+)
+from sidekick_usages.persistence.private_credentials import (
+    PrivateCredentialTree,
+)
+from sidekick_usages.persistence.v060 import ReleasedV060Verifier
 from sidekick_usages.providers import build_provider_registry
 from sidekick_usages.providers.base import Provider
+from sidekick_usages.providers.claude import (
+    ClaudeProvider,
+    SetupTokenMissing,
+    SetupTokenSuccess,
+    SetupTokenTimedOut,
+)
 from sidekick_usages.providers.codex import (
     CodexProvider,
     auth_blob_matches_account,
@@ -105,10 +141,10 @@ from sidekick_usages.providers.codex import (
     ensure_file_auth_home,
     read_auth_blob,
     write_account_auth_file,
+    write_private_account_auth_bundle,
 )
-from sidekick_usages.render import FetchFailure, usage_overview
+from sidekick_usages.render import usage_overview
 from sidekick_usages.serialization import JsonObject
-from sidekick_usages.store import AccountStore
 from sidekick_usages.token_input import TokenInput
 from sidekick_usages.update import (
     InstallMethod,
@@ -118,11 +154,41 @@ from sidekick_usages.update import (
     manual_instructions,
     upgrade_command_for,
 )
+from sidekick_usages.usage import UsageCheckService
 
 
 # ---------------------------------------------------------------------
 # App context: injectable state
 # ---------------------------------------------------------------------
+class PersistenceCommands(Protocol):
+    """Persistence operations required by the current CLI adapter."""
+
+    def assess(self) -> PersistenceAssessment:
+        """Return a passive assessment."""
+
+    def mutation_preview(self) -> PersistenceAssessment:
+        """Require scheduler quiescence and return a safe preview."""
+
+    def read_accounts(self) -> tuple[Account, ...]:
+        """Return a validated read-only account snapshot."""
+
+    def migrate_accounts(
+        self,
+        *,
+        reimport_prototype: bool = False,
+    ) -> PersistenceAssessment:
+        """Migrate account authority or import the prototype."""
+
+    def prepare_rollback(self) -> PersistenceOperationResult:
+        """Prepare exact released-v0.6.0 compatibility."""
+
+    def repair_permissions(self) -> PermissionRepairOperationResult:
+        """Repair and verify the released-layout permission boundary."""
+
+    def full_reset(self) -> PersistenceAssessment:
+        """Delete every Sidekick-owned credential artifact."""
+
+
 @dataclass
 class AppContext:
     """Mutable container for shared dependencies.
@@ -136,10 +202,9 @@ class AppContext:
     :ivar clock: Invocation-scoped application wall clock.
     :ivar console: Rich console for stdout.
     :ivar err_console: Rich console pinned to stderr.
-    :ivar only: Provider filter applied to ``check`` (``--only``).
     """
 
-    store: AccountStore
+    store: AccountStore | None
     http: HttpClient
     providers: dict[ProviderId, Provider]
     heartbeat_providers: dict[ProviderId, HeartbeatProvider]
@@ -148,16 +213,109 @@ class AppContext:
     console: Console
     err_console: Console
     clock: Clock
-    only: ProviderId | None = None
-    collected: list[tuple[Account, UsageReport]] = field(default_factory=list)
-    failures: list[tuple[Account, FetchFailure]] = field(default_factory=list)
+    store_loader: Callable[[], AccountStore] | None = None
+    private_credentials: PrivateCredentialTree | None = None
+    persistence: PersistenceCommands | None = None
+    persistence_assessment: PersistenceAssessment | None = None
+    persistence_failure: PersistenceCompositionFailure | None = None
+
+    def require_store(self) -> AccountStore:
+        """Return the loaded runtime store or surface its blocked state."""
+        if self.store is not None:
+            return self.store
+        if self.store_loader is not None:
+            store = self.store_loader()
+            self.store = store
+            self.store_loader = None
+            return store
+        if self.persistence_assessment is not None:
+            assessment = self.persistence_assessment
+            self.err_console.print(f"[red]{assessment.message}[/red]")
+            if assessment.next_command is not None:
+                self.err_console.print(
+                    "[dim]Next: "
+                    + shlex.join(assessment.next_command)
+                    + "[/dim]"
+                )
+            raise typer.Exit(
+                code=persistence_doctor_exit_code(assessment.code)
+            )
+        if self.persistence_failure is not None:
+            self._exit_persistence_failure()
+        raise RuntimeError("Application context has no account store.")
+
+    def require_persistence(self) -> PersistenceCommands:
+        """Return the configured persistence coordinator."""
+        if self.persistence is None:
+            if self.persistence_failure is not None:
+                self._exit_persistence_failure()
+            raise RuntimeError(
+                "Application context has no persistence service."
+            )
+        return self.persistence
+
+    def require_private_credentials(self) -> PrivateCredentialTree:
+        """Return the shared-lock private credential boundary."""
+        if self.private_credentials is None:
+            store = self.require_store()
+            self.private_credentials = PrivateCredentialTree(
+                self.private_codex_locations.canonical,
+                account_path=store.path,
+                existing_root=self.private_codex_locations.existing_sidekick,
+            )
+        return self.private_credentials
+
+    def _exit_persistence_failure(self) -> NoReturn:
+        """Render and exit for a captured passive composition failure."""
+        failure = self.persistence_failure
+        if failure is None:
+            raise RuntimeError("Application context has no failure.")
+        self.err_console.print(f"[red]{failure.message}[/red]")
+        self.err_console.print(f"[dim]Path: {failure.safe_path}[/dim]")
+        if failure.artifact_basename is not None:
+            self.err_console.print(
+                f"[dim]Artifact: {failure.artifact_basename}[/dim]"
+            )
+        if failure.guidance is not None:
+            self.err_console.print(f"[dim]{failure.guidance}[/dim]")
+        if failure.next_command is not None:
+            self.err_console.print(
+                "[dim]Next: " + shlex.join(failure.next_command) + "[/dim]"
+            )
+        raise typer.Exit(code=persistence_doctor_exit_code(failure.code))
 
 
 _SAFE_CODEX_CACHE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
+_CODEX_CACHE_DIGEST_HEX_LENGTH = 32
+_CODEX_CACHE_STEM_LENGTH = 221
 _MIN_TOKEN_LENGTH_FOR_MASKING = 30
 _DAEMON_BACKEND_HELP = (
     "Scheduler backend: auto, systemd, cron, launchd, task-scheduler."
 )
+_RUNTIME_PERSISTENCE_CODES = frozenset(
+    {
+        PersistenceCode.EMPTY,
+        PersistenceCode.CURRENT,
+        PersistenceCode.PROTOTYPE_IMPORTED,
+    }
+)
+
+
+def _composition_failure(
+    error: ManagedFileReadError
+    | UnsafeManagedFileError
+    | UnsupportedFilesystemError,
+    safe_path: Path,
+) -> PersistenceCompositionFailure:
+    """Create one consistent safe failure with bounded recovery guidance."""
+    return PersistenceCompositionFailure(
+        code=error.code,
+        safe_path=safe_path,
+        artifact_basename=error.artifact_basename,
+        message=str(error),
+        next_command=recovery_next_command(error.code),
+        guidance=recovery_guidance(error.code),
+    )
 
 
 def _build_default_context() -> AppContext:
@@ -167,11 +325,54 @@ def _build_default_context() -> AppContext:
     """
     paths = discover_application_paths()
     clock = SystemClock()
-    providers = build_provider_registry(clock)
     with ExitStack() as cleanup:
         http = cleanup.enter_context(HttpClient(clock=clock))
+        persistence: PersistenceMigrationService | None = None
+        assessment: PersistenceAssessment | None = None
+        failure: PersistenceCompositionFailure | None = None
+        store_loader: Callable[[], AccountStore] | None = None
+        private_credentials: PrivateCredentialTree | None = None
+        try:
+            private_credentials = PrivateCredentialTree(
+                paths.private_codex.canonical,
+                account_path=paths.accounts.canonical,
+                existing_root=paths.private_codex.existing_sidekick,
+            )
+            daemon_manager = DaemonManager()
+            persistence = PersistenceMigrationService(
+                paths.accounts,
+                scheduler_assessor=daemon_manager.assess_quiescence,
+                private_credential_artifacts=private_credentials,
+                released_v060_verifier=ReleasedV060Verifier(),
+            )
+            assessment = persistence.assess()
+            if assessment.code in _RUNTIME_PERSISTENCE_CODES:
+
+                def load_store() -> AccountStore:
+                    return AccountStore(
+                        paths.accounts,
+                        orphaned_credentials_observer=(
+                            private_credentials.observe
+                        ),
+                    ).load()
+
+                store_loader = load_store
+        except (
+            ManagedFileReadError,
+            UnsafeManagedFileError,
+            UnsupportedFilesystemError,
+        ) as error:
+            safe_path = (
+                paths.private_codex.canonical
+                if private_credentials is None
+                or error.artifact_basename
+                == paths.private_codex.canonical.name
+                else paths.accounts.canonical
+            )
+            failure = _composition_failure(error, safe_path)
+        providers = build_provider_registry(clock, private_credentials)
         context = AppContext(
-            store=AccountStore(paths.accounts).load(),
+            store=None,
             http=http,
             providers=providers,
             heartbeat_providers=build_heartbeat_registry(providers),
@@ -186,6 +387,11 @@ def _build_default_context() -> AppContext:
             console=Console(),
             err_console=Console(stderr=True),
             clock=clock,
+            store_loader=store_loader,
+            private_credentials=private_credentials,
+            persistence=persistence,
+            persistence_assessment=assessment,
+            persistence_failure=failure,
         )
         cleanup.pop_all()
         return context
@@ -200,6 +406,8 @@ class _ContextState:
     """
 
     ctx: AppContext | None = None
+    only: ProviderId | None = None
+    close_context: click.Context | None = None
 
 
 def _get_ctx() -> AppContext:
@@ -209,7 +417,14 @@ def _get_ctx() -> AppContext:
     """
     if _ContextState.ctx is None:
         _ContextState.ctx = _build_default_context()
-    return _ContextState.ctx
+    app_ctx = _ContextState.ctx
+    current = click.get_current_context(silent=True)
+    if current is not None:
+        root = current.find_root()
+        if _ContextState.close_context is not root:
+            root.call_on_close(app_ctx.http.close)
+            _ContextState.close_context = root
+    return app_ctx
 
 
 def set_context(ctx: AppContext) -> None:
@@ -238,6 +453,20 @@ daemon_app = BrandedTyper(
     rich_markup_mode="rich",
 )
 app.add_typer(daemon_app, name="daemon")
+
+migrate_app = BrandedTyper(
+    cls=BrandedTyperGroup,
+    help="Migrate account storage or prepare release rollback.",
+    rich_markup_mode="rich",
+)
+app.add_typer(migrate_app, name="migrate")
+
+permissions_app = BrandedTyper(
+    cls=BrandedTyperGroup,
+    help="Inspect or repair Sidekick-owned permissions.",
+    rich_markup_mode="rich",
+)
+app.add_typer(permissions_app, name="permissions")
 
 
 class _HeartbeatGroup(BrandedTyperGroup):
@@ -303,19 +532,21 @@ def main(
     ] = False,
 ) -> None:
     """Default invocation runs ``check`` if no subcommand is given."""
-    app_ctx = _get_ctx()
-    ctx.call_on_close(app_ctx.http.close)
     try:
         provider_filter = ProviderId(only) if only is not None else None
     except ValueError:
-        app_ctx.err_console.print(
-            f"[red]Unknown provider {only!r}. "
-            f"Known: {', '.join(sorted(app_ctx.providers))}.[/red]"
+        typer.echo(
+            f"Unknown provider {only!r}. Known: "
+            + ", ".join(provider.value for provider in ProviderId)
+            + ".",
+            err=True,
         )
         raise typer.Exit(code=ExitCode.MANUAL_ACTION) from None
-    app_ctx.only = provider_filter
-    if ctx.invoked_subcommand is None:
-        _do_check()
+    _ContextState.only = provider_filter
+    if ctx.invoked_subcommand is not None:
+        return
+    _get_ctx()
+    _run_usage_check()
 
 
 # ---------------------------------------------------------------------
@@ -324,65 +555,60 @@ def main(
 @app.command("check")
 def check_cmd() -> None:
     """Print usage for every saved account."""
-    _do_check()
+    _run_usage_check()
 
 
-def _do_check() -> None:
-    """Fetch all (filtered) accounts and render the grouped overview.
+def _run_usage_check() -> None:
+    """Run the typed usage service and render its complete result.
 
     Account failures require manual action; lifetime collection failures
     produce a system-error exit after the completed state is rendered.
     """
     app_ctx = _get_ctx()
-    app_ctx.collected.clear()
-    app_ctx.failures.clear()
-    accounts = list(app_ctx.store)
-    if app_ctx.only:
-        accounts = [a for a in accounts if a.provider_id == app_ctx.only]
-    if not accounts:
-        _print_no_accounts(app_ctx.only, branded=True)
+    provider_filter = _ContextState.only
+    result = UsageCheckService(
+        app_ctx.require_store(),
+        app_ctx.http,
+        app_ctx.providers,
+        clock=app_ctx.clock,
+    ).check(provider_filter)
+    if not result.usages and not result.failures:
+        _print_no_accounts(provider_filter, branded=True)
         raise typer.Exit(code=ExitCode.MANUAL_ACTION)
 
-    exit_code = ExitCode.SUCCESS
-    for acct in accounts:
-        if not _fetch_and_render(acct):
-            exit_code = ExitCode.MANUAL_ACTION
-
-    lifetime = _lifetime_for(accounts, app_ctx.lifetime_sources)
+    provider_ids = {
+        *(usage.provider_id for usage in result.usages),
+        *(failure.provider_id for failure in result.failures),
+    }
+    lifetime = _lifetime_for(provider_ids, app_ctx.lifetime_sources)
+    exit_code = ExitCode.MANUAL_ACTION if result.failures else ExitCode.SUCCESS
     if any(
         isinstance(result, LifetimeFailure) for result in lifetime.values()
     ):
         exit_code = _combined_exit_code(exit_code, ExitCode.SYSTEM_ERROR)
 
-    if app_ctx.collected or app_ctx.failures:
-        app_ctx.console.print(
-            usage_overview(
-                app_ctx.collected,
-                lifetime,
-                failures=app_ctx.failures,
-                width=app_ctx.console.size.width,
-                reference_time=app_ctx.clock.now(),
-            )
+    app_ctx.console.print(
+        usage_overview(
+            result.usages,
+            lifetime,
+            failures=result.failures,
+            width=app_ctx.console.size.width,
+            reference_time=app_ctx.clock.now(),
         )
+    )
     if exit_code:
         raise typer.Exit(code=exit_code)
 
 
-def _collect(acct: Account, report: UsageReport) -> None:
-    """Stash a successful report for the end-of-run grouped render."""
-    _get_ctx().collected.append((acct, report))
-
-
 def _lifetime_for(
-    accounts: list[Account],
+    provider_ids: set[ProviderId],
     sources: dict[ProviderId, Callable[[], LifetimeResult]],
 ) -> dict[ProviderId, LifetimeResult]:
     """Collect lifetime once per provider represented by selected accounts."""
-    providers = {account.provider_id for account in accounts}
     return {
         provider_id: source()
         for provider_id, source in sources.items()
-        if provider_id in providers
+        if provider_id in provider_ids
     }
 
 
@@ -391,258 +617,6 @@ def _lifetime_for(
 #: predicate gates ``/api/oauth/usage`` on whether the stored
 #: credentials' ``scopes`` array contains exactly this string.
 _USAGE_REQUIRED_SCOPE = "user:profile"
-
-
-def _handle_runtime_forbidden(
-    acct: Account,
-    provider: Provider,
-    err: ForbiddenError,
-) -> bool:
-    """Handle a 403 raised during ``check`` for an unknown-scope acct.
-
-    The OAuth usage endpoint refused this token. If the 403 is the
-    canonical "needs ``user:profile``" case and we have no scope
-    info on file, self-heal ``scopes=[]`` so the provider routes to
-    the header probe (which works for inference-only tokens), then
-    retry the fetch. Any other 403 (different scope, different
-    endpoint shape) is surfaced as a per-account error block.
-
-    :param acct: Account whose request 403'd.
-    :param provider: Provider for ``acct``.
-    :param err: Parsed forbidden error.
-    :return: True when the retry rendered real usage, False when
-        rendered as an error.
-    """
-    app_ctx = _get_ctx()
-    if (
-        acct.scopes is None
-        and err.required_scope == _USAGE_REQUIRED_SCOPE
-        and provider.id is ProviderId.CLAUDE
-    ):
-        credentials = _claude_credentials(acct)
-        acct.credentials = replace(credentials, scopes=())
-        app_ctx.store.upsert(acct)
-        app_ctx.store.save()
-        try:
-            report = provider.fetch_usage(acct, app_ctx.http)
-        except UsageError as retry_err:
-            _record_error_block(acct, f"Header probe failed: {retry_err}")
-            return False
-        _collect(acct, report)
-        return True
-    detail = err.api_message or str(err)
-    msg = f"Forbidden (HTTP 403): {detail}"
-    if err.required_scope:
-        msg += f"\n  Required scope: {err.required_scope}."
-    _record_error_block(acct, msg)
-    return False
-
-
-def _fetch_and_render(acct: Account) -> bool:
-    """Fetch one account's usage; on 401, try refresh once.
-
-    :param acct: Account to query.
-    :return: True on success, False on any error.
-    """
-    app_ctx = _get_ctx()
-    provider = app_ctx.providers.get(acct.provider_id)
-    if provider is None:
-        _record_error_block(
-            acct,
-            f"Unknown provider '{acct.provider_id}'.",
-        )
-        return False
-    if not _refresh_known_expired(acct, provider):
-        return False
-    try:
-        return _fetch_usage_and_render(acct, provider)
-    except AuthError as e:
-        return _refresh_after_auth_and_render(acct, provider, e)
-    except ForbiddenError as e:
-        return _handle_fetch_error(acct, provider, e)
-    except UsageError as e:
-        return _handle_fetch_error(acct, provider, e)
-
-
-def _fetch_usage_and_render(acct: Account, provider: Provider) -> bool:
-    """Fetch and render usage for one account.
-
-    :param acct: Account to query.
-    :param provider: Provider for ``acct``.
-    :return: True after rendering usage.
-    """
-    app_ctx = _get_ctx()
-    before_credentials = acct.credentials
-    before_plan = acct.plan
-    report = provider.fetch_usage(acct, app_ctx.http)
-    if report.plan and report.plan not in ("unknown", acct.plan):
-        acct.plan = report.plan
-    if acct.credentials != before_credentials or acct.plan != before_plan:
-        app_ctx.store.upsert(acct)
-        app_ctx.store.save()
-    _collect(acct, report)
-    return True
-
-
-def _refresh_known_expired(acct: Account, provider: Provider) -> bool:
-    """Refresh a known-expired account before its first fetch.
-
-    :param acct: Account about to be queried.
-    :param provider: Provider for ``acct``.
-    :return: False only when refresh itself errors.
-    """
-    if isinstance(acct.expiry, UnknownExpiry):
-        return True
-    if isinstance(acct.expiry, InvalidExpiry):
-        _record_error_block(
-            acct,
-            "Access-token expiry metadata is invalid; refresh the account.",
-        )
-        return False
-    reference_time = _get_ctx().clock.now()
-    if not _should_refresh_before_fetch(acct, provider, reference_time):
-        return True
-    try:
-        refreshed = _refresh_and_save(acct, provider)
-    except UsageError as e:
-        _record_error_block(acct, f"Token refresh failed: {e}")
-        return False
-    if not refreshed:
-        _record_auth_failure(acct)
-        return False
-    return True
-
-
-def _refresh_after_auth_and_render(
-    acct: Account,
-    provider: Provider,
-    err: AuthError,
-) -> bool:
-    """Refresh after a 401, then retry usage once.
-
-    :param acct: Account whose fetch returned 401.
-    :param provider: Provider for ``acct``.
-    :param err: Original auth error to render if refresh cannot help.
-    :return: True on successful retry, otherwise False.
-    """
-    try:
-        refreshed = _refresh_and_save(acct, provider)
-    except UsageError as refresh_err:
-        _record_error_block(acct, f"Token refresh failed: {refresh_err}")
-        return False
-    if not refreshed:
-        return _handle_fetch_error(acct, provider, err)
-    try:
-        return _fetch_usage_and_render(acct, provider)
-    except UsageError as retry_err:
-        return _handle_fetch_error(acct, provider, retry_err)
-
-
-def _should_refresh_before_fetch(
-    acct: Account,
-    provider: Provider,
-    reference_time: datetime,
-) -> bool:
-    """Return whether a known-expired account should refresh first.
-
-    :param acct: Account about to be queried.
-    :param provider: Provider for ``acct``.
-    :param reference_time: Aware wall time for the expiry decision.
-    :return: True when a provider-specific expiry is already stale.
-    """
-    expiry = classify_expiry(acct.expiry, now=reference_time)
-    if isinstance(expiry, ExpiredExpiry):
-        return True
-    if isinstance(expiry, ValidExpiry):
-        if provider.id is ProviderId.CODEX:
-            return expiry.at <= reference_time + timedelta(seconds=60)
-        return False
-    return False
-
-
-def _refresh_and_save(acct: Account, provider: Provider) -> bool:
-    """Refresh an account token and persist any successful mutation.
-
-    :param acct: Account to refresh.
-    :param provider: Provider for ``acct``.
-    :return: True when refresh succeeded.
-    """
-    app_ctx = _get_ctx()
-    try:
-        refreshed = provider.refresh_token(acct, app_ctx.http)
-    except UsageError as e:
-        record_refresh_failure(acct, str(e), app_ctx.clock.now())
-        app_ctx.store.upsert(acct)
-        app_ctx.store.save()
-        raise
-    if not refreshed:
-        record_refresh_failure(
-            acct,
-            "Refresh token unavailable or rejected.",
-            app_ctx.clock.now(),
-        )
-        app_ctx.store.upsert(acct)
-        app_ctx.store.save()
-        return False
-    record_refresh_success(acct, app_ctx.clock.now())
-    app_ctx.store.upsert(acct)
-    app_ctx.store.save()
-    return True
-
-
-def _handle_fetch_error(
-    acct: Account,
-    provider: Provider,
-    err: UsageError,
-) -> bool:
-    """Render one fetch failure as a per-account result.
-
-    :param acct: Account whose fetch failed.
-    :param provider: Provider for ``acct``.
-    :param err: Typed usage error to render.
-    :return: Always False unless a forbidden self-heal succeeds.
-    """
-    if isinstance(err, AuthError):
-        _record_auth_failure(acct)
-        return False
-    if isinstance(err, ForbiddenError):
-        return _handle_runtime_forbidden(acct, provider, err)
-    if isinstance(err, RateLimitError):
-        return _handle_rate_limit(acct, err)
-    if isinstance(err, TransientError):
-        return _handle_transient(acct, err)
-    _record_error_block(acct, str(err))
-    return False
-
-
-def _handle_rate_limit(acct: Account, err: RateLimitError) -> bool:
-    """Render a per-account rate-limit error.
-
-    :param acct: Account whose request was rate-limited.
-    :param err: Rate-limit error with optional retry delay.
-    :return: False.
-    """
-    suffix = (
-        f"Server asked to wait {err.retry_after}s."
-        if err.retry_after is not None
-        else "Try again in a moment."
-    )
-    _record_error_block(
-        acct,
-        f"Rate limited (HTTP 429). {suffix}",
-    )
-    return False
-
-
-def _handle_transient(acct: Account, err: TransientError) -> bool:
-    """Render a per-account transient error.
-
-    :param acct: Account whose request failed transiently.
-    :param err: Transient error to display.
-    :return: False.
-    """
-    _record_error_block(acct, str(err))
-    return False
 
 
 # ---------------------------------------------------------------------
@@ -734,7 +708,7 @@ def add_cmd(
             "[red]Detected credential expiry metadata is invalid.[/red]"
         )
         raise typer.Exit(code=ExitCode.MANUAL_ACTION)
-    existing = app_ctx.store.find_by_token(prov.id, token)
+    existing = app_ctx.require_store().find_by_token(prov.id, token)
     reference_time = app_ctx.clock.now()
     if existing is not None:
         _upsert_existing(
@@ -771,7 +745,7 @@ def list_cmd() -> None:
             section="saved accounts",
         )
     )
-    accounts = list(app_ctx.store)
+    accounts = list(app_ctx.require_store())
     if not accounts:
         app_ctx.console.print("[dim](no accounts saved)[/dim]")
         return
@@ -805,7 +779,9 @@ def list_cmd() -> None:
             _masked_token(acct.access_token),
         )
     app_ctx.console.print(table)
-    app_ctx.console.print(f"\n[dim]Config: {app_ctx.store.path}[/dim]")
+    app_ctx.console.print(
+        f"\n[dim]Config: {app_ctx.require_store().path}[/dim]"
+    )
 
 
 # ---------------------------------------------------------------------
@@ -820,12 +796,11 @@ def remove_cmd(
 ) -> None:
     """Delete a saved account."""
     app_ctx = _get_ctx()
-    if not app_ctx.store.remove(label):
+    if not app_ctx.require_store().remove(label):
         app_ctx.err_console.print(
             f"[yellow]No account named '{label}'.[/yellow]"
         )
         raise typer.Exit(code=ExitCode.MANUAL_ACTION)
-    app_ctx.store.save()
     app_ctx.console.print(f"[green]Removed '{label}'.[/green]")
 
 
@@ -839,13 +814,12 @@ def rename_cmd(
 ) -> None:
     """Rename a saved account."""
     app_ctx = _get_ctx()
-    if not app_ctx.store.rename(old, new):
+    if not app_ctx.require_store().rename(old, new):
         app_ctx.err_console.print(
             f"[yellow]Cannot rename: '{old}' is missing or "
             f"'{new}' already exists.[/yellow]"
         )
         raise typer.Exit(code=ExitCode.MANUAL_ACTION)
-    app_ctx.store.save()
     app_ctx.console.print(f"[green]Renamed '{old}' → '{new}'.[/green]")
 
 
@@ -865,13 +839,13 @@ def set_plan_cmd(label: str, plan: str) -> None:
     if not value:
         app_ctx.err_console.print("[red]Plan must not be empty.[/red]")
         raise typer.Exit(code=ExitCode.MANUAL_ACTION)
-    acct = app_ctx.store.get(label)
+    store = app_ctx.require_store()
+    acct = store.get(label)
     if acct is None:
         app_ctx.err_console.print(f"[red]No account labeled '{label}'.[/red]")
         raise typer.Exit(code=ExitCode.MANUAL_ACTION)
     acct.plan = value
-    app_ctx.store.upsert(acct)
-    app_ctx.store.save()
+    app_ctx.require_store().persist(acct)
     app_ctx.console.print(
         f"Set [bold]{label}[/bold] plan to [bold]{value}[/bold]."
     )
@@ -949,7 +923,8 @@ def refresh_cmd(
     if label is None:
         raise AssertionError("refresh label validation failed")
     app_ctx = _get_ctx()
-    acct = app_ctx.store.get(label)
+    store = app_ctx.require_store()
+    acct = store.get(label)
     if acct is None:
         app_ctx.err_console.print(
             f"[yellow]No account named '{label}'.[/yellow]"
@@ -989,8 +964,7 @@ def refresh_cmd(
         reference_time=reference_time,
     )
     record_refresh_success(acct, reference_time)
-    app_ctx.store.upsert(acct)
-    app_ctx.store.save()
+    app_ctx.require_store().persist(acct)
     app_ctx.console.print(f"[green]Updated token for '{label}'.[/green]")
 
 
@@ -1021,19 +995,26 @@ def _validate_refresh_args(
     return label
 
 
-def _refresh_all_cmd(*, quiet: bool, force: bool) -> None:
-    """Run scheduler-safe saved-token refresh for all accounts."""
-    app_ctx = _get_ctx()
-    accounts = list(app_ctx.store)
-    if not accounts:
-        _print_no_accounts(None)
-        raise typer.Exit(code=ExitCode.MANUAL_ACTION)
-    service = TokenMaintenanceService(
-        app_ctx.store,
+def _token_maintenance_service(
+    app_ctx: AppContext,
+) -> TokenMaintenanceService:
+    """Build token maintenance from the active command dependencies."""
+    return TokenMaintenanceService(
+        app_ctx.require_store(),
         app_ctx.http,
         app_ctx.providers,
         clock=app_ctx.clock,
     )
+
+
+def _refresh_all_cmd(*, quiet: bool, force: bool) -> None:
+    """Run scheduler-safe saved-token refresh for all accounts."""
+    app_ctx = _get_ctx()
+    accounts = list(app_ctx.require_store())
+    if not accounts:
+        _print_no_accounts(None)
+        raise typer.Exit(code=ExitCode.MANUAL_ACTION)
+    service = _token_maintenance_service(app_ctx)
     outcomes = service.refresh_all(force=force)
     for outcome in outcomes:
         if quiet and outcome.exit_code is ExitCode.SUCCESS:
@@ -1138,7 +1119,7 @@ def heartbeat_label_cmd(
 def _run_heartbeat_label(label: str, *, target_id: str | None = None) -> None:
     """Run a one-shot heartbeat for one account label."""
     app_ctx = _get_ctx()
-    account = app_ctx.store.get(label)
+    account = app_ctx.require_store().get(label)
     if account is None:
         app_ctx.err_console.print(
             f"[yellow]No account named '{label}'.[/yellow]"
@@ -1168,7 +1149,7 @@ def heartbeat_enable_cmd(
     """Enable daemon heartbeat for one supported account."""
     app_ctx = _get_ctx()
     outcome = _heartbeat_service().enable(
-        app_ctx.store.get(label),
+        app_ctx.require_store().get(label),
         target_id=target_id,
     )
     _render_heartbeat_outcomes([outcome], quiet=False)
@@ -1190,7 +1171,7 @@ def heartbeat_disable_cmd(
     """Disable daemon heartbeat for one account."""
     app_ctx = _get_ctx()
     outcome = _heartbeat_service().disable(
-        app_ctx.store.get(label),
+        app_ctx.require_store().get(label),
         target_id=target_id,
     )
     _render_heartbeat_outcomes([outcome], quiet=False)
@@ -1215,7 +1196,7 @@ def heartbeat_status_cmd(
 ) -> None:
     """Show heartbeat support and latest diagnostics."""
     app_ctx = _get_ctx()
-    accounts = list(app_ctx.store)
+    accounts = list(app_ctx.require_store())
     if provider_id is not None:
         accounts = [a for a in accounts if a.provider_id == provider_id]
     if label is not None:
@@ -1240,22 +1221,17 @@ def maintain_cmd(
 ) -> None:
     """Run scheduler-safe token refresh, then opted-in heartbeat."""
     app_ctx = _get_ctx()
-    accounts = list(app_ctx.store)
+    accounts = list(app_ctx.require_store())
     if not accounts:
         _print_no_accounts(None)
         raise typer.Exit(code=ExitCode.MANUAL_ACTION)
 
-    refresh_service = TokenMaintenanceService(
-        app_ctx.store,
-        app_ctx.http,
-        app_ctx.providers,
-        clock=app_ctx.clock,
-    )
+    refresh_service = _token_maintenance_service(app_ctx)
     refresh_outcomes = refresh_service.refresh_all()
     _render_refresh_outcomes(refresh_outcomes, quiet=quiet)
 
     heartbeat_outcomes = HeartbeatService(
-        app_ctx.store,
+        app_ctx.require_store(),
         app_ctx.http,
         app_ctx.heartbeat_providers,
         clock=app_ctx.clock,
@@ -1311,7 +1287,7 @@ def _heartbeat_service() -> HeartbeatService:
     """Build a heartbeat service from the active app context."""
     app_ctx = _get_ctx()
     return HeartbeatService(
-        app_ctx.store,
+        app_ctx.require_store(),
         app_ctx.http,
         app_ctx.heartbeat_providers,
         clock=app_ctx.clock,
@@ -1338,8 +1314,317 @@ def _usage_error(message: str) -> NoReturn:
 
 
 # ---------------------------------------------------------------------
+# migrate
+# ---------------------------------------------------------------------
+@migrate_app.command("accounts")
+def migrate_accounts_cmd(
+    yes: Annotated[
+        bool,
+        typer.Option("--yes", help="Skip the interactive confirmation."),
+    ] = False,
+    reimport_prototype: Annotated[
+        bool,
+        typer.Option(
+            "--reimport-prototype",
+            help="Replace current state from a changed prototype.",
+        ),
+    ] = False,
+) -> None:
+    """Explicitly migrate account storage to the current schema."""
+    app_ctx = _get_ctx()
+    service = app_ctx.require_persistence()
+    try:
+        assessment = service.mutation_preview()
+    except (SchedulerMutationBlockedError, PersistenceError) as error:
+        _exit_persistence_error(error)
+    _render_persistence_preview(
+        assessment,
+        title="Account migration",
+        detail=(
+            "Changed prototype replacement is explicitly enabled."
+            if reimport_prototype
+            else None
+        ),
+    )
+    _confirm_persistence_operation(yes)
+    try:
+        result = service.migrate_accounts(
+            reimport_prototype=reimport_prototype
+        )
+    except (SchedulerMutationBlockedError, PersistenceError) as error:
+        _exit_persistence_error(error)
+    _render_persistence_success("Migration complete", result)
+
+
+@migrate_app.command("prepare-rollback")
+def prepare_rollback_cmd(
+    target: Annotated[
+        str,
+        typer.Option(
+            "--target",
+            help="Released compatibility target (v0.6.0).",
+        ),
+    ],
+    yes: Annotated[
+        bool,
+        typer.Option("--yes", help="Skip the interactive confirmation."),
+    ] = False,
+) -> None:
+    """Prepare exact compatibility with released version 0.6.0."""
+    app_ctx = _get_ctx()
+    if target != "v0.6.0":
+        app_ctx.err_console.print(
+            "[red]Unsupported rollback target. Expected 'v0.6.0'.[/red]"
+        )
+        raise typer.Exit(code=ExitCode.MANUAL_ACTION)
+    service = app_ctx.require_persistence()
+    try:
+        assessment = service.mutation_preview()
+    except (SchedulerMutationBlockedError, PersistenceError) as error:
+        _exit_persistence_error(error)
+    _render_persistence_preview(
+        assessment,
+        title="Prepare rollback to v0.6.0",
+    )
+    _confirm_persistence_operation(yes)
+    try:
+        result = service.prepare_rollback()
+    except (SchedulerMutationBlockedError, PersistenceError) as error:
+        _exit_persistence_error(error)
+    _render_persistence_operation_success("Rollback prepared", result)
+
+
+@permissions_app.command("repair")
+def repair_permissions_cmd(
+    yes: Annotated[
+        bool,
+        typer.Option("--yes", help="Skip the interactive confirmation."),
+    ] = False,
+) -> None:
+    """Repair a validated released-layout permission boundary."""
+    app_ctx = _get_ctx()
+    service = app_ctx.require_persistence()
+    try:
+        preview: PersistenceAssessment | PersistenceCompositionFailure = (
+            service.mutation_preview()
+        )
+    except UnsafeManagedFileError as error:
+        safe_path = (
+            app_ctx.private_codex_locations.canonical
+            if error.artifact_basename
+            == app_ctx.private_codex_locations.canonical.name
+            else app_ctx.persistence_assessment.safe_path
+            if app_ctx.persistence_assessment is not None
+            else app_ctx.private_codex_locations.canonical.parent
+            / "accounts.json"
+        )
+        preview = _composition_failure(error, safe_path)
+    except (SchedulerMutationBlockedError, PersistenceError) as error:
+        _exit_persistence_error(error)
+    _render_persistence_preview(preview, title="Permission repair")
+    _confirm_persistence_operation(yes)
+    try:
+        result = service.repair_permissions()
+    except (SchedulerMutationBlockedError, PersistenceError) as error:
+        _exit_persistence_error(error)
+    app_ctx.console.print(
+        "[green]Permissions repaired.[/green] " + result.assessment.message
+    )
+    app_ctx.console.print(
+        "[dim]Application parent changed: "
+        f"{'yes' if result.repair.account_parent_repaired else 'no'}; "
+        f"private directories changed: {result.repair.directories_repaired}; "
+        f"private files changed: {result.repair.files_repaired}.[/dim]"
+    )
+
+
+def _render_persistence_preview(
+    assessment: PersistenceAssessment | PersistenceCompositionFailure,
+    *,
+    title: str,
+    detail: str | None = None,
+) -> None:
+    """Render bounded, credential-free persistence mutation details."""
+    if isinstance(assessment, PersistenceAssessment):
+        generation = assessment.generation
+        count = (
+            str(assessment.account_count)
+            if assessment.account_count is not None
+            else "unknown"
+        )
+    else:
+        generation = "unknown"
+        count = "unknown"
+    lines = [
+        f"State: {assessment.code}",
+        f"Generation: {generation}",
+        f"Validated accounts: {count}",
+        f"Path: {assessment.safe_path}",
+    ]
+    if assessment.artifact_basename is not None:
+        lines.append(f"Artifact: {assessment.artifact_basename}")
+    if detail is not None:
+        lines.append(detail)
+    _get_ctx().console.print(
+        Panel(
+            Text("\n".join(lines)),
+            border_style="yellow",
+            title=f"[yellow]{title}[/yellow]",
+            title_align="left",
+        )
+    )
+
+
+def _confirm_persistence_operation(yes: bool) -> None:
+    """Require explicit confirmation unless non-interactive intent exists."""
+    if yes:
+        return
+    app_ctx = _get_ctx()
+    if Confirm.ask("Continue?", default=False, console=app_ctx.console):
+        return
+    app_ctx.console.print("Cancelled.")
+    raise typer.Exit(code=ExitCode.MANUAL_ACTION)
+
+
+def _render_persistence_success(
+    action: str,
+    assessment: PersistenceAssessment,
+) -> None:
+    """Render a safe successful assessment."""
+    _get_ctx().console.print(f"[green]{action}.[/green] {assessment.message}")
+
+
+def _render_persistence_operation_success(
+    action: str,
+    result: PersistenceOperationResult,
+) -> None:
+    """Render a safe successful operation and optional artifact."""
+    _get_ctx().console.print(f"[green]{action}.[/green] {result.message}")
+    if result.artifact_basename is not None:
+        _get_ctx().console.print(
+            f"[dim]Snapshot: {result.artifact_basename}[/dim]"
+        )
+
+
+def _exit_persistence_error(
+    error: SchedulerMutationBlockedError | PersistenceError,
+) -> NoReturn:
+    """Render a typed safe failure using the stable process vocabulary."""
+    app_ctx = _get_ctx()
+    app_ctx.err_console.print(f"[red]{error}[/red]")
+    if isinstance(error, SchedulerMutationBlockedError):
+        for observation in error.assessment.observations:
+            app_ctx.err_console.print(
+                f"[dim]{observation.backend}: {observation.state} — "
+                f"{observation.message}[/dim]"
+            )
+        raise typer.Exit(code=ExitCode.SCHEDULER_ERROR)
+    if (
+        isinstance(
+            error,
+            PersistenceMigrationStateError | PrototypeReimportRequiredError,
+        )
+        and error.next_command is not None
+    ):
+        app_ctx.err_console.print(
+            "[dim]Next: " + shlex.join(error.next_command) + "[/dim]"
+        )
+    raise typer.Exit(code=_persistence_error_exit_code(error))
+
+
+def _persistence_error_exit_code(error: PersistenceError) -> ExitCode:
+    """Map any persistence failure without ever treating it as success."""
+    try:
+        code = operation_exit_code(error.code)
+    except ValueError:
+        code = persistence_doctor_exit_code(error.code)
+    return ExitCode.MANUAL_ACTION if code is ExitCode.SUCCESS else code
+
+
+# ---------------------------------------------------------------------
 # doctor
 # ---------------------------------------------------------------------
+def _render_persistence_doctor(
+    app_ctx: AppContext,
+    *,
+    json_output: bool,
+) -> None:
+    """Render the context's persistence-only doctor result."""
+    failure = app_ctx.persistence_failure
+    assessment = app_ctx.persistence_assessment
+    if failure is not None:
+        render_doctor(
+            [],
+            app_ctx.console,
+            json_output=json_output,
+            persistence_failure=failure,
+        )
+        code = persistence_doctor_exit_code(failure.code)
+    elif assessment is not None:
+        render_doctor(
+            [],
+            app_ctx.console,
+            json_output=json_output,
+            persistence=assessment,
+        )
+        code = persistence_doctor_exit_code(assessment.code)
+    else:
+        raise RuntimeError("Doctor has no persistence result.")
+    if code:
+        raise typer.Exit(code=code)
+
+
+def _doctor_accounts(
+    app_ctx: AppContext,
+    *,
+    json_output: bool,
+) -> tuple[Account, ...]:
+    """Read doctor accounts without constructing the mutable runtime store."""
+    if app_ctx.store is not None:
+        return tuple(app_ctx.store)
+    assessment = app_ctx.persistence_assessment
+    if (
+        app_ctx.persistence_failure is not None
+        or assessment is None
+        or assessment.code not in _RUNTIME_PERSISTENCE_CODES
+    ):
+        _render_persistence_doctor(app_ctx, json_output=json_output)
+        return ()
+    try:
+        return app_ctx.require_persistence().read_accounts()
+    except PersistenceMigrationStateError as error:
+        render_doctor(
+            [],
+            app_ctx.console,
+            json_output=json_output,
+            persistence=error.assessment,
+        )
+        raise typer.Exit(
+            code=persistence_doctor_exit_code(error.assessment.code)
+        ) from None
+    except (
+        ManagedFileReadError,
+        UnsafeManagedFileError,
+        UnsupportedFilesystemError,
+    ) as error:
+        safe_path = (
+            app_ctx.private_codex_locations.canonical
+            if error.artifact_basename
+            == app_ctx.private_codex_locations.canonical.name
+            else assessment.safe_path
+        )
+        failure = _composition_failure(error, safe_path)
+        render_doctor(
+            [],
+            app_ctx.console,
+            json_output=json_output,
+            persistence_failure=failure,
+        )
+        raise typer.Exit(
+            code=persistence_doctor_exit_code(failure.code)
+        ) from None
+
+
 @app.command("doctor")
 def doctor_cmd(
     provider_id: Annotated[
@@ -1375,24 +1660,33 @@ def doctor_cmd(
             f"[red]Unknown provider {provider_id!r}.[/red]"
         )
         raise typer.Exit(code=ExitCode.SYSTEM_ERROR) from None
+    assessment = app_ctx.persistence_assessment
+    accounts = _doctor_accounts(app_ctx, json_output=json_output)
     service = DoctorService(
-        app_ctx.store,
+        accounts,
         app_ctx.providers,
         app_ctx.heartbeat_providers,
-        TokenMaintenanceService(
-            app_ctx.store,
-            app_ctx.http,
-            app_ctx.providers,
-            clock=app_ctx.clock,
-        ),
         clock=app_ctx.clock,
     )
     diagnostics = service.diagnostics(provider_id=provider_filter, label=label)
     if not diagnostics:
+        if assessment is not None and assessment.account_count == 0:
+            _render_persistence_doctor(app_ctx, json_output=json_output)
+            return
         app_ctx.err_console.print("[yellow]No matching accounts.[/yellow]")
         raise typer.Exit(code=ExitCode.MANUAL_ACTION)
-    render_doctor(diagnostics, app_ctx.console, json_output=json_output)
-    code = doctor_exit_code(diagnostics)
+    render_doctor(
+        diagnostics,
+        app_ctx.console,
+        json_output=json_output,
+        persistence=assessment,
+    )
+    code = account_doctor_exit_code(diagnostics)
+    if assessment is not None:
+        code = _combined_exit_code(
+            code,
+            persistence_doctor_exit_code(assessment.code),
+        )
     if code:
         raise typer.Exit(code=code)
 
@@ -1509,6 +1803,70 @@ def _ensure_refresh_identity_matches(
 # ---------------------------------------------------------------------
 # codex-login / codex-export
 # ---------------------------------------------------------------------
+def _run_codex_login_command(
+    source_home: Path | None,
+    *,
+    device_auth: bool,
+) -> None:
+    """Run Codex login without changing the provider's global home."""
+    if source_home is not None:
+        ensure_file_auth_home(source_home)
+    argv = ["codex", "login"]
+    if device_auth:
+        argv.append("--device-auth")
+    try:
+        if source_home is None:
+            subprocess.run(argv, check=True)
+        else:
+            environment = os.environ.copy()
+            environment["CODEX_HOME"] = str(source_home)
+            subprocess.run(argv, check=True, env=environment)
+    except FileNotFoundError as error:
+        _get_ctx().err_console.print(
+            "[red]Codex CLI executable 'codex' was not found on PATH.[/red]"
+        )
+        raise typer.Exit(code=ExitCode.MANUAL_ACTION) from error
+    except subprocess.CalledProcessError as error:
+        raise typer.Exit(code=error.returncode) from error
+
+
+def _codex_login_account(
+    store: AccountStore,
+    label: str,
+    detected: DetectedCredentials,
+    *,
+    replace_identity: bool,
+) -> tuple[Account, bool]:
+    """Resolve or initialize the account targeted by Codex login."""
+    account = store.get(label)
+    if account is not None and account.provider_id is not ProviderId.CODEX:
+        _get_ctx().err_console.print(
+            f"[red]'{label}' is a {account.provider_id} account, not "
+            "codex.[/red]"
+        )
+        raise typer.Exit(code=ExitCode.MANUAL_ACTION)
+    if account is None:
+        if not isinstance(detected.credentials, CodexCredentials):
+            _get_ctx().err_console.print(
+                "[red]Codex returned incompatible credentials.[/red]"
+            )
+            raise typer.Exit(code=ExitCode.SYSTEM_ERROR)
+        return (
+            Account(
+                label=AccountLabel(label),
+                credentials=detected.credentials,
+            ),
+            True,
+        )
+    _ensure_refresh_identity_matches(
+        account,
+        detected,
+        label,
+        replace_identity=replace_identity,
+    )
+    return account, False
+
+
 @app.command("codex-login")
 def codex_login_cmd(
     label: Annotated[str, typer.Argument(help="Account label to update.")],
@@ -1544,27 +1902,7 @@ def codex_login_cmd(
     app_ctx = _get_ctx()
     provider = _require_codex_provider()
     source_home = codex_home.expanduser() if codex_home is not None else None
-    if source_home is not None:
-        ensure_file_auth_home(source_home)
-
-    argv = ["codex", "login"]
-    if device_auth:
-        argv.append("--device-auth")
-    try:
-        if source_home is None:
-            subprocess.run(argv, check=True)
-        else:
-            env = os.environ.copy()
-            env["CODEX_HOME"] = str(source_home)
-            subprocess.run(argv, check=True, env=env)
-    except FileNotFoundError as e:
-        app_ctx.err_console.print(
-            "[red]Codex CLI executable 'codex' was not found on PATH.[/red]"
-        )
-        raise typer.Exit(code=ExitCode.MANUAL_ACTION) from e
-    except subprocess.CalledProcessError as e:
-        raise typer.Exit(code=e.returncode) from e
-
+    _run_codex_login_command(source_home, device_auth=device_auth)
     detected = provider.detect_credentials(source_home)
     if detected is None:
         source = source_home or default_codex_home()
@@ -1574,29 +1912,15 @@ def codex_login_cmd(
         )
         raise typer.Exit(code=ExitCode.MANUAL_ACTION)
 
-    acct = app_ctx.store.get(label)
-    if acct is not None and acct.provider_id is not ProviderId.CODEX:
-        app_ctx.err_console.print(
-            f"[red]'{label}' is a {acct.provider_id} account, not codex.[/red]"
-        )
-        raise typer.Exit(code=ExitCode.MANUAL_ACTION)
-    if acct is None:
-        if not isinstance(detected.credentials, CodexCredentials):
-            app_ctx.err_console.print(
-                "[red]Codex returned incompatible credentials.[/red]"
-            )
-            raise typer.Exit(code=ExitCode.SYSTEM_ERROR)
-        acct = Account(
-            label=AccountLabel(label),
-            credentials=detected.credentials,
-        )
-    else:
-        _ensure_refresh_identity_matches(
-            acct,
-            detected,
-            label,
-            replace_identity=replace_identity,
-        )
+    store = app_ctx.require_store()
+    acct, is_new = _codex_login_account(
+        store,
+        label,
+        detected,
+        replace_identity=replace_identity,
+    )
+    if is_new:
+        store.persist(acct)
     reference_time = app_ctx.clock.now()
     _apply_detected_credentials(
         acct,
@@ -1606,8 +1930,7 @@ def codex_login_cmd(
         app_ctx.private_codex_locations,
         reference_time=reference_time,
     )
-    app_ctx.store.upsert(acct)
-    app_ctx.store.save()
+    store.persist(acct)
     app_ctx.console.print(f"[green]Updated Codex login for '{label}'.[/green]")
 
 
@@ -1635,7 +1958,7 @@ def codex_export_cmd(
     """Export a saved Codex account into a file-backed Codex home."""
     app_ctx = _get_ctx()
     provider = _require_codex_provider()
-    acct = app_ctx.store.get(label)
+    acct = app_ctx.require_store().get(label)
     if acct is None:
         app_ctx.err_console.print(
             f"[yellow]No account named '{label}'.[/yellow]"
@@ -1663,7 +1986,15 @@ def codex_export_cmd(
             reference_time=reference_time,
         )
     elif not acct.codex_id_token and acct.refresh_token:
-        _refresh_and_save(acct, provider)
+        outcome = _token_maintenance_service(app_ctx).refresh_account(
+            acct,
+            force=True,
+        )
+        if not outcome.refreshed:
+            app_ctx.err_console.print(
+                f"[red]Could not refresh '{label}': {outcome.message}[/red]"
+            )
+            raise typer.Exit(code=outcome.exit_code)
 
     if not write_account_auth_file(
         acct,
@@ -1679,8 +2010,7 @@ def codex_export_cmd(
         )
         raise typer.Exit(code=ExitCode.MANUAL_ACTION)
 
-    app_ctx.store.upsert(acct)
-    app_ctx.store.save()
+    app_ctx.require_store().persist(acct)
     app_ctx.console.print(
         f"[green]Exported '{label}' to Codex home {codex_home}.[/green]"
     )
@@ -1689,6 +2019,38 @@ def codex_export_cmd(
 # ---------------------------------------------------------------------
 # setup-token
 # ---------------------------------------------------------------------
+def _run_setup_token(provider: Provider) -> str | None:
+    """Run provider capture while keeping terminal output in the CLI."""
+    if not isinstance(provider, ClaudeProvider):
+        return provider.run_setup_token()
+    app_ctx = _get_ctx()
+    app_ctx.err_console.print(
+        "[dim]Running `claude setup-token` — complete the browser OAuth "
+        "flow when it opens...[/dim]"
+    )
+    result = provider.capture_setup_token()
+    if isinstance(result, SetupTokenTimedOut):
+        app_ctx.err_console.print("[red]`claude setup-token` timed out.[/red]")
+        return None
+    for line in result.output_lines:
+        app_ctx.err_console.print(line, highlight=False)
+    if isinstance(result, SetupTokenSuccess):
+        return result.token
+    if isinstance(result, SetupTokenMissing):
+        if result.return_code != 0:
+            app_ctx.err_console.print(
+                "[red]`claude setup-token` exited with code "
+                f"{result.return_code}.[/red]"
+            )
+        else:
+            app_ctx.err_console.print(
+                "[red]Could not find a token in the output of "
+                "`claude setup-token`.[/red]"
+            )
+        return None
+    assert_never(result)
+
+
 @app.command("setup-token")
 def setup_token_cmd(
     provider: Annotated[
@@ -1726,7 +2088,7 @@ def setup_token_cmd(
     app_ctx = _get_ctx()
     prov = _resolve_provider(provider)
     try:
-        token = prov.run_setup_token()
+        token = _run_setup_token(prov)
     except UnsupportedOperationError as e:
         app_ctx.err_console.print(f"[red]{e}[/red]")
         raise typer.Exit(code=ExitCode.MANUAL_ACTION) from e
@@ -1740,7 +2102,7 @@ def setup_token_cmd(
         raise typer.Exit(code=ExitCode.MANUAL_ACTION)
 
     detected = _manual_credentials(prov.id, token)
-    existing = app_ctx.store.find_by_token(prov.id, token)
+    existing = app_ctx.require_store().find_by_token(prov.id, token)
     reference_time = app_ctx.clock.now()
     if existing is not None:
         _upsert_existing(
@@ -1765,6 +2127,21 @@ def setup_token_cmd(
 # ---------------------------------------------------------------------
 # reset
 # ---------------------------------------------------------------------
+def _reset_provider_accounts(
+    app_ctx: AppContext,
+    provider_id: ProviderId,
+    provider: str,
+) -> None:
+    """Reset one provider through the typed persistence boundary."""
+    try:
+        cleared = app_ctx.require_store().reset_provider(provider_id)
+    except PersistenceError as error:
+        _exit_persistence_error(error)
+    app_ctx.console.print(
+        f"[green]Cleared {cleared} {provider} account(s).[/green]"
+    )
+
+
 @app.command("reset")
 def reset_cmd(
     yes: Annotated[
@@ -1789,6 +2166,7 @@ def reset_cmd(
     """
     app_ctx = _get_ctx()
     provider_id: ProviderId | None = None
+    validated_count: int | None = None
     if provider:
         try:
             provider_id = ProviderId(provider)
@@ -1797,13 +2175,22 @@ def reset_cmd(
                 f"[red]Unknown provider {provider!r}.[/red]"
             )
             raise typer.Exit(code=ExitCode.MANUAL_ACTION) from None
-        targets = app_ctx.store.filter_by_provider(provider_id)
+        targets = app_ctx.require_store().filter_by_provider(provider_id)
         count = len(targets)
         scope = f"{count} {provider} account(s)"
     else:
-        count = len(app_ctx.store)
-        scope = f"{count} saved account(s) and remove {app_ctx.store.path}"
-    if count == 0:
+        service = app_ctx.require_persistence()
+        try:
+            assessment = service.mutation_preview()
+        except (SchedulerMutationBlockedError, PersistenceError) as error:
+            _exit_persistence_error(error)
+        validated_count = assessment.account_count
+        count = validated_count or 0
+        scope = (
+            f"{count} validated account(s) and all managed credential "
+            f"artifacts at {assessment.safe_path}"
+        )
+    if count == 0 and provider_id is not None:
         app_ctx.console.print("[dim]Nothing to reset.[/dim]")
         return
 
@@ -1825,16 +2212,23 @@ def reset_cmd(
             raise typer.Exit(code=ExitCode.MANUAL_ACTION)
 
     if provider_id is not None:
-        cleared = app_ctx.store.reset_provider(provider_id)
-        app_ctx.console.print(
-            f"[green]Cleared {cleared} {provider} account(s).[/green]"
-        )
+        _reset_provider_accounts(app_ctx, provider_id, provider or "")
     else:
-        cleared = app_ctx.store.reset()
-        app_ctx.console.print(
-            f"[green]Cleared {cleared} account(s) and removed "
-            f"config file.[/green]"
-        )
+        cleared = count
+        try:
+            app_ctx.require_persistence().full_reset()
+        except (SchedulerMutationBlockedError, PersistenceError) as error:
+            _exit_persistence_error(error)
+        if validated_count is None:
+            app_ctx.console.print(
+                "[green]Cleared all managed account and credential "
+                "artifacts.[/green]"
+            )
+        else:
+            app_ctx.console.print(
+                f"[green]Cleared {cleared} account(s) and removed "
+                f"config file.[/green]"
+            )
 
 
 # ---------------------------------------------------------------------
@@ -1941,7 +2335,11 @@ def _sidekick_codex_home(
     safe = _SAFE_CODEX_CACHE_NAME_RE.sub("_", label).strip("._-")
     if not safe:
         safe = "account"
-    return locations.canonical / safe
+    digest = hashlib.sha256(label.encode()).hexdigest()
+    return locations.canonical / (
+        f"{safe[:_CODEX_CACHE_STEM_LENGTH]}--"
+        f"{digest[:_CODEX_CACHE_DIGEST_HEX_LENGTH]}"
+    )
 
 
 def _codex_source_blob(
@@ -2052,8 +2450,9 @@ def _write_sidekick_codex_cache(
     """Write sidekick's private copy of a Codex auth bundle."""
     if provider.id is not ProviderId.CODEX:
         return False
-    return write_account_auth_file(
+    return write_private_account_auth_bundle(
         acct,
+        _get_ctx().require_private_credentials(),
         _sidekick_codex_home(private_codex_locations, acct.label),
         reference_time=reference_time,
         source_blob=_codex_source_blob(provider, source_home),
@@ -2220,21 +2619,22 @@ def _upsert_existing(
     :param reference_time: Aware time shared by credential file writes.
     """
     app_ctx = _get_ctx()
+    store = app_ctx.require_store()
     target = (
         _validated_label(label_override)
         if label_override is not None
         else existing.label
     )
     if target != existing.label:
-        if target in app_ctx.store and not force:
+        if target in store and not force:
             app_ctx.err_console.print(
                 f"[yellow]Token already saved as "
                 f"'{existing.label}', but '{target}' already "
                 f"exists too. Use --force to overwrite.[/yellow]"
             )
             raise typer.Exit(code=ExitCode.MANUAL_ACTION)
-        app_ctx.store.rename(existing.label, target)
-    acct = app_ctx.store.get(target)
+        store.rename(existing.label, target)
+    acct = store.get(target)
     if acct is not None:
         if plan:
             acct.plan = plan
@@ -2248,11 +2648,73 @@ def _upsert_existing(
                 app_ctx.private_codex_locations,
                 reference_time=reference_time,
             )
-        app_ctx.store.upsert(acct)
-    app_ctx.store.save()
+        store.persist(acct)
     app_ctx.console.print(
         f"[green]Token already saved as '{target}' — updated in place.[/green]"
     )
+
+
+def _new_account_warning(account: Account, provider: Provider) -> str | None:
+    """Validate a new account and return a non-blocking safe warning."""
+    app_ctx = _get_ctx()
+    try:
+        provider.fetch_usage(account, app_ctx.http)
+    except AuthError as error:
+        app_ctx.err_console.print(
+            "[red]Token rejected by API (HTTP 401).[/red]"
+        )
+        raise typer.Exit(code=ExitCode.MANUAL_ACTION) from error
+    except ForbiddenError as error:
+        if (
+            error.required_scope == _USAGE_REQUIRED_SCOPE
+            and account.scopes is None
+        ):
+            credentials = _claude_credentials(account)
+            account.credentials = replace(credentials, scopes=())
+            try:
+                provider.fetch_usage(account, app_ctx.http)
+            except UsageError as retry_error:
+                return (
+                    "Token saved, but the header probe also failed: "
+                    f"{retry_error}"
+                )
+        else:
+            _print_forbidden(provider, error)
+    except RateLimitError as error:
+        wait = (
+            f"retry in {error.retry_after}s."
+            if error.retry_after is not None
+            else "retry shortly."
+        )
+        return (
+            "API is rate-limited (HTTP 429). Token was saved anyway — " + wait
+        )
+    except TransientError as error:
+        return f"Could not validate token ({error}). Saved anyway."
+    return None
+
+
+def _persist_new_account(
+    store: AccountStore,
+    account: Account,
+    provider: Provider,
+    source_codex_home: Path | None,
+    *,
+    reference_time: datetime,
+) -> None:
+    """Persist authority before creating a new private Codex bundle."""
+    if provider.id is not ProviderId.CODEX:
+        store.persist(account)
+        return
+    store.persist(account)
+    if _write_sidekick_codex_cache(
+        account,
+        provider,
+        source_codex_home,
+        _get_ctx().private_codex_locations,
+        reference_time=reference_time,
+    ):
+        store.persist(account)
 
 
 def _insert_new(
@@ -2275,12 +2737,13 @@ def _insert_new(
     :param reference_time: Aware time shared by credential file writes.
     """
     app_ctx = _get_ctx()
+    store = app_ctx.require_store()
     label = (
         _validated_label(label_override)
         if label_override is not None
-        else app_ctx.store.generate_label(provider.id, plan or "account")
+        else store.generate_label(provider.id, plan or "account")
     )
-    if label in app_ctx.store and not force:
+    if label in store and not force:
         app_ctx.err_console.print(
             f"[yellow]Account '{label}' already exists. Use "
             f"--force or pass --label.[/yellow]"
@@ -2292,55 +2755,14 @@ def _insert_new(
         credentials=detected.credentials,
         plan=plan or "unknown",
     )
-
-    warning: str | None = None
-    try:
-        provider.fetch_usage(acct, app_ctx.http)
-    except AuthError as e:
-        app_ctx.err_console.print(
-            "[red]Token rejected by API (HTTP 401).[/red]"
-        )
-        raise typer.Exit(code=ExitCode.MANUAL_ACTION) from e
-    except ForbiddenError as e:
-        # OAuth usage endpoint refused — likely an inference-only
-        # token (e.g. ``claude setup-token``). Self-heal scopes=[]
-        # so fetch_usage routes to the header probe, then retry to
-        # validate that path works too. The probe also primes the
-        # in-memory ``acct`` so a follow-up ``check`` returns
-        # usage immediately without re-paying the discovery 403.
-        if e.required_scope == _USAGE_REQUIRED_SCOPE and acct.scopes is None:
-            credentials = _claude_credentials(acct)
-            acct.credentials = replace(credentials, scopes=())
-            try:
-                provider.fetch_usage(acct, app_ctx.http)
-            except UsageError as retry_err:
-                warning = (
-                    f"Token saved, but the header probe also "
-                    f"failed: {retry_err}"
-                )
-        else:
-            _print_forbidden(provider, e)
-    except RateLimitError as e:
-        wait = (
-            f"retry in {e.retry_after}s."
-            if e.retry_after is not None
-            else "retry shortly."
-        )
-        warning = (
-            f"API is rate-limited (HTTP 429). Token was saved anyway — {wait}"
-        )
-    except TransientError as e:
-        warning = f"Could not validate token ({e}). Saved anyway."
-
-    app_ctx.store.upsert(acct)
-    _write_sidekick_codex_cache(
+    warning = _new_account_warning(acct, provider)
+    _persist_new_account(
+        store,
         acct,
         provider,
         source_codex_home,
-        app_ctx.private_codex_locations,
         reference_time=reference_time,
     )
-    app_ctx.store.save()
 
     app_ctx.console.print(f"[green]Saved '{label}'.[/green]")
     if warning:
@@ -2383,34 +2805,6 @@ def _print_no_accounts(
     )
 
 
-def _record_error_block(acct: Account, message: str) -> None:
-    """Record a generic per-account fetch failure for in-panel render."""
-    app_ctx = _get_ctx()
-    detail = tuple(message.splitlines())
-    app_ctx.failures.append(
-        (acct, FetchFailure(status="error", detail=detail))
-    )
-
-
-def _record_auth_failure(acct: Account) -> None:
-    """Record a 401 as an in-panel failure with a re-login + refresh hint."""
-    app_ctx = _get_ctx()
-    provider = app_ctx.providers.get(acct.provider_id)
-    display = provider.display_name if provider else acct.provider_id
-    app_ctx.failures.append(
-        (
-            acct,
-            FetchFailure(
-                status="token expired",
-                detail=(
-                    f"Log in to {display} again, then run:",
-                    f"sidekick-usages refresh {shlex.quote(acct.label)}",
-                ),
-            ),
-        )
-    )
-
-
 def _print_forbidden(provider: Provider, err: ForbiddenError) -> None:
     """Render an unexpected 403 from the usage endpoint at add-time.
 
@@ -2441,16 +2835,22 @@ def _print_forbidden(provider: Provider, err: ForbiddenError) -> None:
 # ---------------------------------------------------------------------
 # Entry-point wrapping for argv overrides + exception conversion
 # ---------------------------------------------------------------------
-def _run_typer() -> int:
-    """Invoke Typer and convert :class:`UsageError` to exit-1.
+def _run_typer(argv: list[str] | None = None) -> int:
+    """Invoke Typer and convert typed application failures to process codes.
 
+    :param argv: Optional explicit command arguments for an embedded caller.
     :return: Process exit code.
     """
     try:
-        app(standalone_mode=False)
+        result: object = app(args=argv, standalone_mode=False)
+        if isinstance(result, int):
+            return int(result)
         return 0
     except typer.Exit as e:
         return int(e.exit_code or 0)
+    except PersistenceError as e:
+        Console(stderr=True).print(f"[red]{e}[/red]")
+        return int(_persistence_error_exit_code(e))
     except UsageError as e:
         Console(stderr=True).print(f"[red]{e}[/red]")
         return 1

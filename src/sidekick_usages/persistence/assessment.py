@@ -1,257 +1,35 @@
 """Deterministic passive persistence assessment and operation outcomes."""
 
 import hashlib
-import unicodedata
+import os
 from collections.abc import Iterable
-from dataclasses import dataclass, field
-from enum import StrEnum
+from dataclasses import dataclass
 from pathlib import Path
 
 from sidekick_usages.core.types import ExitCode
 from sidekick_usages.persistence.errors import (
     InvalidSchemaError,
+    PersistenceCode,
     RollbackCompatibilityError,
 )
-from sidekick_usages.persistence.migrations import (
-    prototype_to_version_one,
-    version_one_to_v060,
+from sidekick_usages.persistence.observations import (
+    ArtifactKind,
+    ArtifactObservation,
+    ArtifactState,
+    AuthorityKind,
+    AuthorityObservation,
+    PersistenceObservation,
+    StoredGeneration,
+    require_safe_observation_basename,
 )
 from sidekick_usages.persistence.schemas import (
-    GenerationZeroDocument,
-    PrototypeDocument,
-    PrototypeReceipt,
-    VersionOneDocument,
     encode_generation_zero,
     encode_version_one,
 )
-
-
-class PersistenceCode(StrEnum):
-    """Closed passive and operation-time persistence outcomes."""
-
-    UNSUPPORTED_FILESYSTEM = "unsupported_filesystem"
-    UNSAFE_PERMISSIONS = "unsafe_permissions"
-    UNREADABLE = "unreadable"
-    DUPLICATE_KEY = "duplicate_key"
-    MALFORMED_JSON = "malformed_json"
-    FUTURE_SCHEMA = "future_schema"
-    INVALID_SCHEMA = "invalid_schema"
-    BACKUP_CONFLICT = "backup_conflict"
-    INTERRUPTED_ARTIFACTS = "interrupted_artifacts"
-    LEGACY_WRITER_DETECTED = "legacy_writer_detected"
-    ROLLBACK_PREPARED = "rollback_prepared"
-    MIGRATION_REQUIRED = "migration_required"
-    PROTOTYPE_IMPORT_REQUIRED = "prototype_import_required"
-    PROTOTYPE_IMPORTED = "prototype_imported"
-    CURRENT = "current"
-    EMPTY = "empty"
-    ROLLBACK_REQUIRED = "rollback_required"
-    STORE_LOCKED = "store_locked"
-    SOURCE_CHANGED = "source_changed"
-    REPLACE_FAILED = "replace_failed"
-    DURABILITY_UNCERTAIN = "durability_uncertain"
-    RESET_INCOMPLETE = "reset_incomplete"
-
-
-class StoredGeneration(StrEnum):
-    """Generation known from passive authority evidence."""
-
-    ABSENT = "absent"
-    GENERATION_ZERO = "generation_zero"
-    VERSION_ONE = "version_one"
-    FUTURE = "future"
-    UNKNOWN = "unknown"
-
-
-class AuthorityKind(StrEnum):
-    """Closed authority observations supplied by the filesystem boundary."""
-
-    ABSENT = "absent"
-    GENERATION_ZERO = "generation_zero"
-    VERSION_ONE = "version_one"
-    FUTURE = "future"
-    DUPLICATE_KEY = "duplicate_key"
-    MALFORMED_JSON = "malformed_json"
-    INVALID_SCHEMA = "invalid_schema"
-    UNREADABLE = "unreadable"
-    UNSAFE = "unsafe"
-    UNSUPPORTED_FILESYSTEM = "unsupported_filesystem"
-
-
-class ArtifactKind(StrEnum):
-    """Managed and import-only artifact categories."""
-
-    LOCK = "lock"
-    V0_BACKUP = "v0_backup"
-    V1_SNAPSHOT = "v1_snapshot"
-    PROTOTYPE_RECEIPT = "prototype_receipt"
-    TEMPORARY = "temporary"
-    PROTOTYPE = "prototype"
-
-
-class ArtifactState(StrEnum):
-    """Security and decoding state of one observed artifact."""
-
-    VALID = "valid"
-    UNSAFE = "unsafe"
-    UNREADABLE = "unreadable"
-    DUPLICATE_KEY = "duplicate_key"
-    MALFORMED_JSON = "malformed_json"
-    FUTURE_SCHEMA = "future_schema"
-    INVALID_SCHEMA = "invalid_schema"
-    CONFLICT = "conflict"
-
-
-@dataclass(frozen=True, slots=True)
-class AuthorityObservation:
-    """Validated or safely classified authoritative-path evidence."""
-
-    kind: AuthorityKind
-    content: bytes | None = field(default=None, repr=False)
-    generation_zero: GenerationZeroDocument | None = field(
-        default=None,
-        repr=False,
-    )
-    version_one: VersionOneDocument | None = field(default=None, repr=False)
-    future_schema_version: int | None = None
-
-    def __post_init__(self) -> None:
-        documents = (self.generation_zero, self.version_one)
-        selected = {
-            AuthorityKind.GENERATION_ZERO: self.generation_zero,
-            AuthorityKind.VERSION_ONE: self.version_one,
-        }
-        if self.kind in selected:
-            valid = (
-                self.content is not None
-                and selected[self.kind] is not None
-                and sum(document is not None for document in documents) == 1
-                and self.future_schema_version is None
-            )
-        elif self.kind is AuthorityKind.FUTURE:
-            valid = (
-                type(self.future_schema_version) is int
-                and self.content is None
-                and all(document is None for document in documents)
-            )
-        else:
-            valid = (
-                self.content is None
-                and all(document is None for document in documents)
-                and self.future_schema_version is None
-            )
-        if not valid:
-            raise ValueError("Authority observation fields disagree.")
-
-    @property
-    def generation(self) -> StoredGeneration:
-        """Return the public generation derived from authority evidence."""
-        return {
-            AuthorityKind.ABSENT: StoredGeneration.ABSENT,
-            AuthorityKind.GENERATION_ZERO: StoredGeneration.GENERATION_ZERO,
-            AuthorityKind.VERSION_ONE: StoredGeneration.VERSION_ONE,
-            AuthorityKind.FUTURE: StoredGeneration.FUTURE,
-        }.get(self.kind, StoredGeneration.UNKNOWN)
-
-    @property
-    def schema_version(self) -> int | None:
-        """Return a known envelope version without decoding again."""
-        if self.kind is AuthorityKind.VERSION_ONE:
-            return 1
-        return self.future_schema_version
-
-    @property
-    def account_count(self) -> int | None:
-        """Return a validated authoritative account count when known."""
-        document = self.generation_zero or self.version_one
-        return len(document.accounts) if document is not None else None
-
-
-@dataclass(frozen=True, slots=True)
-class ArtifactObservation:
-    """One safe managed-artifact or prototype observation."""
-
-    kind: ArtifactKind
-    basename: str
-    state: ArtifactState
-    content: bytes | None = field(default=None, repr=False)
-    generation_zero: GenerationZeroDocument | None = field(
-        default=None,
-        repr=False,
-    )
-    version_one: VersionOneDocument | None = field(default=None, repr=False)
-    prototype: PrototypeDocument | None = field(default=None, repr=False)
-    receipt: PrototypeReceipt | None = field(default=None, repr=False)
-
-    def __post_init__(self) -> None:
-        _validate_safe_basename(self.basename)
-        documents = self._documents()
-        if self.state is ArtifactState.VALID:
-            valid = self._valid_payload()
-        else:
-            valid = all(document is None for document in documents)
-            readable_prototype = (
-                self.kind is ArtifactKind.PROTOTYPE
-                and self.state
-                not in {ArtifactState.UNSAFE, ArtifactState.UNREADABLE}
-            )
-            valid = valid and (
-                self.content is None
-                if not readable_prototype
-                else self.content is not None
-            )
-        if not valid:
-            raise ValueError("Artifact observation fields disagree.")
-
-    def _documents(self) -> tuple[object | None, ...]:
-        return (
-            self.generation_zero,
-            self.version_one,
-            self.prototype,
-            self.receipt,
-        )
-
-    def _valid_payload(self) -> bool:
-        documents = self._documents()
-        payload_present = {
-            ArtifactKind.V0_BACKUP: self.generation_zero is not None,
-            ArtifactKind.V1_SNAPSHOT: self.version_one is not None,
-            ArtifactKind.PROTOTYPE: self.prototype is not None,
-            ArtifactKind.PROTOTYPE_RECEIPT: self.receipt is not None,
-        }
-        if self.kind not in payload_present:
-            return self.content is None and all(
-                document is None for document in documents
-            )
-        expected_content = self.kind is not ArtifactKind.PROTOTYPE_RECEIPT
-        return (
-            payload_present[self.kind]
-            and sum(document is not None for document in documents) == 1
-            and (self.content is not None) is expected_content
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class PersistenceObservation:
-    """Complete read-only evidence supplied to passive assessment."""
-
-    safe_path: Path
-    authority: AuthorityObservation
-    artifacts: tuple[ArtifactObservation, ...] = ()
-    orphaned_credentials: bool = False
-
-    def __post_init__(self) -> None:
-        if type(self.orphaned_credentials) is not bool:
-            raise TypeError("orphaned_credentials must be Boolean.")
-        basenames = tuple(artifact.basename for artifact in self.artifacts)
-        if len(basenames) != len(set(basenames)):
-            raise ValueError("Artifact basenames must be unique.")
-        for singleton in (ArtifactKind.LOCK, ArtifactKind.PROTOTYPE):
-            if (
-                sum(artifact.kind is singleton for artifact in self.artifacts)
-                > 1
-            ):
-                raise ValueError(f"Only one {singleton} may be observed.")
+from sidekick_usages.persistence.transforms import (
+    prototype_to_version_one,
+    version_one_to_v060,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -277,6 +55,7 @@ class PersistenceAssessment:
     next_command: tuple[str, ...] | None
     message: str
     issues: tuple[PersistenceIssue, ...]
+    guidance: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -287,6 +66,34 @@ class PersistenceOperationResult:
     assessment: PersistenceAssessment
     artifact_basename: str | None
     message: str
+
+
+@dataclass(frozen=True, slots=True)
+class PersistenceCompositionFailure:
+    """Safe passive filesystem failure captured during app composition."""
+
+    code: PersistenceCode
+    safe_path: Path
+    artifact_basename: str | None
+    message: str
+    next_command: tuple[str, ...] | None = None
+    guidance: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.code not in {
+            PersistenceCode.UNSUPPORTED_FILESYSTEM,
+            PersistenceCode.UNSAFE_PERMISSIONS,
+            PersistenceCode.UNREADABLE,
+        }:
+            raise ValueError(
+                "Composition failure requires a passive filesystem code."
+            )
+        if not self.safe_path.is_absolute():
+            raise ValueError("Composition failure path must be absolute.")
+        if self.artifact_basename is not None:
+            require_safe_observation_basename(self.artifact_basename)
+        if self.next_command is not None and not self.next_command:
+            raise ValueError("Composition next command cannot be empty.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -323,8 +130,6 @@ _ARTIFACT_RANK: dict[ArtifactKind, int] = {
     ArtifactKind.PROTOTYPE: 6,
 }
 
-_MAX_BASENAME_BYTES = 255
-
 _MESSAGE: dict[PersistenceCode, str] = {
     PersistenceCode.UNSUPPORTED_FILESYSTEM: "Filesystem is unsupported.",
     PersistenceCode.UNSAFE_PERMISSIONS: "A persistence object is unsafe.",
@@ -351,6 +156,11 @@ _MESSAGE: dict[PersistenceCode, str] = {
 }
 
 _MIGRATE_COMMAND = ("sidekick-usages", "migrate", "accounts")
+_PERMISSIONS_REPAIR_COMMAND = (
+    "sidekick-usages",
+    "permissions",
+    "repair",
+)
 _PASSIVE_SUCCESS = frozenset(
     {
         PersistenceCode.EMPTY,
@@ -383,22 +193,6 @@ _OPERATION_MANUAL = frozenset(
         PersistenceCode.INTERRUPTED_ARTIFACTS,
     }
 )
-
-
-def _validate_safe_basename(value: str) -> None:
-    try:
-        encoded = value.encode("utf-8")
-    except UnicodeEncodeError:
-        encoded = b""
-    if (
-        not encoded
-        or len(encoded) > _MAX_BASENAME_BYTES
-        or value in {".", ".."}
-        or "/" in value
-        or "\\" in value
-        or any(unicodedata.category(char) == "Cc" for char in value)
-    ):
-        raise ValueError("Artifact observation requires a safe basename.")
 
 
 def _ranked_issue(
@@ -679,11 +473,14 @@ def _ordered_issues(
     return tuple(ranked.issue for ranked in ordered)
 
 
-def _next_command(
+def recovery_next_command(
     code: PersistenceCode,
     *,
-    reimport_prototype: bool,
+    reimport_prototype: bool = False,
 ) -> tuple[str, ...] | None:
+    """Return the structured safe recovery command for passive state."""
+    if code is PersistenceCode.UNSAFE_PERMISSIONS:
+        return _PERMISSIONS_REPAIR_COMMAND
     if code in {
         PersistenceCode.MIGRATION_REQUIRED,
         PersistenceCode.LEGACY_WRITER_DETECTED,
@@ -694,6 +491,21 @@ def _next_command(
             return (*_MIGRATE_COMMAND, "--reimport-prototype")
         return _MIGRATE_COMMAND
     return None
+
+
+def recovery_guidance(code: PersistenceCode) -> str | None:
+    """Return bounded platform guidance for one recoverable passive state."""
+    if code is not PersistenceCode.UNSAFE_PERMISSIONS:
+        return None
+    if os.name == "nt":
+        return (
+            "Sidekick can restore its exact protected Windows DACL without "
+            "changing credential bytes."
+        )
+    return (
+        "Sidekick can restore owner-only POSIX directory modes without "
+        "changing credential bytes."
+    )
 
 
 def assess_persistence(
@@ -736,9 +548,13 @@ def assess_persistence(
             PersistenceCode.CURRENT,
             PersistenceCode.PROTOTYPE_IMPORTED,
         },
-        next_command=_next_command(code, reimport_prototype=reimport),
+        next_command=recovery_next_command(
+            code,
+            reimport_prototype=reimport,
+        ),
         message=primary.message,
         issues=issues,
+        guidance=recovery_guidance(code),
     )
 
 
@@ -791,7 +607,7 @@ def make_operation_result(
     """Create a safe operation result without replacing passive state."""
     operation_exit_code(code)
     if artifact_basename is not None:
-        _validate_safe_basename(artifact_basename)
+        require_safe_observation_basename(artifact_basename)
     return PersistenceOperationResult(
         code,
         assessment,

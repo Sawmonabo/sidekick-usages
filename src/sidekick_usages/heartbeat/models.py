@@ -1,4 +1,4 @@
-"""Domain types for optional usage-window heartbeat."""
+"""Typed models for optional usage-window heartbeat."""
 
 from dataclasses import dataclass
 from datetime import datetime

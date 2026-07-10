@@ -16,10 +16,6 @@ from enum import StrEnum
 from pathlib import Path
 
 from sidekick_usages.persistence.errors import RollbackCompatibilityError
-from sidekick_usages.persistence.migrations import (
-    generation_zero_to_version_one,
-    version_one_to_v060,
-)
 from sidekick_usages.persistence.schemas import (
     VersionOneDocument,
     decode_generation_zero,
@@ -27,8 +23,12 @@ from sidekick_usages.persistence.schemas import (
     encode_generation_zero,
     encode_version_one,
 )
+from sidekick_usages.persistence.transforms import (
+    generation_zero_to_version_one,
+    version_one_to_v060,
+)
+from sidekick_usages.persistence.v060 import PINNED_V060_COMMIT
 
-PINNED_V060_COMMIT = "6a413b2772c3c11e9ef45a78a06ab79bfc0ca44c"
 _ACCOUNT_ORDER = ("claude-max-1", "codex-plus-1")
 _PROVIDER_ORDER = ("claude", "codex")
 _COMMAND_TIMEOUT_SECONDS = 60

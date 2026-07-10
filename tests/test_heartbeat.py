@@ -39,13 +39,14 @@ from sidekick_usages.heartbeat.codex import (
     CodexHeartbeat,
 )
 from sidekick_usages.http import HttpClient, HttpOperation
+from sidekick_usages.persistence.account_store import AccountStore
 from sidekick_usages.providers.base import Provider
 from sidekick_usages.providers.codex import CodexProvider
 from sidekick_usages.serialization import JsonObject
-from sidekick_usages.store import AccountStore
 from tests.test_support import (
     REFERENCE_TIME,
     FixedClock,
+    make_account_store,
     make_application_paths,
 )
 
@@ -179,10 +180,7 @@ class _FakeRefreshProvider(Provider):
 
 
 def _store(tmp_path: Path, accounts: Iterable[Account]) -> AccountStore:
-    store = AccountStore(make_application_paths(tmp_path).accounts)
-    for account in accounts:
-        store.upsert(account)
-    return store
+    return make_account_store(tmp_path, accounts)
 
 
 def _acct(
@@ -304,9 +302,9 @@ def test_account_roundtrips_heartbeat_metadata(tmp_path: Path) -> None:
     account.last_heartbeat_at = _ROUNDTRIP_AUDIT_TIME
     account.last_heartbeat_status = HeartbeatStatus.WARMED
     account.last_heartbeat_error = None
-    store.save()
+    store.persist(account)
 
-    restored = AccountStore(store.locations).load().get("team")
+    restored = make_account_store(tmp_path).get("team")
 
     assert restored is not None
     assert restored.heartbeat_enabled is True
@@ -355,7 +353,7 @@ def test_heartbeat_label_runs_even_when_disabled(tmp_path: Path) -> None:
 
     assert outcome.status is HeartbeatStatus.WARMED
     assert provider.heartbeat_calls == [("team", "old-token")]
-    saved = AccountStore(store.locations).load().get("team")
+    saved = make_account_store(tmp_path).get("team")
     assert saved is not None
     assert saved.last_heartbeat_status is HeartbeatStatus.WARMED
     assert saved.heartbeat_5h_reset_at == _STANDARD_RESET
@@ -445,7 +443,7 @@ def test_heartbeat_persists_failure_per_account(tmp_path: Path) -> None:
 
     assert outcome.status is HeartbeatStatus.FAILED
     assert outcome.action_required is True
-    saved = AccountStore(store.locations).load().get("team")
+    saved = make_account_store(tmp_path).get("team")
     assert saved is not None
     assert saved.last_heartbeat_at == REFERENCE_TIME
     assert saved.last_heartbeat_status is HeartbeatStatus.FAILED

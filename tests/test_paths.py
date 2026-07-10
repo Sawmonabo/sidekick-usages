@@ -1,11 +1,15 @@
 """Behavioral tests for Sidekick-owned path composition."""
 
 import json
+import os
 from pathlib import Path
 
+import pytest
+
 from sidekick_usages.paths import discover_application_paths
-from sidekick_usages.store import AccountStore
-from tests.test_support import make_application_paths
+from sidekick_usages.persistence.account_store import AccountStoreStateError
+from sidekick_usages.persistence.errors import PersistenceCode
+from tests.test_support import make_account_store, make_application_paths
 
 
 def test_discovery_preserves_current_locations_without_filesystem_side_effects(
@@ -35,10 +39,10 @@ def test_discovery_preserves_current_locations_without_filesystem_side_effects(
     assert not home.exists()
 
 
-def test_injected_account_locations_drive_prototype_import(
+def test_account_store_does_not_implicitly_import_prototype(
     tmp_path: Path,
 ) -> None:
-    """The store imports only from its injected prototype location."""
+    """Runtime loading leaves prototype migration to the coordinator."""
     paths = make_application_paths(tmp_path)
     prototype_file = paths.accounts.prototype_cc_usage
     prototype_file.parent.mkdir(parents=True)
@@ -46,10 +50,12 @@ def test_injected_account_locations_drive_prototype_import(
         {"team": {"token": "secret", "plan": "max"}}
     )
     prototype_file.write_text(prototype_content)
+    os.chmod(prototype_file.parent, 0o700)
+    os.chmod(prototype_file, 0o600)
 
-    account = AccountStore(paths.accounts).load().get("team")
+    with pytest.raises(AccountStoreStateError) as exc_info:
+        make_account_store(tmp_path)
 
-    assert account is not None
-    assert account.access_token == "secret"
-    assert paths.accounts.canonical.exists()
+    assert exc_info.value.code is PersistenceCode.PROTOTYPE_IMPORT_REQUIRED
+    assert not paths.accounts.canonical.exists()
     assert prototype_file.read_text() == prototype_content

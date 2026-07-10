@@ -1,11 +1,11 @@
-"""Abstract provider adapter for usage-window heartbeat."""
+"""Provider port for optional usage-window heartbeat."""
 
 from abc import ABC, abstractmethod
 from datetime import datetime
 
 from sidekick_usages.core.models import Account
 from sidekick_usages.core.types import HeartbeatStatus, ProviderId
-from sidekick_usages.heartbeat.domain import (
+from sidekick_usages.heartbeat.models import (
     HeartbeatProbeResult,
     HeartbeatTarget,
     UsageWindowState,

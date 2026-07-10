@@ -8,7 +8,8 @@ rectangular blocks which look bulky for this multi-line layout.
 """
 
 import re
-from dataclasses import dataclass
+import shlex
+from collections.abc import Sequence
 from datetime import date, datetime
 from typing import assert_never
 
@@ -22,7 +23,7 @@ from sidekick_usages.branding import (
     PROVIDER_COLORS,
     brand_header,
 )
-from sidekick_usages.core.models import Account, UsageReport, UsageWindow
+from sidekick_usages.core.models import UsageReport, UsageWindow
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.lifetime import (
     LifetimeFailure,
@@ -30,6 +31,16 @@ from sidekick_usages.lifetime import (
     LifetimeResult,
     LifetimeTotal,
     LifetimeUnavailable,
+)
+from sidekick_usages.usage.models import (
+    AccountUsage,
+    AuthenticationFailure,
+    FetchFailure,
+    ForbiddenFailure,
+    InvalidExpiryFailure,
+    PersistenceFailure,
+    RateLimitFailure,
+    RefreshRejectedFailure,
 )
 
 BAR_WIDTH = 18
@@ -135,20 +146,6 @@ def _lifetime_text(result: LifetimeResult) -> Text:
                 assert_never(unreachable)
         return Text(label, style="yellow")
     assert_never(result)
-
-
-@dataclass(frozen=True)
-class FetchFailure:
-    """One account's terminal fetch failure, rendered in-panel.
-
-    :ivar status: Short label shown in the data area (e.g. ``token
-        expired``), prefixed with a ``⚠`` glyph by the renderer.
-    :ivar detail: Zero or more recovery lines shown below the status
-        (e.g. the re-login instruction and the ``refresh`` command).
-    """
-
-    status: str
-    detail: tuple[str, ...]
 
 
 def _classify_window(name: str) -> tuple[str, str]:
@@ -319,46 +316,52 @@ def _reset_cell(
     )
 
 
-def _account_tag(acct: Account) -> Text:
+def _account_tag(provider_id: ProviderId, plan: str) -> Text:
     """Build the ``[provider · plan]`` colored tag.
 
-    :param acct: Account whose provider and plan to show.
+    :param provider_id: Account provider to show.
+    :param plan: Account plan to show when known.
     :return: A Rich ``Text`` ready for direct printing.
     """
-    prov_color = PROVIDER_COLORS.get(acct.provider_id, "dim")
-    plan_color = PLAN_COLORS.get(acct.plan, "dim")
+    prov_color = PROVIDER_COLORS.get(provider_id, "dim")
+    plan_color = PLAN_COLORS.get(plan, "dim")
     tag = Text()
-    if not acct.plan or acct.plan == "unknown":
+    if not plan or plan == "unknown":
         tag.append("[", style="dim")
-        tag.append(acct.provider_id, style=prov_color)
+        tag.append(provider_id, style=prov_color)
         tag.append("]", style="dim")
         return tag
     tag.append("[", style="dim")
-    tag.append(acct.provider_id, style=prov_color)
+    tag.append(provider_id, style=prov_color)
     tag.append(" · ", style="dim")
-    tag.append(acct.plan, style=plan_color)
+    tag.append(plan, style=plan_color)
     tag.append("]", style="dim")
     return tag
 
 
-def account_header(acct: Account) -> Text:
+def account_header(
+    label: str,
+    provider_id: ProviderId,
+    plan: str,
+) -> Text:
     """Render a standalone header line.
 
     Used by error blocks where there's no report to align against.
 
-    :param acct: Account to display.
+    :param label: Account label to display.
+    :param provider_id: Account provider to display.
+    :param plan: Account plan to display when known.
     :return: A Rich ``Text`` of ``label  [provider · plan]``.
     """
     header = Text()
-    header.append(acct.label, style="bold")
+    header.append(label, style="bold")
     header.append("  ")
-    header.append_text(_account_tag(acct))
+    header.append_text(_account_tag(provider_id, plan))
     return header
 
 
 def usage_report(
-    acct: Account,
-    report: UsageReport,
+    usage: AccountUsage,
     reference_time: datetime,
 ) -> RenderableType:
     """Render the full per-account block.
@@ -367,15 +370,15 @@ def usage_report(
     by a borderless table of one row per active window. Columns:
     name, bar, percent, reset time.
 
-    :param acct: Account being reported on.
-    :param report: Parsed usage data.
+    :param usage: Immutable account usage to render.
     :param reference_time: Aware wall time for relative reset labels.
     :return: A Rich ``Group`` ready to print or nest in a panel.
     """
+    report = usage.report
     windows = report.active_windows()
     if not windows:
         return Group(
-            account_header(acct),
+            account_header(usage.label, usage.provider_id, usage.plan),
             Text(
                 "  No active usage windows reported.",
                 style="dim",
@@ -407,18 +410,21 @@ def usage_report(
             _format_reset(w.resets_at, reference_time),
         )
 
-    return Group(account_header(acct), table)
+    return Group(
+        account_header(usage.label, usage.provider_id, usage.plan),
+        table,
+    )
 
 
 def _dot(provider_id: ProviderId) -> Text:
     return Text("●", style=PROVIDER_COLORS.get(provider_id, "dim"))
 
 
-def _plan_text(acct: Account) -> Text:
+def _plan_text(plan: str) -> Text:
     """Plan chip, suppressed for empty/unknown (matches legacy tag)."""
-    if not acct.plan or acct.plan == "unknown":
+    if not plan or plan == "unknown":
         return Text("")
-    return Text(acct.plan, style=PLAN_COLORS.get(acct.plan, "grey42"))
+    return Text(plan, style=PLAN_COLORS.get(plan, "grey42"))
 
 
 def _panel_columns(
@@ -555,25 +561,25 @@ def _build_table(
 
 def _provider_panel(
     provider_id: ProviderId,
-    pairs: list[tuple[Account, UsageReport]],
-    failures: list[tuple[Account, FetchFailure]],
+    usages: list[AccountUsage],
+    failures: list[FetchFailure],
     namew: int,
     prov_lifetime: LifetimeResult | None,
     reference_time: datetime,
 ) -> Panel:
     blocks: list[RenderableType] = []
-    if pairs:
-        primary, named = _panel_columns([r for _, r in pairs])
+    if usages:
+        primary, named = _panel_columns([usage.report for usage in usages])
         n_cols = 3 + len(primary) + 2 * len(named)
         table = _build_table(namew, primary, named)
-        for position, (acct, report) in enumerate(pairs):
+        for position, usage in enumerate(usages):
             if position:
                 table.add_row(*([Text("")] * n_cols))
-            index = _window_index(report)
+            index = _window_index(usage.report)
             util_row: list[RenderableType] = [
                 _dot(provider_id),
-                Text(acct.label, style="grey85"),
-                _plan_text(acct),
+                Text(usage.label, style="grey85"),
+                _plan_text(usage.plan),
             ]
             reset_row: list[RenderableType] = [Text(""), Text(""), Text("")]
             for length in primary:
@@ -611,7 +617,7 @@ def _provider_panel(
         blocks.append(_error_table(provider_id, failures, namew))
     content: RenderableType = blocks[0] if len(blocks) == 1 else Group(*blocks)
     color = PROVIDER_COLORS.get(provider_id, "white")
-    account_count = len(pairs) + len(failures)
+    account_count = len(usages) + len(failures)
     account_noun = "account" if account_count == 1 else "accounts"
     title = Text()
     title.append(provider_id.upper(), style=f"bold {color}")
@@ -634,9 +640,55 @@ def _provider_panel(
     )
 
 
+def _failure_copy(failure: FetchFailure) -> tuple[str, tuple[str, ...]]:
+    """Map one typed application failure to human recovery copy."""
+    message_lines = tuple(failure.message.splitlines())
+    if isinstance(
+        failure,
+        AuthenticationFailure | RefreshRejectedFailure,
+    ):
+        provider_name = {
+            ProviderId.CLAUDE: "Claude Code",
+            ProviderId.CODEX: "Codex CLI",
+        }[failure.provider_id]
+        command = shlex.join(["sidekick-usages", "refresh", failure.label])
+        return (
+            "token expired",
+            (
+                *message_lines,
+                f"Log in to {provider_name} again, then run:",
+                command,
+            ),
+        )
+    if isinstance(failure, InvalidExpiryFailure):
+        command = shlex.join(["sidekick-usages", "refresh", failure.label])
+        return "invalid expiry", (*message_lines, command)
+    if isinstance(failure, ForbiddenFailure):
+        detail = list(message_lines)
+        if failure.required_scope is not None:
+            detail.append(f"Required scope: {failure.required_scope}.")
+        return "forbidden", tuple(detail)
+    if isinstance(failure, RateLimitFailure):
+        detail = list(message_lines)
+        if failure.retry_after_seconds is not None:
+            detail.append(
+                f"Retry after {failure.retry_after_seconds} seconds."
+            )
+        return "rate limited", tuple(detail)
+    if isinstance(failure, PersistenceFailure):
+        return (
+            "state not saved",
+            (
+                "Usage was withheld because account changes were not durable.",
+                *message_lines,
+            ),
+        )
+    return "error", message_lines
+
+
 def _error_table(
     provider_id: ProviderId,
-    failures: list[tuple[Account, FetchFailure]],
+    failures: list[FetchFailure],
     namew: int,
 ) -> Table:
     """Build the ``[dot, name, plan, rest]`` failure sub-table.
@@ -645,25 +697,26 @@ def _error_table(
     rows align under the success matrix. ``rest`` stacks the status
     line and any recovery detail lines.
     """
-    rows: list[tuple[Account, Group]] = []
+    rows: list[tuple[FetchFailure, Group]] = []
     rest_w = 1
-    for acct, fail in failures:
-        status = Text(f"⚠ {fail.status}", style="yellow")
-        detail = [Text(line, style="grey54") for line in fail.detail]
+    for failure in failures:
+        status_label, detail_lines = _failure_copy(failure)
+        status = Text(f"⚠ {status_label}", style="yellow")
+        detail = [Text(line, style="grey54") for line in detail_lines]
         rest_w = max(rest_w, status.cell_len, *(t.cell_len for t in detail))
-        rows.append((acct, Group(status, *detail)))
+        rows.append((failure, Group(status, *detail)))
     table = Table(box=None, show_header=False, padding=(0, 1), pad_edge=False)
     table.add_column(width=1)  # dot
     table.add_column(width=namew)  # name
     table.add_column(width=4)  # plan
     table.add_column(width=rest_w, justify="left")  # rest
-    for position, (acct, rest) in enumerate(rows):
+    for position, (failure, rest) in enumerate(rows):
         if position:
             table.add_row(Text(""), Text(""), Text(""), Text(""))
         table.add_row(
             _dot(provider_id),
-            Text(acct.label, style="grey85"),
-            _plan_text(acct),
+            Text(failure.label, style="grey85"),
+            _plan_text(failure.plan),
             rest,
         )
     return table
@@ -705,47 +758,53 @@ def _legend() -> Text:
 
 
 def _provider_order(
-    pairs: list[tuple[Account, UsageReport]],
-    failures: list[tuple[Account, FetchFailure]] | None = None,
+    usages: Sequence[AccountUsage],
+    failures: Sequence[FetchFailure] = (),
 ) -> list[ProviderId]:
     order: list[ProviderId] = []
-    rows: list[Account] = [a for a, _ in pairs]
-    if failures:
-        rows += [a for a, _ in failures]
-    for acct in rows:
-        if acct.provider_id not in order:
-            order.append(acct.provider_id)
+    provider_ids = (
+        *(usage.provider_id for usage in usages),
+        *(failure.provider_id for failure in failures),
+    )
+    for provider_id in provider_ids:
+        if provider_id not in order:
+            order.append(provider_id)
     return order
 
 
-def _failure_block(acct: Account, fail: FetchFailure) -> Group:
+def _failure_block(failure: FetchFailure) -> Group:
     """Stacked (non-panel) failure block for the legacy narrow view."""
+    status, detail = _failure_copy(failure)
     lines: list[RenderableType] = [
-        account_header(acct),
-        Text(f"  ⚠ {fail.status}", style="yellow"),
+        account_header(
+            failure.label,
+            failure.provider_id,
+            failure.plan,
+        ),
+        Text(f"  ⚠ {status}", style="yellow"),
     ]
-    lines.extend(Text(f"  {line}", style="grey54") for line in fail.detail)
+    lines.extend(Text(f"  {line}", style="grey54") for line in detail)
     return Group(*lines)
 
 
 def _legacy_overview(
-    pairs: list[tuple[Account, UsageReport]],
+    usages: Sequence[AccountUsage],
     lifetime: dict[ProviderId, LifetimeResult],
-    failures: list[tuple[Account, FetchFailure]] | None = None,
+    failures: Sequence[FetchFailure] = (),
     *,
     reference_time: datetime,
 ) -> RenderableType:
     """Stacked per-account fallback for narrow terminals (no wrap)."""
     blocks: list[RenderableType] = []
-    for index, (acct, report) in enumerate(pairs):
+    for index, usage in enumerate(usages):
         if index:
             blocks.append(Text(""))
-        blocks.append(usage_report(acct, report, reference_time))
-    for acct, fail in failures or ():
+        blocks.append(usage_report(usage, reference_time))
+    for failure in failures:
         if blocks:
             blocks.append(Text(""))
-        blocks.append(_failure_block(acct, fail))
-    for provider_id in _provider_order(pairs, failures):
+        blocks.append(_failure_block(failure))
+    for provider_id in _provider_order(usages, failures):
         result = lifetime.get(provider_id)
         if result is None:
             continue
@@ -761,36 +820,35 @@ def _legacy_overview(
 
 
 def usage_overview(
-    pairs: list[tuple[Account, UsageReport]],
+    usages: Sequence[AccountUsage],
     lifetime: dict[ProviderId, LifetimeResult],
     *,
-    failures: list[tuple[Account, FetchFailure]] | None = None,
+    failures: Sequence[FetchFailure] = (),
     width: int,
     reference_time: datetime,
 ) -> RenderableType:
     """Render all accounts as provider-grouped framed heat panels.
 
-    :param pairs: ``(Account, UsageReport)`` for every fetched account.
+    :param usages: Immutable successful account usage results.
     :param lifetime: Completed lifetime result for each selected provider.
-    :param failures: ``(Account, FetchFailure)`` for each account whose
-        fetch failed.
+    :param failures: Typed failures for accounts whose fetch failed.
     :param width: Target terminal width; below the binding panel
         width the layout degrades to the legacy stacked view.
     :param reference_time: Aware wall time shared by every reset label.
     :return: A Rich renderable.
     """
-    fails = failures or []
-    if not pairs and not fails:
+    if not usages and not failures:
         return Text("No usage to display.", style="dim")
-    labels = [a.label for a, _ in pairs] + [a.label for a, _ in fails]
+    labels = [usage.label for usage in usages]
+    labels.extend(failure.label for failure in failures)
     namew = max(len(s) for s in labels)
-    order = _provider_order(pairs, fails)
+    order = _provider_order(usages, failures)
     measure = Console(width=10_000)
     panels = [
         _provider_panel(
             pid,
-            [(a, r) for a, r in pairs if a.provider_id == pid],
-            [(a, f) for a, f in fails if a.provider_id == pid],
+            [usage for usage in usages if usage.provider_id == pid],
+            [failure for failure in failures if failure.provider_id == pid],
             namew,
             lifetime.get(pid),
             reference_time,
@@ -806,9 +864,9 @@ def usage_overview(
             brand_header(width),
             Text(""),
             _legacy_overview(
-                pairs,
+                usages,
                 lifetime,
-                fails,
+                failures,
                 reference_time=reference_time,
             ),
         )

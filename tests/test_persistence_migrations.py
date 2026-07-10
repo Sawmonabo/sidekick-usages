@@ -16,12 +16,6 @@ from sidekick_usages.persistence.errors import (
     InvalidSchemaError,
     RollbackCompatibilityError,
 )
-from sidekick_usages.persistence.migrations import (
-    accounts_to_version_one,
-    generation_zero_to_version_one,
-    version_one_to_accounts,
-    version_one_to_v060,
-)
 from sidekick_usages.persistence.schemas import (
     GenerationZeroDocument,
     StoredAccountRecord,
@@ -30,6 +24,12 @@ from sidekick_usages.persistence.schemas import (
     decode_version_one,
     encode_generation_zero,
     encode_version_one,
+)
+from sidekick_usages.persistence.transforms import (
+    accounts_to_version_one,
+    generation_zero_to_version_one,
+    version_one_to_accounts,
+    version_one_to_v060,
 )
 
 EXPIRY = datetime(2026, 7, 11, 12, tzinfo=UTC)

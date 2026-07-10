@@ -15,14 +15,14 @@ from datetime import UTC, datetime
 
 from sidekick_usages.core.models import Account, ClaudeCredentials
 from sidekick_usages.core.types import AccountLabel, HeartbeatStatus
-from sidekick_usages.heartbeat.claude import ClaudeHeartbeat
 from sidekick_usages.http import HttpClient, HttpOperation
-from sidekick_usages.providers.claude import (
+from sidekick_usages.providers.claude import ClaudeProvider
+from sidekick_usages.providers.claude.heartbeat import ClaudeHeartbeat
+from sidekick_usages.providers.claude.usage import (
     ANTHROPIC_BETA,
     MESSAGES_URL,
     PROBE_MODEL,
     USAGE_URL,
-    ClaudeProvider,
 )
 from sidekick_usages.serialization import JsonObject
 from tests.test_support import FixedClock
@@ -124,11 +124,11 @@ _LIVE_HEADERS = {
 }
 
 
-# -- _fetch_via_headers: request shape ----------------------------
+# -- public header route: request shape ---------------------------
 def test_fetch_via_headers_targets_messages_endpoint() -> None:
     """The probe POSTs to ``/v1/messages``, not ``/api/oauth/usage``."""
     http = _FakeHttp(response_headers=_LIVE_HEADERS)
-    _provider()._fetch_via_headers(_acct(()), http)
+    _provider().fetch_usage(_acct(()), http)
     assert http.calls == [("POST", MESSAGES_URL)]
 
 
@@ -144,7 +144,7 @@ def test_fetch_via_headers_sends_bearer_auth_and_beta() -> None:
         acct.credentials,
         access_token="sk-ant-oat01-secret",
     )
-    _provider()._fetch_via_headers(acct, http)
+    _provider().fetch_usage(acct, http)
     assert http.last_post_headers is not None
     assert (
         http.last_post_headers["Authorization"] == "Bearer sk-ant-oat01-secret"
@@ -160,7 +160,7 @@ def test_fetch_via_headers_sends_one_token_probe_body() -> None:
     server-side changes.
     """
     http = _FakeHttp(response_headers=_LIVE_HEADERS)
-    _provider()._fetch_via_headers(_acct(()), http)
+    _provider().fetch_usage(_acct(()), http)
     assert http.last_post_body == {
         "model": PROBE_MODEL,
         "max_tokens": 1,
@@ -168,11 +168,11 @@ def test_fetch_via_headers_sends_one_token_probe_body() -> None:
     }
 
 
-# -- _fetch_via_headers: header parsing ---------------------------
+# -- public header route: response conversion --------------------
 def test_fetch_via_headers_parses_5h_and_7d_windows() -> None:
     """Header-path fractions are normalized to display percentages."""
     http = _FakeHttp(response_headers=_LIVE_HEADERS)
-    report = _provider()._fetch_via_headers(_acct(()), http)
+    report = _provider().fetch_usage(_acct(()), http)
     names = {w.name: w for w in report.windows}
     assert set(names) == {"5h", "7d"}
     assert round(names["5h"].utilization, 2) == _REF_5H_UTILIZATION_PERCENT
@@ -184,7 +184,7 @@ def test_fetch_via_headers_omits_window_when_headers_missing() -> None:
     """Missing 5h headers omit the 5h window — don't synthesize zeros."""
     headers = {k: v for k, v in _LIVE_HEADERS.items() if "-5h-" not in k}
     http = _FakeHttp(response_headers=headers)
-    report = _provider()._fetch_via_headers(_acct(()), http)
+    report = _provider().fetch_usage(_acct(()), http)
     assert [w.name for w in report.windows] == ["7d"]
 
 
@@ -196,7 +196,7 @@ def test_fetch_via_headers_returns_empty_windows_on_empty_response() -> None:
     empty report (renderer shows no bars) rather than throwing.
     """
     http = _FakeHttp(response_headers={})
-    report = _provider()._fetch_via_headers(_acct(()), http)
+    report = _provider().fetch_usage(_acct(()), http)
     assert report.windows == ()
 
 
@@ -207,7 +207,7 @@ def test_fetch_via_headers_skips_non_numeric_utilization() -> None:
         "anthropic-ratelimit-unified-5h-utilization": "not-a-float",
     }
     http = _FakeHttp(response_headers=headers)
-    report = _provider()._fetch_via_headers(_acct(()), http)
+    report = _provider().fetch_usage(_acct(()), http)
     assert [w.name for w in report.windows] == ["7d"]
 
 
@@ -218,7 +218,7 @@ def test_fetch_via_headers_skips_non_numeric_reset() -> None:
         "anthropic-ratelimit-unified-7d-reset": "tomorrow",
     }
     http = _FakeHttp(response_headers=headers)
-    report = _provider()._fetch_via_headers(_acct(()), http)
+    report = _provider().fetch_usage(_acct(()), http)
     assert [w.name for w in report.windows] == ["5h"]
 
 

@@ -26,7 +26,6 @@ from sidekick_usages.errors import ForbiddenError
 from sidekick_usages.http import HttpClient
 from sidekick_usages.providers import build_provider_registry
 from sidekick_usages.serialization import JsonObject
-from sidekick_usages.store import AccountStore
 from sidekick_usages.update import (
     PACKAGE_NAME,
     InstallMethod,
@@ -37,7 +36,11 @@ from sidekick_usages.update import (
     parse_version,
     upgrade_command_for,
 )
-from tests.test_support import FixedClock, make_application_paths
+from tests.test_support import (
+    FixedClock,
+    make_account_store,
+    make_application_paths,
+)
 
 
 class _FakeHttp(HttpClient):
@@ -242,7 +245,7 @@ def _install_fake_ctx(http: HttpClient, root: Path) -> None:
     clock = FixedClock()
     cli.set_context(
         cli.AppContext(
-            store=AccountStore(paths.accounts),
+            store=make_account_store(root),
             http=http,
             providers=build_provider_registry(clock),
             heartbeat_providers={},

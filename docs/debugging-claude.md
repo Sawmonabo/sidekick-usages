@@ -178,17 +178,17 @@ Two things look like the cause but aren't:
 `[claude · max]`, `[claude · pro]`. That string comes from
 `account.plan`, which is parsed from the local Claude CLI keychain
 entry (`oauth.get("subscriptionType")` at
-`src/sidekick_usages/providers/claude.py:215`) and used only for
-color-coding in `src/sidekick_usages/render.py:33-37`
+`src/sidekick_usages/providers/claude/schemas.py:38-47`) and used only for
+color-coding in `src/sidekick_usages/render.py:53-59`
 (`PLAN_COLORS = {"max": "magenta", "team": "cyan", "pro": "green"}`).
 
 It is **not** consulted during auth. The dispatch at
-`providers/claude.py:236-238` routes on `account.scopes`, not on plan:
+`providers/claude/usage.py:33-41` routes on `account.scopes`, not on plan:
 
 ```python
 if account.scopes is not None and PROFILE_SCOPE not in account.scopes:
-    return self._fetch_via_headers(account, http)   # /v1/messages probe
-return self._fetch_via_oauth_endpoint(account, http) # /api/oauth/usage
+    return fetch_via_headers(account, http)  # /v1/messages probe
+return fetch_via_oauth_endpoint(account, http)  # /api/oauth/usage
 ```
 
 Both code paths send the **same token bytes** as
@@ -211,8 +211,8 @@ causes (see [Root causes](#root-causes) below):
 
 The first thing to verify is whether the token itself works against
 Anthropic's API, independent of anything `sidekick-usages` stored or
-sent. `/v1/messages` is the same endpoint the `_fetch_via_headers`
-path uses (`providers/claude.py:296-309`), so a direct curl bypasses
+sent. `/v1/messages` is the same endpoint the `fetch_via_headers`
+path uses (`providers/claude/usage.py:66-85`), so a direct curl bypasses
 every layer of this tool:
 
 ```bash
@@ -328,7 +328,7 @@ gets stored.
 keychain entry. If the saved value is stale — e.g., the keychain
 entry was a full-scope OAuth login when you first ran `add`, but the
 token you just refreshed in is a `setup-token` (inference-only) —
-the dispatcher at `providers/claude.py:236-238` will route to the
+the dispatcher at `providers/claude/usage.py:33-41` will route to the
 wrong endpoint:
 
 | Saved `scopes` | New token shape | Dispatcher sends to | Result |

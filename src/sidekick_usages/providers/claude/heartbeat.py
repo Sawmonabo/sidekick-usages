@@ -1,17 +1,19 @@
-"""Claude-specific usage-window heartbeat adapter."""
-
-from datetime import UTC, datetime
+"""Claude usage-window heartbeat adapter."""
 
 from sidekick_usages.core.models import Account
 from sidekick_usages.core.types import ProviderId
-from sidekick_usages.heartbeat.base import HeartbeatProvider, warmed
-from sidekick_usages.heartbeat.domain import (
+from sidekick_usages.heartbeat.models import (
     HeartbeatProbeResult,
     HeartbeatTarget,
     UsageWindowState,
 )
+from sidekick_usages.heartbeat.ports import HeartbeatProvider, warmed
 from sidekick_usages.http import HttpClient, HttpOperation
-from sidekick_usages.providers.claude import (
+from sidekick_usages.providers.claude.schemas import (
+    header_reset,
+    provider_time,
+)
+from sidekick_usages.providers.claude.usage import (
     ANTHROPIC_API_VERSION,
     ANTHROPIC_BETA,
     MESSAGES_URL,
@@ -20,7 +22,6 @@ from sidekick_usages.providers.claude import (
     USAGE_URL,
     USER_AGENT,
 )
-from sidekick_usages.serialization import JsonValue
 
 INFERENCE_SCOPE = "user:inference"
 FIVE_HOUR_KEY = "five_hour"
@@ -62,9 +63,9 @@ class ClaudeHeartbeat(HeartbeatProvider):
         del target
         if account.scopes is not None and PROFILE_SCOPE not in account.scopes:
             return UsageWindowState(
-                active=False, message="header probe needed"
+                active=False,
+                message="header probe needed",
             )
-
         data = http.get_json(
             USAGE_URL,
             headers={
@@ -76,8 +77,11 @@ class ClaudeHeartbeat(HeartbeatProvider):
         )
         window = data.get(FIVE_HOUR_KEY)
         if not isinstance(window, dict):
-            return UsageWindowState(active=False, message="5h window missing")
-        reset_at = _provider_time(window.get("resets_at"))
+            return UsageWindowState(
+                active=False,
+                message="5h window missing",
+            )
+        reset_at = provider_time(window.get("resets_at"))
         if reset_at is not None:
             return UsageWindowState(
                 active=True,
@@ -92,7 +96,7 @@ class ClaudeHeartbeat(HeartbeatProvider):
         http: HttpClient,
         target: HeartbeatTarget,
     ) -> HeartbeatProbeResult:
-        """Send one tiny Claude messages request and parse 5h reset headers."""
+        """Send one tiny Claude request and parse its reset header."""
         headers = http.post_capture_headers(
             MESSAGES_URL,
             {
@@ -109,33 +113,6 @@ class ClaudeHeartbeat(HeartbeatProvider):
             operation=HttpOperation.CLAUDE_HEARTBEAT,
         )
         return warmed(
-            _parse_header_reset(headers, FIVE_HOUR_HEADER_PREFIX), target
+            header_reset(headers, FIVE_HOUR_HEADER_PREFIX),
+            target,
         )
-
-
-def _parse_header_reset(
-    response_headers: dict[str, str],
-    prefix: str,
-) -> datetime | None:
-    """Parse a unified Claude rate-limit reset header."""
-    reset_raw = response_headers.get(f"{prefix}-reset")
-    if reset_raw is None:
-        return None
-    try:
-        reset_unix = int(float(reset_raw))
-    except TypeError, ValueError:
-        return None
-    return datetime.fromtimestamp(reset_unix, tz=UTC)
-
-
-def _provider_time(value: JsonValue | None) -> datetime | None:
-    """Normalize one optional Claude heartbeat timestamp."""
-    if not isinstance(value, str) or not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None or parsed.utcoffset() is None:
-        return None
-    return parsed.astimezone(UTC)

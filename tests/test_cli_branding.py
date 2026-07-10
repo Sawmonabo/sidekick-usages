@@ -13,8 +13,11 @@ from sidekick_usages.core.types import AccountLabel, ExitCode
 from sidekick_usages.daemon import DaemonOperation, DaemonOperationResult
 from sidekick_usages.http import HttpClient
 from sidekick_usages.providers import build_provider_registry
-from sidekick_usages.store import AccountStore
-from tests.test_support import FixedClock, make_application_paths
+from tests.test_support import (
+    FixedClock,
+    make_account_store,
+    make_application_paths,
+)
 
 
 def _install_context(
@@ -22,9 +25,7 @@ def _install_context(
     accounts: list[Account],
 ) -> tuple[io.StringIO, io.StringIO]:
     paths = make_application_paths(tmp_path)
-    store = AccountStore(paths.accounts)
-    for account in accounts:
-        store.upsert(account)
+    store = make_account_store(tmp_path, accounts)
     stdout = io.StringIO()
     stderr = io.StringIO()
     clock = FixedClock()

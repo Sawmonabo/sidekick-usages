@@ -39,6 +39,8 @@ classifiers = [
 dependencies = [
   "click>=8.1",
   "pydantic==2.13.4",
+  "portalocker==3.2.0",
+  "pywin32==312; sys_platform == 'win32'",
   "rich>=13.9",
   "typer>=0.15",
   "urllib3==2.7.0"
@@ -54,7 +56,10 @@ Changelog = "https://github.com/Sawmonabo/sidekick-usages/blob/main/CHANGELOG.md
 sidekick-usages = "sidekick_usages.cli:app"
 
 [dependency-groups]
-dev = ["ty>=0.0.35"]
+dev = [
+  "ty>=0.0.35",
+  "types-pywin32==312.0.0.20260609; sys_platform == 'win32'"
+]
 lint = [
   "bandit[toml]>=1.9.2",
   "codespell>=2.4.1",

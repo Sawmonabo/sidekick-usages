@@ -12,8 +12,8 @@ from sidekick_usages.core.types import (
     HeartbeatStatus,
     ProviderId,
 )
-from sidekick_usages.heartbeat.base import HeartbeatProvider
-from sidekick_usages.heartbeat.domain import HeartbeatOutcome
+from sidekick_usages.heartbeat.models import HeartbeatOutcome
+from sidekick_usages.heartbeat.ports import HeartbeatProvider
 from sidekick_usages.heartbeat.service import heartbeat_supported_label
 
 

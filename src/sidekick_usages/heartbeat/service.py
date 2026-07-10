@@ -16,12 +16,12 @@ from sidekick_usages.core.types import (
     RefreshStatus,
 )
 from sidekick_usages.errors import UsageError
-from sidekick_usages.heartbeat.base import HeartbeatProvider
-from sidekick_usages.heartbeat.domain import (
+from sidekick_usages.heartbeat.models import (
     HeartbeatOutcome,
 )
+from sidekick_usages.heartbeat.ports import HeartbeatProvider
 from sidekick_usages.http import HttpClient
-from sidekick_usages.store import AccountStore
+from sidekick_usages.persistence.account_store import AccountStore
 
 
 class HeartbeatService:
@@ -122,8 +122,7 @@ class HeartbeatService:
         )
         if result.reset_at:
             _set_target_reset(account, target.id, result.reset_at)
-        self.store.upsert(account)
-        self.store.save()
+        self.store.persist(account)
         if result.status is HeartbeatStatus.FAILED:
             exit_code = (
                 ExitCode.MANUAL_ACTION
@@ -232,8 +231,7 @@ class HeartbeatService:
                 account,
                 selected,
             )
-        self.store.upsert(account)
-        self.store.save()
+        self.store.persist(account)
         return HeartbeatOutcome(
             label=account.label,
             provider_id=account.provider_id,
@@ -284,8 +282,7 @@ class HeartbeatService:
             if not account.heartbeat_targets:
                 account.heartbeat_enabled = False
                 account.heartbeat_targets = None
-            self.store.upsert(account)
-            self.store.save()
+            self.store.persist(account)
             return HeartbeatOutcome(
                 label=account.label,
                 provider_id=account.provider_id,
@@ -293,8 +290,7 @@ class HeartbeatService:
                 message="disabled",
             )
         account.heartbeat_enabled = False
-        self.store.upsert(account)
-        self.store.save()
+        self.store.persist(account)
         return HeartbeatOutcome(
             label=account.label,
             provider_id=account.provider_id,
@@ -329,8 +325,7 @@ class HeartbeatService:
         account.last_heartbeat_at = reference_time
         account.last_heartbeat_status = HeartbeatStatus.UNSUPPORTED
         account.last_heartbeat_error = outcome.message
-        self.store.upsert(account)
-        self.store.save()
+        self.store.persist(account)
         return outcome
 
     def _unsupported_outcome(
@@ -358,8 +353,7 @@ class HeartbeatService:
         account.last_heartbeat_at = reference_time
         account.last_heartbeat_status = HeartbeatStatus.FAILED
         account.last_heartbeat_error = message
-        self.store.upsert(account)
-        self.store.save()
+        self.store.persist(account)
         return HeartbeatOutcome(
             label=account.label,
             provider_id=account.provider_id,

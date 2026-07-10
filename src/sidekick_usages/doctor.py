@@ -1,7 +1,8 @@
 """Read-only account diagnostics for ``sidekick-usages doctor``."""
 
 import json
-from collections.abc import Mapping
+import shlex
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -14,6 +15,7 @@ from sidekick_usages.core.expiry import (
     ExpiredExpiry,
     InvalidExpiry,
     ValidExpiry,
+    classify_expiry,
 )
 from sidekick_usages.core.models import Account
 from sidekick_usages.core.types import (
@@ -28,10 +30,12 @@ from sidekick_usages.heartbeat import (
     HeartbeatProvider,
     heartbeat_supported_label,
 )
-from sidekick_usages.maintenance import TokenMaintenanceService
+from sidekick_usages.persistence.assessment import (
+    PersistenceAssessment,
+    PersistenceCompositionFailure,
+)
 from sidekick_usages.providers.base import Provider
 from sidekick_usages.providers.claude import PROFILE_SCOPE
-from sidekick_usages.store import AccountStore
 
 _IDENTITY_FULL_MAX_LENGTH = 12
 
@@ -70,23 +74,20 @@ class DoctorService:
 
     def __init__(
         self,
-        store: AccountStore,
+        accounts: Sequence[Account],
         providers: dict[ProviderId, Provider],
         heartbeat_providers: dict[ProviderId, HeartbeatProvider],
-        maintenance: TokenMaintenanceService,
         clock: Clock,
     ) -> None:
-        """:param store: Account store to inspect.
+        """:param accounts: Validated read-only account snapshot.
 
         :param providers: Registered provider map.
         :param heartbeat_providers: Registered heartbeat provider map.
-        :param maintenance: Refresh policy service for expiry state.
         :param clock: Aware UTC application wall clock.
         """
-        self.store = store
+        self.accounts = tuple(accounts)
         self.providers = providers
         self.heartbeat_providers = heartbeat_providers
-        self.maintenance = maintenance
         self.clock = clock
 
     def diagnostics(
@@ -96,7 +97,7 @@ class DoctorService:
         label: str | None = None,
     ) -> list[AccountDiagnostic]:
         """Return diagnostics for accounts matching optional filters."""
-        accounts = list(self.store)
+        accounts = list(self.accounts)
         if provider_id is not None:
             accounts = [a for a in accounts if a.provider_id == provider_id]
         if label is not None:
@@ -114,7 +115,7 @@ class DoctorService:
         """Build one account diagnostic."""
         provider = self.providers.get(account.provider_id)
         heartbeat_provider = self.heartbeat_providers.get(account.provider_id)
-        expiry = self.maintenance.expiry(account, reference_time)
+        expiry = classify_expiry(account.expiry, now=reference_time)
         can_auto_refresh = bool(provider and account.refresh_token)
         manual_action_required = _manual_action_required(
             account,
@@ -167,19 +168,29 @@ def render_doctor(
     console: Console,
     *,
     json_output: bool = False,
+    persistence: PersistenceAssessment | None = None,
+    persistence_failure: PersistenceCompositionFailure | None = None,
 ) -> None:
     """Render doctor diagnostics to the configured console."""
+    if persistence is not None and persistence_failure is not None:
+        raise ValueError("Doctor accepts one persistence result.")
     if json_output:
-        console.print(
-            json.dumps(
-                {
-                    "accounts": [
-                        _diagnostic_dict(diagnostic)
-                        for diagnostic in diagnostics
-                    ]
-                },
-                indent=2,
+        payload: dict[str, object] = {
+            "accounts": [
+                _diagnostic_dict(diagnostic) for diagnostic in diagnostics
+            ]
+        }
+        if persistence is not None:
+            payload["persistence"] = _persistence_dict(persistence)
+        elif persistence_failure is not None:
+            payload["persistence"] = _persistence_failure_dict(
+                persistence_failure
             )
+        console.print(
+            json.dumps(payload, indent=2),
+            markup=False,
+            highlight=False,
+            soft_wrap=True,
         )
         return
 
@@ -189,6 +200,12 @@ def render_doctor(
             section="doctor · account diagnostics",
         )
     )
+    if persistence is not None:
+        _render_persistence(persistence, console)
+        if diagnostics:
+            console.print()
+    elif persistence_failure is not None:
+        _render_persistence_failure(persistence_failure, console)
     for index, diagnostic in enumerate(diagnostics):
         if index:
             console.print()
@@ -199,6 +216,111 @@ def render_doctor(
         _render_auth_diagnostic(diagnostic, console)
         _render_heartbeat_diagnostic(diagnostic, console)
         _render_manual_action(diagnostic, console)
+
+
+def _render_persistence(
+    assessment: PersistenceAssessment,
+    console: Console,
+) -> None:
+    """Render one safe frozen persistence assessment."""
+    console.print("persistence")
+    console.print(f"  state: {assessment.code}")
+    console.print(f"  generation: {assessment.generation}")
+    console.print(f"  path: {assessment.safe_path}")
+    count = (
+        str(assessment.account_count)
+        if assessment.account_count is not None
+        else "unknown"
+    )
+    console.print(f"  validated accounts: {count}")
+    console.print(f"  message: {assessment.message}")
+    if assessment.artifact_basename is not None:
+        console.print(f"  artifact: {assessment.artifact_basename}")
+    if assessment.next_command is not None:
+        console.print("  next: " + " ".join(assessment.next_command))
+    if assessment.guidance is not None:
+        console.print(f"  guidance: {assessment.guidance}")
+    if len(assessment.issues) > 1:
+        console.print("  additional findings:")
+        for issue in assessment.issues[1:]:
+            artifact = (
+                f" ({issue.artifact_basename})"
+                if issue.artifact_basename is not None
+                else ""
+            )
+            console.print(f"    {issue.code}{artifact}: {issue.message}")
+
+
+def _persistence_dict(
+    assessment: PersistenceAssessment,
+) -> dict[str, object]:
+    """Build one secret-free machine-readable persistence record."""
+    return {
+        "code": assessment.code.value,
+        "generation": assessment.generation.value,
+        "schema_version": assessment.schema_version,
+        "account_count": assessment.account_count,
+        "safe_path": str(assessment.safe_path),
+        "artifact_basename": assessment.artifact_basename,
+        "write_blocked": assessment.write_blocked,
+        "next_command": list(assessment.next_command)
+        if assessment.next_command is not None
+        else None,
+        "message": assessment.message,
+        "guidance": assessment.guidance,
+        "issues": [
+            {
+                "code": issue.code.value,
+                "artifact_basename": issue.artifact_basename,
+                "message": issue.message,
+            }
+            for issue in assessment.issues
+        ],
+    }
+
+
+def _render_persistence_failure(
+    failure: PersistenceCompositionFailure,
+    console: Console,
+) -> None:
+    """Render one safe passive composition failure."""
+    console.print("persistence")
+    console.print(f"  state: {failure.code}")
+    console.print(f"  path: {failure.safe_path}")
+    console.print(f"  message: {failure.message}")
+    if failure.artifact_basename is not None:
+        console.print(f"  artifact: {failure.artifact_basename}")
+    if failure.guidance is not None:
+        console.print(f"  guidance: {failure.guidance}")
+    if failure.next_command is not None:
+        console.print("  next: " + shlex.join(failure.next_command))
+
+
+def _persistence_failure_dict(
+    failure: PersistenceCompositionFailure,
+) -> dict[str, object]:
+    """Build one secret-free machine-readable composition failure."""
+    return {
+        "code": failure.code.value,
+        "generation": "unknown",
+        "schema_version": None,
+        "account_count": None,
+        "safe_path": str(failure.safe_path),
+        "artifact_basename": failure.artifact_basename,
+        "write_blocked": True,
+        "next_command": list(failure.next_command)
+        if failure.next_command is not None
+        else None,
+        "message": failure.message,
+        "guidance": failure.guidance,
+        "issues": [
+            {
+                "code": failure.code.value,
+                "artifact_basename": failure.artifact_basename,
+                "message": failure.message,
+            }
+        ],
+    }
 
 
 def _render_auth_diagnostic(

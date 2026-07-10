@@ -48,7 +48,6 @@ forbidden = (
     "sidekick_usages.paths",
     "sidekick_usages.persistence",
     "sidekick_usages.providers",
-    "sidekick_usages.store",
 )
 loaded = sorted(
     name for name in sys.modules if name.startswith(forbidden)
@@ -69,4 +68,5 @@ print(json.dumps(loaded))
     package_root = Path(__file__).parents[1] / "src" / "sidekick_usages"
     assert (package_root / "core" / "expiry.py").is_file()
     assert (package_root / "core" / "models.py").is_file()
+    assert not (package_root / "store.py").exists()
     assert not (package_root / "report.py").exists()

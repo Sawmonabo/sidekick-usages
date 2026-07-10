@@ -9,9 +9,20 @@ from sidekick_usages import cli
 from sidekick_usages.branding import BRAND_DESCRIPTION, ROBOT_LINES
 
 
-def test_root_help_is_branded_before_usage_without_loading_state() -> None:
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--help"],
+        ["doctor", "--help"],
+        ["daemon", "status", "--help"],
+        ["migrate", "accounts", "--help"],
+    ],
+)
+def test_help_is_branded_before_usage_without_loading_state(
+    args: list[str],
+) -> None:
     cli._ContextState.ctx = None
-    result = CliRunner().invoke(cli.app, ["--help"])
+    result = CliRunner().invoke(cli.app, args)
     assert result.exit_code == 0
     assert result.output.count(ROBOT_LINES[2]) == 1
     assert result.output.index(ROBOT_LINES[2]) < result.output.index("Usage:")

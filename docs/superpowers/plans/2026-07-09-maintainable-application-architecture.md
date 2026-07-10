@@ -1606,9 +1606,12 @@ CS-12, CS-13, and CS-13A.
 [Persistence Contract Closure Research](../research/2026-07-10-persistence-contract-closure.md)
 and
 [Persistence Assessment State Machine](../research/2026-07-10-persistence-assessment-state-machine.md)
-together with the approved stored-schema contract in the design. The research
-files close exact bounds, artifact grammar, native protocols, precedence,
-transition, output, and restart semantics; no local-only note is an input.
+together with the
+[Private Credential Reset Boundary](../research/2026-07-10-private-credential-reset.md)
+and the approved stored-schema contract in the design. The research files
+close exact bounds, artifact grammar, native protocols, precedence,
+transition, output, repair, and restart semantics; no local-only note is an
+input.
 
 **Files:**
 
@@ -1619,6 +1622,8 @@ transition, output, and restart semantics; no local-only note is an input.
 - Create `src/sidekick_usages/persistence/migrations.py`.
 - Create `src/sidekick_usages/persistence/filesystem.py`.
 - Create `src/sidekick_usages/persistence/locking.py`.
+- Create `src/sidekick_usages/persistence/private_credentials.py` and focused
+  native private-tree adapters.
 - Create the private native modules
   `src/sidekick_usages/persistence/_platform/{__init__,posix,macos,windows}.py`.
 - Delete `src/sidekick_usages/store.py` atomically.
@@ -1644,100 +1649,110 @@ transition, output, and restart semantics; no local-only note is an input.
 
 **Work:**
 
-- [ ] Encode the exact versioned envelope approved in CS-10.
-- [ ] Strictly validate the unversioned current map, prototype shape, and every
+- [x] Encode the exact versioned envelope approved in CS-10.
+- [x] Strictly validate the unversioned current map, prototype shape, and every
       explicitly supported version.
-- [ ] Implement the exact schema limits, historical UTC timestamp grammar,
+- [x] Implement the exact schema limits, historical UTC timestamp grammar,
       Claude/Codex epoch ranges, canonical v1 timestamps, closed status values,
       and generation-zero provider discrimination from the closure authority.
-- [ ] Extend the shared JSON decoder with a Sidekick-owned detailed failure
+- [x] Extend the shared JSON decoder with a Sidekick-owned detailed failure
       that distinguishes duplicate keys from malformed JSON; keep the existing
       HTTP wrapper behavior unchanged.
-- [ ] Reject malformed, unreadable, partially migrated, and unknown future
+- [x] Reject malformed, unreadable, partially migrated, and unknown future
       state with typed actionable errors.
-- [ ] Implement and directly test pure prototype-to-v1, generation-zero-to-v1,
+- [x] Implement and directly test pure prototype-to-v1, generation-zero-to-v1,
       v1-to-runtime, runtime-to-v1, and v1-to-v0.6.0 transformations before
       filesystem coordination. Use integer arithmetic and exact reverse proof.
-- [ ] Implement the approved immutable content-addressed backup, snapshot,
+- [x] Implement the approved immutable content-addressed backup, snapshot,
       receipt, reset, and recovery contracts.
-- [ ] Implement the closed artifact grammar: four temporary purposes, 128-bit
+- [x] Implement the closed artifact grammar: four temporary purposes, 128-bit
       lowercase-hex random suffix, deterministic receipt JSON, exact digest
       naming, and foreign-name non-interference.
-- [ ] Implement the qualified same-directory atomic write, synchronization,
+- [x] Implement the qualified same-directory atomic write, synchronization,
       replacement, security, and reopen-verification protocols in focused
       filesystem and locking modules.
-- [ ] Bind `filesystem.py` to one account location and implement separate
+- [x] Bind `filesystem.py` to one account location and implement separate
       descriptor-relative POSIX, macOS `F_FULLFSYNC`, and pywin32 Windows
       adapters. Use open-handle identity plus exact digest; expose no native or
       third-party type.
-- [ ] Enforce the initial filesystem allowlist: Linux ext4/XFS/Btrfs, macOS
+- [x] Enforce the initial filesystem allowlist: Linux ext4/XFS/Btrfs, macOS
       APFS, Windows NTFS, and WSL ext4. Reject network, volatile, overlay,
       WSL 9p/DrvFS, cross-device, shared/cluster, and unknown filesystems.
-- [ ] Implement the Windows best-effort protocol exactly: no unsupported
+- [x] Implement the Windows best-effort protocol exactly: no unsupported
       `REPLACEFILE_WRITE_THROUGH`; private/write-through temporary, flush,
       `ReplaceFileW` or no-replace `MoveFileExW`, no-reparse final reopen,
       final flush, DACL/identity/byte verification, and
       `durability_uncertain` after any post-replacement proof failure.
-- [ ] Securely create/open and validate the persistent lock sidecar before the
+- [x] Securely create/open and validate the persistent lock sidecar before the
       low-level Portalocker lock. Use a five-second budget and 100 ms interval;
       timeout is `store_locked` and source identity/digest checks remain
       mandatory.
-- [ ] Fail closed on unsafe final or managed objects, ambiguous permissions,
-      unsupported hard locks, and unavailable durability primitives. Provide
-      bounded manual guidance; never silently repair mode bits or DACLs.
-- [ ] Implement the normative phased assessment, exact priority table,
+- [x] Fail closed on unsafe final or managed objects, ambiguous permissions,
+      unsupported hard locks, and unavailable durability primitives. Doctor
+      provides bounded platform-specific guidance and the structured
+      `sidekick-usages permissions repair` next command; it never mutates mode
+      bits or DACLs.
+- [x] Implement confirmed released-layout permission repair. Preflight and
+      identity-repair the owner-controlled application root, acquire the
+      normal persistence lock, then repair and strictly revalidate the complete
+      private credential tree without changing credential bytes.
+- [x] Route every Sidekick-owned private credential write, repair, and deletion
+      through one native boundary and the same persistence lock. Hold exact
+      victims across deletion and prove their link/disposition transition so
+      namespace replacement cannot produce false success.
+- [x] Implement the normative phased assessment, exact priority table,
       deterministic same-code ordering, relation predicates, prototype/receipt
       matrix, first-write v1 rule, and authority reduction from the state-machine
       authority.
-- [ ] Expose frozen `PersistenceIssue`, `PersistenceAssessment`, and
+- [x] Expose frozen `PersistenceIssue`, `PersistenceAssessment`, and
       `PersistenceOperationResult` values with structured next-command tuples,
       bounded authored messages, safe basenames, multi-issue reporting, and no
       raw validation/native exception detail.
-- [ ] Keep operation-only facts separate from restart-derived facts. Never
+- [x] Keep operation-only facts separate from restart-derived facts. Never
       recreate `source_changed`, `replace_failed`, `durability_uncertain`,
       `reset_incomplete`, lock history, or missing provenance from artifacts
       that cannot prove them.
-- [ ] Add explicit `persist(account)` and replace every production
+- [x] Add explicit `persist(account)` and replace every production
       `upsert(account)` plus `save()` sequence.
-- [ ] Stage and validate candidate state, commit and reopen-verify it, then swap
+- [x] Stage and validate candidate state, commit and reopen-verify it, then swap
       the in-memory mapping and baseline. Keep internal mutations private;
       immutable accounts may be returned directly, otherwise use defensive
       copies so failed writes preserve memory/disk consistency.
-- [ ] Reuse `filter_by_provider()` rather than retaining manual duplicates.
-- [ ] Define read-only stored-schema assessment in
+- [x] Reuse `filter_by_provider()` rather than retaining manual duplicates.
+- [x] Define read-only stored-schema assessment in
       `persistence/migrations.py` without activating native relocation.
-- [ ] Add explicit `migrate accounts` and `migrate prepare-rollback --target
+- [x] Add explicit `migrate accounts` and `migrate prepare-rollback --target
       v0.6.0` commands with safe output, daemon-stop verification, confirmation,
       and non-interactive `--yes` behavior.
-- [ ] Add typed all-backend scheduler quiescence. Check systemd plus cron on
+- [x] Add typed all-backend scheduler quiescence. Check systemd plus cron on
       Linux, launchd plus cron on macOS, Task Scheduler on Windows, and all
       three families on WSL. Unassessable or installed schedules block mutation;
       repeat scheduler and persistence assessment under the lock after prompt.
-- [ ] Let `doctor` assess generation zero, current generation, malformed
+- [x] Let `doctor` assess generation zero, current generation, malformed
       input, backup state, and interrupted migration without constructing or
       loading `AccountStore`.
-- [ ] Implement the exact doctor exits: success for empty/current/imported and
+- [x] Implement the exact doctor exits: success for empty/current/imported and
       intentional rollback-prepared; manual action for migration/import/future/
       legacy/interruption states; system failure for integrity/security/I/O;
       scheduler quiescence remains exit `3`.
-- [ ] Make normal composition stop with the exact migration action instead of
+- [x] Make normal composition stop with the exact migration action instead of
       transforming generation zero or importing the prototype during load.
-- [ ] Publish prototype authority before its receipt; let an idempotent rerun
+- [x] Publish prototype authority before its receipt; let an idempotent rerun
       publish a missing receipt only when the exact relation still holds.
-- [ ] Delete credential backups and secret temporaries before full-reset
+- [x] Delete credential backups and secret temporaries before full-reset
       authority deletion. Retain lock/receipts/prototype and return immediate
       `reset_incomplete` on any failed deletion; restart classifies remaining
       credentials without inventing reset intent.
-- [ ] Make provider-scoped reset commit a filtered, possibly empty v1 authority
+- [x] Make provider-scoped reset commit a filtered, possibly empty v1 authority
       while retaining shared history. Full reset must run even when the current
       validated account count is zero.
-- [ ] Prove reverse preparation with the actual local v0.6.0 release reader
+- [x] Prove reverse preparation with the actual local v0.6.0 release reader
       pinned to commit `6a413b2772c3c11e9ef45a78a06ab79bfc0ca44c`.
-- [ ] Reject explicit empty heartbeat target/reset collections through pure
+- [x] Reject explicit empty heartbeat target/reset collections through pure
       `RollbackCompatibilityError` preflight before snapshot or authority
       mutation; prove normal current operation preserves those valid states.
-- [ ] Keep `paths.py` discovery-only and persistence free of provider imports.
-- [ ] Leave physical locations unchanged.
+- [x] Keep `paths.py` discovery-only and persistence free of provider imports.
+- [x] Leave physical locations unchanged.
 - [ ] Keep the versioned writer disabled until native Linux, macOS, Windows,
       WSL, exact-wheel, and twice-repeated actual-v0.6.0 gates all pass.
 
@@ -1783,6 +1798,11 @@ transition, output, and restart semantics; no local-only note is an input.
   zero or many validated accounts. It pins credential-first/authority-last
   deletion, retained lock/receipts/prototype, and immediate `reset_incomplete`
   without inventing that operation after restart.
+- One released-layout repair test starts with `0755` application/private roots
+  and protected credential files, proves doctor remains passive, runs the
+  confirmed repair, preserves exact bytes, and then passes fresh composition.
+  Adversarial unlink/rmdir replacement tests prove reset cannot delete a
+  replacement while the original credential survives unnoticed.
 - One human/JSON result table proves every passive and operation code, ordered
   multi-issue output, exact structured next command, and bounded safe message
   without raw data, credentials, provider identity, native errors, or validator
@@ -1826,22 +1846,22 @@ preserved. A Git revert alone is insufficient after the new schema is written.
 
 **Work:**
 
-- [ ] Revalidate `_do_check`, `_fetch_and_render`, refresh helpers, collection
+- [x] Revalidate `_do_check`, `_fetch_and_render`, refresh helpers, collection
       state, provider filtering, and persistence calls.
-- [ ] Define immutable `UsageCheckResult`, account-usage result, and typed
+- [x] Define immutable `UsageCheckResult`, account-usage result, and typed
       `FetchFailure` shapes from real callers.
-- [ ] Move account selection, collection, refresh-and-retry orchestration,
+- [x] Move account selection, collection, refresh-and-retry orchestration,
       plan/account-id updates, explicit persistence, and failure aggregation
       into `UsageCheckService`.
-- [ ] Reuse the maintenance refresh workflow where semantics match; remove the
+- [x] Reuse the maintenance refresh workflow where semantics match; remove the
       duplicate `_refresh_and_save` path rather than creating another service.
-- [ ] Preserve partial success without printing or raising `typer.Exit`.
-- [ ] Remove collected reports, failures, provider filter, and command-local
+- [x] Preserve partial success without printing or raising `typer.Exit`.
+- [x] Remove collected reports, failures, provider filter, and command-local
       state from the current `AppContext`.
-- [ ] Leave human rendering, error-channel selection, and exit mapping in the
+- [x] Leave human rendering, error-channel selection, and exit mapping in the
       command adapter. The usage check remains human-only; this plan does not
       add `check --json`.
-- [ ] Remove private-helper tests after the public service and command tests
+- [x] Remove private-helper tests after the public service and command tests
       cover their behavior.
 
 **Load-bearing tests:**
@@ -1884,11 +1904,11 @@ machine modes remain outside this usage service.
 
 **Work:**
 
-- [ ] Preserve the existing heartbeat models, port contract, target selection,
+- [x] Preserve the existing heartbeat models, port contract, target selection,
       service behavior, rendering, and exit policy.
-- [ ] Keep initializers thin and export only currently supported public names.
-- [ ] Remove the old files in the same commit and inspect the wheel.
-- [ ] Make no refresh, credential, registry, or provider error-contract change.
+- [x] Keep initializers thin and export only currently supported public names.
+- [x] Remove the old files in the same commit and inspect the wheel.
+- [x] Make no refresh, credential, registry, or provider error-contract change.
 
 **Load-bearing tests:** Existing heartbeat service, command, target-cache, and
 provider-adapter behavior passes through the new imports. The wheel contains
@@ -1915,22 +1935,22 @@ provider-adapter behavior passes through the new imports. The wheel contains
 
 **Work:**
 
-- [ ] Move the concrete Claude heartbeat adapter under Claude ownership.
-- [ ] Put platform credential discovery and file parsing in
+- [x] Move the concrete Claude heartbeat adapter under Claude ownership.
+- [x] Put platform credential discovery and file parsing in
       `claude/credentials.py`.
-- [ ] Put usage routes, scope rules, requests, and response conversion in
+- [x] Put usage routes, scope rules, requests, and response conversion in
       `claude/usage.py`.
-- [ ] Move current payload parsing/validation and already-normalized time
+- [x] Move current payload parsing/validation and already-normalized time
       conversion into `claude/schemas.py` without changing accepted inputs,
       coercion, or failures.
-- [ ] Keep the current Boolean refresh contract and observable behavior in
+- [x] Keep the current Boolean refresh contract and observable behavior in
       `provider.py` until CS-17A replaces it atomically for both providers.
-- [ ] Move the current setup-token implementation under Claude ownership while
+- [x] Move the current setup-token implementation under Claude ownership while
       preserving its public behavior; CS-17A narrows the generic contract.
-- [ ] Keep interactive token input outside the provider package.
-- [ ] Keep package initializers thin and export only supported facades.
-- [ ] Remove old modules in the same atomic package conversion.
-- [ ] Defer strict validator adoption, typed refresh, safe error taxonomy, and
+- [x] Keep interactive token input outside the provider package.
+- [x] Keep package initializers thin and export only supported facades.
+- [x] Remove old modules in the same atomic package conversion.
+- [x] Defer strict validator adoption, typed refresh, safe error taxonomy, and
       generic setup-token contract removal exclusively to CS-17A.
 
 **Load-bearing tests:**
