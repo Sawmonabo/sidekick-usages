@@ -425,8 +425,13 @@ class HiddenWindowsLauncher:
                 "  Remove-Item -LiteralPath $path "
                 "-Force -ErrorAction SilentlyContinue",
                 "}",
-                "Remove-Item -LiteralPath $daemonDir "
+                "$remaining = @(Get-ChildItem -LiteralPath $daemonDir "
+                "-Force -ErrorAction SilentlyContinue)",
+                "if ((Test-Path -LiteralPath $daemonDir) -and "
+                "$remaining.Count -eq 0) {",
+                "  Remove-Item -LiteralPath $daemonDir "
                 "-Force -ErrorAction SilentlyContinue",
+                "}",
             )
         )
 

@@ -249,6 +249,8 @@ def test_task_scheduler_uninstall_removes_generated_launcher_artifacts(
     assert "refresh.ps1" in script
     assert "refresh.out.log" not in script
     assert "refresh.err.log" not in script
+    assert "Get-ChildItem -LiteralPath $daemonDir" in script
+    assert "$remaining.Count -eq 0" in script
     assert "Remove-Item -LiteralPath $daemonDir" in script
 
 
