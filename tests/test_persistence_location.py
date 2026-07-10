@@ -33,9 +33,10 @@ from sidekick_usages.persistence.migrations.ports import (
 )
 from sidekick_usages.persistence.observations import StoredGeneration
 
-COMPATIBILITY_PATH = Path("/synthetic/compatibility/accounts.json")
-CANONICAL_PATH = Path("/synthetic/canonical/accounts.json")
-PROTOTYPE_PATH = Path("/synthetic/prototype/accounts.json")
+SYNTHETIC_ROOT = Path(Path.cwd().anchor) / "sidekick-usages-test"
+COMPATIBILITY_PATH = SYNTHETIC_ROOT / "compatibility" / "accounts.json"
+CANONICAL_PATH = SYNTHETIC_ROOT / "canonical" / "accounts.json"
+PROTOTYPE_PATH = SYNTHETIC_ROOT / "prototype" / "accounts.json"
 MIGRATE_ACCOUNTS = ("sidekick-usages", "migrate", "accounts")
 MIGRATE_LOCATIONS = ("sidekick-usages", "migrate", "locations")
 REPAIR_PERMISSIONS = ("sidekick-usages", "permissions", "repair")

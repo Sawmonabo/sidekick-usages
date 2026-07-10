@@ -504,6 +504,8 @@ def test_relative_bundle_observation_rejects_incomplete_namespaces(
         (bundle / "linked.json").symlink_to(bundle / "auth.json")
     elif invalid == "alias":
         _private_file(bundle / "AUTH.JSON", b"test-only-alias")
+        if len(tuple(bundle.iterdir())) == 1:
+            pytest.skip("host filesystem collapses case aliases")
     else:
         for index in range(16):
             _private_file(bundle / f"extra-{index:02d}.json", b"x")
