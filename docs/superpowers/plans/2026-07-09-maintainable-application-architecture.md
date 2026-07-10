@@ -712,15 +712,35 @@ compatibility export remains.
 
 **Work:**
 
-- [ ] Replace the identified account, layout, and TUI identities with exactly
+- [x] Replace the identified account, layout, and TUI identities with exactly
       `long.account.name@example.test` so sanitization retains the intended
       30-character width case.
-- [ ] Remove any instruction that would mutate a real saved account or active
+- [x] Remove any instruction that would mutate a real saved account or active
       provider login.
-- [ ] Wrap the 93 baseline long lines and fix the existing code-span spacing
+- [x] Wrap the 93 baseline long lines and fix the existing code-span spacing
       finding.
-- [ ] Preserve code blocks, terminal art, and intentional product copy.
-- [ ] Run Markdown lint over all repository Markdown, not only touched files.
+- [x] Preserve code blocks, terminal art, and intentional product copy.
+- [x] Run Markdown lint over all repository Markdown, not only touched files.
+
+**Execution record:** Completed on 2026-07-09 against
+`7d8e4d9c69afa031a484736add6411aa771ea78c`. The refreshed identity scan found
+the person-derived labels only in the two renderer/error fixtures and the two
+June TUI documents. The binding fixture now uses the exact reserved
+30-character identity. Distinct reserved `.test` labels remain only where the
+multi-account relationship is itself part of the rendering behavior, as
+allowed by section 6.2. The documents no longer direct an operator to mutate a
+saved account or use the potentially state-changing live `check` command for
+acceptance. The terminal mockup retains its 74-cell panel rows and stable
+product copy. A Prettier `proseWrap=always` preview was rejected because it
+also rewrote unrelated emphasis, tables, and list formatting; the existing
+Markdown gate was used for the required prose-only repair instead. See the
+canonical [Prettier prose-wrap option][prettier-prose-wrap]. No test was added:
+the existing focused documentation, branding, rendering, and error tests are
+the load-bearing behavior boundary, and only their reserved fixtures changed.
+Those 41 focused cases pass. The full suite passes all 199 cases with branch
+coverage; Ruff, formatting, `ty`, pre-commit, the package build, and
+repository-wide Markdown lint also pass. Markdown lint now reports zero
+findings, permanently removing the pre-CS-05 baseline exception.
 
 **Load-bearing verification:**
 
@@ -2423,3 +2443,4 @@ mechanical-gate changes into one review.
 [cs01-publication-ci]: https://github.com/Sawmonabo/sidekick-usages/actions/runs/29065786820
 [typer-0268-release]: https://typer.tiangolo.com/release-notes/#0268
 [typer-0268-rich-width]: https://github.com/fastapi/typer/blob/0.26.8/typer/rich_utils.py
+[prettier-prose-wrap]: https://prettier.io/docs/options.html#prose-wrap

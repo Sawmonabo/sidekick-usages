@@ -72,7 +72,7 @@ class _FakeProvider(Provider):
 
 
 def _acct(
-    label: str = "a.sawmon@ymail.com", provider_id: str = "codex"
+    label: str = "long.account.name@example.test", provider_id: str = "codex"
 ) -> Account:
     return Account(
         label=label,

@@ -102,23 +102,26 @@ def _report(*windows):
 
 
 def _worst_case_pairs():
-    # 3 Claude + 2 Codex; the 30-char Codex name + Spark block is the
-    # binding width case (matches the user's real store).
+    # 3 Claude + 2 Codex; the reserved 30-char name + Spark block is the
+    # binding width case.
     iso = _iso_in(hours=3, minutes=50)
     claude = [
         (
-            _acct("SAbossedgh@fortressinfosec"),
+            _acct("short.account@example.test"),
             _report(("5h", 94, iso), ("7d", 61, iso)),
         ),
         (
-            _acct("SAbossedgh@fortressinfosec@org", plan="team"),
+            _acct("team.account@example.test", plan="team"),
             _report(("5h", 12, iso), ("7d", 73, iso)),
         ),
-        (_acct("a.sawmon@gmail"), _report(("5h", 40, iso), ("7d", 5, iso))),
+        (
+            _acct("third.account@example.test"),
+            _report(("5h", 40, iso), ("7d", 5, iso)),
+        ),
     ]
     codex = [
         (
-            _acct("a.sawmon@ymail.com", "codex", "pro"),
+            _acct("codex@example.test", "codex", "pro"),
             _report(
                 ("5h", 8, iso),
                 ("7d", 45, iso),
@@ -127,7 +130,7 @@ def _worst_case_pairs():
             ),
         ),
         (
-            _acct("sabossedgh@fortressinfosec.com", "codex", "pro"),
+            _acct("long.account.name@example.test", "codex", "pro"),
             _report(
                 ("5h", 0, iso),
                 ("7d", 0, iso),
@@ -190,7 +193,7 @@ def test_panels_share_one_width():
 
 
 def test_worst_case_renders_as_panels_at_floor():
-    # The widest real store (30-char Codex name + Spark block) must render
+    # The reserved worst-case fixture (30-char name + Spark block) must render
     # as framed panels at the documented floor, with nothing wrapping past
     # the frame and the longest account name intact on one row. Fails if the
     # binding width grows past the floor (a real regression); still passes if
@@ -199,7 +202,7 @@ def test_worst_case_renders_as_panels_at_floor():
     assert "╭─ CLAUDE · 3 accounts ─" in out  # panel path, not legacy
     assert "╭─ CODEX · 2 accounts ─" in out
     assert max(len(line) for line in out.split("\n")) <= _PANEL_FLOOR
-    assert "SAbossedgh@fortressinfosec@org" in out  # longest name, intact
+    assert "long.account.name@example.test" in out
 
 
 def test_overview_shows_robot_masthead_titles_and_lifetime():
@@ -249,7 +252,7 @@ def test_overview_degrades_below_floor_to_legacy():
     assert "CLAUDE" not in out
     assert ".--┴-┴--.  sidekick usages" in out
     assert "A multi-account usage dashboard" not in out
-    assert "a.sawmon@gmail" in out
+    assert "long.account.name@example.test" in out
 
 
 def test_overview_empty_pairs():
@@ -299,12 +302,12 @@ def test_failure_renders_in_provider_panel():
     ]
     failures = [
         (
-            _acct("a.sawmon@ymail.com", "codex", "pro"),
+            _acct("long.account.name@example.test", "codex", "pro"),
             FetchFailure(
                 "token expired",
                 (
                     "Log in to Codex CLI again, then run:",
-                    "sidekick-usages refresh a.sawmon@ymail.com",
+                    "sidekick-usages refresh long.account.name@example.test",
                 ),
             ),
         )
@@ -312,7 +315,7 @@ def test_failure_renders_in_provider_panel():
     out = _render_at(200, pairs, failures=failures)
     assert "⚠ token expired" in out
     assert "Log in to Codex CLI again, then run:" in out
-    assert "sidekick-usages refresh a.sawmon@ymail.com" in out
+    assert "sidekick-usages refresh long.account.name@example.test" in out
     assert "╭─ CODEX · 2 accounts ─" in out
     assert "needs attention" not in out
     first = next(line for line in out.splitlines() if line.strip())
@@ -322,7 +325,7 @@ def test_failure_renders_in_provider_panel():
 def test_all_failed_provider_has_no_orphan_header():
     failures = [
         (
-            _acct("a.sawmon@ymail.com", "codex", "pro"),
+            _acct("long.account.name@example.test", "codex", "pro"),
             FetchFailure("token expired", ("retry later",)),
         )
     ]
@@ -337,18 +340,18 @@ def test_failures_widen_shared_panels():
     iso = _iso_in(hours=3)
     pairs = [
         (
-            _acct("SAbossedgh@fortressinfosec", "claude", "max"),
+            _acct("short.account@example.test", "claude", "max"),
             _report(("5h", 94, iso), ("7d", 61, iso)),
         )
     ]
     failures = [
         (
-            _acct("sabossedgh@fortressinfosec.com", "codex", "pro"),
+            _acct("long.account.name@example.test", "codex", "pro"),
             FetchFailure(
                 "token expired",
                 (
                     "Log in to Codex CLI again, then run:",
-                    "sidekick-usages refresh sabossedgh@fortressinfosec.com",
+                    "sidekick-usages refresh long.account.name@example.test",
                 ),
             ),
         )
@@ -361,7 +364,7 @@ def test_failures_widen_shared_panels():
     out = buf.getvalue()
     widths = _panel_line_widths(out)
     assert len(widths) == 1
-    assert "sidekick-usages refresh sabossedgh@fortressinfosec.com" in out
+    assert "sidekick-usages refresh long.account.name@example.test" in out
 
 
 def test_legacy_mode_renders_failures():
@@ -374,7 +377,7 @@ def test_legacy_mode_renders_failures():
     ]
     failures = [
         (
-            _acct("a.sawmon@ymail.com", "codex", "pro"),
+            _acct("long.account.name@example.test", "codex", "pro"),
             FetchFailure("token expired", ("retry later",)),
         )
     ]
