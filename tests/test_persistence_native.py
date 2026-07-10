@@ -2,7 +2,6 @@
 
 import os
 import stat
-import subprocess
 import sys
 from pathlib import Path
 
@@ -12,7 +11,6 @@ from sidekick_usages.persistence._platform import (
     FilesystemFamily,
     NativeFailureKind,
     NativeFilesystemError,
-    macos,
     posix,
 )
 from sidekick_usages.persistence._platform import (
@@ -31,6 +29,8 @@ if sys.platform == "win32":
         windows_namespace,
         windows_security,
     )
+else:
+    from sidekick_usages.persistence._platform import macos
 from sidekick_usages.persistence.artifacts import (
     AuthorityExpectation,
     AuthorityGeneration,
@@ -262,24 +262,18 @@ def test_posix_removal_rejects_pre_unlink_namespace_replacement(
     assert not candidate.exists()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="macOS fcntl contract")
 def test_macos_requires_apfs_and_issues_full_file_sync(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     reported = {"filesystem": "apfs"}
 
-    def report_filesystem(
-        *_args: object,
-        **_kwargs: object,
-    ) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(
-            args=("stat",),
-            returncode=0,
-            stdout=f"{reported['filesystem']}\n",
-            stderr="",
-        )
-
-    monkeypatch.setattr(macos.subprocess, "run", report_filesystem)
+    monkeypatch.setattr(
+        macos,
+        "_filesystem_name",
+        lambda _descriptor: reported["filesystem"],
+    )
     platform = macos.MacOSPlatform()
     assert platform.qualify(tmp_path) is FilesystemFamily.APFS
 
@@ -303,6 +297,11 @@ def test_macos_requires_apfs_and_issues_full_file_sync(
     platform._synchronize_file(7)
 
     assert calls == [("fsync", 7, None), ("F_FULLFSYNC", 7, 51)]
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS APFS gate")
+def test_macos_real_descriptor_reports_apfs(tmp_path: Path) -> None:
+    assert macos.MacOSPlatform().qualify(tmp_path) is FilesystemFamily.APFS
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows DACL policy")
