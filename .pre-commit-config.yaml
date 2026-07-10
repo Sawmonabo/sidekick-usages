@@ -48,7 +48,7 @@ repos:
   - id: pyupgrade
     args: [--py314-plus]
 - repo: https://github.com/astral-sh/ruff-pre-commit
-  rev: v0.15.5
+  rev: v0.15.12
   hooks:
       # Linter must run before formatter (--fix can produce unformatted code)
   - id: ruff

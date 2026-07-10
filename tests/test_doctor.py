@@ -85,7 +85,7 @@ def test_doctor_json_reports_refreshability_and_redacts_tokens(
 def test_doctor_reports_previous_refresh_rejection(
     tmp_path: Path,
 ) -> None:
-    """Doctor marks accounts with failed saved-token refresh as action items."""
+    """Doctor flags accounts after a saved-token refresh fails."""
     account = Account(
         label="dead",
         provider_id="claude",

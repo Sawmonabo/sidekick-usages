@@ -312,6 +312,8 @@ class LaunchdBackend(SchedulerBackend):
         args = "\n".join(
             f"    <string>{xml_escape(arg)}</string>" for arg in self.command
         )
+        stdout_path = xml_escape(str(self.log_dir / "refresh.out.log"))
+        stderr_path = xml_escape(str(self.log_dir / "refresh.err.log"))
         return (
             '<?xml version="1.0" encoding="UTF-8"?>\n'
             '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
@@ -327,9 +329,9 @@ class LaunchdBackend(SchedulerBackend):
             "  <key>StartInterval</key>\n"
             "  <integer>1800</integer>\n"
             "  <key>StandardOutPath</key>\n"
-            f"  <string>{xml_escape(str(self.log_dir / 'refresh.out.log'))}</string>\n"
+            f"  <string>{stdout_path}</string>\n"
             "  <key>StandardErrorPath</key>\n"
-            f"  <string>{xml_escape(str(self.log_dir / 'refresh.err.log'))}</string>\n"
+            f"  <string>{stderr_path}</string>\n"
             "  <key>RunAtLoad</key>\n"
             "  <true/>\n"
             "</dict>\n"
@@ -338,7 +340,7 @@ class LaunchdBackend(SchedulerBackend):
 
 
 class HiddenWindowsLauncher:
-    """Generate silent Windows-side launcher artifacts for scheduled refresh."""
+    """Generate silent Windows launchers for scheduled refresh."""
 
     def __init__(
         self,
@@ -349,12 +351,13 @@ class HiddenWindowsLauncher:
         self.platform_info = platform_info
 
     def install_preamble(self) -> str:
-        """Return PowerShell that writes wrapper artifacts under LOCALAPPDATA."""
+        """Return PowerShell that writes wrappers under LOCALAPPDATA."""
         return "\n".join(
             (
                 "$daemonDir = Join-Path $env:LOCALAPPDATA "
                 f"{ps_quote(WINDOWS_DAEMON_SUBDIR)}",
-                "New-Item -ItemType Directory -Force -Path $daemonDir | Out-Null",
+                "New-Item -ItemType Directory -Force "
+                "-Path $daemonDir | Out-Null",
                 "$vbsPath = Join-Path $daemonDir 'refresh.vbs'",
                 "$ps1Path = Join-Path $daemonDir 'refresh.ps1'",
                 "$outPath = Join-Path $daemonDir 'refresh.out.log'",
@@ -516,7 +519,8 @@ class TaskSchedulerBackend(SchedulerBackend):
                 "Register-ScheduledTask "
                 f"-TaskName {ps_quote(SERVICE_NAME)} "
                 "-Trigger $trigger -Action $action -Settings $settings "
-                "-Description 'Silently refresh sidekick-usages provider tokens' "
+                "-Description 'Silently refresh sidekick-usages provider "
+                "tokens' "
                 "-Force",
             )
         )

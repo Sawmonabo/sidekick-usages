@@ -56,7 +56,7 @@ class ClaudeHeartbeat(HeartbeatProvider):
         http: HttpClient,
         target: HeartbeatTarget,
     ) -> UsageWindowState:
-        """Read Claude's usage window when the OAuth usage route is available."""
+        """Read Claude usage through the OAuth route when available."""
         del target
         if account.scopes is not None and PROFILE_SCOPE not in account.scopes:
             return UsageWindowState(

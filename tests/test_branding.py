@@ -11,6 +11,7 @@ from sidekick_usages import branding
 
 _LEFT_EYE = (4, 5)
 _RIGHT_EYE = (8, 9)
+_FULL_HEADER_WIDTH = 79
 
 
 def _render(renderable: object, *, width: int) -> str:
@@ -38,10 +39,10 @@ def test_canonical_robot_rows_are_exact() -> None:
 
 
 def test_full_header_contains_approved_copy_at_minimum_width() -> None:
-    assert branding.FULL_HEADER_MIN_WIDTH == 79  # noqa: PLR2004
+    assert branding.FULL_HEADER_MIN_WIDTH == _FULL_HEADER_WIDTH
     out = _render(
-        branding.brand_header(branding.FULL_HEADER_MIN_WIDTH),
-        width=branding.FULL_HEADER_MIN_WIDTH,
+        branding.brand_header(_FULL_HEADER_WIDTH),
+        width=_FULL_HEADER_WIDTH,
     )
     assert "  .--┴-┴--.    sidekick usages" in out
     assert (
@@ -52,7 +53,7 @@ def test_full_header_contains_approved_copy_at_minimum_width() -> None:
         "  | ||||| |   >> Limits + resets + account status, one terminal."
         in out
     )
-    assert max(len(line) for line in out.splitlines()) == 79  # noqa: PLR2004
+    assert max(len(line) for line in out.splitlines()) == _FULL_HEADER_WIDTH
 
 
 @pytest.mark.parametrize(

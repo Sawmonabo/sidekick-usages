@@ -163,10 +163,8 @@ def test_generic_error_is_recorded(tmp_path: Path) -> None:
 
 def test_check_renders_error_in_panel(tmp_path: Path, monkeypatch) -> None:
     """Full check: always-401 account exits 1 and renders error in panel."""
-    import sidekick_usages.cli as cli_mod  # noqa: PLC0415
-
-    monkeypatch.setattr(cli_mod, "claude_lifetime_output", lambda: (1, None))
-    monkeypatch.setattr(cli_mod, "codex_lifetime_output", lambda: (1, None))
+    monkeypatch.setattr(cli, "claude_lifetime_output", lambda: (1, None))
+    monkeypatch.setattr(cli, "codex_lifetime_output", lambda: (1, None))
 
     acct = _acct()
     provider = _FakeProvider(

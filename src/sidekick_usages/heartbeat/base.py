@@ -104,7 +104,7 @@ class HeartbeatProvider(ABC):
         http: HttpClient,
         target: HeartbeatTarget,
     ) -> UsageWindowState:
-        """Read provider state without sending a warming request if possible."""
+        """Read provider state without warming the target when possible."""
 
     @abstractmethod
     def warm_window(

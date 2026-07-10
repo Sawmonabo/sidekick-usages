@@ -137,6 +137,9 @@ class _CredentialFields:
 
 CODEX_CACHE_DIR = CONFIG_DIR / "codex"
 _SAFE_CODEX_CACHE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
+_DAEMON_BACKEND_HELP = (
+    "Scheduler backend: auto, systemd, cron, launchd, task-scheduler."
+)
 
 
 def _build_default_context() -> AppContext:
@@ -1356,7 +1359,7 @@ def daemon_install_cmd(
         str,
         typer.Option(
             "--backend",
-            help="Scheduler backend: auto, systemd, cron, launchd, task-scheduler.",
+            help=_DAEMON_BACKEND_HELP,
         ),
     ] = "auto",
 ) -> None:
@@ -1370,7 +1373,7 @@ def daemon_status_cmd(
         str,
         typer.Option(
             "--backend",
-            help="Scheduler backend: auto, systemd, cron, launchd, task-scheduler.",
+            help=_DAEMON_BACKEND_HELP,
         ),
     ] = "auto",
 ) -> None:
@@ -1384,7 +1387,7 @@ def daemon_uninstall_cmd(
         str,
         typer.Option(
             "--backend",
-            help="Scheduler backend: auto, systemd, cron, launchd, task-scheduler.",
+            help=_DAEMON_BACKEND_HELP,
         ),
     ] = "auto",
 ) -> None:
@@ -1426,7 +1429,7 @@ def _ensure_refresh_identity_matches(
     *,
     replace_identity: bool,
 ) -> None:
-    """Reject manual refresh when the active local login is a different account.
+    """Reject refresh when the active login is a different account.
 
     :param acct: Saved account being refreshed.
     :param detected: Credentials detected from the local provider login.

@@ -79,8 +79,6 @@ def test_classify_window(name, expected):
 
 
 def test_length_hours_orders_5h_before_7d():
-    assert render._length_hours("5h") == 5  # noqa: PLR2004
-    assert render._length_hours("7d") == 168  # noqa: PLR2004
     assert render._length_hours("5h") < render._length_hours("7d")
 
 

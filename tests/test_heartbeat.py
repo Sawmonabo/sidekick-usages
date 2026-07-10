@@ -610,7 +610,7 @@ def test_codex_heartbeat_fails_when_target_window_stays_inactive() -> None:
 
 
 def test_codex_heartbeat_can_enable_all_targets(tmp_path: Path) -> None:
-    """Codex daemon opt-in can explicitly include standard and Spark windows."""
+    """Codex opt-in can include standard and Spark windows."""
     store, stdout, _ = _install_ctx(
         tmp_path,
         [_acct(provider_id="codex", provider_account_id="acct-codex")],

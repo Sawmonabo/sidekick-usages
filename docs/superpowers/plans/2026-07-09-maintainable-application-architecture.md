@@ -722,7 +722,7 @@ compatibility export remains.
 - [x] Preserve code blocks, terminal art, and intentional product copy.
 - [x] Run Markdown lint over all repository Markdown, not only touched files.
 
-**Execution record:** Completed on 2026-07-09 against
+**Execution record:** Completed on 2026-07-10 against
 `7d8e4d9c69afa031a484736add6411aa771ea78c`. The refreshed identity scan found
 the person-derived labels only in the two renderer/error fixtures and the two
 June TUI documents. The binding fixture now uses the exact reserved
@@ -768,15 +768,37 @@ unchanged in behavior.
 
 **Work:**
 
-- [ ] Fix every refreshed `E501` and `W505` finding before enabling the rule.
-- [ ] Remove the unused global `B905` ignore.
-- [ ] Remove each current `# noqa` by fixing the cause; retain only a
+- [x] Fix every refreshed `E501` and `W505` finding before enabling the rule.
+- [x] Remove the unused global `B905` ignore.
+- [x] Remove each current `# noqa` by fixing the cause; retain only a
       rule-specific, one-line justified suppression when unavoidable.
 - [x] Remove legacy future-annotations imports and align `AGENTS.md` with
       native Python 3.14 deferred annotations. This gate correction was pulled
       forward during CS-01 after `pyupgrade --py314-plus` enforced it.
-- [ ] Record, but do not broadly enable, annotation rules whose current
+- [x] Record, but do not broadly enable, annotation rules whose current
       baseline is still noisy.
+
+**Execution record:** Completed on 2026-07-10 against
+`a97d2d44223641e5bdf42987704c7ef70574fd8a`. Enabling `E501` and setting
+Ruff's `W505` maximum to 79 exposed 15 source/test lines plus one all-files
+Homebrew-generator line; each was reflowed without changing emitted CLI,
+XML, PowerShell, or formula behavior. All ten `# noqa` directives were removed
+at their causes. Exact searches and clean selected-rule runs also proved that
+the global `B008`, `B905`, and preview-only `E203` ignores and the empty test
+per-file ignore were unused, so no Ruff suppression remains in production or
+tests. The pre-commit Ruff hook now matches the locked 0.15.12 engine. No test
+was added. Two
+redundant renderer numeric assertions were deleted while retaining the
+ordering behavior they were meant to protect; the approved 79-cell branding
+contract remains explicit through a named test constant. The full suite passes
+all 199 cases with branch coverage. Ruff, formatting, `ty`, pre-commit,
+repository-wide Markdown lint, formula-template suffix parity, and the package
+build pass.
+
+The annotation family remains intentionally unselected at this change set:
+the refreshed baseline has 98 findings (`ANN001` 41, `ANN201` 36, `ANN401`
+14, `ANN202` 5, `ANN002` 1, and `ANN003` 1). CS-22 owns eliminating that debt
+before enabling the rules, rather than hiding it behind an ignore.
 
 **Acceptance:**
 

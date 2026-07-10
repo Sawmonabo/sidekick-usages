@@ -16,6 +16,10 @@ from typing import cast
 #: on this machine, not just sidekick-managed accounts).
 _CLAUDE_STATS_FILE = Path.home() / ".claude" / "stats-cache.json"
 
+_TOKENS_PER_THOUSAND = 1_000
+_TOKENS_PER_MILLION = 1_000_000
+_TOKENS_PER_BILLION = 1_000_000_000
+
 
 def format_tokens(n: int) -> str:
     """Render a token count compactly (``424M``, ``1.5B``).
@@ -23,12 +27,12 @@ def format_tokens(n: int) -> str:
     :param n: Token count.
     :return: A short human string.
     """
-    if n >= 1_000_000_000:  # noqa: PLR2004
-        return f"{n / 1_000_000_000:.1f}B"
-    if n >= 1_000_000:  # noqa: PLR2004
-        return f"{n / 1_000_000:.0f}M"
-    if n >= 1_000:  # noqa: PLR2004
-        return f"{n / 1_000:.0f}K"
+    if n >= _TOKENS_PER_BILLION:
+        return f"{n / _TOKENS_PER_BILLION:.1f}B"
+    if n >= _TOKENS_PER_MILLION:
+        return f"{n / _TOKENS_PER_MILLION:.0f}M"
+    if n >= _TOKENS_PER_THOUSAND:
+        return f"{n / _TOKENS_PER_THOUSAND:.0f}K"
     return str(n)
 
 
@@ -124,8 +128,10 @@ def _max_output_in_rollout(path: Path) -> int:
 def _rollout_date(filename: str) -> str | None:
     """Extract ``YYYY-MM-DD`` from a ``rollout-...`` filename."""
     stem = filename.removeprefix("rollout-")
-    date = stem[:10]
-    return date if len(date) == 10 and date[4] == "-" else None  # noqa: PLR2004
+    value = stem[:10]
+    if len(value) != len("YYYY-MM-DD"):
+        return None
+    return value if value.startswith("-", len("YYYY")) else None
 
 
 def _load_codex_cache() -> dict[str, object]:

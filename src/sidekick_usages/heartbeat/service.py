@@ -407,7 +407,7 @@ def _merge_targets(
     account: Account,
     selected: tuple[str, ...],
 ) -> list[str]:
-    """Merge selected targets with current/default account targets in provider order."""
+    """Merge selected with configured/default targets in provider order."""
     current = account.heartbeat_targets or list(
         provider.default_target_ids(account)
     )
