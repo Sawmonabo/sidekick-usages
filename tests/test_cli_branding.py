@@ -8,7 +8,7 @@ from typer.testing import CliRunner
 
 from sidekick_usages import cli
 from sidekick_usages.branding import ROBOT_LINES
-from sidekick_usages.daemon import DaemonOperationResult
+from sidekick_usages.daemon import DaemonOperation, DaemonOperationResult
 from sidekick_usages.http import HttpClient
 from sidekick_usages.providers import PROVIDERS
 from sidekick_usages.store import Account, AccountStore
@@ -85,16 +85,25 @@ def test_daemon_header_is_limited_to_successful_status(
     class FakeDaemonManager:
         status_exit_code = 0
 
-        def status(self, backend: str) -> DaemonOperationResult:
-            message = "healthy" if self.status_exit_code == 0 else "missing"
-            return DaemonOperationResult(
-                backend,
-                message,
-                self.status_exit_code,
+        def run(
+            self,
+            operation: DaemonOperation,
+            backend: str,
+        ) -> DaemonOperationResult:
+            if operation is DaemonOperation.STATUS:
+                message = (
+                    "healthy" if self.status_exit_code == 0 else "missing"
+                )
+                return DaemonOperationResult(
+                    backend,
+                    message,
+                    self.status_exit_code,
+                )
+            if operation is DaemonOperation.INSTALL:
+                return DaemonOperationResult(backend, "installed")
+            raise AssertionError(
+                f"Unexpected daemon operation: {operation.value}"
             )
-
-        def install(self, backend: str) -> DaemonOperationResult:
-            return DaemonOperationResult(backend, "installed")
 
     monkeypatch.setattr(cli, "DaemonManager", FakeDaemonManager)
 

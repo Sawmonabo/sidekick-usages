@@ -2,13 +2,18 @@
 
 from pathlib import Path
 
+import pytest
+
 from sidekick_usages.daemon import (
     CommandResult,
     DaemonManager,
+    DaemonOperation,
+    DaemonOperationResult,
     PlatformInfo,
     SystemCommandRunner,
     resolve_maintenance_command,
 )
+from sidekick_usages.errors import UsageError
 
 
 class RecordingRunner(SystemCommandRunner):
@@ -27,6 +32,28 @@ class RecordingRunner(SystemCommandRunner):
         return CommandResult(returncode=0, stdout="", stderr="")
 
 
+class RecordingDaemonManager(DaemonManager):
+    """Daemon manager that records operation dispatch without side effects."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    def install(self, backend: str = "auto") -> DaemonOperationResult:
+        """Record an install dispatch."""
+        self.calls.append(("install", backend))
+        return DaemonOperationResult(backend, "installed")
+
+    def status(self, backend: str = "auto") -> DaemonOperationResult:
+        """Record a status dispatch."""
+        self.calls.append(("status", backend))
+        return DaemonOperationResult(backend, "healthy")
+
+    def uninstall(self, backend: str = "auto") -> DaemonOperationResult:
+        """Record an uninstall dispatch."""
+        self.calls.append(("uninstall", backend))
+        return DaemonOperationResult(backend, "removed")
+
+
 def _platform(
     tmp_path: Path,
     *,
@@ -43,6 +70,41 @@ def _platform(
         wsl_distro="Ubuntu" if is_wsl else None,
         has_user_systemd=has_user_systemd,
     )
+
+
+@pytest.mark.parametrize(
+    ("operation", "message"),
+    [
+        (DaemonOperation.INSTALL, "installed"),
+        (DaemonOperation.STATUS, "healthy"),
+        (DaemonOperation.UNINSTALL, "removed"),
+    ],
+)
+def test_daemon_manager_dispatches_exact_operation(
+    operation: DaemonOperation,
+    message: str,
+) -> None:
+    """Each supported operation dispatches once to its matching method."""
+    manager = RecordingDaemonManager()
+
+    result = manager.run(operation, "systemd")
+
+    assert manager.calls == [(operation.value, "systemd")]
+    assert result == DaemonOperationResult("systemd", message)
+
+
+def test_invalid_daemon_operation_cannot_dispatch() -> None:
+    """Invalid operation input cannot reach a scheduler mutation method."""
+    manager = RecordingDaemonManager()
+
+    with pytest.raises(UsageError) as exc_info:
+        manager.run("destroy", "systemd")
+
+    assert str(exc_info.value) == (
+        "Unknown daemon operation 'destroy'. "
+        "Expected one of: install, status, uninstall."
+    )
+    assert manager.calls == []
 
 
 def test_wsl_task_scheduler_uses_hidden_windows_wrapper(

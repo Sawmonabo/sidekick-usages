@@ -1,5 +1,6 @@
 """Reusable OS scheduler backends for token refresh maintenance."""
 
+import enum
 import os
 import platform
 import shlex
@@ -8,6 +9,9 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import assert_never
+
+from sidekick_usages.errors import UsageError
 
 SERVICE_NAME = "sidekick-usages-refresh"
 LAUNCHD_LABEL = "com.sidekick-usages.refresh"
@@ -15,6 +19,14 @@ CRON_BEGIN = "# sidekick-usages refresh begin"
 CRON_END = "# sidekick-usages refresh end"
 DAEMON_DIR_NAME = "sidekick-usages"
 WINDOWS_DAEMON_SUBDIR = "sidekick-usages\\daemon"
+
+
+class DaemonOperation(enum.StrEnum):
+    """Supported daemon manager operations."""
+
+    INSTALL = "install"
+    STATUS = "status"
+    UNINSTALL = "uninstall"
 
 
 @dataclass(frozen=True)
@@ -535,6 +547,36 @@ class DaemonManager:
         self.command = command or resolve_maintenance_command()
         self.platform_info = platform_info or PlatformInfo.detect()
         self.runner = runner or SystemCommandRunner()
+
+    def run(
+        self,
+        operation: str,
+        backend: str = "auto",
+    ) -> DaemonOperationResult:
+        """Parse and run one supported daemon operation.
+
+        :param operation: External operation name to parse.
+        :param backend: Scheduler backend name or ``"auto"``.
+        :returns: Result from the selected operation.
+        :raises UsageError: When the operation name is unsupported.
+        """
+        try:
+            operation_id = DaemonOperation(operation)
+        except ValueError as error:
+            expected = ", ".join(item.value for item in DaemonOperation)
+            raise UsageError(
+                f"Unknown daemon operation {operation!r}. "
+                f"Expected one of: {expected}."
+            ) from error
+
+        match operation_id:
+            case DaemonOperation.INSTALL:
+                return self.install(backend)
+            case DaemonOperation.STATUS:
+                return self.status(backend)
+            case DaemonOperation.UNINSTALL:
+                return self.uninstall(backend)
+        assert_never(operation_id)
 
     def install(self, backend: str = "auto") -> DaemonOperationResult:
         """Install the selected backend."""

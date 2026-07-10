@@ -27,7 +27,7 @@ from rich.text import Text
 from sidekick_usages import __version__
 from sidekick_usages.branding import PROVIDER_COLORS, brand_header, brand_line
 from sidekick_usages.cli_help import BrandedTyper, BrandedTyperGroup
-from sidekick_usages.daemon import DaemonManager
+from sidekick_usages.daemon import DaemonManager, DaemonOperation
 from sidekick_usages.doctor import (
     DoctorService,
     doctor_exit_code,
@@ -1367,7 +1367,7 @@ def daemon_install_cmd(
     ] = "auto",
 ) -> None:
     """Install scheduled saved-token refresh for the current user."""
-    _run_daemon_operation("install", backend)
+    _run_daemon_operation(DaemonOperation.INSTALL, backend)
 
 
 @daemon_app.command("status")
@@ -1381,7 +1381,7 @@ def daemon_status_cmd(
     ] = "auto",
 ) -> None:
     """Inspect scheduled saved-token refresh for the current user."""
-    _run_daemon_operation("status", backend)
+    _run_daemon_operation(DaemonOperation.STATUS, backend)
 
 
 @daemon_app.command("uninstall")
@@ -1395,25 +1395,23 @@ def daemon_uninstall_cmd(
     ] = "auto",
 ) -> None:
     """Remove scheduled saved-token refresh for the current user."""
-    _run_daemon_operation("uninstall", backend)
+    _run_daemon_operation(DaemonOperation.UNINSTALL, backend)
 
 
-def _run_daemon_operation(operation: str, backend: str) -> None:
+def _run_daemon_operation(
+    operation: DaemonOperation,
+    backend: str,
+) -> None:
     """Run one daemon manager operation and render its result."""
     app_ctx = _get_ctx()
     manager = DaemonManager()
     try:
-        if operation == "install":
-            result = manager.install(backend)
-        elif operation == "status":
-            result = manager.status(backend)
-        else:
-            result = manager.uninstall(backend)
-    except ValueError as e:
+        result = manager.run(operation, backend)
+    except (UsageError, ValueError) as e:
         app_ctx.err_console.print(f"[red]{e}[/red]")
         raise typer.Exit(code=3) from e
     style = "green" if result.exit_code == 0 else "red"
-    if operation == "status" and result.exit_code == 0:
+    if operation is DaemonOperation.STATUS and result.exit_code == 0:
         app_ctx.console.print(
             brand_header(
                 app_ctx.console.size.width,
