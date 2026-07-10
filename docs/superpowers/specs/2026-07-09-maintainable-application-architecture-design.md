@@ -1,7 +1,7 @@
 # Design Spec — Maintainable Application Architecture
 
-- **Status:** **Approved baseline; later dependency recommendations await
-  operator disposition**
+- **Status:** **Approved baseline and dependency selections; later persistence
+  and migration gates remain**
 - **Date:** 2026-07-09
 - **Repository:** `/home/sabossedgh/dev/sidekick-usages`
 - **Scope:** Repository-wide Python application architecture
@@ -11,8 +11,8 @@
 - **Evidence mode:** Read-only architecture and maintainability analysis
 - **Evidence-tree state:** Clean and tracking `origin/develop`
 - **Evidence status:** The approved baseline and later decision evidence are
-  inlined here; unapproved recommendations are explicitly marked and this
-  repository document remains the durable design authority
+  inlined here; gated decisions are explicitly marked and this repository
+  document remains the durable design authority
 - **Publication state:** Tracked and approved at execution base
   `73ce06891747a0571276b35c3f54c7de2c4e188f`
 - **Related design:** [Usage TUI Redesign][usage-tui-design]; this spec does
@@ -748,18 +748,18 @@ already configured store, service, or narrow provider facade.
 
 #### Cross-platform directory dependency decision
 
-**Research state:** **WAITING FOR OPERATOR DECISION**. The completed CS-09
-comparison recommends adopting platformdirs 4.10.0 privately behind `paths.py`
-for native discovery. Adoption does not authorize physical relocation, which
-remains disabled until CS-19 passes its separate migration and rollback gates.
-The self-contained evidence record is
+**Decision:** **GO — OPERATOR APPROVED 2026-07-10**. Adopt platformdirs 4.10.0
+privately behind `paths.py` for native discovery using the frozen contract
+below. This approval does not authorize physical relocation, which remains
+disabled until CS-19 passes its separate migration and rollback gates. The
+self-contained evidence record is
 [Application Path Discovery Dependency Research][paths-research].
 
 | Option | Benefits | Costs and risks | Decision |
 |---|---|---|---|
 | Standard library and local per-OS logic | No dependency | Owns XDG, macOS, Windows, WSL, override, and future-platform behavior | NO-GO |
 | Keep one hard-coded `Path.home() / ".config"` root | Preserves current behavior with little code | Ignores native macOS and Windows conventions and keeps state/cache lifecycles conflated | Compatibility baseline only |
-| `platformdirs` 4.10.0 behind `paths.py` | Focused, maintained, side-effect-free native discovery; pure Python, MIT, no runtime dependencies, Python 3.14 support | Canonical paths differ from the current public contract and require explicit migration | Conditional GO recommendation |
+| `platformdirs` 4.10.0 behind `paths.py` | Focused, maintained, side-effect-free native discovery; pure Python, MIT, no runtime dependencies, Python 3.14 support | Canonical paths differ from the current public contract and require explicit migration | **GO — approved** |
 | `pydantic-settings` 2.14.2 | Typed multi-source settings, validation, and precedence | Solves a broader problem that the current application does not have | NO-GO for path discovery |
 
 `platformdirs` remains private to `paths.py`; consumers use `Path` and
@@ -1070,7 +1070,7 @@ maintainability and diagnostic behavior differed:
 | Option | Measured result | Research disposition |
 |---|---|---|
 | Standard library | Strictness was possible only by owning recursion, union handling, aggregation, paths, and messages across eight families | NO-GO; this becomes a custom schema framework |
-| Pydantic 2.13.4 `TypeAdapter` | Aggregated independent errors with exact account labels, nested indices, and stable codes | Conditional GO recommendation |
+| Pydantic 2.13.4 `TypeAdapter` | Aggregated independent errors with exact account labels, nested indices, and stable codes | **GO — approved** |
 | cattrs 26.1.0 | Aggregated useful paths while keeping dataclasses independent, but required owned strict scalar hooks and had weaker union diagnostics | Leading fallback if the packaging gate rejects Pydantic |
 | msgspec 0.21.1 | Fastest and smallest measured candidate, but stopped at the first error and omitted the account label from a mapping path | NO-GO for operator repair diagnostics |
 
@@ -1626,21 +1626,23 @@ renderer code.
 
 ### 10.3 Completed build-versus-adopt research
 
-**Research state:** **WAITING FOR OPERATOR DECISION**. The completed CS-08
-comparison recommends urllib3 2.7.0 for pooled transport with its retries
-disabled, plus one focused Sidekick executor as the sole retry owner. It does
-not authorize a runtime dependency or production refactor. The self-contained
-evidence record is [HTTP Transport and Retry Dependency Research][http-research].
+**Decision:** **GO — OPERATOR APPROVED 2026-07-10**. Use urllib3 2.7.0 for
+pooled transport with its retries disabled, plus one focused Sidekick executor
+as the sole retry owner. The approval authorizes the CS-11 dependency and
+production refactor subject to every implementation and release gate below.
+The self-contained evidence record is
+[HTTP Transport and Retry Dependency Research][http-research].
 
 | Option | Completed result | Research disposition |
 |---|---|---|
 | Standard library plus focused executor | Retains the current non-pooled transport and owned connection behavior | NO-GO; pooling is mandatory |
 | urllib3 `PoolManager` plus urllib3 `Retry` | Strong HTTP classifications and guidance parsing, but directly owns wall time, sleep, and randomness and has no whole-operation deadline | NO-GO as retry owner |
 | Retry-disabled urllib3 plus Tenacity 9.1.4 | Injects sleep and can retain a final response, but directly timestamps retry state and leaves the operation matrix, HTTP-date parsing, deadline, and typed translation local | NO-GO for the current contract |
-| Retry-disabled urllib3 plus focused executor | One pooled transport and direct injection of the two clocks, sleeper, RNG, operation policy, and terminal outcome | Conditional GO recommendation |
+| Retry-disabled urllib3 plus focused executor | One pooled transport and direct injection of the two clocks, sleeper, RNG, operation policy, and terminal outcome | **GO — approved** |
 | HTTPX and Stamina controls | Add broader sync/async, protocol, or observation surfaces without removing the product-specific policy | NO-GO for current requirements |
 
-The recommendation is not a failure to reuse. urllib3 buys the maintained TLS,
+The approved selection is not a failure to reuse. urllib3 buys the maintained
+TLS,
 pool, timeout, response, and proxy transport surface. Sidekick owns only the
 closed retry semantics that no candidate supplied without brittle subclassing
 or a second local policy layer. Three current loops and six concrete operation
@@ -1711,10 +1713,10 @@ Use closed internal policies based on actual operations, such as:
 Do not expose `retry: bool`, arbitrary policy injection, or provider-created
 retry configuration.
 
-The completed safety classification is normative if CS-08 is approved. **R**
-means retry within both attempt and monotonic elapsed bounds; **T** means a
-terminal typed outcome; **R\*** means retry only when the complete valid server
-delay fits the remaining deadline.
+The completed safety classification is normative under the approved CS-08
+decision. **R** means retry within both attempt and monotonic elapsed bounds;
+**T** means a terminal typed outcome; **R\*** means retry only when the complete
+valid server delay fits the remaining deadline.
 
 | Operation | Proven pre-send connect | Ambiguous read or protocol | 429 | Selected 5xx | Explicit rejection |
 |---|---:|---:|---:|---:|---:|
@@ -1867,10 +1869,9 @@ existing tests only when they protect distinct behavior. Do not assert urllib3
 internals, complete third-party error strings, full renderer snapshots,
 projected module line counts, or a coverage number without a behavior contract.
 
-CS-08 remains **WAITING FOR OPERATOR DECISION**. A GO approves the
-retry-disabled urllib3 plus focused-executor pair and its exact safety matrix;
-it does not waive the proxy, CA, TLS, platform, packaging, redaction, or
-lifecycle acceptance gates.
+The CS-08 GO approves the retry-disabled urllib3 plus focused-executor pair and
+its exact safety matrix. It does not waive the proxy, CA, TLS, platform,
+packaging, redaction, or lifecycle acceptance gates.
 
 ## 11. Presentation contract
 
@@ -2083,14 +2084,14 @@ These changes reduce risk before moving ownership.
 
 Then:
 
-- complete the validation-library decision;
+- apply the approved Pydantic boundary-validation decision;
 - create top-level `paths.py` with frozen `ApplicationPaths`;
 - centralize the exact current Sidekick-owned locations without relocating
   existing files;
 - inject concrete paths from the current composition root (`cli.py` during
   intermediate phases, then `cli/app.py` after the atomic CLI package
   conversion) into their consuming adapters and services;
-- complete the `platformdirs` dependency and cross-platform output spike;
+- apply the approved `platformdirs` discovery contract without relocation;
 - establish `core/models.py`, `core/types.py`, and `core/expiry.py`;
 - establish `clock.py` and inject aware wall time into application services;
 - move shared models without changing behavior;
@@ -2098,7 +2099,7 @@ Then:
 - replace shared timestamp strings with aware datetimes and boundary-local
   persistence, provider, and presentation encoding;
 - establish JSON and boundary schemas;
-- complete and persist the HTTP transport and retry dependency spike;
+- apply the approved urllib3 and focused-executor HTTP decision;
 - atomically replace `http.py` with the shared `http/` package;
 - establish one pooled client lifecycle and exactly one retry owner;
 - make POST retry safety explicit per concrete operation;
@@ -2710,18 +2711,18 @@ sources retrieved on 2026-07-09. Focused dependency research was refreshed on
 - **Validation decision:** the section 6.4 spike is complete and Pydantic
   2.13.4 was operator-approved on 2026-07-10 with required release gates
 - **HTTP baseline:** no current third-party HTTP or retry dependency
-- **HTTP research:** the section 10.7 spike is complete and recommends urllib3
-  with retries disabled plus one focused executor; operator disposition remains
-  pending
+- **HTTP decision:** the section 10.3 spike is complete and urllib3 2.7.0 with
+  retries disabled plus one focused executor was operator-approved on
+  2026-07-10
 - **Application-path baseline:** `store.py`, `cli.py`, and `lifetime.py`
   duplicate Sidekick-owned location construction; `store.py` also retains the
   separate `cc-usage` prototype source
 - **Path dependency baseline:** `platformdirs` is not a declared runtime
   dependency; version 4.9.6 appears only transitively in the development lock
   graph through `python-discovery` and `virtualenv`
-- **Application-path research:** section 4.2 now contains the completed
-  platformdirs 4.10.0 adoption recommendation and exact path contract;
-  operator disposition remains pending and relocation remains disabled
+- **Application-path decision:** section 4.2 now contains the approved
+  platformdirs 4.10.0 selection and exact path contract; relocation remains
+  separately gated and disabled
 - **Settings baseline:** the application has no cohesive multi-source settings
   contract
 - **Settings decision:** `pydantic-settings` 2.14.2 is deferred and is not
@@ -2760,9 +2761,9 @@ distribution and 432,560 measured installed bytes. Its `Retry` owner could not
 meet independent clock, sleep, RNG, and whole-operation deadline requirements
 without brittle subclassing or global patching. Tenacity injected sleep but
 left nearly every HTTP-specific policy local. The focused Sidekick executor is
-therefore the recommendation, not yet an approved dependency. Only Linux ran
-the local spike; native proxy, CA, TLS, macOS, Windows, WSL, and Homebrew
-behavior remains an implementation gate.
+therefore the approved retry owner. Only Linux ran the local spike; native
+proxy, CA, TLS, macOS, Windows, WSL, and Homebrew behavior remains an
+implementation gate.
 
 ### 20.3 CS-09 evidence snapshot
 
@@ -2778,9 +2779,10 @@ The controlled probe returned the frozen Linux, absolute-XDG, macOS, Windows,
 and WSL paths and created no filesystem object with `ensure_exists=False`.
 platformdirs is one dependency-free pure-Python runtime distribution; native
 operating-system probes and the full relocation/rollback transaction remain
-later gates. Adoption authorizes discovery only. The current compatibility
-account store, private Codex root, and lifetime cache remain authoritative until
-an independently approved migration activates new locations.
+later gates. The approved adoption authorizes discovery only. The current
+compatibility account store, private Codex root, and lifetime cache remain
+authoritative until an independently approved migration activates new
+locations.
 
 Local path evidence at the evidence commit is:
 
@@ -2901,12 +2903,13 @@ baseline and are mirrored in the implementation-plan ledger.
 | Change set | Research recommendation | State |
 |---|---|---|
 | CS-07 | Pydantic 2.13.4 `TypeAdapter` at untrusted boundaries; Homebrew source-build proof remains a release gate | **GO — APPROVED 2026-07-10** |
-| CS-08 | urllib3 2.7.0 pooled transport with retries disabled plus one focused Sidekick retry executor | **WAITING FOR OPERATOR DECISION** |
-| CS-09 | platformdirs 4.10.0 behind `paths.py`; physical relocation remains separately gated | **WAITING FOR OPERATOR DECISION** |
+| CS-08 | urllib3 2.7.0 pooled transport with retries disabled plus one focused Sidekick retry executor | **GO — APPROVED 2026-07-10** |
+| CS-09 | platformdirs 4.10.0 behind `paths.py`; physical relocation remains separately gated | **GO — APPROVED 2026-07-10** |
 
 ## 21. Approved decisions
 
-The following decisions were approved on 2026-07-09:
+The baseline decisions below were approved on 2026-07-09; the Pydantic,
+urllib3/retry, and platformdirs selections were approved on 2026-07-10:
 
 1. Use `core/`, not `domain/`, for shared product models, types, and pure
    cross-feature policy.
@@ -2919,15 +2922,15 @@ The following decisions were approved on 2026-07-09:
 7. Give Claude and Codex concrete command modules.
 8. Adopt the provider command hierarchy with a defined compatibility policy.
 9. Keep schemas boundary-local.
-10. Complete the validation-library comparison before implementation.
+10. Use Pydantic 2.13.4 `TypeAdapter` at boundary-local schemas subject to the
+    required Homebrew and platform release gates.
 11. Preserve the installed entry point and machine-readable behavior.
 12. Use the phased migration and load-bearing test strategy above.
 13. Keep shared HTTP infrastructure outside `core/` in a dedicated `http/`
     package.
 14. Use exactly one retry owner and require explicit POST operation safety.
-15. Make pooling mandatory, use urllib3 `PoolManager` as the preliminary
-    transport selection, and compare urllib3 `Retry`, Tenacity, and focused
-    local code as the single retry owner in section 10.7.
+15. Make pooling mandatory, use urllib3 2.7.0 with retries disabled, and use
+    the focused Sidekick executor as the sole retry owner.
 16. Make `core/expiry.py` the single owner of provider-neutral expiry
     classification.
 17. Use aware UTC datetimes internally, acquire wall time through the explicit
@@ -2939,9 +2942,9 @@ The following decisions were approved on 2026-07-09:
     lazy CLI composition root, and inject concrete locations into their owners.
 20. Keep provider-native homes and scheduler installation paths outside
     `ApplicationPaths`.
-21. Use `platformdirs` 4.10.0 as the preliminary native-directory adoption
-    choice, subject to the explicit dependency, platform, compatibility, and
-    migration gate.
+21. Use `platformdirs` 4.10.0 privately behind `paths.py` for native discovery,
+    subject to the explicit platform, compatibility, and later migration
+    gates.
 22. Preserve existing physical locations during initial path centralization
     and perform any native-location migration as a separate safe change after
     persistence/schema migration is stable.

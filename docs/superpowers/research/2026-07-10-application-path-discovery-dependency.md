@@ -4,8 +4,8 @@
 - *Research date:* 2026-07-10
 - *Repository:* `sidekick-usages`
 - *Python target:* 3.14
-- *Status:* **WAITING FOR OPERATOR DECISION**
-- *Recommendation:* Conditional GO for `platformdirs` 4.10.0 as the native
+- *Status:* **GO — OPERATOR APPROVED 2026-07-10**
+- *Approved selection:* `platformdirs` 4.10.0 as the private native
   path-discovery dependency; preserve compatibility locations until the later
   persistence and native-migration gates pass
 
@@ -19,9 +19,9 @@ This decision selects a path-discovery dependency and freezes its intended
 outputs. It does not authorize moving an existing account store, rewriting a
 stored schema, copying private credentials, or deleting any current file.
 
-## Executive Recommendation
+## Executive Decision
 
-Record a conditional GO for `platformdirs` 4.10.0 with the exact constructor,
+The operator recorded GO for `platformdirs` 4.10.0 with the exact constructor,
 semantic mapping, output matrix, and override policy in this document.
 
 The library is a focused, dependency-free implementation of the operating
@@ -31,11 +31,11 @@ system conventions the project would otherwise need to maintain itself. The
 provenance. Its scope matches the problem without introducing a settings
 framework.
 
-The GO must remain conditional because native paths differ from the current
-public file locations. Initial `ApplicationPaths` centralization must preserve
-the existing locations. A later migration may activate the frozen native paths
-only after the persistence, credential, platform, recovery, and operator gates
-listed below pass.
+The approval does not activate native paths because they differ from the
+current public file locations. Initial `ApplicationPaths` centralization must
+preserve the existing locations. A later migration may activate the frozen
+native paths only after the persistence, credential, platform, recovery, and
+operator gates listed below pass.
 
 ## Repository Ground Truth
 
@@ -370,15 +370,15 @@ decision. That later decision must independently settle:
 
 This document does not select or freeze any schema envelope, lock dependency,
 backup filename, write protocol, migration command, or rollback command. Those
-are later decisions and remain blockers even if the operator approves CS-09.
+are later decisions and remain blockers after the CS-09 approval.
 
 ## Activation Gates
 
 `platformdirs`-backed native locations may become writable only when all of the
 following are true:
 
-1. The operator records CS-09 GO with this exact constructor, path matrix,
-   semantic mapping, and override policy.
+1. The recorded CS-09 GO uses this exact constructor, path matrix, semantic
+   mapping, and override policy.
 2. The dependency is declared directly and passes the packaging checks above.
 3. Native Linux, macOS, Windows, and WSL runners reproduce the approved
    discovery behavior.
@@ -403,7 +403,7 @@ and the native outputs are evidence, not active storage locations.
 
 ## Reversal Conditions
 
-Reverse the preliminary adoption and retain compatibility paths if any of the
+Reverse the approved adoption and retain compatibility paths if any of the
 following occurs before activation:
 
 - native operating-system output differs from the frozen matrix without an
@@ -429,24 +429,24 @@ On reversal:
 - retain no dormant branch for hypothetical later use; and
 - continue unrelated architecture work against injected compatibility paths.
 
-## Operator Decision Required
+## Operator Decision
 
-### Recommended GO
+### Approved GO
 
-Approve `platformdirs` 4.10.0 as the later native path-discovery dependency with
-the exact contract in this document. This GO authorizes direct dependency and
-native-migration implementation only in their later gated change sets. It does
-not move or rewrite user data.
+The operator approved `platformdirs` 4.10.0 as the later native path-discovery
+dependency with the exact contract in this document. This GO authorizes direct
+dependency and native-migration implementation only in their later gated
+change sets. It does not move or rewrite user data.
 
-### NO-GO Consequence
+### Rejected NO-GO alternative
 
 Retain the current physical locations through compatibility
 `ApplicationPaths`, add no direct `platformdirs` dependency, and omit native
 migration-only code. Other architectural refactors continue.
 
-### Required Recorded Disposition
+### Decision record
 
-The operator record must include:
+The durable operator record includes:
 
 - GO or NO-GO;
 - the selected compatibility disposition;
@@ -454,8 +454,8 @@ The operator record must include:
 - the design commit that incorporates the disposition; and
 - the approved design-content digest required by the implementation plan.
 
-Until that disposition is recorded, CS-09 remains
-**WAITING FOR OPERATOR DECISION**.
+The implementation-plan ledger records the design commit and approved digest
+in its follow-up provenance commit.
 
 ## Sources
 

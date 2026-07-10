@@ -1,6 +1,6 @@
 # HTTP Transport and Retry Dependency Research
 
-- **Status:** **WAITING FOR OPERATOR DECISION**
+- **Status:** **GO — OPERATOR APPROVED 2026-07-10**
 - **Date:** 2026-07-10
 - **Repository:** `/home/sabossedgh/dev/sidekick-usages`
 - **Change set:** CS-08 — decide HTTP transport and retry ownership
@@ -8,11 +8,11 @@
 - **Production impact:** None; this record changes no dependency or runtime
   behavior
 
-This document is the self-contained tracked evidence record for CS-08. It
-refreshes the preliminary HTTP decision in the approved architecture, records
-the measured comparison, and proposes one transport/retry combination. The
-proposal is not approved until the operator records GO or NO-GO and the
-selected approach in the design authority.
+This document is the self-contained tracked evidence and decision record for
+CS-08. It refreshes the preliminary HTTP decision in the approved architecture,
+records the measured comparison, and documents the operator-approved
+transport/retry combination. The GO authorizes CS-11 implementation subject to
+every retained implementation and release gate.
 
 ## Table of Contents
 
@@ -28,7 +28,7 @@ selected approach in the design authority.
 - [Pooling TLS CA Proxy and Redirect Boundary](#pooling-tls-ca-proxy-and-redirect-boundary)
 - [Typed Error and Security Boundary](#typed-error-and-security-boundary)
 - [Packaging Platform License and Maintenance](#packaging-platform-license-and-maintenance)
-- [Conditional Recommendation](#conditional-recommendation)
+- [Approved Decision](#approved-decision)
 - [Implementation Implications](#implementation-implications)
 - [Limitations and Open Risks](#limitations-and-open-risks)
 - [Reversal and Stop Conditions](#reversal-and-stop-conditions)
@@ -55,7 +55,7 @@ the approved pooling requirement.
 
 ## Executive Result
 
-The evidence supports a **conditional GO recommendation** for:
+The evidence supported, and the operator approved, **GO** for:
 
 - **Transport:** urllib3 2.7.0 `PoolManager`/`ProxyManager`;
 - **Retry owner:** one focused local `RetryExecutor` in `http/retry.py`;
@@ -79,10 +79,10 @@ The alternatives are rejected as retry owners:
 - HTTPX and Stamina add capabilities and dependency surface that no current
   call site requires.
 
-This is **not an operator-approved decision**. Production dependency and HTTP
-work remain blocked until the operator records the disposition. The transport
-recommendation is also conditional on explicit environment-proxy, system-CA,
-redirect, native-platform, Homebrew, and typed-error acceptance.
+This is an **operator-approved decision**. Production dependency and HTTP work
+may proceed in CS-11. Release remains conditional on explicit
+environment-proxy, system-CA, redirect, native-platform, Homebrew, and
+typed-error acceptance.
 
 ## Repository Baseline
 
@@ -407,9 +407,9 @@ The first implementation should use explicit names and distinguish attempts
 from retries. Three total attempts, a 15-second whole-operation budget, a
 three-second connect timeout, and a ten-second read timeout are the initial
 proposal. Before each attempt, clamp the transport's per-attempt total timeout
-to the remaining monotonic budget. These values require operator disposition
-and real CLI timing; the requirement for both attempt and elapsed bounds does
-not.
+to the remaining monotonic budget. These values remain subject to real CLI
+timing evidence during CS-11; the approved requirement for both attempt and
+elapsed bounds does not.
 
 Full jitter selects uniformly between zero and the capped exponential delay.
 The RNG is injected for deterministic tests. It need not be cryptographic
@@ -571,27 +571,26 @@ All selected/reviewed licenses are compatible with Sidekick's Apache-2.0
 license. Advisory, release, provenance, and maintainer facts are time-bound and
 must be refreshed at the actual pin or upgrade.
 
-## Conditional Recommendation
+## Approved Decision
 
-### Proposed disposition
+### Approved disposition
 
-Record operator **GO**, if the conditions below are accepted, for:
+The operator recorded **GO** on 2026-07-10 for:
 
 1. urllib3 2.7.0 as the pooled sync transport; and
 2. one focused local executor over retry-disabled urllib3 as the sole retry
    owner.
 
-Record **NO-GO for the current scope** for:
+The decision records **NO-GO for the current scope** for:
 
 - urllib3 `Retry` as owner;
 - Tenacity as owner;
 - HTTPX merely for hypothetical async/HTTP2 support; and
 - Stamina as an additional wrapper.
 
-### Required GO conditions
+### Required implementation conditions
 
-The recommendation becomes implementation authority only after the operator
-approves it and CS-11 proves:
+The approval becomes releasable production authority only after CS-11 proves:
 
 - exactly one retry owner and no provider-level/manual/urllib3 stacking;
 - the complete six-operation matrix;
@@ -607,10 +606,8 @@ approves it and CS-11 proves:
 - Linux, macOS, Windows, WSL, wheel, lockfile, and Homebrew acceptance; and
 - unchanged human, JSON, quiet, scheduled, and version output.
 
-Until that operator disposition exists, the change-set status remains
-**WAITING FOR OPERATOR DECISION**.
-
-No production dependency or HTTP code may consume the recommendation early.
+The operator approval authorizes the selected dependency and implementation;
+it does not waive or defer any condition above.
 
 ## Implementation Implications
 

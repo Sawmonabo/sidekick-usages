@@ -369,8 +369,8 @@ unrecorded chat-only disposition.
 | Change set | Question | Research recommendation | Disposition | Approval date | Design commit | Approved design SHA-256 |
 |---|---|---|---|---|---|---|
 | CS-07 | Boundary-validation dependency | Pydantic 2.13.4 `TypeAdapter`; Homebrew Rust/maturin proof remains a release gate | **GO** | 2026-07-10 | `986e1f7` | `3db51ef2abb86390ab55b6a31a8303f4d18df22f2599a5112d30e494353e44c4` |
-| CS-08 | Pooled transport and sole retry owner | urllib3 2.7.0 with retries disabled plus one focused Sidekick executor | **WAITING FOR OPERATOR DECISION** | Pending | Pending | Pending |
-| CS-09 | Native application-path discovery | platformdirs 4.10.0 privately behind `paths.py`; physical relocation remains off | **WAITING FOR OPERATOR DECISION** | Pending | Pending | Pending |
+| CS-08 | Pooled transport and sole retry owner | urllib3 2.7.0 with retries disabled plus one focused Sidekick executor | **GO** | 2026-07-10 | Pending decision commit | Pending decision commit |
+| CS-09 | Native application-path discovery | platformdirs 4.10.0 privately behind `paths.py`; physical relocation remains off | **GO** | 2026-07-10 | Pending decision commit | Pending decision commit |
 
 ## 6. Testing strategy
 
@@ -939,9 +939,9 @@ and tracked research record. No production dependency or code changed. No test
 was added because this is research-only documentation; copying spike facts into
 tests would not protect production behavior.
 
-**Current status:** **WAITING FOR OPERATOR DECISION**. A GO approves urllib3
-2.7.0 as the pooled transport with retries disabled and one focused Sidekick
-executor as the sole retry owner. It does not waive native proxy, CA, TLS,
+**Operator decision:** **GO, approved 2026-07-10**. Use urllib3 2.7.0 as the
+pooled transport with retries disabled and one focused Sidekick executor as
+the sole retry owner. The approval does not waive native proxy, CA, TLS,
 redirect, lifecycle, packaging, redaction, or platform acceptance.
 
 **Commit:** `docs(research): decide HTTP transport and retry dependency`
@@ -996,11 +996,11 @@ physical path, production code, or test changed. No test was added because this
 change records research rather than behavior; native implementation tests must
 exercise the few observable path, side-effect, and consumer contracts.
 
-**Current status:** **WAITING FOR OPERATOR DECISION**. A GO approves
-platformdirs 4.10.0 as the private native-discovery implementation and the
-frozen path contract. It does not activate physical relocation. A NO-GO keeps
-the compatibility locations behind the same injected `ApplicationPaths` and
-prohibits dormant native-only code or a runtime dependency.
+**Operator decision:** **GO, approved 2026-07-10**. Use platformdirs 4.10.0 as
+the private native-discovery implementation behind `paths.py` and retain the
+frozen path contract. The approval does not activate physical relocation;
+current compatibility locations remain authoritative until CS-19 passes its
+separate migration and rollback gates.
 
 **Commit:** `docs(research): decide application path discovery dependency`
 
