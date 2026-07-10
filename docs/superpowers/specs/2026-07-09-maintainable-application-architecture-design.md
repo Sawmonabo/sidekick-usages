@@ -557,7 +557,8 @@ src/sidekick_usages/
 │   ├── __init__.py
 │   ├── models.py
 │   ├── types.py
-│   └── expiry.py
+│   ├── expiry.py
+│   └── time.py
 ├── serialization/
 │   ├── __init__.py
 │   └── json.py
@@ -601,10 +602,16 @@ src/sidekick_usages/
 ├── persistence/
 │   ├── __init__.py
 │   ├── account_store.py
+│   ├── errors.py
 │   ├── schemas.py
 │   ├── migrations.py
 │   ├── filesystem.py
-│   └── locking.py
+│   ├── locking.py
+│   └── _platform/
+│       ├── __init__.py
+│       ├── macos.py
+│       ├── posix.py
+│       └── windows.py
 ├── credentials/
 │   ├── __init__.py
 │   └── service.py
@@ -1059,7 +1066,21 @@ Maintenance alone applies provider-specific refresh margins to a
 use-case policy. Neither margin becomes a stored expiry state or changes the
 core boundary rule.
 
-### 5.4 Feature-local models
+### 5.4 `core/time.py`
+
+`core/time.py` owns exactly one shared runtime invariant:
+`as_utc(value: datetime) -> datetime`. It rejects naive values and returns the
+equivalent aware `datetime.UTC` instant. The helper was extracted only after
+the same invariant had concrete consumers in expiry values, mutable account
+runtime/reset state, usage windows, and heartbeat results.
+
+The module does not acquire a clock, parse provider epochs or persisted
+strings, format a timestamp, sleep, choose expiry policy, or encode provider,
+persistence, or display representations. Those operations remain at their
+owning boundaries. This narrow pure datetime normalizer is therefore not the
+prohibited `timestamps.py` or a universal timestamp-string formatter.
+
+### 5.5 Feature-local models
 
 Use-case results remain beside the service that creates and consumes them:
 
@@ -1079,15 +1100,24 @@ model files are not created merely for naming symmetry.
 Do not create empty `models.py`, `types.py`, or `schemas.py` files to make
 packages look identical.
 
-### 5.5 CS-13 migration constraints
+### 5.6 CS-13 migration constraints
 
 The atomic model migration preserves these caller-observed distinctions and
 corrects these proven hazards:
 
-- Claude `scopes=None` means unknown scopes, while `scopes=()` means
-  known-empty scopes. Truthiness must not collapse them.
+- Claude `scopes=None` means unknown scopes and alone selects the default
+  refresh scopes. `scopes=()` means known-empty and remains empty during
+  refresh. Truthiness must not collapse them.
 - A missing detected field usually means no new information; known-empty
   scopes deliberately clear stale scope metadata.
+- A successful Claude or Codex refresh requires a non-empty access-token
+  string. A present replacement refresh token, and a present Codex ID token,
+  must also be non-empty strings; malformed optional fields reject the whole
+  refresh before credential replacement.
+- A Claude refresh response without new expiry data produces
+  `UnknownExpiry`; it never preserves a stale known expiry. A present but
+  undecodable Codex access-token JWT produces `InvalidExpiry`, while a decoded
+  JWT with no `exp` claim remains `UnknownExpiry`.
 - Expiry is inspected by discriminant, never by integer or object truthiness.
 - Credential refresh parses and validates the full response before replacing
   the immutable credential variant.
@@ -1105,10 +1135,13 @@ corrects these proven hazards:
   exposed read-only so later item mutation cannot bypass the aware-UTC
   invariant. Legitimate updates replace the mapping copy-on-write. Divergent
   historical records must not be collapsed.
+- Heartbeat provider and window result `reset_at` values enforce the same
+  aware-UTC invariant at construction rather than relying on a later account
+  write to normalize them.
 - The current Codex usage-check margin and the separate Claude and Codex
   maintenance margins remain with their use cases.
 
-### 5.6 CS-13 load-bearing proof
+### 5.7 CS-13 load-bearing proof
 
 CS-13 adds or consolidates only these behavior tests:
 
@@ -1131,8 +1164,13 @@ CS-13 adds or consolidates only these behavior tests:
    values and encode exactly, including precision rejection.
 6. One existing service-clock test proves a decision samples wall time once.
    The existing CS-11 monotonic-deadline suite is rerun, not duplicated.
-7. One architecture and built-wheel test proves the new core modules obey the
-   import boundary and neither source nor wheel contains stale `report.py`.
+7. One parameterized refresh-boundary test proves known-empty Claude scopes,
+   absent Claude expiry, non-empty token fields, and malformed Codex JWT
+   distinctions; one heartbeat-boundary test proves aware offset values become
+   UTC and naive resets fail.
+8. One architecture and built-wheel test proves `core/models.py`,
+   `core/types.py`, `core/expiry.py`, and `core/time.py` obey the import
+   boundary and neither source nor wheel contains stale `report.py`.
 
 Existing behavior tests are mechanically adapted only where their boundary
 remains distinct. Redundant one-field account round trips, repeated scope
@@ -1726,6 +1764,13 @@ for the participating-process hard lock and pywin32 312 as a direct
 Windows-only dependency for native file and DACL operations. Do not use a
 generic atomic-write dependency. The self-contained evidence record is
 [Persistence Durability and Rollback Research][persistence-research].
+The exact implementation closure is
+[Persistence Contract Closure Research](../research/2026-07-10-persistence-contract-closure.md),
+and the normative classifier is
+[Persistence Assessment State Machine](../research/2026-07-10-persistence-assessment-state-machine.md).
+CS-14 implements all three tracked authorities together; broad wording in an
+earlier section never weakens an exact bound, transition, or native gate in
+these authorities.
 
 This decision authorizes the contract and later implementation. It does not
 enable the versioned writer before the native platform, built-artifact, and
@@ -1859,11 +1904,11 @@ must be an exact second. That makes the reverse provider-native integer
 conversion exact. `codex_last_refresh` remains a bounded provider-native
 string because the Codex auth-file boundary owns its meaning.
 
-Refresh status is null, `ok`, `skipped`, or `failed`. Persisted heartbeat
-status is null or a member of the current closed heartbeat vocabulary. Adding
-a field or persisted state requires schema version two and an amendment to
-this recovery contract; it is never added to version one as a permissive
-optional extra.
+Refresh status is exactly null, `ok`, `skipped`, or `failed`. Persisted
+heartbeat status is exactly null, `warmed`, `active`, `disabled`,
+`unsupported`, `failed`, or `enabled`. Adding a field or persisted state
+requires schema version two and an amendment to this recovery contract; it is
+never added to version one as a permissive optional extra.
 
 Every valid version-one field is losslessly representable by the actual
 v0.6.0 store. There is no intentionally unrepresentable field policy.
@@ -1882,7 +1927,41 @@ The persistence boundary enforces:
   or NUL characters, and no more than 512 encoded UTF-8 bytes;
 - non-empty token values no larger than 256 KiB;
 - diagnostic strings no larger than 4 KiB; and
-- named finite per-field list, map, and string bounds in `schemas.py`.
+- the exact per-field bounds below.
+
+| Field or collection | Exact limit |
+|---|---:|
+| Complete document | 16 MiB |
+| Accounts | 512 entries |
+| Account label | 1-512 UTF-8 bytes; no Unicode controls |
+| Access, refresh, or ID token | 1-262,144 UTF-8 bytes |
+| Provider account ID | 1-4,096 UTF-8 bytes |
+| Plan | 1-256 UTF-8 bytes |
+| Scopes | 128 entries |
+| One scope | 1-4,096 UTF-8 bytes |
+| Codex auth-home string | 1-32,768 UTF-8 bytes |
+| Opaque Codex last-refresh string | 1-4,096 UTF-8 bytes |
+| Diagnostic error | 1-4,096 UTF-8 bytes |
+| Heartbeat target list | 32 entries |
+| One heartbeat target ID | 1-256 UTF-8 bytes |
+| Heartbeat reset map | 32 entries |
+| One reset-map key | 1-256 UTF-8 bytes |
+| Historical timestamp input | 20-32 ASCII bytes |
+
+Present strings are non-empty. Containers reject mixed element types and
+duplicates where their representation can express duplicates. Null remains
+distinct from a known-empty scope or heartbeat-target collection.
+
+Generation-zero Sidekick timestamps accept exactly
+`YYYY-MM-DDTHH:MM:SS[.f{1,6}](Z|+00:00)`. Parsing validates the calendar,
+rejects leap seconds, requires UTC, and accepts years 0001 through 9999.
+Claude expiry milliseconds are in `0..253402300799999`; Codex expiry seconds
+are in `0..253402300799`. Boolean is never an integer, and every reverse
+conversion must be exact at provider precision.
+
+Generation zero enforces the same provider discriminator as version one.
+Migration rejects provider-incompatible non-null values and never discards
+them by silently replacing them with null.
 
 Root dispatch treats a strict integer `schema_version` member as an envelope.
 Integer `1` requires exactly `schema_version` and `accounts`; any other integer
@@ -1910,11 +1989,29 @@ sibling artifacts:
 | Generation-zero backup | `<accounts>.v0.<sha256>.bak` | Yes | Immutable until full reset |
 | Version-one rollback snapshot | `<accounts>.v1.<sha256>.bak` | Yes | Immutable until full reset |
 | Prototype receipt | `<accounts>.prototype.<sha256>.receipt` | No | Immutable and retained across reset |
-| Temporary | `.<accounts>.<purpose>.<random>.tmp` | Possibly | Never authoritative; cleanup under the lock only |
+| Temporary | `.<accounts>.<purpose>.<32-lowercase-hex>.tmp` | Possibly | Never authoritative; cleanup under the lock only |
 
 The digest is 64 lowercase hexadecimal characters over exact bytes. Artifact
 discovery accepts only this grammar and never touches a glob result outside the
 injected account parent.
+
+Temporary `purpose` is exactly `authority`, `backup`, `snapshot`, or `receipt`.
+The random component is 128 bits from `secrets.token_hex(16)`. A partially
+matching, uppercase, malformed, or unknown basename is foreign and is never
+opened, cleaned, or deleted by Sidekick.
+
+The prototype receipt is deterministic UTF-8 JSON:
+
+```json
+{
+  "receipt_version": 1,
+  "prototype_sha256": "<64-lowercase-hex>",
+  "target_schema_version": 1
+}
+```
+
+It uses two-space indentation, LF, and one trailing newline. The digest in the
+receipt filename is the exact prototype digest, not a digest of receipt bytes.
 
 Before any generation-zero rewrite:
 
@@ -1952,7 +2049,8 @@ assessment selects the actually observed validated authority.
 
 ##### Platform behavior
 
-On Linux, POSIX systems, and WSL's Linux filesystem:
+On Linux, POSIX systems, and WSL's Linux filesystem, Sidekick operates through
+a securely opened parent directory and descriptor-relative names:
 
 - new state directories use `0o700`;
 - credentials, backups, temporaries, and locks use `0o600` from creation;
@@ -1972,11 +2070,20 @@ signatures with local `ctypes`:
 
 - `CopyFileW(..., TRUE)` creates a private security-preserving backup copy;
 - `MoveFileExW` without replace publishes the immutable backup;
-- `ReplaceFileW` replaces an existing authority while preserving its DACL and
-  selected metadata;
+- `ReplaceFileW` with flags `0` replaces an existing authority while
+  preserving its DACL and selected metadata;
 - `FlushFileBuffers` hardens file data;
 - `win32security` assesses owner, SIDs, inheritance, and effective DACL; and
 - every partial/sharing failure triggers full candidate reassessment.
+
+`REPLACEFILE_WRITE_THROUGH` is unsupported and is never requested or claimed.
+Windows creates a private write-through temporary, flushes and verifies it,
+replaces or publishes it through the operation appropriate to its role,
+reopens the final object without following a reparse point, flushes the final
+handle, and verifies bytes, identity, regular-file state, and DACL. Any failure
+after replacement but before that proof returns `durability_uncertain`.
+This is a documented best-effort protocol, not a fabricated Windows directory
+`fsync` equivalent.
 
 The accepted Windows DACL allows the current user, LocalSystem, and
 Administrators. A null DACL, unassessable owner/inheritance, reparse-point final
@@ -1985,11 +2092,27 @@ Authenticated Users, or Builtin Users fails closed. Enterprise inheritance
 that cannot be classified receives repair guidance and is never stripped
 silently.
 
-The first writer supports only qualified local filesystems on native Linux,
-macOS, Windows, and WSL's Linux filesystem. Remote/network shares,
-cross-device paths, WSL Windows-mounted paths, unsupported hard locks,
-unassessable permissions, and unavailable synchronization fail with a typed
-unsupported-filesystem or permission state.
+Stable source identity is `(st_dev, st_ino)` from the open final handle on
+POSIX and Windows, combined on every platform with SHA-256 over bounded exact
+bytes. Identity detects replacement; digest detects content change.
+
+The first writer supports only this closed local-filesystem allowlist:
+
+| Host | Allowed authority filesystem |
+|---|---|
+| Native Linux | ext4, XFS, or Btrfs |
+| macOS | APFS |
+| Native Windows | NTFS |
+| WSL | ext4 inside the Linux distribution |
+
+It rejects NFS, SMB/CIFS, network FUSE, UNC, WSL 9p/DrvFS, tmpfs, overlayfs,
+FAT, exFAT, ReFS, cluster/shared volumes, cross-device paths, and unknown
+filesystem names. Linux and WSL resolve the longest matching
+`/proc/self/mountinfo` entry, decode its escapes, and compare it with the open
+directory identity. macOS uses its native report for the open directory;
+Windows requires a local NTFS volume with persistent ACL support. Unsupported
+hard locks, unassessable permissions, or unavailable synchronization fail
+closed.
 
 ##### Explicit migration and rollback surfaces
 
@@ -2023,6 +2146,23 @@ stopped, print only safe path/generation/count/backup data, and require terminal
 confirmation unless `--yes` is explicit. Prototype reimport is never automatic
 and requires the explicit option and confirmation.
 
+The lock budget is exactly five seconds with a 100 ms check interval. The
+filesystem adapter securely creates or opens and validates the persistent
+sidecar before Portalocker receives the open file object. Mutation never uses
+Portalocker's high-level pathname opener. A timeout is `store_locked`.
+
+Scheduler quiescence checks every backend that can coexist on the host:
+
+- native Linux: systemd user timer and cron marker;
+- macOS: launchd agent and cron marker;
+- Windows: Task Scheduler task; and
+- WSL: systemd user timer, cron marker, and Windows Task Scheduler task.
+
+Stopped means no Sidekick-owned schedule is installed. An unassessable backend
+blocks mutation. Preview and confirmation happen without holding the lock;
+scheduler quiescence and the complete assessment are repeated under the lock
+immediately before mutation.
+
 Rollback preparation supports exactly the released v0.6.0 target initially:
 
 1. validate latest version one;
@@ -2046,6 +2186,12 @@ before account paths commit. External/provider-native homes remain unchanged.
 
 A successful prototype import publishes a validated non-secret receipt whose
 name contains the exact prototype digest. The prototype remains unchanged.
+Authority is committed and verified before the receipt is published. A crash
+after authority commit but before receipt publication is `current`; an
+idempotent explicit rerun may publish the missing receipt when the exact
+prototype-to-v1 relation still holds. Publishing the receipt first is
+prohibited because it could suppress the only import source without an
+authority.
 
 Full reset is a credential-destruction transaction under the lock. It removes:
 
@@ -2059,6 +2205,11 @@ It retains the non-secret lock and prototype receipts and never deletes the
 external prototype. If any credential artifact cannot be removed, reset returns
 `reset_incomplete` and does not claim all accounts were deleted.
 
+Reset deletes credential backups and secret temporaries before deleting the
+authority last. After restart, authority still present is assessed normally;
+authority absent with credential artifacts is `interrupted_artifacts` even
+when the immediate failed operation returned `reset_incomplete`.
+
 A provider-scoped reset cannot delete shared historical backups without
 destroying the other provider's recovery state. Only full reset, or a separately
 approved explicit prune workflow, removes those shared historical copies.
@@ -2066,6 +2217,12 @@ approved explicit prune workflow, removes those shared historical copies.
 After reset, a matching receipt prevents stale prototype credentials from
 reappearing. A changed prototype is reported as available but still requires
 explicit `--reimport-prototype`.
+
+A valid version-one authority without a generation-zero backup is `current`.
+That is a legitimate first persist from empty. The assessor may report whether
+matching history exists, but it never invents whether missing history means a
+first write or a deleted backup. Rollback remains lossless because preparation
+snapshots and reverses the current version-one authority.
 
 ##### Assessment and error vocabulary
 
@@ -2096,9 +2253,120 @@ rollback_prepared
 reset_incomplete
 ```
 
+Passive assessment is a phased reduction: qualify the filesystem; enumerate
+only exact managed names; validate object security; bounded-read; decode;
+verify digest-derived names; derive relations; then sort every issue. Unknown
+sibling names are never opened or reported. Lower priority numbers win, while
+all safe findings remain available in deterministic order:
+
+| Priority | Code |
+|---:|---|
+| 10 | `unsupported_filesystem` |
+| 20 | `unsafe_permissions` |
+| 30 | `unreadable` |
+| 40 | `duplicate_key` |
+| 50 | `malformed_json` |
+| 60 | `future_schema` |
+| 70 | `invalid_schema` |
+| 80 | `backup_conflict` |
+| 90 | `interrupted_artifacts` |
+| 100 | `legacy_writer_detected` |
+| 110 | `rollback_prepared` |
+| 120 | `migration_required` |
+| 130 | `prototype_import_required` |
+| 140 | `prototype_imported` |
+| 150 | `current` |
+| 160 | `empty` |
+
+Within one code, issues order by authority, lock, sorted v0 basenames, sorted
+v1 basenames, sorted temporary basenames, sorted receipt basenames, then
+prototype. Account insertion order is never sorted.
+
+The core authority reduction is exact:
+
+| Authority | Additional evidence | Result |
+|---|---|---|
+| Absent | Any credential backup or owned temporary | `interrupted_artifacts` |
+| Absent | No credential artifact | Prototype/receipt matrix |
+| Generation zero | Owned temporary | `interrupted_artifacts` |
+| Generation zero | A v1 snapshot reverses exactly | `rollback_prepared` |
+| Generation zero | V1 snapshots exist; none reverses exactly | `legacy_writer_detected` |
+| Generation zero | No v1 snapshot | `migration_required` |
+| Version one | Owned temporary | `interrupted_artifacts` |
+| Version one | Exact prototype/receipt/import equality | `prototype_imported` |
+| Version one | Otherwise | `current` |
+| Future, duplicate, malformed, invalid, unreadable, unsafe | Any | Corresponding closed code |
+
+Multiple different valid backups are expected history. A v0 backup must have
+protected exact bytes matching its digest name and decode as generation zero;
+a v1 snapshot additionally must be canonical version-one bytes. Unsafe backup
+objects are `unsafe_permissions`, unreadable ones are `unreadable`, and digest,
+generation, malformed-content, or canonical-content failures are
+`backup_conflict`. Historical backups never become authority automatically.
+
+Prototype fallback is considered only when authority, credential backups, and
+owned temporaries are absent. A receipt matching exact prototype bytes
+suppresses reimport and yields `empty`; no receipt yields
+`prototype_import_required`; only nonmatching historical receipts require the
+explicit `--reimport-prototype` option. With v1 authority,
+`prototype_imported` is restart-derived only when valid prototype bytes,
+matching receipt, and deterministic transformed v1 bytes all match exactly.
+
+The public passive result is a frozen, slotted `PersistenceAssessment` carrying
+the primary code, generation, schema version, validated count, safe path, safe
+artifact basename, write-blocked flag, structured next-command tuple, bounded
+message, and an ordered tuple of equally safe `PersistenceIssue` values. A
+mutation returns `PersistenceOperationResult(code, assessment, artifact,
+message)` so a transient outcome never replaces the freshly observed state.
+
+Doctor exits `0` for `empty`, `current`, `prototype_imported`, and intentional
+`rollback_prepared`; exits `1` for migration, prototype import, legacy-writer,
+unambiguous interruption, and future-version action; and exits `2` for schema,
+I/O, security, filesystem, and backup-integrity failures. Scheduler
+quiescence retains exit `3`. Normal composition accepts only `empty`,
+`current`, and `prototype_imported`.
+
+`store_locked`, `source_changed`, `replace_failed`, `durability_uncertain`,
+`reset_incomplete`, and `rollback_required` are operation-time facts. They are
+not fabricated after restart. Restart can derive exact rollback/prototype
+relations and snapshot-proven legacy writes, but cannot derive a lost flush,
+prior lock, completed replace call, reset intent, ordinary v1-to-gen0 overwrite
+without v1 proof, or first-write provenance.
+
+Durable checkpoints reduce as follows:
+
+| Workflow checkpoint | Restart result |
+|---|---|
+| Gen0 before backup | `migration_required` |
+| Matching v0 backup published | Resumable `migration_required` |
+| Migration output temporary exists | `interrupted_artifacts` |
+| V1 replacement verified | `current` |
+| Prototype before V1 commit | `prototype_import_required` |
+| Prototype V1 temporary exists | `interrupted_artifacts` |
+| Prototype V1 committed before receipt | `current` |
+| Prototype receipt temporary exists | `interrupted_artifacts` |
+| Receipt published with exact import relation | `prototype_imported` |
+| Rollback before snapshot | `current` |
+| Rollback snapshot published while V1 remains authority | `current` |
+| Rollback gen0 temporary exists | `interrupted_artifacts` |
+| Gen0 exactly reverses retained v1 snapshot | `rollback_prepared` |
+| v0.6 later changes that gen0 | `legacy_writer_detected` |
+| Re-upgrade commits V1 | `current` |
+| Normal persist before temporary | `current` |
+| Normal persist candidate temporary exists | `interrupted_artifacts` |
+| Normal persist replacement verified | New `current` |
+| Reset while authority remains | Existing logical state |
+| Reset removes authority while credentials remain | `interrupted_artifacts` |
+| Reset removes credentials and retains matching receipt | `empty` |
+| Prototype changes after retained historical receipt | Import required with `--reimport-prototype` |
+
+A post-replacement hardening failure returns immediate
+`durability_uncertain`; restart reports only the state it can validate.
+
 Human and JSON output expose only the owned code, known generation, safe path,
 validated account count, safe artifact basename, write-blocked flag, exact next
-command, and bounded Sidekick-authored message. Tokens, raw records, full
+command, ordered safe issues, and bounded Sidekick-authored message. Tokens,
+raw records, full
 provider identities, raw validation errors, native exceptions, and third-party
 exception graphs never cross the boundary.
 
@@ -2111,6 +2379,7 @@ The dependency decision is:
 | Portalocker 3.2.0 | Mature cross-platform hard lock; fail-closed native behavior behind an owned adapter | **GO** |
 | filelock 3.29.7 | Strong maintenance and Python 3.14 support, but Unix can fall back to `SoftFileLock` on `ENOSYS` | NO-GO for this boundary |
 | pywin32 312 | Maintained CPython 3.14 native Windows file and DACL bindings | **GO on Windows** |
+| types-pywin32 312.0.0.20260609 | Matching Windows development stubs; native returns still require owned narrowing | **GO for Windows development** |
 | `atomicwrites` | Archived, old, and insufficient Windows/durability behavior | NO-GO |
 | Portalocker `open_atomic()` | Create-only; no replacement, namespace hardening, ACL, source comparison, or recovery states | NO-GO as writer |
 | SQLite | Robust exemplar but incompatible with the approved JSON/v0.6.0 contract | NO-GO as storage |
@@ -2122,6 +2391,10 @@ portalocker==3.2.0
 pywin32==312; sys_platform == "win32"
 ```
 
+Declare `types-pywin32==312.0.0.20260609` as a Windows-only development
+dependency. Stub incompleteness never justifies `Any`, an unchecked cast, or a
+blanket suppression.
+
 pywin32 is direct because Sidekick consumes its APIs independently of
 Portalocker's Windows closure. Both remain private to `persistence/`.
 
@@ -2131,16 +2404,24 @@ The cohesive package owns:
 persistence/
 ├── __init__.py
 ├── account_store.py
-├── schemas.py
-├── migrations.py
+├── errors.py
 ├── filesystem.py
-└── locking.py
+├── locking.py
+├── migrations.py
+├── schemas.py
+└── _platform/
+    ├── __init__.py
+    ├── macos.py
+    ├── posix.py
+    └── windows.py
 ```
 
 `filesystem.py` owns only qualified commit, synchronization, identity, and
 permission behavior. `locking.py` owns only Portalocker acquisition and
 Sidekick error translation. They are concrete infrastructure boundaries, not
-generic utilities. No third-party type crosses `persistence/__init__.py`.
+generic utilities. `_platform/` owns the three genuinely different native
+implementations and does not become a general filesystem toolkit. No
+third-party type crosses `persistence/__init__.py`.
 
 ##### Required proof
 
@@ -2164,6 +2445,14 @@ The few load-bearing suites are:
    on both sides; and
 8. one human/JSON doctor secrecy table for every assessment state.
 
+The schema suite pins every exact numerical bound and timestamp/range edge.
+The state-machine suite pins precedence, multi-issue ordering, prototype and
+receipt reduction, first-write v1 without history, backup relations, operation
+versus restart facts, doctor exit mapping, and every durable transition table.
+The lock suite proves the five-second/100 ms policy without sleeping in unit
+tests. The scheduler suite proves every coexisting backend is absent or blocks
+mutation.
+
 Every interruption test starts a fresh assessment and authorized resume. It
 asserts one unambiguous authority, no accepted partial artifact, preserved
 source bytes, idempotent final bytes, and no empty-store fallback.
@@ -2172,6 +2461,10 @@ Native evidence uses the exact built wheel and final dependency lock on local
 Linux, macOS/APFS, Windows/NTFS as a normal user, and WSL2's Linux filesystem.
 It records OS, filesystem, Python, dependency versions, wheel hash, and result.
 A hosted Linux pass is not evidence for macOS, Windows, or WSL.
+The writer remains disabled until Linux descriptor-relative operations,
+macOS `F_FULLFSYNC`, Windows pywin32/DACL/final-flush behavior, WSL ext4
+acceptance and 9p rejection, exact-wheel contents, and the actual-v0.6.0
+two-cycle compatibility harness all pass.
 
 ## 10. Shared HTTP infrastructure
 
@@ -2663,6 +2956,7 @@ The following repeated concepts have enough concrete consumers to centralize:
 | Exit-status reduction | Three command-specific reducers | Typed status policy |
 | HTTP retry loop | Three similar request loops | `http/retry.py` behind the selected retry owner |
 | Expiry classification | Check, maintenance, doctor, heartbeat | `core/expiry.py` |
+| Aware-UTC runtime normalization | Expiry, account runtime/reset, usage, heartbeat | `core/time.py:as_utc` |
 | Refresh-outcome rendering | Multiple command loops | One presentation helper |
 | Sidekick-owned application locations | Store, CLI, and lifetime reconstruct the root | `ApplicationPaths` in top-level `paths.py` |
 
@@ -2734,7 +3028,8 @@ Then:
   intermediate phases, then `cli/app.py` after the atomic CLI package
   conversion) into their consuming adapters and services;
 - apply the approved `platformdirs` discovery contract without relocation;
-- establish `core/models.py`, `core/types.py`, and `core/expiry.py`;
+- establish `core/models.py`, `core/types.py`, `core/expiry.py`, and the narrow
+  `core/time.py` aware-UTC normalizer;
 - establish `clock.py` and inject aware wall time into application services;
 - move shared models without changing behavior;
 - move provider-neutral expiry classification into core;
@@ -2925,6 +3220,7 @@ Acceptance requires:
 - no `Any` or unjustified cast crosses the new HTTP JSON boundary;
 - core models remain independent of HTTP, persistence, and provider schemas;
 - `core/expiry.py` owns only pure provider-neutral expiry policy;
+- `core/time.py` owns only aware-datetime validation and UTC normalization;
 - core imports no external settings loader or operating-system path discovery;
 - application services pass one aware `now` value into each core expiry
   decision;
@@ -3208,6 +3504,8 @@ Add focused checks for:
 - no HTTP, external settings loader, operating-system path discovery,
   filesystem, or infrastructure import from `core/`;
 - `core/expiry.py` remains pure and infrastructure-independent;
+- `core/time.py` remains a pure `as_utc()` invariant with no parsing,
+  formatting, clock acquisition, or boundary encoding;
 - no production `timestamps.py` or universal timestamp-string formatter;
 - no application-wide settings singleton;
 - no declared runtime `pydantic-settings` dependency or production import
@@ -3576,8 +3874,9 @@ on 2026-07-10:
     the focused Sidekick executor as the sole retry owner.
 16. Make `core/expiry.py` the single owner of provider-neutral expiry
     classification.
-17. Use aware UTC datetimes internally, acquire wall time through the explicit
-    `Clock`, and keep HTTP deadlines on an HTTP-local monotonic source.
+17. Use `core/time.py:as_utc` only for shared aware-UTC runtime normalization,
+    acquire wall time through the explicit `Clock`, and keep HTTP deadlines on
+    an HTTP-local monotonic source.
 18. Keep persistence, provider-native, and human timestamp encoding at their
     owning boundaries; do not create `timestamps.py` or a universal timestamp
     formatter.

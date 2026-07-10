@@ -242,6 +242,7 @@ the implementation sequence explicit.
 | `report.py` models | `core/models.py` |
 | provider-neutral identifiers/statuses | `core/types.py` |
 | repeated expiry classification | `core/expiry.py` |
+| repeated aware-UTC runtime invariant | `core/time.py` |
 | recursive JSON vocabulary | `serialization/json.py` |
 | `store.py:AccountStore` | `persistence/account_store.py` |
 | persisted record parsing | `persistence/schemas.py` |
@@ -1185,41 +1186,41 @@ changes.
 
 **Work:**
 
-- [ ] Add recursive JSON aliases and strict runtime object narrowing without
+- [x] Add recursive JSON aliases and strict runtime object narrowing without
       an unchecked cast.
-- [ ] Add only the approved boundary-validation and transport/retry
+- [x] Add only the approved boundary-validation and transport/retry
       dependencies; do not add alternative candidates.
-- [ ] Preserve `from sidekick_usages.http import HttpClient`.
-- [ ] Preserve the four capability-oriented request methods unless refreshed
+- [x] Preserve `from sidekick_usages.http import HttpClient`.
+- [x] Preserve the four capability-oriented request methods unless refreshed
       callers justify a smaller named surface.
-- [ ] Construct requests with standard-library `HTTPMethod` members, never
+- [x] Construct requests with standard-library `HTTPMethod` members, never
       magic method strings.
-- [ ] Return response headers as a documented Sidekick-owned normalized
+- [x] Return response headers as a documented Sidekick-owned normalized
       mapping; expose no selected-library header or response type.
-- [ ] Create one pool per CLI invocation under transactional lifecycle
+- [x] Create one pool per CLI invocation under transactional lifecycle
       ownership, retaining cleanup until composition safely transfers it.
-- [ ] Keep help and version from constructing the pool.
-- [ ] Enforce HTTPS before transport access.
-- [ ] Bound request bodies, response reads, connect/read timeouts, attempts,
+- [x] Keep help and version from constructing the pool.
+- [x] Enforce HTTPS before transport access.
+- [x] Bound request bodies, response reads, connect/read timeouts, attempts,
       elapsed deadline, jitter, and server-directed waits.
-- [ ] Use the closed operation-safety policies approved in CS-08.
-- [ ] Parse non-negative delay seconds and HTTP-date `Retry-After` values,
+- [x] Use the closed operation-safety policies approved in CS-08.
+- [x] Parse non-negative delay seconds and HTTP-date `Retry-After` values,
       apply the product cap, and retain the last valid delay in exhaustion.
-- [ ] Use the injected `Clock` only to evaluate absolute HTTP dates and a
+- [x] Use the injected `Clock` only to evaluate absolute HTTP dates and a
       distinct injected monotonic source for elapsed deadlines.
-- [ ] Translate all selected-library and transport exceptions into Sidekick
+- [x] Translate all selected-library and transport exceptions into Sidekick
       errors.
-- [ ] Redact tokens, authorization headers, payloads, and full identities from
+- [x] Redact tokens, authorization headers, payloads, and full identities from
       errors and any retry observation.
-- [ ] Keep retry observation absent until a real consumer exists.
-- [ ] Remove or revise the current `B310` suppression whose justification is
+- [x] Keep retry observation absent until a real consumer exists.
+- [x] Remove or revise the current `B310` suppression whose justification is
       specific to the retired urllib request implementation.
-- [ ] Remove the old module and confirm no direct transport or retry import
+- [x] Remove the old module and confirm no direct transport or retry import
       exists outside `http/`.
-- [ ] Make the verifier build into a fresh test-owned output directory, require
+- [x] Make the verifier build into a fresh test-owned output directory, require
       the exact resulting wheel, inspect package members, install that wheel in
       isolation, clear source leakage, and exercise both entry paths.
-- [ ] Update the verifier's required/forbidden package manifest in every later
+- [x] Update the verifier's required/forbidden package manifest in every later
       same-named module-to-package conversion.
 
 **Load-bearing tests:**
@@ -1246,6 +1247,31 @@ changes.
 
 Assert Sidekick behavior and transport requests, not selected-library private
 types.
+
+**Execution record:** Commit `46874d2` closed the native package-installation
+proof. The initial discovery run
+[29076273675](https://github.com/Sawmonabo/sidekick-usages/actions/runs/29076273675)
+against `ba84a330b4179da7586dc44449e42ed24f9a4e79` failed for two concrete
+release-path reasons: the isolated Windows wheel smoke rendered the robot
+through the runner's `cp1252` console and raised `UnicodeEncodeError` for
+`U+2534`, while Homebrew on both Ubuntu and macOS rejected installation of a
+standalone formula because it was not inside a tap. Those failures were
+discovery evidence, not accepted native proof.
+
+The corrective native run
+[29076654138](https://github.com/Sawmonabo/sidekick-usages/actions/runs/29076654138)
+completed successfully at
+`46874d2bb39fef6a02dd0f006c2409d9211920ef`. Ubuntu job `86309665195`, macOS
+job `86309665242`, and Windows job `86309665260` each passed all 246 tests and
+the `Verify exact wheel in isolation` step for
+`sidekick_usages-0.6.0-py3-none-any.whl`. Ubuntu Homebrew job `86309723413` and
+macOS Homebrew job `86309723417` created an ephemeral tap, installed the
+generated formula from the archived current source, and passed `brew test`;
+the installed formula exercised `sidekick-usages --version` and
+`sidekick-usages list`. Dependent distribution job `86311603756` then passed
+`Build and verify exact distributions` and uploaded the exact wheel and source
+distribution. This is the required native Linux, macOS, Windows, wheel, and
+Linux/macOS Homebrew evidence for CS-11.
 
 **Acceptance:**
 
@@ -1372,6 +1398,8 @@ that stores provider-native integers or formatted timestamps.
 
 - Create `src/sidekick_usages/core/expiry.py`.
 - Create `src/sidekick_usages/core/models.py`.
+- Create `src/sidekick_usages/core/time.py` for the shared pure aware-UTC
+  runtime invariant.
 - Delete `src/sidekick_usages/report.py` atomically.
 - Modify `store.py`, provider modules, maintenance, doctor, heartbeat, CLI,
   lifetime, and render consumers.
@@ -1417,6 +1445,9 @@ that stores provider-native integers or formatted timestamps.
       schemas retain boundary payloads without leaking them into core.
 - [x] Normalize all runtime expiry and audit time values to aware UTC
       datetimes or explicit discriminated states.
+- [x] Extract `core/time.py:as_utc()` only after its third concrete consumer.
+      Keep it free of clock acquisition, parsing, formatting, encoding, and
+      use-case policy so it is not a universal timestamp helper.
 - [x] Convert Claude milliseconds and Codex seconds at provider boundaries.
 - [x] Use exact integer and `timedelta` epoch arithmetic. Reject runtime values
       that cannot encode exactly as a Claude millisecond or Codex second; never
@@ -1431,9 +1462,15 @@ that stores provider-native integers or formatted timestamps.
       owners; remove the three `_now_utc_z()` duplicates without creating
       `timestamps.py`.
 - [x] Ensure secret-bearing fields are absent from default representations.
-- [x] Preserve `scopes=None` as unknown and `scopes=()` as known-empty. Do not
-      collapse detected absence, known-empty metadata, or expiry state through
+- [x] Preserve `scopes=None` as unknown and the only default-scope selector;
+      preserve `scopes=()` as known-empty throughout refresh. Do not collapse
+      detected absence, known-empty metadata, or expiry state through
       truthiness.
+- [x] Require every refreshed access token to be a non-empty string. Reject a
+      present empty or non-string replacement refresh token or Codex ID token
+      before replacement; make absent Claude refresh expiry unknown rather
+      than stale, and distinguish an undecodable Codex JWT as invalid from a
+      decoded JWT with no expiry claim as unknown.
 - [x] Scope saved-token lookup by provider so an identical token cannot merge
       Claude and Codex account state.
 - [x] Compare typed credentials and plan for mutation detection rather than
@@ -1464,13 +1501,36 @@ that stores provider-native integers or formatted timestamps.
   legacy units, audit/reset datetime conversion, and precision rejection.
 - One existing service test proves one wall-clock sample per decision. Rerun
   the existing CS-11 monotonic-deadline suite instead of duplicating it.
-- One architecture and exact-wheel test proves core dependency direction, the
-  presence of the new core models, and the absence of stale `report.py`.
+- One focused provider-boundary table proves known-empty Claude refresh scopes,
+  atomic non-empty refresh fields, missing Claude expiry, and malformed Codex
+  JWT states. One heartbeat result test proves aware offset resets normalize to
+  UTC and naive values fail.
+- One architecture and exact-wheel test proves core dependency direction,
+  requires `core/models.py`, `core/types.py`, `core/expiry.py`, and
+  `core/time.py`, and rejects stale `report.py`.
 
 Mechanically adapt existing behavior tests only where they protect a distinct
 contract. Delete redundant one-field round trips, repeated scope cases,
 `raw={}` fixtures, and duplicate clock assertions rather than padding the
 suite.
+
+**Execution record:** Commit `7594b8a` completed the atomic model migration:
+provider-compatible credential variants, provider-neutral expiry, aware
+runtime time values, provider-scoped token lookup, secret-safe
+representations, the compatibility codec, provider/service/renderer callers,
+and exact-wheel deletion proof for `report.py`. Commit `a74985f` then closed
+the independent audit findings. Known-empty Claude scopes remain empty during
+refresh and only `None` selects defaults. Claude and Codex require non-empty
+refreshed access tokens and validate present replacement refresh or ID tokens
+before atomic credential replacement. Claude refresh without new expiry
+becomes unknown; an undecodable present Codex JWT is invalid; and heartbeat
+result reset times require aware values and normalize to UTC.
+
+The same commit extracted the third shared pure invariant as
+`core/time.py:as_utc` and added it to the exact-wheel manifest. The module only
+rejects naive datetimes and canonicalizes aware values to UTC. It deliberately
+does not parse, format, acquire time, encode boundary values, or select policy,
+so it does not introduce the prohibited universal timestamp formatter.
 
 **Acceptance:** All current account, usage, maintenance, heartbeat, doctor, and
 rendering behavior passes with final runtime time types. No invalid
@@ -1523,14 +1583,25 @@ state is untouched.
 **Dependencies:** Recorded operator CS-07 GO, recorded operator CS-10 GO,
 CS-12, CS-13, and CS-13A.
 
+**Normative implementation authorities:** Implement CS-14 against the tracked
+[Persistence Contract Closure Research](../research/2026-07-10-persistence-contract-closure.md)
+and
+[Persistence Assessment State Machine](../research/2026-07-10-persistence-assessment-state-machine.md)
+together with the approved stored-schema contract in the design. The research
+files close exact bounds, artifact grammar, native protocols, precedence,
+transition, output, and restart semantics; no local-only note is an input.
+
 **Files:**
 
 - Create `src/sidekick_usages/persistence/__init__.py`.
 - Create `src/sidekick_usages/persistence/account_store.py`.
+- Create `src/sidekick_usages/persistence/errors.py`.
 - Create `src/sidekick_usages/persistence/schemas.py`.
 - Create `src/sidekick_usages/persistence/migrations.py`.
 - Create `src/sidekick_usages/persistence/filesystem.py`.
 - Create `src/sidekick_usages/persistence/locking.py`.
+- Create the private native modules
+  `src/sidekick_usages/persistence/_platform/{__init__,posix,macos,windows}.py`.
 - Delete `src/sidekick_usages/store.py` atomically.
 - Modify every store consumer and test import.
 - Modify `src/sidekick_usages/doctor.py` and its tests for pre-load schema
@@ -1539,8 +1610,17 @@ CS-12, CS-13, and CS-13A.
   them atomically to `cli/commands/migrate.py`.
 - Modify the reset owner so full reset implements the approved credential-
   artifact transaction.
+- Modify `src/sidekick_usages/daemon.py` only as needed to expose typed
+  all-backend scheduler-quiescence assessment.
+- Refine `src/sidekick_usages/serialization/json.py` so persistence can
+  distinguish duplicate keys from malformed JSON without duplicating the
+  existing recursive decoder or changing CS-11's HTTP-facing error contract.
+- Update `packaging/smoke_wheel.py` for the persistence package and retired
+  `store.py` manifest.
 - Modify `pyproject.toml` and `uv.lock` for Portalocker 3.2.0 and native-Windows
-  pywin32 312. Retain the already approved validator from CS-11.
+  pywin32 312 plus the Windows-only development stub
+  `types-pywin32==312.0.0.20260609`. Retain the already approved validator from
+  CS-11.
 - Add cohesive persistence and schema-migration tests.
 
 **Work:**
@@ -1548,66 +1628,152 @@ CS-12, CS-13, and CS-13A.
 - [ ] Encode the exact versioned envelope approved in CS-10.
 - [ ] Strictly validate the unversioned current map, prototype shape, and every
       explicitly supported version.
+- [ ] Implement the exact schema limits, historical UTC timestamp grammar,
+      Claude/Codex epoch ranges, canonical v1 timestamps, closed status values,
+      and generation-zero provider discrimination from the closure authority.
+- [ ] Extend the shared JSON decoder with a Sidekick-owned detailed failure
+      that distinguishes duplicate keys from malformed JSON; keep the existing
+      HTTP wrapper behavior unchanged.
 - [ ] Reject malformed, unreadable, partially migrated, and unknown future
       state with typed actionable errors.
-- [ ] Implement pure schema transformations before filesystem coordination.
+- [ ] Implement and directly test pure prototype-to-v1, generation-zero-to-v1,
+      v1-to-runtime, runtime-to-v1, and v1-to-v0.6.0 transformations before
+      filesystem coordination. Use integer arithmetic and exact reverse proof.
 - [ ] Implement the approved immutable content-addressed backup, snapshot,
       receipt, reset, and recovery contracts.
+- [ ] Implement the closed artifact grammar: four temporary purposes, 128-bit
+      lowercase-hex random suffix, deterministic receipt JSON, exact digest
+      naming, and foreign-name non-interference.
 - [ ] Implement the qualified same-directory atomic write, synchronization,
       replacement, security, and reopen-verification protocols in focused
       filesystem and locking modules.
-- [ ] Fail closed on unsupported hard locks, remote/network filesystems, WSL
-      Windows mounts, unsafe final objects, ambiguous permissions, and
-      unavailable durability primitives.
+- [ ] Bind `filesystem.py` to one account location and implement separate
+      descriptor-relative POSIX, macOS `F_FULLFSYNC`, and pywin32 Windows
+      adapters. Use open-handle identity plus exact digest; expose no native or
+      third-party type.
+- [ ] Enforce the initial filesystem allowlist: Linux ext4/XFS/Btrfs, macOS
+      APFS, Windows NTFS, and WSL ext4. Reject network, volatile, overlay,
+      WSL 9p/DrvFS, cross-device, shared/cluster, and unknown filesystems.
+- [ ] Implement the Windows best-effort protocol exactly: no unsupported
+      `REPLACEFILE_WRITE_THROUGH`; private/write-through temporary, flush,
+      `ReplaceFileW` or no-replace `MoveFileExW`, no-reparse final reopen,
+      final flush, DACL/identity/byte verification, and
+      `durability_uncertain` after any post-replacement proof failure.
+- [ ] Securely create/open and validate the persistent lock sidecar before the
+      low-level Portalocker lock. Use a five-second budget and 100 ms interval;
+      timeout is `store_locked` and source identity/digest checks remain
+      mandatory.
+- [ ] Fail closed on unsafe final or managed objects, ambiguous permissions,
+      unsupported hard locks, and unavailable durability primitives. Provide
+      bounded manual guidance; never silently repair mode bits or DACLs.
+- [ ] Implement the normative phased assessment, exact priority table,
+      deterministic same-code ordering, relation predicates, prototype/receipt
+      matrix, first-write v1 rule, and authority reduction from the state-machine
+      authority.
+- [ ] Expose frozen `PersistenceIssue`, `PersistenceAssessment`, and
+      `PersistenceOperationResult` values with structured next-command tuples,
+      bounded authored messages, safe basenames, multi-issue reporting, and no
+      raw validation/native exception detail.
+- [ ] Keep operation-only facts separate from restart-derived facts. Never
+      recreate `source_changed`, `replace_failed`, `durability_uncertain`,
+      `reset_incomplete`, lock history, or missing provenance from artifacts
+      that cannot prove them.
 - [ ] Add explicit `persist(account)` and replace every production
       `upsert(account)` plus `save()` sequence.
-- [ ] Keep internal in-memory mutations private and unambiguously named.
+- [ ] Stage and validate candidate state, commit and reopen-verify it, then swap
+      the in-memory mapping and baseline. Keep internal mutations private;
+      immutable accounts may be returned directly, otherwise use defensive
+      copies so failed writes preserve memory/disk consistency.
 - [ ] Reuse `filter_by_provider()` rather than retaining manual duplicates.
 - [ ] Define read-only stored-schema assessment in
       `persistence/migrations.py` without activating native relocation.
 - [ ] Add explicit `migrate accounts` and `migrate prepare-rollback --target
       v0.6.0` commands with safe output, daemon-stop verification, confirmation,
       and non-interactive `--yes` behavior.
+- [ ] Add typed all-backend scheduler quiescence. Check systemd plus cron on
+      Linux, launchd plus cron on macOS, Task Scheduler on Windows, and all
+      three families on WSL. Unassessable or installed schedules block mutation;
+      repeat scheduler and persistence assessment under the lock after prompt.
 - [ ] Let `doctor` assess generation zero, current generation, malformed
       input, backup state, and interrupted migration without constructing or
       loading `AccountStore`.
+- [ ] Implement the exact doctor exits: success for empty/current/imported and
+      intentional rollback-prepared; manual action for migration/import/future/
+      legacy/interruption states; system failure for integrity/security/I/O;
+      scheduler quiescence remains exit `3`.
 - [ ] Make normal composition stop with the exact migration action instead of
       transforming generation zero or importing the prototype during load.
+- [ ] Publish prototype authority before its receipt; let an idempotent rerun
+      publish a missing receipt only when the exact relation still holds.
+- [ ] Delete credential backups and secret temporaries before full-reset
+      authority deletion. Retain lock/receipts/prototype and return immediate
+      `reset_incomplete` on any failed deletion; restart classifies remaining
+      credentials without inventing reset intent.
+- [ ] Make provider-scoped reset commit a filtered, possibly empty v1 authority
+      while retaining shared history. Full reset must run even when the current
+      validated account count is zero.
 - [ ] Prove reverse preparation with the actual local v0.6.0 release reader
       pinned to commit `6a413b2772c3c11e9ef45a78a06ab79bfc0ca44c`.
 - [ ] Keep `paths.py` discovery-only and persistence free of provider imports.
 - [ ] Leave physical locations unchanged.
+- [ ] Keep the versioned writer disabled until native Linux, macOS, Windows,
+      WSL, exact-wheel, and twice-repeated actual-v0.6.0 gates all pass.
 
 **Load-bearing tests:**
 
-- Empty initial state only when no candidate exists.
-- Exact current and prototype inputs migrate to the exact versioned envelope.
-- Each supported version loads; unknown future versions fail closed.
-- Wrong top-level shape, non-object account, missing required field, wrong
-  scalar type, unreadable file, and malformed JSON remain distinct errors.
-- A literal string such as `"false"` cannot coerce to Boolean true.
-- Migration interruption at each approved checkpoint is recoverable and
-  idempotent.
-- Backup equivalence, digest naming, collision, permissions, and unsafe-object
-  rejection follow CS-10.
-- Full reset deletes all managed credential artifacts or reports
-  `reset_incomplete`; it retains the lock and prototype receipts and never
-  reimports or deletes the external prototype.
-- `persist()` updates memory and durable state together; failed writes leave
-  the last valid file and in-memory contract consistent.
-- Callers cannot accidentally perform a public in-memory-only update.
-- Persistence imports no provider package and exposes no validation framework
-  type to core.
-- `doctor` reports generation, backup equivalence or collision, interruption,
-  and exact recovery action without loading or mutating invalid state.
-- An isolated compatibility harness builds or installs the local `v0.6.0` tag,
-  migrates a synthetic generation-zero store, makes a new-schema account
-  change, runs the approved rollback preparation, and proves the released old
-  binary reads the latest representable state.
-- Source and wheel contain `persistence/` and no stale `store.py`.
-- Native Linux, macOS, and Windows jobs exercise their platform-specific
-  durability and permission implementation. Recorded WSL evidence covers its
-  Linux-filesystem success and Windows-mount rejection paths.
+- One table-driven lexical/schema suite covers prototype, every historical
+  generation-zero field set, exact version one, duplicate keys versus malformed
+  JSON, strict types, provider discrimination, extras, every numerical bound,
+  timestamp/range edges, and unknown future versions. It also proves the shared
+  HTTP JSON wrapper retains its existing error contract.
+- One pure transformation suite proves deterministic prototype-to-v1,
+  generation-zero-to-v1, runtime-to-v1, and v1-to-v0.6.0 bytes, exact provider
+  precision, and lossless reverse preparation.
+- One state-machine table proves the priority values 10 through 160,
+  deterministic same-code ordering, every authority reduction, backup
+  relation, prototype/receipt matrix, backup-less first-write v1, doctor exit,
+  and operation-versus-restart distinction. Empty is possible only when the
+  complete candidate set permits it.
+- One parameterized interruption suite covers every documented migration,
+  prototype-import, rollback, normal-persist, and full-reset checkpoint. Each
+  case starts a fresh passive assessment and authorized resume, proving one
+  authority, idempotent final bytes, preserved valid source, and no empty-store
+  fallback.
+- One artifact suite proves the closed managed-name grammar, 128-bit temporary
+  suffix, deterministic receipt bytes, content-addressed backup/snapshot
+  collision behavior, and complete non-interference with foreign siblings.
+- One filesystem failure-injection suite covers source revalidation, temporary
+  create/write/sync, publication, replacement, namespace hardening, and final
+  reopen. It distinguishes `source_changed`, `replace_failed`, and
+  `durability_uncertain`; `persist()` changes neither memory nor the last valid
+  authority until commit proof succeeds.
+- One native security suite per platform proves no-follow object handling,
+  regular/single-link or non-reparse state, permissions or effective DACL,
+  bounded reads, stable identity plus digest, allowed filesystem detection, and
+  fail-closed unsupported cases without silent repair.
+- One real two-process lock test and one scheduler table prove the five-second
+  budget, 100 ms interval, live source-change detection, every coexisting
+  backend, unassessable-backend blocking, and repeated scheduler plus
+  persistence assessment under the acquired lock. Unit policy tests inject
+  time instead of sleeping.
+- One reset table covers provider-scoped empty-v1 commits and full reset with
+  zero or many validated accounts. It pins credential-first/authority-last
+  deletion, retained lock/receipts/prototype, and immediate `reset_incomplete`
+  without inventing that operation after restart.
+- One human/JSON result table proves every passive and operation code, ordered
+  multi-issue output, exact structured next command, and bounded safe message
+  without raw data, credentials, provider identity, native errors, or validator
+  types. Doctor performs no store construction or mutation.
+- Architecture and exact-wheel checks require every persistence and native
+  adapter module, forbid stale `store.py` and provider imports, verify Windows-
+  only dependency markers, and install the built wheel rather than importing
+  the source tree.
+- Native release jobs prove Linux descriptor-relative durability, macOS APFS
+  `F_FULLFSYNC`, Windows NTFS pywin32/DACL/final-flush behavior as a normal
+  user, and WSL ext4 acceptance plus 9p/DrvFS rejection.
+- The actual commit `6a413b2772c3c11e9ef45a78a06ab79bfc0ca44c`
+  upgrade/downgrade harness writes a mutation on both sides and succeeds twice
+  with deterministic bytes and artifact names.
 
 **Acceptance:** Malformed or failed migration never appears as an empty valid
 store. The old physical location remains authoritative. The approved reverse
@@ -2279,6 +2445,8 @@ redesign. Exact approved visual tests remain load-bearing.
 - [ ] Consume every architecture check in design section 16.5 rather than a
       hand-selected subset.
 - [ ] Enforce no production `timestamps.py` or universal timestamp formatter.
+- [ ] Enforce `core/time.py` as the narrow pure `as_utc()` invariant with no
+      parsing, formatting, clock acquisition, or boundary encoding.
 - [ ] Enforce no paths, clocks, raw HTTP, provider registry, or scheduler
       backend in `AppContext`.
 - [ ] Enforce no import-time Sidekick path discovery or duplicate
