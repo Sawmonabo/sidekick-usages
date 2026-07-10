@@ -1,6 +1,7 @@
 # Design Spec — Maintainable Application Architecture
 
-- **Status:** **Approved**
+- **Status:** **Approved baseline; later dependency recommendations await
+  operator disposition**
 - **Date:** 2026-07-09
 - **Repository:** `/home/sabossedgh/dev/sidekick-usages`
 - **Scope:** Repository-wide Python application architecture
@@ -9,8 +10,9 @@
 - **Evidence commit subject:** `feat(cli): add shared robot branding`
 - **Evidence mode:** Read-only architecture and maintainability analysis
 - **Evidence-tree state:** Clean and tracking `origin/develop`
-- **Evidence status:** All decision-relevant evidence and conclusions are
-  inlined here; this repository document is the durable design authority
+- **Evidence status:** The approved baseline and later decision evidence are
+  inlined here; unapproved recommendations are explicitly marked and this
+  repository document remains the durable design authority
 - **Publication state:** Tracked and approved at execution base
   `73ce06891747a0571276b35c3f54c7de2c4e188f`
 - **Related design:** [Usage TUI Redesign][usage-tui-design]; this spec does
@@ -1005,58 +1007,76 @@ formatting. `serialization/json.py` supplies JSON vocabulary; it does not
 become the universal owner of provider, persistence, or presentation time
 formats.
 
-### 6.4 Build-versus-adopt decision
+### 6.4 Completed build-versus-adopt research
 
-The project currently has no runtime validation dependency. Do not begin by
-writing a custom schema framework.
+**Decision:** **GO — OPERATOR APPROVED 2026-07-10**. Use Pydantic 2.13.4
+`TypeAdapter` at untrusted provider and persistence boundaries. The approval
+authorizes implementation of the dependency and its required packaging work;
+release exposure remains blocked until the Homebrew source-build and supported
+platform gates pass. The self-contained evidence record is
+[Schema Validation Dependency Research][schema-research].
 
-The current candidates are:
+The synthetic corpus covered eight current, historical, prototype, provider,
+JWT, refresh, and generic-JSON boundary families. Eight independent mutations
+covered missing and extra fields, nulls, wrong scalar and container types,
+Boolean coercion, nested list errors, wrong roots, and simultaneous account
+errors. All four strict prototypes rejected all eight mutations. Their
+maintainability and diagnostic behavior differed:
 
-| Option | Strength | Cost or risk | Current assessment |
-|---|---|---|---|
-| Standard library plus focused parsing | No new dependency; complete control | Reimplements nested validation, error paths, and serialization | Baseline, not the default winner |
-| Pydantic `TypeAdapter` | Rich strict validation without requiring core models to inherit `BaseModel` | Runtime and packaging footprint; strict configuration required | Preliminary front-runner for diagnostic quality |
-| cattrs | Keeps dataclasses independent from edge structuring rules | Converter configuration; fewer built-in constraints | Strong low-coupling alternative |
-| msgspec | Fast typed decoding with no required transitive dependencies | Own conventions and compiled distribution | Candidate when measured performance or footprint wins |
+| Option | Measured result | Research disposition |
+|---|---|---|
+| Standard library | Strictness was possible only by owning recursion, union handling, aggregation, paths, and messages across eight families | NO-GO; this becomes a custom schema framework |
+| Pydantic 2.13.4 `TypeAdapter` | Aggregated independent errors with exact account labels, nested indices, and stable codes | Conditional GO recommendation |
+| cattrs 26.1.0 | Aggregated useful paths while keeping dataclasses independent, but required owned strict scalar hooks and had weaker union diagnostics | Leading fallback if the packaging gate rejects Pydantic |
+| msgspec 0.21.1 | Fastest and smallest measured candidate, but stopped at the first error and omitted the account label from a mapping path | NO-GO for operator repair diagnostics |
 
-No candidate is approved by popularity alone.
+Decision-critical Linux CPython 3.14.6 measurements were:
 
-Before implementation, compare the candidates against:
+| Measure | Standard library | Pydantic | cattrs | msgspec |
+|---|---:|---:|---:|---:|
+| Decode and validate median | 7.820 us | 4.449 us | 13.194 us | 1.145 us |
+| Fresh schema process median | 44.81 ms | 103.33 ms | 72.06 ms | 48.01 ms |
+| Installed closure | 0 | 7,281,761 bytes | 677,508 bytes | 532,136 bytes |
 
-1. current and legacy account files;
-2. malformed and partially migrated account files;
-3. Claude credential, usage, and refresh payloads;
-4. Codex auth, JWT, usage, and refresh payloads;
-5. missing, extra, mistyped, and null fields;
-6. strict versus coercing behavior;
-7. expiry-unit migration;
-8. error paths shown by normal commands and doctor;
-9. CLI startup time;
-10. wheel and Homebrew packaging;
-11. Python 3.14 on Linux, macOS, and Windows;
-12. transitive dependencies, licenses, advisories, provenance, and release
-    process.
+The Pydantic closure contains five distributions and its measured Linux wheel
+downloads total 2,645,819 bytes. Runtime throughput is not the selection
+reason; structured multi-error diagnostics are. Actual help, dashboard, and
+doctor startup still require measurement on the implemented composition path.
 
-Current recommendation:
+Pydantic's release gate is material. The current Homebrew generator selects
+source distributions. `pydantic-core` uses Rust and maturin, requires Rust
+1.88 for the measured release, and the official Homebrew Pydantic formula
+declares both build tools. Mainstream wheels do not prove Sidekick's formula
+path. Production adoption therefore requires a deterministic, supportable,
+network-restricted Homebrew source build plus the Linux, macOS, and Windows
+runtime matrix. If that cost is rejected or cannot pass, reopen CS-07 with
+cattrs as the leading alternative; do not switch silently.
 
-- prefer Pydantic `TypeAdapter` when it delivers materially better strict
-  validation and actionable paths without unacceptable packaging cost;
-- prefer cattrs when it provides the cleanest dataclass boundary while meeting
-  diagnostic and migration requirements;
-- prefer msgspec when measured startup, decoding, or distribution behavior
-  materially benefits the application;
-- build focused parsing only when the mature candidates fail concrete
-  requirements or cost more to integrate than the owned surface.
+If Pydantic is approved, the following rules are mandatory:
 
-Whichever option wins stays at provider and persistence edges. Core models do
-not inherit a validation framework merely to simplify external parsing.
+- use cached, module-local adapters only in provider and persistence boundary
+  modules;
+- configure strict behavior explicitly and choose the extra-field policy per
+  boundary; stored generations are closed, while provider compatibility must
+  be intentional rather than globally forbidden;
+- validate boundary `TypedDict` or dataclass shapes and convert immediately to
+  plain application models;
+- project `ValidationError.errors(include_input=False, include_url=False)` to
+  Sidekick-owned path, code, and safe-message values;
+- never expose, chain, log, render, or serialize raw Pydantic errors or rejected
+  inputs; and
+- keep Pydantic out of `core/`, commands, services, renderers, public models,
+  and public method signatures.
 
-This validation decision does not approve `pydantic-settings`. Pydantic
-`TypeAdapter` validates untrusted boundary data; `pydantic-settings` discovers
-and merges configuration sources. They solve different problems and require
-separate adoption evidence. Even if Pydantic wins schema validation,
-`pydantic-settings` remains deferred until the application has the cohesive
-multi-source settings contract defined in section 3.10.
+Reopen or reverse the recommendation if the Homebrew build cannot be made
+deterministic, raw input escapes diagnostics, framework types leak into core or
+public surfaces, an upgrade changes strict behavior without a migration path,
+or security, provenance, maintenance, or supported-platform posture becomes
+unacceptable.
+
+This decision does not approve `pydantic-settings`. Boundary validation and
+configuration-source discovery are separate problems; the latter remains
+deferred until section 3.10 has a real multi-source settings contract.
 
 ## 7. Provider integration packages
 
@@ -2601,16 +2621,17 @@ During iteration, run the smallest relevant test module before the full suite.
 
 ## 20. Research sources
 
-The organizational distinctions and dependency assessment use current primary
-sources retrieved on 2026-07-09:
+The organizational distinctions and initial dependency assessment use primary
+sources retrieved on 2026-07-09. Focused dependency research was refreshed on
+2026-07-10 and is recorded separately below.
 
 - **Repository commit:**
   `42cd01eb17c7903b385b1b4e259cf5b0c64126c5`
 - **Python target:** 3.14
 - **Current relevant runtime dependencies:** Click, Typer, and Rich
 - **Validation baseline:** no current runtime validation dependency
-- **Open decision:** schema-validation selection requires the repository spike
-  in section 6.4
+- **Validation decision:** the section 6.4 spike is complete and Pydantic
+  2.13.4 was operator-approved on 2026-07-10 with required release gates
 - **HTTP baseline:** no current third-party HTTP or retry dependency
 - **Open HTTP decision:** urllib3 `PoolManager` is the preliminary pooled
   transport; section 10.7 selects and approves the single retry owner
@@ -2627,6 +2648,24 @@ sources retrieved on 2026-07-09:
   contract
 - **Settings decision:** `pydantic-settings` 2.14.2 is deferred and is not
   implied by a Pydantic schema-validation decision
+
+### 20.1 CS-07 evidence snapshot
+
+The 2026-07-10 validation research used repository snapshot
+`c5b588ad474fd95c597cfd0b64339223e3da1843`, a synthetic eight-boundary
+corpus, and eight malformed-input classes. Pydantic 2.13.4, cattrs 26.1.0,
+msgspec 0.21.1, and a focused standard-library baseline were exercised on
+Linux CPython 3.14.6. The exact measurements, candidate behavior, packaging
+impact, limitations, sources, and conditional recommendation are in the
+tracked [Schema Validation Dependency Research][schema-research].
+
+Only Pydantic combined aggregate independent errors, exact account/list paths,
+and stable machine-readable codes without coupling core models to a framework.
+That evidence is counterbalanced by a measured five-distribution, 7,281,761
+byte installed closure and an unproven Homebrew source build requiring Rust
+and maturin. Package classifiers and wheels support the other operating
+systems, but native macOS and Windows execution remains an implementation
+gate. No dependency is approved by this evidence snapshot.
 
 Local path evidence at the evidence commit is:
 
@@ -2739,6 +2778,15 @@ The source-backed conclusions are:
 - the canonical `litl/backoff` repository is archived and is not an adoption
   candidate.
 
+### 20.4 Dependency decision status
+
+These later dependency decisions are separate from the approved 2026-07-09
+baseline and are mirrored in the implementation-plan ledger.
+
+| Change set | Research recommendation | State |
+|---|---|---|
+| CS-07 | Pydantic 2.13.4 `TypeAdapter` at untrusted boundaries; Homebrew source-build proof remains a release gate | **GO — APPROVED 2026-07-10** |
+
 ## 21. Approved decisions
 
 The following decisions were approved on 2026-07-09:
@@ -2850,4 +2898,5 @@ docs/superpowers/plans/
 [platformdirs-api]: https://platformdirs.readthedocs.io/en/latest/api.html
 [platformdirs-platforms]: https://platformdirs.readthedocs.io/en/latest/platforms.html
 [platformdirs-pypi]: https://pypi.org/project/platformdirs/
+[schema-research]: ../research/2026-07-10-schema-validation-dependency.md
 [usage-tui-design]: ./2026-06-19-usage-tui-redesign-design.md

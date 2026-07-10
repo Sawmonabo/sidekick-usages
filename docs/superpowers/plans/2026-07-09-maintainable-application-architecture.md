@@ -366,6 +366,10 @@ ledger distinguishes later authorized decisions from accidental design drift.
 No production dependency, writer, or native migration may rely on an
 unrecorded chat-only disposition.
 
+| Change set | Question | Research recommendation | Disposition | Approval date | Design commit | Approved design SHA-256 |
+|---|---|---|---|---|---|---|
+| CS-07 | Boundary-validation dependency | Pydantic 2.13.4 `TypeAdapter`; Homebrew Rust/maturin proof remains a release gate | **GO** | 2026-07-10 | Pending decision commit | Pending decision commit |
+
 ## 6. Testing strategy
 
 Tests exist to protect behavior and user data, not to inflate a count.
@@ -830,16 +834,17 @@ before enabling the rules, rather than hiding it behind an ignore.
 
 **Work:**
 
-- [ ] Refresh primary-source and canonical-repository evidence for standard
+- [x] Refresh primary-source and canonical-repository evidence for standard
       parsing, Pydantic `TypeAdapter`, cattrs, and msgspec.
-- [ ] Build a synthetic corpus covering current Sidekick records, prototype
+- [x] Build a synthetic corpus covering current Sidekick records, prototype
       records, provider payloads, JWT claims, and refresh responses.
-- [ ] Measure strict missing, extra, null, mistyped, and coercing behavior.
-- [ ] Compare error paths, schema migration ergonomics, secret redaction,
+- [x] Measure strict missing, extra, null, mistyped, and coercing behavior.
+- [x] Compare error paths, schema migration ergonomics, secret redaction,
       startup, decoding cost, wheel size, Homebrew packaging, and platforms.
-- [ ] Record transitive dependencies, license, advisories, provenance,
+- [x] Record transitive dependencies, license, advisories, provenance,
       maintainer health, release posture, and reversal conditions.
-- [ ] Select one boundary-validation approach and inline the decision.
+- [x] Select one boundary-validation recommendation and inline its evidence
+      without treating it as operator approval.
 
 **GO gate:** One option provides strict typed validation and actionable paths
 without leaking its framework into `core/` or creating unacceptable packaging
@@ -855,6 +860,24 @@ This decision never approves `pydantic-settings`.
 `WAITING FOR OPERATOR DECISION`. Record the operator-approved GO or NO-GO and
 selected approach in the design authority before any production consumer or
 dependency change proceeds.
+
+**Execution record:** Research completed on 2026-07-10 against
+`c5b588ad474fd95c597cfd0b64339223e3da1843`. A strict eight-family corpus and
+eight mutation classes compared standard-library parsing, Pydantic 2.13.4,
+cattrs 26.1.0, and msgspec 0.21.1. Pydantic supplied the strongest aggregated,
+structured repair diagnostics, but its five-distribution closure includes the
+Rust/maturin `pydantic-core` source build that the current Homebrew generator
+does not yet support. The conditional recommendation, exact measurements,
+secret-safe error projection, platform limits, and reversal conditions are
+persisted in the design authority and the tracked research record. No
+production dependency or code changed. No test was added because this is a
+research-only change; testing prose or copied measurements would be inert.
+
+**Operator decision:** **GO, approved 2026-07-10**. Use Pydantic 2.13.4
+`TypeAdapter` at boundary-local schemas and prove the Homebrew Rust/maturin
+source-build path before release. Reopen the choice with cattrs as the leading
+alternative if that required gate cannot be made deterministic and
+supportable. This decision does not approve `pydantic-settings`.
 
 **Commit:** `docs(research): decide schema validation dependency`
 
