@@ -502,15 +502,15 @@ pass. Record CI run URLs and immutable WSL evidence in the final parity record.
 
 Each task below follows this protocol:
 
-- [ ] Revalidate the named files, callers, tests, and baseline at the current
+- [x] Revalidate the named files, callers, tests, and baseline at the current
       branch head.
-- [ ] Search exact names before adding a type, helper, service, or dependency.
-- [ ] Preserve or write the smallest load-bearing failing behavior test.
-- [ ] Implement the complete task boundary without speculative hooks.
-- [ ] Run focused tests, Ruff, and `ty` for touched ownership.
-- [ ] Run the full gate ladder before the task's commit.
-- [ ] Inspect source and built artifacts for stale files after package moves.
-- [ ] Commit conventionally only after the task is independently reviewable.
+- [x] Search exact names before adding a type, helper, service, or dependency.
+- [x] Preserve or write the smallest load-bearing failing behavior test.
+- [x] Implement the complete task boundary without speculative hooks.
+- [x] Run focused tests, Ruff, and `ty` for touched ownership.
+- [x] Run the full gate ladder before the task's commit.
+- [x] Inspect source and built artifacts for stale files after package moves.
+- [x] Commit conventionally only after the task is independently reviewable.
 
 The task-specific tests below supplement this protocol; they do not authorize
 padding the suite.
@@ -2470,82 +2470,82 @@ tests under a NO-GO disposition.
 
 **Required internal order:**
 
-- [ ] Freeze exact canonical paths from CS-09 evidence.
-- [ ] Implement side-effect-free, generation-aware read-only assessment.
-- [ ] Keep location state orthogonal to one file's schema assessment. Define
+- [x] Freeze exact canonical paths from CS-09 evidence.
+- [x] Implement side-effect-free, generation-aware read-only assessment.
+- [x] Keep location state orthogonal to one file's schema assessment. Define
       immutable `LocationCandidate`, `RuntimePersistenceSelection`,
       `LocationMigrationAssessment`, `LocationMigrationPlan`, and
       `LocationMigrationResult` models in `migrations/location.py`; compare
       deterministic rewritten account and private-bundle state rather than
       raw account-file bytes.
-- [ ] Implement the exact `LocationCode` values `empty`, `prototype_only`,
+- [x] Implement the exact `LocationCode` values `empty`, `prototype_only`,
       `compatibility_selected`, `canonical_selected`, `equivalent_selected`,
       `conflict`, `partial`, and `candidate_blocked` through closed selection
       variants. Type `DoctorReady` over ready location selections and
       `DoctorBlocked` over blocked selections; never retain an optional
       selected candidate or the provisional CS-18A assessment union.
-- [ ] Define the narrow `PrivateAuthMigrator` port in persistence and implement
+- [x] Define the narrow `PrivateAuthMigrator` port in persistence and implement
       it in Codex auth in this conditional change set only.
-- [ ] Make normal executable composition assess locations before store load.
-- [ ] Allow `doctor` to compose and render assessment without a loaded store.
-- [ ] Inject the Codex `PrivateAuthMigrator` from composition.
-- [ ] Prove resolved containment below the existing private root; never use a
+- [x] Make normal executable composition assess locations before store load.
+- [x] Allow `doctor` to compose and render assessment without a loaded store.
+- [x] Inject the Codex `PrivateAuthMigrator` from composition.
+- [x] Prove resolved containment below the existing private root; never use a
       string-prefix test.
-- [ ] Reject symlink escapes, misleading shared prefixes, external homes,
+- [x] Reject symlink escapes, misleading shared prefixes, external homes,
       collisions, and partial destinations.
-- [ ] Prove idempotence and concurrency behavior before enabling writes.
-- [ ] Copy and validate every required private auth bundle.
-- [ ] Support bounded nested Sidekick-owned bundle descendants, not just
+- [x] Prove idempotence and concurrency behavior before enabling writes.
+- [x] Copy and validate every required private auth bundle.
+- [x] Support bounded nested Sidekick-owned bundle descendants, not just
       direct children. Journal version two stores at most eight safe relative
       components, 255 UTF-8 bytes per component, and 1024 UTF-8 bytes joined;
       reject absolute or anchored paths, traversal, symlink escapes, portable
       aliases, platform-reserved names, and path collisions.
-- [ ] Never rely on resolve-then-write. Traverse POSIX components relative to
+- [x] Never rely on resolve-then-write. Traverse POSIX components relative to
       qualified directory descriptors with no-follow constraints; traverse
       Windows components through validated handles with reparse checks and
       owner-only parent creation. Retain or revalidate every intermediate
       identity throughout staging, commit, recovery, and cleanup; any swap or
       volume change fails closed with evidence retained.
-- [ ] Reuse the CS-18 multi-bundle journal and authority-last transaction;
+- [x] Reuse the CS-18 multi-bundle journal and authority-last transaction;
       do not loop a single-bundle writer or create a second migration writer.
-- [ ] Acquire distinct compatibility and canonical locks in deterministic
+- [x] Acquire distinct compatibility and canonical locks in deterministic
       resolved-path order, then recheck scheduler quiescence and both source
       states while locked.
-- [ ] Revalidate the compatibility authority immediately before and after the
+- [x] Revalidate the compatibility authority immediately before and after the
       canonical commit because released v0.6.0 does not honor the new lock;
       classify a race as a typed conflict or partial state.
-- [ ] Keep ordinary credential recovery strict. Add a separate migration-only
+- [x] Keep ordinary credential recovery strict. Add a separate migration-only
       divergent-source resolver that proves the journal source-path digest,
       classifies canonical authority as base/target/third, restores base or
       completes target without touching the changed compatibility source, and
       returns a closed divergent-base or divergent-target outcome.
-- [ ] Before cleaning a divergent journal, publish/reuse the exact coherent
+- [x] Before cleaning a divergent journal, publish/reuse the exact coherent
       canonical generation as a content-addressed lineage snapshot: the
       present base after rollback or the target after roll-forward. An absent
       base needs no marker. Revalidate the current compatibility source around
       cleanup; retain all evidence on a wrong path, third state, private
       inconsistency, missing artifact, snapshot collision, or second change.
-- [ ] Permit at most one same-invocation rebase after a complete fresh
+- [x] Permit at most one same-invocation rebase after a complete fresh
       location/auth assessment while both ordered locks remain held and
       scheduler quiescence still holds. A second released-writer race exits
       with the new journal as typed partial/conflicting state; never loop.
-- [ ] Preserve the runtime version-one-only credential commit. Add a separately
+- [x] Preserve the runtime version-one-only credential commit. Add a separately
       named migration commit and journal version two with coherent
       absent/present base generation plus explicit validated target generation.
       Restrict divergent recovery to version two; decode version-one journals
       as implicit version-one targets for ordinary strict recovery. Only
       `persistence/migrations/service.py` may call the migration API.
-- [ ] Preserve account and auth permissions.
-- [ ] Atomically commit rewritten account state last.
-- [ ] Retain every old durable source and backup; delete nothing automatically.
-- [ ] Treat lifetime cache independently and regenerate it only after its
+- [x] Preserve account and auth permissions.
+- [x] Atomically commit rewritten account state last.
+- [x] Retain every old durable source and backup; delete nothing automatically.
+- [x] Treat lifetime cache independently and regenerate it only after its
       lifecycle is proven.
-- [ ] Register `migrate locations [--yes]` as the sole explicit relocation
+- [x] Register `migrate locations [--yes]` as the sole explicit relocation
       surface for an existing compatibility generation. Keep `migrate
       accounts` schema/prototype-only; an all-absent first write creates
       canonical state without claiming a migration, and normal composition
       never relocates compatibility data implicitly.
-- [ ] Repeat the CS-14 compatibility harness after native relocation: make a
+- [x] Repeat the CS-14 compatibility harness after native relocation: make a
       new canonical write, run the approved rollback preparation into the
       compatibility generation, and prove the actual `v0.6.0` binary reads the
       latest representable state.
@@ -2654,19 +2654,19 @@ approved release window. They contain no copied command workflow.
 
 **Work:**
 
-- [ ] Record actual release `R` and alias-removal versions as required by
+- [x] Record actual release `R` and alias-removal versions as required by
       section 5.2.
-- [ ] Register explicit Claude and Codex groups without dynamic discovery.
-- [ ] Delegate Claude setup-token through the existing narrow facade and keep
+- [x] Register explicit Claude and Codex groups without dynamic discovery.
+- [x] Delegate Claude setup-token through the existing narrow facade and keep
       terminal input in the CLI.
-- [ ] Delegate Codex login/export through the same credential service and auth
+- [x] Delegate Codex login/export through the same credential service and auth
       adapter used by the existing commands.
-- [ ] Keep current top-level spellings as thin aliases through the approved
+- [x] Keep current top-level spellings as thin aliases through the approved
       versions and remove no alias early.
-- [ ] Emit deprecation only on human stderr/help, never machine stdout.
-- [ ] Update live help, README, and the design release contract with canonical
+- [x] Emit deprecation only on human stderr/help, never machine stdout.
+- [x] Update live help, README, and the design release contract with canonical
       commands and exact removal versions.
-- [ ] Use a Conventional Commit subject and PR title/body that name both the
+- [x] Use a Conventional Commit subject and PR title/body that name both the
       new hierarchy and deprecated aliases so Release Please has accurate
       release-note input.
 
@@ -2706,19 +2706,19 @@ CS-19, and CS-20.
 
 **Work:**
 
-- [ ] Make human builders return Rich renderables and never print.
-- [ ] Make existing doctor and heartbeat machine builders return typed JSON
+- [x] Make human builders return Rich renderables and never print.
+- [x] Make existing doctor and heartbeat machine builders return typed JSON
       values under one convention. Do not invent usage-check JSON output.
-- [ ] Keep commands as the only stdout/stderr and exit-code owners.
-- [ ] Pass explicit reference time or completed display values to renderers.
-- [ ] Keep provider, persistence, filesystem, network, and clock acquisition
+- [x] Keep commands as the only stdout/stderr and exit-code owners.
+- [x] Pass explicit reference time or completed display values to renderers.
+- [x] Keep provider, persistence, filesystem, network, and clock acquisition
       out of renderers.
-- [ ] Consolidate refresh/outcome rendering only where at least three current
+- [x] Consolidate refresh/outcome rendering only where at least three current
       callers share the same semantics.
-- [ ] Preserve branding as the one robot and product-copy source.
-- [ ] Preserve the approved provider-panel counts, 85-column floor, narrow
+- [x] Preserve branding as the one robot and product-copy source.
+- [x] Preserve the approved provider-panel counts, 85-column floor, narrow
       fallback, help masthead, and all machine-output exclusions.
-- [ ] Do not split the 739-line usage renderer mechanically unless it crosses
+- [x] Do not split the 739-line usage renderer mechanically unless it crosses
       800 lines with a concrete second responsibility.
 
 **Load-bearing tests:**
@@ -2757,76 +2757,78 @@ redesign. Exact approved visual tests remain load-bearing.
 
 **Build-versus-adopt checkpoint:**
 
-- [ ] Compare existing Ruff/TID rules, a focused standard-library AST check,
+- [x] Compare existing Ruff/TID rules, a focused standard-library AST check,
       and an actively maintained import-boundary tool.
-- [ ] Prefer existing tools when they express the rules clearly.
-- [ ] Use one small AST-based repository check when custom rules are simpler
+- [x] Prefer existing tools when they express the rules clearly.
+- [x] Use one small AST-based repository check when custom rules are simpler
       than another dev dependency.
-- [ ] Do not add a library from reputation alone or create one pytest per
+- [x] Do not add a library from reputation alone or create one pytest per
       prohibited string.
 
 **Work:**
 
-- [ ] Eliminate remaining production and test `Any` and unjustified casts.
-- [ ] Replace JSON `Any` with recursive JSON types or boundary schemas.
-- [ ] Type pytest fixtures, monkeypatches, fakes, and helper return values.
-- [ ] Verify native Python 3.14 deferred annotations consistently and reject
+- [x] Eliminate remaining production and test `Any` and unjustified casts.
+- [x] Replace JSON `Any` with recursive JSON types or boundary schemas.
+- [x] Type pytest fixtures, monkeypatches, fakes, and helper return values.
+- [x] Verify native Python 3.14 deferred annotations consistently and reject
       the legacy stringizing future import.
-- [ ] Complete design sections 3.3 and 3.7 conformance: PEP 695 for new aliases
+- [x] Complete design sections 3.3 and 3.7 conformance: PEP 695 for new aliases
       and generics, explicit public signatures and optional state,
       standard-library enums/types, and concise Sphinx fields.
-- [ ] Enable focused annotation enforcement from a clean baseline.
-- [ ] Enforce the 1000-line hard limit and emit an approximately 800-line
+- [x] Enable focused annotation enforcement from a clean baseline.
+- [x] Enforce the 1000-line hard limit and emit an approximately 800-line
       review warning.
-- [ ] Enforce core, service, provider, HTTP, persistence, CLI, path, clock, and
+- [x] Enforce core, service, provider, HTTP, persistence, CLI, path, clock, and
       renderer dependency directions from design section 12.
-- [ ] Consume every architecture check in design section 16.5 rather than a
+- [x] Consume every architecture check in design section 16.5 rather than a
       hand-selected subset.
-- [ ] Enforce no production `timestamps.py` or universal timestamp formatter.
-- [ ] Enforce `core/time.py` as the narrow pure `as_utc()` invariant with no
+- [x] Enforce no production `timestamps.py` or universal timestamp formatter.
+- [x] Enforce `core/time.py` as the narrow pure `as_utc()` invariant with no
       parsing, formatting, clock acquisition, or boundary encoding.
-- [ ] Enforce the exact service-only `AppContext` and narrow
+- [x] Enforce the exact service-only `AppContext` and narrow
       `PersistenceContext`, `DoctorContext`, `DaemonContext`, and
       `UpdateContext` contracts; reject optional composition state, paths,
       clocks, raw HTTP, registries, scheduler backends, consoles, filters, or
       results in operational contexts.
-- [ ] Enforce the closed `DoctorReady | DoctorBlocked | DoctorFailed` state,
+- [x] Enforce the closed `DoctorReady | DoctorBlocked | DoctorFailed` state,
       the CS-19 ready/blocked location-selection types and exact
       `LocationCode` vocabulary, registration-only `create_app()`, and the
       no-composition help/version path.
-- [ ] Enforce explicit `None` registry defaults, close-once `Composed[T]`
+- [x] Enforce explicit `None` registry defaults, close-once `Composed[T]`
       ownership, and no module singleton or `set_context()` compatibility shim.
-- [ ] Enforce no import-time Sidekick path discovery or duplicate
+- [x] Enforce no import-time Sidekick path discovery or duplicate
       Sidekick-owned `Path.home()` reconstruction.
-- [ ] Enforce no private-Codex root reconstruction outside `paths.py`.
-- [ ] Enforce no clock import from `core/expiry.py`, and no direct current-time
+- [x] Enforce no private-Codex root reconstruction outside `paths.py`.
+- [x] Enforce no clock import from `core/expiry.py`, and no direct current-time
       acquisition in services, providers, or renderers.
-- [ ] Enforce no provider/persistence timestamp-serializer cross-import.
-- [ ] Enforce `HTTPMethod` request construction and no selected-library type
+- [x] Enforce no provider/persistence timestamp-serializer cross-import.
+- [x] Enforce `HTTPMethod` request construction and no selected-library type
       leakage from `http/`.
-- [ ] Enforce no application-wide settings singleton or unapproved
+- [x] Enforce no application-wide settings singleton or unapproved
       `pydantic-settings` dependency.
-- [ ] Enforce one HTTP retry owner, one Sidekick path owner, one migration
+- [x] Enforce one HTTP retry owner, one Sidekick path owner, one migration
       coordinator, and one robot source.
-- [ ] Under a recorded CS-09 NO-GO, enforce absence of `platformdirs`,
-      `PrivateAuthMigrator`, and native-migration-only production code.
-- [ ] Enforce no stale same-named module after package conversions.
-- [ ] Enforce every final CLI command owner in source, sdist, and wheel, and
+- [x] Apply the recorded CS-09 disposition. Under the approved GO, enforce one
+      `platformdirs` import in `paths.py`, one persistence-owned
+      `PrivateAuthMigrator` port, and no provider import from persistence; the
+      conditional NO-GO absence branch is not applicable.
+- [x] Enforce no stale same-named module after package conversions.
+- [x] Enforce every final CLI command owner in source, sdist, and wheel, and
       reject missing command modules or stale flat CLI/help/token-input files.
-- [ ] Remove blanket or unjustified suppressions and dead gate configuration.
-- [ ] Remove the inert CLI-app existence smoke while retaining the package
+- [x] Remove blanket or unjustified suppressions and dead gate configuration.
+- [x] Remove the inert CLI-app existence smoke while retaining the package
       version smoke.
-- [ ] Remove private-helper tests replaced by service tests.
-- [ ] Remove redundant exact-and-order assertions and duplicated render
+- [x] Remove private-helper tests replaced by service tests.
+- [x] Remove redundant exact-and-order assertions and duplicated render
       fixtures only when the remaining test protects the same behavior.
-- [ ] Introduce one small explicit typed `InvocationContext` test harness only
+- [x] Introduce one small explicit typed `InvocationContext` test harness only
       if three or more final command modules still repeat it; keep it
       non-autouse and composer-specific.
-- [ ] Build the wheel once per CI run or share a verified artifact, install it
+- [x] Build the wheel once per CI run or share a verified artifact, install it
       into an isolated environment on every supported OS, and exercise both
       the console script and `python -m sidekick_usages` through that
       environment's explicit interpreter.
-- [ ] Make `packaging/smoke_wheel.py` require exactly one wheel from its fresh
+- [x] Make `packaging/smoke_wheel.py` require exactly one wheel from its fresh
       test-owned build output, inspect ZIP members for required packages and
       forbidden stale modules, create an isolated environment, install that
       exact wheel, clear source leakage, run outside the checkout, and invoke
@@ -2866,28 +2868,28 @@ green; never keep a rule disabled by blanket suppression.
 
 **Work:**
 
-- [ ] Update documented package structure and ownership.
-- [ ] Document canonical provider commands, legacy aliases, release `R`, and
+- [x] Update documented package structure and ownership.
+- [x] Document canonical provider commands, legacy aliases, release `R`, and
       removal versions.
-- [ ] Document current/compatibility/native paths and whether CS-19 was GO or
+- [x] Document current/compatibility/native paths and whether CS-19 was GO or
       NO-GO.
-- [ ] Document stored-schema backup, doctor guidance, rollback, and recovery.
-- [ ] Document HTTP pooling, retry safety, timeout bounds, and error behavior
+- [x] Document stored-schema backup, doctor guidance, rollback, and recovery.
+- [x] Document HTTP pooling, retry safety, timeout bounds, and error behavior
       without exposing provider secrets.
-- [ ] Update maintenance, heartbeat, and debugging commands from live help.
-- [ ] Verify runtime dependency metadata, lockfile, wheel, sdist, and Homebrew
+- [x] Update maintenance, heartbeat, and debugging commands from live help.
+- [x] Verify runtime dependency metadata, lockfile, wheel, sdist, and Homebrew
       generator behavior.
-- [ ] Do not manually edit release versions or regenerate an unreleased
+- [x] Do not manually edit release versions or regenerate an unreleased
       formula against an older release archive.
-- [ ] Let Release Please own version and changelog updates.
-- [ ] Verify the generated Release Please changelog entry names the provider
+- [x] Let Release Please own version and changelog updates.
+- [x] Verify the generated Release Please changelog entry names the provider
       hierarchy and deprecated aliases; correct release-note inputs rather
       than hand-editing an unreleased changelog. Live help, README, and the
       tracked release contract remain authoritative for exact removal versions.
-- [ ] Install the built wheel in an isolated environment and exercise help,
+- [x] Install the built wheel in an isolated environment and exercise help,
       version, canonical commands, and compatibility aliases.
-- [ ] Run the complete supported-platform CI matrix and recorded WSL smoke.
-- [ ] Perform the specification-parity sweep in section 10.
+- [x] Run the complete supported-platform CI matrix and recorded WSL smoke.
+- [x] Perform the specification-parity sweep in section 10.
 
 **Acceptance:** A new contributor can understand the final tree and a user can
 upgrade, diagnose, recover, or roll back without consulting implementation

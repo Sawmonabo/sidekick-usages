@@ -319,11 +319,12 @@ account.
 
 ## Config fields
 
-The account store lives at:
-
-```text
-~/.config/sidekick-usages/accounts.json
-```
+`doctor` reports the selected account source and destination. Existing 0.6.0
+installations can remain at `~/.config/sidekick-usages/accounts.json`; fresh
+0.7.0 installations use the operating system's native application-data
+directory. See
+[persistence locations, migration, and recovery](./persistence-and-recovery.md)
+before inspecting or moving a store.
 
 Refresh diagnostics are optional and backward-compatible:
 
@@ -370,6 +371,8 @@ heartbeat uses the provider default targets. For Codex, that default is
 
 - `warmed`
 - `active`
+- `enabled`
+- `disabled`
 - `failed`
 - `unsupported`
 - `null` when no heartbeat attempt has been recorded
@@ -394,7 +397,7 @@ sidekick-usages refresh <label>
 For Codex, you can also use:
 
 ```bash
-sidekick-usages codex-login <label>
+sidekick-usages codex login <label>
 ```
 
 Use `--replace-identity` only if you intentionally want to replace the
@@ -444,12 +447,12 @@ testable:
 - `sidekick_usages.heartbeat.HeartbeatService` owns optional
   usage-window warming policy, opt-in checks, cached reset throttling,
   per-account outcomes, and diagnostic persistence.
-- `sidekick_usages.heartbeat.HeartbeatProvider` is the provider
-  adapter base class. Concrete adapters such as `ClaudeHeartbeat` and
+- `sidekick_usages.heartbeat.HeartbeatProvider` is the narrow provider
+  port. Concrete adapters such as `ClaudeHeartbeat` and
   `CodexHeartbeat` own provider endpoint details instead of adding
   heartbeat methods to the generic usage provider abstraction.
-- `sidekick_usages.doctor.DoctorService` builds read-only account
-  diagnostics and renders text or JSON output.
+- `sidekick_usages.doctor.DoctorService` builds one read-only result.
+  Pure human and JSON presenters consume that same completed result.
 - `sidekick_usages.daemon.DaemonManager` selects a scheduler backend
   and delegates install/status/uninstall.
 - `sidekick_usages.daemon.SchedulerBackend` is the reusable backend
@@ -462,5 +465,5 @@ testable:
 - `SystemCommandRunner` is injected so tests can verify generated
   commands without touching the host scheduler.
 
-The CLI should stay thin: parse Typer options, instantiate these
-services, render results, and map outcomes to exit codes.
+The CLI stays thin: commands parse Typer options, request one narrow lazily
+composed context, render completed results, and map outcomes to exit codes.

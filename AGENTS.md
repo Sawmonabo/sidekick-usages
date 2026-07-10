@@ -3,24 +3,34 @@
 ## Project Structure & Module Organization
 
 This Python 3.14 package uses a `src/` layout. `src/sidekick_usages/cli/`
-contains the Typer composition root and cohesive command owners; `providers/`
-contains Claude and Codex adapters; and `heartbeat/`, `daemon.py`, and
-`maintenance.py` own scheduled maintenance. Tests in `tests/` generally mirror
-package modules. Keep operational docs in `docs/`, Homebrew packaging in
-`packaging/homebrew/`, and automation in `.github/workflows/`. Do not commit
-generated distributions, caches, coverage, or credential files.
+contains the registration-only Typer root, typed lazy composition, help
+adapter, and cohesive command owners. `core/` contains infrastructure-free
+models and types; `providers/` contains Claude and Codex boundary adapters;
+`http/` owns pooled transport and retries; `persistence/` owns strict schemas,
+qualified transactions, recovery, and provider-neutral migrations; and
+`usage/` owns the usage service and presentation. `heartbeat/`, `daemon.py`,
+and `maintenance.py` own scheduled maintenance. Tests in `tests/` generally
+mirror package modules. Keep operational docs in `docs/`, quality and artifact
+verification in `packaging/`, Homebrew packaging in `packaging/homebrew/`, and
+automation in `.github/workflows/`. Do not commit generated distributions,
+caches, coverage, or credential files.
 
 ## Build, Test, and Development Commands
 
 - `uv sync --all-groups`: install locked development and quality tools.
 - `uv pip install -e .`: install the CLI from the working tree.
 - `uv run sidekick-usages --help`: exercise the local CLI.
+- `uv run python packaging/check_architecture.py`: enforce repository-specific
+  dependency, ownership, context, path, clock, and package-shape contracts.
 - `uv run pytest --cov=sidekick_usages`: run tests with branch coverage.
 - `uv run ruff check src/ tests/` and `uv run ty check src/ tests/`: lint and
   type-check.
 - `uv run pre-commit run --all-files`: reproduce the CI quality gate.
-- `npm run lint:markdown`: validate `README.md` and `docs/**/*.md`.
+- `npm run lint:markdown`: validate `README.md` and `docs/**/*.md` with the
+  Node.js 22-or-newer development toolchain declared in `package.json`.
 - `uv build`: create the wheel and source distribution in `dist/`.
+- `uv run python packaging/smoke_wheel.py --build`: build, inspect, install,
+  and exercise one exact wheel outside the checkout.
 
 ## Coding Style & Naming Conventions
 

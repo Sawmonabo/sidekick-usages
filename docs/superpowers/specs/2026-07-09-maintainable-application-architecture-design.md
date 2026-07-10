@@ -603,9 +603,13 @@ src/sidekick_usages/
 │       └── schemas.py
 ├── persistence/
 │   ├── __init__.py
+│   ├── _recovery.py
+│   ├── _schema_models.py
 │   ├── account_store.py
 │   ├── artifacts.py
 │   ├── assessment.py
+│   ├── credential_transaction_plans.py
+│   ├── credential_transaction_recovery.py
 │   ├── credential_transaction_schema.py
 │   ├── credential_transactions.py
 │   ├── errors.py
@@ -616,20 +620,38 @@ src/sidekick_usages/
 │   │   ├── account.py
 │   │   ├── errors.py
 │   │   ├── location.py
+│   │   ├── observer.py
 │   │   └── ports.py
 │   ├── filesystem.py
 │   ├── inventory.py
 │   ├── locking.py
 │   ├── observations.py
+│   ├── private_bundle_paths.py
+│   ├── private_bundle_writes.py
+│   ├── private_credential_contracts.py
 │   ├── private_credentials.py
 │   ├── transaction.py
 │   ├── transforms.py
 │   ├── v060.py
+│   ├── _compat/
+│   │   └── v060-reader.zip
 │   └── _platform/
 │       ├── __init__.py
 │       ├── macos.py
 │       ├── posix.py
-│       └── windows.py
+│       ├── posix_files.py
+│       ├── posix_mounts.py
+│       ├── posix_namespace.py
+│       ├── posix_private.py
+│       ├── posix_private_bundles.py
+│       ├── windows.py
+│       ├── windows_files.py
+│       ├── windows_handles.py
+│       ├── windows_namespace.py
+│       ├── windows_private.py
+│       ├── windows_private_bundles.py
+│       ├── windows_private_tree.py
+│       └── windows_security.py
 ├── credentials/
 │   ├── __init__.py
 │   ├── models.py
@@ -637,7 +659,9 @@ src/sidekick_usages/
 │   └── codex.py
 ├── usage/
 │   ├── __init__.py
+│   ├── legacy_render.py
 │   ├── models.py
+│   ├── reset_display.py
 │   ├── service.py
 │   └── render.py
 ├── heartbeat/
@@ -652,6 +676,7 @@ src/sidekick_usages/
 ├── lifetime.py
 ├── clock.py
 ├── paths.py
+├── scheduler_quiescence.py
 ├── http/
 │   ├── __init__.py
 │   ├── client.py
@@ -1866,6 +1891,8 @@ first provider-hierarchy release as `R = 0.7.0`. Deprecated aliases ship in
 0.7.0, remain available throughout 0.8.x, and are removed in 0.9.0. The
 changelog and help mark them deprecated in 0.7.0; deprecation messaging never
 contaminates JSON, quiet, scheduled, or other machine-readable stdout.
+Implementation completed on 2026-07-10. The eventual 0.7.0 tag date remains
+TBD and is recorded separately when Release Please publishes the release.
 
 ## 9. Application services
 
@@ -3996,6 +4023,14 @@ Do not introduce `Any` merely to make a fixture, mock, or helper convenient.
 
 ### 16.5 Architecture checks
 
+**Enforcement decision:** **GO — IMPLEMENTED 2026-07-10**. Keep Ruff and `ty`
+as the general quality authorities, keep exact artifact validation in the
+cross-platform wheel verifier, and use one focused standard-library AST gate
+for Sidekick-specific semantic contracts. Import Linter was evaluated and not
+adopted because import-graph contracts cover only a subset of the required
+field, union, call-owner, path, enum, and artifact rules. The self-contained
+decision record is [Architecture Enforcement Decision][architecture-research].
+
 Add focused checks for:
 
 - no production module over 1000 lines;
@@ -4552,4 +4587,5 @@ docs/superpowers/plans/
 [paths-research]: ../research/2026-07-10-application-path-discovery-dependency.md
 [persistence-research]: ../research/2026-07-10-persistence-durability-and-rollback.md
 [schema-research]: ../research/2026-07-10-schema-validation-dependency.md
+[architecture-research]: ../research/2026-07-10-architecture-enforcement.md
 [usage-tui-design]: ./2026-06-19-usage-tui-redesign-design.md

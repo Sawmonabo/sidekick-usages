@@ -6,8 +6,8 @@ windows, reset times, local lifetime output totals, and per-account failures in
 one terminal view.
 
 Routine checks do not open a browser. Initial account setup, an explicit
-`codex-login`, or recovery from expired credentials can still require the
-provider's normal login flow.
+`sidekick-usages codex login`, or recovery from expired credentials can still
+require the provider's normal login flow.
 
 ## Table of contents
 
@@ -19,6 +19,7 @@ provider's normal login flow.
 - [Commands](#commands)
 - [Background maintenance and heartbeat](#background-maintenance-and-heartbeat)
 - [Security and network access](#security-and-network-access)
+- [Persistence and recovery](#persistence-and-recovery)
 - [Configuration](#configuration)
 - [Troubleshooting](#troubleshooting)
 - [Development](#development)
@@ -97,17 +98,17 @@ For another Codex account, use an isolated source home when the normal
 `~/.codex` login must remain unchanged:
 
 ```bash
-sidekick-usages codex-login codex-work --codex-home ~/.codex-work
+sidekick-usages codex login codex-work --codex-home ~/.codex-work
 ```
 
-Without `--codex-home`, `codex-login` runs the normal Codex login flow against
-`~/.codex`; that provider login changes the active Codex account before
-sidekick imports its private copy.
+Without `--codex-home`, `sidekick-usages codex login` runs the normal Codex
+login flow against `~/.codex`; that provider login changes the active Codex
+account before sidekick imports its private copy.
 
 Claude's long-lived setup token is also supported:
 
 ```bash
-sidekick-usages setup-token claude --label claude-long-lived
+sidekick-usages claude setup-token --label claude-long-lived
 ```
 
 A setup token has no refresh token and must be replaced manually when rejected.
@@ -152,10 +153,12 @@ accounts saved in sidekick:
 - Claude reads `~/.claude/stats-cache.json`.
 - Codex scans cumulative output totals in
   `~/.codex/sessions/**/rollout-*.jsonl` and caches file totals in
-  `~/.config/sidekick-usages/codex-lifetime-cache.json`.
+  the operating system's native Sidekick cache directory.
 
-These local statistics are not uploaded. Missing or malformed lifetime files
-produce a zero total without preventing provider usage checks.
+These local statistics are not uploaded. A missing source is reported as
+unavailable. Malformed or unreadable sources produce an explicit failure
+instead of a fabricated zero; provider usage checks still run, and the command
+returns a system-error status after rendering the failure.
 
 ## How provider access works
 
@@ -193,12 +196,13 @@ the normal `~/.claude` login. Setup tokens cannot auto-refresh.
 
 Credential discovery reads `$CODEX_HOME/auth.json` when `CODEX_HOME` is set,
 otherwise `~/.codex/auth.json`. Sidekick copies each imported account into a
-private file-backed Codex home under
-`~/.config/sidekick-usages/codex/<filesystem-safe-label>/auth.json`.
+private file-backed Codex home under Sidekick's selected application-data
+directory. Existing 0.6.0 installations keep using the compatibility location
+until an explicit location migration.
 
-`codex-login` follows the same rule: without `--codex-home` it logs in through
-the normal `~/.codex` home; with an explicit home it configures file-backed auth
-there and leaves the normal home untouched.
+`sidekick-usages codex login` follows the same rule: without `--codex-home` it
+logs in through the normal `~/.codex` home; with an explicit home it configures
+file-backed auth there and leaves the normal home untouched.
 
 Usage calls `https://chatgpt.com/backend-api/codex/usage` with the saved bearer
 token and `ChatGPT-Account-Id`. It reports the primary 5-hour window, secondary
@@ -222,9 +226,13 @@ written to the private sidekick cache, not the active `~/.codex` login.
 | `sidekick-usages refresh --all [--force] [--quiet]` | Rotate due saved refresh tokens without reading the current global login. |
 | `sidekick-usages maintain [--quiet]` | Refresh due tokens, then heartbeat opted-in accounts; used by the daemon. |
 | `sidekick-usages doctor [--provider ...] [--label ...] [--json]` | Report auth, refresh, usage-route, heartbeat, and manual-action diagnostics. |
-| `sidekick-usages codex-login <label>` | Run Codex login and import a private account copy; supports `--device-auth`, `--codex-home`, and `--replace-identity`. |
-| `sidekick-usages codex-export <label> --codex-home <path>` | Export complete saved Codex credentials to an isolated file-backed home. |
-| `sidekick-usages setup-token claude` | Run Claude's long-lived token generator and save its output. |
+| `sidekick-usages codex login <label>` | Run Codex login and import a private account copy; supports `--device-auth`, `--codex-home`, and `--replace-identity`. |
+| `sidekick-usages codex export <label> --codex-home <path>` | Export complete saved Codex credentials to an isolated file-backed home. |
+| `sidekick-usages claude setup-token` | Run Claude's long-lived token generator and save its output. |
+| `sidekick-usages migrate accounts` | Explicitly upgrade stored schema or import the prototype source. |
+| `sidekick-usages migrate locations` | Preview and explicitly relocate durable state to native application data. |
+| `sidekick-usages migrate prepare-rollback --target v0.6.0` | Prepare and verify exact released-0.6.0 compatibility before downgrade. |
+| `sidekick-usages permissions repair` | Preview and repair Sidekick-owned credential permissions. |
 | `sidekick-usages reset [--provider <id>] [-y]` | Delete all accounts or one provider's accounts. |
 | `sidekick-usages check-update` | Query the latest GitHub release. |
 | `sidekick-usages update [--dry-run]` | Run the detected `uv`, pipx, or Homebrew upgrade command. |
@@ -234,6 +242,12 @@ written to the private sidekick cache, not the active `~/.codex` login.
 
 Run `sidekick-usages --help` and
 `sidekick-usages <command> --help` for every option.
+
+Starting with release 0.7.0, `sidekick-usages setup-token claude`,
+`sidekick-usages codex-login`, and `sidekick-usages codex-export` are deprecated
+compatibility aliases. They remain available throughout 0.8.x and are removed
+in 0.9.0. Invoking an alias adds a human-facing warning to stderr without
+changing the command's stdout.
 
 ### Refresh identity safety
 
@@ -317,6 +331,8 @@ logs, exit codes, and recovery procedures.
   secret in shell history or process listings, so prefer auto-detection, stdin,
   or the hidden prompt.
 - Every built-in HTTP request rejects non-HTTPS URLs.
+- Requests use bounded pooled connections, verified TLS, closed operation
+  classes, and retry behavior that distinguishes safe reads from mutations.
 - There is no analytics or telemetry, and no automatic update check. The
   explicit `check-update` command contacts GitHub.
 
@@ -335,56 +351,84 @@ hosts. GitHub release checks do not include provider credentials. Installation
 and explicit updates additionally contact the selected package manager's normal
 GitHub, Homebrew, or package-index destinations.
 
-## Configuration
+See [HTTP transport and retry behavior](./docs/networking.md) for proxy, TLS,
+pool, timeout, payload-bound, retry-safety, and error contracts.
 
-The account store is:
+## Persistence and recovery
 
-```text
-~/.config/sidekick-usages/accounts.json
+Release 0.7.0 introduces native per-user application-data locations on Linux,
+WSL, macOS, and Windows. Upgrading does not silently relocate an existing
+0.6.0 store: compatibility data remains authoritative until the operator runs
+`sidekick-usages migrate locations`. A fresh installation writes directly to
+the native location.
+
+`doctor` reports the selected source and destination, candidate conflicts,
+partial transactions, safe private-auth evidence, and the exact next command.
+Migration retains compatibility data and immutable backups. Preparing a
+downgrade requires the explicit current-release command:
+
+```bash
+sidekick-usages migrate prepare-rollback --target v0.6.0
 ```
 
-Labels are top-level JSON keys. Each serialized account currently contains all
-of these fields:
+Do not manually copy or edit account and private-auth files. See
+[persistence locations, migration, and recovery](./docs/persistence-and-recovery.md)
+for the platform path matrix, migration procedure, stable doctor states,
+permission recovery, and verified rollback sequence.
+
+## Configuration
+
+The active account store is selected from the native and compatibility
+locations documented above. On Linux and WSL, a fresh store defaults to
+`~/.local/share/sidekick-usages/accounts.json`; an upgraded 0.6.0 store remains
+at `~/.config/sidekick-usages/accounts.json` until explicit migration.
+
+The current stored authority is a strict versioned envelope. Labels are keys
+under `accounts`, and canonical timestamps are fixed-width UTC strings:
 
 ```json
 {
-  "<label>": {
-    "provider_id": "claude",
-    "provider_account_id": null,
-    "access_token": "<redacted>",
-    "refresh_token": "<redacted-or-null>",
-    "expires_at": 1781245745398,
-    "plan": "max",
-    "scopes": ["user:profile", "user:inference"],
-    "codex_home": null,
-    "codex_id_token": null,
-    "codex_last_refresh": null,
-    "last_refresh_at": null,
-    "last_refresh_status": null,
-    "last_refresh_error": null,
-    "heartbeat_enabled": false,
-    "heartbeat_5h_reset_at": null,
-    "heartbeat_window_resets": null,
-    "heartbeat_targets": null,
-    "last_heartbeat_at": null,
-    "last_heartbeat_status": null,
-    "last_heartbeat_error": null
+  "schema_version": 1,
+  "accounts": {
+    "<label>": {
+      "provider_id": "claude",
+      "provider_account_id": null,
+      "access_token": "<redacted>",
+      "refresh_token": "<redacted-or-null>",
+      "expires_at": "2026-06-12T12:34:56.000000Z",
+      "plan": "max",
+      "scopes": ["user:profile", "user:inference"],
+      "codex_home": null,
+      "codex_id_token": null,
+      "codex_last_refresh": null,
+      "last_refresh_at": null,
+      "last_refresh_status": null,
+      "last_refresh_error": null,
+      "heartbeat_enabled": false,
+      "heartbeat_5h_reset_at": null,
+      "heartbeat_window_resets": null,
+      "heartbeat_targets": null,
+      "last_heartbeat_at": null,
+      "last_heartbeat_status": null,
+      "last_heartbeat_error": null
+    }
   }
 }
 ```
 
 Important field semantics:
 
-- `expires_at` uses Unix milliseconds for Claude and Unix seconds for Codex.
+- Version-one `expires_at` uses canonical UTC text. The reader still validates
+  released 0.6.0 Claude-millisecond and Codex-second values during migration.
 - `provider_account_id` binds Codex requests and protects explicit imports from
   cross-account replacement when the id is known.
 - `codex_home`, `codex_id_token`, and `codex_last_refresh` preserve enough
   private auth metadata to refresh or export a CLI-compatible Codex account.
 - Refresh and heartbeat diagnostics are redacted user-facing state. Heartbeat
   targets and reset caches are optional and target-specific.
-- If the new store is absent but
-  `~/.config/cc-usage/accounts.json` exists, it is copied into the new schema;
-  the legacy file is left in place.
+- If only `~/.config/cc-usage/accounts.json` exists, `doctor` directs the
+  operator to `sidekick-usages migrate accounts`. The prototype is left in
+  place after import.
 
 Do not edit the store by hand. Use CLI commands so identity checks, file modes,
 private Codex caches, and diagnostics remain consistent.
@@ -410,7 +454,7 @@ in as that exact provider account and update the label explicitly:
 claude auth login
 sidekick-usages refresh <claude-label>
 
-sidekick-usages codex-login <codex-label>
+sidekick-usages codex login <codex-label>
 ```
 
 If a known provider account id differs, `refresh` refuses the replacement. Do
@@ -438,18 +482,22 @@ sidekick-usages set-plan <label> <plan>
 Re-import a complete ChatGPT login:
 
 ```bash
-sidekick-usages codex-login <label>
+sidekick-usages codex login <label>
 ```
 
 Use `--codex-home <path>` only when deliberately working with an isolated Codex
-home. `codex-export` also requires complete id-token, account-id, and refresh
-metadata; one successful `codex-login` normally supplies it.
+home. `sidekick-usages codex export` also requires complete id-token,
+account-id, and refresh metadata; one successful `sidekick-usages codex login`
+normally supplies it.
 
 ### HTTP 429 or transient network errors
 
-The HTTP client retries HTTP 429, server errors, and network failures with
-backoff. After retries are exhausted, wait for the shown `Retry-After` interval
-when available and run the check again.
+The HTTP client retries only when the closed operation-safety policy permits
+it. Safe reads may retry selected 429, 5xx, and ambiguous transport failures;
+OAuth refreshes and heartbeat model requests fail closed when repetition could
+duplicate a mutation. After attempts stop, wait for the shown `Retry-After`
+interval when available and run the command again. See
+[HTTP transport and retry behavior](./docs/networking.md).
 
 ### Daemon is installed but accounts do not rotate
 
@@ -481,6 +529,16 @@ If it is missing, run `claude auth login` and retry `add` or `refresh`.
 
 - `src/sidekick_usages/`: Typer CLI, provider adapters, storage, rendering,
   refresh, heartbeat, doctor, daemon, and update logic.
+- `src/sidekick_usages/core/`: provider-neutral models, identifiers, expiry,
+  and aware-UTC invariants with no infrastructure dependencies.
+- `src/sidekick_usages/cli/`: registration-only application root, typed lazy
+  composition, help adapter, token input, and cohesive command owners.
+- `src/sidekick_usages/providers/`: Claude and Codex boundary schemas and
+  adapters; `http/` owns pooled transport and retry policy.
+- `src/sidekick_usages/persistence/`: strict schemas, qualified filesystem
+  operations, transactions, recovery, and provider-neutral migrations.
+- `src/sidekick_usages/usage/`: usage results, application service, and Rich
+  presentation; `branding.py` is the one robot and product-copy source.
 - `tests/`: focused pytest coverage for CLI behavior, providers, HTTP errors,
   storage, rendering, maintenance, packaging, and cross-platform schedulers.
 - `docs/`: operational guides plus the usage-TUI design and implementation
@@ -500,6 +558,7 @@ uv sync --all-groups
 uv pip install -e .
 
 uv run sidekick-usages --help
+uv run python packaging/check_architecture.py
 uv run ruff check src/ tests/
 uv run ty check src/ tests/
 uv run pytest --cov=sidekick_usages
@@ -510,22 +569,22 @@ npx --no-install markdownlint-cli2 README.md
 npm run lint:markdown
 
 uv build
+uv run python packaging/smoke_wheel.py --build
 ```
 
+The Markdown toolchain requires Node.js 22 or newer; `package.json` records
+that development-only runtime floor.
+
 CI runs pre-commit, the full pytest suite on Linux, macOS, and Windows with
-Python 3.14, then builds and smoke-tests the wheel. No minimum coverage
-percentage is configured.
+Python 3.14, then builds and smoke-tests the exact installed wheel. No minimum
+coverage percentage is configured.
 
-The direct README Markdown command passes at this snapshot. The repository-wide
-`npm run lint:markdown` also scans the tracked historical TUI plan/spec under
-`docs/superpowers/`; those records contain pre-existing Markdown lint findings,
-primarily long lines.
-
-Ruff targets Python 3.14, double quotes, LF endings, and a 79-column formatter
-width; `E501` is intentionally ignored, so 79 columns is not a hard lint error.
-Use PEP 604 unions such as `str | None` and Sphinx-style public docstrings. Ty
-treats warnings as errors. Pytest discovers `tests/test_*.py` and `test_*`
-functions under strict marker and configuration checks.
+Ruff targets Python 3.14, double quotes, LF endings, a 79-column source and
+docstring limit, and explicit annotation enforcement. Use PEP 604 unions such
+as `str | None`, Python 3.14 native type parameters and aliases, and
+Sphinx-style public docstrings. Ty treats warnings as errors. Pytest discovers
+`tests/test_*.py` and `test_*` functions under strict marker and configuration
+checks.
 
 Use Conventional Commits such as `feat(render): ...`, `fix(cli): ...`,
 `test: ...`, and `docs: ...`. Release Please builds release notes and tags from

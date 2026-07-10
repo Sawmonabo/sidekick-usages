@@ -133,8 +133,8 @@ inside a temporary `HOME` with
 `CLAUDE_CODE_OAUTH_REFRESH_TOKEN` and `CLAUDE_CODE_OAUTH_SCOPES` set
 from the saved account. It then parses the temporary
 `.claude/.credentials.json`, imports the rotated access/refresh
-tokens into `~/.config/sidekick-usages/accounts.json`, and removes
-the temporary home. Your real `~/.claude` login is not overwritten.
+tokens into the account store selected by `doctor`, and removes the temporary
+home. Your real `~/.claude` login is not overwritten.
 
 If sidekick reports `Claude CLI refresh failed`, the saved refresh
 token is dead according to Claude Code itself. Log into the matching
@@ -176,17 +176,19 @@ Two things look like the cause but aren't:
 
 `sidekick-usages` shows accounts as `[claude · team]`,
 `[claude · max]`, `[claude · pro]`. That string comes from
-`account.plan`, which is parsed from the local Claude CLI keychain
-entry (`oauth.get("subscriptionType")` at
-`src/sidekick_usages/providers/claude/schemas.py:38-47`) and used only for
-color-coding in `src/sidekick_usages/render.py:53-59`
-(`PLAN_COLORS = {"max": "magenta", "team": "cyan", "pro": "green"}`).
+`account.plan`, which is parsed from the local Claude CLI credential boundary
+(`subscriptionType` in
+`src/sidekick_usages/providers/claude/schemas.py:142`) and used only for
+color-coding in `src/sidekick_usages/usage/legacy_render.py:20` and the wide
+usage renderer.
 
 It is **not** consulted during auth. The dispatch at
-`providers/claude/usage.py:33-41` routes on `account.scopes`, not on plan:
+`src/sidekick_usages/providers/claude/usage.py:27` routes on saved scopes, not
+on plan:
 
 ```python
-if account.scopes is not None and PROFILE_SCOPE not in account.scopes:
+credentials = require_claude_credentials(account)
+if credentials.scopes is not None and PROFILE_SCOPE not in credentials.scopes:
     return fetch_via_headers(account, http)  # /v1/messages probe
 return fetch_via_oauth_endpoint(account, http)  # /api/oauth/usage
 ```
@@ -212,7 +214,8 @@ causes (see [Root causes](#root-causes) below):
 The first thing to verify is whether the token itself works against
 Anthropic's API, independent of anything `sidekick-usages` stored or
 sent. `/v1/messages` is the same endpoint the `fetch_via_headers`
-path uses (`providers/claude/usage.py:66-85`), so a direct curl bypasses
+path uses (`src/sidekick_usages/providers/claude/usage.py:56`), so a direct
+curl bypasses
 every layer of this tool:
 
 ```bash
@@ -328,7 +331,8 @@ gets stored.
 keychain entry. If the saved value is stale — e.g., the keychain
 entry was a full-scope OAuth login when you first ran `add`, but the
 token you just refreshed in is a `setup-token` (inference-only) —
-the dispatcher at `providers/claude/usage.py:33-41` will route to the
+the dispatcher at `src/sidekick_usages/providers/claude/usage.py:27` will
+route to the
 wrong endpoint:
 
 | Saved `scopes` | New token shape | Dispatcher sends to | Result |
@@ -362,9 +366,11 @@ If `check` still 401s after a clean `--force`:
 
 1. Run the direct curl probe above. If that 401s too, the token is
    genuinely dead — mint a new one.
-2. If the curl returns 200 but `sidekick-usages` 401s, inspect
-   `~/.config/sidekick-usages/accounts.json` for whitespace in
-   `access_token`, then re-run step 1.
+2. If the curl returns 200 but `sidekick-usages` 401s, use
+   `sidekick-usages doctor --json` to identify the selected store. Inspect only
+   that file for whitespace in `access_token`, then re-run step 1. See the
+   [persistence location guide](./persistence-and-recovery.md) before assuming
+   the 0.6.0 compatibility path is active.
 
 ---
 

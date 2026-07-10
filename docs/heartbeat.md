@@ -109,7 +109,8 @@ sidekick-usages heartbeat disable <label>
 - Does not probe again while the target-specific cached reset is still
   in the future. The legacy `heartbeat_5h_reset_at` field mirrors the
   default `standard` target for backward compatibility.
-- Does not retry aggressively after provider errors.
+- Uses the closed HTTP operation policy: only safe, explicitly reviewed
+  heartbeat failures can retry within the bounded attempt budget.
 - Records last heartbeat status and error on the account.
 
 ## Troubleshooting
