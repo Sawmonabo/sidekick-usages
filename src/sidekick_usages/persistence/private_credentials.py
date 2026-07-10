@@ -1,10 +1,12 @@
 """Provider-neutral private credential artifact persistence boundary."""
 
+import os
 import sys
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
+from types import MappingProxyType
 from typing import Protocol
 
 from sidekick_usages.persistence._platform import (
@@ -27,7 +29,10 @@ elif sys.platform.startswith("linux"):
         PosixPrivateCredentialPlatform,
     )
 from sidekick_usages.persistence.artifacts import (
+    ExpectedAuthority,
+    FileFingerprint,
     FileSnapshot,
+    require_portable_unique_basenames,
     require_safe_basename,
 )
 from sidekick_usages.persistence.errors import (
@@ -111,8 +116,78 @@ class _PrivateCredentialPlatform(Protocol):
     def destroy_artifacts(self, root: Path) -> None:
         """Delete a fully validated private tree bottom-up."""
 
+    def destroy_tree(self, root: Path) -> None:
+        """Delete a fully validated private tree and exact root."""
+
 
 type _FilesystemFactory = Callable[[Path], PersistenceFilesystem]
+
+PRIVATE_TRANSACTION_DIRECTORY = ".credential-transaction"
+PRIVATE_TRANSACTION_JOURNAL = "journal.json"
+_MAX_PRIVATE_FILES = 16
+_MAX_PRIVATE_FILE_BYTES = 1024 * 1024
+_MAX_PRIVATE_BUNDLE_BYTES = 4 * 1024 * 1024
+
+
+def _validated_private_payloads(
+    files: Mapping[str, bytes],
+    expected_files: Mapping[str, bytes | None],
+) -> tuple[dict[str, bytes], dict[str, bytes | None]]:
+    """Validate and own one bounded private-bundle payload set."""
+    owned_files = dict(files)
+    owned_expected = dict(expected_files)
+    if not owned_files or len(owned_files) > _MAX_PRIVATE_FILES:
+        raise ValueError("Private credential file count is unsupported.")
+    require_portable_unique_basenames(owned_files)
+    total = 0
+    for basename, payload in owned_files.items():
+        require_safe_basename(basename)
+        if not isinstance(payload, bytes):
+            raise TypeError("Private credential payloads must be bytes.")
+        if len(payload) > _MAX_PRIVATE_FILE_BYTES:
+            raise ValueError("A private credential file is too large.")
+        total += len(payload)
+    if total > _MAX_PRIVATE_BUNDLE_BYTES:
+        raise ValueError("Private credential bundle is too large.")
+    for basename, payload in owned_expected.items():
+        require_safe_basename(basename)
+        if payload is not None and not isinstance(payload, bytes):
+            raise TypeError("Expected private payloads must be bytes.")
+        if payload is not None and len(payload) > _MAX_PRIVATE_FILE_BYTES:
+            raise ValueError(
+                "An expected private credential file is too large."
+            )
+    if not owned_expected.keys() <= owned_files.keys():
+        raise ValueError("Expected files must belong to the prepared bundle.")
+    return owned_files, owned_expected
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedPrivateBundleWrite:
+    """Secret-safe immutable input for one coordinated private write."""
+
+    path: Path
+    files: Mapping[str, bytes] = field(repr=False)
+    expected_bundle_present: bool
+    expected_files: Mapping[str, bytes | None] = field(
+        default_factory=dict,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        if not self.path.is_absolute():
+            raise ValueError(
+                "Private credential bundle path must be absolute."
+            )
+        require_safe_basename(self.path.name)
+        if type(self.expected_bundle_present) is not bool:
+            raise TypeError("expected_bundle_present must be Boolean.")
+        files, expected = _validated_private_payloads(
+            self.files,
+            self.expected_files,
+        )
+        object.__setattr__(self, "files", MappingProxyType(files))
+        object.__setattr__(self, "expected_files", MappingProxyType(expected))
 
 
 def _current_platform() -> _PrivateCredentialPlatform:
@@ -169,9 +244,17 @@ class PrivateCredentialTree:
         except NativeFilesystemError as error:
             raise _passive_error(error, root.name) from None
 
+    @property
+    def transaction_directory(self) -> Path:
+        """Return the reserved private transaction directory."""
+        return self.root / PRIVATE_TRANSACTION_DIRECTORY
+
     def observe(self) -> OrphanedPrivateCredentials:
         """Return safely proven private credential presence."""
         try:
+            if os.path.lexists(self.transaction_directory):
+                self._native.contains_artifacts(self.transaction_directory)
+                return OrphanedPrivateCredentials.INTERRUPTED
             present = self._native.contains_artifacts(self.root)
         except NativeFilesystemError as error:
             raise _passive_error(error, self.root.name) from None
@@ -196,6 +279,8 @@ class PrivateCredentialTree:
             return PrivateCredentialOwnership.EXTERNAL
         if bundle_path.parent == self.root:
             require_safe_basename(bundle_path.name)
+            if bundle_path.name == PRIVATE_TRANSACTION_DIRECTORY:
+                return PrivateCredentialOwnership.EXTERNAL
             return PrivateCredentialOwnership.CANONICAL
         if bundle_path.parent == self._existing_root:
             require_safe_basename(bundle_path.name)
@@ -230,6 +315,126 @@ class PrivateCredentialTree:
             return self._native.contains_artifacts(bundle_path)
         except NativeFilesystemError as error:
             raise _passive_error(error, bundle_path.name) from None
+
+    def transaction_directory_present(self) -> bool:
+        """Return whether any reserved transaction directory entry exists."""
+        return os.path.lexists(self.transaction_directory)
+
+    def transaction_artifacts_present(self) -> bool:
+        """Validate and report descendants of the transaction directory."""
+        if not self.transaction_directory_present():
+            return False
+        try:
+            return self._native.contains_artifacts(self.transaction_directory)
+        except NativeFilesystemError as error:
+            raise _passive_error(
+                error,
+                PRIVATE_TRANSACTION_DIRECTORY,
+            ) from None
+
+    def ensure_transaction_directory(self) -> None:
+        """Create or validate the reserved private transaction directory."""
+        try:
+            self._native.ensure_directory(self.root)
+            self._native.ensure_directory(self.transaction_directory)
+        except NativeFilesystemError as error:
+            if error.kind in {
+                NativeFailureKind.UNSUPPORTED,
+                NativeFailureKind.UNSAFE,
+                NativeFailureKind.UNREADABLE,
+                NativeFailureKind.CHANGED,
+            }:
+                raise _passive_error(
+                    error,
+                    PRIVATE_TRANSACTION_DIRECTORY,
+                ) from None
+            raise CandidateWriteError(PRIVATE_TRANSACTION_DIRECTORY) from None
+
+    def read_owned_file(
+        self,
+        directory: Path,
+        basename: str,
+    ) -> FileSnapshot | None:
+        """Read one exact file from a direct owned private directory."""
+        self._require_owned_directory(directory)
+        require_safe_basename(basename)
+        try:
+            directory_has_artifacts = self._native.contains_artifacts(
+                directory
+            )
+        except NativeFilesystemError as error:
+            raise _passive_error(error, directory.name) from None
+        if not directory_has_artifacts:
+            return None
+        return self._filesystem_factory(
+            directory / basename
+        ).read_opaque_private()
+
+    def write_owned_file(
+        self,
+        directory: Path,
+        basename: str,
+        payload: bytes,
+        *,
+        expected_source: ExpectedAuthority | None = None,
+    ) -> FileSnapshot:
+        """Commit one exact file while the caller holds the account lock."""
+        self._require_owned_directory(directory)
+        require_safe_basename(basename)
+        self._ensure_owned_directory(directory)
+        return self._filesystem_factory(
+            directory / basename
+        ).commit_opaque_private(
+            payload,
+            expected_source=expected_source,
+        )
+
+    def delete_owned_file(
+        self,
+        directory: Path,
+        basename: str,
+        expected: FileFingerprint,
+    ) -> None:
+        """Delete one exact private file under the shared account lock."""
+        self._require_owned_directory(directory)
+        require_safe_basename(basename)
+        self._filesystem_factory(directory / basename).delete_opaque_private(
+            expected
+        )
+
+    def destroy_owned_directory(self, directory: Path) -> None:
+        """Delete all secrets in one direct owned directory, then its leaf."""
+        self._require_owned_directory(directory)
+        try:
+            self._native.destroy_tree(directory)
+            if os.path.lexists(directory):
+                raise NativeFilesystemError(NativeFailureKind.CHANGED)
+        except NativeFilesystemError:
+            raise PrivateCredentialArtifactError from None
+
+    def _require_owned_directory(self, directory: Path) -> None:
+        if directory == self.transaction_directory:
+            return
+        if (
+            self.classify_bundle(directory)
+            is PrivateCredentialOwnership.CANONICAL
+        ):
+            return
+        raise ValueError("Private directory is not canonically owned.")
+
+    def _ensure_owned_directory(self, directory: Path) -> None:
+        try:
+            self._native.ensure_directory(self.root)
+            self._native.ensure_directory(directory)
+        except NativeFilesystemError as error:
+            if error.kind in {
+                NativeFailureKind.UNSUPPORTED,
+                NativeFailureKind.UNSAFE,
+                NativeFailureKind.UNREADABLE,
+                NativeFailureKind.CHANGED,
+            }:
+                raise _passive_error(error, directory.name) from None
+            raise CandidateWriteError(directory.name) from None
 
     def _validate_bundle_write(
         self,
@@ -387,6 +592,7 @@ class PrivateCredentialTree:
 
 
 __all__ = [
+    "PreparedPrivateBundleWrite",
     "PrivateCredentialArtifacts",
     "PrivateCredentialOwnership",
     "PrivateCredentialRepairResult",

@@ -10,6 +10,7 @@ from sidekick_usages.persistence._platform import (
     NativeFailureKind,
     NativeFilesystemError,
 )
+from sidekick_usages.persistence.artifacts import portable_basename_key
 
 if sys.platform == "win32":
     import msvcrt
@@ -90,9 +91,6 @@ if sys.platform == "win32":
         ):
             raise _native_error(NativeFailureKind.UNSAFE)
 
-    def _win32_name_key(value: str) -> str:
-        return ntpath.normcase(value.rstrip(" ."))
-
     def require_exact_entry(parent: Path, basename: str) -> bool:
         """Reject aliases without opening their contents."""
         try:
@@ -101,8 +99,8 @@ if sys.platform == "win32":
             raise _native_error(NativeFailureKind.UNREADABLE) from None
         if basename in entries:
             return True
-        requested = _win32_name_key(basename)
-        if any(_win32_name_key(entry) == requested for entry in entries):
+        requested = portable_basename_key(basename)
+        if any(portable_basename_key(entry) == requested for entry in entries):
             raise _native_error(NativeFailureKind.UNSAFE)
         return False
 

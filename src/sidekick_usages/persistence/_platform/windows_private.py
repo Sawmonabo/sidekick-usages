@@ -73,6 +73,9 @@ if sys.platform == "win32":
         validate_membership as _validate_membership,
     )
     from sidekick_usages.persistence._platform.windows_private_tree import (
+        delete_empty_tree as _delete_empty_tree,
+    )
+    from sidekick_usages.persistence._platform.windows_private_tree import (
         delete_entry as _delete_entry,
     )
     from sidekick_usages.persistence._platform.windows_private_tree import (
@@ -497,6 +500,11 @@ if sys.platform == "win32":
                 remaining, _remaining_identities = _scan_tree(opened)
                 if remaining:
                     raise _native_error(NativeFailureKind.CHANGED)
+
+        def destroy_tree(self, root: Path) -> None:
+            """Delete one exact validated private tree including its root."""
+            self.destroy_artifacts(root)
+            _delete_empty_tree(root)
 
 
 __all__ = ["WindowsPrivateCredentialPlatform"]

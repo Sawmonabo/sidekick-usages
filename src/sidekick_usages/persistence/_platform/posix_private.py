@@ -713,5 +713,36 @@ class PosixPrivateCredentialPlatform:
             if remaining:
                 raise _native_error(NativeFailureKind.CHANGED)
 
+    def destroy_tree(self, root: Path) -> None:
+        """Delete one exact validated private tree including its root."""
+        self._qualifier.qualify(root)
+        with _open_tree(root) as opened:
+            if opened is None:
+                return
+            entries, identities = _scan_tree(opened)
+            for entry in sorted(
+                entries,
+                key=lambda candidate: (
+                    len(candidate.relative),
+                    candidate.relative,
+                ),
+                reverse=True,
+            ):
+                _delete_entry(opened, entry, identities)
+            remaining, _remaining_identities = _scan_tree(opened)
+            if remaining:
+                raise _native_error(NativeFailureKind.CHANGED)
+            _require_root_identity(opened)
+            root_entry = _TreeEntry(
+                (opened.root_basename,),
+                opened.root_identity,
+                True,
+            )
+            _delete_directory(
+                opened,
+                opened.parent_descriptor,
+                root_entry,
+            )
+
 
 __all__ = ["PosixPrivateCredentialPlatform"]

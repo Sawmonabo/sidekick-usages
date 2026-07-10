@@ -404,12 +404,37 @@ if sys.platform == "win32":
             if require_exact_entry(parent, basename):
                 raise _native_error(NativeFailureKind.CHANGED)
 
+    def delete_empty_tree(root: Path) -> None:
+        """Handle-delete one exact validated empty private-tree root."""
+        with open_tree(root) as opened:
+            if opened is None:
+                return
+            entries, _identities = scan_tree(opened)
+            if entries:
+                raise _native_error(NativeFailureKind.CHANGED)
+            identity = opened.root_identity
+        parent_descriptor = open_directory(root.parent, private=False)
+        with owned_descriptor(
+            parent_descriptor,
+            NativeFailureKind.REMOVE,
+        ):
+            if not require_exact_entry(root.parent, root.name):
+                raise _native_error(NativeFailureKind.CHANGED)
+            _delete_directory(
+                root.parent,
+                parent_descriptor,
+                TreeEntry((root.name,), identity, True),
+            )
+            if require_exact_entry(root.parent, root.name):
+                raise _native_error(NativeFailureKind.CHANGED)
+
 
 __all__ = [
     "Identity",
     "OpenedTree",
     "RelativePath",
     "TreeEntry",
+    "delete_empty_tree",
     "delete_entry",
     "list_names",
     "open_relative_directory",

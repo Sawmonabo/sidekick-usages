@@ -1,6 +1,6 @@
 """Transactional runtime account storage over current schema version one."""
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Protocol, Self
@@ -19,6 +19,10 @@ from sidekick_usages.persistence.assessment import (
     PersistenceObservation,
     assess_persistence,
 )
+from sidekick_usages.persistence.credential_transactions import (
+    CredentialSourceGuard,
+    PrivateCredentialTransaction,
+)
 from sidekick_usages.persistence.errors import (
     DuplicateKeyError,
     DurabilityUncertainError,
@@ -27,6 +31,7 @@ from sidekick_usages.persistence.errors import (
     MalformedJsonError,
     PersistenceCode,
     PersistenceError,
+    PrivateCredentialCollisionError,
     SourceChangedError,
 )
 from sidekick_usages.persistence.filesystem import PersistenceFilesystem
@@ -35,6 +40,16 @@ from sidekick_usages.persistence.inventory import (
     PersistenceInventory,
 )
 from sidekick_usages.persistence.locking import PersistenceLock
+from sidekick_usages.persistence.observations import (
+    ArtifactKind,
+    ArtifactState,
+    AuthorityKind,
+)
+from sidekick_usages.persistence.private_credentials import (
+    PreparedPrivateBundleWrite,
+    PrivateCredentialOwnership,
+    PrivateCredentialTree,
+)
 from sidekick_usages.persistence.schemas import (
     decode_version_one,
     encode_version_one,
@@ -122,6 +137,11 @@ def _index_accounts(accounts: tuple[Account, ...]) -> dict[str, Account]:
     return {str(account.label): account for account in accounts}
 
 
+def _path_text(path: Path) -> str:
+    """Return deterministic lexical ordering text for one private path."""
+    return str(path)
+
+
 class AccountStore:
     """Load, query, and transactionally persist current account state."""
 
@@ -130,6 +150,7 @@ class AccountStore:
         locations: AccountLocations,
         *,
         orphaned_credentials_observer: OrphanedCredentialsObserver,
+        private_credentials: PrivateCredentialTree | None = None,
         filesystem_factory: _FilesystemFactory = PersistenceFilesystem,
         lock_factory: _LockFactory = PersistenceLock,
     ) -> None:
@@ -138,6 +159,7 @@ class AccountStore:
         :param locations: Discovered account-state locations.
         :param orphaned_credentials_observer: Current private-credential
             evidence provider.
+        :param private_credentials: Optional coordinated private-tree owner.
         :param filesystem_factory: Qualified filesystem boundary factory.
         :param lock_factory: Lock-scoped transaction factory.
         """
@@ -147,6 +169,7 @@ class AccountStore:
         self._filesystem_factory = filesystem_factory
         self._lock_factory = lock_factory
         self._orphaned_credentials_observer = orphaned_credentials_observer
+        self._private_credentials = private_credentials
         self._inventory = PersistenceInventory(
             self.path,
             locations.prototype_cc_usage,
@@ -164,6 +187,14 @@ class AccountStore:
         if self._loaded:
             return self
         observation, assessment = self._assess()
+        if observation.interrupted_credentials:
+            if not _private_recovery_is_only_blocker(
+                observation,
+                assessment,
+            ):
+                _require_store_assessment(assessment)
+            self._recover_private_transaction()
+            observation, assessment = self._assess()
         snapshot = self._validated_snapshot(observation, assessment)
         if snapshot is None:
             accounts: dict[str, Account] = {}
@@ -243,14 +274,49 @@ class AccountStore:
 
         :param account: Complete runtime account to persist.
         """
+        self.persist_credentials(account)
+
+    def persist_credentials(
+        self,
+        account: Account,
+        *,
+        previous_label: str | None = None,
+        private_bundle: PreparedPrivateBundleWrite | None = None,
+        source_guard: CredentialSourceGuard | None = None,
+    ) -> None:
+        """Persist one complete account and optional private bundle.
+
+        :param account: Complete runtime account to persist.
+        :param previous_label: Optional old label removed in the same commit.
+        :param private_bundle: Optional prepared private credential mutation.
+        :param source_guard: Optional retained authority to revalidate.
+        """
         self._require_loaded()
         candidate = self._copy_accounts()
         owned_account = _copy_account(account)
+        if (
+            previous_label is not None
+            and previous_label != owned_account.label
+        ):
+            if previous_label not in candidate:
+                raise SourceChangedError
+            if str(owned_account.label) in candidate:
+                raise ValueError("Replacement account label already exists.")
+            del candidate[previous_label]
         candidate[str(owned_account.label)] = owned_account
-        self._commit(candidate)
+        bundles = (private_bundle,) if private_bundle is not None else ()
+        self._commit_credentials(candidate, bundles, source_guard=source_guard)
 
     def remove(self, label: str) -> bool:
         """Durably remove one account when present.
+
+        :param label: Exact account label.
+        :returns: Whether an account was removed.
+        """
+        return self.remove_credentials(label)
+
+    def remove_credentials(self, label: str) -> bool:
+        """Remove one account and only its displaced canonical bundle.
 
         :param label: Exact account label.
         :returns: Whether an account was removed.
@@ -260,7 +326,7 @@ class AccountStore:
             return False
         candidate = self._copy_accounts()
         del candidate[label]
-        self._commit(candidate)
+        self._commit_credentials(candidate, ())
         return True
 
     def rename(self, old: str, new: str) -> bool:
@@ -296,6 +362,14 @@ class AccountStore:
         :param provider_id: Provider whose accounts to remove.
         :returns: Number of removed accounts.
         """
+        return self.reset_provider_credentials(provider_id)
+
+    def reset_provider_credentials(self, provider_id: ProviderId) -> int:
+        """Remove provider accounts and their unreferenced private bundles.
+
+        :param provider_id: Provider whose accounts to remove.
+        :returns: Number of removed accounts.
+        """
         self._require_loaded()
         candidate = {
             label: _copy_account(account)
@@ -304,8 +378,36 @@ class AccountStore:
         }
         removed = len(self._accounts) - len(candidate)
         if removed:
-            self._commit(candidate)
+            self._commit_credentials(candidate, ())
         return removed
+
+    def recover_credentials(self) -> bool:
+        """Resolve one interrupted private transaction under the store lock.
+
+        :returns: Whether recovery evidence was resolved.
+        """
+        self._require_loaded()
+        recovered = self._recover_private_transaction()
+        if not recovered:
+            return False
+        observation, assessment = self._assess()
+        snapshot = self._validated_snapshot(observation, assessment)
+        if snapshot is None:
+            self._accounts = {}
+            self._baseline = AuthorityExpectation.ABSENT
+        else:
+            document = decode_version_one(snapshot.data)
+            self._accounts = _index_accounts(version_one_to_accounts(document))
+            self._baseline = snapshot.fingerprint
+        return True
+
+    def _recover_private_transaction(self) -> bool:
+        private = self._require_private_credentials()
+        with self._lock_factory(self._filesystem).hold():
+            return PrivateCredentialTransaction(
+                private,
+                self._filesystem.read_authority,
+            ).recover()
 
     def generate_label(
         self,
@@ -333,25 +435,109 @@ class AccountStore:
         }
 
     def _commit(self, candidate: dict[str, Account]) -> None:
+        self._commit_credentials(candidate, ())
+
+    def _commit_credentials(
+        self,
+        candidate: dict[str, Account],
+        private_bundles: tuple[PreparedPrivateBundleWrite, ...],
+        *,
+        source_guard: CredentialSourceGuard | None = None,
+    ) -> None:
         baseline = self._require_loaded()
         document = accounts_to_version_one(candidate.values())
         payload = encode_version_one(document)
         validated = decode_version_one(payload)
         staged = _index_accounts(version_one_to_accounts(validated))
+        displaced: tuple[Path, ...] = ()
+        private = self._private_credentials
+        if private is not None:
+            old_private_accounts = _canonical_private_accounts(
+                self._accounts.values(),
+                private,
+            )
+            new_private_accounts = _canonical_private_accounts(
+                staged.values(),
+                private,
+            )
+            old_references = set(old_private_accounts)
+            new_references = set(new_private_accounts)
+            prepared_paths: set[Path] = {
+                bundle.path for bundle in private_bundles
+            }
+            if not prepared_paths <= new_references:
+                raise ValueError(
+                    "Prepared private bundles must be referenced by accounts."
+                )
+            introduced_paths: set[Path] = new_references.difference(
+                old_references,
+            )
+            if not introduced_paths <= prepared_paths:
+                unproven = min(
+                    introduced_paths - prepared_paths,
+                    key=_path_text,
+                )
+                raise PrivateCredentialCollisionError(unproven.name)
+            changed_paths = {
+                path
+                for path in old_references & new_references
+                if old_private_accounts[path].credentials
+                != new_private_accounts[path].credentials
+            }
+            if not changed_paths <= prepared_paths:
+                unproven = min(
+                    changed_paths - prepared_paths,
+                    key=_path_text,
+                )
+                raise PrivateCredentialCollisionError(unproven.name)
+            removed: set[Path] = old_references.difference(new_references)
+            displaced = tuple(sorted(removed, key=_path_text))
+        elif private_bundles or source_guard is not None:
+            raise RuntimeError(
+                "Private credential transaction is not configured."
+            )
         with self._lock_factory(self._filesystem).hold() as transaction:
+            coordinator = (
+                PrivateCredentialTransaction(
+                    private,
+                    self._filesystem.read_authority,
+                )
+                if private is not None
+                else None
+            )
+            if coordinator is not None:
+                coordinator.recover(source_guard=source_guard)
             observation, assessment = self._assess()
             observed = self._validated_snapshot(observation, assessment)
             if not _baseline_matches(baseline, observed):
                 raise SourceChangedError
-            final = transaction.commit_authority(
-                AuthorityGeneration.VERSION_ONE,
-                payload,
-                baseline,
+            final = (
+                transaction.commit_authority(
+                    AuthorityGeneration.VERSION_ONE,
+                    payload,
+                    baseline,
+                )
+                if coordinator is None
+                else coordinator.commit(
+                    transaction,
+                    payload,
+                    baseline,
+                    private_bundles=private_bundles,
+                    displaced_bundles=displaced,
+                    source_guard=source_guard,
+                )
             )
             if final.data != payload:
                 raise DurabilityUncertainError(self.path.name)
             self._accounts = staged
             self._baseline = final.fingerprint
+
+    def _require_private_credentials(self) -> PrivateCredentialTree:
+        if self._private_credentials is None:
+            raise RuntimeError(
+                "Private credential recovery is not configured."
+            )
+        return self._private_credentials
 
     def _assess(
         self,
@@ -365,7 +551,8 @@ class AccountStore:
         observation: PersistenceObservation,
         assessment: PersistenceAssessment,
     ) -> FileSnapshot | None:
-        _require_store_assessment(assessment)
+        if not _private_recovery_is_only_blocker(observation, assessment):
+            _require_store_assessment(assessment)
         snapshot = self._filesystem.read_authority()
         if assessment.code is PersistenceCode.EMPTY:
             if snapshot is not None:
@@ -417,6 +604,61 @@ def _baseline_matches(
     if baseline is AuthorityExpectation.ABSENT:
         return observed is None
     return observed is not None and observed.fingerprint == baseline
+
+
+def _canonical_private_accounts(
+    accounts: Iterable[Account],
+    private: PrivateCredentialTree,
+) -> dict[Path, Account]:
+    """Index accounts by their unique canonical private auth home."""
+    references: dict[Path, Account] = {}
+    for account in accounts:
+        auth_home = account.codex_home
+        if auth_home is None:
+            continue
+        path = Path(auth_home)
+        if (
+            private.classify_bundle(path)
+            is PrivateCredentialOwnership.CANONICAL
+        ):
+            if path in references:
+                raise PrivateCredentialCollisionError(path.name)
+            references[path] = account
+    return references
+
+
+def _private_recovery_is_only_blocker(
+    observation: PersistenceObservation,
+    assessment: PersistenceAssessment,
+) -> bool:
+    """Allow store loading only for one recoverable private journal."""
+    if (
+        not observation.interrupted_credentials
+        or assessment.code is not PersistenceCode.INTERRUPTED_ARTIFACTS
+        or observation.authority.kind
+        not in {AuthorityKind.ABSENT, AuthorityKind.VERSION_ONE}
+    ):
+        return False
+    if any(
+        artifact.kind is ArtifactKind.TEMPORARY
+        or artifact.state is not ArtifactState.VALID
+        for artifact in observation.artifacts
+    ):
+        return False
+    return all(
+        issue.code
+        in {
+            PersistenceCode.EMPTY,
+            PersistenceCode.INTERRUPTED_ARTIFACTS,
+            PersistenceCode.CURRENT,
+            PersistenceCode.PROTOTYPE_IMPORTED,
+        }
+        and (
+            issue.code is not PersistenceCode.INTERRUPTED_ARTIFACTS
+            or issue.artifact_basename is None
+        )
+        for issue in assessment.issues
+    )
 
 
 __all__ = [

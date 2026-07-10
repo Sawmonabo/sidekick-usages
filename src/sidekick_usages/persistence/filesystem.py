@@ -226,21 +226,33 @@ class PersistenceFilesystem(RecoveryOperations):
         validate(payload)
         return self._commit_payload(payload, expected_source, validate)
 
-    def commit_opaque_private(self, payload: bytes) -> FileSnapshot:
-        """Atomically write bounded opaque bytes to this private path."""
+    def commit_opaque_private(
+        self,
+        payload: bytes,
+        *,
+        expected_source: ExpectedAuthority | None = None,
+    ) -> FileSnapshot:
+        """Atomically write bounded opaque bytes to this private path.
+
+        :param payload: Exact private bytes to commit.
+        :param expected_source: Optional caller-proven source expectation.
+        :returns: Reopened and verified private file state.
+        """
         if len(payload) > MAX_DOCUMENT_BYTES:
             raise CandidateWriteError(self.grammar.authority_basename)
         self._prepare_parent()
-        current = self._read(
-            self.grammar.authority_basename,
-            MAX_DOCUMENT_BYTES,
-            require_complete=True,
-        )
-        expected: ExpectedAuthority = (
-            AuthorityExpectation.ABSENT
-            if current is None
-            else current.fingerprint
-        )
+        expected = expected_source
+        if expected is None:
+            current = self._read(
+                self.grammar.authority_basename,
+                MAX_DOCUMENT_BYTES,
+                require_complete=True,
+            )
+            expected = (
+                AuthorityExpectation.ABSENT
+                if current is None
+                else current.fingerprint
+            )
         return self._commit_payload(payload, expected, None)
 
     def read_opaque_private(self) -> FileSnapshot | None:
@@ -251,6 +263,48 @@ class PersistenceFilesystem(RecoveryOperations):
             MAX_DOCUMENT_BYTES,
             require_complete=True,
         )
+
+    def delete_opaque_private(self, expected: FileFingerprint) -> None:
+        """Delete one exact private file and prove namespace absence.
+
+        :param expected: Fingerprint of the exact file to remove.
+        """
+        self.qualify()
+        current = self._read(
+            self.grammar.authority_basename,
+            MAX_DOCUMENT_BYTES,
+            require_complete=True,
+        )
+        if current is None or current.fingerprint != expected:
+            raise SourceChangedError
+        try:
+            removed = self._native.remove_validated(
+                self._parent,
+                self.grammar.authority_basename,
+                expected.identity.device,
+                expected.identity.inode,
+            )
+            if not removed:
+                raise NativeFilesystemError(NativeFailureKind.CHANGED)
+            self._native.harden_cleanup(self._parent)
+            if (
+                self._read(
+                    self.grammar.authority_basename,
+                    MAX_DOCUMENT_BYTES,
+                    require_complete=True,
+                )
+                is not None
+            ):
+                raise NativeFilesystemError(NativeFailureKind.CHANGED)
+        except NativeFilesystemError as error:
+            if error.kind in {
+                NativeFailureKind.CHANGED,
+                NativeFailureKind.UNSAFE,
+            }:
+                raise SourceChangedError from None
+            raise DurabilityUncertainError(
+                self.grammar.authority_basename
+            ) from None
 
     def _commit_payload(
         self,

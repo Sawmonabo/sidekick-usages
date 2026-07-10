@@ -439,13 +439,14 @@ def _logical_issue(
 
 
 def _interruption_issues(
-    authority: AuthorityObservation,
+    observation: PersistenceObservation,
     artifacts: tuple[ArtifactObservation, ...],
 ) -> list[_RankedIssue]:
+    authority = observation.authority
     kinds = {ArtifactKind.TEMPORARY}
     if authority.kind is AuthorityKind.ABSENT:
         kinds.update((ArtifactKind.V0_BACKUP, ArtifactKind.V1_SNAPSHOT))
-    return [
+    issues = [
         _ranked_issue(
             PersistenceCode.INTERRUPTED_ARTIFACTS,
             artifact=artifact,
@@ -453,6 +454,14 @@ def _interruption_issues(
         for artifact in artifacts
         if artifact.kind in kinds
     ]
+    if observation.interrupted_credentials:
+        issues.append(
+            _ranked_issue(
+                PersistenceCode.INTERRUPTED_ARTIFACTS,
+                artifact_rank=4,
+            )
+        )
+    return issues
 
 
 def _ordered_issues(
@@ -531,7 +540,7 @@ def assess_persistence(
                 continue
             if (failure := _artifact_failure_issue(artifact)) is not None:
                 ranked_issues.append(failure)
-        ranked_issues.extend(_interruption_issues(authority, artifacts))
+        ranked_issues.extend(_interruption_issues(observation, artifacts))
     issues = _ordered_issues(ranked_issues)
     primary = issues[0]
     code = primary.code

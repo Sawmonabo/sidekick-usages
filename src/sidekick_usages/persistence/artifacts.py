@@ -1,9 +1,11 @@
 """Closed names and content identities for persistence artifacts."""
 
 import hashlib
+import ntpath
 import re
 import secrets
 import unicodedata
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from enum import StrEnum
 
@@ -231,6 +233,7 @@ def is_safe_basename(value: str) -> bool:
     return (
         bool(value)
         and value not in {".", ".."}
+        and value == value.rstrip(" .")
         and not (
             "/" in value
             or "\\" in value
@@ -239,6 +242,20 @@ def is_safe_basename(value: str) -> bool:
             )
         )
     )
+
+
+def portable_basename_key(value: str) -> str:
+    """Return the Windows-compatible identity of one safe basename."""
+    return ntpath.normcase(value.rstrip(" ."))
+
+
+def require_portable_unique_basenames(values: Iterable[str]) -> None:
+    """Reject names that alias in a portable filesystem namespace."""
+    keys = tuple(portable_basename_key(value) for value in values)
+    if len(keys) != len(set(keys)):
+        raise ValueError(
+            "Artifact names must be unique in the portable namespace."
+        )
 
 
 def require_safe_basename(value: str) -> None:
@@ -265,6 +282,8 @@ __all__ = [
     "ManagedArtifactKind",
     "Sha256Digest",
     "is_safe_basename",
+    "portable_basename_key",
+    "require_portable_unique_basenames",
     "require_safe_basename",
     "sha256_digest",
 ]

@@ -49,6 +49,8 @@ REQUIRED_WHEEL_MEMBERS = frozenset(
         "sidekick_usages/persistence/account_store.py",
         "sidekick_usages/persistence/artifacts.py",
         "sidekick_usages/persistence/assessment.py",
+        "sidekick_usages/persistence/credential_transaction_schema.py",
+        "sidekick_usages/persistence/credential_transactions.py",
         "sidekick_usages/persistence/errors.py",
         "sidekick_usages/persistence/filesystem.py",
         "sidekick_usages/persistence/inventory.py",

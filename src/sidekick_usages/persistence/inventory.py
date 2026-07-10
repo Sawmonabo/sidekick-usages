@@ -53,6 +53,7 @@ class OrphanedPrivateCredentials(StrEnum):
 
     ABSENT = "absent"
     PRESENT = "present"
+    INTERRUPTED = "interrupted"
 
 
 class PrototypeMigrationIntent(StrEnum):
@@ -172,6 +173,10 @@ class PersistenceInventory:
             orphaned_credentials=(
                 orphaned_private_credentials
                 is OrphanedPrivateCredentials.PRESENT
+            ),
+            interrupted_credentials=(
+                orphaned_private_credentials
+                is OrphanedPrivateCredentials.INTERRUPTED
             ),
         )
 
@@ -384,7 +389,7 @@ def _prototype_eligible(
         )
     if authority.kind is not AuthorityKind.ABSENT:
         return False
-    if orphaned is OrphanedPrivateCredentials.PRESENT:
+    if orphaned is not OrphanedPrivateCredentials.ABSENT:
         return False
     blocking = {
         ArtifactKind.V0_BACKUP,

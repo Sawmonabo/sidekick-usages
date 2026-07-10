@@ -13,7 +13,10 @@ from sidekick_usages.persistence._platform import (
     NativeFilesystemError,
     posix_private,
 )
-from sidekick_usages.persistence.artifacts import FileSnapshot
+from sidekick_usages.persistence.artifacts import (
+    ExpectedAuthority,
+    FileSnapshot,
+)
 from sidekick_usages.persistence.errors import (
     DurabilityUncertainError,
     ManagedFileReadError,
@@ -77,12 +80,24 @@ class _RecordingPlatform:
         if self.clear_on_destroy:
             self.present = False
 
+    def destroy_tree(self, root: Path) -> None:
+        """Model complete owned-tree deletion for facade type checks."""
+        self.destroy_artifacts(root)
+
 
 class _TamperingFilesystem(PersistenceFilesystem):
     """Remove the first bundle file after the second file commits."""
 
-    def commit_opaque_private(self, payload: bytes) -> FileSnapshot:
-        snapshot = super().commit_opaque_private(payload)
+    def commit_opaque_private(
+        self,
+        payload: bytes,
+        *,
+        expected_source: ExpectedAuthority | None = None,
+    ) -> FileSnapshot:
+        snapshot = super().commit_opaque_private(
+            payload,
+            expected_source=expected_source,
+        )
         if self.authority_path.name == "config.toml":
             (self.authority_path.parent / "auth.json").unlink()
         return snapshot

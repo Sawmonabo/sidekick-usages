@@ -206,10 +206,16 @@ class PersistenceObservation:
     authority: AuthorityObservation
     artifacts: tuple[ArtifactObservation, ...] = ()
     orphaned_credentials: bool = False
+    interrupted_credentials: bool = False
 
     def __post_init__(self) -> None:
-        if type(self.orphaned_credentials) is not bool:
-            raise TypeError("orphaned_credentials must be Boolean.")
+        if (
+            type(self.orphaned_credentials) is not bool
+            or type(self.interrupted_credentials) is not bool
+        ):
+            raise TypeError("Credential observations must be Boolean.")
+        if self.orphaned_credentials and self.interrupted_credentials:
+            raise ValueError("Credential observations cannot conflict.")
         basenames = tuple(artifact.basename for artifact in self.artifacts)
         if len(basenames) != len(set(basenames)):
             raise ValueError("Artifact basenames must be unique.")
