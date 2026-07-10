@@ -31,7 +31,7 @@ if sys.platform == "win32":
     def path_attributes(path: Path) -> int | None:
         """Return exact no-follow attributes or proven absence."""
         try:
-            attributes = win32file.GetFileAttributesW(str(path))
+            attributes = win32api.GetFileAttributes(str(path))
         except pywintypes.error as error:
             if error.winerror in _NOT_FOUND_ERRORS:
                 return None

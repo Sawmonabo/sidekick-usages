@@ -581,13 +581,17 @@ def _delete_directory(
             descriptor
         ):
             raise _native_error(NativeFailureKind.CHANGED)
+        before_links = metadata.st_nlink
         try:
             os.rmdir(basename, dir_fd=parent_descriptor)
         except FileNotFoundError:
             raise _native_error(NativeFailureKind.CHANGED) from None
         except OSError:
             raise _native_error(NativeFailureKind.REMOVE) from None
-        if _metadata(descriptor, NativeFailureKind.REMOVE).st_nlink != 0:
+        if (
+            _metadata(descriptor, NativeFailureKind.REMOVE).st_nlink
+            >= before_links
+        ):
             raise _native_error(NativeFailureKind.CHANGED)
     _synchronize_namespace(parent_descriptor)
 

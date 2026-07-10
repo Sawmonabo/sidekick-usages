@@ -265,8 +265,11 @@ def test_oversize_mapping_preserves_artifact_role(tmp_path: Path) -> None:
     filesystem = _filesystem(tmp_path)
     filesystem._prepare_parent()
     oversized = b"x" * (MAX_DOCUMENT_BYTES + 1)
-    filesystem.authority_path.write_bytes(oversized)
-    os.chmod(filesystem.authority_path, 0o600)
+    filesystem._native.create_private(
+        filesystem.authority_path.parent,
+        filesystem.authority_path.name,
+        oversized,
+    )
     with pytest.raises(InvalidManagedArtifactError):
         filesystem.read_authority()
 
@@ -280,8 +283,11 @@ def test_oversize_mapping_preserves_artifact_role(tmp_path: Path) -> None:
     )
     assert backup is not None
     backup_path = filesystem.authority_path.with_name(backup.basename)
-    backup_path.write_bytes(oversized)
-    os.chmod(backup_path, 0o600)
+    filesystem._native.create_private(
+        backup_path.parent,
+        backup_path.name,
+        oversized,
+    )
     with pytest.raises(BackupConflictError):
         filesystem.read_managed(backup)
 

@@ -256,9 +256,7 @@ if sys.platform == "win32":
         destination_basename: str,
         expected: bytes,
     ) -> NativeFile:
-        """Copy security with ``CopyFileW`` and verify exact bytes."""
-        source = child_path(parent, source_basename)
-        destination = child_path(parent, destination_basename)
+        """Copy validated source bytes into a newly protected file."""
         parent_descriptor = open_directory(parent)
         with owned_descriptor(
             parent_descriptor,
@@ -274,28 +272,31 @@ if sys.platform == "win32":
                 source_descriptor,
                 NativeFailureKind.UNREADABLE,
             ):
-                try:
-                    win32file.CopyFileW(
-                        str(source),
-                        str(destination),
-                        True,
-                    )
-                except pywintypes.error as error:
-                    if error.winerror in (
-                        winerror.ERROR_FILE_EXISTS,
-                        winerror.ERROR_ALREADY_EXISTS,
-                    ):
-                        raise _native_error(NativeFailureKind.EXISTS) from None
-                    raise _native_error(NativeFailureKind.CREATE) from None
-            _flush_path(parent, destination_basename, parent_descriptor)
-            reopened = read_file(
-                parent,
-                destination_basename,
-                len(expected),
-            )
-            if reopened is None or reopened.data != expected:
+                source = read_descriptor(
+                    source_descriptor,
+                    metadata(
+                        parent_descriptor,
+                        NativeFailureKind.UNREADABLE,
+                    ).st_dev,
+                    len(expected),
+                )
+                if source.data != expected:
+                    raise _native_error(NativeFailureKind.CHANGED)
+                copied = create_private_file(
+                    parent,
+                    destination_basename,
+                    expected,
+                )
+                validate_membership(
+                    parent_descriptor,
+                    msvcrt.get_osfhandle(source_descriptor),
+                    source_basename,
+                )
+                if not require_exact_entry(parent, source_basename):
+                    raise _native_error(NativeFailureKind.CHANGED)
+            if copied.data != expected:
                 raise _native_error(NativeFailureKind.WRITE)
-            return reopened
+            return copied
 
     def publish_no_replace(
         parent: Path,
@@ -371,21 +372,14 @@ if sys.platform == "win32":
                 NativeFailureKind.REPLACE,
             ):
                 try:
+                    flags = win32file.MOVEFILE_WRITE_THROUGH
                     if destination_exists:
-                        win32file.ReplaceFile(
-                            str(destination),
-                            str(source),
-                            None,
-                            0,
-                            None,
-                            None,
-                        )
-                    else:
-                        win32file.MoveFileExW(
-                            str(source),
-                            str(destination),
-                            win32file.MOVEFILE_WRITE_THROUGH,
-                        )
+                        flags |= win32file.MOVEFILE_REPLACE_EXISTING
+                    win32file.MoveFileExW(
+                        str(source),
+                        str(destination),
+                        flags,
+                    )
                 except pywintypes.error as error:
                     if not destination_exists and error.winerror in {
                         winerror.ERROR_FILE_EXISTS,

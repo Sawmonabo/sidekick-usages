@@ -3,7 +3,8 @@
 **Date:** 2026-07-10  
 **Scope:** CS-14 native filesystem qualification and test collection  
 **Evidence commit:** `56cc657052302e770547e25933205de216fc1893`  
-**Evidence run:** GitHub Actions `29090469212`
+**Evidence runs:** GitHub Actions `29090469212`, `29090699204`, and
+`29090940639`
 
 ## Observed failures
 
@@ -54,6 +55,59 @@ the macOS-specific contract on Windows. A Darwin-only test exercises real APFS
 qualification so future macOS runners validate the native path rather than
 only a mocked classification result.
 
+Run `29090940639` proved that real descriptor-relative APFS qualification
+works. It also exposed a portable directory-disposition assumption. Linux
+reports zero links for an unlinked directory that remains open through a file
+descriptor; APFS can retain a link count of one. Apple documents directory
+link counts as filesystem-dependent and documents `rmdir` as removing the
+named directory entry. The portable proof therefore combines three facts:
+
+1. the held descriptor still has the exact prevalidated device and inode;
+2. its link count strictly decreases after `rmdir`; and
+3. the exact parent-relative basename is proven absent.
+
+The existing injected rename/replacement tests continue to require all three
+facts, so accepting the APFS terminal link count does not weaken the race
+proof.
+
+## Windows-native qualification findings
+
+The third matrix reached the Windows implementation and identified independent
+native-contract defects rather than application failures.
+
+First, Windows file-attribute constants belong to Python's `stat` module.
+Using the pywin32 `win32file` namespace for
+`FILE_ATTRIBUTE_REPARSE_POINT` and `FILE_ATTRIBUTE_DIRECTORY` failed because
+that module does not export those constants. The adapter now uses the stdlib
+constants. It also uses `win32api.GetFileAttributes`, whose pywin32 contract
+raises a typed Windows error for a missing path. The previous
+`GetFileAttributesW` wrapper returned the `INVALID_FILE_ATTRIBUTES` sentinel
+as an integer in the exercised runtime, causing an absent child to be treated
+as an unsafe existing object.
+
+Second, a native Windows 3.14 and pywin32 312 reproduction proved that
+`CopyFileW` produced a destination whose inherited security descriptor did not
+meet Sidekick's exact protected-DACL contract. Immutable copies now read and
+revalidate the held source descriptor, create the destination through the
+existing private-file primitive, and then reprove source membership. This
+reuses the security boundary instead of repairing a weaker copied object.
+
+Third, the pywin32 `ReplaceFile` wrapper reverses its two native path
+conversions in the current upstream source even though its generated Python
+documentation presents the Win32 order. A native reproduction consequently
+removed the intended authority and left the old bytes at the candidate name.
+The adapter no longer depends on this wrapper. It uses `MoveFileExW` with
+`MOVEFILE_REPLACE_EXISTING` for an existing destination and always uses
+`MOVEFILE_WRITE_THROUGH`. Both files are already proven to reside in the same
+qualified parent, and the candidate already has the exact private DACL. The
+held candidate identity is then reproved under the final basename.
+
+No new package is justified. pywin32 remains the maintained Windows binding
+already required by the project, while the corrected operations reuse its
+working APIs and the repository's qualified private-file primitive. An
+additional atomic-write package would not strengthen handle identity, DACL
+validation, or multi-artifact recovery.
+
 ## Primary sources
 
 - [Apple `statfs(2)` and `fstatfs(2)` manual](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/statfs.2.html)
@@ -65,10 +119,24 @@ only a mocked classification result.
 - [Darwin `fstab(5)` manual](https://manp.gs/mac/5/fstab)
   identifies APFS as the default macOS filesystem and `fdesc` as the
   implementation behind `/dev/fd`.
+- [Apple `rmdir(2)` manual](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/rmdir.2.html)
+  defines successful removal of the named directory entry.
+- [Apple `getattrlist(2)` manual](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/getattrlist.2.html)
+  documents filesystem-dependent directory link-count behavior.
+- [Python 3.14 `stat` documentation](https://docs.python.org/3.14/library/stat.html)
+  defines the Windows file-attribute constants used with
+  `st_file_attributes`.
+- [Microsoft `MoveFileExW` documentation](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-movefileexw)
+  defines replacement and write-through flags and their same-volume behavior.
+- [Microsoft `ReplaceFileW` documentation](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-replacefilew)
+  establishes the native replaced-file and replacement-file parameter order.
+- [pywin32 `ReplaceFile` wrapper source](https://github.com/mhammond/pywin32/blob/main/win32/src/win32file.i#L3915-L3942)
+  shows the binding's current argument conversions and native call.
 
 ## Verification requirement
 
-The correction is not complete from Linux evidence. A new pushed matrix must
-pass real macOS APFS qualification and then reach the Windows pywin32/DACL
-tests. Any subsequent native failure remains a release blocker and must be
-recorded here before the CS-14 native gate is closed.
+The correction is not complete from one host's evidence. A new pushed matrix
+must pass real macOS APFS qualification, the Windows pywin32/DACL suite, Linux,
+the WSL harness, and both Homebrew source builds. Any subsequent native failure
+remains a release blocker and must be recorded here before the CS-14 native
+gate is closed.
