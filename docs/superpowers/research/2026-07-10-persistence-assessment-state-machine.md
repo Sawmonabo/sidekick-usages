@@ -310,7 +310,7 @@ class PersistenceOperationResult:
 |---|---|---:|---:|
 | `prototype_imported` | V1 and receipt committed and verified | 0 | Only through exact relation |
 | `rollback_prepared` | Snapshot, gen0, and actual-v0.6 proof succeed | 0 | Relation is derivable |
-| `rollback_required` | Caller requests old compatibility before preparation | 1 | No |
+| `rollback_required` | Caller requests old compatibility before preparation, or valid v1 fails pinned-reader compatibility preflight | 1 | No |
 | `store_locked` | Five-second lock budget expires | 1 | Only while currently locked |
 | `source_changed` | Identity or digest changed before replacement | 1 | No |
 | `legacy_writer_detected` | Live baseline or snapshot relation proves old writer | 1 | Sometimes |
@@ -352,6 +352,10 @@ An idempotent rerun on exact v1/prototype equality may publish the missing
 receipt without rewriting v1.
 
 ### Rollback preparation
+
+An explicit empty heartbeat target or reset collection fails pure
+v0.6-compatibility preflight as operation-time `rollback_required`. Assessment
+remains `current`; no snapshot, temporary, or authority mutation occurs.
 
 | Checkpoint | Restart state |
 |---|---|

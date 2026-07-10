@@ -66,9 +66,13 @@ The recommended contract is:
 - `sidekick-usages migrate prepare-rollback --target v0.6.0`, which converts
   the latest state rather than restoring a stale pre-upgrade snapshot.
 
-Version one intentionally has no state that cannot be represented by v0.6.0.
-Any later persisted field or state requires schema version two and a newly
-approved reverse policy.
+Version one preserves explicit empty heartbeat target and reset collections,
+but the pinned v0.6.0 reader collapses both to `None` through `_str_list()` and
+`_str_dict()`. Those valid current states therefore fail rollback preflight
+with `RollbackCompatibilityError` before a snapshot or authority mutation.
+Every other version-one state remains losslessly reversible. Any later
+persisted field or state requires schema version two and a newly approved
+reverse policy.
 
 ## Repository evidence
 
@@ -388,6 +392,14 @@ converts every field to the strict v0.6.0 shape:
 - canonical timestamps become accepted UTC `Z` strings;
 - enums become current strings; and
 - all credential, scope, path, plan, map, and diagnostic values remain.
+
+Before publishing the snapshot, the pure reverse transform rejects an
+explicit empty `heartbeat_targets` or `heartbeat_window_resets`. Commit
+`6a413b2772c3c11e9ef45a78a06ab79bfc0ca44c` proves that the released reader
+returns `result or None` for both helpers, so no generation-zero spelling can
+preserve those distinctions. The command reports manual action and leaves
+version one untouched; it never coerces valid current state while claiming a
+lossless downgrade.
 
 The command commits generation zero and then runs the actual isolated v0.6.0
 reader against it. The original pre-upgrade backup is never substituted for

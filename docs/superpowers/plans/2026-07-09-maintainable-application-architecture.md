@@ -331,9 +331,11 @@ implementation-critical summary is:
    replacement, buffer-flush, and security APIs.
 6. `doctor` performs read-only assessment and reports typed safe recovery
    actions without loading invalid state or exposing credential values.
-7. `migrate prepare-rollback --target v0.6.0` snapshots the latest version-one
-   authority, emits a strict generation-zero reverse transformation, and runs
-   the actual released v0.6.0 reader before declaring rollback prepared.
+7. `migrate prepare-rollback --target v0.6.0` first rejects valid state the
+   pinned reader cannot preserve, then snapshots the latest representable
+   version-one authority, emits a strict generation-zero reverse
+   transformation, and runs the actual released reader before declaring
+   rollback prepared.
 8. Full reset removes every Sidekick-owned credential-bearing account
    authority, snapshot, and secret temporary under the lock, while retaining
    the non-secret lock and prototype receipts. Partial deletion is reported as
@@ -1050,9 +1052,10 @@ NO-GO disposition.
       without printing secrets.
 - [x] Define how rollback works after a later native-location migration and
       after new writes exist only in the canonical generation.
-- [x] Design a lossless reverse transformation or rollback-preparation surface
-      that converts the latest supported state for `v0.6.0`; restoring only
-      the pre-upgrade backup is insufficient after new writes.
+- [x] Design a lossless reverse transformation for v0.6-representable state
+      and a fail-before-mutation rollback preflight for explicit empty
+      heartbeat collections the pinned reader collapses to null. Restoring
+      only the pre-upgrade backup is insufficient after new writes.
 - [x] Define migration as an explicit command after pre-load assessment, owned
       only by `persistence/migrations.py`; normal loading never migrates.
 - [x] Inline the complete contract and obtain approval before CS-14 writes it.
@@ -1082,14 +1085,19 @@ generation-zero and prototype corpus; strict version-one envelope and field
 contract; JSON bounds and deterministic bytes; exact artifact grammar;
 qualified POSIX, macOS, Windows, and WSL protocols; explicit migration and
 prototype import; full-reset behavior; and lossless v0.6.0 rollback
-preparation. The tracked research records the official platform evidence and
-the buy-versus-adopt analysis. The selected runtime boundaries for CS-14 are
+preparation for representable state with fail-closed compatibility preflight.
+The tracked research records the official platform evidence and the
+buy-versus-adopt analysis. The selected runtime boundaries for CS-14 are
 Portalocker 3.2.0 and `pywin32==312; sys_platform == "win32"`.
 
-**Operator decision:** **GO, approved 2026-07-10**. There is no intentionally
-unrepresentable version-one field. Normal loading remains read-only with
-respect to migration, and no schema writer may ship before the platform and
-released-v0.6.0 compatibility gates pass.
+**Ground-truth amendment:** The pinned v0.6.0 reader at `6a413b2` returns
+`result or None` for persisted heartbeat target lists and reset maps. Valid
+explicit empty collections remain representable in version one, but rollback
+preparation must raise `RollbackCompatibilityError` before mutation because
+the old reader cannot preserve them. All other state remains losslessly
+reversible. Normal loading remains read-only with respect to migration, and no
+schema writer may ship before the platform and released-v0.6.0 compatibility
+gates pass.
 
 **Commit:** `docs(persistence): define schema migration recovery contract`
 
@@ -1725,6 +1733,9 @@ transition, output, and restart semantics; no local-only note is an input.
       validated account count is zero.
 - [ ] Prove reverse preparation with the actual local v0.6.0 release reader
       pinned to commit `6a413b2772c3c11e9ef45a78a06ab79bfc0ca44c`.
+- [ ] Reject explicit empty heartbeat target/reset collections through pure
+      `RollbackCompatibilityError` preflight before snapshot or authority
+      mutation; prove normal current operation preserves those valid states.
 - [ ] Keep `paths.py` discovery-only and persistence free of provider imports.
 - [ ] Leave physical locations unchanged.
 - [ ] Keep the versioned writer disabled until native Linux, macOS, Windows,
@@ -1739,7 +1750,8 @@ transition, output, and restart semantics; no local-only note is an input.
   HTTP JSON wrapper retains its existing error contract.
 - One pure transformation suite proves deterministic prototype-to-v1,
   generation-zero-to-v1, runtime-to-v1, and v1-to-v0.6.0 bytes, exact provider
-  precision, and lossless reverse preparation.
+  precision, lossless representable reverse preparation, and fail-before-write
+  handling for explicit empty heartbeat collections.
 - One state-machine table proves the priority values 10 through 160,
   deterministic same-code ordering, every authority reduction, backup
   relation, prototype/receipt matrix, backup-less first-write v1, doctor exit,

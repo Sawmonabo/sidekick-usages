@@ -1940,8 +1940,13 @@ heartbeat status is exactly null, `warmed`, `active`, `disabled`,
 requires schema version two and an amendment to this recovery contract; it is
 never added to version one as a permissive optional extra.
 
-Every valid version-one field is losslessly representable by the actual
-v0.6.0 store. There is no intentionally unrepresentable field policy.
+Every valid version-one state except explicit empty heartbeat target or reset
+collections is losslessly representable by the actual v0.6.0 store. The pinned
+reader's `_str_list()` and `_str_dict()` return `result or None`, making `[]`
+and `{}` indistinguishable from null after load. Version one preserves the
+richer distinction. Rollback preparation detects those two valid states and
+raises `RollbackCompatibilityError` before any snapshot or authority mutation;
+it never coerces them while claiming a lossless downgrade.
 
 ##### JSON lexical and deterministic-output rules
 
@@ -2196,11 +2201,14 @@ immediately before mutation.
 Rollback preparation supports exactly the released v0.6.0 target initially:
 
 1. validate latest version one;
-2. publish its exact content-addressed v1 snapshot;
-3. reverse every field to the strict v0.6.0 generation-zero representation;
-4. commit that generation zero through the durable protocol;
-5. run the actual isolated v0.6.0 reader against the exact file; and
-6. report `rollback_prepared` and the safe snapshot basename.
+2. run the pure v0.6 compatibility preflight, rejecting explicit empty
+   heartbeat target/reset collections without mutation;
+3. publish its exact content-addressed v1 snapshot;
+4. reverse every representable field to the strict v0.6.0 generation-zero
+   representation;
+5. commit that generation zero through the durable protocol;
+6. run the actual isolated v0.6.0 reader against the exact file; and
+7. report `rollback_prepared` and the safe snapshot basename.
 
 After preparation, generation zero is authoritative. If v0.6.0 changes it, a
 later re-upgrade migrates that current file and never silently restores a
@@ -2251,8 +2259,10 @@ explicit `--reimport-prototype`.
 A valid version-one authority without a generation-zero backup is `current`.
 That is a legitimate first persist from empty. The assessor may report whether
 matching history exists, but it never invents whether missing history means a
-first write or a deleted backup. Rollback remains lossless because preparation
-snapshots and reverses the current version-one authority.
+first write or a deleted backup. Rollback remains lossless for representable
+state because preparation snapshots and reverses the current version-one
+authority; explicit empty heartbeat collections fail compatibility preflight
+before that snapshot.
 
 ##### Assessment and error vocabulary
 
@@ -3940,8 +3950,10 @@ on 2026-07-10:
     content-addressed generation-zero and version-one snapshots, and use a
     non-secret content-addressed receipt to make prototype imports explicit.
 29. Make rollback preparation for the actual v0.6.0 release lossless for every
-    version-one state and verify the emitted generation-zero document with the
-    released old reader before reporting success.
+    representable version-one state, fail before mutation for explicit empty
+    heartbeat collections the pinned reader collapses to null, and verify the
+    emitted generation-zero document with the released old reader before
+    reporting success.
 30. Adopt Portalocker 3.2.0 for the process lock and pywin32 312 on native
     Windows for qualified security and durability primitives; do not recreate
     those operating-system boundaries through local `ctypes` declarations.

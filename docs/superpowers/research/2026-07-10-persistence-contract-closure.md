@@ -178,6 +178,12 @@ mixed element types, empty present strings, and extras. `scopes=None` remains
 different from a known-empty scope tuple. `heartbeat_targets=None` remains
 different from an explicit empty target tuple.
 
+The pinned v0.6.0 reader cannot preserve explicit empty heartbeat target or
+reset collections: its `_str_list()` and `_str_dict()` helpers return
+`result or None`. These remain valid version-one values, but rollback
+preparation rejects them with `RollbackCompatibilityError` before publishing
+any snapshot or changing authority. No lossy normalization is permitted.
+
 The bounds are deliberately above current provider values while preventing a
 single field from consuming the full document budget. A future need for a
 larger value is a schema amendment, not permissive coercion.
@@ -335,9 +341,10 @@ installation. A matching v0 backup proves migration history; its absence does
 not prove deletion or corruption.
 
 This avoids adding a speculative provenance marker and preserves the approved
-two-field version-one envelope. Recovery remains lossless because rollback
-preparation snapshots current version one and performs the pure reverse
-transformation even when no historical v0 backup exists.
+two-field version-one envelope. For v0.6-representable state, rollback remains
+lossless because preparation snapshots current version one and performs the
+pure reverse transformation even when no historical v0 backup exists.
+Unrepresentable explicit empty heartbeat collections block before mutation.
 
 Doctor may report whether a matching historical backup exists, but it must not
 invent how a backup-less current authority was created.
