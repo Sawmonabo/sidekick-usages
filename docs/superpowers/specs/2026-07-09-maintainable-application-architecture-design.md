@@ -1177,6 +1177,36 @@ remains distinct. Redundant one-field account round trips, repeated scope
 fixtures, `raw={}` setup, and duplicate clock tests are removed instead of
 being preserved as coverage padding.
 
+### 5.8 Lifetime collection outcomes
+
+`lifetime.py` owns one feature-local closed result:
+
+- `LifetimeTotal(output_tokens: int, since: date | None)` represents a valid
+  non-negative total, including zero;
+- `LifetimeUnavailable` means the provider has no local source corpus; and
+- `LifetimeFailure(kind)` distinguishes source-unreadable,
+  source-malformed, cache-read, and cache-write failures.
+
+Claude's statistics file and Codex's rollout tree remain provider-native
+source locations owned by the lifetime feature. Only the Sidekick Codex cache
+path comes from injected `ApplicationPaths`. Dates are parsed at the source
+boundary, and rendering receives completed typed results without filesystem
+access.
+
+Codex source enumeration propagates traversal errors, uses canonical relative
+paths below the sessions root as collision-safe cache keys, and compares exact
+integer nanosecond modification times. The exact released basename-plus-float
+cache shape is a known legacy generation: its totals are never trusted, every
+rollout is reread, and the current cache is published only after the complete
+source pass succeeds. Arbitrary or unreadable cache state remains an explicit
+failure. A failed rollout never lowers a total or writes a partial cache.
+
+The usage command collects lifetime state once for each provider represented
+by the selected accounts, including when every usage request fails. Both wide
+and narrow renderers preserve totals, unavailability, and failures. A
+lifetime failure renders before exit and contributes `SYSTEM_ERROR`; absence
+of local lifetime data is not itself an error.
+
 ## 6. Schemas, serialization, and runtime validation
 
 ### 6.1 Naming contract

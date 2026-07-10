@@ -901,9 +901,8 @@ def test_codex_export_writes_saved_credentials_to_home(
     assert saved.codex_home == str(codex_home)
 
 
-def test_check_renders_grouped_overview(tmp_path, monkeypatch):
+def test_check_renders_grouped_overview(tmp_path):
     """`check` collects successes and prints one grouped overview."""
-    monkeypatch.setattr(cli, "claude_lifetime_output", lambda: (1, None))
     acct = _acct(plan="max")
     report = UsageReport(
         windows=(

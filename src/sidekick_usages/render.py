@@ -9,7 +9,8 @@ rectangular blocks which look bulky for this multi-line layout.
 
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
+from typing import assert_never
 
 from rich.console import Console, Group, RenderableType
 from rich.panel import Panel
@@ -23,9 +24,19 @@ from sidekick_usages.branding import (
 )
 from sidekick_usages.core.models import Account, UsageReport, UsageWindow
 from sidekick_usages.core.types import ProviderId
-from sidekick_usages.lifetime import format_since, format_tokens
+from sidekick_usages.lifetime import (
+    LifetimeFailure,
+    LifetimeFailureKind,
+    LifetimeResult,
+    LifetimeTotal,
+    LifetimeUnavailable,
+)
 
 BAR_WIDTH = 18
+
+_TOKENS_PER_THOUSAND = 1_000
+_TOKENS_PER_MILLION = 1_000_000
+_TOKENS_PER_BILLION = 1_000_000_000
 
 #: Utilization percentage thresholds for bar/percent coloring.
 #: Values are the lower bound (inclusive) for each color band.
@@ -77,6 +88,53 @@ _PANEL_CHROME = 6
 
 #: Matches a window length token such as ``5h`` or ``7d``.
 _LENGTH_RE = re.compile(r"\d+[hd]")
+
+
+def _format_tokens(value: int) -> str:
+    """Render a token count compactly."""
+    if value >= _TOKENS_PER_BILLION:
+        return f"{value / _TOKENS_PER_BILLION:.1f}B"
+    if value >= _TOKENS_PER_MILLION:
+        return f"{value / _TOKENS_PER_MILLION:.0f}M"
+    if value >= _TOKENS_PER_THOUSAND:
+        return f"{value / _TOKENS_PER_THOUSAND:.0f}K"
+    return str(value)
+
+
+def _format_since(value: date) -> str:
+    """Render a source date as ``Mon D``."""
+    return f"{value:%b} {value.day}"
+
+
+def _lifetime_text(result: LifetimeResult) -> Text:
+    """Render one completed lifetime result without source I/O."""
+    if isinstance(result, LifetimeTotal):
+        rendered = Text(
+            f"{_format_tokens(result.output_tokens)} output",
+            style="grey54",
+        )
+        if result.since is not None:
+            rendered.append(
+                f"  ·  since {_format_since(result.since)} ",
+                style="grey35",
+            )
+        return rendered
+    if isinstance(result, LifetimeUnavailable):
+        return Text("lifetime unavailable", style="grey42")
+    if isinstance(result, LifetimeFailure):
+        match result.kind:
+            case LifetimeFailureKind.SOURCE_UNREADABLE:
+                label = "lifetime source unreadable"
+            case LifetimeFailureKind.SOURCE_MALFORMED:
+                label = "lifetime source malformed"
+            case LifetimeFailureKind.CACHE_READ_FAILED:
+                label = "lifetime cache read failed"
+            case LifetimeFailureKind.CACHE_WRITE_FAILED:
+                label = "lifetime cache write failed"
+            case _ as unreachable:
+                assert_never(unreachable)
+        return Text(label, style="yellow")
+    assert_never(result)
 
 
 @dataclass(frozen=True)
@@ -500,7 +558,7 @@ def _provider_panel(
     pairs: list[tuple[Account, UsageReport]],
     failures: list[tuple[Account, FetchFailure]],
     namew: int,
-    prov_lifetime: tuple[int, str | None] | None,
+    prov_lifetime: LifetimeResult | None,
     reference_time: datetime,
 ) -> Panel:
     blocks: list[RenderableType] = []
@@ -561,14 +619,9 @@ def _provider_panel(
         f" · {account_count} {account_noun}",
         style="grey54",
     )
-    subtitle = None
-    if prov_lifetime is not None:
-        total, since = prov_lifetime
-        subtitle = Text()
-        subtitle.append(f"{format_tokens(total)} output", style="grey54")
-        since_str = format_since(since)
-        if since_str:
-            subtitle.append(f"  ·  since {since_str} ", style="grey35")
+    subtitle = (
+        _lifetime_text(prov_lifetime) if prov_lifetime is not None else None
+    )
     return Panel(
         content,
         title=title,
@@ -677,6 +730,7 @@ def _failure_block(acct: Account, fail: FetchFailure) -> Group:
 
 def _legacy_overview(
     pairs: list[tuple[Account, UsageReport]],
+    lifetime: dict[ProviderId, LifetimeResult],
     failures: list[tuple[Account, FetchFailure]] | None = None,
     *,
     reference_time: datetime,
@@ -691,12 +745,24 @@ def _legacy_overview(
         if blocks:
             blocks.append(Text(""))
         blocks.append(_failure_block(acct, fail))
+    for provider_id in _provider_order(pairs, failures):
+        result = lifetime.get(provider_id)
+        if result is None:
+            continue
+        if blocks:
+            blocks.append(Text(""))
+        line = Text()
+        color = PROVIDER_COLORS.get(provider_id, "white")
+        line.append(provider_id.upper(), style=f"bold {color}")
+        line.append(" · ", style="grey54")
+        line.append_text(_lifetime_text(result))
+        blocks.append(line)
     return Group(*blocks)
 
 
 def usage_overview(
     pairs: list[tuple[Account, UsageReport]],
-    lifetime: dict[ProviderId, tuple[int, str | None]],
+    lifetime: dict[ProviderId, LifetimeResult],
     *,
     failures: list[tuple[Account, FetchFailure]] | None = None,
     width: int,
@@ -705,7 +771,7 @@ def usage_overview(
     """Render all accounts as provider-grouped framed heat panels.
 
     :param pairs: ``(Account, UsageReport)`` for every fetched account.
-    :param lifetime: ``provider_id -> (output_total, since)``.
+    :param lifetime: Completed lifetime result for each selected provider.
     :param failures: ``(Account, FetchFailure)`` for each account whose
         fetch failed.
     :param width: Target terminal width; below the binding panel
@@ -741,6 +807,7 @@ def usage_overview(
             Text(""),
             _legacy_overview(
                 pairs,
+                lifetime,
                 fails,
                 reference_time=reference_time,
             ),

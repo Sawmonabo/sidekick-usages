@@ -1552,16 +1552,16 @@ existing compatible shape until CS-14.
 
 **Work:**
 
-- [ ] Define a feature-local typed result distinguishing valid totals,
+- [x] Define a feature-local typed result distinguishing valid totals,
       unavailable source data, and invalid/read/write failures.
-- [ ] Preserve valid zero as a real total, never an error sentinel.
-- [ ] Surface malformed/unreadable Claude statistics and Codex rollouts as
+- [x] Preserve valid zero as a real total, never an error sentinel.
+- [x] Surface malformed/unreadable Claude statistics and Codex rollouts as
       actionable typed states.
-- [ ] Surface cache read and write failures without pretending that the cache
+- [x] Surface cache read and write failures without pretending that the cache
       is empty or successfully updated.
-- [ ] Keep Claude/Codex native source locations lifetime/provider-owned and use
+- [x] Keep Claude/Codex native source locations lifetime/provider-owned and use
       injected `ApplicationPaths` only for the Sidekick-owned cache.
-- [ ] Keep token/date human formatting at presentation boundaries.
+- [x] Keep token/date human formatting at presentation boundaries.
 
 **Load-bearing tests:**
 
@@ -1572,6 +1572,17 @@ existing compatible shape until CS-14.
 
 **Acceptance:** No lifetime parse or I/O failure becomes `(0, None)`, an empty
 cache, or a claimed successful write.
+
+**Execution record:** The feature-local result union now distinguishes valid
+totals, unavailable input, source failures, and cache failures. Codex source
+enumeration propagates traversal errors, uses collision-safe relative cache
+keys and exact nanosecond modification times, and upgrades the exact released
+legacy cache shape only after a complete successful source pass. CLI policy
+collects once per selected provider even when every usage request fails,
+renders the completed state in wide and narrow layouts, and maps collection
+failure to the system-error exit. Nine focused lifetime tests plus existing
+CLI/render behavior tests cover the accepted states without private-helper or
+formatter padding.
 
 **Recovery:** Code-only revert; cache remains regenerable and durable account
 state is untouched.

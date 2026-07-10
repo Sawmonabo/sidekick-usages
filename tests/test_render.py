@@ -1,5 +1,5 @@
 import io
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 import pytest
 from rich.console import Console
@@ -13,6 +13,12 @@ from sidekick_usages.core.models import (
     UsageWindow,
 )
 from sidekick_usages.core.types import AccountLabel, ProviderId
+from sidekick_usages.lifetime import (
+    LifetimeFailure,
+    LifetimeFailureKind,
+    LifetimeResult,
+    LifetimeTotal,
+)
 from sidekick_usages.render import FetchFailure
 from tests.test_support import REFERENCE_TIME
 
@@ -167,9 +173,15 @@ def _worst_case_pairs():
     return claude + codex
 
 
-_LIFETIME: dict[ProviderId, tuple[int, str | None]] = {
-    ProviderId.CLAUDE: (424_000_000, "2025-12-28"),
-    ProviderId.CODEX: (212_000_000, "2026-03-30"),
+_LIFETIME: dict[ProviderId, LifetimeResult] = {
+    ProviderId.CLAUDE: LifetimeTotal(
+        424_000_000,
+        date(2025, 12, 28),
+    ),
+    ProviderId.CODEX: LifetimeTotal(
+        212_000_000,
+        date(2026, 3, 30),
+    ),
 }
 
 #: The documented panel floor (spec §8/§10). The Framed-Panels redesign
@@ -299,7 +311,7 @@ def test_overview_degrades_below_floor_to_legacy():
     # path; the legacy tag uses the lowercase provider id. Branding keeps the
     # complete robot but drops the wide product copy.
     out = _render_at(70, _worst_case_pairs())
-    assert "CLAUDE" not in out
+    assert "╭─ CLAUDE" not in out
     assert ".--┴-┴--.  sidekick usages" in out
     assert "A multi-account usage dashboard" not in out
     assert "long.account.name@example.test" in out
@@ -329,8 +341,11 @@ def test_subtitle_not_truncated_when_wider_than_content():
             ),
         )
     ]
-    lifetime: dict[ProviderId, tuple[int, str | None]] = {
-        ProviderId.CODEX: (999_000_000, "2024-01-01")
+    lifetime: dict[ProviderId, LifetimeResult] = {
+        ProviderId.CODEX: LifetimeTotal(
+            999_000_000,
+            date(2024, 1, 1),
+        )
     }
     buf = io.StringIO()
     console = Console(width=200, file=buf)
@@ -455,6 +470,33 @@ def test_legacy_mode_renders_failures():
     )
     out = buf.getvalue()
     assert "token expired" in out
+    assert "212M output" in out
+
+
+@pytest.mark.parametrize("width", [200, 40])
+def test_lifetime_failure_survives_wide_and_narrow_rendering(width: int):
+    pairs = [
+        (
+            _acct("acct", "codex", "pro"),
+            _report(("5h", 8, _time_after(hours=3))),
+        )
+    ]
+    lifetime: dict[ProviderId, LifetimeResult] = {
+        ProviderId.CODEX: LifetimeFailure(
+            LifetimeFailureKind.CACHE_WRITE_FAILED
+        )
+    }
+    buf = io.StringIO()
+    Console(width=width, file=buf).print(
+        render.usage_overview(
+            pairs,
+            lifetime,
+            width=width,
+            reference_time=REFERENCE_TIME,
+        )
+    )
+
+    assert "lifetime cache write failed" in buf.getvalue()
 
 
 def test_panels_have_interior_top_padding():

@@ -80,6 +80,8 @@ from sidekick_usages.heartbeat import (
 )
 from sidekick_usages.http import HttpClient
 from sidekick_usages.lifetime import (
+    LifetimeFailure,
+    LifetimeResult,
     claude_lifetime_output,
     codex_lifetime_output,
 )
@@ -142,7 +144,7 @@ class AppContext:
     providers: dict[ProviderId, Provider]
     heartbeat_providers: dict[ProviderId, HeartbeatProvider]
     private_codex_locations: PrivateCodexLocations
-    lifetime_sources: dict[ProviderId, Callable[[], tuple[int, str | None]]]
+    lifetime_sources: dict[ProviderId, Callable[[], LifetimeResult]]
     console: Console
     err_console: Console
     clock: Clock
@@ -328,7 +330,8 @@ def check_cmd() -> None:
 def _do_check() -> None:
     """Fetch all (filtered) accounts and render the grouped overview.
 
-    Exits with code 1 if any account failed.
+    Account failures require manual action; lifetime collection failures
+    produce a system-error exit after the completed state is rendered.
     """
     app_ctx = _get_ctx()
     app_ctx.collected.clear()
@@ -345,14 +348,17 @@ def _do_check() -> None:
         if not _fetch_and_render(acct):
             exit_code = ExitCode.MANUAL_ACTION
 
+    lifetime = _lifetime_for(accounts, app_ctx.lifetime_sources)
+    if any(
+        isinstance(result, LifetimeFailure) for result in lifetime.values()
+    ):
+        exit_code = _combined_exit_code(exit_code, ExitCode.SYSTEM_ERROR)
+
     if app_ctx.collected or app_ctx.failures:
         app_ctx.console.print(
             usage_overview(
                 app_ctx.collected,
-                _lifetime_for(
-                    app_ctx.collected,
-                    app_ctx.lifetime_sources,
-                ),
+                lifetime,
                 failures=app_ctx.failures,
                 width=app_ctx.console.size.width,
                 reference_time=app_ctx.clock.now(),
@@ -368,11 +374,11 @@ def _collect(acct: Account, report: UsageReport) -> None:
 
 
 def _lifetime_for(
-    pairs: list[tuple[Account, UsageReport]],
-    sources: dict[ProviderId, Callable[[], tuple[int, str | None]]],
-) -> dict[ProviderId, tuple[int, str | None]]:
-    """Look up lifetime output per provider present in ``pairs``."""
-    providers = {acct.provider_id for acct, _ in pairs}
+    accounts: list[Account],
+    sources: dict[ProviderId, Callable[[], LifetimeResult]],
+) -> dict[ProviderId, LifetimeResult]:
+    """Collect lifetime once per provider represented by selected accounts."""
+    providers = {account.provider_id for account in accounts}
     return {
         provider_id: source()
         for provider_id, source in sources.items()

@@ -17,9 +17,15 @@ from sidekick_usages.core.models import (
     UsageReport,
     UsageWindow,
 )
-from sidekick_usages.core.types import AccountLabel, ProviderId
+from sidekick_usages.core.types import AccountLabel, ExitCode, ProviderId
 from sidekick_usages.errors import AuthError, TransientError
 from sidekick_usages.http import HttpClient
+from sidekick_usages.lifetime import (
+    LifetimeFailure,
+    LifetimeFailureKind,
+    LifetimeResult,
+    LifetimeUnavailable,
+)
 from sidekick_usages.providers.base import Provider
 from sidekick_usages.store import AccountStore
 from tests.test_support import FixedClock, make_application_paths
@@ -179,11 +185,10 @@ def test_generic_error_is_recorded(tmp_path: Path) -> None:
     assert stdout.getvalue() == ""
 
 
-def test_check_renders_error_in_panel(tmp_path: Path, monkeypatch) -> None:
+def test_check_collects_lifetime_when_every_usage_fetch_fails(
+    tmp_path: Path,
+) -> None:
     """Full check: always-401 account exits 1 and renders error in panel."""
-    monkeypatch.setattr(cli, "claude_lifetime_output", lambda: (1, None))
-    monkeypatch.setattr(cli, "codex_lifetime_output", lambda: (1, None))
-
     acct = _acct()
     provider = _FakeProvider(
         fetch_results=[AuthError("Token expired")],
@@ -194,6 +199,13 @@ def test_check_renders_error_in_panel(tmp_path: Path, monkeypatch) -> None:
     paths = make_application_paths(tmp_path)
     store = AccountStore(paths.accounts)
     store.upsert(acct)
+    calls = 0
+
+    def collect_lifetime() -> LifetimeResult:
+        nonlocal calls
+        calls += 1
+        return LifetimeUnavailable()
+
     cli.set_context(
         cli.AppContext(
             store=store,
@@ -201,7 +213,7 @@ def test_check_renders_error_in_panel(tmp_path: Path, monkeypatch) -> None:
             providers={provider.id: provider},
             heartbeat_providers={},
             private_codex_locations=paths.private_codex,
-            lifetime_sources={},
+            lifetime_sources={ProviderId.CODEX: collect_lifetime},
             console=Console(file=stdout, width=200, force_terminal=False),
             err_console=Console(file=stderr, force_terminal=False),
             clock=FixedClock(),
@@ -211,8 +223,28 @@ def test_check_renders_error_in_panel(tmp_path: Path, monkeypatch) -> None:
     result = CliRunner().invoke(cli.app, ["check"])
 
     assert result.exit_code == 1
+    assert calls == 1
     out = stdout.getvalue()
     assert "⚠ token expired" in out
     assert "sidekick-usages refresh" in out
+    assert "lifetime unavailable" in out
     # The error appears INSIDE the panel — after the top strip
     assert out.index("sidekick usages") < out.index("token expired")
+
+
+def test_lifetime_failure_renders_and_forces_system_error(
+    tmp_path: Path,
+) -> None:
+    acct = _acct()
+    provider = _FakeProvider()
+    _, stdout, _ = _install_ctx(tmp_path, provider, acct, width=200)
+    cli._get_ctx().lifetime_sources = {
+        ProviderId.CODEX: lambda: LifetimeFailure(
+            LifetimeFailureKind.SOURCE_UNREADABLE
+        )
+    }
+
+    result = CliRunner().invoke(cli.app, ["check"])
+
+    assert result.exit_code == ExitCode.SYSTEM_ERROR
+    assert "lifetime source unreadable" in stdout.getvalue()
