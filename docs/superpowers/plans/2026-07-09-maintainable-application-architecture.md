@@ -370,6 +370,7 @@ unrecorded chat-only disposition.
 |---|---|---|---|---|---|---|
 | CS-07 | Boundary-validation dependency | Pydantic 2.13.4 `TypeAdapter`; Homebrew Rust/maturin proof remains a release gate | **GO** | 2026-07-10 | `986e1f7` | `3db51ef2abb86390ab55b6a31a8303f4d18df22f2599a5112d30e494353e44c4` |
 | CS-08 | Pooled transport and sole retry owner | urllib3 2.7.0 with retries disabled plus one focused Sidekick executor | **WAITING FOR OPERATOR DECISION** | Pending | Pending | Pending |
+| CS-09 | Native application-path discovery | platformdirs 4.10.0 privately behind `paths.py`; physical relocation remains off | **WAITING FOR OPERATOR DECISION** | Pending | Pending | Pending |
 
 ## 6. Testing strategy
 
@@ -958,16 +959,16 @@ redirect, lifecycle, packaging, redaction, or platform acceptance.
 
 **Work:**
 
-- [ ] Refresh `platformdirs` release, canonical repository, license,
+- [x] Refresh `platformdirs` release, canonical repository, license,
       advisories, provenance, maintenance, and Python/platform support.
-- [ ] Record exact Linux, macOS, Windows, and WSL outputs for the chosen
+- [x] Record exact Linux, macOS, Windows, and WSL outputs for the chosen
       application name, author, roaming, and override policy.
-- [ ] Verify `ensure_exists=False` produces no discovery side effect.
-- [ ] Confirm account state and private Codex auth map to durable data while
+- [x] Verify `ensure_exists=False` produces no discovery side effect.
+- [x] Confirm account state and private Codex auth map to durable data while
       lifetime totals map to cache.
-- [ ] Define exact canonical, existing Sidekick, prototype, private Codex, and
+- [x] Define exact canonical, existing Sidekick, prototype, private Codex, and
       lifetime-cache locations.
-- [ ] Record packaging impact, migration feasibility, and reversal conditions.
+- [x] Record packaging impact, migration feasibility, and reversal conditions.
 
 **GO gate:** Exact native paths and a safe compatibility transition are
 approved for every supported environment.
@@ -980,6 +981,26 @@ direct `platformdirs` dependency or dormant native-migration code.
 exact compatibility disposition, and any canonical paths in the design
 authority. Compatibility-only path injection may proceed after either recorded
 disposition; native migration requires a recorded GO.
+
+**Execution record:** Research completed on 2026-07-10 against
+`c5b588ad474fd95c597cfd0b64339223e3da1843`. platformdirs 4.10.0 was compared
+with repeated hard-coded paths, an owned per-platform switch, and
+`pydantic-settings`. The focused package is pure Python, MIT licensed, has no
+runtime dependency, and owns the exact convention problem without becoming a
+settings framework. A frozen constructor produced deterministic Linux,
+absolute-XDG, macOS, Windows, and WSL outputs and created no directories with
+`ensure_exists=False`. The design and tracked research record persist those
+outputs, semantic data/cache roles, invalid-relative-XDG behavior, packaging
+limits, activation gates, and reversal conditions. No runtime dependency,
+physical path, production code, or test changed. No test was added because this
+change records research rather than behavior; native implementation tests must
+exercise the few observable path, side-effect, and consumer contracts.
+
+**Current status:** **WAITING FOR OPERATOR DECISION**. A GO approves
+platformdirs 4.10.0 as the private native-discovery implementation and the
+frozen path contract. It does not activate physical relocation. A NO-GO keeps
+the compatibility locations behind the same injected `ApplicationPaths` and
+prohibits dormant native-only code or a runtime dependency.
 
 **Commit:** `docs(research): decide application path discovery dependency`
 

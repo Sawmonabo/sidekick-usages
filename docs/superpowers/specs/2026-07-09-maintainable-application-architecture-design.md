@@ -748,18 +748,44 @@ already configured store, service, or narrow provider facade.
 
 #### Cross-platform directory dependency decision
 
-Current primary-source research retrieved on 2026-07-09 compared:
+**Research state:** **WAITING FOR OPERATOR DECISION**. The completed CS-09
+comparison recommends adopting platformdirs 4.10.0 privately behind `paths.py`
+for native discovery. Adoption does not authorize physical relocation, which
+remains disabled until CS-19 passes its separate migration and rollback gates.
+The self-contained evidence record is
+[Application Path Discovery Dependency Research][paths-research].
 
 | Option | Benefits | Costs and risks | Decision |
 |---|---|---|---|
-| Standard library and local per-OS logic | No dependency | Owns XDG, macOS, Windows, WSL, override, and future-platform behavior | Rejected as the target |
+| Standard library and local per-OS logic | No dependency | Owns XDG, macOS, Windows, WSL, override, and future-platform behavior | NO-GO |
 | Keep one hard-coded `Path.home() / ".config"` root | Preserves current behavior with little code | Ignores native macOS and Windows conventions and keeps state/cache lifecycles conflated | Compatibility baseline only |
-| `platformdirs` 4.10.0 behind `paths.py` | Focused config, data, state, and cache discovery across supported operating systems; Python 3.14 support | Canonical paths differ from the current public contract and require explicit migration | Preliminary adoption choice |
-| `pydantic-settings` 2.14.2 | Typed multi-source settings, validation, and precedence | Solves a broader problem that the current application does not have | Deferred until a real settings contract exists |
+| `platformdirs` 4.10.0 behind `paths.py` | Focused, maintained, side-effect-free native discovery; pure Python, MIT, no runtime dependencies, Python 3.14 support | Canonical paths differ from the current public contract and require explicit migration | Conditional GO recommendation |
+| `pydantic-settings` 2.14.2 | Typed multi-source settings, validation, and precedence | Solves a broader problem that the current application does not have | NO-GO for path discovery |
 
 `platformdirs` remains private to `paths.py`; consumers use `Path` and
 `ApplicationPaths`. No provider, service, CLI command, persistence module, or
 core module imports it directly.
+
+The frozen discovery call is:
+
+```python
+PlatformDirs(
+    appname="sidekick-usages",
+    appauthor=False,
+    version=None,
+    roaming=False,
+    multipath=False,
+    opinion=True,
+    ensure_exists=False,
+    use_site_for_root=False,
+)
+```
+
+`appauthor=False` avoids a duplicated Windows component; `roaming=False` keeps
+credentials in Local AppData; `version=None` prevents release-path churn;
+`opinion=True` preserves the separate Windows cache child;
+`ensure_exists=False` keeps discovery read-only; and `use_site_for_root=False`
+preserves per-user Unix paths even when the process runs as root.
 
 The intended native semantic mapping is:
 
@@ -770,18 +796,36 @@ The intended native semantic mapping is:
 - no current artifact uses `user_config_path`, because the application has no
   user settings contract.
 
-The spike verifies exact operating-system outputs, application name, author
-argument, roaming behavior, and override semantics before approving physical
-locations. It does not use directory names to reclassify durable state as
-cache or settings. Discovery calls `platformdirs` path APIs with
-`ensure_exists=False`; persistence, credential, and cache writers create only
-the directories they own.
+The controlled 4.10.0 discovery probe produced:
 
-The implementation spike must record exact Linux, macOS, Windows, and WSL
-outputs and decide the compatibility transition before changing a durable
-location. It must classify each current artifact, preserve credential
-permissions, and distinguish data that may be regenerated from data that must
-be migrated.
+| Environment | Account store and private Codex root | Lifetime cache |
+|---|---|---|
+| Linux | `~/.local/share/sidekick-usages/accounts.json`; sibling `codex/` | `~/.cache/sidekick-usages/codex-lifetime-cache.json` |
+| Linux with absolute XDG roots | `$XDG_DATA_HOME/sidekick-usages/accounts.json`; sibling `codex/` | `$XDG_CACHE_HOME/sidekick-usages/codex-lifetime-cache.json` |
+| WSL | The Linux/XDG contract below the WSL Linux home | The Linux/XDG cache contract |
+| macOS | `~/Library/Application Support/sidekick-usages/accounts.json`; sibling `codex/` | `~/Library/Caches/sidekick-usages/codex-lifetime-cache.json` |
+| Windows | `%LOCALAPPDATA%\sidekick-usages\accounts.json`; sibling `codex\` | `%LOCALAPPDATA%\sidekick-usages\Cache\codex-lifetime-cache.json` |
+
+The probe also inspected absent controlled roots before and after every path
+property and observed no created file or directory. Writers, not discovery,
+create only the directories they own.
+
+On Unix, macOS, and WSL, non-empty absolute XDG values are honored. A relative
+XDG value is rejected as a typed path-discovery failure before any credential
+path is returned. Sidekick does not add a second environment override; tests
+inject `ApplicationPaths`. Production Windows composition rejects the
+library's `WIN_PD_OVERRIDE_*` testing variables and relies on the operating
+system known-folder result. WSL must remain on the Linux filesystem rather than
+silently selecting `%LOCALAPPDATA%` or a mounted Windows home.
+
+Package metadata and deterministic class probes are not native relocation
+proof. Before activation, real Linux, macOS, Windows, and WSL runners must
+confirm the frozen outputs, directory/ACL behavior, collision handling,
+rollback, and upgrade-again equivalence. Reverse the dependency and retain
+compatibility-path `ApplicationPaths` if those outputs differ, relative-root
+safety cannot be enforced, a supported platform is lost, packaging or startup
+cost becomes unacceptable, security/maintenance posture degrades, or the
+location and latest-state rollback harness cannot pass.
 
 If both authoritative generations exist, the application never silently
 chooses one. It either proves they are equivalent under the migration contract
@@ -817,12 +861,12 @@ able to report source, destination, conflict, partial work, and recovery action
 without first requiring a successfully loaded account store. No second path or
 migration service is introduced.
 
-For an executable command, runtime composition assesses locations before
-loading the store. An unambiguous one-source migration to an absent canonical
-destination invokes the idempotent migration operation before store load. A
-no-op assessment proceeds directly. A conflict or partial destination blocks
-non-diagnostic commands while still permitting the composition needed by
-`doctor`. Help and version bypass assessment entirely.
+For an executable command, runtime composition may assess locations before
+loading the store, but it does not silently relocate data. Compatibility paths
+remain authoritative until CS-19 explicitly activates the approved migration
+protocol. A conflict or partial destination blocks non-diagnostic commands
+while still permitting the read-only composition needed by `doctor`. Help and
+version bypass assessment entirely.
 
 ## 5. Shared core
 
@@ -2675,9 +2719,9 @@ sources retrieved on 2026-07-09. Focused dependency research was refreshed on
 - **Path dependency baseline:** `platformdirs` is not a declared runtime
   dependency; version 4.9.6 appears only transitively in the development lock
   graph through `python-discovery` and `virtualenv`
-- **Application-path decision:** `platformdirs` 4.10.0 is the preliminary
-  direct runtime adoption choice behind `paths.py`, subject to the explicit
-  cross-platform and migration gate in section 4.2
+- **Application-path research:** section 4.2 now contains the completed
+  platformdirs 4.10.0 adoption recommendation and exact path contract;
+  operator disposition remains pending and relocation remains disabled
 - **Settings baseline:** the application has no cohesive multi-source settings
   contract
 - **Settings decision:** `pydantic-settings` 2.14.2 is deferred and is not
@@ -2719,6 +2763,24 @@ left nearly every HTTP-specific policy local. The focused Sidekick executor is
 therefore the recommendation, not yet an approved dependency. Only Linux ran
 the local spike; native proxy, CA, TLS, macOS, Windows, WSL, and Homebrew
 behavior remains an implementation gate.
+
+### 20.3 CS-09 evidence snapshot
+
+The 2026-07-10 path research used the same repository snapshot, platformdirs
+4.10.0 official APIs and tagged platform implementations, controlled native
+class probes, and primary XDG, Apple, Microsoft, and WSL guidance. Exact
+constructor arguments, platform outputs, current and native file roles,
+override behavior, package evidence, activation gates, and reversal conditions
+are in the tracked
+[Application Path Discovery Dependency Research][paths-research].
+
+The controlled probe returned the frozen Linux, absolute-XDG, macOS, Windows,
+and WSL paths and created no filesystem object with `ensure_exists=False`.
+platformdirs is one dependency-free pure-Python runtime distribution; native
+operating-system probes and the full relocation/rollback transaction remain
+later gates. Adoption authorizes discovery only. The current compatibility
+account store, private Codex root, and lifetime cache remain authoritative until
+an independently approved migration activates new locations.
 
 Local path evidence at the evidence commit is:
 
@@ -2840,6 +2902,7 @@ baseline and are mirrored in the implementation-plan ledger.
 |---|---|---|
 | CS-07 | Pydantic 2.13.4 `TypeAdapter` at untrusted boundaries; Homebrew source-build proof remains a release gate | **GO — APPROVED 2026-07-10** |
 | CS-08 | urllib3 2.7.0 pooled transport with retries disabled plus one focused Sidekick retry executor | **WAITING FOR OPERATOR DECISION** |
+| CS-09 | platformdirs 4.10.0 behind `paths.py`; physical relocation remains separately gated | **WAITING FOR OPERATOR DECISION** |
 
 ## 21. Approved decisions
 
@@ -2953,5 +3016,6 @@ docs/superpowers/plans/
 [platformdirs-api]: https://platformdirs.readthedocs.io/en/latest/api.html
 [platformdirs-platforms]: https://platformdirs.readthedocs.io/en/latest/platforms.html
 [platformdirs-pypi]: https://pypi.org/project/platformdirs/
+[paths-research]: ../research/2026-07-10-application-path-discovery-dependency.md
 [schema-research]: ../research/2026-07-10-schema-validation-dependency.md
 [usage-tui-design]: ./2026-06-19-usage-tui-redesign-design.md
