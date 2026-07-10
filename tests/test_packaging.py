@@ -35,6 +35,7 @@ def test_runtime_dependencies_and_lock_match_reviewed_versions() -> None:
     }
 
     assert "click>=8.1" in dependencies
+    assert "platformdirs==4.10.0" in dependencies
     assert "pydantic==2.13.4" in dependencies
     assert "portalocker==3.2.0" in dependencies
     assert "pywin32==312; sys_platform == 'win32'" in dependencies
@@ -49,6 +50,7 @@ def test_runtime_dependencies_and_lock_match_reviewed_versions() -> None:
         "types-pywin32==312.0.0.20260609; sys_platform == 'win32'",
     }
     assert locked["portalocker"] == "3.2.0"
+    assert locked["platformdirs"] == "4.10.0"
     assert locked["pydantic"] == "2.13.4"
     assert locked["pydantic-core"] == "2.46.4"
     assert locked["pywin32"] == "312"
@@ -59,6 +61,14 @@ def test_runtime_dependencies_and_lock_match_reviewed_versions() -> None:
 def test_exact_wheel_selection_and_member_contract(tmp_path: Path) -> None:
     """All artifact forms require the package and reject flat remnants."""
     assert {
+        ("claude", "setup-token", "--help"),
+        ("codex", "login", "--help"),
+        ("codex", "export", "--help"),
+        ("setup-token", "--help"),
+        ("codex-login", "--help"),
+        ("codex-export", "--help"),
+    } <= set(smoke_wheel.SMOKE_ARGUMENTS)
+    assert {
         "sidekick_usages/heartbeat/base.py",
         "sidekick_usages/heartbeat/codex.py",
         "sidekick_usages/heartbeat/domain.py",
@@ -67,6 +77,9 @@ def test_exact_wheel_selection_and_member_contract(tmp_path: Path) -> None:
         "sidekick_usages/store.py",
         "sidekick_usages/cli.py",
         "sidekick_usages/cli_help.py",
+        "sidekick_usages/persistence/migration_errors.py",
+        "sidekick_usages/persistence/migrations.py",
+        "sidekick_usages/render.py",
         "sidekick_usages/token_input.py",
     } <= smoke_wheel.FORBIDDEN_WHEEL_MEMBERS
     assert {
@@ -76,13 +89,31 @@ def test_exact_wheel_selection_and_member_contract(tmp_path: Path) -> None:
         "sidekick_usages/heartbeat/models.py",
         "sidekick_usages/heartbeat/ports.py",
         "sidekick_usages/persistence/_compat/v060-reader.zip",
+        "sidekick_usages/persistence/_platform/posix_private_bundles.py",
+        "sidekick_usages/persistence/_platform/windows_private_bundles.py",
+        "sidekick_usages/persistence/credential_transaction_plans.py",
+        "sidekick_usages/persistence/credential_transaction_recovery.py",
+        "sidekick_usages/persistence/migrations/__init__.py",
+        "sidekick_usages/persistence/migrations/account.py",
+        "sidekick_usages/persistence/migrations/errors.py",
+        "sidekick_usages/persistence/migrations/location.py",
+        "sidekick_usages/persistence/migrations/observer.py",
+        "sidekick_usages/persistence/migrations/ports.py",
+        "sidekick_usages/persistence/migrations/service.py",
+        "sidekick_usages/persistence/private_bundle_paths.py",
+        "sidekick_usages/persistence/private_bundle_writes.py",
+        "sidekick_usages/persistence/private_credential_contracts.py",
         "sidekick_usages/persistence/transaction.py",
         "sidekick_usages/providers/codex/auth.py",
+        "sidekick_usages/providers/codex/auth_migration.py",
         "sidekick_usages/providers/codex/heartbeat.py",
         "sidekick_usages/providers/codex/provider.py",
         "sidekick_usages/providers/codex/schemas.py",
         "sidekick_usages/providers/codex/usage.py",
         "sidekick_usages/providers/registry.py",
+        "sidekick_usages/usage/legacy_render.py",
+        "sidekick_usages/usage/render.py",
+        "sidekick_usages/usage/reset_display.py",
         *smoke_wheel.REQUIRED_CLI_MEMBERS,
     } <= smoke_wheel.REQUIRED_WHEEL_MEMBERS
     artifacts = tmp_path / "artifacts"

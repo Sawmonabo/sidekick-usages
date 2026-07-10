@@ -38,14 +38,16 @@ from sidekick_usages.persistence.filesystem import (
     PersistenceFilesystem,
 )
 from sidekick_usages.persistence.inventory import OrphanedPrivateCredentials
-from sidekick_usages.persistence.migration_errors import (
+from sidekick_usages.persistence.migrations.account import (
+    AccountMigrationCoordinator,
+)
+from sidekick_usages.persistence.migrations.errors import (
     PersistenceMigrationStateError,
     PrototypeReimportRequiredError,
     ReleasedVerifierBoundaryError,
     SchedulerMutationBlockedError,
     VerificationPhase,
 )
-from sidekick_usages.persistence.migrations import PersistenceMigrationService
 from sidekick_usages.persistence.private_credentials import (
     PrivateCredentialRepairResult,
 )
@@ -179,6 +181,15 @@ class InMemoryTransaction:
         if existing is None:
             self._filesystem.seed_immutable(generation, source.data)
         self._operation_log.append(f"snapshot:{generation}")
+        return artifact
+
+    def publish_migration_snapshot(
+        self,
+        generation: AuthorityGeneration,
+        payload: bytes,
+    ) -> ManagedArtifact:
+        artifact = self._filesystem.seed_immutable(generation, payload)
+        self._operation_log.append(f"migration-snapshot:{generation}")
         return artifact
 
     def publish_receipt(
@@ -443,7 +454,7 @@ def _service(
     private_credentials: RecordingPrivateCredentials | None = None,
     operation_log: list[str] | None = None,
 ) -> tuple[
-    PersistenceMigrationService,
+    AccountMigrationCoordinator,
     InMemoryFilesystem,
     InMemoryFilesystem,
     list[str],
@@ -465,8 +476,9 @@ def _service(
     private_credentials = private_credentials or RecordingPrivateCredentials(
         OrphanedPrivateCredentials.ABSENT
     )
-    service = PersistenceMigrationService(
-        paths.accounts,
+    service = AccountMigrationCoordinator(
+        paths.accounts.canonical,
+        paths.accounts.prototype_cc_usage,
         scheduler_assessor=scheduler,
         private_credential_artifacts=private_credentials,
         released_v060_verifier=verifier,

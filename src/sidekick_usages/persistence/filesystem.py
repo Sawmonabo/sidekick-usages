@@ -194,6 +194,31 @@ class PersistenceFilesystem(RecoveryOperations):
             copy_source=True,
         )
 
+    def _publish_migration_snapshot(
+        self,
+        generation: AuthorityGeneration,
+        payload: bytes,
+    ) -> ManagedArtifact:
+        """Publish validated bytes imported from a locked peer authority."""
+        self._validate_generation(payload, generation)
+        final_basename = self.grammar.backup_basename(
+            generation,
+            sha256_digest(payload),
+        )
+        self._prepare_parent()
+        purpose = (
+            ArtifactPurpose.BACKUP
+            if generation is AuthorityGeneration.GENERATION_ZERO
+            else ArtifactPurpose.SNAPSHOT
+        )
+        return self._publish_content_addressed(
+            final_basename,
+            payload,
+            purpose,
+            expected_source=None,
+            copy_source=False,
+        )
+
     def _publish_receipt(
         self,
         prototype_digest: Sha256Digest,

@@ -40,6 +40,24 @@ urllib3==2.7.0 ; python_version >= "3.14"
     ]
 
 
+def test_locked_homebrew_closure_contains_every_host_runtime_dependency() -> (
+    None
+):
+    """Formula resolution cannot omit a direct non-Windows dependency."""
+    resolved = dict(homebrew_generator.resolved_versions())
+
+    assert {
+        "click",
+        "platformdirs",
+        "portalocker",
+        "pydantic",
+        "rich",
+        "typer",
+        "urllib3",
+    } <= resolved.keys()
+    assert "pywin32" not in resolved
+
+
 def test_pydantic_core_source_build_policy_is_exact_and_fail_closed() -> None:
     native_source_builds = [("pydantic-core", "2.46.4")]
 

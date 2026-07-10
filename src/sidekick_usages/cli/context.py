@@ -5,6 +5,7 @@ from collections.abc import Callable, Mapping
 from contextlib import ExitStack
 from dataclasses import dataclass, field
 from functools import partial
+from pathlib import Path
 from typing import NoReturn, Protocol
 
 import click
@@ -46,22 +47,32 @@ from sidekick_usages.persistence.errors import (
     UnsafeManagedFileError,
     UnsupportedFilesystemError,
 )
-from sidekick_usages.persistence.inventory import OrphanedPrivateCredentials
-from sidekick_usages.persistence.migration_errors import (
-    PersistenceMigrationStateError,
-)
 from sidekick_usages.persistence.migrations import (
     PermissionRepairOperationResult,
     PersistenceMigrationService,
 )
-from sidekick_usages.persistence.private_credentials import (
-    PrivateCredentialTree,
+from sidekick_usages.persistence.migrations.errors import (
+    LocationMigrationStateError,
+    PersistenceMigrationStateError,
+)
+from sidekick_usages.persistence.migrations.location import (
+    BlockedLocationSelection,
+    LocationMigrationAssessment,
+    LocationMigrationResult,
+    ReadyLocationSelection,
+    RuntimePersistenceSelection,
+    blocked_location_assessment,
+    is_blocked_location_selection,
+    ready_location_assessment,
 )
 from sidekick_usages.persistence.v060 import ReleasedV060Verifier
 from sidekick_usages.providers.base import Provider
 from sidekick_usages.providers.claude import (
     ClaudeProvider,
     ClaudeSetupToken,
+)
+from sidekick_usages.providers.codex.auth_migration import (
+    CodexPrivateAuthMigrator,
 )
 from sidekick_usages.providers.registry import (
     build_heartbeat_registry,
@@ -70,14 +81,6 @@ from sidekick_usages.providers.registry import (
 from sidekick_usages.update import UpdateService
 from sidekick_usages.usage import UsageCheckService
 
-_RUNTIME_PERSISTENCE_CODES = frozenset(
-    {
-        PersistenceCode.EMPTY,
-        PersistenceCode.CURRENT,
-        PersistenceCode.PROTOTYPE_IMPORTED,
-    }
-)
-
 
 class PersistenceCommands(Protocol):
     """Persistence operations exposed to explicit recovery commands."""
@@ -85,8 +88,18 @@ class PersistenceCommands(Protocol):
     def assess(self) -> PersistenceAssessment:
         """Return a passive assessment."""
 
+    def assess_locations(
+        self,
+    ) -> LocationMigrationAssessment[RuntimePersistenceSelection]:
+        """Return passive durable-state location evidence."""
+
     def mutation_preview(self) -> PersistenceAssessment:
         """Require scheduler quiescence and return a safe preview."""
+
+    def location_migration_preview(
+        self,
+    ) -> LocationMigrationAssessment[RuntimePersistenceSelection]:
+        """Require quiescence and return relocation evidence."""
 
     def permission_repair_preview(
         self,
@@ -102,6 +115,9 @@ class PersistenceCommands(Protocol):
         reimport_prototype: bool = False,
     ) -> PersistenceAssessment:
         """Migrate account authority or import the prototype."""
+
+    def migrate_locations(self) -> LocationMigrationResult:
+        """Relocate compatibility state to native application data."""
 
     def prepare_rollback(self) -> PersistenceOperationResult:
         """Prepare exact released-v0.6.0 compatibility."""
@@ -154,14 +170,14 @@ class DoctorReady:
     """Doctor can inspect validated accounts and persistence state."""
 
     service: DoctorService
-    assessment: PersistenceAssessment
+    assessment: LocationMigrationAssessment[ReadyLocationSelection]
 
 
 @dataclass(frozen=True, slots=True)
 class DoctorBlocked:
     """Doctor can render a safe blocking persistence assessment."""
 
-    assessment: PersistenceAssessment
+    assessment: LocationMigrationAssessment[BlockedLocationSelection]
 
 
 @dataclass(frozen=True, slots=True)
@@ -249,23 +265,14 @@ def _provider_maps(
     return provider_map, heartbeat_map
 
 
-def _private_credentials(paths: ApplicationPaths) -> PrivateCredentialTree:
-    return PrivateCredentialTree(
-        paths.private_codex.canonical,
-        account_path=paths.accounts.canonical,
-        existing_root=paths.private_codex.existing_sidekick,
-    )
-
-
 def _persistence(
     paths: ApplicationPaths,
-    private_credentials: PrivateCredentialTree,
 ) -> PersistenceMigrationService:
     daemon = DaemonManager()
     return PersistenceMigrationService(
-        paths.accounts,
+        paths,
         scheduler_assessor=daemon.assess_quiescence,
-        private_credential_artifacts=private_credentials,
+        private_auth_migrator=CodexPrivateAuthMigrator(),
         released_v060_verifier=ReleasedV060Verifier(),
     )
 
@@ -274,18 +281,8 @@ def _composition_failure(
     error: ManagedFileReadError
     | UnsafeManagedFileError
     | UnsupportedFilesystemError,
-    paths: ApplicationPaths,
-    private_credentials: PrivateCredentialTree | None,
+    safe_path: Path,
 ) -> PersistenceCompositionFailure:
-    private_failure = (
-        private_credentials is None
-        or error.artifact_basename == paths.private_codex.canonical.name
-    )
-    safe_path = (
-        paths.private_codex.canonical
-        if private_failure
-        else paths.accounts.canonical
-    )
     return PersistenceCompositionFailure(
         code=error.code,
         safe_path=safe_path,
@@ -293,6 +290,22 @@ def _composition_failure(
         message=str(error),
         next_command=recovery_next_command(error.code),
         guidance=recovery_guidance(error.code),
+    )
+
+
+def _location_race_failure(
+    assessment: LocationMigrationAssessment[RuntimePersistenceSelection],
+) -> PersistenceCompositionFailure:
+    code = PersistenceCode.SOURCE_CHANGED
+    return PersistenceCompositionFailure(
+        code=code,
+        safe_path=assessment.source,
+        artifact_basename=assessment.artifact_basename,
+        message=(
+            "Persistence locations changed while diagnostics were being read."
+        ),
+        next_command=("sidekick-usages", "doctor"),
+        guidance=recovery_guidance(code),
     )
 
 
@@ -315,33 +328,24 @@ def compose_app_context(
             heartbeat_providers,
         )
         http = resources.enter_context(HttpClient(clock=resolved_clock))
-        private: PrivateCredentialTree | None = None
         try:
-            private = _private_credentials(resolved_paths)
-            persistence = _persistence(resolved_paths, private)
-            assessment = persistence.assess()
+            persistence = _persistence(resolved_paths)
+            runtime = persistence.runtime()
+            private = runtime.private_credentials
+            accounts = AccountStore(
+                runtime.locations,
+                orphaned_credentials_observer=private.observe,
+                private_credentials=private,
+            ).load()
+            persistence.require_location_unchanged(runtime.assessment)
         except (
             ManagedFileReadError,
             UnsafeManagedFileError,
             UnsupportedFilesystemError,
         ) as error:
             raise _ApplicationCompositionError(
-                _composition_failure(error, resolved_paths, private)
+                _composition_failure(error, resolved_paths.accounts.canonical)
             ) from None
-        interrupted_private = (
-            assessment.code is PersistenceCode.INTERRUPTED_ARTIFACTS
-            and private.observe() is OrphanedPrivateCredentials.INTERRUPTED
-        )
-        if (
-            assessment.code not in _RUNTIME_PERSISTENCE_CODES
-            and not interrupted_private
-        ):
-            raise AccountStoreStateError(assessment)
-        accounts = AccountStore(
-            resolved_paths.accounts,
-            orphaned_credentials_observer=private.observe,
-            private_credentials=private,
-        ).load()
         credentials = CredentialService(
             accounts,
             http,
@@ -402,10 +406,44 @@ def compose_persistence_context(
 
     def build(_resources: ExitStack) -> PersistenceContext:
         resolved_paths = _resolved_paths(paths)
-        private = _private_credentials(resolved_paths)
-        return PersistenceContext(_persistence(resolved_paths, private))
+        return PersistenceContext(_persistence(resolved_paths))
 
     return _compose(build)
+
+
+def _ready_doctor_state(
+    persistence: PersistenceMigrationService,
+    ready: LocationMigrationAssessment[ReadyLocationSelection],
+    providers: dict[ProviderId, Provider],
+    heartbeat_providers: dict[ProviderId, HeartbeatProvider],
+    clock: Clock,
+) -> DoctorState:
+    try:
+        accounts = persistence.read_accounts()
+        persistence.require_location_unchanged(ready)
+    except LocationMigrationStateError as error:
+        if is_blocked_location_selection(error.assessment.selection):
+            return DoctorBlocked(blocked_location_assessment(error.assessment))
+        return DoctorFailed(_location_race_failure(error.assessment))
+    except PersistenceMigrationStateError as error:
+        return DoctorFailed(
+            PersistenceCompositionFailure(
+                code=error.code,
+                safe_path=ready.source,
+                artifact_basename=ready.artifact_basename,
+                message=str(error),
+                next_command=error.next_command,
+                guidance=recovery_guidance(error.code),
+            )
+        )
+    except (
+        ManagedFileReadError,
+        UnsafeManagedFileError,
+        UnsupportedFilesystemError,
+    ) as error:
+        return DoctorFailed(_composition_failure(error, ready.source))
+    service = DoctorService(accounts, providers, heartbeat_providers, clock)
+    return DoctorReady(service, ready)
 
 
 def compose_doctor_context(
@@ -425,11 +463,9 @@ def compose_doctor_context(
             providers,
             heartbeat_providers,
         )
-        private: PrivateCredentialTree | None = None
         try:
-            private = _private_credentials(resolved_paths)
-            persistence = _persistence(resolved_paths, private)
-            assessment = persistence.assess()
+            persistence = _persistence(resolved_paths)
+            assessment = persistence.assess_locations()
         except (
             ManagedFileReadError,
             UnsafeManagedFileError,
@@ -437,32 +473,26 @@ def compose_doctor_context(
         ) as error:
             return DoctorContext(
                 DoctorFailed(
-                    _composition_failure(error, resolved_paths, private)
+                    _composition_failure(
+                        error,
+                        resolved_paths.accounts.canonical,
+                    )
                 )
             )
-        if assessment.code not in _RUNTIME_PERSISTENCE_CODES:
-            return DoctorContext(DoctorBlocked(assessment))
-        try:
-            accounts = persistence.read_accounts()
-        except PersistenceMigrationStateError as error:
-            return DoctorContext(DoctorBlocked(error.assessment))
-        except (
-            ManagedFileReadError,
-            UnsafeManagedFileError,
-            UnsupportedFilesystemError,
-        ) as error:
+        if is_blocked_location_selection(assessment.selection):
             return DoctorContext(
-                DoctorFailed(
-                    _composition_failure(error, resolved_paths, private)
-                )
+                DoctorBlocked(blocked_location_assessment(assessment))
             )
-        service = DoctorService(
-            accounts,
-            provider_map,
-            heartbeat_map,
-            resolved_clock,
+        ready = ready_location_assessment(assessment)
+        return DoctorContext(
+            _ready_doctor_state(
+                persistence,
+                ready,
+                provider_map,
+                heartbeat_map,
+                resolved_clock,
+            )
         )
-        return DoctorContext(DoctorReady(service, assessment))
 
     return _compose(build)
 
@@ -544,6 +574,8 @@ class InvocationContext:
             value = self._app.require(ctx)
         except AccountStoreStateError as error:
             self._exit_assessment(error.assessment)
+        except LocationMigrationStateError as error:
+            self._exit_location_assessment(error.assessment)
         except _ApplicationCompositionError as error:
             self._exit_failure(error.failure)
         if not isinstance(value, AppContext):
@@ -606,6 +638,31 @@ class InvocationContext:
                 "[dim]Next: " + shlex.join(failure.next_command) + "[/dim]"
             )
         raise typer.Exit(code=persistence_doctor_exit_code(failure.code))
+
+    def _exit_location_assessment(
+        self,
+        assessment: LocationMigrationAssessment[RuntimePersistenceSelection],
+    ) -> NoReturn:
+        self.err_console.print(
+            "[red]Persistence locations require explicit diagnosis or "
+            "migration.[/red]"
+        )
+        self.err_console.print(
+            f"[dim]State: {assessment.selection.code.value}[/dim]"
+        )
+        self.err_console.print(f"[dim]Source: {assessment.source}[/dim]")
+        self.err_console.print(
+            f"[dim]Destination: {assessment.destination}[/dim]"
+        )
+        if assessment.next_command is not None:
+            self.err_console.print(
+                "[dim]Next: " + shlex.join(assessment.next_command) + "[/dim]"
+            )
+        raise typer.Exit(
+            code=persistence_doctor_exit_code(
+                LocationMigrationStateError(assessment).code
+            )
+        )
 
 
 def initialize_invocation(ctx: click.Context) -> InvocationContext:

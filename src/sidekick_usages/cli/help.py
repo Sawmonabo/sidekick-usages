@@ -88,13 +88,17 @@ def branded_command(
     application: typer.Typer,
     name: str | None = None,
     *,
+    help: str | None = None,
     hidden: bool = False,
+    deprecated: bool = False,
 ) -> Callable[[CommandFunctionType], CommandFunctionType]:
     """Return a decorator using the shared branded command class."""
     return application.command(
         name,
         cls=BrandedTyperCommand,
+        help=help,
         hidden=hidden,
+        deprecated=deprecated,
     )
 
 

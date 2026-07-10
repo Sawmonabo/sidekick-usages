@@ -1,4 +1,4 @@
-"""Pure schema transforms and explicit durable migration coordination."""
+"""Explicit durable account-schema migration coordination."""
 
 from collections.abc import Callable
 from contextlib import AbstractContextManager
@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Protocol
 
 from sidekick_usages.core.models import Account
-from sidekick_usages.paths import AccountLocations
 from sidekick_usages.persistence.artifacts import (
     AuthorityExpectation,
     AuthorityGeneration,
@@ -48,7 +47,7 @@ from sidekick_usages.persistence.inventory import (
     PrototypeMigrationIntent,
 )
 from sidekick_usages.persistence.locking import PersistenceLock
-from sidekick_usages.persistence.migration_errors import (
+from sidekick_usages.persistence.migrations.errors import (
     PersistenceMigrationStateError,
     PrototypeReimportRequiredError,
     ReleasedVerifierBoundaryError,
@@ -95,7 +94,7 @@ class PermissionRepairOperationResult:
     assessment: PersistenceAssessment
 
 
-class _MigrationTransaction(Protocol):
+class MigrationTransaction(Protocol):
     """Lock-scoped durable operations required by migrations."""
 
     def publish_immutable(
@@ -104,6 +103,13 @@ class _MigrationTransaction(Protocol):
         source: FileSnapshot,
     ) -> ManagedArtifact:
         """Publish or reuse one exact immutable source snapshot."""
+
+    def publish_migration_snapshot(
+        self,
+        generation: AuthorityGeneration,
+        payload: bytes,
+    ) -> ManagedArtifact:
+        """Publish validated bytes copied from another locked authority."""
 
     def publish_receipt(
         self,
@@ -130,47 +136,94 @@ class _MigrationTransaction(Protocol):
         """Delete credentials before deleting the exact authority."""
 
 
-class _MigrationLock(Protocol):
+class AccountMigrationLock(Protocol):
     """Cooperative lock yielding one active mutation capability."""
 
-    def hold(self) -> AbstractContextManager[_MigrationTransaction]:
+    def hold(self) -> AbstractContextManager[MigrationTransaction]:
         """Acquire the lock and yield its mutation capability."""
 
 
-type _FilesystemFactory = Callable[[Path], PersistenceFilesystem]
-type _LockFactory = Callable[[PersistenceFilesystem], _MigrationLock]
+type AccountFilesystemFactory = Callable[[Path], PersistenceFilesystem]
+type AccountLockFactory = Callable[
+    [PersistenceFilesystem],
+    AccountMigrationLock,
+]
 
-_MIGRATABLE_GENERATION_ZERO = frozenset(
+
+MIGRATABLE_GENERATION_ZERO = frozenset(
     {
         PersistenceCode.MIGRATION_REQUIRED,
         PersistenceCode.ROLLBACK_PREPARED,
         PersistenceCode.LEGACY_WRITER_DETECTED,
     }
 )
-_CURRENT_VERSION_ONE = frozenset(
+CURRENT_VERSION_ONE = frozenset(
     {PersistenceCode.CURRENT, PersistenceCode.PROTOTYPE_IMPORTED}
 )
 
 
-class PersistenceMigrationService:
+def accounts_from_current(
+    observation: PersistenceObservation,
+    assessment: PersistenceAssessment,
+) -> tuple[Account, ...]:
+    """Return accounts only from absent or runtime-safe version-one state."""
+    if assessment.code is PersistenceCode.EMPTY:
+        if observation.authority.kind is not AuthorityKind.ABSENT:
+            raise SourceChangedError
+        return ()
+    if assessment.code not in CURRENT_VERSION_ONE:
+        raise ValueError("Assessment is not runtime-safe version one.")
+    document = observation.authority.version_one
+    if document is None:
+        raise SourceChangedError
+    return version_one_to_accounts(document)
+
+
+def generation_zero_payload(observation: PersistenceObservation) -> bytes:
+    """Return canonical version-one bytes for generation-zero evidence."""
+    document = observation.authority.generation_zero
+    if document is None:
+        raise SourceChangedError
+    return encode_version_one(generation_zero_to_version_one(document))
+
+
+def rollback_payload(observation: PersistenceObservation) -> bytes:
+    """Return exact released-v0.6.0 bytes for canonical version one."""
+    document = observation.authority.version_one
+    if document is None:
+        raise SourceChangedError
+    canonical = encode_version_one(document)
+    if observation.authority.content != canonical:
+        raise InvalidSchemaError
+    return encode_generation_zero(version_one_to_v060(document))
+
+
+def prototype_payload(artifact: ArtifactObservation) -> bytes:
+    """Return canonical version-one bytes for a validated prototype."""
+    document = artifact.prototype
+    if document is None:
+        raise InvalidSchemaError
+    return encode_version_one(prototype_to_version_one(document))
+
+
+class AccountMigrationCoordinator:
     """Assess and execute explicit lock-scoped persistence transitions."""
 
     def __init__(
         self,
-        locations: AccountLocations,
+        account_path: Path,
+        prototype_path: Path,
         *,
         scheduler_assessor: Callable[[], SchedulerQuiescenceAssessment],
         private_credential_artifacts: PrivateCredentialArtifacts,
         released_v060_verifier: ReleasedV060Verifier,
-        filesystem_factory: _FilesystemFactory = PersistenceFilesystem,
-        lock_factory: _LockFactory = PersistenceLock,
+        filesystem_factory: AccountFilesystemFactory = PersistenceFilesystem,
+        lock_factory: AccountLockFactory = PersistenceLock,
     ) -> None:
-        self.locations = locations
-        self.path = locations.canonical
+        self.path = account_path
         self._filesystem = filesystem_factory(self.path)
-        self._prototype_filesystem = filesystem_factory(
-            locations.prototype_cc_usage
-        )
+        self._prototype_path = prototype_path
+        self._prototype_filesystem = filesystem_factory(prototype_path)
         self._filesystem_factory = filesystem_factory
         self._scheduler_assessor = scheduler_assessor
         self._private_credential_artifacts = private_credential_artifacts
@@ -178,7 +231,7 @@ class PersistenceMigrationService:
         self._lock_factory = lock_factory
         self._inventory = PersistenceInventory(
             self.path,
-            locations.prototype_cc_usage,
+            prototype_path,
             filesystem_factory=self._inventory_filesystem,
         )
 
@@ -222,16 +275,10 @@ class PersistenceMigrationService:
         """Return a validated current snapshot without constructing a store."""
         observation = self._inspect()
         assessment = assess_persistence(observation)
-        if assessment.code is PersistenceCode.EMPTY:
-            if observation.authority.kind is not AuthorityKind.ABSENT:
-                raise SourceChangedError
-            return ()
-        if assessment.code not in _CURRENT_VERSION_ONE:
-            raise PersistenceMigrationStateError(assessment)
-        document = observation.authority.version_one
-        if document is None:
-            raise SourceChangedError
-        return version_one_to_accounts(document)
+        try:
+            return accounts_from_current(observation, assessment)
+        except ValueError:
+            raise PersistenceMigrationStateError(assessment) from None
 
     def migrate_accounts(
         self,
@@ -291,14 +338,14 @@ class PersistenceMigrationService:
                 preflight_observation.authority.kind
                 is AuthorityKind.VERSION_ONE
                 and (
-                    preflight_assessment.code in _CURRENT_VERSION_ONE
+                    preflight_assessment.code in CURRENT_VERSION_ONE
                     or self._can_recover_temporaries(
                         preflight_observation,
                         preflight_assessment,
                     )
                 )
             ):
-                self._rollback_payload(preflight_observation)
+                rollback_payload(preflight_observation)
             observation, assessment = self._locked_assessment(transaction)
             if (
                 observation.authority.kind is AuthorityKind.GENERATION_ZERO
@@ -319,13 +366,13 @@ class PersistenceMigrationService:
                 )
             if (
                 observation.authority.kind is not AuthorityKind.VERSION_ONE
-                or assessment.code not in _CURRENT_VERSION_ONE
+                or assessment.code not in CURRENT_VERSION_ONE
             ):
                 raise PersistenceMigrationStateError(assessment)
             source = self._authority_snapshot(observation)
             if source is None:
                 raise SourceChangedError
-            payload = self._rollback_payload(observation)
+            payload = rollback_payload(observation)
             snapshot = transaction.publish_immutable(
                 AuthorityGeneration.VERSION_ONE,
                 source,
@@ -344,16 +391,6 @@ class PersistenceMigrationService:
                 postcondition,
                 artifact_basename=snapshot.basename,
             )
-
-    @staticmethod
-    def _rollback_payload(observation: PersistenceObservation) -> bytes:
-        document = observation.authority.version_one
-        if document is None:
-            raise SourceChangedError
-        canonical = encode_version_one(document)
-        if observation.authority.content != canonical:
-            raise InvalidSchemaError
-        return encode_generation_zero(version_one_to_v060(document))
 
     def full_reset(self) -> PersistenceAssessment:
         """Delete every account credential artifact, even when empty."""
@@ -385,17 +422,16 @@ class PersistenceMigrationService:
 
     def _migrate_generation_zero(
         self,
-        transaction: _MigrationTransaction,
+        transaction: MigrationTransaction,
         observation: PersistenceObservation,
         assessment: PersistenceAssessment,
     ) -> PersistenceAssessment:
-        if assessment.code not in _MIGRATABLE_GENERATION_ZERO:
+        if assessment.code not in MIGRATABLE_GENERATION_ZERO:
             raise PersistenceMigrationStateError(assessment)
         source = self._authority_snapshot(observation)
-        document = observation.authority.generation_zero
-        if source is None or document is None:
+        if source is None:
             raise SourceChangedError
-        payload = encode_version_one(generation_zero_to_version_one(document))
+        payload = generation_zero_payload(observation)
         transaction.publish_immutable(
             AuthorityGeneration.GENERATION_ZERO,
             source,
@@ -405,11 +441,11 @@ class PersistenceMigrationService:
             payload,
             source.fingerprint,
         )
-        return self._require_postcondition(_CURRENT_VERSION_ONE)
+        return self._require_postcondition(CURRENT_VERSION_ONE)
 
     def _import_absent_prototype(
         self,
-        transaction: _MigrationTransaction,
+        transaction: MigrationTransaction,
         observation: PersistenceObservation,
         assessment: PersistenceAssessment,
         *,
@@ -433,7 +469,7 @@ class PersistenceMigrationService:
         if assessment.code is PersistenceCode.EMPTY and not reimport:
             return assessment
         prototype_artifact, prototype_source = prototype
-        payload = self._prototype_payload(prototype_artifact)
+        payload = prototype_payload(prototype_artifact)
         self._revalidate_prototype(prototype_source)
         transaction.commit_authority(
             AuthorityGeneration.VERSION_ONE,
@@ -450,13 +486,13 @@ class PersistenceMigrationService:
 
     def _migrate_or_resume_prototype(
         self,
-        transaction: _MigrationTransaction,
+        transaction: MigrationTransaction,
         observation: PersistenceObservation,
         assessment: PersistenceAssessment,
         *,
         reimport: bool,
     ) -> PersistenceAssessment:
-        if assessment.code not in _CURRENT_VERSION_ONE:
+        if assessment.code not in CURRENT_VERSION_ONE:
             raise PersistenceMigrationStateError(assessment)
         source = self._authority_snapshot(observation)
         if source is None:
@@ -467,7 +503,7 @@ class PersistenceMigrationService:
                 raise PersistenceMigrationStateError(assessment)
             return assessment
         prototype_artifact, prototype_source = prototype
-        payload = self._prototype_payload(prototype_artifact)
+        payload = prototype_payload(prototype_artifact)
         if payload != source.data:
             if not reimport:
                 raise PrototypeReimportRequiredError(assessment)
@@ -488,20 +524,13 @@ class PersistenceMigrationService:
 
     def _publish_prototype_receipt(
         self,
-        transaction: _MigrationTransaction,
+        transaction: MigrationTransaction,
         source: FileSnapshot,
     ) -> None:
         self._revalidate_prototype(source)
         digest = source.fingerprint.digest
         payload = encode_prototype_receipt(PrototypeReceipt(digest))
         transaction.publish_receipt(digest, payload)
-
-    @staticmethod
-    def _prototype_payload(artifact: ArtifactObservation) -> bytes:
-        document = artifact.prototype
-        if document is None:
-            raise InvalidSchemaError
-        return encode_version_one(prototype_to_version_one(document))
 
     def _prototype_source(
         self,
@@ -546,7 +575,7 @@ class PersistenceMigrationService:
 
     def _locked_assessment(
         self,
-        transaction: _MigrationTransaction,
+        transaction: MigrationTransaction,
         *,
         intent: PrototypeMigrationIntent | None = None,
     ) -> tuple[PersistenceObservation, PersistenceAssessment]:
@@ -735,7 +764,7 @@ class PersistenceMigrationService:
     def _inventory_filesystem(self, path: Path) -> PersistenceFilesystem:
         if path == self.path:
             return self._filesystem
-        if path == self.locations.prototype_cc_usage:
+        if path == self._prototype_path:
             return self._prototype_filesystem
         return self._filesystem_factory(path)
 
@@ -769,7 +798,12 @@ class PersistenceMigrationService:
 
 
 __all__ = [
-    "PersistenceMigrationService",
+    "AccountFilesystemFactory",
+    "AccountLockFactory",
+    "AccountMigrationCoordinator",
+    "AccountMigrationLock",
+    "MigrationTransaction",
+    "PermissionRepairOperationResult",
     "PrivateCredentialArtifacts",
     "ReleasedV060Verifier",
 ]

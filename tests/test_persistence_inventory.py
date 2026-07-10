@@ -489,6 +489,20 @@ def test_external_prototype_maps_eligibility_without_mutation(
         assert prototype.calls[0] == "qualify"
 
 
+def test_authority_only_assessment_never_adopts_prototype_fallback() -> None:
+    """Location candidates remain orthogonal to prototype import state."""
+    authority = FakeFilesystem(AUTHORITY_PATH)
+    prototype = FakeFilesystem(PROTOTYPE_PATH)
+    prototype.snapshots[PROTOTYPE_PATH.name] = _snapshot(PROTOTYPE)
+
+    observation = _inventory(authority, prototype).inspect_authority(
+        OrphanedPrivateCredentials.ABSENT
+    )
+
+    assert assess_persistence(observation).code is PersistenceCode.EMPTY
+    assert prototype.calls == []
+
+
 @pytest.mark.parametrize(
     ("authority_payload", "expected"),
     [

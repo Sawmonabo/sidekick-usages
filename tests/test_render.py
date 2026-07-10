@@ -5,7 +5,6 @@ from datetime import date, datetime, timedelta
 import pytest
 from rich.console import Console
 
-from sidekick_usages import render
 from sidekick_usages.core.models import UsageReport, UsageWindow
 from sidekick_usages.core.types import AccountLabel, ProviderId
 from sidekick_usages.lifetime import (
@@ -20,7 +19,9 @@ from sidekick_usages.usage import (
     AuthenticationFailure,
     FetchFailure,
     PersistenceFailure,
+    render,
 )
+from sidekick_usages.usage.reset_display import compact_reset_text
 from tests.test_support import REFERENCE_TIME
 
 
@@ -28,7 +29,7 @@ def _time_after(**delta: float) -> datetime:
     return REFERENCE_TIME + timedelta(**delta)
 
 
-def test_heat_band_picks_inclusive_lower_bounds():
+def test_heat_band_picks_inclusive_lower_bounds() -> None:
     assert render._heat_band(90) == ("#ffe6e6", "#b03030")
     assert render._heat_band(89) == ("#fff4e0", "#9c6f12")
     assert render._heat_band(70) == ("#fff4e0", "#9c6f12")
@@ -37,43 +38,43 @@ def test_heat_band_picks_inclusive_lower_bounds():
     assert render._heat_band(0) is None
 
 
-def test_heat_tile_zero_is_grey_filled_percent():
+def test_heat_tile_zero_is_grey_filled_percent() -> None:
     tile = render._heat_tile(0)
     assert tile.plain == f"{'0%':^{render._TILE_WIDTH}}"
     assert tile.style == f"{render._ZERO_FG} on {render._ZERO_BG}"
 
 
-def test_heat_tile_nonzero_is_centered_percent_on_band():
+def test_heat_tile_nonzero_is_centered_percent_on_band() -> None:
     tile = render._heat_tile(94)
     assert tile.plain == f"{'94%':^{render._TILE_WIDTH}}"
     assert tile.style == "#ffe6e6 on #b03030"
 
 
-def test_format_reset_compact_buckets():
-    assert render._format_reset_compact(None, REFERENCE_TIME) == ""
+def test_format_reset_compact_buckets() -> None:
+    assert compact_reset_text(None, REFERENCE_TIME) == ""
     assert (
-        render._format_reset_compact(
+        compact_reset_text(
             _time_after(minutes=-5),
             REFERENCE_TIME,
         )
         == "now"
     )
     assert (
-        render._format_reset_compact(
+        compact_reset_text(
             _time_after(minutes=45),
             REFERENCE_TIME,
         )
         == "45m"
     )
     assert (
-        render._format_reset_compact(
+        compact_reset_text(
             _time_after(hours=3, minutes=50),
             REFERENCE_TIME,
         )
         == "3h 50m"
     )
     assert (
-        render._format_reset_compact(
+        compact_reset_text(
             _time_after(days=1, hours=15),
             REFERENCE_TIME,
         )
@@ -81,7 +82,7 @@ def test_format_reset_compact_buckets():
     )
 
 
-def test_reset_cell_is_centered_dim():
+def test_reset_cell_is_centered_dim() -> None:
     cell = render._reset_cell(
         _time_after(hours=3, minutes=50),
         REFERENCE_TIME,
@@ -104,11 +105,11 @@ def test_reset_cell_is_centered_dim():
         ("Spark 7d", ("7d", "Spark")),
     ],
 )
-def test_classify_window(name, expected):
+def test_classify_window(name: str, expected: tuple[str, str]) -> None:
     assert render._classify_window(name) == expected
 
 
-def test_length_hours_orders_5h_before_7d():
+def test_length_hours_orders_5h_before_7d() -> None:
     assert render._length_hours("5h") < render._length_hours("7d")
 
 
@@ -137,7 +138,9 @@ def _auth_failure(
     )
 
 
-def _report(*windows):
+def _report(
+    *windows: tuple[str, float, datetime | None],
+) -> UsageReport:
     return UsageReport(
         windows=tuple(UsageWindow(*w) for w in windows),
         plan="max",
@@ -263,7 +266,7 @@ def _panel_line_widths(out: str) -> set[int]:
     }
 
 
-def test_panels_share_one_width():
+def test_panels_share_one_width() -> None:
     # measure-then-pin: every provider panel is pinned to the single
     # binding width, so all panel border/interior lines share one right edge.
     out = _render_at(200, _worst_case_usages())
@@ -271,7 +274,7 @@ def test_panels_share_one_width():
     assert len(widths) == 1
 
 
-def test_worst_case_renders_as_panels_at_floor():
+def test_worst_case_renders_as_panels_at_floor() -> None:
     # The reserved worst-case fixture (30-char name + Spark block) must render
     # as framed panels at the documented floor, with nothing wrapping past
     # the frame and the longest account name intact on one row. Fails if the
@@ -284,7 +287,7 @@ def test_worst_case_renders_as_panels_at_floor():
     assert "long.account.name@example.test" in out
 
 
-def test_overview_shows_robot_masthead_titles_and_lifetime():
+def test_overview_shows_robot_masthead_titles_and_lifetime() -> None:
     out = _render_at(120, _worst_case_usages())
     assert "      o" in out
     assert "     .-." in out
@@ -306,7 +309,7 @@ def test_overview_shows_robot_masthead_titles_and_lifetime():
     assert "GPT-5.3-Codex-Spark" in out
 
 
-def test_provider_title_uses_singular_account_count():
+def test_provider_title_uses_singular_account_count() -> None:
     usages = [
         _usage(
             "only",
@@ -323,7 +326,7 @@ def test_provider_title_uses_singular_account_count():
     assert "CODEX · 1 accounts" not in out
 
 
-def test_overview_degrades_below_floor_to_legacy():
+def test_overview_degrades_below_floor_to_legacy() -> None:
     # Well below the binding panel width the renderer falls back to the
     # legacy stacked view instead of squeezing/wrapping the panels.
     # Discriminator: the uppercase panel title only exists on the panel
@@ -336,12 +339,12 @@ def test_overview_degrades_below_floor_to_legacy():
     assert "long.account.name@example.test" in out
 
 
-def test_overview_empty_pairs():
+def test_overview_empty_pairs() -> None:
     out = _render_at(80, [])
     assert "No usage" in out
 
 
-def test_named_group_caption_row_and_rule_present():
+def test_named_group_caption_row_and_rule_present() -> None:
     out = _render_at(200, _worst_case_usages())
     cap = next(
         line for line in out.split("\n") if "GPT-5.3-Codex-Spark" in line
@@ -350,7 +353,7 @@ def test_named_group_caption_row_and_rule_present():
     assert "│" in out  # the model rule is drawn on data rows
 
 
-def test_subtitle_not_truncated_when_wider_than_content():
+def test_subtitle_not_truncated_when_wider_than_content() -> None:
     usages = [
         _usage(
             "x",
@@ -383,7 +386,7 @@ def test_subtitle_not_truncated_when_wider_than_content():
     assert "999M output" in out
 
 
-def test_failure_renders_in_provider_panel():
+def test_failure_renders_in_provider_panel() -> None:
     iso = _time_after(hours=3)
     usages = [
         _usage(
@@ -404,7 +407,7 @@ def test_failure_renders_in_provider_panel():
     assert first.strip() == "o"
 
 
-def test_persistence_failure_is_not_rendered_as_successful_usage():
+def test_persistence_failure_is_not_rendered_as_successful_usage() -> None:
     failures = [
         PersistenceFailure(
             label=AccountLabel("long.account.name@example.test"),
@@ -421,7 +424,7 @@ def test_persistence_failure_is_not_rendered_as_successful_usage():
     assert "5h" not in out
 
 
-def test_failures_widen_shared_panels():
+def test_failures_widen_shared_panels() -> None:
     iso = _time_after(hours=3)
     usages = [
         _usage(
@@ -447,7 +450,7 @@ def test_failures_widen_shared_panels():
     assert "sidekick-usages refresh long.account.name@example.test" in out
 
 
-def test_legacy_mode_renders_failures():
+def test_legacy_mode_renders_failures() -> None:
     iso = _time_after(hours=3)
     usages = [
         _usage(
@@ -475,7 +478,9 @@ def test_legacy_mode_renders_failures():
 
 
 @pytest.mark.parametrize("width", [200, 40])
-def test_lifetime_failure_survives_wide_and_narrow_rendering(width: int):
+def test_lifetime_failure_survives_wide_and_narrow_rendering(
+    width: int,
+) -> None:
     usages = [
         _usage(
             "acct",
@@ -502,7 +507,7 @@ def test_lifetime_failure_survives_wide_and_narrow_rendering(width: int):
     assert "lifetime cache write failed" in buf.getvalue()
 
 
-def test_panels_have_interior_top_padding():
+def test_panels_have_interior_top_padding() -> None:
     out = _render_at(200, _worst_case_usages())
     lines = out.splitlines()
     tops = [i for i, line in enumerate(lines) if line.lstrip().startswith("╭")]
@@ -514,7 +519,7 @@ def test_panels_have_interior_top_padding():
         assert inner.strip("│ ") == ""
 
 
-def test_named_panel_separates_caption_from_header():
+def test_named_panel_separates_caption_from_header() -> None:
     out = _render_at(200, _worst_case_usages())
     lines = out.splitlines()
     cap = next(

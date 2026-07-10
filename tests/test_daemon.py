@@ -338,7 +338,9 @@ def test_launchd_backend_writes_launch_agent(tmp_path: Path) -> None:
     assert runner.calls[0][0][:3] == ("launchctl", "bootstrap", "gui/501")
 
 
-def test_default_maintenance_command_runs_maintain_quiet(monkeypatch) -> None:
+def test_default_maintenance_command_runs_maintain_quiet(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """New daemon installs run the combined maintenance command."""
     monkeypatch.setattr(
         "sidekick_usages.daemon.shutil.which",

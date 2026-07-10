@@ -16,6 +16,7 @@ from pydantic import (
 
 from sidekick_usages.persistence.artifacts import (
     AuthorityExpectation,
+    AuthorityGeneration,
     ExpectedAuthority,
     Sha256Digest,
     portable_basename_key,
@@ -23,9 +24,12 @@ from sidekick_usages.persistence.artifacts import (
     require_safe_basename,
 )
 from sidekick_usages.persistence.errors import InterruptedArtifactError
-from sidekick_usages.persistence.private_credentials import (
+from sidekick_usages.persistence.private_bundle_paths import (
     PRIVATE_TRANSACTION_DIRECTORY,
     PRIVATE_TRANSACTION_JOURNAL,
+    portable_private_bundle_path_key,
+    private_bundle_relative_components,
+    require_portable_unique_private_bundle_paths,
 )
 from sidekick_usages.persistence.schemas import (
     MAX_ACCOUNTS,
@@ -33,7 +37,6 @@ from sidekick_usages.persistence.schemas import (
 )
 from sidekick_usages.serialization import JsonDecodeError, decode_json_value
 
-_JOURNAL_VERSION = 1
 _MAX_JOURNAL_BYTES = 4 * 1024 * 1024
 _MAX_PRIVATE_FILES_PER_BUNDLE = 16
 _MAX_TRANSACTION_FILES = MAX_ACCOUNTS * _MAX_PRIVATE_FILES_PER_BUNDLE
@@ -66,10 +69,19 @@ def _backup_basename(value: str) -> str:
     return value
 
 
+def _relative_bundle_path(value: str) -> str:
+    private_bundle_relative_components(value)
+    return value
+
+
 type _SafeBasename = Annotated[str, AfterValidator(_safe_basename)]
 type _Digest = Annotated[str, AfterValidator(_digest)]
 type _StageBasename = Annotated[str, AfterValidator(_stage_basename)]
 type _BackupBasename = Annotated[str, AfterValidator(_backup_basename)]
+type _RelativeBundlePath = Annotated[
+    str,
+    AfterValidator(_relative_bundle_path),
+]
 
 
 class AbsentAuthority(BaseModel):
@@ -113,6 +125,25 @@ class CredentialTransactionFile(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
 
     bundle_basename: _SafeBasename
+    basename: _SafeBasename
+    stage_basename: _StageBasename
+    backup_basename: _BackupBasename | None
+    base_sha256: _Digest | None
+    target_sha256: _Digest
+
+    @model_validator(mode="after")
+    def _coherent_backup(self) -> Self:
+        if (self.backup_basename is None) is not (self.base_sha256 is None):
+            raise ValueError
+        return self
+
+
+class MigrationCredentialTransactionFile(BaseModel):
+    """One migration-only nested target-file transition."""
+
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
+
+    bundle_path: _RelativeBundlePath
     basename: _SafeBasename
     stage_basename: _StageBasename
     backup_basename: _BackupBasename | None
@@ -201,7 +232,95 @@ class CredentialTransactionJournal(BaseModel):
         return self
 
 
-_JOURNAL_ADAPTER = TypeAdapter(CredentialTransactionJournal)
+class MigrationCredentialTransactionJournal(BaseModel):
+    """Strict migration journal with explicit generations and nested paths."""
+
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
+
+    journal_version: Literal[2]
+    base_authority: JournalAuthority
+    base_generation: AuthorityGeneration | None
+    source_guard: CredentialSourceGuardRecord
+    target_generation: AuthorityGeneration
+    target_authority_sha256: _Digest
+    target_authority_size: int = Field(ge=0, le=MAX_DOCUMENT_BYTES)
+    target_bundles: tuple[_RelativeBundlePath, ...] = Field(
+        max_length=MAX_ACCOUNTS
+    )
+    base_present_bundles: tuple[_RelativeBundlePath, ...] = Field(
+        max_length=MAX_ACCOUNTS
+    )
+    files: tuple[MigrationCredentialTransactionFile, ...] = Field(
+        max_length=_MAX_TRANSACTION_FILES
+    )
+    displaced_bundles: tuple[_RelativeBundlePath, ...] = Field(
+        max_length=MAX_ACCOUNTS
+    )
+
+    @model_validator(mode="after")
+    def _coherent_migration(self) -> Self:
+        if isinstance(self.base_authority, AbsentAuthority):
+            if self.base_generation is not None:
+                raise ValueError
+        elif self.base_generation is None:
+            raise ValueError
+        if bool(self.target_bundles) is not bool(self.files):
+            raise ValueError
+        require_portable_unique_private_bundle_paths(self.target_bundles)
+        require_portable_unique_private_bundle_paths(self.base_present_bundles)
+        require_portable_unique_private_bundle_paths(self.displaced_bundles)
+        target_keys = tuple(
+            portable_private_bundle_path_key(value)
+            for value in self.target_bundles
+        )
+        base_keys = tuple(
+            portable_private_bundle_path_key(value)
+            for value in self.base_present_bundles
+        )
+        displaced_keys = tuple(
+            portable_private_bundle_path_key(value)
+            for value in self.displaced_bundles
+        )
+        file_names = tuple(
+            (
+                portable_private_bundle_path_key(item.bundle_path),
+                portable_basename_key(item.basename),
+            )
+            for item in self.files
+        )
+        stages = tuple(
+            portable_basename_key(item.stage_basename) for item in self.files
+        )
+        backups = tuple(
+            portable_basename_key(item.backup_basename)
+            for item in self.files
+            if item.backup_basename is not None
+        )
+        if any(
+            len(values) != len(set(values))
+            for values in (file_names, stages, backups)
+        ):
+            raise ValueError
+        if (
+            not set(base_keys) <= set(target_keys)
+            or set(target_keys) & set(displaced_keys)
+            or set(target_keys)
+            != {
+                portable_private_bundle_path_key(item.bundle_path)
+                for item in self.files
+            }
+        ):
+            raise ValueError
+        return self
+
+
+type CredentialJournal = Annotated[
+    CredentialTransactionJournal | MigrationCredentialTransactionJournal,
+    Field(discriminator="journal_version"),
+]
+
+
+_JOURNAL_ADAPTER = TypeAdapter(CredentialJournal)
 
 
 def journal_authority(expected: ExpectedAuthority) -> JournalAuthority:
@@ -218,7 +337,7 @@ def journal_authority(expected: ExpectedAuthority) -> JournalAuthority:
 
 
 def encode_credential_journal(
-    journal: CredentialTransactionJournal,
+    journal: CredentialJournal,
 ) -> bytes:
     """Return bounded deterministic non-secret journal bytes."""
     payload = json.dumps(
@@ -236,7 +355,7 @@ def encode_credential_journal(
 
 def decode_credential_journal(
     payload: bytes,
-) -> CredentialTransactionJournal:
+) -> CredentialJournal:
     """Decode a bounded strict journal or fail closed without input detail."""
     if len(payload) > _MAX_JOURNAL_BYTES:
         raise InterruptedArtifactError(PRIVATE_TRANSACTION_JOURNAL)
@@ -255,9 +374,12 @@ def decode_credential_journal(
 
 __all__ = [
     "AbsentAuthority",
+    "CredentialJournal",
     "CredentialSourceGuardRecord",
     "CredentialTransactionFile",
     "CredentialTransactionJournal",
+    "MigrationCredentialTransactionFile",
+    "MigrationCredentialTransactionJournal",
     "PresentAuthority",
     "decode_credential_journal",
     "encode_credential_journal",

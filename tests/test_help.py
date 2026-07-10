@@ -42,6 +42,14 @@ def _no_composition_context(calls: list[str]) -> InvocationContext:
         ["doctor", "--help"],
         ["daemon", "status", "--help"],
         ["migrate", "accounts", "--help"],
+        ["claude", "--help"],
+        ["claude", "setup-token", "--help"],
+        ["codex", "--help"],
+        ["codex", "login", "--help"],
+        ["codex", "export", "--help"],
+        ["setup-token", "--help"],
+        ["codex-login", "--help"],
+        ["codex-export", "--help"],
     ],
 )
 def test_help_is_branded_before_usage_without_loading_state(
@@ -153,6 +161,39 @@ def test_doctor_help_does_not_advertise_removed_auth_option() -> None:
 
     assert result.exit_code == 0
     assert "--auth" not in click.unstyle(result.output)
+
+
+@pytest.mark.parametrize(
+    ("args", "commands"),
+    [
+        (["claude", "--help"], ("setup-token",)),
+        (["codex", "--help"], ("login", "export")),
+    ],
+)
+def test_provider_help_lists_only_canonical_commands(
+    args: list[str],
+    commands: tuple[str, ...],
+) -> None:
+    """Provider groups advertise their owned canonical capabilities."""
+    result = CliRunner().invoke(app, args)
+
+    assert result.exit_code == 0
+    output = click.unstyle(result.stdout)
+    assert all(command in output for command in commands)
+    assert "deprecated" not in output.lower()
+
+
+def test_root_help_marks_only_compatibility_spellings_deprecated() -> None:
+    """Root help leads with provider groups and bounded alias migration."""
+    result = CliRunner().invoke(app, ["--help"])
+
+    assert result.exit_code == 0
+    output = click.unstyle(result.stdout)
+    aliases = ("setup-token", "codex-login", "codex-export")
+    assert all(command in output for command in ("claude", "codex", *aliases))
+    assert output.count("(deprecated)") == len(aliases)
+    assert output.count("removed in 0.9.0") == len(aliases)
+    assert result.stderr == ""
 
 
 def test_version_is_exact_and_does_not_compose_any_context() -> None:

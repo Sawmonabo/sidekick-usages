@@ -21,10 +21,18 @@ from sidekick_usages.persistence.assessment import (
     doctor_exit_code as persistence_doctor_exit_code,
 )
 from sidekick_usages.persistence.errors import PersistenceError
-from sidekick_usages.persistence.migration_errors import (
+from sidekick_usages.persistence.migrations.errors import (
     PersistenceMigrationStateError,
     PrototypeReimportRequiredError,
     SchedulerMutationBlockedError,
+)
+from sidekick_usages.persistence.migrations.location import (
+    LocationMigrationAssessment,
+    RuntimePersistenceSelection,
+)
+from sidekick_usages.persistence.migrations.ports import (
+    PrivateAuthMigrationAssessment,
+    PrivateAuthMigrationFailure,
 )
 
 
@@ -156,6 +164,66 @@ def migrate_accounts_cmd(
     )
 
 
+def render_location_preview(
+    ctx: typer.Context,
+    assessment: LocationMigrationAssessment[RuntimePersistenceSelection],
+) -> None:
+    """Render one bounded credential-free location migration preview."""
+    private = assessment.private_auth_summary
+    if isinstance(private, PrivateAuthMigrationAssessment):
+        private_detail = f"Private bundles to copy: {private.copies_required}"
+    elif isinstance(private, PrivateAuthMigrationFailure):
+        private_detail = f"Private auth: {private.code.value}"
+    else:
+        raise TypeError("Unknown private-auth migration summary.")
+    lines = [
+        f"State: {assessment.selection.code.value}",
+        f"Source: {assessment.source}",
+        f"Destination: {assessment.destination}",
+        private_detail,
+    ]
+    for candidate in assessment.candidates:
+        lines.append(
+            f"{candidate.role.value}: {candidate.assessment.code.value}"
+        )
+    if assessment.artifact_basename is not None:
+        lines.append(f"Artifact: {assessment.artifact_basename}")
+    invocation_context(ctx).console.print(
+        Panel(
+            Text("\n".join(lines)),
+            border_style="yellow",
+            title="[yellow]Application-data migration[/yellow]",
+            title_align="left",
+        )
+    )
+
+
+def migrate_locations_cmd(
+    ctx: typer.Context,
+    yes: Annotated[
+        bool,
+        typer.Option("--yes", help="Skip the interactive confirmation."),
+    ] = False,
+) -> None:
+    """Explicitly relocate compatibility data to native application data."""
+    invocation = invocation_context(ctx)
+    service = invocation.require_persistence(ctx).persistence
+    try:
+        assessment = service.location_migration_preview()
+    except (SchedulerMutationBlockedError, PersistenceError) as error:
+        exit_persistence_error(ctx, error)
+    render_location_preview(ctx, assessment)
+    confirm_operation(ctx, yes)
+    try:
+        result = service.migrate_locations()
+    except (SchedulerMutationBlockedError, PersistenceError) as error:
+        exit_persistence_error(ctx, error)
+    invocation.console.print(
+        "[green]Application-data migration complete.[/green] "
+        f"State: {result.assessment.selection.code.value}."
+    )
+
+
 def prepare_rollback_cmd(
     ctx: typer.Context,
     target: Annotated[
@@ -208,10 +276,13 @@ def register(application: typer.Typer) -> None:
     """Create and register the migration command group."""
     migrate_app = typer.Typer(
         cls=BrandedTyperGroup,
-        help="Migrate account storage or prepare release rollback.",
+        help=(
+            "Migrate account or application-data storage and prepare rollback."
+        ),
         rich_markup_mode="rich",
     )
     branded_command(migrate_app, "accounts")(migrate_accounts_cmd)
+    branded_command(migrate_app, "locations")(migrate_locations_cmd)
     branded_command(migrate_app, "prepare-rollback")(prepare_rollback_cmd)
     application.add_typer(migrate_app, name="migrate")
 
@@ -221,5 +292,6 @@ __all__ = [
     "exit_persistence_error",
     "persistence_error_exit_code",
     "register",
+    "render_location_preview",
     "render_preview",
 ]

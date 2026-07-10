@@ -3,14 +3,13 @@
 import os
 import sys
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
-from typing import Protocol
 
 from sidekick_usages.persistence._platform import (
     NativeFailureKind,
+    NativeFile,
     NativeFilesystemError,
 )
 
@@ -19,21 +18,32 @@ if sys.platform == "darwin":
     from sidekick_usages.persistence._platform.posix_private import (
         PosixPrivateCredentialPlatform,
     )
+    from sidekick_usages.persistence._platform.posix_private_bundles import (
+        PosixPrivateBundlePlatform,
+    )
 elif sys.platform == "win32":
     from sidekick_usages.persistence._platform.windows_private import (
         WindowsPrivateCredentialPlatform,
+    )
+    from sidekick_usages.persistence._platform.windows_private_bundles import (
+        WindowsPrivateBundlePlatform,
     )
 elif sys.platform.startswith("linux"):
     from sidekick_usages.persistence._platform.posix import PosixPlatform
     from sidekick_usages.persistence._platform.posix_private import (
         PosixPrivateCredentialPlatform,
     )
+    from sidekick_usages.persistence._platform.posix_private_bundles import (
+        PosixPrivateBundlePlatform,
+    )
 from sidekick_usages.persistence.artifacts import (
+    AuthorityExpectation,
     ExpectedAuthority,
     FileFingerprint,
+    FileIdentity,
     FileSnapshot,
-    require_portable_unique_basenames,
     require_safe_basename,
+    sha256_digest,
 )
 from sidekick_usages.persistence.errors import (
     CandidateWriteError,
@@ -49,23 +59,32 @@ from sidekick_usages.persistence.errors import (
 from sidekick_usages.persistence.filesystem import PersistenceFilesystem
 from sidekick_usages.persistence.inventory import OrphanedPrivateCredentials
 from sidekick_usages.persistence.locking import PersistenceLock
+from sidekick_usages.persistence.private_bundle_paths import (
+    MAX_PRIVATE_BUNDLE_COMPONENT_BYTES,
+    MAX_PRIVATE_BUNDLE_COMPONENTS,
+    MAX_PRIVATE_BUNDLE_PATH_BYTES,
+    PRIVATE_TRANSACTION_DIRECTORY,
+    portable_private_bundle_path_key,
+    private_bundle_relative_components,
+    require_portable_unique_private_bundle_paths,
+)
+from sidekick_usages.persistence.private_bundle_paths import (
+    PRIVATE_TRANSACTION_JOURNAL as _PRIVATE_TRANSACTION_JOURNAL,
+)
+from sidekick_usages.persistence.private_bundle_writes import (
+    MAX_PRIVATE_BUNDLE_BYTES,
+    MAX_PRIVATE_FILE_BYTES,
+    MAX_PRIVATE_FILES,
+    PreparedPrivateBundleWrite,
+)
+from sidekick_usages.persistence.private_credential_contracts import (
+    PrivateBundleNative,
+    PrivateCredentialArtifacts,
+    PrivateCredentialNative,
+    PrivateCredentialRepairResult,
+)
 
-
-class PrivateCredentialArtifacts(Protocol):
-    """Sidekick-owned credential artifacts used by reset coordination."""
-
-    def observe(self) -> OrphanedPrivateCredentials:
-        """Return closed presence evidence or fail without guessing."""
-
-    def destroy_all(self) -> None:
-        """Delete every private credential artifact and verify removal."""
-
-    def repair_permissions(
-        self,
-        *,
-        locked_precondition: Callable[[], None],
-    ) -> PrivateCredentialRepairResult:
-        """Repair a released tree under the shared account lock."""
+PRIVATE_TRANSACTION_JOURNAL = _PRIVATE_TRANSACTION_JOURNAL
 
 
 class PrivateCredentialOwnership(StrEnum):
@@ -76,127 +95,26 @@ class PrivateCredentialOwnership(StrEnum):
     EXTERNAL = "external"
 
 
-@dataclass(frozen=True, slots=True)
-class PrivateCredentialRepairResult:
-    """Verified outcome of one explicit private-permission repair."""
-
-    root: Path
-    account_parent_repaired: bool
-    directories_repaired: int
-    files_repaired: int
-    artifacts_present: bool
-
-    def __post_init__(self) -> None:
-        if not self.root.is_absolute():
-            raise ValueError(
-                "Private credential repair root must be absolute."
-            )
-        if type(self.account_parent_repaired) is not bool:
-            raise TypeError("account_parent_repaired must be Boolean.")
-        if self.directories_repaired < 0 or self.files_repaired < 0:
-            raise ValueError(
-                "Private credential repair counts cannot be negative."
-            )
-        if type(self.artifacts_present) is not bool:
-            raise TypeError("artifacts_present must be Boolean.")
-
-
-class _PrivateCredentialPlatform(Protocol):
-    """Native private-tree operations hidden behind the public facade."""
-
-    def contains_artifacts(self, root: Path) -> bool:
-        """Return whether a fully validated private tree has descendants."""
-
-    def ensure_directory(self, path: Path) -> None:
-        """Create or validate one protected private directory."""
-
-    def repair_permissions(self, root: Path) -> tuple[int, int]:
-        """Preflight and repair a private tree without changing bytes."""
-
-    def destroy_artifacts(self, root: Path) -> None:
-        """Delete a fully validated private tree bottom-up."""
-
-    def destroy_tree(self, root: Path) -> None:
-        """Delete a fully validated private tree and exact root."""
-
-
 type _FilesystemFactory = Callable[[Path], PersistenceFilesystem]
 
-PRIVATE_TRANSACTION_DIRECTORY = ".credential-transaction"
-PRIVATE_TRANSACTION_JOURNAL = "journal.json"
-_MAX_PRIVATE_FILES = 16
-_MAX_PRIVATE_FILE_BYTES = 1024 * 1024
-_MAX_PRIVATE_BUNDLE_BYTES = 4 * 1024 * 1024
 
-
-def _validated_private_payloads(
-    files: Mapping[str, bytes],
-    expected_files: Mapping[str, bytes | None],
-) -> tuple[dict[str, bytes], dict[str, bytes | None]]:
-    """Validate and own one bounded private-bundle payload set."""
-    owned_files = dict(files)
-    owned_expected = dict(expected_files)
-    if not owned_files or len(owned_files) > _MAX_PRIVATE_FILES:
-        raise ValueError("Private credential file count is unsupported.")
-    require_portable_unique_basenames(owned_files)
-    total = 0
-    for basename, payload in owned_files.items():
-        require_safe_basename(basename)
-        if not isinstance(payload, bytes):
-            raise TypeError("Private credential payloads must be bytes.")
-        if len(payload) > _MAX_PRIVATE_FILE_BYTES:
-            raise ValueError("A private credential file is too large.")
-        total += len(payload)
-    if total > _MAX_PRIVATE_BUNDLE_BYTES:
-        raise ValueError("Private credential bundle is too large.")
-    for basename, payload in owned_expected.items():
-        require_safe_basename(basename)
-        if payload is not None and not isinstance(payload, bytes):
-            raise TypeError("Expected private payloads must be bytes.")
-        if payload is not None and len(payload) > _MAX_PRIVATE_FILE_BYTES:
-            raise ValueError(
-                "An expected private credential file is too large."
-            )
-    if not owned_expected.keys() <= owned_files.keys():
-        raise ValueError("Expected files must belong to the prepared bundle.")
-    return owned_files, owned_expected
-
-
-@dataclass(frozen=True, slots=True)
-class PreparedPrivateBundleWrite:
-    """Secret-safe immutable input for one coordinated private write."""
-
-    path: Path
-    files: Mapping[str, bytes] = field(repr=False)
-    expected_bundle_present: bool
-    expected_files: Mapping[str, bytes | None] = field(
-        default_factory=dict,
-        repr=False,
-    )
-
-    def __post_init__(self) -> None:
-        if not self.path.is_absolute():
-            raise ValueError(
-                "Private credential bundle path must be absolute."
-            )
-        require_safe_basename(self.path.name)
-        if type(self.expected_bundle_present) is not bool:
-            raise TypeError("expected_bundle_present must be Boolean.")
-        files, expected = _validated_private_payloads(
-            self.files,
-            self.expected_files,
-        )
-        object.__setattr__(self, "files", MappingProxyType(files))
-        object.__setattr__(self, "expected_files", MappingProxyType(expected))
-
-
-def _current_platform() -> _PrivateCredentialPlatform:
+def _current_platform() -> PrivateCredentialNative:
     if sys.platform == "darwin":
         return PosixPrivateCredentialPlatform(MacOSPlatform())
     if sys.platform == "win32":
         return WindowsPrivateCredentialPlatform()
     if sys.platform.startswith("linux"):
         return PosixPrivateCredentialPlatform(PosixPlatform())
+    raise NativeFilesystemError(NativeFailureKind.UNSUPPORTED)
+
+
+def _current_bundle_platform() -> PrivateBundleNative:
+    if sys.platform == "darwin":
+        return PosixPrivateBundlePlatform(MacOSPlatform())
+    if sys.platform == "win32":
+        return WindowsPrivateBundlePlatform()
+    if sys.platform.startswith("linux"):
+        return PosixPrivateBundlePlatform(PosixPlatform())
     raise NativeFilesystemError(NativeFailureKind.UNSUPPORTED)
 
 
@@ -221,7 +139,8 @@ class PrivateCredentialTree:
         *,
         account_path: Path | None = None,
         existing_root: Path | None = None,
-        _native: _PrivateCredentialPlatform | None = None,
+        _native: PrivateCredentialNative | None = None,
+        _bundle_native: PrivateBundleNative | None = None,
         _filesystem_factory: _FilesystemFactory = PersistenceFilesystem,
     ) -> None:
         if not root.is_absolute():
@@ -241,6 +160,7 @@ class PrivateCredentialTree:
         self._filesystem_factory = _filesystem_factory
         try:
             self._native = _native or _current_platform()
+            self._bundle_native = _bundle_native or _current_bundle_platform()
         except NativeFilesystemError as error:
             raise _passive_error(error, root.name) from None
 
@@ -277,15 +197,189 @@ class PrivateCredentialTree:
         """Classify a requested bundle without following filesystem paths."""
         if not bundle_path.is_absolute():
             return PrivateCredentialOwnership.EXTERNAL
-        if bundle_path.parent == self.root:
-            require_safe_basename(bundle_path.name)
-            if bundle_path.name == PRIVATE_TRANSACTION_DIRECTORY:
-                return PrivateCredentialOwnership.EXTERNAL
+        try:
+            canonical_relative = bundle_path.relative_to(self.root)
+        except ValueError:
+            canonical_relative = None
+        if canonical_relative is not None:
+            private_bundle_relative_components(canonical_relative.as_posix())
             return PrivateCredentialOwnership.CANONICAL
-        if bundle_path.parent == self._existing_root:
-            require_safe_basename(bundle_path.name)
+        try:
+            existing_relative = bundle_path.relative_to(self._existing_root)
+        except ValueError:
+            existing_relative = None
+        if existing_relative is not None:
+            private_bundle_relative_components(existing_relative.as_posix())
             return PrivateCredentialOwnership.EXISTING_COMPATIBILITY
         return PrivateCredentialOwnership.EXTERNAL
+
+    def relative_bundle_path(self, bundle_path: Path) -> str:
+        """Return one validated canonical bundle path relative to the root."""
+        if (
+            self.classify_bundle(bundle_path)
+            is not PrivateCredentialOwnership.CANONICAL
+        ):
+            raise ValueError("Private bundle is not canonically owned.")
+        relative = bundle_path.relative_to(self.root).as_posix()
+        private_bundle_relative_components(relative)
+        return relative
+
+    def canonical_bundle_path(self, relative: str) -> Path:
+        """Reconstruct one validated canonical bundle from journal text."""
+        components = private_bundle_relative_components(relative)
+        return self.root.joinpath(*components)
+
+    @staticmethod
+    def _snapshot(native: NativeFile) -> FileSnapshot:
+        return FileSnapshot(
+            FileFingerprint(
+                FileIdentity(native.device, native.inode),
+                sha256_digest(native.data),
+                len(native.data),
+            ),
+            native.link_count,
+            native.data,
+        )
+
+    def read_relative_bundle_file(
+        self,
+        relative: str,
+        basename: str,
+    ) -> FileSnapshot | None:
+        """Read one nested bundle file through qualified components."""
+        components = private_bundle_relative_components(relative)
+        require_safe_basename(basename)
+        try:
+            native = self._bundle_native.read_relative_file(
+                self.root,
+                components,
+                basename,
+                MAX_PRIVATE_FILE_BYTES,
+            )
+        except NativeFilesystemError as error:
+            raise _passive_error(error, basename) from None
+        return None if native is None else self._snapshot(native)
+
+    def read_relative_bundle(
+        self,
+        relative: str,
+    ) -> Mapping[str, FileSnapshot] | None:
+        """Return a complete immutable direct-file bundle observation."""
+        components = private_bundle_relative_components(relative)
+        try:
+            native = self._bundle_native.read_relative_bundle(
+                self.root,
+                components,
+                MAX_PRIVATE_FILES,
+                MAX_PRIVATE_FILE_BYTES,
+                MAX_PRIVATE_BUNDLE_BYTES,
+            )
+        except NativeFilesystemError as error:
+            raise _passive_error(error, components[-1]) from None
+        if native is None:
+            return None
+        return MappingProxyType(
+            {
+                basename: self._snapshot(snapshot)
+                for basename, snapshot in native
+            }
+        )
+
+    def relative_bundle_present(self, relative: str) -> bool:
+        """Report one nested bundle's qualified descendant state."""
+        components = private_bundle_relative_components(relative)
+        try:
+            return self._bundle_native.contains_relative_artifacts(
+                self.root,
+                components,
+            )
+        except NativeFilesystemError as error:
+            raise _passive_error(error, components[-1]) from None
+
+    def install_staged_bundle_file(
+        self,
+        relative: str,
+        basename: str,
+        stage_basename: str,
+        *,
+        expected_source: ExpectedAuthority,
+    ) -> FileSnapshot:
+        """Install one journal stage through qualified component chains."""
+        components = private_bundle_relative_components(relative)
+        require_safe_basename(basename)
+        require_safe_basename(stage_basename)
+        current = self.read_relative_bundle_file(relative, basename)
+        if expected_source is AuthorityExpectation.ABSENT:
+            if current is not None:
+                raise PrivateCredentialCollisionError(components[-1])
+        elif current is None or current.fingerprint != expected_source:
+            raise PrivateCredentialCollisionError(components[-1])
+        expected_native = (
+            None
+            if current is None
+            else NativeFile(
+                current.fingerprint.identity.device,
+                current.fingerprint.identity.inode,
+                current.link_count,
+                current.data,
+            )
+        )
+        try:
+            native = self._bundle_native.install_staged_file(
+                self.root,
+                (PRIVATE_TRANSACTION_DIRECTORY,),
+                stage_basename,
+                components,
+                basename,
+                expected_native,
+                MAX_PRIVATE_FILE_BYTES,
+            )
+        except NativeFilesystemError as error:
+            if error.kind in {
+                NativeFailureKind.CHANGED,
+                NativeFailureKind.UNSAFE,
+                NativeFailureKind.UNREADABLE,
+            }:
+                raise PrivateCredentialCollisionError(components[-1]) from None
+            raise DurabilityUncertainError(components[-1]) from None
+        return self._snapshot(native)
+
+    def delete_relative_bundle_file(
+        self,
+        relative: str,
+        basename: str,
+        expected: FileFingerprint,
+    ) -> None:
+        """Delete one exact nested file through qualified components."""
+        components = private_bundle_relative_components(relative)
+        require_safe_basename(basename)
+        current = self.read_relative_bundle_file(relative, basename)
+        if current is None or current.fingerprint != expected:
+            raise PrivateCredentialCollisionError(components[-1])
+        native = NativeFile(
+            current.fingerprint.identity.device,
+            current.fingerprint.identity.inode,
+            current.link_count,
+            current.data,
+        )
+        try:
+            self._bundle_native.delete_relative_file(
+                self.root,
+                components,
+                basename,
+                native,
+                MAX_PRIVATE_FILE_BYTES,
+            )
+        except NativeFilesystemError:
+            raise PrivateCredentialArtifactError from None
+
+    def destroy_relative_bundle(self, relative: str) -> None:
+        """Delete one exact nested bundle through qualified components."""
+        components = private_bundle_relative_components(relative)
+        try:
+            self._bundle_native.destroy_relative_tree(self.root, components)
+        except NativeFilesystemError:
+            raise PrivateCredentialArtifactError from None
 
     def read_bundle_file(
         self,
@@ -358,6 +452,17 @@ class PrivateCredentialTree:
         """Read one exact file from a direct owned private directory."""
         self._require_owned_directory(directory)
         require_safe_basename(basename)
+        if directory == self.transaction_directory:
+            try:
+                native = self._bundle_native.read_relative_file(
+                    self.root,
+                    (PRIVATE_TRANSACTION_DIRECTORY,),
+                    basename,
+                    MAX_PRIVATE_FILE_BYTES,
+                )
+            except NativeFilesystemError as error:
+                raise _passive_error(error, directory.name) from None
+            return None if native is None else self._snapshot(native)
         try:
             directory_has_artifacts = self._native.contains_artifacts(
                 directory
@@ -398,6 +503,27 @@ class PrivateCredentialTree:
         """Delete one exact private file under the shared account lock."""
         self._require_owned_directory(directory)
         require_safe_basename(basename)
+        if directory == self.transaction_directory:
+            current = self.read_owned_file(directory, basename)
+            if current is None or current.fingerprint != expected:
+                raise PrivateCredentialArtifactError
+            native = NativeFile(
+                current.fingerprint.identity.device,
+                current.fingerprint.identity.inode,
+                current.link_count,
+                current.data,
+            )
+            try:
+                self._bundle_native.delete_relative_file(
+                    self.root,
+                    (PRIVATE_TRANSACTION_DIRECTORY,),
+                    basename,
+                    native,
+                    MAX_PRIVATE_FILE_BYTES,
+                )
+            except NativeFilesystemError:
+                raise PrivateCredentialArtifactError from None
+            return
         self._filesystem_factory(directory / basename).delete_opaque_private(
             expected
         )
@@ -592,9 +718,15 @@ class PrivateCredentialTree:
 
 
 __all__ = [
+    "MAX_PRIVATE_BUNDLE_COMPONENTS",
+    "MAX_PRIVATE_BUNDLE_COMPONENT_BYTES",
+    "MAX_PRIVATE_BUNDLE_PATH_BYTES",
     "PreparedPrivateBundleWrite",
     "PrivateCredentialArtifacts",
     "PrivateCredentialOwnership",
     "PrivateCredentialRepairResult",
     "PrivateCredentialTree",
+    "portable_private_bundle_path_key",
+    "private_bundle_relative_components",
+    "require_portable_unique_private_bundle_paths",
 ]

@@ -10,8 +10,10 @@ import pytest
 
 from sidekick_usages.persistence._platform import (
     NativeFailureKind,
+    NativeFile,
     NativeFilesystemError,
     posix_private,
+    posix_private_bundles,
 )
 from sidekick_usages.persistence.artifacts import (
     ExpectedAuthority,
@@ -20,6 +22,7 @@ from sidekick_usages.persistence.artifacts import (
 from sidekick_usages.persistence.errors import (
     DurabilityUncertainError,
     ManagedFileReadError,
+    PersistenceFilesystemError,
     PrivateCredentialArtifactError,
     UnsafeManagedFileError,
     UnsupportedFilesystemError,
@@ -446,6 +449,111 @@ def test_private_bundle_ownership_distinguishes_compatibility_and_external(
     )
 
 
+def test_relative_bundle_observation_is_complete_and_absence_is_distinct(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "sidekick" / "codex"
+    tree = PrivateCredentialTree(root, account_path=tmp_path / "accounts.json")
+    assert tree.read_relative_bundle("teams/missing") is None
+
+    bundle = tree.write_bundle(
+        root / "teams" / "primary",
+        {
+            "auth.json": b"test-only-private-auth",
+            "config.toml": b"test-only-private-config",
+        },
+        expected_bundle_present=False,
+        expected_files={"auth.json": None},
+    )
+    observed = tree.read_relative_bundle("teams/primary")
+
+    assert observed is not None
+    assert {
+        basename: snapshot.data for basename, snapshot in observed.items()
+    } == {
+        "auth.json": b"test-only-private-auth",
+        "config.toml": b"test-only-private-config",
+    }
+    assert bundle == root / "teams" / "primary"
+
+
+@pytest.mark.parametrize(
+    ("invalid", "error_type"),
+    [
+        ("nested", UnsafeManagedFileError),
+        ("symlink", UnsafeManagedFileError),
+        ("alias", UnsafeManagedFileError),
+        ("too_many", ManagedFileReadError),
+    ],
+)
+@pytest.mark.skipif(os.name == "nt", reason="POSIX invalid namespace fixtures")
+def test_relative_bundle_observation_rejects_incomplete_namespaces(
+    tmp_path: Path,
+    invalid: str,
+    error_type: type[PersistenceFilesystemError],
+) -> None:
+    root = tmp_path / "sidekick" / "codex"
+    bundle = root / "teams" / "primary"
+    bundle.mkdir(parents=True)
+    for path in (root, root / "teams", bundle):
+        path.chmod(_PRIVATE_DIRECTORY_MODE)
+    _private_file(bundle / "auth.json", b"test-only-private-auth")
+    if invalid == "nested":
+        _private_directory(bundle / "nested")
+    elif invalid == "symlink":
+        (bundle / "linked.json").symlink_to(bundle / "auth.json")
+    elif invalid == "alias":
+        _private_file(bundle / "AUTH.JSON", b"test-only-alias")
+    else:
+        for index in range(16):
+            _private_file(bundle / f"extra-{index:02d}.json", b"x")
+
+    with pytest.raises(error_type):
+        PrivateCredentialTree(root).read_relative_bundle("teams/primary")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX component identity swap")
+def test_relative_bundle_observation_rejects_intermediate_directory_swap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "sidekick" / "codex"
+    teams = root / "teams"
+    bundle = teams / "primary"
+    bundle.mkdir(parents=True)
+    for path in (root, teams, bundle):
+        path.chmod(_PRIVATE_DIRECTORY_MODE)
+    _private_file(bundle / "auth.json", b"test-only-private-auth")
+    original = posix_private_bundles._read_bundle_pass
+    swapped = False
+
+    def swap_after_read(
+        opened: posix_private._OpenedTree,
+        chain: posix_private_bundles._OpenedChain,
+        names: tuple[str, ...],
+        file_limit: int,
+        total_limit: int,
+    ) -> tuple[tuple[str, NativeFile], ...]:
+        nonlocal swapped
+        result = original(opened, chain, names, file_limit, total_limit)
+        if not swapped:
+            swapped = True
+            teams.rename(root / "original-teams")
+            replacement = root / "teams"
+            replacement.mkdir()
+            replacement.chmod(_PRIVATE_DIRECTORY_MODE)
+        return result
+
+    monkeypatch.setattr(
+        posix_private_bundles,
+        "_read_bundle_pass",
+        swap_after_read,
+    )
+
+    with pytest.raises(UnsafeManagedFileError):
+        PrivateCredentialTree(root).read_relative_bundle("teams/primary")
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX tamper fixture")
 def test_private_bundle_final_proof_rejects_between_file_removal(
     tmp_path: Path,
@@ -472,6 +580,28 @@ def test_private_bundle_final_proof_rejects_between_file_removal(
 
 
 if sys.platform == "win32":
+
+    def test_windows_relative_bundle_observation_rejects_nested_directory(
+        tmp_path: Path,
+    ) -> None:
+        root = tmp_path / "sidekick" / "codex"
+        tree = PrivateCredentialTree(
+            root,
+            account_path=tmp_path / "sidekick" / "accounts.json",
+        )
+        bundle = tree.write_bundle(
+            root / "teams" / "primary",
+            {"auth.json": b"test-only-private-auth"},
+            expected_bundle_present=False,
+            expected_files={"auth.json": None},
+        )
+        win32file.CreateDirectoryW(
+            str(bundle / "nested"),
+            private_security_attributes(directory=True),
+        )
+
+        with pytest.raises(UnsafeManagedFileError):
+            tree.read_relative_bundle("teams/primary")
 
     def test_windows_private_tree_uses_handle_deletion_and_rejects_swap(
         tmp_path: Path,

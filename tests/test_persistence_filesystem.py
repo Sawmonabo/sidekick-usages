@@ -12,6 +12,7 @@ from sidekick_usages.persistence._platform import (
 from sidekick_usages.persistence.artifacts import (
     AuthorityExpectation,
     AuthorityGeneration,
+    FileSnapshot,
     ManagedArtifactKind,
     sha256_digest,
 )
@@ -48,7 +49,7 @@ def _filesystem(tmp_path: Path) -> PersistenceFilesystem:
     return PersistenceFilesystem(authority)
 
 
-def _commit_initial(filesystem: PersistenceFilesystem):
+def _commit_initial(filesystem: PersistenceFilesystem) -> FileSnapshot:
     with PersistenceLock(filesystem).hold() as transaction:
         return transaction.commit_authority(
             AuthorityGeneration.VERSION_ONE,

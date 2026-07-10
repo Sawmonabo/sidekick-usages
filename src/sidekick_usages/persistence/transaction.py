@@ -48,6 +48,18 @@ class PersistenceTransaction:
         with self._operation():
             return self._filesystem._publish_immutable(generation, source)
 
+    def publish_migration_snapshot(
+        self,
+        generation: AuthorityGeneration,
+        payload: bytes,
+    ) -> ManagedArtifact:
+        """Publish validated bytes copied from another locked authority."""
+        with self._operation():
+            return self._filesystem._publish_migration_snapshot(
+                generation,
+                payload,
+            )
+
     def publish_receipt(
         self,
         prototype_digest: Sha256Digest,

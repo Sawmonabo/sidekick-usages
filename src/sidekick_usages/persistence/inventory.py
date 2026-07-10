@@ -106,7 +106,22 @@ class PersistenceInventory:
         orphaned_private_credentials: OrphanedPrivateCredentials,
     ) -> PersistenceObservation:
         """Return complete read-only evidence for passive assessment."""
-        return self._inspect(orphaned_private_credentials, explicit=False)
+        return self._inspect(
+            orphaned_private_credentials,
+            explicit=False,
+            include_prototype=True,
+        )
+
+    def inspect_authority(
+        self,
+        orphaned_private_credentials: OrphanedPrivateCredentials,
+    ) -> PersistenceObservation:
+        """Return one candidate's evidence without prototype fallback."""
+        return self._inspect(
+            orphaned_private_credentials,
+            explicit=False,
+            include_prototype=False,
+        )
 
     def inspect_for_prototype_migration(
         self,
@@ -116,13 +131,18 @@ class PersistenceInventory:
         """Inspect a prototype only for one explicit migration intent."""
         if not isinstance(intent, PrototypeMigrationIntent):
             raise TypeError("intent must use the closed migration intent.")
-        return self._inspect(orphaned_private_credentials, explicit=True)
+        return self._inspect(
+            orphaned_private_credentials,
+            explicit=True,
+            include_prototype=True,
+        )
 
     def _inspect(
         self,
         orphaned_private_credentials: OrphanedPrivateCredentials,
         *,
         explicit: bool,
+        include_prototype: bool,
     ) -> PersistenceObservation:
         if not isinstance(
             orphaned_private_credentials,
@@ -153,7 +173,7 @@ class PersistenceInventory:
             authority = self._classify_authority(filesystem)
             artifacts = self._read_managed_artifacts(filesystem, managed)
 
-        if _prototype_eligible(
+        if include_prototype and _prototype_eligible(
             authority,
             artifacts,
             orphaned_private_credentials,

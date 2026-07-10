@@ -12,7 +12,7 @@ from sidekick_usages.cli.commands.migrate import (
 from sidekick_usages.cli.context import invocation_context
 from sidekick_usages.cli.help import BrandedTyperGroup, branded_command
 from sidekick_usages.persistence.errors import PersistenceError
-from sidekick_usages.persistence.migration_errors import (
+from sidekick_usages.persistence.migrations.errors import (
     SchedulerMutationBlockedError,
 )
 

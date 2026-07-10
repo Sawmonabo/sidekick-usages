@@ -9,7 +9,7 @@ from sidekick_usages.cli.context import invocation_context
 from sidekick_usages.cli.help import branded_command
 from sidekick_usages.core.types import ExitCode, ProviderId, highest_exit_code
 from sidekick_usages.lifetime import LifetimeFailure
-from sidekick_usages.render import usage_overview
+from sidekick_usages.usage.render import usage_overview
 
 
 def run(ctx: typer.Context) -> None:

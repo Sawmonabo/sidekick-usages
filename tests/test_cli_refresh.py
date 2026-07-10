@@ -65,19 +65,6 @@ def _isolate_default_codex_home(
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "missing-default"))
 
 
-def test_private_codex_cache_keys_do_not_collapse_distinct_labels(
-    tmp_path: Path,
-) -> None:
-    """Legacy-equivalent sanitized labels receive distinct durable keys."""
-    locations = make_application_paths(tmp_path).private_codex
-
-    first = private_codex_home(locations.canonical, "a b")
-    second = private_codex_home(locations.canonical, "a@b")
-
-    assert first != second
-    assert first.parent == second.parent == locations.canonical
-
-
 class _FakeProvider(Provider):
     """Provider test double with scripted fetch/refresh behavior."""
 
@@ -750,11 +737,21 @@ def test_add_prompts_only_for_missing_local_credentials(
         assert saved is None
 
 
+@pytest.mark.parametrize(
+    ("command", "deprecated"),
+    [
+        (["codex", "login"], False),
+        (["codex-login"], True),
+    ],
+)
 def test_codex_login_runs_plain_cli_and_imports_private_cache(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    command: list[str],
+    *,
+    deprecated: bool,
 ) -> None:
-    """codex-login leaves global ~/.codex as source for other apps."""
+    """Both spellings leave global ~/.codex as the explicit source."""
     provider = _FakeProvider(
         detected=_detected(
             access_token="eyJ-current.access.sig",
@@ -768,7 +765,7 @@ def test_codex_login_runs_plain_cli_and_imports_private_cache(
         ),
         provider_id="codex",
     )
-    harness, store, _, _ = _install_empty_ctx(tmp_path, provider)
+    harness, store, stdout, _ = _install_empty_ctx(tmp_path, provider)
     calls: list[dict[str, object]] = []
 
     def fake_run(
@@ -784,9 +781,12 @@ def test_codex_login_runs_plain_cli_and_imports_private_cache(
 
     monkeypatch.setattr(codex_auth_module.subprocess, "run", fake_run)
 
-    result = harness.invoke(["codex-login", "team"])
+    result = harness.invoke([*command, "team"])
 
     assert result.exit_code == 0
+    assert ("DeprecationWarning" in result.stderr) is deprecated
+    assert "DeprecationWarning" not in result.stdout
+    assert "Updated Codex login for 'team'." in stdout.getvalue()
     assert len(calls) == 1
     assert calls[0]["argv"] == ["codex", "login"]
     assert calls[0]["check"] is True
@@ -801,11 +801,21 @@ def test_codex_login_runs_plain_cli_and_imports_private_cache(
     assert cached["tokens"]["id_token"] == "id-token-current"
 
 
+@pytest.mark.parametrize(
+    ("command", "deprecated"),
+    [
+        (["codex", "export"], False),
+        (["codex-export"], True),
+    ],
+)
 def test_codex_export_writes_saved_credentials_to_home(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    command: list[str],
+    *,
+    deprecated: bool,
 ) -> None:
-    """Saved Codex credentials can be exported into an isolated home."""
+    """Both spellings export the same saved credentials and warning channel."""
     codex_home = tmp_path / "codex-team"
     acct = _codex_acct(
         access_token="eyJ-current.access.sig",
@@ -816,13 +826,16 @@ def test_codex_export_writes_saved_credentials_to_home(
     )
     provider = _FakeProvider(provider_id="codex")
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "missing-default"))
-    harness, store, _, _ = _install_ctx(tmp_path, provider, acct)
+    harness, store, stdout, _ = _install_ctx(tmp_path, provider, acct)
 
     result = harness.invoke(
-        ["codex-export", "team", "--codex-home", str(codex_home)],
+        [*command, "team", "--codex-home", str(codex_home)],
     )
 
     assert result.exit_code == 0
+    assert ("DeprecationWarning" in result.stderr) is deprecated
+    assert "DeprecationWarning" not in result.stdout
+    assert "Exported 'team' to Codex home" in stdout.getvalue()
     auth = json.loads((codex_home / "auth.json").read_text())
     assert auth["auth_mode"] == "chatgpt"
     assert auth["last_refresh"] == "2026-06-12T00:00:00Z"
@@ -877,7 +890,7 @@ def test_codex_export_reads_default_source_without_mutating_it(
     harness, _, _, _ = _install_ctx(tmp_path, provider, account)
 
     result = harness.invoke(
-        ["codex-export", "team", "--codex-home", str(target_home)],
+        ["codex", "export", "team", "--codex-home", str(target_home)],
     )
 
     assert result.exit_code == expected_exit
@@ -892,11 +905,21 @@ def test_codex_export_reads_default_source_without_mutating_it(
         assert not (target_home / "config.toml").exists()
 
 
+@pytest.mark.parametrize(
+    ("command", "deprecated"),
+    [
+        (["claude", "setup-token"], False),
+        (["setup-token", "claude"], True),
+    ],
+)
 def test_setup_token_delegates_only_to_claude_capability(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    command: list[str],
+    *,
+    deprecated: bool,
 ) -> None:
-    """The setup-token command uses Claude's narrow capability."""
+    """Both spellings delegate to Claude's one narrow capability."""
     token = "sk-ant-oat01-synthetic-setup-token"
     raw_secret = "oauth-code=must-not-reach-terminal"
     provider = ClaudeProvider(FixedClock())
@@ -935,10 +958,13 @@ def test_setup_token_delegates_only_to_claude_capability(
     )
 
     result = harness.invoke(
-        ["setup-token", "claude", "--label", "setup"],
+        [*command, "--label", "setup"],
     )
 
     assert result.exit_code == 0
+    assert ("DeprecationWarning" in result.stderr) is deprecated
+    assert "DeprecationWarning" not in result.stdout
+    assert "Saved 'setup'." in stdout.getvalue()
     assert raw_secret not in result.output
     assert raw_secret not in stdout.getvalue()
     assert raw_secret not in stderr.getvalue()

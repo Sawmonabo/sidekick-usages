@@ -30,7 +30,12 @@ from sidekick_usages.credentials import (
 )
 from sidekick_usages.credentials import codex as credential_codex
 from sidekick_usages.credentials.codex import private_codex_home
-from sidekick_usages.doctor import DoctorService, render_doctor
+from sidekick_usages.doctor import (
+    DoctorReadyResult,
+    DoctorService,
+    doctor_json,
+    render_doctor,
+)
 from sidekick_usages.errors import AuthError
 from sidekick_usages.http import HttpClient, HttpOperation
 from sidekick_usages.maintenance import TokenMaintenanceService
@@ -38,9 +43,25 @@ from sidekick_usages.persistence.account_store import AccountStore
 from sidekick_usages.persistence.artifacts import (
     ExpectedAuthority,
     FileSnapshot,
+    Sha256Digest,
 )
-from sidekick_usages.persistence.errors import ReplaceFailedError
+from sidekick_usages.persistence.assessment import PersistenceAssessment
+from sidekick_usages.persistence.errors import (
+    PersistenceCode,
+    ReplaceFailedError,
+)
 from sidekick_usages.persistence.filesystem import PersistenceFilesystem
+from sidekick_usages.persistence.migrations.location import (
+    CanonicalSelection,
+    LocationCandidate,
+    LocationMigrationAssessment,
+    LocationRole,
+    ReadyLocationSelection,
+)
+from sidekick_usages.persistence.migrations.ports import (
+    PrivateAuthMigrationAssessment,
+)
+from sidekick_usages.persistence.observations import StoredGeneration
 from sidekick_usages.persistence.private_credentials import (
     PreparedPrivateBundleWrite,
     PrivateCredentialTree,
@@ -64,6 +85,19 @@ from tests.test_support import (
 
 _PRIVATE_DIRECTORY_MODE = 0o700
 _PRIVATE_FILE_MODE = 0o600
+
+
+def test_private_codex_cache_keys_do_not_collapse_distinct_labels(
+    tmp_path: Path,
+) -> None:
+    """Legacy-equivalent sanitized labels receive distinct durable keys."""
+    locations = make_application_paths(tmp_path).private_codex
+
+    first = private_codex_home(locations.canonical, "a b")
+    second = private_codex_home(locations.canonical, "a@b")
+
+    assert first != second
+    assert first.parent == second.parent == locations.canonical
 
 
 def _access_token(account_id: str) -> str:
@@ -820,17 +854,45 @@ def test_provider_secret_never_crosses_persisted_or_doctor_error_channels(
         {},
         clock,
     ).diagnostics()
+    schema = PersistenceAssessment(
+        code=PersistenceCode.CURRENT,
+        generation=StoredGeneration.VERSION_ONE,
+        schema_version=1,
+        account_count=1,
+        safe_path=store.path,
+        artifact_basename=None,
+        write_blocked=False,
+        next_command=None,
+        message="Account storage is current.",
+        issues=(),
+    )
+    candidate = LocationCandidate(
+        role=LocationRole.CANONICAL,
+        path=store.path,
+        assessment=schema,
+        account_digest=Sha256Digest("a" * 64),
+        private_auth_digest=Sha256Digest("b" * 64),
+    )
+    selection: ReadyLocationSelection = CanonicalSelection(candidate)
+    assessment: LocationMigrationAssessment[ReadyLocationSelection] = (
+        LocationMigrationAssessment(
+            selection=selection,
+            candidates=(candidate,),
+            source=store.path,
+            destination=store.path,
+            private_auth_summary=PrivateAuthMigrationAssessment(()),
+            artifact_basename=None,
+            issues=(),
+            write_blocked=False,
+            next_command=None,
+        )
+    )
+    completed = DoctorReadyResult(tuple(diagnostics), assessment)
     human_output = io.StringIO()
-    json_output = io.StringIO()
-    render_doctor(
-        diagnostics,
-        Console(file=human_output, force_terminal=False),
+    Console(file=human_output, force_terminal=False).print(
+        render_doctor(completed, width=80)
     )
-    render_doctor(
-        diagnostics,
-        Console(file=json_output, force_terminal=False),
-        json_output=True,
-    )
+    machine_output = json.dumps(doctor_json(completed))
 
     assert saved.last_refresh_error == (
         "Claude rejected the credential refresh. Log in again."
@@ -840,6 +902,6 @@ def test_provider_secret_never_crosses_persisted_or_doctor_error_channels(
         store.path.read_text(),
         repr(diagnostics),
         human_output.getvalue(),
-        json_output.getvalue(),
+        machine_output,
     ):
         assert response_secret not in rendered

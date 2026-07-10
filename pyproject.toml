@@ -38,6 +38,7 @@ classifiers = [
 ]
 dependencies = [
   "click>=8.1",
+  "platformdirs==4.10.0",
   "pydantic==2.13.4",
   "portalocker==3.2.0",
   "pywin32==312; sys_platform == 'win32'",
@@ -91,6 +92,7 @@ extend-exclude = [".claude/", ".codex/"]
 
 [tool.ruff.lint]
 select = [
+  "ANN",  # annotations
   "B",  # bugbear
   "C",  # complexity
   "C4",  # comprehensions
@@ -211,12 +213,6 @@ targets = ["src"]
 # ---------------------------------------------------------------------
 [tool.commitizen]
 name = "cz_conventional_commits"
-version = "0.5.0"
-version_files = ["src/sidekick_usages/__init__.py:__version__"]
-tag_format = "v$version"
-update_changelog_on_bump = true
-changelog_incremental = true
-major_version_zero = true
 allowed_prefixes = ["Merge", "Revert", "chore", "build", "ci"]
 
 [tool.commitizen.customize]

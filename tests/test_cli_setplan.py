@@ -46,7 +46,7 @@ def _acct(label: str, plan: str) -> Account:
     )
 
 
-def test_set_plan_updates_and_persists(tmp_path):
+def test_set_plan_updates_and_persists(tmp_path: Path) -> None:
     _, harness = _ctx(tmp_path, _acct("acme", "unknown"))
 
     result = harness.invoke(["set-plan", "acme", "max"])
@@ -57,7 +57,7 @@ def test_set_plan_updates_and_persists(tmp_path):
     assert saved.plan == "max"
 
 
-def test_set_plan_unknown_label_errors(tmp_path):
+def test_set_plan_unknown_label_errors(tmp_path: Path) -> None:
     _, harness = _ctx(tmp_path, _acct("acme", "team"))
 
     result = harness.invoke(["set-plan", "nope", "max"])
@@ -65,7 +65,7 @@ def test_set_plan_unknown_label_errors(tmp_path):
     assert result.exit_code == 1
 
 
-def test_set_plan_rejects_empty_plan(tmp_path):
+def test_set_plan_rejects_empty_plan(tmp_path: Path) -> None:
     _, harness = _ctx(tmp_path, _acct("acme", "team"))
 
     result = harness.invoke(["set-plan", "acme", ""])

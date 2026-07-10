@@ -32,6 +32,11 @@ from sidekick_usages.lifetime import (
     LifetimeTotal,
     LifetimeUnavailable,
 )
+from sidekick_usages.usage.legacy_render import (
+    PLAN_COLORS,
+    account_header,
+    usage_report,
+)
 from sidekick_usages.usage.models import (
     AccountUsage,
     AuthenticationFailure,
@@ -42,33 +47,11 @@ from sidekick_usages.usage.models import (
     RateLimitFailure,
     RefreshRejectedFailure,
 )
-
-BAR_WIDTH = 18
+from sidekick_usages.usage.reset_display import compact_reset_text
 
 _TOKENS_PER_THOUSAND = 1_000
 _TOKENS_PER_MILLION = 1_000_000
 _TOKENS_PER_BILLION = 1_000_000_000
-
-#: Utilization percentage thresholds for bar/percent coloring.
-#: Values are the lower bound (inclusive) for each color band.
-_PCT_RED_THRESHOLD = 90
-_PCT_YELLOW_THRESHOLD = 70
-_PCT_CYAN_THRESHOLD = 40
-
-#: Seconds in common time units, used to choose the
-#: ``in Xm`` / ``in Xh Xm`` / ``in Xd Xh`` rendering style.
-_SECONDS_PER_HOUR = 3600
-_SECONDS_PER_DAY = 86400
-
-#: Plan tag colors. Keyed by lowercased plan string.
-PLAN_COLORS: dict[str, str] = {
-    "max": "magenta",
-    "team": "cyan",
-    "pro": "green",
-    "plus": "green",
-    "enterprise": "yellow",
-    "business": "yellow",
-}
 
 #: Heat bands as (lower-bound-inclusive percent, fg hex, bg hex).
 #: Thresholds match the legacy ``_utilization_color`` bands.
@@ -210,96 +193,6 @@ def _heat_tile(pct: int) -> Text:
     return Text(f"{f'{pct}%':^{_TILE_WIDTH}}", style=f"{fg} on {bg}")
 
 
-def _utilization_color(pct: float) -> str:
-    """Pick a Rich color name based on a utilization percentage.
-
-    :param pct: Utilization 0-100.
-    :return: Rich color name suitable for ``[color]text[/color]``.
-    """
-    if pct >= _PCT_RED_THRESHOLD:
-        return "red"
-    if pct >= _PCT_YELLOW_THRESHOLD:
-        return "yellow"
-    if pct >= _PCT_CYAN_THRESHOLD:
-        return "cyan"
-    return "green"
-
-
-def _braille_bar(pct: float, width: int = BAR_WIDTH) -> Text:
-    """Build a braille-dot progress bar as a Rich :class:`Text`.
-
-    :param pct: 0-100; clamped if out of range.
-    :param width: Total bar width in characters.
-    :return: A Rich ``Text`` with two styled spans (filled, empty).
-    """
-    pct = max(0.0, min(100.0, pct))
-    filled = round(pct / 100.0 * width)
-    empty = width - filled
-    color = _utilization_color(pct)
-    bar = Text()
-    bar.append("⣿" * filled, style=color)
-    bar.append("⣀" * empty, style="dim")
-    return bar
-
-
-def _format_reset(
-    reset_at: datetime | None,
-    reference_time: datetime,
-) -> Text:
-    """Render a reset timestamp as ``<local> (<relative>)``.
-
-    :param reset_at: Aware provider-normalized reset time, if known.
-    :param reference_time: Aware wall time for relative formatting.
-    :return: A dim Rich ``Text`` (or em-dash for missing data).
-    """
-    if reset_at is None:
-        return Text("—", style="dim")
-    secs = int((reset_at - reference_time).total_seconds())
-    if secs <= 0:
-        rel = "any moment"
-    elif secs < _SECONDS_PER_HOUR:
-        rel = f"in {secs // 60}m"
-    elif secs < _SECONDS_PER_DAY:
-        h, m = divmod(secs // 60, 60)
-        rel = f"in {h}h {m}m"
-    else:
-        d, rem = divmod(secs, _SECONDS_PER_DAY)
-        rel = f"in {d}d {rem // _SECONDS_PER_HOUR}h"
-    local = reset_at.astimezone()
-    return Text(
-        f"↻ {local.strftime('%a %b %d, %I:%M %p')} ({rel})",
-        style="dim",
-    )
-
-
-def _format_reset_compact(
-    reset_at: datetime | None,
-    reference_time: datetime,
-) -> str:
-    """Compact relative countdown: ``45m`` / ``3h 50m`` / ``1d 15h``.
-
-    No ``↻`` glyph and no absolute timestamp (those are dropped from
-    the matrix per the spec).
-
-    :param reset_at: Aware provider-normalized reset time, if known.
-    :param reference_time: Aware wall time for relative formatting.
-    :return: A compact string, ``"now"`` if already due, or ``""``
-        when missing/unparseable.
-    """
-    if reset_at is None:
-        return ""
-    secs = round((reset_at - reference_time).total_seconds())
-    if secs <= 0:
-        return "now"
-    if secs < _SECONDS_PER_HOUR:
-        return f"{secs // 60}m"
-    if secs < _SECONDS_PER_DAY:
-        hours, minutes = divmod(secs // 60, 60)
-        return f"{hours}h {minutes}m"
-    days, remainder = divmod(secs, _SECONDS_PER_DAY)
-    return f"{days}d {remainder // _SECONDS_PER_HOUR}h"
-
-
 def _reset_cell(
     reset_at: datetime | None,
     reference_time: datetime,
@@ -311,108 +204,8 @@ def _reset_cell(
     :return: A ``Text`` of width ``_TILE_WIDTH``.
     """
     return Text(
-        f"{_format_reset_compact(reset_at, reference_time):^{_TILE_WIDTH}}",
+        f"{compact_reset_text(reset_at, reference_time):^{_TILE_WIDTH}}",
         style="grey42",
-    )
-
-
-def _account_tag(provider_id: ProviderId, plan: str) -> Text:
-    """Build the ``[provider · plan]`` colored tag.
-
-    :param provider_id: Account provider to show.
-    :param plan: Account plan to show when known.
-    :return: A Rich ``Text`` ready for direct printing.
-    """
-    prov_color = PROVIDER_COLORS.get(provider_id, "dim")
-    plan_color = PLAN_COLORS.get(plan, "dim")
-    tag = Text()
-    if not plan or plan == "unknown":
-        tag.append("[", style="dim")
-        tag.append(provider_id, style=prov_color)
-        tag.append("]", style="dim")
-        return tag
-    tag.append("[", style="dim")
-    tag.append(provider_id, style=prov_color)
-    tag.append(" · ", style="dim")
-    tag.append(plan, style=plan_color)
-    tag.append("]", style="dim")
-    return tag
-
-
-def account_header(
-    label: str,
-    provider_id: ProviderId,
-    plan: str,
-) -> Text:
-    """Render a standalone header line.
-
-    Used by error blocks where there's no report to align against.
-
-    :param label: Account label to display.
-    :param provider_id: Account provider to display.
-    :param plan: Account plan to display when known.
-    :return: A Rich ``Text`` of ``label  [provider · plan]``.
-    """
-    header = Text()
-    header.append(label, style="bold")
-    header.append("  ")
-    header.append_text(_account_tag(provider_id, plan))
-    return header
-
-
-def usage_report(
-    usage: AccountUsage,
-    reference_time: datetime,
-) -> RenderableType:
-    """Render the full per-account block.
-
-    Layout: a header line with the account label and tag, followed
-    by a borderless table of one row per active window. Columns:
-    name, bar, percent, reset time.
-
-    :param usage: Immutable account usage to render.
-    :param reference_time: Aware wall time for relative reset labels.
-    :return: A Rich ``Group`` ready to print or nest in a panel.
-    """
-    report = usage.report
-    windows = report.active_windows()
-    if not windows:
-        return Group(
-            account_header(usage.label, usage.provider_id, usage.plan),
-            Text(
-                "  No active usage windows reported.",
-                style="dim",
-            ),
-        )
-
-    table = Table(
-        show_header=False,
-        show_edge=False,
-        box=None,
-        padding=(0, 1),
-        pad_edge=False,
-    )
-    table.add_column("name", style="dim", no_wrap=True)
-    table.add_column("bar", no_wrap=True)
-    table.add_column("pct", justify="right", no_wrap=True)
-    table.add_column("reset", no_wrap=True)
-
-    for w in windows:
-        pct_int = round(w.utilization)
-        pct_text = Text(
-            f"{pct_int}%",
-            style=_utilization_color(w.utilization),
-        )
-        table.add_row(
-            f" {w.name}",
-            _braille_bar(w.utilization),
-            pct_text,
-            _format_reset(w.resets_at, reference_time),
-        )
-
-    return Group(
-        account_header(usage.label, usage.provider_id, usage.plan),
-        table,
     )
 
 

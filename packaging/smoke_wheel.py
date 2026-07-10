@@ -64,11 +64,13 @@ REQUIRED_WHEEL_MEMBERS = frozenset(
         "sidekick_usages/persistence/_platform/posix_mounts.py",
         "sidekick_usages/persistence/_platform/posix_namespace.py",
         "sidekick_usages/persistence/_platform/posix_private.py",
+        "sidekick_usages/persistence/_platform/posix_private_bundles.py",
         "sidekick_usages/persistence/_platform/windows.py",
         "sidekick_usages/persistence/_platform/windows_files.py",
         "sidekick_usages/persistence/_platform/windows_handles.py",
         "sidekick_usages/persistence/_platform/windows_namespace.py",
         "sidekick_usages/persistence/_platform/windows_private.py",
+        "sidekick_usages/persistence/_platform/windows_private_bundles.py",
         "sidekick_usages/persistence/_platform/windows_private_tree.py",
         "sidekick_usages/persistence/_platform/windows_security.py",
         "sidekick_usages/persistence/_recovery.py",
@@ -77,14 +79,24 @@ REQUIRED_WHEEL_MEMBERS = frozenset(
         "sidekick_usages/persistence/artifacts.py",
         "sidekick_usages/persistence/assessment.py",
         "sidekick_usages/persistence/credential_transaction_schema.py",
+        "sidekick_usages/persistence/credential_transaction_plans.py",
+        "sidekick_usages/persistence/credential_transaction_recovery.py",
         "sidekick_usages/persistence/credential_transactions.py",
         "sidekick_usages/persistence/errors.py",
         "sidekick_usages/persistence/filesystem.py",
         "sidekick_usages/persistence/inventory.py",
         "sidekick_usages/persistence/locking.py",
-        "sidekick_usages/persistence/migration_errors.py",
-        "sidekick_usages/persistence/migrations.py",
+        "sidekick_usages/persistence/migrations/__init__.py",
+        "sidekick_usages/persistence/migrations/account.py",
+        "sidekick_usages/persistence/migrations/errors.py",
+        "sidekick_usages/persistence/migrations/location.py",
+        "sidekick_usages/persistence/migrations/observer.py",
+        "sidekick_usages/persistence/migrations/ports.py",
+        "sidekick_usages/persistence/migrations/service.py",
         "sidekick_usages/persistence/observations.py",
+        "sidekick_usages/persistence/private_bundle_paths.py",
+        "sidekick_usages/persistence/private_bundle_writes.py",
+        "sidekick_usages/persistence/private_credential_contracts.py",
         "sidekick_usages/persistence/private_credentials.py",
         "sidekick_usages/persistence/schemas.py",
         "sidekick_usages/persistence/transaction.py",
@@ -98,6 +110,7 @@ REQUIRED_WHEEL_MEMBERS = frozenset(
         "sidekick_usages/providers/claude/usage.py",
         "sidekick_usages/providers/codex/__init__.py",
         "sidekick_usages/providers/codex/auth.py",
+        "sidekick_usages/providers/codex/auth_migration.py",
         "sidekick_usages/providers/codex/heartbeat.py",
         "sidekick_usages/providers/codex/provider.py",
         "sidekick_usages/providers/codex/schemas.py",
@@ -108,7 +121,10 @@ REQUIRED_WHEEL_MEMBERS = frozenset(
         "sidekick_usages/serialization/__init__.py",
         "sidekick_usages/serialization/json.py",
         "sidekick_usages/usage/__init__.py",
+        "sidekick_usages/usage/legacy_render.py",
         "sidekick_usages/usage/models.py",
+        "sidekick_usages/usage/render.py",
+        "sidekick_usages/usage/reset_display.py",
         "sidekick_usages/usage/service.py",
     }
     | REQUIRED_CLI_MEMBERS
@@ -116,6 +132,7 @@ REQUIRED_WHEEL_MEMBERS = frozenset(
 FORBIDDEN_WHEEL_MEMBERS = frozenset(
     {
         "sidekick_usages/http.py",
+        "sidekick_usages/render.py",
         "sidekick_usages/cli.py",
         "sidekick_usages/cli_help.py",
         "sidekick_usages/token_input.py",
@@ -128,7 +145,27 @@ FORBIDDEN_WHEEL_MEMBERS = frozenset(
         "sidekick_usages/heartbeat/registry.py",
         "sidekick_usages/providers/claude.py",
         "sidekick_usages/providers/codex.py",
+        "sidekick_usages/persistence/migration_errors.py",
+        "sidekick_usages/persistence/migrations.py",
     }
+)
+
+SMOKE_ARGUMENTS: tuple[tuple[str, ...], ...] = (
+    ("--version",),
+    ("--help",),
+    ("daemon", "--help"),
+    ("daemon", "status", "--help"),
+    ("doctor", "--help"),
+    ("add", "--help"),
+    ("migrate", "locations", "--help"),
+    ("claude", "--help"),
+    ("claude", "setup-token", "--help"),
+    ("codex", "--help"),
+    ("codex", "login", "--help"),
+    ("codex", "export", "--help"),
+    ("setup-token", "--help"),
+    ("codex-login", "--help"),
+    ("codex-export", "--help"),
 )
 
 
@@ -396,7 +433,7 @@ def verify_installed_wheel(wheel: Path) -> None:
         )
 
         origin_check = (
-            "import pathlib, sidekick_usages, sys; "
+            "import importlib.metadata, pathlib, sidekick_usages, sys; "
             "import sidekick_usages.cli.app; "
             "import sidekick_usages.cli.context; "
             "import sidekick_usages.persistence.filesystem; "
@@ -405,7 +442,12 @@ def verify_installed_wheel(wheel: Path) -> None:
             "import sidekick_usages.persistence.transaction; "
             "origin = pathlib.Path(sidekick_usages.__file__).resolve(); "
             "prefix = pathlib.Path(sys.prefix).resolve(); "
-            "assert origin.is_relative_to(prefix), (origin, prefix)"
+            "dependency = pathlib.Path("
+            "sys.modules['platformdirs'].__file__).resolve(); "
+            "assert origin.is_relative_to(prefix), (origin, prefix); "
+            "assert dependency.is_relative_to(prefix), "
+            "(dependency, prefix); "
+            "assert importlib.metadata.version('platformdirs') == '4.10.0'"
         )
         _run(
             [str(python), "-c", origin_check],
@@ -465,20 +507,12 @@ authority.unlink()
             env=env,
         )
 
-        smoke_arguments = (
-            ("--version",),
-            ("--help",),
-            ("daemon", "--help"),
-            ("daemon", "status", "--help"),
-            ("doctor", "--help"),
-            ("add", "--help"),
-        )
         entry_points = (
             (str(console),),
             (str(python), "-m", "sidekick_usages"),
         )
         for entry_point in entry_points:
-            for arguments in smoke_arguments:
+            for arguments in SMOKE_ARGUMENTS:
                 result = _run(
                     [*entry_point, *arguments],
                     cwd=run_dir,

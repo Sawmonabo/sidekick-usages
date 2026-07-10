@@ -8,7 +8,11 @@ from pathlib import Path
 from rich.console import Console
 
 from sidekick_usages.branding import ROBOT_LINES
-from sidekick_usages.cli.context import DoctorContext, DoctorReady
+from sidekick_usages.cli.context import (
+    DoctorContext,
+    DoctorFailed,
+    DoctorReady,
+)
 from sidekick_usages.core.expiry import KnownExpiry
 from sidekick_usages.core.models import (
     Account,
@@ -17,13 +21,34 @@ from sidekick_usages.core.models import (
 )
 from sidekick_usages.core.types import (
     AccountLabel,
+    ExitCode,
     HeartbeatStatus,
     RefreshStatus,
 )
-from sidekick_usages.doctor import DoctorService
+from sidekick_usages.doctor import (
+    DoctorReadyResult,
+    DoctorService,
+    doctor_json,
+    render_doctor,
+)
 from sidekick_usages.persistence.account_store import AccountStore
-from sidekick_usages.persistence.assessment import PersistenceAssessment
+from sidekick_usages.persistence.artifacts import Sha256Digest
+from sidekick_usages.persistence.assessment import (
+    PersistenceAssessment,
+    PersistenceCompositionFailure,
+)
 from sidekick_usages.persistence.errors import PersistenceCode
+from sidekick_usages.persistence.migrations.location import (
+    CanonicalSelection,
+    EmptySelection,
+    LocationCandidate,
+    LocationMigrationAssessment,
+    LocationRole,
+    ReadyLocationSelection,
+)
+from sidekick_usages.persistence.migrations.ports import (
+    PrivateAuthMigrationAssessment,
+)
 from sidekick_usages.persistence.observations import StoredGeneration
 from sidekick_usages.providers.registry import (
     build_heartbeat_registry,
@@ -37,6 +62,51 @@ from tests.test_support import (
 )
 
 
+def _ready_assessment(
+    tmp_path: Path,
+    account_count: int,
+) -> LocationMigrationAssessment[ReadyLocationSelection]:
+    path = (tmp_path / "accounts.json").resolve()
+    candidates: tuple[LocationCandidate, ...]
+    selection: ReadyLocationSelection
+    if account_count:
+        schema = PersistenceAssessment(
+            code=PersistenceCode.CURRENT,
+            generation=StoredGeneration.VERSION_ONE,
+            schema_version=1,
+            account_count=account_count,
+            safe_path=path,
+            artifact_basename=None,
+            write_blocked=False,
+            next_command=None,
+            message="Account storage is current.",
+            issues=(),
+        )
+        candidate = LocationCandidate(
+            role=LocationRole.CANONICAL,
+            path=path,
+            assessment=schema,
+            account_digest=Sha256Digest("a" * 64),
+            private_auth_digest=Sha256Digest("b" * 64),
+        )
+        candidates = (candidate,)
+        selection = CanonicalSelection(candidate)
+    else:
+        candidates = ()
+        selection = EmptySelection()
+    return LocationMigrationAssessment(
+        selection=selection,
+        candidates=candidates,
+        source=path,
+        destination=path,
+        private_auth_summary=PrivateAuthMigrationAssessment(()),
+        artifact_basename=None,
+        issues=(),
+        write_blocked=False,
+        next_command=None,
+    )
+
+
 def _install_ctx(
     tmp_path: Path,
     accounts: list[Account],
@@ -48,18 +118,7 @@ def _install_ctx(
     clock = FixedClock()
     providers = build_provider_registry(clock)
     heartbeat_providers = build_heartbeat_registry(providers)
-    assessment = PersistenceAssessment(
-        code=PersistenceCode.CURRENT,
-        generation=StoredGeneration.VERSION_ONE,
-        schema_version=1,
-        account_count=len(accounts),
-        safe_path=(tmp_path / "accounts.json").resolve(),
-        artifact_basename=None,
-        write_blocked=False,
-        next_command=None,
-        message="Account storage is current.",
-        issues=(),
-    )
+    assessment = _ready_assessment(tmp_path, len(accounts))
     harness = CliHarness(
         console=Console(file=stdout, force_terminal=False),
         err_console=Console(file=stderr, force_terminal=False),
@@ -120,10 +179,75 @@ def test_doctor_json_reports_refreshability_and_redacts_tokens(
     assert accounts["setup"]["can_auto_refresh"] is False
     assert accounts["setup"]["usage_route"] == "/v1/messages headers"
     assert accounts["setup"]["heartbeat_supported"] is True
+    persistence = payload["persistence"]
+    assert persistence["code"] == "canonical_selected"
+    assert persistence["candidates"][0]["schema"]["code"] == "current"
     assert clock.calls == 1
     rendered = stdout.getvalue()
     assert "secret-refresh-token" not in rendered
     assert "sk-ant-oat01-secret-access-token-value" not in rendered
+
+
+def test_doctor_views_share_one_completed_typed_result(tmp_path: Path) -> None:
+    """Human and JSON views preserve the same completed diagnostics."""
+    account = Account(
+        label=AccountLabel("team"),
+        credentials=ClaudeCredentials(
+            access_token="sk-ant-oat01-test-token",
+            refresh_token="test-refresh-token",
+            expiry=KnownExpiry(REFERENCE_TIME + timedelta(hours=1)),
+            scopes=("user:profile",),
+        ),
+        plan="team",
+    )
+    harness, _, _, _, clock = _install_ctx(tmp_path, [account])
+    context = harness.doctor
+    assert context is not None
+    state = context.state
+    assert isinstance(state, DoctorReady)
+    completed = DoctorReadyResult(
+        tuple(state.service.diagnostics()),
+        state.assessment,
+    )
+    human = io.StringIO()
+    Console(file=human, force_terminal=False, width=120).print(
+        render_doctor(completed, width=120)
+    )
+    machine = doctor_json(completed)
+    decoded = json.loads(json.dumps(machine))
+
+    assert "team" in human.getvalue()
+    assert "location: canonical_selected" in human.getvalue()
+    assert decoded["accounts"][0]["label"] == "team"
+    assert decoded["persistence"]["code"] == "canonical_selected"
+    assert decoded == machine
+    assert clock.calls == 1
+
+
+def test_doctor_json_represents_composition_failure(tmp_path: Path) -> None:
+    """A pre-assessment failure remains machine-readable and actionable."""
+    safe_path = (tmp_path / "accounts.json").resolve()
+    failure = PersistenceCompositionFailure(
+        code=PersistenceCode.UNREADABLE,
+        safe_path=safe_path,
+        artifact_basename=safe_path.name,
+        message="The persistence location could not be read safely.",
+        next_command=("sidekick-usages", "doctor"),
+    )
+    stdout = io.StringIO()
+    harness = CliHarness(
+        console=Console(file=stdout, force_terminal=False),
+        err_console=Console(file=io.StringIO(), force_terminal=False),
+        doctor=DoctorContext(DoctorFailed(failure)),
+    )
+
+    result = harness.invoke(["doctor", "--json"])
+    payload = json.loads(stdout.getvalue())
+
+    assert result.exit_code == ExitCode.SYSTEM_ERROR
+    assert payload["accounts"] == []
+    assert payload["persistence"]["code"] == "unreadable"
+    assert payload["persistence"]["safe_path"] == str(safe_path)
 
 
 def test_doctor_reports_previous_refresh_rejection(

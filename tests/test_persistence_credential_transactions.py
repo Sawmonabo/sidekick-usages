@@ -20,6 +20,7 @@ from sidekick_usages.persistence.artifacts import (
 )
 from sidekick_usages.persistence.assessment import assess_persistence
 from sidekick_usages.persistence.credential_transaction_schema import (
+    CredentialTransactionJournal,
     decode_credential_journal,
 )
 from sidekick_usages.persistence.credential_transactions import (
@@ -45,7 +46,9 @@ from sidekick_usages.persistence.private_credentials import (
     PreparedPrivateBundleWrite,
     PrivateCredentialTree,
 )
-from sidekick_usages.persistence.schemas import encode_version_one
+from sidekick_usages.persistence.schemas import (
+    encode_version_one,
+)
 from sidekick_usages.persistence.transaction import PersistenceTransaction
 from sidekick_usages.persistence.transforms import accounts_to_version_one
 from tests.test_support import make_application_paths
@@ -54,6 +57,8 @@ _OLD_AUTH = b"test-only-old-private-auth"
 _NEW_AUTH = b"test-only-new-private-auth"
 _CONFIG = b'test-only-mode = "file"\n'
 _CODEX_REMOVED = 2
+_SECOND_SOURCE_READ = 2
+_TARGET_SWAP_CHECKPOINT = 4
 
 
 class _SimulatedCrash(BaseException):
@@ -493,6 +498,7 @@ def test_multi_bundle_journal_is_deterministic_and_recovers_as_one_unit(
     )
     assert snapshot is not None
     journal = decode_credential_journal(snapshot.data)
+    assert isinstance(journal, CredentialTransactionJournal)
     assert journal.target_bundles == ("a-first", "b-second")
     assert tuple(item.bundle_basename for item in journal.files) == (
         "a-first",

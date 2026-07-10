@@ -108,22 +108,25 @@ _GENERATION_ZERO_REQUIRED = frozenset(
         "plan",
     }
 )
+_GENERATION_ZERO_NULL_FIELDS = (
+    "provider_account_id",
+    "scopes",
+    "codex_home",
+    "codex_id_token",
+    "codex_last_refresh",
+    "last_refresh_at",
+    "last_refresh_status",
+    "last_refresh_error",
+    "heartbeat_5h_reset_at",
+    "heartbeat_window_resets",
+    "heartbeat_targets",
+    "last_heartbeat_at",
+    "last_heartbeat_status",
+    "last_heartbeat_error",
+)
 _GENERATION_ZERO_DEFAULTS: JsonObject = {
-    "provider_account_id": None,
-    "scopes": None,
-    "codex_home": None,
-    "codex_id_token": None,
-    "codex_last_refresh": None,
-    "last_refresh_at": None,
-    "last_refresh_status": None,
-    "last_refresh_error": None,
+    **dict.fromkeys(_GENERATION_ZERO_NULL_FIELDS),
     "heartbeat_enabled": False,
-    "heartbeat_5h_reset_at": None,
-    "heartbeat_window_resets": None,
-    "heartbeat_targets": None,
-    "last_heartbeat_at": None,
-    "last_heartbeat_status": None,
-    "last_heartbeat_error": None,
 }
 
 

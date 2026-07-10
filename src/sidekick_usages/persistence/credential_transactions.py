@@ -1,8 +1,6 @@
 """Crash-recoverable account-authority and private-bundle coordination."""
 
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field
-from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
 
@@ -10,39 +8,39 @@ from sidekick_usages.persistence.artifacts import (
     AuthorityExpectation,
     AuthorityGeneration,
     ExpectedAuthority,
-    FileFingerprint,
-    FileIdentity,
     FileSnapshot,
+    ManagedArtifact,
     Sha256Digest,
-    portable_basename_key,
-    require_portable_unique_basenames,
-    sha256_digest,
+)
+from sidekick_usages.persistence.credential_transaction_plans import (
+    CredentialTransactionPlan,
+    build_migration_transaction_plan,
+    build_runtime_transaction_plan,
+    validate_migration_displaced,
+    validate_migration_generations,
+    validate_runtime_displaced,
+)
+from sidekick_usages.persistence.credential_transaction_recovery import (
+    CredentialSourceGuard,
+    CredentialTransactionRecovery,
+    DivergentSourceOutcome,
 )
 from sidekick_usages.persistence.credential_transaction_schema import (
-    AbsentAuthority,
-    CredentialSourceGuardRecord,
-    CredentialTransactionFile,
-    CredentialTransactionJournal,
-    PresentAuthority,
-    decode_credential_journal,
+    CredentialJournal,
     encode_credential_journal,
-    journal_authority,
 )
 from sidekick_usages.persistence.errors import (
     InterruptedArtifactError,
-    PrivateCredentialCollisionError,
     SourceChangedError,
 )
 from sidekick_usages.persistence.private_credentials import (
     PRIVATE_TRANSACTION_JOURNAL,
     PreparedPrivateBundleWrite,
-    PrivateCredentialOwnership,
     PrivateCredentialTree,
 )
-from sidekick_usages.persistence.schemas import MAX_ACCOUNTS
 
 
-class _AuthorityTransaction(Protocol):
+class _AuthorityCommitter(Protocol):
     """Held-lock authority operation used at the final commit point."""
 
     def commit_authority(
@@ -54,47 +52,26 @@ class _AuthorityTransaction(Protocol):
         """Commit and prove exact authoritative bytes."""
 
 
+class _LineagePublisher(Protocol):
+    """Held-lock capability for content-addressed lineage publication."""
+
+    def publish_immutable(
+        self,
+        generation: AuthorityGeneration,
+        source: FileSnapshot,
+    ) -> ManagedArtifact:
+        """Publish or reuse one exact content-addressed lineage snapshot."""
+
+
+class _MigrationTransaction(
+    _AuthorityCommitter,
+    _LineagePublisher,
+    Protocol,
+):
+    """Held-lock migration commit and lineage publication capability."""
+
+
 type _AuthorityReader = Callable[[], FileSnapshot | None]
-
-
-@dataclass(frozen=True, slots=True)
-class CredentialSourceGuard:
-    """Exact retained authority checked around a distinct target commit."""
-
-    path: Path
-    expected: ExpectedAuthority
-    reader: _AuthorityReader = field(repr=False)
-
-    def __post_init__(self) -> None:
-        if not self.path.is_absolute():
-            raise ValueError("Credential source guard path must be absolute.")
-        if not self.path.name:
-            raise ValueError("Credential source guard requires a basename.")
-
-
-class _AuthorityState(StrEnum):
-    BASE = "base"
-    TARGET = "target"
-    THIRD = "third"
-
-
-@dataclass(frozen=True, slots=True)
-class _PlannedFile:
-    record: CredentialTransactionFile
-    target: bytes = field(repr=False)
-    base: FileSnapshot | None = field(repr=False)
-
-
-@dataclass(frozen=True, slots=True)
-class _TransactionPlan:
-    journal: CredentialTransactionJournal
-    files: tuple[_PlannedFile, ...] = field(repr=False)
-
-
-def _expected_source(snapshot: FileSnapshot | None) -> ExpectedAuthority:
-    if snapshot is None:
-        return AuthorityExpectation.ABSENT
-    return snapshot.fingerprint
 
 
 class PrivateCredentialTransaction:
@@ -107,6 +84,10 @@ class PrivateCredentialTransaction:
     ) -> None:
         self._tree = tree
         self._authority_reader = authority_reader
+        self._recovery = CredentialTransactionRecovery(
+            tree,
+            authority_reader,
+        )
 
     def recover(
         self,
@@ -117,35 +98,28 @@ class PrivateCredentialTransaction:
 
         :returns: Whether transaction evidence was found and resolved.
         """
-        if not self._tree.transaction_directory_present():
-            return False
-        journal_snapshot = self._tree.read_owned_file(
-            self._tree.transaction_directory,
-            PRIVATE_TRANSACTION_JOURNAL,
+        return self._recovery.recover(source_guard=source_guard)
+
+    def recover_migration(
+        self,
+        transaction: _LineagePublisher,
+        *,
+        source_guard: CredentialSourceGuard,
+    ) -> bool:
+        """Strictly recover one version-two migration and publish lineage.
+
+        :param transaction: Capability for canonical lineage publication.
+        :param source_guard: Original unchanged compatibility authority.
+        :returns: Whether transaction evidence was found and resolved.
+        """
+        return self._recovery.recover_migration(
+            transaction,
+            source_guard=source_guard,
         )
-        if journal_snapshot is None:
-            if self._tree.transaction_artifacts_present():
-                raise InterruptedArtifactError(PRIVATE_TRANSACTION_JOURNAL)
-            self._tree.destroy_owned_directory(
-                self._tree.transaction_directory
-            )
-            return True
-        journal = decode_credential_journal(journal_snapshot.data)
-        self._require_source_guard(journal.source_guard, source_guard)
-        state = self._authority_state(journal, self._authority_reader())
-        if state is _AuthorityState.BASE:
-            self._restore_base(journal)
-        elif state is _AuthorityState.TARGET:
-            self._ensure_target(journal)
-            self._delete_displaced(journal)
-        else:
-            raise SourceChangedError
-        self._cleanup_transaction(journal)
-        return True
 
     def commit(
         self,
-        transaction: _AuthorityTransaction,
+        transaction: _AuthorityCommitter,
         payload: bytes,
         expected_source: ExpectedAuthority,
         *,
@@ -165,7 +139,10 @@ class PrivateCredentialTransaction:
         """
         if self._tree.transaction_directory_present():
             raise InterruptedArtifactError(PRIVATE_TRANSACTION_JOURNAL)
-        displaced = self._validated_displaced(displaced_bundles)
+        displaced = validate_runtime_displaced(
+            self._tree,
+            displaced_bundles,
+        )
         if not private_bundles and not displaced and source_guard is None:
             return transaction.commit_authority(
                 AuthorityGeneration.VERSION_ONE,
@@ -173,22 +150,26 @@ class PrivateCredentialTransaction:
                 expected_source,
             )
         self._require_authority(expected_source)
-        self._require_source_guard(
-            self._source_guard_record(source_guard),
+        self._recovery.require_source_guard(
+            self._recovery.source_guard_record(source_guard),
             source_guard,
         )
-        plan = self._build_plan(
+        plan = build_runtime_transaction_plan(
+            self._tree,
             payload,
             expected_source,
             private_bundles,
             displaced,
-            source_guard,
+            self._recovery.source_guard_record(source_guard),
         )
         self._write_journal(plan.journal)
         try:
             self._materialize_private_candidates(plan)
-            self._apply_target(plan)
-            self._require_source_guard(plan.journal.source_guard, source_guard)
+            self._recovery.apply_target(plan)
+            self._recovery.require_source_guard(
+                plan.journal.source_guard,
+                source_guard,
+            )
             final = transaction.commit_authority(
                 AuthorityGeneration.VERSION_ONE,
                 payload,
@@ -200,106 +181,117 @@ class PrivateCredentialTransaction:
                 or final.fingerprint.size != plan.journal.target_authority_size
             ):
                 raise SourceChangedError
-            self._require_source_guard(plan.journal.source_guard, source_guard)
-            self._delete_displaced(plan.journal)
-            self._cleanup_transaction(plan.journal)
+            self._recovery.require_source_guard(
+                plan.journal.source_guard,
+                source_guard,
+            )
+            self._recovery.delete_displaced(plan.journal)
+            self._recovery.cleanup_transaction(plan.journal)
             return final
         except Exception:
             self.recover(source_guard=source_guard)
             raise
 
-    def _build_plan(
+    def commit_migration(
         self,
+        transaction: _MigrationTransaction,
+        target_generation: AuthorityGeneration,
         payload: bytes,
         expected_source: ExpectedAuthority,
-        bundles: tuple[PreparedPrivateBundleWrite, ...],
-        displaced: tuple[Path, ...],
-        source_guard: CredentialSourceGuard | None,
-    ) -> _TransactionPlan:
-        planned: list[_PlannedFile] = []
-        if len(bundles) > MAX_ACCOUNTS:
-            raise ValueError("Too many prepared private bundles.")
-        bundle_names = tuple(bundle.path.name for bundle in bundles)
-        require_portable_unique_basenames(bundle_names)
-        next_index = 0
-        for bundle in sorted(bundles, key=lambda item: item.path.name):
-            self._require_canonical_bundle(bundle.path)
-            present = self._tree.bundle_present(bundle.path)
-            if present is not bundle.expected_bundle_present:
-                raise PrivateCredentialCollisionError(bundle.path.name)
-            for basename, target in sorted(bundle.files.items()):
-                base = (
-                    self._tree.read_owned_file(bundle.path, basename)
-                    if present
-                    else None
-                )
-                if basename in bundle.expected_files:
-                    expected = bundle.expected_files[basename]
-                    if (base is None) is not (expected is None) or (
-                        base is not None and base.data != expected
-                    ):
-                        raise PrivateCredentialCollisionError(bundle.path.name)
-                record = CredentialTransactionFile(
-                    bundle_basename=bundle.path.name,
-                    basename=basename,
-                    stage_basename=f"stage-{next_index:04d}.bin",
-                    backup_basename=(
-                        f"backup-{next_index:04d}.bin"
-                        if base is not None
-                        else None
-                    ),
-                    base_sha256=(
-                        str(base.fingerprint.digest)
-                        if base is not None
-                        else None
-                    ),
-                    target_sha256=str(sha256_digest(target)),
-                )
-                planned.append(_PlannedFile(record, target, base))
-                next_index += 1
-        journal = CredentialTransactionJournal(
-            journal_version=1,
-            base_authority=journal_authority(expected_source),
-            source_guard=self._source_guard_record(source_guard),
-            target_authority_sha256=str(sha256_digest(payload)),
-            target_authority_size=len(payload),
-            target_bundles=tuple(sorted(bundle_names)),
-            base_present_bundles=tuple(
-                sorted(
-                    bundle.path.name
-                    for bundle in bundles
-                    if bundle.expected_bundle_present
-                )
-            ),
-            files=tuple(item.record for item in planned),
-            displaced_bundles=tuple(path.name for path in displaced),
+        *,
+        base_generation: AuthorityGeneration | None,
+        private_bundles: tuple[PreparedPrivateBundleWrite, ...],
+        displaced_bundles: Iterable[Path],
+        source_guard: CredentialSourceGuard,
+    ) -> FileSnapshot:
+        """Commit one migration generation through a version-two journal.
+
+        :param transaction: Capability proving the canonical lock is held.
+        :param target_generation: Validated canonical target generation.
+        :param payload: Exact canonical target authority bytes.
+        :param expected_source: Exact old canonical authority expectation.
+        :param base_generation: Old generation, or ``None`` when absent.
+        :param private_bundles: Bounded nested private target mutations.
+        :param displaced_bundles: Canonical homes no longer referenced.
+        :param source_guard: Distinct compatibility authority retained.
+        :returns: Reopened and verified target authority.
+        """
+        if self._tree.transaction_directory_present():
+            raise InterruptedArtifactError(PRIVATE_TRANSACTION_JOURNAL)
+        validate_migration_generations(
+            expected_source,
+            base_generation,
+            target_generation,
+            payload,
         )
-        encode_credential_journal(journal)
-        return _TransactionPlan(journal, tuple(planned))
-
-    def _validated_displaced(
-        self,
-        bundles: Iterable[Path],
-    ) -> tuple[Path, ...]:
-        unique: dict[str, Path] = {}
-        for bundle in bundles:
-            self._require_canonical_bundle(bundle)
-            key = portable_basename_key(bundle.name)
-            if key in unique:
-                raise ValueError(
-                    "Displaced private bundle paths must be unique."
-                )
-            unique[key] = bundle
-        if len(unique) > MAX_ACCOUNTS:
-            raise ValueError("Too many displaced private bundles.")
-        return tuple(unique[key] for key in sorted(unique))
-
-    def _require_canonical_bundle(self, path: Path) -> None:
+        displaced = validate_migration_displaced(
+            self._tree,
+            displaced_bundles,
+        )
+        self._require_authority(expected_source)
+        recorded_guard = self._recovery.source_guard_record(source_guard)
+        if recorded_guard is None:
+            raise ValueError("Migration source guard is required.")
+        self._recovery.require_source_guard(recorded_guard, source_guard)
+        plan = build_migration_transaction_plan(
+            self._tree,
+            payload,
+            expected_source,
+            base_generation,
+            target_generation,
+            private_bundles,
+            displaced,
+            recorded_guard,
+        )
+        self._write_journal(plan.journal)
+        self._materialize_private_candidates(plan)
+        self._recovery.apply_target(plan)
+        self._recovery.require_source_guard(
+            plan.journal.source_guard,
+            source_guard,
+        )
+        final = transaction.commit_authority(
+            target_generation,
+            payload,
+            expected_source,
+        )
         if (
-            self._tree.classify_bundle(path)
-            is not PrivateCredentialOwnership.CANONICAL
+            final.fingerprint.digest
+            != Sha256Digest(plan.journal.target_authority_sha256)
+            or final.fingerprint.size != plan.journal.target_authority_size
         ):
-            raise ValueError("Private bundle is not canonically owned.")
+            raise SourceChangedError
+        self._recovery.require_source_guard(
+            plan.journal.source_guard,
+            source_guard,
+        )
+        self._recovery.delete_displaced(plan.journal)
+        self._recovery.require_target_state(plan.journal)
+        transaction.publish_immutable(target_generation, final)
+        self._recovery.require_source_guard(
+            plan.journal.source_guard,
+            source_guard,
+        )
+        self._recovery.require_target_state(plan.journal)
+        self._recovery.cleanup_transaction(plan.journal)
+        return final
+
+    def resolve_migration_source_divergence(
+        self,
+        transaction: _LineagePublisher,
+        *,
+        source_guard: CredentialSourceGuard,
+    ) -> DivergentSourceOutcome:
+        """Resolve one version-two journal after its source changed.
+
+        :param transaction: Capability for canonical lineage publication.
+        :param source_guard: Fresh exact state at the journal's source path.
+        :returns: Whether canonical state converged to base or target.
+        """
+        return self._recovery.resolve_migration_source_divergence(
+            transaction,
+            source_guard=source_guard,
+        )
 
     def _require_authority(self, expected: ExpectedAuthority) -> None:
         current = self._authority_reader()
@@ -309,40 +301,9 @@ class PrivateCredentialTransaction:
         elif current is None or current.fingerprint != expected:
             raise SourceChangedError
 
-    @staticmethod
-    def _source_guard_record(
-        guard: CredentialSourceGuard | None,
-    ) -> CredentialSourceGuardRecord | None:
-        if guard is None:
-            return None
-        path_digest = sha256_digest(str(guard.path).encode("utf-8"))
-        return CredentialSourceGuardRecord(
-            path_sha256=str(path_digest),
-            authority=journal_authority(guard.expected),
-        )
-
-    @classmethod
-    def _require_source_guard(
-        cls,
-        recorded: CredentialSourceGuardRecord | None,
-        guard: CredentialSourceGuard | None,
-    ) -> None:
-        if recorded is None:
-            if guard is not None:
-                raise SourceChangedError
-            return
-        if guard is None or cls._source_guard_record(guard) != recorded:
-            raise SourceChangedError
-        observed = guard.reader()
-        if guard.expected is AuthorityExpectation.ABSENT:
-            if observed is not None:
-                raise SourceChangedError
-        elif observed is None or observed.fingerprint != guard.expected:
-            raise SourceChangedError
-
     def _write_journal(
         self,
-        journal: CredentialTransactionJournal,
+        journal: CredentialJournal,
     ) -> None:
         self._tree.ensure_transaction_directory()
         if self._tree.transaction_artifacts_present():
@@ -356,7 +317,7 @@ class PrivateCredentialTransaction:
 
     def _materialize_private_candidates(
         self,
-        plan: _TransactionPlan,
+        plan: CredentialTransactionPlan,
     ) -> None:
         directory = self._tree.transaction_directory
         for planned in plan.files:
@@ -378,179 +339,9 @@ class PrivateCredentialTransaction:
                     expected_source=AuthorityExpectation.ABSENT,
                 )
 
-    def _apply_target(self, plan: _TransactionPlan) -> None:
-        journal = plan.journal
-        for planned in plan.files:
-            bundle = self._tree.root / planned.record.bundle_basename
-            stage = self._required_transaction_file(
-                planned.record.stage_basename,
-                Sha256Digest(planned.record.target_sha256),
-            )
-            self._tree.write_owned_file(
-                bundle,
-                planned.record.basename,
-                stage.data,
-                expected_source=_expected_source(planned.base),
-            )
-        self._require_target_files(journal)
 
-    def _restore_base(self, journal: CredentialTransactionJournal) -> None:
-        for record in journal.files:
-            bundle = self._tree.root / record.bundle_basename
-            current = self._tree.read_owned_file(bundle, record.basename)
-            target_digest = Sha256Digest(record.target_sha256)
-            base_digest = (
-                Sha256Digest(record.base_sha256)
-                if record.base_sha256 is not None
-                else None
-            )
-            if base_digest is None:
-                if current is None:
-                    continue
-                if current.fingerprint.digest != target_digest:
-                    raise SourceChangedError
-                self._tree.delete_owned_file(
-                    bundle,
-                    record.basename,
-                    current.fingerprint,
-                )
-                continue
-            if (
-                current is not None
-                and current.fingerprint.digest == base_digest
-            ):
-                continue
-            if current is None or current.fingerprint.digest != target_digest:
-                raise SourceChangedError
-            if record.backup_basename is None:
-                raise InterruptedArtifactError(PRIVATE_TRANSACTION_JOURNAL)
-            backup = self._required_transaction_file(
-                record.backup_basename,
-                base_digest,
-            )
-            self._tree.write_owned_file(
-                bundle,
-                record.basename,
-                backup.data,
-                expected_source=current.fingerprint,
-            )
-        for basename in sorted(
-            set(journal.target_bundles) - set(journal.base_present_bundles)
-        ):
-            bundle = self._tree.root / basename
-            if self._tree.bundle_present(bundle):
-                raise SourceChangedError
-            self._tree.destroy_owned_directory(bundle)
-
-    def _ensure_target(self, journal: CredentialTransactionJournal) -> None:
-        for record in journal.files:
-            bundle = self._tree.root / record.bundle_basename
-            current = self._tree.read_owned_file(bundle, record.basename)
-            target_digest = Sha256Digest(record.target_sha256)
-            if (
-                current is not None
-                and current.fingerprint.digest == target_digest
-            ):
-                continue
-            base_digest = (
-                Sha256Digest(record.base_sha256)
-                if record.base_sha256 is not None
-                else None
-            )
-            if current is not None and (
-                base_digest is None
-                or current.fingerprint.digest != base_digest
-            ):
-                raise SourceChangedError
-            stage = self._required_transaction_file(
-                record.stage_basename,
-                target_digest,
-            )
-            self._tree.write_owned_file(
-                bundle,
-                record.basename,
-                stage.data,
-                expected_source=_expected_source(current),
-            )
-        self._require_target_files(journal)
-
-    def _require_target_files(
-        self,
-        journal: CredentialTransactionJournal,
-    ) -> None:
-        for record in journal.files:
-            bundle = self._tree.root / record.bundle_basename
-            current = self._tree.read_owned_file(bundle, record.basename)
-            if current is None or current.fingerprint.digest != Sha256Digest(
-                record.target_sha256
-            ):
-                raise SourceChangedError
-
-    def _required_transaction_file(
-        self,
-        basename: str,
-        digest: Sha256Digest,
-    ) -> FileSnapshot:
-        snapshot = self._tree.read_owned_file(
-            self._tree.transaction_directory,
-            basename,
-        )
-        if snapshot is None or snapshot.fingerprint.digest != digest:
-            raise InterruptedArtifactError(PRIVATE_TRANSACTION_JOURNAL)
-        return snapshot
-
-    def _delete_displaced(
-        self,
-        journal: CredentialTransactionJournal,
-    ) -> None:
-        for basename in journal.displaced_bundles:
-            self._tree.destroy_owned_directory(self._tree.root / basename)
-
-    def _cleanup_transaction(
-        self,
-        journal: CredentialTransactionJournal,
-    ) -> None:
-        directory = self._tree.transaction_directory
-        for record in journal.files:
-            for basename in (
-                record.stage_basename,
-                record.backup_basename,
-            ):
-                if basename is None:
-                    continue
-                snapshot = self._tree.read_owned_file(directory, basename)
-                if snapshot is not None:
-                    self._tree.delete_owned_file(
-                        directory,
-                        basename,
-                        snapshot.fingerprint,
-                    )
-        self._tree.destroy_owned_directory(directory)
-
-    @staticmethod
-    def _authority_state(
-        journal: CredentialTransactionJournal,
-        current: FileSnapshot | None,
-    ) -> _AuthorityState:
-        base = journal.base_authority
-        if isinstance(base, AbsentAuthority):
-            if current is None:
-                return _AuthorityState.BASE
-        elif isinstance(base, PresentAuthority) and current is not None:
-            expected = FileFingerprint(
-                FileIdentity(base.device, base.inode),
-                Sha256Digest(base.sha256),
-                base.size,
-            )
-            if current.fingerprint == expected:
-                return _AuthorityState.BASE
-        if current is not None and (
-            current.fingerprint.digest
-            == Sha256Digest(journal.target_authority_sha256)
-            and current.fingerprint.size == journal.target_authority_size
-        ):
-            return _AuthorityState.TARGET
-        return _AuthorityState.THIRD
-
-
-__all__ = ["CredentialSourceGuard", "PrivateCredentialTransaction"]
+__all__ = [
+    "CredentialSourceGuard",
+    "DivergentSourceOutcome",
+    "PrivateCredentialTransaction",
+]

@@ -1,5 +1,6 @@
 """Heartbeat command group, fallback parsing, and presentation."""
 
+import json
 from typing import Annotated, NoReturn
 
 import click
@@ -11,6 +12,11 @@ from sidekick_usages.core.types import ExitCode, ProviderId
 from sidekick_usages.heartbeat import (
     HeartbeatOutcome,
     heartbeat_exit_code,
+)
+from sidekick_usages.heartbeat.render import (
+    HeartbeatOutputChannel,
+    build_heartbeat_status_rows,
+    heartbeat_status_json,
     render_heartbeat_outcomes,
     render_heartbeat_status,
 )
@@ -50,12 +56,13 @@ def render_outcomes(
 ) -> None:
     """Render typed heartbeat outcomes through invocation consoles."""
     invocation = invocation_context(ctx)
-    render_heartbeat_outcomes(
-        outcomes,
-        console=invocation.console,
-        err_console=invocation.err_console,
-        quiet=quiet,
-    )
+    for rendered in render_heartbeat_outcomes(outcomes, quiet=quiet):
+        console = (
+            invocation.err_console
+            if rendered.channel is HeartbeatOutputChannel.STDERR
+            else invocation.console
+        )
+        console.print(rendered.renderable)
 
 
 def heartbeat_cmd(
@@ -240,11 +247,23 @@ def heartbeat_status_cmd(
     if not accounts:
         invocation.err_console.print("[yellow]No matching accounts.[/yellow]")
         raise typer.Exit(code=ExitCode.MANUAL_ACTION)
-    render_heartbeat_status(
+    rows = build_heartbeat_status_rows(
         accounts,
         app_context.heartbeat.support_labels(accounts),
-        invocation.console,
-        json_output=json_output,
+    )
+    if json_output:
+        invocation.console.print(
+            json.dumps(heartbeat_status_json(rows), indent=2),
+            markup=False,
+            highlight=False,
+            soft_wrap=True,
+        )
+        return
+    invocation.console.print(
+        render_heartbeat_status(
+            rows,
+            width=invocation.console.size.width,
+        )
     )
 
 

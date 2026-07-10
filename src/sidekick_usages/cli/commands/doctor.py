@@ -1,5 +1,6 @@
 """Read-only doctor command adapter."""
 
+import json
 from typing import Annotated, assert_never
 
 import typer
@@ -8,16 +9,31 @@ from sidekick_usages.cli.context import (
     DoctorBlocked,
     DoctorFailed,
     DoctorReady,
+    InvocationContext,
     invocation_context,
 )
 from sidekick_usages.cli.help import branded_command
-from sidekick_usages.core.types import ExitCode, ProviderId, highest_exit_code
+from sidekick_usages.core.types import ExitCode, ProviderId
+from sidekick_usages.doctor import (
+    DoctorBlockedResult,
+    DoctorFailedResult,
+    DoctorReadyResult,
+    DoctorResult,
+    doctor_json,
+    render_doctor,
+)
 from sidekick_usages.doctor import (
     doctor_exit_code as account_doctor_exit_code,
 )
-from sidekick_usages.doctor import render_doctor
 from sidekick_usages.persistence.assessment import (
     doctor_exit_code as persistence_doctor_exit_code,
+)
+from sidekick_usages.persistence.migrations.location import (
+    BlockedLocationSelection,
+    CandidateBlockedSelection,
+    ConflictSelection,
+    PartialSelection,
+    PrototypeSelection,
 )
 
 
@@ -34,6 +50,37 @@ def _provider_filter(
             f"[red]Unknown provider {value!r}.[/red]"
         )
         raise typer.Exit(code=ExitCode.SYSTEM_ERROR) from None
+
+
+def _write_result(
+    invocation: InvocationContext,
+    result: DoctorResult,
+    *,
+    json_output: bool,
+) -> None:
+    """Write one completed result through the selected presentation."""
+    if json_output:
+        invocation.console.print(
+            json.dumps(doctor_json(result), indent=2),
+            markup=False,
+            highlight=False,
+            soft_wrap=True,
+        )
+        return
+    invocation.console.print(
+        render_doctor(result, width=invocation.console.size.width)
+    )
+
+
+def _blocked_exit_code(selection: BlockedLocationSelection) -> ExitCode:
+    """Map one closed blocking location state to a process outcome."""
+    if isinstance(selection, PrototypeSelection):
+        return ExitCode.MANUAL_ACTION
+    if isinstance(selection, CandidateBlockedSelection):
+        return persistence_doctor_exit_code(selection.persistence_code)
+    if isinstance(selection, (ConflictSelection, PartialSelection)):
+        return ExitCode.SYSTEM_ERROR
+    assert_never(selection)
 
 
 def doctor_cmd(
@@ -65,22 +112,20 @@ def doctor_cmd(
     state = invocation.require_doctor(ctx).state
     provider_filter = _provider_filter(ctx, provider_id)
     if isinstance(state, DoctorBlocked):
-        render_doctor(
-            [],
-            invocation.console,
+        _write_result(
+            invocation,
+            DoctorBlockedResult(state.assessment),
             json_output=json_output,
-            persistence=state.assessment,
         )
-        code = persistence_doctor_exit_code(state.assessment.code)
+        code = _blocked_exit_code(state.assessment.selection)
         if code:
             raise typer.Exit(code=code)
         return
     if isinstance(state, DoctorFailed):
-        render_doctor(
-            [],
-            invocation.console,
+        _write_result(
+            invocation,
+            DoctorFailedResult(state.failure),
             json_output=json_output,
-            persistence_failure=state.failure,
         )
         code = persistence_doctor_exit_code(state.failure.code)
         if code:
@@ -92,31 +137,23 @@ def doctor_cmd(
             label=label,
         )
         if not diagnostics:
-            if state.assessment.account_count == 0:
-                render_doctor(
-                    [],
-                    invocation.console,
+            if not state.service.accounts:
+                _write_result(
+                    invocation,
+                    DoctorReadyResult((), state.assessment),
                     json_output=json_output,
-                    persistence=state.assessment,
                 )
-                code = persistence_doctor_exit_code(state.assessment.code)
-                if code:
-                    raise typer.Exit(code=code)
                 return
             invocation.err_console.print(
                 "[yellow]No matching accounts.[/yellow]"
             )
             raise typer.Exit(code=ExitCode.MANUAL_ACTION)
-        render_doctor(
-            diagnostics,
-            invocation.console,
+        _write_result(
+            invocation,
+            DoctorReadyResult(tuple(diagnostics), state.assessment),
             json_output=json_output,
-            persistence=state.assessment,
         )
-        code = highest_exit_code(
-            account_doctor_exit_code(diagnostics),
-            persistence_doctor_exit_code(state.assessment.code),
-        )
+        code = account_doctor_exit_code(diagnostics)
         if code:
             raise typer.Exit(code=code)
         return

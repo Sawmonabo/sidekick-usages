@@ -16,7 +16,6 @@ from sidekick_usages.cli.context import (
     DaemonContext,
     DoctorBlocked,
     DoctorContext,
-    DoctorFailed,
     InvocationContext,
     PersistenceContext,
     compose_app_context,
@@ -46,18 +45,31 @@ from sidekick_usages.persistence.errors import (
 )
 from sidekick_usages.persistence.filesystem import PersistenceFilesystem
 from sidekick_usages.persistence.locking import PersistenceLock
-from sidekick_usages.persistence.migration_errors import (
-    PersistenceMigrationStateError,
-    SchedulerMutationBlockedError,
-)
 from sidekick_usages.persistence.migrations import (
     PermissionRepairOperationResult,
     PersistenceMigrationService,
 )
+from sidekick_usages.persistence.migrations.errors import (
+    LocationMigrationStateError,
+    PersistenceMigrationStateError,
+    SchedulerMutationBlockedError,
+)
+from sidekick_usages.persistence.migrations.location import (
+    BlockedLocationSelection,
+    CandidateBlockedSelection,
+    EmptySelection,
+    LocationCandidate,
+    LocationMigrationAssessment,
+    LocationMigrationResult,
+    LocationRole,
+    RuntimePersistenceSelection,
+)
+from sidekick_usages.persistence.migrations.ports import (
+    PrivateAuthMigrationAssessment,
+)
 from sidekick_usages.persistence.observations import StoredGeneration
 from sidekick_usages.persistence.private_credentials import (
     PrivateCredentialRepairResult,
-    PrivateCredentialTree,
 )
 from sidekick_usages.persistence.schemas import (
     GenerationZeroDocument,
@@ -66,6 +78,9 @@ from sidekick_usages.persistence.schemas import (
     encode_version_one,
 )
 from sidekick_usages.persistence.v060 import ReleasedV060Verifier
+from sidekick_usages.providers.codex.auth_migration import (
+    CodexPrivateAuthMigrator,
+)
 from sidekick_usages.scheduler_quiescence import (
     SchedulerBackendId,
     SchedulerBackendObservation,
@@ -157,6 +172,22 @@ class RecordingPersistence:
         self.events.append("assess")
         return self.assessment
 
+    def assess_locations(
+        self,
+    ) -> LocationMigrationAssessment[RuntimePersistenceSelection]:
+        path = self.assessment.safe_path
+        return LocationMigrationAssessment(
+            selection=EmptySelection(),
+            candidates=(),
+            source=path,
+            destination=path,
+            private_auth_summary=PrivateAuthMigrationAssessment(()),
+            artifact_basename=None,
+            issues=(),
+            write_blocked=False,
+            next_command=None,
+        )
+
     def read_accounts(self) -> tuple[Account, ...]:
         return ()
 
@@ -165,6 +196,12 @@ class RecordingPersistence:
         if self.preview_error is not None:
             raise self.preview_error
         return self.assessment
+
+    def location_migration_preview(
+        self,
+    ) -> LocationMigrationAssessment[RuntimePersistenceSelection]:
+        self.events.append("location-preview")
+        return self.assess_locations()
 
     def permission_repair_preview(self) -> PersistenceAssessment:
         return self.mutation_preview()
@@ -178,6 +215,10 @@ class RecordingPersistence:
         if self.migration_error is not None:
             raise self.migration_error
         return self.assessment
+
+    def migrate_locations(self) -> LocationMigrationResult:
+        self.events.append("migrate-locations")
+        raise LocationMigrationStateError(self.assess_locations())
 
     def prepare_rollback(self) -> PersistenceOperationResult:
         self.events.append("rollback")
@@ -359,15 +400,10 @@ def test_permissions_repair_restores_fresh_default_composition(
             ),
         )
     )
-    private = PrivateCredentialTree(
-        paths.private_codex.canonical,
-        account_path=paths.accounts.canonical,
-        existing_root=paths.private_codex.existing_sidekick,
-    )
     persistence = PersistenceMigrationService(
-        paths.accounts,
+        paths,
         scheduler_assessor=lambda: scheduler,
-        private_credential_artifacts=private,
+        private_auth_migrator=CodexPrivateAuthMigrator(),
         released_v060_verifier=ReleasedV060Verifier(),
     )
     harness = CliHarness(
@@ -547,13 +583,48 @@ def test_doctor_renders_blocked_persistence_without_a_store(
         )
     )
     harness, stdout, _ = _install_context(tmp_path, persistence)
-    harness.doctor = DoctorContext(DoctorBlocked(persistence.assessment))
+    candidate = LocationCandidate(
+        role=LocationRole.COMPATIBILITY,
+        path=persistence.assessment.safe_path,
+        assessment=persistence.assessment,
+        account_digest=None,
+        private_auth_digest=None,
+    )
+    selection: BlockedLocationSelection = CandidateBlockedSelection(
+        candidate,
+        PersistenceCode.MALFORMED_JSON,
+    )
+    assessment: LocationMigrationAssessment[BlockedLocationSelection] = (
+        LocationMigrationAssessment(
+            selection=selection,
+            candidates=(candidate,),
+            source=candidate.path,
+            destination=candidate.path,
+            private_auth_summary=PrivateAuthMigrationAssessment(()),
+            artifact_basename=None,
+            issues=persistence.assessment.issues,
+            write_blocked=True,
+            next_command=None,
+        )
+    )
+    harness.doctor = DoctorContext(DoctorBlocked(assessment))
 
     result = harness.invoke(["doctor", "--json"])
 
     assert result.exit_code == ExitCode.SYSTEM_ERROR
-    assert '"code": "malformed_json"' in stdout.getvalue()
-    assert '"accounts": []' in stdout.getvalue()
+    payload = json.loads(stdout.getvalue())
+    assert payload["accounts"] == []
+    assert payload["persistence"]["code"] == "candidate_blocked"
+    assert (
+        payload["persistence"]["candidates"][0]["schema"]["code"]
+        == "malformed_json"
+    )
+    stdout.seek(0)
+    stdout.truncate()
+    human = harness.invoke(["doctor"])
+    assert human.exit_code == ExitCode.SYSTEM_ERROR
+    assert "location: candidate_blocked" in stdout.getvalue()
+    assert "state: malformed_json" in stdout.getvalue()
     assert persistence.events == []
 
 
@@ -618,7 +689,7 @@ def test_scheduler_recovery_commands_do_not_require_account_store() -> None:
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX legacy mode fixture")
-def test_unsafe_private_root_composes_as_passive_doctor_failure(
+def test_unsafe_private_root_composes_as_blocked_location_assessment(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -646,11 +717,11 @@ def test_unsafe_private_root_composes_as_passive_doctor_failure(
 
     assert constructed_stores == 0
     state = owner.value.state
-    assert isinstance(state, DoctorFailed)
-    failure = state.failure
-    assert failure.code is PersistenceCode.UNSAFE_PERMISSIONS
-    assert failure.safe_path == paths.private_codex.canonical
-    assert failure.artifact_basename == paths.private_codex.canonical.name
+    assert isinstance(state, DoctorBlocked)
+    selection = state.assessment.selection
+    assert isinstance(selection, CandidateBlockedSelection)
+    assert selection.persistence_code is PersistenceCode.UNSAFE_PERMISSIONS
+    assert selection.candidate.path == paths.accounts.canonical
 
     stdout = io.StringIO()
     stderr = io.StringIO()
@@ -667,9 +738,9 @@ def test_unsafe_private_root_composes_as_passive_doctor_failure(
         doctor = harness.invoke(["doctor", "--json"])
         payload = json.loads(stdout.getvalue())
         assert doctor.exit_code == ExitCode.SYSTEM_ERROR
-        assert payload["persistence"]["code"] == "unsafe_permissions"
-        assert payload["persistence"]["safe_path"] == str(
-            paths.private_codex.canonical
-        )
+        assert payload["persistence"]["code"] == "candidate_blocked"
+        candidate = payload["persistence"]["candidates"][0]
+        assert candidate["schema"]["code"] == "unsafe_permissions"
+        assert candidate["path"] == str(paths.accounts.canonical)
     finally:
         owner.close()

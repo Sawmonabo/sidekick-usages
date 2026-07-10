@@ -38,12 +38,23 @@ class OpenedTree:
     root_basename: str
 
 
+@dataclass(slots=True)
+class OpenedChain:
+    """Held descriptors and identities for one root-relative chain."""
+
+    paths: tuple[Path, ...]
+    descriptors: list[int]
+    identities: tuple[Identity, ...]
+    components: RelativePath
+
+
 if sys.platform == "win32":
     import msvcrt
 
     import pywintypes
     import win32con
     import win32file
+    import winerror
 
     from sidekick_usages.persistence._platform.windows_files import (
         open_directory,
@@ -65,6 +76,7 @@ if sys.platform == "win32":
         validate_membership,
     )
     from sidekick_usages.persistence._platform.windows_security import (
+        private_security_attributes,
         validate_security,
     )
 
@@ -191,6 +203,148 @@ if sys.platform == "win32":
             root_metadata.st_ino,
         ) != opened.root_identity:
             raise _native_error(NativeFailureKind.CHANGED)
+        try:
+            root_handle = msvcrt.get_osfhandle(opened.root_descriptor)
+        except OSError:
+            raise _native_error(NativeFailureKind.CHANGED) from None
+        validate_membership(
+            opened.parent_descriptor,
+            root_handle,
+            opened.root_basename,
+        )
+
+    def require_chain_identity(
+        opened: OpenedTree,
+        chain: OpenedChain,
+        *,
+        final_may_be_absent: bool = False,
+    ) -> None:
+        """Revalidate every held component, volume, and parent membership."""
+        require_root_identity(opened)
+        if not chain.descriptors or len(chain.descriptors) != len(
+            chain.identities
+        ):
+            raise _native_error(NativeFailureKind.CHANGED)
+        for index, descriptor in enumerate(chain.descriptors):
+            value = metadata(descriptor, NativeFailureKind.CHANGED)
+            identity = (value.st_dev, value.st_ino)
+            if identity != chain.identities[index] or (
+                value.st_dev != opened.root_device
+            ):
+                raise _native_error(NativeFailureKind.CHANGED)
+            if index == 0:
+                continue
+            parent_descriptor = chain.descriptors[index - 1]
+            parent = chain.paths[index - 1]
+            basename = chain.components[index - 1]
+            present = require_exact_entry(parent, basename)
+            if final_may_be_absent and index == len(chain.descriptors) - 1:
+                if present:
+                    validate_membership(
+                        parent_descriptor,
+                        msvcrt.get_osfhandle(descriptor),
+                        basename,
+                    )
+                continue
+            if not present:
+                raise _native_error(NativeFailureKind.CHANGED)
+            validate_membership(
+                parent_descriptor,
+                msvcrt.get_osfhandle(descriptor),
+                basename,
+            )
+
+    def _open_or_create_chain_child(
+        opened: OpenedTree,
+        parent: Path,
+        parent_descriptor: int,
+        component: str,
+        *,
+        create: bool,
+    ) -> int | None:
+        present = require_exact_entry(parent, component)
+        if not present:
+            if not create:
+                return None
+            try:
+                win32file.CreateDirectoryW(
+                    str(child_path(parent, component)),
+                    private_security_attributes(directory=True),
+                )
+            except pywintypes.error as error:
+                if error.winerror in {
+                    winerror.ERROR_ALREADY_EXISTS,
+                    winerror.ERROR_FILE_EXISTS,
+                }:
+                    raise _native_error(NativeFailureKind.CHANGED) from None
+                raise _native_error(NativeFailureKind.CREATE) from None
+        child = _open_child_directory(
+            parent,
+            component,
+            parent_descriptor,
+            delete=False,
+        )
+        value = metadata(child, NativeFailureKind.UNREADABLE)
+        if value.st_dev != opened.root_device:
+            close_descriptor(
+                child,
+                _native_error(NativeFailureKind.CHANGED),
+            )
+        return child
+
+    @contextmanager
+    def open_component_chain(
+        opened: OpenedTree,
+        relative: RelativePath,
+        *,
+        create: bool,
+        final_may_be_absent: bool = False,
+    ) -> Iterator[OpenedChain | None]:
+        """Hold a handle-qualified root-relative component chain."""
+        try:
+            root_descriptor = os.dup(opened.root_descriptor)
+        except OSError:
+            raise _native_error(NativeFailureKind.UNREADABLE) from None
+        descriptors = [root_descriptor]
+        paths = [opened.root_path]
+        identities = [opened.root_identity]
+        primary: BaseException | None = None
+        missing = False
+        try:
+            for component in relative:
+                child = _open_or_create_chain_child(
+                    opened,
+                    paths[-1],
+                    descriptors[-1],
+                    component,
+                    create=create,
+                )
+                if child is None:
+                    missing = True
+                    break
+                value = metadata(child, NativeFailureKind.UNREADABLE)
+                descriptors.append(child)
+                paths.append(child_path(paths[-1], component))
+                identities.append((value.st_dev, value.st_ino))
+            if missing:
+                yield None
+            else:
+                chain = OpenedChain(
+                    tuple(paths),
+                    descriptors,
+                    tuple(identities),
+                    relative,
+                )
+                require_chain_identity(opened, chain)
+                yield chain
+                require_chain_identity(
+                    opened,
+                    chain,
+                    final_may_be_absent=final_may_be_absent,
+                )
+        except BaseException as error:
+            primary = error
+        _close_descriptors(descriptors, primary)
 
     def open_relative_directory(
         opened: OpenedTree,
@@ -431,14 +585,17 @@ if sys.platform == "win32":
 
 __all__ = [
     "Identity",
+    "OpenedChain",
     "OpenedTree",
     "RelativePath",
     "TreeEntry",
     "delete_empty_tree",
     "delete_entry",
     "list_names",
+    "open_component_chain",
     "open_relative_directory",
     "open_tree",
+    "require_chain_identity",
     "require_root_identity",
     "scan_tree",
 ]

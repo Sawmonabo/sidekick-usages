@@ -14,7 +14,7 @@ from sidekick_usages.cli.context import invocation_context
 from sidekick_usages.cli.help import branded_command
 from sidekick_usages.core.types import AccountLabel, ExitCode, ProviderId
 from sidekick_usages.persistence.errors import PersistenceError
-from sidekick_usages.persistence.migration_errors import (
+from sidekick_usages.persistence.migrations.errors import (
     SchedulerMutationBlockedError,
 )
 
