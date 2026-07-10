@@ -1,7 +1,6 @@
 """Meaningful integration checks for shared branded help output."""
 
-from __future__ import annotations
-
+import click
 import pytest
 from typer.testing import CliRunner
 
@@ -34,10 +33,11 @@ def test_leaf_and_nested_help_share_one_header(
     args: list[str],
     usage: str,
 ) -> None:
-    result = CliRunner().invoke(cli.app, args)
+    result = CliRunner().invoke(cli.app, args, env={"CI": "true"})
     assert result.exit_code == 0
-    assert result.output.count(ROBOT_LINES[2]) == 1
-    assert result.output.index(ROBOT_LINES[2]) < result.output.index(usage)
+    output = click.unstyle(result.output)
+    assert output.count(ROBOT_LINES[2]) == 1
+    assert output.index(ROBOT_LINES[2]) < output.index(usage)
 
 
 def test_narrow_help_uses_shared_narrow_header() -> None:

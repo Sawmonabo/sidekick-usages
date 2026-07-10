@@ -6,8 +6,6 @@ dependencies on accounts, providers, storage, HTTP services, or CLI state so
 help rendering can use it without loading credentials.
 """
 
-from __future__ import annotations
-
 from rich.console import Group, RenderableType
 from rich.text import Text
 

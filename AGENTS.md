@@ -26,9 +26,11 @@ or credential files.
 
 Use four-space indentation, double quotes, LF endings, and the 79-column Ruff
 format. Use `snake_case` for modules and functions, `PascalCase` for classes,
-and `UPPER_SNAKE_CASE` for constants. Prefer PEP 604 unions, add
-`from __future__ import annotations` to modules, and write Sphinx-style
-docstrings. Keep provider-specific logic in adapters, not shared services.
+and `UPPER_SNAKE_CASE` for constants. Prefer PEP 604 unions and Python 3.14's
+native deferred annotations; do not add the legacy stringizing
+`from __future__ import annotations` behavior, which is scheduled for future
+deprecation. Write Sphinx-style docstrings. Keep provider-specific logic in
+adapters, not shared services.
 
 ## Testing Guidelines
 

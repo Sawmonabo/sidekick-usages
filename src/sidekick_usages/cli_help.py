@@ -1,7 +1,5 @@
 """Typer adapters that prepend shared branding to human-facing help."""
 
-from __future__ import annotations
-
 import shutil
 from collections.abc import Callable
 from typing import Any
