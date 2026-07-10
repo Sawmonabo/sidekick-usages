@@ -82,8 +82,8 @@ def test_header_places_section_below_divider() -> None:
     assert out.index(divider) < out.index("doctor · account diagnostics")
 
 
-def test_brand_line_contains_compact_title_and_matching_divider() -> None:
-    line = branding.brand_line("update status")
+def test_update_status_line_has_compact_title_and_matching_divider() -> None:
+    line = branding.update_status_line()
     rendered = line.plain.splitlines()
     assert rendered[0] == "sidekick usages · update status"
     assert rendered[1] == "─" * len(rendered[0])

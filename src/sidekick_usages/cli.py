@@ -1,9 +1,8 @@
 """Command-line entry point.
 
 Typer-based CLI. Each subcommand is a top-level function decorated
-with ``@app.command()``. State lives in a module-level
-:class:`AppContext` that command functions read from, so tests can
-inject fakes by overwriting ``_ctx``.
+with ``@app.command()``. State lives in a lazily initialized
+:class:`AppContext`; tests inject fakes through :func:`set_context`.
 """
 
 import os
@@ -25,7 +24,11 @@ from rich.table import Table
 from rich.text import Text
 
 from sidekick_usages import __version__
-from sidekick_usages.branding import PROVIDER_COLORS, brand_header, brand_line
+from sidekick_usages.branding import (
+    PROVIDER_COLORS,
+    brand_header,
+    update_status_line,
+)
 from sidekick_usages.cli_help import BrandedTyper, BrandedTyperGroup
 from sidekick_usages.daemon import DaemonManager, DaemonOperation
 from sidekick_usages.doctor import (
@@ -559,7 +562,7 @@ def _retry_or_handle_forbidden(
     err: ForbiddenError,
 ) -> bool:
     """Retry transient Codex 403s, otherwise render the error."""
-    if not _should_retry_bodyless_forbidden(acct, provider, err):
+    if not _should_retry_bodyless_forbidden(provider, err):
         return _handle_fetch_error(acct, provider, err)
     try:
         return _fetch_usage_and_render(acct, provider)
@@ -568,12 +571,10 @@ def _retry_or_handle_forbidden(
 
 
 def _should_retry_bodyless_forbidden(
-    acct: Account,
     provider: Provider,
     err: ForbiddenError,
 ) -> bool:
     """Return whether a bodyless 403 should be retried once."""
-    del acct
     return (
         provider.id == "codex"
         and err.api_message is None
@@ -939,7 +940,6 @@ def refresh_cmd(
         )
         raise typer.Exit(code=1)
     credential_home = _refresh_credential_home(
-        acct,
         provider,
         from_codex_home,
     )
@@ -1300,13 +1300,6 @@ def _usage_error(message: str) -> NoReturn:
 # ---------------------------------------------------------------------
 @app.command("doctor")
 def doctor_cmd(
-    auth: Annotated[
-        bool,
-        typer.Option(
-            "--auth",
-            help="Show auth/token diagnostics. Currently the default.",
-        ),
-    ] = False,
     provider_id: Annotated[
         str | None,
         typer.Option(
@@ -1330,7 +1323,6 @@ def doctor_cmd(
     ] = False,
 ) -> None:
     """Report what is healthy and what needs login."""
-    del auth
     app_ctx = _get_ctx()
     if provider_id is not None and provider_id not in app_ctx.providers:
         app_ctx.err_console.print(
@@ -1779,7 +1771,7 @@ def check_update_cmd() -> None:
         )
         raise typer.Exit(code=1) from None
 
-    app_ctx.console.print(brand_line("update status"))
+    app_ctx.console.print(update_status_line())
     app_ctx.console.print()
     if is_newer(latest, __version__):
         app_ctx.console.print(
@@ -1869,12 +1861,10 @@ def _codex_source_blob(
 
 
 def _refresh_credential_home(
-    acct: Account,
     provider: Provider,
     from_codex_home: Path | None,
 ) -> Path | None:
     """Pick the credential home for a manual refresh."""
-    del acct
     if from_codex_home is not None:
         return _normalize_codex_home(provider, from_codex_home)
     return None

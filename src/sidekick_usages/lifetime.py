@@ -1,7 +1,7 @@
 """Per-provider lifetime OUTPUT-token aggregation (leak-free).
 
 Reads local, read-only stats: Claude's pre-aggregated
-``stats-cache.json`` and (in Task 5) the Codex rollout logs. Returns
+``stats-cache.json`` and the Codex rollout logs. Returns
 ``(output_total, since)`` per provider. Output tokens are the only
 cross-provider-comparable measure (Claude reports cache-read
 separately; Codex folds cached tokens into ``input_tokens``).

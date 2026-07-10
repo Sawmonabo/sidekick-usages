@@ -654,22 +654,36 @@ changes.
 
 **Work:**
 
-- [ ] Revalidate and remove the no-op doctor `--auth` option if it remains
+- [x] Revalidate and remove the no-op doctor `--auth` option if it remains
       unused.
-- [ ] Revalidate and remove `diagnostic_dicts` if it remains uncalled.
-- [ ] Revalidate and remove `providers.get_provider` if explicit registry
+- [x] Revalidate and remove `diagnostic_dicts` if it remains uncalled.
+- [x] Revalidate and remove `providers.get_provider` if explicit registry
       construction remains the real owner.
-- [ ] Remove unused `acct` parameters from the two named helpers if they
+- [x] Remove unused `acct` parameters from the two named helpers if they
       remain unused.
-- [ ] Stop over-exporting `heartbeat_status_dict` if it remains private to one
+- [x] Stop over-exporting `heartbeat_status_dict` if it remains private to one
       renderer.
-- [ ] Replace the one-caller parameterized `brand_line(section)` with a
+- [x] Replace the one-caller parameterized `brand_line(section)` with a
       specifically named update-status builder if caller evidence is unchanged.
-- [ ] Correct or delete every stale comment and docstring listed in design
+- [x] Correct or delete every stale comment and docstring listed in design
       section 15.8.
-- [ ] Defer removal of generic `Provider.run_setup_token` to the provider
+- [x] Defer removal of generic `Provider.run_setup_token` to the provider
       package task unless it can be replaced directly with the final
       Claude-owned capability now; do not create a temporary abstraction.
+
+**Execution record:** Completed on 2026-07-09 against
+`96b7a52ce107b6cfc4a0fdfc4a594ac89d63aee6`. Exact caller searches proved
+the doctor option was discarded, `diagnostic_dicts` and `get_provider` were
+uncalled, both `acct` parameters were unused, and the heartbeat status builder
+had only renderer-local consumers. The status brand now has the specific
+parameterless name `update_status_line()`. `Provider.run_setup_token` remains
+unchanged because it is a live command capability; its final Claude ownership
+and generic-contract removal remain assigned to CS-16 and CS-17A. One new
+public-help test proves doctor no longer advertises `--auth`; no name-absence
+or other filler tests were added. The focused behavioral suite passes all 87
+cases, and the full suite passes all 199 cases with branch coverage. Ruff,
+formatting, `ty`, pre-commit, and the package build pass. The Markdown gate
+remains at the exact 93-finding pre-CS-05 baseline and adds no finding.
 
 **Load-bearing tests:**
 

@@ -1,9 +1,7 @@
 """Provider abstraction.
 
-Each provider (Claude Code, Codex CLI, ...) implements the
-:class:`Provider` ABC. The CLI dispatches calls through this
-interface so adding a new provider means adding one file, not
-refactoring the rest of the codebase.
+Provider integrations implement :class:`Provider`, allowing application
+services and commands to dispatch through a shared capability contract.
 """
 
 import re

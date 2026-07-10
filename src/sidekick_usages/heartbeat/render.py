@@ -81,7 +81,7 @@ def render_heartbeat_status(
             json.dumps(
                 {
                     "accounts": [
-                        heartbeat_status_dict(account, providers)
+                        _heartbeat_status_dict(account, providers)
                         for account in accounts
                     ]
                 },
@@ -99,7 +99,7 @@ def render_heartbeat_status(
     for index, account in enumerate(accounts):
         if index:
             console.print()
-        status = heartbeat_status_dict(account, providers)
+        status = _heartbeat_status_dict(account, providers)
         suffix = f" · {account.plan}" if account.plan != "unknown" else ""
         console.print(f"{account.label}  [{account.provider_id}{suffix}]")
         console.print(f"  heartbeat: {status['heartbeat']}")
@@ -125,11 +125,11 @@ def render_heartbeat_status(
             console.print(f"  error: {account.last_heartbeat_error}")
 
 
-def heartbeat_status_dict(
+def _heartbeat_status_dict(
     account: Account,
     providers: dict[str, HeartbeatProvider],
 ) -> dict[str, object]:
-    """Return one account's heartbeat status for status/doctor/list."""
+    """Build one account's heartbeat status data for rendering."""
     provider = providers.get(account.provider_id)
     supported = bool(provider and provider.supports(account))
     return {

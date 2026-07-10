@@ -735,5 +735,5 @@ def usage_overview(
         parts.append(panel)
         parts.append(Text(""))
     parts.append(_legend())
-    parts.append(Text(""))  # #6: trailing newline after the legend
+    parts.append(Text(""))  # Separate the TUI from the next prompt.
     return Group(*parts)

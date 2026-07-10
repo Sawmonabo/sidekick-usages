@@ -1,9 +1,7 @@
-"""HTTP client with retry/backoff for OAuth-protected GETs.
+"""HTTP client with retry/backoff for provider and release requests.
 
-Generalized from cc-usage.py so any provider can call it. Retries 429
-and 5xx with exponential backoff and honors the ``Retry-After``
-header. Raises typed :class:`UsageError` subclasses so callers can
-react meaningfully.
+Supports the integrations' current HTTPS GET and POST request shapes.
+Raises typed errors so callers can react meaningfully.
 """
 
 import json
@@ -47,7 +45,7 @@ _JITTER_RNG = secrets.SystemRandom()
 
 
 class HttpClient:
-    """Tiny GET-only HTTP client with retry/backoff."""
+    """Small HTTPS client with typed errors and retry/backoff."""
 
     def __init__(
         self,

@@ -166,17 +166,13 @@ def brand_header(
     return Group(*parts)
 
 
-def brand_line(section: str) -> Text:
-    """Render compact one-line branding plus a matching divider.
-
-    :param section: Short status-surface label, such as ``update status``.
-    :return: A two-line Rich text value containing title and divider.
-    """
+def update_status_line() -> Text:
+    """Render compact update-status branding plus a matching divider."""
     line = Text()
     line.append(BRAND_NAME, style=_TITLE_STYLE)
     line.append(f" {BRAND_PRODUCT}", style=_PRODUCT_STYLE)
     line.append(" · ", style="grey42")
-    line.append(section, style="grey62")
+    line.append("update status", style="grey62")
     divider = "─" * line.cell_len
     line.append(f"\n{divider}", style=_DIVIDER_STYLE)
     return line

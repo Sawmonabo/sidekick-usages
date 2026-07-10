@@ -3,7 +3,6 @@
 import json
 from dataclasses import asdict, dataclass
 from datetime import datetime
-from typing import Any
 
 from rich.console import Console
 
@@ -274,10 +273,3 @@ def _identity_fingerprint(account: Account) -> str | None:
     if len(value) <= _IDENTITY_FULL_MAX_LENGTH:
         return value
     return f"{value[:8]}…{value[-4:]}"
-
-
-def diagnostic_dicts(
-    diagnostics: list[AccountDiagnostic],
-) -> list[dict[str, Any]]:
-    """Expose diagnostics as plain dicts for tests or future callers."""
-    return [asdict(diagnostic) for diagnostic in diagnostics]

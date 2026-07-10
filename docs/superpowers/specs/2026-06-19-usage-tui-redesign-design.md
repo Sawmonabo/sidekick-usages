@@ -163,7 +163,7 @@ The masthead is an application component, not usage-renderer-owned text:
 - `brand_header(width, section=...)` selects the full 79-cell masthead, the
   robot-and-title narrow form, or a title-only fallback. All forms are composed
   from the same canonical constants.
-- `brand_line(section)` provides the compact status treatment used by
+- `update_status_line()` provides the compact status treatment used by
   `check-update`.
 - `cli_help.py` adapts Typer command and group help once. Root, nested-group,
   and leaf help prepend the shared header before `Usage:` without initializing

@@ -248,10 +248,7 @@ class AccountStore:
         return self
 
     def save(self) -> None:
-        """Persist current state to disk with 600 perms on Unix.
-
-        :return: None.
-        """
+        """Persist current state to disk with 600 perms on Unix."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             label: acct.to_dict() for label, acct in self._accounts.items()
@@ -261,10 +258,7 @@ class AccountStore:
             os.chmod(self.path, stat.S_IRUSR | stat.S_IWUSR)
 
     def _migrate_from_legacy(self) -> None:
-        """Copy legacy cc-usage config into the new location.
-
-        :return: None.
-        """
+        """Copy legacy cc-usage config into the new location."""
         try:
             raw = json.loads(LEGACY_CONFIG_FILE.read_text())
         except json.JSONDecodeError, OSError:
@@ -324,7 +318,6 @@ class AccountStore:
         """Insert or replace an account in-place by label.
 
         :param account: Account to store.
-        :return: None.
         """
         self._accounts[account.label] = account
 

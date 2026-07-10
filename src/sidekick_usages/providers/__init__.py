@@ -17,25 +17,8 @@ PROVIDERS: dict[str, Provider] = {
     "claude": ClaudeProvider(),
     "codex": CodexProvider(),
 }
-
-
-def get_provider(provider_id: str) -> Provider:
-    """Look up a provider by id.
-
-    :param provider_id: Provider id (``"claude"`` or ``"codex"``).
-    :return: The matching ``Provider`` instance.
-    :raises KeyError: When the id is not registered.
-    """
-    if provider_id not in PROVIDERS:
-        raise KeyError(
-            f"Unknown provider {provider_id!r}. Known: {', '.join(PROVIDERS)}."
-        )
-    return PROVIDERS[provider_id]
-
-
 __all__ = [
     "PROVIDERS",
     "DetectedCredentials",
     "Provider",
-    "get_provider",
 ]

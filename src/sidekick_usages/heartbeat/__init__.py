@@ -15,7 +15,6 @@ from sidekick_usages.heartbeat.domain import (
 )
 from sidekick_usages.heartbeat.registry import HEARTBEAT_PROVIDERS
 from sidekick_usages.heartbeat.render import (
-    heartbeat_status_dict,
     render_heartbeat_outcomes,
     render_heartbeat_status,
 )
@@ -40,7 +39,6 @@ __all__ = [
     "HeartbeatTarget",
     "UsageWindowState",
     "heartbeat_exit_code",
-    "heartbeat_status_dict",
     "heartbeat_supported_label",
     "render_heartbeat_outcomes",
     "render_heartbeat_status",

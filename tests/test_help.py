@@ -99,6 +99,13 @@ def test_help_width_override_does_not_leak_to_errors() -> None:
     assert set(_panel_widths(error_result.output)) == {80}
 
 
+def test_doctor_help_does_not_advertise_removed_auth_option() -> None:
+    result = CliRunner().invoke(cli.app, ["doctor", "--help"])
+
+    assert result.exit_code == 0
+    assert "--auth" not in click.unstyle(result.output)
+
+
 def test_version_remains_one_unbranded_line() -> None:
     result = CliRunner().invoke(cli.app, ["--version"])
     assert result.exit_code == 0
