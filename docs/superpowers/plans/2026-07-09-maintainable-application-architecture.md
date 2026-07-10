@@ -387,7 +387,7 @@ weaken the ledger, tests, platform proof, or fail-closed gates.
 | CS-07 | Boundary-validation dependency | Pydantic 2.13.4 `TypeAdapter`; Homebrew Rust/maturin proof remains a release gate | **GO** | 2026-07-10 | `986e1f7` | `3db51ef2abb86390ab55b6a31a8303f4d18df22f2599a5112d30e494353e44c4` |
 | CS-08 | Pooled transport and sole retry owner | urllib3 2.7.0 with retries disabled plus one focused Sidekick executor | **GO** | 2026-07-10 | `90883d8` | `9e73ed80cbb278b22fbb25c0468fe75ccc8be71d3345844791c756485f05a865` |
 | CS-09 | Native application-path discovery | platformdirs 4.10.0 privately behind `paths.py`; physical relocation remains off | **GO** | 2026-07-10 | `90883d8` | `9e73ed80cbb278b22fbb25c0468fe75ccc8be71d3345844791c756485f05a865` |
-| CS-10 | Stored-schema, durability, migration, and rollback | Strict schema v1; explicit migration; immutable content-addressed snapshots; Portalocker 3.2.0; pywin32 312 on Windows; verified v0.6.0 reverse preparation | **GO** | 2026-07-10 | `PENDING` | `PENDING` |
+| CS-10 | Stored-schema, durability, migration, and rollback | Strict schema v1; explicit migration; immutable content-addressed snapshots; Portalocker 3.2.0; pywin32 312 on Windows; verified v0.6.0 reverse preparation | **GO** | 2026-07-10 | `82f3893` | `6c82edfd2a054f1ce62b1c5843a0ccdbb58091074175ffa9e18e66c2303cf985` |
 
 ## 6. Testing strategy
 
