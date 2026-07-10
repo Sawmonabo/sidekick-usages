@@ -1548,7 +1548,8 @@ import the selected transport, retry library, or their exceptions.
 - attempt and elapsed-time bounds;
 - standards-compliant `Retry-After` handling;
 - bounded jitter behavior;
-- selected-library configuration.
+- transport retries disabled per request and Sidekick-owned closed retry
+  policies.
 
 The three concrete retry loops justify this responsibility. Do not add a
 generic resilience framework, circuit breaker, arbitrary retry hook system,
@@ -1579,46 +1580,56 @@ The HTTP package may import the recursive JSON vocabulary and application
 error types. It imports no provider, CLI, Rich, Typer, persistence, account, or
 renderer code.
 
-### 10.3 Build-versus-adopt decision
+### 10.3 Completed build-versus-adopt research
 
-Current primary-source research, retrieved on 2026-07-09, compared:
+**Research state:** **WAITING FOR OPERATOR DECISION**. The completed CS-08
+comparison recommends urllib3 2.7.0 for pooled transport with its retries
+disabled, plus one focused Sidekick executor as the sole retry owner. It does
+not authorize a runtime dependency or production refactor. The self-contained
+evidence record is [HTTP Transport and Retry Dependency Research][http-research].
 
-| Option | Current fit | Cost or risk | Assessment |
-|---|---|---|---|
-| Standard library plus focused executor | Adds no dependency | No shared connection pool; continues transport ownership | Measurement baseline only; cannot win |
-| urllib3 2.7.0 plus urllib3 `Retry` | Pooling, TLS, timeouts, method policy, statuses, `Retry-After`, backoff, and jitter in one dependency | Transport migration must preserve typed behavior | Preliminary winner |
-| urllib3 plus Tenacity 9.1.4 | Pooling and richer typed hooks | Two retry-capable layers can multiply attempts | Strong fallback with urllib3 retries disabled |
-| urllib3 plus focused executor | Pooling with complete local retry control | Continues retry-algorithm ownership | Owned-code fallback with urllib3 retries disabled |
-| HTTPX 0.28.1 plus Tenacity | Rich sync/async client, pooling, mock transport, optional HTTP/2 | Larger transitive and migration surface; advanced retries still external | No current justification |
-| Stamina 26.1.0 | Active, typed, instrumented Tenacity wrapper | Adds a wrapper without owning HTTP semantics | Reject for current scope |
-| `litl/backoff` 2.2.1 | Familiar retry decorator | Canonical repository is archived | Reject |
+| Option | Completed result | Research disposition |
+|---|---|---|
+| Standard library plus focused executor | Retains the current non-pooled transport and owned connection behavior | NO-GO; pooling is mandatory |
+| urllib3 `PoolManager` plus urllib3 `Retry` | Strong HTTP classifications and guidance parsing, but directly owns wall time, sleep, and randomness and has no whole-operation deadline | NO-GO as retry owner |
+| Retry-disabled urllib3 plus Tenacity 9.1.4 | Injects sleep and can retain a final response, but directly timestamps retry state and leaves the operation matrix, HTTP-date parsing, deadline, and typed translation local | NO-GO for the current contract |
+| Retry-disabled urllib3 plus focused executor | One pooled transport and direct injection of the two clocks, sleeper, RNG, operation policy, and terminal outcome | Conditional GO recommendation |
+| HTTPX and Stamina controls | Add broader sync/async, protocol, or observation surfaces without removing the product-specific policy | NO-GO for current requirements |
 
-urllib3 `PoolManager` is the selected pooled transport boundary. urllib3's
-`Retry` is the preliminary retry-owner leader because it addresses the complete
-current HTTP problem with one actively maintained Python 3.14 dependency.
-Tenacity is the leading retry-owner fallback if the spike proves that concrete
-hooks or typed dynamic wait behavior cannot be expressed cleanly with urllib3
-`Retry`. A focused local executor is the last fallback.
+The recommendation is not a failure to reuse. urllib3 buys the maintained TLS,
+pool, timeout, response, and proxy transport surface. Sidekick owns only the
+closed retry semantics that no candidate supplied without brittle subclassing
+or a second local policy layer. Three current loops and six concrete operation
+classes satisfy the rule of three; arbitrary hooks, provider-created policies,
+circuit breakers, async support, and a generic resilience service do not.
 
-No dependency is approved until the focused spike in section 10.7 passes.
-Exactly one layer owns retry:
+The transport contract is:
 
-- if urllib3 owns retry, no manual or Tenacity loop wraps it;
-- if Tenacity or focused local code owns retry, urllib3 transport retries are
-  disabled;
-- provider adapters never construct retry objects or policies.
+- one invocation-scoped `PoolManager` and, when required, `ProxyManager`;
+- `retries=False` and `redirect=False` at manager configuration and on every
+  request;
+- one focused executor in `http/retry.py` as the only attempt owner;
+- independently injected aware UTC wall time, monotonic elapsed time, sleeper,
+  and deterministic test RNG;
+- environment proxy and `NO_PROXY` behavior preserved explicitly because
+  urllib3 does not reproduce the standard-library opener automatically;
+- system CA behavior and verified HTTPS preserved without an unapproved
+  certificate dependency; and
+- no urllib3 response, exception, request object, proxy credential, token,
+  authorization header, body, or full account identity above `http/`.
 
-Pooling is a hard product requirement. The non-pooled standard-library option
-remains a measurement baseline but cannot be the selected architecture. If
-urllib3 fails transport, packaging, security, or platform acceptance, reopen
-the transport decision rather than silently selecting a non-pooled fallback.
+The isolated package added one dependency-free pure-Python distribution,
+432,560 installed bytes, and one Homebrew resource. Only Linux CPython 3.14.6
+ran the local server and timing work. Native proxy, CA, TLS, Homebrew, macOS,
+Windows, and WSL behavior remain implementation gates rather than inferred
+success.
 
-Bare Tenacity `@retry` is prohibited. Its documented default retries broad
-exceptions indefinitely without waiting and is not a product policy.
-
-Do not adopt HTTPX merely for hypothetical async or HTTP/2 needs. Reconsider it
-only when concrete product behavior requires capabilities that the selected
-sync client cannot supply.
+Reopen the decision if urllib3 fails a supported platform, security,
+provenance, packaging, proxy, or CA gate; a provider documents an idempotency
+key or authoritative not-applied signal; real async, HTTP/2, cancellation, or
+multiple retry-domain requirements emerge; or the focused executor begins
+recreating a general-purpose retry framework. Do not silently stack a second
+retry owner.
 
 ### 10.4 Retry semantics
 
@@ -1646,13 +1657,39 @@ A POST retry requires a concrete basis:
 
 Use closed internal policies based on actual operations, such as:
 
-- safe read;
-- safe provider probe;
-- approved credential exchange;
-- no retry.
+- `SAFE_READ`;
+- `CLAUDE_PROBE`;
+- `CLAUDE_REFRESH`;
+- `CODEX_REFRESH`;
+- `CLAUDE_HEARTBEAT`; and
+- `CODEX_HEARTBEAT`.
 
 Do not expose `retry: bool`, arbitrary policy injection, or provider-created
 retry configuration.
+
+The completed safety classification is normative if CS-08 is approved. **R**
+means retry within both attempt and monotonic elapsed bounds; **T** means a
+terminal typed outcome; **R\*** means retry only when the complete valid server
+delay fits the remaining deadline.
+
+| Operation | Proven pre-send connect | Ambiguous read or protocol | 429 | Selected 5xx | Explicit rejection |
+|---|---:|---:|---:|---:|---:|
+| `SAFE_READ` | R | R | R\* | R: 500, 502, 503, 504; Claude 529 | T |
+| `CLAUDE_PROBE` | R | T | R\* | T | T |
+| `CLAUDE_REFRESH` | R | T | T with guidance | T | T |
+| `CODEX_REFRESH` | R | T | T with guidance | T | T |
+| `CLAUDE_HEARTBEAT` | R | T | R\* | T | T |
+| `CODEX_HEARTBEAT` | R | T | T with guidance | T | T |
+
+Only urllib3's narrow connect category documented as occurring before the
+request is sent proves a POST was not applied. A read or protocol failure can
+follow a sent request and is terminal for every current POST. Claude Messages
+429 is an authoritative rejection and may retry within bounds. No
+endpoint-specific idempotency key or not-applied signal was found for either
+OAuth refresh or the provider-private Codex heartbeat endpoint, so their 429
+and 5xx results remain terminal while retaining user guidance. This matrix is a
+conservative safety inference from standards and the available provider
+contracts, not a claim that the endpoints are idempotent.
 
 The shared retry policy includes:
 
@@ -1736,64 +1773,60 @@ account identities, or unredacted provider bodies. It never changes JSON,
 quiet, scheduled, or normal stdout behavior. Do not add an observer hook until
 a real consumer exists.
 
-### 10.7 Dependency spike and acceptance gate
+### 10.7 Completed research and implementation acceptance gate
 
-Before production extraction, persist a focused comparison of:
+The 2026-07-10 spike exercised all four request shapes and the current typed
+error boundary against exact-version candidates. Its decision-critical results
+were:
 
-1. urllib3 `PoolManager` plus urllib3 `Retry`;
-2. urllib3 `PoolManager` plus Tenacity with urllib3 retries disabled;
-3. urllib3 `PoolManager` plus a focused local executor with urllib3 retries
-   disabled.
+| Probe | Result |
+|---|---|
+| Request capabilities | GET object, POST JSON object, POST form object, and POST bytes-to-headers all passed |
+| Pool reuse | Six local requests used one observed client source port |
+| Final rate limit | The terminal 429 response and last valid guidance remained available |
+| `Retry-After` | Integer and HTTP-date forms, past dates, malformed values, and a cap were exercised |
+| Deadline | Injected monotonic time stopped at attempt two while a five-attempt budget remained because the next delay exceeded the elapsed deadline |
+| urllib3 package | 432,560 installed bytes, no mandatory dependency, one Homebrew resource |
+| urllib3 plus Tenacity | Added 86,532 bytes and a second resource while leaving the HTTP policy local |
+| Platform execution | Linux CPython 3.14.6 only; other-platform metadata is not runtime proof |
 
-Use the real four request shapes and current typed error contract. Record:
+The local server proved request encoding, response retention, connection reuse,
+and deterministic time control. It did not prove remote TLS session reuse,
+environment proxies, CA-store integration, provider behavior, or native macOS,
+Windows, and WSL behavior. CS-11 must satisfy those gaps before merge and must
+measure real help/version, one-account, and representative multi-account
+startup. Help and version must not initialize the pool.
 
-- source sketches and owned line counts;
-- exact attempt and exhaustion behavior;
-- final 429 response and `Retry-After` access;
-- integer and HTTP-date `Retry-After` behavior;
-- safe and unsafe POST behavior;
-- deterministic test ergonomics;
-- connect, read, and total deadline behavior;
-- proxy, CA, TLS, redirect, and header differences;
-- CLI startup and multi-account request timing;
-- wheel, lockfile, and Homebrew impact;
-- Python 3.14 behavior on Linux, macOS, Windows, and WSL;
-- license, advisories, provenance, maintenance, and release posture;
-- the final selection and reversal conditions.
+The implementation test set is deliberately small and load-bearing:
 
-urllib3 wins only if it produces fewer and clearer owned lines, preserves typed
-application failures, retains final rate-limit metadata, and passes packaging
-and platform checks. Tenacity wins if concrete hook or typed-state needs make
-urllib3 integration depend on brittle subclassing or obscure exhaustion state.
-Focused local code wins only if both mature candidates fail concrete needs or
-cost more to integrate and maintain than the cohesive owned surface.
+1. One local-server test exercises all four capabilities, connection reuse,
+   bounded reads, and deterministic closure.
+2. One parameterized operation-safety test proves the six policies across
+   connect, ambiguous read, 429, selected 5xx, and explicit rejection by
+   asserting attempt count and terminal typed outcome.
+3. One `Retry-After` table proves integer, future-date, past-date, malformed,
+   cap, last-valid retention, and delay-beyond-deadline behavior.
+4. One synthetic-deadline test injects both clocks, sleeper, and RNG and proves
+   the elapsed bound stops retry while attempts remain.
+5. One typed-boundary table covers non-HTTPS rejection before transport, auth,
+   forbidden diagnostics, rate-limit guidance, exhaustion, malformed or
+   non-object JSON, and oversized response behavior.
+6. One credential-safety test places distinct sentinels in authorization,
+   body, proxy URL, and account identity and proves they are absent from every
+   public error and retry observation.
+7. One composition/proxy test proves environment proxy and `NO_PROXY`
+   selection, request-level redirect rejection, lazy initialization,
+   deterministic closure, and unchanged JSON, quiet, and scheduled stdout.
 
-The load-bearing HTTP tests cover:
+Parameterize related outcomes rather than copy the transport setup. Preserve
+existing tests only when they protect distinct behavior. Do not assert urllib3
+internals, complete third-party error strings, full renderer snapshots,
+projected module line counts, or a coverage number without a behavior contract.
 
-- non-HTTPS input rejected as `InsecureUrlError` before transport access;
-- valid object JSON;
-- valid non-object JSON as a typed failure;
-- malformed JSON as a typed failure;
-- oversized response rejection through a bounded read;
-- immediate 401 and 403 behavior;
-- bounded 429 and selected 5xx retries;
-- final rate-limit metadata;
-- safe versus unsafe POST after ambiguous failure;
-- both standard `Retry-After` forms and the configured cap;
-- an injected monotonic time source and sleeper proving the total deadline
-  stops retry while attempt budget remains;
-- transport exhaustion translated into application errors;
-- pool closure at the CLI lifecycle boundary;
-- credential and authorization values absent from errors and observations;
-- unchanged JSON, quiet, and scheduled output.
-
-Tests assert Sidekick Usages behavior, not library internals.
-
-All decision-relevant HTTP research, source facts, option comparisons,
-recommendations, risks, and reversal conditions are inlined in sections 10 and
-20. The implementation spike must inline its measured results and final
-decision in this specification before dependency approval. It may also preserve
-supplementary evidence in the git-tracked section 3.9 layout.
+CS-08 remains **WAITING FOR OPERATOR DECISION**. A GO approves the
+retry-disabled urllib3 plus focused-executor pair and its exact safety matrix;
+it does not waive the proxy, CA, TLS, platform, packaging, redaction, or
+lifecycle acceptance gates.
 
 ## 11. Presentation contract
 
@@ -2633,8 +2666,9 @@ sources retrieved on 2026-07-09. Focused dependency research was refreshed on
 - **Validation decision:** the section 6.4 spike is complete and Pydantic
   2.13.4 was operator-approved on 2026-07-10 with required release gates
 - **HTTP baseline:** no current third-party HTTP or retry dependency
-- **Open HTTP decision:** urllib3 `PoolManager` is the preliminary pooled
-  transport; section 10.7 selects and approves the single retry owner
+- **HTTP research:** the section 10.7 spike is complete and recommends urllib3
+  with retries disabled plus one focused executor; operator disposition remains
+  pending
 - **Application-path baseline:** `store.py`, `cli.py`, and `lifetime.py`
   duplicate Sidekick-owned location construction; `store.py` also retains the
   separate `cc-usage` prototype source
@@ -2666,6 +2700,25 @@ byte installed closure and an unproven Homebrew source build requiring Rust
 and maturin. Package classifiers and wheels support the other operating
 systems, but native macOS and Windows execution remains an implementation
 gate. No dependency is approved by this evidence snapshot.
+
+### 20.2 CS-08 evidence snapshot
+
+The 2026-07-10 HTTP research used the same repository snapshot, exact tagged
+urllib3 2.7.0 and Tenacity 9.1.4 sources, a loopback server, the four production
+request shapes, and synthetic time. It exercised pooling, final responses, both
+standard `Retry-After` forms, operation safety, and deterministic deadline
+behavior. The complete evidence, primary sources, measured dependency cost,
+limitations, security contract, and recommendation are in the tracked
+[HTTP Transport and Retry Dependency Research][http-research].
+
+urllib3 supplied the required pooled transport at one dependency-free
+distribution and 432,560 measured installed bytes. Its `Retry` owner could not
+meet independent clock, sleep, RNG, and whole-operation deadline requirements
+without brittle subclassing or global patching. Tenacity injected sleep but
+left nearly every HTTP-specific policy local. The focused Sidekick executor is
+therefore the recommendation, not yet an approved dependency. Only Linux ran
+the local spike; native proxy, CA, TLS, macOS, Windows, WSL, and Homebrew
+behavior remains an implementation gate.
 
 Local path evidence at the evidence commit is:
 
@@ -2786,6 +2839,7 @@ baseline and are mirrored in the implementation-plan ledger.
 | Change set | Research recommendation | State |
 |---|---|---|
 | CS-07 | Pydantic 2.13.4 `TypeAdapter` at untrusted boundaries; Homebrew source-build proof remains a release gate | **GO — APPROVED 2026-07-10** |
+| CS-08 | urllib3 2.7.0 pooled transport with retries disabled plus one focused Sidekick retry executor | **WAITING FOR OPERATOR DECISION** |
 
 ## 21. Approved decisions
 
@@ -2893,6 +2947,7 @@ docs/superpowers/plans/
 [tenacity-github]: https://github.com/jd/tenacity
 [httpx-transports]: https://www.python-httpx.org/advanced/transports/
 [httpx-pypi]: https://pypi.org/project/httpx/
+[http-research]: ../research/2026-07-10-http-transport-retry-dependency.md
 [stamina-pypi]: https://pypi.org/project/stamina/
 [backoff-github]: https://github.com/litl/backoff
 [platformdirs-api]: https://platformdirs.readthedocs.io/en/latest/api.html

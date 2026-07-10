@@ -369,6 +369,7 @@ unrecorded chat-only disposition.
 | Change set | Question | Research recommendation | Disposition | Approval date | Design commit | Approved design SHA-256 |
 |---|---|---|---|---|---|---|
 | CS-07 | Boundary-validation dependency | Pydantic 2.13.4 `TypeAdapter`; Homebrew Rust/maturin proof remains a release gate | **GO** | 2026-07-10 | `986e1f7` | `3db51ef2abb86390ab55b6a31a8303f4d18df22f2599a5112d30e494353e44c4` |
+| CS-08 | Pooled transport and sole retry owner | urllib3 2.7.0 with retries disabled plus one focused Sidekick executor | **WAITING FOR OPERATOR DECISION** | Pending | Pending | Pending |
 
 ## 6. Testing strategy
 
@@ -893,21 +894,23 @@ supportable. This decision does not approve `pydantic-settings`.
 
 **Work:**
 
-- [ ] Refresh urllib3, Tenacity, and focused-local-option evidence from
+- [x] Refresh urllib3, Tenacity, and focused-local-option evidence from
       official docs, releases, security policies, and canonical repositories.
-- [ ] Exercise the four real request capabilities and current typed errors.
-- [ ] Classify the Claude probe, Claude refresh, Codex refresh, Claude
+- [x] Exercise the four real request capabilities and current typed errors.
+- [x] Classify the Claude probe, Claude refresh, Codex refresh, Claude
       heartbeat, and Codex heartbeat POST operations.
-- [ ] Record retry eligibility after connect failure, ambiguous read failure,
+- [x] Record retry eligibility after connect failure, ambiguous read failure,
       429, selected 5xx, and explicit provider rejection for each operation.
-- [ ] Compare final 429 metadata, integer and HTTP-date `Retry-After`, bounded
+- [x] Compare final 429 metadata, integer and HTTP-date `Retry-After`, bounded
       deadlines, deterministic tests, pooling, TLS, proxy, CA, redirects,
       startup, wheel, Homebrew, platforms, license, and maintenance.
-- [ ] Prove each candidate can use independently injected aware wall time for
-      absolute HTTP dates and monotonic time for elapsed retry budgets.
-- [ ] Select urllib3 retry, Tenacity over retry-disabled urllib3, or focused
+- [x] Determine whether each candidate can use independently injected aware
+      wall time for absolute HTTP dates and monotonic time for elapsed retry
+      budgets.
+- [x] Select urllib3 retry, Tenacity over retry-disabled urllib3, or focused
       local retry over retry-disabled urllib3 as the only retry owner.
-- [ ] Inline the decision, operation-safety table, and reversal conditions.
+- [x] Inline the recommendation, operation-safety table, and reversal
+      conditions without treating them as operator approval.
 
 **GO gate:** One pooled design has exactly one retry owner, preserves typed
 errors and final rate-limit guidance, and passes the operation-safety matrix.
@@ -919,6 +922,26 @@ never stack retry engines or silently retain a non-pooled target.
 `WAITING FOR OPERATOR DECISION`. Record the operator-approved GO or NO-GO and
 selected transport/retry owner in the design authority before HTTP production
 work proceeds.
+
+**Execution record:** Research completed on 2026-07-10 against
+`c5b588ad474fd95c597cfd0b64339223e3da1843`. urllib3 2.7.0 exercised all four
+request shapes and reused one local connection. urllib3 `Retry` was rejected as
+the owner because its tagged implementation directly owns wall time, sleeping,
+and randomness and has no whole-operation elapsed deadline. Tenacity 9.1.4 was
+rejected because Sidekick would still own the HTTP operation matrix,
+`Retry-After`, elapsed deadline, final response, and typed translation while
+adding a second distribution. The focused executor directly satisfies the two
+clock, sleeper, deterministic RNG, terminal-response, and operation-safety
+contract. Exact measurements, limitations, security rules, reversal
+conditions, and the six-operation matrix are persisted in the design authority
+and tracked research record. No production dependency or code changed. No test
+was added because this is research-only documentation; copying spike facts into
+tests would not protect production behavior.
+
+**Current status:** **WAITING FOR OPERATOR DECISION**. A GO approves urllib3
+2.7.0 as the pooled transport with retries disabled and one focused Sidekick
+executor as the sole retry owner. It does not waive native proxy, CA, TLS,
+redirect, lifecycle, packaging, redaction, or platform acceptance.
 
 **Commit:** `docs(research): decide HTTP transport and retry dependency`
 
