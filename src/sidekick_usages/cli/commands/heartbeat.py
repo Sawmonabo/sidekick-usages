@@ -103,11 +103,13 @@ def heartbeat_cmd(
             )
         except ValueError:
             _usage_error(ctx, f"Unknown provider {provider_id!r}.")
-        outcomes = invocation_context(ctx).require_app(
-            ctx
-        ).heartbeat.heartbeat_all(
-            provider_id=provider_filter,
-            target_id=target_id,
+        outcomes = (
+            invocation_context(ctx)
+            .require_app(ctx)
+            .heartbeat.heartbeat_all(
+                provider_id=provider_filter,
+                target_id=target_id,
+            )
         )
         render_outcomes(ctx, outcomes, quiet=quiet)
         code = heartbeat_exit_code(outcomes)

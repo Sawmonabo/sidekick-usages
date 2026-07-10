@@ -29,6 +29,10 @@ from sidekick_usages.daemon import (
     DaemonOperation,
     DaemonOperationResult,
 )
+from sidekick_usages.persistence.artifacts import (
+    AuthorityExpectation,
+    AuthorityGeneration,
+)
 from sidekick_usages.persistence.assessment import (
     PersistenceAssessment,
     PersistenceIssue,
@@ -40,6 +44,8 @@ from sidekick_usages.persistence.errors import (
     ResetIncompleteError,
     SourceChangedError,
 )
+from sidekick_usages.persistence.filesystem import PersistenceFilesystem
+from sidekick_usages.persistence.locking import PersistenceLock
 from sidekick_usages.persistence.migration_errors import (
     PersistenceMigrationStateError,
     SchedulerMutationBlockedError,
@@ -553,10 +559,13 @@ def test_doctor_renders_blocked_persistence_without_a_store(
 
 def test_normal_command_reports_exact_migration_action(tmp_path: Path) -> None:
     paths = make_application_paths(tmp_path)
-    paths.accounts.canonical.write_bytes(
-        encode_generation_zero(GenerationZeroDocument(()))
-    )
-    paths.accounts.canonical.chmod(0o600)
+    filesystem = PersistenceFilesystem(paths.accounts.canonical)
+    with PersistenceLock(filesystem).hold() as transaction:
+        transaction.commit_authority(
+            AuthorityGeneration.GENERATION_ZERO,
+            encode_generation_zero(GenerationZeroDocument(())),
+            AuthorityExpectation.ABSENT,
+        )
     stdout = io.StringIO()
     stderr = io.StringIO()
     invocation = InvocationContext(
