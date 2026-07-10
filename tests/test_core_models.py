@@ -27,8 +27,8 @@ REFERENCE_TIME = datetime(2026, 7, 10, 12, tzinfo=UTC)
 @pytest.mark.parametrize(
     ("value", "is_valid"),
     [
-        ("caf\N{LATIN SMALL LETTER E WITH ACUTE}", True),
-        ("cafe\N{COMBINING ACUTE ACCENT}", True),
+        ("\N{LATIN SMALL LETTER E WITH ACUTE}", True),
+        ("e\N{COMBINING ACUTE ACCENT}", True),
         ("", False),
         ("contains\ncontrol", False),
         ("contains\x00nul", False),
