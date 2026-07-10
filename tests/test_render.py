@@ -8,7 +8,7 @@ from sidekick_usages import render
 from sidekick_usages.render import FetchFailure
 from sidekick_usages.report import UsageReport, UsageWindow
 from sidekick_usages.store import Account
-from tests._support import REFERENCE_TIME
+from tests.test_support import REFERENCE_TIME
 
 
 def _iso_after(**delta: float) -> str:

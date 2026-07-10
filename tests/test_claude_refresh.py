@@ -12,7 +12,7 @@ from sidekick_usages.http import HttpClient
 from sidekick_usages.providers import claude as claude_module
 from sidekick_usages.providers.claude import ClaudeProvider
 from sidekick_usages.store import Account
-from tests._support import REFERENCE_TIME, FixedClock
+from tests.test_support import REFERENCE_TIME, FixedClock
 
 CLI_REFRESH_TIMEOUT_SECONDS = 60
 CLI_EXPIRES_AT_MS = 1_781_270_062_459

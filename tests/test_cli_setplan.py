@@ -9,7 +9,7 @@ from typer.testing import CliRunner
 from sidekick_usages import cli
 from sidekick_usages.http import HttpClient
 from sidekick_usages.store import Account, AccountStore
-from tests._support import FixedClock
+from tests.test_support import FixedClock
 
 
 def _ctx(tmp_path: Path, account: Account) -> AccountStore:

@@ -22,7 +22,7 @@ from sidekick_usages.providers.claude import (
     ClaudeProvider,
 )
 from sidekick_usages.store import Account
-from tests._support import FixedClock
+from tests.test_support import FixedClock
 
 #: Reference utilization values quoted verbatim from the unified
 #: rate-limit headers in ``anthropics/claude-code`` issue #12829.

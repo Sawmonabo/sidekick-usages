@@ -12,7 +12,7 @@ from sidekick_usages.daemon import DaemonOperation, DaemonOperationResult
 from sidekick_usages.http import HttpClient
 from sidekick_usages.providers import build_provider_registry
 from sidekick_usages.store import Account, AccountStore
-from tests._support import FixedClock
+from tests.test_support import FixedClock
 
 
 def _install_context(

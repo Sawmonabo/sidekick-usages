@@ -14,7 +14,7 @@ from sidekick_usages.http import HttpClient
 from sidekick_usages.providers.base import DetectedCredentials, Provider
 from sidekick_usages.report import UsageReport, UsageWindow
 from sidekick_usages.store import Account, AccountStore
-from tests._support import FixedClock
+from tests.test_support import FixedClock
 
 
 class _FakeProvider(Provider):

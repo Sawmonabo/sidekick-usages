@@ -10,7 +10,7 @@ from typing import Any
 from sidekick_usages.http import HttpClient
 from sidekick_usages.providers.codex import CodexProvider
 from sidekick_usages.store import Account
-from tests._support import REFERENCE_TIME, FixedClock
+from tests.test_support import REFERENCE_TIME, FixedClock
 
 DETECTED_EXP = 1_800_000_000
 REFRESH_EXP = 1_900_000_000

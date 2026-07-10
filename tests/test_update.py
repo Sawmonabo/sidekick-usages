@@ -34,7 +34,7 @@ from sidekick_usages.update import (
     parse_version,
     upgrade_command_for,
 )
-from tests._support import FixedClock
+from tests.test_support import FixedClock
 
 
 class _FakeHttp(HttpClient):

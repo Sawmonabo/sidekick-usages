@@ -31,7 +31,7 @@ from sidekick_usages.providers.base import DetectedCredentials, Provider
 from sidekick_usages.providers.codex import CodexProvider
 from sidekick_usages.report import UsageReport
 from sidekick_usages.store import Account, AccountStore
-from tests._support import REFERENCE_TIME, FixedClock
+from tests.test_support import REFERENCE_TIME, FixedClock
 
 CODEX_USAGE_FETCHES_FOR_WARM = 2
 

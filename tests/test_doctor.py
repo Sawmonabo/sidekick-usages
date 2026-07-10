@@ -13,7 +13,7 @@ from sidekick_usages.heartbeat import build_heartbeat_registry
 from sidekick_usages.http import HttpClient
 from sidekick_usages.providers import build_provider_registry
 from sidekick_usages.store import Account, AccountStore
-from tests._support import REFERENCE_TIME, FixedClock
+from tests.test_support import REFERENCE_TIME, FixedClock
 
 
 def _install_ctx(

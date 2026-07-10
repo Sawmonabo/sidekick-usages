@@ -18,7 +18,7 @@ from sidekick_usages.http import HttpClient
 from sidekick_usages.providers.base import DetectedCredentials, Provider
 from sidekick_usages.report import UsageReport, UsageWindow
 from sidekick_usages.store import Account, AccountStore
-from tests._support import REFERENCE_TIME, FixedClock
+from tests.test_support import REFERENCE_TIME, FixedClock
 
 _CLAUDE_NOW_MS = int(REFERENCE_TIME.timestamp() * 1000)
 _CODEX_NOW_SECONDS = int(REFERENCE_TIME.timestamp())
