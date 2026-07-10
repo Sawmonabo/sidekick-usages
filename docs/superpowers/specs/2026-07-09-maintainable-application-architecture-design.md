@@ -2291,6 +2291,40 @@ writer race is a typed conflict or resumable partial state, never silent
 success. Native relocation reuses the CS-18 multi-bundle journal so every
 bundle and the rewritten authority recover as one unit.
 
+Ordinary credential recovery remains strict when its retained source guard
+changes. Native migration adds a separate capability that can resolve a race
+with the released writer without weakening that runtime contract. The
+migration service supplies the freshly validated current compatibility
+fingerprint and the exact original source path. The transaction first proves
+that the source-path digest matches the journal, then classifies the canonical
+authority as base, target, or third before changing anything. A base authority
+rolls every private target mutation back and, when the base is present,
+publishes that exact base as its content-addressed lineage snapshot. A target
+authority rolls the tuple forward, removes only journal-listed displaced
+target bundles, and publishes the exact canonical target as its lineage
+snapshot. An absent base needs no artificial marker. A third authority, wrong
+path, missing or malformed journal, private third state, or unprovable current
+source fails closed with all recovery evidence retained.
+
+The divergent-source resolver never writes or deletes the compatibility
+source. It revalidates that source around cleanup and returns a closed
+`source_diverged_base` or `source_diverged_target` outcome only after complete
+target coherence. A crash after target cleanup remains resumable from the
+lineage snapshot. While both locks remain held and scheduler quiescence still
+holds, the migration service may perform at most one fresh reassessment and
+one rebase from the current valid compatibility authority. A second race
+retains the new journal and exits as partial or conflicting state; it never
+enters a retry loop.
+
+The runtime `PrivateCredentialTransaction.commit()` API remains version-one
+only. CS-19 adds a separately named migration commit whose target generation
+is explicit and payload-validated. Credential journal version two records a
+base generation coherent with absent/present base authority plus the target
+generation. Divergent-source recovery accepts only version-two journals. The
+decoder continues to accept version-one journals with an implicit version-one
+target for ordinary strict recovery. Only `persistence/migrations/service.py`
+may invoke the migration commit.
+
 ##### Prototype receipt and reset
 
 A successful prototype import publishes a validated non-secret receipt whose

@@ -2318,6 +2318,27 @@ tests under a NO-GO disposition.
 - [ ] Revalidate the compatibility authority immediately before and after the
       canonical commit because released v0.6.0 does not honor the new lock;
       classify a race as a typed conflict or partial state.
+- [ ] Keep ordinary credential recovery strict. Add a separate migration-only
+      divergent-source resolver that proves the journal source-path digest,
+      classifies canonical authority as base/target/third, restores base or
+      completes target without touching the changed compatibility source, and
+      returns a closed divergent-base or divergent-target outcome.
+- [ ] Before cleaning a divergent journal, publish/reuse the exact coherent
+      canonical generation as a content-addressed lineage snapshot: the
+      present base after rollback or the target after roll-forward. An absent
+      base needs no marker. Revalidate the current compatibility source around
+      cleanup; retain all evidence on a wrong path, third state, private
+      inconsistency, missing artifact, snapshot collision, or second change.
+- [ ] Permit at most one same-invocation rebase after a complete fresh
+      location/auth assessment while both ordered locks remain held and
+      scheduler quiescence still holds. A second released-writer race exits
+      with the new journal as typed partial/conflicting state; never loop.
+- [ ] Preserve the runtime version-one-only credential commit. Add a separately
+      named migration commit and journal version two with coherent
+      absent/present base generation plus explicit validated target generation.
+      Restrict divergent recovery to version two; decode version-one journals
+      as implicit version-one targets for ordinary strict recovery. Only
+      `persistence/migrations/service.py` may call the migration API.
 - [ ] Preserve account and auth permissions.
 - [ ] Atomically commit rewritten account state last.
 - [ ] Retain every old durable source and backup; delete nothing automatically.
@@ -2351,6 +2372,25 @@ tests under a NO-GO disposition.
 - Equivalent destinations are idempotent; conflicting or partial destinations
   are typed failures.
 - Account paths change only after all required copies validate.
+
+**Additional released-writer recovery tests:**
+
+- Divergence at base restores the complete old multi-bundle target, publishes
+  exact present-base lineage (or proves absent base), leaves compatibility
+  byte-identical, removes the journal only after proof, and returns the typed
+  base outcome.
+- Divergence at target completes the tuple, removes only listed displaced
+  target bundles, publishes the exact lineage snapshot, leaves compatibility
+  untouched, and returns the typed target outcome.
+- Wrong source path, third canonical authority, private third state, missing
+  secret artifact, another source change, and snapshot collision all retain
+  evidence or a durable lineage marker and never report success.
+- A crash after divergent-target cleanup is recognized from the lineage
+  snapshot by a fresh process. One bounded rebase succeeds; a second source
+  race stops with its new journal.
+- Migration generation-zero before/after-authority recovery passes while the
+  runtime credential commit remains version-one-only and an architecture check
+  enforces its sole migration caller.
 
 **Operational acceptance:**
 
