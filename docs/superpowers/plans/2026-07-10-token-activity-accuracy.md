@@ -6,7 +6,7 @@
 > the stop/go gates, atomic migration boundary, and verification requirements
 > when a different execution mechanism is used.
 
-- **Status:** Ready for implementation
+- **Status:** Implemented and verified
 - **Date:** 2026-07-10
 - **Repository:** `/home/sabossedgh/dev/sidekick-usages`
 - **Audited branch:** `develop`
@@ -18,6 +18,24 @@
   `44918ea10c0f99151c6710411b4322c2f5c96bea`
 - **Implementation authority:** This plan, together with the provider sources
   linked in section 2.1
+
+> **Implementation cohesion note (2026-07-10):** The architecture gate exposed
+> `usage/service.py` and `usage/render.py` crossing the repository's 800-line
+> review threshold during implementation. The approved responsibilities were
+> preserved in two focused owners: `usage/activity.py` contains the
+> scope-specific ports and aggregation policy, while
+> `usage/activity_render.py` contains token precision, scope, and failure copy.
+> The service still owns selection and eligibility; the overview still owns
+> layout. This split changes no provider, model, or presentation contract.
+
+**Verification snapshot (2026-07-10):** The implementation passes 795 tests
+with four platform-specific skips, a full branch-coverage test run, Ruff,
+`ty`, pre-commit, Bandit, dependency vulnerability scanning, Markdown lint,
+architecture mutation tests, exact wheel verification, and an isolated wheel
+smoke install. A real `uv run sidekick-usages` invocation on `develop`
+confirmed Claude live-suffix collection and Codex account-profile collection.
+The unchecked boxes below are retained as the original executable sequence;
+this status and snapshot record its completed outcome.
 
 ## 1. Outcome
 
@@ -675,6 +693,8 @@ src/sidekick_usages/
 │       └── usage.py
 ├── usage/
 │   ├── __init__.py
+│   ├── activity.py
+│   ├── activity_render.py
 │   ├── models.py
 │   ├── render.py
 │   └── service.py
@@ -698,9 +718,9 @@ src/sidekick_usages/
 | `lifetime.py:claude_lifetime_output` | `providers/claude/activity.py` | Claude filesystem and aggregation boundary |
 | Codex rollout functions | Deleted | Wrong metric and wrong scope |
 | Codex cache functions | Deleted | No corrected feature consumes this cache |
-| `LifetimeCollector` | `UsageCheckService` activity orchestration | One selection and one completed result |
+| `LifetimeCollector` | `usage/activity.py:TokenActivityCollector`, called by `UsageCheckService` | One selection and one completed result |
 | CLI lifetime collection | `UsageCheckService.check` | CLI renders; it does not collect data |
-| `_lifetime_text` | Token-activity rendering in `usage/render.py` | Scope, coverage, and precision-aware copy |
+| `_lifetime_text` | Token-activity text in `usage/activity_render.py` | Scope, coverage, and precision-aware copy |
 | Codex account headers | `providers/codex/request.py` | Exact third-call-site reuse |
 | `ApplicationPaths.lifetime_cache_file` | Deleted | No Sidekick runtime cache remains |
 
@@ -711,8 +731,11 @@ Create:
 - `src/sidekick_usages/providers/claude/activity.py`;
 - `src/sidekick_usages/providers/codex/activity.py`;
 - `src/sidekick_usages/providers/codex/request.py`;
+- `src/sidekick_usages/usage/activity.py`;
+- `src/sidekick_usages/usage/activity_render.py`;
 - `tests/test_claude_activity.py`; and
-- `tests/test_codex_activity.py`.
+- `tests/test_codex_activity.py`;
+- `tests/test_usage_activity.py`.
 
 Modify:
 
@@ -779,8 +802,10 @@ Enforce these constraints:
 - Codex activity imports core, shared HTTP, and Codex boundaries, but not
   Claude, filesystem traversal, or usage presentation;
 - provider modules never import `usage.models`;
-- `usage/service.py` owns the structural ports and aggregates core readings;
-- `usage/render.py` receives immutable application results;
+- `usage/activity.py` owns the structural ports and aggregates core readings;
+- `usage/service.py` owns selection, credential preparation, and eligibility;
+- `usage/activity_render.py` owns token-activity text and precision;
+- `usage/render.py` receives immutable application results and owns layout;
 - `cli/commands/usage.py` selects, renders, and exits but does not call a
   provider or filesystem directly; and
 - `paths.py` remains the sole owner of Sidekick application paths, while the
@@ -1537,17 +1562,19 @@ one reference time, and the canonical credential workflow.
 
 **Files:**
 
+- Create: `src/sidekick_usages/usage/activity.py`
 - Modify: `src/sidekick_usages/usage/service.py`
 - Modify: `src/sidekick_usages/usage/models.py`
 - Modify: `src/sidekick_usages/usage/__init__.py`
 - Modify: `src/sidekick_usages/cli/context.py`
 - Modify: `tests/test_usage_service.py`
+- Create: `tests/test_usage_activity.py`
 - Modify: `tests/test_support.py`
 
 **Steps:**
 
-- [ ] Add the two structural activity ports beside the service that consumes
-  them. Keep their signatures scope-specific.
+- [ ] Add the two structural activity ports to the focused usage activity
+  owner consumed by the service. Keep their signatures scope-specific.
 
 - [ ] Update test support to inject local and account activity-source maps.
   Default fakes must fail if an unexpected activity boundary is crossed; do
@@ -1557,7 +1584,7 @@ one reference time, and the canonical credential workflow.
   confirm failure.
 
   ```bash
-  uv run pytest tests/test_usage_service.py -k "activity or partial" -q
+  uv run pytest tests/test_usage_activity.py -q
   ```
 
 - [ ] Refactor the private check outcome to retain the latest trustworthy
@@ -1604,6 +1631,7 @@ to mistake for complete account lifetime.
 
 **Files:**
 
+- Create: `src/sidekick_usages/usage/activity_render.py`
 - Modify: `src/sidekick_usages/usage/render.py`
 - Modify: `src/sidekick_usages/cli/commands/usage.py`
 - Modify: `tests/test_render.py`

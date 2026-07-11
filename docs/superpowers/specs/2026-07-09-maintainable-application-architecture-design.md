@@ -669,6 +669,8 @@ src/sidekick_usages/
 │   └── codex.py
 ├── usage/
 │   ├── __init__.py
+│   ├── activity.py
+│   ├── activity_render.py
 │   ├── legacy_render.py
 │   ├── models.py
 │   ├── reset_display.py
@@ -1274,11 +1276,13 @@ Provider-specific acquisition remains with its integration:
   for each eligible saved account through the shared HTTP client and marks the
   result as account-scoped. It never reads rollout or SQLite totals.
 
-`usage/service.py` owns the two scope-specific ports, account eligibility,
-aggregation, coverage, and typed issues. `UsageCheckResult` carries one
-complete, partial, unavailable, or failed activity outcome per selected
-provider from the same account selection and reference time as its usage
-rows. The CLI performs no independent collection.
+`usage/activity.py` owns the two scope-specific ports, provider reads,
+aggregation, coverage, and typed issues. `usage/service.py` owns account
+selection, credential preparation, activity eligibility, and the single call
+into that collector. `UsageCheckResult` carries one complete, partial,
+unavailable, or failed activity outcome per selected provider from the same
+account selection and reference time as its usage rows. The CLI performs no
+independent collection.
 
 Wide rendering uses exact grouped totals. Narrow rendering retains meaningful
 compact precision. Claude is labeled local, partial Codex coverage is labeled
@@ -1903,7 +1907,9 @@ TBD and is recorded separately when Release Please publishes the release.
 ### 9.1 Usage checking
 
 `usage/service.py` owns selection, usage collection, refresh-and-retry policy,
-and failure aggregation.
+activity eligibility, and failure aggregation. `usage/activity.py` owns the
+scope-specific collection ports and reduction of provider readings into one
+truthful provider activity outcome.
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -3245,15 +3251,17 @@ Presentation uses a small, explicit contract:
 
 JSON, quiet, scheduler, and version output remain undecorated.
 
-`usage/render.py` receives complete data and builds the approved overview. Its
-physical move from `render.py` does not authorize a visual redesign.
+`usage/render.py` receives complete data and builds the approved overview.
+`usage/activity_render.py` owns the distinct scope, precision, and failure-copy
+subdomain for token activity while returning only Rich text values to the
+overview. Neither renderer acquires provider or filesystem data. The physical
+move from `render.py` does not authorize a visual redesign.
 
-The current 739-line `render.py` stays intact until the usage package and
-service create the concrete ownership boundary for that move. At that point it
-may move atomically to `usage/render.py`; it is not mechanically divided into
-smaller renderer files unless three stable rendering subdomains or another
-clear responsibility boundary have emerged. File movement alone is not an
-architectural improvement.
+The 749-line `usage/render.py` remains below the architecture review threshold.
+Token activity established a separate stable presentation vocabulary and moved
+to `usage/activity_render.py`; the remaining layout stays cohesive in
+`usage/render.py`. Further mechanical division is not an architectural
+improvement.
 
 Do not add a generic screen, renderer-service, or hook framework.
 

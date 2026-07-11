@@ -6,12 +6,11 @@ or prepare a safe rollback to release 0.6.0.
 
 ## Location model
 
-Sidekick owns three kinds of local data:
+Sidekick owns two kinds of local data:
 
 - `accounts.json`, the authoritative account document containing OAuth
-  credentials and account status;
-- private Codex auth bundles copied from a provider login; and
-- the regenerable Codex lifetime-output cache.
+  credentials and account status; and
+- private Codex auth bundles copied from a provider login.
 
 Provider-native homes such as `~/.claude` and `~/.codex` are not Sidekick
 application-data locations. Location migration never moves, deletes, or
@@ -19,18 +18,18 @@ overwrites the active provider login.
 
 ### Native locations
 
-Release 0.7.0 uses the operating system's per-user application-data and cache
+Release 0.7.0 uses the operating system's per-user application-data
 conventions:
 
-| Platform | Account document | Private Codex root | Lifetime cache |
-| --- | --- | --- | --- |
-| Linux and WSL | `${XDG_DATA_HOME:-~/.local/share}/sidekick-usages/accounts.json` | `${XDG_DATA_HOME:-~/.local/share}/sidekick-usages/codex/` | `${XDG_CACHE_HOME:-~/.cache}/sidekick-usages/codex-lifetime-cache.json` |
-| macOS | `~/Library/Application Support/sidekick-usages/accounts.json` | `~/Library/Application Support/sidekick-usages/codex/` | `~/Library/Caches/sidekick-usages/codex-lifetime-cache.json` |
-| Windows | `%LOCALAPPDATA%\sidekick-usages\accounts.json` | `%LOCALAPPDATA%\sidekick-usages\codex\` | `%LOCALAPPDATA%\sidekick-usages\Cache\codex-lifetime-cache.json` |
+| Platform | Account document | Private Codex root |
+| --- | --- | --- |
+| Linux and WSL | `${XDG_DATA_HOME:-~/.local/share}/sidekick-usages/accounts.json` | `${XDG_DATA_HOME:-~/.local/share}/sidekick-usages/codex/` |
+| macOS | `~/Library/Application Support/sidekick-usages/accounts.json` | `~/Library/Application Support/sidekick-usages/codex/` |
+| Windows | `%LOCALAPPDATA%\sidekick-usages\accounts.json` | `%LOCALAPPDATA%\sidekick-usages\codex\` |
 
-Linux and WSL honor absolute `XDG_DATA_HOME` and `XDG_CACHE_HOME` values.
-Relative XDG roots fail closed. WSL uses the Linux filesystem and Linux home;
-it does not silently select a mounted Windows profile.
+Linux and WSL honor an absolute `XDG_DATA_HOME`. A relative data root fails
+closed. WSL uses the Linux filesystem and Linux home; it does not silently
+select a mounted Windows profile.
 
 ### Compatibility locations
 
@@ -60,8 +59,24 @@ Installing release 0.7.0 does not silently relocate an existing store:
    location.
 3. If native and compatibility authorities both exist, Sidekick proves they
    are equivalent or fails closed. It never chooses conflicting state.
-4. The regenerable lifetime cache uses the native cache location and can be
-   rebuilt from provider-local statistics.
+
+### Obsolete derived Codex cache
+
+Release 0.6.0 derived a Codex output-only total from local rollout files and
+stored `codex-lifetime-cache.json` in the platform cache directory. Release
+0.7.0 does not read, trust, migrate, rewrite, or delete that file. Codex token
+activity now comes from each saved account's authoritative profile.
+
+The inert file can be removed manually if it exists:
+
+| Platform | Obsolete file |
+| --- | --- |
+| Linux and WSL | `${XDG_CACHE_HOME:-~/.cache}/sidekick-usages/codex-lifetime-cache.json` |
+| macOS | `~/Library/Caches/sidekick-usages/codex-lifetime-cache.json` |
+| Windows | `%LOCALAPPDATA%\sidekick-usages\Cache\codex-lifetime-cache.json` |
+
+Normal usage checks remain read-only with respect to this obsolete artifact;
+Sidekick does not perform hidden cleanup during a dashboard render.
 
 Inspect the current selection before making a change:
 

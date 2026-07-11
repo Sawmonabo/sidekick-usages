@@ -17,7 +17,7 @@
 
 Inspect Claude Code and Codex CLI usage across multiple saved accounts without
 switching the active provider login for every check. The CLI groups rate-limit
-windows, reset times, local lifetime output totals, and per-account failures in
+windows, reset times, scope-aware token activity, and per-account failures in
 one terminal view.
 
 Routine checks do not open a browser. Initial account setup, an explicit
@@ -178,20 +178,27 @@ The default `check` view provides:
   such as Claude Opus/OAuth or Codex Spark windows when returned.
 - Local reset countdowns and inline recovery details for failed accounts.
 - A narrow-terminal fallback when the full heat-panel layout does not fit.
-- Per-provider lifetime **output-token** totals derived from local CLI state.
+- Exact token activity at normal widths and precision-preserving compact totals
+  in the narrow fallback.
 
-Lifetime totals are machine-wide local statistics, not totals for only the
-accounts saved in sidekick:
+The activity subtitle is deliberately scope-aware:
 
-- Claude reads `~/.claude/stats-cache.json`.
-- Codex scans cumulative output totals in
-  `~/.codex/sessions/**/rollout-*.jsonl` and caches file totals in
-  the operating system's native Sidekick cache directory.
+- Claude matches Claude Code's local `/stats` accounting. It adds historical
+  input and output tokens from `stats-cache.json` to live UTC-day input and
+  output tokens from project transcripts, while excluding cache-read and
+  cache-creation tokens. The result is labeled `local CLI` because it belongs
+  to the Claude installation selected by `CLAUDE_CONFIG_DIR` or `~/.claude`,
+  not to one saved Sidekick account.
+- Codex reads each eligible saved ChatGPT account's authoritative token profile
+  and sums `lifetime_tokens`. A complete panel total covers every selected
+  account. If only some profiles succeed, Sidekick shows the exact partial sum
+  as `known tokens` instead of implying complete coverage.
 
-These local statistics are not uploaded. A missing source is reported as
-unavailable. Malformed or unreadable sources produce an explicit failure
-instead of a fabricated zero; provider usage checks still run, and the command
-returns a system-error status after rendering the failure.
+Sidekick never substitutes Codex rollout files, SQLite state, or a derived
+local cache when the account profile is unavailable. Missing authoritative
+activity is shown as unavailable. Malformed, unreadable, authentication, and
+transport failures remain explicit while valid rate-limit rows stay visible;
+the command renders the result before returning its typed non-zero status.
 
 ## How provider access works
 
@@ -225,6 +232,11 @@ inside an isolated temporary `HOME`, then imports the rotated credentials. A
 direct HTTPS OAuth exchange is available as a fallback. Neither path overwrites
 the normal `~/.claude` login. Setup tokens cannot auto-refresh.
 
+Claude token activity is read-only local state. Sidekick reads the documented
+statistics cache and the live transcript suffix needed to match Claude Code's
+current `/stats` total. It never refreshes, rewrites, locks, renames, or deletes
+Claude-owned activity files.
+
 ### Codex CLI
 
 Credential discovery reads `$CODEX_HOME/auth.json` when `CODEX_HOME` is set,
@@ -242,6 +254,13 @@ token and `ChatGPT-Account-Id`. It reports the primary 5-hour window, secondary
 7-day window, and provider-returned additional model limits. Expiring access
 tokens rotate through `https://auth.openai.com/oauth/token`; rotated data is
 written to the private sidekick cache, not the active `~/.codex` login.
+
+Token activity independently calls
+`https://chatgpt.com/backend-api/wham/profiles/me` for each eligible saved
+account and validates the returned `stats.lifetime_tokens`. A rate-limit
+endpoint failure does not suppress this independent safe read. An activity
+authentication failure does not start a second refresh loop, and no local
+rollout total is used as a fallback.
 
 ## Commands
 
@@ -375,7 +394,7 @@ Runtime network destinations are:
 | --- | --- |
 | Claude usage and tiny header probe | `api.anthropic.com` |
 | Claude direct refresh fallback | `platform.claude.com` |
-| Codex usage and heartbeat | `chatgpt.com` |
+| Codex usage, token activity, and heartbeat | `chatgpt.com` |
 | Codex token refresh | `auth.openai.com` |
 | Explicit release check | `api.github.com` |
 
