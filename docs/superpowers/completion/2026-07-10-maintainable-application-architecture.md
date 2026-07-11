@@ -1,5 +1,11 @@
 # Maintainable application architecture completion record
 
+> **Subsequent token-activity correction (2026-07-10):** This completion
+> record remains valid evidence for the architecture migration as delivered.
+> Later provider-source verification disproved the output-only local metric.
+> The top-level collector and Codex cache are superseded by the tracked
+> [token activity accuracy plan](../plans/2026-07-10-token-activity-accuracy.md).
+
 ## Scope and authority
 
 This record closes the implementation authorized by:

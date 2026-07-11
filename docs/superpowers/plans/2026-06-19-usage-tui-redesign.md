@@ -1,5 +1,15 @@
 # Usage TUI Redesign ("Framed Panels") Implementation Plan
 
+> **Subsequent token-activity correction (2026-07-10):** This executed plan
+> accurately records the earlier output-only local implementation, but that
+> metric, the top-level `lifetime.py` owner, and the Codex rollout cache are
+> superseded by the tracked
+> [token activity accuracy plan](./2026-07-10-token-activity-accuracy.md).
+> Task excerpts below remain historical execution evidence, not current
+> implementation authority.
+
+---
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use
 > superpowers:subagent-driven-development (recommended) or
 > superpowers:executing-plans to implement this plan task by task. Steps use

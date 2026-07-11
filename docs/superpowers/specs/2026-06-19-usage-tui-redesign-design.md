@@ -8,9 +8,13 @@
   remove the global account/provider summary, and show each provider's account
   count in its panel title. Existing failure rows remain the only failure-status
   treatment.
+- **Token activity correction:** **Approved 2026-07-10** — replace the
+  output-only local counters with scope-aware provider activity. The tracked
+  [token activity implementation plan][token-activity-plan] supersedes every
+  conflicting lifetime-output or rollout-cache statement in this document.
 - **Branch:** `feat/usage-tui-redesign`
-- **Visual reference (not shipped):** scratchpad `variants.py` → `framed.svg`,
-  previewed faithfully via Rich `export_svg` in the browser.
+- **Visual reference:** The inline approved mockup below is normative; no
+  local-only preview artifact is required to implement it.
 
 ---
 
@@ -52,13 +56,13 @@ organized into two clearly separated provider panels.
 │                                         3h 50m 1d 15h                  │
 │ ● long.account.name@example.test  team  [12%]  [73%]                   │
 │ ...                                                                    │
-╰──────────────────────────────  424M output · since Dec 28 ─────────────╯
+╰────────────  903,464,085 tokens · local CLI · since Dec 28 ────────────╯
 
 ╭─ CODEX · 2 accounts ───────────────────────────────────────────────────╮
 │                          5h     7d    Spark  5h     7d                 │
 │ ● codex@example.test pro [8%]  [45%]         [·]   [·]                 │
 │ ...                                                                    │
-╰──────────────────────────────  212M output · since Mar 30 ─────────────╯
+╰──────────────────────────────  7,449,473,297 tokens ───────────────────╯
 
  <40   40-69   70-89   ≥90      dim = resets in
 ```
@@ -73,8 +77,8 @@ organized into two clearly separated provider panels.
     failed accounts represented in that panel, with correct singular/plural
     wording (`1 account`, `2 accounts`). No alert or `needs attention` suffix
     is added; existing failure rows retain that responsibility.
-  - **Panel footer/subtitle** (right): lifetime **output** tokens across all
-    accounts + `· since <date>`, in a single faint tone (see §6).
+  - **Panel footer/subtitle** (right): truthful provider token activity with
+    explicit local or partial scope, in a single faint tone (see §6).
   - **Body:** a borderless matrix table.
 - **Per account = a 2-row group** with a blank separator row between
   accounts:
@@ -170,39 +174,55 @@ Window names arrive as free strings on `UsageWindow.name` (e.g. `"5h"`, `"7d"`,
 
 ---
 
-## 6. Lifetime output tokens (per provider, all accounts) — NEW data feature
+## 6. Provider token activity
 
-- **What:** cumulative **output** tokens, **summed across all accounts of a
-  provider**, shown faint in each panel footer:
-  `424M output · since Dec 28`.
-- **Why output (not input/total):** it is the only measure **comparable across
-  providers**. Claude reports cache-read separately; Codex folds cached tokens
-  into `input_tokens`. Input- and total-based figures are therefore
-  apples-to-oranges; output is clean. Total throughput is about 48 B each and
-  cache-dominated, which would be misleading.
-- **Leak-free:** aggregate **only**. Never per-account — no per-account
-  attribution is recoverable from local logs because neither provider stamps
-  an account into session logs. See §9.
-- **Sources (read-only, local):**
-  - **Claude:** `~/.claude/stats-cache.json` → `modelUsage` per-model lifetime
-    output. This is machine-wide, covers all accounts, and updates lazily.
-    `since` approximates the earliest date in `dailyModelTokens` (about Dec
-    28). Observed total: about **424M**.
-  - **Codex:** sum output across `~/.codex/sessions/**/rollout-*.jsonl` using
-    cumulative `payload.info.total_token_usage.output_tokens` or
-    `last_token_usage` deltas. `since` is the earliest rollout date (about Mar
-    30). Observed total: about **212M**.
-- **Honest caveat #1 (retention):** "lifetime" is bounded by **local log
-  retention**, not true account lifetime. `since <date>` makes that explicit.
-- **Honest caveat #2 (Claude figure scope):** `stats-cache.json` is
-  **machine-wide**. It sums *all* Claude Code output on this machine, including
-  accounts not managed by sidekick. The Claude panel's number is therefore
-  "this machine's Claude Code output," which may **exceed the sum of the
-  accounts shown in the panel**. It remains aggregate and output-only, but the
-  footer must not imply "sum of exactly these rows." Codex is summed from the
-  rollout logs on disk, so it reflects the sessions present there.
-- **Computed at runtime** (numbers grow). **Perf flag:** Codex summing touches
-  about 1500 files and likely needs caching. Deferred to `writing-plans`.
+The provider panels show total non-cached token activity, but the two
+providers expose different truthful scopes. The UI must preserve that
+difference rather than forcing both values into one misleading local-output
+definition.
+
+### 6.1 Claude local-installation activity
+
+- Resolve `CLAUDE_CONFIG_DIR`, falling back to `~/.claude`.
+- Sum historical `modelUsage.inputTokens + outputTokens` from
+  `stats-cache.json`.
+- Scan the inclusive cache boundary through the current UTC date from parent
+  and actual subagent transcripts so active usage appears before Claude
+  rewrites its cache.
+- Exclude cache-read and cache-creation tokens.
+- Exclude parent-log `isSidechain` copies while including actual subagent
+  records.
+- Never modify Claude-owned state.
+- Label the value as local CLI history. It is not attributable to one saved
+  Sidekick account.
+
+The audited parity value is `903,464,085 tokens`, displayed compactly as
+`903.46M tokens` in the narrow fallback.
+
+### 6.2 Codex account activity
+
+- Query the authenticated account profile at
+  `https://chatgpt.com/backend-api/wham/profiles/me` for every eligible saved
+  Codex account.
+- Use the provider's `stats.lifetime_tokens` as the authoritative account
+  value.
+- Validate optional daily buckets but never substitute their sum for the
+  lifetime field.
+- Sum successful account-scoped profiles for the provider panel.
+- Show `known tokens` whenever selected-account coverage is incomplete.
+- Surface explicit, secret-safe activity failures; never fall back to local
+  rollout or SQLite totals.
+
+The audited single-account parity value is `7,449,473,297 tokens`, displayed
+compactly as `7.449B tokens` in the narrow fallback.
+
+### 6.3 Rendering
+
+Wide framed panels show exact grouped integers so every increment remains
+visible. The intentional narrow fallback uses two decimal places for millions
+and three for billions, trimming trailing zeroes. Partial account coverage is
+always labeled `known tokens`; Claude always carries local-installation
+wording.
 
 ---
 
@@ -221,11 +241,14 @@ Window names arrive as free strings on `UsageWindow.name` (e.g. `"5h"`, `"7d"`,
     account count + matrix + footer) → legend. Per-account
     `usage_report`/`account_header` may be retained for error/empty blocks.
   - Reset formatting → compact relative (§5).
-- **NEW lifetime-tokens code** (module or functions): read `stats-cache.json`
-  for Claude and sum Codex rollouts; return per-provider
-  `(output_total, since_date)`. Caching is considered in §6.
-- **Caller (`cli` / main entry):** switch from the per-account print loop to
-  the new grouped renderer and thread lifetime lookups into panel footers.
+- **Provider activity adapters:** `providers/claude/activity.py` owns the
+  bounded local Claude read; `providers/codex/activity.py` owns the account
+  profile request. Neither imports Rich.
+- **Usage service:** owns activity selection, account eligibility,
+  aggregation, coverage, and failures in the same immutable result as usage
+  rows.
+- **Caller (`cli` / main entry):** renders the completed usage result once and
+  never performs a second provider or filesystem collection.
 
 ### 7.1 Shared application branding refinement (2026-07-09)
 
@@ -330,8 +353,9 @@ instead of wrapping or cropping the logo.
    is the generic, explicit `set-plan` command; no account-specific mapping or
    automatic active-login mutation was added. The command remained separate
    from rendering work so it could be reviewed and reverted independently.
-3. **Lifetime-token perf:** settle the Codex rollout caching strategy in
-   `writing-plans`.
+3. ~~Codex rollout-cache strategy~~ → **Superseded 2026-07-10.** Codex account
+   lifetime comes from the provider profile, so the local rollout cache and
+   its Sidekick path contract are removed rather than optimized.
 
 ---
 
@@ -348,6 +372,8 @@ instead of wrapping or cropping the logo.
   and essential styles, provider grouping, heat-band thresholds, window
   classification, and zero-versus-active reset behavior. Do not snapshot
   whole screens.
+
+[token-activity-plan]: ../plans/2026-07-10-token-activity-accuracy.md
 
 ---
 

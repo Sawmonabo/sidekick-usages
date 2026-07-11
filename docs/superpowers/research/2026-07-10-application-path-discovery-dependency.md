@@ -1,5 +1,12 @@
 # Application Path Discovery Dependency Decision
 
+> **Subsequent token-activity correction (2026-07-10):** This research
+> accurately records why the former derived lifetime cache belonged under the
+> native cache root. The corrected token-activity feature no longer owns that
+> cache or path. The account-store and private-Codex path decision remains
+> active; cache rows below are historical evidence only. See the tracked
+> [token activity accuracy plan](../plans/2026-07-10-token-activity-accuracy.md).
+
 - *Change set:* CS-09
 - *Research date:* 2026-07-10
 - *Repository:* `sidekick-usages`

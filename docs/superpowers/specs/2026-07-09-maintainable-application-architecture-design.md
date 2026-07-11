@@ -18,6 +18,13 @@
 - **Related design:** [Usage TUI Redesign][usage-tui-design]; this spec does
   not alter its visual contract
 - **Next step:** Execute the matching implementation plan in dependency order
+- **Token activity correction:** **Approved 2026-07-10.** The tracked
+  [token activity plan][token-activity-plan] replaces the former top-level
+  `lifetime.py`, `LifetimeCollector`, local Codex rollout total, and Sidekick
+  lifetime-cache contract with provider-owned activity adapters and
+  usage-service aggregation. Every conflicting lifetime or cache statement
+  below is historical evidence of the completed earlier migration, not active
+  authority.
 
 ---
 
@@ -591,6 +598,7 @@ src/sidekick_usages/
 │   │   ├── provider.py
 │   │   ├── credentials.py
 │   │   ├── usage.py
+│   │   ├── activity.py
 │   │   ├── heartbeat.py
 │   │   └── schemas.py
 │   └── codex/
@@ -599,6 +607,8 @@ src/sidekick_usages/
 │       ├── auth.py
 │       ├── auth_migration.py
 │       ├── usage.py
+│       ├── activity.py
+│       ├── request.py
 │       ├── heartbeat.py
 │       └── schemas.py
 ├── persistence/
@@ -673,7 +683,6 @@ src/sidekick_usages/
 ├── maintenance.py
 ├── doctor.py
 ├── daemon.py
-├── lifetime.py
 ├── clock.py
 ├── paths.py
 ├── scheduler_quiescence.py
@@ -709,8 +718,8 @@ Codex protocol behavior, or become a second persistence writer. The package
 initializer remains a thin public facade and does not re-export private
 coordinators or provider internals.
 
-Top-level `paths.py` owns Sidekick-managed durable-state, private-auth, and
-cache locations that have multiple consumers. Provider-native homes remain in
+Top-level `paths.py` owns Sidekick-managed durable-state and private-auth
+locations that have multiple consumers. Provider-native homes remain in
 their provider packages, and scheduler installation paths remain with daemon
 adapters. This is a focused path owner, not a generic filesystem utility
 module.
@@ -747,11 +756,11 @@ adjustments must not extend or shorten HTTP retry budgets.
 locations. The approved semantic roles are:
 
 At the evidence commit, `store.py` defines the current Sidekick directory and
-account file, `cli.py` derives the private Codex directory from that
-representation, and `lifetime.py` independently reconstructs the Sidekick
-root for its cache. `store.py` also owns the older `cc-usage` prototype
-migration source. These are repeated concrete consumers, not a speculative
-path abstraction.
+account file while `cli.py` derives the private Codex directory from that
+representation. `store.py` also owns the older `cc-usage` prototype migration
+source. These are repeated concrete consumers, not a speculative path
+abstraction. The former lifetime cache is superseded and is not part of the
+active application-path contract.
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -771,7 +780,6 @@ class PrivateCodexLocations:
 class ApplicationPaths:
     accounts: AccountLocations
     private_codex: PrivateCodexLocations
-    lifetime_cache_file: Path
 ```
 
 The three account-location roles are explicit because the live application
@@ -813,15 +821,14 @@ Path discovery:
 
 - resolves the environment once at application composition time;
 - has no directory-creation or file-writing side effect;
-- distinguishes durable state, credential-bearing private auth, and
-  safely-regenerable cache;
+- distinguishes durable state from credential-bearing private auth;
 - preserves the current documented locations until an approved migration
   selects new canonical locations;
 - never includes provider-native Claude or Codex homes; and
 - never includes scheduler installation paths.
 
-`cli/app.py` discovers production paths and uses them to construct the account
-store, lifetime service, and credential workflows. The complete
+`cli/context.py` discovers production paths and uses them to construct the
+account store and credential workflows. The complete
 `ApplicationPaths` value does not enter `AppContext`; commands receive the
 already configured store, service, or narrow provider facade.
 
@@ -869,21 +876,20 @@ preserves per-user Unix paths even when the process runs as root.
 The intended native semantic mapping is:
 
 - account state and Sidekick-owned private Codex auth bundles are durable,
-  credential-bearing application data rooted below `user_data_path`;
-- lifetime aggregation totals are safely regenerable data rooted below
-  `user_cache_path`; and
-- no current artifact uses `user_config_path`, because the application has no
-  user settings contract.
+  credential-bearing application data rooted below `user_data_path`; and
+- no current artifact uses `user_config_path` or `user_cache_path`, because
+  the application has neither a user settings contract nor an active
+  Sidekick-owned derived cache.
 
 The controlled 4.10.0 discovery probe produced:
 
-| Environment | Account store and private Codex root | Lifetime cache |
-|---|---|---|
-| Linux | `~/.local/share/sidekick-usages/accounts.json`; sibling `codex/` | `~/.cache/sidekick-usages/codex-lifetime-cache.json` |
-| Linux with absolute XDG roots | `$XDG_DATA_HOME/sidekick-usages/accounts.json`; sibling `codex/` | `$XDG_CACHE_HOME/sidekick-usages/codex-lifetime-cache.json` |
-| WSL | The Linux/XDG contract below the WSL Linux home | The Linux/XDG cache contract |
-| macOS | `~/Library/Application Support/sidekick-usages/accounts.json`; sibling `codex/` | `~/Library/Caches/sidekick-usages/codex-lifetime-cache.json` |
-| Windows | `%LOCALAPPDATA%\sidekick-usages\accounts.json`; sibling `codex\` | `%LOCALAPPDATA%\sidekick-usages\Cache\codex-lifetime-cache.json` |
+| Environment | Account store and private Codex root |
+|---|---|
+| Linux | `~/.local/share/sidekick-usages/accounts.json`; sibling `codex/` |
+| Linux with absolute XDG roots | `$XDG_DATA_HOME/sidekick-usages/accounts.json`; sibling `codex/` |
+| WSL | The Linux/XDG contract below the WSL Linux home |
+| macOS | `~/Library/Application Support/sidekick-usages/accounts.json`; sibling `codex/` |
+| Windows | `%LOCALAPPDATA%\sidekick-usages\accounts.json`; sibling `codex\` |
 
 The probe also inspected absent controlled roots before and after every path
 property and observed no created file or directory. Writers, not discovery,
@@ -1251,35 +1257,34 @@ remains distinct. Redundant one-field account round trips, repeated scope
 fixtures, `raw={}` setup, and duplicate clock tests are removed instead of
 being preserved as coverage padding.
 
-### 5.8 Lifetime collection outcomes
+### 5.8 Provider token activity outcomes
 
-`lifetime.py` owns one feature-local closed result:
+`core/types.py` owns `TokenActivityScope.ACCOUNT` and
+`LOCAL_INSTALLATION`. `core/models.py` owns strict
+`TokenActivitySummary(total_tokens, scope, since)` and the explicit
+unavailable source reading. Valid zero, unavailable, malformed, partial, and
+failed states never collapse into one value.
 
-- `LifetimeTotal(output_tokens: int, since: date | None)` represents a valid
-  non-negative total, including zero;
-- `LifetimeUnavailable` means the provider has no local source corpus; and
-- `LifetimeFailure(kind)` distinguishes source-unreadable,
-  source-malformed, cache-read, and cache-write failures.
+Provider-specific acquisition remains with its integration:
 
-Claude's statistics file and Codex's rollout tree remain provider-native
-source locations owned by the lifetime feature. Only the Sidekick Codex cache
-path comes from injected `ApplicationPaths`. Dates are parsed at the source
-boundary, and rendering receives completed typed results without filesystem
-access.
+- `providers/claude/activity.py` reads the provider-owned historical cache and
+  live transcript boundary without modifying it, returns total non-cached
+  input plus output, and marks the result as local-installation history; and
+- `providers/codex/activity.py` fetches `stats.lifetime_tokens` independently
+  for each eligible saved account through the shared HTTP client and marks the
+  result as account-scoped. It never reads rollout or SQLite totals.
 
-Codex source enumeration propagates traversal errors, uses canonical relative
-paths below the sessions root as collision-safe cache keys, and compares exact
-integer nanosecond modification times. The exact released basename-plus-float
-cache shape is a known legacy generation: its totals are never trusted, every
-rollout is reread, and the current cache is published only after the complete
-source pass succeeds. Arbitrary or unreadable cache state remains an explicit
-failure. A failed rollout never lowers a total or writes a partial cache.
+`usage/service.py` owns the two scope-specific ports, account eligibility,
+aggregation, coverage, and typed issues. `UsageCheckResult` carries one
+complete, partial, unavailable, or failed activity outcome per selected
+provider from the same account selection and reference time as its usage
+rows. The CLI performs no independent collection.
 
-The usage command collects lifetime state once for each provider represented
-by the selected accounts, including when every usage request fails. Both wide
-and narrow renderers preserve totals, unavailability, and failures. A
-lifetime failure renders before exit and contributes `SYSTEM_ERROR`; absence
-of local lifetime data is not itself an error.
+Wide rendering uses exact grouped totals. Narrow rendering retains meaningful
+compact precision. Claude is labeled local, partial Codex coverage is labeled
+`known tokens`, and attempted activity-read failures contribute
+`SYSTEM_ERROR` without removing valid usage rows. No Sidekick lifetime cache
+or cache path remains active.
 
 ## 6. Schemas, serialization, and runtime validation
 
@@ -1704,7 +1709,6 @@ class AppContext:
     credentials: CredentialService
     heartbeat: HeartbeatService
     maintenance: TokenMaintenanceService
-    lifetime: LifetimeCollector
     claude_setup_token: ClaudeSetupToken
 
 
@@ -1832,7 +1836,7 @@ across a generic utility module:
 
 | Module | Exact ownership |
 |---|---|
-| `usage.py` | default invocation, `check`, no-account result, lifetime collection call, and usage exit reduction |
+| `usage.py` | default invocation, `check`, no-account result, completed usage-and-activity rendering, and usage exit reduction |
 | `accounts.py` | `list`, `remove`, `rename`, `set-plan`, `reset`, account-table rows, and account mutation messages |
 | `credentials.py` | `add`, the sole `refresh` registration/parser, refresh-mode validation, missing-only token prompt fallback, credential-failure output, and refresh outcome output |
 | `heartbeat.py` | heartbeat group, label fallback, enable, disable, status, heartbeat outcome output, and heartbeat exit reduction |
@@ -1985,10 +1989,10 @@ directly and never trigger a token prompt.
 The CLI package conversion closes the remaining raw-dependency leaks with the
 smallest caller-proven seams:
 
-- `LifetimeCollector` in top-level `lifetime.py` owns the provider-to-source
-  mapping and exposes `collect(provider_ids)`. It returns typed
-  `LifetimeResult` values and never prints. `AppContext` does not expose raw
-  callables or cache paths.
+- `UsageCheckService` owns scope-specific token-activity ports and returns
+  provider activity in the same `UsageCheckResult` as account usage rows.
+  `AppContext` exposes no separate collector, raw activity callable, provider
+  filesystem path, or cache path.
 - `HeartbeatService.support_label(account)` and
   `support_labels(accounts)` provide the account-list, doctor, and
   heartbeat-status display data. The collection method returns a typed mapping
@@ -3348,7 +3352,7 @@ An unexpected daemon operation is rejected. It never maps to uninstall.
 
 A parse, I/O, or collection failure never becomes:
 
-- zero lifetime usage;
+- zero token activity;
 - zero remaining time;
 - an empty credential state;
 - an empty account store;
@@ -3374,7 +3378,7 @@ The following repeated concepts have enough concrete consumers to centralize:
 | Expiry classification | Check, maintenance, doctor, heartbeat | `core/expiry.py` |
 | Aware-UTC runtime normalization | Expiry, account runtime/reset, usage, heartbeat | `core/time.py:as_utc` |
 | Refresh-outcome rendering | Multiple command loops | One presentation helper |
-| Sidekick-owned application locations | Store, CLI, and lifetime reconstruct the root | `ApplicationPaths` in top-level `paths.py` |
+| Sidekick-owned application locations | Store and CLI composition require the same durable and private roots | `ApplicationPaths` in top-level `paths.py` |
 
 The three current `_now_utc_z()` implementations are mechanically identical
 but cross persistence and provider contracts. That is not one semantic
@@ -3815,8 +3819,8 @@ Acceptance requires:
 - `Composed[T]` transfer, close-once behavior, partial LIFO cleanup, and
   original-error preservation;
 - explicit empty provider and heartbeat registries remaining empty;
-- narrow prompt, heartbeat display, lifetime, update, and Claude setup-token
-  seams instead of command-facing raw infrastructure;
+- narrow prompt, heartbeat display, token-activity, update, and Claude
+  setup-token seams instead of command-facing raw infrastructure;
 - no `cli.py`, `cli_help.py`, or top-level `token_input.py` in source, sdist,
   or wheel;
 - `cli/app.py` at approximately 200 lines or fewer;
@@ -3928,8 +3932,9 @@ Retain concise tests for:
 - persistence and migration failures;
 - missing versus malformed credentials;
 - token prompting only for the exact missing-credential outcome;
-- prompt metadata, heartbeat display data, lifetime collection, update work,
-  and Claude setup-token capture crossing only their narrow service seams;
+- prompt metadata, heartbeat display data, token-activity collection, update
+  work, and Claude setup-token capture crossing only their narrow service
+  seams;
 - maintenance ordering and exit status;
 - heartbeat scheduling and provider targets;
 - usage partial success and typed failures;
@@ -4212,9 +4217,10 @@ sources retrieved on 2026-07-09. Focused dependency research was refreshed on
 - **HTTP decision:** the section 10.3 spike is complete and urllib3 2.7.0 with
   retries disabled plus one focused executor was operator-approved on
   2026-07-10
-- **Application-path baseline:** `store.py`, `cli.py`, and `lifetime.py`
-  duplicate Sidekick-owned location construction; `store.py` also retains the
-  separate `cc-usage` prototype source
+- **Historical application-path baseline:** `store.py`, `cli.py`, and the
+  former `lifetime.py` duplicated Sidekick-owned location construction;
+  `store.py` also retained the separate `cc-usage` prototype source. The
+  token-activity correction removes the derived-cache role.
 - **Path dependency baseline:** `platformdirs` is not a declared runtime
   dependency; version 4.9.6 appears only transitively in the development lock
   graph through `python-discovery` and `virtualenv`
@@ -4277,17 +4283,18 @@ The controlled probe returned the frozen Linux, absolute-XDG, macOS, Windows,
 and WSL paths and created no filesystem object with `ensure_exists=False`.
 platformdirs is one dependency-free pure-Python runtime distribution; native
 operating-system probes and the full relocation/rollback transaction remain
-later gates. The approved adoption authorizes discovery only. The current
-compatibility account store, private Codex root, and lifetime cache remain
-authoritative until an independently approved migration activates new
-locations.
+later gates. The approved adoption authorized discovery only. At that
+historical decision point, the compatibility account store, private Codex
+root, and derived lifetime cache remained authoritative; the 2026-07-10 token
+activity correction later removes the cache role entirely.
 
 Local path evidence at the evidence commit is:
 
 - `store.py` defines the current Sidekick account path and distinct prototype
   migration path;
 - `cli.py` derives the Sidekick-owned private Codex root;
-- `lifetime.py` independently reconstructs the Sidekick cache root;
+- the former `lifetime.py` independently reconstructed the Sidekick cache
+  root, which the token-activity correction removes;
 - `providers/codex.py` separately owns provider-native `CODEX_HOME` discovery
   and persists Sidekick-owned private auth locations on accounts; and
 - `daemon.py` separately owns scheduler installation paths.
@@ -4511,9 +4518,9 @@ on 2026-07-10:
 41. Treat only `None` as a request for production registry defaults; preserve
     explicitly injected empty provider and heartbeat registries.
 42. Use the narrow `TokenPromptSpec`, heartbeat display capability,
-    `LifetimeCollector`, `UpdateService`, and `ClaudeSetupToken` seams instead
-    of exposing raw providers, registries, HTTP clients, subprocesses, cache
-    paths, or source callables to commands.
+    usage-service token-activity ports, `UpdateService`, and
+    `ClaudeSetupToken` seams instead of exposing raw providers, registries,
+    HTTP clients, subprocesses, cache paths, or source callables to commands.
 43. Keep `create_app()` registration-only and make help and version execute
     without operational composition or filesystem, credential, scheduler, or
     network initialization.
@@ -4589,3 +4596,4 @@ docs/superpowers/plans/
 [schema-research]: ../research/2026-07-10-schema-validation-dependency.md
 [architecture-research]: ../research/2026-07-10-architecture-enforcement.md
 [usage-tui-design]: ./2026-06-19-usage-tui-redesign-design.md
+[token-activity-plan]: ../plans/2026-07-10-token-activity-accuracy.md

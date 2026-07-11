@@ -1,5 +1,13 @@
 # Maintainable Application Architecture Implementation Plan
 
+> **Subsequent token-activity correction (2026-07-10):** The architecture
+> migration and its recorded gates remain completed evidence. The former
+> `LifetimeCollector`, top-level `lifetime.py`, local Codex rollout total, and
+> Sidekick lifetime cache are superseded by the tracked
+> [token activity accuracy plan](./2026-07-10-token-activity-accuracy.md).
+
+---
+
 > **For agentic workers:** Execute this plan one task at a time. Use
 > `superpowers:subagent-driven-development` or
 > `superpowers:executing-plans` when that capability is available. Preserve
