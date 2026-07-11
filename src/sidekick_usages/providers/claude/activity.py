@@ -218,9 +218,7 @@ def _selected_files(
             if filename.endswith(".jsonl")
         )
     if depth == _SESSION_DEPTH:
-        directories[:] = [
-            name for name in directories if name == "subagents"
-        ]
+        directories[:] = [name for name in directories if name == "subagents"]
         return ()
     if depth == _SUBAGENT_DEPTH and parts[-1] == "subagents":
         directories.clear()
@@ -336,9 +334,7 @@ def _included_event(
     if event is None or (event.is_sidechain and not is_subagent):
         return None
     event_date = event.occurred_at.date()
-    if event_date > today or (
-        boundary is not None and event_date < boundary
-    ):
+    if event_date > today or (boundary is not None and event_date < boundary):
         return None
     return event.total_tokens, event_date
 

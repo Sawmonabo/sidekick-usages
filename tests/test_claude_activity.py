@@ -131,9 +131,10 @@ def test_parent_sidechain_copy_is_excluded_but_subagent_is_included(
 def test_source_states_remain_explicit_and_active_final_fragment_is_safe(
     tmp_path: Path,
 ) -> None:
-    assert discover_claude_config_dir(
-        {"CLAUDE_CONFIG_DIR": str(tmp_path)}
-    ) == tmp_path
+    assert (
+        discover_claude_config_dir({"CLAUDE_CONFIG_DIR": str(tmp_path)})
+        == tmp_path
+    )
     activity = ClaudeActivity(tmp_path)
     assert activity.read(REFERENCE_TIME) == TokenActivityUnavailable(
         scope=TokenActivityScope.LOCAL_INSTALLATION
