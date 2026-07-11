@@ -1,6 +1,7 @@
 """Provider-neutral account usage orchestration."""
 
-from dataclasses import replace
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Protocol
 
@@ -22,6 +23,7 @@ from sidekick_usages.credentials import CredentialUpdateResult
 from sidekick_usages.errors import (
     AuthError,
     ForbiddenError,
+    ProviderIdentityError,
     RateLimitError,
     TransientError,
     UsageError,
@@ -40,6 +42,11 @@ from sidekick_usages.providers.base import (
     Provider,
     ProviderBoundaryError,
     ProviderFailure,
+)
+from sidekick_usages.usage.activity import (
+    AccountTokenActivitySource,
+    LocalTokenActivitySource,
+    TokenActivityCollector,
 )
 from sidekick_usages.usage.models import (
     AccountUsage,
@@ -73,6 +80,20 @@ class CredentialCoordinator(CredentialRefresher, Protocol):
         """Persist provider-discovered credentials and plan atomically."""
 
 
+@dataclass(frozen=True, slots=True)
+class _ActivityEligibleAccount:
+    account: Account
+    outcome: AccountUsage | FetchFailure
+
+
+@dataclass(frozen=True, slots=True)
+class _ActivityIneligibleAccount:
+    outcome: FetchFailure
+
+
+type _CheckedAccount = _ActivityEligibleAccount | _ActivityIneligibleAccount
+
+
 class UsageCheckService:
     """Select accounts and return explicit usage-check outcomes."""
 
@@ -84,6 +105,16 @@ class UsageCheckService:
         credentials: CredentialCoordinator,
         *,
         clock: Clock,
+        local_activity_sources: Mapping[
+            ProviderId,
+            LocalTokenActivitySource,
+        ]
+        | None = None,
+        account_activity_sources: Mapping[
+            ProviderId,
+            AccountTokenActivitySource,
+        ]
+        | None = None,
     ) -> None:
         """Bind usage checking to its invocation-scoped dependencies.
 
@@ -92,12 +123,23 @@ class UsageCheckService:
         :param providers: Closed provider adapter registry.
         :param credentials: Canonical credential coordinator.
         :param clock: Aware application wall clock.
+        :param local_activity_sources: Local-installation activity readers.
+        :param account_activity_sources: Per-account activity readers.
         """
         self._store = store
         self._http = http
         self._providers = providers
         self._credentials = credentials
         self._clock = clock
+        self._activity = TokenActivityCollector(
+            http,
+            ({} if local_activity_sources is None else local_activity_sources),
+            (
+                {}
+                if account_activity_sources is None
+                else account_activity_sources
+            ),
+        )
         self._maintenance = TokenMaintenanceService(
             store,
             credentials,
@@ -121,8 +163,12 @@ class UsageCheckService:
         reference_time = self._clock.now()
         usages: list[AccountUsage] = []
         failures: list[FetchFailure] = []
+        eligible_accounts: list[Account] = []
         for account in accounts:
-            outcome = self._check_account(account, reference_time)
+            checked = self._check_account(account, reference_time)
+            if isinstance(checked, _ActivityEligibleAccount):
+                eligible_accounts.append(checked.account)
+            outcome = checked.outcome
             if isinstance(outcome, AccountUsage):
                 usages.append(outcome)
             else:
@@ -131,31 +177,40 @@ class UsageCheckService:
             tuple(usages),
             tuple(failures),
             reference_time,
+            self._activity.collect(
+                accounts,
+                tuple(eligible_accounts),
+                reference_time,
+            ),
         )
 
     def _check_account(
         self,
         account: Account,
         reference_time: datetime,
-    ) -> AccountUsage | FetchFailure:
+    ) -> _CheckedAccount:
         provider = self._providers.get(account.provider_id)
         if provider is None:
-            return UnknownProviderFailure(
-                label=account.label,
-                provider_id=account.provider_id,
-                plan=account.plan,
-                message=f"Unknown provider '{account.provider_id}'.",
+            return _ActivityIneligibleAccount(
+                UnknownProviderFailure(
+                    label=account.label,
+                    provider_id=account.provider_id,
+                    plan=account.plan,
+                    message=f"Unknown provider '{account.provider_id}'.",
+                )
             )
         expiry = classify_expiry(account.expiry, now=reference_time)
         if isinstance(expiry, InvalidExpiry):
-            return InvalidExpiryFailure(
-                label=account.label,
-                provider_id=account.provider_id,
-                plan=account.plan,
-                message=(
-                    "Access-token expiry metadata is invalid; refresh the "
-                    "account."
-                ),
+            return _ActivityIneligibleAccount(
+                InvalidExpiryFailure(
+                    label=account.label,
+                    provider_id=account.provider_id,
+                    plan=account.plan,
+                    message=(
+                        "Access-token expiry metadata is invalid; refresh the "
+                        "account."
+                    ),
+                )
             )
         if isinstance(expiry, ExpiredExpiry) or (
             isinstance(expiry, ValidExpiry)
@@ -164,7 +219,7 @@ class UsageCheckService:
         ):
             refreshed = self._refresh(account)
             if isinstance(refreshed, FetchFailure):
-                return refreshed
+                return _ActivityIneligibleAccount(refreshed)
             account = refreshed
         return self._fetch(account, provider, allow_auth_refresh=True)
 
@@ -174,7 +229,7 @@ class UsageCheckService:
         provider: Provider,
         *,
         allow_auth_refresh: bool,
-    ) -> AccountUsage | FetchFailure:
+    ) -> _CheckedAccount:
         before_credentials = account.credentials
         before_plan = account.plan
         try:
@@ -187,24 +242,78 @@ class UsageCheckService:
                 allow_refresh=allow_auth_refresh,
             )
         except ForbiddenError as error:
-            return self._handle_forbidden(account, provider, error)
+            return self._handle_forbidden(
+                account,
+                provider,
+                error,
+                before_credentials,
+                before_plan,
+            )
         except ProviderBoundaryError as error:
-            return ProviderPayloadFailure(
-                label=account.label,
-                provider_id=account.provider_id,
-                plan=account.plan,
-                message=error.failure.message,
-                provider_failure=error.failure,
+            return self._complete_failure(
+                account,
+                ProviderPayloadFailure(
+                    label=account.label,
+                    provider_id=account.provider_id,
+                    plan=account.plan,
+                    message=error.failure.message,
+                    provider_failure=error.failure,
+                ),
+                before_credentials,
+                before_plan,
             )
         except UsageError as error:
-            return self._failure_from_error(account, error)
+            if isinstance(error, ProviderIdentityError):
+                return _ActivityIneligibleAccount(
+                    self._failure_from_error(account, error)
+                )
+            return self._complete_failure(
+                account,
+                self._failure_from_error(account, error),
+                before_credentials,
+                before_plan,
+            )
 
-        return self._complete_fetch(
+        outcome = self._complete_fetch(
             account,
             report,
             before_credentials,
             before_plan,
         )
+        return self._checked_outcome(account, outcome)
+
+    def _complete_failure(
+        self,
+        account: Account,
+        failure: FetchFailure,
+        before_credentials: Credentials,
+        before_plan: str,
+    ) -> _CheckedAccount:
+        """Persist provider-discovered state before activity eligibility."""
+        if (
+            account.credentials != before_credentials
+            or account.plan != before_plan
+        ) and (
+            persistence_failure := self._persist_provider_update(
+                account,
+                expected_credentials=before_credentials,
+                expected_plan=before_plan,
+            )
+        ) is not None:
+            return _ActivityIneligibleAccount(persistence_failure)
+        return self._checked_outcome(account, failure)
+
+    @staticmethod
+    def _checked_outcome(
+        account: Account,
+        outcome: AccountUsage | FetchFailure,
+    ) -> _CheckedAccount:
+        if isinstance(
+            outcome,
+            AuthenticationFailure | PersistenceFailure,
+        ):
+            return _ActivityIneligibleAccount(outcome)
+        return _ActivityEligibleAccount(account, outcome)
 
     def _complete_fetch(
         self,
@@ -242,12 +351,14 @@ class UsageCheckService:
         error: AuthError,
         *,
         allow_refresh: bool,
-    ) -> AccountUsage | FetchFailure:
+    ) -> _CheckedAccount:
         if not allow_refresh:
-            return self._failure_from_error(account, error)
+            return _ActivityIneligibleAccount(
+                self._failure_from_error(account, error)
+            )
         refreshed = self._refresh(account)
         if isinstance(refreshed, FetchFailure):
-            return refreshed
+            return _ActivityIneligibleAccount(refreshed)
         return self._fetch(
             refreshed,
             provider,
@@ -259,7 +370,9 @@ class UsageCheckService:
         account: Account,
         provider: Provider,
         error: ForbiddenError,
-    ) -> AccountUsage | FetchFailure:
+        before_credentials: Credentials,
+        before_plan: str,
+    ) -> _CheckedAccount:
         credentials = account.credentials
         if (
             provider.id is ProviderId.CLAUDE
@@ -267,8 +380,6 @@ class UsageCheckService:
             and credentials.scopes is None
             and error.required_scope == _CLAUDE_USAGE_REQUIRED_SCOPE
         ):
-            before_credentials = account.credentials
-            before_plan = account.plan
             account.credentials = replace(credentials, scopes=())
             if (
                 failure := self._persist_provider_update(
@@ -277,13 +388,18 @@ class UsageCheckService:
                     expected_plan=before_plan,
                 )
             ) is not None:
-                return failure
+                return _ActivityIneligibleAccount(failure)
             return self._fetch(
                 account,
                 provider,
                 allow_auth_refresh=False,
             )
-        return self._failure_from_error(account, error)
+        return self._complete_failure(
+            account,
+            self._failure_from_error(account, error),
+            before_credentials,
+            before_plan,
+        )
 
     def _refresh(self, account: Account) -> Account | FetchFailure:
         try:
@@ -409,4 +525,9 @@ class UsageCheckService:
         )
 
 
-__all__ = ["CredentialCoordinator", "UsageCheckService"]
+__all__ = [
+    "AccountTokenActivitySource",
+    "CredentialCoordinator",
+    "LocalTokenActivitySource",
+    "UsageCheckService",
+]

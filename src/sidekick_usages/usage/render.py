@@ -10,8 +10,7 @@ rectangular blocks which look bulky for this multi-line layout.
 import re
 import shlex
 from collections.abc import Sequence
-from datetime import date, datetime
-from typing import assert_never
+from datetime import datetime
 
 from rich.console import Console, Group, RenderableType
 from rich.panel import Panel
@@ -25,12 +24,9 @@ from sidekick_usages.branding import (
 )
 from sidekick_usages.core.models import UsageReport, UsageWindow
 from sidekick_usages.core.types import ProviderId
-from sidekick_usages.lifetime import (
-    LifetimeFailure,
-    LifetimeFailureKind,
-    LifetimeResult,
-    LifetimeTotal,
-    LifetimeUnavailable,
+from sidekick_usages.usage.activity_render import (
+    activity_failure_label,
+    activity_text,
 )
 from sidekick_usages.usage.legacy_render import (
     PLAN_COLORS,
@@ -40,18 +36,20 @@ from sidekick_usages.usage.legacy_render import (
 from sidekick_usages.usage.models import (
     AccountUsage,
     AuthenticationFailure,
+    FailedTokenActivity,
     FetchFailure,
     ForbiddenFailure,
     InvalidExpiryFailure,
+    PartialTokenActivity,
     PersistenceFailure,
+    ProviderTokenActivity,
     RateLimitFailure,
     RefreshRejectedFailure,
+    TokenActivityFailureKind,
+    TokenActivityIssue,
+    UsageCheckResult,
 )
 from sidekick_usages.usage.reset_display import compact_reset_text
-
-_TOKENS_PER_THOUSAND = 1_000
-_TOKENS_PER_MILLION = 1_000_000
-_TOKENS_PER_BILLION = 1_000_000_000
 
 #: Heat bands as (lower-bound-inclusive percent, fg hex, bg hex).
 #: Thresholds match the legacy ``_utilization_color`` bands.
@@ -82,53 +80,6 @@ _PANEL_CHROME = 6
 
 #: Matches a window length token such as ``5h`` or ``7d``.
 _LENGTH_RE = re.compile(r"\d+[hd]")
-
-
-def _format_tokens(value: int) -> str:
-    """Render a token count compactly."""
-    if value >= _TOKENS_PER_BILLION:
-        return f"{value / _TOKENS_PER_BILLION:.1f}B"
-    if value >= _TOKENS_PER_MILLION:
-        return f"{value / _TOKENS_PER_MILLION:.0f}M"
-    if value >= _TOKENS_PER_THOUSAND:
-        return f"{value / _TOKENS_PER_THOUSAND:.0f}K"
-    return str(value)
-
-
-def _format_since(value: date) -> str:
-    """Render a source date as ``Mon D``."""
-    return f"{value:%b} {value.day}"
-
-
-def _lifetime_text(result: LifetimeResult) -> Text:
-    """Render one completed lifetime result without source I/O."""
-    if isinstance(result, LifetimeTotal):
-        rendered = Text(
-            f"{_format_tokens(result.output_tokens)} output",
-            style="grey54",
-        )
-        if result.since is not None:
-            rendered.append(
-                f"  ·  since {_format_since(result.since)} ",
-                style="grey35",
-            )
-        return rendered
-    if isinstance(result, LifetimeUnavailable):
-        return Text("lifetime unavailable", style="grey42")
-    if isinstance(result, LifetimeFailure):
-        match result.kind:
-            case LifetimeFailureKind.SOURCE_UNREADABLE:
-                label = "lifetime source unreadable"
-            case LifetimeFailureKind.SOURCE_MALFORMED:
-                label = "lifetime source malformed"
-            case LifetimeFailureKind.CACHE_READ_FAILED:
-                label = "lifetime cache read failed"
-            case LifetimeFailureKind.CACHE_WRITE_FAILED:
-                label = "lifetime cache write failed"
-            case _ as unreachable:
-                assert_never(unreachable)
-        return Text(label, style="yellow")
-    assert_never(result)
 
 
 def _classify_window(name: str) -> tuple[str, str]:
@@ -357,7 +308,7 @@ def _provider_panel(
     usages: list[AccountUsage],
     failures: list[FetchFailure],
     namew: int,
-    prov_lifetime: LifetimeResult | None,
+    activity: ProviderTokenActivity | None,
     reference_time: datetime,
 ) -> Panel:
     blocks: list[RenderableType] = []
@@ -408,6 +359,13 @@ def _provider_panel(
         if blocks:
             blocks.append(Text(""))  # gap between successes and failures
         blocks.append(_error_table(provider_id, failures, namew))
+    activity_issues = _account_activity_issues(activity)
+    if activity_issues:
+        if blocks:
+            blocks.append(Text(""))
+        blocks.append(
+            _activity_issue_table(provider_id, activity_issues, namew)
+        )
     content: RenderableType = blocks[0] if len(blocks) == 1 else Group(*blocks)
     color = PROVIDER_COLORS.get(provider_id, "white")
     account_count = len(usages) + len(failures)
@@ -419,7 +377,9 @@ def _provider_panel(
         style="grey54",
     )
     subtitle = (
-        _lifetime_text(prov_lifetime) if prov_lifetime is not None else None
+        activity_text(activity, compact=False)
+        if activity is not None
+        else None
     )
     return Panel(
         content,
@@ -515,6 +475,74 @@ def _error_table(
     return table
 
 
+def _activity_issue_copy(
+    provider_id: ProviderId,
+    issue: TokenActivityIssue,
+) -> tuple[str, ...]:
+    """Return safe recovery detail for one account activity issue."""
+    if (
+        issue.kind is not TokenActivityFailureKind.AUTHENTICATION
+        or issue.label is None
+    ):
+        return ()
+    provider_name = {
+        ProviderId.CLAUDE: "Claude Code",
+        ProviderId.CODEX: "Codex CLI",
+    }[provider_id]
+    command = shlex.join(["sidekick-usages", "refresh", issue.label])
+    return (
+        f"Log in to {provider_name} again, then run:",
+        command,
+    )
+
+
+def _account_activity_issues(
+    activity: ProviderTokenActivity | None,
+) -> tuple[TokenActivityIssue, ...]:
+    """Return only account-scoped issues suitable for warning rows."""
+    if not isinstance(activity, PartialTokenActivity | FailedTokenActivity):
+        return ()
+    return tuple(issue for issue in activity.issues if issue.label is not None)
+
+
+def _activity_issue_table(
+    provider_id: ProviderId,
+    issues: tuple[TokenActivityIssue, ...],
+    namew: int,
+) -> Table:
+    """Build account-aligned warning rows for activity read failures."""
+    rows: list[tuple[TokenActivityIssue, Group]] = []
+    rest_w = 1
+    for issue in issues:
+        status = Text(
+            f"⚠ {activity_failure_label(issue.kind)}",
+            style="yellow",
+        )
+        detail = [
+            Text(line, style="grey54")
+            for line in _activity_issue_copy(provider_id, issue)
+        ]
+        rest_w = max(rest_w, status.cell_len, *(t.cell_len for t in detail))
+        rows.append((issue, Group(status, *detail)))
+    table = Table(box=None, show_header=False, padding=(0, 1), pad_edge=False)
+    table.add_column(width=1)
+    table.add_column(width=namew)
+    table.add_column(width=4)
+    table.add_column(width=rest_w, justify="left")
+    for position, (issue, rest) in enumerate(rows):
+        if position:
+            table.add_row(Text(""), Text(""), Text(""), Text(""))
+        if issue.label is None:
+            raise ValueError("Account activity issue requires a label.")
+        table.add_row(
+            _dot(provider_id),
+            Text(issue.label, style="grey85"),
+            Text(""),
+            rest,
+        )
+    return table
+
+
 def _panel_min_width(measure: Console, panel: Panel) -> int:
     """Natural width of a panel, floored by its title/subtitle.
 
@@ -580,26 +608,40 @@ def _failure_block(failure: FetchFailure) -> Group:
     return Group(*lines)
 
 
-def _legacy_overview(
-    usages: Sequence[AccountUsage],
-    lifetime: dict[ProviderId, LifetimeResult],
-    failures: Sequence[FetchFailure] = (),
-    *,
-    reference_time: datetime,
-) -> RenderableType:
-    """Stacked per-account fallback for narrow terminals (no wrap)."""
+def _activity_issue_block(
+    provider_id: ProviderId,
+    issue: TokenActivityIssue,
+    plan: str,
+) -> Group:
+    """Stack one activity warning in the narrow fallback."""
+    if issue.label is None:
+        raise ValueError("Account activity issue requires a label.")
+    lines: list[RenderableType] = [
+        account_header(issue.label, provider_id, plan),
+        Text(f"  ⚠ {activity_failure_label(issue.kind)}", style="yellow"),
+    ]
+    lines.extend(
+        Text(f"  {line}", style="grey54")
+        for line in _activity_issue_copy(provider_id, issue)
+    )
+    return Group(*lines)
+
+
+def _legacy_activity_blocks(
+    result: UsageCheckResult,
+) -> list[RenderableType]:
+    """Build compact provider activity summaries and warning blocks."""
     blocks: list[RenderableType] = []
-    for index, usage in enumerate(usages):
-        if index:
-            blocks.append(Text(""))
-        blocks.append(usage_report(usage, reference_time))
-    for failure in failures:
-        if blocks:
-            blocks.append(Text(""))
-        blocks.append(_failure_block(failure))
-    for provider_id in _provider_order(usages, failures):
-        result = lifetime.get(provider_id)
-        if result is None:
+    activities = {
+        activity.provider_id: activity for activity in result.activities
+    }
+    plans = {
+        (item.provider_id, item.label): item.plan
+        for item in (*result.usages, *result.failures)
+    }
+    for provider_id in _provider_order(result.usages, result.failures):
+        activity = activities.get(provider_id)
+        if activity is None:
             continue
         if blocks:
             blocks.append(Text(""))
@@ -607,44 +649,77 @@ def _legacy_overview(
         color = PROVIDER_COLORS.get(provider_id, "white")
         line.append(provider_id.upper(), style=f"bold {color}")
         line.append(" · ", style="grey54")
-        line.append_text(_lifetime_text(result))
+        line.append_text(activity_text(activity, compact=True))
         blocks.append(line)
+        for issue in _account_activity_issues(activity):
+            if blocks:
+                blocks.append(Text(""))
+            if issue.label is None:
+                raise ValueError("Account activity issue requires a label.")
+            blocks.append(
+                _activity_issue_block(
+                    provider_id,
+                    issue,
+                    plans.get((provider_id, issue.label), "unknown"),
+                )
+            )
+    return blocks
+
+
+def _legacy_overview(
+    result: UsageCheckResult,
+) -> RenderableType:
+    """Stacked per-account fallback for narrow terminals (no wrap)."""
+    blocks: list[RenderableType] = []
+    for index, usage in enumerate(result.usages):
+        if index:
+            blocks.append(Text(""))
+        blocks.append(usage_report(usage, result.reference_time))
+    for failure in result.failures:
+        if blocks:
+            blocks.append(Text(""))
+        blocks.append(_failure_block(failure))
+    activity_blocks = _legacy_activity_blocks(result)
+    if blocks and activity_blocks:
+        blocks.append(Text(""))
+    blocks.extend(activity_blocks)
     return Group(*blocks)
 
 
 def usage_overview(
-    usages: Sequence[AccountUsage],
-    lifetime: dict[ProviderId, LifetimeResult],
+    result: UsageCheckResult,
     *,
-    failures: Sequence[FetchFailure] = (),
     width: int,
-    reference_time: datetime,
 ) -> RenderableType:
     """Render all accounts as provider-grouped framed heat panels.
 
-    :param usages: Immutable successful account usage results.
-    :param lifetime: Completed lifetime result for each selected provider.
-    :param failures: Typed failures for accounts whose fetch failed.
+    :param result: Completed usage rows, failures, and token activity.
     :param width: Target terminal width; below the binding panel
         width the layout degrades to the legacy stacked view.
-    :param reference_time: Aware wall time shared by every reset label.
     :return: A Rich renderable.
     """
-    if not usages and not failures:
+    if not result.usages and not result.failures:
         return Text("No usage to display.", style="dim")
-    labels = [usage.label for usage in usages]
-    labels.extend(failure.label for failure in failures)
+    labels = [usage.label for usage in result.usages]
+    labels.extend(failure.label for failure in result.failures)
     namew = max(len(s) for s in labels)
-    order = _provider_order(usages, failures)
+    order = _provider_order(result.usages, result.failures)
+    activities = {
+        activity.provider_id: activity for activity in result.activities
+    }
     measure = Console(width=10_000)
     panels = [
         _provider_panel(
             pid,
-            [usage for usage in usages if usage.provider_id == pid],
-            [failure for failure in failures if failure.provider_id == pid],
+            [usage for usage in result.usages if usage.provider_id == pid],
+            [
+                failure
+                for failure in result.failures
+                if failure.provider_id == pid
+            ],
             namew,
-            lifetime.get(pid),
-            reference_time,
+            activities.get(pid),
+            result.reference_time,
         )
         for pid in order
     ]
@@ -656,12 +731,7 @@ def usage_overview(
         return Group(
             brand_header(width),
             Text(""),
-            _legacy_overview(
-                usages,
-                lifetime,
-                failures,
-                reference_time=reference_time,
-            ),
+            _legacy_overview(result),
         )
     for panel in panels:
         panel.expand = True

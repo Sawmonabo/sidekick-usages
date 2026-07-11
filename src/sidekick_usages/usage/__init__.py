@@ -1,19 +1,31 @@
 """Typed usage-check application service."""
 
+from sidekick_usages.usage.activity import (
+    AccountTokenActivitySource,
+    LocalTokenActivitySource,
+)
 from sidekick_usages.usage.models import (
     AccountUsage,
     AuthenticationFailure,
+    CompleteTokenActivity,
+    FailedTokenActivity,
     FetchFailure,
     FetchFailureKind,
     ForbiddenFailure,
     InvalidExpiryFailure,
+    PartialTokenActivity,
     PersistenceFailure,
     ProviderPayloadFailure,
+    ProviderTokenActivity,
     RateLimitFailure,
     RefreshRejectedFailure,
+    TokenActivityFailureKind,
+    TokenActivityIssue,
     TransientFailure,
+    UnavailableTokenActivity,
     UnknownProviderFailure,
     UsageCheckResult,
+    activity_has_failure,
 )
 from sidekick_usages.usage.service import (
     CredentialCoordinator,
@@ -21,19 +33,29 @@ from sidekick_usages.usage.service import (
 )
 
 __all__ = [
+    "AccountTokenActivitySource",
     "AccountUsage",
     "AuthenticationFailure",
+    "CompleteTokenActivity",
     "CredentialCoordinator",
+    "FailedTokenActivity",
     "FetchFailure",
     "FetchFailureKind",
     "ForbiddenFailure",
     "InvalidExpiryFailure",
+    "LocalTokenActivitySource",
+    "PartialTokenActivity",
     "PersistenceFailure",
     "ProviderPayloadFailure",
+    "ProviderTokenActivity",
     "RateLimitFailure",
     "RefreshRejectedFailure",
+    "TokenActivityFailureKind",
+    "TokenActivityIssue",
     "TransientFailure",
+    "UnavailableTokenActivity",
     "UnknownProviderFailure",
     "UsageCheckResult",
     "UsageCheckService",
+    "activity_has_failure",
 ]

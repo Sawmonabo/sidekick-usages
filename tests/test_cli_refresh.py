@@ -205,7 +205,6 @@ def _install_ctx(
             private,
             app_clock,
             heartbeat_providers={},
-            lifetime_sources={},
         ),
     )
     return harness, store, stdout, stderr
@@ -235,7 +234,6 @@ def _install_many_ctx(
             private,
             app_clock,
             heartbeat_providers={},
-            lifetime_sources={},
             claude_setup_token=claude_setup_token,
         ),
     )
@@ -265,7 +263,6 @@ def _install_empty_ctx(
             private,
             app_clock,
             heartbeat_providers={},
-            lifetime_sources={},
         ),
     )
     return harness, store, stdout, stderr

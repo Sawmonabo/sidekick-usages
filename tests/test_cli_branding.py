@@ -47,7 +47,6 @@ def _install_context(
             private_credentials,
             clock,
             heartbeat_providers={},
-            lifetime_sources={},
         ),
     )
     return harness, stdout, stderr

@@ -76,6 +76,10 @@ class InvalidPayloadError(UsageError):
         )
 
 
+class ProviderIdentityError(UsageError):
+    """A provider request cannot resolve its required saved identity."""
+
+
 class HttpStatusError(UsageError):
     """An HTTP response had a permanent, non-auth failure status.
 

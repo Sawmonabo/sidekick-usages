@@ -4,7 +4,6 @@ import shlex
 from collections.abc import Callable, Mapping
 from contextlib import ExitStack
 from dataclasses import dataclass, field
-from functools import partial
 from pathlib import Path
 from typing import NoReturn, Protocol
 
@@ -20,11 +19,6 @@ from sidekick_usages.daemon import DaemonManager
 from sidekick_usages.doctor import DoctorService
 from sidekick_usages.heartbeat import HeartbeatProvider, HeartbeatService
 from sidekick_usages.http import HttpClient
-from sidekick_usages.lifetime import (
-    LifetimeCollector,
-    claude_lifetime_output,
-    codex_lifetime_output,
-)
 from sidekick_usages.maintenance import TokenMaintenanceService
 from sidekick_usages.paths import ApplicationPaths, discover_application_paths
 from sidekick_usages.persistence.account_store import (
@@ -68,9 +62,12 @@ from sidekick_usages.persistence.migrations.location import (
 from sidekick_usages.persistence.v060 import ReleasedV060Verifier
 from sidekick_usages.providers.base import Provider
 from sidekick_usages.providers.claude import (
+    ClaudeActivity,
     ClaudeProvider,
     ClaudeSetupToken,
+    discover_claude_config_dir,
 )
+from sidekick_usages.providers.codex import CodexActivity
 from sidekick_usages.providers.codex.auth_migration import (
     CodexPrivateAuthMigrator,
 )
@@ -79,7 +76,11 @@ from sidekick_usages.providers.registry import (
     build_provider_registry,
 )
 from sidekick_usages.update import UpdateService
-from sidekick_usages.usage import UsageCheckService
+from sidekick_usages.usage import (
+    AccountTokenActivitySource,
+    LocalTokenActivitySource,
+    UsageCheckService,
+)
 
 
 class PersistenceCommands(Protocol):
@@ -154,7 +155,6 @@ class AppContext:
     credentials: CredentialService
     heartbeat: HeartbeatService
     maintenance: TokenMaintenanceService
-    lifetime: LifetimeCollector
     claude_setup_token: ClaudeSetupToken
 
 
@@ -315,6 +315,16 @@ def compose_app_context(
     clock: Clock | None = None,
     providers: Mapping[ProviderId, Provider] | None = None,
     heartbeat_providers: Mapping[ProviderId, HeartbeatProvider] | None = None,
+    local_activity_sources: Mapping[
+        ProviderId,
+        LocalTokenActivitySource,
+    ]
+    | None = None,
+    account_activity_sources: Mapping[
+        ProviderId,
+        AccountTokenActivitySource,
+    ]
+    | None = None,
     claude_setup_token: ClaudeSetupToken | None = None,
 ) -> Composed[AppContext]:
     """Compose normal store-backed application services."""
@@ -353,12 +363,34 @@ def compose_app_context(
             private,
             clock=resolved_clock,
         )
+        if local_activity_sources is None:
+            local_activity_map: dict[
+                ProviderId,
+                LocalTokenActivitySource,
+            ] = {}
+            if ProviderId.CLAUDE in provider_map:
+                local_activity_map[ProviderId.CLAUDE] = ClaudeActivity(
+                    discover_claude_config_dir()
+                )
+        else:
+            local_activity_map = dict(local_activity_sources)
+        if account_activity_sources is None:
+            account_activity_map: dict[
+                ProviderId,
+                AccountTokenActivitySource,
+            ] = {}
+            if ProviderId.CODEX in provider_map:
+                account_activity_map[ProviderId.CODEX] = CodexActivity()
+        else:
+            account_activity_map = dict(account_activity_sources)
         usage = UsageCheckService(
             accounts,
             http,
             provider_map,
             credentials,
             clock=resolved_clock,
+            local_activity_sources=local_activity_map,
+            account_activity_sources=account_activity_map,
         )
         heartbeat = HeartbeatService(
             accounts,
@@ -371,15 +403,6 @@ def compose_app_context(
             credentials,
             clock=resolved_clock,
         )
-        lifetime = LifetimeCollector(
-            {
-                ProviderId.CLAUDE: claude_lifetime_output,
-                ProviderId.CODEX: partial(
-                    codex_lifetime_output,
-                    resolved_paths.lifetime_cache_file,
-                ),
-            }
-        )
         setup_token = (
             ClaudeProvider(resolved_clock)
             if claude_setup_token is None
@@ -391,7 +414,6 @@ def compose_app_context(
             credentials=credentials,
             heartbeat=heartbeat,
             maintenance=maintenance,
-            lifetime=lifetime,
             claude_setup_token=setup_token,
         )
 

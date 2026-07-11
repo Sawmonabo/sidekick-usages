@@ -18,8 +18,14 @@ from sidekick_usages.core.models import (
     ClaudeCredentials,
     CodexCredentials,
     DetectedCredentials,
+    TokenActivitySummary,
+    TokenActivityUnavailable,
 )
-from sidekick_usages.core.types import AccountLabel, ProviderId
+from sidekick_usages.core.types import (
+    AccountLabel,
+    ProviderId,
+    TokenActivityScope,
+)
 
 REFERENCE_TIME = datetime(2026, 7, 10, 12, tzinfo=UTC)
 
@@ -138,3 +144,28 @@ def test_provider_identity_is_derived_and_representations_hide_secrets() -> (
             assert item.refresh_token not in rendered
         if isinstance(item, CodexCredentials) and item.id_token is not None:
             assert item.id_token not in rendered
+
+
+def test_token_activity_distinguishes_zero_from_unavailable_and_invalid() -> (
+    None
+):
+    """Exact zero and source absence remain distinct valid states."""
+    assert (
+        TokenActivitySummary(
+            total_tokens=0,
+            scope=TokenActivityScope.ACCOUNT,
+        ).total_tokens
+        == 0
+    )
+    assert (
+        TokenActivityUnavailable(
+            scope=TokenActivityScope.LOCAL_INSTALLATION
+        ).scope
+        is TokenActivityScope.LOCAL_INSTALLATION
+    )
+    for invalid in (True, -1):
+        with pytest.raises(ValueError, match="non-negative integer"):
+            TokenActivitySummary(
+                total_tokens=invalid,
+                scope=TokenActivityScope.ACCOUNT,
+            )

@@ -26,7 +26,6 @@ from sidekick_usages.core.types import ProviderId
 from sidekick_usages.credentials import CredentialService
 from sidekick_usages.heartbeat import HeartbeatProvider, HeartbeatService
 from sidekick_usages.http import HttpClient
-from sidekick_usages.lifetime import LifetimeCollector, LifetimeResult
 from sidekick_usages.maintenance import TokenMaintenanceService
 from sidekick_usages.paths import (
     AccountLocations,
@@ -43,7 +42,11 @@ from sidekick_usages.providers.claude import (
     ClaudeSetupToken,
     SetupTokenCapture,
 )
-from sidekick_usages.usage import UsageCheckService
+from sidekick_usages.usage import (
+    AccountTokenActivitySource,
+    LocalTokenActivitySource,
+    UsageCheckService,
+)
 
 REFERENCE_TIME = datetime(2026, 6, 12, 12, 34, 56, 789000, tzinfo=UTC)
 
@@ -62,7 +65,6 @@ def make_application_paths(root: Path) -> ApplicationPaths:
             canonical=private_codex_root,
             existing_sidekick=private_codex_root,
         ),
-        lifetime_cache_file=root / "codex-lifetime-cache.json",
     )
 
 
@@ -126,28 +128,28 @@ def make_app_context(
     clock: Clock,
     *,
     heartbeat_providers: Mapping[ProviderId, HeartbeatProvider] | None = None,
-    lifetime_sources: Mapping[
+    local_activity_sources: Mapping[
         ProviderId,
-        Callable[[], LifetimeResult],
+        LocalTokenActivitySource,
     ]
     | None = None,
-    credentials: CredentialService | None = None,
+    account_activity_sources: Mapping[
+        ProviderId,
+        AccountTokenActivitySource,
+    ]
+    | None = None,
     claude_setup_token: ClaudeSetupToken | None = None,
 ) -> AppContext:
     """Build strict application services around test-owned boundaries."""
     heartbeat_map = (
         {} if heartbeat_providers is None else dict(heartbeat_providers)
     )
-    credential_service = (
-        CredentialService(
-            store,
-            http,
-            providers,
-            private_credentials,
-            clock=clock,
-        )
-        if credentials is None
-        else credentials
+    credential_service = CredentialService(
+        store,
+        http,
+        providers,
+        private_credentials,
+        clock=clock,
     )
     return AppContext(
         accounts=store,
@@ -157,6 +159,8 @@ def make_app_context(
             providers,
             credential_service,
             clock=clock,
+            local_activity_sources=local_activity_sources,
+            account_activity_sources=account_activity_sources,
         ),
         credentials=credential_service,
         heartbeat=HeartbeatService(
@@ -169,9 +173,6 @@ def make_app_context(
             store,
             credential_service,
             clock=clock,
-        ),
-        lifetime=LifetimeCollector(
-            {} if lifetime_sources is None else lifetime_sources
         ),
         claude_setup_token=(
             _UnexpectedClaudeSetupToken()

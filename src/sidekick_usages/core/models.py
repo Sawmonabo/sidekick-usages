@@ -2,7 +2,7 @@
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from types import MappingProxyType
 from typing import ClassVar
 
@@ -13,6 +13,7 @@ from sidekick_usages.core.types import (
     HeartbeatStatus,
     ProviderId,
     RefreshStatus,
+    TokenActivityScope,
 )
 
 
@@ -44,6 +45,43 @@ class CodexCredentials:
 
 
 type Credentials = ClaudeCredentials | CodexCredentials
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TokenActivitySummary:
+    """One exact provider token total with its truthful scope."""
+
+    total_tokens: int
+    scope: TokenActivityScope
+    since: date | None = None
+
+    def __post_init__(self) -> None:
+        """Reject values that cannot be a provider token total."""
+        if (
+            isinstance(self.total_tokens, bool)
+            or not isinstance(self.total_tokens, int)
+            or self.total_tokens < 0
+        ):
+            raise ValueError(
+                "Token activity total must be a non-negative integer."
+            )
+        if not isinstance(self.scope, TokenActivityScope):
+            raise TypeError("Token activity scope must be explicit.")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TokenActivityUnavailable:
+    """The provider has no authoritative activity reading."""
+
+    scope: TokenActivityScope
+
+    def __post_init__(self) -> None:
+        """Require an explicit unavailable scope."""
+        if not isinstance(self.scope, TokenActivityScope):
+            raise TypeError("Token activity scope must be explicit.")
+
+
+type TokenActivityReading = TokenActivitySummary | TokenActivityUnavailable
 
 
 @dataclass(frozen=True, slots=True)

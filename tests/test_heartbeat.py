@@ -274,7 +274,6 @@ def _install_ctx(
             private_credentials,
             active_clock,
             heartbeat_providers=heartbeat_providers,
-            lifetime_sources={},
         ),
     )
     return harness, store, stdout, stderr
@@ -754,7 +753,7 @@ def test_codex_heartbeat_warms_standard_window_with_mini() -> None:
         }
     ]
     assert headers["Authorization"] == "Bearer old-token"
-    assert headers["ChatGPT-Account-ID"] == "acct-codex"
+    assert headers["ChatGPT-Account-Id"] == "acct-codex"
     assert headers["Accept"] == "text/event-stream"
 
 

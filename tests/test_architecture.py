@@ -110,8 +110,11 @@ _MUTATIONS = (
     _Mutation(
         "DEP006",
         "src/sidekick_usages/usage/service.py",
-        "from dataclasses import replace\n",
-        "from dataclasses import replace\nfrom rich.text import Text\n",
+        "from dataclasses import dataclass, replace\n",
+        (
+            "from dataclasses import dataclass, replace\n"
+            "from rich.text import Text\n"
+        ),
     ),
     _Mutation(
         "DEP007",
@@ -209,6 +212,12 @@ _MUTATIONS = (
         "src/sidekick_usages/persistence/migrations/location.py",
         '    EMPTY = "empty"\n',
         '    EMPTY = "emptied"\n',
+    ),
+    _Mutation(
+        "ACT001",
+        "src/sidekick_usages/activity_architecture_fixture.py",
+        "",
+        "import sidekick_usages.lifetime\n",
     ),
 )
 

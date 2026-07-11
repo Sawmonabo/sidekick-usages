@@ -102,7 +102,6 @@ def _paths(root: Path) -> ApplicationPaths:
             canonical=canonical / "codex",
             existing_sidekick=compatibility / "codex",
         ),
-        lifetime_cache_file=canonical / "codex-lifetime-cache.json",
     )
 
 

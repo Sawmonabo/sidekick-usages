@@ -6,7 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from sidekick_usages.core import ExitCode, ProviderId, highest_exit_code
+from sidekick_usages.core import (
+    ExitCode,
+    ProviderId,
+    TokenActivityScope,
+    highest_exit_code,
+)
 
 
 def test_provider_ids_preserve_the_closed_string_boundary() -> None:
@@ -14,6 +19,10 @@ def test_provider_ids_preserve_the_closed_string_boundary() -> None:
     assert (ProviderId.CLAUDE, ProviderId.CODEX) == ("claude", "codex")
     with pytest.raises(ValueError, match="unsupported"):
         ProviderId("unsupported")
+    assert tuple(TokenActivityScope) == (
+        "account",
+        "local_installation",
+    )
 
 
 def test_exit_codes_preserve_the_closed_process_boundary() -> None:

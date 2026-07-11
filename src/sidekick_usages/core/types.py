@@ -44,6 +44,13 @@ class ProviderId(StrEnum):
     CODEX = "codex"
 
 
+class TokenActivityScope(StrEnum):
+    """Truthful ownership scope for a provider token total."""
+
+    ACCOUNT = "account"
+    LOCAL_INSTALLATION = "local_installation"
+
+
 class RefreshStatus(StrEnum):
     """Closed saved-token refresh outcomes."""
 

@@ -2,7 +2,8 @@
 
 import math
 import re
-from datetime import UTC, datetime, timedelta
+from dataclasses import dataclass
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Annotated
 
@@ -45,14 +46,28 @@ _MAX_METADATA_BYTES = 4_096
 _MAX_PLAN_BYTES = 256
 _MAX_SCOPES = 128
 _MAX_UTILIZATION_PERCENT = 100
+_MAX_TOKEN_COUNT = 9_223_372_036_854_775_807
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 _SAFE_PATH_SEGMENTS = frozenset(
     {
         "accessToken",
+        "cacheCreationInputTokens",
+        "cacheReadInputTokens",
+        "cache_creation_input_tokens",
+        "cache_read_input_tokens",
         "claudeAiOauth",
         "expiresAt",
         "expires_in",
         "five_hour",
+        "firstSessionDate",
+        "inputTokens",
+        "input_tokens",
+        "isSidechain",
+        "lastComputedDate",
+        "message",
+        "modelUsage",
+        "outputTokens",
+        "output_tokens",
         "refreshToken",
         "refresh_token",
         "resets_at",
@@ -61,6 +76,9 @@ _SAFE_PATH_SEGMENTS = frozenset(
         "seven_day_oauth_apps",
         "seven_day_opus",
         "subscriptionType",
+        "timestamp",
+        "type",
+        "usage",
         "utilization",
     }
 )
@@ -204,6 +222,84 @@ class _ClaudeHeaderReset(BaseModel):
     reset: _Metadata
 
 
+class _ClaudeActivityModelUsage(BaseModel):
+    """Private strict model for one cached model aggregate."""
+
+    model_config = ConfigDict(strict=True, extra="ignore", frozen=True)
+
+    input_tokens: int = Field(alias="inputTokens", ge=0, le=_MAX_TOKEN_COUNT)
+    output_tokens: int = Field(
+        alias="outputTokens",
+        ge=0,
+        le=_MAX_TOKEN_COUNT,
+    )
+    cache_read_input_tokens: int | None = Field(
+        default=None,
+        alias="cacheReadInputTokens",
+        ge=0,
+        le=_MAX_TOKEN_COUNT,
+    )
+    cache_creation_input_tokens: int | None = Field(
+        default=None,
+        alias="cacheCreationInputTokens",
+        ge=0,
+        le=_MAX_TOKEN_COUNT,
+    )
+
+
+class _ClaudeActivityCache(BaseModel):
+    """Private strict model for Claude's historical activity cache."""
+
+    model_config = ConfigDict(strict=True, extra="ignore", frozen=True)
+
+    model_usage: dict[str, _ClaudeActivityModelUsage] = Field(
+        alias="modelUsage"
+    )
+    last_computed_date: _Metadata = Field(alias="lastComputedDate")
+    first_session_date: _Metadata | None = Field(
+        default=None,
+        alias="firstSessionDate",
+    )
+
+
+class _ClaudeAssistantUsage(BaseModel):
+    """Private strict model for one assistant token record."""
+
+    model_config = ConfigDict(strict=True, extra="ignore", frozen=True)
+
+    input_tokens: int = Field(ge=0, le=_MAX_TOKEN_COUNT)
+    output_tokens: int = Field(ge=0, le=_MAX_TOKEN_COUNT)
+    cache_read_input_tokens: int | None = Field(
+        default=None,
+        ge=0,
+        le=_MAX_TOKEN_COUNT,
+    )
+    cache_creation_input_tokens: int | None = Field(
+        default=None,
+        ge=0,
+        le=_MAX_TOKEN_COUNT,
+    )
+
+
+class _ClaudeAssistantMessage(BaseModel):
+    """Private strict model for the relevant assistant message fields."""
+
+    model_config = ConfigDict(strict=True, extra="ignore", frozen=True)
+
+    usage: _ClaudeAssistantUsage
+
+
+class _ClaudeAssistantRecord(BaseModel):
+    """Private strict model for one transcript assistant event."""
+
+    model_config = ConfigDict(strict=True, extra="ignore", frozen=True)
+
+    kind: str = Field(alias="type", pattern="^assistant$")
+    timestamp: _Metadata
+    is_sidechain: bool = Field(default=False, alias="isSidechain")
+    message: _ClaudeAssistantMessage
+
+
 _CREDENTIALS_ADAPTER = TypeAdapter(_ClaudeCredentialsEnvelope)
 _REFRESH_ADAPTER = TypeAdapter(_ClaudeRefreshResponse)
 _USAGE_ADAPTER = TypeAdapter(_ClaudeUsageResponse)
@@ -222,6 +318,26 @@ _SETUP_TOKEN_ADAPTER = TypeAdapter(
     Annotated[str, AfterValidator(_token)],
     config=ConfigDict(strict=True),
 )
+_ACTIVITY_CACHE_ADAPTER = TypeAdapter(_ClaudeActivityCache)
+_ASSISTANT_RECORD_ADAPTER = TypeAdapter(_ClaudeAssistantRecord)
+
+
+@dataclass(frozen=True, slots=True)
+class ClaudeActivityCache:
+    """Validated historical total and inclusive live-scan boundary."""
+
+    total_tokens: int
+    last_computed_date: date
+    first_session_date: date | None
+
+
+@dataclass(frozen=True, slots=True)
+class ClaudeActivityEvent:
+    """Validated non-cached usage from one assistant transcript event."""
+
+    occurred_at: datetime
+    total_tokens: int
+    is_sidechain: bool
 
 
 def claude_failure(
@@ -294,6 +410,81 @@ def _validate[T](
     else:
         return result
     raise error from None
+
+
+def _activity_error(message: str) -> ProviderBoundaryError:
+    return ProviderBoundaryError(
+        claude_failure(
+            ProviderFailureKind.MALFORMED,
+            message,
+            action_required=False,
+        )
+    )
+
+
+def _activity_time(value: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        raise _activity_error(
+            "Claude activity data contains an invalid timestamp."
+        ) from None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise _activity_error(
+            "Claude activity data contains an invalid timestamp."
+        )
+    return parsed.astimezone(UTC)
+
+
+def parse_activity_cache(value: JsonObject) -> ClaudeActivityCache:
+    """Validate and aggregate Claude's historical activity cache."""
+    validated = _validate(
+        _ACTIVITY_CACHE_ADAPTER,
+        value,
+        boundary="activity cache",
+    )
+    try:
+        boundary = date.fromisoformat(validated.last_computed_date)
+    except ValueError:
+        raise _activity_error(
+            "Claude activity cache has an invalid computation date."
+        ) from None
+    first_session = (
+        None
+        if validated.first_session_date is None
+        else _activity_time(validated.first_session_date).date()
+    )
+    total = sum(
+        usage.input_tokens + usage.output_tokens
+        for usage in validated.model_usage.values()
+    )
+    if total > _MAX_TOKEN_COUNT:
+        raise _activity_error("Claude activity total exceeds its boundary.")
+    return ClaudeActivityCache(total, boundary, first_session)
+
+
+def parse_activity_record(
+    value: JsonObject,
+) -> ClaudeActivityEvent | None:
+    """Return one validated assistant activity event, when relevant."""
+    if value.get("type") != "assistant":
+        return None
+    validated = _validate(
+        _ASSISTANT_RECORD_ADAPTER,
+        value,
+        boundary="activity transcript",
+    )
+    total = (
+        validated.message.usage.input_tokens
+        + validated.message.usage.output_tokens
+    )
+    if total > _MAX_TOKEN_COUNT:
+        raise _activity_error("Claude activity event exceeds its boundary.")
+    return ClaudeActivityEvent(
+        occurred_at=_activity_time(validated.timestamp),
+        total_tokens=total,
+        is_sidechain=validated.is_sidechain,
+    )
 
 
 def parse_credentials_blob(blob: JsonObject) -> DetectedCredentials:

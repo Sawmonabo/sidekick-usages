@@ -33,6 +33,7 @@ VIOLATION_RULE_IDS = frozenset(
         "PKG001",
         "SCHEMA001",
         "MODEL001",
+        "ACT001",
     }
 )
 WARNING_RULE_IDS = frozenset({"SIZE002"})
@@ -41,6 +42,7 @@ STALE_SOURCE_FILES = frozenset(
         "src/sidekick_usages/cli.py",
         "src/sidekick_usages/cli_help.py",
         "src/sidekick_usages/http.py",
+        "src/sidekick_usages/lifetime.py",
         "src/sidekick_usages/persistence/migration_errors.py",
         "src/sidekick_usages/persistence/migrations.py",
         "src/sidekick_usages/providers/claude.py",
@@ -258,6 +260,8 @@ def assignment_literal(tree: ast.Module, target_name: str) -> object | None:
         if isinstance(
             node, (ast.AnnAssign, ast.Assign)
         ) and target_name in assigned_names(node):
+            if node.value is None:
+                return None
             try:
                 return ast.literal_eval(node.value)
             except ValueError:

@@ -18,33 +18,26 @@ from tests.test_support import make_account_store, make_application_paths
 @dataclass(frozen=True, slots=True)
 class _NativePaths:
     user_data_path: Path
-    user_cache_path: Path
 
 
 @pytest.mark.parametrize(
-    ("platform_name", "data_root", "cache_root", "environment"),
+    ("platform_name", "data_root", "environment"),
     [
         (
             "linux",
             "/home/alice/.local/share/sidekick-usages",
-            "/home/alice/.cache/sidekick-usages",
             {},
         ),
         (
             "linux",
             "/srv/alice/data/sidekick-usages",
-            "/srv/alice/cache/sidekick-usages",
             {
                 "XDG_DATA_HOME": "/srv/alice/data",
-                "XDG_CACHE_HOME": "/srv/alice/cache",
-                "XDG_CONFIG_HOME": "/srv/alice/config",
-                "XDG_STATE_HOME": "/srv/alice/state",
             },
         ),
         (
             "linux",
             "/home/alice/.local/share/sidekick-usages",
-            "/home/alice/.cache/sidekick-usages",
             {
                 "LOCALAPPDATA": "C:/Users/Alice/AppData/Local",
                 "WIN_PD_OVERRIDE_LOCAL_APPDATA": "C:/test-only",
@@ -54,13 +47,11 @@ class _NativePaths:
         (
             "darwin",
             "/Users/alice/Library/Application Support/sidekick-usages",
-            "/Users/alice/Library/Caches/sidekick-usages",
             {},
         ),
         (
             "win32",
             "C:/Users/Alice/AppData/Local/sidekick-usages",
-            "C:/Users/Alice/AppData/Local/sidekick-usages/Cache",
             {"WIN_PD_OVERRIDE_LOCAL_APPDATA": ""},
         ),
     ],
@@ -69,7 +60,6 @@ class _NativePaths:
 def test_discovery_maps_the_frozen_native_matrix_without_side_effects(
     platform_name: str,
     data_root: str,
-    cache_root: str,
     environment: dict[str, str],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -95,7 +85,7 @@ def test_discovery_maps_the_frozen_native_matrix_without_side_effects(
 
     def platform_dirs(**arguments: object) -> _NativePaths:
         calls.append(arguments)
-        return _NativePaths(Path(data_root), Path(cache_root))
+        return _NativePaths(Path(data_root))
 
     monkeypatch.setattr(paths_module, "PlatformDirs", platform_dirs)
 
@@ -113,9 +103,6 @@ def test_discovery_maps_the_frozen_native_matrix_without_side_effects(
     assert paths.private_codex.canonical == Path(data_root) / "codex"
     assert (
         paths.private_codex.existing_sidekick == compatibility_root / "codex"
-    )
-    assert paths.lifetime_cache_file == (
-        Path(cache_root) / "codex-lifetime-cache.json"
     )
     assert calls == [
         {
@@ -136,9 +123,6 @@ def test_discovery_maps_the_frozen_native_matrix_without_side_effects(
     ("platform_name", "variable", "value"),
     [
         ("linux", "XDG_DATA_HOME", "relative/data"),
-        ("linux", "XDG_CACHE_HOME", "relative/cache"),
-        ("darwin", "XDG_CONFIG_HOME", "relative/config"),
-        ("linux", "XDG_STATE_HOME", "relative/state"),
         (
             "win32",
             "WIN_PD_OVERRIDE_LOCAL_APPDATA",

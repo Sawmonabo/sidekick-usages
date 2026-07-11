@@ -1,5 +1,9 @@
 """Supported Claude provider facade."""
 
+from sidekick_usages.providers.claude.activity import (
+    ClaudeActivity,
+    discover_claude_config_dir,
+)
 from sidekick_usages.providers.claude.provider import (
     ClaudeProvider,
     ClaudeSetupToken,
@@ -14,6 +18,7 @@ from sidekick_usages.providers.claude.usage import PROFILE_SCOPE
 
 __all__ = [
     "PROFILE_SCOPE",
+    "ClaudeActivity",
     "ClaudeProvider",
     "ClaudeSetupToken",
     "SetupTokenCapture",
@@ -22,4 +27,5 @@ __all__ = [
     "SetupTokenSuccess",
     "SetupTokenTimedOut",
     "SetupTokenUnreadable",
+    "discover_claude_config_dir",
 ]

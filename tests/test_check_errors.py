@@ -2,7 +2,7 @@
 
 import io
 import re
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 from rich.console import Console
@@ -11,17 +11,19 @@ from sidekick_usages.core.models import (
     Account,
     ClaudeCredentials,
     CodexCredentials,
+    TokenActivityReading,
+    TokenActivitySummary,
     UsageReport,
     UsageWindow,
 )
-from sidekick_usages.core.types import AccountLabel, ExitCode, ProviderId
+from sidekick_usages.core.types import (
+    AccountLabel,
+    ExitCode,
+    ProviderId,
+    TokenActivityScope,
+)
 from sidekick_usages.errors import AuthError, TransientError
 from sidekick_usages.http import HttpClient
-from sidekick_usages.lifetime import (
-    LifetimeFailure,
-    LifetimeFailureKind,
-    LifetimeResult,
-)
 from sidekick_usages.persistence.account_store import AccountStore
 from sidekick_usages.providers.base import (
     CredentialDetection,
@@ -31,6 +33,7 @@ from sidekick_usages.providers.base import (
     RefreshResult,
     RefreshSuccess,
 )
+from sidekick_usages.usage import AccountTokenActivitySource
 from tests.test_support import (
     CliHarness,
     FixedClock,
@@ -111,6 +114,31 @@ class _FakeProvider(Provider):
         return RefreshSuccess(credentials=account.credentials)
 
 
+class _ScriptedAccountActivity(AccountTokenActivitySource):
+    """Return account activity or raise its scripted operational error."""
+
+    provider_id = ProviderId.CODEX
+
+    def __init__(
+        self,
+        steps: Mapping[str, TokenActivityReading | TransientError],
+    ) -> None:
+        self.steps = dict(steps)
+        self.calls: list[AccountLabel] = []
+
+    def read(
+        self,
+        account: Account,
+        http: HttpClient,
+    ) -> TokenActivityReading:
+        del http
+        self.calls.append(account.label)
+        step = self.steps[str(account.label)]
+        if isinstance(step, TransientError):
+            raise step
+        return step
+
+
 def _acct(
     label: str = "long.account.name@example.test", provider_id: str = "codex"
 ) -> Account:
@@ -132,11 +160,7 @@ def _install_ctx(
     providers: tuple[_FakeProvider, ...],
     accounts: tuple[Account, ...],
     *,
-    lifetime_sources: dict[
-        ProviderId,
-        Callable[[], LifetimeResult],
-    ]
-    | None = None,
+    account_activity_source: AccountTokenActivitySource | None = None,
     width: int = 200,
 ) -> tuple[CliHarness, AccountStore, io.StringIO, io.StringIO]:
     store, private_credentials = make_account_store_with_private(
@@ -160,8 +184,10 @@ def _install_ctx(
             private_credentials,
             clock,
             heartbeat_providers={},
-            lifetime_sources=(
-                {} if lifetime_sources is None else lifetime_sources
+            account_activity_sources=(
+                {}
+                if account_activity_source is None
+                else {ProviderId.CODEX: account_activity_source}
             ),
         ),
     )
@@ -173,17 +199,31 @@ def test_check_renders_partial_success_and_typed_auth_recovery(
 ) -> None:
     """Success and failure remain visible in their provider panels."""
     claude = _FakeProvider(provider_id="claude")
+    report = UsageReport(
+        windows=(UsageWindow("5h", 0.0, None),),
+        plan="pro",
+    )
     codex = _FakeProvider(
-        fetch_results=[AuthError("Token expired")],
+        fetch_results=[report, AuthError("Token expired")],
         refresh_ok=False,
+    )
+    activity = _ScriptedAccountActivity(
+        {
+            "codex-ok": TokenActivitySummary(
+                total_tokens=7_449_473_297,
+                scope=TokenActivityScope.ACCOUNT,
+            )
+        }
     )
     harness, _, stdout, _ = _install_ctx(
         tmp_path,
         (claude, codex),
         (
             _acct("claude-account", "claude"),
+            _acct("codex-ok"),
             _acct("my work account"),
         ),
+        account_activity_source=activity,
     )
 
     result = harness.invoke(["check"])
@@ -191,10 +231,12 @@ def test_check_renders_partial_success_and_typed_auth_recovery(
     assert result.exit_code == ExitCode.MANUAL_ACTION
     out = stdout.getvalue()
     assert "CLAUDE · 1 account" in out
-    assert "CODEX · 1 account" in out
+    assert "CODEX · 2 accounts" in out
+    assert "7,449,473,297 known tokens" in out
     assert "⚠ token expired" in out
     assert "Log in to Codex CLI again, then run:" in out
     assert "sidekick-usages refresh 'my work account'" in out
+    assert activity.calls == ["codex-ok"]
 
 
 def test_check_provider_filter_uses_only_selected_accounts(
@@ -218,22 +260,21 @@ def test_check_provider_filter_uses_only_selected_accounts(
     assert "CLAUDE ·" not in out
 
 
-def test_lifetime_failure_renders_and_forces_system_error(
+def test_activity_failure_renders_before_forcing_system_error(
     tmp_path: Path,
 ) -> None:
     acct = _acct()
     provider = _FakeProvider(
         fetch_results=[TransientError("provider unavailable")]
     )
+    activity = _ScriptedAccountActivity(
+        {str(acct.label): TransientError("test-only provider response detail")}
+    )
     harness, _, stdout, _ = _install_ctx(
         tmp_path,
         (provider,),
         (acct,),
-        lifetime_sources={
-            ProviderId.CODEX: lambda: LifetimeFailure(
-                LifetimeFailureKind.SOURCE_UNREADABLE
-            )
-        },
+        account_activity_source=activity,
     )
 
     result = harness.invoke(["check"])
@@ -241,4 +282,5 @@ def test_lifetime_failure_renders_and_forces_system_error(
     assert result.exit_code == ExitCode.SYSTEM_ERROR
     out = stdout.getvalue()
     assert "provider unavailable" in out
-    assert "lifetime source unreadable" in out
+    assert "token activity temporarily unavailable" in out
+    assert "test-only provider response detail" not in out

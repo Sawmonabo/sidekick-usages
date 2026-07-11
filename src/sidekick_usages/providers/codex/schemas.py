@@ -3,7 +3,7 @@
 from base64 import b64decode
 from binascii import Error as Base64Error
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Annotated
 
 from pydantic import (
@@ -19,10 +19,11 @@ from sidekick_usages.core.expiry import Expiry, KnownExpiry, UnknownExpiry
 from sidekick_usages.core.models import (
     CodexCredentials,
     DetectedCredentials,
+    TokenActivitySummary,
     UsageReport,
     UsageWindow,
 )
-from sidekick_usages.core.types import ProviderId
+from sidekick_usages.core.types import ProviderId, TokenActivityScope
 from sidekick_usages.errors import InvalidPayloadError
 from sidekick_usages.providers.base import (
     ProviderBoundaryError,
@@ -40,6 +41,7 @@ _MAX_TOKEN_BYTES = 262_144
 _MAX_METADATA_BYTES = 4_096
 _MAX_PLAN_BYTES = 256
 _MAX_TIMESTAMP_BYTES = 4_096
+_MAX_TOKEN_COUNT = 9_223_372_036_854_775_807
 
 
 def _bounded_utf8(value: str, maximum: int) -> str:
@@ -88,8 +90,12 @@ _SAFE_PATH_SEGMENTS = frozenset(
         "id_token",
         "label",
         "last_refresh",
+        "lifetime_tokens",
         "limit_name",
+        "longest_running_turn_sec",
+        "longest_streak_days",
         "model",
+        "peak_daily_tokens",
         "plan",
         "plan_type",
         "primary_window",
@@ -98,7 +104,11 @@ _SAFE_PATH_SEGMENTS = frozenset(
         "reset_at",
         "resets_at",
         "secondary_window",
+        "start_date",
+        "stats",
         "tokens",
+        "current_streak_days",
+        "daily_usage_buckets",
         "used_percent",
     }
 )
@@ -183,11 +193,34 @@ class _UsageResponseSchema(_ProviderModel):
     )
 
 
+class _TokenUsageDailyBucketSchema(_ProviderModel):
+    start_date: _MetadataString
+    tokens: int = Field(ge=0, le=_MAX_TOKEN_COUNT)
+
+
+class _TokenUsageStatsSchema(_ProviderModel):
+    lifetime_tokens: int = Field(ge=0, le=_MAX_TOKEN_COUNT)
+    peak_daily_tokens: int | None = Field(
+        default=None,
+        ge=0,
+        le=_MAX_TOKEN_COUNT,
+    )
+    longest_running_turn_sec: int | None = Field(default=None, ge=0)
+    current_streak_days: int | None = Field(default=None, ge=0)
+    longest_streak_days: int | None = Field(default=None, ge=0)
+    daily_usage_buckets: list[_TokenUsageDailyBucketSchema] | None = None
+
+
+class _TokenUsageProfileSchema(_ProviderModel):
+    stats: _TokenUsageStatsSchema
+
+
 _AUTH_ADAPTER = TypeAdapter(_AuthDocumentSchema)
 _AUTH_IDENTITY_ADAPTER = TypeAdapter(_AuthIdentityDocumentSchema)
 _JWT_ADAPTER = TypeAdapter(_JwtSchema)
 _REFRESH_ADAPTER = TypeAdapter(_RefreshSchema)
 _USAGE_ADAPTER = TypeAdapter(_UsageResponseSchema)
+_TOKEN_USAGE_PROFILE_ADAPTER = TypeAdapter(_TokenUsageProfileSchema)
 _TOKEN_ADAPTER = TypeAdapter(
     _TokenString,
     config=ConfigDict(strict=True),
@@ -561,6 +594,40 @@ def parse_usage_response(value: JsonObject) -> UsageReport:
     )
 
 
+def parse_activity_response(value: JsonObject) -> TokenActivitySummary:
+    """Validate and normalize one Codex account activity profile."""
+    profile = _validate(
+        _TOKEN_USAGE_PROFILE_ADAPTER,
+        value,
+        message="Codex token activity response is incomplete or malformed.",
+    )
+    seen_dates: set[date] = set()
+    for bucket in profile.stats.daily_usage_buckets or ():
+        try:
+            bucket_date = date.fromisoformat(bucket.start_date)
+        except ValueError:
+            raise ProviderBoundaryError(
+                _failure(
+                    ProviderFailureKind.MALFORMED,
+                    "Codex token activity contains an invalid bucket date.",
+                    fields=("stats.daily_usage_buckets.start_date",),
+                )
+            ) from None
+        if bucket_date in seen_dates:
+            raise ProviderBoundaryError(
+                _failure(
+                    ProviderFailureKind.MALFORMED,
+                    "Codex token activity contains duplicate bucket dates.",
+                    fields=("stats.daily_usage_buckets.start_date",),
+                )
+            )
+        seen_dates.add(bucket_date)
+    return TokenActivitySummary(
+        total_tokens=profile.stats.lifetime_tokens,
+        scope=TokenActivityScope.ACCOUNT,
+    )
+
+
 def _rate_limit_windows(
     rate_limit: _RateLimitSchema,
     prefix: str | None = None,
@@ -634,6 +701,7 @@ __all__ = [
     "auth_blob_account_id",
     "credentials_from_access_token",
     "jwt_expiry",
+    "parse_activity_response",
     "parse_auth_credentials",
     "parse_usage_response",
     "plan_from_token",

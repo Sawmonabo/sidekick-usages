@@ -5,20 +5,28 @@ from datetime import date, datetime, timedelta
 import pytest
 from rich.console import Console
 
-from sidekick_usages.core.models import UsageReport, UsageWindow
-from sidekick_usages.core.types import AccountLabel, ProviderId
-from sidekick_usages.lifetime import (
-    LifetimeFailure,
-    LifetimeFailureKind,
-    LifetimeResult,
-    LifetimeTotal,
+from sidekick_usages.core.models import (
+    TokenActivitySummary,
+    UsageReport,
+    UsageWindow,
+)
+from sidekick_usages.core.types import (
+    AccountLabel,
+    ProviderId,
+    TokenActivityScope,
 )
 from sidekick_usages.persistence.errors import PersistenceCode
 from sidekick_usages.usage import (
     AccountUsage,
     AuthenticationFailure,
+    CompleteTokenActivity,
+    FailedTokenActivity,
     FetchFailure,
+    PartialTokenActivity,
     PersistenceFailure,
+    TokenActivityFailureKind,
+    TokenActivityIssue,
+    UsageCheckResult,
     render,
 )
 from sidekick_usages.usage.reset_display import compact_reset_text
@@ -193,16 +201,23 @@ def _worst_case_usages() -> list[AccountUsage]:
     return claude + codex
 
 
-_LIFETIME: dict[ProviderId, LifetimeResult] = {
-    ProviderId.CLAUDE: LifetimeTotal(
-        424_000_000,
-        date(2025, 12, 28),
+_ACTIVITIES = (
+    CompleteTokenActivity(
+        provider_id=ProviderId.CLAUDE,
+        summary=TokenActivitySummary(
+            total_tokens=903_464_085,
+            scope=TokenActivityScope.LOCAL_INSTALLATION,
+            since=date(2025, 12, 28),
+        ),
     ),
-    ProviderId.CODEX: LifetimeTotal(
-        212_000_000,
-        date(2026, 3, 30),
+    CompleteTokenActivity(
+        provider_id=ProviderId.CODEX,
+        summary=TokenActivitySummary(
+            total_tokens=7_449_473_297,
+            scope=TokenActivityScope.ACCOUNT,
+        ),
     ),
-}
+)
 
 #: The documented panel floor (spec §8/§10). The Framed-Panels redesign
 #: must render as real panels — not the legacy fallback — for the worst-case
@@ -224,14 +239,28 @@ def _render_at(
     console = Console(width=width, file=buf, legacy_windows=False)
     console.print(
         render.usage_overview(
-            usages,
-            _LIFETIME,
-            failures=failures,
+            _result(usages, failures=failures),
             width=width,
-            reference_time=REFERENCE_TIME,
         )
     )
     return buf.getvalue()
+
+
+def _result(
+    usages: Sequence[AccountUsage],
+    *,
+    failures: Sequence[FetchFailure] = (),
+    activities: tuple[
+        CompleteTokenActivity | PartialTokenActivity | FailedTokenActivity,
+        ...,
+    ] = _ACTIVITIES,
+) -> UsageCheckResult:
+    return UsageCheckResult(
+        tuple(usages),
+        tuple(failures),
+        REFERENCE_TIME,
+        activities,
+    )
 
 
 @pytest.mark.parametrize(
@@ -287,7 +316,7 @@ def test_worst_case_renders_as_panels_at_floor() -> None:
     assert "long.account.name@example.test" in out
 
 
-def test_overview_shows_robot_masthead_titles_and_lifetime() -> None:
+def test_overview_shows_robot_masthead_and_provider_titles() -> None:
     out = _render_at(120, _worst_case_usages())
     assert "      o" in out
     assert "     .-." in out
@@ -304,9 +333,45 @@ def test_overview_shows_robot_masthead_titles_and_lifetime() -> None:
     assert "5 accounts · 2 providers" not in out
     assert "╭─ CLAUDE · 3 accounts ─" in out
     assert "╭─ CODEX · 2 accounts ─" in out
-    assert "424M output" in out
-    assert "since Mar 30" in out
     assert "GPT-5.3-Codex-Spark" in out
+
+
+@pytest.mark.parametrize(
+    (
+        "width",
+        "claude_total",
+        "codex_total",
+        "local_scope",
+        "since_text",
+    ),
+    [
+        (
+            120,
+            "903,464,085 tokens",
+            "7,449,473,297 tokens",
+            "local CLI",
+            "since Dec 28",
+        ),
+        (40, "903.46M tokens", "7.449B tokens", "local", None),
+    ],
+)
+def test_activity_totals_retain_scope_and_use_width_aware_precision(
+    width: int,
+    claude_total: str,
+    codex_total: str,
+    local_scope: str,
+    since_text: str | None,
+) -> None:
+    out = _render_at(width, _worst_case_usages())
+
+    assert claude_total in out
+    assert codex_total in out
+    assert local_scope in out
+    if since_text is None:
+        assert "since Dec 28" not in out
+    else:
+        assert since_text in out
+    assert "output" not in out
 
 
 def test_provider_title_uses_singular_account_count() -> None:
@@ -365,25 +430,26 @@ def test_subtitle_not_truncated_when_wider_than_content() -> None:
             "pro",
         )
     ]
-    lifetime: dict[ProviderId, LifetimeResult] = {
-        ProviderId.CODEX: LifetimeTotal(
-            999_000_000,
-            date(2024, 1, 1),
-        )
-    }
+    activities = (
+        CompleteTokenActivity(
+            provider_id=ProviderId.CODEX,
+            summary=TokenActivitySummary(
+                total_tokens=999_000_000,
+                scope=TokenActivityScope.ACCOUNT,
+            ),
+        ),
+    )
     buf = io.StringIO()
     console = Console(width=200, file=buf)
     console.print(
         render.usage_overview(
-            usages,
-            lifetime,
+            _result(usages, activities=activities),
             width=200,
-            reference_time=REFERENCE_TIME,
         )
     )
     out = buf.getvalue()
     assert "…" not in out
-    assert "999M output" in out
+    assert "999,000,000 tokens" in out
 
 
 def test_failure_renders_in_provider_panel() -> None:
@@ -437,11 +503,8 @@ def test_failures_widen_shared_panels() -> None:
     console = Console(width=200, file=buf)
     console.print(
         render.usage_overview(
-            usages,
-            _LIFETIME,
-            failures=failures,
+            _result(usages, failures=failures),
             width=200,
-            reference_time=REFERENCE_TIME,
         )
     )
     out = buf.getvalue()
@@ -465,46 +528,70 @@ def test_legacy_mode_renders_failures() -> None:
     console = Console(width=40, file=buf)
     console.print(
         render.usage_overview(
-            usages,
-            _LIFETIME,
-            failures=failures,
+            _result(usages, failures=failures),
             width=40,
-            reference_time=REFERENCE_TIME,
         )
     )
     out = buf.getvalue()
     assert "token expired" in out
-    assert "212M output" in out
+    assert "7.449B tokens" in out
 
 
-@pytest.mark.parametrize("width", [200, 40])
-def test_lifetime_failure_survives_wide_and_narrow_rendering(
+@pytest.mark.parametrize(
+    ("width", "known_total"),
+    [(200, "7,449,473,297 known tokens"), (40, "7.449B known tokens")],
+)
+def test_partial_activity_keeps_usage_and_actionable_warning(
     width: int,
+    known_total: str,
 ) -> None:
     usages = [
         _usage(
-            "acct",
+            "known",
             _report(("5h", 8, _time_after(hours=3))),
             "codex",
             "pro",
-        )
+        ),
+        _usage(
+            "profile failed",
+            _report(("5h", 12, _time_after(hours=4))),
+            "codex",
+            "pro",
+        ),
     ]
-    lifetime: dict[ProviderId, LifetimeResult] = {
-        ProviderId.CODEX: LifetimeFailure(
-            LifetimeFailureKind.CACHE_WRITE_FAILED
-        )
-    }
+    activities = (
+        PartialTokenActivity(
+            provider_id=ProviderId.CODEX,
+            summary=TokenActivitySummary(
+                total_tokens=7_449_473_297,
+                scope=TokenActivityScope.ACCOUNT,
+            ),
+            covered_accounts=1,
+            selected_accounts=2,
+            issues=(
+                TokenActivityIssue(
+                    kind=TokenActivityFailureKind.AUTHENTICATION,
+                    message="Safe application message.",
+                    label=AccountLabel("profile failed"),
+                ),
+            ),
+        ),
+    )
     buf = io.StringIO()
     Console(width=width, file=buf).print(
         render.usage_overview(
-            usages,
-            lifetime,
+            _result(usages, activities=activities),
             width=width,
-            reference_time=REFERENCE_TIME,
         )
     )
+    out = buf.getvalue()
 
-    assert "lifetime cache write failed" in buf.getvalue()
+    assert known_total in out
+    assert "known" in out
+    assert "profile failed" in out
+    assert "token activity authentication failed" in out
+    assert "sidekick-usages refresh 'profile failed'" in out.replace("\n", "")
+    assert "Safe application message" not in out
 
 
 def test_panels_have_interior_top_padding() -> None:

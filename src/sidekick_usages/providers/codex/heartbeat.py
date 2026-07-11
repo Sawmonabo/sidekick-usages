@@ -4,7 +4,6 @@ from datetime import datetime
 
 from sidekick_usages.core.models import Account, UsageReport, UsageWindow
 from sidekick_usages.core.types import HeartbeatStatus, ProviderId
-from sidekick_usages.errors import UsageError
 from sidekick_usages.heartbeat.models import (
     HeartbeatProbeResult,
     HeartbeatTarget,
@@ -13,7 +12,7 @@ from sidekick_usages.heartbeat.models import (
 from sidekick_usages.heartbeat.ports import HeartbeatProvider, warmed
 from sidekick_usages.http import HttpClient, HttpOperation
 from sidekick_usages.providers.codex.provider import CodexProvider
-from sidekick_usages.providers.codex.usage import USER_AGENT
+from sidekick_usages.providers.codex.request import account_headers
 from sidekick_usages.serialization import JsonObject
 
 CODEX_RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses"
@@ -94,16 +93,12 @@ class CodexHeartbeat(HeartbeatProvider):
         target: HeartbeatTarget,
     ) -> HeartbeatProbeResult:
         """Warm one Codex window and then refresh its usage state."""
-        account_id = _account_id(account)
+        headers = account_headers(account)
+        headers["Accept"] = "text/event-stream"
         http.post_capture_headers(
             CODEX_RESPONSES_URL,
             _heartbeat_body(_target_model(target.id)),
-            {
-                "Accept": "text/event-stream",
-                "Authorization": f"Bearer {account.access_token}",
-                "ChatGPT-Account-ID": account_id,
-                "User-Agent": USER_AGENT,
-            },
+            headers,
             operation=HttpOperation.CODEX_HEARTBEAT,
         )
         reset_at = _window_reset(
@@ -119,15 +114,6 @@ class CodexHeartbeat(HeartbeatProvider):
             target_id=target.id,
             target_label=target.label,
         )
-
-
-def _account_id(account: Account) -> str:
-    if account.provider_account_id:
-        return account.provider_account_id
-    raise UsageError(
-        "Missing Codex account id. Run sidekick-usages refresh "
-        f"{account.label} before heartbeat."
-    )
 
 
 def _target_window(

@@ -32,7 +32,6 @@ def _ctx(tmp_path: Path, account: Account) -> tuple[AccountStore, CliHarness]:
             private,
             clock,
             heartbeat_providers={},
-            lifetime_sources={},
         ),
     )
     return store, harness

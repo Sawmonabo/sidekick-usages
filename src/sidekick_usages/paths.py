@@ -9,12 +9,7 @@ from platformdirs import PlatformDirs
 
 from sidekick_usages.errors import UsageError
 
-_XDG_HOME_VARIABLES = (
-    "XDG_DATA_HOME",
-    "XDG_CACHE_HOME",
-    "XDG_CONFIG_HOME",
-    "XDG_STATE_HOME",
-)
+_XDG_HOME_VARIABLES = ("XDG_DATA_HOME",)
 _WINDOWS_OVERRIDE_PREFIX = "WIN_PD_OVERRIDE_"
 
 
@@ -62,12 +57,10 @@ class ApplicationPaths:
 
     :ivar accounts: Account-store compatibility locations.
     :ivar private_codex: Private Codex credential locations.
-    :ivar lifetime_cache_file: Sidekick-owned Codex lifetime cache.
     """
 
     accounts: AccountLocations
     private_codex: PrivateCodexLocations
-    lifetime_cache_file: Path
 
 
 def discover_application_paths() -> ApplicationPaths:
@@ -90,7 +83,6 @@ def discover_application_paths() -> ApplicationPaths:
         use_site_for_root=False,
     )
     native_data_root = native.user_data_path
-    native_cache_root = native.user_cache_path
     return ApplicationPaths(
         accounts=AccountLocations(
             canonical=native_data_root / "accounts.json",
@@ -103,7 +95,6 @@ def discover_application_paths() -> ApplicationPaths:
             canonical=native_data_root / "codex",
             existing_sidekick=compatibility_root / "codex",
         ),
-        lifetime_cache_file=(native_cache_root / "codex-lifetime-cache.json"),
     )
 
 

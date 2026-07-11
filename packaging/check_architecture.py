@@ -41,9 +41,9 @@ _SERVICE_FILES = frozenset(
     {
         "src/sidekick_usages/credentials/service.py",
         "src/sidekick_usages/heartbeat/service.py",
-        "src/sidekick_usages/lifetime.py",
         "src/sidekick_usages/maintenance.py",
         "src/sidekick_usages/update.py",
+        "src/sidekick_usages/usage/activity.py",
         "src/sidekick_usages/usage/service.py",
     }
 )
@@ -51,6 +51,7 @@ _RENDERER_FILES = frozenset(
     {
         "src/sidekick_usages/branding.py",
         "src/sidekick_usages/heartbeat/render.py",
+        "src/sidekick_usages/usage/activity_render.py",
         "src/sidekick_usages/usage/legacy_render.py",
         "src/sidekick_usages/usage/render.py",
         "src/sidekick_usages/usage/reset_display.py",
@@ -100,6 +101,7 @@ def check_repository(
     _check_import_boundaries(units, violations)
     _check_time_and_settings(units, violations)
     _check_value_contracts(units, violations)
+    _check_activity_contract(units, violations)
     _check_cli(units, violations)
     check_ownership(units, violations)
     _check_source_shape(units, violations)
@@ -499,7 +501,6 @@ def _check_value_contracts(
         "ApplicationPaths": (
             ("accounts", "AccountLocations"),
             ("private_codex", "PrivateCodexLocations"),
-            ("lifetime_cache_file", "Path"),
         ),
     }
     if paths is not None:
@@ -513,7 +514,6 @@ def _check_value_contracts(
             ("credentials", "CredentialService"),
             ("heartbeat", "HeartbeatService"),
             ("maintenance", "TokenMaintenanceService"),
-            ("lifetime", "LifetimeCollector"),
             ("claude_setup_token", "ClaudeSetupToken"),
         ),
         "PersistenceContext": (("persistence", "PersistenceCommands"),),
@@ -559,6 +559,58 @@ def _check_value_contracts(
     ):
         violations.append(
             finding(location, None, "MODEL001", "LocationCode changed")
+        )
+
+
+def _check_activity_contract(
+    units: Sequence[SourceUnit],
+    violations: list[ArchitectureFinding],
+) -> None:
+    """Enforce provider-owned activity and prohibit the old fallback."""
+    required = {
+        "src/sidekick_usages/providers/claude/activity.py",
+        "src/sidekick_usages/providers/codex/activity.py",
+    }
+    production = tuple(unit for unit in units if unit.production)
+    present = {str(unit.path) for unit in production}
+    missing = sorted(required - present)
+    invalid: list[tuple[SourceUnit, ast.AST | None]] = []
+    for unit in production:
+        path = str(unit.path)
+        if path == "src/sidekick_usages/lifetime.py":
+            invalid.append((unit, None))
+        invalid.extend(
+            (unit, node)
+            for node, module in scan_imports(unit)
+            if matches(module, "sidekick_usages.lifetime")
+        )
+        if path == "src/sidekick_usages/providers/codex/activity.py":
+            invalid.extend(
+                (unit, node)
+                for node, module in scan_imports(unit)
+                if matches_any(module, ("glob", "os", "pathlib", "sqlite3"))
+            )
+            if any(
+                term in unit.source.lower()
+                for term in ("codex-lifetime-cache", "rollout")
+            ):
+                invalid.append((unit, None))
+    if missing or invalid:
+        unit, node = (
+            invalid[0]
+            if invalid
+            else (
+                next(iter(production)),
+                None,
+            )
+        )
+        violations.append(
+            finding(
+                unit,
+                node,
+                "ACT001",
+                "provider activity ownership or no-fallback contract changed",
+            )
         )
 
 
