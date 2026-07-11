@@ -197,8 +197,18 @@ The activity subtitle uses one provider-neutral presentation contract:
 Both panels render the same footer shape:
 
 ```text
-915,947,703 tokens  ·  since Dec 28
-7,455,971,162 tokens  ·  since Apr 7
+915,947,703 tokens  ·  since Dec 28, 2025
+7,455,971,162 tokens  ·  since Apr 7, 2026
+```
+
+The supported narrow layout keeps the full year on a deliberate second line:
+
+```text
+CLAUDE · 915.95M tokens
+         since Dec 28, 2025
+
+CODEX · 7.456B tokens
+        since Apr 7, 2026
 ```
 
 Sidekick never substitutes Codex rollout files, SQLite state, or the obsolete

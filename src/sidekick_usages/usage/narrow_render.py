@@ -1,4 +1,4 @@
-"""Narrow-terminal per-account usage presentation."""
+"""Supported narrow-terminal per-account usage presentation."""
 
 from datetime import datetime
 

@@ -52,7 +52,7 @@ _RENDERER_FILES = frozenset(
         "src/sidekick_usages/branding.py",
         "src/sidekick_usages/heartbeat/render.py",
         "src/sidekick_usages/usage/activity_render.py",
-        "src/sidekick_usages/usage/legacy_render.py",
+        "src/sidekick_usages/usage/narrow_render.py",
         "src/sidekick_usages/usage/render.py",
         "src/sidekick_usages/usage/reset_display.py",
     }

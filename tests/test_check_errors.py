@@ -235,7 +235,7 @@ def test_check_renders_partial_success_and_typed_auth_recovery(
     assert "CLAUDE · 1 account" in out
     assert "CODEX · 2 accounts" in out
     assert "7,449,473,297 tokens" in out
-    assert "since Apr 7" in out
+    assert "since Apr 7, 2026" in out
     assert "known tokens" not in out
     assert "⚠ token expired" in out
     assert "Log in to Codex CLI again, then run:" in out

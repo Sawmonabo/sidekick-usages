@@ -221,10 +221,11 @@ _ACTIVITIES = (
 )
 
 #: The documented panel floor (spec §8/§10). The Framed-Panels redesign
-#: must render as real panels — not the legacy fallback — for the worst-case
+#: must render as real panels — not the narrow fallback — for the worst-case
 #: store at this width. If a change pushes the binding panel width past it,
 #: the floor guard below fails instead of the layout silently degrading.
 _PANEL_FLOOR = 85
+_NARROW_TEST_WIDTH = 40
 
 
 def _render_at(
@@ -311,8 +312,10 @@ def test_worst_case_renders_as_panels_at_floor() -> None:
     # binding width grows past the floor (a real regression); still passes if
     # the layout gets tighter (an improvement must not break the guard).
     out = _render_at(_PANEL_FLOOR, _worst_case_usages())
-    assert "╭─ CLAUDE · 3 accounts ─" in out  # panel path, not legacy
+    assert "╭─ CLAUDE · 3 accounts ─" in out  # panel path, not narrow
     assert "╭─ CODEX · 2 accounts ─" in out
+    assert "since Dec 28, 2025" in out
+    assert "since Apr 7, 2026" in out
     assert max(len(line) for line in out.split("\n")) <= _PANEL_FLOOR
     assert "long.account.name@example.test" in out
 
@@ -349,7 +352,7 @@ def test_overview_shows_robot_masthead_and_provider_titles() -> None:
             "903,464,085 tokens",
             "7,449,473,297 tokens",
         ),
-        (40, "903.46M tokens", "7.449B tokens"),
+        (_NARROW_TEST_WIDTH, "903.46M tokens", "7.449B tokens"),
     ],
 )
 def test_activity_totals_share_tokens_and_since_footer_contract(
@@ -361,11 +364,18 @@ def test_activity_totals_share_tokens_and_since_footer_contract(
 
     assert claude_total in out
     assert codex_total in out
-    assert "since Dec 28" in out
-    assert "since Apr 7" in out
+    assert "since Dec 28, 2025" in out
+    assert "since Apr 7, 2026" in out
     assert "local" not in out
     assert "known tokens" not in out
     assert "output" not in out
+    if width == _NARROW_TEST_WIDTH:
+        lines = out.splitlines()
+        claude = lines.index("CLAUDE · 903.46M tokens")
+        codex = lines.index("CODEX · 7.449B tokens")
+        assert lines[claude + 1] == "         since Dec 28, 2025"
+        assert lines[codex + 1] == "        since Apr 7, 2026"
+        assert max(map(len, lines)) <= width
 
 
 def test_provider_title_uses_singular_account_count() -> None:
@@ -385,11 +395,11 @@ def test_provider_title_uses_singular_account_count() -> None:
     assert "CODEX · 1 accounts" not in out
 
 
-def test_overview_degrades_below_floor_to_legacy() -> None:
+def test_overview_degrades_below_floor_to_narrow() -> None:
     # Well below the binding panel width the renderer falls back to the
-    # legacy stacked view instead of squeezing/wrapping the panels.
+    # narrow stacked view instead of squeezing/wrapping the panels.
     # Discriminator: the uppercase panel title only exists on the panel
-    # path; the legacy tag uses the lowercase provider id. Branding keeps the
+    # path; the narrow tag uses the lowercase provider id. Branding keeps the
     # complete robot but drops the wide product copy.
     out = _render_at(70, _worst_case_usages())
     assert "╭─ CLAUDE" not in out
@@ -507,7 +517,7 @@ def test_failures_widen_shared_panels() -> None:
     assert "sidekick-usages refresh long.account.name@example.test" in out
 
 
-def test_legacy_mode_renders_failures() -> None:
+def test_narrow_layout_renders_failures() -> None:
     iso = _time_after(hours=3)
     usages = [
         _usage(
@@ -519,21 +529,26 @@ def test_legacy_mode_renders_failures() -> None:
     ]
     failures = [_auth_failure()]
     buf = io.StringIO()
-    console = Console(width=40, file=buf)
+    console = Console(width=_NARROW_TEST_WIDTH, file=buf)
     console.print(
         render.usage_overview(
             _result(usages, failures=failures),
-            width=40,
+            width=_NARROW_TEST_WIDTH,
         )
     )
     out = buf.getvalue()
     assert "token expired" in out
     assert "7.449B tokens" in out
+    assert "since Apr 7, 2026" in out
+    assert max(map(len, out.splitlines())) <= _NARROW_TEST_WIDTH
 
 
 @pytest.mark.parametrize(
     ("width", "token_total"),
-    [(200, "7,449,473,297 tokens"), (40, "7.449B tokens")],
+    [
+        (200, "7,449,473,297 tokens"),
+        (_NARROW_TEST_WIDTH, "7.449B tokens"),
+    ],
 )
 def test_partial_activity_keeps_usage_and_actionable_warning(
     width: int,
@@ -582,7 +597,7 @@ def test_partial_activity_keeps_usage_and_actionable_warning(
     out = buf.getvalue()
 
     assert token_total in out
-    assert "since Apr 7" in out
+    assert "since Apr 7, 2026" in out
     assert "known tokens" not in out
     assert "known" in out
     assert "profile failed" in out

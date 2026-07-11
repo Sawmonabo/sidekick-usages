@@ -29,6 +29,10 @@
   [durable activity plan][durable-activity-plan] adds a separate strict
   snapshot authority for last-successful Codex account profiles and replaces
   visible scope qualifiers with one `tokens · since` footer contract.
+- **Token start year and narrow layout:** **Approved 2026-07-11.** The tracked
+  [token start year plan][token-start-year-plan] preserves four-digit years in
+  both presentation modes and renames the supported responsive renderer from
+  legacy to narrow without changing provider or persistence behavior.
 
 ---
 
@@ -675,7 +679,7 @@ src/sidekick_usages/
 │   ├── __init__.py
 │   ├── activity.py
 │   ├── activity_render.py
-│   ├── legacy_render.py
+│   ├── narrow_render.py
 │   ├── models.py
 │   ├── reset_display.py
 │   ├── service.py
@@ -1291,9 +1295,10 @@ activity outcome per selected provider from the same account selection and
 reference time as its usage rows. The CLI performs no independent collection.
 
 Wide rendering uses exact grouped totals. Narrow rendering retains meaningful
-compact precision. Both providers use `tokens · since <date>`; account rows
-carry authentication failures without renaming the metric. Attempted activity
-or snapshot-persistence failures contribute `SYSTEM_ERROR` without removing
+compact precision and places the full `Mon D, YYYY` date on a deliberate
+second line. Both providers use `tokens · since <date>`; account rows carry
+authentication failures without renaming the metric. Attempted activity or
+snapshot-persistence failures contribute `SYSTEM_ERROR` without removing
 valid usage rows or retained totals. The obsolete rollout lifetime cache and
 its path remain inactive.
 
@@ -4613,3 +4618,4 @@ docs/superpowers/plans/
 [usage-tui-design]: ./2026-06-19-usage-tui-redesign-design.md
 [token-activity-plan]: ../plans/2026-07-10-token-activity-accuracy.md
 [durable-activity-plan]: ../plans/2026-07-11-durable-token-activity-snapshots.md
+[token-start-year-plan]: ../plans/2026-07-11-token-start-year-and-narrow-layout.md

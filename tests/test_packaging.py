@@ -118,7 +118,7 @@ def test_exact_wheel_selection_and_member_contract(tmp_path: Path) -> None:
         "sidekick_usages/providers/registry.py",
         "sidekick_usages/usage/activity.py",
         "sidekick_usages/usage/activity_render.py",
-        "sidekick_usages/usage/legacy_render.py",
+        "sidekick_usages/usage/narrow_render.py",
         "sidekick_usages/usage/render.py",
         "sidekick_usages/usage/reset_display.py",
         *smoke_wheel.REQUIRED_CLI_MEMBERS,

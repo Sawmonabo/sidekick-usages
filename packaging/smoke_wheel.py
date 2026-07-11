@@ -127,7 +127,7 @@ REQUIRED_WHEEL_MEMBERS = frozenset(
         "sidekick_usages/usage/__init__.py",
         "sidekick_usages/usage/activity.py",
         "sidekick_usages/usage/activity_render.py",
-        "sidekick_usages/usage/legacy_render.py",
+        "sidekick_usages/usage/narrow_render.py",
         "sidekick_usages/usage/models.py",
         "sidekick_usages/usage/render.py",
         "sidekick_usages/usage/reset_display.py",

@@ -16,6 +16,10 @@
   tracked [durable activity plan][durable-activity-plan] replaces visible
   scope qualifiers and the no-snapshot fallback with one `tokens · since`
   footer contract and durable authoritative Codex account snapshots.
+- **Full-year narrow-layout correction:** **Approved 2026-07-11** — the
+  tracked [token start year plan][token-start-year-plan] adds the complete
+  year to both providers and names the supported responsive fallback the
+  narrow stacked layout.
 - **Branch:** `feat/usage-tui-redesign`
 - **Visual reference:** The inline approved mockup below is normative; no
   local-only preview artifact is required to implement it.
@@ -60,13 +64,13 @@ organized into two clearly separated provider panels.
 │                                         3h 50m 1d 15h                  │
 │ ● long.account.name@example.test  team  [12%]  [73%]                   │
 │ ...                                                                    │
-╰──────────────────────  903,464,085 tokens · since Dec 28 ─────────────╯
+╰────────────────  903,464,085 tokens · since Dec 28, 2025 ────────────╯
 
 ╭─ CODEX · 2 accounts ───────────────────────────────────────────────────╮
 │                          5h     7d    Spark  5h     7d                 │
 │ ● codex@example.test pro [8%]  [45%]         [·]   [·]                 │
 │ ...                                                                    │
-╰──────────────────────────────  7,449,473,297 tokens ───────────────────╯
+╰────────────────  7,449,473,297 tokens · since Apr 7, 2026 ───────────╯
 
  <40   40-69   70-89   ≥90      dim = resets in
 ```
@@ -321,7 +325,7 @@ while giving human-facing overview and status screens a consistent identity.
     **verbatim — no elision at ≥80**.
   - **Below 80:** the layout degrades by squeezing the name column or
     truncating Spark. Implementation must detect `width < 80` and degrade
-    deliberately by eliding the name or using the legacy per-account view.
+    deliberately by eliding the name or using the narrow per-account view.
     It must **never silently wrap**.
 
 > **Update (2026-06-19):** the implementation chose the "roomier look"
@@ -330,7 +334,7 @@ while giving human-facing overview and status screens a consistent identity.
 > showcase refinement, and the account-name column is shown verbatim. The
 > 30-character fixture `long.account.name@example.test`, combined with those
 > side margins, makes the Codex panel the binding case at **85 columns**, not
-> 80. The renderer already degrades to the legacy stacked view when
+> 80. The renderer already degrades to the narrow stacked view when
 > `width < required`; only the threshold moved from 80 to **85** (behavior
 > unchanged). The original 80-column target, derived with `padding=(0,0)`, was
 > traded for the roomier look per explicit user decision.
@@ -338,8 +342,9 @@ while giving human-facing overview and status screens a consistent identity.
 **Masthead update (2026-07-09):** The longest robot/product-copy line is
 **79 cells**. It therefore fits inside the existing 85-column worst-case
 overview. For smaller account sets, 79 becomes the framed view's minimum
-width; narrower terminals continue to use the existing legacy stacked view
-instead of wrapping or cropping the logo.
+width; narrower terminals continue to use the supported narrow stacked view
+instead of wrapping or cropping the logo. Token activity uses two deliberate
+lines there so the full `Mon D, YYYY` date never depends on incidental wrap.
 
 - **Truecolor:** required for heat tiles; graceful downsample/fallback per §3.
 - **Runtime data:** preserve configured account labels and plan tags verbatim.
@@ -382,6 +387,7 @@ instead of wrapping or cropping the logo.
 
 [token-activity-plan]: ../plans/2026-07-10-token-activity-accuracy.md
 [durable-activity-plan]: ../plans/2026-07-11-durable-token-activity-snapshots.md
+[token-start-year-plan]: ../plans/2026-07-11-token-start-year-and-narrow-layout.md
 
 ---
 

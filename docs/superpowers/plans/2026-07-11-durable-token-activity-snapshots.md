@@ -17,12 +17,17 @@
 - **Implementation authority:** This plan and the primary provider sources
   linked in section 2
 
+> **Presentation supersession (2026-07-11):** The completed
+> [token start year and narrow-layout plan][token-start-year-plan] adds the
+> four-digit year and deliberate two-line narrow presentation. This document
+> remains authoritative for snapshot and provider-accounting behavior.
+
 ## 1. Outcome
 
 Both provider panels use one stable token-activity footer contract:
 
 ```text
-╰──────────────────────── 915,947,703 tokens  ·  since Dec 28 ─╯
+╰────────────────── 915,947,703 tokens  ·  since Dec 28, 2025 ─╯
 ```
 
 The implementation must provide all of the following:
@@ -97,15 +102,18 @@ its live transcript suffix. Sidekick does not create a second Claude snapshot.
 Wide panels render exact grouped integers and a short date:
 
 ```text
-915,947,703 tokens  ·  since Dec 28
-7,455,971,162 tokens  ·  since Apr 7
+915,947,703 tokens  ·  since Dec 28, 2025
+7,455,971,162 tokens  ·  since Apr 7, 2026
 ```
 
 The narrow fallback retains compact precision and the same date contract:
 
 ```text
-915.95M tokens  ·  since Dec 28
-7.456B tokens  ·  since Apr 7
+CLAUDE · 915.95M tokens
+         since Dec 28, 2025
+
+CODEX · 7.456B tokens
+        since Apr 7, 2026
 ```
 
 The renderer never emits `local`, `local CLI`, `known token`, or
@@ -539,8 +547,8 @@ state satisfies AC-01 through AC-14.
 The live working-tree CLI rendered the approved provider-neutral contract:
 
 ```text
-917,064,538 tokens  ·  since Dec 28
-7,486,342,730 tokens  ·  since Apr 7
+917,064,538 tokens  ·  since Dec 28, 2025
+7,486,342,730 tokens  ·  since Apr 7, 2026
 ```
 
 The account authentication warning remained visible. The rejected account had
@@ -573,3 +581,4 @@ No commit or push was performed as part of this implementation request.
   https://github.com/openai/codex/blob/44918ea10c0f99151c6710411b4322c2f5c96bea/codex-rs/app-server/README.md#L1926-L1937
 [codex-account-protocol]:
   https://github.com/openai/codex/blob/44918ea10c0f99151c6710411b4322c2f5c96bea/codex-rs/app-server-protocol/src/protocol/v2/account.rs#L387-L443
+[token-start-year-plan]: ./2026-07-11-token-start-year-and-narrow-layout.md

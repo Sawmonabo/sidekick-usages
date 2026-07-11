@@ -26,12 +26,8 @@ from sidekick_usages.core.models import UsageReport, UsageWindow
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.usage.activity_render import (
     activity_failure_label,
-    activity_text,
-)
-from sidekick_usages.usage.legacy_render import (
-    PLAN_COLORS,
-    account_header,
-    usage_report,
+    narrow_activity_lines,
+    panel_activity_text,
 )
 from sidekick_usages.usage.models import (
     AccountUsage,
@@ -50,10 +46,15 @@ from sidekick_usages.usage.models import (
     TokenActivityIssue,
     UsageCheckResult,
 )
+from sidekick_usages.usage.narrow_render import (
+    PLAN_COLORS,
+    account_header,
+    usage_report,
+)
 from sidekick_usages.usage.reset_display import compact_reset_text
 
 #: Heat bands as (lower-bound-inclusive percent, fg hex, bg hex).
-#: Thresholds match the legacy ``_utilization_color`` bands.
+#: Thresholds match the narrow renderer's ``_utilization_color`` bands.
 _HEAT_BANDS: list[tuple[int, str, str]] = [
     (90, "#ffe6e6", "#b03030"),
     (70, "#fff4e0", "#9c6f12"),
@@ -166,7 +167,7 @@ def _dot(provider_id: ProviderId) -> Text:
 
 
 def _plan_text(plan: str) -> Text:
-    """Plan chip, suppressed for empty/unknown (matches legacy tag)."""
+    """Plan chip, suppressed for empty/unknown (matches narrow tag)."""
     if not plan or plan == "unknown":
         return Text("")
     return Text(plan, style=PLAN_COLORS.get(plan, "grey42"))
@@ -377,11 +378,7 @@ def _provider_panel(
         f" · {account_count} {account_noun}",
         style="grey54",
     )
-    subtitle = (
-        activity_text(activity, compact=False)
-        if activity is not None
-        else None
-    )
+    subtitle = panel_activity_text(activity) if activity is not None else None
     return Panel(
         content,
         title=title,
@@ -598,7 +595,7 @@ def _provider_order(
 
 
 def _failure_block(failure: FetchFailure) -> Group:
-    """Stacked (non-panel) failure block for the legacy narrow view."""
+    """Stacked failure block for the supported narrow view."""
     status, detail = _failure_copy(failure)
     lines: list[RenderableType] = [
         account_header(
@@ -631,7 +628,7 @@ def _activity_issue_block(
     return Group(*lines)
 
 
-def _legacy_activity_blocks(
+def _narrow_activity_blocks(
     result: UsageCheckResult,
 ) -> list[RenderableType]:
     """Build compact provider activity summaries and warning blocks."""
@@ -649,12 +646,20 @@ def _legacy_activity_blocks(
             continue
         if blocks:
             blocks.append(Text(""))
-        line = Text()
+        provider_name = provider_id.upper()
         color = PROVIDER_COLORS.get(provider_id, "white")
-        line.append(provider_id.upper(), style=f"bold {color}")
-        line.append(" · ", style="grey54")
-        line.append_text(activity_text(activity, compact=True))
-        blocks.append(line)
+        prefix_width = len(provider_name) + len(" · ")
+        for position, activity_line in enumerate(
+            narrow_activity_lines(activity)
+        ):
+            line = Text()
+            if position == 0:
+                line.append(provider_name, style=f"bold {color}")
+                line.append(" · ", style="grey54")
+            else:
+                line.append(" " * prefix_width)
+            line.append_text(activity_line)
+            blocks.append(line)
         for issue in _account_activity_issues(activity):
             if blocks:
                 blocks.append(Text(""))
@@ -670,7 +675,7 @@ def _legacy_activity_blocks(
     return blocks
 
 
-def _legacy_overview(
+def _narrow_overview(
     result: UsageCheckResult,
 ) -> RenderableType:
     """Stacked per-account fallback for narrow terminals (no wrap)."""
@@ -683,7 +688,7 @@ def _legacy_overview(
         if blocks:
             blocks.append(Text(""))
         blocks.append(_failure_block(failure))
-    activity_blocks = _legacy_activity_blocks(result)
+    activity_blocks = _narrow_activity_blocks(result)
     if blocks and activity_blocks:
         blocks.append(Text(""))
     blocks.extend(activity_blocks)
@@ -699,7 +704,7 @@ def usage_overview(
 
     :param result: Completed usage rows, failures, and token activity.
     :param width: Target terminal width; below the binding panel
-        width the layout degrades to the legacy stacked view.
+        width the layout degrades to the narrow stacked view.
     :return: A Rich renderable.
     """
     if not result.usages and not result.failures:
@@ -735,7 +740,7 @@ def usage_overview(
         return Group(
             brand_header(width),
             Text(""),
-            _legacy_overview(result),
+            _narrow_overview(result),
         )
     for panel in panels:
         panel.expand = True
