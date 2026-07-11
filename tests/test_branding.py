@@ -119,3 +119,21 @@ def test_robot_roof_has_one_source_definition() -> None:
         if roof in path.read_text(encoding="utf-8")
     ]
     assert matches == [package / "branding.py"]
+
+
+def test_readme_masthead_matches_canonical_branding() -> None:
+    """The README logo stays aligned with the runtime source of truth."""
+    readme = (Path(__file__).parents[1] / "README.md").read_text(
+        encoding="utf-8"
+    )
+    rows = (
+        branding.ROBOT_LINES[0],
+        branding.ROBOT_LINES[1],
+        f"{branding.ROBOT_LINES[2]}    {branding.BRAND_TITLE}",
+        f"{branding.ROBOT_LINES[3]}   >> {branding.BRAND_DESCRIPTION}",
+        f"{branding.ROBOT_LINES[4]}   >> {branding.BRAND_PROMISE}",
+        branding.ROBOT_LINES[5],
+    )
+    masthead = "```text\n" + "\n".join(rows) + "\n```"
+
+    assert readme.startswith(f"# sidekick-usages\n\n{masthead}\n")

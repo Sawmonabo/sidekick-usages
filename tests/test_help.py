@@ -69,6 +69,37 @@ def test_help_is_branded_before_usage_without_loading_state(
 
 
 @pytest.mark.parametrize(
+    "path",
+    [
+        [],
+        ["codex"],
+        ["codex", "login"],
+        ["heartbeat"],
+        ["daemon", "status"],
+    ],
+)
+def test_short_help_alias_matches_long_help_at_every_command_level(
+    path: list[str],
+) -> None:
+    """Root settings provide equivalent help through nested command levels."""
+    calls: list[str] = []
+    short = CliRunner().invoke(
+        app,
+        [*path, "-h"],
+        obj=_no_composition_context(calls),
+    )
+    long = CliRunner().invoke(
+        app,
+        [*path, "--help"],
+        obj=_no_composition_context(calls),
+    )
+
+    assert short.exit_code == long.exit_code == 0
+    assert click.unstyle(short.output) == click.unstyle(long.output)
+    assert calls == []
+
+
+@pytest.mark.parametrize(
     ("args", "usage"),
     [
         (["doctor", "--help"], "Usage: sidekick-usages doctor"),

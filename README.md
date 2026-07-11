@@ -1,5 +1,20 @@
 # sidekick-usages
 
+```text
+      o
+     .-.
+  .--┴-┴--.    sidekick usages
+  | O   O |   >> A multi-account usage dashboard for Claude Code and Codex CLI.
+  | ||||| |   >> Limits + resets + account status, one terminal.
+  '--___--'
+```
+
+[![Version](https://img.shields.io/github/v/release/Sawmonabo/sidekick-usages?label=version&color=ff1447)](https://github.com/Sawmonabo/sidekick-usages/releases/latest)
+![Python](https://img.shields.io/badge/python-%3E%3D3.14-3776AB?logo=python&logoColor=white)
+![Package Manager](https://img.shields.io/badge/package%20manager-uv-2f2a45)
+![TUI](https://img.shields.io/badge/TUI-Typer%20%2B%20Rich-009485)
+![Tests](https://img.shields.io/badge/tests-pytest%209%2B-0f172a?logo=pytest&logoColor=white)
+
 Inspect Claude Code and Codex CLI usage across multiple saved accounts without
 switching the active provider login for every check. The CLI groups rate-limit
 windows, reset times, local lifetime output totals, and per-account failures in
@@ -8,6 +23,11 @@ one terminal view.
 Routine checks do not open a browser. Initial account setup, an explicit
 `sidekick-usages codex login`, or recovery from expired credentials can still
 require the provider's normal login flow.
+
+> [!NOTE]
+> This README tracks `develop` and its next-release command surface. The stable
+> installation instructions use the latest published release shown by the
+> version badge. Install `develop` below when you need every documented command.
 
 ## Table of contents
 
@@ -77,6 +97,19 @@ Find the current tag on the
 Until a public PyPI distribution exists, registry-only commands such as
 `uv tool install sidekick-usages`, `pipx install sidekick-usages`, and the
 checked-in `install.sh` bootstrap are not valid public installation paths.
+
+### uv from the current development branch
+
+To use the next-release command surface documented in this README before it is
+published, install directly from `develop`:
+
+```bash
+uv tool install --force --python 3.14 "git+https://github.com/Sawmonabo/sidekick-usages.git@develop"
+uv tool update-shell
+```
+
+The development branch can change before release. Use the tagged installation
+above when you need a stable, reproducible version.
 
 ## Quick start
 
@@ -240,8 +273,8 @@ written to the private sidekick cache, not the active `~/.codex` login.
 | `sidekick-usages heartbeat ...` | Inspect, warm, enable, disable, or report usage-window heartbeat state. |
 | `sidekick-usages --version` | Print the installed version. |
 
-Run `sidekick-usages --help` and
-`sidekick-usages <command> --help` for every option.
+Append `--help` or `-h` to the root command, any command group, or any command
+to see its options.
 
 Starting with release 0.7.0, `sidekick-usages setup-token claude`,
 `sidekick-usages codex-login`, and `sidekick-usages codex-export` are deprecated
@@ -534,7 +567,9 @@ If it is missing, run `claude auth login` and retry `add` or `refresh`.
 - `src/sidekick_usages/cli/`: registration-only application root, typed lazy
   composition, help adapter, token input, and cohesive command owners.
 - `src/sidekick_usages/providers/`: Claude and Codex boundary schemas and
-  adapters; `http/` owns pooled transport and retry policy.
+  provider-specific adapters.
+- `src/sidekick_usages/http/`: provider-neutral pooled HTTPS transport and
+  retry policy.
 - `src/sidekick_usages/persistence/`: strict schemas, qualified filesystem
   operations, transactions, recovery, and provider-neutral migrations.
 - `src/sidekick_usages/usage/`: usage results, application service, and Rich
@@ -553,19 +588,17 @@ git clone https://github.com/Sawmonabo/sidekick-usages
 cd sidekick-usages
 
 uv python install 3.14
-uv venv
 uv sync --all-groups
-uv pip install -e .
 
-uv run sidekick-usages --help
+uv run sidekick-usages -h
 uv run python packaging/check_architecture.py
 uv run ruff check src/ tests/
 uv run ty check src/ tests/
 uv run pytest --cov=sidekick_usages
-SKIP=no-commit-to-branch uv run pre-commit run --all-files
+uv run pre-commit run --all-files
 
 npm ci
-npx --no-install markdownlint-cli2 README.md
+npm audit --audit-level=moderate
 npm run lint:markdown
 
 uv build

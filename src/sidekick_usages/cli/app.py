@@ -82,6 +82,7 @@ def create_app() -> typer.Typer:
         no_args_is_help=False,
         pretty_exceptions_show_locals=False,
         add_completion=False,
+        context_settings={"help_option_names": ["-h", "--help"]},
     )
     application.callback(invoke_without_command=True)(_main)
     usage.register(application)
