@@ -602,6 +602,8 @@ def parse_activity_response(value: JsonObject) -> TokenActivitySummary:
         message="Codex token activity response is incomplete or malformed.",
     )
     seen_dates: set[date] = set()
+    bucket_total = 0
+    bucket_overflow = False
     for bucket in profile.stats.daily_usage_buckets or ():
         try:
             bucket_date = date.fromisoformat(bucket.start_date)
@@ -622,9 +624,21 @@ def parse_activity_response(value: JsonObject) -> TokenActivitySummary:
                 )
             )
         seen_dates.add(bucket_date)
+        if bucket.tokens > _MAX_TOKEN_COUNT - bucket_total:
+            bucket_overflow = True
+        elif not bucket_overflow:
+            bucket_total += bucket.tokens
+    since = (
+        min(seen_dates)
+        if seen_dates
+        and not bucket_overflow
+        and bucket_total == profile.stats.lifetime_tokens
+        else None
+    )
     return TokenActivitySummary(
         total_tokens=profile.stats.lifetime_tokens,
         scope=TokenActivityScope.ACCOUNT,
+        since=since,
     )
 
 

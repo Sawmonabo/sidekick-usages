@@ -70,6 +70,24 @@ class TokenActivitySummary:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class AccountTokenActivitySnapshot:
+    """One durable account-scoped provider activity observation."""
+
+    provider_id: ProviderId
+    provider_account_id: str = field(repr=False)
+    summary: TokenActivitySummary
+    fetched_at: datetime
+
+    def __post_init__(self) -> None:
+        """Require stable identity, account scope, and aware UTC time."""
+        if not self.provider_account_id:
+            raise ValueError("Activity snapshots require an account identity.")
+        if self.summary.scope is not TokenActivityScope.ACCOUNT:
+            raise ValueError("Activity snapshots must be account-scoped.")
+        object.__setattr__(self, "fetched_at", as_utc(self.fetched_at))
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class TokenActivityUnavailable:
     """The provider has no authoritative activity reading."""
 

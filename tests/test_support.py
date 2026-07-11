@@ -65,6 +65,7 @@ def make_application_paths(root: Path) -> ApplicationPaths:
             canonical=private_codex_root,
             existing_sidekick=private_codex_root,
         ),
+        activity_snapshots=root / "token-activity.json",
     )
 
 

@@ -57,10 +57,12 @@ class ApplicationPaths:
 
     :ivar accounts: Account-store compatibility locations.
     :ivar private_codex: Private Codex credential locations.
+    :ivar activity_snapshots: Canonical token-activity snapshot file.
     """
 
     accounts: AccountLocations
     private_codex: PrivateCodexLocations
+    activity_snapshots: Path
 
 
 def discover_application_paths() -> ApplicationPaths:
@@ -95,6 +97,7 @@ def discover_application_paths() -> ApplicationPaths:
             canonical=native_data_root / "codex",
             existing_sidekick=compatibility_root / "codex",
         ),
+        activity_snapshots=native_data_root / "token-activity.json",
     )
 
 

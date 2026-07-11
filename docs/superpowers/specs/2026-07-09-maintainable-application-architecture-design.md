@@ -25,6 +25,10 @@
   usage-service aggregation. Every conflicting lifetime or cache statement
   below is historical evidence of the completed earlier migration, not active
   authority.
+- **Durable activity snapshots:** **Approved 2026-07-11.** The tracked
+  [durable activity plan][durable-activity-plan] adds a separate strict
+  snapshot authority for last-successful Codex account profiles and replaces
+  visible scope qualifiers with one `tokens · since` footer contract.
 
 ---
 
@@ -1276,19 +1280,22 @@ Provider-specific acquisition remains with its integration:
   for each eligible saved account through the shared HTTP client and marks the
   result as account-scoped. It never reads rollout or SQLite totals.
 
-`usage/activity.py` owns the two scope-specific ports, provider reads,
-aggregation, coverage, and typed issues. `usage/service.py` owns account
-selection, credential preparation, activity eligibility, and the single call
-into that collector. `UsageCheckResult` carries one complete, partial,
-unavailable, or failed activity outcome per selected provider from the same
-account selection and reference time as its usage rows. The CLI performs no
-independent collection.
+`persistence/activity_snapshots.py` owns strict, identity-hashed,
+last-successful Codex profile snapshots. It is separate from credentials and
+never imports rollout or SQLite totals. `usage/activity.py` owns the two
+scope-specific ports, fresh-or-snapshot resolution, aggregation, coverage, and
+typed issues. `usage/service.py` owns account selection, credential
+preparation, activity eligibility, and the single call into that collector.
+`UsageCheckResult` carries one complete, partial, unavailable, or failed
+activity outcome per selected provider from the same account selection and
+reference time as its usage rows. The CLI performs no independent collection.
 
 Wide rendering uses exact grouped totals. Narrow rendering retains meaningful
-compact precision. Claude is labeled local, partial Codex coverage is labeled
-`known tokens`, and attempted activity-read failures contribute
-`SYSTEM_ERROR` without removing valid usage rows. No Sidekick lifetime cache
-or cache path remains active.
+compact precision. Both providers use `tokens · since <date>`; account rows
+carry authentication failures without renaming the metric. Attempted activity
+or snapshot-persistence failures contribute `SYSTEM_ERROR` without removing
+valid usage rows or retained totals. The obsolete rollout lifetime cache and
+its path remain inactive.
 
 ## 6. Schemas, serialization, and runtime validation
 
@@ -4605,3 +4612,4 @@ docs/superpowers/plans/
 [architecture-research]: ../research/2026-07-10-architecture-enforcement.md
 [usage-tui-design]: ./2026-06-19-usage-tui-redesign-design.md
 [token-activity-plan]: ../plans/2026-07-10-token-activity-accuracy.md
+[durable-activity-plan]: ../plans/2026-07-11-durable-token-activity-snapshots.md

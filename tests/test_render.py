@@ -215,6 +215,7 @@ _ACTIVITIES = (
         summary=TokenActivitySummary(
             total_tokens=7_449_473_297,
             scope=TokenActivityScope.ACCOUNT,
+            since=date(2026, 4, 7),
         ),
     ),
 )
@@ -341,36 +342,29 @@ def test_overview_shows_robot_masthead_and_provider_titles() -> None:
         "width",
         "claude_total",
         "codex_total",
-        "local_scope",
-        "since_text",
     ),
     [
         (
             120,
             "903,464,085 tokens",
             "7,449,473,297 tokens",
-            "local CLI",
-            "since Dec 28",
         ),
-        (40, "903.46M tokens", "7.449B tokens", "local", None),
+        (40, "903.46M tokens", "7.449B tokens"),
     ],
 )
-def test_activity_totals_retain_scope_and_use_width_aware_precision(
+def test_activity_totals_share_tokens_and_since_footer_contract(
     width: int,
     claude_total: str,
     codex_total: str,
-    local_scope: str,
-    since_text: str | None,
 ) -> None:
     out = _render_at(width, _worst_case_usages())
 
     assert claude_total in out
     assert codex_total in out
-    assert local_scope in out
-    if since_text is None:
-        assert "since Dec 28" not in out
-    else:
-        assert since_text in out
+    assert "since Dec 28" in out
+    assert "since Apr 7" in out
+    assert "local" not in out
+    assert "known tokens" not in out
     assert "output" not in out
 
 
@@ -538,12 +532,12 @@ def test_legacy_mode_renders_failures() -> None:
 
 
 @pytest.mark.parametrize(
-    ("width", "known_total"),
-    [(200, "7,449,473,297 known tokens"), (40, "7.449B known tokens")],
+    ("width", "token_total"),
+    [(200, "7,449,473,297 tokens"), (40, "7.449B tokens")],
 )
 def test_partial_activity_keeps_usage_and_actionable_warning(
     width: int,
-    known_total: str,
+    token_total: str,
 ) -> None:
     usages = [
         _usage(
@@ -565,6 +559,7 @@ def test_partial_activity_keeps_usage_and_actionable_warning(
             summary=TokenActivitySummary(
                 total_tokens=7_449_473_297,
                 scope=TokenActivityScope.ACCOUNT,
+                since=date(2026, 4, 7),
             ),
             covered_accounts=1,
             selected_accounts=2,
@@ -586,7 +581,9 @@ def test_partial_activity_keeps_usage_and_actionable_warning(
     )
     out = buf.getvalue()
 
-    assert known_total in out
+    assert token_total in out
+    assert "since Apr 7" in out
+    assert "known tokens" not in out
     assert "known" in out
     assert "profile failed" in out
     assert "token activity authentication failed" in out

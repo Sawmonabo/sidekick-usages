@@ -102,6 +102,7 @@ def _paths(root: Path) -> ApplicationPaths:
             canonical=canonical / "codex",
             existing_sidekick=compatibility / "codex",
         ),
+        activity_snapshots=root / "token-activity.json",
     )
 
 

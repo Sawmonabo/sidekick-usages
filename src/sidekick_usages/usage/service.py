@@ -44,6 +44,7 @@ from sidekick_usages.providers.base import (
     ProviderFailure,
 )
 from sidekick_usages.usage.activity import (
+    AccountTokenActivitySnapshots,
     AccountTokenActivitySource,
     LocalTokenActivitySource,
     TokenActivityCollector,
@@ -115,6 +116,7 @@ class UsageCheckService:
             AccountTokenActivitySource,
         ]
         | None = None,
+        activity_snapshots: AccountTokenActivitySnapshots | None = None,
     ) -> None:
         """Bind usage checking to its invocation-scoped dependencies.
 
@@ -125,6 +127,7 @@ class UsageCheckService:
         :param clock: Aware application wall clock.
         :param local_activity_sources: Local-installation activity readers.
         :param account_activity_sources: Per-account activity readers.
+        :param activity_snapshots: Durable last-successful account activity.
         """
         self._store = store
         self._http = http
@@ -139,6 +142,7 @@ class UsageCheckService:
                 if account_activity_sources is None
                 else account_activity_sources
             ),
+            activity_snapshots,
         )
         self._maintenance = TokenMaintenanceService(
             store,

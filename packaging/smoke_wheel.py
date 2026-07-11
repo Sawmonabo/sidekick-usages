@@ -72,6 +72,7 @@ REQUIRED_WHEEL_MEMBERS = frozenset(
         "sidekick_usages/persistence/_platform/windows_private.py",
         "sidekick_usages/persistence/_platform/windows_private_bundles.py",
         "sidekick_usages/persistence/_platform/windows_private_tree.py",
+        "sidekick_usages/persistence/activity_snapshots.py",
         "sidekick_usages/persistence/_platform/windows_security.py",
         "sidekick_usages/persistence/_recovery.py",
         "sidekick_usages/persistence/_schema_models.py",

@@ -1,6 +1,7 @@
 """Typed usage-check application service."""
 
 from sidekick_usages.usage.activity import (
+    AccountTokenActivitySnapshots,
     AccountTokenActivitySource,
     LocalTokenActivitySource,
 )
@@ -33,6 +34,7 @@ from sidekick_usages.usage.service import (
 )
 
 __all__ = [
+    "AccountTokenActivitySnapshots",
     "AccountTokenActivitySource",
     "AccountUsage",
     "AuthenticationFailure",

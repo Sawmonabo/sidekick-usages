@@ -37,6 +37,12 @@ confirmed Claude live-suffix collection and Codex account-profile collection.
 The unchecked boxes below are retained as the original executable sequence;
 this status and snapshot record its completed outcome.
 
+> **Presentation supersession (2026-07-11):** The completed
+> [durable token activity snapshots plan](./2026-07-11-durable-token-activity-snapshots.md)
+> replaces this plan's visible `local` and `known tokens` copy and its
+> no-snapshot Codex fallback policy. This document otherwise remains the
+> historical execution authority for provider-source accuracy.
+
 ## 1. Outcome
 
 Replace Sidekick's incorrect, output-only local counters with truthful token

@@ -6,11 +6,13 @@ or prepare a safe rollback to release 0.6.0.
 
 ## Location model
 
-Sidekick owns two kinds of local data:
+Sidekick owns three kinds of local data:
 
 - `accounts.json`, the authoritative account document containing OAuth
   credentials and account status; and
-- private Codex auth bundles copied from a provider login.
+- private Codex auth bundles copied from a provider login; and
+- `token-activity.json`, strict last-successful Codex account activity
+  snapshots containing no credentials, labels, or raw provider account IDs.
 
 Provider-native homes such as `~/.claude` and `~/.codex` are not Sidekick
 application-data locations. Location migration never moves, deletes, or
@@ -21,11 +23,11 @@ overwrites the active provider login.
 Release 0.7.0 uses the operating system's per-user application-data
 conventions:
 
-| Platform | Account document | Private Codex root |
-| --- | --- | --- |
-| Linux and WSL | `${XDG_DATA_HOME:-~/.local/share}/sidekick-usages/accounts.json` | `${XDG_DATA_HOME:-~/.local/share}/sidekick-usages/codex/` |
-| macOS | `~/Library/Application Support/sidekick-usages/accounts.json` | `~/Library/Application Support/sidekick-usages/codex/` |
-| Windows | `%LOCALAPPDATA%\sidekick-usages\accounts.json` | `%LOCALAPPDATA%\sidekick-usages\codex\` |
+| Platform | Account document | Private Codex root | Activity snapshots |
+| --- | --- | --- | --- |
+| Linux and WSL | `${XDG_DATA_HOME:-~/.local/share}/sidekick-usages/accounts.json` | `${XDG_DATA_HOME:-~/.local/share}/sidekick-usages/codex/` | `${XDG_DATA_HOME:-~/.local/share}/sidekick-usages/token-activity.json` |
+| macOS | `~/Library/Application Support/sidekick-usages/accounts.json` | `~/Library/Application Support/sidekick-usages/codex/` | `~/Library/Application Support/sidekick-usages/token-activity.json` |
+| Windows | `%LOCALAPPDATA%\sidekick-usages\accounts.json` | `%LOCALAPPDATA%\sidekick-usages\codex\` | `%LOCALAPPDATA%\sidekick-usages\token-activity.json` |
 
 Linux and WSL honor an absolute `XDG_DATA_HOME`. A relative data root fails
 closed. WSL uses the Linux filesystem and Linux home; it does not silently
@@ -77,6 +79,24 @@ The inert file can be removed manually if it exists:
 
 Normal usage checks remain read-only with respect to this obsolete artifact;
 Sidekick does not perform hidden cleanup during a dashboard render.
+
+### Authoritative Codex activity snapshots
+
+`token-activity.json` is separate from credentials and from the obsolete
+rollout cache. After a successful Codex account-profile request, Sidekick
+stores only the authoritative lifetime total, a verified earliest activity
+date when daily buckets reconcile exactly, and the fetch time. Records are
+keyed by a SHA-256 digest of stable provider identity, not by account labels.
+
+The snapshot document uses strict versioned JSON, bounded private reads,
+qualified local filesystems, a cross-process hard lock, atomic replacement,
+and post-write durability proof. A malformed or unsafe document fails closed
+and is never silently replaced.
+
+When a later profile request is rejected, the dashboard retains the last
+successful snapshot and keeps the account authentication warning visible. An
+account that has never produced a successful profile has no snapshot; Sidekick
+does not replace that missing value with rollout or SQLite totals.
 
 Inspect the current selection before making a change:
 

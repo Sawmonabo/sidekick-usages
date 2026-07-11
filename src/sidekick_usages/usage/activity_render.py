@@ -5,7 +5,6 @@ from typing import assert_never
 
 from rich.text import Text
 
-from sidekick_usages.core.types import TokenActivityScope
 from sidekick_usages.usage.models import (
     CompleteTokenActivity,
     FailedTokenActivity,
@@ -50,22 +49,25 @@ def activity_failure_label(kind: TokenActivityFailureKind) -> str:
     """Map one typed activity issue to concise presentation copy."""
     match kind:
         case TokenActivityFailureKind.SOURCE_UNREADABLE:
-            return "token activity source unreadable"
+            label = "token activity source unreadable"
         case TokenActivityFailureKind.SOURCE_MALFORMED:
-            return "token activity source malformed"
+            label = "token activity source malformed"
         case TokenActivityFailureKind.AUTHENTICATION:
-            return "token activity authentication failed"
+            label = "token activity authentication failed"
         case TokenActivityFailureKind.FORBIDDEN:
-            return "token activity forbidden"
+            label = "token activity forbidden"
         case TokenActivityFailureKind.RATE_LIMITED:
-            return "token activity rate limited"
+            label = "token activity rate limited"
         case (
             TokenActivityFailureKind.TRANSIENT
             | TokenActivityFailureKind.PROVIDER
         ):
-            return "token activity temporarily unavailable"
+            label = "token activity temporarily unavailable"
+        case TokenActivityFailureKind.PERSISTENCE:
+            label = "saved token activity unavailable"
         case _ as unreachable:
             assert_never(unreachable)
+    return label
 
 
 def activity_text(
@@ -76,21 +78,11 @@ def activity_text(
     """Render one completed token-activity outcome without source I/O."""
     if isinstance(activity, CompleteTokenActivity | PartialTokenActivity):
         formatter = format_tokens_compact if compact else format_tokens_exact
-        qualifier = (
-            " known tokens"
-            if isinstance(activity, PartialTokenActivity)
-            else " tokens"
-        )
         rendered = Text(
-            f"{formatter(activity.summary.total_tokens)}{qualifier}",
+            f"{formatter(activity.summary.total_tokens)} tokens",
             style="grey54",
         )
-        if activity.summary.scope is TokenActivityScope.LOCAL_INSTALLATION:
-            rendered.append(
-                "  ·  local" if compact else "  ·  local CLI",
-                style="grey42",
-            )
-        if not compact and activity.summary.since is not None:
+        if activity.summary.since is not None:
             rendered.append(
                 f"  ·  since {_format_since(activity.summary.since)} ",
                 style="grey35",

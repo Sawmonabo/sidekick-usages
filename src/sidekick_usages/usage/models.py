@@ -40,6 +40,7 @@ class TokenActivityFailureKind(StrEnum):
     RATE_LIMITED = "rate_limited"
     TRANSIENT = "transient"
     PROVIDER = "provider"
+    PERSISTENCE = "persistence"
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -150,6 +151,16 @@ class CompleteTokenActivity:
 
     provider_id: ProviderId
     summary: TokenActivitySummary
+    issues: tuple[TokenActivityIssue, ...] = ()
+
+    def __post_init__(self) -> None:
+        """Require issue identities compatible with the summary scope."""
+        if self.summary.scope is TokenActivityScope.ACCOUNT:
+            valid = all(issue.label is not None for issue in self.issues)
+        else:
+            valid = all(issue.label is None for issue in self.issues)
+        if not valid:
+            raise ValueError("Activity issue labels must match their scope.")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -221,7 +232,7 @@ def activity_has_failure(activity: ProviderTokenActivity) -> bool:
     """Return whether an activity outcome has an attempted-read failure."""
     if isinstance(activity, FailedTokenActivity):
         return True
-    if isinstance(activity, PartialTokenActivity):
+    if isinstance(activity, CompleteTokenActivity | PartialTokenActivity):
         return bool(activity.issues)
     return False
 

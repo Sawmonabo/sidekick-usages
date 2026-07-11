@@ -92,6 +92,7 @@ def test_exact_wheel_selection_and_member_contract(tmp_path: Path) -> None:
         "sidekick_usages/persistence/_compat/v060-reader.zip",
         "sidekick_usages/persistence/_platform/posix_private_bundles.py",
         "sidekick_usages/persistence/_platform/windows_private_bundles.py",
+        "sidekick_usages/persistence/activity_snapshots.py",
         "sidekick_usages/persistence/credential_transaction_plans.py",
         "sidekick_usages/persistence/credential_transaction_recovery.py",
         "sidekick_usages/persistence/migrations/__init__.py",

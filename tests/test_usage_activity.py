@@ -3,7 +3,7 @@
 import re
 from collections.abc import Iterator, Mapping
 from dataclasses import replace
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -11,6 +11,7 @@ import pytest
 from sidekick_usages.core.expiry import Expiry, KnownExpiry, UnknownExpiry
 from sidekick_usages.core.models import (
     Account,
+    AccountTokenActivitySnapshot,
     ClaudeCredentials,
     CodexCredentials,
     TokenActivityReading,
@@ -31,6 +32,10 @@ from sidekick_usages.errors import (
 )
 from sidekick_usages.http import HttpClient
 from sidekick_usages.persistence.account_store import AccountStore
+from sidekick_usages.persistence.activity_snapshots import (
+    ActivitySnapshotError,
+    ActivitySnapshotFailureKind,
+)
 from sidekick_usages.providers.base import (
     CredentialDetection,
     Provider,
@@ -39,6 +44,7 @@ from sidekick_usages.providers.base import (
     RefreshResult,
 )
 from sidekick_usages.usage import (
+    AccountTokenActivitySnapshots,
     AccountTokenActivitySource,
     CompleteTokenActivity,
     LocalTokenActivitySource,
@@ -48,6 +54,7 @@ from sidekick_usages.usage import (
     TransientFailure,
     UnavailableTokenActivity,
     UsageCheckService,
+    activity_has_failure,
 )
 from tests.test_support import (
     REFERENCE_TIME,
@@ -168,6 +175,38 @@ class _AccountActivity(AccountTokenActivitySource):
         return step
 
 
+class _ActivitySnapshots(AccountTokenActivitySnapshots):
+    """Retain scripted snapshots without crossing the filesystem boundary."""
+
+    def __init__(
+        self,
+        snapshots: tuple[AccountTokenActivitySnapshot, ...] = (),
+        *,
+        save_error: ActivitySnapshotError | None = None,
+    ) -> None:
+        self.snapshots = {
+            snapshot.provider_account_id: snapshot for snapshot in snapshots
+        }
+        self.save_error = save_error
+        self.loads: list[AccountLabel] = []
+        self.saves: list[AccountTokenActivitySnapshot] = []
+
+    def load(self, account: Account) -> AccountTokenActivitySnapshot | None:
+        self.loads.append(account.label)
+        account_id = account.provider_account_id
+        return None if account_id is None else self.snapshots.get(account_id)
+
+    def save(
+        self,
+        snapshot: AccountTokenActivitySnapshot,
+    ) -> AccountTokenActivitySnapshot:
+        self.saves.append(snapshot)
+        if self.save_error is not None:
+            raise self.save_error
+        self.snapshots[snapshot.provider_account_id] = snapshot
+        return snapshot
+
+
 @pytest.fixture
 def http() -> Iterator[HttpClient]:
     """Yield an idle HTTP facade for injected provider fakes."""
@@ -207,8 +246,30 @@ def _report() -> UsageReport:
     )
 
 
-def _summary(total: int, scope: TokenActivityScope) -> TokenActivitySummary:
-    return TokenActivitySummary(total_tokens=total, scope=scope)
+def _summary(
+    total: int,
+    scope: TokenActivityScope,
+    since: date | None = None,
+) -> TokenActivitySummary:
+    return TokenActivitySummary(
+        total_tokens=total,
+        scope=scope,
+        since=since,
+    )
+
+
+def _snapshot(
+    account: Account,
+    total: int,
+    since: date,
+) -> AccountTokenActivitySnapshot:
+    assert account.provider_account_id is not None
+    return AccountTokenActivitySnapshot(
+        provider_id=account.provider_id,
+        provider_account_id=account.provider_account_id,
+        summary=_summary(total, TokenActivityScope.ACCOUNT, since),
+        fetched_at=REFERENCE_TIME - timedelta(hours=1),
+    )
 
 
 def _service(
@@ -219,6 +280,7 @@ def _service(
     *,
     local_activity: LocalTokenActivitySource | None = None,
     account_activity: AccountTokenActivitySource | None = None,
+    activity_snapshots: AccountTokenActivitySnapshots | None = None,
 ) -> tuple[UsageCheckService, AccountStore]:
     store, private = make_account_store_with_private(tmp_path, accounts)
     registry: dict[ProviderId, Provider] = {
@@ -248,6 +310,7 @@ def _service(
                 if account_activity is None
                 else {ProviderId.CODEX: account_activity}
             ),
+            activity_snapshots=activity_snapshots,
         ),
         store,
     )
@@ -417,3 +480,127 @@ def test_missing_provider_identity_is_not_activity_eligible(
     )
     assert profiles.calls == []
     assert isinstance(result.activities[0], UnavailableTokenActivity)
+
+
+def test_fresh_and_retained_account_snapshots_form_one_complete_total(
+    tmp_path: Path,
+    http: HttpClient,
+) -> None:
+    """An auth-ineligible account keeps its last authoritative activity."""
+    fresh = _account("fresh", ProviderId.CODEX)
+    retained = _account(
+        "retained",
+        ProviderId.CODEX,
+        expiry=KnownExpiry(
+            REFERENCE_TIME.replace(microsecond=0) + timedelta(seconds=30)
+        ),
+    )
+    provider = _ScriptedProvider(
+        ProviderId.CODEX,
+        {"fresh": _report(), "retained": _report()},
+    )
+    profiles = _AccountActivity(
+        {
+            "fresh": _summary(
+                7_449_473_297,
+                TokenActivityScope.ACCOUNT,
+                date(2026, 4, 7),
+            )
+        }
+    )
+    snapshots = _ActivitySnapshots(
+        (_snapshot(retained, 900_000_000, date(2026, 3, 30)),)
+    )
+    service, _store = _service(
+        tmp_path,
+        http,
+        (fresh, retained),
+        (provider,),
+        account_activity=profiles,
+        activity_snapshots=snapshots,
+    )
+
+    result = service.check()
+
+    assert isinstance(result.failures[0], RefreshRejectedFailure)
+    assert profiles.calls == ["fresh"]
+    assert snapshots.loads == ["retained"]
+    assert len(snapshots.saves) == 1
+    outcome = result.activities[0]
+    assert outcome == CompleteTokenActivity(
+        provider_id=ProviderId.CODEX,
+        summary=_summary(
+            8_349_473_297,
+            TokenActivityScope.ACCOUNT,
+            date(2026, 3, 30),
+        ),
+    )
+
+
+def test_profile_failure_uses_snapshot_and_preserves_activity_warning(
+    tmp_path: Path,
+    http: HttpClient,
+) -> None:
+    """A failed refresh does not erase the last successful profile."""
+    account = _account("account", ProviderId.CODEX)
+    provider = _ScriptedProvider(
+        ProviderId.CODEX,
+        {"account": _report()},
+    )
+    profiles = _AccountActivity(
+        {"account": TransientError("secret provider detail")}
+    )
+    snapshots = _ActivitySnapshots(
+        (_snapshot(account, _CODEX_TOTAL, date(2026, 4, 7)),)
+    )
+    service, _store = _service(
+        tmp_path,
+        http,
+        (account,),
+        (provider,),
+        account_activity=profiles,
+        activity_snapshots=snapshots,
+    )
+
+    outcome = service.check().activities[0]
+
+    assert isinstance(outcome, CompleteTokenActivity)
+    assert outcome.summary.total_tokens == _CODEX_TOTAL
+    assert outcome.summary.since == date(2026, 4, 7)
+    assert outcome.issues[0].kind is TokenActivityFailureKind.TRANSIENT
+    assert activity_has_failure(outcome)
+
+
+def test_snapshot_write_failure_keeps_fresh_total_and_fails_explicitly(
+    tmp_path: Path,
+    http: HttpClient,
+) -> None:
+    """Durability failure cannot suppress a valid current provider value."""
+    account = _account("account", ProviderId.CODEX)
+    provider = _ScriptedProvider(
+        ProviderId.CODEX,
+        {"account": _report()},
+    )
+    fresh = _summary(
+        _CODEX_TOTAL,
+        TokenActivityScope.ACCOUNT,
+        date(2026, 4, 7),
+    )
+    snapshots = _ActivitySnapshots(
+        save_error=ActivitySnapshotError(ActivitySnapshotFailureKind.WRITE)
+    )
+    service, _store = _service(
+        tmp_path,
+        http,
+        (account,),
+        (provider,),
+        account_activity=_AccountActivity({"account": fresh}),
+        activity_snapshots=snapshots,
+    )
+
+    outcome = service.check().activities[0]
+
+    assert isinstance(outcome, CompleteTokenActivity)
+    assert outcome.summary == fresh
+    assert outcome.issues[0].kind is TokenActivityFailureKind.PERSISTENCE
+    assert activity_has_failure(outcome)

@@ -1,6 +1,7 @@
 """Provider-neutral product vocabulary and pure policy."""
 
 from sidekick_usages.core.models import (
+    AccountTokenActivitySnapshot,
     TokenActivityReading,
     TokenActivitySummary,
     TokenActivityUnavailable,
@@ -13,6 +14,7 @@ from sidekick_usages.core.types import (
 )
 
 __all__ = [
+    "AccountTokenActivitySnapshot",
     "ExitCode",
     "ProviderId",
     "TokenActivityReading",

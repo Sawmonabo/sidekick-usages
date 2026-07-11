@@ -1,7 +1,7 @@
 """Load-bearing invariants for provider-neutral account models."""
 
 from collections.abc import MutableMapping
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 
 import pytest
 
@@ -15,6 +15,7 @@ from sidekick_usages.core.expiry import (
 )
 from sidekick_usages.core.models import (
     Account,
+    AccountTokenActivitySnapshot,
     ClaudeCredentials,
     CodexCredentials,
     DetectedCredentials,
@@ -169,3 +170,38 @@ def test_token_activity_distinguishes_zero_from_unavailable_and_invalid() -> (
                 total_tokens=invalid,
                 scope=TokenActivityScope.ACCOUNT,
             )
+
+
+def test_activity_snapshot_requires_scope_and_normalizes_time() -> None:
+    """Snapshots retain stable identity without exposing it in reprs."""
+    offset_time = REFERENCE_TIME.astimezone(timezone(timedelta(hours=-4)))
+    snapshot = AccountTokenActivitySnapshot(
+        provider_id=ProviderId.CODEX,
+        provider_account_id="acct_private",
+        summary=TokenActivitySummary(
+            total_tokens=7_449_473_297,
+            scope=TokenActivityScope.ACCOUNT,
+            since=date(2026, 4, 7),
+        ),
+        fetched_at=offset_time,
+    )
+
+    assert snapshot.fetched_at == REFERENCE_TIME
+    assert "acct_private" not in repr(snapshot)
+    with pytest.raises(ValueError, match="account identity"):
+        AccountTokenActivitySnapshot(
+            provider_id=ProviderId.CODEX,
+            provider_account_id="",
+            summary=snapshot.summary,
+            fetched_at=REFERENCE_TIME,
+        )
+    with pytest.raises(ValueError, match="account-scoped"):
+        AccountTokenActivitySnapshot(
+            provider_id=ProviderId.CLAUDE,
+            provider_account_id="acct_private",
+            summary=TokenActivitySummary(
+                total_tokens=1,
+                scope=TokenActivityScope.LOCAL_INSTALLATION,
+            ),
+            fetched_at=REFERENCE_TIME,
+        )

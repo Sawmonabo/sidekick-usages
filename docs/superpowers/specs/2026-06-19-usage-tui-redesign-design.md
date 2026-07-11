@@ -12,6 +12,10 @@
   output-only local counters with scope-aware provider activity. The tracked
   [token activity implementation plan][token-activity-plan] supersedes every
   conflicting lifetime-output or rollout-cache statement in this document.
+- **Durable activity footer correction:** **Approved 2026-07-11** — the
+  tracked [durable activity plan][durable-activity-plan] replaces visible
+  scope qualifiers and the no-snapshot fallback with one `tokens · since`
+  footer contract and durable authoritative Codex account snapshots.
 - **Branch:** `feat/usage-tui-redesign`
 - **Visual reference:** The inline approved mockup below is normative; no
   local-only preview artifact is required to implement it.
@@ -56,7 +60,7 @@ organized into two clearly separated provider panels.
 │                                         3h 50m 1d 15h                  │
 │ ● long.account.name@example.test  team  [12%]  [73%]                   │
 │ ...                                                                    │
-╰────────────  903,464,085 tokens · local CLI · since Dec 28 ────────────╯
+╰──────────────────────  903,464,085 tokens · since Dec 28 ─────────────╯
 
 ╭─ CODEX · 2 accounts ───────────────────────────────────────────────────╮
 │                          5h     7d    Spark  5h     7d                 │
@@ -193,8 +197,8 @@ definition.
 - Exclude parent-log `isSidechain` copies while including actual subagent
   records.
 - Never modify Claude-owned state.
-- Label the value as local CLI history. It is not attributable to one saved
-  Sidekick account.
+- Render the value as `tokens · since <first session date>` without a visible
+  source qualifier. It is not attributable to one saved Sidekick account.
 
 The audited parity value is `903,464,085 tokens`, displayed compactly as
 `903.46M tokens` in the narrow fallback.
@@ -209,7 +213,10 @@ The audited parity value is `903,464,085 tokens`, displayed compactly as
 - Validate optional daily buckets but never substitute their sum for the
   lifetime field.
 - Sum successful account-scoped profiles for the provider panel.
-- Show `known tokens` whenever selected-account coverage is incomplete.
+- Persist every successful account total and verified earliest bucket date in
+  the strict Sidekick activity snapshot store.
+- Reuse a prior snapshot when a later account request fails while retaining
+  the account warning.
 - Surface explicit, secret-safe activity failures; never fall back to local
   rollout or SQLite totals.
 
@@ -220,9 +227,9 @@ compactly as `7.449B tokens` in the narrow fallback.
 
 Wide framed panels show exact grouped integers so every increment remains
 visible. The intentional narrow fallback uses two decimal places for millions
-and three for billions, trimming trailing zeroes. Partial account coverage is
-always labeled `known tokens`; Claude always carries local-installation
-wording.
+and three for billions, trimming trailing zeroes. Both modes and providers use
+the same `tokens · since <date>` wording. Account rows, not the metric name,
+carry authentication and refresh failures.
 
 ---
 
@@ -374,6 +381,7 @@ instead of wrapping or cropping the logo.
   whole screens.
 
 [token-activity-plan]: ../plans/2026-07-10-token-activity-accuracy.md
+[durable-activity-plan]: ../plans/2026-07-11-durable-token-activity-snapshots.md
 
 ---
 

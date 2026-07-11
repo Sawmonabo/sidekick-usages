@@ -25,6 +25,9 @@ from sidekick_usages.persistence.account_store import (
     AccountStore,
     AccountStoreStateError,
 )
+from sidekick_usages.persistence.activity_snapshots import (
+    ActivitySnapshotStore,
+)
 from sidekick_usages.persistence.assessment import (
     PersistenceAssessment,
     PersistenceCompositionFailure,
@@ -391,6 +394,9 @@ def compose_app_context(
             clock=resolved_clock,
             local_activity_sources=local_activity_map,
             account_activity_sources=account_activity_map,
+            activity_snapshots=ActivitySnapshotStore(
+                resolved_paths.activity_snapshots
+            ),
         )
         heartbeat = HeartbeatService(
             accounts,

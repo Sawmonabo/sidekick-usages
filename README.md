@@ -181,24 +181,32 @@ The default `check` view provides:
 - Exact token activity at normal widths and precision-preserving compact totals
   in the narrow fallback.
 
-The activity subtitle is deliberately scope-aware:
+The activity subtitle uses one provider-neutral presentation contract:
 
 - Claude matches Claude Code's local `/stats` accounting. It adds historical
   input and output tokens from `stats-cache.json` to live UTC-day input and
   output tokens from project transcripts, while excluding cache-read and
-  cache-creation tokens. The result is labeled `local CLI` because it belongs
-  to the Claude installation selected by `CLAUDE_CONFIG_DIR` or `~/.claude`,
-  not to one saved Sidekick account.
+  cache-creation tokens. Its verified `firstSessionDate` supplies the footer's
+  `since` date.
 - Codex reads each eligible saved ChatGPT account's authoritative token profile
-  and sums `lifetime_tokens`. A complete panel total covers every selected
-  account. If only some profiles succeed, Sidekick shows the exact partial sum
-  as `known tokens` instead of implying complete coverage.
+  and sums `lifetime_tokens`. When valid unique daily buckets sum exactly to
+  the lifetime value, their earliest date supplies `since`. Each successful
+  account profile is retained as a strict Sidekick-owned snapshot, so a later
+  authentication failure does not erase the last authoritative value.
 
-Sidekick never substitutes Codex rollout files, SQLite state, or a derived
-local cache when the account profile is unavailable. Missing authoritative
-activity is shown as unavailable. Malformed, unreadable, authentication, and
-transport failures remain explicit while valid rate-limit rows stay visible;
-the command renders the result before returning its typed non-zero status.
+Both panels render the same footer shape:
+
+```text
+915,947,703 tokens  ·  since Dec 28
+7,455,971,162 tokens  ·  since Apr 7
+```
+
+Sidekick never substitutes Codex rollout files, SQLite state, or the obsolete
+output-only cache. An account without a successful profile snapshot has no
+recoverable lifetime value. Malformed, unreadable, authentication, transport,
+and snapshot-persistence failures remain explicit while valid usage and
+retained activity stay visible; the command renders the result before returning
+its typed non-zero status.
 
 ## How provider access works
 

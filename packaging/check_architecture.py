@@ -60,6 +60,7 @@ _RENDERER_FILES = frozenset(
 _PYDANTIC_OWNERS = frozenset(
     {
         "src/sidekick_usages/persistence/_schema_models.py",
+        "src/sidekick_usages/persistence/activity_snapshots.py",
         "src/sidekick_usages/persistence/credential_transaction_schema.py",
         "src/sidekick_usages/persistence/schemas.py",
         "src/sidekick_usages/providers/claude/schemas.py",
@@ -501,6 +502,7 @@ def _check_value_contracts(
         "ApplicationPaths": (
             ("accounts", "AccountLocations"),
             ("private_codex", "PrivateCodexLocations"),
+            ("activity_snapshots", "Path"),
         ),
     }
     if paths is not None:
@@ -568,6 +570,7 @@ def _check_activity_contract(
 ) -> None:
     """Enforce provider-owned activity and prohibit the old fallback."""
     required = {
+        "src/sidekick_usages/persistence/activity_snapshots.py",
         "src/sidekick_usages/providers/claude/activity.py",
         "src/sidekick_usages/providers/codex/activity.py",
     }
@@ -595,6 +598,10 @@ def _check_activity_contract(
                 for term in ("codex-lifetime-cache", "rollout")
             ):
                 invalid.append((unit, None))
+        if path == "src/sidekick_usages/usage/activity_render.py" and any(
+            term in unit.source for term in ("known tokens", "local CLI")
+        ):
+            invalid.append((unit, None))
     if missing or invalid:
         unit, node = (
             invalid[0]

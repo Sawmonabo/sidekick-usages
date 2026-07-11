@@ -1,6 +1,7 @@
 """Behavioral tests for Codex account token activity."""
 
 from collections.abc import Mapping
+from datetime import date
 
 import pytest
 
@@ -79,8 +80,14 @@ def test_profile_uses_exact_account_route_and_authoritative_lifetime() -> None:
                 "current_streak_days": 1,
                 "longest_streak_days": 29,
                 "daily_usage_buckets": [
-                    {"start_date": "2026-07-09", "tokens": 3},
-                    {"start_date": "2026-07-10", "tokens": 4},
+                    {
+                        "start_date": "2026-07-09",
+                        "tokens": 4_000_000_000,
+                    },
+                    {
+                        "start_date": "2026-07-10",
+                        "tokens": 3_449_473_297,
+                    },
                 ],
             }
         }
@@ -91,6 +98,7 @@ def test_profile_uses_exact_account_route_and_authoritative_lifetime() -> None:
     assert result == TokenActivitySummary(
         total_tokens=7_449_473_297,
         scope=TokenActivityScope.ACCOUNT,
+        since=date(2026, 7, 9),
     )
     assert http.request is not None
     url, headers = http.request
@@ -119,6 +127,16 @@ def test_profile_uses_exact_account_route_and_authoritative_lifetime() -> None:
             },
             ProviderFailureKind.MALFORMED,
         ),
+        (
+            {
+                "lifetime_tokens": 2,
+                "daily_usage_buckets": [
+                    {"start_date": "2026-07-10", "tokens": 1},
+                    {"start_date": "2026-07-10", "tokens": 1},
+                ],
+            },
+            ProviderFailureKind.MALFORMED,
+        ),
     ],
 )
 def test_profile_rejects_values_that_cannot_be_lifetime_activity(
@@ -128,6 +146,26 @@ def test_profile_rejects_values_that_cannot_be_lifetime_activity(
     with pytest.raises(ProviderBoundaryError) as captured:
         parse_activity_response({"stats": stats})
     assert captured.value.failure.kind is expected_kind
+
+
+def test_nonreconciling_buckets_keep_lifetime_without_inventing_date() -> None:
+    """Optional bounded buckets cannot redefine the lifetime summary."""
+    result = parse_activity_response(
+        {
+            "stats": {
+                "lifetime_tokens": 100,
+                "daily_usage_buckets": [
+                    {"start_date": "2026-07-10", "tokens": 99}
+                ],
+            }
+        }
+    )
+
+    assert result == TokenActivitySummary(
+        total_tokens=100,
+        scope=TokenActivityScope.ACCOUNT,
+        since=None,
+    )
 
 
 def test_authentication_failure_never_becomes_a_local_number() -> None:

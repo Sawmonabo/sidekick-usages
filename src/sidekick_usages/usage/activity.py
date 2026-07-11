@@ -6,6 +6,7 @@ from typing import Protocol
 
 from sidekick_usages.core.models import (
     Account,
+    AccountTokenActivitySnapshot,
     TokenActivityReading,
     TokenActivitySummary,
     TokenActivityUnavailable,
@@ -24,6 +25,9 @@ from sidekick_usages.errors import (
     UsageError,
 )
 from sidekick_usages.http import HttpClient
+from sidekick_usages.persistence.activity_snapshots import (
+    ActivitySnapshotError,
+)
 from sidekick_usages.providers.base import (
     ProviderBoundaryError,
     ProviderFailureKind,
@@ -63,6 +67,19 @@ class AccountTokenActivitySource(Protocol):
         """Return one account-scoped activity reading."""
 
 
+class AccountTokenActivitySnapshots(Protocol):
+    """Persist authoritative activity by stable account identity."""
+
+    def load(self, account: Account) -> AccountTokenActivitySnapshot | None:
+        """Load the account's last successful activity snapshot."""
+
+    def save(
+        self,
+        snapshot: AccountTokenActivitySnapshot,
+    ) -> AccountTokenActivitySnapshot:
+        """Durably merge one successful account activity snapshot."""
+
+
 class TokenActivityCollector:
     """Collect and aggregate provider activity for one account selection."""
 
@@ -71,11 +88,13 @@ class TokenActivityCollector:
         http: HttpClient,
         local_sources: Mapping[ProviderId, LocalTokenActivitySource],
         account_sources: Mapping[ProviderId, AccountTokenActivitySource],
+        snapshots: AccountTokenActivitySnapshots | None = None,
     ) -> None:
         """Bind collection to validated provider source mappings."""
         self._http = http
         self._local_sources = dict(local_sources)
         self._account_sources = dict(account_sources)
+        self._snapshots = snapshots
         if any(
             provider_id is not source.provider_id
             for provider_id, source in (
@@ -128,6 +147,7 @@ class TokenActivityCollector:
                         account_source,
                         selected,
                         eligible,
+                        reference_time,
                     )
                 )
         return tuple(outcomes)
@@ -168,33 +188,26 @@ class TokenActivityCollector:
         source: AccountTokenActivitySource,
         selected: tuple[Account, ...],
         eligible: tuple[Account, ...],
+        reference_time: datetime,
     ) -> ProviderTokenActivity:
         total = 0
         since_dates: list[date] = []
         has_unknown_since = False
         covered = 0
         issues: list[TokenActivityIssue] = []
-        for account in eligible:
-            try:
-                reading = source.read(account, self._http)
-            except UsageError as error:
-                issues.append(self._issue(error, account.label))
+        eligible_by_label = {account.label: account for account in eligible}
+        for selected_account in selected:
+            account = eligible_by_label.get(selected_account.label)
+            summary, account_issues = self._account_summary(
+                source,
+                selected_account if account is None else account,
+                reference_time,
+                fetch=account is not None,
+            )
+            issues.extend(account_issues)
+            if summary is None:
                 continue
-            if reading.scope is not TokenActivityScope.ACCOUNT:
-                issues.append(
-                    TokenActivityIssue(
-                        kind=TokenActivityFailureKind.PROVIDER,
-                        message=(
-                            "Provider token activity returned an invalid "
-                            "scope."
-                        ),
-                        label=account.label,
-                    )
-                )
-                continue
-            if isinstance(reading, TokenActivityUnavailable):
-                continue
-            if reading.total_tokens > _MAX_TOKEN_COUNT - total:
+            if summary.total_tokens > _MAX_TOKEN_COUNT - total:
                 issues.append(
                     TokenActivityIssue(
                         kind=TokenActivityFailureKind.SOURCE_MALFORMED,
@@ -202,16 +215,16 @@ class TokenActivityCollector:
                             "Provider token activity total exceeds its "
                             "boundary."
                         ),
-                        label=account.label,
+                        label=selected_account.label,
                     )
                 )
                 continue
-            total += reading.total_tokens
+            total += summary.total_tokens
             covered += 1
-            if reading.since is None:
+            if summary.since is None:
                 has_unknown_since = True
             else:
-                since_dates.append(reading.since)
+                since_dates.append(summary.since)
 
         if covered == 0:
             if issues:
@@ -238,6 +251,7 @@ class TokenActivityCollector:
             return CompleteTokenActivity(
                 provider_id=provider_id,
                 summary=summary,
+                issues=tuple(issues),
             )
         return PartialTokenActivity(
             provider_id=provider_id,
@@ -246,6 +260,84 @@ class TokenActivityCollector:
             selected_accounts=len(selected),
             issues=tuple(issues),
         )
+
+    def _account_summary(
+        self,
+        source: AccountTokenActivitySource,
+        account: Account,
+        reference_time: datetime,
+        *,
+        fetch: bool,
+    ) -> tuple[TokenActivitySummary | None, tuple[TokenActivityIssue, ...]]:
+        issues: list[TokenActivityIssue] = []
+        if fetch:
+            try:
+                reading = source.read(account, self._http)
+            except UsageError as error:
+                issues.append(self._issue(error, account.label))
+            else:
+                if reading.scope is not TokenActivityScope.ACCOUNT:
+                    issues.append(
+                        TokenActivityIssue(
+                            kind=TokenActivityFailureKind.PROVIDER,
+                            message=(
+                                "Provider token activity returned an invalid "
+                                "scope."
+                            ),
+                            label=account.label,
+                        )
+                    )
+                elif isinstance(reading, TokenActivitySummary):
+                    summary, snapshot_issue = self._save_snapshot(
+                        account,
+                        reading,
+                        reference_time,
+                    )
+                    if snapshot_issue is not None:
+                        issues.append(snapshot_issue)
+                    return summary, tuple(issues)
+        snapshot, snapshot_issue = self._load_snapshot(account)
+        if snapshot_issue is not None:
+            issues.append(snapshot_issue)
+        return (
+            None if snapshot is None else snapshot.summary,
+            tuple(issues),
+        )
+
+    def _load_snapshot(
+        self,
+        account: Account,
+    ) -> tuple[
+        AccountTokenActivitySnapshot | None,
+        TokenActivityIssue | None,
+    ]:
+        if self._snapshots is None:
+            return None, None
+        try:
+            return self._snapshots.load(account), None
+        except ActivitySnapshotError as error:
+            return None, self._issue(error, account.label)
+
+    def _save_snapshot(
+        self,
+        account: Account,
+        summary: TokenActivitySummary,
+        reference_time: datetime,
+    ) -> tuple[TokenActivitySummary, TokenActivityIssue | None]:
+        account_id = account.provider_account_id
+        if self._snapshots is None or account_id is None:
+            return summary, None
+        snapshot = AccountTokenActivitySnapshot(
+            provider_id=account.provider_id,
+            provider_account_id=account_id,
+            summary=summary,
+            fetched_at=reference_time,
+        )
+        try:
+            durable = self._snapshots.save(snapshot)
+        except ActivitySnapshotError as error:
+            return summary, self._issue(error, account.label)
+        return durable.summary, None
 
     @staticmethod
     def _invalid_scope(
@@ -296,6 +388,9 @@ class TokenActivityCollector:
         elif isinstance(error, InvalidPayloadError):
             kind = TokenActivityFailureKind.SOURCE_MALFORMED
             message = "Provider token activity response is malformed."
+        elif isinstance(error, ActivitySnapshotError):
+            kind = TokenActivityFailureKind.PERSISTENCE
+            message = str(error)
         else:
             kind = TokenActivityFailureKind.PROVIDER
             message = "Provider token activity is unavailable."
@@ -303,6 +398,7 @@ class TokenActivityCollector:
 
 
 __all__ = [
+    "AccountTokenActivitySnapshots",
     "AccountTokenActivitySource",
     "LocalTokenActivitySource",
     "TokenActivityCollector",

@@ -36,6 +36,7 @@ from sidekick_usages.usage.legacy_render import (
 from sidekick_usages.usage.models import (
     AccountUsage,
     AuthenticationFailure,
+    CompleteTokenActivity,
     FailedTokenActivity,
     FetchFailure,
     ForbiddenFailure,
@@ -500,7 +501,10 @@ def _account_activity_issues(
     activity: ProviderTokenActivity | None,
 ) -> tuple[TokenActivityIssue, ...]:
     """Return only account-scoped issues suitable for warning rows."""
-    if not isinstance(activity, PartialTokenActivity | FailedTokenActivity):
+    if not isinstance(
+        activity,
+        CompleteTokenActivity | PartialTokenActivity | FailedTokenActivity,
+    ):
         return ()
     return tuple(issue for issue in activity.issues if issue.label is not None)
 

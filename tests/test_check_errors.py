@@ -3,6 +3,7 @@
 import io
 import re
 from collections.abc import Iterable, Mapping
+from datetime import date
 from pathlib import Path
 
 from rich.console import Console
@@ -212,6 +213,7 @@ def test_check_renders_partial_success_and_typed_auth_recovery(
             "codex-ok": TokenActivitySummary(
                 total_tokens=7_449_473_297,
                 scope=TokenActivityScope.ACCOUNT,
+                since=date(2026, 4, 7),
             )
         }
     )
@@ -232,7 +234,9 @@ def test_check_renders_partial_success_and_typed_auth_recovery(
     out = stdout.getvalue()
     assert "CLAUDE · 1 account" in out
     assert "CODEX · 2 accounts" in out
-    assert "7,449,473,297 known tokens" in out
+    assert "7,449,473,297 tokens" in out
+    assert "since Apr 7" in out
+    assert "known tokens" not in out
     assert "⚠ token expired" in out
     assert "Log in to Codex CLI again, then run:" in out
     assert "sidekick-usages refresh 'my work account'" in out
