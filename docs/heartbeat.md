@@ -8,8 +8,8 @@ sends a tiny provider request to open an inactive usage window so
 `sidekick-usages` can show an active 5-hour reset time before a work
 session starts.
 
-Heartbeat does not create free quota. A successful warm is a real model request,
-appears as provider usage, and consumes a small amount of your quota.
+Heartbeat does not create free quota. A successful warm is a real model
+request, appears as provider usage, and consumes a small amount of your quota.
 
 ## Commands
 
@@ -112,6 +112,39 @@ sidekick-usages heartbeat disable <label>
 - Uses the closed HTTP operation policy: only safe, explicitly reviewed
   heartbeat failures can retry within the bounded attempt budget.
 - Records last heartbeat status and error on the account.
+
+## Persisted diagnostics
+
+Heartbeat diagnostics are optional and backward-compatible:
+
+```json
+{
+  "heartbeat_enabled": true,
+  "heartbeat_5h_reset_at": "2026-06-12T18:00:00Z",
+  "heartbeat_window_resets": {
+    "standard": "2026-06-12T18:00:00Z",
+    "spark": "2026-06-12T19:00:00Z"
+  },
+  "heartbeat_targets": ["standard", "spark"],
+  "last_heartbeat_at": "2026-06-12T13:00:00Z",
+  "last_heartbeat_status": "warmed",
+  "last_heartbeat_error": null
+}
+```
+
+`heartbeat_targets` is optional. When it is absent or `null`, daemon
+heartbeat uses the provider default targets. For Codex, that default is
+`standard` only; Spark warming must be requested explicitly.
+
+`last_heartbeat_status` is one of:
+
+- `warmed`
+- `active`
+- `enabled`
+- `disabled`
+- `failed`
+- `unsupported`
+- `null` when no heartbeat attempt has been recorded
 
 ## Troubleshooting
 

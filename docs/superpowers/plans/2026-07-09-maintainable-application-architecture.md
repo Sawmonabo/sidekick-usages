@@ -1945,7 +1945,7 @@ provider-adapter behavior passes through the new imports. The wheel contains
   `schemas.py`.
 - Update provider and heartbeat registry imports.
 - Update current CLI/service imports.
-- Update Claude-provider path references in `docs/debugging-claude.md` in this
+- Update Claude-provider path references in `docs/claude/debugging.md` in this
   same commit.
 - Refocus Claude, scope, header-path, refresh, and heartbeat tests.
 
@@ -2708,7 +2708,7 @@ CS-19, and CS-20.
 - Modify heartbeat rendering only for typed model imports and shared outcomes.
 - Finalize doctor presentation in the CLI adapter.
 - Modify JSON serialization at the owning command/presentation boundaries.
-- Update top-level renderer path references in `docs/debugging-claude.md` in
+- Update top-level renderer path references in `docs/claude/debugging.md` in
   the same commit.
 - Refocus rendering tests without duplicating the approved TUI specification.
 
@@ -2867,7 +2867,7 @@ green; never keep a rule disabled by blanket suppression.
 
 - Modify `AGENTS.md` and `README.md`.
 - Modify `docs/token-maintenance.md`, `docs/heartbeat.md`, and
-  `docs/debugging-claude.md` where behavior or paths changed.
+  `docs/claude/debugging.md` where behavior or paths changed.
 - Modify Homebrew documentation/generator tests for dependency changes.
 - Modify the design authority with final dependency selections and measured
   implementation evidence.

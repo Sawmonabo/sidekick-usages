@@ -3,19 +3,25 @@
 from pathlib import Path
 
 
-def test_heartbeat_docs_explain_commands_and_quota() -> None:
-    """Heartbeat docs must cover opt-in behavior and real model calls."""
-    readme = Path("README.md").read_text()
+def test_heartbeat_guide_owns_commands_models_and_quota() -> None:
+    """The heartbeat guide must remain the detailed product contract."""
     maintenance = Path("docs/token-maintenance.md").read_text()
     heartbeat = Path("docs/heartbeat.md").read_text()
+    normalized = " ".join(heartbeat.split())
 
-    combined = "\n".join([readme, maintenance, heartbeat])
-    assert "sidekick-usages heartbeat enable" in combined
-    assert "sidekick-usages heartbeat --all --quiet" in combined
-    assert "sidekick-usages maintain --quiet" in combined
-    assert "claude-haiku-4-5-20251001" in combined
-    assert "gpt-5.4-mini" in combined
-    assert "gpt-5.3-codex-spark" in combined
-    assert "--target spark" in combined
-    assert "real model request" in heartbeat
-    assert "consumes" in heartbeat
+    required_contracts = (
+        "sidekick-usages heartbeat enable",
+        "sidekick-usages heartbeat --all --quiet",
+        "sidekick-usages maintain --quiet",
+        "claude-haiku-4-5-20251001",
+        "gpt-5.4-mini",
+        "gpt-5.3-codex-spark",
+        "--target spark",
+        "real model request",
+        "consumes",
+    )
+    for contract in required_contracts:
+        assert contract in normalized
+    assert "./heartbeat.md" in maintenance
+    assert "gpt-5.4-mini" not in maintenance
+    assert "gpt-5.3-codex-spark" not in maintenance

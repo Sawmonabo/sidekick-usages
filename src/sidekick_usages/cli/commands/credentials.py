@@ -101,7 +101,7 @@ def add_cmd(
             "--codex-home",
             help=(
                 "Read Codex credentials from this source CODEX_HOME, "
-                "then copy them into sidekick's private cache."
+                "then copy them into sidekick's private credential bundle."
             ),
         ),
     ] = None,

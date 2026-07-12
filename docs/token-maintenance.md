@@ -31,9 +31,9 @@ arbitrary labels.
 
 | Account type | Auto-refresh | Notes |
 | --- | --- | --- |
-| Claude OAuth login with `refresh_token` | Yes | Uses the installed Claude Code CLI in a temporary `HOME`, imports rotated credentials, and leaves normal `~/.claude` untouched. |
+| Claude OAuth login with `refresh_token` | Yes | On non-macOS systems with Claude Code installed, prefers the CLI in an isolated temporary home. macOS or a missing executable uses bounded HTTPS refresh. Neither path changes the active Claude login. |
 | Claude `setup-token` account | No | Setup tokens do not contain refresh tokens. Replace manually when the token dies. |
-| Codex ChatGPT login with `refresh_token` | Yes | Refreshes through the OpenAI OAuth token endpoint and writes the rotated auth bundle to sidekick's private Codex cache. |
+| Codex ChatGPT login with `refresh_token` | Yes | Refreshes through the OpenAI OAuth token endpoint and transactionally updates Sidekick's private Codex credential bundle. |
 | Account with rejected or revoked refresh token | No | Requires logging into the matching provider account again, then running an explicit single-label refresh. |
 
 ## Commands
@@ -93,40 +93,14 @@ regardless of expiry. It still does not import global provider logins.
 
 ### Warm inactive usage windows
 
-```bash
-sidekick-usages heartbeat <label>
-sidekick-usages heartbeat <label> --target spark
-sidekick-usages heartbeat enable <label>
-sidekick-usages heartbeat enable <label> --target all
-sidekick-usages heartbeat disable <label>
-sidekick-usages heartbeat status
-sidekick-usages heartbeat --all --quiet
-```
-
 Heartbeat is optional usage-window warming. It is not token freshness
 and it is not free quota. A successful warm sends a real model request
 and consumes a small amount of provider quota.
 
-`heartbeat <label>` is an explicit one-shot warm attempt. It can run
-even if the account is not enabled for daemon heartbeat.
-
-`heartbeat enable <label>` opts one supported account into daemon
-heartbeat. `heartbeat --all --quiet` processes enabled accounts only
-and is the heartbeat portion of `maintain --quiet`.
-
-- Claude OAuth/team accounts with `user:profile` and `user:inference`
-  can read `/api/oauth/usage` first and send a tiny `/v1/messages`
-  request only when the 5-hour window is inactive.
-- Claude setup-token/inference-only accounts cannot read the OAuth
-  usage endpoint, so heartbeat uses the same tiny `/v1/messages`
-  header probe as usage fetching.
-- Codex ChatGPT-login accounts can read the Codex usage endpoint first
-  and send a tiny streaming
-  `https://chatgpt.com/backend-api/codex/responses` request only when a
-  target window is inactive. The default `standard` target warms the
-  primary Codex 5-hour window with `gpt-5.4-mini`. The explicit `spark`
-  target warms the separate GPT-5.3-Codex-Spark window with
-  `gpt-5.3-codex-spark`.
+`maintain --quiet` refreshes saved credentials first, then processes
+heartbeat-enabled accounts. See
+[heartbeat behavior and guardrails](./heartbeat.md) for commands, supported
+account types, provider targets, model requests, and persisted diagnostics.
 
 ### Run full scheduled maintenance
 
@@ -321,8 +295,8 @@ account.
 
 `doctor` reports the selected account source and destination. Existing 0.6.0
 installations can remain at `~/.config/sidekick-usages/accounts.json`; fresh
-0.7.0 installations use the operating system's native application-data
-directory. See
+installations of the upcoming 0.7.0 release use the operating system's native
+application-data directory. See
 [persistence locations, migration, and recovery](./persistence-and-recovery.md)
 before inspecting or moving a store.
 
@@ -346,36 +320,8 @@ Refresh diagnostics are optional and backward-compatible:
 `last_refresh_error` is a redacted user-facing error string. It must
 not contain raw tokens.
 
-Heartbeat diagnostics are optional and backward-compatible:
-
-```json
-{
-  "heartbeat_enabled": true,
-  "heartbeat_5h_reset_at": "2026-06-12T18:00:00Z",
-  "heartbeat_window_resets": {
-    "standard": "2026-06-12T18:00:00Z",
-    "spark": "2026-06-12T19:00:00Z"
-  },
-  "heartbeat_targets": ["standard", "spark"],
-  "last_heartbeat_at": "2026-06-12T13:00:00Z",
-  "last_heartbeat_status": "warmed",
-  "last_heartbeat_error": null
-}
-```
-
-`heartbeat_targets` is optional. When it is absent or `null`, daemon
-heartbeat uses the provider default targets. For Codex, that default is
-`standard` only; Spark warming must be requested explicitly.
-
-`last_heartbeat_status` is one of:
-
-- `warmed`
-- `active`
-- `enabled`
-- `disabled`
-- `failed`
-- `unsupported`
-- `null` when no heartbeat attempt has been recorded
+Heartbeat state and target defaults are documented in
+[heartbeat behavior and guardrails](./heartbeat.md#persisted-diagnostics).
 
 ## Troubleshooting
 

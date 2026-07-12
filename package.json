@@ -6,7 +6,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "lint:markdown": "markdownlint-cli2 README.md docs/**/*.md"
+    "lint:markdown": "markdownlint-cli2 README.md \"docs/**/*.md\""
   },
   "devDependencies": {
     "markdownlint-cli2": "^0.23.0"

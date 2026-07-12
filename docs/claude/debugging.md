@@ -1,4 +1,10 @@
-# Debugging Claude accounts
+# Claude account debugging
+
+- **Status:** Active symptom-first operational guidance
+- **Source and command verification:** 2026-07-12
+- **Claude Code release:** `2.1.207`
+- **Sidekick evidence commit:**
+  `15cef27bf91029f911d87597efca9e410b3a67fd`
 
 A running log of non-obvious debugging techniques and root causes
 encountered with `sidekick-usages`'s Claude provider. Add new entries
@@ -29,8 +35,8 @@ symptom mean and how do I get unstuck?" Keep them in the shape:
 1. **Symptom** — the exact terminal output or behavior. Copy-paste,
    don't paraphrase. Future-you greps this section.
 2. **Don't be fooled** — false leads that look like the cause but
-   aren't. Cite source lines (`path/to/file.py:NNN`) so the reader
-   can confirm.
+   aren't. Link the owning source file and name the relevant symbol;
+   avoid brittle raw line-number citations.
 3. **Diagnostic** — a probe that isolates the symptom from
    `sidekick-usages`'s code path (usually a direct curl). Includes
    how to read the output.
@@ -40,6 +46,11 @@ symptom mean and how do I get unstuck?" Keep them in the shape:
 Redact tokens (`sk-ant-oat01-<REDACTED>`) and anonymize identifiers
 (`<ORG_UUID_A>`) when including worked examples. The technique is
 the reusable content; the secret it was applied to is not.
+
+Never put a real token in shell history, command arguments, documentation, or
+diagnostic output. Use a hidden prompt and pass the value through a bounded
+stdin or child-environment boundary only for the lifetime of the probe. Unset
+the shell variable immediately afterward.
 
 Add a one-line summary to the [Index](#index) above with an anchor
 link to the new section.
@@ -57,7 +68,7 @@ Any of these errors during the refresh step:
 
 ```text
 Token refresh failed: HTTP 400: Bad Request
-Token refresh failed: Rate limited (HTTP 429) after 4 attempts.
+Token refresh failed: Rate limited (HTTP 429) after 3 attempts.
 Token refresh failed: HTTP 403 Forbidden (no body).
 Token refresh failed: Claude CLI refresh failed: Login failed: Request failed with status code 400
 ```
@@ -66,7 +77,7 @@ Token refresh failed: Claude CLI refresh failed: Login failed: Request failed wi
 
 The `sk-ant-ort01-...` refresh token can be real and still fail if
 the refresh request does not match Claude Code's own OAuth client
-flow. Claude Code 2.1.174 uses:
+flow. The current Sidekick boundary and installed Claude Code 2.1.207 use:
 
 - token endpoint: `https://platform.claude.com/v1/oauth/token`
 - client id: `9d1c250a-e61b-44d9-88ed-5944d1962f5e`
@@ -78,12 +89,13 @@ with the metadata-document client id
 `https://claude.ai/oauth/claude-code-client-metadata`. That request
 shape is not equivalent to the installed CLI.
 
-Even after matching the visible body fields, Python `urllib` requests
-can still hit edge behavior that the Claude binary does not: dummy
-token probes returned Cloudflare 1010 without the Claude Code user
-agent and Anthropic `rate_limit_error` 429 with it. The installed
-`claude auth login --claudeai` path succeeded with the same saved
-refresh token in an isolated temporary `HOME`.
+During the original investigation, Python `urllib` requests hit edge behavior
+that the Claude binary did not: dummy token probes returned Cloudflare 1010
+without the Claude Code user agent and Anthropic `rate_limit_error` 429 with
+it. The installed `claude auth login --claudeai` path succeeded with the same
+saved refresh token in an isolated temporary `HOME`. These response details are
+historical observations; the supported current behavior is the isolated CLI
+path followed by the bounded platform fallback described below.
 
 ### Diagnostic
 
@@ -92,10 +104,16 @@ Use the installed Claude binary itself, but isolate it from your real
 
 ```bash
 tmp="$(mktemp -d)"
-CLAUDE_CODE_OAUTH_REFRESH_TOKEN='sk-ant-ort01-<REDACTED>' \
+trap 'rm -rf "$tmp"' EXIT
+
+IFS= read -r -s -p "Claude refresh token: " claude_refresh_token
+printf '\n'
+
+CLAUDE_CODE_OAUTH_REFRESH_TOKEN="$claude_refresh_token" \
 CLAUDE_CODE_OAUTH_SCOPES='user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload' \
 HOME="$tmp" \
 claude auth login --claudeai
+unset claude_refresh_token
 
 jq '{expiresAt: .claudeAiOauth.expiresAt,
      scopes: .claudeAiOauth.scopes,
@@ -110,7 +128,7 @@ jq '{expiresAt: .claudeAiOauth.expiresAt,
   Code itself rejected the refresh token. Treat it as expired,
   revoked, or bound to a login you no longer have.
 
-### Root causes
+### Refresh root causes
 
 1. Direct refresh request shape drifted from Claude Code's current
    OAuth client metadata.
@@ -122,19 +140,24 @@ jq '{expiresAt: .claudeAiOauth.expiresAt,
 
 ### Fix
 
-Current `sidekick-usages` refreshes saved Claude OAuth accounts by
-running:
+On non-macOS systems with Claude Code installed, `sidekick-usages` first
+tries to refresh saved Claude OAuth accounts by running:
 
 ```text
 claude auth login --claudeai
 ```
 
-inside a temporary `HOME` with
+inside an isolated temporary home with
 `CLAUDE_CODE_OAUTH_REFRESH_TOKEN` and `CLAUDE_CODE_OAUTH_SCOPES` set
 from the saved account. It then parses the temporary
 `.claude/.credentials.json`, imports the rotated access/refresh
 tokens into the account store selected by `doctor`, and removes the temporary
-home. Your real `~/.claude` login is not overwritten.
+home.
+
+On macOS, or when no Claude executable can be resolved, Sidekick uses its
+bounded direct HTTPS OAuth exchange. Both paths leave the active `~/.claude`
+login untouched. An explicit CLI rejection remains terminal and is not masked
+by the HTTPS fallback.
 
 If sidekick reports `Claude CLI refresh failed`, the saved refresh
 token is dead according to Claude Code itself. Log into the matching
@@ -153,7 +176,7 @@ currently active local Claude login.
 ## HTTP 401 in `check` after a token refresh
 
 You just rotated a Claude OAuth token (via `claude setup-token` or
-`claude login` + `sidekick-usages refresh <label>`), and
+`claude auth login` plus `sidekick-usages refresh <label>`), and
 `sidekick-usages check` still reports 401 for one or more accounts.
 This entry walks through verifying the token bytes independently of
 this tool, decoding what the response headers say about *which*
@@ -178,13 +201,14 @@ Two things look like the cause but aren't:
 `[claude · max]`, `[claude · pro]`. That string comes from
 `account.plan`, which is parsed from the local Claude CLI credential boundary
 (`subscriptionType` in
-`src/sidekick_usages/providers/claude/schemas.py:142`) and used only for
-color-coding in `src/sidekick_usages/usage/legacy_render.py:20` and the wide
-usage renderer.
+[`providers/claude/schemas.py`](../../src/sidekick_usages/providers/claude/schemas.py))
+and used only for color-coding in
+[`usage/narrow_render.py`](../../src/sidekick_usages/usage/narrow_render.py)
+and the wide usage renderer.
 
-It is **not** consulted during auth. The dispatch at
-`src/sidekick_usages/providers/claude/usage.py:27` routes on saved scopes, not
-on plan:
+It is **not** consulted during auth. The `fetch_usage` dispatch in
+[`providers/claude/usage.py`](../../src/sidekick_usages/providers/claude/usage.py)
+routes on saved scopes, not on plan:
 
 ```python
 credentials = require_claude_credentials(account)
@@ -202,7 +226,7 @@ display bug — it cannot cause a 401.
 
 Anthropic's API returns 401 for any malformed `Authorization` header,
 not just rotated/revoked tokens. The two most common non-expiry
-causes (see [Root causes](#root-causes) below):
+causes (see [401 root causes](#401-root-causes) below):
 
 - whitespace in the stored token bytes (leading space, trailing `\n`,
   shell-quoting accidents);
@@ -214,81 +238,102 @@ causes (see [Root causes](#root-causes) below):
 The first thing to verify is whether the token itself works against
 Anthropic's API, independent of anything `sidekick-usages` stored or
 sent. `/v1/messages` is the same endpoint the `fetch_via_headers`
-path uses (`src/sidekick_usages/providers/claude/usage.py:56`), so a direct
-curl bypasses
-every layer of this tool:
+path in
+[`providers/claude/usage.py`](../../src/sidekick_usages/providers/claude/usage.py),
+so a direct curl bypasses every layer of this tool.
+
+The following function reads the token without echo, validates the same token
+grammar Sidekick accepts, and sends curl configuration through stdin. The token
+does not appear in shell history, curl arguments, or curl's environment:
 
 ```bash
-curl -s -i -X POST https://api.anthropic.com/v1/messages \
-  -H "Authorization: Bearer sk-ant-oat01-<REDACTED>" \
-  -H "anthropic-version: 2023-06-01" \
-  -H "anthropic-beta: oauth-2025-04-20" \
-  -H "User-Agent: claude-code/2.0.32" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"claude-haiku-4-5-20251001","max_tokens":1,
-       "messages":[{"role":"user","content":"q"}]}' \
-  | grep -iE "(^HTTP/|anthropic-ratelimit-|anthropic-organization-id|error)"
+probe_claude_token() {
+  local claude_token claude_version
+  IFS= read -r -s -p "Claude access token: " claude_token
+  printf '\n'
+
+  if [[ ! "$claude_token" =~ ^sk-ant-oat01-[A-Za-z0-9_-]+$ ]]; then
+    printf 'Token does not match the Claude OAuth token grammar.\n' >&2
+    return 2
+  fi
+
+  claude_version="$(claude --version | awk '{print $1}')"
+  {
+    printf 'url = "https://api.anthropic.com/v1/messages"\n'
+    printf 'request = "POST"\n'
+    printf 'header = "Authorization: Bearer %s"\n' "$claude_token"
+    printf 'header = "anthropic-version: 2023-06-01"\n'
+    printf 'header = "anthropic-beta: oauth-2025-04-20"\n'
+    printf 'header = "User-Agent: claude-code/%s"\n' "$claude_version"
+    printf 'header = "Content-Type: application/json"\n'
+    printf '%s\n' \
+      'data = "{\"model\":\"claude-haiku-4-5-20251001\",\"max_tokens\":1,\"messages\":[{\"role\":\"user\",\"content\":\"q\"}]}"'
+  } | curl --silent --include --config - \
+    | grep -iE \
+      '(^HTTP/|anthropic-ratelimit-|anthropic-organization-id|error)'
+}
+
+probe_claude_token
+unset -f probe_claude_token
 ```
+
+This is still a real one-word model request and consumes a small amount of
+quota. Do not run it on a shared or hostile host where another process owned by
+the same user can inspect runtime memory or pipes.
 
 - **HTTP 200** → the token is valid; the 401 is something inside
   `sidekick-usages` (whitespace, stale scopes, wrong account
-  selected). Jump to [Root causes](#root-causes).
+  selected). Jump to [401 root causes](#401-root-causes).
 - **HTTP 401** → the token is genuinely revoked/expired/wrong. Mint
-  a new one (`claude setup-token` or `claude login`).
-- **HTTP 403** → the token is valid but missing a scope the endpoint
-  requires. Usually means a `setup-token` (inference-only) is being
-  pointed at `/api/oauth/usage` instead of `/v1/messages`.
+  a new one (`claude setup-token` or `claude auth login`).
+- **HTTP 403** → the provider recognized the request but denied the Messages
+  operation because of scope, account policy, or another authorization rule.
 
 ### What the response headers reveal
 
-When the probe returns 200, the response headers are gold. The four
-most useful:
+The subscription-specific unified headers below are private observations, not
+published stable Anthropic contracts. Sidekick parses only the narrow 5-hour
+and 7-day utilization/reset fields it needs. Use the other values as
+corroborating troubleshooting evidence only; never use them as authorization,
+durable identity, or definitive plan classification.
 
-| Header | What it tells you |
+| Observed header | Safe interpretation |
 |---|---|
-| `anthropic-organization-id` | UUID of the Anthropic org this token belongs to. Personal accounts are single-user orgs with their own UUID. **This is the cleanest "are these two tokens the same account?" signal Anthropic exposes** — compare UUIDs, not display names. |
-| `anthropic-ratelimit-unified-overage-status` | `allowed` or `rejected`. `rejected` is a strong Team/Enterprise-plan fingerprint (see below). |
-| `anthropic-ratelimit-unified-{5h,7d}-utilization` | Current usage in each window. Sanity-checks that the token is actively being used by the account you think it is. |
-| `anthropic-ratelimit-unified-{5h,7d}-reset` | Unix timestamp of next reset. Different accounts drift to different reset times based on first-use-in-window, so two distinct accounts will have distinct reset minutes. |
+| `anthropic-organization-id` | Correlates responses within one dated investigation; it is not a Sidekick account-identity contract. |
+| `anthropic-ratelimit-unified-overage-status` | Reports the observed overage state; it does not prove a subscription plan. |
+| `anthropic-ratelimit-unified-{5h,7d}-utilization` | Supplies the utilization values Sidekick validates and renders. |
+| `anthropic-ratelimit-unified-{5h,7d}-reset` | Supplies the reset instants Sidekick validates and renders. |
 
-#### Distinguishing Team plan from personal/Max
+#### Dated overage observations
 
-If `overage-status` is `rejected`, the response also carries an
-`overage-disabled-reason`. Two values worth knowing:
+During the original investigation, a rejected overage response also included
+an `overage-disabled-reason`:
 
-- **`group_zero_credit_limit`** → a workspace admin on a Team /
-  Enterprise plan has set the org's overage spend to $0. This is a
-  config you **cannot** apply to a personal plan. Seeing this confirms
-  the token belongs to an org-administered account.
-- **`usage_limit_reached`** → personal account has hit its monthly
-  cap.
+- `group_zero_credit_limit` appeared on an organization-managed workspace where
+  an administrator had disabled overage spending.
+- `usage_limit_reached` appeared when the observed account had exhausted its
+  usage allowance.
 
-The `group_*` prefix specifically means "an organization-level
-setting blocked this," not a user-level setting.
+Those strings are useful forensic context for that capture. Anthropic does not
+currently publish them as an exhaustive or stable plan taxonomy, so future
+responses may add values or change their meaning.
 
 #### Worked example
 
-Two tokens probed at the same time, both returning 200:
+Two tokens probed at the same time both returned 200:
 
-| Label | `anthropic-organization-id` | `overage-status` | Reason | Conclusion |
-|---|---|---|---|---|
-| Work Org | `<ORG_UUID_A>` | `rejected` | `group_zero_credit_limit` | Team plan; admin disabled overage |
-| Personal Max | `<ORG_UUID_B>` | `allowed` | — | Personal Max plan; pay-as-you-go overage permitted |
+| Label | Observed organization id | Overage | Reason |
+|---|---|---|---|
+| Work label | `<ORG_UUID_A>` | `rejected` | `group_zero_credit_limit` |
+| Personal label | `<ORG_UUID_B>` | `allowed` | — |
 
-Three independent signals confirm these are distinct accounts and
-that the labels are correct:
+The different observed organization ids, overage states, and utilization values
+corroborated the expected labels in that one investigation. They did not create
+a durable provider identity mapping. If a saved label is suspect, reauthenticate
+the intended account and let Sidekick's supported import and identity checks
+replace or reject it.
 
-1. Different `anthropic-organization-id` UUIDs — if the labels were
-   swapped or pointed at the same account, one or both would match.
-2. `group_zero_credit_limit` on the Org token is a Team-plan-only
-   marker — impossible to set on a personal plan.
-3. Utilization values differ in a way consistent with the labels
-   (work account showed recent activity; personal showed near-zero).
-
-If the labels in your config disagree with the org IDs the API
-returns, that's the bug — rename or replace the account.
-
-### Root causes
+### 401 root causes
 
 When the direct curl returns 200 but `sidekick-usages` still 401s,
 one of these is almost always the cause.
@@ -300,40 +345,17 @@ contains a leading space, trailing newline, or shell-quoting artifact.
 Anthropic rejects `Authorization: Bearer  sk-ant-…` (double space)
 with 401.
 
-The classic source is `export X= sk-ant-…` — note the space after
-`=`. Bash treats this as `export X=` (assigning empty) followed by an
-attempt to execute `sk-ant-…` as a command. If you then copy that
-same pasted string into `sidekick-usages add --token "..."`, the
-literal leading space rides along into the saved bytes.
-
-**Whitespace-safe save** (no shell-quoting hazards, no terminal echo
-of the token):
-
-```bash
-printf '%s' 'sk-ant-oat01-<REDACTED>' \
-  | sidekick-usages add claude --label "your-label" --force
-```
-
-`printf '%s'` emits the token with no trailing newline and no
-interpretation of escape sequences — what goes in is exactly what
-gets stored.
-
-> Note on `add` precedence: when both stdin and a local Claude CLI
-> login are present, `add` prefers the local-CLI auto-detect over the
-> pipe. If your local `claude` CLI is logged into a *different*
-> account than the token you piped, you'll silently save the wrong
-> one. To force the piped token, use `--token` explicitly, or log out
-> of `claude` first.
+The classic source is `export X= sk-ant-…` — note the space after `=`. Bash
+treats this as an empty assignment followed by an attempt to execute the token
+as a command. Literal `--token` values also enter shell history and process
+arguments. Do not repair either problem by manually editing `accounts.json` or
+re-entering a secret on the command line.
 
 #### Stale `account.scopes` routing the wrong code path
 
-`account.scopes` is captured at `add` time from the local CLI
-keychain entry. If the saved value is stale — e.g., the keychain
-entry was a full-scope OAuth login when you first ran `add`, but the
-token you just refreshed in is a `setup-token` (inference-only) —
-the dispatcher at `src/sidekick_usages/providers/claude/usage.py:27` will
-route to the
-wrong endpoint:
+`account.scopes` is captured from the provider credential boundary. If a token
+was imported through the wrong workflow, the saved metadata can route usage to
+the wrong endpoint:
 
 | Saved `scopes` | New token shape | Dispatcher sends to | Result |
 |---|---|---|---|
@@ -342,34 +364,35 @@ wrong endpoint:
 | no `user:profile` | full-scope OAuth | `/v1/messages` | 200 (works either way) |
 | no `user:profile` | `setup-token` | `/v1/messages` | 200 |
 
-Re-running `add … --force` rewrites `scopes` from the current
-keychain entry, which is why it tends to fix mysterious 401s. If
-you're piping a `setup-token` and don't have the matching CLI session
-locally, pass `--token` explicitly so `add` doesn't read stale
-keychain scopes.
+Reimporting the current OAuth login refreshes its scope metadata. The dedicated
+setup-token command records an inference-only credential without relying on a
+different active local login.
 
 ### Fix
 
-For most real-world 401s, this one-liner clears it:
+Use the provider-owned login flow that matches the credential type. These paths
+capture credentials without placing them in command arguments:
 
 ```bash
-# 1. Refresh from whichever source has the canonical token bytes
-#    (local CLI keychain OR a piped setup-token)
-printf '%s' 'sk-ant-oat01-<REDACTED>' \
-  | sidekick-usages add claude --label "your-label" --force
+# OAuth login
+claude auth login
+sidekick-usages refresh "your-label"
 
-# 2. Verify
+# Or create and save a long-lived setup token
+sidekick-usages claude setup-token --label "your-label"
+
 sidekick-usages --only claude check
 ```
 
-If `check` still 401s after a clean `--force`:
+If `check` still returns 401 after a clean reauthentication:
 
 1. Run the direct curl probe above. If that 401s too, the token is
    genuinely dead — mint a new one.
 2. If the curl returns 200 but `sidekick-usages` 401s, use
-   `sidekick-usages doctor --json` to identify the selected store. Inspect only
-   that file for whitespace in `access_token`, then re-run step 1. See the
-   [persistence location guide](./persistence-and-recovery.md) before assuming
+   `sidekick-usages doctor --json` to confirm the selected store and credential
+   classification, then repeat the supported import path. Do not print or edit
+   the stored token. See the
+   [persistence location guide](../persistence-and-recovery.md) before assuming
    the 0.6.0 compatibility path is active.
 
 ---
@@ -388,14 +411,14 @@ and what this entry covers.>
 
 ### Don't be fooled
 
-<false leads with source-line citations.>
+<false leads with links to owning source symbols.>
 
 ### Diagnostic
 
 <the probe that isolates the symptom from sidekick-usages's code
 path. Show the command and how to read the output.>
 
-### Root causes
+### <entry-specific> root causes
 
 <the real explanations, ranked by frequency.>
 

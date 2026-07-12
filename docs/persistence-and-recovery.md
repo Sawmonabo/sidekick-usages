@@ -1,8 +1,8 @@
 # Persistence locations, migration, and recovery
 
-This guide describes where Sidekick stores account state, how release 0.7.0
-moves durable data to native application-data directories, and how to recover
-or prepare a safe rollback to release 0.6.0.
+This guide describes where Sidekick stores account state, how the upcoming
+0.7.0 release moves durable data to native application-data directories, and
+how to recover or prepare a safe rollback to release 0.6.0.
 
 ## Location model
 
@@ -20,8 +20,8 @@ overwrites the active provider login.
 
 ### Native locations
 
-Release 0.7.0 uses the operating system's per-user application-data
-conventions:
+The upcoming 0.7.0 release uses the operating system's per-user
+application-data conventions:
 
 | Platform | Account document | Private Codex root | Activity snapshots |
 | --- | --- | --- | --- |
@@ -54,7 +54,7 @@ import and never deletes it automatically.
 
 ## Upgrade behavior
 
-Installing release 0.7.0 does not silently relocate an existing store:
+Upgrading to 0.7.0 will not silently relocate an existing store:
 
 1. If only compatibility data exists, normal commands continue using it.
 2. If all candidates are absent, the first authorized write uses the native
@@ -65,9 +65,10 @@ Installing release 0.7.0 does not silently relocate an existing store:
 ### Obsolete derived Codex cache
 
 Release 0.6.0 derived a Codex output-only total from local rollout files and
-stored `codex-lifetime-cache.json` in the platform cache directory. Release
-0.7.0 does not read, trust, migrate, rewrite, or delete that file. Codex token
-activity now comes from each saved account's authoritative profile.
+stored `codex-lifetime-cache.json` in the platform cache directory. The
+upcoming 0.7.0 release does not read, trust, migrate, rewrite, or delete that
+file. Codex token activity now comes from each saved account's authoritative
+profile.
 
 The inert file can be removed manually if it exists:
 
@@ -227,9 +228,9 @@ uv tool install --force --python 3.14 \
 ```
 
 If rollback preparation fails, do not downgrade. Keep the current release,
-run `doctor`, and follow its reported recovery action. Upgrading again after a
-prepared rollback is safe: release 0.7.0 recognizes the retained lineage and
-selects the latest proven generation.
+run `doctor`, and follow its reported recovery action. After 0.7.0 is released,
+upgrading again from a prepared rollback will be safe because it recognizes
+the retained lineage and selects the latest proven generation.
 
 ## Security boundaries
 

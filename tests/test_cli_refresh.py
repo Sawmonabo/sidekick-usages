@@ -427,7 +427,7 @@ def test_refresh_command_persists_detected_provider_account_id(
     assert saved.provider_account_id == "acct_current"
 
 
-def test_refresh_command_imports_default_codex_login_to_private_cache(
+def test_refresh_command_imports_default_codex_login_to_private_bundle(
     tmp_path: Path,
 ) -> None:
     """Refreshing a Codex label reads default login and caches a copy."""
@@ -658,10 +658,10 @@ def test_refresh_all_persists_failed_refresh_diagnostic(
     assert saved.last_refresh_error is not None
 
 
-def test_add_codex_uses_default_login_and_writes_private_cache(
+def test_add_codex_uses_default_login_and_writes_private_bundle(
     tmp_path: Path,
 ) -> None:
-    """Adding Codex from default login copies auth into private cache."""
+    """Adding Codex from the default login saves a private auth bundle."""
     provider = _FakeProvider(
         detected=_detected(
             access_token="eyJ-current.access.sig",
@@ -741,7 +741,7 @@ def test_add_prompts_only_for_missing_local_credentials(
         (["codex-login"], True),
     ],
 )
-def test_codex_login_runs_plain_cli_and_imports_private_cache(
+def test_codex_login_runs_plain_cli_and_imports_private_bundle(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     command: list[str],

@@ -194,7 +194,8 @@ The activity subtitle uses one provider-neutral presentation contract:
   account profile is retained as a strict Sidekick-owned snapshot, so a later
   authentication failure does not erase the last authoritative value.
 
-Both panels render the same footer shape:
+Both panels render the same footer shape. These values are illustrative, not
+live account data:
 
 ```text
 915,947,703 tokens  ·  since Dec 28, 2025
@@ -226,6 +227,11 @@ browser for usage checks.
 
 ### Claude Code
 
+[Claude-specific documentation](./docs/claude/README.md) records provider
+schema authority, retrieval guidance, and symptom-first debugging. Public
+schemas described there are documentation and authoring contracts; they are
+not additional Sidekick runtime dependencies.
+
 Credential discovery checks:
 
 - macOS Keychain item `Claude Code-credentials`.
@@ -245,10 +251,12 @@ The usage route depends on the saved OAuth scopes:
   small amount of Claude quota.
 
 Saved Claude OAuth logins with refresh tokens rotate automatically before a
-known expiry or after HTTP 401. Refresh prefers `claude auth login --claudeai`
-inside an isolated temporary `HOME`, then imports the rotated credentials. A
-direct HTTPS OAuth exchange is available as a fallback. Neither path overwrites
-the normal `~/.claude` login. Setup tokens cannot auto-refresh.
+known expiry or after HTTP 401. On non-macOS systems with Claude Code available,
+refresh first runs `claude auth login --claudeai` inside an isolated temporary
+`HOME`, then imports the rotated credentials. On macOS, or when the executable
+cannot be resolved, Sidekick uses its bounded direct HTTPS OAuth exchange.
+Neither path overwrites the normal `~/.claude` login. Setup tokens cannot
+auto-refresh.
 
 Claude token activity is read-only local state. Sidekick reads the documented
 statistics cache and the live transcript suffix needed to match Claude Code's
@@ -256,6 +264,11 @@ current `/stats` total. It never refreshes, rewrites, locks, renames, or deletes
 Claude-owned activity files.
 
 ### Codex CLI
+
+[Codex-specific documentation](./docs/codex/README.md) records provider
+research, app-server schema guidance, and architecture status. Proposed
+behavior there is not part of the current runtime unless an implementation
+record says otherwise.
 
 Credential discovery reads `$CODEX_HOME/auth.json` when `CODEX_HOME` is set,
 otherwise `~/.codex/auth.json`. Sidekick copies each imported account into a
@@ -271,7 +284,8 @@ Usage calls `https://chatgpt.com/backend-api/codex/usage` with the saved bearer
 token and `ChatGPT-Account-Id`. It reports the primary 5-hour window, secondary
 7-day window, and provider-returned additional model limits. Expiring access
 tokens rotate through `https://auth.openai.com/oauth/token`; rotated data is
-written to the private sidekick cache, not the active `~/.codex` login.
+written to the saved account's private credential bundle, not the active
+`~/.codex` login.
 
 Token activity independently calls
 `https://chatgpt.com/backend-api/wham/profiles/me` for each eligible saved
@@ -426,11 +440,11 @@ pool, timeout, payload-bound, retry-safety, and error contracts.
 
 ## Persistence and recovery
 
-Release 0.7.0 introduces native per-user application-data locations on Linux,
-WSL, macOS, and Windows. Upgrading does not silently relocate an existing
-0.6.0 store: compatibility data remains authoritative until the operator runs
-`sidekick-usages migrate locations`. A fresh installation writes directly to
-the native location.
+The upcoming 0.7.0 release introduces native per-user application-data
+locations on Linux, WSL, macOS, and Windows. Upgrading does not silently
+relocate an existing 0.6.0 store: compatibility data remains authoritative
+until the operator runs `sidekick-usages migrate locations`. A fresh
+installation writes directly to the native location.
 
 `doctor` reports the selected source and destination, candidate conflicts,
 partial transactions, safe private-auth evidence, and the exact next command.
@@ -501,7 +515,7 @@ Important field semantics:
   place after import.
 
 Do not edit the store by hand. Use CLI commands so identity checks, file modes,
-private Codex caches, and diagnostics remain consistent.
+private Codex credential bundles, and diagnostics remain consistent.
 
 ## Troubleshooting
 
@@ -532,9 +546,9 @@ not bypass this with `--replace-identity` unless changing the label's account is
 intentional.
 
 For non-obvious Claude failures, use the
-[Claude debugging log](./docs/debugging-claude.md). It covers isolated refresh,
-direct token probes, scope routing, whitespace in stored tokens, and provider
-response headers.
+[Claude debugging log](./docs/claude/debugging.md). It covers isolated
+refresh, direct token probes, scope routing, whitespace in stored tokens, and
+provider response headers.
 
 ### Claude setup-token shows fewer windows
 
@@ -613,8 +627,8 @@ If it is missing, run `claude auth login` and retry `add` or `refresh`.
   presentation; `branding.py` is the one robot and product-copy source.
 - `tests/`: focused pytest coverage for CLI behavior, providers, HTTP errors,
   storage, rendering, maintenance, packaging, and cross-platform schedulers.
-- `docs/`: operational guides plus the usage-TUI design and implementation
-  record.
+- `docs/`: shared operational guides, provider research and schemas,
+  architecture specifications, and implementation records.
 - `packaging/homebrew/`: formula generator and in-tree formula copy.
 - `.github/workflows/`: CI, release, PyPI-gated publish, and Homebrew automation.
 
