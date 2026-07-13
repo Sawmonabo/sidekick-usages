@@ -33,9 +33,11 @@ from sidekick_usages.persistence.errors import (
 from sidekick_usages.persistence.filesystem import PersistenceFilesystem
 from sidekick_usages.persistence.inventory import PersistenceInventory
 from sidekick_usages.persistence.migrations.account import (
-    CURRENT_VERSION_ONE,
     AccountFilesystemFactory,
     accounts_from_current,
+)
+from sidekick_usages.persistence.migrations.account_codecs import (
+    CURRENT_VERSION_TWO,
 )
 from sidekick_usages.persistence.migrations.location import (
     CandidateBlockedSelection,
@@ -74,8 +76,8 @@ from sidekick_usages.persistence.private_credentials import (
     PRIVATE_TRANSACTION_JOURNAL,
     PrivateCredentialTree,
 )
-from sidekick_usages.persistence.schemas import encode_version_one
-from sidekick_usages.persistence.transforms import accounts_to_version_one
+from sidekick_usages.persistence.schemas import encode_version_two
+from sidekick_usages.persistence.transforms import accounts_to_version_two
 
 _MIGRATE_ACCOUNTS_COMMAND = (
     "sidekick-usages",
@@ -338,7 +340,7 @@ class LocationObserver:
             PrivateAuthMigrationResult | PrivateAuthMigrationAssessment
         ) = PrivateAuthMigrationAssessment(())
         lineage_account_digests: frozenset[Sha256Digest] = frozenset()
-        if assessment.code in CURRENT_VERSION_ONE and observation is not None:
+        if assessment.code in CURRENT_VERSION_TWO and observation is not None:
             accounts = accounts_from_current(observation, assessment)
             private_auth = self.prepare_private_auth(
                 accounts,
@@ -356,7 +358,7 @@ class LocationObserver:
             lineage_account_digests = frozenset(
                 sha256_digest(artifact.content)
                 for artifact in observation.artifacts
-                if artifact.kind is ArtifactKind.V1_SNAPSHOT
+                if artifact.kind is ArtifactKind.V2_SNAPSHOT
                 and artifact.state is ArtifactState.VALID
                 and artifact.content is not None
             )
@@ -540,7 +542,7 @@ class LocationObserver:
 
 
 def _account_digest(accounts: tuple[Account, ...]) -> Sha256Digest:
-    payload = encode_version_one(accounts_to_version_one(accounts))
+    payload = encode_version_two(accounts_to_version_two(accounts))
     return sha256_digest(payload)
 
 

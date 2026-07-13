@@ -11,7 +11,8 @@ import pytest
 from sidekick_usages.core.expiry import InvalidExpiry, KnownExpiry
 from sidekick_usages.core.models import (
     Account,
-    ClaudeCredentials,
+    ClaudeLoginCredentials,
+    ClaudeSetupTokenCredentials,
     CodexCredentials,
 )
 from sidekick_usages.core.types import (
@@ -21,7 +22,7 @@ from sidekick_usages.core.types import (
 )
 from sidekick_usages.persistence.errors import InvalidSchemaError
 from sidekick_usages.providers.base import ProviderBoundaryError
-from sidekick_usages.providers.claude.schemas import (
+from sidekick_usages.providers.claude.credential_schemas import (
     claude_expiry,
     parse_credentials_blob,
 )
@@ -36,22 +37,29 @@ def test_claude_parser_preserves_known_scope_order() -> None:
         {
             "claudeAiOauth": {
                 "accessToken": "sk-ant-oat01-abc",
+                "refreshToken": "refresh-abc",
+                "expiresAt": 1_800_000_000_000,
                 "scopes": ["user:inference", "user:profile"],
             }
         }
     )
 
-    assert detected is not None
+    assert isinstance(detected.credentials, ClaudeLoginCredentials)
     assert detected.scopes == ("user:inference", "user:profile")
 
 
-def test_claude_parser_preserves_absent_scopes_as_unknown() -> None:
-    """An absent scope field remains distinct from a known-empty list."""
-    detected = parse_credentials_blob(
-        {"claudeAiOauth": {"accessToken": "sk-ant-oat01-abc"}}
-    )
-
-    assert detected.scopes is None
+def test_claude_parser_rejects_absent_login_scopes() -> None:
+    """Native login state cannot impersonate explicit setup-token input."""
+    with pytest.raises(ProviderBoundaryError):
+        parse_credentials_blob(
+            {
+                "claudeAiOauth": {
+                    "accessToken": "sk-ant-oat01-abc",
+                    "refreshToken": "refresh-abc",
+                    "expiresAt": 1_800_000_000_000,
+                }
+            }
+        )
 
 
 @pytest.mark.parametrize("scopes", ["not-a-list", ["user:inference", 42]])
@@ -62,6 +70,8 @@ def test_claude_parser_rejects_malformed_scopes(scopes: JsonValue) -> None:
             {
                 "claudeAiOauth": {
                     "accessToken": "sk-ant-oat01-abc",
+                    "refreshToken": "refresh-abc",
+                    "expiresAt": 1_800_000_000_000,
                     "scopes": scopes,
                 }
             }
@@ -89,9 +99,7 @@ def test_provider_native_expiry_units_converge_and_fail_closed() -> None:
 def test_store_round_trips_exact_provider_state(tmp_path: Path) -> None:
     """The compatibility codec preserves exact units and aware state."""
     epoch = datetime(1970, 1, 1, tzinfo=UTC)
-    claude_expiry_ms = 1_800_000_000_123
     codex_expiry_seconds = 1_900_000_000
-    claude_expiry = epoch + timedelta(milliseconds=claude_expiry_ms)
     codex_expiry = epoch + timedelta(seconds=codex_expiry_seconds)
     eastern = timezone(timedelta(hours=-4))
     audit_time = datetime(2026, 6, 12, 8, 34, 56, 789000, tzinfo=eastern)
@@ -100,10 +108,8 @@ def test_store_round_trips_exact_provider_state(tmp_path: Path) -> None:
     reset_time_utc = reset_time.astimezone(UTC)
     claude_account = Account(
         label=AccountLabel("claude-team"),
-        credentials=ClaudeCredentials(
+        credentials=ClaudeSetupTokenCredentials(
             access_token="sk-ant-oat01-x",
-            expiry=KnownExpiry(claude_expiry),
-            scopes=("user:inference", "user:profile"),
         ),
         last_refresh_at=audit_time,
         last_refresh_status=RefreshStatus.OK,
@@ -133,7 +139,9 @@ def test_store_round_trips_exact_provider_state(tmp_path: Path) -> None:
     codex_record = records["codex-pro"]
     assert isinstance(claude_record, dict)
     assert isinstance(codex_record, dict)
-    assert claude_record["expires_at"] == "2027-01-15T08:00:00.123000Z"
+    assert claude_record["credential_kind"] == "setup_token"
+    assert "access_expires_at" not in claude_record
+    assert "scopes" not in claude_record
     assert codex_record["expires_at"] == "2030-03-17T17:46:40.000000Z"
     assert claude_record["last_refresh_at"] == "2026-06-12T12:34:56.789000Z"
     assert (
@@ -145,8 +153,7 @@ def test_store_round_trips_exact_provider_state(tmp_path: Path) -> None:
     codex = restored.get("codex-pro")
 
     assert claude is not None
-    assert claude.expiry == KnownExpiry(claude_expiry)
-    assert claude.scopes == ("user:inference", "user:profile")
+    assert isinstance(claude.credentials, ClaudeSetupTokenCredentials)
     assert claude.last_refresh_at == audit_time_utc
     assert claude.heartbeat_5h_reset_at == reset_time_utc
     assert claude.heartbeat_window_resets == {"standard": reset_time_utc}
@@ -158,12 +165,12 @@ def test_store_round_trips_exact_provider_state(tmp_path: Path) -> None:
     assert codex.codex_last_refresh == "2026-06-12T00:00:00Z"
     assert codex.last_heartbeat_at == audit_time_utc
 
-    assert isinstance(claude_account.credentials, ClaudeCredentials)
-    claude_account.credentials = replace(
-        claude_account.credentials,
-        expiry=KnownExpiry(claude_expiry + timedelta(microseconds=1)),
+    assert isinstance(codex_account.credentials, CodexCredentials)
+    codex_account.credentials = replace(
+        codex_account.credentials,
+        expiry=InvalidExpiry(),
     )
     with pytest.raises(InvalidSchemaError):
-        store.persist(claude_account)
+        store.persist(codex_account)
     with pytest.raises(ValueError, match="Account labels"):
         restored.rename("claude-team", "invalid\x00label")

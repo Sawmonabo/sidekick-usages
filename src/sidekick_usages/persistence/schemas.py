@@ -4,6 +4,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from enum import StrEnum, auto
 
 from pydantic import TypeAdapter, ValidationError
 
@@ -13,10 +14,17 @@ from sidekick_usages.core.types import (
     ProviderId,
     RefreshStatus,
 )
+from sidekick_usages.persistence._current_schema import (
+    decode_current,
+    encode_current,
+)
+from sidekick_usages.persistence._prototype_receipt_schema import (
+    decode_receipt,
+    encode_receipt,
+)
 from sidekick_usages.persistence._schema_models import (
     GENERATION_ZERO_ADAPTER,
     PROTOTYPE_ADAPTER,
-    PROTOTYPE_RECEIPT_ADAPTER,
     VERSION_ONE_ADAPTER,
     ValidatedAccountRecord,
 )
@@ -39,6 +47,7 @@ from sidekick_usages.serialization import (
 
 MAX_DOCUMENT_BYTES = 16 * 1024 * 1024
 MAX_ACCOUNTS = 512
+CURRENT_SCHEMA_VERSION = 2
 
 _MIN_HISTORICAL_TIMESTAMP_LENGTH = 20
 _MAX_HISTORICAL_TIMESTAMP_LENGTH = 32
@@ -91,7 +100,13 @@ _SAFE_SCHEMA_PATH_SEGMENTS = frozenset(
         *_RECORD_FIELDS,
         "accounts",
         "claude",
+        "claude_identity",
         "codex",
+        "credential_kind",
+        "access_expires_at",
+        "refresh_expires_at",
+        "account_id",
+        "organization_id",
         "prototype_sha256",
         "receipt_version",
         "schema_version",
@@ -155,6 +170,27 @@ class StoredAccountRecord:
     last_heartbeat_at: datetime | None
     last_heartbeat_status: HeartbeatStatus | None
     last_heartbeat_error: str | None
+    credential_kind: ClaudeCredentialKind | None = None
+    refresh_expires_at: datetime | None = None
+    claude_identity: StoredClaudeIdentity | None = field(
+        default=None,
+        repr=False,
+    )
+
+
+class ClaudeCredentialKind(StrEnum):
+    """Closed persisted Claude credential variants."""
+
+    SETUP_TOKEN = auto()
+    SUBSCRIPTION_LOGIN = "subscription_login"
+
+
+@dataclass(frozen=True, slots=True)
+class StoredClaudeIdentity:
+    """Complete stable Claude identity persisted as one value."""
+
+    account_id: str = field(repr=False)
+    organization_id: str = field(repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,6 +214,7 @@ class PrototypeReceipt:
     """Non-secret proof that one exact prototype was imported."""
 
     prototype_sha256: str
+    target_schema_version: int = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,7 +231,16 @@ class VersionOneDocument:
     accounts: tuple[StoredAccountRecord, ...]
 
 
-type StoredDocument = GenerationZeroDocument | VersionOneDocument
+@dataclass(frozen=True, slots=True)
+class VersionTwoDocument:
+    """Validated current schema-version-two accounts in insertion order."""
+
+    accounts: tuple[StoredAccountRecord, ...]
+
+
+type StoredDocument = (
+    GenerationZeroDocument | VersionOneDocument | VersionTwoDocument
+)
 
 
 def _decode_json(payload: bytes) -> JsonValue:
@@ -538,12 +584,14 @@ def decode_authority(payload: bytes) -> StoredDocument:
     """Decode an authoritative account document by strict root dispatch.
 
     :param payload: Complete bounded authority bytes.
-    :returns: Validated generation-zero or version-one document.
+    :returns: Validated generation-zero, version-one, or version-two document.
     :raises PersistenceSchemaError: If the bytes are not supported state.
     """
     root = _object_root(payload)
     schema_version = root.get("schema_version")
     if type(schema_version) is int:
+        if schema_version == CURRENT_SCHEMA_VERSION:
+            return decode_version_two(payload)
         if schema_version != 1:
             raise FutureSchemaError(schema_version)
         return _version_one_from_root(root)
@@ -569,6 +617,11 @@ def decode_version_one(payload: bytes) -> VersionOneDocument:
     return _version_one_from_root(root)
 
 
+def decode_version_two(payload: bytes) -> VersionTwoDocument:
+    """Decode one strict current schema-version-two document."""
+    return decode_current(payload)
+
+
 def decode_prototype(payload: bytes) -> PrototypeDocument:
     """Decode the strict import-only cc-usage prototype shape."""
     root = _object_root(payload)
@@ -588,20 +641,7 @@ def decode_prototype(payload: bytes) -> PrototypeDocument:
 
 def decode_prototype_receipt(payload: bytes) -> PrototypeReceipt:
     """Decode one exact deterministic prototype-import receipt."""
-    root = _object_root(payload)
-    model = _validate(PROTOTYPE_RECEIPT_ADAPTER, root)
-    receipt = PrototypeReceipt(model.prototype_sha256)
-    if payload != _encode_json(_prototype_receipt_object(receipt)):
-        raise InvalidSchemaError
-    return receipt
-
-
-def _prototype_receipt_object(receipt: PrototypeReceipt) -> JsonObject:
-    return {
-        "receipt_version": 1,
-        "prototype_sha256": receipt.prototype_sha256,
-        "target_schema_version": 1,
-    }
+    return decode_receipt(payload)
 
 
 def _reset_object(
@@ -732,6 +772,11 @@ def encode_version_one(document: VersionOneDocument) -> bytes:
     return payload
 
 
+def encode_version_two(document: VersionTwoDocument) -> bytes:
+    """Encode deterministic current schema-version-two bytes."""
+    return encode_current(document)
+
+
 def encode_generation_zero(document: GenerationZeroDocument) -> bytes:
     """Encode the complete deterministic v0.6.0 generation-zero shape."""
     payload = _encode_json(
@@ -743,6 +788,4 @@ def encode_generation_zero(document: GenerationZeroDocument) -> bytes:
 
 def encode_prototype_receipt(receipt: PrototypeReceipt) -> bytes:
     """Encode the exact deterministic non-secret receipt format."""
-    payload = _encode_json(_prototype_receipt_object(receipt))
-    decode_prototype_receipt(payload)
-    return payload
+    return encode_receipt(receipt)

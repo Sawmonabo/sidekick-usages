@@ -15,7 +15,12 @@ from datetime import UTC, datetime
 
 import pytest
 
-from sidekick_usages.core.models import Account, ClaudeCredentials
+from sidekick_usages.core.expiry import KnownExpiry, UnknownExpiry
+from sidekick_usages.core.models import (
+    Account,
+    ClaudeLoginCredentials,
+    ClaudeSetupTokenCredentials,
+)
 from sidekick_usages.core.types import AccountLabel, HeartbeatStatus
 from sidekick_usages.http import HttpClient, HttpOperation
 from sidekick_usages.providers.base import (
@@ -103,17 +108,26 @@ class _FakeHttp(HttpClient):
 
 
 def _acct(scopes: tuple[str, ...] | None) -> Account:
-    """Build a minimal Account fixture.
+    """Build a setup or complete login account for its expected route.
 
-    :param scopes: Scope tuple (or None) to assign.
+    :param scopes: Login scopes when ``user:profile`` is present; otherwise
+        select an explicit setup-token credential.
     :return: Account with sentinel fields.
     """
+    credentials = (
+        ClaudeLoginCredentials(
+            access_token="sk-ant-oat01-test",
+            refresh_token="refresh-test",
+            access_expiry=KnownExpiry(datetime(2027, 1, 1, tzinfo=UTC)),
+            refresh_expiry=UnknownExpiry(),
+            scopes=scopes,
+        )
+        if scopes is not None and "user:profile" in scopes
+        else ClaudeSetupTokenCredentials(access_token="sk-ant-oat01-test")
+    )
     return Account(
         label=AccountLabel("t"),
-        credentials=ClaudeCredentials(
-            access_token="sk-ant-oat01-test",
-            scopes=scopes,
-        ),
+        credentials=credentials,
     )
 
 
@@ -227,49 +241,6 @@ def test_fetch_via_headers_rejects_malformed_window_atomically(
     assert value not in repr(exc_info.value.failure)
 
 
-# -- fetch_usage: scope-based routing -----------------------------
-def test_fetch_usage_routes_inference_only_to_header_path() -> None:
-    """scopes lacking ``user:profile`` → header path."""
-    http = _FakeHttp(response_headers=_LIVE_HEADERS)
-    _provider().fetch_usage(_acct(("user:inference",)), http)
-    assert http.calls == [("POST", MESSAGES_URL)]
-
-
-def test_fetch_usage_routes_empty_scopes_to_header_path() -> None:
-    """Known-empty scopes use the inference-only header path."""
-    http = _FakeHttp(response_headers=_LIVE_HEADERS)
-    _provider().fetch_usage(_acct(()), http)
-    assert http.calls == [("POST", MESSAGES_URL)]
-
-
-def test_fetch_usage_routes_full_scope_to_oauth_path() -> None:
-    """scopes including ``user:profile`` → ``/api/oauth/usage``."""
-    http = _FakeHttp(
-        response_json={
-            "five_hour": {
-                "utilization": 0.1,
-                "resets_at": "2026-05-16T00:00:00Z",
-            },
-        }
-    )
-    _provider().fetch_usage(
-        _acct(("user:profile", "user:inference")),
-        http,
-    )
-    assert http.calls == [("GET", USAGE_URL)]
-
-
-def test_fetch_usage_routes_unknown_scope_to_oauth_path() -> None:
-    """scopes=None (never observed) → optimistic OAuth path.
-
-    The CLI catches any resulting 403, self-heals scopes=[], and
-    retries via the header path. See ``_handle_runtime_forbidden``.
-    """
-    http = _FakeHttp(response_json={})
-    _provider().fetch_usage(_acct(None), http)
-    assert http.calls == [("GET", USAGE_URL)]
-
-
 @pytest.mark.parametrize("heartbeat", [False, True])
 def test_oauth_boundaries_reject_malformed_window_safely(
     *,
@@ -345,8 +316,8 @@ def test_claude_oauth_heartbeat_warms_inactive_five_hour() -> None:
     }
 
 
-def test_claude_inference_heartbeat_uses_header_probe() -> None:
-    """Inference-only tokens can only warm by sending the tiny probe."""
+def test_claude_setup_heartbeat_uses_header_probe() -> None:
+    """Setup tokens warm by sending the tiny header probe."""
     http = _FakeHttp(response_headers=_LIVE_HEADERS)
 
     result = ClaudeHeartbeat().run(_acct(("user:inference",)), http)

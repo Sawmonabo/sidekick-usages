@@ -143,13 +143,39 @@ def finding(
 
 
 def imports(unit: SourceUnit) -> Iterable[tuple[ast.AST, str]]:
-    """Yield absolute imports found anywhere in a source unit."""
+    """Yield resolved import candidates found in a source unit."""
     for node in ast.walk(unit.tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 yield node, alias.name
-        elif isinstance(node, ast.ImportFrom) and node.module is not None:
-            yield node, node.module
+        elif isinstance(node, ast.ImportFrom):
+            base = _import_from_base(unit, node)
+            for alias in node.names:
+                if alias.name == "*":
+                    if base:
+                        yield node, base
+                    continue
+                yield (
+                    node,
+                    ".".join(part for part in (base, alias.name) if part),
+                )
+
+
+def _import_from_base(unit: SourceUnit, node: ast.ImportFrom) -> str:
+    """Resolve one ``from`` import base against its importing package."""
+    if node.level == 0:
+        return node.module or ""
+    parts = unit.path.parts
+    if parts and parts[0] == "src":
+        parts = parts[1:]
+    package = parts[:-1]
+    if unit.path.name == "__init__.py":
+        package = parts[:-1]
+    ascend = node.level - 1
+    if ascend:
+        package = package[:-ascend] if ascend <= len(package) else ()
+    module = tuple((node.module or "").split(".")) if node.module else ()
+    return ".".join((*package, *module))
 
 
 def matches(module: str, boundary: str) -> bool:

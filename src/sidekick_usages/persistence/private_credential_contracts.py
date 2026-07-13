@@ -57,11 +57,23 @@ class PrivateCredentialNative(Protocol):
     def contains_artifacts(self, root: Path) -> bool:
         """Return whether a fully validated private tree has descendants."""
 
+    def list_directories(self, root: Path) -> tuple[str, ...]:
+        """Return validated direct child directory basenames."""
+
+    def list_directories_shallow(self, root: Path) -> tuple[str, ...]:
+        """Return direct directories without scanning their descendants."""
+
+    def list_files(self, root: Path) -> tuple[str, ...]:
+        """Return validated direct child file basenames."""
+
     def ensure_directory(self, path: Path) -> None:
         """Create or validate one protected private directory."""
 
     def repair_permissions(self, root: Path) -> tuple[int, int]:
         """Preflight and repair a private tree without changing bytes."""
+
+    def harden_provider_stage(self, root: Path) -> tuple[int, int]:
+        """Normalize one isolated provider-produced private subtree."""
 
     def destroy_artifacts(self, root: Path) -> None:
         """Delete a fully validated private tree bottom-up."""

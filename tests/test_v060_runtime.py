@@ -6,13 +6,16 @@ import subprocess
 import sys
 import zipfile
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
+from sidekick_usages.core.expiry import KnownExpiry
 from sidekick_usages.core.models import (
     Account,
-    ClaudeCredentials,
+    ClaudeLoginCredentials,
+    ClaudeLoginIdentity,
     CodexCredentials,
 )
 from sidekick_usages.core.types import AccountLabel
@@ -25,8 +28,8 @@ from sidekick_usages.persistence.artifacts import (
 from sidekick_usages.persistence.errors import PersistenceCode
 from sidekick_usages.persistence.schemas import encode_generation_zero
 from sidekick_usages.persistence.transforms import (
-    accounts_to_version_one,
-    version_one_to_v060,
+    accounts_to_version_two,
+    version_two_to_v060,
 )
 from sidekick_usages.persistence.v060 import (
     ReleasedReaderVerificationError,
@@ -54,10 +57,16 @@ def _rollback_payload() -> bytes:
     accounts = (
         Account(
             label=AccountLabel("claude-测试"),
-            credentials=ClaudeCredentials(
+            credentials=ClaudeLoginCredentials(
                 access_token="test-only-claude-access",
                 refresh_token="test-only-claude-refresh",
+                access_expiry=KnownExpiry(datetime(2027, 1, 1, tzinfo=UTC)),
+                refresh_expiry=KnownExpiry(datetime(2027, 6, 1, tzinfo=UTC)),
                 scopes=("user:profile",),
+                identity=ClaudeLoginIdentity(
+                    account_id="test-only-account-id",
+                    organization_id="test-only-organization-id",
+                ),
             ),
             plan="团队",
         ),
@@ -73,8 +82,8 @@ def _rollback_payload() -> bytes:
             plan="plus",
         ),
     )
-    version_one = accounts_to_version_one(accounts)
-    return encode_generation_zero(version_one_to_v060(version_one))
+    version_two = accounts_to_version_two(accounts)
+    return encode_generation_zero(version_two_to_v060(version_two))
 
 
 def _file_snapshot(path: Path, payload: bytes) -> FileSnapshot:
@@ -88,6 +97,34 @@ def _file_snapshot(path: Path, payload: bytes) -> FileSnapshot:
         metadata.st_nlink,
         payload,
     )
+
+
+def test_released_payload_preserves_claude_login_state() -> None:
+    """Rollback retains every v0.6.0-representable login field."""
+    payload = json.loads(_rollback_payload())
+
+    assert payload["claude-测试"] == {
+        "provider_id": "claude",
+        "provider_account_id": None,
+        "access_token": "test-only-claude-access",
+        "refresh_token": "test-only-claude-refresh",
+        "expires_at": 1_798_761_600_000,
+        "plan": "团队",
+        "scopes": ["user:profile"],
+        "codex_home": None,
+        "codex_id_token": None,
+        "codex_last_refresh": None,
+        "last_refresh_at": None,
+        "last_refresh_status": None,
+        "last_refresh_error": None,
+        "heartbeat_enabled": False,
+        "heartbeat_5h_reset_at": None,
+        "heartbeat_window_resets": None,
+        "heartbeat_targets": None,
+        "last_heartbeat_at": None,
+        "last_heartbeat_status": None,
+        "last_heartbeat_error": None,
+    }
 
 
 def test_bundle_is_deterministic_exact_pinned_source(tmp_path: Path) -> None:

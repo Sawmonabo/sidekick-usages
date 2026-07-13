@@ -16,7 +16,7 @@ from sidekick_usages.core.expiry import (
 )
 from sidekick_usages.core.models import (
     Account,
-    ClaudeCredentials,
+    ClaudeLoginCredentials,
     CodexCredentials,
     Credentials,
     UsageReport,
@@ -34,6 +34,7 @@ from sidekick_usages.credentials import (
     CredentialUpdateResult,
     CredentialUpdateSuccess,
 )
+from sidekick_usages.credentials.refresh import CredentialRefreshReason
 from sidekick_usages.errors import (
     AuthError,
     ForbiddenError,
@@ -222,8 +223,17 @@ class ScriptedCredentialCoordinator(CredentialRefresher):
         self.steps = list(steps)
         self.calls: list[str] = []
 
-    def refresh_saved(self, account: Account) -> CredentialRefreshResult:
-        self.calls.append(str(account.label))
+    def refresh(
+        self,
+        *,
+        label: AccountLabel,
+        reason: CredentialRefreshReason,
+    ) -> CredentialRefreshResult:
+        del reason
+        account = self.store.get(str(label))
+        if account is None:
+            raise AssertionError("Scripted refresh target disappeared.")
+        self.calls.append(str(label))
         step = (
             self.steps.pop(0)
             if self.steps
@@ -234,11 +244,25 @@ class ScriptedCredentialCoordinator(CredentialRefresher):
         if isinstance(step, ProviderFailure):
             return step
         saved = _copy_account(account)
-        saved.credentials = replace(
-            saved.credentials,
-            access_token=f"test-only-{account.label}-refreshed",
-            expiry=KnownExpiry(REFERENCE_TIME + timedelta(hours=1)),
-        )
+        credentials = saved.credentials
+        access_token = f"test-only-{account.label}-refreshed"
+        if isinstance(credentials, ClaudeLoginCredentials):
+            saved.credentials = replace(
+                credentials,
+                access_token=access_token,
+                access_expiry=KnownExpiry(REFERENCE_TIME + timedelta(hours=1)),
+            )
+        elif isinstance(credentials, CodexCredentials):
+            saved.credentials = replace(
+                credentials,
+                access_token=access_token,
+                expiry=KnownExpiry(REFERENCE_TIME + timedelta(hours=1)),
+            )
+        else:
+            saved.credentials = replace(
+                credentials,
+                access_token=access_token,
+            )
         self.store.persist(saved)
         return step
 
@@ -272,23 +296,27 @@ def _account(
     *,
     expiry: Expiry | None = None,
     plan: str = "team",
-    scopes: tuple[str, ...] | None = None,
 ) -> Account:
-    credentials = (
-        ClaudeCredentials(
+    if provider_id is ProviderId.CLAUDE:
+        access_expiry = expiry or KnownExpiry(
+            REFERENCE_TIME + timedelta(hours=1)
+        )
+        if not isinstance(access_expiry, KnownExpiry):
+            raise ValueError("Claude login expiry must be known.")
+        credentials = ClaudeLoginCredentials(
             access_token=f"test-only-{label}-access",
             refresh_token=f"test-only-{label}-refresh",
-            expiry=expiry or UnknownExpiry(),
-            scopes=scopes,
+            access_expiry=access_expiry,
+            refresh_expiry=UnknownExpiry(),
+            scopes=("user:profile",),
         )
-        if provider_id is ProviderId.CLAUDE
-        else CodexCredentials(
+    else:
+        credentials = CodexCredentials(
             access_token=f"test-only-{label}-access",
             refresh_token=f"test-only-{label}-refresh",
             expiry=expiry or UnknownExpiry(),
             account_id=f"acct_{label}",
         )
-    )
     return Account(
         label=AccountLabel(label),
         credentials=credentials,
@@ -432,24 +460,20 @@ def test_usage_expiry_policy_refreshes_before_the_first_fetch(
 def test_invalid_expiry_and_missing_adapter_fail_without_provider_traffic(
     http: HttpClient,
 ) -> None:
-    invalid = _account(
-        "invalid",
-        ProviderId.CLAUDE,
-        expiry=InvalidExpiry(),
-    )
-    missing = _account("missing", ProviderId.CODEX)
+    invalid = _account("invalid", ProviderId.CODEX, expiry=InvalidExpiry())
+    missing = _account("missing", ProviderId.CLAUDE)
     store = InMemoryAccountStore((invalid, missing))
-    claude = ScriptedProvider(
-        ProviderId.CLAUDE,
+    codex = ScriptedProvider(
+        ProviderId.CODEX,
         {"invalid": [_report()]},
     )
 
-    result = _service(store, http, claude).check()
+    result = _service(store, http, codex).check()
 
     assert isinstance(result.failures[0], InvalidExpiryFailure)
     assert isinstance(result.failures[1], UnknownProviderFailure)
     assert result.usages == ()
-    assert claude.events == []
+    assert codex.events == []
     assert store.persisted == []
 
 
@@ -701,29 +725,3 @@ def test_persistence_failure_cannot_be_presented_as_successful_usage(
     assert isinstance(failure, PersistenceFailure)
     assert failure.persistence_code is PersistenceCode.REPLACE_FAILED
     assert store.saved("codex").plan == "unknown"
-
-
-def test_canonical_claude_forbidden_switches_route_and_retries_once(
-    http: HttpClient,
-) -> None:
-    account = _account("claude", ProviderId.CLAUDE, scopes=None)
-    store = InMemoryAccountStore((account,))
-    provider = ScriptedProvider(
-        ProviderId.CLAUDE,
-        {
-            "claude": [
-                ForbiddenError(
-                    "forbidden",
-                    required_scope="user:profile",
-                ),
-                _report(),
-            ]
-        },
-    )
-
-    result = _service(store, http, provider).check()
-
-    assert len(result.usages) == 1
-    assert provider.fetch_scopes == [None, ()]
-    assert len(store.persisted) == 1
-    assert store.saved("claude").scopes == ()

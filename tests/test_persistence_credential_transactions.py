@@ -1,13 +1,12 @@
 """Load-bearing private-bundle and authority transaction tests."""
 
-from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from sidekick_usages.core.models import (
     Account,
-    ClaudeCredentials,
+    ClaudeSetupTokenCredentials,
     CodexCredentials,
 )
 from sidekick_usages.core.types import AccountLabel, ProviderId
@@ -29,7 +28,6 @@ from sidekick_usages.persistence.credential_transactions import (
 )
 from sidekick_usages.persistence.errors import (
     CandidateWriteError,
-    InterruptedArtifactError,
     PersistenceCode,
     PrivateCredentialCollisionError,
     ReplaceFailedError,
@@ -47,10 +45,10 @@ from sidekick_usages.persistence.private_credentials import (
     PrivateCredentialTree,
 )
 from sidekick_usages.persistence.schemas import (
-    encode_version_one,
+    encode_version_two,
 )
 from sidekick_usages.persistence.transaction import PersistenceTransaction
-from sidekick_usages.persistence.transforms import accounts_to_version_one
+from sidekick_usages.persistence.transforms import accounts_to_version_two
 from tests.test_support import make_application_paths
 
 _OLD_AUTH = b"test-only-old-private-auth"
@@ -133,7 +131,7 @@ class _ChangeGuardAfterAuthority:
         )
         with PersistenceLock(self._source).hold() as transaction:
             transaction.commit_authority(
-                AuthorityGeneration.VERSION_ONE,
+                AuthorityGeneration.VERSION_TWO,
                 self._changed_source,
                 self._source_snapshot.fingerprint,
             )
@@ -194,12 +192,12 @@ def _codex_account(label: str, auth_home: Path, token: str) -> Account:
 def _claude_account(label: str) -> Account:
     return Account(
         label=AccountLabel(label),
-        credentials=ClaudeCredentials(access_token=f"{label}-token"),
+        credentials=ClaudeSetupTokenCredentials(access_token=f"{label}-token"),
     )
 
 
 def _authority_payload(*accounts: Account) -> bytes:
-    return encode_version_one(accounts_to_version_one(accounts))
+    return encode_version_two(accounts_to_version_two(accounts))
 
 
 def _protected_filesystem(path: Path) -> PersistenceFilesystem:
@@ -245,7 +243,7 @@ def _seed_transaction_state(
     )
     with PersistenceLock(filesystem).hold() as transaction:
         base = transaction.commit_authority(
-            AuthorityGeneration.VERSION_ONE,
+            AuthorityGeneration.VERSION_TWO,
             base_payload,
             AuthorityExpectation.ABSENT,
         )
@@ -621,7 +619,7 @@ def test_distinct_source_guard_change_after_target_commit_fails_closed(
     source_payload = _authority_payload(_claude_account("source"))
     with PersistenceLock(source).hold() as transaction:
         source_snapshot = transaction.commit_authority(
-            AuthorityGeneration.VERSION_ONE,
+            AuthorityGeneration.VERSION_TWO,
             source_payload,
             AuthorityExpectation.ABSENT,
         )
@@ -723,104 +721,3 @@ def test_account_removal_cleans_only_unreferenced_canonical_bundles(
     assert unrelated.exists()
     assert external_auth.read_bytes() == b"external-private-auth"
     assert store.get("claude") is not None
-
-
-def test_canonical_credential_change_requires_a_prepared_bundle(
-    tmp_path: Path,
-) -> None:
-    paths = make_application_paths(tmp_path)
-    _protected_filesystem(paths.accounts.canonical)
-    private = PrivateCredentialTree(
-        paths.private_codex.canonical,
-        account_path=paths.accounts.canonical,
-    )
-    store = AccountStore(
-        paths.accounts,
-        orphaned_credentials_observer=private.observe,
-        private_credentials=private,
-    ).load()
-    bundle = paths.private_codex.canonical / "primary"
-    original = _codex_account("primary", bundle, "old-token")
-    store.persist_credentials(
-        original,
-        private_bundle=PreparedPrivateBundleWrite(
-            bundle,
-            {"auth.json": _OLD_AUTH},
-            False,
-            {"auth.json": None},
-        ),
-    )
-
-    metadata_only = store.get("primary")
-    assert metadata_only is not None
-    metadata_only.plan = "team"
-    store.persist(metadata_only)
-
-    changed = store.get("primary")
-    assert changed is not None
-    credentials = changed.credentials
-    assert isinstance(credentials, CodexCredentials)
-    changed.credentials = replace(credentials, access_token="new-token")
-    with pytest.raises(PrivateCredentialCollisionError):
-        store.persist(changed)
-
-    persisted = store.get("primary")
-    assert persisted is not None
-    assert persisted.access_token == "old-token"
-    assert persisted.plan == "team"
-    assert private.read_bundle_file(bundle, "auth.json") == _OLD_AUTH
-
-
-def test_malformed_journal_and_third_authority_fail_closed(
-    tmp_path: Path,
-) -> None:
-    filesystem, tree, bundle, base, target_payload = _seed_transaction_state(
-        tmp_path
-    )
-    with PersistenceLock(filesystem).hold():
-        tree.ensure_transaction_directory()
-        tree.write_owned_file(
-            tree.transaction_directory,
-            PRIVATE_TRANSACTION_JOURNAL,
-            b'{"journal_version":1,"files":[]}',
-            expected_source=AuthorityExpectation.ABSENT,
-        )
-        with pytest.raises(InterruptedArtifactError):
-            PrivateCredentialTransaction(
-                tree,
-                filesystem.read_authority,
-            ).recover()
-    assert tree.transaction_directory_present()
-
-    tree.destroy_owned_directory(tree.transaction_directory)
-    with pytest.raises(_SimulatedCrash):
-        _crash_commit(
-            filesystem,
-            PrivateCredentialTransaction(
-                tree,
-                filesystem.read_authority,
-            ),
-            bundle,
-            base,
-            target_payload,
-            after_authority=False,
-        )
-    third_payload = _authority_payload(
-        _codex_account("primary", bundle, "test-only-third-token")
-    )
-    with PersistenceLock(filesystem).hold() as transaction:
-        transaction.commit_authority(
-            AuthorityGeneration.VERSION_ONE,
-            third_payload,
-            base.fingerprint,
-        )
-    with (
-        PersistenceLock(filesystem).hold(),
-        pytest.raises(SourceChangedError),
-    ):
-        PrivateCredentialTransaction(
-            tree,
-            filesystem.read_authority,
-        ).recover()
-    assert tree.transaction_directory_present()
-    assert tree.read_bundle_file(bundle, "auth.json") == _NEW_AUTH

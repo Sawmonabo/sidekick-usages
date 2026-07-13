@@ -18,6 +18,7 @@ _MAX_AUTH_HOME_BYTES = 32_768
 _MAX_SCOPES = 128
 _MAX_HEARTBEAT_TARGETS = 32
 _MAX_HEARTBEAT_RESETS = 32
+_CLAUDE_PROFILE_SCOPE = "user:profile"
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z", re.ASCII)
 
 
@@ -64,6 +65,14 @@ def _scopes(value: list[str]) -> list[str]:
     return value
 
 
+def _claude_login_scopes(value: list[str]) -> list[str]:
+    """Require one unique current login scope set with profile access."""
+    validated = _scopes(value)
+    if not validated or _CLAUDE_PROFILE_SCOPE not in validated:
+        raise ValueError
+    return validated
+
+
 def _heartbeat_targets(value: list[str]) -> list[str]:
     if len(value) > _MAX_HEARTBEAT_TARGETS or len(value) != len(set(value)):
         raise ValueError
@@ -85,6 +94,10 @@ type _Sha256String = Annotated[str, AfterValidator(_sha256_string)]
 type _ScopeList = Annotated[
     list[_MetadataString],
     AfterValidator(_scopes),
+]
+type _ClaudeLoginScopeList = Annotated[
+    list[_MetadataString],
+    AfterValidator(_claude_login_scopes),
 ]
 type _HeartbeatTargetList = Annotated[
     list[_ShortString],
@@ -149,6 +162,65 @@ class _CodexRecordModel(_AccountRecordModel):
     scopes: None
 
 
+class _CurrentAccountStateModel(BaseModel):
+    """Strict provider-neutral account state in the current envelope."""
+
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
+
+    provider_id: str
+    access_token: _TokenString = Field(repr=False)
+    plan: _ShortString
+    last_refresh_at: _TimestampString | None
+    last_refresh_status: _RefreshStatusValue | None
+    last_refresh_error: _MetadataString | None
+    heartbeat_enabled: bool
+    heartbeat_5h_reset_at: _TimestampString | None
+    heartbeat_window_resets: _HeartbeatResetMap | None
+    heartbeat_targets: _HeartbeatTargetList | None
+    last_heartbeat_at: _TimestampString | None
+    last_heartbeat_status: _HeartbeatStatusValue | None
+    last_heartbeat_error: _MetadataString | None
+
+
+class CurrentClaudeIdentityModel(BaseModel):
+    """Strict complete stable Claude identity."""
+
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
+
+    account_id: _MetadataString = Field(repr=False)
+    organization_id: _MetadataString = Field(repr=False)
+
+
+class CurrentClaudeSetupRecordModel(_CurrentAccountStateModel):
+    """Strict current Claude setup-token record."""
+
+    provider_id: Literal["claude"]
+    credential_kind: Literal["setup_token"]
+
+
+class CurrentClaudeLoginRecordModel(_CurrentAccountStateModel):
+    """Strict current Claude subscription-login record."""
+
+    provider_id: Literal["claude"]
+    credential_kind: Literal["subscription_login"]
+    refresh_token: _TokenString = Field(repr=False)
+    access_expires_at: _TimestampString
+    refresh_expires_at: _TimestampString | None
+    scopes: _ClaudeLoginScopeList
+    claude_identity: CurrentClaudeIdentityModel | None
+
+
+type ValidatedCurrentClaudeRecord = Annotated[
+    CurrentClaudeSetupRecordModel | CurrentClaudeLoginRecordModel,
+    Field(discriminator="credential_kind"),
+]
+
+type ValidatedCurrentAccountRecord = Annotated[
+    ValidatedCurrentClaudeRecord | _CodexRecordModel,
+    Field(discriminator="provider_id"),
+]
+
+
 type ValidatedAccountRecord = Annotated[
     _ClaudeRecordModel | _CodexRecordModel,
     Field(discriminator="provider_id"),
@@ -162,6 +234,15 @@ class VersionOneEnvelopeModel(BaseModel):
 
     schema_version: Literal[1]
     accounts: dict[str, ValidatedAccountRecord]
+
+
+class VersionTwoEnvelopeModel(BaseModel):
+    """Strict schema-version-two envelope."""
+
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
+
+    schema_version: Literal[2]
+    accounts: dict[str, ValidatedCurrentAccountRecord]
 
 
 class PrototypeRecordModel(BaseModel):
@@ -180,10 +261,11 @@ class PrototypeReceiptModel(BaseModel):
 
     receipt_version: Literal[1]
     prototype_sha256: _Sha256String
-    target_schema_version: Literal[1]
+    target_schema_version: Literal[1, 2]
 
 
 GENERATION_ZERO_ADAPTER = TypeAdapter(dict[str, ValidatedAccountRecord])
 VERSION_ONE_ADAPTER = TypeAdapter(VersionOneEnvelopeModel)
+VERSION_TWO_ADAPTER = TypeAdapter(VersionTwoEnvelopeModel)
 PROTOTYPE_ADAPTER = TypeAdapter(dict[str, PrototypeRecordModel])
 PROTOTYPE_RECEIPT_ADAPTER = TypeAdapter(PrototypeReceiptModel)

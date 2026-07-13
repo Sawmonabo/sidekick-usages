@@ -8,6 +8,7 @@ from types import ModuleType
 from typing import Protocol
 
 import click
+import pytest
 from typer.main import get_command
 
 from sidekick_usages.cli.app import create_app
@@ -110,11 +111,8 @@ _MUTATIONS = (
     _Mutation(
         "DEP006",
         "src/sidekick_usages/usage/service.py",
-        "from dataclasses import dataclass, replace\n",
-        (
-            "from dataclasses import dataclass, replace\n"
-            "from rich.text import Text\n"
-        ),
+        "from dataclasses import dataclass\n",
+        ("from dataclasses import dataclass\nfrom rich.text import Text\n"),
     ),
     _Mutation(
         "DEP007",
@@ -298,6 +296,120 @@ def test_near_limit_module_emits_a_cohesion_warning() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("path", "source", "rule_id"),
+    [
+        (
+            "src/sidekick_usages/core/cross_owner_fixture.py",
+            "from sidekick_usages.credentials import models\n",
+            "DEP001",
+        ),
+        (
+            "src/sidekick_usages/persistence/cross_owner_fixture.py",
+            "from sidekick_usages.credentials import models\n",
+            "DEP003",
+        ),
+        (
+            "src/sidekick_usages/providers/cross_owner_fixture.py",
+            "from sidekick_usages.credentials import models\n",
+            "DEP004",
+        ),
+        (
+            "src/sidekick_usages/credentials/cross_owner_fixture.py",
+            "from sidekick_usages.usage import service\n",
+            "DEP006",
+        ),
+    ],
+)
+def test_concrete_owner_boundaries_reject_reverse_dependencies(
+    path: str,
+    source: str,
+    rule_id: str,
+) -> None:
+    """Final ownership layers stay directed."""
+    report = architecture.check_repository(
+        REPO_ROOT,
+        source_overrides={path: source},
+    )
+
+    assert any(
+        violation.path.as_posix() == path and violation.rule_id == rule_id
+        for violation in report.violations
+    )
+
+
+@pytest.mark.parametrize(
+    ("path", "source", "rule_id"),
+    [
+        (
+            "src/sidekick_usages/persistence/import_fixture.py",
+            "from sidekick_usages import providers as boundary\n",
+            "DEP003",
+        ),
+        (
+            "src/sidekick_usages/persistence/migrations/import_fixture.py",
+            "from ... import providers as boundary\n",
+            "DEP003",
+        ),
+        (
+            "src/sidekick_usages/providers/import_fixture.py",
+            "from sidekick_usages import credentials as boundary\n",
+            "DEP004",
+        ),
+        (
+            "src/sidekick_usages/providers/claude/import_fixture.py",
+            "from ... import credentials as boundary\n",
+            "DEP004",
+        ),
+        (
+            "src/sidekick_usages/credentials/import_fixture.py",
+            "from sidekick_usages import usage as boundary\n",
+            "DEP006",
+        ),
+        (
+            "src/sidekick_usages/credentials/import_fixture.py",
+            "from .. import usage as boundary\n",
+            "DEP006",
+        ),
+        (
+            "src/sidekick_usages/http/import_fixture.py",
+            "from sidekick_usages import providers as boundary\n",
+            "DEP005",
+        ),
+        (
+            "src/sidekick_usages/http/import_fixture.py",
+            "from .. import providers as boundary\n",
+            "DEP005",
+        ),
+        (
+            "src/sidekick_usages/import_fixture.py",
+            "from sidekick_usages import cli as boundary\n",
+            "DEP002",
+        ),
+        (
+            "src/sidekick_usages/import_fixture.py",
+            "from . import cli as boundary\n",
+            "DEP002",
+        ),
+    ],
+)
+def test_import_from_aliases_and_levels_cannot_bypass_boundaries(
+    path: str,
+    source: str,
+    rule_id: str,
+) -> None:
+    """Root aliases and relative imports resolve before policy checks."""
+    report = architecture.check_repository(
+        REPO_ROOT,
+        source_overrides={path: source},
+    )
+
+    assert any(
+        violation.path.as_posix() == path and violation.rule_id == rule_id
+        for violation in report.violations
+    )
+
+
 def test_cli_command_surface_is_registered_once_by_focused_owners() -> None:
     """Application assembly exposes the complete intentional command tree."""
     root = get_command(create_app())
@@ -331,7 +443,7 @@ def test_cli_command_surface_is_registered_once_by_focused_owners() -> None:
         if isinstance(command, click.Group)
     }
     assert nested == {
-        "claude": {"setup-token"},
+        "claude": {"restore-setup-token", "setup-token"},
         "codex": {"export", "login"},
         "daemon": {"install", "status", "uninstall"},
         "heartbeat": {"disable", "enable", "run-label", "status"},

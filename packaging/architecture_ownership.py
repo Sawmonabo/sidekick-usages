@@ -15,6 +15,7 @@ from architecture_ast import (
     finding,
     function_node,
     imports,
+    matches,
     name,
 )
 
@@ -123,7 +124,7 @@ def _check_migrations(
                 )
     service = next((unit for unit in units if str(unit.path) == owner), None)
     has_port = service is not None and any(
-        module == "sidekick_usages.persistence.migrations.ports"
+        matches(module, "sidekick_usages.persistence.migrations.ports")
         and isinstance(node, ast.ImportFrom)
         and any(alias.name == "PrivateAuthMigrator" for alias in node.names)
         for node, module in imports(service)

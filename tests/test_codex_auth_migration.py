@@ -10,7 +10,7 @@ import pytest
 
 from sidekick_usages.core.models import (
     Account,
-    ClaudeCredentials,
+    ClaudeSetupTokenCredentials,
     CodexCredentials,
 )
 from sidekick_usages.core.types import AccountLabel
@@ -131,7 +131,9 @@ def test_prepare_classifies_and_rewrites_exact_nested_bundles_without_writes(
         _codex_account("external", external_home, "acct_external"),
         Account(
             label=AccountLabel("claude"),
-            credentials=ClaudeCredentials(access_token="claude-secret"),
+            credentials=ClaudeSetupTokenCredentials(
+                access_token="claude-secret"
+            ),
         ),
     )
     zeta_files = _bundle("acct_zeta")

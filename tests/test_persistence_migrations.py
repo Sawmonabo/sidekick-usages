@@ -1,14 +1,17 @@
 """Pure transformation tests for account persistence generations."""
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import pytest
 
-from sidekick_usages.core.expiry import InvalidExpiry, KnownExpiry
+from sidekick_usages.core.expiry import KnownExpiry, UnknownExpiry
 from sidekick_usages.core.models import (
     Account,
-    ClaudeCredentials,
+    ClaudeLoginCredentials,
+    ClaudeLoginIdentity,
+    ClaudeSetupTokenCredentials,
     CodexCredentials,
 )
 from sidekick_usages.core.types import AccountLabel, ProviderId
@@ -133,14 +136,15 @@ def test_v060_reverse_rejects_only_unrepresentable_empty_collections(
 
 
 def test_runtime_account_conversion_is_validated_and_secret_safe() -> None:
-    """The persistence DTO neither leaks tokens nor trusts invalid expiry."""
+    """The legacy persistence bridge preserves complete runtime accounts."""
     accounts = (
         Account(
             label=AccountLabel("claude-max-1"),
-            credentials=ClaudeCredentials(
+            credentials=ClaudeLoginCredentials(
                 access_token="claude-access-secret",
                 refresh_token="claude-refresh-secret",
-                expiry=KnownExpiry(EXPIRY),
+                access_expiry=KnownExpiry(EXPIRY),
+                refresh_expiry=UnknownExpiry(),
                 scopes=("user:profile",),
             ),
             plan="max",
@@ -172,12 +176,90 @@ def test_runtime_account_conversion_is_validated_and_secret_safe() -> None:
         )
     )
 
-    invalid = Account(
-        label=AccountLabel("invalid"),
-        credentials=ClaudeCredentials(
-            access_token="test-only-token",
-            expiry=InvalidExpiry(),
-        ),
+
+def test_version_one_classifies_unambiguous_legacy_claude_shapes() -> None:
+    """Existing complete logins load without inventing unavailable metadata."""
+    login = _stored_record(ProviderId.CLAUDE)
+    setup = replace(
+        login,
+        label=AccountLabel("claude-setup"),
+        refresh_token=None,
+        expires_at=None,
+        scopes=("user:inference",),
     )
+
+    accounts = version_one_to_accounts(VersionOneDocument((login, setup)))
+
+    assert accounts[0].credentials == ClaudeLoginCredentials(
+        access_token=login.access_token,
+        refresh_token="test-only-claude-refresh",
+        access_expiry=KnownExpiry(EXPIRY),
+        refresh_expiry=UnknownExpiry(),
+        scopes=("user:profile",),
+        identity=None,
+    )
+    assert accounts[1].credentials == ClaudeSetupTokenCredentials(
+        access_token=setup.access_token
+    )
+
+
+@pytest.mark.parametrize(
+    ("refresh_token", "expires_at", "scopes"),
+    [
+        ("test-only-refresh", None, ("user:profile",)),
+        (None, EXPIRY, ("user:profile",)),
+        (None, None, ("user:profile",)),
+        ("test-only-refresh", EXPIRY, ("user:inference",)),
+    ],
+)
+def test_version_one_rejects_partial_legacy_claude_logins(
+    refresh_token: str | None,
+    expires_at: datetime | None,
+    scopes: tuple[str, ...] | None,
+) -> None:
+    """Partial login state never degrades into a setup-token credential."""
+    record = replace(
+        _stored_record(ProviderId.CLAUDE),
+        refresh_token=refresh_token,
+        expires_at=expires_at,
+        scopes=scopes,
+    )
+
     with pytest.raises(InvalidSchemaError):
-        accounts_to_version_one((invalid,))
+        version_one_to_accounts(VersionOneDocument((record,)))
+
+
+@pytest.mark.parametrize(
+    "credentials",
+    [
+        ClaudeLoginCredentials(
+            access_token="test-only-access",
+            refresh_token="test-only-refresh",
+            access_expiry=KnownExpiry(EXPIRY),
+            refresh_expiry=KnownExpiry(EXPIRY),
+            scopes=("user:profile",),
+        ),
+        ClaudeLoginCredentials(
+            access_token="test-only-access",
+            refresh_token="test-only-refresh",
+            access_expiry=KnownExpiry(EXPIRY),
+            refresh_expiry=UnknownExpiry(),
+            scopes=("user:profile",),
+            identity=ClaudeLoginIdentity(
+                account_id="test-only-account",
+                organization_id="test-only-organization",
+            ),
+        ),
+    ],
+)
+def test_version_one_rejects_unrepresentable_claude_login_metadata(
+    credentials: ClaudeLoginCredentials,
+) -> None:
+    """The bridge never silently discards Task 3-owned login metadata."""
+    account = Account(
+        label=AccountLabel("claude-login"),
+        credentials=credentials,
+    )
+
+    with pytest.raises(InvalidSchemaError):
+        accounts_to_version_one((account,))

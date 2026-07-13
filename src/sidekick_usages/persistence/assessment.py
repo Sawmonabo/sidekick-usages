@@ -24,11 +24,11 @@ from sidekick_usages.persistence.observations import (
 )
 from sidekick_usages.persistence.schemas import (
     encode_generation_zero,
-    encode_version_one,
+    encode_version_two,
 )
 from sidekick_usages.persistence.transforms import (
-    prototype_to_version_one,
-    version_one_to_v060,
+    prototype_to_version_two,
+    version_two_to_v060,
 )
 
 
@@ -125,9 +125,10 @@ _ARTIFACT_RANK: dict[ArtifactKind, int] = {
     ArtifactKind.LOCK: 1,
     ArtifactKind.V0_BACKUP: 2,
     ArtifactKind.V1_SNAPSHOT: 3,
-    ArtifactKind.TEMPORARY: 4,
-    ArtifactKind.PROTOTYPE_RECEIPT: 5,
-    ArtifactKind.PROTOTYPE: 6,
+    ArtifactKind.V2_SNAPSHOT: 4,
+    ArtifactKind.TEMPORARY: 5,
+    ArtifactKind.PROTOTYPE_RECEIPT: 6,
+    ArtifactKind.PROTOTYPE: 7,
 }
 
 _MESSAGE: dict[PersistenceCode, str] = {
@@ -222,6 +223,7 @@ def _artifact_failure_issue(
     elif artifact.kind in {
         ArtifactKind.V0_BACKUP,
         ArtifactKind.V1_SNAPSHOT,
+        ArtifactKind.V2_SNAPSHOT,
     }:
         code = PersistenceCode.BACKUP_CONFLICT
     elif artifact.kind is ArtifactKind.PROTOTYPE:
@@ -288,8 +290,8 @@ def _prototype_matches_authority(
     ):
         return False
     try:
-        encoded = encode_version_one(
-            prototype_to_version_one(prototype.prototype)
+        encoded = encode_version_two(
+            prototype_to_version_two(prototype.prototype)
         )
     except InvalidSchemaError:
         return False
@@ -300,10 +302,10 @@ def _snapshot_reverses_to_authority(
     snapshot: ArtifactObservation,
     authority: AuthorityObservation,
 ) -> bool:
-    if snapshot.version_one is None or authority.content is None:
+    if snapshot.version_two is None or authority.content is None:
         return False
     try:
-        reversed_document = version_one_to_v060(snapshot.version_one)
+        reversed_document = version_two_to_v060(snapshot.version_two)
         encoded = encode_generation_zero(reversed_document)
     except InvalidSchemaError, RollbackCompatibilityError:
         return False
@@ -321,7 +323,7 @@ def _generation_zero_issue(
         artifact
         for artifact in _artifacts_of_kind(
             artifacts,
-            ArtifactKind.V1_SNAPSHOT,
+            ArtifactKind.V2_SNAPSHOT,
         )
         if artifact.state is ArtifactState.VALID
     )
@@ -338,6 +340,18 @@ def _generation_zero_issue(
 
 
 def _version_one_issue(
+    authority: AuthorityObservation,
+    artifacts: tuple[ArtifactObservation, ...],
+) -> _LogicalResult:
+    del artifacts
+    return (
+        _ranked_issue(PersistenceCode.MIGRATION_REQUIRED),
+        authority.account_count,
+        False,
+    )
+
+
+def _version_two_issue(
     authority: AuthorityObservation,
     artifacts: tuple[ArtifactObservation, ...],
 ) -> _LogicalResult:
@@ -373,6 +387,7 @@ def _absent_issue(
         in {
             ArtifactKind.V0_BACKUP,
             ArtifactKind.V1_SNAPSHOT,
+            ArtifactKind.V2_SNAPSHOT,
             ArtifactKind.TEMPORARY,
         }
     )
@@ -430,6 +445,8 @@ def _logical_issue(
         return _generation_zero_issue(authority, artifacts)
     if authority.kind is AuthorityKind.VERSION_ONE:
         return _version_one_issue(authority, artifacts)
+    if authority.kind is AuthorityKind.VERSION_TWO:
+        return _version_two_issue(authority, artifacts)
     if authority.kind is AuthorityKind.ABSENT:
         return _absent_issue(observation, artifacts)
     failure = _authority_failure_issue(authority)
@@ -445,7 +462,13 @@ def _interruption_issues(
     authority = observation.authority
     kinds = {ArtifactKind.TEMPORARY}
     if authority.kind is AuthorityKind.ABSENT:
-        kinds.update((ArtifactKind.V0_BACKUP, ArtifactKind.V1_SNAPSHOT))
+        kinds.update(
+            (
+                ArtifactKind.V0_BACKUP,
+                ArtifactKind.V1_SNAPSHOT,
+                ArtifactKind.V2_SNAPSHOT,
+            )
+        )
     issues = [
         _ranked_issue(
             PersistenceCode.INTERRUPTED_ARTIFACTS,

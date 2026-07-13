@@ -39,12 +39,15 @@ from sidekick_usages.persistence.observations import (
 from sidekick_usages.persistence.schemas import (
     GenerationZeroDocument,
     VersionOneDocument,
+    VersionTwoDocument,
     decode_authority,
     decode_generation_zero,
     decode_prototype,
     decode_prototype_receipt,
     decode_version_one,
+    decode_version_two,
     encode_version_one,
+    encode_version_two,
 )
 
 
@@ -74,6 +77,9 @@ class ReadOnlyPersistenceFilesystem(Protocol):
 
     def read_authority(self) -> FileSnapshot | None:
         """Read the bound path without following its final object."""
+
+    def read_external_private_source(self) -> FileSnapshot | None:
+        """Read a private import source from an owner-controlled parent."""
 
     def read_managed(
         self,
@@ -239,6 +245,12 @@ class PersistenceInventory:
                     content=snapshot.data,
                     version_one=document,
                 )
+            elif isinstance(document, VersionTwoDocument):
+                observation = AuthorityObservation(
+                    AuthorityKind.VERSION_TWO,
+                    content=snapshot.data,
+                    version_two=document,
+                )
             else:
                 assert_never(document)
         return observation
@@ -323,7 +335,7 @@ class PersistenceInventory:
         try:
             filesystem = self._filesystem_factory(self.prototype_path)
             filesystem.qualify()
-            snapshot = filesystem.read_authority()
+            snapshot = filesystem.read_external_private_source()
         except UnsupportedFilesystemError, UnsafeManagedFileError:
             return ArtifactObservation(
                 ArtifactKind.PROTOTYPE,
@@ -376,6 +388,8 @@ def _artifact_kind(kind: ManagedArtifactKind) -> ArtifactKind:
             return ArtifactKind.V0_BACKUP
         case ManagedArtifactKind.VERSION_ONE_SNAPSHOT:
             return ArtifactKind.V1_SNAPSHOT
+        case ManagedArtifactKind.VERSION_TWO_SNAPSHOT:
+            return ArtifactKind.V2_SNAPSHOT
         case ManagedArtifactKind.PROTOTYPE_RECEIPT:
             return ArtifactKind.PROTOTYPE_RECEIPT
         case ManagedArtifactKind.TEMPORARY:
@@ -395,7 +409,7 @@ def _prototype_eligible(
     *,
     explicit: bool = False,
 ) -> bool:
-    if authority.kind is AuthorityKind.VERSION_ONE:
+    if authority.kind is AuthorityKind.VERSION_TWO:
         if explicit:
             return all(
                 artifact.state is ArtifactState.VALID
@@ -414,6 +428,7 @@ def _prototype_eligible(
     blocking = {
         ArtifactKind.V0_BACKUP,
         ArtifactKind.V1_SNAPSHOT,
+        ArtifactKind.V2_SNAPSHOT,
         ArtifactKind.TEMPORARY,
     }
     return not any(artifact.kind in blocking for artifact in artifacts)
@@ -427,6 +442,8 @@ def _validate_managed_artifact(
         return _generation_zero_backup(artifact, snapshot)
     if artifact.kind is ManagedArtifactKind.VERSION_ONE_SNAPSHOT:
         return _version_one_snapshot(artifact, snapshot)
+    if artifact.kind is ManagedArtifactKind.VERSION_TWO_SNAPSHOT:
+        return _version_two_snapshot(artifact, snapshot)
     if artifact.kind is ManagedArtifactKind.PROTOTYPE_RECEIPT:
         return _prototype_receipt(artifact, snapshot)
     raise ValueError("Managed artifact has no content validator.")
@@ -473,6 +490,28 @@ def _version_one_snapshot(
     )
 
 
+def _version_two_snapshot(
+    artifact: ManagedArtifact,
+    snapshot: FileSnapshot,
+) -> ArtifactObservation:
+    if artifact.digest != snapshot.fingerprint.digest:
+        return _artifact_failure(artifact, ArtifactKind.V2_SNAPSHOT)
+    try:
+        document = decode_version_two(snapshot.data)
+        canonical = encode_version_two(document)
+    except PersistenceSchemaError:
+        return _artifact_failure(artifact, ArtifactKind.V2_SNAPSHOT)
+    if canonical != snapshot.data:
+        return _artifact_failure(artifact, ArtifactKind.V2_SNAPSHOT)
+    return ArtifactObservation(
+        ArtifactKind.V2_SNAPSHOT,
+        artifact.basename,
+        ArtifactState.VALID,
+        content=snapshot.data,
+        version_two=document,
+    )
+
+
 def _prototype_receipt(
     artifact: ManagedArtifact,
     snapshot: FileSnapshot,
@@ -513,7 +552,11 @@ def _oversized_artifact(
 ) -> ArtifactObservation:
     if kind is ArtifactKind.PROTOTYPE_RECEIPT:
         state = ArtifactState.BOUND_EXCEEDED
-    elif kind in {ArtifactKind.V0_BACKUP, ArtifactKind.V1_SNAPSHOT}:
+    elif kind in {
+        ArtifactKind.V0_BACKUP,
+        ArtifactKind.V1_SNAPSHOT,
+        ArtifactKind.V2_SNAPSHOT,
+    }:
         state = ArtifactState.CONFLICT
     else:
         state = ArtifactState.UNREADABLE

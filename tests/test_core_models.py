@@ -16,7 +16,9 @@ from sidekick_usages.core.expiry import (
 from sidekick_usages.core.models import (
     Account,
     AccountTokenActivitySnapshot,
-    ClaudeCredentials,
+    ClaudeLoginCredentials,
+    ClaudeLoginIdentity,
+    ClaudeSetupTokenCredentials,
     CodexCredentials,
     DetectedCredentials,
     TokenActivitySummary,
@@ -97,7 +99,9 @@ def test_timed_expiry_and_mutable_account_times_require_aware_datetimes() -> (
     resets = {"standard": offset_time}
     account = Account(
         label=AccountLabel("claude-team"),
-        credentials=ClaudeCredentials(access_token="synthetic-access"),
+        credentials=ClaudeSetupTokenCredentials(
+            access_token="synthetic-access"
+        ),
         heartbeat_window_resets=resets,
     )
     resets["standard"] = naive
@@ -117,9 +121,16 @@ def test_provider_identity_is_derived_and_representations_hide_secrets() -> (
 ):
     """Credential variants determine identity without exposing tokens."""
     credentials = (
-        ClaudeCredentials(
+        ClaudeLoginCredentials(
             access_token="claude-access-secret",
             refresh_token="claude-refresh-secret",
+            access_expiry=KnownExpiry(REFERENCE_TIME + timedelta(hours=1)),
+            refresh_expiry=UnknownExpiry(),
+            scopes=("user:profile",),
+            identity=ClaudeLoginIdentity(
+                account_id="claude-account-secret",
+                organization_id="claude-organization-secret",
+            ),
         ),
         CodexCredentials(
             access_token="codex-access-secret",
@@ -143,6 +154,10 @@ def test_provider_identity_is_derived_and_representations_hide_secrets() -> (
         assert item.access_token not in rendered
         if item.refresh_token is not None:
             assert item.refresh_token not in rendered
+        if isinstance(item, ClaudeLoginCredentials):
+            assert item.identity is not None
+            assert item.identity.account_id not in rendered
+            assert item.identity.organization_id not in rendered
         if isinstance(item, CodexCredentials) and item.id_token is not None:
             assert item.id_token not in rendered
 

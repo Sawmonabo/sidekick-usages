@@ -8,23 +8,27 @@ from pathlib import Path
 
 from sidekick_usages.core.expiry import (
     ExpiredExpiry,
-    InvalidExpiry,
     classify_expiry,
 )
 from sidekick_usages.core.models import (
     Account,
     ClaudeCredentials,
+    ClaudeLoginCredentials,
+    ClaudeSetupTokenCredentials,
 )
 from sidekick_usages.errors import InvalidPayloadError
 from sidekick_usages.providers.base import (
     CredentialDetection,
     ProviderBoundaryError,
     ProviderFailure,
+    ProviderFailureCause,
     ProviderFailureKind,
+)
+from sidekick_usages.providers.claude.credential_schemas import (
+    parse_credentials_blob,
 )
 from sidekick_usages.providers.claude.schemas import (
     claude_failure,
-    parse_credentials_blob,
 )
 from sidekick_usages.serialization import decode_json_object
 
@@ -51,7 +55,10 @@ def detect_credentials(
 def require_claude_credentials(account: Account) -> ClaudeCredentials:
     """Return Claude credentials or reject an incompatible account."""
     credentials = account.credentials
-    if isinstance(credentials, ClaudeCredentials):
+    if isinstance(
+        credentials,
+        ClaudeSetupTokenCredentials | ClaudeLoginCredentials,
+    ):
         return credentials
     raise ProviderBoundaryError(
         claude_failure(
@@ -237,16 +244,31 @@ def parse_detected_credentials(
         detected = parse_credentials_blob(blob)
     except ProviderBoundaryError as error:
         return error.failure
-    expiry = detected.expiry
-    if isinstance(expiry, InvalidExpiry):
-        return claude_failure(
-            ProviderFailureKind.MALFORMED,
-            "Claude credential expiry metadata is invalid.",
+    credentials = detected.credentials
+    if not isinstance(credentials, ClaudeLoginCredentials):
+        raise AssertionError(
+            "Claude native parsing returned setup credentials."
         )
-    if isinstance(classify_expiry(expiry, now=reference_time), ExpiredExpiry):
+    if isinstance(
+        classify_expiry(
+            credentials.refresh_expiry,
+            now=reference_time,
+        ),
+        ExpiredExpiry,
+    ):
         return claude_failure(
             ProviderFailureKind.EXPIRED,
-            "Claude credentials have expired. Log in or refresh them.",
+            "The saved Claude login credential has expired.",
+            cause=ProviderFailureCause.LOGIN_CREDENTIAL_EXPIRED,
+        )
+    if isinstance(
+        classify_expiry(credentials.access_expiry, now=reference_time),
+        ExpiredExpiry,
+    ):
+        return claude_failure(
+            ProviderFailureKind.EXPIRED,
+            "The saved Claude access credential has expired.",
+            cause=ProviderFailureCause.ACCESS_CREDENTIAL_EXPIRED,
         )
     return detected
 

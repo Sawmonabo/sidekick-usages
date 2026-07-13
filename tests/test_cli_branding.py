@@ -7,7 +7,7 @@ from rich.console import Console
 
 from sidekick_usages.branding import ROBOT_LINES
 from sidekick_usages.cli.context import DaemonContext
-from sidekick_usages.core.models import Account, ClaudeCredentials
+from sidekick_usages.core.models import Account, ClaudeSetupTokenCredentials
 from sidekick_usages.core.types import AccountLabel, ExitCode
 from sidekick_usages.daemon import (
     DaemonManager,
@@ -57,7 +57,9 @@ def test_list_uses_one_shared_header_for_rows_and_empty_state(
 ) -> None:
     account = Account(
         label=AccountLabel("personal"),
-        credentials=ClaudeCredentials(access_token="sk-ant-oat01-test-token"),
+        credentials=ClaudeSetupTokenCredentials(
+            access_token="sk-ant-oat01-test-token"
+        ),
         plan="max",
     )
     populated_cli, populated, _ = _install_context(

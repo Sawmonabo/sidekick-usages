@@ -3,7 +3,9 @@
 import base64
 import io
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -15,9 +17,11 @@ from sidekick_usages.cli.context import (
     compose_app_context,
     compose_doctor_context,
 )
+from sidekick_usages.core.expiry import KnownExpiry, UnknownExpiry
 from sidekick_usages.core.models import (
     Account,
-    ClaudeCredentials,
+    ClaudeLoginCredentials,
+    ClaudeSetupTokenCredentials,
     CodexCredentials,
 )
 from sidekick_usages.core.types import AccountLabel, ExitCode
@@ -32,10 +36,12 @@ from sidekick_usages.persistence.artifacts import (
     ExpectedAuthority,
     FileSnapshot,
 )
+from sidekick_usages.persistence.credential_refresh import (
+    CredentialRefreshArtifacts,
+)
 from sidekick_usages.persistence.errors import PersistenceCode
 from sidekick_usages.persistence.filesystem import PersistenceFilesystem
 from sidekick_usages.persistence.locking import PersistenceLock
-from sidekick_usages.persistence.migrations import PersistenceMigrationService
 from sidekick_usages.persistence.migrations.errors import (
     LocationMigrationStateError,
 )
@@ -52,11 +58,14 @@ from sidekick_usages.persistence.migrations.location import (
     PrototypeSelection,
     ReadyLocationSelection,
 )
+from sidekick_usages.persistence.migrations.service import (
+    PersistenceMigrationService,
+)
 from sidekick_usages.persistence.private_credentials import (
     PrivateCredentialTree,
 )
-from sidekick_usages.persistence.schemas import encode_version_one
-from sidekick_usages.persistence.transforms import accounts_to_version_one
+from sidekick_usages.persistence.schemas import encode_version_two
+from sidekick_usages.persistence.transforms import accounts_to_version_two
 from sidekick_usages.persistence.v060 import ReleasedV060Verifier
 from sidekick_usages.providers.codex.auth import (
     CODEX_AUTH_FILE,
@@ -72,7 +81,7 @@ from sidekick_usages.scheduler_quiescence import (
     SchedulerBackendState,
     SchedulerQuiescenceAssessment,
 )
-from tests.test_support import CliHarness
+from tests.test_support import REFERENCE_TIME, CliHarness
 
 MIGRATE_ACCOUNTS = ("sidekick-usages", "migrate", "accounts")
 MIGRATE_LOCATIONS = ("sidekick-usages", "migrate", "locations")
@@ -103,6 +112,7 @@ def _paths(root: Path) -> ApplicationPaths:
             existing_sidekick=compatibility / "codex",
         ),
         activity_snapshots=root / "token-activity.json",
+        credential_refresh=canonical / "credential-refresh",
     )
 
 
@@ -126,7 +136,7 @@ def _service(
 def _claude_account(label: str, token: str = "test-only-token") -> Account:
     return Account(
         label=AccountLabel(label),
-        credentials=ClaudeCredentials(access_token=token),
+        credentials=ClaudeSetupTokenCredentials(access_token=token),
     )
 
 
@@ -175,7 +185,7 @@ def _auth_bundle(account_id: str, marker: str) -> dict[str, bytes]:
 
 
 def _authority_payload(accounts: tuple[Account, ...]) -> bytes:
-    return encode_version_one(accounts_to_version_one(accounts))
+    return encode_version_two(accounts_to_version_two(accounts))
 
 
 def _seed_authority(path: Path, accounts: tuple[Account, ...]) -> bytes:
@@ -184,7 +194,7 @@ def _seed_authority(path: Path, accounts: tuple[Account, ...]) -> bytes:
     filesystem.repair_parent_permissions()
     with PersistenceLock(filesystem).hold() as transaction:
         transaction.commit_authority(
-            AuthorityGeneration.VERSION_ONE,
+            AuthorityGeneration.VERSION_TWO,
             payload,
             AuthorityExpectation.ABSENT,
         )
@@ -197,7 +207,7 @@ def _replace_authority(path: Path, accounts: tuple[Account, ...]) -> None:
     assert source is not None
     with PersistenceLock(filesystem).hold() as transaction:
         transaction.commit_authority(
-            AuthorityGeneration.VERSION_ONE,
+            AuthorityGeneration.VERSION_TWO,
             _authority_payload(accounts),
             source.fingerprint,
         )
@@ -480,6 +490,44 @@ def test_empty_runtime_first_persist_creates_only_canonical_state(
     assert assessment.source == paths.accounts.canonical
 
 
+def test_full_reset_resamples_authority_after_lifecycle_acquisition(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A location migration while reset waits cannot preserve authority."""
+    paths = _paths(tmp_path)
+    _seed_authority(
+        paths.accounts.existing_sidekick,
+        (_claude_account("migrating"),),
+    )
+    PersistenceFilesystem(paths.accounts.canonical).repair_parent_permissions()
+    original_hold = CredentialRefreshArtifacts.hold_quiescent
+    migrated = False
+
+    @contextmanager
+    def migrate_when_lifecycle_is_acquired(
+        artifacts: CredentialRefreshArtifacts,
+    ) -> Iterator[None]:
+        nonlocal migrated
+        with original_hold(artifacts):
+            paths.accounts.existing_sidekick.replace(paths.accounts.canonical)
+            migrated = True
+            yield
+
+    monkeypatch.setattr(
+        CredentialRefreshArtifacts,
+        "hold_quiescent",
+        migrate_when_lifecycle_is_acquired,
+    )
+
+    result = _service(paths).full_reset()
+
+    assert migrated
+    assert result.account_count == 0
+    assert not paths.accounts.canonical.exists()
+    assert not paths.accounts.existing_sidekick.exists()
+
+
 def test_normal_composition_rejects_a_post_load_location_race(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -662,6 +710,134 @@ def test_migrate_locations_requires_intent_and_commits_private_auth_first(
     assert external_file.read_bytes() == external_bytes
 
 
+def test_conflicting_location_requires_explicit_destination_replacement(
+    tmp_path: Path,
+) -> None:
+    """Conflict replacement preserves the source and uses one transaction."""
+    paths = _paths(tmp_path)
+    source_home = paths.private_codex.existing_sidekick / "teams" / "source"
+    replacement_home = paths.private_codex.canonical / "teams" / "source"
+    displaced_home = paths.private_codex.canonical / "teams" / "stale"
+    source_account = _codex_account("shared", source_home, "acct_source")
+    displaced_account = _codex_account(
+        "shared",
+        displaced_home,
+        "acct_stale",
+    )
+    source_authority = _seed_authority(
+        paths.accounts.existing_sidekick,
+        (source_account,),
+    )
+    displaced_authority = _seed_authority(
+        paths.accounts.canonical,
+        (displaced_account,),
+    )
+    source_bundle = _auth_bundle("acct_source", "source")
+    displaced_bundle = _auth_bundle("acct_stale", "stale")
+    _seed_bundle(
+        paths,
+        LocationRole.COMPATIBILITY,
+        source_home,
+        source_bundle,
+    )
+    _seed_bundle(
+        paths,
+        LocationRole.CANONICAL,
+        displaced_home,
+        displaced_bundle,
+    )
+    service = _service(paths)
+
+    with pytest.raises(LocationMigrationStateError):
+        service.migrate_locations()
+
+    assert paths.accounts.existing_sidekick.read_bytes() == source_authority
+    assert paths.accounts.canonical.read_bytes() == displaced_authority
+    assert not replacement_home.exists()
+    assert {
+        basename: (displaced_home / basename).read_bytes()
+        for basename in displaced_bundle
+    } == displaced_bundle
+
+    result = service.migrate_locations(
+        replace_conflicting_destination=True,
+    )
+
+    assert isinstance(result.assessment.selection, EquivalentSelection)
+    assert paths.accounts.existing_sidekick.read_bytes() == source_authority
+    assert not displaced_home.exists()
+    assert not PrivateCredentialTree(
+        paths.private_codex.canonical,
+        account_path=paths.accounts.canonical,
+        existing_root=paths.private_codex.existing_sidekick,
+    ).transaction_directory_present()
+    assert {
+        basename: (replacement_home / basename).read_bytes()
+        for basename in source_bundle
+    } == source_bundle
+    assert any(
+        snapshot.read_bytes() == displaced_authority
+        for snapshot in paths.accounts.canonical.parent.glob(
+            "accounts.json.v2.*.bak"
+        )
+    )
+    migrated = service.read_accounts()
+    assert len(migrated) == 1
+    assert migrated[0].label == source_account.label
+    assert (
+        migrated[0].provider_account_id == source_account.provider_account_id
+    )
+    assert migrated[0].codex_home == str(replacement_home)
+
+
+def test_conflict_replacement_rejects_stale_compatibility_credential(
+    tmp_path: Path,
+) -> None:
+    """A newer canonical refresh cannot roll back from compatibility."""
+    paths = _paths(tmp_path)
+    access_expiry = KnownExpiry(REFERENCE_TIME + timedelta(hours=1))
+    compatibility = Account(
+        label=AccountLabel("shared"),
+        credentials=ClaudeLoginCredentials(
+            access_token="test-only-compatibility-access",
+            refresh_token="test-only-compatibility-refresh",
+            access_expiry=access_expiry,
+            refresh_expiry=UnknownExpiry(),
+            scopes=("user:profile",),
+        ),
+        last_refresh_at=REFERENCE_TIME,
+    )
+    canonical = Account(
+        label=AccountLabel("shared"),
+        credentials=ClaudeLoginCredentials(
+            access_token="test-only-canonical-access",
+            refresh_token="test-only-canonical-refresh",
+            access_expiry=access_expiry,
+            refresh_expiry=UnknownExpiry(),
+            scopes=("user:profile",),
+        ),
+        last_refresh_at=REFERENCE_TIME + timedelta(minutes=1),
+    )
+    compatibility_bytes = _seed_authority(
+        paths.accounts.existing_sidekick,
+        (compatibility,),
+    )
+    canonical_bytes = _seed_authority(
+        paths.accounts.canonical,
+        (canonical,),
+    )
+
+    with pytest.raises(LocationMigrationStateError):
+        _service(paths).migrate_locations(
+            replace_conflicting_destination=True,
+        )
+
+    assert paths.accounts.existing_sidekick.read_bytes() == (
+        compatibility_bytes
+    )
+    assert paths.accounts.canonical.read_bytes() == canonical_bytes
+
+
 def test_native_rollback_preserves_latest_state_for_released_reader(
     tmp_path: Path,
 ) -> None:
@@ -729,7 +905,7 @@ def test_native_rollback_preserves_latest_state_for_released_reader(
         compatibility,
     )
     compatibility_snapshots = tuple(
-        paths.accounts.existing_sidekick.parent.glob("accounts.json.v1.*.bak")
+        paths.accounts.existing_sidekick.parent.glob("accounts.json.v2.*.bak")
     )
     assert any(
         snapshot.read_bytes() == original_compatibility

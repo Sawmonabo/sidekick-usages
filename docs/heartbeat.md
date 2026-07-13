@@ -41,16 +41,21 @@ saved tokens first, then runs heartbeat for enabled accounts.
 
 ## Supported providers
 
-Claude OAuth/team accounts are supported when the saved token has both
-`user:profile` and `user:inference`:
+Claude subscription-login credentials always use `/api/oauth/usage` for
+inspection. Warming is supported when the saved login also has the
+`user:inference` capability:
 
 - `user:profile` lets sidekick read `/api/oauth/usage`.
 - `user:inference` lets sidekick send the tiny `/v1/messages` warming
   request with `claude-haiku-4-5-20251001`.
 
-Claude setup-token or inference-only accounts are also supported, but
-they cannot read `/api/oauth/usage`. For those accounts, heartbeat uses
+Claude setup-token credentials are supported, but they cannot read
+`/api/oauth/usage`. For those accounts, heartbeat uses
 the same tiny `/v1/messages` header probe used by the usage fallback.
+
+Credential kind, not scope presence, selects the usage route. A missing
+inference capability can make a subscription login unsupported for warming;
+it never converts that login into a setup-token credential.
 
 Codex ChatGPT-login accounts are supported when the saved account has a
 usable access token and ChatGPT account id. Heartbeat reads
@@ -105,6 +110,8 @@ sidekick-usages heartbeat disable <label>
 - Uses saved sidekick account credentials only.
 - Never imports or overwrites from the current global Claude or Codex
   login.
+- Never changes a saved credential kind. Access refresh, login renewal, and
+  heartbeat are independent transitions.
 - Does not run for accounts whose last token refresh failed.
 - Does not probe again while the target-specific cached reset is still
   in the future. The legacy `heartbeat_5h_reset_at` field mirrors the
@@ -115,24 +122,26 @@ sidekick-usages heartbeat disable <label>
 
 ## Persisted diagnostics
 
-Heartbeat diagnostics are optional and backward-compatible:
+Heartbeat diagnostics may be absent before the first heartbeat operation.
+This is a synthetic schema example; the timestamp placeholders are not local
+account data:
 
 ```json
 {
   "heartbeat_enabled": true,
-  "heartbeat_5h_reset_at": "2026-06-12T18:00:00Z",
+  "heartbeat_5h_reset_at": "<UTC_TIMESTAMP>",
   "heartbeat_window_resets": {
-    "standard": "2026-06-12T18:00:00Z",
-    "spark": "2026-06-12T19:00:00Z"
+    "standard": "<UTC_TIMESTAMP>",
+    "spark": "<UTC_TIMESTAMP>"
   },
   "heartbeat_targets": ["standard", "spark"],
-  "last_heartbeat_at": "2026-06-12T13:00:00Z",
+  "last_heartbeat_at": "<UTC_TIMESTAMP>",
   "last_heartbeat_status": "warmed",
   "last_heartbeat_error": null
 }
 ```
 
-`heartbeat_targets` is optional. When it is absent or `null`, daemon
+When `heartbeat_targets` is absent or `null`, daemon
 heartbeat uses the provider default targets. For Codex, that default is
 `standard` only; Spark warming must be requested explicitly.
 
@@ -160,7 +169,7 @@ Common states:
 - `heartbeat: off`: the account supports heartbeat, but daemon warming
   is disabled.
 - `heartbeat: on`: daemon warming is enabled for the account.
-- `heartbeat: unsupported`: the provider or saved account scopes cannot
-  safely warm a window.
+- `heartbeat: unsupported`: the provider or saved credential cannot safely
+  warm a window.
 - `heartbeat: needs-login`: the last heartbeat failed because auth or
   refresh is broken.

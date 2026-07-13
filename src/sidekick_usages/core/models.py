@@ -4,9 +4,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from types import MappingProxyType
-from typing import ClassVar
+from typing import ClassVar, assert_never
 
-from sidekick_usages.core.expiry import Expiry, UnknownExpiry
+from sidekick_usages.core.expiry import Expiry, KnownExpiry, UnknownExpiry
 from sidekick_usages.core.time import as_utc
 from sidekick_usages.core.types import (
     AccountLabel,
@@ -16,17 +16,109 @@ from sidekick_usages.core.types import (
     TokenActivityScope,
 )
 
+_MAX_CLAUDE_IDENTITY_BYTES = 4_096
+_MAX_CLAUDE_SCOPES = 128
+_CLAUDE_PROFILE_SCOPE = "user:profile"
+
+
+def _require_bounded_claude_identity(value: str) -> None:
+    """Reject identity values that are empty, malformed, or unbounded."""
+    if not isinstance(value, str):
+        raise TypeError("Claude identity values must be strings.")
+    try:
+        encoded = value.encode("utf-8")
+    except UnicodeEncodeError:
+        raise ValueError(
+            "Claude identity values must be valid UTF-8."
+        ) from None
+    if not encoded or len(encoded) > _MAX_CLAUDE_IDENTITY_BYTES:
+        raise ValueError(
+            "Claude identity values must be nonempty and bounded."
+        )
+
+
+def _require_claude_token(value: str, *, kind: str) -> None:
+    """Require one nonempty string credential at the domain boundary."""
+    if not isinstance(value, str):
+        raise TypeError(f"Claude {kind} tokens must be strings.")
+    if not value:
+        raise ValueError(f"Claude {kind} tokens must be nonempty.")
+
+
+def _require_claude_login_scopes(scopes: tuple[str, ...]) -> None:
+    """Require the unique capabilities needed by a Claude login."""
+    if not isinstance(scopes, tuple):
+        raise TypeError("Claude login scopes must be a tuple.")
+    if (
+        not scopes
+        or len(scopes) > _MAX_CLAUDE_SCOPES
+        or len(scopes) != len(set(scopes))
+        or _CLAUDE_PROFILE_SCOPE not in scopes
+    ):
+        raise ValueError(
+            "Claude login scopes must be nonempty, unique, and include "
+            "user:profile."
+        )
+    for scope in scopes:
+        _require_bounded_claude_identity(scope)
+
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class ClaudeCredentials:
-    """Claude credential material and provider-owned metadata."""
+class ClaudeSetupTokenCredentials:
+    """Claude setup-token material without saved-login state."""
 
     provider_id: ClassVar[ProviderId] = ProviderId.CLAUDE
 
     access_token: str = field(repr=False)
-    refresh_token: str | None = field(default=None, repr=False)
-    expiry: Expiry = field(default_factory=UnknownExpiry)
-    scopes: tuple[str, ...] | None = None
+
+    def __post_init__(self) -> None:
+        """Require explicit nonempty setup-token material."""
+        _require_claude_token(self.access_token, kind="access")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ClaudeLoginIdentity:
+    """Stable provider-owned identity for one Claude login."""
+
+    account_id: str = field(repr=False)
+    organization_id: str = field(repr=False)
+
+    def __post_init__(self) -> None:
+        """Require complete bounded stable identity values."""
+        _require_bounded_claude_identity(self.account_id)
+        _require_bounded_claude_identity(self.organization_id)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ClaudeLoginCredentials:
+    """Complete refreshable Claude subscription-login credentials."""
+
+    provider_id: ClassVar[ProviderId] = ProviderId.CLAUDE
+
+    access_token: str = field(repr=False)
+    refresh_token: str = field(repr=False)
+    access_expiry: KnownExpiry
+    refresh_expiry: KnownExpiry | UnknownExpiry
+    scopes: tuple[str, ...]
+    identity: ClaudeLoginIdentity | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        """Reject incomplete login material and ambiguous capabilities."""
+        _require_claude_token(self.access_token, kind="access")
+        _require_claude_token(self.refresh_token, kind="refresh")
+        if not isinstance(self.access_expiry, KnownExpiry):
+            raise TypeError("Claude login access expiry must be known.")
+        if not isinstance(self.refresh_expiry, KnownExpiry | UnknownExpiry):
+            raise TypeError("Claude login refresh expiry must be explicit.")
+        _require_claude_login_scopes(self.scopes)
+        if self.identity is not None and not isinstance(
+            self.identity,
+            ClaudeLoginIdentity,
+        ):
+            raise TypeError("Claude login identity must be complete.")
+
+
+type ClaudeCredentials = ClaudeSetupTokenCredentials | ClaudeLoginCredentials
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -45,6 +137,43 @@ class CodexCredentials:
 
 
 type Credentials = ClaudeCredentials | CodexCredentials
+
+
+def _refresh_token(credentials: Credentials) -> str | None:
+    """Return refresh material only for credential kinds that own it."""
+    match credentials:
+        case ClaudeSetupTokenCredentials():
+            return None
+        case ClaudeLoginCredentials(refresh_token=refresh_token):
+            return refresh_token
+        case CodexCredentials(refresh_token=refresh_token):
+            return refresh_token
+        case unexpected:
+            assert_never(unexpected)
+
+
+def _access_expiry(credentials: Credentials) -> Expiry:
+    """Return provider-neutral access-token expiry metadata."""
+    match credentials:
+        case ClaudeSetupTokenCredentials():
+            return UnknownExpiry()
+        case ClaudeLoginCredentials(access_expiry=access_expiry):
+            return access_expiry
+        case CodexCredentials(expiry=expiry):
+            return expiry
+        case unexpected:
+            assert_never(unexpected)
+
+
+def _claude_scopes(credentials: Credentials) -> tuple[str, ...] | None:
+    """Return validated login scopes only for Claude login credentials."""
+    match credentials:
+        case ClaudeSetupTokenCredentials() | CodexCredentials():
+            return None
+        case ClaudeLoginCredentials(scopes=scopes):
+            return scopes
+        case unexpected:
+            assert_never(unexpected)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -122,19 +251,17 @@ class DetectedCredentials:
     @property
     def refresh_token(self) -> str | None:
         """Return the detected refresh token when supplied."""
-        return self.credentials.refresh_token
+        return _refresh_token(self.credentials)
 
     @property
     def expiry(self) -> Expiry:
         """Return normalized detected expiry metadata."""
-        return self.credentials.expiry
+        return _access_expiry(self.credentials)
 
     @property
     def scopes(self) -> tuple[str, ...] | None:
         """Return Claude scopes, or ``None`` for Codex credentials."""
-        if isinstance(self.credentials, ClaudeCredentials):
-            return self.credentials.scopes
-        return None
+        return _claude_scopes(self.credentials)
 
     @property
     def provider_account_id(self) -> str | None:
@@ -221,19 +348,17 @@ class Account:
     @property
     def refresh_token(self) -> str | None:
         """Return the saved refresh token when present."""
-        return self.credentials.refresh_token
+        return _refresh_token(self.credentials)
 
     @property
     def expiry(self) -> Expiry:
         """Return provider-neutral expiry metadata."""
-        return self.credentials.expiry
+        return _access_expiry(self.credentials)
 
     @property
     def scopes(self) -> tuple[str, ...] | None:
         """Return Claude scopes, or ``None`` for Codex credentials."""
-        if isinstance(self.credentials, ClaudeCredentials):
-            return self.credentials.scopes
-        return None
+        return _claude_scopes(self.credentials)
 
     @property
     def provider_account_id(self) -> str | None:

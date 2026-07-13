@@ -140,7 +140,11 @@ def doctor_cmd(
             if not state.service.accounts:
                 _write_result(
                     invocation,
-                    DoctorReadyResult((), state.assessment),
+                    DoctorReadyResult(
+                        (),
+                        state.assessment,
+                        state.refresh_state,
+                    ),
                     json_output=json_output,
                 )
                 return
@@ -150,7 +154,11 @@ def doctor_cmd(
             raise typer.Exit(code=ExitCode.MANUAL_ACTION)
         _write_result(
             invocation,
-            DoctorReadyResult(tuple(diagnostics), state.assessment),
+            DoctorReadyResult(
+                tuple(diagnostics),
+                state.assessment,
+                state.refresh_state,
+            ),
             json_output=json_output,
         )
         code = account_doctor_exit_code(diagnostics)

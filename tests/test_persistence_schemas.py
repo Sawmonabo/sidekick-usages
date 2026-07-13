@@ -36,7 +36,7 @@ EXPIRY = "2026-07-11T12:00:00.000000Z"
 AUDIT_TIME = "2026-07-10T12:00:00.000000Z"
 CLAUDE_EXPIRY_MILLISECONDS = 1_783_771_200_000
 CODEX_EXPIRY_SECONDS = 1_783_771_200
-FUTURE_SCHEMA_VERSION = 2
+FUTURE_SCHEMA_VERSION = 3
 
 
 def _payload(value: object) -> bytes:
@@ -246,7 +246,7 @@ def test_schema_diagnostics_project_paths_without_rejected_input() -> None:
             DuplicateKeyError,
         ),
         (
-            b'{"schema_version":2,"accounts":{}}',
+            b'{"schema_version":3,"accounts":{}}',
             FutureSchemaError,
         ),
         (b'{"schema_version":true,"accounts":{}}', InvalidSchemaError),
@@ -770,7 +770,7 @@ def test_prototype_receipt_has_one_exact_non_secret_encoding() -> None:
         "{\n"
         '  "receipt_version": 1,\n'
         f'  "prototype_sha256": "{digest}",\n'
-        '  "target_schema_version": 1\n'
+        '  "target_schema_version": 2\n'
         "}\n"
     ).encode()
 
@@ -783,15 +783,15 @@ def test_prototype_receipt_has_one_exact_non_secret_encoding() -> None:
         expected.replace(digest.encode(), digest.upper().encode()),
         expected.replace(digest.encode(), digest[:-1].encode()),
         expected.replace(
-            b'"target_schema_version": 1',
             b'"target_schema_version": 2',
+            b'"target_schema_version": 3',
         ),
         expected.replace(b"\n}", b',\n  "extra": true\n}'),
         _payload(
             {
                 "prototype_sha256": digest,
                 "receipt_version": 1,
-                "target_schema_version": 1,
+                "target_schema_version": 2,
             }
         ),
     ):

@@ -36,6 +36,7 @@ class AuthorityGeneration(StrEnum):
 
     GENERATION_ZERO = "v0"
     VERSION_ONE = "v1"
+    VERSION_TWO = "v2"
 
 
 class ManagedArtifactKind(StrEnum):
@@ -45,6 +46,7 @@ class ManagedArtifactKind(StrEnum):
     LOCK = "lock"
     GENERATION_ZERO_BACKUP = "generation_zero_backup"
     VERSION_ONE_SNAPSHOT = "version_one_snapshot"
+    VERSION_TWO_SNAPSHOT = "version_two_snapshot"
     PROTOTYPE_RECEIPT = "prototype_receipt"
     TEMPORARY = "temporary"
 
@@ -109,6 +111,7 @@ class ArtifactGrammar:
     authority_basename: str
     _v0_pattern: re.Pattern[str] = field(init=False, repr=False)
     _v1_pattern: re.Pattern[str] = field(init=False, repr=False)
+    _v2_pattern: re.Pattern[str] = field(init=False, repr=False)
     _receipt_pattern: re.Pattern[str] = field(init=False, repr=False)
     _temporary_pattern: re.Pattern[str] = field(init=False, repr=False)
 
@@ -124,6 +127,11 @@ class ArtifactGrammar:
             self,
             "_v1_pattern",
             re.compile(rf"{escaped}\.v1\.([0-9a-f]{{64}})\.bak\Z"),
+        )
+        object.__setattr__(
+            self,
+            "_v2_pattern",
+            re.compile(rf"{escaped}\.v2\.([0-9a-f]{{64}})\.bak\Z"),
         )
         object.__setattr__(
             self,
@@ -154,9 +162,7 @@ class ArtifactGrammar:
         digest: Sha256Digest,
     ) -> str:
         """Return a content-addressed immutable backup basename."""
-        suffix = (
-            "v0" if generation is AuthorityGeneration.GENERATION_ZERO else "v1"
-        )
+        suffix = generation.value
         return f"{self.authority_basename}.{suffix}.{digest}.bak"
 
     def receipt_basename(self, prototype_digest: Sha256Digest) -> str:
@@ -199,6 +205,10 @@ class ArtifactGrammar:
             (
                 self._v1_pattern,
                 ManagedArtifactKind.VERSION_ONE_SNAPSHOT,
+            ),
+            (
+                self._v2_pattern,
+                ManagedArtifactKind.VERSION_TWO_SNAPSHOT,
             ),
             (
                 self._receipt_pattern,

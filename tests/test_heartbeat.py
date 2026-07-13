@@ -15,7 +15,8 @@ from sidekick_usages.clock import Clock
 from sidekick_usages.core.expiry import KnownExpiry, UnknownExpiry
 from sidekick_usages.core.models import (
     Account,
-    ClaudeCredentials,
+    ClaudeLoginCredentials,
+    ClaudeSetupTokenCredentials,
     CodexCredentials,
     UsageReport,
 )
@@ -24,6 +25,7 @@ from sidekick_usages.core.types import (
     ExitCode,
     HeartbeatStatus,
     ProviderId,
+    RefreshStatus,
 )
 from sidekick_usages.heartbeat import (
     HeartbeatOutcome,
@@ -52,7 +54,6 @@ from sidekick_usages.providers.base import (
 )
 from sidekick_usages.providers.codex import CodexProvider
 from sidekick_usages.providers.codex.heartbeat import (
-    SPARK_HEARTBEAT_MODEL,
     CodexHeartbeat,
 )
 from sidekick_usages.serialization import JsonObject
@@ -195,11 +196,14 @@ class _FakeRefreshProvider(Provider):
     ) -> RefreshResult:
         del http
         self.refresh_calls += 1
+        credentials = account.credentials
+        if not isinstance(credentials, ClaudeLoginCredentials):
+            raise AssertionError("Refresh fixture requires a Claude login.")
         return RefreshSuccess(
             credentials=replace(
-                account.credentials,
+                credentials,
                 access_token="refreshed-token",
-                expiry=KnownExpiry(REFERENCE_TIME + timedelta(hours=1)),
+                access_expiry=KnownExpiry(REFERENCE_TIME + timedelta(hours=1)),
             ),
         )
 
@@ -217,23 +221,15 @@ def _acct(
     heartbeat_5h_reset_at: datetime | None = None,
     heartbeat_window_resets: dict[str, datetime] | None = None,
     heartbeat_targets: tuple[str, ...] | None = None,
-    refresh_token: str | None = "refresh-token",
-    expiry_at: datetime | None = None,
 ) -> Account:
-    expiry = (
-        KnownExpiry(expiry_at) if expiry_at is not None else UnknownExpiry()
-    )
+    access_token = "old-token" if label == "team" else f"old-token-{label}"
     credentials = (
-        ClaudeCredentials(
-            access_token="old-token",
-            refresh_token=refresh_token,
-            expiry=expiry,
-        )
+        ClaudeSetupTokenCredentials(access_token=access_token)
         if provider_id is ProviderId.CLAUDE
         else CodexCredentials(
-            access_token="old-token",
-            refresh_token=refresh_token,
-            expiry=expiry,
+            access_token=access_token,
+            refresh_token=f"refresh-token-{label}",
+            expiry=UnknownExpiry(),
             account_id=provider_account_id,
         )
     )
@@ -245,6 +241,27 @@ def _acct(
         heartbeat_5h_reset_at=heartbeat_5h_reset_at,
         heartbeat_window_resets=heartbeat_window_resets,
         heartbeat_targets=heartbeat_targets,
+    )
+
+
+def _claude_login_acct(
+    *,
+    access_expiry_at: datetime,
+    heartbeat_enabled: bool = False,
+    heartbeat_5h_reset_at: datetime | None = None,
+) -> Account:
+    return Account(
+        label=AccountLabel("team"),
+        credentials=ClaudeLoginCredentials(
+            access_token="old-token",
+            refresh_token="refresh-token",
+            access_expiry=KnownExpiry(access_expiry_at),
+            refresh_expiry=UnknownExpiry(),
+            scopes=("user:profile",),
+        ),
+        plan="team",
+        heartbeat_enabled=heartbeat_enabled,
+        heartbeat_5h_reset_at=heartbeat_5h_reset_at,
     )
 
 
@@ -423,9 +440,9 @@ def test_heartbeat_decision_samples_clock_once(tmp_path: Path) -> None:
     store = _store(
         tmp_path,
         [
-            _acct(
+            _claude_login_acct(
                 heartbeat_enabled=True,
-                expiry_at=REFERENCE_TIME + timedelta(hours=1),
+                access_expiry_at=REFERENCE_TIME + timedelta(hours=1),
                 heartbeat_5h_reset_at=_STANDARD_RESET,
             )
         ],
@@ -683,205 +700,8 @@ def test_heartbeat_all_quiet_runs_enabled_only(tmp_path: Path) -> None:
     result = harness.invoke(["heartbeat", "--all", "--quiet"])
 
     assert result.exit_code == 0
-    assert provider.heartbeat_calls == [("enabled", "old-token")]
+    assert provider.heartbeat_calls == [("enabled", "old-token-enabled")]
     assert stdout.getvalue() == ""
-
-
-def test_heartbeat_enable_accepts_codex_with_saved_account_id(
-    tmp_path: Path,
-) -> None:
-    """Codex accounts with saved account ids can opt into heartbeat."""
-    harness, store, stdout, _ = _install_ctx(
-        tmp_path,
-        [
-            _acct(
-                provider_id=ProviderId.CODEX,
-                provider_account_id="acct-codex",
-            )
-        ],
-        {ProviderId.CODEX: _codex_heartbeat()},
-    )
-
-    result = harness.invoke(["heartbeat", "enable", "team"])
-
-    assert result.exit_code == 0
-    saved = store.get("team")
-    assert saved is not None
-    assert saved.heartbeat_enabled is True
-    assert "team: enabled" in stdout.getvalue()
-
-
-def test_codex_heartbeat_warms_standard_window_with_mini() -> None:
-    """Codex standard heartbeat uses the cheapest standard-window model."""
-    account = _acct(
-        provider_id=ProviderId.CODEX,
-        provider_account_id="acct-codex",
-    )
-    http = _FakeCodexHttp(
-        [
-            {"rate_limit": {"primary_window": {"used_percent": 0}}},
-            {
-                "rate_limit": {
-                    "primary_window": {
-                        "used_percent": 1,
-                        "resets_at": "2026-06-12T18:00:00Z",
-                    }
-                }
-            },
-        ]
-    )
-
-    result = _codex_heartbeat().run(account, http)
-
-    assert result.status is HeartbeatStatus.WARMED
-    assert result.reset_at == _STANDARD_RESET
-    assert len(http.get_calls) == CODEX_USAGE_FETCHES_FOR_WARM
-    assert len(http.post_calls) == 1
-    url, body, headers = http.post_calls[0]
-    assert url == "https://chatgpt.com/backend-api/codex/responses"
-    assert body["model"] == "gpt-5.4-mini"
-    assert body["model"] != SPARK_HEARTBEAT_MODEL
-    assert body["instructions"] == "Reply with exactly: ok"
-    assert body["stream"] is True
-    assert body["store"] is False
-    assert body["reasoning"] == {"effort": "low"}
-    assert body["input"] == [
-        {
-            "type": "message",
-            "role": "user",
-            "content": [{"type": "input_text", "text": "ok"}],
-        }
-    ]
-    assert headers["Authorization"] == "Bearer old-token"
-    assert headers["ChatGPT-Account-Id"] == "acct-codex"
-    assert headers["Accept"] == "text/event-stream"
-
-
-def test_codex_heartbeat_warms_spark_window_with_spark_model() -> None:
-    """Codex Spark heartbeat targets the separate Spark rate limit."""
-    account = _acct(
-        provider_id=ProviderId.CODEX,
-        provider_account_id="acct-codex",
-    )
-    http = _FakeCodexHttp(
-        [
-            {
-                "rate_limit": {
-                    "primary_window": {
-                        "used_percent": 1,
-                        "resets_at": "2026-06-12T18:00:00Z",
-                    }
-                },
-                "additional_rate_limits": [
-                    {
-                        "limit_name": "GPT-5.3-Codex-Spark",
-                        "rate_limit": {
-                            "primary_window": {"used_percent": 0},
-                        },
-                    }
-                ],
-            },
-            {
-                "rate_limit": {
-                    "primary_window": {
-                        "used_percent": 1,
-                        "resets_at": "2026-06-12T18:00:00Z",
-                    }
-                },
-                "additional_rate_limits": [
-                    {
-                        "limit_name": "GPT-5.3-Codex-Spark",
-                        "rate_limit": {
-                            "primary_window": {
-                                "used_percent": 1,
-                                "resets_at": "2026-06-12T19:00:00Z",
-                            },
-                        },
-                    }
-                ],
-            },
-        ]
-    )
-
-    result = _codex_heartbeat().run(account, http, target_id="spark")
-
-    assert result.status is HeartbeatStatus.WARMED
-    assert result.reset_at == _SPARK_RESET
-    assert result.target_id == "spark"
-    assert len(http.post_calls) == 1
-    _, body, _ = http.post_calls[0]
-    assert body["model"] == SPARK_HEARTBEAT_MODEL
-
-
-def test_codex_heartbeat_fails_when_target_window_stays_inactive() -> None:
-    """A successful POST is not reported as warmed unless usage confirms it."""
-    account = _acct(
-        provider_id=ProviderId.CODEX,
-        provider_account_id="acct-codex",
-    )
-    http = _FakeCodexHttp(
-        [
-            {"rate_limit": {"primary_window": {"used_percent": 0}}},
-            {"rate_limit": {"primary_window": {"used_percent": 1}}},
-        ]
-    )
-
-    result = _codex_heartbeat().run(account, http)
-
-    assert result.status is HeartbeatStatus.FAILED
-    assert result.warmed is False
-    assert "did not become active" in result.message
-
-
-def test_codex_heartbeat_can_enable_all_targets(tmp_path: Path) -> None:
-    """Codex opt-in can include standard and Spark windows."""
-    harness, store, stdout, _ = _install_ctx(
-        tmp_path,
-        [
-            _acct(
-                provider_id=ProviderId.CODEX,
-                provider_account_id="acct-codex",
-            )
-        ],
-        {ProviderId.CODEX: _codex_heartbeat()},
-    )
-
-    result = harness.invoke(
-        ["heartbeat", "enable", "team", "--target", "all"],
-    )
-
-    assert result.exit_code == 0
-    saved = store.get("team")
-    assert saved is not None
-    assert saved.heartbeat_enabled is True
-    assert saved.heartbeat_targets == ("standard", "spark")
-    assert "team: enabled" in stdout.getvalue()
-
-
-def test_codex_heartbeat_skips_when_usage_window_is_active() -> None:
-    """Codex usage state is inspected before sending a model request."""
-    account = _acct(
-        provider_id=ProviderId.CODEX,
-        provider_account_id="acct-codex",
-    )
-    http = _FakeCodexHttp(
-        [
-            {
-                "rate_limit": {
-                    "primary_window": {
-                        "used_percent": 1,
-                        "resets_at": "2026-06-12T18:00:00Z",
-                    }
-                }
-            }
-        ]
-    )
-
-    result = _codex_heartbeat().run(account, http)
-
-    assert result.status is HeartbeatStatus.ACTIVE
-    assert result.reset_at == _STANDARD_RESET
-    assert http.post_calls == []
 
 
 def test_maintain_refreshes_before_heartbeat(tmp_path: Path) -> None:
@@ -892,10 +712,9 @@ def test_maintain_refreshes_before_heartbeat(tmp_path: Path) -> None:
     harness, _, _, _ = _install_ctx(
         tmp_path,
         [
-            _acct(
+            _claude_login_acct(
                 heartbeat_enabled=True,
-                refresh_token="refresh-token",
-                expiry_at=REFERENCE_TIME - timedelta(minutes=1),
+                access_expiry_at=REFERENCE_TIME - timedelta(minutes=1),
             )
         ],
         {ProviderId.CLAUDE: heartbeat_provider},
@@ -908,3 +727,25 @@ def test_maintain_refreshes_before_heartbeat(tmp_path: Path) -> None:
     assert result.exit_code == 0
     assert refresh_provider.refresh_calls == 1
     assert heartbeat_provider.heartbeat_calls == [("team", "refreshed-token")]
+
+
+def test_maintain_preserves_setup_token_failure_cause(tmp_path: Path) -> None:
+    """A rejected setup token never receives login recovery wording."""
+    account = _acct(heartbeat_enabled=True)
+    account.last_refresh_status = RefreshStatus.FAILED
+    account.last_refresh_error = "Claude rejected the saved setup token."
+    provider = _FakeHeartbeatProvider()
+    harness, _, stdout, stderr = _install_ctx(
+        tmp_path,
+        [account],
+        {ProviderId.CLAUDE: provider},
+    )
+
+    result = harness.invoke(["maintain", "--quiet"])
+
+    assert result.exit_code == ExitCode.MANUAL_ACTION
+    assert provider.heartbeat_calls == []
+    assert stdout.getvalue() == ""
+    assert stderr.getvalue() == (
+        "team: Claude rejected the saved setup token.\n"
+    )

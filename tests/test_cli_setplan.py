@@ -5,7 +5,7 @@ from pathlib import Path
 
 from rich.console import Console
 
-from sidekick_usages.core.models import Account, ClaudeCredentials
+from sidekick_usages.core.models import Account, ClaudeSetupTokenCredentials
 from sidekick_usages.core.types import AccountLabel
 from sidekick_usages.http import HttpClient
 from sidekick_usages.persistence.account_store import AccountStore
@@ -40,7 +40,7 @@ def _ctx(tmp_path: Path, account: Account) -> tuple[AccountStore, CliHarness]:
 def _acct(label: str, plan: str) -> Account:
     return Account(
         label=AccountLabel(label),
-        credentials=ClaudeCredentials(access_token="t"),
+        credentials=ClaudeSetupTokenCredentials(access_token="t"),
         plan=plan,
     )
 

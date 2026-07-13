@@ -138,6 +138,23 @@ def test_case_variant_and_insecure_mode_never_become_authority(
         filesystem.read_authority()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX parent mode policy")
+@pytest.mark.parametrize("parent_mode", [0o720, 0o702])
+def test_external_private_source_rejects_writable_parent(
+    tmp_path: Path,
+    parent_mode: int,
+) -> None:
+    parent = tmp_path / "external"
+    parent.mkdir(mode=0o700)
+    source = parent / "accounts.json"
+    source.write_bytes(VERSION_ONE)
+    source.chmod(PRIVATE_FILE_MODE)
+    parent.chmod(parent_mode)
+
+    with pytest.raises(UnsafeManagedFileError):
+        PersistenceFilesystem(source).read_external_private_source()
+
+
 def test_qualification_preserves_security_vs_capability_codes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -379,6 +396,64 @@ def test_windows_dacl_rejects_missing_inherited_and_foreign_access() -> None:
         with pytest.raises(NativeFilesystemError) as exc_info:
             windows_security._validate_acl(candidate, directory=directory)
         assert exc_info.value.kind is NativeFailureKind.UNSAFE
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows external ACL")
+def test_windows_external_source_acl_separates_parent_and_file_access() -> (
+    None
+):
+    trusted = windows_security._allowed_sids()
+    world = win32security.CreateWellKnownSid(win32security.WinWorldSid)
+    inherited_read = win32security.ACL()
+    inherited_read.AddAccessAllowedAceEx(
+        win32security.ACL_REVISION,
+        win32security.INHERITED_ACE,
+        win32file.FILE_GENERIC_READ,
+        world,
+    )
+    effective_read = win32security.ACL()
+    effective_read.AddAccessAllowedAce(
+        win32security.ACL_REVISION,
+        win32file.FILE_GENERIC_READ,
+        world,
+    )
+    effective_write = win32security.ACL()
+    effective_write.AddAccessAllowedAce(
+        win32security.ACL_REVISION,
+        win32file.FILE_GENERIC_WRITE,
+        world,
+    )
+    unknown_inherit_only = win32security.ACL()
+    unknown_inherit_only.AddMandatoryAce(
+        win32security.ACL_REVISION,
+        win32security.INHERIT_ONLY_ACE,
+        win32security.SYSTEM_MANDATORY_LABEL_NO_WRITE_UP,
+        win32security.CreateWellKnownSid(win32security.WinLowLabelSid),
+    )
+
+    windows_security._validate_external_acl(
+        inherited_read,
+        trusted,
+        win32file.FILE_GENERIC_WRITE,
+    )
+    with pytest.raises(NativeFilesystemError):
+        windows_security._validate_external_acl(
+            effective_write,
+            trusted,
+            win32file.FILE_GENERIC_WRITE,
+        )
+    with pytest.raises(NativeFilesystemError):
+        windows_security._validate_external_acl(
+            effective_read,
+            trusted,
+            win32file.FILE_GENERIC_READ | win32file.FILE_GENERIC_WRITE,
+        )
+    with pytest.raises(NativeFilesystemError):
+        windows_security._validate_external_acl(
+            unknown_inherit_only,
+            trusted,
+            win32file.FILE_GENERIC_READ | win32file.FILE_GENERIC_WRITE,
+        )
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows DACL repair")

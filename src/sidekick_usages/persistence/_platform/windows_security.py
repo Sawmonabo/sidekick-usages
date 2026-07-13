@@ -14,6 +14,7 @@ if TYPE_CHECKING and sys.platform == "win32":
 if sys.platform == "win32":
     import pywintypes
     import win32api
+    import win32con
     import win32file
     import win32security
 
@@ -236,10 +237,84 @@ if sys.platform == "win32":
             raise _unsafe()
         _validate_acl(dacl, directory=directory)
 
+    def _validate_external_acl(
+        dacl: _win32typing.PyACL,
+        trusted: tuple[_win32typing.PySID, ...],
+        forbidden_access: int,
+    ) -> None:
+        """Reject every effective foreign allow ACE in a bounded mask."""
+        try:
+            for index in range(dacl.GetAceCount()):
+                header, mask, sid = dacl.GetAce(index)
+                ace_type, ace_flags = header
+                if ace_type not in {
+                    win32security.ACCESS_ALLOWED_ACE_TYPE,
+                    win32security.ACCESS_DENIED_ACE_TYPE,
+                }:
+                    raise _unsafe()
+                if (
+                    ace_flags & win32security.INHERIT_ONLY_ACE
+                    or ace_type == win32security.ACCESS_DENIED_ACE_TYPE
+                ):
+                    continue
+                if sid not in trusted and mask & forbidden_access:
+                    raise _unsafe()
+        except pywintypes.error, TypeError, ValueError:
+            raise _unsafe() from None
+
+    def _validate_external_security(
+        handle: int,
+        forbidden_access: int,
+    ) -> None:
+        try:
+            descriptor = win32security.GetSecurityInfo(
+                handle,
+                win32security.SE_FILE_OBJECT,
+                win32security.OWNER_SECURITY_INFORMATION
+                | win32security.DACL_SECURITY_INFORMATION,
+            )
+            if not descriptor.IsValid():
+                raise _unsafe()
+            owner = descriptor.GetSecurityDescriptorOwner()
+            dacl = descriptor.GetSecurityDescriptorDacl()
+            trusted = _allowed_sids()
+            if owner not in trusted or dacl is None:
+                raise _unsafe()
+            _validate_external_acl(dacl, trusted, forbidden_access)
+        except pywintypes.error:
+            raise _unsafe() from None
+
+    def validate_external_source_directory(handle: int) -> None:
+        """Require a trusted owner and no untrusted namespace writer."""
+        _validate_external_security(
+            handle,
+            win32file.FILE_ADD_FILE
+            | win32file.FILE_ADD_SUBDIRECTORY
+            | win32file.FILE_DELETE_CHILD
+            | win32file.FILE_GENERIC_WRITE
+            | win32con.DELETE
+            | win32con.WRITE_DAC
+            | win32con.WRITE_OWNER,
+        )
+
+    def validate_external_private_source_file(handle: int) -> None:
+        """Require a trusted owner and no untrusted file access."""
+        _validate_external_security(
+            handle,
+            win32file.FILE_GENERIC_READ
+            | win32file.FILE_GENERIC_WRITE
+            | win32file.FILE_GENERIC_EXECUTE
+            | win32con.DELETE
+            | win32con.WRITE_DAC
+            | win32con.WRITE_OWNER,
+        )
+
 
 __all__ = [
     "private_security_attributes",
     "repair_security",
+    "validate_external_private_source_file",
+    "validate_external_source_directory",
     "validate_repair_owner",
     "validate_security",
 ]

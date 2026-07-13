@@ -10,7 +10,6 @@ from pathlib import Path
 from sidekick_usages.persistence._platform import (
     NativeFailureKind,
     NativeFilesystemError,
-    NativePlatform,
 )
 from sidekick_usages.persistence._platform.posix import (
     _close_descriptor_stack,
@@ -347,6 +346,58 @@ def _open_regular(
     return descriptor
 
 
+def _scan_direct_tree(opened: _OpenedTree) -> tuple[_TreeEntry, ...]:
+    """Validate the root namespace without traversing child directories."""
+    _require_root_identity(opened)
+    entries: list[_TreeEntry] = []
+    descriptor = _open_relative_directory(
+        opened,
+        (),
+        {(): opened.root_identity},
+    )
+    with _owned_descriptor(descriptor, NativeFailureKind.UNREADABLE):
+        for basename in _list_names(descriptor):
+            identity, metadata = _entry_metadata(descriptor, basename)
+            if stat.S_ISDIR(metadata.st_mode):
+                _validate_directory(metadata, opened.root_device)
+                child = _open_child_directory(
+                    descriptor,
+                    basename,
+                    private=True,
+                )
+                with _owned_descriptor(
+                    child,
+                    NativeFailureKind.UNREADABLE,
+                ):
+                    child_metadata = _metadata(
+                        child,
+                        NativeFailureKind.UNREADABLE,
+                    )
+                    if (
+                        child_metadata.st_dev,
+                        child_metadata.st_ino,
+                    ) != identity:
+                        raise _native_error(NativeFailureKind.CHANGED)
+                entries.append(_TreeEntry((basename,), identity, True))
+                continue
+            if not stat.S_ISREG(metadata.st_mode):
+                raise _native_error(NativeFailureKind.UNSAFE)
+            file_descriptor = _open_regular(
+                descriptor,
+                basename,
+                opened.root_device,
+                identity,
+            )
+            with _owned_descriptor(
+                file_descriptor,
+                NativeFailureKind.UNREADABLE,
+            ):
+                pass
+            entries.append(_TreeEntry((basename,), identity, False))
+    _require_root_identity(opened)
+    return tuple(entries)
+
+
 def _scan_tree(
     opened: _OpenedTree,
 ) -> tuple[tuple[_TreeEntry, ...], dict[_RelativePath, _Identity]]:
@@ -651,98 +702,4 @@ def _delete_entry(
             raise _native_error(NativeFailureKind.CHANGED)
 
 
-class PosixPrivateCredentialPlatform:
-    """Secure recursive private-tree operations for Linux and macOS."""
-
-    def __init__(self, qualifier: NativePlatform) -> None:
-        self._qualifier = qualifier
-
-    def ensure_directory(self, path: Path) -> None:
-        """Create or validate one owner-only credential directory."""
-        self._qualifier.qualify(path)
-        self._qualifier.ensure_parent(path)
-        self._qualifier.qualify(path)
-
-    def repair_permissions(self, root: Path) -> tuple[int, int]:
-        """Repair only preflight-safe owner-owned directory modes."""
-        self._qualifier.qualify(root)
-        with _open_repair_tree(root) as opened:
-            if opened is None:
-                return (0, 0)
-            directories, identities = _scan_repair_tree(opened)
-            repaired = sum(
-                _repair_directory_permissions(opened, directory, identities)
-                for directory in sorted(
-                    directories,
-                    key=lambda candidate: (
-                        len(candidate.relative),
-                        candidate.relative,
-                    ),
-                    reverse=True,
-                )
-            )
-            _scan_tree(opened)
-            return (repaired, 0)
-
-    def contains_artifacts(self, root: Path) -> bool:
-        """Validate the complete tree and report whether it has children."""
-        self._qualifier.qualify(root)
-        with _open_tree(root) as opened:
-            if opened is None:
-                return False
-            entries, _identities = _scan_tree(opened)
-            return bool(entries)
-
-    def destroy_artifacts(self, root: Path) -> None:
-        """Prevalidate then identity-delete every descendant bottom-up."""
-        self._qualifier.qualify(root)
-        with _open_tree(root) as opened:
-            if opened is None:
-                return
-            entries, identities = _scan_tree(opened)
-            for entry in sorted(
-                entries,
-                key=lambda candidate: (
-                    len(candidate.relative),
-                    candidate.relative,
-                ),
-                reverse=True,
-            ):
-                _delete_entry(opened, entry, identities)
-            remaining, _remaining_identities = _scan_tree(opened)
-            if remaining:
-                raise _native_error(NativeFailureKind.CHANGED)
-
-    def destroy_tree(self, root: Path) -> None:
-        """Delete one exact validated private tree including its root."""
-        self._qualifier.qualify(root)
-        with _open_tree(root) as opened:
-            if opened is None:
-                return
-            entries, identities = _scan_tree(opened)
-            for entry in sorted(
-                entries,
-                key=lambda candidate: (
-                    len(candidate.relative),
-                    candidate.relative,
-                ),
-                reverse=True,
-            ):
-                _delete_entry(opened, entry, identities)
-            remaining, _remaining_identities = _scan_tree(opened)
-            if remaining:
-                raise _native_error(NativeFailureKind.CHANGED)
-            _require_root_identity(opened)
-            root_entry = _TreeEntry(
-                (opened.root_basename,),
-                opened.root_identity,
-                True,
-            )
-            _delete_directory(
-                opened,
-                opened.parent_descriptor,
-                root_entry,
-            )
-
-
-__all__ = ["PosixPrivateCredentialPlatform"]
+__all__: list[str] = []

@@ -183,6 +183,8 @@ if sys.platform == "win32":
         descriptor: int,
         directory_device: int,
         limit: int,
+        *,
+        allow_interrupted_link: bool = True,
     ) -> NativeFile:
         """Bounded-read and revalidate one stable open file handle."""
         before = metadata(descriptor, NativeFailureKind.UNREADABLE)
@@ -190,7 +192,7 @@ if sys.platform == "win32":
             before,
             directory=False,
             directory_device=directory_device,
-            allow_interrupted_link=True,
+            allow_interrupted_link=allow_interrupted_link,
         )
         if before.st_size > limit:
             raise _native_error(NativeFailureKind.TOO_LARGE)
@@ -221,7 +223,7 @@ if sys.platform == "win32":
             after,
             directory=False,
             directory_device=directory_device,
-            allow_interrupted_link=True,
+            allow_interrupted_link=allow_interrupted_link,
         )
         if (
             (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)

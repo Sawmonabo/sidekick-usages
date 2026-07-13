@@ -75,7 +75,7 @@ type _AuthorityReader = Callable[[], FileSnapshot | None]
 
 
 class PrivateCredentialTransaction:
-    """Coordinate private bytes and one version-one authority under a lock."""
+    """Coordinate private bytes and one current authority under a lock."""
 
     def __init__(
         self,
@@ -127,10 +127,10 @@ class PrivateCredentialTransaction:
         displaced_bundles: Iterable[Path],
         source_guard: CredentialSourceGuard | None = None,
     ) -> FileSnapshot:
-        """Commit private changes first and version-one authority last.
+        """Commit private changes first and current authority last.
 
         :param transaction: Capability proving the account lock is held.
-        :param payload: Canonical target version-one authority bytes.
+        :param payload: Canonical target current authority bytes.
         :param expected_source: Exact old authority expectation.
         :param private_bundles: Bounded private target mutations.
         :param displaced_bundles: Old canonical homes no longer referenced.
@@ -145,7 +145,7 @@ class PrivateCredentialTransaction:
         )
         if not private_bundles and not displaced and source_guard is None:
             return transaction.commit_authority(
-                AuthorityGeneration.VERSION_ONE,
+                AuthorityGeneration.VERSION_TWO,
                 payload,
                 expected_source,
             )
@@ -171,7 +171,7 @@ class PrivateCredentialTransaction:
                 source_guard,
             )
             final = transaction.commit_authority(
-                AuthorityGeneration.VERSION_ONE,
+                AuthorityGeneration.VERSION_TWO,
                 payload,
                 expected_source,
             )

@@ -1,6 +1,13 @@
 """Claude usage routes, scope policy, and response conversion."""
 
-from sidekick_usages.core.models import Account, UsageReport
+from typing import assert_never
+
+from sidekick_usages.core.models import (
+    Account,
+    ClaudeLoginCredentials,
+    ClaudeSetupTokenCredentials,
+    UsageReport,
+)
 from sidekick_usages.http import HttpClient, HttpOperation
 from sidekick_usages.providers.claude.credentials import (
     require_claude_credentials,
@@ -15,7 +22,6 @@ MESSAGES_URL = "https://api.anthropic.com/v1/messages"
 USER_AGENT = "claude-code/2.1.174"
 ANTHROPIC_BETA = "oauth-2025-04-20"
 ANTHROPIC_API_VERSION = "2023-06-01"
-PROFILE_SCOPE = "user:profile"
 PROBE_MODEL = "claude-haiku-4-5-20251001"
 
 HEADER_BUCKETS: tuple[tuple[str, str], ...] = (
@@ -25,14 +31,15 @@ HEADER_BUCKETS: tuple[tuple[str, str], ...] = (
 
 
 def fetch_usage(account: Account, http: HttpClient) -> UsageReport:
-    """Fetch usage through the route selected by known scope metadata."""
+    """Fetch usage through the route owned by the credential variant."""
     credentials = require_claude_credentials(account)
-    if (
-        credentials.scopes is not None
-        and PROFILE_SCOPE not in credentials.scopes
-    ):
-        return fetch_via_headers(account, http)
-    return fetch_via_oauth_endpoint(account, http)
+    match credentials:
+        case ClaudeSetupTokenCredentials():
+            return fetch_via_headers(account, http)
+        case ClaudeLoginCredentials():
+            return fetch_via_oauth_endpoint(account, http)
+        case unexpected:
+            assert_never(unexpected)
 
 
 def fetch_via_oauth_endpoint(

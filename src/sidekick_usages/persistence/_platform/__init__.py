@@ -83,6 +83,14 @@ class NativePlatform(Protocol):
     ) -> NativeFile | None:
         """No-follow read one protected regular object when present."""
 
+    def read_external_private_source(
+        self,
+        parent: Path,
+        basename: str,
+        limit: int,
+    ) -> NativeFile | None:
+        """Read one private file from an owner-controlled external parent."""
+
     def create_private(
         self,
         parent: Path,

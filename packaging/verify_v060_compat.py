@@ -4,34 +4,49 @@
 import argparse
 import hashlib
 import json
-import os
 import shutil
 import subprocess
 import sys
 import tarfile
 import tempfile
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 
+from v060_process import (
+    ProcessRunner,
+    run_process,
+)
+from v060_process import (
+    install_network_guard as _install_network_guard,
+)
+from v060_process import (
+    isolated_environment as _isolated_environment,
+)
+
 from sidekick_usages.persistence.errors import RollbackCompatibilityError
 from sidekick_usages.persistence.schemas import (
-    VersionOneDocument,
+    ClaudeCredentialKind,
+    GenerationZeroDocument,
+    StoredClaudeIdentity,
+    VersionTwoDocument,
     decode_generation_zero,
-    decode_version_one,
+    decode_version_two,
     encode_generation_zero,
-    encode_version_one,
+    encode_version_two,
 )
 from sidekick_usages.persistence.transforms import (
-    generation_zero_to_version_one,
-    version_one_to_v060,
+    generation_zero_to_version_two,
+    version_two_to_v060,
 )
 from sidekick_usages.persistence.v060 import PINNED_V060_COMMIT
 
-_ACCOUNT_ORDER = ("claude-max-1", "codex-plus-1")
-_PROVIDER_ORDER = ("claude", "codex")
-_COMMAND_TIMEOUT_SECONDS = 60
+_ACCOUNT_ORDER = ("claude-max-1", "codex-plus-1", "claude-setup-1")
+_PROVIDER_ORDER = ("claude", "codex", "claude")
+_SETUP_LABEL = "claude-setup-1"
+_SETUP_SCOPE = "user:inference"
 _SHA256_LENGTH = 64
 
 _OLD_ORACLE_PROGRAM = r"""
@@ -149,7 +164,7 @@ class OracleObservation:
 class CurrentCycleResult:
     """Deterministic bytes owned by the current pure transform seam."""
 
-    version_one: bytes
+    version_two: bytes
     reverse_v060: bytes
 
 
@@ -158,7 +173,7 @@ class CycleEvidence:
     """Stable evidence for one complete old/current/old cycle."""
 
     number: int
-    version_one_sha256: str
+    version_two_sha256: str
     reverse_v060_sha256: str
     final_state_sha256: str
 
@@ -176,39 +191,20 @@ class CompatibilityReport:
             "account_order": list(_ACCOUNT_ORDER),
             "provider_order": list(_PROVIDER_ORDER),
             "empty_heartbeat_preflight": "rejected",
+            "setup_token_round_trip": (
+                "user:inference_reconstructs_setup_token"
+            ),
+            "advisory_metadata_loss": ("identity_and_refresh_expiry_only"),
             "cycles": [
                 {
                     "number": cycle.number,
-                    "version_one_sha256": cycle.version_one_sha256,
+                    "version_two_sha256": cycle.version_two_sha256,
                     "reverse_v060_sha256": cycle.reverse_v060_sha256,
                     "final_state_sha256": cycle.final_state_sha256,
                 }
                 for cycle in self.cycles
             ],
         }
-
-
-type ProcessRunner = Callable[
-    [tuple[str, ...], Path, Mapping[str, str] | None],
-    subprocess.CompletedProcess[str],
-]
-
-
-def run_process(
-    argv: tuple[str, ...],
-    cwd: Path,
-    env: Mapping[str, str] | None,
-) -> subprocess.CompletedProcess[str]:
-    """Run one bounded argv-only subprocess."""
-    return subprocess.run(
-        list(argv),
-        cwd=cwd,
-        env=env,
-        capture_output=True,
-        check=False,
-        text=True,
-        timeout=_COMMAND_TIMEOUT_SECONDS,
-    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -352,17 +348,18 @@ class PureCurrentTransform:
             raise CompatibilityHarnessError(
                 "Current generation-zero encoding is not deterministic."
             )
+        _require_released_setup_shape(document)
         return first
 
     def verify_empty_collection_preflight(self, source: bytes) -> None:
         """Prove explicit empty heartbeat state is rejected, not coerced."""
-        current = generation_zero_to_version_one(
+        current = generation_zero_to_version_two(
             decode_generation_zero(source)
         )
         first = replace(current.accounts[0], heartbeat_targets=())
-        unrepresentable = VersionOneDocument((first, *current.accounts[1:]))
+        unrepresentable = VersionTwoDocument((first, *current.accounts[1:]))
         try:
-            version_one_to_v060(unrepresentable)
+            version_two_to_v060(unrepresentable)
         except RollbackCompatibilityError:
             if unrepresentable.accounts[0].heartbeat_targets == ():
                 return
@@ -373,7 +370,8 @@ class PureCurrentTransform:
     def run_cycle(self, source: bytes, number: int) -> CurrentCycleResult:
         """Upgrade, mutate, validate, and reverse one current-code cycle."""
         source_document = decode_generation_zero(source)
-        current = generation_zero_to_version_one(source_document)
+        current = generation_zero_to_version_two(source_document)
+        _require_current_setup_kind(current)
         target_index = number % len(current.accounts)
         records = tuple(
             replace(record, plan=f"{record.plan}-current-{number}")
@@ -381,19 +379,28 @@ class PureCurrentTransform:
             else record
             for index, record in enumerate(current.accounts)
         )
-        mutated = VersionOneDocument(records)
-        version_one = encode_version_one(mutated)
-        if encode_version_one(decode_version_one(version_one)) != version_one:
+        claude = replace(
+            records[0],
+            refresh_expires_at=datetime(2026, 12, 1, tzinfo=UTC),
+            claude_identity=StoredClaudeIdentity(
+                "test-only-account-id",
+                "test-only-organization-id",
+            ),
+        )
+        mutated = VersionTwoDocument((claude, *records[1:]))
+        version_two = encode_version_two(mutated)
+        if encode_version_two(decode_version_two(version_two)) != version_two:
             raise CompatibilityHarnessError(
-                "Current version-one encoding is not deterministic."
+                "Current version-two encoding is not deterministic."
             )
-        reverse_document = version_one_to_v060(decode_version_one(version_one))
+        reverse_document = version_two_to_v060(decode_version_two(version_two))
+        _require_released_setup_shape(reverse_document)
         reverse = encode_generation_zero(reverse_document)
         if encode_generation_zero(decode_generation_zero(reverse)) != reverse:
             raise CompatibilityHarnessError(
                 "Current rollback encoding is not deterministic."
             )
-        return CurrentCycleResult(version_one, reverse)
+        return CurrentCycleResult(version_two, reverse)
 
 
 def run_compatibility(repository: Path) -> CompatibilityReport:
@@ -447,7 +454,7 @@ def run_compatibility(repository: Path) -> CompatibilityReport:
             evidence.append(
                 CycleEvidence(
                     number=number,
-                    version_one_sha256=_sha256(current.version_one),
+                    version_two_sha256=_sha256(current.version_two),
                     reverse_v060_sha256=_sha256(current.reverse_v060),
                     final_state_sha256=_state_digest(source),
                 )
@@ -487,6 +494,7 @@ def _released_mutation(
         raise CompatibilityHarnessError(
             "The released store did not preserve the expected state."
         )
+    _require_released_setup_shape(decode_generation_zero(result))
     return result
 
 
@@ -539,7 +547,72 @@ def _representative_root() -> dict[str, object]:
             "last_heartbeat_status": "warmed",
             "last_heartbeat_error": None,
         },
+        "claude-setup-1": {
+            "provider_id": "claude",
+            "provider_account_id": None,
+            "access_token": "test-only-claude-setup-token",
+            "refresh_token": None,
+            "expires_at": None,
+            "plan": "max",
+            "scopes": [_SETUP_SCOPE],
+            "codex_home": None,
+            "codex_id_token": None,
+            "codex_last_refresh": None,
+            "last_refresh_at": None,
+            "last_refresh_status": "skipped",
+            "last_refresh_error": None,
+            "heartbeat_enabled": True,
+            "heartbeat_5h_reset_at": reset_time,
+            "heartbeat_window_resets": {"five-hour": reset_time},
+            "heartbeat_targets": ["five-hour"],
+            "last_heartbeat_at": audit_time,
+            "last_heartbeat_status": "active",
+            "last_heartbeat_error": None,
+        },
     }
+
+
+def _require_released_setup_shape(
+    document: GenerationZeroDocument,
+) -> None:
+    """Require the exact released setup-token discriminator shape."""
+    setup = next(
+        (
+            record
+            for record in document.accounts
+            if str(record.label) == _SETUP_LABEL
+        ),
+        None,
+    )
+    if (
+        setup is None
+        or setup.refresh_token is not None
+        or setup.expires_at is not None
+        or setup.scopes != (_SETUP_SCOPE,)
+    ):
+        raise CompatibilityHarnessError(
+            "Released setup-token state lost its explicit scope shape."
+        )
+
+
+def _require_current_setup_kind(document: VersionTwoDocument) -> None:
+    """Require deterministic current reconstruction of the setup kind."""
+    setup = next(
+        (
+            record
+            for record in document.accounts
+            if str(record.label) == _SETUP_LABEL
+        ),
+        None,
+    )
+    if (
+        setup is None
+        or setup.credential_kind is not ClaudeCredentialKind.SETUP_TOKEN
+        or setup.scopes is not None
+    ):
+        raise CompatibilityHarnessError(
+            "Released setup-token state reconstructed as the wrong kind."
+        )
 
 
 def _expected_mutation_digest(
@@ -646,28 +719,6 @@ def _is_sha256(value: str) -> bool:
 
 def _sha256(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
-
-
-def _isolated_environment(home: Path) -> dict[str, str]:
-    environment = {
-        "HOME": str(home),
-        "LC_ALL": "C.UTF-8",
-        "NO_PROXY": "*",
-        "no_proxy": "*",
-        "PYTHONNOUSERSITE": "1",
-    }
-    for name in ("PATH", "SYSTEMROOT", "WINDIR"):
-        if (value := os.environ.get(name)) is not None:
-            environment[name] = value
-    return environment
-
-
-def _install_network_guard() -> None:
-    def deny_network(event: str, _args: tuple[object, ...]) -> None:
-        if event.startswith("socket."):
-            raise PermissionError("Network access is disabled.")
-
-    sys.addaudithook(deny_network)
 
 
 def _default_repository() -> Path:

@@ -9,8 +9,10 @@ cross-platform scheduler is installed.
 
 `sidekick-usages` has two different token update paths:
 
-1. `sidekick-usages refresh <label>` imports the current local provider
-   login into one explicit saved label.
+1. `sidekick-usages refresh <label>` imports the current local provider login
+   into one explicit saved login label. For Claude, this is safe for
+   subscription-login labels only unless the operator separately authorizes an
+   authentication-method change.
 2. `sidekick-usages refresh --all` uses only refresh tokens already
    saved in the sidekick config.
 
@@ -31,8 +33,8 @@ arbitrary labels.
 
 | Account type | Auto-refresh | Notes |
 | --- | --- | --- |
-| Claude OAuth login with `refresh_token` | Yes | On non-macOS systems with Claude Code installed, prefers the CLI in an isolated temporary home. macOS or a missing executable uses bounded HTTPS refresh. Neither path changes the active Claude login. |
-| Claude `setup-token` account | No | Setup tokens do not contain refresh tokens. Replace manually when the token dies. |
+| Claude subscription-login credential | Yes, while login remains usable | On non-macOS systems with Claude Code installed, prefers the CLI in a private staged home. macOS or a missing executable uses bounded HTTPS refresh and immediately stages the result. Neither path changes the active Claude login. |
+| Claude setup-token credential | No | Setup tokens do not contain refresh credentials. Replace explicitly when rejected; their issue date cannot be recovered from the token. |
 | Codex ChatGPT login with `refresh_token` | Yes | Refreshes through the OpenAI OAuth token endpoint and transactionally updates Sidekick's private Codex credential bundle. |
 | Account with rejected or revoked refresh token | No | Requires logging into the matching provider account again, then running an explicit single-label refresh. |
 
@@ -54,9 +56,10 @@ sidekick-usages doctor --label <label>
 - provider
 - plan
 - usage route
-- refresh-token presence
-- access-token expiry when known
-- provider account fingerprint when known
+- credential kind
+- access-token expiry and login expiry as separate values
+- secret-free identity availability
+- five-day login-renewal state when a known login expiry is near
 - whether the account can auto-refresh
 - whether manual action is required
 - latest refresh status and error, if sidekick has attempted a refresh
@@ -84,6 +87,22 @@ sidekick-usages refresh --all --force
 - continues checking other accounts after one account fails
 - never calls provider local-login detection
 - never replaces saved identity from global Claude or Codex state
+
+Every rotating refresh goes through one coordinator. Refreshes sharing one
+provider refresh credential are serialized by the
+credential-derived operation identity before provider traffic. The coordinator
+resamples durable state
+after acquiring the credential-derived lock, writes one private staged
+replacement, commits only the targeted credential over unrelated account
+changes, and cleans up after durability proof. A complete interrupted stage is
+recovered locally without a second provider request.
+
+Known Claude login expiry is independent from access-token expiry. At or
+inside five days, maintenance emits the five-day login-renewal warning and one
+manual action. It does not classify the warning as a failed refresh or persist
+it over existing refresh diagnostics. An expired login fails closed before
+provider traffic. Unknown login expiry and setup-token credentials do not
+produce this proximity warning.
 
 `--quiet` suppresses normal fresh/refreshed output and prints only
 accounts that need manual action.
@@ -118,16 +137,22 @@ maintenance only.
 ```bash
 sidekick-usages refresh <label>
 sidekick-usages refresh <label> --replace-identity
+sidekick-usages refresh <label> --replace-auth-method
 sidekick-usages refresh <label> --from-codex-home <path>
 ```
 
-Use this only when you intentionally want to update one saved label
-from the provider's current local login.
+Use this only when you intentionally want to update one saved login label from
+the provider's current local login. For Claude setup-token credentials, use
+`sidekick-usages claude setup-token` or the exact-label
+`sidekick-usages claude restore-setup-token` recovery instead.
 
 If a saved provider account id exists and the current login belongs to
 a different provider account, sidekick refuses the update. Use
 `--replace-identity` only when you intentionally want the label to
 become the newly logged-in provider account.
+
+`--replace-auth-method` independently authorizes setup token to subscription
+login. When method and identity both change, both flags are required.
 
 ## Daemon install
 
@@ -300,11 +325,12 @@ application-data directory. See
 [persistence locations, migration, and recovery](./persistence-and-recovery.md)
 before inspecting or moving a store.
 
-Refresh diagnostics are optional and backward-compatible:
+Refresh diagnostics may be absent when no attempt has been recorded. When
+present, the current schema uses these fields:
 
 ```json
 {
-  "last_refresh_at": "2026-06-12T13:14:22.459000Z",
+  "last_refresh_at": "<UTC_TIMESTAMP>",
   "last_refresh_status": "ok",
   "last_refresh_error": null
 }
@@ -331,13 +357,20 @@ The account probably has no saved refresh token. Claude `setup-token`
 accounts are the expected case. They can report usage, but they cannot
 rotate themselves.
 
-### Doctor says the refresh token was rejected
+### Doctor says the refresh credential was rejected
 
-Log into the matching provider account again, then update that one
-label:
+For a Claude subscription-login label, sign into the matching account, then
+update that one label:
 
 ```bash
+claude auth login
 sidekick-usages refresh <label>
+```
+
+For a Claude setup-token label, capture a replacement of the same method:
+
+```bash
+sidekick-usages claude setup-token --label <label> --force
 ```
 
 For Codex, you can also use:
@@ -388,8 +421,13 @@ The implementation is split so scheduler behavior is reusable and
 testable:
 
 - `sidekick_usages.maintenance.TokenMaintenanceService` owns saved-token
-  refresh policy, near-expiry checks, per-account outcomes, and
-  diagnostic persistence.
+  access-refresh policy, derived Claude login-renewal warnings, per-account
+  outcomes, and diagnostic persistence.
+- `sidekick_usages.credentials.CredentialRefreshCoordinator` owns the single
+  provider-neutral saved-credential refresh entry point.
+- `sidekick_usages.persistence.credential_refresh` and its focused schema,
+  stage, merge, artifact, and private-stage modules own credential-derived
+  locking, private staging, targeted commit, assessment, and recovery.
 - `sidekick_usages.heartbeat.HeartbeatService` owns optional
   usage-window warming policy, opt-in checks, cached reset throttling,
   per-account outcomes, and diagnostic persistence.

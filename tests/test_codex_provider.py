@@ -404,6 +404,7 @@ def test_refresh_returns_complete_replacement_without_hidden_mutation() -> (
     result = CodexProvider(FixedClock()).refresh_credentials(account, http)
 
     assert isinstance(result, RefreshSuccess)
+    assert isinstance(result.credentials, CodexCredentials)
     assert account.credentials is original
     assert http.data == {
         "grant_type": "refresh_token",

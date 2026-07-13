@@ -13,16 +13,11 @@ from architecture_ast import (
     ArchitectureFinding,
     ArchitectureReport,
     SourceUnit,
-    class_fields,
-    class_node,
-    compact,
-    enum_values,
     finding,
     function_node,
     load_units,
     matches,
     matches_any,
-    type_alias,
 )
 from architecture_ast import (
     imports as scan_imports,
@@ -31,6 +26,7 @@ from architecture_ast import (
     name as dotted_name,
 )
 from architecture_ownership import check_ownership
+from architecture_value_contracts import check_value_contracts
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MAX_MODULE_LINES = 1000
@@ -62,7 +58,11 @@ _PYDANTIC_OWNERS = frozenset(
         "src/sidekick_usages/persistence/_schema_models.py",
         "src/sidekick_usages/persistence/activity_snapshots.py",
         "src/sidekick_usages/persistence/credential_transaction_schema.py",
+        "src/sidekick_usages/persistence/credential_refresh_private_stage.py",
+        "src/sidekick_usages/persistence/credential_refresh_schema.py",
+        "src/sidekick_usages/persistence/credential_refresh_stage.py",
         "src/sidekick_usages/persistence/schemas.py",
+        "src/sidekick_usages/providers/claude/credential_schemas.py",
         "src/sidekick_usages/providers/claude/schemas.py",
         "src/sidekick_usages/providers/codex/schemas.py",
         "src/sidekick_usages/serialization/json.py",
@@ -101,7 +101,7 @@ def check_repository(
     _check_hygiene(units, violations)
     _check_import_boundaries(units, violations)
     _check_time_and_settings(units, violations)
-    _check_value_contracts(units, violations)
+    check_value_contracts(units, violations)
     _check_activity_contract(units, violations)
     _check_cli(units, violations)
     check_ownership(units, violations)
@@ -241,27 +241,27 @@ def _check_import(
         (
             "DEP001",
             "/core/" in path,
-            matches_any(
-                module,
-                (
-                    "click",
-                    "os",
-                    "pathlib",
-                    "platformdirs",
-                    "rich",
-                    "shutil",
-                    "subprocess",
-                    "typer",
-                    "urllib3",
-                    "sidekick_usages.cli",
-                    "sidekick_usages.clock",
-                    "sidekick_usages.http",
-                    "sidekick_usages.paths",
-                    "sidekick_usages.persistence",
-                    "sidekick_usages.providers",
-                ),
+            (
+                matches_any(
+                    module,
+                    (
+                        "click",
+                        "os",
+                        "pathlib",
+                        "platformdirs",
+                        "rich",
+                        "shutil",
+                        "subprocess",
+                        "typer",
+                        "urllib3",
+                    ),
+                )
+                or (
+                    matches(module, "sidekick_usages")
+                    and not matches(module, "sidekick_usages.core")
+                )
             ),
-            "core cannot import infrastructure",
+            "core cannot import infrastructure or application owners",
         ),
         (
             "DEP002",
@@ -272,8 +272,14 @@ def _check_import(
         (
             "DEP003",
             "/persistence/" in path,
-            matches(module, "sidekick_usages.providers"),
-            "persistence cannot import providers",
+            matches_any(
+                module,
+                (
+                    "sidekick_usages.credentials",
+                    "sidekick_usages.providers",
+                ),
+            ),
+            "persistence cannot import credentials or providers",
         ),
         (
             "DEP005",
@@ -294,9 +300,27 @@ def _check_import(
         ),
         (
             "DEP006",
-            path in _SERVICE_FILES,
-            matches_any(module, ("click", "rich", "typer")),
-            "services cannot import presentation frameworks",
+            path in _SERVICE_FILES or "/credentials/" in path,
+            (
+                matches_any(module, ("click", "rich", "typer"))
+                or (
+                    "/credentials/" in path
+                    and matches_any(
+                        module,
+                        (
+                            "sidekick_usages.cli",
+                            "sidekick_usages.daemon",
+                            "sidekick_usages.doctor",
+                            "sidekick_usages.heartbeat",
+                            "sidekick_usages.maintenance",
+                            "sidekick_usages.update",
+                            "sidekick_usages.usage",
+                        ),
+                    )
+                )
+            ),
+            "services and credential workflows cannot import presentation "
+            "or higher workflows",
         ),
         (
             "DEP007",
@@ -307,7 +331,7 @@ def _check_import(
         (
             "PATH001",
             not path.endswith("/paths.py"),
-            module == "platformdirs",
+            matches(module, "platformdirs"),
             "platformdirs is private to paths.py",
         ),
         (
@@ -328,14 +352,14 @@ def _check_import(
                 "typer",
                 "urllib3",
                 "sidekick_usages.cli",
-                "sidekick_usages.credentials.service",
+                "sidekick_usages.credentials",
                 "sidekick_usages.heartbeat.service",
                 "sidekick_usages.usage",
             ),
         )
         persistence_leak = matches(module, "sidekick_usages.persistence") and (
             not path.endswith("/providers/codex/auth_migration.py")
-            or module not in _PROVIDER_PERSISTENCE_IMPORTS
+            or not matches_any(module, _PROVIDER_PERSISTENCE_IMPORTS)
         )
         if forbidden_provider or persistence_leak:
             violations.append(
@@ -483,87 +507,6 @@ def _pure_time_module(tree: ast.Module) -> bool:
     )
 
 
-def _check_value_contracts(
-    units: Sequence[SourceUnit],
-    violations: list[ArchitectureFinding],
-) -> None:
-    by_path = {str(unit.path): unit for unit in units}
-    paths = by_path.get("src/sidekick_usages/paths.py")
-    path_fields = {
-        "AccountLocations": (
-            ("canonical", "Path"),
-            ("existing_sidekick", "Path"),
-            ("prototype_cc_usage", "Path"),
-        ),
-        "PrivateCodexLocations": (
-            ("canonical", "Path"),
-            ("existing_sidekick", "Path"),
-        ),
-        "ApplicationPaths": (
-            ("accounts", "AccountLocations"),
-            ("private_codex", "PrivateCodexLocations"),
-            ("activity_snapshots", "Path"),
-        ),
-    }
-    if paths is not None:
-        _require_fields(paths, path_fields, "PATH002", violations)
-
-    context = by_path.get("src/sidekick_usages/cli/context.py")
-    context_fields = {
-        "AppContext": (
-            ("accounts", "AccountStore"),
-            ("usage", "UsageCheckService"),
-            ("credentials", "CredentialService"),
-            ("heartbeat", "HeartbeatService"),
-            ("maintenance", "TokenMaintenanceService"),
-            ("claude_setup_token", "ClaudeSetupToken"),
-        ),
-        "PersistenceContext": (("persistence", "PersistenceCommands"),),
-        "DoctorContext": (("state", "DoctorState"),),
-        "DaemonContext": (("daemon", "DaemonManager"),),
-        "UpdateContext": (("update", "UpdateService"),),
-    }
-    if context is not None:
-        _require_fields(context, context_fields, "CTX001", violations)
-        alias = type_alias(context.tree, "DoctorState")
-        if alias is None or compact(ast.unparse(alias.value)) != (
-            "DoctorReady|DoctorBlocked|DoctorFailed"
-        ):
-            violations.append(
-                finding(context, alias, "CTX001", "DoctorState is not closed")
-            )
-        composed = {
-            "Composed": (
-                ("value", "T"),
-                ("_resources", "ExitStack"),
-                ("_closed", "bool"),
-            )
-        }
-        _require_fields(context, composed, "CTX002", violations)
-        _check_close_once(context, violations)
-
-    location = by_path.get(
-        "src/sidekick_usages/persistence/migrations/location.py"
-    )
-    expected_codes = {
-        "EMPTY": "empty",
-        "PROTOTYPE_ONLY": "prototype_only",
-        "COMPATIBILITY_SELECTED": "compatibility_selected",
-        "CANONICAL_SELECTED": "canonical_selected",
-        "EQUIVALENT_SELECTED": "equivalent_selected",
-        "CONFLICT": "conflict",
-        "PARTIAL": "partial",
-        "CANDIDATE_BLOCKED": "candidate_blocked",
-    }
-    if (
-        location is not None
-        and enum_values(location.tree, "LocationCode") != expected_codes
-    ):
-        violations.append(
-            finding(location, None, "MODEL001", "LocationCode changed")
-        )
-
-
 def _check_activity_contract(
     units: Sequence[SourceUnit],
     violations: list[ArchitectureFinding],
@@ -617,78 +560,6 @@ def _check_activity_contract(
                 node,
                 "ACT001",
                 "provider activity ownership or no-fallback contract changed",
-            )
-        )
-
-
-def _require_fields(
-    unit: SourceUnit,
-    expected: Mapping[str, tuple[tuple[str, str], ...]],
-    rule_id: str,
-    violations: list[ArchitectureFinding],
-) -> None:
-    for name, fields in expected.items():
-        if class_fields(unit.tree, name) != fields:
-            violations.append(
-                finding(
-                    unit,
-                    class_node(unit.tree, name),
-                    rule_id,
-                    f"{name} differs from its frozen field contract",
-                )
-            )
-
-
-def _check_close_once(
-    context: SourceUnit,
-    violations: list[ArchitectureFinding],
-) -> None:
-    registrations = [
-        node
-        for node in ast.walk(context.tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "call_on_close"
-    ]
-    registered = [
-        compact(ast.unparse(argument))
-        for call in registrations
-        for argument in call.args
-    ]
-    has_setter = any(
-        isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef))
-        and node.name == "set_context"
-        for node in ast.walk(context.tree)
-    )
-    implicit_registry_default = any(
-        isinstance(node, ast.BoolOp)
-        and isinstance(node.op, ast.Or)
-        and {
-            child.id for child in ast.walk(node) if isinstance(child, ast.Name)
-        }
-        & {"providers", "heartbeat_providers"}
-        for node in ast.walk(context.tree)
-    )
-    context_singleton = any(
-        isinstance(statement, (ast.AnnAssign, ast.Assign))
-        and isinstance(statement.value, ast.Call)
-        and dotted_name(statement.value.func)
-        in {"AppContext", "Composed", "InvocationContext"}
-        for statement in context.tree.body
-    )
-    if (
-        len(registrations) != 1
-        or registered != ["owner.close"]
-        or has_setter
-        or implicit_registry_default
-        or context_singleton
-    ):
-        violations.append(
-            finding(
-                context,
-                registrations[0] if registrations else None,
-                "CTX002",
-                "one lazy Composed owner must register close exactly once",
             )
         )
 
@@ -786,7 +657,8 @@ def _check_command_context(
         and node.func.attr.startswith("require_")
     }
     imports_app = any(
-        module == "sidekick_usages.cli.app" for _, module in scan_imports(unit)
+        matches(module, "sidekick_usages.cli.app")
+        for _, module in scan_imports(unit)
     )
     if actual != expected or imports_app:
         violations.append(

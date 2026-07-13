@@ -13,11 +13,13 @@ boundary:
 - `providers/claude/` and `providers/codex/` own provider schemas, credential
   detection, refresh behavior, usage and token-activity calls, and heartbeat
   adapters.
-- `credentials/` owns provider-neutral credential workflows and private Codex
-  bundle coordination; `http/` owns pooled HTTPS transport and retry policy.
+- `credentials/` owns provider-neutral credential workflows, Claude
+  transition/lifetime/restore policy, serialized refresh coordination, and
+  private Codex bundle coordination; `http/` owns pooled HTTPS transport and
+  retry policy.
 - `persistence/` owns strict schemas, qualified filesystem operations,
-  transactions, recovery, and provider-neutral migrations; `serialization/`
-  owns strict JSON decoding.
+  account/private and refresh transactions, recovery, and provider-neutral
+  migrations; `serialization/` owns strict JSON decoding.
 - `usage/activity.py` owns scoped token-activity collection and aggregation;
   the rest of `usage/` owns usage results and Rich presentation. `heartbeat/`,
   `daemon.py`, and `maintenance.py` own scheduled maintenance.

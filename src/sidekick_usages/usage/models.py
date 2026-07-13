@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 from datetime import datetime
-from enum import StrEnum
+from enum import StrEnum, auto
 from typing import ClassVar
 
 from sidekick_usages.core.models import TokenActivitySummary, UsageReport
@@ -28,6 +28,14 @@ class FetchFailureKind(StrEnum):
     TRANSIENT = "transient"
     PROVIDER = "provider"
     PERSISTENCE = "persistence"
+
+
+class CredentialRecoveryKind(StrEnum):
+    """Credential modes that select presentation-owned recovery copy."""
+
+    CLAUDE_SETUP_TOKEN = auto()
+    CLAUDE_SUBSCRIPTION_LOGIN = auto()
+    CODEX_LOGIN = auto()
 
 
 class TokenActivityFailureKind(StrEnum):
@@ -85,6 +93,8 @@ class AuthenticationFailure(FetchFailure):
 
     kind: ClassVar[FetchFailureKind] = FetchFailureKind.AUTHENTICATION
 
+    credential_kind: CredentialRecoveryKind
+
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class RefreshRejectedFailure(FetchFailure):
@@ -92,6 +102,7 @@ class RefreshRejectedFailure(FetchFailure):
 
     kind: ClassVar[FetchFailureKind] = FetchFailureKind.REFRESH_REJECTED
 
+    credential_kind: CredentialRecoveryKind
     provider_failure: ProviderFailure | None = None
 
 

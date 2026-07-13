@@ -10,6 +10,7 @@ from sidekick_usages.persistence.schemas import (
     PrototypeDocument,
     PrototypeReceipt,
     VersionOneDocument,
+    VersionTwoDocument,
 )
 
 _MAX_BASENAME_BYTES = 255
@@ -21,6 +22,7 @@ class StoredGeneration(StrEnum):
     ABSENT = "absent"
     GENERATION_ZERO = "generation_zero"
     VERSION_ONE = "version_one"
+    VERSION_TWO = "version_two"
     FUTURE = "future"
     UNKNOWN = "unknown"
 
@@ -31,6 +33,7 @@ class AuthorityKind(StrEnum):
     ABSENT = "absent"
     GENERATION_ZERO = "generation_zero"
     VERSION_ONE = "version_one"
+    VERSION_TWO = "version_two"
     FUTURE = "future"
     DUPLICATE_KEY = "duplicate_key"
     MALFORMED_JSON = "malformed_json"
@@ -46,6 +49,7 @@ class ArtifactKind(StrEnum):
     LOCK = "lock"
     V0_BACKUP = "v0_backup"
     V1_SNAPSHOT = "v1_snapshot"
+    V2_SNAPSHOT = "v2_snapshot"
     PROTOTYPE_RECEIPT = "prototype_receipt"
     TEMPORARY = "temporary"
     PROTOTYPE = "prototype"
@@ -76,13 +80,19 @@ class AuthorityObservation:
         repr=False,
     )
     version_one: VersionOneDocument | None = field(default=None, repr=False)
+    version_two: VersionTwoDocument | None = field(default=None, repr=False)
     future_schema_version: int | None = None
 
     def __post_init__(self) -> None:
-        documents = (self.generation_zero, self.version_one)
+        documents = (
+            self.generation_zero,
+            self.version_one,
+            self.version_two,
+        )
         selected = {
             AuthorityKind.GENERATION_ZERO: self.generation_zero,
             AuthorityKind.VERSION_ONE: self.version_one,
+            AuthorityKind.VERSION_TWO: self.version_two,
         }
         if self.kind in selected:
             valid = (
@@ -113,6 +123,7 @@ class AuthorityObservation:
             AuthorityKind.ABSENT: StoredGeneration.ABSENT,
             AuthorityKind.GENERATION_ZERO: StoredGeneration.GENERATION_ZERO,
             AuthorityKind.VERSION_ONE: StoredGeneration.VERSION_ONE,
+            AuthorityKind.VERSION_TWO: StoredGeneration.VERSION_TWO,
             AuthorityKind.FUTURE: StoredGeneration.FUTURE,
         }.get(self.kind, StoredGeneration.UNKNOWN)
 
@@ -121,12 +132,14 @@ class AuthorityObservation:
         """Return a known envelope version without decoding again."""
         if self.kind is AuthorityKind.VERSION_ONE:
             return 1
+        if self.kind is AuthorityKind.VERSION_TWO:
+            return 2
         return self.future_schema_version
 
     @property
     def account_count(self) -> int | None:
         """Return a validated authoritative account count when known."""
-        document = self.generation_zero or self.version_one
+        document = self.generation_zero or self.version_one or self.version_two
         return len(document.accounts) if document is not None else None
 
 
@@ -143,6 +156,7 @@ class ArtifactObservation:
         repr=False,
     )
     version_one: VersionOneDocument | None = field(default=None, repr=False)
+    version_two: VersionTwoDocument | None = field(default=None, repr=False)
     prototype: PrototypeDocument | None = field(default=None, repr=False)
     receipt: PrototypeReceipt | None = field(default=None, repr=False)
 
@@ -174,6 +188,7 @@ class ArtifactObservation:
         return (
             self.generation_zero,
             self.version_one,
+            self.version_two,
             self.prototype,
             self.receipt,
         )
@@ -183,6 +198,7 @@ class ArtifactObservation:
         payload_present = {
             ArtifactKind.V0_BACKUP: self.generation_zero is not None,
             ArtifactKind.V1_SNAPSHOT: self.version_one is not None,
+            ArtifactKind.V2_SNAPSHOT: self.version_two is not None,
             ArtifactKind.PROTOTYPE: self.prototype is not None,
             ArtifactKind.PROTOTYPE_RECEIPT: self.receipt is not None,
         }

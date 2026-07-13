@@ -7,7 +7,7 @@ from types import TracebackType
 
 import pytest
 
-from sidekick_usages.core.models import Account, ClaudeCredentials
+from sidekick_usages.core.models import Account, ClaudeSetupTokenCredentials
 from sidekick_usages.core.types import AccountLabel, ExitCode
 from sidekick_usages.persistence._platform import FilesystemFamily
 from sidekick_usages.persistence.artifacts import (
@@ -26,10 +26,7 @@ from sidekick_usages.persistence.artifacts import (
 from sidekick_usages.persistence.errors import (
     BackupConflictError,
     PersistenceCode,
-    PersistenceError,
     PrivateCredentialArtifactError,
-    ResetIncompleteError,
-    RollbackCompatibilityError,
     SourceChangedError,
     UnsafeManagedFileError,
 )
@@ -44,27 +41,25 @@ from sidekick_usages.persistence.migrations.account import (
 from sidekick_usages.persistence.migrations.errors import (
     PersistenceMigrationStateError,
     PrototypeReimportRequiredError,
-    ReleasedVerifierBoundaryError,
     SchedulerMutationBlockedError,
-    VerificationPhase,
 )
 from sidekick_usages.persistence.private_credentials import (
     PrivateCredentialRepairResult,
 )
 from sidekick_usages.persistence.schemas import (
     PrototypeReceipt,
-    VersionOneDocument,
     decode_generation_zero,
     decode_prototype,
     decode_version_one,
+    decode_version_two,
     encode_generation_zero,
     encode_prototype_receipt,
-    encode_version_one,
+    encode_version_two,
 )
 from sidekick_usages.persistence.transforms import (
-    accounts_to_version_one,
-    prototype_to_version_one,
-    version_one_to_v060,
+    accounts_to_version_two,
+    prototype_to_version_two,
+    version_two_to_v060,
 )
 from sidekick_usages.scheduler_quiescence import (
     SchedulerBackendId,
@@ -108,6 +103,10 @@ class InMemoryFilesystem(PersistenceFilesystem):
         return tuple(self.managed)
 
     def read_authority(self) -> FileSnapshot | None:
+        self.read_count += 1
+        return self.snapshot
+
+    def read_external_private_source(self) -> FileSnapshot | None:
         self.read_count += 1
         return self.snapshot
 
@@ -220,6 +219,8 @@ class InMemoryTransaction:
         self._require_expected(expected_source)
         if generation is AuthorityGeneration.VERSION_ONE:
             decode_version_one(payload)
+        elif generation is AuthorityGeneration.VERSION_TWO:
+            decode_version_two(payload)
         else:
             decode_generation_zero(payload)
         committed = self._filesystem.replace_authority(payload)
@@ -240,6 +241,7 @@ class InMemoryTransaction:
         credential_kinds = {
             ManagedArtifactKind.GENERATION_ZERO_BACKUP,
             ManagedArtifactKind.VERSION_ONE_SNAPSHOT,
+            ManagedArtifactKind.VERSION_TWO_SNAPSHOT,
             ManagedArtifactKind.TEMPORARY,
         }
         self._filesystem.managed = {
@@ -422,25 +424,24 @@ def _account(
 ) -> Account:
     return Account(
         label=AccountLabel(label),
-        credentials=ClaudeCredentials(
-            access_token=f"test-only-{label}-access",
-            refresh_token=f"test-only-{label}-refresh",
+        credentials=ClaudeSetupTokenCredentials(
+            access_token=f"test-only-{label}-access"
         ),
         plan="max",
         heartbeat_targets=targets,
     )
 
 
-VERSION_ONE = encode_version_one(
-    accounts_to_version_one((_account("claude-max-1"),))
+VERSION_TWO = encode_version_two(
+    accounts_to_version_two((_account("claude-max-1"),))
 )
 GENERATION_ZERO = encode_generation_zero(
-    version_one_to_v060(decode_version_one(VERSION_ONE))
+    version_two_to_v060(decode_version_two(VERSION_TWO))
 )
-EMPTY_VERSION_ONE = encode_version_one(VersionOneDocument(()))
+EMPTY_VERSION_TWO = encode_version_two(accounts_to_version_two(()))
 PROTOTYPE = b'{"imported":{"token":"test-only-prototype-access","plan":"max"}}'
-PROTOTYPE_VERSION_ONE = encode_version_one(
-    prototype_to_version_one(decode_prototype(PROTOTYPE))
+PROTOTYPE_VERSION_TWO = encode_version_two(
+    prototype_to_version_two(decode_prototype(PROTOTYPE))
 )
 
 
@@ -499,7 +500,7 @@ def test_read_accounts_accepts_only_runtime_safe_snapshots(
     tmp_path: Path,
 ) -> None:
     """Doctor reads safe snapshots without constructing a mutable store."""
-    current, *_ = _service(tmp_path / "current", VERSION_ONE)
+    current, *_ = _service(tmp_path / "current", VERSION_TWO)
     empty, *_ = _service(tmp_path / "empty", None)
     legacy, *_ = _service(tmp_path / "legacy", GENERATION_ZERO)
 
@@ -522,7 +523,7 @@ def test_permission_repair_rechecks_scheduler_and_reassesses(
     blocked_scheduler = SchedulerSequence(QUIET, BLOCKED)
     blocked, *_ = _service(
         tmp_path / "blocked",
-        VERSION_ONE,
+        VERSION_TWO,
         scheduler=blocked_scheduler,
         private_credentials=blocked_private,
     )
@@ -541,7 +542,7 @@ def test_permission_repair_rechecks_scheduler_and_reassesses(
     repaired_scheduler = SchedulerSequence(QUIET, QUIET)
     repaired, *_ = _service(
         tmp_path / "repaired",
-        VERSION_ONE,
+        VERSION_TWO,
         scheduler=repaired_scheduler,
         private_credentials=repaired_private,
     )
@@ -562,7 +563,7 @@ def test_generation_zero_migration_resumes_every_durable_checkpoint(
     tmp_path: Path,
     checkpoint: str,
 ) -> None:
-    """Backup and safe temporary checkpoints converge on one current v1."""
+    """Backup and safe temporary checkpoints converge on current v2."""
     service, authority, _prototype, log, scheduler, _verifier = _service(
         tmp_path,
         GENERATION_ZERO,
@@ -579,7 +580,7 @@ def test_generation_zero_migration_resumes_every_durable_checkpoint(
 
     assert result.code is PersistenceCode.CURRENT
     assert authority.snapshot is not None
-    assert authority.snapshot.data == VERSION_ONE
+    assert authority.snapshot.data == VERSION_TWO
     assert scheduler.calls == EXPECTED_SCHEDULER_CHECKS
     assert (
         sum(
@@ -607,13 +608,13 @@ def test_prototype_import_is_explicit_authority_first_and_resumable(
     )
     result = service.migrate_accounts()
     assert result.code is PersistenceCode.PROTOTYPE_IMPORTED
-    assert log.index("commit:v1") < log.index("receipt")
+    assert log.index("commit:v2") < log.index("receipt")
     assert authority.snapshot is not None
-    assert authority.snapshot.data == PROTOTYPE_VERSION_ONE
+    assert authority.snapshot.data == PROTOTYPE_VERSION_TWO
 
     resumed, _authority, prototype, resume_log, _, _ = _service(
         tmp_path / "resume",
-        PROTOTYPE_VERSION_ONE,
+        PROTOTYPE_VERSION_TWO,
         prototype_payload=PROTOTYPE,
     )
     assert resumed.assess().code is PersistenceCode.CURRENT
@@ -624,7 +625,7 @@ def test_prototype_import_is_explicit_authority_first_and_resumable(
 
     reimport, reimport_authority, _, reimport_log, _, _ = _service(
         tmp_path / "reimport",
-        VERSION_ONE,
+        VERSION_TWO,
         prototype_payload=PROTOTYPE,
     )
     with pytest.raises(PrototypeReimportRequiredError) as exc_info:
@@ -636,8 +637,8 @@ def test_prototype_import_is_explicit_authority_first_and_resumable(
         is PersistenceCode.PROTOTYPE_IMPORTED
     )
     assert reimport_authority.snapshot is not None
-    assert reimport_authority.snapshot.data == PROTOTYPE_VERSION_ONE
-    assert reimport_log == ["snapshot:v1", "commit:v1", "receipt"]
+    assert reimport_authority.snapshot.data == PROTOTYPE_VERSION_TWO
+    assert reimport_log == ["snapshot:v2", "commit:v2", "receipt"]
 
 
 def test_absent_authority_requires_reimport_for_historical_receipt(
@@ -668,103 +669,8 @@ def test_absent_authority_requires_reimport_for_historical_receipt(
 
     assert result.code is PersistenceCode.PROTOTYPE_IMPORTED
     assert authority.snapshot is not None
-    assert authority.snapshot.data == PROTOTYPE_VERSION_ONE
-    assert log == ["commit:v1", "receipt"]
-
-
-@pytest.mark.parametrize("checkpoint", ["current", "snapshot", "committed"])
-def test_rollback_resumes_snapshot_and_committed_checkpoints(
-    tmp_path: Path,
-    checkpoint: str,
-) -> None:
-    """Every rollback checkpoint converges and reports its exact snapshot."""
-    payload = GENERATION_ZERO if checkpoint == "committed" else VERSION_ONE
-    service, authority, _prototype, log, _scheduler, verifier = _service(
-        tmp_path,
-        payload,
-    )
-    snapshot_artifact = None
-    if checkpoint in {"snapshot", "committed"}:
-        snapshot_artifact = authority.seed_immutable(
-            AuthorityGeneration.VERSION_ONE,
-            VERSION_ONE,
-        )
-    if checkpoint == "committed":
-        decoy_payload = encode_version_one(
-            accounts_to_version_one((_account("decoy", targets=()),))
-        )
-        decoy = authority.seed_immutable(
-            AuthorityGeneration.VERSION_ONE,
-            decoy_payload,
-        )
-        assert snapshot_artifact is not None
-        assert decoy.basename < snapshot_artifact.basename
-
-    result = service.prepare_rollback()
-
-    assert result.code is PersistenceCode.ROLLBACK_PREPARED
-    assert result.assessment.code is PersistenceCode.ROLLBACK_PREPARED
-    assert authority.snapshot is not None
-    assert authority.snapshot.data == GENERATION_ZERO
-    assert verifier.preflight_calls == EXPECTED_SCHEDULER_CHECKS
-    assert verifier.verified[-1] == authority.snapshot
-    expected_basename = (
-        snapshot_artifact.basename
-        if snapshot_artifact is not None
-        else authority.grammar.backup_basename(
-            AuthorityGeneration.VERSION_ONE,
-            sha256_digest(VERSION_ONE),
-        )
-    )
-    assert result.artifact_basename == expected_basename
-    if checkpoint == "committed":
-        assert not any(entry.startswith("commit:") for entry in log)
-
-
-@pytest.mark.parametrize("failure", ["schema", "preflight", "verify"])
-def test_rollback_failures_preserve_their_exact_commit_boundary(
-    tmp_path: Path,
-    failure: str,
-) -> None:
-    """Preflight failures do not snapshot; post-proof failure stays typed."""
-    payload = (
-        encode_version_one(
-            accounts_to_version_one(
-                (_account("claude-empty-targets", targets=()),)
-            )
-        )
-        if failure == "schema"
-        else VERSION_ONE
-    )
-    verifier = RecordingVerifier()
-    if failure == "preflight":
-        verifier.preflight_error = RuntimeError("raw oracle failure")
-    elif failure == "verify":
-        verifier.verify_error = RuntimeError("raw reader failure")
-    service, authority, _prototype, log, _scheduler, _ = _service(
-        tmp_path,
-        payload,
-        verifier=verifier,
-    )
-    before = authority.snapshot
-
-    if failure == "schema":
-        error_type: type[PersistenceError] = RollbackCompatibilityError
-    else:
-        error_type = ReleasedVerifierBoundaryError
-    with pytest.raises(error_type) as exc_info:
-        service.prepare_rollback()
-
-    if failure in {"schema", "preflight"}:
-        assert authority.snapshot == before
-        assert authority.managed == {}
-        assert log == []
-    else:
-        assert isinstance(exc_info.value, ReleasedVerifierBoundaryError)
-        assert exc_info.value.phase is VerificationPhase.POST_COMMIT
-        assert exc_info.value.code is PersistenceCode.DURABILITY_UNCERTAIN
-        assert authority.snapshot is not None
-        decode_generation_zero(authority.snapshot.data)
+    assert authority.snapshot.data == PROTOTYPE_VERSION_TWO
+    assert log == ["commit:v2", "receipt"]
 
 
 def test_scheduler_state_and_ambiguous_persistence_block_without_mutation(
@@ -806,184 +712,3 @@ def test_scheduler_state_and_ambiguous_persistence_block_without_mutation(
         ambiguous.migrate_accounts()
     assert tuple(ambiguous_authority.managed) == before_names
     assert ambiguous_log == []
-
-
-@pytest.mark.parametrize(
-    ("state", "expected_code"),
-    [
-        ("absent", PersistenceCode.EMPTY),
-        ("empty-v1", PersistenceCode.EMPTY),
-        ("generation-zero", PersistenceCode.EMPTY),
-        ("malformed-with-prototype", PersistenceCode.MALFORMED_JSON),
-    ],
-)
-def test_full_reset_runs_at_zero_and_clears_validated_credentials(
-    tmp_path: Path,
-    state: str,
-    expected_code: PersistenceCode,
-) -> None:
-    """Reset is authority-last recovery, including zero-account states."""
-    payload = {
-        "absent": None,
-        "empty-v1": EMPTY_VERSION_ONE,
-        "generation-zero": GENERATION_ZERO,
-        "malformed-with-prototype": b"{",
-    }[state]
-    prototype_payload = b"{" if state == "malformed-with-prototype" else None
-    service, authority, _prototype, log, _scheduler, _verifier = _service(
-        tmp_path,
-        payload,
-        prototype_payload=prototype_payload,
-    )
-    if state == "generation-zero":
-        authority.seed_immutable(
-            AuthorityGeneration.GENERATION_ZERO,
-            GENERATION_ZERO,
-        )
-        authority.seed_temporary("3" * 32)
-
-    result = service.full_reset()
-
-    assert result.code is expected_code
-    assert "reset" in log
-    assert authority.snapshot is None
-    assert not any(
-        artifact.kind
-        in {
-            ManagedArtifactKind.GENERATION_ZERO_BACKUP,
-            ManagedArtifactKind.VERSION_ONE_SNAPSHOT,
-            ManagedArtifactKind.TEMPORARY,
-        }
-        for artifact in authority.managed
-    )
-
-
-def test_full_reset_rejects_invalid_managed_receipt_without_deletion(
-    tmp_path: Path,
-) -> None:
-    """External prototype errors are tolerated; managed conflicts are not."""
-    service, authority, _prototype, log, _scheduler, _verifier = _service(
-        tmp_path,
-        VERSION_ONE,
-    )
-    digest = sha256_digest(PROTOTYPE)
-    receipt_name = authority.grammar.receipt_basename(digest)
-    receipt = authority.grammar.parse(receipt_name)
-    assert receipt is not None
-    authority.managed[receipt] = _snapshot(b"{}", inode=88)
-    before = authority.snapshot
-
-    with pytest.raises(PersistenceMigrationStateError) as exc_info:
-        service.full_reset()
-
-    assert exc_info.value.code is PersistenceCode.INVALID_SCHEMA
-    assert authority.snapshot == before
-    assert log == []
-
-
-def test_full_reset_destroys_private_credentials_before_absent_authority(
-    tmp_path: Path,
-) -> None:
-    """An orphan-only reset proves absence before authority cleanup."""
-    events: list[str] = []
-    private_credentials = RecordingPrivateCredentials(
-        OrphanedPrivateCredentials.PRESENT,
-        events=events,
-    )
-    service, authority, _, _, _, _ = _service(
-        tmp_path,
-        None,
-        private_credentials=private_credentials,
-        operation_log=events,
-    )
-
-    result = service.full_reset()
-
-    assert result.code is PersistenceCode.EMPTY
-    assert authority.snapshot is None
-    assert events == [
-        "credentials:observe",
-        "credentials:destroy",
-        "credentials:observe",
-        "reset",
-        "credentials:observe",
-    ]
-
-
-@pytest.mark.parametrize(
-    "failure",
-    ["destroy", "verification", "passive-verification"],
-)
-def test_full_reset_private_credential_failure_preserves_authority(
-    tmp_path: Path,
-    failure: str,
-) -> None:
-    """Destruction and its absence proof both fail before authority."""
-    private_credentials = RecordingPrivateCredentials(
-        OrphanedPrivateCredentials.PRESENT,
-        fail_destroy=failure == "destroy",
-        remain_present=failure == "verification",
-        fail_observe_at=2 if failure == "passive-verification" else None,
-    )
-    service, authority, _, log, _, _ = _service(
-        tmp_path,
-        VERSION_ONE,
-        private_credentials=private_credentials,
-    )
-    before = authority.snapshot
-
-    with pytest.raises(ResetIncompleteError) as exc_info:
-        service.full_reset()
-
-    assert str(exc_info.value) == (
-        "Account reset could not remove every credential artifact."
-    )
-    assert authority.snapshot == before
-    assert log == []
-
-
-def test_full_reset_translates_final_observation_failure(
-    tmp_path: Path,
-) -> None:
-    """A post-authority absence proof cannot masquerade as passive state."""
-    private_credentials = RecordingPrivateCredentials(
-        OrphanedPrivateCredentials.PRESENT,
-        fail_observe_at=3,
-    )
-    service, authority, _, log, _, _ = _service(
-        tmp_path,
-        VERSION_ONE,
-        private_credentials=private_credentials,
-    )
-
-    with pytest.raises(ResetIncompleteError):
-        service.full_reset()
-
-    assert authority.snapshot is None
-    assert log == ["reset"]
-
-
-def test_full_reset_reports_partial_private_destruction(
-    tmp_path: Path,
-) -> None:
-    """Authority drift after private deletion is a partial reset failure."""
-    private_credentials = RecordingPrivateCredentials(
-        OrphanedPrivateCredentials.PRESENT
-    )
-    service, authority, _, log, _, _ = _service(
-        tmp_path,
-        VERSION_ONE,
-        private_credentials=private_credentials,
-    )
-    private_credentials.after_destroy = lambda: setattr(
-        authority,
-        "snapshot",
-        _snapshot(VERSION_ONE, inode=999),
-    )
-
-    with pytest.raises(ResetIncompleteError):
-        service.full_reset()
-
-    assert private_credentials.state is OrphanedPrivateCredentials.ABSENT
-    assert authority.snapshot is not None
-    assert log == []

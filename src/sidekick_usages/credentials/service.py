@@ -8,7 +8,8 @@ from sidekick_usages.clock import Clock
 from sidekick_usages.core.expiry import InvalidExpiry, UnknownExpiry
 from sidekick_usages.core.models import (
     Account,
-    ClaudeCredentials,
+    ClaudeLoginCredentials,
+    ClaudeSetupTokenCredentials,
     CodexCredentials,
     Credentials,
     DetectedCredentials,
@@ -18,8 +19,15 @@ from sidekick_usages.core.types import (
     ProviderId,
     RefreshStatus,
 )
+from sidekick_usages.credentials.claude_setup_save import (
+    preview_claude_setup_token_save,
+)
+from sidekick_usages.credentials.claude_transitions import (
+    apply_claude_transition,
+)
 from sidekick_usages.credentials.codex import CodexCredentialCoordinator
 from sidekick_usages.credentials.models import (
+    ClaudeSetupTokenSavePreview,
     CredentialExportResult,
     CredentialLoginResult,
     CredentialLoginSuccess,
@@ -34,12 +42,15 @@ from sidekick_usages.credentials.models import (
     TokenCredentialSource,
     TokenPromptSpec,
 )
+from sidekick_usages.credentials.refresh import (
+    CredentialRefreshCoordinator,
+    CredentialRefreshReason,
+)
 from sidekick_usages.errors import (
     AuthError,
     ForbiddenError,
     RateLimitError,
     TransientError,
-    UsageError,
 )
 from sidekick_usages.http import HttpClient
 from sidekick_usages.persistence.account_store import AccountStore
@@ -56,7 +67,6 @@ from sidekick_usages.providers.base import (
     ProviderFailureKind,
 )
 
-_CLAUDE_USAGE_REQUIRED_SCOPE = "user:profile"
 _CLAUDE_SETUP_HINT = (
     "Run `sidekick-usages setup-token claude` to generate one."
 )
@@ -110,6 +120,8 @@ class CredentialService:
         private_credentials: PrivateCredentialTree,
         *,
         clock: Clock,
+        refresh_coordinator: CredentialRefreshCoordinator | None = None,
+        codex_coordinator: CodexCredentialCoordinator | None = None,
     ) -> None:
         """Bind credential workflows to invocation-scoped dependencies.
 
@@ -124,10 +136,15 @@ class CredentialService:
         self._providers = providers
         self._private = private_credentials
         self._clock = clock
-        self._codex = CodexCredentialCoordinator(
-            store,
-            private_credentials,
-            clock=clock,
+        self._refresh = refresh_coordinator
+        self._codex = (
+            codex_coordinator
+            if codex_coordinator is not None
+            else CodexCredentialCoordinator(
+                store,
+                private_credentials,
+                clock=clock,
+            )
         )
 
     def prompt_spec(
@@ -199,6 +216,7 @@ class CredentialService:
         label: AccountLabel | None,
         plan: str | None,
         force: bool,
+        replace_identity: bool = False,
     ) -> CredentialSaveResult:
         """Resolve and durably save one account in a single commit."""
         result = self.resolve(source)
@@ -216,6 +234,7 @@ class CredentialService:
             label=label,
             plan=plan,
             force=force,
+            replace_identity=replace_identity,
         )
         if isinstance(save_plan, ProviderFailure):
             return save_plan
@@ -225,7 +244,11 @@ class CredentialService:
         warning: str | None = None
         if save_plan.created or (
             previous is not None
-            and previous.access_token != candidate.access_token
+            and (
+                previous.access_token != candidate.access_token
+                or type(previous.credentials)
+                is not type(candidate.credentials)
+            )
         ):
             validation = self._validate_new_account(
                 candidate,
@@ -276,6 +299,7 @@ class CredentialService:
         label: AccountLabel | None,
         plan: str | None,
         force: bool,
+        replace_identity: bool,
     ) -> _SavePlan | ProviderFailure:
         """Build one save candidate without mutating durable state."""
         by_token = self._store.find_by_token(
@@ -310,7 +334,13 @@ class CredentialService:
             )
         previous = by_token or target
         replacing = target is not None and by_token is None
-        if previous is None or replacing:
+        if previous is None or (
+            replacing
+            and not isinstance(
+                detected.credentials,
+                ClaudeSetupTokenCredentials,
+            )
+        ):
             candidate = Account(
                 label=target_label,
                 credentials=detected.credentials,
@@ -321,13 +351,21 @@ class CredentialService:
             applied = self._apply_detected(
                 candidate,
                 detected,
-                replace_identity=False,
+                replace_identity=replace_identity,
+                replace_auth_method=force,
             )
             if isinstance(applied, ProviderFailure):
                 return applied
             candidate = applied
             if plan is not None:
                 candidate.plan = plan
+            if (
+                candidate.provider_id is ProviderId.CLAUDE
+                and previous.credentials != candidate.credentials
+            ):
+                candidate.last_refresh_at = None
+                candidate.last_refresh_status = None
+                candidate.last_refresh_error = None
         return _SavePlan(
             candidate,
             previous,
@@ -339,12 +377,28 @@ class CredentialService:
             ),
         )
 
+    def preview_setup_token_save(
+        self,
+        label: AccountLabel | None,
+        *,
+        force: bool,
+        replace_identity: bool,
+    ) -> ClaudeSetupTokenSavePreview | ProviderFailure | None:
+        """Authorize a known login-to-setup crossing before token capture."""
+        return preview_claude_setup_token_save(
+            self._store,
+            label,
+            force=force,
+            replace_identity=replace_identity,
+        )
+
     def refresh_from_source(
         self,
         label: str,
         source: LocalCredentialSource,
         *,
         replace_identity: bool,
+        replace_auth_method: bool = False,
     ) -> CredentialRefreshResult:
         """Import one local login into an existing saved account."""
         account = self._store.get(label)
@@ -368,6 +422,7 @@ class CredentialService:
             candidate,
             detected,
             replace_identity=replace_identity,
+            replace_auth_method=replace_auth_method,
         )
         if isinstance(applied, ProviderFailure):
             return applied
@@ -441,46 +496,26 @@ class CredentialService:
         )
         return CredentialUpdateSuccess(candidate.label)
 
-    def refresh_saved(self, account: Account) -> CredentialRefreshResult:
-        """Refresh from saved secrets without reading an active login."""
-        provider = self._providers.get(account.provider_id)
-        if provider is None:
+    def refresh(
+        self,
+        *,
+        label: AccountLabel,
+        reason: CredentialRefreshReason,
+    ) -> CredentialRefreshResult:
+        """Delegate every rotating saved refresh to the coordinator."""
+        if self._refresh is None:
+            account = self._store.get(str(label))
+            provider_id = (
+                account.provider_id
+                if account is not None
+                else ProviderId.CLAUDE
+            )
             return _failure(
-                account.provider_id,
+                provider_id,
                 ProviderFailureKind.UNSUPPORTED,
-                f"Provider '{account.provider_id}' is not registered.",
+                "Credential refresh coordination is unavailable.",
             )
-        try:
-            refreshed = provider.refresh_credentials(account, self._http)
-        except ProviderBoundaryError as error:
-            return error.failure
-        if isinstance(refreshed, ProviderFailure):
-            return refreshed
-        candidate = _copy_account(account, credentials=refreshed.credentials)
-        if refreshed.plan is not None:
-            candidate.plan = refreshed.plan
-        reference_time = self._clock.now()
-        candidate.last_refresh_at = reference_time
-        candidate.last_refresh_status = RefreshStatus.OK
-        candidate.last_refresh_error = None
-        private_bundle: PreparedPrivateBundleWrite | None = None
-        if candidate.provider_id is ProviderId.CODEX:
-            prepared = self._codex.prepare_account(
-                candidate,
-                account,
-                source_home=None,
-                use_existing_source=True,
-                require_bundle=False,
-                reference_time=reference_time,
-            )
-            if isinstance(prepared, ProviderFailure):
-                return prepared
-            candidate, private_bundle = prepared
-        self._store.persist_credentials(
-            candidate,
-            private_bundle=private_bundle,
-        )
-        return CredentialRefreshSuccess(candidate.label)
+        return self._refresh.refresh(label=label, reason=reason)
 
     def login_codex(
         self,
@@ -567,6 +602,7 @@ class CredentialService:
                 candidate,
                 detected,
                 replace_identity=replace_identity,
+                replace_auth_method=False,
             )
             if isinstance(applied, ProviderFailure):
                 return applied
@@ -604,7 +640,10 @@ class CredentialService:
             and result.kind is ProviderFailureKind.INCOMPLETE
             and account.refresh_token is not None
         ):
-            refreshed = self.refresh_saved(account)
+            refreshed = self.refresh(
+                label=account.label,
+                reason=CredentialRefreshReason.CREDENTIAL_REQUIRED,
+            )
             if isinstance(refreshed, ProviderFailure):
                 return refreshed
             saved = self._store.get(label)
@@ -623,6 +662,7 @@ class CredentialService:
         detected: DetectedCredentials,
         *,
         replace_identity: bool,
+        replace_auth_method: bool,
     ) -> Account | ProviderFailure:
         if account.provider_id is not detected.provider_id:
             return _failure(
@@ -638,38 +678,32 @@ class CredentialService:
             )
         current = account.credentials
         incoming = detected.credentials
-        if isinstance(current, ClaudeCredentials) and isinstance(
+        if isinstance(
+            current,
+            ClaudeSetupTokenCredentials | ClaudeLoginCredentials,
+        ) and isinstance(
             incoming,
-            ClaudeCredentials,
+            ClaudeSetupTokenCredentials | ClaudeLoginCredentials,
         ):
-            account.credentials = replace(
+            applied = apply_claude_transition(
                 current,
-                access_token=incoming.access_token,
-                refresh_token=(
-                    incoming.refresh_token
-                    if incoming.refresh_token is not None
-                    else current.refresh_token
-                ),
-                expiry=(
-                    incoming.expiry
-                    if not isinstance(incoming.expiry, UnknownExpiry)
-                    else current.expiry
-                ),
-                scopes=(
-                    incoming.scopes
-                    if incoming.scopes is not None
-                    else current.scopes
-                ),
+                incoming,
+                replace_identity=replace_identity,
+                replace_auth_method=replace_auth_method,
             )
+            if isinstance(applied, ProviderFailure):
+                return applied
+            account.credentials = applied
         elif isinstance(current, CodexCredentials) and isinstance(
             incoming,
             CodexCredentials,
         ):
             old_id = current.account_id
             new_id = incoming.account_id
-            identity_proven = (
-                old_id is not None and old_id == new_id
-            ) or current.access_token == incoming.access_token
+            if old_id is not None and new_id is not None:
+                identity_proven = old_id == new_id
+            else:
+                identity_proven = current.access_token == incoming.access_token
             if not replace_identity and not identity_proven:
                 return _failure(
                     ProviderId.CODEX,
@@ -748,22 +782,9 @@ class CredentialService:
         provider: Provider,
         error: ForbiddenError,
     ) -> str | None:
-        """Handle Claude's inference-only usage validation fallback."""
-        if not (
-            provider.id is ProviderId.CLAUDE
-            and error.required_scope == _CLAUDE_USAGE_REQUIRED_SCOPE
-            and account.scopes is None
-        ):
-            return "Token saved, but the usage endpoint denied this scope."
-        credentials = account.credentials
-        if not isinstance(credentials, ClaudeCredentials):
-            raise AssertionError("Claude account has wrong credentials.")
-        account.credentials = replace(credentials, scopes=())
-        try:
-            provider.fetch_usage(account, self._http)
-        except UsageError:
-            return "Token saved, but the usage validation probe failed."
-        return None
+        """Return the provider-neutral validation warning for forbidden use."""
+        del account, provider, error
+        return "Token saved, but the usage endpoint denied this scope."
 
 
 __all__ = ["CredentialService"]

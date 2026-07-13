@@ -38,23 +38,32 @@ from sidekick_usages.persistence.schemas import (
     GenerationZeroDocument,
     PrototypeReceipt,
     VersionOneDocument,
+    VersionTwoDocument,
     decode_prototype,
     encode_generation_zero,
     encode_prototype_receipt,
     encode_version_one,
+    encode_version_two,
 )
-from sidekick_usages.persistence.transforms import prototype_to_version_one
+from sidekick_usages.persistence.transforms import (
+    prototype_to_version_one,
+    prototype_to_version_two,
+)
 
 _QUALIFIED_ROOT = Path.cwd() / "qualified-test-root"
 AUTHORITY_PATH = _QUALIFIED_ROOT / "sidekick" / "accounts.json"
 PROTOTYPE_PATH = _QUALIFIED_ROOT / "prototype" / "accounts.json"
 GENERATION_ZERO = encode_generation_zero(GenerationZeroDocument(()))
 VERSION_ONE = encode_version_one(VersionOneDocument(()))
+VERSION_TWO = encode_version_two(VersionTwoDocument(()))
 PROTOTYPE = b'{"primary":{"token":"test-only-secret","plan":"max"}}'
 PROTOTYPE_VERSION_ONE = encode_version_one(
     prototype_to_version_one(decode_prototype(PROTOTYPE))
 )
-FUTURE_SCHEMA_VERSION = 2
+PROTOTYPE_VERSION_TWO = encode_version_two(
+    prototype_to_version_two(decode_prototype(PROTOTYPE))
+)
+FUTURE_SCHEMA_VERSION = 3
 
 
 def _snapshot(payload: bytes, *, inode: int = 1) -> FileSnapshot:
@@ -102,6 +111,10 @@ class FakeFilesystem:
         self.calls.append("read-authority")
         return self._read(self.path.name)
 
+    def read_external_private_source(self) -> FileSnapshot | None:
+        self.calls.append("read-external-private-source")
+        return self._read(self.path.name)
+
     def read_managed(
         self,
         artifact: ManagedArtifact,
@@ -142,6 +155,7 @@ def _inventory(
         ("absent", AuthorityKind.ABSENT, False),
         ("generation-zero", AuthorityKind.GENERATION_ZERO, True),
         ("version-one", AuthorityKind.VERSION_ONE, True),
+        ("version-two", AuthorityKind.VERSION_TWO, True),
         ("future", AuthorityKind.FUTURE, False),
         ("duplicate", AuthorityKind.DUPLICATE_KEY, False),
         ("malformed", AuthorityKind.MALFORMED_JSON, False),
@@ -163,7 +177,8 @@ def test_authority_classification_is_exact_and_qualifies_first(
     payload = {
         "generation-zero": GENERATION_ZERO,
         "version-one": VERSION_ONE,
-        "future": b'{"schema_version":2,"accounts":{}}',
+        "version-two": VERSION_TWO,
+        "future": b'{"schema_version":3,"accounts":{}}',
         "duplicate": b'{"same":1,"same":2}',
         "malformed": b'{"test-only-secret":',
         "invalid": b'{"account":true}',
@@ -507,9 +522,9 @@ def test_authority_only_assessment_never_adopts_prototype_fallback() -> None:
     ("authority_payload", "expected"),
     [
         (None, PersistenceCode.EMPTY),
-        (PROTOTYPE_VERSION_ONE, PersistenceCode.PROTOTYPE_IMPORTED),
+        (PROTOTYPE_VERSION_TWO, PersistenceCode.PROTOTYPE_IMPORTED),
     ],
-    ids=("absent-authority", "version-one-authority"),
+    ids=("absent-authority", "version-two-authority"),
 )
 def test_exact_receipt_enables_only_the_required_prototype_relation(
     authority_payload: bytes | None,
@@ -532,7 +547,10 @@ def test_exact_receipt_enables_only_the_required_prototype_relation(
         OrphanedPrivateCredentials.ABSENT
     )
 
-    assert prototype.calls[:2] == ["qualify", "read-authority"]
+    assert prototype.calls[:2] == [
+        "qualify",
+        "read-external-private-source",
+    ]
     assert assess_persistence(observation).code is expected
 
 

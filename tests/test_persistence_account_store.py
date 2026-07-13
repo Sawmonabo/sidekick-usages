@@ -6,9 +6,11 @@ from types import TracebackType
 
 import pytest
 
+from sidekick_usages.core.expiry import KnownExpiry, UnknownExpiry
 from sidekick_usages.core.models import (
     Account,
-    ClaudeCredentials,
+    ClaudeLoginCredentials,
+    ClaudeSetupTokenCredentials,
     CodexCredentials,
 )
 from sidekick_usages.core.types import AccountLabel, ProviderId
@@ -45,12 +47,15 @@ from sidekick_usages.persistence.filesystem import (
 from sidekick_usages.persistence.inventory import OrphanedPrivateCredentials
 from sidekick_usages.persistence.schemas import (
     GenerationZeroDocument,
-    VersionOneDocument,
-    decode_version_one,
+    VersionTwoDocument,
+    decode_version_two,
     encode_generation_zero,
-    encode_version_one,
+    encode_version_two,
 )
-from sidekick_usages.persistence.transforms import accounts_to_version_one
+from sidekick_usages.persistence.transforms import (
+    accounts_to_version_two,
+    version_two_to_accounts,
+)
 from tests.test_support import REFERENCE_TIME, make_application_paths
 
 
@@ -92,6 +97,9 @@ class InMemoryFilesystem(PersistenceFilesystem):
     def read_authority(self) -> FileSnapshot | None:
         return self.snapshot
 
+    def read_external_private_source(self) -> FileSnapshot | None:
+        return self.snapshot
+
     def read_managed(
         self,
         artifact: ManagedArtifact,
@@ -107,8 +115,8 @@ class InMemoryFilesystem(PersistenceFilesystem):
         payload: bytes,
         expected_source: ExpectedAuthority,
     ) -> FileSnapshot:
-        assert generation is AuthorityGeneration.VERSION_ONE
-        decode_version_one(payload)
+        assert generation is AuthorityGeneration.VERSION_TWO
+        decode_version_two(payload)
         observed: ExpectedAuthority = (
             AuthorityExpectation.ABSENT
             if self.snapshot is None
@@ -203,9 +211,8 @@ class OrphanedCredentialsObserver:
 
 def _account(label: str, provider_id: ProviderId) -> Account:
     if provider_id is ProviderId.CLAUDE:
-        credentials = ClaudeCredentials(
-            access_token=f"test-only-{label}-access",
-            refresh_token=f"test-only-{label}-refresh",
+        credentials = ClaudeSetupTokenCredentials(
+            access_token=f"test-only-{label}-access"
         )
     else:
         credentials = CodexCredentials(
@@ -221,8 +228,23 @@ def _account(label: str, provider_id: ProviderId) -> Account:
     )
 
 
-def _version_one(*accounts: Account) -> bytes:
-    return encode_version_one(accounts_to_version_one(accounts))
+def _claude_login_account(label: str) -> Account:
+    return Account(
+        label=AccountLabel(label),
+        credentials=ClaudeLoginCredentials(
+            access_token=f"test-only-{label}-access",
+            refresh_token=f"test-only-{label}-refresh",
+            access_expiry=KnownExpiry(REFERENCE_TIME),
+            refresh_expiry=UnknownExpiry(),
+            scopes=("user:profile", "user:inference"),
+        ),
+        plan="max",
+        heartbeat_window_resets={"standard": REFERENCE_TIME},
+    )
+
+
+def _version_two(*accounts: Account) -> bytes:
+    return encode_version_two(accounts_to_version_two(accounts))
 
 
 def _store(
@@ -251,7 +273,7 @@ def _store(
             PersistenceCode.MIGRATION_REQUIRED,
         ),
         (
-            b'{"schema_version":2,"accounts":{}}\n',
+            b'{"schema_version":3,"accounts":{}}\n',
             FutureSchemaError,
             PersistenceCode.FUTURE_SCHEMA,
         ),
@@ -293,7 +315,7 @@ def test_loaded_queries_never_expose_mutable_store_state(
     account = _account("claude-max-1", ProviderId.CLAUDE)
     store, _filesystem, _observer = _store(
         tmp_path,
-        _version_one(account),
+        _version_two(account),
     )
     with pytest.raises(RuntimeError, match="must be loaded"):
         len(store)
@@ -313,6 +335,30 @@ def test_loaded_queries_never_expose_mutable_store_state(
         assert preserved is not None
         assert preserved.plan == "max"
         assert tuple(preserved.heartbeat_window_resets or ()) == ("standard",)
+
+
+def test_store_round_trips_complete_legacy_claude_login(
+    tmp_path: Path,
+) -> None:
+    """The current store retains all v1 login and operational fields."""
+    account = _claude_login_account("claude-login")
+    store, filesystem, _observer = _store(
+        tmp_path,
+        _version_two(account),
+    )
+
+    store.load()
+
+    assert store.get("claude-login") == account
+    loaded = store.get("claude-login")
+    assert loaded is not None
+    loaded.plan = "team"
+    store.persist(loaded)
+    assert store.get("claude-login") == loaded
+    assert filesystem.snapshot is not None
+    assert version_two_to_accounts(
+        decode_version_two(filesystem.snapshot.data)
+    ) == (loaded,)
 
 
 def test_failed_persist_preserves_memory_disk_and_baseline_for_retry(
@@ -343,8 +389,8 @@ def test_failed_persist_preserves_memory_disk_and_baseline_for_retry(
     store.persist(updated)
     assert store.get("claude-max-1") == updated
     assert filesystem.snapshot is not None
-    document = decode_version_one(filesystem.snapshot.data)
-    assert encode_version_one(document) == filesystem.snapshot.data
+    document = decode_version_two(filesystem.snapshot.data)
+    assert encode_version_two(document) == filesystem.snapshot.data
 
 
 def test_release_failure_after_commit_keeps_memory_at_durable_state(
@@ -360,7 +406,7 @@ def test_release_failure_after_commit_keeps_memory_at_durable_state(
 
     assert store.get("claude-max-1") == account
     assert filesystem.snapshot is not None
-    assert decode_version_one(filesystem.snapshot.data).accounts[0].label == (
+    assert decode_version_two(filesystem.snapshot.data).accounts[0].label == (
         account.label
     )
 
@@ -404,7 +450,7 @@ def test_persist_reassesses_credentials_and_artifacts_under_lock(
     assert store.get("codex-plus-1") == account
 
     external = _account("claude-external", ProviderId.CLAUDE)
-    external_payload = _version_one(external)
+    external_payload = _version_two(external)
     filesystem.snapshot = _snapshot(external_payload, inode=101)
     with pytest.raises(SourceChangedError):
         store.persist(_account("claude-new", ProviderId.CLAUDE))
@@ -437,5 +483,5 @@ def test_crud_mutations_commit_one_complete_ordered_candidate(
     assert len(store) == 0
 
     assert filesystem.snapshot is not None
-    document = decode_version_one(filesystem.snapshot.data)
-    assert document == VersionOneDocument(())
+    document = decode_version_two(filesystem.snapshot.data)
+    assert document == VersionTwoDocument(())

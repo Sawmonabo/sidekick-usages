@@ -47,6 +47,19 @@ from sidekick_usages.persistence.inventory import (
     PrototypeMigrationIntent,
 )
 from sidekick_usages.persistence.locking import PersistenceLock
+from sidekick_usages.persistence.migrations.account_codecs import (
+    CURRENT_VERSION_TWO,
+    MIGRATABLE_GENERATION_ZERO,
+    accounts_from_current,
+    credential_migration_preflight,
+    generation_zero_payload,
+    prototype_payload,
+    rollback_payload,
+    version_one_payload,
+)
+from sidekick_usages.persistence.migrations.account_preview import (
+    AccountMigrationPreview,
+)
 from sidekick_usages.persistence.migrations.errors import (
     PersistenceMigrationStateError,
     PrototypeReimportRequiredError,
@@ -63,14 +76,8 @@ from sidekick_usages.persistence.schemas import (
     decode_prototype,
     encode_generation_zero,
     encode_prototype_receipt,
-    encode_version_one,
 )
-from sidekick_usages.persistence.transforms import (
-    generation_zero_to_version_one,
-    prototype_to_version_one,
-    version_one_to_accounts,
-    version_one_to_v060,
-)
+from sidekick_usages.persistence.transforms import version_two_to_v060
 from sidekick_usages.scheduler_quiescence import (
     SchedulerQuiescenceAssessment,
 )
@@ -150,62 +157,6 @@ type AccountLockFactory = Callable[
 ]
 
 
-MIGRATABLE_GENERATION_ZERO = frozenset(
-    {
-        PersistenceCode.MIGRATION_REQUIRED,
-        PersistenceCode.ROLLBACK_PREPARED,
-        PersistenceCode.LEGACY_WRITER_DETECTED,
-    }
-)
-CURRENT_VERSION_ONE = frozenset(
-    {PersistenceCode.CURRENT, PersistenceCode.PROTOTYPE_IMPORTED}
-)
-
-
-def accounts_from_current(
-    observation: PersistenceObservation,
-    assessment: PersistenceAssessment,
-) -> tuple[Account, ...]:
-    """Return accounts only from absent or runtime-safe version-one state."""
-    if assessment.code is PersistenceCode.EMPTY:
-        if observation.authority.kind is not AuthorityKind.ABSENT:
-            raise SourceChangedError
-        return ()
-    if assessment.code not in CURRENT_VERSION_ONE:
-        raise ValueError("Assessment is not runtime-safe version one.")
-    document = observation.authority.version_one
-    if document is None:
-        raise SourceChangedError
-    return version_one_to_accounts(document)
-
-
-def generation_zero_payload(observation: PersistenceObservation) -> bytes:
-    """Return canonical version-one bytes for generation-zero evidence."""
-    document = observation.authority.generation_zero
-    if document is None:
-        raise SourceChangedError
-    return encode_version_one(generation_zero_to_version_one(document))
-
-
-def rollback_payload(observation: PersistenceObservation) -> bytes:
-    """Return exact released-v0.6.0 bytes for canonical version one."""
-    document = observation.authority.version_one
-    if document is None:
-        raise SourceChangedError
-    canonical = encode_version_one(document)
-    if observation.authority.content != canonical:
-        raise InvalidSchemaError
-    return encode_generation_zero(version_one_to_v060(document))
-
-
-def prototype_payload(artifact: ArtifactObservation) -> bytes:
-    """Return canonical version-one bytes for a validated prototype."""
-    document = artifact.prototype
-    if document is None:
-        raise InvalidSchemaError
-    return encode_version_one(prototype_to_version_one(document))
-
-
 class AccountMigrationCoordinator:
     """Assess and execute explicit lock-scoped persistence transitions."""
 
@@ -243,6 +194,14 @@ class AccountMigrationCoordinator:
         """Require quiescence and return a pre-confirmation assessment."""
         self._require_scheduler_quiescence()
         return self.assess()
+
+    def account_migration_preview(self) -> AccountMigrationPreview:
+        """Return one read-only migration assessment and classification."""
+        self._require_scheduler_quiescence()
+        observation = self._inspect()
+        assessment = assess_persistence(observation)
+        classification = credential_migration_preflight(observation)
+        return AccountMigrationPreview(assessment, classification)
 
     def permission_repair_preview(
         self,
@@ -303,12 +262,18 @@ class AccountMigrationCoordinator:
             self._require_explicit_prototype_valid(observation)
             match observation.authority.kind:
                 case AuthorityKind.GENERATION_ZERO:
-                    return self._migrate_generation_zero(
+                    return self._migrate_legacy(
                         transaction,
                         observation,
                         assessment,
                     )
                 case AuthorityKind.VERSION_ONE:
+                    return self._migrate_legacy(
+                        transaction,
+                        observation,
+                        assessment,
+                    )
+                case AuthorityKind.VERSION_TWO:
                     return self._migrate_or_resume_prototype(
                         transaction,
                         observation,
@@ -336,9 +301,9 @@ class AccountMigrationCoordinator:
             preflight_assessment = assess_persistence(preflight_observation)
             if (
                 preflight_observation.authority.kind
-                is AuthorityKind.VERSION_ONE
+                is AuthorityKind.VERSION_TWO
                 and (
-                    preflight_assessment.code in CURRENT_VERSION_ONE
+                    preflight_assessment.code in CURRENT_VERSION_TWO
                     or self._can_recover_temporaries(
                         preflight_observation,
                         preflight_assessment,
@@ -365,8 +330,8 @@ class AccountMigrationCoordinator:
                     artifact_basename=snapshot.basename,
                 )
             if (
-                observation.authority.kind is not AuthorityKind.VERSION_ONE
-                or assessment.code not in CURRENT_VERSION_ONE
+                observation.authority.kind is not AuthorityKind.VERSION_TWO
+                or assessment.code not in CURRENT_VERSION_TWO
             ):
                 raise PersistenceMigrationStateError(assessment)
             source = self._authority_snapshot(observation)
@@ -374,7 +339,7 @@ class AccountMigrationCoordinator:
                 raise SourceChangedError
             payload = rollback_payload(observation)
             snapshot = transaction.publish_immutable(
-                AuthorityGeneration.VERSION_ONE,
+                AuthorityGeneration.VERSION_TWO,
                 source,
             )
             committed = transaction.commit_authority(
@@ -420,28 +385,40 @@ class AccountMigrationCoordinator:
                 raise ResetIncompleteError(self.path.name)
             return assess_persistence(post_observation)
 
-    def _migrate_generation_zero(
+    def _migrate_legacy(
         self,
         transaction: MigrationTransaction,
         observation: PersistenceObservation,
         assessment: PersistenceAssessment,
     ) -> PersistenceAssessment:
-        if assessment.code not in MIGRATABLE_GENERATION_ZERO:
+        kind = observation.authority.kind
+        if kind is AuthorityKind.GENERATION_ZERO:
+            allowed = assessment.code in MIGRATABLE_GENERATION_ZERO
+            generation = AuthorityGeneration.GENERATION_ZERO
+            payload = generation_zero_payload(observation)
+        elif kind is AuthorityKind.VERSION_ONE:
+            allowed = assessment.code is PersistenceCode.MIGRATION_REQUIRED
+            generation = AuthorityGeneration.VERSION_ONE
+            payload = version_one_payload(observation)
+        else:
+            allowed = False
+            generation = AuthorityGeneration.VERSION_ONE
+            payload = b""
+        if not allowed:
             raise PersistenceMigrationStateError(assessment)
         source = self._authority_snapshot(observation)
         if source is None:
             raise SourceChangedError
-        payload = generation_zero_payload(observation)
         transaction.publish_immutable(
-            AuthorityGeneration.GENERATION_ZERO,
+            generation,
             source,
         )
         transaction.commit_authority(
-            AuthorityGeneration.VERSION_ONE,
+            AuthorityGeneration.VERSION_TWO,
             payload,
             source.fingerprint,
         )
-        return self._require_postcondition(CURRENT_VERSION_ONE)
+        return self._require_postcondition(CURRENT_VERSION_TWO)
 
     def _import_absent_prototype(
         self,
@@ -472,7 +449,7 @@ class AccountMigrationCoordinator:
         payload = prototype_payload(prototype_artifact)
         self._revalidate_prototype(prototype_source)
         transaction.commit_authority(
-            AuthorityGeneration.VERSION_ONE,
+            AuthorityGeneration.VERSION_TWO,
             payload,
             AuthorityExpectation.ABSENT,
         )
@@ -492,7 +469,7 @@ class AccountMigrationCoordinator:
         *,
         reimport: bool,
     ) -> PersistenceAssessment:
-        if assessment.code not in CURRENT_VERSION_ONE:
+        if assessment.code not in CURRENT_VERSION_TWO:
             raise PersistenceMigrationStateError(assessment)
         source = self._authority_snapshot(observation)
         if source is None:
@@ -509,11 +486,11 @@ class AccountMigrationCoordinator:
                 raise PrototypeReimportRequiredError(assessment)
             self._revalidate_prototype(prototype_source)
             transaction.publish_immutable(
-                AuthorityGeneration.VERSION_ONE,
+                AuthorityGeneration.VERSION_TWO,
                 source,
             )
             transaction.commit_authority(
-                AuthorityGeneration.VERSION_ONE,
+                AuthorityGeneration.VERSION_TWO,
                 payload,
                 source.fingerprint,
             )
@@ -554,7 +531,7 @@ class AccountMigrationCoordinator:
             raise PersistenceMigrationStateError(
                 assess_persistence(observation)
             )
-        source = self._prototype_filesystem.read_authority()
+        source = self._prototype_filesystem.read_external_private_source()
         if (
             source is None
             or source.link_count != 1
@@ -565,7 +542,7 @@ class AccountMigrationCoordinator:
         return artifact, source
 
     def _revalidate_prototype(self, expected: FileSnapshot) -> None:
-        observed = self._prototype_filesystem.read_authority()
+        observed = self._prototype_filesystem.read_external_private_source()
         if (
             observed is None
             or observed.link_count != 1
@@ -631,14 +608,14 @@ class AccountMigrationCoordinator:
             key=lambda candidate: candidate.basename,
         ):
             if not (
-                artifact.kind is ArtifactKind.V1_SNAPSHOT
+                artifact.kind is ArtifactKind.V2_SNAPSHOT
                 and artifact.state is ArtifactState.VALID
-                and artifact.version_one is not None
+                and artifact.version_two is not None
             ):
                 continue
             try:
                 reverse = encode_generation_zero(
-                    version_one_to_v060(artifact.version_one)
+                    version_two_to_v060(artifact.version_two)
                 )
             except InvalidSchemaError, RollbackCompatibilityError:
                 continue
@@ -738,6 +715,7 @@ class AccountMigrationCoordinator:
         credential_kinds = {
             ArtifactKind.V0_BACKUP,
             ArtifactKind.V1_SNAPSHOT,
+            ArtifactKind.V2_SNAPSHOT,
             ArtifactKind.TEMPORARY,
         }
         return (

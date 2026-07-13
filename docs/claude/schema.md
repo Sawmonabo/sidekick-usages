@@ -1,7 +1,7 @@
 # Claude Code Schema and Contract Guide
 
 - **Status:** Active schema retrieval and validation guidance
-- **Last verified:** 2026-07-12
+- **Last verified:** 2026-07-13
 - **Claude Code release:** `2.1.207`
 - **Release build commit:**
   `bc512d56332530b2be3f5079e29ec17aa20b8553`
@@ -44,12 +44,13 @@ as one schema would be inaccurate.
    1. [Retrieve Compatible Agent SDK Types](#retrieve-compatible-agent-sdk-types)
 10. [Hook Event Contracts](#hook-event-contracts)
 11. [Provider-Owned Local State](#provider-owned-local-state)
-12. [Sidekick Production Boundary](#sidekick-production-boundary)
-13. [Build-Versus-Adopt Decision](#build-versus-adopt-decision)
-14. [Agent Instructions](#agent-instructions)
-15. [When a Schema Subset May Be Tracked](#when-a-schema-subset-may-be-tracked)
-16. [Revalidation Triggers](#revalidation-triggers)
-17. [Primary Sources](#primary-sources)
+12. [Credential Fields Observed in 2.1.207](#credential-fields-observed-in-21207)
+13. [Sidekick Production Boundary](#sidekick-production-boundary)
+14. [Build-Versus-Adopt Decision](#build-versus-adopt-decision)
+15. [Agent Instructions](#agent-instructions)
+16. [When a Schema Subset May Be Tracked](#when-a-schema-subset-may-be-tracked)
+17. [Revalidation Triggers](#revalidation-triggers)
+18. [Primary Sources](#primary-sources)
 
 ## Decision Summary
 
@@ -617,13 +618,84 @@ Never:
 Use synthetic records containing only the fields needed by the behavior under
 test.
 
+## Credential Fields Observed in 2.1.207
+
+The exact installed Claude Code 2.1.207 credential envelope uses the root
+member `claudeAiOauth`. The following field names are version-pinned runtime
+observations, not a claim that Anthropic publishes a complete credential-file
+schema:
+
+| Field | Observed shape | Sidekick contract |
+| --- | --- | --- |
+| `accessToken` | Non-empty string | Required for a subscription-login credential; value remains secret |
+| `refreshToken` | Non-empty string | Required for a subscription-login credential; value remains secret |
+| `expiresAt` | Nonnegative integer milliseconds from the Unix epoch | Required and normalized to aware UTC access-token expiry |
+| `refreshTokenExpiresAt` | Nonnegative integer milliseconds from the Unix epoch; field may be absent | Known login expiry when present; unknown when absent; explicit null is malformed |
+| `scopes` | Nonempty unique string array containing `user:profile` | Required login capabilities; not used to infer setup-token mode |
+| `subscriptionType` | Bounded string; field may be absent | Display plan when present |
+| `rateLimitTier` | Bounded provider string; field may be absent | Observed but not consumed or persisted by Sidekick |
+| `tokenAccount.accountUuid` | Bounded string; field may be absent | Stable identity only when both identity members are present |
+| `tokenAccount.organizationUuid` | Bounded string; field may be absent | Stable identity only when both identity members are present |
+
+The observed refresh response uses `access_token` and `expires_in`, and may
+also return `refresh_token` and `refresh_token_expires_in`. The relative
+durations are nonnegative integer seconds. When the response omits the refresh
+credential or its lifetime, Sidekick preserves the previously proven value;
+present null or malformed values fail closed.
+
+`rateLimitTier` is intentionally listed even though production ignores it.
+This separates the exact observed provider surface from the smaller set the
+application consumes.
+
+### Revalidate the credential field set
+
+Revalidation is read-only unless an operator separately authorizes an isolated
+login. Do not copy extracted provider source, a credential envelope, or raw
+binary strings into the repository.
+
+To revalidate the field set, verify the exact release before inspecting the
+closed key-name list or running synthetic boundary tests.
+
+On POSIX, reuse the exact doctor/manifest-qualified `binary` value verified
+above, then perform a bounded key-name check against that exact executable:
+
+```bash
+# Reuse the exact `binary` value verified above.
+test -x "$binary"
+strings "$binary" \
+  | rg -o 'accessToken|refreshToken|expiresAt|refreshTokenExpiresAt|scopes|subscriptionType|rateLimitTier|tokenAccount|accountUuid|organizationUuid|refresh_token_expires_in' \
+  | sort -u
+```
+
+On PowerShell, use the verified executable path and an installed `strings`
+equivalent, pipe only the same closed key-name expression to `rg -o`, and sort
+the unique result. Treat this as corroboration, not schema authority.
+
+Then run the synthetic provider-boundary contract:
+
+```bash
+uv run pytest \
+  tests/test_claude_credential_modes.py \
+  tests/test_claude_provider_boundaries.py \
+  tests/test_claude_refresh.py -q
+```
+
+If an exact runtime shape must be confirmed, use a disposable isolated Claude
+home only after explicit authorization. Record only the version, field names,
+primitive types, and whether a field was absent. Destroy the temporary secret
+state after review. Never print or persist values, never use the active Claude
+home, and never promote private binary implementation details into a public
+stability promise.
+
 ## Sidekick Production Boundary
 
-The current implementation already has the correct ownership:
+The current implementation has two cohesive Claude schema owners:
 
+- [`providers/claude/credential_schemas.py`](../../src/sidekick_usages/providers/claude/credential_schemas.py)
+  owns strict credential-envelope, token-account, setup-token, and refresh
+  response validation plus expiry normalization.
 - [`providers/claude/schemas.py`](../../src/sidekick_usages/providers/claude/schemas.py)
-  owns strict Claude credential, refresh, usage, header, activity-cache, and
-  transcript-record validation.
+  owns strict usage, header, activity-cache, and transcript-record validation.
 - [`providers/claude/activity.py`](../../src/sidekick_usages/providers/claude/activity.py)
   owns read-only Claude config discovery, bounded file traversal, cache reads,
   live transcript aggregation, and typed failures.
@@ -638,7 +710,7 @@ When a private Claude shape changes:
 1. Reproduce the failure against the exact release.
 2. Confirm that no public contract covers the field.
 3. Inspect only the necessary key names and primitive types.
-4. Update the narrow Claude Pydantic model.
+4. Update the narrow model in the owning Claude schema module.
 5. Preserve missing, malformed, incomplete, and unreadable distinctions.
 6. Add the fewest load-bearing synthetic tests.
 7. Never weaken validation merely to accept one local payload.
@@ -728,7 +800,8 @@ Repeat this investigation when:
 - official documentation changes a stability or ownership statement.
 
 Revalidation must update the version metadata, current manifest table, source
-commits, runtime probes, and diagram validation date together.
+commits, runtime probes, observed credential-field table, and diagram
+validation date together.
 
 ## Primary Sources
 

@@ -1,5 +1,6 @@
 """Scheduled refresh-plus-heartbeat maintenance command adapter."""
 
+import shlex
 from typing import Annotated
 
 import typer
@@ -12,6 +13,9 @@ from sidekick_usages.core.types import (
     ExitCode,
     RefreshStatus,
     highest_exit_code,
+)
+from sidekick_usages.credentials.claude_lifetime import (
+    ClaudeLoginRenewalState,
 )
 from sidekick_usages.heartbeat import heartbeat_exit_code
 from sidekick_usages.maintenance import RefreshOutcome, refresh_exit_code
@@ -27,7 +31,34 @@ def _render_refresh_outcomes(
     for outcome in outcomes:
         if quiet and outcome.exit_code is ExitCode.SUCCESS:
             continue
-        if outcome.status is RefreshStatus.OK:
+        renewal_action = outcome.login_renewal_state in (
+            ClaudeLoginRenewalState.RENEWAL_DUE,
+            ClaudeLoginRenewalState.EXPIRED,
+            ClaudeLoginRenewalState.INVALID,
+        )
+        login_refresh_action = (
+            outcome.action_required
+            and outcome.login_renewal_state
+            is not ClaudeLoginRenewalState.NOT_APPLICABLE
+        )
+        if renewal_action or login_refresh_action:
+            command = shlex.join(
+                ("sidekick-usages", "refresh", str(outcome.label))
+            )
+            invocation.console.print(
+                f"[yellow]{outcome.label}: {outcome.message}[/yellow]"
+            )
+            if (
+                outcome.status is RefreshStatus.FAILED
+                and outcome.login_renewal_message is not None
+            ):
+                invocation.console.print(
+                    f"  [yellow]{outcome.login_renewal_message}[/yellow]"
+                )
+            invocation.console.print(
+                "  Action: sign in to that Claude account, then run " + command
+            )
+        elif outcome.status is RefreshStatus.OK:
             invocation.console.print(
                 f"[green]{outcome.label}: refreshed[/green]"
             )

@@ -2,7 +2,7 @@
 
 import shlex
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import assert_never
 
@@ -15,10 +15,13 @@ from sidekick_usages.core.expiry import (
     ClassifiedExpiry,
     ExpiredExpiry,
     InvalidExpiry,
-    ValidExpiry,
-    classify_expiry,
 )
-from sidekick_usages.core.models import Account
+from sidekick_usages.core.models import (
+    Account,
+    ClaudeLoginCredentials,
+    ClaudeSetupTokenCredentials,
+    CodexCredentials,
+)
 from sidekick_usages.core.types import (
     AccountLabel,
     ExitCode,
@@ -27,6 +30,18 @@ from sidekick_usages.core.types import (
     ProviderId,
     RefreshStatus,
 )
+from sidekick_usages.credentials.claude_lifetime import (
+    ClaudeLoginRenewalState,
+)
+from sidekick_usages.doctor_credentials import (
+    DoctorCredentialKind,
+    IdentityState,
+    access_expiry_display,
+    authentication_label,
+    diagnose_credentials,
+    expiry_time,
+    refresh_expiry_display,
+)
 from sidekick_usages.heartbeat import (
     HeartbeatProvider,
     heartbeat_supported_label,
@@ -34,6 +49,10 @@ from sidekick_usages.heartbeat import (
 from sidekick_usages.persistence.assessment import (
     PersistenceAssessment,
     PersistenceCompositionFailure,
+)
+from sidekick_usages.persistence.credential_refresh import (
+    CredentialRefreshState,
+    CredentialRefreshStateKind,
 )
 from sidekick_usages.persistence.migrations.location import (
     BlockedLocationSelection,
@@ -47,10 +66,7 @@ from sidekick_usages.persistence.migrations.ports import (
     PrivateAuthMigrationFailure,
 )
 from sidekick_usages.providers.base import Provider
-from sidekick_usages.providers.claude import PROFILE_SCOPE
 from sidekick_usages.serialization import JsonObject, JsonValue
-
-_IDENTITY_FULL_MAX_LENGTH = 12
 
 
 @dataclass(frozen=True)
@@ -62,11 +78,16 @@ class AccountDiagnostic:
     plan: str
     usage_route: str
     has_refresh_token: bool
-    expires_at: datetime | None
-    expires_at_local: str | None
-    identity_fingerprint: str | None
+    credential_kind: DoctorCredentialKind
+    access_expires_at: datetime | None
+    access_expiry_state: ExpiryState
+    access_expiry_display: str
+    refresh_expires_at: datetime | None
+    refresh_expiry_state: ExpiryState
+    refresh_expiry_display: str
+    login_renewal_state: ClaudeLoginRenewalState
+    identity_state: IdentityState
     can_auto_refresh: bool
-    expiry_state: ExpiryState
     last_refresh_at: datetime | None
     last_refresh_status: RefreshStatus | None
     last_refresh_error: str | None
@@ -88,6 +109,11 @@ class DoctorReadyResult:
 
     diagnostics: tuple[AccountDiagnostic, ...]
     assessment: LocationMigrationAssessment[ReadyLocationSelection]
+    refresh_state: CredentialRefreshState = field(
+        default_factory=lambda: CredentialRefreshState(
+            CredentialRefreshStateKind.CLEAN
+        )
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,12 +181,17 @@ class DoctorService:
         """Build one account diagnostic."""
         provider = self.providers.get(account.provider_id)
         heartbeat_provider = self.heartbeat_providers.get(account.provider_id)
-        expiry = classify_expiry(account.expiry, now=reference_time)
-        can_auto_refresh = bool(provider and account.refresh_token)
+        credentials = diagnose_credentials(
+            account,
+            reference_time=reference_time,
+            provider_registered=provider is not None,
+        )
         manual_action_required = _manual_action_required(
             account,
-            can_auto_refresh=can_auto_refresh,
-            expiry=expiry,
+            can_auto_refresh=credentials.can_auto_refresh,
+            access_expiry=credentials.access_expiry,
+            refresh_expiry=credentials.refresh_expiry,
+            login_renewal_state=credentials.login_renewal_state,
             provider_known=provider is not None,
         )
         return AccountDiagnostic(
@@ -169,11 +200,22 @@ class DoctorService:
             plan=account.plan,
             usage_route=usage_route(account),
             has_refresh_token=bool(account.refresh_token),
-            expires_at=_expiry_time(expiry),
-            expires_at_local=_expires_at_local(expiry),
-            identity_fingerprint=_identity_fingerprint(account),
-            can_auto_refresh=can_auto_refresh,
-            expiry_state=expiry.state,
+            credential_kind=credentials.kind,
+            access_expires_at=expiry_time(credentials.access_expiry),
+            access_expiry_state=credentials.access_expiry.state,
+            access_expiry_display=access_expiry_display(
+                credentials.kind,
+                credentials.access_expiry,
+                reference_time,
+            ),
+            refresh_expires_at=expiry_time(credentials.refresh_expiry),
+            refresh_expiry_state=credentials.refresh_expiry.state,
+            refresh_expiry_display=refresh_expiry_display(
+                credentials.refresh_expiry
+            ),
+            login_renewal_state=credentials.login_renewal_state,
+            identity_state=credentials.identity_state,
+            can_auto_refresh=credentials.can_auto_refresh,
             last_refresh_at=account.last_refresh_at,
             last_refresh_status=account.last_refresh_status,
             last_refresh_error=account.last_refresh_error,
@@ -194,13 +236,15 @@ class DoctorService:
 
 def usage_route(account: Account) -> str:
     """Return the provider route sidekick-usages will use for usage."""
-    if account.provider_id == ProviderId.CLAUDE:
-        if account.scopes is not None and PROFILE_SCOPE not in account.scopes:
+    match account.credentials:
+        case ClaudeSetupTokenCredentials():
             return "/v1/messages headers"
-        return "/api/oauth/usage"
-    if account.provider_id == ProviderId.CODEX:
-        return "/backend-api/codex/usage"
-    return "unknown"
+        case ClaudeLoginCredentials():
+            return "/api/oauth/usage"
+        case CodexCredentials():
+            return "/backend-api/codex/usage"
+        case unexpected:
+            assert_never(unexpected)
 
 
 def render_doctor(
@@ -214,6 +258,9 @@ def render_doctor(
     ]
     if isinstance(result, DoctorReadyResult):
         parts.extend(_location_lines(result.assessment))
+        parts.append(
+            Text("  credential refresh: " + result.refresh_state.kind.value)
+        )
         diagnostics = result.diagnostics
     elif isinstance(result, DoctorBlockedResult):
         parts.extend(_location_lines(result.assessment))
@@ -254,6 +301,7 @@ def doctor_json(result: DoctorResult) -> JsonObject:
     if isinstance(result, DoctorReadyResult):
         diagnostics = result.diagnostics
         persistence = _location_dict(result.assessment)
+        persistence["credential_refresh"] = result.refresh_state.kind.value
     elif isinstance(result, DoctorBlockedResult):
         diagnostics = ()
         persistence = _location_dict(result.assessment)
@@ -512,6 +560,10 @@ def _command_json(command: tuple[str, ...] | None) -> JsonValue:
 def _auth_lines(diagnostic: AccountDiagnostic) -> tuple[Text, ...]:
     """Build auth and refresh lines for one account."""
     lines = [
+        Text(
+            "  authentication: "
+            + authentication_label(diagnostic.credential_kind)
+        ),
         Text(f"  usage route: {diagnostic.usage_route}"),
         Text(
             "  refresh token: "
@@ -521,14 +573,32 @@ def _auth_lines(diagnostic: AccountDiagnostic) -> tuple[Text, ...]:
             "  auto-refresh: "
             + ("yes" if diagnostic.can_auto_refresh else "no")
         ),
-        Text(
-            f"  expires: {diagnostic.expires_at_local}"
-            if diagnostic.expires_at_local
-            else "  expires: unknown"
-        ),
     ]
-    if diagnostic.identity_fingerprint:
-        lines.append(Text(f"  identity: {diagnostic.identity_fingerprint}"))
+    if diagnostic.credential_kind is DoctorCredentialKind.SETUP_TOKEN:
+        lines.append(
+            Text(
+                "  setup-token expiry: provider does not expose the "
+                "token's issued-at timestamp"
+            )
+        )
+    else:
+        lines.append(
+            Text("  access token expires: " + diagnostic.access_expiry_display)
+        )
+    if diagnostic.credential_kind is DoctorCredentialKind.SUBSCRIPTION_LOGIN:
+        lines.append(
+            Text("  login expires: " + diagnostic.refresh_expiry_display)
+        )
+        if (
+            diagnostic.login_renewal_state
+            is ClaudeLoginRenewalState.RENEWAL_DUE
+        ):
+            lines.append(Text("  login renewal: required within five days"))
+        elif diagnostic.login_renewal_state in (
+            ClaudeLoginRenewalState.EXPIRED,
+            ClaudeLoginRenewalState.INVALID,
+        ):
+            lines.append(Text("  login renewal: required now"))
     if diagnostic.last_refresh_status:
         lines.append(Text(f"  last refresh: {diagnostic.last_refresh_status}"))
     if diagnostic.last_refresh_error:
@@ -594,7 +664,9 @@ def _manual_action_required(
     account: Account,
     *,
     can_auto_refresh: bool,
-    expiry: ClassifiedExpiry,
+    access_expiry: ClassifiedExpiry,
+    refresh_expiry: ClassifiedExpiry,
+    login_renewal_state: ClaudeLoginRenewalState,
     provider_known: bool,
 ) -> bool:
     """Return whether the user needs to log in or fix config."""
@@ -602,34 +674,16 @@ def _manual_action_required(
         return True
     if account.last_refresh_status is RefreshStatus.FAILED:
         return True
-    if isinstance(expiry, InvalidExpiry):
+    if isinstance(access_expiry, InvalidExpiry):
         return True
-    return isinstance(expiry, ExpiredExpiry) and not can_auto_refresh
-
-
-def _expires_at_local(expiry: ClassifiedExpiry) -> str | None:
-    """Render expiry as a local ISO timestamp."""
-    expires_at = _expiry_time(expiry)
-    if expires_at is None:
-        return None
-    return expires_at.astimezone().isoformat()
-
-
-def _identity_fingerprint(account: Account) -> str | None:
-    """Return a short provider identity fingerprint, never a token."""
-    value = account.provider_account_id
-    if not value:
-        return None
-    if len(value) <= _IDENTITY_FULL_MAX_LENGTH:
-        return value
-    return f"{value[:8]}…{value[-4:]}"
-
-
-def _expiry_time(expiry: ClassifiedExpiry) -> datetime | None:
-    """Return the authoritative time from a classified expiry."""
-    if isinstance(expiry, ValidExpiry | ExpiredExpiry):
-        return expiry.at
-    return None
+    if isinstance(account.credentials, ClaudeLoginCredentials) and isinstance(
+        refresh_expiry,
+        ExpiredExpiry | InvalidExpiry,
+    ):
+        return True
+    if login_renewal_state is ClaudeLoginRenewalState.RENEWAL_DUE:
+        return True
+    return isinstance(access_expiry, ExpiredExpiry) and not can_auto_refresh
 
 
 def _format_machine_time(value: datetime) -> str:
@@ -662,11 +716,18 @@ def _diagnostic_dict(diagnostic: AccountDiagnostic) -> JsonObject:
         "plan": diagnostic.plan,
         "usage_route": diagnostic.usage_route,
         "has_refresh_token": diagnostic.has_refresh_token,
-        "expires_at": _optional_machine_time(diagnostic.expires_at),
-        "expires_at_local": diagnostic.expires_at_local,
-        "identity_fingerprint": diagnostic.identity_fingerprint,
+        "credential_kind": diagnostic.credential_kind.value,
+        "access_expires_at": _optional_machine_time(
+            diagnostic.access_expires_at
+        ),
+        "access_expiry_state": diagnostic.access_expiry_state.value,
+        "refresh_expires_at": _optional_machine_time(
+            diagnostic.refresh_expires_at
+        ),
+        "refresh_expiry_state": diagnostic.refresh_expiry_state.value,
+        "login_renewal_state": diagnostic.login_renewal_state.value,
+        "identity_state": diagnostic.identity_state.value,
         "can_auto_refresh": diagnostic.can_auto_refresh,
-        "expiry_state": diagnostic.expiry_state.value,
         "last_refresh_at": _optional_machine_time(diagnostic.last_refresh_at),
         "last_refresh_status": (
             diagnostic.last_refresh_status.value

@@ -1,9 +1,8 @@
 # Design Spec — Maintainable Application Architecture
 
-- **Status:** **Approved baseline and dependency selections; later persistence
-  and migration gates remain**
+- **Status:** **Implemented and verified; retained as design authority**
 - **Date:** 2026-07-09
-- **Repository:** `/home/sabossedgh/dev/sidekick-usages`
+- **Repository:** `<REPOSITORY_ROOT>`
 - **Scope:** Repository-wide Python application architecture
 - **Evidence base:** `develop` at
   `42cd01eb17c7903b385b1b4e259cf5b0c64126c5`
@@ -17,7 +16,9 @@
   `73ce06891747a0571276b35c3f54c7de2c4e188f`
 - **Related design:** [Usage TUI Redesign][usage-tui-design]; this spec does
   not alter its visual contract
-- **Next step:** Execute the matching implementation plan in dependency order
+- **Completion evidence:** The
+  [completed architecture implementation plan](../plans/2026-07-09-maintainable-application-architecture.md)
+  records the executed change sets and final verification gates
 - **Token activity correction:** **Approved 2026-07-10.** The tracked
   [token activity plan][token-activity-plan] replaces the former top-level
   `lifetime.py`, `LifetimeCollector`, local Codex rollout total, and Sidekick
@@ -605,6 +606,7 @@ src/sidekick_usages/
 │   │   ├── __init__.py
 │   │   ├── provider.py
 │   │   ├── credentials.py
+│   │   ├── credential_schemas.py
 │   │   ├── usage.py
 │   │   ├── activity.py
 │   │   ├── heartbeat.py
@@ -621,11 +623,21 @@ src/sidekick_usages/
 │       └── schemas.py
 ├── persistence/
 │   ├── __init__.py
+│   ├── _current_schema.py
+│   ├── _prototype_receipt_schema.py
 │   ├── _recovery.py
 │   ├── _schema_models.py
 │   ├── account_store.py
+│   ├── activity_snapshots.py
 │   ├── artifacts.py
 │   ├── assessment.py
+│   ├── credential_ownership.py
+│   ├── credential_refresh.py
+│   ├── credential_refresh_artifacts.py
+│   ├── credential_refresh_merge.py
+│   ├── credential_refresh_private_stage.py
+│   ├── credential_refresh_schema.py
+│   ├── credential_refresh_stage.py
 │   ├── credential_transaction_plans.py
 │   ├── credential_transaction_recovery.py
 │   ├── credential_transaction_schema.py
@@ -636,11 +648,15 @@ src/sidekick_usages/
 │   │   ├── __init__.py
 │   │   ├── service.py
 │   │   ├── account.py
+│   │   ├── account_codecs.py
+│   │   ├── account_preview.py
+│   │   ├── credential_kinds.py
 │   │   ├── errors.py
 │   │   ├── location.py
 │   │   ├── observer.py
 │   │   └── ports.py
 │   ├── filesystem.py
+│   ├── filesystem_access.py
 │   ├── inventory.py
 │   ├── locking.py
 │   ├── observations.py
@@ -672,7 +688,12 @@ src/sidekick_usages/
 │       └── windows_security.py
 ├── credentials/
 │   ├── __init__.py
+│   ├── claude_lifetime.py
+│   ├── claude_restore.py
+│   ├── claude_setup_save.py
+│   ├── claude_transitions.py
 │   ├── models.py
+│   ├── refresh.py
 │   ├── service.py
 │   └── codex.py
 ├── usage/
@@ -692,6 +713,7 @@ src/sidekick_usages/
 │   └── render.py
 ├── maintenance.py
 ├── doctor.py
+├── doctor_credentials.py
 ├── daemon.py
 ├── clock.py
 ├── paths.py
@@ -707,8 +729,8 @@ The `cli/`, `core/`, provider, persistence, credentials, usage, and heartbeat
 boundaries are deliberate. Smaller cohesive modules become packages only when
 their real responsibilities justify the move.
 
-The `credentials/` package has three proven responsibilities rather than one
-sprawling service module:
+The `credentials/` package has focused, caller-proven responsibilities rather
+than one sprawling service module:
 
 - `models.py` owns trusted, provider-neutral credential-workflow inputs and
   results shared by the service and CLI. These are application models, not
@@ -716,6 +738,17 @@ sprawling service module:
   rather than `schemas.py`.
 - `service.py` owns provider-neutral detection, identity, refresh, save, and
   durable account-update orchestration.
+- `refresh.py` is the sole application coordinator for rotating saved
+  credentials. It assigns a closed reason, stabilizes durable authority,
+  invokes one provider exchange, and delegates private stage/merge/recovery to
+  persistence.
+- `credentials/claude_transitions.py` owns independent authentication-method
+  and identity replacement authorization.
+- `credentials/claude_setup_save.py` owns complete setup-token replacement.
+- `credentials/claude_restore.py` owns exact-label transactional restore
+  from the import-only prototype.
+- `credentials/claude_lifetime.py` owns the derived five-day login-renewal
+  state without persisting an advisory as refresh history.
 - `codex.py` is the application bridge between provider-owned Codex auth
   preparation and persistence-owned private-bundle transactions. It exists
   because Codex has a real private auth tree and export/login workflow that
@@ -975,11 +1008,14 @@ needed by `doctor`. Help and version bypass assessment entirely.
 `core/models.py` owns provider-neutral runtime product objects used across
 features and adapters.
 
-Initial models:
+Core models:
 
 - `Account`;
 - `DetectedCredentials`;
-- `ClaudeCredentials`;
+- `ClaudeSetupTokenCredentials`;
+- `ClaudeLoginIdentity`;
+- `ClaudeLoginCredentials`;
+- `ClaudeCredentials`, the closed alias for the two Claude variants;
 - `CodexCredentials`;
 - `UsageWindow`;
 - `UsageReport`.
@@ -1001,18 +1037,24 @@ Provider, persistence, and presentation boundaries own their external epoch,
 string, and display representations. Core models never store a formatted time
 merely because an external schema does.
 
-The CS-13 caller analysis fixes the runtime credential representation as two
-immutable, slotted concrete variants:
+The runtime credential representation uses three immutable, slotted concrete
+variants:
 
-- `ClaudeCredentials` contains the access token, optional refresh token,
-  provider-neutral expiry, and `scopes: tuple[str, ...] | None`;
+- `ClaudeSetupTokenCredentials` contains only its access credential. It has no
+  refresh, access-expiry, login-expiry, scope, or identity member.
+- `ClaudeLoginCredentials` requires its access and refresh credentials, a
+  known access expiry, an explicit known-or-unknown refresh/login expiry, and
+  a unique scope tuple containing `user:profile`. Its identity is either
+  absent or one complete `ClaudeLoginIdentity` with both stable IDs.
 - `CodexCredentials` contains the access token, optional refresh token,
   provider-neutral expiry, optional provider account identity, optional auth
   home, optional ID token, and the bounded opaque Codex auth
   `last_refresh` value; and
-- `type Credentials = ClaudeCredentials | CodexCredentials` is the complete
-  supported union. No abstract credential base, generic provider hierarchy,
-  or speculative capability hook is introduced.
+- `type ClaudeCredentials = ClaudeSetupTokenCredentials |
+  ClaudeLoginCredentials` and `type Credentials = ClaudeCredentials |
+  CodexCredentials` are the complete supported unions. No abstract credential
+  base, generic provider hierarchy, or speculative capability hook is
+  introduced.
 
 Each credential variant exposes its `ProviderId` as class-level closed
 vocabulary. `Account.provider_id` is derived from the credential variant; it
@@ -1045,10 +1087,10 @@ remains a bounded opaque string because only the Codex auth-file boundary owns
 its semantics and lossless encoding. It is not classified, compared, or
 formatted by core.
 
-Persistence flattens the runtime credential variant into the approved stored
-record and reconstructs the variant from the persisted provider
-discriminator. The flattened schema is a boundary representation, not a
-reason to permit provider-incompatible fields in the runtime model.
+Persistence schema version 2 stores Claude's `credential_kind` as a strict
+discriminator and reconstructs the exact runtime variant. Setup and login
+records reject each other's fields. The boundary representation is not a
+reason to permit provider-incompatible state in core.
 
 `UsageWindow` and `UsageReport` are immutable, slotted runtime values.
 `UsageWindow.resets_at` is an aware `datetime | None`; `UsageReport.windows`
@@ -1513,11 +1555,16 @@ return a Boolean while mutating hidden state.
 
 ### 7.2 Claude package
 
+The credential validation owner is
+`providers/claude/credential_schemas.py`; usage, header, and activity schemas
+remain in `providers/claude/schemas.py`.
+
 ```text
 providers/claude/
 ├── __init__.py
 ├── provider.py
 ├── credentials.py
+├── credential_schemas.py
 ├── usage.py
 ├── heartbeat.py
 └── schemas.py
@@ -1527,12 +1574,13 @@ Responsibilities:
 
 - `provider.py` composes the Claude provider facade and refresh behavior;
 - `credentials.py` owns platform-specific credential discovery and parsing;
-- `usage.py` owns usage routes, scope rules, request construction, and response
-  conversion;
+- `credential_schemas.py` owns credential envelopes, token-account identity,
+  setup-token validation, refresh responses, and provider-native expiry
+  normalization;
+- `usage.py` selects usage by credential variant, owns request construction,
+  and converts responses;
 - `heartbeat.py` implements the heartbeat port for Claude;
-- `schemas.py` owns untrusted Claude payload shapes and normalizes
-  provider-native expiry and time units to aware UTC `datetime` values before
-  constructing core models.
+- `schemas.py` owns untrusted usage, header, and activity payload shapes.
 
 Interactive terminal input does not live in the provider package.
 
@@ -1968,6 +2016,17 @@ a presentation type.
 - persisting an updated account;
 - preserving the active-login safety rule.
 
+Rotating saved credentials do not call a provider through `service.py`
+directly. `credentials/refresh.py` is the single coordinator for maintenance,
+usage prefetch and authentication recovery, operator force, and
+credential-dependent export. It selects one closed refresh reason and uses
+the persistence-owned credential-refresh transaction before returning.
+
+Claude method and identity transitions live in
+`credentials/claude_transitions.py`; setup-token save and targeted prototype
+restore live in `claude_setup_save.py` and `claude_restore.py`. These are
+application workflows, not provider payload parsers or persistence writers.
+
 Provider-specific file and protocol details remain in provider packages.
 Terminal prompts remain in CLI adapters.
 
@@ -2039,11 +2098,12 @@ classification. Each application service obtains one aware UTC `now` value
 from its injected `Clock` and passes the value into core policy. Services do
 not read provider-native epoch units or compare formatted timestamp strings.
 
-Maintenance alone derives "due for refresh" from a valid expiry and its
-provider-specific refresh margin. The margin is maintenance use-case policy;
-it is neither a persisted expiry state nor a core discriminant. Usage checking,
-doctor, and heartbeat consume the core classification without inheriting
-maintenance-specific thresholds.
+Maintenance derives "due for access refresh" from a valid access expiry and
+its provider-specific refresh margin. Separately,
+`credentials/claude_lifetime.py` derives a five-day login-renewal state from a
+known Claude refresh expiry. The advisory is not a persisted expiry or failed
+refresh state. Usage checking, doctor, and heartbeat consume the shared
+classifications without confusing access expiry with login lifetime.
 
 ### 9.5 Account persistence
 
@@ -2055,6 +2115,26 @@ maintenance-specific thresholds.
 - durable account persistence;
 - atomic writes where supported;
 - explicit persistence errors.
+
+Credential refresh has one cohesive persistence family:
+
+- `persistence/credential_refresh.py` owns the lifecycle, credential-derived lock,
+  stabilization, targeted commit, and recovery matrix;
+- `persistence/credential_refresh_schema.py` owns the non-secret journal;
+- `persistence/credential_refresh_stage.py` owns one atomic secret replacement
+  envelope;
+- `persistence/credential_refresh_private_stage.py` owns the nested Codex
+  private-bundle subcodec;
+- `persistence/credential_refresh_merge.py` owns target-only optimistic merge
+  policy; and
+- `persistence/credential_refresh_artifacts.py` owns passive assessment,
+  quiescence, and reset cleanup.
+
+The complete stage is the local recovery boundary. Recovery can finish a
+complete replacement without another provider request, rebases unrelated
+account writes, and never resurrects a removed or changed target. The
+provider-response-to-complete-stage interval is an unavoidable cross-system
+gap; the design does not claim distributed provider/filesystem atomicity.
 
 The `persistence/migrations/` package owns both explicitly supported
 stored-schema migrations and the durable-state location-migration coordinator
@@ -2187,10 +2267,11 @@ The current complete synthetic generation-zero corpus is:
 }
 ```
 
-##### Version-one schema
+##### Historical version-one schema
 
-The first versioned document uses strict integer version `1` and exactly two
-top-level fields in this order:
+The first versioned document used strict integer version `1` and exactly two
+top-level fields in this order. It remains a validated migration source and
+historical snapshot format, but it is not accepted as current authority:
 
 ```json
 {
@@ -2242,6 +2323,36 @@ richer distinction. Rollback preparation detects those two valid states and
 raises `RollbackCompatibilityError` before any snapshot or authority mutation;
 it never coerces them while claiming a lossless downgrade.
 
+##### Current version-two schema
+
+The current document uses strict integer version `2` and the same closed,
+deterministic two-field envelope:
+
+```json
+{
+  "schema_version": 2,
+  "accounts": {}
+}
+```
+
+Version two makes Claude authentication mode explicit. A Claude setup-token
+record has `credential_kind: "setup_token"`, its access token, plan, and the
+provider-neutral refresh/heartbeat state; it cannot contain refresh, expiry,
+scope, or login-identity fields. A Claude subscription-login record has
+`credential_kind: "subscription_login"`, a required refresh token, required
+canonical `access_expires_at`, nullable canonical `refresh_expires_at`, a
+non-empty unique scope list containing `user:profile`, and nullable
+`claude_identity`. When identity is present, both bounded `account_id` and
+`organization_id` are required. Codex retains its strict flattened provider
+record inside the version-two envelope. Provider and credential-kind
+discriminators reject every mixed, partial, or extra state.
+
+All normal store writes encode version two. Runtime loading accepts only exact
+version-two authority or true absence; generation zero and version one remain
+explicit migration inputs. Deterministic ordering, lexical limits, canonical
+timestamps, duplicate-key rejection, credential-ownership uniqueness, and
+provider-field compatibility apply before a current document is accepted.
+
 ##### JSON lexical and deterministic-output rules
 
 The persistence boundary enforces:
@@ -2288,16 +2399,17 @@ Claude expiry milliseconds are in `0..253402300799999`; Codex expiry seconds
 are in `0..253402300799`. Boolean is never an integer, and every reverse
 conversion must be exact at provider precision.
 
-Generation zero enforces the same provider discriminator as version one.
+Generation zero enforces the same provider discriminator as historical
+version one.
 Migration rejects provider-incompatible non-null values and never discards
 them by silently replacing them with null.
 
 Root dispatch treats a strict integer `schema_version` member as an envelope.
-Integer `1` requires exactly `schema_version` and `accounts`; any other integer
-is an unknown future schema and never falls back. An object-valued generation-
-zero account label literally named `schema_version` remains eligible for the
-generation-zero schema. Prototype dispatch is never attempted at the
-authoritative Sidekick path.
+Integer `1` requires the exact historical envelope, integer `2` requires the
+exact current envelope, and any other integer is an unknown future schema that
+never falls back. An object-valued generation-zero account label literally
+named `schema_version` remains eligible for the generation-zero schema.
+Prototype dispatch is never attempted at the authoritative Sidekick path.
 
 Serialization uses UTF-8, `ensure_ascii=False`, two-space indentation, LF on
 every platform, one trailing newline, fixed envelope/field order, and account
@@ -2316,7 +2428,8 @@ sibling artifacts:
 |---|---|---:|---|
 | Lock | `<accounts>.lock` | No | Persistent sidecar; never migration-state evidence |
 | Generation-zero backup | `<accounts>.v0.<sha256>.bak` | Yes | Immutable until full reset |
-| Version-one rollback snapshot | `<accounts>.v1.<sha256>.bak` | Yes | Immutable until full reset |
+| Version-one migration snapshot | `<accounts>.v1.<sha256>.bak` | Yes | Immutable historical lineage until full reset |
+| Version-two rollback snapshot | `<accounts>.v2.<sha256>.bak` | Yes | Immutable current rollback lineage until full reset |
 | Prototype receipt | `<accounts>.prototype.<sha256>.receipt` | No | Immutable and retained across reset |
 | Temporary | `.<accounts>.<purpose>.<32-lowercase-hex>.tmp` | Possibly | Never authoritative; cleanup under the lock only |
 
@@ -2335,7 +2448,7 @@ The prototype receipt is deterministic UTF-8 JSON:
 {
   "receipt_version": 1,
   "prototype_sha256": "<64-lowercase-hex>",
-  "target_schema_version": 1
+  "target_schema_version": 2
 }
 ```
 
@@ -2478,8 +2591,9 @@ Normal command behavior is:
 
 | Assessment | Behavior |
 |---|---|
-| No candidate | Empty current in-memory store; first authorized persist creates version one |
-| Current version one | Construct `AccountStore` |
+| No candidate | Empty current in-memory store; first authorized persist creates version two |
+| Current version two | Construct `AccountStore` |
+| Historical version one | `migration_required` with exact command |
 | Generation zero | `migration_required` with exact command |
 | Eligible prototype only | `prototype_import_required` with exact command |
 | Malformed, unreadable, unsafe, conflicting, or partial | Fail closed with doctor action |
@@ -2535,10 +2649,10 @@ immediately before mutation.
 
 Rollback preparation supports exactly the released v0.6.0 target initially:
 
-1. validate latest version one;
+1. validate latest version two;
 2. run the pure v0.6 compatibility preflight, rejecting explicit empty
    heartbeat target/reset collections without mutation;
-3. publish its exact content-addressed v1 snapshot;
+3. publish its exact content-addressed v2 snapshot;
 4. reverse every representable field to the strict v0.6.0 generation-zero
    representation;
 5. commit that generation zero through the durable protocol;
@@ -2547,7 +2661,7 @@ Rollback preparation supports exactly the released v0.6.0 target initially:
 
 After preparation, generation zero is authoritative. If v0.6.0 changes it, a
 later re-upgrade migrates that current file and never silently restores a
-retained version-one snapshot. Content-addressed artifacts make repeated
+retained version-two snapshot. Content-addressed artifacts make repeated
 upgrade/downgrade cycles idempotent.
 
 After native relocation, rollback preparation additionally materializes the
@@ -2622,14 +2736,14 @@ name contains the exact prototype digest. The prototype remains unchanged.
 Authority is committed and verified before the receipt is published. A crash
 after authority commit but before receipt publication is `current`; an
 idempotent explicit rerun may publish the missing receipt when the exact
-prototype-to-v1 relation still holds. Publishing the receipt first is
+prototype-to-v2 relation still holds. Publishing the receipt first is
 prohibited because it could suppress the only import source without an
 authority.
 
 Full reset is a credential-destruction transaction under the lock. It removes:
 
 - the authoritative account document;
-- every valid Sidekick-managed v0/v1 account backup or snapshot;
+- every valid Sidekick-managed v0/v1/v2 account backup or snapshot;
 - owned secret-bearing account temporaries; and
 - every Sidekick-owned private Codex bundle in the bound private root.
 
@@ -2654,13 +2768,15 @@ After reset, a matching receipt prevents stale prototype credentials from
 reappearing. A changed prototype is reported as available but still requires
 explicit `--reimport-prototype`.
 
-A valid version-one authority without a generation-zero backup is `current`.
-That is a legitimate first persist from empty. The assessor may report whether
-matching history exists, but it never invents whether missing history means a
-first write or a deleted backup. Rollback remains lossless for representable
-state because preparation snapshots and reverses the current version-one
-authority; explicit empty heartbeat collections fail compatibility preflight
-before that snapshot.
+A valid version-one authority is `migration_required`, even without a
+generation-zero backup; it is a historical migration source, never current
+authority. A valid version-two authority without a generation-zero or
+version-one artifact is `current` and can be a legitimate first persist from
+empty. The assessor may report whether matching history exists, but it never
+invents whether missing history means a first write or a deleted backup.
+Rollback remains lossless for representable state because preparation
+snapshots and reverses the current version-two authority; explicit empty
+heartbeat collections fail compatibility preflight before that snapshot.
 
 ##### Assessment and error vocabulary
 
@@ -2717,8 +2833,8 @@ all safe findings remain available in deterministic order:
 | 160 | `empty` |
 
 Within one code, issues order by authority, lock, sorted v0 basenames, sorted
-v1 basenames, sorted temporary basenames, sorted receipt basenames, then
-prototype. Account insertion order is never sorted.
+v1 basenames, sorted v2 basenames, sorted temporary basenames, sorted receipt
+basenames, then prototype. Account insertion order is never sorted.
 
 The core authority reduction is exact:
 
@@ -2727,28 +2843,31 @@ The core authority reduction is exact:
 | Absent | Any credential backup or owned temporary | `interrupted_artifacts` |
 | Absent | No credential artifact | Prototype/receipt matrix |
 | Generation zero | Owned temporary | `interrupted_artifacts` |
-| Generation zero | A v1 snapshot reverses exactly | `rollback_prepared` |
-| Generation zero | V1 snapshots exist; none reverses exactly | `legacy_writer_detected` |
-| Generation zero | No v1 snapshot | `migration_required` |
+| Generation zero | A v2 snapshot reverses exactly | `rollback_prepared` |
+| Generation zero | V2 snapshots exist; none reverses exactly | `legacy_writer_detected` |
+| Generation zero | No v2 snapshot | `migration_required` |
 | Version one | Owned temporary | `interrupted_artifacts` |
-| Version one | Exact prototype/receipt/import equality | `prototype_imported` |
-| Version one | Otherwise | `current` |
+| Version one | Otherwise | `migration_required` |
+| Version two | Owned temporary | `interrupted_artifacts` |
+| Version two | Exact prototype/receipt/import equality | `prototype_imported` |
+| Version two | Otherwise | `current` |
 | Future, duplicate, malformed, invalid, unreadable, unsafe | Any | Corresponding closed code |
 
 Multiple different valid backups are expected history. A v0 backup must have
 protected exact bytes matching its digest name and decode as generation zero;
-a v1 snapshot additionally must be canonical version-one bytes. Unsafe backup
-objects are `unsafe_permissions`, unreadable ones are `unreadable`, and digest,
-generation, malformed-content, or canonical-content failures are
-`backup_conflict`. Historical backups never become authority automatically.
+a v1 or v2 snapshot additionally must be canonical bytes for its named
+generation. Unsafe backup objects are `unsafe_permissions`, unreadable ones
+are `unreadable`, and digest, generation, malformed-content, or
+canonical-content failures are `backup_conflict`. Historical backups never
+become authority automatically.
 
 Prototype fallback is considered only when authority, credential backups, and
 owned temporaries are absent. A receipt matching exact prototype bytes
 suppresses reimport and yields `empty`; no receipt yields
 `prototype_import_required`; only nonmatching historical receipts require the
-explicit `--reimport-prototype` option. With v1 authority,
+explicit `--reimport-prototype` option. With v2 authority,
 `prototype_imported` is restart-derived only when valid prototype bytes,
-matching receipt, and deterministic transformed v1 bytes all match exactly.
+matching receipt, and deterministic transformed v2 bytes all match exactly.
 
 The public passive result is a frozen, slotted `PersistenceAssessment` carrying
 the primary code, generation, schema version, validated count, safe path, safe
@@ -2768,8 +2887,8 @@ quiescence retains exit `3`. Normal composition accepts only `empty`,
 `reset_incomplete`, and `rollback_required` are operation-time facts. They are
 not fabricated after restart. Restart can derive exact rollback/prototype
 relations and snapshot-proven legacy writes, but cannot derive a lost flush,
-prior lock, completed replace call, reset intent, ordinary v1-to-gen0 overwrite
-without v1 proof, or first-write provenance.
+prior lock, completed replace call, reset intent, ordinary v2-to-gen0 overwrite
+without v2 proof, or first-write provenance.
 
 Durable checkpoints reduce as follows:
 
@@ -2778,18 +2897,18 @@ Durable checkpoints reduce as follows:
 | Gen0 before backup | `migration_required` |
 | Matching v0 backup published | Resumable `migration_required` |
 | Migration output temporary exists | `interrupted_artifacts` |
-| V1 replacement verified | `current` |
-| Prototype before V1 commit | `prototype_import_required` |
-| Prototype V1 temporary exists | `interrupted_artifacts` |
-| Prototype V1 committed before receipt | `current` |
+| V2 replacement verified | `current` |
+| Prototype before V2 commit | `prototype_import_required` |
+| Prototype V2 temporary exists | `interrupted_artifacts` |
+| Prototype V2 committed before receipt | `current` |
 | Prototype receipt temporary exists | `interrupted_artifacts` |
 | Receipt published with exact import relation | `prototype_imported` |
 | Rollback before snapshot | `current` |
-| Rollback snapshot published while V1 remains authority | `current` |
+| Rollback snapshot published while V2 remains authority | `current` |
 | Rollback gen0 temporary exists | `interrupted_artifacts` |
-| Gen0 exactly reverses retained v1 snapshot | `rollback_prepared` |
+| Gen0 exactly reverses retained v2 snapshot | `rollback_prepared` |
 | v0.6 later changes that gen0 | `legacy_writer_detected` |
-| Re-upgrade commits V1 | `current` |
+| Re-upgrade commits V2 | `current` |
 | Normal persist before temporary | `current` |
 | Normal persist candidate temporary exists | `interrupted_artifacts` |
 | Normal persist replacement verified | New `current` |
@@ -2866,8 +2985,9 @@ third-party type crosses `persistence/__init__.py`.
 The few load-bearing suites are:
 
 1. one table-driven lexical/schema suite covering prototype, every historical
-   generation-zero field set, exact version one, duplicate keys, non-standard
-   constants, strict types, extras, bounds, and future versions;
+   generation-zero field set, exact historical version one, exact current
+   version two, duplicate keys, non-standard constants, strict types, extras,
+   bounds, and future versions;
 2. one pure forward/reverse suite proving deterministic output and lossless
    v0.6.0 representation;
 3. one parameterized interruption suite over source validation; backup
@@ -2885,7 +3005,7 @@ The few load-bearing suites are:
 
 The schema suite pins every exact numerical bound and timestamp/range edge.
 The state-machine suite pins precedence, multi-issue ordering, prototype and
-receipt reduction, first-write v1 without history, backup relations, operation
+receipt reduction, first-write v2 without history, backup relations, operation
 versus restart facts, doctor exit mapping, and every durable transition table.
 The lock suite proves the five-second/100 ms policy without sleeping in unit
 tests. The scheduler suite proves every coexisting backend is absent or blocks
@@ -3309,11 +3429,16 @@ providers and heartbeat adapters --> http/HttpClient --> selected transport
 
 Enforce these rules:
 
-- `core/` imports no CLI, provider, persistence, HTTP, Rich, or scheduler code;
+- `core/` imports no other Sidekick owner and no CLI, provider, persistence,
+  HTTP, Rich, or scheduler code;
 - `core/` imports no external settings loader, operating-system path
   discovery, filesystem, or infrastructure module;
 - pure core policy accepts validated values and aware times explicitly;
-- provider and persistence adapters import core models, never CLI commands;
+- persistence imports neither providers nor credential workflows;
+- providers import neither credential workflows nor feature services;
+- credential workflows may coordinate providers and persistence but never
+  import CLI, presentation, usage, heartbeat, doctor, daemon, or update
+  workflows;
 - providers and heartbeat adapters consume the Sidekick Usages `HttpClient`,
   never a transport or retry dependency directly;
 - `http/` imports no providers, CLI, Rich, Typer, persistence, accounts, or
@@ -4064,6 +4189,9 @@ Add focused checks for:
 - no blanket suppressions;
 - no CLI imports from core or providers back into commands;
 - no Rich or Typer imports in services and core;
+- no application-owner import from `core/`, no credential/provider import from
+  persistence, no credential import from providers, and no presentation or
+  higher-workflow import from credentials;
 - no transport or retry-library imports outside `http/`;
 - exactly one configured HTTP retry owner;
 - no HTTP, external settings loader, operating-system path discovery,
@@ -4107,8 +4235,11 @@ Add focused checks for:
 - no provider and persistence timestamp serializer importing the other;
 - exactly one `ApplicationPaths` owner for Sidekick-owned locations;
 - exactly one canonical robot source;
-- source, sdist, and built-wheel CLI package contents;
-- all exact command modules from section 8.5 are packaged;
+- exact equality between the source package, sdist package namespace, and
+  built-wheel package namespace;
+- all concrete runtime and command modules are explicitly required by the
+  wheel contract, including credential refresh, Claude restore, and current
+  schema owners;
 - no stale same-named module after package conversions; and
 - `cli/app.py` remains near or below 200 lines, every cohesive module remains
   below the 800-line target where practical, and no production module exceeds
@@ -4489,14 +4620,16 @@ on 2026-07-10:
     consume an injected `PrivateAuthMigrator` port so provider auth semantics
     remain with provider adapters without introducing a
     persistence-to-provider import.
-27. Use a strict, two-field schema-version-one account envelope and require an
-    explicit migration command; normal store loading never rewrites an older
-    schema or imports the prototype automatically.
+27. Use a strict, two-field schema-version-two account envelope as current
+    authority, retain strict schema version one as an explicit migration
+    source, and never let normal store loading rewrite an older schema or
+    import the prototype automatically.
 28. Protect schema changes and downgrade preparation with immutable,
-    content-addressed generation-zero and version-one snapshots, and use a
-    non-secret content-addressed receipt to make prototype imports explicit.
+    content-addressed generation-zero, version-one, and version-two snapshots,
+    and use a non-secret content-addressed receipt targeting schema version two
+    to make prototype imports explicit.
 29. Make rollback preparation for the actual v0.6.0 release lossless for every
-    representable version-one state, fail before mutation for explicit empty
+    representable version-two state, fail before mutation for explicit empty
     heartbeat collections the pinned reader collapses to null, and verify the
     emitted generation-zero document with the released old reader before
     reporting success.
@@ -4558,12 +4691,10 @@ Approved by the operator on 2026-07-09, with the dependency and persistence
 decisions and the CS-13 caller-driven model decisions above approved on
 2026-07-10.
 
-Next, write the matching implementation plan at:
+## Completion status
 
-```text
-docs/superpowers/plans/
-2026-07-09-maintainable-application-architecture.md
-```
+The architecture migration is complete. The linked plan above is retained as
+historical execution and verification evidence, not an active work queue.
 
 [python-packages]: https://docs.python.org/3/tutorial/modules.html
 [python-src-layout]: https://packaging.python.org/en/latest/discussions/src-layout-vs-flat-layout/

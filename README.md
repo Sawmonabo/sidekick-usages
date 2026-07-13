@@ -118,20 +118,20 @@ above when you need a stable, reproducible version.
 Log in normally, then import the current provider login under a stable label:
 
 ```bash
-# Claude Code OAuth login
+# Claude Code subscription login
 claude auth login
-sidekick-usages add claude --label claude-personal
+sidekick-usages add claude --label <claude-label>
 
 # Codex ChatGPT login
 codex login
-sidekick-usages add codex --label codex-personal
+sidekick-usages add codex --label <codex-label>
 ```
 
 For another Codex account, use an isolated source home when the normal
 `~/.codex` login must remain unchanged:
 
 ```bash
-sidekick-usages codex login codex-work --codex-home ~/.codex-work
+sidekick-usages codex login <codex-label> --codex-home <isolated-home>
 ```
 
 Without `--codex-home`, `sidekick-usages codex login` runs the normal Codex
@@ -141,7 +141,7 @@ account before sidekick imports its private copy.
 Claude's long-lived setup token is also supported:
 
 ```bash
-sidekick-usages claude setup-token --label claude-long-lived
+sidekick-usages claude setup-token --label <setup-label>
 ```
 
 A setup token has no refresh token and must be replaced manually when rejected.
@@ -160,9 +160,9 @@ sidekick-usages doctor
 sidekick-usages list
 
 # Account management
-sidekick-usages rename claude-personal claude-main
-sidekick-usages set-plan claude-long-lived max
-sidekick-usages remove old-label
+sidekick-usages rename <old-label> <new-label>
+sidekick-usages set-plan <label> max
+sidekick-usages remove <label>
 ```
 
 `add` is idempotent by access token. It auto-detects provider credentials first,
@@ -239,24 +239,30 @@ Credential discovery checks:
   `~/.config/claude/.credentials.json`.
 - Native Windows Claude credential files, then Windows Credential Manager.
 
-The usage route depends on the saved OAuth scopes:
+The usage route depends on the saved credential variant:
 
-- Accounts with `user:profile` call
+- Subscription-login credentials call
   `https://api.anthropic.com/api/oauth/usage` and can report 5-hour, 7-day,
   7-day Opus, and 7-day OAuth-app windows when returned.
-- Setup-token and known inference-only accounts cannot use that endpoint. They
+- Setup-token credentials cannot use that endpoint. They
   POST a request with one input word and `max_tokens=1` to
   `https://api.anthropic.com/v1/messages`, discard the body, and read the
   unified 5-hour and 7-day rate-limit headers. This real request consumes a
   small amount of Claude quota.
 
-Saved Claude OAuth logins with refresh tokens rotate automatically before a
-known expiry or after HTTP 401. On non-macOS systems with Claude Code available,
-refresh first runs `claude auth login --claudeai` inside an isolated temporary
-`HOME`, then imports the rotated credentials. On macOS, or when the executable
-cannot be resolved, Sidekick uses its bounded direct HTTPS OAuth exchange.
-Neither path overwrites the normal `~/.claude` login. Setup tokens cannot
-auto-refresh.
+Saved Claude subscription logins rotate their access credentials before a
+known access-token expiry or after HTTP 401. On non-macOS systems with Claude
+Code available, refresh first runs `claude auth login --claudeai` inside a
+private staged home, then validates the staged credentials. On macOS, or when
+the executable cannot be resolved, Sidekick uses its bounded direct HTTPS
+OAuth exchange and immediately stages the result. Neither path overwrites the
+normal `~/.claude` login. Setup-token credentials cannot auto-refresh.
+
+Access-token expiry and login expiry are independent. When a known Claude
+login expiry is at or inside five days, maintenance emits a manual renewal
+warning without recording a failed refresh. An expired login fails closed
+before provider traffic. A setup token's issue date is not encoded in its
+value, so Sidekick cannot infer its one-year deadline.
 
 Claude token activity is read-only local state. Sidekick reads the documented
 statistics cache and the live transcript suffix needed to match Claude Code's
@@ -306,15 +312,16 @@ rollout total is used as a fallback.
 | `sidekick-usages remove <label>` | Delete one saved account. |
 | `sidekick-usages rename <old> <new>` | Rename one saved account. |
 | `sidekick-usages set-plan <label> <plan>` | Correct a display plan that the provider cannot introspect. |
-| `sidekick-usages refresh <label>` | Import the current matching local login into one saved label. |
+| `sidekick-usages refresh <label>` | Import the current matching local login into one saved login label; method and identity changes require separate authorization. |
 | `sidekick-usages refresh --all [--force] [--quiet]` | Rotate due saved refresh tokens without reading the current global login. |
 | `sidekick-usages maintain [--quiet]` | Refresh due tokens, then heartbeat opted-in accounts; used by the daemon. |
 | `sidekick-usages doctor [--provider ...] [--label ...] [--json]` | Report auth, refresh, usage-route, heartbeat, and manual-action diagnostics. |
 | `sidekick-usages codex login <label>` | Run Codex login and import a private account copy; supports `--device-auth`, `--codex-home`, and `--replace-identity`. |
 | `sidekick-usages codex export <label> --codex-home <path>` | Export complete saved Codex credentials to an isolated file-backed home. |
 | `sidekick-usages claude setup-token` | Run Claude's long-lived token generator and save its output. |
+| `sidekick-usages claude restore-setup-token <label>` | Preview and transactionally restore one exact setup token from the import-only prototype. |
 | `sidekick-usages migrate accounts` | Explicitly upgrade stored schema or import the prototype source. |
-| `sidekick-usages migrate locations` | Preview and explicitly relocate durable state to native application data. |
+| `sidekick-usages migrate locations` | Preview and explicitly relocate durable state; conflicts require `--replace-conflicting-destination`. |
 | `sidekick-usages migrate prepare-rollback --target v0.6.0` | Prepare and verify exact released-0.6.0 compatibility before downgrade. |
 | `sidekick-usages permissions repair` | Preview and repair Sidekick-owned credential permissions. |
 | `sidekick-usages reset [--provider <id>] [-y]` | Delete all accounts or one provider's accounts. |
@@ -335,10 +342,14 @@ changing the command's stdout.
 
 ### Refresh identity safety
 
-`refresh <label>` imports the provider's current local login. When both the
-saved account and detected login expose provider account ids, sidekick refuses
-a mismatch. Use `--replace-identity` only when intentionally reassigning the
-label. `refresh --all` never performs local-login detection and never replaces
+`refresh <label>` imports the provider's current local login. It is the normal
+recovery path for a subscription-login label, not a blanket repair for a
+Claude setup-token credential. When both the saved account and detected login
+expose provider account ids, Sidekick refuses a mismatch. Use
+`--replace-identity` only when intentionally reassigning the label. Converting
+a Claude setup-token label to a subscription login additionally requires
+`--replace-auth-method`; both flags are required when both method and identity
+change. `refresh --all` never performs local-login detection and never replaces
 saved identities from the active Claude or Codex login.
 
 ### Updating a Git-tag installation
@@ -467,49 +478,32 @@ locations documented above. On Linux and WSL, a fresh store defaults to
 `~/.local/share/sidekick-usages/accounts.json`; an upgraded 0.6.0 store remains
 at `~/.config/sidekick-usages/accounts.json` until explicit migration.
 
-The current stored authority is a strict versioned envelope. Labels are keys
-under `accounts`, and canonical timestamps are fixed-width UTC strings:
+The current stored authority is a strict schema-version-two envelope. Labels
+are keys under `accounts`, and canonical timestamps are fixed-width UTC
+strings. Claude records contain an explicit `credential_kind` discriminator:
 
-```json
-{
-  "schema_version": 1,
-  "accounts": {
-    "<label>": {
-      "provider_id": "claude",
-      "provider_account_id": null,
-      "access_token": "<redacted>",
-      "refresh_token": "<redacted-or-null>",
-      "expires_at": "2026-06-12T12:34:56.000000Z",
-      "plan": "max",
-      "scopes": ["user:profile", "user:inference"],
-      "codex_home": null,
-      "codex_id_token": null,
-      "codex_last_refresh": null,
-      "last_refresh_at": null,
-      "last_refresh_status": null,
-      "last_refresh_error": null,
-      "heartbeat_enabled": false,
-      "heartbeat_5h_reset_at": null,
-      "heartbeat_window_resets": null,
-      "heartbeat_targets": null,
-      "last_heartbeat_at": null,
-      "last_heartbeat_status": null,
-      "last_heartbeat_error": null
-    }
-  }
-}
-```
+- `setup_token` stores only setup-compatible credential state and shared
+  account status. It cannot contain refresh, expiry, scope, or stable-login
+  identity fields.
+- `subscription_login` requires a refresh credential, access expiry, login
+  scopes, and an explicit known-or-unknown login expiry. A complete nested
+  Claude identity may be present; half-identities are invalid.
+- Codex retains its provider-specific refresh and private-bundle metadata.
+
+Every envelope and record rejects extra or inconsistent fields. Schema-one
+state is migration evidence, not runtime-current state; use
+`sidekick-usages migrate accounts` instead of editing it.
 
 Important field semantics:
 
-- Version-one `expires_at` uses canonical UTC text. The reader still validates
-  released 0.6.0 Claude-millisecond and Codex-second values during migration.
+- Schema-two access and login expiry values use canonical UTC text. Migration
+  still validates released 0.6.0 Claude-millisecond and Codex-second values.
 - `provider_account_id` binds Codex requests and protects explicit imports from
   cross-account replacement when the id is known.
 - `codex_home`, `codex_id_token`, and `codex_last_refresh` preserve enough
   private auth metadata to refresh or export a CLI-compatible Codex account.
 - Refresh and heartbeat diagnostics are redacted user-facing state. Heartbeat
-  targets and reset caches are optional and target-specific.
+  targets and reset caches may be absent and remain target-specific.
 - If only `~/.config/cc-usage/accounts.json` exists, `doctor` directs the
   operator to `sidekick-usages migrate accounts`. The prototype is left in
   place after import.
@@ -524,20 +518,36 @@ private Codex credential bundles, and diagnostics remain consistent.
 Log in to the provider CLI, then import it:
 
 ```bash
-sidekick-usages add claude --label claude-personal
-sidekick-usages add codex --label codex-personal
+sidekick-usages add claude --label <claude-label>
+sidekick-usages add codex --label <codex-label>
 ```
 
 ### HTTP 401 or failed refresh
 
-Saved OAuth accounts with refresh tokens rotate before known expiry and retry
-once after HTTP 401. If the refresh token is missing, revoked, or rejected, log
-in as that exact provider account and update the label explicitly:
+Saved login accounts rotate access credentials before known access expiry and
+retry once after HTTP 401. Recovery depends on the saved credential kind.
+
+For a Claude subscription login, sign in as that exact account and update the
+login label explicitly:
 
 ```bash
 claude auth login
 sidekick-usages refresh <claude-label>
+```
 
+For a rejected setup token, capture a new setup token instead of importing the
+active subscription login:
+
+```bash
+sidekick-usages claude setup-token --label <setup-label> --force
+```
+
+If the exact earlier setup-token record remains in the import-only prototype,
+preview `sidekick-usages claude restore-setup-token <setup-label>`.
+
+For Codex, use its explicit login workflow:
+
+```bash
 sidekick-usages codex login <codex-label>
 ```
 
@@ -546,9 +556,9 @@ not bypass this with `--replace-identity` unless changing the label's account is
 intentional.
 
 For non-obvious Claude failures, use the
-[Claude debugging log](./docs/claude/debugging.md). It covers isolated
-refresh, direct token probes, scope routing, whitespace in stored tokens, and
-provider response headers.
+[Claude debugging guide](./docs/claude/debugging.md). It covers separate
+access/login lifetimes, the five-day login-renewal warning, explicit
+credential transitions, cause-only diagnostics, and recovery evidence.
 
 ### Claude setup-token shows fewer windows
 
@@ -602,7 +612,7 @@ until enabled per account.
 Verify the Keychain item directly:
 
 ```bash
-security find-generic-password -s 'Claude Code-credentials' -w
+security find-generic-password -s 'Claude Code-credentials' >/dev/null
 ```
 
 If it is missing, run `claude auth login` and retry `add` or `refresh`.
@@ -622,7 +632,11 @@ If it is missing, run `claude auth login` and retry `add` or `refresh`.
 - `src/sidekick_usages/http/`: provider-neutral pooled HTTPS transport and
   retry policy.
 - `src/sidekick_usages/persistence/`: strict schemas, qualified filesystem
-  operations, transactions, recovery, and provider-neutral migrations.
+  operations, account/private transactions, credential-refresh recovery, and
+  provider-neutral migrations.
+- `src/sidekick_usages/credentials/`: provider-neutral credential workflows,
+  Claude transition/lifetime/restore policy, serialized refresh coordination,
+  and private Codex bundle coordination.
 - `src/sidekick_usages/usage/`: usage results, application service, and Rich
   presentation; `branding.py` is the one robot and product-copy source.
 - `tests/`: focused pytest coverage for CLI behavior, providers, HTTP errors,

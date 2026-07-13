@@ -10,6 +10,8 @@ from sidekick_usages.cli.context import invocation_context
 from sidekick_usages.cli.help import BrandedTyperGroup, branded_command
 from sidekick_usages.core.types import ExitCode, ProviderId
 from sidekick_usages.credentials import TokenCredentialSource
+from sidekick_usages.errors import UsageError
+from sidekick_usages.persistence.errors import PersistenceError
 from sidekick_usages.providers.base import ProviderFailure
 from sidekick_usages.providers.claude import (
     SetupTokenCapture,
@@ -79,9 +81,24 @@ def _run_setup_token(
     label: str | None,
     plan: str | None,
     force: bool,
+    replace_identity: bool,
 ) -> None:
     invocation = invocation_context(ctx)
     app_context = invocation.require_app(ctx)
+    target_label = validated_label(ctx, label) if label is not None else None
+    preview = app_context.credentials.preview_setup_token_save(
+        target_label,
+        force=force,
+        replace_identity=replace_identity,
+    )
+    if isinstance(preview, ProviderFailure):
+        exit_credential_failure(ctx, preview)
+    if preview is not None:
+        invocation.err_console.print(
+            "[yellow]Authentication for "
+            f"'{preview.label}' will change from a Claude subscription "
+            "login to a setup token.[/yellow]"
+        )
     invocation.err_console.print(
         "[dim]Running `claude setup-token` — complete the browser OAuth "
         "flow when it opens...[/dim]"
@@ -98,9 +115,10 @@ def _run_setup_token(
         raise typer.Exit(code=ExitCode.MANUAL_ACTION)
     result = app_context.credentials.save(
         TokenCredentialSource(provider_id=ProviderId.CLAUDE, token=token),
-        label=validated_label(ctx, label) if label is not None else None,
+        label=target_label,
         plan=plan,
         force=force,
+        replace_identity=replace_identity,
     )
     if isinstance(result, ProviderFailure):
         exit_credential_failure(ctx, result)
@@ -130,9 +148,19 @@ def setup_token_cmd(
             help="Overwrite an existing label.",
         ),
     ] = False,
+    replace_identity: Annotated[
+        bool,
+        typer.Option(
+            "--replace-identity",
+            help=(
+                "Allow deleting a saved Claude login identity when "
+                "replacing it with a setup token."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Run Claude Code's long-lived token generator and save its token."""
-    _run_setup_token(ctx, label, plan, force)
+    _run_setup_token(ctx, label, plan, force, replace_identity)
 
 
 def setup_token_alias_cmd(
@@ -159,10 +187,65 @@ def setup_token_alias_cmd(
             help="Overwrite an existing label.",
         ),
     ] = False,
+    replace_identity: Annotated[
+        bool,
+        typer.Option(
+            "--replace-identity",
+            help=(
+                "Allow deleting a saved Claude login identity when "
+                "replacing it with a setup token."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Run the deprecated provider-positioned setup-token spelling."""
     _provider_id(ctx, provider)
-    _run_setup_token(ctx, label, plan, force)
+    _run_setup_token(ctx, label, plan, force, replace_identity)
+
+
+def restore_setup_token_cmd(
+    ctx: typer.Context,
+    label: Annotated[
+        str,
+        typer.Argument(help="Exact current Claude account label."),
+    ],
+    yes: Annotated[
+        bool,
+        typer.Option("--yes", help="Restore without confirmation."),
+    ] = False,
+) -> None:
+    """Restore one setup token from the import-only legacy prototype."""
+    invocation = invocation_context(ctx)
+    app_context = invocation.require_app(ctx)
+    target = validated_label(ctx, label)
+    try:
+        preview = app_context.claude_setup_restore.preview(target)
+    except PersistenceError as error:
+        invocation.err_console.print(f"[red]{error}[/red]")
+        raise typer.Exit(code=ExitCode.SYSTEM_ERROR) from None
+    if isinstance(preview, ProviderFailure):
+        exit_credential_failure(ctx, preview)
+    invocation.console.print(
+        f"Only authentication for '{target}' will change from "
+        f"{preview.previous_authentication} to a setup token; plan and "
+        "heartbeat state will remain unchanged."
+    )
+    if not yes and not typer.confirm("Continue?", default=False):
+        invocation.console.print("[yellow]Cancelled.[/yellow]")
+        raise typer.Exit(code=ExitCode.MANUAL_ACTION)
+    try:
+        restored = app_context.claude_setup_restore.restore(preview)
+    except PersistenceError as error:
+        invocation.err_console.print(f"[red]{error}[/red]")
+        raise typer.Exit(code=ExitCode.SYSTEM_ERROR) from None
+    except UsageError as error:
+        invocation.err_console.print(f"[red]{error}[/red]")
+        raise typer.Exit(code=ExitCode.MANUAL_ACTION) from None
+    if isinstance(restored, ProviderFailure):
+        exit_credential_failure(ctx, restored)
+    invocation.console.print(
+        f"[green]Restored '{restored.label}' as a Claude setup token.[/green]"
+    )
 
 
 def register(application: typer.Typer) -> None:
@@ -173,6 +256,7 @@ def register(application: typer.Typer) -> None:
         rich_markup_mode="rich",
     )
     branded_command(claude_app, "setup-token")(setup_token_cmd)
+    branded_command(claude_app, "restore-setup-token")(restore_setup_token_cmd)
     application.add_typer(claude_app, name="claude")
     branded_command(
         application,

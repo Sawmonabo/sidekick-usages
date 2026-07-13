@@ -23,7 +23,12 @@ from sidekick_usages.cli.context import (
 from sidekick_usages.clock import Clock
 from sidekick_usages.core.models import Account
 from sidekick_usages.core.types import ProviderId
-from sidekick_usages.credentials import CredentialService
+from sidekick_usages.credentials import (
+    ClaudeSetupTokenRestoreService,
+    CredentialService,
+)
+from sidekick_usages.credentials.codex import CodexCredentialCoordinator
+from sidekick_usages.credentials.refresh import CredentialRefreshCoordinator
 from sidekick_usages.heartbeat import HeartbeatProvider, HeartbeatService
 from sidekick_usages.http import HttpClient
 from sidekick_usages.maintenance import TokenMaintenanceService
@@ -33,6 +38,9 @@ from sidekick_usages.paths import (
     PrivateCodexLocations,
 )
 from sidekick_usages.persistence.account_store import AccountStore
+from sidekick_usages.persistence.credential_refresh import (
+    CredentialRefreshTransactions,
+)
 from sidekick_usages.persistence.filesystem import PersistenceFilesystem
 from sidekick_usages.persistence.private_credentials import (
     PrivateCredentialTree,
@@ -66,6 +74,7 @@ def make_application_paths(root: Path) -> ApplicationPaths:
             existing_sidekick=private_codex_root,
         ),
         activity_snapshots=root / "token-activity.json",
+        credential_refresh=root / "credential-refresh",
     )
 
 
@@ -145,12 +154,30 @@ def make_app_context(
     heartbeat_map = (
         {} if heartbeat_providers is None else dict(heartbeat_providers)
     )
+    codex_coordinator = CodexCredentialCoordinator(
+        store,
+        private_credentials,
+        clock=clock,
+    )
+    refresh_coordinator = CredentialRefreshCoordinator(
+        store,
+        http,
+        providers,
+        CredentialRefreshTransactions(
+            store,
+            make_application_paths(store.path.parent).credential_refresh,
+        ),
+        clock=clock,
+        codex=codex_coordinator,
+    )
     credential_service = CredentialService(
         store,
         http,
         providers,
         private_credentials,
         clock=clock,
+        refresh_coordinator=refresh_coordinator,
+        codex_coordinator=codex_coordinator,
     )
     return AppContext(
         accounts=store,
@@ -179,6 +206,11 @@ def make_app_context(
             _UnexpectedClaudeSetupToken()
             if claude_setup_token is None
             else claude_setup_token
+        ),
+        claude_setup_restore=ClaudeSetupTokenRestoreService(
+            store,
+            http,
+            providers.get(ProviderId.CLAUDE),
         ),
     )
 

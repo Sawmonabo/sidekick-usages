@@ -39,6 +39,8 @@ if sys.platform == "win32":
     )
     from sidekick_usages.persistence._platform.windows_security import (
         private_security_attributes,
+        validate_external_private_source_file,
+        validate_external_source_directory,
         validate_security,
     )
 
@@ -78,12 +80,24 @@ if sys.platform == "win32":
         except NativeFilesystemError as error:
             close_descriptor(descriptor, error)
 
+    def open_external_source_directory(path: Path) -> int:
+        """Open a non-reparse directory with bounded write authority."""
+        descriptor = open_directory(path, private=False)
+        try:
+            validate_external_source_directory(
+                msvcrt.get_osfhandle(descriptor)
+            )
+            return descriptor
+        except BaseException as error:
+            close_descriptor(descriptor, error)
+
     def open_existing(
         parent: Path,
         basename: str,
         parent_descriptor: int,
         *,
         writable: bool,
+        external_source: bool = False,
     ) -> int:
         """Open one exact protected child and prove parent membership."""
         if not require_exact_entry(parent, basename):
@@ -118,7 +132,10 @@ if sys.platform == "win32":
             )
             raise _native_error(kind) from None
         try:
-            validate_security(int(handle), directory=False)
+            if external_source:
+                validate_external_private_source_file(int(handle))
+            else:
+                validate_security(int(handle), directory=False)
             validate_membership(parent_descriptor, int(handle), basename)
         except BaseException as error:
             close_handle(handle, error)
@@ -131,7 +148,7 @@ if sys.platform == "win32":
                     parent_descriptor,
                     NativeFailureKind.UNREADABLE,
                 ).st_dev,
-                allow_interrupted_link=True,
+                allow_interrupted_link=not external_source,
             )
             return descriptor
         except NativeFilesystemError as error:
@@ -158,6 +175,8 @@ if sys.platform == "win32":
         parent: Path,
         basename: str,
         limit: int,
+        *,
+        external_source: bool = False,
     ) -> NativeFile | None:
         """Read one bounded protected non-reparse sibling."""
         attributes = path_attributes(parent)
@@ -168,7 +187,11 @@ if sys.platform == "win32":
             or not attributes & stat.FILE_ATTRIBUTE_DIRECTORY
         ):
             raise _native_error(NativeFailureKind.UNSAFE)
-        directory_descriptor = open_directory(parent)
+        directory_descriptor = (
+            open_external_source_directory(parent)
+            if external_source
+            else open_directory(parent)
+        )
         with owned_descriptor(
             directory_descriptor,
             NativeFailureKind.UNREADABLE,
@@ -180,6 +203,7 @@ if sys.platform == "win32":
                 basename,
                 directory_descriptor,
                 writable=False,
+                external_source=external_source,
             )
             with owned_descriptor(
                 file_descriptor,
@@ -192,6 +216,7 @@ if sys.platform == "win32":
                         NativeFailureKind.UNREADABLE,
                     ).st_dev,
                     limit,
+                    allow_interrupted_link=not external_source,
                 )
                 try:
                     child_handle = msvcrt.get_osfhandle(file_descriptor)
@@ -489,6 +514,7 @@ __all__ = [
     "harden_file",
     "open_directory",
     "open_existing",
+    "open_external_source_directory",
     "publish_no_replace",
     "read_file",
     "remove_candidate",

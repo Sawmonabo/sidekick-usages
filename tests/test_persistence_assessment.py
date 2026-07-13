@@ -26,18 +26,22 @@ from sidekick_usages.persistence.schemas import (
     GenerationZeroDocument,
     PrototypeReceipt,
     VersionOneDocument,
+    VersionTwoDocument,
     decode_prototype,
     encode_generation_zero,
     encode_version_one,
+    encode_version_two,
 )
 from sidekick_usages.persistence.transforms import (
     prototype_to_version_one,
-    version_one_to_v060,
+    prototype_to_version_two,
+    version_two_to_v060,
 )
 
 SAFE_PATH = Path("/synthetic/sidekick/accounts.json")
 EMPTY_G0 = GenerationZeroDocument(())
 EMPTY_V1 = VersionOneDocument(())
+EMPTY_V2 = VersionTwoDocument(())
 PROTOTYPE_BYTES = b"""{
   "primary": {
     "token": "prototype-secret",
@@ -47,7 +51,8 @@ PROTOTYPE_BYTES = b"""{
 """
 PROTOTYPE = decode_prototype(PROTOTYPE_BYTES)
 PROTOTYPE_V1 = prototype_to_version_one(PROTOTYPE)
-PROTOTYPE_G0 = version_one_to_v060(PROTOTYPE_V1)
+PROTOTYPE_V2 = prototype_to_version_two(PROTOTYPE)
+PROTOTYPE_G0 = version_two_to_v060(PROTOTYPE_V2)
 PROTOTYPE_RECEIPT = PrototypeReceipt(
     sha256(PROTOTYPE_BYTES).hexdigest(),
 )
@@ -76,6 +81,16 @@ def _version_one(
         AuthorityKind.VERSION_ONE,
         content=encode_version_one(document),
         version_one=document,
+    )
+
+
+def _version_two(
+    document: VersionTwoDocument = EMPTY_V2,
+) -> AuthorityObservation:
+    return AuthorityObservation(
+        AuthorityKind.VERSION_TWO,
+        content=encode_version_two(document),
+        version_two=document,
     )
 
 
@@ -110,6 +125,19 @@ def _v1_snapshot(
         ArtifactState.VALID,
         content=encode_version_one(document),
         version_one=document,
+    )
+
+
+def _v2_snapshot(
+    document: VersionTwoDocument = EMPTY_V2,
+    basename: str = "accounts.v2.snapshot",
+) -> ArtifactObservation:
+    return ArtifactObservation(
+        ArtifactKind.V2_SNAPSHOT,
+        basename,
+        ArtifactState.VALID,
+        content=encode_version_two(document),
+        version_two=document,
     )
 
 
@@ -177,22 +205,30 @@ def _observe(
         ),
         pytest.param(
             _observe(_version_one()),
-            PersistenceCode.CURRENT,
+            PersistenceCode.MIGRATION_REQUIRED,
             StoredGeneration.VERSION_ONE,
             1,
             0,
             id="version-one-first-write",
         ),
         pytest.param(
+            _observe(_version_two()),
+            PersistenceCode.CURRENT,
+            StoredGeneration.VERSION_TWO,
+            2,
+            0,
+            id="version-two-current",
+        ),
+        pytest.param(
             _observe(
                 AuthorityObservation(
                     AuthorityKind.FUTURE,
-                    future_schema_version=2,
+                    future_schema_version=3,
                 )
             ),
             PersistenceCode.FUTURE_SCHEMA,
             StoredGeneration.FUTURE,
-            2,
+            3,
             None,
             id="future",
         ),
@@ -253,7 +289,7 @@ def _observe(
         ),
         pytest.param(
             _observe(
-                _version_one(),
+                _version_two(),
                 _simple_artifact(
                     ArtifactKind.TEMPORARY,
                     ArtifactState.VALID,
@@ -261,10 +297,10 @@ def _observe(
                 ),
             ),
             PersistenceCode.INTERRUPTED_ARTIFACTS,
-            StoredGeneration.VERSION_ONE,
-            1,
+            StoredGeneration.VERSION_TWO,
+            2,
             0,
-            id="version-one-temporary",
+            id="version-two-temporary",
         ),
     ],
 )
@@ -292,14 +328,14 @@ def test_authority_reduction_uses_only_restart_derivable_evidence(
     ("observation", "code"),
     [
         pytest.param(
-            _observe(_generation_zero(), _v1_snapshot()),
+            _observe(_generation_zero(), _v2_snapshot()),
             PersistenceCode.ROLLBACK_PREPARED,
-            id="exact-v1-reverse",
+            id="exact-v2-reverse",
         ),
         pytest.param(
-            _observe(_generation_zero(), _v1_snapshot(PROTOTYPE_V1)),
+            _observe(_generation_zero(), _v2_snapshot(PROTOTYPE_V2)),
             PersistenceCode.LEGACY_WRITER_DETECTED,
-            id="nonmatching-v1-history",
+            id="nonmatching-v2-history",
         ),
         pytest.param(
             _observe(
@@ -311,9 +347,9 @@ def test_authority_reduction_uses_only_restart_derivable_evidence(
             id="multiple-v0-history",
         ),
         pytest.param(
-            _observe(_version_one(), _v1_snapshot()),
+            _observe(_version_two(), _v2_snapshot()),
             PersistenceCode.CURRENT,
-            id="v1-snapshot-beside-v1",
+            id="v2-snapshot-beside-v2",
         ),
     ],
 )
@@ -321,7 +357,7 @@ def test_backup_relations_distinguish_history_from_rollback_proof(
     observation: PersistenceObservation,
     code: PersistenceCode,
 ) -> None:
-    """Only an exact reversible v1 snapshot changes logical generation zero."""
+    """Only an exact reversible v2 snapshot changes logical generation zero."""
     assert assess_persistence(observation).code is code
 
 
@@ -361,7 +397,7 @@ def test_backup_relations_distinguish_history_from_rollback_proof(
             id="receipt-suppresses-unchanged-malformed-source",
         ),
         pytest.param(
-            _version_one(PROTOTYPE_V1),
+            _version_two(PROTOTYPE_V2),
             (_prototype(), _receipt()),
             PersistenceCode.PROTOTYPE_IMPORTED,
             1,
@@ -369,7 +405,7 @@ def test_backup_relations_distinguish_history_from_rollback_proof(
             id="completed-import-relation",
         ),
         pytest.param(
-            _version_one(),
+            _version_two(),
             (_prototype(), _receipt()),
             PersistenceCode.CURRENT,
             0,
@@ -377,7 +413,7 @@ def test_backup_relations_distinguish_history_from_rollback_proof(
             id="authority-mutated-after-import",
         ),
         pytest.param(
-            _version_one(),
+            _version_two(),
             (_prototype(ArtifactState.MALFORMED_JSON),),
             PersistenceCode.CURRENT,
             0,
@@ -563,7 +599,7 @@ def test_operation_facts_do_not_replace_restart_state(
     exit_code: ExitCode,
 ) -> None:
     """Transient results retain, but never manufacture, passive evidence."""
-    observation = _observe(_version_one())
+    observation = _observe(_version_two())
     assessment = assess_persistence(observation)
     result = make_operation_result(code, assessment)
 

@@ -474,6 +474,55 @@ if sys.platform == "win32":
         require_root_identity(opened)
         return tuple(entries), identities
 
+    def scan_direct_tree(opened: OpenedTree) -> tuple[TreeEntry, ...]:
+        """Validate the root namespace without traversing child directories."""
+        require_root_identity(opened)
+        entries: list[TreeEntry] = []
+        for basename in list_names(opened.root_path):
+            if not require_exact_entry(opened.root_path, basename):
+                raise _native_error(NativeFailureKind.CHANGED)
+            attributes = path_attributes(
+                child_path(opened.root_path, basename)
+            )
+            if attributes is None:
+                raise _native_error(NativeFailureKind.CHANGED)
+            if attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+                raise _native_error(NativeFailureKind.UNSAFE)
+            directory = bool(attributes & stat.FILE_ATTRIBUTE_DIRECTORY)
+            if directory:
+                child = _open_child_directory(
+                    opened.root_path,
+                    basename,
+                    opened.root_descriptor,
+                    delete=False,
+                )
+            else:
+                child = open_existing(
+                    opened.root_path,
+                    basename,
+                    opened.root_descriptor,
+                    writable=False,
+                )
+            with owned_descriptor(child, NativeFailureKind.UNREADABLE):
+                child_metadata = metadata(
+                    child,
+                    NativeFailureKind.UNREADABLE,
+                )
+                validate_stat(
+                    child_metadata,
+                    directory=directory,
+                    directory_device=(
+                        None if directory else opened.root_device
+                    ),
+                    allow_interrupted_link=False,
+                )
+                if child_metadata.st_dev != opened.root_device:
+                    raise _native_error(NativeFailureKind.UNSAFE)
+                identity = (child_metadata.st_dev, child_metadata.st_ino)
+            entries.append(TreeEntry((basename,), identity, directory))
+        require_root_identity(opened)
+        return tuple(entries)
+
     def _mark_for_deletion(descriptor: int) -> None:
         try:
             handle = msvcrt.get_osfhandle(descriptor)
@@ -597,5 +646,6 @@ __all__ = [
     "open_tree",
     "require_chain_identity",
     "require_root_identity",
+    "scan_direct_tree",
     "scan_tree",
 ]

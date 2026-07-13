@@ -14,6 +14,9 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PYPROJECT_PATH = REPO_ROOT / "pyproject.toml"
+SOURCE_EXCLUDED_DIRECTORIES = frozenset(
+    {"__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache"}
+)
 
 REQUIRED_CLI_MEMBERS = frozenset(
     {
@@ -42,29 +45,50 @@ REQUIRED_WHEEL_MEMBERS = frozenset(
     {
         "sidekick_usages/__init__.py",
         "sidekick_usages/__main__.py",
+        "sidekick_usages/branding.py",
+        "sidekick_usages/clock.py",
+        "sidekick_usages/core/__init__.py",
         "sidekick_usages/credentials/__init__.py",
+        "sidekick_usages/credentials/claude_lifetime.py",
+        "sidekick_usages/credentials/claude_restore.py",
+        "sidekick_usages/credentials/claude_setup_save.py",
+        "sidekick_usages/credentials/claude_transitions.py",
         "sidekick_usages/credentials/codex.py",
         "sidekick_usages/credentials/models.py",
+        "sidekick_usages/credentials/refresh.py",
         "sidekick_usages/credentials/service.py",
         "sidekick_usages/core/expiry.py",
         "sidekick_usages/core/models.py",
         "sidekick_usages/core/time.py",
         "sidekick_usages/core/types.py",
+        "sidekick_usages/daemon.py",
+        "sidekick_usages/doctor.py",
+        "sidekick_usages/doctor_credentials.py",
+        "sidekick_usages/errors.py",
         "sidekick_usages/http/__init__.py",
         "sidekick_usages/http/client.py",
         "sidekick_usages/http/retry.py",
+        "sidekick_usages/heartbeat/__init__.py",
         "sidekick_usages/heartbeat/models.py",
         "sidekick_usages/heartbeat/ports.py",
+        "sidekick_usages/heartbeat/render.py",
+        "sidekick_usages/heartbeat/service.py",
+        "sidekick_usages/maintenance.py",
+        "sidekick_usages/paths.py",
         "sidekick_usages/persistence/__init__.py",
         "sidekick_usages/persistence/_compat/v060-reader.zip",
+        "sidekick_usages/persistence/_current_schema.py",
         "sidekick_usages/persistence/_platform/__init__.py",
         "sidekick_usages/persistence/_platform/macos.py",
+        "sidekick_usages/persistence/_platform/macos_acl.py",
         "sidekick_usages/persistence/_platform/posix.py",
         "sidekick_usages/persistence/_platform/posix_files.py",
         "sidekick_usages/persistence/_platform/posix_mounts.py",
         "sidekick_usages/persistence/_platform/posix_namespace.py",
         "sidekick_usages/persistence/_platform/posix_private.py",
         "sidekick_usages/persistence/_platform/posix_private_bundles.py",
+        "sidekick_usages/persistence/_platform/posix_private_platform.py",
+        "sidekick_usages/persistence/_platform/posix_provider_stage.py",
         "sidekick_usages/persistence/_platform/windows.py",
         "sidekick_usages/persistence/_platform/windows_files.py",
         "sidekick_usages/persistence/_platform/windows_handles.py",
@@ -76,23 +100,37 @@ REQUIRED_WHEEL_MEMBERS = frozenset(
         "sidekick_usages/persistence/_platform/windows_security.py",
         "sidekick_usages/persistence/_recovery.py",
         "sidekick_usages/persistence/_schema_models.py",
+        "sidekick_usages/persistence/_prototype_receipt_schema.py",
         "sidekick_usages/persistence/account_store.py",
         "sidekick_usages/persistence/artifacts.py",
         "sidekick_usages/persistence/assessment.py",
+        "sidekick_usages/persistence/credential_refresh.py",
+        "sidekick_usages/persistence/credential_refresh_artifacts.py",
+        "sidekick_usages/persistence/credential_refresh_merge.py",
+        "sidekick_usages/persistence/credential_refresh_private_stage.py",
+        "sidekick_usages/persistence/credential_refresh_schema.py",
+        "sidekick_usages/persistence/credential_refresh_stage.py",
+        "sidekick_usages/persistence/credential_ownership.py",
         "sidekick_usages/persistence/credential_transaction_schema.py",
         "sidekick_usages/persistence/credential_transaction_plans.py",
         "sidekick_usages/persistence/credential_transaction_recovery.py",
         "sidekick_usages/persistence/credential_transactions.py",
         "sidekick_usages/persistence/errors.py",
         "sidekick_usages/persistence/filesystem.py",
+        "sidekick_usages/persistence/filesystem_access.py",
         "sidekick_usages/persistence/inventory.py",
         "sidekick_usages/persistence/locking.py",
         "sidekick_usages/persistence/migrations/__init__.py",
         "sidekick_usages/persistence/migrations/account.py",
+        "sidekick_usages/persistence/migrations/account_codecs.py",
+        "sidekick_usages/persistence/migrations/account_preview.py",
+        "sidekick_usages/persistence/migrations/credential_kinds.py",
         "sidekick_usages/persistence/migrations/errors.py",
         "sidekick_usages/persistence/migrations/location.py",
+        "sidekick_usages/persistence/migrations/location_state.py",
         "sidekick_usages/persistence/migrations/observer.py",
         "sidekick_usages/persistence/migrations/ports.py",
+        "sidekick_usages/persistence/migrations/released_verification.py",
         "sidekick_usages/persistence/migrations/service.py",
         "sidekick_usages/persistence/observations.py",
         "sidekick_usages/persistence/private_bundle_paths.py",
@@ -105,6 +143,7 @@ REQUIRED_WHEEL_MEMBERS = frozenset(
         "sidekick_usages/persistence/v060.py",
         "sidekick_usages/providers/claude/__init__.py",
         "sidekick_usages/providers/claude/activity.py",
+        "sidekick_usages/providers/claude/credential_schemas.py",
         "sidekick_usages/providers/claude/credentials.py",
         "sidekick_usages/providers/claude/heartbeat.py",
         "sidekick_usages/providers/claude/provider.py",
@@ -122,6 +161,7 @@ REQUIRED_WHEEL_MEMBERS = frozenset(
         "sidekick_usages/providers/__init__.py",
         "sidekick_usages/providers/base.py",
         "sidekick_usages/providers/registry.py",
+        "sidekick_usages/scheduler_quiescence.py",
         "sidekick_usages/serialization/__init__.py",
         "sidekick_usages/serialization/json.py",
         "sidekick_usages/usage/__init__.py",
@@ -132,6 +172,7 @@ REQUIRED_WHEEL_MEMBERS = frozenset(
         "sidekick_usages/usage/render.py",
         "sidekick_usages/usage/reset_display.py",
         "sidekick_usages/usage/service.py",
+        "sidekick_usages/update.py",
     }
     | REQUIRED_CLI_MEMBERS
 )
@@ -167,6 +208,7 @@ SMOKE_ARGUMENTS: tuple[tuple[str, ...], ...] = (
     ("migrate", "locations", "--help"),
     ("claude", "--help"),
     ("claude", "setup-token", "--help"),
+    ("claude", "restore-setup-token", "--help"),
     ("codex", "--help"),
     ("codex", "login", "--help"),
     ("codex", "export", "--help"),
@@ -280,11 +322,16 @@ def verify_wheel_members(wheel: Path) -> None:
             f"Invalid wheel archive: {wheel}"
         ) from error
 
-    missing = sorted(REQUIRED_WHEEL_MEMBERS - members)
+    package_members = frozenset(
+        member for member in members if member.startswith("sidekick_usages/")
+    )
+    missing = sorted(REQUIRED_WHEEL_MEMBERS - package_members)
+    unexpected = sorted(package_members - REQUIRED_WHEEL_MEMBERS)
     forbidden = sorted(FORBIDDEN_WHEEL_MEMBERS & members)
-    if missing or forbidden:
+    if missing or unexpected or forbidden:
         raise WheelVerificationError(
             f"Wheel member contract failed; missing={missing!r}, "
+            f"unexpected={unexpected!r}, "
             f"forbidden={forbidden!r}."
         )
 
@@ -294,14 +341,17 @@ def verify_source_members() -> None:
     package_root = REPO_ROOT / "src"
     members = frozenset(
         path.relative_to(package_root).as_posix()
-        for path in package_root.rglob("*")
+        for path in package_root.joinpath("sidekick_usages").rglob("*")
         if path.is_file()
+        and not SOURCE_EXCLUDED_DIRECTORIES.intersection(path.parts)
     )
-    missing = sorted(REQUIRED_CLI_MEMBERS - members)
+    missing = sorted(REQUIRED_WHEEL_MEMBERS - members)
+    unexpected = sorted(members - REQUIRED_WHEEL_MEMBERS)
     forbidden = sorted(FORBIDDEN_WHEEL_MEMBERS & members)
-    if missing or forbidden:
+    if missing or unexpected or forbidden:
         raise WheelVerificationError(
             f"Source member contract failed; missing={missing!r}, "
+            f"unexpected={unexpected!r}, "
             f"forbidden={forbidden!r}."
         )
 
@@ -317,16 +367,22 @@ def verify_sdist_members(sdist: Path) -> None:
         raise WheelVerificationError(
             f"Invalid source distribution archive: {sdist}"
         ) from error
-    required = frozenset(prefix + member for member in REQUIRED_CLI_MEMBERS)
+    required = frozenset(prefix + member for member in REQUIRED_WHEEL_MEMBERS)
+    package_prefix = prefix + "sidekick_usages/"
+    package_members = frozenset(
+        member for member in members if member.startswith(package_prefix)
+    )
     forbidden_contract = frozenset(
         prefix + member for member in FORBIDDEN_WHEEL_MEMBERS
     )
     missing = sorted(required - members)
+    unexpected = sorted(package_members - required)
     forbidden = sorted(forbidden_contract & members)
-    if missing or forbidden:
+    if missing or unexpected or forbidden:
         raise WheelVerificationError(
             f"Source distribution member contract failed; "
-            f"missing={missing!r}, forbidden={forbidden!r}."
+            f"missing={missing!r}, unexpected={unexpected!r}, "
+            f"forbidden={forbidden!r}."
         )
 
 
@@ -463,9 +519,11 @@ def verify_installed_wheel(wheel: Path) -> None:
         )
 
         compatibility_check = """
+from datetime import UTC, datetime
 from pathlib import Path
 
-from sidekick_usages.core.models import Account, ClaudeCredentials
+from sidekick_usages.core.expiry import KnownExpiry, UnknownExpiry
+from sidekick_usages.core.models import Account, ClaudeLoginCredentials
 from sidekick_usages.core.types import AccountLabel
 from sidekick_usages.persistence.artifacts import (
     FileFingerprint,
@@ -482,9 +540,12 @@ from sidekick_usages.persistence.v060 import ReleasedV060Verifier
 
 account = Account(
     label=AccountLabel("claude-wheel-测试"),
-    credentials=ClaudeCredentials(
+    credentials=ClaudeLoginCredentials(
         access_token="test-only-wheel-access",
         refresh_token="test-only-wheel-refresh",
+        access_expiry=KnownExpiry(datetime(2027, 1, 1, tzinfo=UTC)),
+        refresh_expiry=UnknownExpiry(),
+        scopes=("user:profile",),
     ),
     plan="team",
 )

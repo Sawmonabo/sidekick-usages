@@ -57,6 +57,15 @@ class _PrivateTarget:
     config: bytes | None
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedCodexCredentialRefresh:
+    """Validated account fields and private bundle for one rotation."""
+
+    credentials: CodexCredentials
+    plan: str | None
+    private_bundle: PreparedPrivateBundleWrite
+
+
 def _failure(
     kind: ProviderFailureKind,
     message: str,
@@ -177,6 +186,42 @@ class CodexCredentialCoordinator:
                 CODEX_AUTH_FILE: observed.auth,
                 CODEX_CONFIG_FILE: observed.config,
             },
+        )
+
+    def prepare_refresh(
+        self,
+        previous: Account,
+        credentials: CodexCredentials,
+        plan: str | None,
+        *,
+        reference_time: datetime,
+    ) -> PreparedCodexCredentialRefresh | ProviderFailure:
+        """Prepare rotated authority and its exact private bundle together."""
+        candidate = replace(
+            previous,
+            credentials=credentials,
+            plan=previous.plan if plan is None else plan,
+        )
+        prepared = self.prepare_account(
+            candidate,
+            previous,
+            source_home=None,
+            use_existing_source=True,
+            require_bundle=True,
+            reference_time=reference_time,
+        )
+        if isinstance(prepared, ProviderFailure):
+            return prepared
+        account, private_bundle = prepared
+        if private_bundle is None or not isinstance(
+            account.credentials,
+            CodexCredentials,
+        ):
+            raise AssertionError("Codex refresh preparation is incomplete.")
+        return PreparedCodexCredentialRefresh(
+            account.credentials,
+            account.plan,
+            private_bundle,
         )
 
     def export(
@@ -484,4 +529,8 @@ class CodexCredentialCoordinator:
         return None
 
 
-__all__ = ["CodexCredentialCoordinator", "private_codex_home"]
+__all__ = [
+    "CodexCredentialCoordinator",
+    "PreparedCodexCredentialRefresh",
+    "private_codex_home",
+]

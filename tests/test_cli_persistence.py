@@ -31,6 +31,7 @@ from sidekick_usages.daemon import (
 from sidekick_usages.persistence.artifacts import (
     AuthorityExpectation,
     AuthorityGeneration,
+    Sha256Digest,
 )
 from sidekick_usages.persistence.assessment import (
     PersistenceAssessment,
@@ -45,9 +46,11 @@ from sidekick_usages.persistence.errors import (
 )
 from sidekick_usages.persistence.filesystem import PersistenceFilesystem
 from sidekick_usages.persistence.locking import PersistenceLock
-from sidekick_usages.persistence.migrations import (
-    PermissionRepairOperationResult,
-    PersistenceMigrationService,
+from sidekick_usages.persistence.migrations.account_preview import (
+    AccountMigrationPreview,
+)
+from sidekick_usages.persistence.migrations.credential_kinds import (
+    VersionOneCredentialClassification,
 )
 from sidekick_usages.persistence.migrations.errors import (
     LocationMigrationStateError,
@@ -57,6 +60,7 @@ from sidekick_usages.persistence.migrations.errors import (
 from sidekick_usages.persistence.migrations.location import (
     BlockedLocationSelection,
     CandidateBlockedSelection,
+    ConflictSelection,
     EmptySelection,
     LocationCandidate,
     LocationMigrationAssessment,
@@ -67,15 +71,19 @@ from sidekick_usages.persistence.migrations.location import (
 from sidekick_usages.persistence.migrations.ports import (
     PrivateAuthMigrationAssessment,
 )
+from sidekick_usages.persistence.migrations.service import (
+    PermissionRepairOperationResult,
+    PersistenceMigrationService,
+)
 from sidekick_usages.persistence.observations import StoredGeneration
 from sidekick_usages.persistence.private_credentials import (
     PrivateCredentialRepairResult,
 )
 from sidekick_usages.persistence.schemas import (
     GenerationZeroDocument,
-    VersionOneDocument,
+    VersionTwoDocument,
     encode_generation_zero,
-    encode_version_one,
+    encode_version_two,
 )
 from sidekick_usages.persistence.v060 import ReleasedV060Verifier
 from sidekick_usages.providers.codex.auth_migration import (
@@ -89,7 +97,7 @@ from sidekick_usages.scheduler_quiescence import (
 )
 from tests.test_support import CliHarness, make_application_paths
 
-_SNAPSHOT_BASENAME = f"accounts.json.v1.{'a' * 64}.bak"
+_SNAPSHOT_BASENAME = f"accounts.json.v2.{'a' * 64}.bak"
 _PRIVATE_DIRECTORY_MODE = 0o700
 
 
@@ -122,13 +130,13 @@ def _assessment(
         PersistenceCode.MALFORMED_JSON: StoredGeneration.UNKNOWN,
         PersistenceCode.MIGRATION_REQUIRED: StoredGeneration.GENERATION_ZERO,
         PersistenceCode.ROLLBACK_PREPARED: (StoredGeneration.GENERATION_ZERO),
-    }.get(code, StoredGeneration.VERSION_ONE)
+    }.get(code, StoredGeneration.VERSION_TWO)
     issue = PersistenceIssue(code, None, message)
     return PersistenceAssessment(
         code=code,
         generation=generation,
         schema_version=(
-            1 if generation is StoredGeneration.VERSION_ONE else None
+            2 if generation is StoredGeneration.VERSION_TWO else None
         ),
         account_count=count,
         safe_path=root / "accounts.json",
@@ -159,6 +167,11 @@ class RecordingPersistence:
         reset_error: SchedulerMutationBlockedError
         | PersistenceError
         | None = None,
+        classification: VersionOneCredentialClassification | None = None,
+        location_assessment: LocationMigrationAssessment[
+            RuntimePersistenceSelection
+        ]
+        | None = None,
     ) -> None:
         self.assessment = assessment
         self.preview_error = preview_error
@@ -166,6 +179,8 @@ class RecordingPersistence:
         self.rollback_error = rollback_error
         self.repair_error = repair_error
         self.reset_error = reset_error
+        self.classification = classification
+        self.location_assessment = location_assessment
         self.events: list[str] = []
 
     def assess(self) -> PersistenceAssessment:
@@ -175,6 +190,8 @@ class RecordingPersistence:
     def assess_locations(
         self,
     ) -> LocationMigrationAssessment[RuntimePersistenceSelection]:
+        if self.location_assessment is not None:
+            return self.location_assessment
         path = self.assessment.safe_path
         return LocationMigrationAssessment(
             selection=EmptySelection(),
@@ -197,6 +214,12 @@ class RecordingPersistence:
             raise self.preview_error
         return self.assessment
 
+    def account_migration_preview(self) -> AccountMigrationPreview:
+        self.events.append("account-preview")
+        if self.preview_error is not None:
+            raise self.preview_error
+        return AccountMigrationPreview(self.assessment, self.classification)
+
     def location_migration_preview(
         self,
     ) -> LocationMigrationAssessment[RuntimePersistenceSelection]:
@@ -216,8 +239,14 @@ class RecordingPersistence:
             raise self.migration_error
         return self.assessment
 
-    def migrate_locations(self) -> LocationMigrationResult:
-        self.events.append("migrate-locations")
+    def migrate_locations(
+        self,
+        *,
+        replace_conflicting_destination: bool = False,
+    ) -> LocationMigrationResult:
+        self.events.append(
+            f"migrate-locations:{replace_conflicting_destination}"
+        )
         raise LocationMigrationStateError(self.assess_locations())
 
     def prepare_rollback(self) -> PersistenceOperationResult:
@@ -291,7 +320,7 @@ def test_migrate_accounts_previews_before_confirmation_and_honors_intent(
     )
 
     assert result.exit_code == ExitCode.MANUAL_ACTION
-    assert cancelled.events == ["preview"]
+    assert cancelled.events == ["account-preview"]
     assert "State: migration_required" in cancelled_stdout.getvalue()
 
     approved = RecordingPersistence(assessment)
@@ -300,7 +329,94 @@ def test_migrate_accounts_previews_before_confirmation_and_honors_intent(
         ["migrate", "accounts", "--reimport-prototype", "--yes"],
     )
     assert result.exit_code == ExitCode.SUCCESS
-    assert approved.events == ["preview", "migrate:True"]
+    assert approved.events == ["account-preview", "migrate:True"]
+
+
+def test_migrate_locations_threads_and_renders_replacement_intent(
+    tmp_path: Path,
+) -> None:
+    compatibility = _assessment(
+        tmp_path / "compatibility",
+        PersistenceCode.CURRENT,
+        count=1,
+    )
+    canonical = _assessment(
+        tmp_path / "canonical",
+        PersistenceCode.CURRENT,
+        count=1,
+    )
+    compatibility_candidate = LocationCandidate(
+        LocationRole.COMPATIBILITY,
+        compatibility.safe_path,
+        compatibility,
+        Sha256Digest("a" * 64),
+        Sha256Digest("c" * 64),
+    )
+    canonical_candidate = LocationCandidate(
+        LocationRole.CANONICAL,
+        canonical.safe_path,
+        canonical,
+        Sha256Digest("b" * 64),
+        Sha256Digest("c" * 64),
+    )
+    location_assessment: LocationMigrationAssessment[
+        RuntimePersistenceSelection
+    ] = LocationMigrationAssessment(
+        selection=ConflictSelection(
+            (compatibility_candidate, canonical_candidate)
+        ),
+        candidates=(compatibility_candidate, canonical_candidate),
+        source=compatibility.safe_path,
+        destination=canonical.safe_path,
+        private_auth_summary=PrivateAuthMigrationAssessment(()),
+        artifact_basename=None,
+        issues=(*compatibility.issues, *canonical.issues),
+        write_blocked=True,
+        next_command=None,
+    )
+    persistence = RecordingPersistence(
+        compatibility,
+        location_assessment=location_assessment,
+    )
+    harness, stdout, _ = _install_context(tmp_path, persistence)
+
+    result = harness.invoke(
+        [
+            "migrate",
+            "locations",
+            "--replace-conflicting-destination",
+            "--yes",
+        ]
+    )
+
+    assert result.exit_code == ExitCode.SYSTEM_ERROR
+    assert persistence.events == [
+        "location-preview",
+        "migrate-locations:True",
+    ]
+    assert (
+        "The canonical destination will be replaced from compatibility."
+        in stdout.getvalue()
+    )
+    ordinary = RecordingPersistence(compatibility)
+    ordinary_cli, ordinary_stdout, _ = _install_context(
+        tmp_path / "ordinary",
+        ordinary,
+    )
+
+    ordinary_cli.invoke(
+        [
+            "migrate",
+            "locations",
+            "--replace-conflicting-destination",
+            "--yes",
+        ]
+    )
+
+    assert (
+        "The canonical destination will be replaced from compatibility."
+        not in ordinary_stdout.getvalue()
+    )
 
 
 def test_prepare_rollback_rejects_other_targets_and_reports_snapshot(
@@ -385,7 +501,7 @@ def test_permissions_repair_restores_fresh_default_composition(
 ) -> None:
     paths = make_application_paths(tmp_path)
     paths.accounts.canonical.parent.chmod(0o755)
-    authority = encode_version_one(VersionOneDocument(()))
+    authority = encode_version_two(VersionTwoDocument(()))
     paths.accounts.canonical.write_bytes(authority)
     paths.accounts.canonical.chmod(0o600)
     paths.private_codex.canonical.mkdir(mode=0o755)
@@ -476,7 +592,7 @@ def test_migration_errors_use_stable_exit_vocabulary(
     result = harness.invoke(["migrate", "accounts", "--yes"])
 
     assert result.exit_code == expected_exit
-    assert persistence.events == ["preview"]
+    assert persistence.events == ["account-preview"]
     assert stderr.getvalue()
 
 
@@ -485,7 +601,7 @@ def test_migration_errors_use_stable_exit_vocabulary(
     [
         (
             ["migrate", "accounts", "--reimport-prototype", "--yes"],
-            ["preview", "migrate:True"],
+            ["account-preview", "migrate:True"],
         ),
         (
             [

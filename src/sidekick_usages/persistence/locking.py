@@ -22,7 +22,8 @@ from sidekick_usages.persistence.transaction import (
 
 LOCK_TIMEOUT_SECONDS = 5.0
 LOCK_CHECK_INTERVAL_SECONDS = 0.1
-_LOCK_FLAGS = LockFlags.EXCLUSIVE | LockFlags.NON_BLOCKING
+_EXCLUSIVE_LOCK_FLAGS = LockFlags.EXCLUSIVE | LockFlags.NON_BLOCKING
+_SHARED_LOCK_FLAGS = LockFlags.SHARED | LockFlags.NON_BLOCKING
 
 
 class LockFailurePhase(StrEnum):
@@ -167,10 +168,11 @@ def _wait_for_lock(
     deadline: float,
     monotonic: Callable[[], float],
     sleep: Callable[[float], None],
+    flags: LockFlags,
 ) -> None:
     while True:
         try:
-            portalocker.lock(sidecar, _LOCK_FLAGS)
+            portalocker.lock(sidecar, flags)
         except portalocker.AlreadyLocked:
             remaining = deadline - monotonic()
             if remaining <= 0:
@@ -251,10 +253,16 @@ class PersistenceLock:
         *,
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
+        timeout_seconds: float = LOCK_TIMEOUT_SECONDS,
+        shared: bool = False,
     ) -> None:
+        if timeout_seconds < 0:
+            raise ValueError("Lock timeout must not be negative.")
         self._filesystem = filesystem
         self._monotonic = monotonic
         self._sleep = sleep
+        self._timeout_seconds = timeout_seconds
+        self._flags = _SHARED_LOCK_FLAGS if shared else _EXCLUSIVE_LOCK_FLAGS
 
     def hold(self) -> _HeldPersistenceLock:
         """Build a context that acquires only when it is entered."""
@@ -263,12 +271,13 @@ class PersistenceLock:
     def _acquire(self) -> IO[bytes]:
         sidecar = self._filesystem._open_lock_sidecar()
         try:
-            deadline = self._monotonic() + LOCK_TIMEOUT_SECONDS
+            deadline = self._monotonic() + self._timeout_seconds
             _wait_for_lock(
                 sidecar,
                 deadline,
                 self._monotonic,
                 self._sleep,
+                self._flags,
             )
         except StoreLockedError:
             if not _close_sidecar(sidecar):

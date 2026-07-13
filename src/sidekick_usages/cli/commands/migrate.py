@@ -21,12 +21,19 @@ from sidekick_usages.persistence.assessment import (
     doctor_exit_code as persistence_doctor_exit_code,
 )
 from sidekick_usages.persistence.errors import PersistenceError
+from sidekick_usages.persistence.migrations.account_preview import (
+    AccountMigrationPreview,
+)
+from sidekick_usages.persistence.migrations.credential_kinds import (
+    CredentialMigrationPreflightError,
+)
 from sidekick_usages.persistence.migrations.errors import (
     PersistenceMigrationStateError,
     PrototypeReimportRequiredError,
     SchedulerMutationBlockedError,
 )
 from sidekick_usages.persistence.migrations.location import (
+    ConflictSelection,
     LocationMigrationAssessment,
     RuntimePersistenceSelection,
 )
@@ -74,6 +81,35 @@ def render_preview(
     )
 
 
+def render_account_migration_preview(
+    ctx: typer.Context,
+    preview: AccountMigrationPreview,
+    *,
+    reimport_prototype: bool,
+) -> None:
+    """Render one secret-safe credential classification before mutation."""
+    details: list[str] = []
+    classification = preview.classification
+    if classification is not None:
+        details.extend(
+            (
+                f"Claude setup-token records: {classification.setup_count}",
+                "Claude subscription-login records: "
+                f"{classification.login_count}",
+                "Refresh expiry unavailable: "
+                f"{classification.refresh_expiry_unavailable_count}",
+            )
+        )
+    if reimport_prototype:
+        details.append("Changed prototype replacement is explicitly enabled.")
+    render_preview(
+        ctx,
+        preview.assessment,
+        title="Account migration",
+        detail="\n".join(details) if details else None,
+    )
+
+
 def confirm_operation(ctx: typer.Context, yes: bool) -> None:
     """Require explicit confirmation unless non-interactive intent exists."""
     if yes:
@@ -108,6 +144,11 @@ def exit_persistence_error(
                 f"{observation.message}[/dim]"
             )
         raise typer.Exit(code=ExitCode.SCHEDULER_ERROR)
+    if isinstance(error, CredentialMigrationPreflightError):
+        for command in error.next_commands:
+            invocation.err_console.print(
+                "[dim]Next: " + shlex.join(command) + "[/dim]"
+            )
     if (
         isinstance(
             error,
@@ -139,18 +180,13 @@ def migrate_accounts_cmd(
     invocation = invocation_context(ctx)
     service = invocation.require_persistence(ctx).persistence
     try:
-        assessment = service.mutation_preview()
+        preview = service.account_migration_preview()
     except (SchedulerMutationBlockedError, PersistenceError) as error:
         exit_persistence_error(ctx, error)
-    render_preview(
+    render_account_migration_preview(
         ctx,
-        assessment,
-        title="Account migration",
-        detail=(
-            "Changed prototype replacement is explicitly enabled."
-            if reimport_prototype
-            else None
-        ),
+        preview,
+        reimport_prototype=reimport_prototype,
     )
     confirm_operation(ctx, yes)
     try:
@@ -167,6 +203,8 @@ def migrate_accounts_cmd(
 def render_location_preview(
     ctx: typer.Context,
     assessment: LocationMigrationAssessment[RuntimePersistenceSelection],
+    *,
+    replace_conflicting_destination: bool,
 ) -> None:
     """Render one bounded credential-free location migration preview."""
     private = assessment.private_auth_summary
@@ -182,6 +220,13 @@ def render_location_preview(
         f"Destination: {assessment.destination}",
         private_detail,
     ]
+    if replace_conflicting_destination and isinstance(
+        assessment.selection,
+        ConflictSelection,
+    ):
+        lines.append(
+            "The canonical destination will be replaced from compatibility."
+        )
     for candidate in assessment.candidates:
         lines.append(
             f"{candidate.role.value}: {candidate.assessment.code.value}"
@@ -204,6 +249,13 @@ def migrate_locations_cmd(
         bool,
         typer.Option("--yes", help="Skip the interactive confirmation."),
     ] = False,
+    replace_conflicting_destination: Annotated[
+        bool,
+        typer.Option(
+            "--replace-conflicting-destination",
+            help=("Replace conflicting canonical state from compatibility."),
+        ),
+    ] = False,
 ) -> None:
     """Explicitly relocate compatibility data to native application data."""
     invocation = invocation_context(ctx)
@@ -212,10 +264,16 @@ def migrate_locations_cmd(
         assessment = service.location_migration_preview()
     except (SchedulerMutationBlockedError, PersistenceError) as error:
         exit_persistence_error(ctx, error)
-    render_location_preview(ctx, assessment)
+    render_location_preview(
+        ctx,
+        assessment,
+        replace_conflicting_destination=replace_conflicting_destination,
+    )
     confirm_operation(ctx, yes)
     try:
-        result = service.migrate_locations()
+        result = service.migrate_locations(
+            replace_conflicting_destination=replace_conflicting_destination,
+        )
     except (SchedulerMutationBlockedError, PersistenceError) as error:
         exit_persistence_error(ctx, error)
     invocation.console.print(
@@ -292,6 +350,7 @@ __all__ = [
     "exit_persistence_error",
     "persistence_error_exit_code",
     "register",
+    "render_account_migration_preview",
     "render_location_preview",
     "render_preview",
 ]

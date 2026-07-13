@@ -6,7 +6,7 @@ current global Claude or Codex CLI login into an arbitrary account
 label.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Protocol, assert_never
 
@@ -19,7 +19,7 @@ from sidekick_usages.core.expiry import (
     ValidExpiry,
     classify_expiry,
 )
-from sidekick_usages.core.models import Account
+from sidekick_usages.core.models import Account, ClaudeSetupTokenCredentials
 from sidekick_usages.core.types import (
     AccountLabel,
     ExitCode,
@@ -27,6 +27,11 @@ from sidekick_usages.core.types import (
     RefreshStatus,
 )
 from sidekick_usages.credentials import CredentialRefreshResult
+from sidekick_usages.credentials.claude_lifetime import (
+    ClaudeLoginRenewalState,
+    classify_claude_login_renewal,
+)
+from sidekick_usages.credentials.refresh import CredentialRefreshReason
 from sidekick_usages.errors import RateLimitError, TransientError, UsageError
 from sidekick_usages.persistence.account_store import AccountStore
 from sidekick_usages.persistence.errors import PersistenceError
@@ -39,8 +44,13 @@ CODEX_REFRESH_MARGIN_SECONDS = 10 * 60
 class CredentialRefresher(Protocol):
     """Saved-credential refresh capability required by maintenance."""
 
-    def refresh_saved(self, account: Account) -> CredentialRefreshResult:
-        """Refresh and durably persist one saved account."""
+    def refresh(
+        self,
+        *,
+        label: AccountLabel,
+        reason: CredentialRefreshReason,
+    ) -> CredentialRefreshResult:
+        """Refresh and durably persist one exact saved account."""
 
 
 @dataclass(frozen=True)
@@ -57,6 +67,14 @@ class RefreshOutcome:
     provider_failure: ProviderFailure | None = None
     operational_error: UsageError | None = None
     persistence_error: PersistenceError | None = None
+    login_renewal_state: ClaudeLoginRenewalState = (
+        ClaudeLoginRenewalState.NOT_APPLICABLE
+    )
+
+    @property
+    def login_renewal_message(self) -> str | None:
+        """Return the display-safe advisory for the derived login state."""
+        return _login_renewal_message(self.login_renewal_state)
 
 
 class TokenMaintenanceService:
@@ -102,6 +120,7 @@ class TokenMaintenanceService:
         account: Account,
         *,
         force: bool = False,
+        reason: CredentialRefreshReason | None = None,
     ) -> RefreshOutcome:
         """Refresh one account if policy says it is due.
 
@@ -109,37 +128,94 @@ class TokenMaintenanceService:
         :param force: Refresh even if the token is still fresh.
         :return: A scheduler-friendly outcome.
         """
-        if force:
+        selected_reason = reason or (
+            CredentialRefreshReason.OPERATOR_FORCED
+            if force
+            else CredentialRefreshReason.SCHEDULED_DUE
+        )
+        reference_time = self.clock.now()
+        login_renewal_state = classify_claude_login_renewal(
+            account.credentials,
+            reference_time=reference_time,
+        )
+        if login_renewal_state in (
+            ClaudeLoginRenewalState.EXPIRED,
+            ClaudeLoginRenewalState.INVALID,
+        ):
+            return _login_renewal_outcome(
+                account,
+                login_renewal_state,
+                refreshed=False,
+            )
+        if force or reason is not None:
             should_refresh, expiry = (True, None)
         else:
             should_refresh, expiry = self._refresh_decision(
                 account,
                 force=False,
-                reference_time=self.clock.now(),
+                reference_time=reference_time,
             )
         if not should_refresh:
-            return RefreshOutcome(
-                label=account.label,
-                provider_id=account.provider_id,
-                status=RefreshStatus.SKIPPED,
-                message=_skipped_message(expiry),
+            return _skipped_outcome(
+                account,
+                expiry=expiry,
+                login_renewal_state=login_renewal_state,
             )
 
-        if not account.refresh_token:
-            return self._record_failed(
-                account,
-                "No refresh token saved; log in manually.",
-                exit_code=ExitCode.MANUAL_ACTION,
+        if not account.refresh_token and not isinstance(
+            account.credentials,
+            ClaudeSetupTokenCredentials,
+        ):
+            return replace(
+                self._record_failed(
+                    account,
+                    "No refresh token saved; log in manually.",
+                    exit_code=ExitCode.MANUAL_ACTION,
+                ),
+                login_renewal_state=login_renewal_state,
             )
-        return self._refresh_due_account(account)
+        outcome = replace(
+            self._refresh_due_account(account, selected_reason),
+            login_renewal_state=login_renewal_state,
+        )
+        if outcome.status is not RefreshStatus.OK:
+            return outcome
+        saved = self.store.get(str(account.label))
+        refreshed_state = classify_claude_login_renewal(
+            (saved or account).credentials,
+            reference_time=reference_time,
+        )
+        if refreshed_state is ClaudeLoginRenewalState.RENEWAL_DUE:
+            return _login_renewal_outcome(
+                account,
+                refreshed_state,
+                refreshed=True,
+            )
+        return RefreshOutcome(
+            label=outcome.label,
+            provider_id=outcome.provider_id,
+            status=outcome.status,
+            message=outcome.message,
+            exit_code=outcome.exit_code,
+            refreshed=outcome.refreshed,
+            action_required=outcome.action_required,
+            provider_failure=outcome.provider_failure,
+            operational_error=outcome.operational_error,
+            persistence_error=outcome.persistence_error,
+            login_renewal_state=refreshed_state,
+        )
 
     def _refresh_due_account(
         self,
         account: Account,
+        reason: CredentialRefreshReason,
     ) -> RefreshOutcome:
         """Refresh one policy-approved account through its configured path."""
         try:
-            result = self.credentials.refresh_saved(account)
+            result = self.credentials.refresh(
+                label=account.label,
+                reason=reason,
+            )
         except PersistenceError as error:
             return RefreshOutcome(
                 label=account.label,
@@ -272,6 +348,65 @@ def refresh_margin_seconds(provider_id: ProviderId) -> int:
     if provider_id == ProviderId.CODEX:
         return CODEX_REFRESH_MARGIN_SECONDS
     assert_never(provider_id)
+
+
+def _login_renewal_outcome(
+    account: Account,
+    state: ClaudeLoginRenewalState,
+    *,
+    refreshed: bool,
+) -> RefreshOutcome:
+    """Return one derived manual action without persisting a failure."""
+    message = _login_renewal_message(state)
+    if message is None:
+        raise AssertionError(f"Unexpected renewal action state: {state!r}")
+    if refreshed:
+        message = "Access token refreshed; " + message
+    return RefreshOutcome(
+        label=account.label,
+        provider_id=account.provider_id,
+        status=RefreshStatus.OK if refreshed else RefreshStatus.SKIPPED,
+        message=message,
+        exit_code=ExitCode.MANUAL_ACTION,
+        refreshed=refreshed,
+        action_required=True,
+        login_renewal_state=state,
+    )
+
+
+def _login_renewal_message(
+    state: ClaudeLoginRenewalState,
+) -> str | None:
+    """Return one canonical display message for a derived renewal state."""
+    if state is ClaudeLoginRenewalState.RENEWAL_DUE:
+        return "Claude login expires within five days."
+    if state is ClaudeLoginRenewalState.EXPIRED:
+        return "Claude login has expired."
+    if state is ClaudeLoginRenewalState.INVALID:
+        return "Claude login expiry is invalid."
+    return None
+
+
+def _skipped_outcome(
+    account: Account,
+    *,
+    expiry: ClassifiedExpiry | None,
+    login_renewal_state: ClaudeLoginRenewalState,
+) -> RefreshOutcome:
+    """Return one ordinary skip or derived login-renewal action."""
+    if login_renewal_state is ClaudeLoginRenewalState.RENEWAL_DUE:
+        return _login_renewal_outcome(
+            account,
+            login_renewal_state,
+            refreshed=False,
+        )
+    return RefreshOutcome(
+        label=account.label,
+        provider_id=account.provider_id,
+        status=RefreshStatus.SKIPPED,
+        message=_skipped_message(expiry),
+        login_renewal_state=login_renewal_state,
+    )
 
 
 def record_refresh_failure(

@@ -35,6 +35,8 @@ def read_descriptor(
     descriptor: int,
     directory_device: int,
     limit: int,
+    *,
+    allow_interrupted_link: bool = True,
 ) -> NativeFile:
     """Bounded-read one validated descriptor and reject concurrent change."""
     try:
@@ -44,7 +46,7 @@ def read_descriptor(
     validate_file(
         before,
         directory_device,
-        allow_interrupted_link=True,
+        allow_interrupted_link=allow_interrupted_link,
     )
     if before.st_size > limit:
         raise NativeFilesystemError(NativeFailureKind.TOO_LARGE)
@@ -68,6 +70,11 @@ def read_descriptor(
         after = os.fstat(descriptor)
     except OSError:
         raise NativeFilesystemError(NativeFailureKind.UNREADABLE) from None
+    validate_file(
+        after,
+        directory_device,
+        allow_interrupted_link=allow_interrupted_link,
+    )
     if (
         (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
         or before.st_size != after.st_size

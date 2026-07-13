@@ -20,13 +20,15 @@ from sidekick_usages.cli.context import (
     compose_app_context,
     compose_doctor_context,
 )
-from sidekick_usages.core.models import Account, ClaudeCredentials
+from sidekick_usages.core.models import Account, ClaudeSetupTokenCredentials
 from sidekick_usages.core.types import AccountLabel, ProviderId
 from sidekick_usages.http import HttpClient
 from sidekick_usages.persistence.account_store import AccountStore
 from sidekick_usages.persistence.errors import ManagedFileReadError
 from sidekick_usages.persistence.filesystem import PersistenceFilesystem
-from sidekick_usages.persistence.migrations import PersistenceMigrationService
+from sidekick_usages.persistence.migrations.service import (
+    PersistenceMigrationService,
+)
 from sidekick_usages.providers.base import ProviderFailure, ProviderFailureKind
 from sidekick_usages.providers.registry import (
     build_heartbeat_registry,
@@ -153,7 +155,9 @@ def test_explicit_empty_provider_maps_remain_empty_in_composition(
     """Empty injection never silently activates production adapters."""
     account = Account(
         label=AccountLabel("explicit-empty"),
-        credentials=ClaudeCredentials(access_token="test-only-access"),
+        credentials=ClaudeSetupTokenCredentials(
+            access_token="test-only-access"
+        ),
         plan="max",
     )
     make_account_store(tmp_path, (account,))
@@ -196,7 +200,9 @@ def test_doctor_reads_snapshot_without_constructing_account_store(
     """Current-state doctor stays on its read-only composition path."""
     account = Account(
         label=AccountLabel("doctor-account"),
-        credentials=ClaudeCredentials(access_token="test-only-access"),
+        credentials=ClaudeSetupTokenCredentials(
+            access_token="test-only-access"
+        ),
         plan="max",
     )
     make_account_store(tmp_path, (account,))

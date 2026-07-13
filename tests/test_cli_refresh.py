@@ -1,7 +1,6 @@
 """CLI refresh-flow regression tests."""
 
 import io
-import json
 import re
 from collections.abc import Iterable
 from dataclasses import replace
@@ -11,12 +10,13 @@ from pathlib import Path
 import pytest
 from rich.console import Console
 
-from sidekick_usages.cli.token_input import TokenInput
 from sidekick_usages.clock import Clock
 from sidekick_usages.core.expiry import Expiry, KnownExpiry, UnknownExpiry
 from sidekick_usages.core.models import (
     Account,
-    ClaudeCredentials,
+    ClaudeLoginCredentials,
+    ClaudeLoginIdentity,
+    ClaudeSetupTokenCredentials,
     CodexCredentials,
     DetectedCredentials,
     UsageReport,
@@ -39,11 +39,11 @@ from sidekick_usages.providers.base import (
     RefreshResult,
     RefreshSuccess,
 )
-from sidekick_usages.providers.claude import ClaudeSetupToken
-from sidekick_usages.providers.claude import provider as claude_provider_module
-from sidekick_usages.providers.claude.provider import ClaudeProvider
-from sidekick_usages.providers.codex import auth as codex_auth_module
-from sidekick_usages.providers.codex.provider import CodexProvider
+from sidekick_usages.providers.claude import (
+    ClaudeSetupToken,
+    SetupTokenCapture,
+    SetupTokenSuccess,
+)
 from tests.test_support import (
     REFERENCE_TIME,
     CliHarness,
@@ -109,7 +109,7 @@ class _FakeProvider(Provider):
 
     def credentials_from_token(self, token: str) -> CredentialDetection:
         credentials = (
-            ClaudeCredentials(access_token=token)
+            ClaudeSetupTokenCredentials(access_token=token)
             if self.id is ProviderId.CLAUDE
             else CodexCredentials(access_token=token)
         )
@@ -163,14 +163,33 @@ class _FakeProvider(Provider):
                 ),
                 account_id="acct_refreshed",
             )
-        else:
+        elif isinstance(credentials, ClaudeLoginCredentials):
             updated = replace(
                 credentials,
                 access_token="sk-ant-oat01-refreshed",
                 refresh_token="refresh-new",
-                expiry=KnownExpiry(REFERENCE_TIME + timedelta(seconds=60)),
+                access_expiry=KnownExpiry(
+                    REFERENCE_TIME + timedelta(seconds=60)
+                ),
+            )
+        else:
+            updated = replace(
+                credentials,
+                access_token="sk-ant-oat01-refreshed",
             )
         return RefreshSuccess(credentials=updated)
+
+
+class _SyntheticSetupToken:
+    """Return one synthetic setup token without invoking a provider CLI."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def capture_setup_token(self, timeout: int = 600) -> SetupTokenCapture:
+        del timeout
+        self.calls += 1
+        return SetupTokenSuccess("sk-ant-oat01-replacement-setup")
 
 
 def _report() -> UsageReport:
@@ -279,22 +298,22 @@ def _codex_cache_home(tmp_path: Path, label: str = "team") -> Path:
     return private_codex_home(root, label)
 
 
-def _acct(
+def _claude_login_account(
     *,
     access_token: str = "sk-ant-oat01-old",
-    refresh_token: str | None = "refresh-old",
-    expiry: Expiry | None = None,
-    scopes: tuple[str, ...] | None = None,
+    refresh_token: str = "refresh-old",
+    access_expiry: KnownExpiry,
     plan: str = "team",
 ) -> Account:
-    """Build a Claude account fixture."""
+    """Build a complete legacy-representable Claude login fixture."""
     return Account(
         label=AccountLabel("team"),
-        credentials=ClaudeCredentials(
+        credentials=ClaudeLoginCredentials(
             access_token=access_token,
             refresh_token=refresh_token,
-            expiry=expiry or UnknownExpiry(),
-            scopes=scopes,
+            access_expiry=access_expiry,
+            refresh_expiry=UnknownExpiry(),
+            scopes=("user:profile",),
         ),
         plan=plan,
     )
@@ -334,7 +353,6 @@ def _detected(
     refresh_token: str | None = None,
     expiry: Expiry | None = None,
     plan: str = "unknown",
-    scopes: tuple[str, ...] | None = None,
     provider_account_id: str | None = None,
     id_token: str | None = None,
     last_refresh: str | None = None,
@@ -343,12 +361,7 @@ def _detected(
     provider = ProviderId(provider_id)
     expiry_value = expiry or UnknownExpiry()
     credentials = (
-        ClaudeCredentials(
-            access_token=access_token,
-            refresh_token=refresh_token,
-            expiry=expiry_value,
-            scopes=scopes,
-        )
+        ClaudeSetupTokenCredentials(access_token=access_token)
         if provider is ProviderId.CLAUDE
         else CodexCredentials(
             access_token=access_token,
@@ -367,620 +380,373 @@ def _seconds(value: int) -> KnownExpiry:
     return KnownExpiry(_EPOCH + timedelta(seconds=value))
 
 
-def _milliseconds(value: int) -> KnownExpiry:
-    """Build a strict whole-millisecond expiry fixture."""
-    return KnownExpiry(_EPOCH + timedelta(milliseconds=value))
-
-
-def test_refresh_command_persists_detected_empty_scopes(
+def test_refresh_requires_explicit_claude_authentication_method_change(
     tmp_path: Path,
 ) -> None:
-    """Manual refresh can clear stale scope metadata with ``[]``."""
-    acct = _acct(scopes=("user:profile",))
-    provider = _FakeProvider(
-        detected=_detected(
-            access_token="sk-ant-oat01-current",
-            refresh_token="refresh-current",
-            expiry=_milliseconds(1_770_000_000_000),
-            plan="team",
-            scopes=(),
-        )
-    )
-    harness, store, _, _ = _install_ctx(tmp_path, provider, acct)
-
-    result = harness.invoke(["refresh", "team"])
-
-    assert result.exit_code == 0
-    saved = store.get("team")
-    assert saved is not None
-    assert saved.access_token == "sk-ant-oat01-current"
-    assert saved.refresh_token == "refresh-current"
-    assert saved.scopes == ()
-
-
-def test_refresh_command_persists_detected_provider_account_id(
-    tmp_path: Path,
-) -> None:
-    """Manual refresh records the Codex account id used by usage fetch."""
-    acct = _codex_acct(provider_account_id="acct_current")
-    detected = _detected(
-        access_token="eyJ-current.access.sig",
-        provider_id="codex",
-        refresh_token="refresh-current",
-        expiry=_seconds(1_770_000_000),
-        plan="pro",
-        provider_account_id="acct_current",
-        id_token="id-token-current",
-        last_refresh="2026-06-12T00:00:00Z",
-    )
-    provider = _FakeProvider(
-        detected=detected,
-        provider_id="codex",
-    )
-    harness, store, _, _ = _install_ctx(tmp_path, provider, acct)
-
-    result = harness.invoke(["refresh", "team"])
-
-    assert result.exit_code == 0
-    saved = store.get("team")
-    assert saved is not None
-    assert saved.provider_account_id == "acct_current"
-
-
-def test_refresh_command_imports_default_codex_login_to_private_bundle(
-    tmp_path: Path,
-) -> None:
-    """Refreshing a Codex label reads default login and caches a copy."""
-    old_home = tmp_path / "old-external-home"
-    acct = _codex_acct(
-        codex_home=str(old_home),
-        provider_account_id="acct_current",
-    )
-    provider = _FakeProvider(
-        detected=_detected(
-            access_token="eyJ-current.access.sig",
-            provider_id="codex",
-            refresh_token="refresh-current",
-            expiry=_seconds(1_770_000_000),
-            plan="pro",
-            provider_account_id="acct_current",
-            id_token="id-token-current",
-            last_refresh="2026-06-12T00:00:00Z",
+    """A local login cannot silently replace one saved setup token."""
+    account = Account(
+        label=AccountLabel("team"),
+        credentials=ClaudeSetupTokenCredentials(
+            access_token="sk-ant-oat01-saved-setup"
         ),
-        provider_id="codex",
+        plan="max",
+        heartbeat_enabled=True,
     )
-    clock = FixedClock()
-    harness, store, _, _ = _install_ctx(
-        tmp_path,
-        provider,
-        acct,
-        clock=clock,
-    )
-
-    result = harness.invoke(["refresh", "team"])
-
-    assert result.exit_code == 0
-    assert provider.credential_homes == [None]
-    saved = store.get("team")
-    assert saved is not None
-    cache_home = _codex_cache_home(tmp_path)
-    assert saved.codex_home == str(cache_home)
-    assert saved.codex_id_token == "id-token-current"
-    assert saved.codex_last_refresh == "2026-06-12T00:00:00Z"
-    assert saved.last_refresh_at == REFERENCE_TIME
-    cached = json.loads((cache_home / "auth.json").read_text())
-    assert cached["tokens"]["access_token"] == "eyJ-current.access.sig"
-    assert cached["tokens"]["refresh_token"] == "refresh-current"
-    assert cached["tokens"]["id_token"] == "id-token-current"
-    assert cached["tokens"]["account_id"] == "acct_current"
-    assert clock.calls == 1
-
-
-def test_refresh_command_from_codex_home_overrides_saved_home(
-    tmp_path: Path,
-) -> None:
-    """Manual refresh can explicitly read a non-default source home."""
-    old_home = tmp_path / "codex-old"
-    source_home = tmp_path / "codex-source"
-    acct = _codex_acct(
-        codex_home=str(old_home),
-        provider_account_id="acct_current",
+    incoming = ClaudeLoginCredentials(
+        access_token="sk-ant-oat01-current-login",
+        refresh_token="current-refresh",
+        access_expiry=KnownExpiry(REFERENCE_TIME + timedelta(hours=1)),
+        refresh_expiry=KnownExpiry(REFERENCE_TIME + timedelta(days=90)),
+        scopes=("user:profile", "user:inference"),
     )
     provider = _FakeProvider(
-        detected=_detected(
-            access_token="eyJ-current.access.sig",
-            provider_id="codex",
-            refresh_token="refresh-current",
-            expiry=_seconds(1_770_000_000),
-            plan="pro",
-            provider_account_id="acct_current",
-            id_token="id-token-current",
-            last_refresh="2026-06-12T00:00:00Z",
+        detected=DetectedCredentials(credentials=incoming, plan="team")
+    )
+    harness, store, stdout, _ = _install_ctx(tmp_path, provider, account)
+    authority_before = store.path.read_bytes()
+
+    refused = harness.invoke(["refresh", "team"])
+
+    assert refused.exit_code == ExitCode.MANUAL_ACTION
+    assert store.path.read_bytes() == authority_before
+
+    replaced = harness.invoke(["refresh", "team", "--replace-auth-method"])
+
+    assert replaced.exit_code == ExitCode.SUCCESS
+    saved = store.get("team")
+    assert saved is not None
+    assert saved.credentials == incoming
+    assert saved.heartbeat_enabled is True
+    assert "Updated 'team' as a Claude subscription login." in (
+        stdout.getvalue()
+    )
+
+
+@pytest.mark.parametrize(
+    ("incoming_identity", "requires_replacement"),
+    [
+        (
+            ClaudeLoginIdentity(
+                account_id="account-saved",
+                organization_id="organization-saved",
+            ),
+            False,
         ),
-        provider_id="codex",
-    )
-    harness, store, _, _ = _install_ctx(tmp_path, provider, acct)
-
-    result = harness.invoke(
-        ["refresh", "team", "--from-codex-home", str(source_home)],
-    )
-
-    assert result.exit_code == 0
-    assert provider.credential_homes == [source_home]
-    saved = store.get("team")
-    assert saved is not None
-    assert saved.codex_home == str(_codex_cache_home(tmp_path))
-
-
-def test_refresh_command_rejects_provider_account_id_mismatch(
+        (
+            ClaudeLoginIdentity(
+                account_id="account-other",
+                organization_id="organization-other",
+            ),
+            True,
+        ),
+        (None, True),
+    ],
+)
+def test_refresh_enforces_claude_login_identity_policy(
     tmp_path: Path,
+    incoming_identity: ClaudeLoginIdentity | None,
+    *,
+    requires_replacement: bool,
 ) -> None:
-    """Manual refresh refuses to copy the wrong Codex login into a label."""
-    acct = _codex_acct(provider_account_id="acct_saved")
-    detected = _detected(
-        access_token="eyJ-current.access.sig",
-        provider_id="codex",
-        refresh_token="refresh-current",
-        expiry=_seconds(1_770_000_000),
-        plan="pro",
-        provider_account_id="acct_current",
-        id_token="id-token-current",
-        last_refresh="2026-06-12T00:00:00Z",
+    """Login imports distinguish matching, mismatching, and unknown IDs."""
+    saved_identity = ClaudeLoginIdentity(
+        account_id="account-saved",
+        organization_id="organization-saved",
+    )
+    account = Account(
+        label=AccountLabel("team"),
+        credentials=ClaudeLoginCredentials(
+            access_token="sk-ant-oat01-saved-login",
+            refresh_token="saved-refresh",
+            access_expiry=KnownExpiry(REFERENCE_TIME + timedelta(minutes=30)),
+            refresh_expiry=KnownExpiry(REFERENCE_TIME + timedelta(days=30)),
+            scopes=("saved:scope", "user:profile"),
+            identity=saved_identity,
+        ),
+        plan="team",
+    )
+    incoming = ClaudeLoginCredentials(
+        access_token="sk-ant-oat01-current-login",
+        refresh_token="current-refresh",
+        access_expiry=KnownExpiry(REFERENCE_TIME + timedelta(hours=1)),
+        refresh_expiry=KnownExpiry(REFERENCE_TIME + timedelta(days=90)),
+        scopes=("current:scope", "user:profile"),
+        identity=incoming_identity,
     )
     provider = _FakeProvider(
-        detected=detected,
-        provider_id="codex",
+        detected=DetectedCredentials(credentials=incoming, plan="team")
     )
-    harness, store, _, _ = _install_ctx(tmp_path, provider, acct)
+    harness, store, _, _ = _install_ctx(tmp_path, provider, account)
+    authority_before = store.path.read_bytes()
 
-    result = harness.invoke(["refresh", "team"])
+    first = harness.invoke(["refresh", "team"])
 
-    assert result.exit_code == 1
+    if requires_replacement:
+        assert first.exit_code == ExitCode.MANUAL_ACTION
+        assert store.path.read_bytes() == authority_before
+        result = harness.invoke(["refresh", "team", "--replace-identity"])
+    else:
+        result = first
+
+    assert result.exit_code == ExitCode.SUCCESS
     saved = store.get("team")
     assert saved is not None
-    assert saved.access_token == "sk-ant-oat01-old"
-    assert saved.refresh_token == "refresh-old"
-    assert saved.provider_account_id == "acct_saved"
+    assert saved.credentials == incoming
 
 
-def test_refresh_command_replace_identity_allows_provider_account_id_mismatch(
+def test_refresh_requires_identity_flag_for_equal_access_bytes(
     tmp_path: Path,
 ) -> None:
-    """Explicit replacement recovers a label that already has bad identity."""
-    acct = _codex_acct(provider_account_id="acct_saved")
-    detected = _detected(
-        access_token="eyJ-current.access.sig",
-        provider_id="codex",
-        refresh_token="refresh-current",
-        expiry=_seconds(1_770_000_000),
-        plan="pro",
-        provider_account_id="acct_current",
-        id_token="id-token-current",
-        last_refresh="2026-06-12T00:00:00Z",
+    """The public CLI cannot bypass known IDs with exact token bytes."""
+    shared_access = "test-only-shared-access-material"
+    account = Account(
+        label=AccountLabel("team"),
+        credentials=ClaudeLoginCredentials(
+            access_token=shared_access,
+            refresh_token="test-only-saved-refresh",
+            access_expiry=KnownExpiry(REFERENCE_TIME + timedelta(minutes=30)),
+            refresh_expiry=KnownExpiry(REFERENCE_TIME + timedelta(days=30)),
+            scopes=("user:profile",),
+            identity=ClaudeLoginIdentity(
+                account_id="test-only-saved-account",
+                organization_id="test-only-saved-organization",
+            ),
+        ),
+        plan="team",
+    )
+    incoming = ClaudeLoginCredentials(
+        access_token=shared_access,
+        refresh_token="test-only-incoming-refresh",
+        access_expiry=KnownExpiry(REFERENCE_TIME + timedelta(hours=1)),
+        refresh_expiry=KnownExpiry(REFERENCE_TIME + timedelta(days=90)),
+        scopes=("user:profile",),
+        identity=ClaudeLoginIdentity(
+            account_id="test-only-incoming-account",
+            organization_id="test-only-incoming-organization",
+        ),
     )
     provider = _FakeProvider(
-        detected=detected,
-        provider_id="codex",
+        detected=DetectedCredentials(credentials=incoming, plan="team")
     )
-    harness, store, _, _ = _install_ctx(tmp_path, provider, acct)
+    harness, store, _, _ = _install_ctx(tmp_path, provider, account)
+    authority_before = store.path.read_bytes()
 
-    result = harness.invoke(
-        ["refresh", "team", "--replace-identity"],
-    )
+    refused = harness.invoke(["refresh", "team"])
 
-    assert result.exit_code == 0
+    assert refused.exit_code == ExitCode.MANUAL_ACTION
+    assert store.path.read_bytes() == authority_before
+
+    replaced = harness.invoke(["refresh", "team", "--replace-identity"])
+
+    assert replaced.exit_code == ExitCode.SUCCESS
     saved = store.get("team")
     assert saved is not None
-    assert saved.access_token == "eyJ-current.access.sig"
-    assert saved.refresh_token == "refresh-current"
-    assert saved.provider_account_id == "acct_current"
+    assert saved.credentials == incoming
 
 
-def test_refresh_all_refreshes_due_tokens_without_detecting_local_credentials(
+def test_refresh_requires_both_claude_replacement_authorizations(
     tmp_path: Path,
 ) -> None:
-    """Bulk maintenance refresh uses saved refresh tokens only."""
-    acct = _acct(expiry=KnownExpiry(REFERENCE_TIME - timedelta(seconds=1)))
+    """Method and stable-identity changes remain independent decisions."""
+    account = Account(
+        label=AccountLabel("team"),
+        credentials=ClaudeSetupTokenCredentials(
+            access_token="sk-ant-oat01-saved-setup"
+        ),
+        plan="max",
+    )
+    incoming = ClaudeLoginCredentials(
+        access_token="sk-ant-oat01-current-login",
+        refresh_token="current-refresh",
+        access_expiry=KnownExpiry(REFERENCE_TIME + timedelta(hours=1)),
+        refresh_expiry=KnownExpiry(REFERENCE_TIME + timedelta(days=90)),
+        scopes=("user:profile",),
+        identity=ClaudeLoginIdentity(
+            account_id="account-current",
+            organization_id="organization-current",
+        ),
+    )
     provider = _FakeProvider(
-        detected=_detected(access_token="sk-ant-oat01-local")
+        detected=DetectedCredentials(credentials=incoming, plan="team")
     )
-    clock = FixedClock()
-    harness, store, stdout, stderr = _install_many_ctx(
-        tmp_path,
-        {ProviderId.CLAUDE: provider},
-        [acct],
-        clock=clock,
+    harness, store, _, _ = _install_ctx(tmp_path, provider, account)
+    authority_before = store.path.read_bytes()
+
+    for authorization in (
+        "--replace-auth-method",
+        "--replace-identity",
+    ):
+        refused = harness.invoke(["refresh", "team", authorization])
+        assert refused.exit_code == ExitCode.MANUAL_ACTION
+        assert store.path.read_bytes() == authority_before
+
+    replaced = harness.invoke(
+        [
+            "refresh",
+            "team",
+            "--replace-auth-method",
+            "--replace-identity",
+        ]
     )
 
-    result = harness.invoke(["refresh", "--all", "--quiet"])
-
-    assert result.exit_code == 0
-    assert stdout.getvalue() == ""
-    assert stderr.getvalue() == ""
-    assert provider.refresh_calls == 1
-    assert provider.credential_homes == []
+    assert replaced.exit_code == ExitCode.SUCCESS
     saved = store.get("team")
     assert saved is not None
-    assert saved.access_token == "sk-ant-oat01-refreshed"
-    assert saved.last_refresh_at == REFERENCE_TIME
-    assert saved.last_refresh_status is RefreshStatus.OK
-    assert saved.last_refresh_error is None
+    assert saved.credentials == incoming
 
 
-def test_refresh_all_skips_fresh_tokens_unless_forced(
+def test_setup_token_requires_both_login_replacement_authorizations(
     tmp_path: Path,
 ) -> None:
-    """Bulk maintenance avoids needless refreshes until forced."""
-    acct = _acct(expiry=KnownExpiry(REFERENCE_TIME + timedelta(hours=1)))
+    """Method and stable-identity replacement remain independent."""
+    account = Account(
+        label=AccountLabel("team"),
+        credentials=ClaudeLoginCredentials(
+            access_token="sk-ant-oat01-stale-access",
+            refresh_token="stale-refresh-secret",
+            access_expiry=KnownExpiry(REFERENCE_TIME + timedelta(hours=1)),
+            refresh_expiry=KnownExpiry(REFERENCE_TIME + timedelta(days=90)),
+            scopes=("stale:scope", "user:profile"),
+            identity=ClaudeLoginIdentity(
+                account_id="stale-account",
+                organization_id="stale-organization",
+            ),
+        ),
+        plan="max",
+        last_refresh_at=REFERENCE_TIME,
+        last_refresh_status=RefreshStatus.FAILED,
+        last_refresh_error="provider rejected refresh",
+        heartbeat_enabled=True,
+        heartbeat_5h_reset_at=REFERENCE_TIME + timedelta(hours=2),
+        heartbeat_targets=("standard",),
+        last_heartbeat_at=REFERENCE_TIME,
+    )
     provider = _FakeProvider()
-    clock = FixedClock()
-    harness, _, _, _ = _install_many_ctx(
-        tmp_path,
-        {ProviderId.CLAUDE: provider},
-        [acct],
-        clock=clock,
-    )
-
-    result = harness.invoke(["refresh", "--all"])
-
-    assert result.exit_code == 0
-    assert provider.refresh_calls == 0
-    assert clock.calls == 1
-    clock.calls = 0
-
-    forced = harness.invoke(["refresh", "--all", "--force"])
-
-    assert forced.exit_code == 0
-    assert provider.refresh_calls == 1
-    assert clock.calls == 1
-
-
-def test_refresh_all_persists_failed_refresh_diagnostic(
-    tmp_path: Path,
-) -> None:
-    """Rejected refresh tokens are recorded for doctor and exit 1."""
-    acct = _acct(expiry=KnownExpiry(REFERENCE_TIME - timedelta(seconds=1)))
-    provider = _FakeProvider(refresh_ok=False)
-    harness, store, stdout, _ = _install_many_ctx(
-        tmp_path,
-        {ProviderId.CLAUDE: provider},
-        [acct],
-    )
-
-    result = harness.invoke(["refresh", "--all", "--quiet"])
-
-    assert result.exit_code == 1
-    assert "team" in stdout.getvalue()
-    saved = store.get("team")
-    assert saved is not None
-    assert saved.access_token == "sk-ant-oat01-old"
-    assert saved.last_refresh_status is RefreshStatus.FAILED
-    assert saved.last_refresh_error is not None
-
-
-def test_add_codex_uses_default_login_and_writes_private_bundle(
-    tmp_path: Path,
-) -> None:
-    """Adding Codex from the default login saves a private auth bundle."""
-    provider = _FakeProvider(
-        detected=_detected(
-            access_token="eyJ-current.access.sig",
-            provider_id="codex",
-            refresh_token="refresh-current",
-            expiry=_seconds(1_770_000_000),
-            plan="pro",
-            provider_account_id="acct_current",
-            id_token="id-token-current",
-            last_refresh="2026-06-12T00:00:00Z",
-        ),
-        provider_id="codex",
-    )
-    harness, store, _, _ = _install_empty_ctx(tmp_path, provider)
-
-    result = harness.invoke(["add", "codex", "--label", "team"])
-
-    assert result.exit_code == 0
-    assert provider.credential_homes == [None]
-    saved = store.get("team")
-    assert saved is not None
-    cache_home = _codex_cache_home(tmp_path)
-    assert saved.codex_home == str(cache_home)
-    assert saved.provider_account_id == "acct_current"
-    assert saved.codex_id_token == "id-token-current"
-    assert saved.codex_last_refresh == "2026-06-12T00:00:00Z"
-    cached = json.loads((cache_home / "auth.json").read_text())
-    assert cached["tokens"]["access_token"] == "eyJ-current.access.sig"
-
-
-@pytest.mark.parametrize("failure_kind", list(ProviderFailureKind))
-def test_add_prompts_only_for_missing_local_credentials(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    failure_kind: ProviderFailureKind,
-) -> None:
-    """Only an absent local login authorizes interactive token fallback."""
-    provider = _FakeProvider(
-        detected=ProviderFailure(
-            provider_id=ProviderId.CLAUDE,
-            kind=failure_kind,
-            message=f"Synthetic {failure_kind} credential failure.",
-        )
-    )
-    harness, store, _, _ = _install_empty_ctx(tmp_path, provider)
-    prompt_calls = 0
-
-    def read_token(
-        _input: TokenInput,
-        prompt: str = "Paste OAuth token",
-    ) -> str:
-        nonlocal prompt_calls
-        del prompt
-        prompt_calls += 1
-        return "sk-ant-oat01-prompted-test-token"
-
-    monkeypatch.setattr(TokenInput, "read", read_token)
-
-    result = harness.invoke(["add", "claude", "--label", "prompted"])
-
-    saved = store.get("prompted")
-    if failure_kind is ProviderFailureKind.MISSING:
-        assert result.exit_code == ExitCode.SUCCESS
-        assert prompt_calls == 1
-        assert saved is not None
-        assert saved.access_token == "sk-ant-oat01-prompted-test-token"
-    else:
-        assert result.exit_code == ExitCode.MANUAL_ACTION
-        assert prompt_calls == 0
-        assert saved is None
-
-
-@pytest.mark.parametrize(
-    ("command", "deprecated"),
-    [
-        (["codex", "login"], False),
-        (["codex-login"], True),
-    ],
-)
-def test_codex_login_runs_plain_cli_and_imports_private_bundle(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    command: list[str],
-    *,
-    deprecated: bool,
-) -> None:
-    """Both spellings leave global ~/.codex as the explicit source."""
-    provider = _FakeProvider(
-        detected=_detected(
-            access_token="eyJ-current.access.sig",
-            provider_id="codex",
-            refresh_token="refresh-current",
-            expiry=_seconds(1_770_000_000),
-            plan="pro",
-            provider_account_id="acct_current",
-            id_token="id-token-current",
-            last_refresh="2026-06-12T00:00:00Z",
-        ),
-        provider_id="codex",
-    )
-    harness, store, stdout, _ = _install_empty_ctx(tmp_path, provider)
-    calls: list[dict[str, object]] = []
-
-    def fake_run(
-        argv: list[str],
-        *,
-        check: bool,
-        env: dict[str, str] | None = None,
-    ) -> None:
-        call: dict[str, object] = {"argv": argv, "check": check}
-        if env is not None:
-            call["env"] = env
-        calls.append(call)
-
-    monkeypatch.setattr(codex_auth_module.subprocess, "run", fake_run)
-
-    result = harness.invoke([*command, "team"])
-
-    assert result.exit_code == 0
-    assert ("DeprecationWarning" in result.stderr) is deprecated
-    assert "DeprecationWarning" not in result.stdout
-    assert "Updated Codex login for 'team'." in stdout.getvalue()
-    assert len(calls) == 1
-    assert calls[0]["argv"] == ["codex", "login"]
-    assert calls[0]["check"] is True
-    assert "env" not in calls[0]
-    assert provider.credential_homes == [None]
-    saved = store.get("team")
-    assert saved is not None
-    cache_home = _codex_cache_home(tmp_path)
-    assert saved.codex_home == str(cache_home)
-    assert saved.provider_account_id == "acct_current"
-    cached = json.loads((cache_home / "auth.json").read_text())
-    assert cached["tokens"]["id_token"] == "id-token-current"
-
-
-@pytest.mark.parametrize(
-    ("command", "deprecated"),
-    [
-        (["codex", "export"], False),
-        (["codex-export"], True),
-    ],
-)
-def test_codex_export_writes_saved_credentials_to_home(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    command: list[str],
-    *,
-    deprecated: bool,
-) -> None:
-    """Both spellings export the same saved credentials and warning channel."""
-    codex_home = tmp_path / "codex-team"
-    acct = _codex_acct(
-        access_token="eyJ-current.access.sig",
-        refresh_token="refresh-current",
-        provider_account_id="acct_current",
-        id_token="id-token-current",
-        last_refresh="2026-06-12T00:00:00Z",
-    )
-    provider = _FakeProvider(provider_id="codex")
-    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "missing-default"))
-    harness, store, stdout, _ = _install_ctx(tmp_path, provider, acct)
-
-    result = harness.invoke(
-        [*command, "team", "--codex-home", str(codex_home)],
-    )
-
-    assert result.exit_code == 0
-    assert ("DeprecationWarning" in result.stderr) is deprecated
-    assert "DeprecationWarning" not in result.stdout
-    assert "Exported 'team' to Codex home" in stdout.getvalue()
-    auth = json.loads((codex_home / "auth.json").read_text())
-    assert auth["auth_mode"] == "chatgpt"
-    assert auth["last_refresh"] == "2026-06-12T00:00:00Z"
-    assert auth["tokens"] == {
-        "access_token": "eyJ-current.access.sig",
-        "refresh_token": "refresh-current",
-        "id_token": "id-token-current",
-        "account_id": "acct_current",
-    }
-    saved = store.get("team")
-    assert saved is not None
-    assert saved.codex_home is None
-
-
-@pytest.mark.parametrize(
-    ("source_account_id", "expected_exit"),
-    [
-        ("acct_current", ExitCode.SUCCESS),
-        ("acct_other", ExitCode.MANUAL_ACTION),
-    ],
-)
-def test_codex_export_reads_default_source_without_mutating_it(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    source_account_id: str,
-    expected_exit: ExitCode,
-) -> None:
-    source_home = tmp_path / "default-codex"
-    source_home.mkdir()
-    source_auth = source_home / "auth.json"
-    source_auth.write_text(
-        json.dumps(
-            {
-                "future_metadata": {"preserve": True},
-                "tokens": {
-                    "account_id": source_account_id,
-                    "id_token": "id-from-default-source",
-                },
-            }
-        )
-    )
-    original_source = source_auth.read_bytes()
-    monkeypatch.setenv("CODEX_HOME", str(source_home))
-    target_home = tmp_path / "exported-codex"
-    account = _codex_acct(
-        access_token="eyJ-current.access.sig",
-        refresh_token="refresh-current",
-        provider_account_id="acct_current",
-        id_token=None,
-    )
-    provider = _FakeProvider(provider_id="codex")
-    harness, _, _, _ = _install_ctx(tmp_path, provider, account)
-
-    result = harness.invoke(
-        ["codex", "export", "team", "--codex-home", str(target_home)],
-    )
-
-    assert result.exit_code == expected_exit
-    assert source_auth.read_bytes() == original_source
-    assert provider.refresh_calls == 0
-    if expected_exit is ExitCode.SUCCESS:
-        exported = json.loads((target_home / "auth.json").read_text())
-        assert exported["tokens"]["id_token"] == "id-from-default-source"
-    else:
-        assert target_home.is_dir()
-        assert not (target_home / "auth.json").exists()
-        assert not (target_home / "config.toml").exists()
-
-
-@pytest.mark.parametrize(
-    ("command", "deprecated"),
-    [
-        (["claude", "setup-token"], False),
-        (["setup-token", "claude"], True),
-    ],
-)
-def test_setup_token_delegates_only_to_claude_capability(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    command: list[str],
-    *,
-    deprecated: bool,
-) -> None:
-    """Both spellings delegate to Claude's one narrow capability."""
-    token = "sk-ant-oat01-synthetic-setup-token"
-    raw_secret = "oauth-code=must-not-reach-terminal"
-    provider = ClaudeProvider(FixedClock())
-    monkeypatch.setattr(
-        claude_provider_module.shutil,
-        "which",
-        lambda name: "/usr/bin/claude" if name == "claude" else None,
-    )
-
-    def capture(
-        command: list[str],
-        timeout: int,
-    ) -> claude_provider_module._CapturedSetupOutput:
-        assert command == ["/usr/bin/claude", "setup-token"]
-        assert timeout > 0
-        return claude_provider_module._CapturedSetupOutput(
-            0,
-            f"{raw_secret}\nToken: {token}\n".encode(),
-        )
-
-    monkeypatch.setattr(
-        ClaudeProvider,
-        "_capture_setup_output",
-        staticmethod(capture),
-    )
-    monkeypatch.setattr(
-        provider,
-        "fetch_usage",
-        lambda account, http: UsageReport(),
-    )
+    setup_token = _SyntheticSetupToken()
     harness, store, stdout, stderr = _install_many_ctx(
         tmp_path,
         {ProviderId.CLAUDE: provider},
-        (),
-        claude_setup_token=provider,
+        (account,),
+        claude_setup_token=setup_token,
     )
+    authority_before = store.path.read_bytes()
+
+    force_only = harness.invoke(
+        ["claude", "setup-token", "--label", "team", "--force"]
+    )
+    assert force_only.exit_code == ExitCode.MANUAL_ACTION
+    assert setup_token.calls == 0
+    assert store.path.read_bytes() == authority_before
+
+    identity_only = harness.invoke(
+        [
+            "claude",
+            "setup-token",
+            "--label",
+            "team",
+            "--replace-identity",
+        ]
+    )
+    assert identity_only.exit_code == ExitCode.MANUAL_ACTION
+    assert setup_token.calls == 0
+    assert store.path.read_bytes() == authority_before
 
     result = harness.invoke(
-        [*command, "--label", "setup"],
+        [
+            "claude",
+            "setup-token",
+            "--label",
+            "team",
+            "--force",
+            "--replace-identity",
+        ]
     )
 
-    assert result.exit_code == 0
-    assert ("DeprecationWarning" in result.stderr) is deprecated
-    assert "DeprecationWarning" not in result.stdout
-    assert "Saved 'setup'." in stdout.getvalue()
-    assert raw_secret not in result.output
-    assert raw_secret not in stdout.getvalue()
-    assert raw_secret not in stderr.getvalue()
-    saved = store.get("setup")
+    assert result.exit_code == ExitCode.SUCCESS
+    assert setup_token.calls == 1
+    saved = store.get("team")
     assert saved is not None
-    assert saved.access_token == token
+    assert saved.credentials == ClaudeSetupTokenCredentials(
+        access_token="sk-ant-oat01-replacement-setup"
+    )
+    assert saved.plan == "max"
+    assert saved.heartbeat_enabled is True
+    assert saved.heartbeat_5h_reset_at == REFERENCE_TIME + timedelta(hours=2)
+    assert saved.heartbeat_targets == ("standard",)
+    assert saved.last_heartbeat_at == REFERENCE_TIME
+    assert saved.last_refresh_at is None
+    assert saved.last_refresh_status is None
+    assert saved.last_refresh_error is None
+    authority = store.path.read_text()
+    for stale in (
+        "stale-refresh-secret",
+        "stale:scope",
+        "stale-account",
+        "stale-organization",
+    ):
+        assert stale not in authority
+    assert "Updated 'team'." in stdout.getvalue()
+    assert (
+        "Authentication for 'team' will change from a Claude "
+        "subscription login to a setup token."
+    ) in re.sub(r"\s+", " ", stderr.getvalue())
 
 
-def test_setup_token_codex_returns_typed_unsupported_outcome(
+@pytest.mark.parametrize(
+    "command",
+    [
+        ("claude", "setup-token"),
+        ("setup-token", "claude"),
+    ],
+)
+def test_setup_token_unknown_login_identity_still_requires_authorization(
     tmp_path: Path,
+    command: tuple[str, ...],
 ) -> None:
-    """Codex setup-token fails cleanly without a generic provider method."""
-    harness, _, _, stderr = _install_many_ctx(
+    """An identity-free historical login cannot prove token equivalence."""
+    account = Account(
+        label=AccountLabel("historical"),
+        credentials=ClaudeLoginCredentials(
+            access_token="sk-ant-oat01-historical-access",
+            refresh_token="historical-refresh-secret",
+            access_expiry=KnownExpiry(REFERENCE_TIME + timedelta(hours=1)),
+            refresh_expiry=UnknownExpiry(),
+            scopes=("user:profile",),
+        ),
+        plan="max",
+        heartbeat_enabled=True,
+    )
+    setup_token = _SyntheticSetupToken()
+    harness, store, _, _ = _install_many_ctx(
         tmp_path,
-        {ProviderId.CODEX: CodexProvider(FixedClock())},
-        (),
+        {ProviderId.CLAUDE: _FakeProvider()},
+        (account,),
+        claude_setup_token=setup_token,
+    )
+    authority_before = store.path.read_bytes()
+
+    refused = harness.invoke([*command, "--label", "historical", "--force"])
+
+    assert refused.exit_code == ExitCode.MANUAL_ACTION
+    assert setup_token.calls == 0
+    assert store.path.read_bytes() == authority_before
+
+    replaced = harness.invoke(
+        [
+            *command,
+            "--label",
+            "historical",
+            "--force",
+            "--replace-identity",
+        ]
     )
 
-    result = harness.invoke(["setup-token", "codex"])
-
-    assert result.exit_code == 1
-    assert "doesn't expose a long-lived token generator" in stderr.getvalue()
+    assert replaced.exit_code == ExitCode.SUCCESS
+    assert setup_token.calls == 1
+    saved = store.get("historical")
+    assert saved is not None
+    assert saved.credentials == ClaudeSetupTokenCredentials(
+        access_token="sk-ant-oat01-replacement-setup"
+    )
+    assert saved.plan == "max"
+    assert saved.heartbeat_enabled is True

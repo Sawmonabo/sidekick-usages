@@ -89,6 +89,27 @@ class InvalidSchemaError(PersistenceSchemaError):
         super().__init__("Account data does not match a supported schema.")
 
 
+class DuplicateCredentialOwnershipError(InvalidSchemaError):
+    """One provider credential is assigned to multiple account labels."""
+
+    def __init__(
+        self,
+        labels: tuple[str, ...],
+        *,
+        provider_id: str | None = None,
+        credential_field: str | None = None,
+    ) -> None:
+        self.labels = labels
+        self.provider_id = provider_id
+        self.credential_field = credential_field
+        super().__init__()
+        self.args = (
+            "One provider credential has multiple durable owners: "
+            + ", ".join(labels)
+            + ".",
+        )
+
+
 class FutureSchemaError(PersistenceSchemaError):
     """A versioned document requires different application software.
 

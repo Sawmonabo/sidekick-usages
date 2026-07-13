@@ -23,7 +23,11 @@ assert SPEC is not None
 assert SPEC.loader is not None
 verify_v060_compat = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = verify_v060_compat
-SPEC.loader.exec_module(verify_v060_compat)
+sys.path.insert(0, str(HARNESS_PATH.parent))
+try:
+    SPEC.loader.exec_module(verify_v060_compat)
+finally:
+    sys.path.remove(str(HARNESS_PATH.parent))
 
 
 def _failed_process(
@@ -124,9 +128,19 @@ def test_actual_v060_store_survives_two_current_transform_cycles() -> None:
     assert report["released_commit"] == (
         "6a413b2772c3c11e9ef45a78a06ab79bfc0ca44c"
     )
-    assert report["account_order"] == ["claude-max-1", "codex-plus-1"]
-    assert report["provider_order"] == ["claude", "codex"]
+    assert report["account_order"] == [
+        "claude-max-1",
+        "codex-plus-1",
+        "claude-setup-1",
+    ]
+    assert report["provider_order"] == ["claude", "codex", "claude"]
     assert report["empty_heartbeat_preflight"] == "rejected"
+    assert report["setup_token_round_trip"] == (
+        "user:inference_reconstructs_setup_token"
+    )
+    assert report["advisory_metadata_loss"] == (
+        "identity_and_refresh_expiry_only"
+    )
     cycle_values = report["cycles"]
     assert isinstance(cycle_values, list)
     cycles: list[JsonObject] = []
@@ -142,7 +156,7 @@ def test_actual_v060_store_survives_two_current_transform_cycles() -> None:
         assert type(number) is int
         numbers.append(number)
         for field in (
-            "version_one_sha256",
+            "version_two_sha256",
             "reverse_v060_sha256",
             "final_state_sha256",
         ):

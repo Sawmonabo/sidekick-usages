@@ -9,7 +9,7 @@ from sidekick_usages.core.expiry import (
     InvalidExpiry,
     classify_expiry,
 )
-from sidekick_usages.core.models import Account
+from sidekick_usages.core.models import Account, ClaudeSetupTokenCredentials
 from sidekick_usages.core.types import (
     AccountLabel,
     ExitCode,
@@ -323,6 +323,11 @@ class HeartbeatService:
     ) -> str | None:
         """Return a user-action blocker for accounts that should not warm."""
         if account.last_refresh_status is RefreshStatus.FAILED:
+            if isinstance(account.credentials, ClaudeSetupTokenCredentials):
+                return account.last_refresh_error or (
+                    "Last setup-token check failed; replace the token before "
+                    "heartbeat."
+                )
             return "Last token refresh failed; log in before heartbeat."
         expiry = classify_expiry(account.expiry, now=reference_time)
         if isinstance(expiry, InvalidExpiry):

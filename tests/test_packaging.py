@@ -58,10 +58,29 @@ def test_runtime_dependencies_and_lock_match_reviewed_versions() -> None:
     assert "B310" not in pyproject["tool"]["bandit"]["skips"]
 
 
+def test_wheel_compatibility_program_uses_explicit_legacy_claude_login() -> (
+    None
+):
+    """The installed-wheel oracle constructs one representable login."""
+    source = SMOKE_WHEEL_PATH.read_text(encoding="utf-8")
+
+    assert "ClaudeCredentials(" not in source
+    assert all(
+        fragment in source
+        for fragment in (
+            "ClaudeLoginCredentials(",
+            "access_expiry=KnownExpiry(",
+            "refresh_expiry=UnknownExpiry()",
+            'scopes=("user:profile",)',
+        )
+    )
+
+
 def test_exact_wheel_selection_and_member_contract(tmp_path: Path) -> None:
     """All artifact forms require the package and reject flat remnants."""
     assert {
         ("claude", "setup-token", "--help"),
+        ("claude", "restore-setup-token", "--help"),
         ("codex", "login", "--help"),
         ("codex", "export", "--help"),
         ("setup-token", "--help"),
@@ -84,8 +103,10 @@ def test_exact_wheel_selection_and_member_contract(tmp_path: Path) -> None:
         "sidekick_usages/token_input.py",
     } <= smoke_wheel.FORBIDDEN_WHEEL_MEMBERS
     assert {
+        "sidekick_usages/credentials/claude_setup_save.py",
         "sidekick_usages/credentials/codex.py",
         "sidekick_usages/credentials/models.py",
+        "sidekick_usages/credentials/refresh.py",
         "sidekick_usages/credentials/service.py",
         "sidekick_usages/heartbeat/models.py",
         "sidekick_usages/heartbeat/ports.py",
@@ -95,12 +116,21 @@ def test_exact_wheel_selection_and_member_contract(tmp_path: Path) -> None:
         "sidekick_usages/persistence/activity_snapshots.py",
         "sidekick_usages/persistence/credential_transaction_plans.py",
         "sidekick_usages/persistence/credential_transaction_recovery.py",
+        "sidekick_usages/persistence/credential_refresh.py",
+        "sidekick_usages/persistence/credential_refresh_artifacts.py",
+        "sidekick_usages/persistence/credential_refresh_merge.py",
+        "sidekick_usages/persistence/credential_refresh_private_stage.py",
+        "sidekick_usages/persistence/credential_refresh_schema.py",
+        "sidekick_usages/persistence/credential_refresh_stage.py",
+        "sidekick_usages/persistence/filesystem_access.py",
         "sidekick_usages/persistence/migrations/__init__.py",
         "sidekick_usages/persistence/migrations/account.py",
         "sidekick_usages/persistence/migrations/errors.py",
         "sidekick_usages/persistence/migrations/location.py",
+        "sidekick_usages/persistence/migrations/location_state.py",
         "sidekick_usages/persistence/migrations/observer.py",
         "sidekick_usages/persistence/migrations/ports.py",
+        "sidekick_usages/persistence/migrations/released_verification.py",
         "sidekick_usages/persistence/migrations/service.py",
         "sidekick_usages/persistence/private_bundle_paths.py",
         "sidekick_usages/persistence/private_bundle_writes.py",
@@ -123,6 +153,15 @@ def test_exact_wheel_selection_and_member_contract(tmp_path: Path) -> None:
         "sidekick_usages/usage/reset_display.py",
         *smoke_wheel.REQUIRED_CLI_MEMBERS,
     } <= smoke_wheel.REQUIRED_WHEEL_MEMBERS
+    source_members = {
+        path.relative_to(REPO_ROOT / "src").as_posix()
+        for path in (REPO_ROOT / "src" / "sidekick_usages").rglob("*")
+        if path.is_file()
+        and not smoke_wheel.SOURCE_EXCLUDED_DIRECTORIES.intersection(
+            path.parts
+        )
+    }
+    assert source_members == smoke_wheel.REQUIRED_WHEEL_MEMBERS
     artifacts = tmp_path / "artifacts"
     artifacts.mkdir()
     wheel_name, sdist_name = smoke_wheel.expected_artifact_names()
@@ -143,13 +182,13 @@ def test_exact_wheel_selection_and_member_contract(tmp_path: Path) -> None:
 
     archive_root = sdist_name.removesuffix(".tar.gz")
     with tarfile.open(sdist, mode="w:gz") as archive:
-        for member in smoke_wheel.REQUIRED_CLI_MEMBERS:
+        for member in smoke_wheel.REQUIRED_WHEEL_MEMBERS:
             info = tarfile.TarInfo(f"{archive_root}/src/{member}")
             archive.addfile(info, io.BytesIO())
     smoke_wheel.verify_sdist_members(sdist)
 
     with tarfile.open(sdist, mode="w:gz") as archive:
-        for member in smoke_wheel.REQUIRED_CLI_MEMBERS | {
+        for member in smoke_wheel.REQUIRED_WHEEL_MEMBERS | {
             "sidekick_usages/cli.py"
         }:
             info = tarfile.TarInfo(f"{archive_root}/src/{member}")
@@ -162,6 +201,14 @@ def test_exact_wheel_selection_and_member_contract(tmp_path: Path) -> None:
     with pytest.raises(smoke_wheel.WheelVerificationError):
         smoke_wheel.verify_wheel_members(wheel)
 
+    with zipfile.ZipFile(wheel, "w") as archive:
+        for member in smoke_wheel.REQUIRED_WHEEL_MEMBERS | {
+            "sidekick_usages/untracked_runtime.py"
+        }:
+            archive.writestr(member, "")
+    with pytest.raises(smoke_wheel.WheelVerificationError):
+        smoke_wheel.verify_wheel_members(wheel)
+
     stale_wheel = artifacts / "stale-0.1.0-py3-none-any.whl"
     stale_wheel.touch()
     with pytest.raises(smoke_wheel.WheelVerificationError):
@@ -171,6 +218,27 @@ def test_exact_wheel_selection_and_member_contract(tmp_path: Path) -> None:
     (artifacts / "unexpected.zip").touch()
     with pytest.raises(smoke_wheel.WheelVerificationError):
         smoke_wheel.require_exact_distribution_set(artifacts)
+
+
+def test_source_contract_rejects_unexpected_non_python_package_data(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Source equality covers every regular package file, not only code."""
+    source_root = tmp_path / "src"
+    for member in smoke_wheel.REQUIRED_WHEEL_MEMBERS:
+        target = source_root / member
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"")
+    unexpected = source_root / "sidekick_usages" / "unexpected-data.txt"
+    unexpected.write_text("not declared package data\n", encoding="utf-8")
+    monkeypatch.setattr(smoke_wheel, "REPO_ROOT", tmp_path)
+
+    with pytest.raises(
+        smoke_wheel.WheelVerificationError,
+        match=r"unexpected-data\.txt",
+    ):
+        smoke_wheel.verify_source_members()
 
 
 def test_isolated_subprocess_preserves_unicode_output(

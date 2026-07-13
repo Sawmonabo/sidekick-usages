@@ -92,6 +92,7 @@ class SystemCommandRunner:
         completed = subprocess.run(
             list(argv),
             input=input_text,
+            stdin=subprocess.DEVNULL if input_text is None else None,
             text=True,
             capture_output=True,
             check=False,

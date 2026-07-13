@@ -10,7 +10,7 @@ from rich.console import Console
 
 from sidekick_usages.core.models import (
     Account,
-    ClaudeCredentials,
+    ClaudeSetupTokenCredentials,
     CodexCredentials,
     TokenActivityReading,
     TokenActivitySummary,
@@ -145,9 +145,9 @@ def _acct(
 ) -> Account:
     provider = ProviderId(provider_id)
     credentials = (
-        CodexCredentials(access_token="tok")
+        CodexCredentials(access_token=f"tok-{label}")
         if provider is ProviderId.CODEX
-        else ClaudeCredentials(access_token="tok")
+        else ClaudeSetupTokenCredentials(access_token=f"tok-{label}")
     )
     return Account(
         label=AccountLabel(label),

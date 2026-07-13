@@ -376,6 +376,20 @@ if sys.platform == "win32":
             """Read one bounded protected non-reparse sibling."""
             return _read_file(parent, basename, limit)
 
+        def read_external_private_source(
+            self,
+            parent: Path,
+            basename: str,
+            limit: int,
+        ) -> NativeFile | None:
+            """Read one private source below an owner-controlled parent."""
+            return _read_file(
+                parent,
+                basename,
+                limit,
+                external_source=True,
+            )
+
         def create_private(
             self,
             parent: Path,

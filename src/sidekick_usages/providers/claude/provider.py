@@ -4,7 +4,6 @@ import os
 import platform
 import shutil
 import subprocess
-import tempfile
 from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -12,35 +11,43 @@ from threading import Event, Thread
 from typing import IO, Protocol
 
 from sidekick_usages.clock import Clock
+from sidekick_usages.core.expiry import (
+    ExpiredExpiry,
+    KnownExpiry,
+    classify_expiry,
+)
 from sidekick_usages.core.models import (
     Account,
-    ClaudeCredentials,
+    ClaudeLoginCredentials,
+    ClaudeSetupTokenCredentials,
     DetectedCredentials,
     UsageReport,
 )
 from sidekick_usages.core.types import ProviderId
-from sidekick_usages.errors import AuthError
+from sidekick_usages.errors import AuthError, TransientError
 from sidekick_usages.http import HttpClient, HttpOperation
 from sidekick_usages.providers.base import (
     CredentialDetection,
+    CredentialStageReader,
     Provider,
     ProviderBoundaryError,
     ProviderFailure,
+    ProviderFailureCause,
     ProviderFailureKind,
     RefreshResult,
     RefreshSuccess,
 )
-from sidekick_usages.providers.claude.credentials import (
-    detect_credentials,
-    read_credentials_path,
-    require_claude_credentials,
-)
-from sidekick_usages.providers.claude.schemas import (
+from sidekick_usages.providers.claude.credential_schemas import (
     CLAUDE_TOKEN_PATTERN,
-    claude_failure,
     parse_refresh_credentials,
     validate_setup_token,
 )
+from sidekick_usages.providers.claude.credentials import (
+    detect_credentials,
+    parse_detected_credentials,
+    require_claude_credentials,
+)
+from sidekick_usages.providers.claude.schemas import claude_failure
 from sidekick_usages.providers.claude.usage import (
     fetch_usage as fetch_claude_usage,
 )
@@ -48,15 +55,22 @@ from sidekick_usages.providers.claude.usage import (
 OAUTH_REFRESH_ENDPOINT = "https://platform.claude.com/v1/oauth/token"
 OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 OAUTH_REFRESH_EXPIRES_IN_SECONDS = 31_536_000
-DEFAULT_REFRESH_SCOPES: tuple[str, ...] = (
-    "user:profile",
-    "user:inference",
-    "user:sessions:claude_code",
-    "user:mcp_servers",
-    "user:file_upload",
-)
 _MAX_SETUP_OUTPUT_BYTES = 1024 * 1024
 _SETUP_READ_CHUNK_BYTES = 8192
+_PRIVATE_CHILD_UMASK = 0o077
+_INHERITED_REFRESH_ENVIRONMENT = (
+    "COMSPEC",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "PATH",
+    "PATHEXT",
+    "SYSTEMROOT",
+    "TEMP",
+    "TMP",
+    "TMPDIR",
+    "WINDIR",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,6 +122,37 @@ type _SetupProcessResult = (
 )
 
 
+def _closed_refresh_environment(
+    isolated_home: Path,
+    refresh_token: str,
+    scopes: tuple[str, ...],
+) -> dict[str, str]:
+    """Build the closed child environment required on supported systems.
+
+    Only process lookup, Windows process startup, locale, and temporary-file
+    variables are inherited. Claude and Anthropic configuration or credential
+    inputs can therefore enter only through the managed values below.
+    """
+    environment = {
+        name: value
+        for name in _INHERITED_REFRESH_ENVIRONMENT
+        if (value := os.environ.get(name)) is not None
+    }
+    environment.update(
+        {
+            "HOME": str(isolated_home),
+            "USERPROFILE": str(isolated_home),
+            "APPDATA": str(isolated_home / "AppData" / "Roaming"),
+            "LOCALAPPDATA": str(isolated_home / "AppData" / "Local"),
+            "XDG_CONFIG_HOME": str(isolated_home / ".config"),
+            "CLAUDE_CONFIG_DIR": str(isolated_home / ".claude"),
+            "CLAUDE_CODE_OAUTH_REFRESH_TOKEN": refresh_token,
+            "CLAUDE_CODE_OAUTH_SCOPES": " ".join(scopes),
+        }
+    )
+    return environment
+
+
 class ClaudeSetupToken(Protocol):
     """Narrow structural capability for Claude setup-token capture."""
 
@@ -148,7 +193,7 @@ class ClaudeProvider(Provider):
                 "The supplied Claude OAuth token is invalid.",
             )
         return DetectedCredentials(
-            credentials=ClaudeCredentials(access_token=validated)
+            credentials=ClaudeSetupTokenCredentials(access_token=validated)
         )
 
     def fetch_usage(
@@ -156,7 +201,7 @@ class ClaudeProvider(Provider):
         account: Account,
         http: HttpClient,
     ) -> UsageReport:
-        """Fetch usage through Claude's scope-selected route."""
+        """Fetch usage through the Claude credential-variant route."""
         return fetch_claude_usage(account, http)
 
     def refresh_credentials(
@@ -164,133 +209,200 @@ class ClaudeProvider(Provider):
         account: Account,
         http: HttpClient,
     ) -> RefreshResult:
-        """Return validated replacement credentials without mutation."""
+        """Return a validated direct-HTTPS credential replacement."""
         credentials = require_claude_credentials(account)
-        if credentials.refresh_token is None:
+        if isinstance(credentials, ClaudeSetupTokenCredentials):
             return claude_failure(
                 ProviderFailureKind.MISSING,
-                "Claude refresh credentials are missing. Log in again.",
+                "Claude setup-token credentials have no refresh credential.",
+                cause=(ProviderFailureCause.MISSING_REFRESH_CREDENTIAL),
             )
-        cli_result = self._refresh_via_cli(account)
+        if isinstance(
+            classify_expiry(credentials.refresh_expiry, now=self.clock.now()),
+            ExpiredExpiry,
+        ):
+            return claude_failure(
+                ProviderFailureKind.EXPIRED,
+                "The saved Claude login credential has expired.",
+                cause=ProviderFailureCause.LOGIN_CREDENTIAL_EXPIRED,
+            )
+        return self._refresh_via_http(http, credentials)
+
+    def refresh_credentials_in_stage(
+        self,
+        account: Account,
+        http: HttpClient,
+        stage_home: Path,
+        stage_reader: CredentialStageReader,
+    ) -> RefreshResult:
+        """Refresh using only one caller-owned private child home."""
+        if not stage_home.is_absolute() or not stage_home.is_dir():
+            return claude_failure(
+                ProviderFailureKind.UNREADABLE,
+                "Claude refresh staging is unavailable.",
+                cause=ProviderFailureCause.REFRESH_PROCESS_UNAVAILABLE,
+            )
+        credentials = require_claude_credentials(account)
+        if isinstance(credentials, ClaudeSetupTokenCredentials):
+            return claude_failure(
+                ProviderFailureKind.MISSING,
+                "Claude setup-token credentials have no refresh credential.",
+                cause=(ProviderFailureCause.MISSING_REFRESH_CREDENTIAL),
+            )
+        if isinstance(
+            classify_expiry(credentials.refresh_expiry, now=self.clock.now()),
+            ExpiredExpiry,
+        ):
+            return claude_failure(
+                ProviderFailureKind.EXPIRED,
+                "The saved Claude login credential has expired.",
+                cause=ProviderFailureCause.LOGIN_CREDENTIAL_EXPIRED,
+            )
+        cli_result = self._refresh_via_cli(
+            credentials,
+            stage_home,
+            stage_reader,
+        )
         if cli_result is not None:
             return cli_result
-        return self._refresh_via_http(account, http)
+        return self._refresh_via_http(http, credentials)
 
-    def _refresh_via_cli(self, account: Account) -> RefreshResult | None:
-        credentials = require_claude_credentials(account)
-        if credentials.refresh_token is None:
-            raise ProviderBoundaryError(
-                claude_failure(
-                    ProviderFailureKind.MISSING,
-                    "Claude refresh credentials are missing. Log in again.",
-                )
-            ) from None
+    def _refresh_via_cli(
+        self,
+        credentials: ClaudeLoginCredentials,
+        isolated_home: Path,
+        stage_reader: CredentialStageReader,
+    ) -> RefreshResult | None:
         claude_bin = (
             None if platform.system() == "Darwin" else shutil.which("claude")
         )
         if claude_bin is None:
             return None
-        scopes = self._refresh_scopes(account)
-        with tempfile.TemporaryDirectory(
-            prefix="sidekick-claude-refresh-"
-        ) as temp_home:
-            isolated_home = Path(temp_home)
-            env = os.environ.copy()
-            env["HOME"] = temp_home
-            env["USERPROFILE"] = temp_home
-            env["APPDATA"] = str(isolated_home / "AppData" / "Roaming")
-            env["LOCALAPPDATA"] = str(isolated_home / "AppData" / "Local")
-            env["XDG_CONFIG_HOME"] = str(isolated_home / ".config")
-            env["CLAUDE_CONFIG_DIR"] = str(isolated_home / ".claude")
-            env["CLAUDE_CODE_OAUTH_REFRESH_TOKEN"] = credentials.refresh_token
-            env["CLAUDE_CODE_OAUTH_SCOPES"] = " ".join(scopes)
-            env.pop("CLAUDE_CODE_OAUTH_TOKEN", None)
-            env.pop("ANTHROPIC_API_KEY", None)
-            completed = self._run_cli_refresh(
-                claude_bin,
-                env,
-                isolated_home,
-            )
-            if completed is None or isinstance(completed, ProviderFailure):
-                return completed
+        scopes = self._refresh_scopes(credentials)
+        env = _closed_refresh_environment(
+            isolated_home,
+            credentials.refresh_token,
+            scopes,
+        )
+        completed = self._run_cli_refresh(
+            claude_bin,
+            env,
+            isolated_home,
+        )
+        if isinstance(completed, ProviderFailure):
+            return completed
 
-            credentials_path = (
-                Path(env["CLAUDE_CONFIG_DIR"]) / ".credentials.json"
+        payload = stage_reader.read()
+        if completed.return_code != 0 and payload is None:
+            return claude_failure(
+                ProviderFailureKind.REJECTED,
+                "Claude rejected the saved subscription login.",
+                cause=ProviderFailureCause.PROVIDER_REJECTED_REFRESH,
             )
-            if completed.returncode != 0 and not credentials_path.exists():
-                return claude_failure(
-                    ProviderFailureKind.REJECTED,
-                    "Claude rejected the credential refresh. Log in again.",
+        detected = (
+            claude_failure(
+                ProviderFailureKind.MISSING,
+                "Claude credentials were not found.",
+            )
+            if payload is None
+            else parse_detected_credentials(payload, self.clock.now())
+        )
+        if isinstance(detected, ProviderFailure):
+            if detected.kind in {
+                ProviderFailureKind.INCOMPLETE,
+                ProviderFailureKind.MALFORMED,
+            }:
+                cause = (
+                    ProviderFailureCause.REFRESH_OUTPUT_INCOMPLETE
+                    if detected.kind is ProviderFailureKind.INCOMPLETE
+                    else ProviderFailureCause.REFRESH_OUTPUT_MALFORMED
                 )
-            detected = read_credentials_path(
-                credentials_path,
-                self.clock.now(),
-            )
-            if isinstance(detected, ProviderFailure):
-                if detected.kind in {
-                    ProviderFailureKind.INCOMPLETE,
-                    ProviderFailureKind.MALFORMED,
-                }:
-                    raise ProviderBoundaryError(detected) from None
-                if detected.kind is ProviderFailureKind.MISSING:
-                    return claude_failure(
-                        ProviderFailureKind.INCOMPLETE,
-                        "Claude CLI refresh produced no credentials.",
+                raise ProviderBoundaryError(
+                    claude_failure(
+                        detected.kind,
+                        (
+                            "Claude refresh output was incomplete."
+                            if detected.kind is ProviderFailureKind.INCOMPLETE
+                            else "Claude refresh output was malformed."
+                        ),
+                        cause=cause,
+                        fields=detected.fields,
                     )
-                return detected
-            return self._cli_refresh_success(credentials, detected)
+                ) from None
+            if detected.kind is ProviderFailureKind.MISSING:
+                return claude_failure(
+                    ProviderFailureKind.INCOMPLETE,
+                    "Claude CLI refresh produced no credentials.",
+                    cause=ProviderFailureCause.REFRESH_OUTPUT_INCOMPLETE,
+                )
+            return detected
+        return self._cli_refresh_success(credentials, detected)
 
     @staticmethod
     def _run_cli_refresh(
         claude_bin: str,
         env: dict[str, str],
         working_directory: Path,
-    ) -> subprocess.CompletedProcess[bytes] | ProviderFailure | None:
-        try:
-            return subprocess.run(
-                [claude_bin, "auth", "login", "--claudeai"],
-                env=env,
-                cwd=working_directory,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=60,
-                check=False,
-            )
-        except FileNotFoundError:
-            return None
-        except OSError, subprocess.SubprocessError:
+    ) -> _CapturedSetupOutput | ProviderFailure:
+        captured = ClaudeProvider._capture_setup_output(
+            [claude_bin, "auth", "login", "--claudeai"],
+            60,
+            env=env,
+            cwd=working_directory,
+            umask=_PRIVATE_CHILD_UMASK if os.name == "posix" else -1,
+        )
+        if isinstance(captured, SetupTokenTimedOut):
             return claude_failure(
                 ProviderFailureKind.UNREADABLE,
-                "Claude CLI refresh could not be completed.",
+                "Claude credential refresh timed out.",
+                cause=ProviderFailureCause.REFRESH_TIMED_OUT,
             )
+        if isinstance(captured, SetupTokenUnreadable):
+            return claude_failure(
+                ProviderFailureKind.UNREADABLE,
+                "Claude refresh process is unavailable.",
+                cause=ProviderFailureCause.REFRESH_PROCESS_UNAVAILABLE,
+            )
+        return captured
 
     @staticmethod
     def _cli_refresh_success(
-        previous: ClaudeCredentials,
+        previous: ClaudeLoginCredentials,
         detected: DetectedCredentials,
     ) -> RefreshSuccess:
         refreshed = detected.credentials
-        if not isinstance(refreshed, ClaudeCredentials):
+        if not isinstance(refreshed, ClaudeLoginCredentials):
             raise ProviderBoundaryError(
                 claude_failure(
                     ProviderFailureKind.IDENTITY_MISMATCH,
                     "Claude refresh returned incompatible credentials.",
+                    cause=(ProviderFailureCause.REFRESHED_IDENTITY_MISMATCH),
+                )
+            ) from None
+        if (
+            previous.identity is not None
+            and refreshed.identity is not None
+            and previous.identity != refreshed.identity
+        ):
+            raise ProviderBoundaryError(
+                claude_failure(
+                    ProviderFailureKind.IDENTITY_MISMATCH,
+                    "Claude refresh returned a different login identity.",
+                    cause=(ProviderFailureCause.REFRESHED_IDENTITY_MISMATCH),
                 )
             ) from None
         credentials = replace(
             previous,
             access_token=refreshed.access_token,
-            refresh_token=(
-                refreshed.refresh_token
-                if refreshed.refresh_token is not None
-                else previous.refresh_token
+            refresh_token=refreshed.refresh_token,
+            access_expiry=refreshed.access_expiry,
+            refresh_expiry=(
+                refreshed.refresh_expiry
+                if isinstance(refreshed.refresh_expiry, KnownExpiry)
+                else previous.refresh_expiry
             ),
-            expiry=refreshed.expiry,
-            scopes=(
-                refreshed.scopes
-                if refreshed.scopes is not None
-                else previous.scopes
-            ),
+            scopes=refreshed.scopes,
+            identity=refreshed.identity or previous.identity,
         )
         return RefreshSuccess(
             credentials=credentials,
@@ -299,16 +411,10 @@ class ClaudeProvider(Provider):
 
     def _refresh_via_http(
         self,
-        account: Account,
         http: HttpClient,
+        credentials: ClaudeLoginCredentials,
     ) -> RefreshResult:
-        credentials = require_claude_credentials(account)
-        if credentials.refresh_token is None:
-            return claude_failure(
-                ProviderFailureKind.MISSING,
-                "Claude refresh credentials are missing. Log in again.",
-            )
-        scopes = self._refresh_scopes(account)
+        scopes = self._refresh_scopes(credentials)
         try:
             response = http.post_json(
                 OAUTH_REFRESH_ENDPOINT,
@@ -327,20 +433,46 @@ class ClaudeProvider(Provider):
         except AuthError:
             return claude_failure(
                 ProviderFailureKind.REJECTED,
-                "Claude rejected the credential refresh. Log in again.",
+                "Claude rejected the saved subscription login.",
+                cause=ProviderFailureCause.PROVIDER_REJECTED_REFRESH,
             )
-        reference_time = self.clock.now() if "expires_in" in response else None
-        refreshed = parse_refresh_credentials(
-            response,
-            credentials,
-            reference_time,
-        )
+        except TransientError:
+            return claude_failure(
+                ProviderFailureKind.UNREADABLE,
+                "Claude refresh is temporarily unavailable.",
+                cause=(ProviderFailureCause.REFRESH_TEMPORARILY_UNAVAILABLE),
+            )
+        try:
+            refreshed = parse_refresh_credentials(
+                response,
+                credentials,
+                self.clock.now(),
+            )
+        except ProviderBoundaryError as error:
+            cause = (
+                ProviderFailureCause.REFRESH_OUTPUT_INCOMPLETE
+                if error.failure.kind is ProviderFailureKind.INCOMPLETE
+                else ProviderFailureCause.REFRESH_OUTPUT_MALFORMED
+            )
+            raise ProviderBoundaryError(
+                claude_failure(
+                    error.failure.kind,
+                    (
+                        "Claude refresh output was incomplete."
+                        if error.failure.kind is ProviderFailureKind.INCOMPLETE
+                        else "Claude refresh output was malformed."
+                    ),
+                    cause=cause,
+                    fields=error.failure.fields,
+                )
+            ) from None
         return RefreshSuccess(credentials=refreshed)
 
     @staticmethod
-    def _refresh_scopes(account: Account) -> tuple[str, ...]:
-        scopes = require_claude_credentials(account).scopes
-        return DEFAULT_REFRESH_SCOPES if scopes is None else scopes
+    def _refresh_scopes(
+        credentials: ClaudeLoginCredentials,
+    ) -> tuple[str, ...]:
+        return credentials.scopes
 
     def capture_setup_token(self, timeout: int = 600) -> SetupTokenCapture:
         """Run Claude's token generator and return only structured state."""
@@ -372,13 +504,20 @@ class ClaudeProvider(Provider):
     def _capture_setup_output(
         command: list[str],
         timeout: int,
+        *,
+        env: dict[str, str] | None = None,
+        cwd: Path | None = None,
+        umask: int = -1,
     ) -> _SetupProcessResult:
         """Capture at most the bounded token-search input."""
         try:
             process = subprocess.Popen(
                 command,
+                env=env,
+                cwd=cwd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
+                umask=umask,
             )
         except OSError, subprocess.SubprocessError:
             return SetupTokenUnreadable()

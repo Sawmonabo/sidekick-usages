@@ -105,6 +105,7 @@ def test_discovery_maps_the_frozen_native_matrix_without_side_effects(
         paths.private_codex.existing_sidekick == compatibility_root / "codex"
     )
     assert paths.activity_snapshots == Path(data_root) / "token-activity.json"
+    assert paths.credential_refresh == Path(data_root) / "credential-refresh"
     assert calls == [
         {
             "appname": "sidekick-usages",

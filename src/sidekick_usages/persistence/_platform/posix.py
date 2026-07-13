@@ -324,12 +324,44 @@ class PosixPlatform:
         limit: int,
     ) -> NativeFile | None:
         """Bounded-read a no-follow protected sibling."""
+        return self._read_file(
+            parent,
+            basename,
+            limit,
+            private_parent=True,
+            allow_interrupted_link=True,
+        )
+
+    def read_external_private_source(
+        self,
+        parent: Path,
+        basename: str,
+        limit: int,
+    ) -> NativeFile | None:
+        """Read one private source below a non-writable owned parent."""
+        return self._read_file(
+            parent,
+            basename,
+            limit,
+            private_parent=False,
+            allow_interrupted_link=False,
+        )
+
+    def _read_file(
+        self,
+        parent: Path,
+        basename: str,
+        limit: int,
+        *,
+        private_parent: bool,
+        allow_interrupted_link: bool,
+    ) -> NativeFile | None:
         metadata = _path_metadata(parent)
         if metadata is None:
             return None
         if not stat.S_ISDIR(metadata.st_mode):
             raise _native_error(NativeFailureKind.UNSAFE)
-        parent_descriptor = _open_directory(parent, private=True)
+        parent_descriptor = _open_directory(parent, private=private_parent)
         with _owned_descriptor(
             parent_descriptor,
             NativeFailureKind.UNREADABLE,
@@ -384,6 +416,7 @@ class PosixPlatform:
                     file_descriptor,
                     directory_device,
                     limit,
+                    allow_interrupted_link=allow_interrupted_link,
                 )
                 if (
                     _require_exact_entry(

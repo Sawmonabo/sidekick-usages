@@ -14,7 +14,12 @@ from rich.console import Console
 from sidekick_usages.clock import Clock, SystemClock
 from sidekick_usages.core.models import Account
 from sidekick_usages.core.types import ProviderId
-from sidekick_usages.credentials import CredentialService
+from sidekick_usages.credentials import (
+    ClaudeSetupTokenRestoreService,
+    CredentialService,
+)
+from sidekick_usages.credentials.codex import CodexCredentialCoordinator
+from sidekick_usages.credentials.refresh import CredentialRefreshCoordinator
 from sidekick_usages.daemon import DaemonManager
 from sidekick_usages.doctor import DoctorService
 from sidekick_usages.heartbeat import HeartbeatProvider, HeartbeatService
@@ -38,15 +43,20 @@ from sidekick_usages.persistence.assessment import (
 from sidekick_usages.persistence.assessment import (
     doctor_exit_code as persistence_doctor_exit_code,
 )
+from sidekick_usages.persistence.credential_refresh import (
+    CredentialRefreshRecoveryBlockedError,
+    CredentialRefreshState,
+    CredentialRefreshStateKind,
+    CredentialRefreshTransactions,
+)
 from sidekick_usages.persistence.errors import (
     ManagedFileReadError,
     PersistenceCode,
     UnsafeManagedFileError,
     UnsupportedFilesystemError,
 )
-from sidekick_usages.persistence.migrations import (
-    PermissionRepairOperationResult,
-    PersistenceMigrationService,
+from sidekick_usages.persistence.migrations.account_preview import (
+    AccountMigrationPreview,
 )
 from sidekick_usages.persistence.migrations.errors import (
     LocationMigrationStateError,
@@ -61,6 +71,10 @@ from sidekick_usages.persistence.migrations.location import (
     blocked_location_assessment,
     is_blocked_location_selection,
     ready_location_assessment,
+)
+from sidekick_usages.persistence.migrations.service import (
+    PermissionRepairOperationResult,
+    PersistenceMigrationService,
 )
 from sidekick_usages.persistence.v060 import ReleasedV060Verifier
 from sidekick_usages.providers.base import Provider
@@ -100,6 +114,9 @@ class PersistenceCommands(Protocol):
     def mutation_preview(self) -> PersistenceAssessment:
         """Require scheduler quiescence and return a safe preview."""
 
+    def account_migration_preview(self) -> AccountMigrationPreview:
+        """Return a safe account migration credential preview."""
+
     def location_migration_preview(
         self,
     ) -> LocationMigrationAssessment[RuntimePersistenceSelection]:
@@ -120,7 +137,11 @@ class PersistenceCommands(Protocol):
     ) -> PersistenceAssessment:
         """Migrate account authority or import the prototype."""
 
-    def migrate_locations(self) -> LocationMigrationResult:
+    def migrate_locations(
+        self,
+        *,
+        replace_conflicting_destination: bool = False,
+    ) -> LocationMigrationResult:
         """Relocate compatibility state to native application data."""
 
     def prepare_rollback(self) -> PersistenceOperationResult:
@@ -159,6 +180,7 @@ class AppContext:
     heartbeat: HeartbeatService
     maintenance: TokenMaintenanceService
     claude_setup_token: ClaudeSetupToken
+    claude_setup_restore: ClaudeSetupTokenRestoreService
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,6 +196,11 @@ class DoctorReady:
 
     service: DoctorService
     assessment: LocationMigrationAssessment[ReadyLocationSelection]
+    refresh_state: CredentialRefreshState = field(
+        default_factory=lambda: CredentialRefreshState(
+            CredentialRefreshStateKind.CLEAN
+        )
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -312,6 +339,21 @@ def _location_race_failure(
     )
 
 
+def _refresh_composition_failure(
+    error: CredentialRefreshRecoveryBlockedError,
+    safe_path: Path,
+) -> PersistenceCompositionFailure:
+    """Render blocked private refresh evidence without exposing its content."""
+    return PersistenceCompositionFailure(
+        code=error.code,
+        safe_path=safe_path,
+        artifact_basename=safe_path.name,
+        message=str(error),
+        next_command=error.next_command,
+        guidance=recovery_guidance(error.code),
+    )
+
+
 def compose_app_context(
     *,
     paths: ApplicationPaths | None = None,
@@ -351,6 +393,19 @@ def compose_app_context(
                 private_credentials=private,
             ).load()
             persistence.require_location_unchanged(runtime.assessment)
+            refresh_transactions = CredentialRefreshTransactions(
+                accounts,
+                resolved_paths.credential_refresh,
+            )
+            with refresh_transactions.hold_lifecycle():
+                refresh_transactions.recover()
+        except CredentialRefreshRecoveryBlockedError as error:
+            raise _ApplicationCompositionError(
+                _refresh_composition_failure(
+                    error,
+                    resolved_paths.credential_refresh,
+                )
+            ) from None
         except (
             ManagedFileReadError,
             UnsafeManagedFileError,
@@ -359,12 +414,27 @@ def compose_app_context(
             raise _ApplicationCompositionError(
                 _composition_failure(error, resolved_paths.accounts.canonical)
             ) from None
+        codex_coordinator = CodexCredentialCoordinator(
+            accounts,
+            private,
+            clock=resolved_clock,
+        )
+        refresh_coordinator = CredentialRefreshCoordinator(
+            accounts,
+            http,
+            provider_map,
+            refresh_transactions,
+            clock=resolved_clock,
+            codex=codex_coordinator,
+        )
         credentials = CredentialService(
             accounts,
             http,
             provider_map,
             private,
             clock=resolved_clock,
+            refresh_coordinator=refresh_coordinator,
+            codex_coordinator=codex_coordinator,
         )
         if local_activity_sources is None:
             local_activity_map: dict[
@@ -421,6 +491,11 @@ def compose_app_context(
             heartbeat=heartbeat,
             maintenance=maintenance,
             claude_setup_token=setup_token,
+            claude_setup_restore=ClaudeSetupTokenRestoreService(
+                accounts,
+                http,
+                provider_map.get(ProviderId.CLAUDE),
+            ),
         )
 
     return _compose(build)
@@ -471,7 +546,7 @@ def _ready_doctor_state(
     ) as error:
         return DoctorFailed(_composition_failure(error, ready.source))
     service = DoctorService(accounts, providers, heartbeat_providers, clock)
-    return DoctorReady(service, ready)
+    return DoctorReady(service, ready, persistence.assess_refresh())
 
 
 def compose_doctor_context(

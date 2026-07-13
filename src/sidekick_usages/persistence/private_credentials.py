@@ -15,11 +15,11 @@ from sidekick_usages.persistence._platform import (
 
 if sys.platform == "darwin":
     from sidekick_usages.persistence._platform.macos import MacOSPlatform
-    from sidekick_usages.persistence._platform.posix_private import (
-        PosixPrivateCredentialPlatform,
-    )
     from sidekick_usages.persistence._platform.posix_private_bundles import (
         PosixPrivateBundlePlatform,
+    )
+    from sidekick_usages.persistence._platform.posix_private_platform import (
+        PosixPrivateCredentialPlatform,
     )
 elif sys.platform == "win32":
     from sidekick_usages.persistence._platform.windows_private import (
@@ -30,11 +30,11 @@ elif sys.platform == "win32":
     )
 elif sys.platform.startswith("linux"):
     from sidekick_usages.persistence._platform.posix import PosixPlatform
-    from sidekick_usages.persistence._platform.posix_private import (
-        PosixPrivateCredentialPlatform,
-    )
     from sidekick_usages.persistence._platform.posix_private_bundles import (
         PosixPrivateBundlePlatform,
+    )
+    from sidekick_usages.persistence._platform.posix_private_platform import (
+        PosixPrivateCredentialPlatform,
     )
 from sidekick_usages.persistence.artifacts import (
     AuthorityExpectation,
@@ -183,6 +183,30 @@ class PrivateCredentialTree:
             if present
             else OrphanedPrivateCredentials.ABSENT
         )
+
+    def list_owned_directories(self) -> tuple[Path, ...]:
+        """Return direct directory children after a complete secure scan."""
+        try:
+            basenames = self._native.list_directories(self.root)
+        except NativeFilesystemError as error:
+            raise _passive_error(error, self.root.name) from None
+        return tuple(self.root / basename for basename in basenames)
+
+    def list_owned_directories_shallow(self) -> tuple[Path, ...]:
+        """Return direct owned directories without inspecting descendants."""
+        try:
+            basenames = self._native.list_directories_shallow(self.root)
+        except NativeFilesystemError as error:
+            raise _passive_error(error, self.root.name) from None
+        return tuple(self.root / basename for basename in basenames)
+
+    def list_owned_files(self) -> tuple[Path, ...]:
+        """Return direct file children after a complete secure scan."""
+        try:
+            basenames = self._native.list_files(self.root)
+        except NativeFilesystemError as error:
+            raise _passive_error(error, self.root.name) from None
+        return tuple(self.root / basename for basename in basenames)
 
     def destroy_all(self) -> None:
         """Delete all validated artifacts and immediately rescan the root."""
@@ -493,6 +517,20 @@ class PrivateCredentialTree:
             payload,
             expected_source=expected_source,
         )
+
+    def ensure_owned_directory(self, directory: Path) -> None:
+        """Create or validate one qualified directory below the root."""
+        self._require_owned_directory(directory)
+        self._ensure_owned_directory(directory)
+
+    def harden_provider_stage(self, directory: Path) -> None:
+        """Normalize only provider output below one held transaction."""
+        self._require_owned_directory(directory)
+        stage_home = directory / "provider-home"
+        try:
+            self._native.harden_provider_stage(stage_home)
+        except NativeFilesystemError as error:
+            raise _passive_error(error, stage_home.name) from None
 
     def delete_owned_file(
         self,

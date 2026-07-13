@@ -39,6 +39,7 @@ from sidekick_usages.persistence.schemas import (
     MAX_ACCOUNTS,
     decode_generation_zero,
     decode_version_one,
+    decode_version_two,
 )
 
 
@@ -334,6 +335,8 @@ def validate_migration_generations(
         decode_generation_zero(payload)
     elif target_generation is AuthorityGeneration.VERSION_ONE:
         decode_version_one(payload)
+    elif target_generation is AuthorityGeneration.VERSION_TWO:
+        decode_version_two(payload)
     else:
         raise ValueError("Unsupported migration target generation.")
 

@@ -1,6 +1,12 @@
 """Claude usage-window heartbeat adapter."""
 
-from sidekick_usages.core.models import Account
+from typing import assert_never
+
+from sidekick_usages.core.models import (
+    Account,
+    ClaudeLoginCredentials,
+    ClaudeSetupTokenCredentials,
+)
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.heartbeat.models import (
     HeartbeatProbeResult,
@@ -9,6 +15,9 @@ from sidekick_usages.heartbeat.models import (
 )
 from sidekick_usages.heartbeat.ports import HeartbeatProvider, warmed
 from sidekick_usages.http import HttpClient, HttpOperation
+from sidekick_usages.providers.claude.credentials import (
+    require_claude_credentials,
+)
 from sidekick_usages.providers.claude.schemas import (
     header_reset,
     oauth_usage_window,
@@ -18,7 +27,6 @@ from sidekick_usages.providers.claude.usage import (
     ANTHROPIC_BETA,
     MESSAGES_URL,
     PROBE_MODEL,
-    PROFILE_SCOPE,
     USAGE_URL,
     USER_AGENT,
 )
@@ -35,18 +43,22 @@ class ClaudeHeartbeat(HeartbeatProvider):
     display_name = "Claude Code"
 
     def supports(self, account: Account) -> bool:
-        """Claude can warm when inference access is known or unknown."""
+        """Claude can warm setup tokens or inference-capable logins."""
         if account.provider_id != self.id:
             return False
-        if account.scopes is None:
-            return True
-        if PROFILE_SCOPE in account.scopes:
-            return INFERENCE_SCOPE in account.scopes
-        return True
+        credentials = require_claude_credentials(account)
+        match credentials:
+            case ClaudeSetupTokenCredentials():
+                return True
+            case ClaudeLoginCredentials(scopes=scopes):
+                return INFERENCE_SCOPE in scopes
+            case unexpected:
+                assert_never(unexpected)
 
     def unsupported_message(self, account: Account) -> str:
         """Return the missing-scope detail for Claude accounts."""
-        if account.scopes is not None and PROFILE_SCOPE in account.scopes:
+        credentials = require_claude_credentials(account)
+        if isinstance(credentials, ClaudeLoginCredentials):
             return (
                 "Claude heartbeat requires user:inference scope to send "
                 "the tiny warming request."
@@ -59,13 +71,19 @@ class ClaudeHeartbeat(HeartbeatProvider):
         http: HttpClient,
         target: HeartbeatTarget,
     ) -> UsageWindowState:
-        """Read Claude usage through the OAuth route when available."""
+        """Inspect logins without letting setup tokens impersonate them."""
         del target
-        if account.scopes is not None and PROFILE_SCOPE not in account.scopes:
-            return UsageWindowState(
-                active=False,
-                message="header probe needed",
-            )
+        credentials = require_claude_credentials(account)
+        match credentials:
+            case ClaudeSetupTokenCredentials():
+                return UsageWindowState(
+                    active=False,
+                    message="header probe needed",
+                )
+            case ClaudeLoginCredentials():
+                pass
+            case unexpected:
+                assert_never(unexpected)
         data = http.get_json(
             USAGE_URL,
             headers={

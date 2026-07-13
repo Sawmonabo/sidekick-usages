@@ -11,6 +11,10 @@ from sidekick_usages.cli.commands.maintenance import run_refresh_all
 from sidekick_usages.cli.context import invocation_context
 from sidekick_usages.cli.help import branded_command
 from sidekick_usages.cli.token_input import TokenInput
+from sidekick_usages.core.models import (
+    ClaudeLoginCredentials,
+    ClaudeSetupTokenCredentials,
+)
 from sidekick_usages.core.types import ExitCode, ProviderId
 from sidekick_usages.credentials import (
     LocalCredentialSource,
@@ -223,6 +227,16 @@ def refresh_cmd(
             ),
         ),
     ] = False,
+    replace_auth_method: Annotated[
+        bool,
+        typer.Option(
+            "--replace-auth-method",
+            help=(
+                "Allow replacing a saved Claude setup token with the "
+                "current subscription login."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Replace a saved account's token with the local CLI login.
 
@@ -239,6 +253,7 @@ def refresh_cmd(
         force=force,
         from_codex_home=from_codex_home,
         replace_identity=replace_identity,
+        replace_auth_method=replace_auth_method,
     )
     if all_accounts:
         run_refresh_all(ctx, quiet=quiet, force=force)
@@ -272,10 +287,24 @@ def refresh_cmd(
             ),
         ),
         replace_identity=replace_identity,
+        replace_auth_method=replace_auth_method,
     )
     if isinstance(result, ProviderFailure):
         exit_credential_failure(ctx, result)
-    invocation.console.print(f"[green]Updated token for '{narrowed}'.[/green]")
+    saved = app_context.accounts.get(narrowed)
+    if saved is not None and isinstance(
+        saved.credentials,
+        ClaudeLoginCredentials,
+    ):
+        message = f"Updated '{narrowed}' as a Claude subscription login."
+    elif saved is not None and isinstance(
+        saved.credentials,
+        ClaudeSetupTokenCredentials,
+    ):
+        message = f"Updated '{narrowed}' as a Claude setup token."
+    else:
+        message = f"Updated token for '{narrowed}'."
+    invocation.console.print(f"[green]{message}[/green]")
 
 
 def _validate_refresh_args(
@@ -287,6 +316,7 @@ def _validate_refresh_args(
     force: bool,
     from_codex_home: Path | None,
     replace_identity: bool,
+    replace_auth_method: bool,
 ) -> str | None:
     if all_accounts:
         if label is not None:
@@ -303,6 +333,11 @@ def _validate_refresh_args(
             _usage_error(
                 ctx,
                 "--replace-identity only applies to a label refresh.",
+            )
+        if replace_auth_method:
+            _usage_error(
+                ctx,
+                "--replace-auth-method only applies to a label refresh.",
             )
         return None
     if label is None:

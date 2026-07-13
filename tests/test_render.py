@@ -20,6 +20,7 @@ from sidekick_usages.usage import (
     AccountUsage,
     AuthenticationFailure,
     CompleteTokenActivity,
+    CredentialRecoveryKind,
     FailedTokenActivity,
     FetchFailure,
     PartialTokenActivity,
@@ -143,6 +144,7 @@ def _auth_failure(
         provider_id=ProviderId.CODEX,
         plan="pro",
         message="Refresh token unavailable or rejected.",
+        credential_kind=CredentialRecoveryKind.CODEX_LOGIN,
     )
 
 
@@ -475,6 +477,77 @@ def test_failure_renders_in_provider_panel() -> None:
     assert "needs attention" not in out
     first = next(line for line in out.splitlines() if line.strip())
     assert first.strip() == "o"
+
+
+@pytest.mark.parametrize(
+    ("credential_kind", "cause", "expected_lines"),
+    [
+        (
+            CredentialRecoveryKind.CLAUDE_SETUP_TOKEN,
+            "Claude rejected the saved setup token.",
+            (
+                "Claude rejected the saved setup token.",
+                "Run: sidekick-usages claude setup-token --label "
+                "'team account' --force",
+            ),
+        ),
+        (
+            CredentialRecoveryKind.CLAUDE_SUBSCRIPTION_LOGIN,
+            "Claude rejected the saved subscription login.",
+            (
+                "Claude rejected the saved subscription login.",
+                "Sign in to that Claude account, then run:",
+                "sidekick-usages refresh 'team account'",
+            ),
+        ),
+    ],
+)
+def test_claude_auth_recovery_has_one_mode_appropriate_action(
+    credential_kind: CredentialRecoveryKind,
+    cause: str,
+    expected_lines: tuple[str, ...],
+) -> None:
+    failure = AuthenticationFailure(
+        label=AccountLabel("team account"),
+        provider_id=ProviderId.CLAUDE,
+        plan="max",
+        message=cause,
+        credential_kind=credential_kind,
+    )
+
+    status, detail = render._failure_copy(failure)
+
+    assert status == "authentication failed"
+    assert detail == expected_lines
+    assert sum("sidekick-usages" in line for line in detail) == 1
+    assert "log in again" not in "\n".join(detail).lower()
+
+
+@pytest.mark.parametrize("width", [200, _NARROW_TEST_WIDTH])
+def test_claude_auth_recovery_fits_normal_and_narrow_layouts(
+    width: int,
+) -> None:
+    failures = [
+        AuthenticationFailure(
+            label=AccountLabel("team account"),
+            provider_id=ProviderId.CLAUDE,
+            plan="max",
+            message="Claude rejected the saved setup token.",
+            credential_kind=CredentialRecoveryKind.CLAUDE_SETUP_TOKEN,
+        ),
+        AuthenticationFailure(
+            label=AccountLabel("saved login"),
+            provider_id=ProviderId.CLAUDE,
+            plan="max",
+            message="Claude rejected the saved subscription login.",
+            credential_kind=(CredentialRecoveryKind.CLAUDE_SUBSCRIPTION_LOGIN),
+        ),
+    ]
+
+    out = _render_at(width, [], failures=failures)
+
+    assert max(map(len, out.splitlines())) <= width
+    assert "log in again" not in out.lower()
 
 
 def test_persistence_failure_is_not_rendered_as_successful_usage() -> None:

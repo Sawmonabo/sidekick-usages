@@ -33,6 +33,7 @@ from sidekick_usages.usage.models import (
     AccountUsage,
     AuthenticationFailure,
     CompleteTokenActivity,
+    CredentialRecoveryKind,
     FailedTokenActivity,
     FetchFailure,
     ForbiddenFailure,
@@ -391,6 +392,51 @@ def _provider_panel(
     )
 
 
+def _authentication_failure_copy(
+    failure: AuthenticationFailure | RefreshRejectedFailure,
+    message_lines: tuple[str, ...],
+) -> tuple[str, tuple[str, ...]]:
+    """Render one action selected from the saved credential variant."""
+    if failure.credential_kind is CredentialRecoveryKind.CLAUDE_SETUP_TOKEN:
+        command = shlex.join(
+            [
+                "sidekick-usages",
+                "claude",
+                "setup-token",
+                "--label",
+                failure.label,
+                "--force",
+            ]
+        )
+        return "authentication failed", (*message_lines, f"Run: {command}")
+    if (
+        failure.credential_kind
+        is CredentialRecoveryKind.CLAUDE_SUBSCRIPTION_LOGIN
+    ):
+        command = shlex.join(["sidekick-usages", "refresh", failure.label])
+        return (
+            "authentication failed",
+            (
+                *message_lines,
+                "Sign in to that Claude account, then run:",
+                command,
+            ),
+        )
+    provider_name = {
+        ProviderId.CLAUDE: "Claude Code",
+        ProviderId.CODEX: "Codex CLI",
+    }[failure.provider_id]
+    command = shlex.join(["sidekick-usages", "refresh", failure.label])
+    return (
+        "token expired",
+        (
+            *message_lines,
+            f"Log in to {provider_name} again, then run:",
+            command,
+        ),
+    )
+
+
 def _failure_copy(failure: FetchFailure) -> tuple[str, tuple[str, ...]]:
     """Map one typed application failure to human recovery copy."""
     message_lines = tuple(failure.message.splitlines())
@@ -398,19 +444,7 @@ def _failure_copy(failure: FetchFailure) -> tuple[str, tuple[str, ...]]:
         failure,
         AuthenticationFailure | RefreshRejectedFailure,
     ):
-        provider_name = {
-            ProviderId.CLAUDE: "Claude Code",
-            ProviderId.CODEX: "Codex CLI",
-        }[failure.provider_id]
-        command = shlex.join(["sidekick-usages", "refresh", failure.label])
-        return (
-            "token expired",
-            (
-                *message_lines,
-                f"Log in to {provider_name} again, then run:",
-                command,
-            ),
-        )
+        return _authentication_failure_copy(failure, message_lines)
     if isinstance(failure, InvalidExpiryFailure):
         command = shlex.join(["sidekick-usages", "refresh", failure.label])
         return "invalid expiry", (*message_lines, command)

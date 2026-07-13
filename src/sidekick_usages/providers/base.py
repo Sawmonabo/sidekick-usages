@@ -9,6 +9,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
+from typing import Protocol
 
 from sidekick_usages.core.models import (
     Account,
@@ -34,6 +35,21 @@ class ProviderFailureKind(StrEnum):
     UNSUPPORTED = "unsupported"
 
 
+class ProviderFailureCause(StrEnum):
+    """Closed refresh causes without presentation-owned recovery copy."""
+
+    MISSING_REFRESH_CREDENTIAL = "missing refresh credential"
+    ACCESS_CREDENTIAL_EXPIRED = "access credential expired"
+    LOGIN_CREDENTIAL_EXPIRED = "login credential expired"
+    PROVIDER_REJECTED_REFRESH = "provider rejected refresh"
+    REFRESH_TIMED_OUT = "refresh timed out"
+    REFRESH_PROCESS_UNAVAILABLE = "refresh process unavailable"
+    REFRESH_OUTPUT_INCOMPLETE = "refresh output incomplete"
+    REFRESH_OUTPUT_MALFORMED = "refresh output malformed"
+    REFRESHED_IDENTITY_MISMATCH = "refreshed identity mismatch"
+    REFRESH_TEMPORARILY_UNAVAILABLE = "refresh temporarily unavailable"
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ProviderFailure:
     """Secret-safe provider failure suitable for application boundaries."""
@@ -41,6 +57,7 @@ class ProviderFailure:
     provider_id: ProviderId
     kind: ProviderFailureKind
     message: str
+    cause: ProviderFailureCause | None = None
     action_required: bool = True
     fields: tuple[str, ...] = ()
 
@@ -51,6 +68,13 @@ class ProviderBoundaryError(UsageError):
     def __init__(self, failure: ProviderFailure) -> None:
         super().__init__(failure.message)
         self.failure = failure
+
+
+class CredentialStageReader(Protocol):
+    """Read child-produced credentials through their qualified owner."""
+
+    def read(self) -> bytes | None:
+        """Return bounded qualified bytes or absence."""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

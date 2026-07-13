@@ -39,11 +39,13 @@ def _no_composition_context(calls: list[str]) -> InvocationContext:
     "args",
     [
         ["--help"],
+        ["refresh", "--help"],
         ["doctor", "--help"],
         ["daemon", "status", "--help"],
         ["migrate", "accounts", "--help"],
         ["claude", "--help"],
         ["claude", "setup-token", "--help"],
+        ["claude", "restore-setup-token", "--help"],
         ["codex", "--help"],
         ["codex", "login", "--help"],
         ["codex", "export", "--help"],
@@ -72,6 +74,10 @@ def test_help_is_branded_before_usage_without_loading_state(
     "path",
     [
         [],
+        ["refresh"],
+        ["claude"],
+        ["claude", "setup-token"],
+        ["claude", "restore-setup-token"],
         ["codex"],
         ["codex", "login"],
         ["heartbeat"],
@@ -197,7 +203,10 @@ def test_doctor_help_does_not_advertise_removed_auth_option() -> None:
 @pytest.mark.parametrize(
     ("args", "commands"),
     [
-        (["claude", "--help"], ("setup-token",)),
+        (
+            ["claude", "--help"],
+            ("setup-token", "restore-setup-token"),
+        ),
         (["codex", "--help"], ("login", "export")),
     ],
 )

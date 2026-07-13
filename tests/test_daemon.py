@@ -1,9 +1,11 @@
 """Reusable daemon backend architecture tests."""
 
+import subprocess
 from pathlib import Path
 
 import pytest
 
+import sidekick_usages.daemon as daemon_module
 from sidekick_usages.daemon import (
     CommandResult,
     DaemonManager,
@@ -127,6 +129,50 @@ def _absent_scheduler_results() -> dict[SchedulerBackendId, CommandResult]:
             stderr="",
         ),
     }
+
+
+@pytest.mark.parametrize(
+    ("argv", "input_text", "expected_stdin"),
+    [
+        (
+            ("powershell.exe", "-NoProfile", "-Command", "probe"),
+            None,
+            subprocess.DEVNULL,
+        ),
+        (("crontab", "-"), "updated crontab\n", None),
+    ],
+    ids=("no-input-scheduler-probe", "explicit-input"),
+)
+def test_system_command_runner_controls_child_stdin(
+    monkeypatch: pytest.MonkeyPatch,
+    argv: tuple[str, ...],
+    input_text: str | None,
+    expected_stdin: int | None,
+) -> None:
+    """Commands cannot inherit stdin unless the caller supplies input."""
+    calls: list[tuple[list[str], str | None, int | None]] = []
+
+    def fake_run(
+        command: list[str],
+        *,
+        input: str | None,
+        stdin: int | None = None,
+        text: bool,
+        capture_output: bool,
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        assert text is True
+        assert capture_output is True
+        assert check is False
+        calls.append((command, input, stdin))
+        return subprocess.CompletedProcess(command, 0, "output", "")
+
+    monkeypatch.setattr(daemon_module.subprocess, "run", fake_run)
+
+    result = SystemCommandRunner().run(argv, input_text=input_text)
+
+    assert result == CommandResult(0, "output", "")
+    assert calls == [(list(argv), input_text, expected_stdin)]
 
 
 @pytest.mark.parametrize(

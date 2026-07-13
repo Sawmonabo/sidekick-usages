@@ -1,9 +1,9 @@
 """Provider-neutral account usage orchestration."""
 
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Protocol
+from typing import Protocol, assert_never
 
 from sidekick_usages.clock import Clock
 from sidekick_usages.core.expiry import (
@@ -14,12 +14,15 @@ from sidekick_usages.core.expiry import (
 )
 from sidekick_usages.core.models import (
     Account,
-    ClaudeCredentials,
+    ClaudeLoginCredentials,
+    ClaudeSetupTokenCredentials,
+    CodexCredentials,
     Credentials,
     UsageReport,
 )
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.credentials import CredentialUpdateResult
+from sidekick_usages.credentials.refresh import CredentialRefreshReason
 from sidekick_usages.errors import (
     AuthError,
     ForbiddenError,
@@ -52,6 +55,7 @@ from sidekick_usages.usage.activity import (
 from sidekick_usages.usage.models import (
     AccountUsage,
     AuthenticationFailure,
+    CredentialRecoveryKind,
     FetchFailure,
     ForbiddenFailure,
     InvalidExpiryFailure,
@@ -65,7 +69,6 @@ from sidekick_usages.usage.models import (
 )
 
 _CODEX_USAGE_REFRESH_MARGIN = timedelta(seconds=60)
-_CLAUDE_USAGE_REQUIRED_SCOPE = "user:profile"
 
 
 class CredentialCoordinator(CredentialRefresher, Protocol):
@@ -221,7 +224,10 @@ class UsageCheckService:
             and provider.id is ProviderId.CODEX
             and expiry.at <= reference_time + _CODEX_USAGE_REFRESH_MARGIN
         ):
-            refreshed = self._refresh(account)
+            refreshed = self._refresh(
+                account,
+                CredentialRefreshReason.CREDENTIAL_REQUIRED,
+            )
             if isinstance(refreshed, FetchFailure):
                 return _ActivityIneligibleAccount(refreshed)
             account = refreshed
@@ -360,7 +366,10 @@ class UsageCheckService:
             return _ActivityIneligibleAccount(
                 self._failure_from_error(account, error)
             )
-        refreshed = self._refresh(account)
+        refreshed = self._refresh(
+            account,
+            CredentialRefreshReason.ACCESS_REJECTED,
+        )
         if isinstance(refreshed, FetchFailure):
             return _ActivityIneligibleAccount(refreshed)
         return self._fetch(
@@ -377,27 +386,6 @@ class UsageCheckService:
         before_credentials: Credentials,
         before_plan: str,
     ) -> _CheckedAccount:
-        credentials = account.credentials
-        if (
-            provider.id is ProviderId.CLAUDE
-            and isinstance(credentials, ClaudeCredentials)
-            and credentials.scopes is None
-            and error.required_scope == _CLAUDE_USAGE_REQUIRED_SCOPE
-        ):
-            account.credentials = replace(credentials, scopes=())
-            if (
-                failure := self._persist_provider_update(
-                    account,
-                    expected_credentials=before_credentials,
-                    expected_plan=before_plan,
-                )
-            ) is not None:
-                return _ActivityIneligibleAccount(failure)
-            return self._fetch(
-                account,
-                provider,
-                allow_auth_refresh=False,
-            )
         return self._complete_failure(
             account,
             self._failure_from_error(account, error),
@@ -405,9 +393,17 @@ class UsageCheckService:
             before_plan,
         )
 
-    def _refresh(self, account: Account) -> Account | FetchFailure:
+    def _refresh(
+        self,
+        account: Account,
+        reason: CredentialRefreshReason,
+    ) -> Account | FetchFailure:
         try:
-            outcome = self._maintenance.refresh_account(account, force=True)
+            outcome = self._maintenance.refresh_account(
+                account,
+                force=True,
+                reason=reason,
+            )
         except PersistenceError as error:
             return self._persistence_failure(account, error)
         if outcome.refreshed:
@@ -436,6 +432,7 @@ class UsageCheckService:
             provider_id=account.provider_id,
             plan=account.plan,
             message=outcome.message,
+            credential_kind=_credential_recovery_kind(account.credentials),
             provider_failure=outcome.provider_failure,
         )
 
@@ -496,7 +493,8 @@ class UsageCheckService:
                 label=account.label,
                 provider_id=account.provider_id,
                 plan=account.plan,
-                message=str(error),
+                message=_authentication_cause(account.credentials),
+                credential_kind=_credential_recovery_kind(account.credentials),
             )
         if isinstance(error, ForbiddenError):
             return ForbiddenFailure(
@@ -527,6 +525,34 @@ class UsageCheckService:
             plan=account.plan,
             message=str(error),
         )
+
+
+def _credential_recovery_kind(
+    credentials: Credentials,
+) -> CredentialRecoveryKind:
+    """Classify credentials for presentation without exposing material."""
+    match credentials:
+        case ClaudeSetupTokenCredentials():
+            return CredentialRecoveryKind.CLAUDE_SETUP_TOKEN
+        case ClaudeLoginCredentials():
+            return CredentialRecoveryKind.CLAUDE_SUBSCRIPTION_LOGIN
+        case CodexCredentials():
+            return CredentialRecoveryKind.CODEX_LOGIN
+        case unexpected:
+            assert_never(unexpected)
+
+
+def _authentication_cause(credentials: Credentials) -> str:
+    """Return one secret-safe cause owned by the credential boundary."""
+    match credentials:
+        case ClaudeSetupTokenCredentials():
+            return "Claude rejected the saved setup token."
+        case ClaudeLoginCredentials():
+            return "Claude rejected the saved subscription login."
+        case CodexCredentials():
+            return "Codex rejected the saved login."
+        case unexpected:
+            assert_never(unexpected)
 
 
 __all__ = [

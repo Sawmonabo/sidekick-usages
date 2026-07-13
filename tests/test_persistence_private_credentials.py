@@ -63,11 +63,29 @@ class _RecordingPlatform:
     def ensure_directory(self, path: Path) -> None:
         del path
 
+    def list_directories(self, root: Path) -> tuple[str, ...]:
+        del root
+        if self.failure is not None:
+            raise NativeFilesystemError(self.failure)
+        return ()
+
+    def list_directories_shallow(self, root: Path) -> tuple[str, ...]:
+        return self.list_directories(root)
+
+    def list_files(self, root: Path) -> tuple[str, ...]:
+        del root
+        if self.failure is not None:
+            raise NativeFilesystemError(self.failure)
+        return ()
+
     def repair_permissions(self, root: Path) -> tuple[int, int]:
         del root
         if self.failure is not None:
             raise NativeFilesystemError(self.failure)
         return (0, 0)
+
+    def harden_provider_stage(self, root: Path) -> tuple[int, int]:
+        return self.repair_permissions(root)
 
     def contains_artifacts(self, root: Path) -> bool:
         del root
@@ -588,6 +606,29 @@ def test_private_bundle_final_proof_rejects_between_file_removal(
 
 
 if sys.platform == "win32":
+
+    def test_windows_provider_stage_hardens_one_inherited_child_acl(
+        tmp_path: Path,
+    ) -> None:
+        """Apply the exact private DACL only to isolated provider output."""
+        root = tmp_path / "credential-refresh"
+        transaction = root / ("a" * 64)
+        stage_home = transaction / "provider-home"
+        for directory in (root, transaction, stage_home):
+            win32file.CreateDirectoryW(
+                str(directory),
+                private_security_attributes(directory=True),
+            )
+        backups = stage_home / "backups"
+        win32file.CreateDirectoryW(str(backups), None)
+        tree = PrivateCredentialTree(root)
+
+        with pytest.raises(PrivateCredentialArtifactError):
+            tree.destroy_owned_directory(transaction)
+        tree.harden_provider_stage(transaction)
+        tree.destroy_owned_directory(transaction)
+
+        assert not transaction.exists()
 
     def test_windows_relative_bundle_observation_rejects_nested_directory(
         tmp_path: Path,

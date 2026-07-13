@@ -12,7 +12,7 @@ from sidekick_usages.core.expiry import Expiry, KnownExpiry, UnknownExpiry
 from sidekick_usages.core.models import (
     Account,
     AccountTokenActivitySnapshot,
-    ClaudeCredentials,
+    ClaudeSetupTokenCredentials,
     CodexCredentials,
     TokenActivityReading,
     TokenActivitySummary,
@@ -221,10 +221,7 @@ def _account(
     expiry: Expiry | None = None,
 ) -> Account:
     credentials = (
-        ClaudeCredentials(
-            access_token=f"test-only-{label}-access",
-            expiry=expiry or UnknownExpiry(),
-        )
+        ClaudeSetupTokenCredentials(access_token=f"test-only-{label}-access")
         if provider_id is ProviderId.CLAUDE
         else CodexCredentials(
             access_token=f"test-only-{label}-access",

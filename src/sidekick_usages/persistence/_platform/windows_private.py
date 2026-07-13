@@ -88,10 +88,19 @@ if sys.platform == "win32":
         require_root_identity as _require_root_identity,
     )
     from sidekick_usages.persistence._platform.windows_private_tree import (
+        scan_direct_tree as _scan_direct_tree,
+    )
+    from sidekick_usages.persistence._platform.windows_private_tree import (
         scan_tree as _scan_tree,
     )
     from sidekick_usages.persistence._platform.windows_security import (
         repair_security as _repair_security,
+    )
+    from sidekick_usages.persistence._platform.windows_security import (
+        validate_external_private_source_file as _validate_external_file,
+    )
+    from sidekick_usages.persistence._platform.windows_security import (
+        validate_external_source_directory as _validate_external_directory,
     )
     from sidekick_usages.persistence._platform.windows_security import (
         validate_repair_owner as _validate_repair_owner,
@@ -291,15 +300,23 @@ if sys.platform == "win32":
         """Preflight every owner-owned object before changing any DACL."""
         _require_root_identity(opened)
         identities: dict[_RelativePath, _Identity] = {(): opened.root_identity}
+        root_security_valid = _security_is_valid(
+            opened.root_descriptor,
+            directory=True,
+        )
+        if not root_security_valid:
+            _validate_external_directory(
+                _descriptor_handle(
+                    opened.root_descriptor,
+                    NativeFailureKind.UNSAFE,
+                )
+            )
         entries = [
             _RepairEntry(
                 (),
                 opened.root_identity,
                 True,
-                _security_is_valid(
-                    opened.root_descriptor,
-                    directory=True,
-                ),
+                root_security_valid,
             )
         ]
         pending: list[_RelativePath] = [()]
@@ -342,6 +359,15 @@ if sys.platform == "win32":
                             child,
                             directory=directory,
                         )
+                        if not security_valid:
+                            handle = _descriptor_handle(
+                                child,
+                                NativeFailureKind.UNSAFE,
+                            )
+                            if directory:
+                                _validate_external_directory(handle)
+                            else:
+                                _validate_external_file(handle)
                     child_relative = (*relative, basename)
                     entries.append(
                         _RepairEntry(
@@ -472,6 +498,10 @@ if sys.platform == "win32":
                 _scan_tree(opened)
                 return (repaired_directories, repaired_files)
 
+        def harden_provider_stage(self, root: Path) -> tuple[int, int]:
+            """Normalize only a preflight-safe provider-produced subtree."""
+            return self.repair_permissions(root)
+
         def contains_artifacts(self, root: Path) -> bool:
             """Validate the complete tree and report any descendants."""
             self._qualifier.qualify(root)
@@ -480,6 +510,50 @@ if sys.platform == "win32":
                     return False
                 entries, _identities = _scan_tree(opened)
                 return bool(entries)
+
+        def list_directories(self, root: Path) -> tuple[str, ...]:
+            """Validate the tree and list direct child directories."""
+            self._qualifier.qualify(root)
+            with _open_tree(root) as opened:
+                if opened is None:
+                    return ()
+                entries, _identities = _scan_tree(opened)
+                return tuple(
+                    sorted(
+                        entry.relative[0]
+                        for entry in entries
+                        if entry.directory and len(entry.relative) == 1
+                    )
+                )
+
+        def list_directories_shallow(self, root: Path) -> tuple[str, ...]:
+            """Validate only direct children and return directories."""
+            self._qualifier.qualify(root)
+            with _open_tree(root) as opened:
+                if opened is None:
+                    return ()
+                return tuple(
+                    sorted(
+                        entry.relative[0]
+                        for entry in _scan_direct_tree(opened)
+                        if entry.directory
+                    )
+                )
+
+        def list_files(self, root: Path) -> tuple[str, ...]:
+            """Validate the tree and list direct child files."""
+            self._qualifier.qualify(root)
+            with _open_tree(root) as opened:
+                if opened is None:
+                    return ()
+                entries, _identities = _scan_tree(opened)
+                return tuple(
+                    sorted(
+                        entry.relative[0]
+                        for entry in entries
+                        if not entry.directory and len(entry.relative) == 1
+                    )
+                )
 
         def destroy_artifacts(self, root: Path) -> None:
             """Prevalidate then handle-delete every descendant bottom-up."""

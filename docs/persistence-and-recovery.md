@@ -14,6 +14,10 @@ Sidekick owns three kinds of local data:
 - `token-activity.json`, strict last-successful Codex account activity
   snapshots containing no credentials, labels, or raw provider account IDs.
 
+Credential refresh also uses private, short-lived transaction journals and a
+single staged replacement envelope. These are recovery evidence, not account
+configuration or fixtures.
+
 Provider-native homes such as `~/.claude` and `~/.codex` are not Sidekick
 application-data locations. Location migration never moves, deletes, or
 overwrites the active provider login.
@@ -131,6 +135,28 @@ For reviewed non-interactive automation, pass `--yes`:
 sidekick-usages migrate locations --yes
 ```
 
+A conflict remains blocked by default. After independently verifying that the
+compatibility location is the intended authority, explicitly replace the
+conflicting canonical destination with:
+
+```bash
+sidekick-usages migrate locations --replace-conflicting-destination
+```
+
+Replacement remains blocked when a provably older credential from the
+compatibility authority would replace the canonical credential for the same
+provider and label. The proof requires different credentials plus timestamps
+on both records, with the canonical `last_refresh_at` strictly newer. This
+protects a recent rotating-token refresh from being rolled back by stale
+compatibility state. Neither authority nor its recovery artifacts are changed
+when this guard stops the migration.
+
+The preview states that replacement intent before confirmation. The command
+retains the displaced canonical account authority as an immutable snapshot,
+keeps the compatibility source unchanged, and uses the same private-auth-first
+transaction and recovery path as a normal location migration. Add `--yes` only
+after reviewing that exact preview.
+
 The command rechecks the source under both location locks, validates every
 private Codex bundle through the provider-owned adapter, commits private auth
 before account authority, and verifies the completed native state. A single
@@ -151,7 +177,7 @@ sidekick-usages daemon status
 ## Schema migration and prototype import
 
 The current account authority is a versioned document with
-`"schema_version": 1`. Released 0.6.0 documents remain readable. If `doctor`
+`"schema_version": 2`. Released 0.6.0 documents remain readable. If `doctor`
 reports a schema migration or prototype import requirement, run:
 
 ```bash
@@ -161,6 +187,58 @@ sidekick-usages migrate accounts
 The command previews its exact operation and asks for confirmation. Use
 `--yes` only after reviewing the preview. Immutable content-addressed backups
 are published before the authority changes.
+
+## Credential refresh recovery
+
+Every saved rotating refresh enters one provider-neutral coordinator. Work for
+the same credential is serialized before provider traffic with a lock derived
+from the provider and refresh credential. The secret itself is never written
+to the lock name, journal, or diagnostics. After lock acquisition, Sidekick
+reopens current authority and stabilizes again if the credential rotated while
+a waiter was blocked.
+
+The local transaction is:
+
+1. write a bounded non-secret intent journal;
+2. exchange with the provider exactly once;
+3. strictly encode one private `replacement.json` stage containing the target
+   account, an explicit plan update when returned, and a prepared Codex private
+   bundle when required;
+4. mark the stage complete;
+5. merge only the target credential over unrelated account and heartbeat
+   writes;
+6. commit and prove any matching private Codex bundle; and
+7. remove the private stage and journal after durability proof.
+
+Refresh recovery runs before another refresh and during the relevant
+persistence lifecycle operations. A complete stage can finish locally without
+another provider request. An incomplete stage is discarded with the current
+account unchanged. A newer, removed, or renamed target is never overwritten or
+resurrected. Malformed, oversized, linked, permission-unsafe, or otherwise
+untrusted evidence blocks mutation and remains available for diagnosis.
+
+`doctor` reports refresh evidence as clean, recoverable, or blocked without
+exposing a credential or identity. Account migration, location migration, and
+rollback preparation resolve safe complete evidence first and stop on unsafe
+evidence. Do not delete a journal, stage, or unknown refresh-root entry by
+hand.
+
+A full `sidekick-usages reset` acquires exclusive lifecycle ownership and
+removes refresh transactions and staged credentials before deleting account
+authority. It fails closed when the private namespace contains an unknown or
+unsafe entry. `sidekick-usages daemon uninstall` removes scheduling only; it
+does not remove accounts or refresh recovery evidence.
+
+### Provider/local atomicity limit
+
+No local transaction can make a provider's rotating OAuth exchange atomic
+with Sidekick's filesystem. The unavoidable provider/local atomicity gap is
+the interval after a provider returns replacement credentials and before the
+complete private stage is durably written. A process loss in that interval may
+require an explicit login recovery because another provider exchange could
+invalidate the only returned credential. Sidekick minimizes this window and
+recovers every state at or after a complete stage, but does not claim
+distributed atomicity.
 
 ## Recovery states
 
@@ -185,8 +263,9 @@ Follow the emitted `Next:` command. The stable location outcomes are:
 
 Do not repair a conflict by manually copying JSON or auth files. That bypasses
 identity, permission, collision, generation, and durability checks. Preserve
-both locations and use the typed next command or report the redacted doctor
-output.
+both locations until you have established which authority is correct. Use
+`--replace-conflicting-destination` only when compatibility is the intended
+source; otherwise preserve the evidence and report the redacted doctor output.
 
 If permissions are the only problem, preview and run:
 
@@ -215,10 +294,10 @@ sidekick-usages migrate prepare-rollback --target v0.6.0 --yes
 ```
 
 The command rewrites the latest canonical account and private-Codex state into
-the compatibility location, publishes the version-one lineage snapshot needed
-for a future upgrade, commits exact generation-zero authority bytes, and runs
-the pinned released 0.6.0 reader against the result. It preserves the native
-authority and older compatibility evidence.
+the compatibility location, publishes the current schema-version-two lineage
+snapshot needed for a future upgrade, commits exact generation-zero authority
+bytes, and runs the pinned released 0.6.0 reader against the result. It
+preserves the native authority and older compatibility evidence.
 
 Only after that verification succeeds should the executable be downgraded:
 

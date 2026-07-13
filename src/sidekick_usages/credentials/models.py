@@ -66,6 +66,13 @@ class CredentialSaveSuccess:
 
 
 @dataclass(frozen=True, slots=True)
+class ClaudeSetupTokenSavePreview:
+    """Authorized login-to-setup method-change preview."""
+
+    label: AccountLabel
+
+
+@dataclass(frozen=True, slots=True)
 class CredentialRefreshSuccess:
     """One account's credentials were durably refreshed."""
 
@@ -104,6 +111,7 @@ type CredentialExportResult = CredentialExportSuccess | ProviderFailure
 
 
 __all__ = [
+    "ClaudeSetupTokenSavePreview",
     "CredentialExportResult",
     "CredentialExportSuccess",
     "CredentialLoginResult",
