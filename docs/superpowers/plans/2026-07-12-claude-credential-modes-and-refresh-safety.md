@@ -43,8 +43,8 @@ pytest 9, Ruff, `ty`, `uv`, and the official Claude Code 2.1.207 CLI.
 
 - **Status:** Tasks 1-7 implemented and verified after corrective live
   recovery. Scheduler restoration, editable/global installation parity, and
-  final gates are complete. Commit and push remain pending explicit operator
-  authorization
+  final gates are complete. Publication was explicitly authorized on
+  2026-07-13; the primary implementation commit is `cffb1a3`
 - **Date:** 2026-07-12
 - **Repository:** `<REPOSITORY_ROOT>`
 - **Branch:** `develop`
@@ -1565,9 +1565,8 @@ operations.
 - [x] Inspect `git status --short --branch`, `git diff --stat`,
   `git diff --check`, local HEAD, and `origin/develop` before any completion
   claim.
-- [ ] If and only if the operator authorizes commits, use section 15's
-  Conventional Commit sequence. Do not push until the operator explicitly
-  requests a push.
+- [x] After explicit operator authorization, publish with Conventional
+  Commits. Do not push until the operator explicitly requests a push.
 
 Task 7 automated verification and installation record (2026-07-13):
 

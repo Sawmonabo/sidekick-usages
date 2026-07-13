@@ -28,8 +28,8 @@ IMPLEMENTATION_PLAN = (
     / "2026-07-12-claude-credential-modes-and-refresh-safety.md"
 )
 CHANGED_DOCUMENTS = (*CLAUDE_GUIDES, ARCHITECTURE_SPEC, IMPLEMENTATION_PLAN)
-TASK_SEVEN_COMPLETED_STEP_COUNT = 5
-TASK_SEVEN_PENDING_STEP_COUNT = 1
+TASK_SEVEN_COMPLETED_STEP_COUNT = 6
+TASK_SEVEN_PENDING_STEP_COUNT = 0
 
 
 def _heading_anchors(text: str) -> set[str]:
@@ -297,7 +297,8 @@ def test_plan_status_and_spec_recovery_match_current_version_two() -> None:
     assert "- [x] Execute section 14.8" in task_seven
     assert "- [x] Stop and present the exact section 14.9" in task_seven
     assert "Tasks 1-7 implemented and verified" in normalized_plan
-    assert "Commit and push remain pending" in normalized_plan
+    assert "Publication was explicitly authorized" in normalized_plan
+    assert "the primary implementation commit is `cffb1a3`" in plan
     assert (
         "corrected recovery run remains pending renewed approval" not in plan
     )
