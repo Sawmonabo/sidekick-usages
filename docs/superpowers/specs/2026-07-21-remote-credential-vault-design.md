@@ -1,6 +1,7 @@
 # Design Spec — Remote Credential Vault and Cross-Machine State
 
-- **Status:** Proposed; researched and QA-corrected; not implemented
+- **Status:** Proposed; fully consolidated, researched, and QA-corrected; not
+  implemented
 - **Date:** 2026-07-21
 - **Repository:** `sidekick-usages`
 - **Repository decision:** All product and deployable source remains in this
@@ -11,8 +12,10 @@
 - **Related checkout:** `sidekick-tools` at
   `7320fe38c19689671c21753426ced3f8c81c0533`
 - **Research date:** 2026-07-21
-- **Evidence status:** Primary web sources and repository evidence are inlined;
-  this tracked specification does not depend on ignored research artifacts
+- **Evidence status:** Primary web sources, repository evidence, architecture
+  alternatives, limits, calculations, corrections, and implementation gates are
+  inlined; this tracked specification does not depend on ignored research
+  artifacts
 - **Production impact:** None; this document authorizes no deployment,
   credential upload, provider mutation, or Cloudflare mutation
 
@@ -53,7 +56,8 @@ repository.
 24. [Rejected Designs](#24-rejected-designs)
 25. [Risks and Open Questions](#25-risks-and-open-questions)
 26. [Revalidation Triggers](#26-revalidation-triggers)
-27. [Source Matrix](#27-source-matrix)
+27. [Modern Cross-Product Target and Free-Tier Contract](#27-modern-cross-product-target-and-free-tier-contract)
+28. [Source Matrix](#28-source-matrix)
 
 ## 1. Executive Decision
 
@@ -106,6 +110,21 @@ In one sentence:
 > Sidekick Usages owns one personal remote vault for explicitly portable
 > Claude setup tokens and safe snapshots; provider login sessions remain on
 > the machines and with the official provider clients that created them.
+
+The richer cross-product target does not weaken that sentence. Sidekick Tools
+remains a separately deployed, MCP-first capability service for its own Google,
+Microsoft, and Resend integrations. It does not become the Claude/Codex vault,
+and the vault does not become an MCP secret-export service. The products may
+share one Cloudflare account and, later, a deliberately narrow read-only
+integration, but they retain separate Workers, Durable Object namespaces,
+credentials, keys, principals, release lifecycles, and compromise boundaries.
+
+The full target, scheduling ownership, multi-machine lease design, current
+Free-tier limits, capacity calculations, Sidekick Tools modernization verdict,
+research corrections, and promotion gates are normative in
+[Section 27](#27-modern-cross-product-target-and-free-tier-contract). Version
+one remains the narrower vault described above; the richer features are phased
+and cannot be used to bypass its security gates.
 
 ## 2. Problem and Incident Context
 
@@ -1920,7 +1939,864 @@ Re-run provider and platform research when any of these occur:
 A revalidation records exact versions, dates, URLs, and the resulting design
 amendment. It does not silently rewrite this authority.
 
-## 27. Source Matrix
+## 27. Modern Cross-Product Target and Free-Tier Contract
+
+This section is the durable consolidation of the architecture investigation
+that followed the original vault decision. It resolves how Sidekick Tools,
+remote MCP access, local Sidekick Usages schedulers, multi-machine collection,
+time aggregation, and Cloudflare Free constraints fit together. Where this
+section narrows an earlier idea, this section is authoritative.
+
+### 27.1 Research scope and evidence snapshot
+
+The investigation used four independent evidence lanes, synthesized here
+without relying on a separate research artifact:
+
+1. current Cloudflare capabilities, Free limits, failure behavior,
+   authentication, storage, scheduling, and observability;
+2. maintained Cloudflare and MCP architecture patterns;
+3. official Claude and Codex credential ownership plus multi-device scheduling
+   safety; and
+4. integration fit against the live Sidekick Tools and Sidekick Usages
+   repositories.
+
+The Sidekick Tools evidence revision was
+`7320fe38c19689671c21753426ced3f8c81c0533`. At that revision:
+
+| Measurement | Verified result |
+| --- | ---: |
+| Registered provider modules | 7 |
+| Provider handler files / operations | 56 |
+| Provider TypeScript files | 89 |
+| Provider production lines | 5,941 |
+| TypeScript test files | 85 |
+| Worker entry point | `src/index.ts` |
+| Scheduled refresh | `*/45 * * * *` |
+| Mutable refresh authority | Workers KV |
+
+The registered providers were Resend, Gmail, Google Calendar, Outlook,
+Microsoft Calendar, OneDrive, and Teams. Every handler was shaped around the
+current request/result contract, and the provider tree widely constructed MCP
+content results. The package was private, exposed no library exports, and
+deployed one Worker. Its existing CLI was a credential-setup utility, not a
+second provider-capability consumer.
+
+The live source also showed the urgent credential issue: normal calls, 401
+recovery, and the 45-minute cron could cause token refresh, while rotated
+Microsoft refresh material was written to Workers KV. Cloudflare documents KV
+as eventually consistent and unsuitable for values that need an atomic
+read/write transaction.[^workers-kv] That algorithm must not be copied into the
+Sidekick Usages vault and should be replaced in Sidekick Tools.
+
+No research observation authorizes a production migration. Google and
+Microsoft rotation details still require provider-specific contract tests, and
+the live Cloudflare account still requires a read-only plan and capacity
+inventory before any deployment.
+
+### 27.2 Sidekick Tools architecture verdict
+
+Sidekick Tools is currently and intentionally MCP-first. If MCP remains its
+only concrete delivery surface, a full workspace reconstruction is not
+necessary.
+
+The superseded immediate proposal was:
+
+```text
+packages/capabilities
+packages/providers
+apps/worker
+apps/cli
+```
+
+That shape is reasonable only after a real independently built consumer exists.
+Moving 56 handlers into packages now would add a release graph and migration
+surface without delivering a requested product behavior. Modern MCP already
+supports transport separation, output schemas, structured content, behavior
+annotations, resources, prompts, and stateless or stateful Streamable HTTP.
+Those capabilities do not require a monorepo package split.[^mcp-tools]
+[^mcp-typescript]
+
+The current recommendation is focused internal hardening inside the existing
+private Worker package:
+
+```text
+src/
+├── core/
+│   ├── capability-result.ts
+│   ├── effects.ts
+│   ├── errors.ts
+│   └── ports.ts
+├── providers/
+├── adapters/
+│   └── mcp/
+├── runtime/
+│   └── cloudflare/
+└── index.ts
+```
+
+These are conceptual ownership boundaries, not an instruction to create empty
+or speculative modules. The rule of three still applies. A boundary is added
+only while migrating concrete behavior.
+
+The hardening scope is:
+
+1. preserve every external MCP operation name and accepted input unless an
+   intentional product change is separately approved;
+2. return typed, validated provider results before MCP formatting;
+3. map results to `outputSchema`, `structuredContent`, and compatible text in
+   the MCP adapter;
+4. classify read, create, update, send, delete, destructive, and idempotent
+   effects;
+5. inject only narrow provider/runtime ports;
+6. move rotating credential authority and exact counters out of KV;
+7. coordinate refresh through a Sidekick Tools-specific SQLite Durable Object;
+8. replace blanket proactive refresh with safe on-demand refresh;
+9. retain compatibility and tool-selection evaluations; and
+10. reconcile architecture documentation with the live provider registry.
+
+This is not an implementation plan for this repository. Sidekick Tools remains
+owned and released by its own repository. The purpose of recording the verdict
+here is to make the cross-product trust and integration decision durable.
+
+### 27.3 When package reconstruction becomes justified
+
+The full package split is deferred, not prohibited. Reconsider it only when at
+least one concrete trigger exists:
+
+- a real non-MCP CLI invokes the same provider operations;
+- an independently deployed HTTP service consumes the same provider code;
+- another repository needs a versioned private TypeScript package;
+- package-level security ownership differs materially from Worker ownership;
+- provider capabilities need an independent release lifecycle; or
+- two or more maintained consumers prove the abstraction through use.
+
+At that point, the conditional package design preserves these contracts:
+
+| Contract | Required behavior |
+| --- | --- |
+| Capability | Stable ID, input/output schema, effect, retry safety |
+| Result | Typed structured value, not pre-rendered MCP text |
+| Error | Bounded typed state with private provider diagnostics |
+| Ports | HTTP, token source, clock, logger, ID, cancellation, storage |
+| MCP adapter | Description, annotations, content, compatibility rendering |
+| Worker runtime | Environment parsing, authentication, storage, scheduling |
+
+The first proof should migrate one simple read, one credentialed mutation, and
+one complex structured result while preserving MCP compatibility. Package
+extraction must follow the proof; it must not be the proof.
+
+### 27.4 Product and credential boundaries
+
+Sidekick Tools is a **credential-using remote capability hub**. It is not a
+general remote credential store. The service necessarily uses its own Google,
+Microsoft, and Resend authority server-side to perform user-authorized actions.
+An MCP client receives authorization to invoke a capability; it never receives
+the upstream provider credential.
+
+Sidekick Usages is the Claude/Codex account, credential-mode, usage, heartbeat,
+local-session, and portable-credential authority. Its cloud vault stores only
+the positive allowlist in [Section 6](#6-credential-and-state-classification).
+
+| Surface | May do | Must never do |
+| --- | --- | --- |
+| Sidekick Tools MCP | Invoke scoped provider capabilities; show connection health | Return provider access or refresh tokens |
+| Sidekick Tools MCP | Return sanitized Sidekick usage later | Export a Claude setup token or Codex auth state |
+| Sidekick Tools Worker | Refresh its own cloud provider authority | Refresh Claude/Codex subscription logins |
+| Sidekick Usages CLI | Explicitly push/pull eligible setup tokens | Make secret retrieval agent-invocable |
+| Sidekick Usages Worker | Store encrypted setup-token generations | Call Claude or OpenAI providers |
+| Local provider clients | Own local login and provider calls | Let cloud state overwrite the active login |
+
+Raw secret operations remain deliberate Sidekick Usages CLI workflows with
+explicit human intent. MCP is model-controlled, and the MCP specification
+requires strong input validation, access control, rate limits, sanitized
+outputs, and human confirmation for sensitive operations.[^mcp-tools] A
+`get_raw_token` tool would place credentials into model context, client logs,
+tool traces, and conversation history and is therefore forbidden.
+
+### 27.5 Complete trust-boundary topology
+
+```mermaid
+flowchart TB
+    accTitle: Complete Sidekick cloud and local trust boundaries
+    accDescr: Two independent Workers share an account but not credentials, keys, stores, or authority. Local machines own Claude and Codex provider sessions.
+
+    subgraph Account["One Cloudflare account; Free plan required"]
+        AccessTools["Tools Access / OAuth boundary"]
+        Tools["Sidekick Tools Worker<br/>remote MCP Streamable HTTP"]
+        ToolsDO["Tools Credential SQLite DO<br/>Google/Microsoft refresh authority"]
+
+        AccessVault["Vault device Access boundary"]
+        Vault["Sidekick Usages Vault Worker<br/>versioned vault protocol"]
+        VaultDO["Personal Vault SQLite DO<br/>encrypted setup tokens, snapshots,<br/>leases, activity, audit"]
+
+        ReadBinding["Optional sanitized read interface<br/>no credential methods"]
+
+        AccessTools --> Tools --> ToolsDO
+        AccessVault --> Vault --> VaultDO
+        Tools -. "optional read only" .-> ReadBinding
+        ReadBinding -.-> Vault
+    end
+
+    subgraph Machines["Enrolled user machines"]
+        MCPClients["MCP clients"]
+        Usages["Sidekick Usages CLI / daemon / TUI"]
+        Claude["Local Claude credential owner"]
+        Codex["Official local Codex credential owner"]
+        Activity["Local token activity"]
+
+        MCPClients --> AccessTools
+        Usages --> AccessVault
+        Usages --> Claude
+        Usages --> Codex
+        Activity --> Usages
+    end
+
+    Claude -. "no credential path" .- Tools
+    Codex -. "no credential path" .- Tools
+```
+
+The dashed optional read path is not part of version one. It cannot be enabled
+until its interface is proven incapable of credential retrieval, bootstrap,
+restore, enrollment, deletion, or mutation.
+
+### 27.6 Authentication is separated by client class
+
+Human MCP clients and headless vault devices are different principals.
+
+#### MCP clients
+
+The preferred future Sidekick Tools front door is Cloudflare Access Managed
+OAuth because it lets compatible MCP clients use a standard OAuth flow and
+re-evaluates Access policy during refresh. Cloudflare currently recommends a
+5-15 minute access-token lifetime and a one-to-two-week grant session for CLI
+and agent clients.[^managed-oauth]
+
+Managed OAuth is currently labeled **Beta**. It is a migration candidate, not
+an unconditional production prerequisite. Before cutover:
+
+1. allow only the owner's identity;
+2. validate the Access JWT in the Worker;
+3. verify issuer, audience, time, signature, and application claims;
+4. test every actual MCP client and redirect mode;
+5. restrict dynamic registration to required localhost, loopback, and explicit
+   redirect URIs;
+6. preserve an explicit client/session revocation path;
+7. retain capability/effect authorization in the application; and
+8. keep a bounded rollback to the maintained Cloudflare OAuth-provider path.
+
+Managed OAuth must not be enabled in front of an existing origin OAuth server
+without migration. Cloudflare documents that the feature replaces the
+protected application's normal 401 behavior and requires an RFC 8707-capable
+client.[^managed-oauth]
+
+#### Vault devices
+
+Each enrolled Sidekick Usages device receives:
+
+- one independently revocable service identity or equivalent narrow service
+  credential;
+- one application-level public signing key;
+- a random device ID;
+- explicit scopes;
+- issued, last-seen, and revoked timestamps; and
+- a monotonic request, generation, or nonce discipline.
+
+No MCP bearer, browser OAuth refresh token, provider token, or bootstrap secret
+is reused for a device. Cloudflare's default Access account limit currently
+lists 50 service tokens, which is sufficient for the expected personal fleet
+but must still be checked live before enrollment.[^access-limits]
+
+### 27.7 Sidekick Tools credential actor and refresh flow
+
+Sidekick Tools needs its own SQLite Durable Object namespace. The consistency
+subject is a provider credential owner, not a Claude/Codex account in the
+Sidekick Usages vault.
+
+The Tools credential actor owns:
+
+- encrypted refresh-token generation;
+- access-token value and expiry;
+- a durable refresh epoch;
+- single-flight refresh state;
+- compare-and-swap rotation;
+- reauthorization-required state;
+- exact per-identity application budgets; and
+- redacted refresh audit metadata.
+
+```mermaid
+sequenceDiagram
+    actor Client as Authenticated MCP client
+    participant MCP as Tools MCP adapter
+    participant Policy as Effect and retry policy
+    participant DO as Tools Credential DO
+    participant Provider as Google or Microsoft
+
+    Client->>MCP: Invoke capability
+    MCP->>Policy: Validate scope, effect, retry safety
+    Policy->>DO: Request usable access token
+    alt Token safely valid
+        DO-->>Policy: Current access token
+    else Token near expiry
+        DO->>DO: Start or join one refresh epoch
+        DO->>Provider: Refresh with current generation
+        Provider-->>DO: Access token and optional rotated refresh token
+        DO->>DO: Atomic generation compare-and-swap
+        DO-->>Policy: New access token or typed failure
+    end
+    Policy->>Provider: Execute provider action
+    alt Read receives 401
+        Policy->>DO: Invalidate access token
+        Policy->>Provider: Retry once after coordinated refresh
+    else Mutation is ambiguous
+        Policy-->>MCP: Typed outcome; no blind replay
+    end
+    MCP-->>Client: Structured result plus compatible text
+```
+
+The default policy is lazy proactive refresh immediately before the token
+enters a short safety margin. Refresh happens before a provider mutation, not
+after an ambiguous failure. A read may retry once after a coordinated 401. A
+send, create, update, or delete retries only when the provider supplies a
+verified idempotency basis.
+
+After this path is proven, remove the blanket `*/45 * * * *` cron. A
+provider-specific Durable Object alarm is allowed only if current official
+provider documentation proves unused authority requires proactive renewal.
+That alarm must be idempotent and credential-specific.
+
+### 27.8 Claude and Codex credential lifecycles remain local
+
+Claude setup tokens are an explicit exception because Anthropic documents them
+as one-year model-request credentials printed for CI and non-interactive
+environments. Claude Code does not save the printed token, and
+`CLAUDE_CODE_OAUTH_TOKEN` takes precedence over subscription login state.
+[^claude-auth] They are not a rotating refresh family and need no 30-minute
+cloud refresh job.
+
+The setup-token lifecycle is:
+
+```text
+interactive generation on the intended authenticated account
+  -> provider validation without claiming unsupported identity
+  -> explicit account-association approval
+  -> encrypted new vault generation
+  -> explicit pull on another enrolled machine
+  -> Sidekick-owned import without touching the active login
+  -> renewal warning before the documented one-year expiration
+  -> explicit replacement and retirement of the old generation
+```
+
+A provider-accepted setup token does not by itself prove a unique email,
+account, or organization context. Identity stays `unverified` until the user
+approves it or a documented provider identity contract proves it.
+
+Claude subscription login remains local. Anthropic documents subscription OAuth
+as ordinary native use and prohibits third-party routing of Free, Pro, and Max
+credentials on behalf of users; the Worker therefore never becomes an
+inference proxy.[^claude-legal]
+
+Current official Codex documentation says the CLI caches credentials locally in
+`auth.json` or an OS credential store and automatically refreshes ChatGPT tokens
+during use.[^codex-auth] Consequently:
+
+- every machine owns its official Codex login;
+- `auth.json`, keyring entries, access tokens, refresh tokens, and ID tokens are
+  never uploaded;
+- Sidekick may coordinate only a private local bundle under existing local
+  invariants;
+- cloud alarms never invoke Codex refresh; and
+- remote health never proves a particular machine's Codex login is healthy.
+
+### 27.9 Local maintenance and cross-machine collector leases
+
+The 30-minute OS scheduler remains installed on each machine because local
+credentials, provider clients, and token-activity evidence live there. Running
+a scheduler everywhere is safe only when ownership is explicit.
+
+All enrolled machines may:
+
+- inspect their own credential health;
+- let the official local client maintain its own login;
+- authenticate and renew device presence;
+- upload unique local activity batches;
+- pull newer remote snapshots; and
+- perform a clearly labeled on-demand provider read.
+
+Only the current per-account lease holder may perform scheduled provider polling
+or usage-generating heartbeat/warm activity.
+
+```mermaid
+sequenceDiagram
+    participant A as Device A scheduler
+    participant B as Device B scheduler
+    participant V as Vault DO lease actor
+    participant P as Local provider adapter
+
+    A->>V: Acquire account lease
+    V-->>A: Epoch 12, expires in 75 minutes
+    B->>V: Acquire same account lease
+    V-->>B: Held by A, epoch 12
+    A->>P: Poll usage and permitted heartbeat
+    P-->>A: Provider observation
+    A->>V: Publish observation with epoch 12
+    V-->>A: Accepted generation 44
+    Note over A,V: Device A goes offline; lease expires
+    B->>V: Acquire expired lease
+    V-->>B: Epoch 13
+    A->>V: Late publish with epoch 12
+    V-->>A: Rejected as stale lease epoch
+    B->>P: Poll under epoch 13
+    B->>V: Publish observation with epoch 13
+```
+
+The normative lease record contains:
+
+| Field | Meaning |
+| --- | --- |
+| Provider-qualified account ID | Stable lease subject; never friendly label |
+| Device ID | Current collector |
+| Lease epoch | Incremented on every ownership change |
+| Acquired and expiry times | Server-clock authority |
+| Last successful collection | Freshness and diagnostics |
+| Last publication generation | Late-result rejection |
+
+Initial tuning is a 30-minute maintenance cadence with a 70-75 minute lease
+TTL. The leader renews on a successful run. Any enrolled eligible device may
+take over after expiry. A late old-leader result is rejected. On-demand reads
+remain possible but do not establish scheduled ownership. If all devices are
+offline, data becomes visibly stale; the cloud does not manufacture a provider
+result.
+
+Each local maintenance pass becomes separately observable:
+
+```text
+1. inspect local credential health
+2. let official local owners refresh where applicable
+3. authenticate the device to the vault
+4. acquire or renew provider-account collector leases
+5. poll or heartbeat only for leases this device owns
+6. publish provider snapshots idempotently
+7. publish local activity batches idempotently
+8. pull and merge newer eligible remote state
+9. persist and render explicit partial failures
+```
+
+### 27.10 Time, snapshot, and activity semantics
+
+The cloud coordinates time; it does not infer unseen usage.
+
+Provider quota and utilization snapshots are gauges:
+
+- store the provider's absolute reset time where available;
+- store `observed_at`, server `received_at`, source device, lease epoch,
+  generation, and expiry;
+- select the newest valid observation by server-validated chronology;
+- never add percentages or remaining quota from different devices;
+- never advance a stale countdown as though it were a provider response; and
+- render stale, unavailable, unauthorized, and malformed distinctly.
+
+Local token activity is an additive event stream only when records are unique.
+An activity batch contains:
+
+- provider and immutable account ID;
+- device ID;
+- local source/session ID;
+- event or deterministic batch ID;
+- UTC interval start and end;
+- record count and bounded aggregates;
+- source watermark;
+- client-observed time and server-received time; and
+- an idempotency key bound to the canonical payload.
+
+Uniqueness is keyed by provider, account, device, source session, event/batch,
+and interval. Retrying the same batch is a no-op. The server records receipt
+time, detects extreme clock skew, rejects impossible ordering, and retains
+per-device watermarks. If a source lacks a stable event identity, the record
+keeps explicit provenance and reduced deduplication confidence rather than
+claiming exact global totals.
+
+These controls prevent three separate duplicate classes:
+
+1. an idempotency key prevents retry duplication;
+2. a device/source identity prevents two machines' real activity from being
+   collapsed together; and
+3. a lease epoch prevents an old scheduled collector from publishing after
+   failover.
+
+### 27.11 Optional sanitized presentation integration
+
+Sidekick Tools may later expose read-only capabilities such as:
+
+- `sidekick_usage_summary`;
+- `sidekick_account_health`;
+- `sidekick_reset_schedule`; and
+- `sidekick_snapshot_freshness`.
+
+The source contract remains owned by Sidekick Usages because this repository
+owns collection semantics, freshness, identity, and redaction. The response may
+contain only:
+
+- provider and synthetic or user-approved display label;
+- plan label;
+- utilization percentages;
+- absolute reset times;
+- non-secret health category;
+- observation, receipt, and expiry times;
+- snapshot generation; and
+- stale and source indicators.
+
+The interface must have no method for credential export, restore, replacement,
+deletion, enrollment, bootstrap, or active-login mutation. Sidekick Tools owns
+only a strict validating client and MCP presentation adapter. Malformed,
+unauthorized, unavailable, and stale results remain distinct.
+
+The preferred same-account transport is an optional Service Binding because it
+avoids a public Internet hop. This is not part of version one, and current
+pricing requires a correction to the earlier assumption: Cloudflare's statement
+that Service Binding calls add no request fee is expressly scoped to Workers
+Standard pricing.[^workers-pricing] On Workers Free, capacity calculations
+must conservatively count both the calling and called Worker invocation unless
+the live plan documentation and metrics prove otherwise.
+
+Compromise of the Tools Worker must not retrieve vault credentials even through
+a private binding. Private transport is not authorization.
+
+### 27.12 Cloud-side scheduling
+
+Version one has no Cron Trigger and no Durable Object alarm.
+
+The richer Sidekick Usages target may add one alarm per personal vault only for
+bounded, non-provider housekeeping:
+
+- expire collector leases;
+- prune expired idempotency outcomes;
+- compact old snapshots into bounded rollups;
+- mark device/account state stale;
+- enforce audit retention; and
+- schedule the next housekeeping pass.
+
+Cloudflare Durable Object alarms have guaranteed at-least-once execution,
+automatically retry thrown failures, and permit one outstanding alarm per
+object.[^do-alarms] The handler must therefore be idempotent and resumable. It
+must never call Claude, OpenAI, Google, Microsoft, or Resend; refresh a provider
+credential; import an active login; or generate token-consuming heartbeat
+traffic.
+
+Sidekick Tools may later use a credential-specific alarm only when a provider's
+official contract requires proactive renewal. It never shares the Sidekick
+Usages housekeeping alarm or Durable Object.
+
+### 27.13 Scheduling ownership matrix
+
+| Job | Authority | Execution location | Trigger |
+| --- | --- | --- | --- |
+| Tools Google/Microsoft access refresh | Tools credential actor | Cloud Tools Worker/DO | On demand before expiry |
+| Tools rotating refresh token | Tools credential actor | Atomic Tools DO transaction | Same refresh epoch |
+| Claude setup-token renewal | User | Interactive local machine | Explicit before one year |
+| Claude subscription-login maintenance | Local credential owner | Each machine | Native/local use |
+| Codex ChatGPT refresh | Official Codex client | Each machine | Automatic during use |
+| Scheduled provider usage poll | Per-account elected device | Local Sidekick Usages | 30-minute lease cadence |
+| Scheduled heartbeat/warm | Per-account elected device | Local Sidekick Usages | Provider-policy cadence |
+| On-demand provider read | Requesting device | Local Sidekick Usages | Explicit user request |
+| Local activity upload | Every enrolled device | Local to vault | Batched/idempotent |
+| Cross-device aggregation | Sidekick vault actor | Vault DO | On accepted writes/read |
+| Lease expiry and pruning | Sidekick vault actor | Request-time or DO alarm | Idempotent housekeeping |
+
+This table is the answer to who refreshes and tracks time. There is no one
+global refresh job because the credentials and observations have different
+owners.
+
+### 27.14 Current Cloudflare Free contract
+
+The following values were revalidated from current official pages on
+2026-07-21. They are deployment inputs, not permanent constants.
+
+| Resource | Current Workers Free limit | Design use |
+| --- | ---: | --- |
+| Worker requests | 100,000/day/account | MCP, device sync, dashboard API |
+| Worker CPU | 10 ms/invocation | Bounded validation, routing, WebCrypto |
+| Worker memory | 128 MB | Small bounded payloads |
+| Subrequests | 50/invocation | DO and limited provider calls |
+| Environment variables | 64/Worker, 5 KB each | Few root secrets/config values |
+| Compressed Worker bundle | 3 MB | Small dependencies; 2.5 MB soft gate |
+| Workers | 100/account | Separate Tools and Usages Workers |
+| Cron Triggers | 5/account | Target zero |
+| SQLite DO requests | 100,000/day | Vault and Tools coordination |
+| SQLite DO duration | 13,000 GB-s/day | Short, hibernating actors |
+| SQLite DO rows read | 5,000,000/day | Bounded current/history reads |
+| SQLite DO rows written | 100,000/day | Batches, generations, audit |
+| SQLite DO stored data | 5 GB total | Bounded personal state |
+| KV reads | 100,000/day | Optional non-authoritative cache only |
+| KV writes/deletes/lists | 1,000/day each | Not credential or lease authority |
+| Workers Logs written | 200,000/day | Sampled current operations |
+| Workers Logs retention | 3 days | Not durable security audit |
+| Access service tokens | Default 50 | Independently revocable devices |
+
+Cloudflare states that Workers Free accounts receive 100,000 requests per day
+and that exceeding the limit returns Error 1027. Security-critical routes must
+use fail-closed behavior.[^workers-limits] Cloudflare also states that further
+Durable Object operations fail when a Free allowance is exhausted. These hard
+caps reduce silent Worker overage risk, but they create outage risk; local state
+and explicit cloud-unavailable rendering remain mandatory.
+
+SQLite Durable Objects are the recommended and Free-supported backend for new
+objects. Current allowances are 100,000 requests, 13,000 GB-s, five million
+rows read, 100,000 rows written per day, and 5 GB total SQL storage.
+[^do-pricing] They provide a globally named coordination point with private,
+transactional, strongly consistent storage.[^durable-objects]
+
+The system does not hard-code a Zero Trust user ceiling from marketing copy.
+The design needs one human identity and a small device fleet. Deployment must
+verify that both Workers Free and Zero Trust Free are active and that required
+Access features are available without a paid subscription.
+
+### 27.15 Conservative capacity model
+
+Use a deliberately generous personal workload:
+
+- five enrolled machines;
+- ten saved provider accounts;
+- one 30-minute maintenance pass per device;
+- one scheduled collector per account;
+- 5,000 MCP capability calls per day;
+- 500 dashboard or sanitized usage reads per day; and
+- an optional read binding conservatively counted as a second Worker request.
+
+Daily estimates:
+
+| Resource | Conservative estimate | Free limit | Approximate share |
+| --- | ---: | ---: | ---: |
+| Device maintenance/sync requests | 240 | 100,000 | 0.24% |
+| MCP requests | 5,000 | 100,000 | 5.0% |
+| Dashboard/read requests | 500 | 100,000 | 0.5% |
+| Optional bound read invocations | 500 | 100,000 | 0.5% |
+| Total Worker requests with headroom | Under 7,000 | 100,000 | Under 7% |
+| Durable Object requests | Under 7,000 | 100,000 | Under 7% |
+| Leased scheduled snapshot rows | About 480 | 100,000 | 0.48% |
+| Uncoordinated snapshot upper bound | 2,400 | 100,000 | 2.4% |
+| Total rows written hard target | Under 10,000 | 100,000 | Under 10% |
+| Configured Cron Triggers | 0 target | 5 | 0% |
+
+The 480-row estimate is ten accounts multiplied by 48 daily collections. The
+2,400-row figure preserves the deliberately pessimistic pre-lease bound where
+all five devices publish every account each interval. Both fit, but the lease
+design is semantically correct and less wasteful.
+
+These calculations exclude other Workers in the same account. No claim of
+actual headroom is valid until a read-only inventory measures account-wide
+requests, Cron Triggers, Durable Objects, KV, Access applications, and other
+bindings.
+
+### 27.16 Application-level Free safeguards
+
+Platform limits are last-resort outage boundaries. The application enforces
+lower budgets:
+
+- default maximum 5,000 MCP capability calls per day;
+- default maximum 1,000 device-sync requests per day;
+- default maximum 10,000 snapshot/activity rows written per day;
+- bounded request and response bodies far below platform maxima;
+- fixed snapshot, activity, idempotency, and audit retention;
+- no unbounded list or full-table queries;
+- bounded retries with jitter and server-wait ceilings;
+- no long-lived WebSockets for this product;
+- no polling faster than the configured maintenance cadence;
+- nonessential history writes degrade before authority writes;
+- authorization and credential paths always fail closed; and
+- quota-near, quota-exhausted, stale, and unavailable remain visible.
+
+Exact budgets belong in a strongly consistent actor, not Workers KV. They are
+configuration with conservative maxima, not user-tunable paths to platform
+exhaustion.
+
+### 27.17 Allowed and rejected Cloudflare capabilities
+
+The initial allowed set is deliberately small:
+
+- Workers Free;
+- Zero Trust Free and Access after live eligibility verification;
+- SQLite Durable Objects;
+- ordinary per-Worker secrets;
+- an optional Service Binding after Free accounting verification; and
+- Workers Logs with controlled sampling and redaction.
+
+The following are rejected unless a concrete feature receives separate current
+research and explicit approval:
+
+- Workers Paid or Standard subscription;
+- Dynamic Workers;
+- Workers AI;
+- Browser Rendering;
+- Vectorize;
+- Hyperdrive;
+- R2;
+- Queues;
+- Workflows;
+- D1;
+- paid Log Explorer or OpenTelemetry export;
+- Secrets Store Beta;
+- MCP Portal;
+- Code Mode as a production dependency; and
+- any marketplace or paid third-party service.
+
+This is a cost and attack-surface decision, not a claim that those products are
+intrinsically unsuitable. Managed OAuth is also Beta; it may be tested as a
+Tools authentication migration because it solves a concrete MCP need, but it
+must retain the fallback and approval gates in Section 27.6.
+
+### 27.18 Deployment and financial-safety gates
+
+Before every production deployment:
+
+1. verify Workers Free and Zero Trust Free in the live account;
+2. inventory account-wide Worker requests and existing Cron Triggers;
+3. inventory Durable Object, KV, D1, R2, Queue, Workflow, AI, Hyperdrive,
+   Vectorize, Browser, and other bindings;
+4. compare Wrangler configuration to the allowed-binding policy;
+5. reject an unapproved paid plan or paid product;
+6. run a dry-run bundle and enforce a 2.5 MB compressed soft ceiling;
+7. enforce the approved cron count, initially zero;
+8. validate required secret **names** without reading values;
+9. run synthetic concurrency, quota, retry, and fail-closed tests;
+10. if alarms exist, prove idempotent replay and rescheduling;
+11. if a Service Binding exists, account for both invocations on Free;
+12. upload a version before activating traffic;
+13. smoke-test authentication and authorization through Access;
+14. verify rollback handles code and storage separately; and
+15. record limit-source dates and the read-only account inventory.
+
+The primary financial risk is accidentally enabling a paid product or plan.
+The primary operational risk on Free is hitting a hard cap and losing cloud
+availability. The architecture addresses the former with an allowlist and
+deployment gate, and the latter with local authority, conservative budgets,
+bounded retention, and explicit outage states.
+
+### 27.19 Rich presentation without secret expansion
+
+The feature-rich target may expose:
+
+- the existing local TUI as the primary live and recovery surface;
+- an Access-protected static dashboard for sanitized usage, devices,
+  freshness, and audit health;
+- sanitized MCP usage tools through the optional read interface;
+- renewal-due and stale-collector notifications after a delivery channel is
+  explicitly selected; and
+- CLI-only credential administration with explicit confirmation.
+
+Static assets should avoid Worker invocation where supported. Dynamic reads
+remain bounded and authenticated. No web or MCP surface returns raw credentials,
+ciphertext, wrapped keys, fingerprints usable as credential selectors, provider
+errors containing secrets, or active-login state.
+
+### 27.20 Delivery phasing for the complete target
+
+The existing phases in Section 22 remain the version-one delivery authority.
+The richer target adds only after those gates succeed:
+
+#### Phase 7 — Multi-device coordination
+
+- add per-account collector leases;
+- split maintenance into independently observable phases;
+- enforce lease epochs on scheduled publication;
+- retain on-demand non-leader reads; and
+- test contention, takeover, clock skew, late results, and offline staleness.
+
+#### Phase 8 — Cross-device activity and bounded history
+
+- add deterministic activity batches and per-device watermarks;
+- add UTC aggregation and clock-skew policy;
+- bound snapshot, activity, audit, and idempotency retention;
+- add application budgets; and
+- prove retry is a no-op.
+
+#### Phase 9 — Optional housekeeping
+
+- add a request-time housekeeping pass first;
+- add one vault alarm only if request-time cleanup is insufficient;
+- prove at-least-once replay safety; and
+- keep all provider traffic forbidden.
+
+#### Phase 10 — Optional sanitized presentation
+
+- add the credential-inaccessible read interface;
+- test a Service Binding under the actual Free plan accounting;
+- add MCP structured usage results without secret operations;
+- optionally add the Access-protected static dashboard; and
+- prove compromise of Sidekick Tools cannot read vault credentials.
+
+Sidekick Tools hardening is a separate repository effort. Its order is:
+
+1. freeze the 56-operation compatibility inventory;
+2. prove structured result/effect metadata on one read, one mutation, and one
+   complex result;
+3. add the Tools Credential Durable Object;
+4. migrate provider refresh authority from KV with synthetic tests;
+5. remove blanket cron only after on-demand coordination is proven;
+6. test Managed OAuth Beta and the fallback against actual clients; and
+7. reconcile docs and quality gates.
+
+No phase authorizes real credential migration, provider mutation, Access
+cutover, or Cloudflare deployment without separate explicit approval.
+
+### 27.21 Cross-product acceptance gates
+
+In addition to Section 23, the complete target requires:
+
+- Sidekick Tools remains independently buildable, deployable, and operable;
+- Sidekick Usages never imports Sidekick Tools source or packages;
+- Sidekick Tools never receives Claude or Codex credentials;
+- the two Workers share no credential actor, encryption key, service bearer,
+  bootstrap authority, storage namespace, or deployment lifecycle;
+- MCP results have validated structured output and compatible text;
+- every mutation has explicit effect and retry-safety policy;
+- rotating Tools refresh authority is atomic and absent from KV;
+- concurrent Tools refresh requests join one durable epoch;
+- an ambiguous provider mutation is not blindly replayed;
+- only the current lease epoch can publish scheduled observations;
+- provider gauges are never summed;
+- activity retry is idempotent and provenance-preserving;
+- all-device-offline state becomes stale rather than fabricated;
+- a housekeeping alarm is idempotent and provider-inert;
+- optional MCP usage access is read-only and secret-inaccessible;
+- Managed OAuth compatibility and rollback are proven before cutover;
+- the live account is verified Free before deployment;
+- disallowed paid bindings fail CI/deployment policy; and
+- the conservative daily model remains below 10% of each key Free allowance,
+  after adding measured account-wide use.
+
+### 27.22 Research corrections and unresolved claims
+
+The QA pass corrected or bounded these claims:
+
+| Earlier shorthand | Durable corrected claim |
+| --- | --- |
+| Service Bindings add no request cost | Cloudflare scopes that statement to Workers Standard; count both Worker invocations on Free until verified |
+| Managed OAuth is the final auth answer | It is currently Beta; test clients, validate JWTs, and retain a maintained fallback |
+| Zero Trust Free supports a fixed user count | Free exists, but do not hard-code a marketing ceiling; verify the live plan and required features |
+| One 45-minute cron keeps provider tokens healthy | Blanket refresh creates unnecessary writers; use credential-scoped on-demand single flight |
+| Cloud refresh provides continuous usage time | Claude/Codex provider authority remains local; the cloud stores observations and coordinates collectors |
+| Every local daemon duplicates usage | Only shared polling/heartbeat needs a lease; unique local activity is legitimately published by every device |
+| A valid setup token proves account ownership | Validity and identity are different; retain explicit assurance state |
+| Free hard caps eliminate cost risk | They reduce ordinary overage risk but not accidental paid-product enablement or outages |
+
+Still unresolved before implementation:
+
+- live account-wide Cloudflare consumption and plan eligibility;
+- actual MCP client compatibility with Managed OAuth Beta;
+- official provider rotation/invalidation behavior for the Sidekick Tools Google
+  and Microsoft credential families;
+- a documented Claude setup-token identity contract;
+- exact cross-device event identity for every activity source;
+- employer approval for organization credentials in a personal Cloudflare
+  account; and
+- retention and recovery policy acceptable for a Free service with no paid
+  SLA.
+
+These are explicit gates, not reasons to invent plausible behavior. Local
+operation and recovery remain functional if the cloud feature is unavailable or
+never approved.
+
+## 28. Source Matrix
 
 | Topic | Source | Used for |
 | --- | --- | --- |
@@ -1929,20 +2805,31 @@ amendment. It does not silently rewrite this authority.
 | Codex authentication | [Codex authentication][codex-auth] | Local caching, refresh ownership, credential stores |
 | Codex environment | [Codex environment variables][codex-env] | `CODEX_HOME` state boundary |
 | OAuth security | [RFC 9700][rfc9700] | Refresh confidentiality, rotation, replay risk |
+| Workers Free limits | [Workers limits][workers-limits] | Request, CPU, memory, subrequest, variable, bundle, Worker, cron, and hard-failure limits |
+| Workers Free pricing | [Workers pricing][workers-pricing] | Free request allowance and Service Binding accounting correction |
 | Workers monorepos | [Advanced setups][workers-monorepo] | Worker source inside this repository |
 | Wrangler roots | [Automatic configuration][workers-auto-config] | Separate cloud package root and dependencies |
 | Durable Objects | [Durable Objects overview][durable-objects] | Strong transactional state and Free availability |
 | Durable Object pricing | [DO pricing][do-pricing] | Free personal-vault capacity |
+| Durable Object alarms | [DO alarms][do-alarms] | At-least-once, retry, and one-alarm semantics |
 | Durable Object security | [DO data security][do-security] | Cloudflare-managed encryption trust boundary |
 | Durable Object state | [DO state API][do-state] | External-await concurrency semantics |
 | SQLite storage/PITR | [SQLite storage API][do-pitr] | Transactions and 30-day restore behavior |
 | Workers KV | [KV consistency][workers-kv] | Rejection as authority |
+| Workers KV limits | [KV pricing][kv-pricing] | Free read, write, delete, list, and failure limits |
+| Cloudflare One plans | [Cloudflare One overview][cloudflare-one] | Existence of Free and Paid Zero Trust plans |
 | Access service tokens | [Service tokens][access-service-tokens] | Per-machine bootstrap and revocation |
 | Access limits | [Account limits][access-limits] | Default 50 service-token limit |
 | Access application claims | [Application token][access-token] | `common_name`, audience, issuer, times |
 | Access JWT validation | [Validate JWTs][access-validation] | Signature and claim validation in Worker |
+| Managed OAuth | [Access Managed OAuth][managed-oauth] | Beta status, MCP flow, client requirements, token/session guidance |
+| Remote MCP | [Cloudflare remote MCP][remote-mcp] | Streamable HTTP and stateless/stateful Worker choices |
+| MCP tools | [MCP tools specification][mcp-tools] | Structured content, output schemas, annotations, and security |
+| MCP TypeScript | [MCP TypeScript server guide][mcp-typescript] | Transport separation and compatible structured results |
+| Service Bindings | [Service Bindings][service-bindings] | Optional private read transport |
 | Worker secrets | [Workers Secrets][worker-secrets] | Stable KEK binding and deploy semantics |
 | Web Crypto | [Workers Web Crypto][web-crypto] | AES-GCM and secure randomness |
+| Workers Logs | [Workers Logs][workers-logs] | Free write allowance and three-day retention |
 | Worker versions | [Versions and deployments][worker-deployments] | Code/storage lifecycle separation |
 | Sidekick Claude contract | [Claude documentation][local-claude] | Existing credential variants and import safety |
 | Sidekick Codex design | [Codex multi-account research][local-codex] | Official Codex as sole credential owner |
@@ -1953,20 +2840,31 @@ amendment. It does not silently rewrite this authority.
 [codex-auth]: https://learn.chatgpt.com/docs/auth
 [codex-env]: https://learn.chatgpt.com/docs/config-file/environment-variables
 [rfc9700]: https://www.rfc-editor.org/rfc/rfc9700.html
+[workers-limits]: https://developers.cloudflare.com/workers/platform/limits/
+[workers-pricing]: https://developers.cloudflare.com/workers/platform/pricing/
 [workers-monorepo]: https://developers.cloudflare.com/workers/ci-cd/builds/advanced-setups/
 [workers-auto-config]: https://developers.cloudflare.com/workers/framework-guides/automatic-configuration/
 [durable-objects]: https://developers.cloudflare.com/durable-objects/
 [do-pricing]: https://developers.cloudflare.com/durable-objects/platform/pricing/
+[do-alarms]: https://developers.cloudflare.com/durable-objects/api/alarms/
 [do-security]: https://developers.cloudflare.com/durable-objects/reference/data-security/
 [do-state]: https://developers.cloudflare.com/durable-objects/api/state/
 [do-pitr]: https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/
 [workers-kv]: https://developers.cloudflare.com/kv/concepts/how-kv-works/
+[kv-pricing]: https://developers.cloudflare.com/kv/platform/pricing/
+[cloudflare-one]: https://developers.cloudflare.com/cloudflare-one/
 [access-service-tokens]: https://developers.cloudflare.com/cloudflare-one/access-controls/service-credentials/service-tokens/
 [access-limits]: https://developers.cloudflare.com/cloudflare-one/account-limits/
 [access-token]: https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/application-token/
 [access-validation]: https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/
+[managed-oauth]: https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/managed-oauth/
+[remote-mcp]: https://developers.cloudflare.com/agents/model-context-protocol/guides/remote-mcp-server/
+[mcp-tools]: https://modelcontextprotocol.io/specification/2025-11-25/server/tools
+[mcp-typescript]: https://ts.sdk.modelcontextprotocol.io/server
+[service-bindings]: https://developers.cloudflare.com/workers/runtime-apis/bindings/service-bindings/
 [worker-secrets]: https://developers.cloudflare.com/workers/configuration/secrets/
 [web-crypto]: https://developers.cloudflare.com/workers/runtime-apis/web-crypto/
+[workers-logs]: https://developers.cloudflare.com/workers/observability/logs/workers-logs/
 [worker-deployments]: https://developers.cloudflare.com/workers/versions-and-deployments/
 [local-claude]: ../../claude/README.md
 [local-codex]: ../../codex/2026-07-11-transparent-multi-account-authentication-research.md
@@ -1986,6 +2884,12 @@ amendment. It does not silently rewrite this authority.
     root for authentication and other Codex state.
 [^rfc9700]: IETF, [OAuth 2.0 Security Best Current Practice][rfc9700], January
     2025, accessed 2026-07-21.
+[^workers-limits]: Cloudflare, [Workers limits][workers-limits], updated
+    2026-07-05 and accessed 2026-07-21. The page documents the current Free
+    account limits, Error 1027, and fail-open/fail-closed behavior.
+[^workers-pricing]: Cloudflare, [Workers pricing][workers-pricing], updated
+    2026-07-07 and accessed 2026-07-21. Its no-additional-request-fee statement
+    for Service Bindings is explicitly scoped to Workers Standard pricing.
 [^workers-kv]: Cloudflare, [How Workers KV works][workers-kv], accessed
     2026-07-21.
 [^durable-objects]: Cloudflare, [Durable Objects][durable-objects], accessed
@@ -1994,6 +2898,9 @@ amendment. It does not silently rewrite this authority.
     accessed 2026-07-21.
 [^do-pricing]: Cloudflare, [Durable Object pricing][do-pricing], accessed
     2026-07-21.
+[^do-alarms]: Cloudflare, [Durable Object alarms][do-alarms], accessed
+    2026-07-21. The page documents one outstanding alarm per object,
+    at-least-once execution, and automatic retry after thrown failures.
 [^access-limits]: Cloudflare, [Cloudflare One account limits][access-limits],
     accessed 2026-07-21.
 [^access-validation]: Cloudflare, [Validate Access JWTs][access-validation],
@@ -2001,6 +2908,16 @@ amendment. It does not silently rewrite this authority.
 [^access-token]: Cloudflare, [Access application token][access-token], accessed
     2026-07-21. The service-token JWT example defines `common_name` as the
     service token Client ID.
+[^managed-oauth]: Cloudflare, [Access Managed OAuth][managed-oauth], accessed
+    2026-07-21. The page labels the feature Beta, documents MCP support and JWT
+    validation, warns that it replaces origin 401 behavior, requires RFC 8707,
+    and recommends short access tokens with longer grant sessions.
+[^mcp-tools]: Model Context Protocol, [Tools specification][mcp-tools], version
+    2025-11-25, accessed 2026-07-21. It defines model-controlled tools, output
+    schemas, structured content, annotations, and security responsibilities.
+[^mcp-typescript]: Model Context Protocol, [TypeScript server guide][mcp-typescript],
+    accessed 2026-07-21. The current v1 guide recommends Streamable HTTP for
+    remote servers and demonstrates structured output with compatibility text.
 [^do-security]: Cloudflare, [Durable Object data security][do-security],
     accessed 2026-07-21.
 [^do-state]: Cloudflare, [Durable Object State][do-state], accessed
