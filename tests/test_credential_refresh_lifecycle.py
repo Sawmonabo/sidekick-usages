@@ -40,7 +40,7 @@ from sidekick_usages.scheduler_quiescence import (
     SchedulerBackendState,
     SchedulerQuiescenceAssessment,
 )
-from tests.credential_refresh_support import (
+from tests.test_credential_refresh_support import (
     BlockingRefreshProvider,
     CrashAt,
     RefreshProvider,

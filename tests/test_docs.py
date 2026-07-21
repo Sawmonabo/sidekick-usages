@@ -32,6 +32,11 @@ TASK_SEVEN_COMPLETED_STEP_COUNT = 6
 TASK_SEVEN_PENDING_STEP_COUNT = 0
 
 
+def _read_text(path: Path) -> str:
+    """Read one tracked UTF-8 document on every supported platform."""
+    return path.read_text(encoding="utf-8")
+
+
 def _heading_anchors(text: str) -> set[str]:
     """Return GitHub-style anchors for the headings in one guide."""
     anchors: set[str] = set()
@@ -76,8 +81,8 @@ def _prose_without_fenced_code(text: str) -> str:
 
 def test_heartbeat_guide_owns_commands_models_and_quota() -> None:
     """The heartbeat guide must remain the detailed product contract."""
-    maintenance = Path("docs/token-maintenance.md").read_text()
-    heartbeat = Path("docs/heartbeat.md").read_text()
+    maintenance = _read_text(Path("docs/token-maintenance.md"))
+    heartbeat = _read_text(Path("docs/heartbeat.md"))
     normalized = " ".join(heartbeat.split())
 
     required_contracts = (
@@ -100,13 +105,13 @@ def test_heartbeat_guide_owns_commands_models_and_quota() -> None:
 
 def test_claude_guides_cover_final_credential_and_recovery_contracts() -> None:
     """Tracked operator docs describe every final Claude boundary."""
-    claude = (REPO_ROOT / "docs" / "claude" / "README.md").read_text()
-    debugging = (REPO_ROOT / "docs" / "claude" / "debugging.md").read_text()
-    schema = (REPO_ROOT / "docs" / "claude" / "schema.md").read_text()
-    maintenance = (REPO_ROOT / "docs" / "token-maintenance.md").read_text()
-    persistence = (
+    claude = _read_text(REPO_ROOT / "docs" / "claude" / "README.md")
+    debugging = _read_text(REPO_ROOT / "docs" / "claude" / "debugging.md")
+    schema = _read_text(REPO_ROOT / "docs" / "claude" / "schema.md")
+    maintenance = _read_text(REPO_ROOT / "docs" / "token-maintenance.md")
+    persistence = _read_text(
         REPO_ROOT / "docs" / "persistence-and-recovery.md"
-    ).read_text()
+    )
 
     for contract in (
         "setup-token credential",
@@ -158,7 +163,7 @@ def test_claude_guides_exclude_secret_shapes_and_stale_field_language() -> (
     None
 ):
     """Changed guides contain no credential-like data or stale mode advice."""
-    combined = "\n".join(path.read_text() for path in CHANGED_DOCUMENTS)
+    combined = "\n".join(_read_text(path) for path in CHANGED_DOCUMENTS)
     without_test_email = re.sub(
         r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.test\b",
         "<synthetic-email>",
@@ -218,7 +223,7 @@ def test_changed_guides_have_resolvable_local_links_and_balanced_mermaid() -> (
     """Local guide links resolve and every Mermaid fence is complete."""
     link = re.compile(r"\[[^]]+\]\(([^)]+)\)")
     for document in CHANGED_DOCUMENTS:
-        text = document.read_text()
+        text = _read_text(document)
         assert _mermaid_blocks_are_closed(text)
         for target in link.findall(_prose_without_fenced_code(text)):
             if target.startswith(("http://", "https://", "mailto:")):
@@ -231,7 +236,7 @@ def test_changed_guides_have_resolvable_local_links_and_balanced_mermaid() -> (
             )
             assert resolved.exists(), f"{document}: broken link {target}"
             if fragment and resolved.suffix == ".md":
-                anchors = _heading_anchors(resolved.read_text())
+                anchors = _heading_anchors(_read_text(resolved))
                 assert fragment in anchors, (
                     f"{document}: broken anchor {target}"
                 )
@@ -239,7 +244,7 @@ def test_changed_guides_have_resolvable_local_links_and_balanced_mermaid() -> (
 
 def test_architecture_spec_names_final_credential_and_refresh_owners() -> None:
     """The architecture guide names the concrete enforced module family."""
-    architecture = ARCHITECTURE_SPEC.read_text()
+    architecture = _read_text(ARCHITECTURE_SPEC)
 
     for module in (
         "providers/claude/credential_schemas.py",
@@ -260,7 +265,7 @@ def test_architecture_spec_names_final_credential_and_refresh_owners() -> None:
 
 def test_schema_revalidation_reuses_the_verified_executable() -> None:
     """Credential corroboration cannot fall back to an unqualified shim."""
-    schema = (REPO_ROOT / "docs" / "claude" / "schema.md").read_text()
+    schema = _read_text(REPO_ROOT / "docs" / "claude" / "schema.md")
     revalidation = schema.split(
         "### Revalidate the credential field set",
         maxsplit=1,
@@ -273,8 +278,8 @@ def test_schema_revalidation_reuses_the_verified_executable() -> None:
 
 def test_plan_status_and_spec_recovery_match_current_version_two() -> None:
     """Implemented task metadata and current recovery prose cannot drift."""
-    plan = IMPLEMENTATION_PLAN.read_text()
-    architecture = ARCHITECTURE_SPEC.read_text()
+    plan = _read_text(IMPLEMENTATION_PLAN)
+    architecture = _read_text(ARCHITECTURE_SPEC)
     normalized_plan = " ".join(plan.split())
     normalized_architecture = " ".join(architecture.split())
 

@@ -17,7 +17,7 @@ from sidekick_usages.http import HttpClient
 from sidekick_usages.persistence.credential_refresh import (
     CredentialRefreshTransactions,
 )
-from tests.credential_refresh_support import (
+from tests.test_credential_refresh_support import (
     CodexRefreshProvider,
     RefreshProvider,
     login_account,

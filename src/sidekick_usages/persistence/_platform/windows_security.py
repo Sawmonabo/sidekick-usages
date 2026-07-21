@@ -12,6 +12,7 @@ if TYPE_CHECKING and sys.platform == "win32":
     import _win32typing
 
 if sys.platform == "win32":
+    import ntsecuritycon
     import pywintypes
     import win32api
     import win32con
@@ -288,10 +289,10 @@ if sys.platform == "win32":
         """Require a trusted owner and no untrusted namespace writer."""
         _validate_external_security(
             handle,
-            win32file.FILE_ADD_FILE
-            | win32file.FILE_ADD_SUBDIRECTORY
-            | win32file.FILE_DELETE_CHILD
-            | win32file.FILE_GENERIC_WRITE
+            ntsecuritycon.FILE_ADD_FILE
+            | ntsecuritycon.FILE_ADD_SUBDIRECTORY
+            | ntsecuritycon.FILE_DELETE_CHILD
+            | ntsecuritycon.FILE_GENERIC_WRITE
             | win32con.DELETE
             | win32con.WRITE_DAC
             | win32con.WRITE_OWNER,
@@ -301,9 +302,9 @@ if sys.platform == "win32":
         """Require a trusted owner and no untrusted file access."""
         _validate_external_security(
             handle,
-            win32file.FILE_GENERIC_READ
-            | win32file.FILE_GENERIC_WRITE
-            | win32file.FILE_GENERIC_EXECUTE
+            ntsecuritycon.FILE_GENERIC_READ
+            | ntsecuritycon.FILE_GENERIC_WRITE
+            | ntsecuritycon.FILE_GENERIC_EXECUTE
             | win32con.DELETE
             | win32con.WRITE_DAC
             | win32con.WRITE_OWNER,

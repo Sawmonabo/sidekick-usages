@@ -44,22 +44,24 @@ from sidekick_usages.providers.base import (
     RefreshResult,
     RefreshSuccess,
 )
-from tests.credential_refresh_support import (
+from tests.test_credential_refresh_support import (
     BlockingRefreshProvider as _BlockingRefreshProvider,
 )
-from tests.credential_refresh_support import (
+from tests.test_credential_refresh_support import (
     CallbackRefreshProvider as _CallbackRefreshProvider,
 )
-from tests.credential_refresh_support import (
+from tests.test_credential_refresh_support import (
     ManagedStageRefreshProvider as _ManagedStageRefreshProvider,
 )
-from tests.credential_refresh_support import (
+from tests.test_credential_refresh_support import (
     ParallelRefreshProvider as _ParallelRefreshProvider,
 )
-from tests.credential_refresh_support import (
+from tests.test_credential_refresh_support import (
     RefreshProvider as _RefreshProvider,
 )
-from tests.credential_refresh_support import login_account as _login_account
+from tests.test_credential_refresh_support import (
+    login_account as _login_account,
+)
 from tests.test_support import REFERENCE_TIME, FixedClock, make_account_store
 
 _TWO_CALLERS = 2

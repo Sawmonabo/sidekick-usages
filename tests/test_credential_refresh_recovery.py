@@ -25,7 +25,7 @@ from sidekick_usages.persistence.errors import DurabilityUncertainError
 from sidekick_usages.persistence.private_bundle_writes import (
     MAX_PRIVATE_FILE_BYTES,
 )
-from tests.credential_refresh_support import (
+from tests.test_credential_refresh_support import (
     CrashAt,
     RefreshProvider,
     SimulatedCrashError,

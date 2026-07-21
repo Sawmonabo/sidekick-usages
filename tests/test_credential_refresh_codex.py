@@ -57,7 +57,7 @@ from sidekick_usages.providers.codex.auth import (
     CODEX_FILE_AUTH_CONFIG,
     validate_auth_bundle_matches_account,
 )
-from tests.credential_refresh_support import (
+from tests.test_credential_refresh_support import (
     CrashAt,
     SimulatedCrashError,
 )
