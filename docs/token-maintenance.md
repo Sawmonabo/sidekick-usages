@@ -9,8 +9,10 @@ cross-platform scheduler is installed.
 
 `sidekick-usages` has two different token update paths:
 
-1. `sidekick-usages refresh <label>` imports the current local provider
-   login into one explicit saved label.
+1. `sidekick-usages refresh <label>` imports the current local provider login
+   into one explicit saved login label. For Claude, this is safe for
+   subscription-login labels only unless the operator separately authorizes an
+   authentication-method change.
 2. `sidekick-usages refresh --all` uses only refresh tokens already
    saved in the sidekick config.
 
@@ -31,9 +33,9 @@ arbitrary labels.
 
 | Account type | Auto-refresh | Notes |
 | --- | --- | --- |
-| Claude OAuth login with `refresh_token` | Yes | Uses the installed Claude Code CLI in a temporary `HOME`, imports rotated credentials, and leaves normal `~/.claude` untouched. |
-| Claude `setup-token` account | No | Setup tokens do not contain refresh tokens. Replace manually when the token dies. |
-| Codex ChatGPT login with `refresh_token` | Yes | Refreshes through the OpenAI OAuth token endpoint and writes the rotated auth bundle to sidekick's private Codex cache. |
+| Claude subscription-login credential | Yes, while login remains usable | On non-macOS systems with Claude Code installed, prefers the CLI in a private staged home. macOS or a missing executable uses bounded HTTPS refresh and immediately stages the result. Neither path changes the active Claude login. |
+| Claude setup-token credential | No | Setup tokens do not contain refresh credentials. Replace explicitly when rejected; their issue date cannot be recovered from the token. |
+| Codex ChatGPT login with `refresh_token` | Yes | Refreshes through the OpenAI OAuth token endpoint and transactionally updates Sidekick's private Codex credential bundle. |
 | Account with rejected or revoked refresh token | No | Requires logging into the matching provider account again, then running an explicit single-label refresh. |
 
 ## Commands
@@ -54,9 +56,10 @@ sidekick-usages doctor --label <label>
 - provider
 - plan
 - usage route
-- refresh-token presence
-- access-token expiry when known
-- provider account fingerprint when known
+- credential kind
+- access-token expiry and login expiry as separate values
+- secret-free identity availability
+- five-day login-renewal state when a known login expiry is near
 - whether the account can auto-refresh
 - whether manual action is required
 - latest refresh status and error, if sidekick has attempted a refresh
@@ -85,6 +88,22 @@ sidekick-usages refresh --all --force
 - never calls provider local-login detection
 - never replaces saved identity from global Claude or Codex state
 
+Every rotating refresh goes through one coordinator. Refreshes sharing one
+provider refresh credential are serialized by the
+credential-derived operation identity before provider traffic. The coordinator
+resamples durable state
+after acquiring the credential-derived lock, writes one private staged
+replacement, commits only the targeted credential over unrelated account
+changes, and cleans up after durability proof. A complete interrupted stage is
+recovered locally without a second provider request.
+
+Known Claude login expiry is independent from access-token expiry. At or
+inside five days, maintenance emits the five-day login-renewal warning and one
+manual action. It does not classify the warning as a failed refresh or persist
+it over existing refresh diagnostics. An expired login fails closed before
+provider traffic. Unknown login expiry and setup-token credentials do not
+produce this proximity warning.
+
 `--quiet` suppresses normal fresh/refreshed output and prints only
 accounts that need manual action.
 
@@ -93,40 +112,14 @@ regardless of expiry. It still does not import global provider logins.
 
 ### Warm inactive usage windows
 
-```bash
-sidekick-usages heartbeat <label>
-sidekick-usages heartbeat <label> --target spark
-sidekick-usages heartbeat enable <label>
-sidekick-usages heartbeat enable <label> --target all
-sidekick-usages heartbeat disable <label>
-sidekick-usages heartbeat status
-sidekick-usages heartbeat --all --quiet
-```
-
 Heartbeat is optional usage-window warming. It is not token freshness
 and it is not free quota. A successful warm sends a real model request
 and consumes a small amount of provider quota.
 
-`heartbeat <label>` is an explicit one-shot warm attempt. It can run
-even if the account is not enabled for daemon heartbeat.
-
-`heartbeat enable <label>` opts one supported account into daemon
-heartbeat. `heartbeat --all --quiet` processes enabled accounts only
-and is the heartbeat portion of `maintain --quiet`.
-
-- Claude OAuth/team accounts with `user:profile` and `user:inference`
-  can read `/api/oauth/usage` first and send a tiny `/v1/messages`
-  request only when the 5-hour window is inactive.
-- Claude setup-token/inference-only accounts cannot read the OAuth
-  usage endpoint, so heartbeat uses the same tiny `/v1/messages`
-  header probe as usage fetching.
-- Codex ChatGPT-login accounts can read the Codex usage endpoint first
-  and send a tiny streaming
-  `https://chatgpt.com/backend-api/codex/responses` request only when a
-  target window is inactive. The default `standard` target warms the
-  primary Codex 5-hour window with `gpt-5.4-mini`. The explicit `spark`
-  target warms the separate GPT-5.3-Codex-Spark window with
-  `gpt-5.3-codex-spark`.
+`maintain --quiet` refreshes saved credentials first, then processes
+heartbeat-enabled accounts. See
+[heartbeat behavior and guardrails](./heartbeat.md) for commands, supported
+account types, provider targets, model requests, and persisted diagnostics.
 
 ### Run full scheduled maintenance
 
@@ -144,16 +137,22 @@ maintenance only.
 ```bash
 sidekick-usages refresh <label>
 sidekick-usages refresh <label> --replace-identity
+sidekick-usages refresh <label> --replace-auth-method
 sidekick-usages refresh <label> --from-codex-home <path>
 ```
 
-Use this only when you intentionally want to update one saved label
-from the provider's current local login.
+Use this only when you intentionally want to update one saved login label from
+the provider's current local login. For Claude setup-token credentials, use
+`sidekick-usages claude setup-token` or the exact-label
+`sidekick-usages claude restore-setup-token` recovery instead.
 
 If a saved provider account id exists and the current login belongs to
 a different provider account, sidekick refuses the update. Use
 `--replace-identity` only when you intentionally want the label to
 become the newly logged-in provider account.
+
+`--replace-auth-method` independently authorizes setup token to subscription
+login. When method and identity both change, both flags are required.
 
 ## Daemon install
 
@@ -319,17 +318,19 @@ account.
 
 ## Config fields
 
-The account store lives at:
+`doctor` reports the selected account source and destination. Existing 0.6.0
+installations can remain at `~/.config/sidekick-usages/accounts.json`; fresh
+installations of the upcoming 0.7.0 release use the operating system's native
+application-data directory. See
+[persistence locations, migration, and recovery](./persistence-and-recovery.md)
+before inspecting or moving a store.
 
-```text
-~/.config/sidekick-usages/accounts.json
-```
-
-Refresh diagnostics are optional and backward-compatible:
+Refresh diagnostics may be absent when no attempt has been recorded. When
+present, the current schema uses these fields:
 
 ```json
 {
-  "last_refresh_at": "2026-06-12T13:14:22.459000Z",
+  "last_refresh_at": "<UTC_TIMESTAMP>",
   "last_refresh_status": "ok",
   "last_refresh_error": null
 }
@@ -345,34 +346,8 @@ Refresh diagnostics are optional and backward-compatible:
 `last_refresh_error` is a redacted user-facing error string. It must
 not contain raw tokens.
 
-Heartbeat diagnostics are optional and backward-compatible:
-
-```json
-{
-  "heartbeat_enabled": true,
-  "heartbeat_5h_reset_at": "2026-06-12T18:00:00Z",
-  "heartbeat_window_resets": {
-    "standard": "2026-06-12T18:00:00Z",
-    "spark": "2026-06-12T19:00:00Z"
-  },
-  "heartbeat_targets": ["standard", "spark"],
-  "last_heartbeat_at": "2026-06-12T13:00:00Z",
-  "last_heartbeat_status": "warmed",
-  "last_heartbeat_error": null
-}
-```
-
-`heartbeat_targets` is optional. When it is absent or `null`, daemon
-heartbeat uses the provider default targets. For Codex, that default is
-`standard` only; Spark warming must be requested explicitly.
-
-`last_heartbeat_status` is one of:
-
-- `warmed`
-- `active`
-- `failed`
-- `unsupported`
-- `null` when no heartbeat attempt has been recorded
+Heartbeat state and target defaults are documented in
+[heartbeat behavior and guardrails](./heartbeat.md#persisted-diagnostics).
 
 ## Troubleshooting
 
@@ -382,19 +357,26 @@ The account probably has no saved refresh token. Claude `setup-token`
 accounts are the expected case. They can report usage, but they cannot
 rotate themselves.
 
-### Doctor says the refresh token was rejected
+### Doctor says the refresh credential was rejected
 
-Log into the matching provider account again, then update that one
-label:
+For a Claude subscription-login label, sign into the matching account, then
+update that one label:
 
 ```bash
+claude auth login
 sidekick-usages refresh <label>
+```
+
+For a Claude setup-token label, capture a replacement of the same method:
+
+```bash
+sidekick-usages claude setup-token --label <label> --force
 ```
 
 For Codex, you can also use:
 
 ```bash
-sidekick-usages codex-login <label>
+sidekick-usages codex login <label>
 ```
 
 Use `--replace-identity` only if you intentionally want to replace the
@@ -439,17 +421,22 @@ The implementation is split so scheduler behavior is reusable and
 testable:
 
 - `sidekick_usages.maintenance.TokenMaintenanceService` owns saved-token
-  refresh policy, near-expiry checks, per-account outcomes, and
-  diagnostic persistence.
+  access-refresh policy, derived Claude login-renewal warnings, per-account
+  outcomes, and diagnostic persistence.
+- `sidekick_usages.credentials.CredentialRefreshCoordinator` owns the single
+  provider-neutral saved-credential refresh entry point.
+- `sidekick_usages.persistence.credential_refresh` and its focused schema,
+  stage, merge, artifact, and private-stage modules own credential-derived
+  locking, private staging, targeted commit, assessment, and recovery.
 - `sidekick_usages.heartbeat.HeartbeatService` owns optional
   usage-window warming policy, opt-in checks, cached reset throttling,
   per-account outcomes, and diagnostic persistence.
-- `sidekick_usages.heartbeat.HeartbeatProvider` is the provider
-  adapter base class. Concrete adapters such as `ClaudeHeartbeat` and
+- `sidekick_usages.heartbeat.HeartbeatProvider` is the narrow provider
+  port. Concrete adapters such as `ClaudeHeartbeat` and
   `CodexHeartbeat` own provider endpoint details instead of adding
   heartbeat methods to the generic usage provider abstraction.
-- `sidekick_usages.doctor.DoctorService` builds read-only account
-  diagnostics and renders text or JSON output.
+- `sidekick_usages.doctor.DoctorService` builds one read-only result.
+  Pure human and JSON presenters consume that same completed result.
 - `sidekick_usages.daemon.DaemonManager` selects a scheduler backend
   and delegates install/status/uninstall.
 - `sidekick_usages.daemon.SchedulerBackend` is the reusable backend
@@ -462,5 +449,5 @@ testable:
 - `SystemCommandRunner` is injected so tests can verify generated
   commands without touching the host scheduler.
 
-The CLI should stay thin: parse Typer options, instantiate these
-services, render results, and map outcomes to exit codes.
+The CLI stays thin: commands parse Typer options, request one narrow lazily
+composed context, render completed results, and map outcomes to exit codes.

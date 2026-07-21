@@ -1,53 +1,92 @@
 """Provider abstraction.
 
-Each provider (Claude Code, Codex CLI, ...) implements the
-:class:`Provider` ABC. The CLI dispatches calls through this
-interface so adding a new provider means adding one file, not
-refactoring the rest of the codebase.
+Provider integrations implement :class:`Provider`, allowing application
+services and commands to dispatch through a shared capability contract.
 """
 
 import re
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
+from typing import Protocol
 
+from sidekick_usages.core.models import (
+    Account,
+    Credentials,
+    DetectedCredentials,
+    UsageReport,
+)
+from sidekick_usages.core.types import ProviderId
+from sidekick_usages.errors import UsageError
 from sidekick_usages.http import HttpClient
-from sidekick_usages.report import UsageReport
-from sidekick_usages.store import Account
 
 
-@dataclass
-class DetectedCredentials:
-    """Credentials extracted from a provider's local install.
+class ProviderFailureKind(StrEnum):
+    """Closed safe failure states owned by provider integrations."""
 
-    :ivar access_token: OAuth access token (bearer auth).
-    :ivar provider_account_id: Provider-native account/workspace id
-        needed by APIs that require an account header in addition to
-        bearer auth. Codex uses this for ``ChatGPT-Account-Id``.
-    :ivar refresh_token: Refresh token, or ``None`` if absent.
-    :ivar expires_at: Unix timestamp of access-token expiry, or
-        ``None`` when unknown.
-    :ivar plan: Plan tag (``"max"``, ``"plus"``, etc.). May be
-        ``"unknown"`` when the local creds don't expose it.
-    :ivar scopes: OAuth scope list when surfaced by the local
-        credentials file (Claude's ``~/.claude/.credentials.json``
-        exposes ``scopes``; not all providers do). ``None`` when
-        unknown.
-    :ivar id_token: Provider id token when the local credential store
-        exposes it. Codex needs this to reconstruct a CLI-compatible
-        file-backed ``auth.json``.
-    :ivar last_refresh: Provider-native last-refresh timestamp, when
-        present in the local credential store.
-    """
+    MISSING = "missing"
+    UNREADABLE = "unreadable"
+    MALFORMED = "malformed"
+    INCOMPLETE = "incomplete"
+    EXPIRED = "expired"
+    REJECTED = "rejected"
+    IDENTITY_MISMATCH = "identity_mismatch"
+    UNSUPPORTED = "unsupported"
 
-    access_token: str
-    provider_account_id: str | None = None
-    refresh_token: str | None = None
-    expires_at: int | None = None
-    plan: str = "unknown"
-    scopes: list[str] | None = None
-    id_token: str | None = None
-    last_refresh: str | None = None
+
+class ProviderFailureCause(StrEnum):
+    """Closed refresh causes without presentation-owned recovery copy."""
+
+    MISSING_REFRESH_CREDENTIAL = "missing refresh credential"
+    ACCESS_CREDENTIAL_EXPIRED = "access credential expired"
+    LOGIN_CREDENTIAL_EXPIRED = "login credential expired"
+    PROVIDER_REJECTED_REFRESH = "provider rejected refresh"
+    REFRESH_TIMED_OUT = "refresh timed out"
+    REFRESH_PROCESS_UNAVAILABLE = "refresh process unavailable"
+    REFRESH_OUTPUT_INCOMPLETE = "refresh output incomplete"
+    REFRESH_OUTPUT_MALFORMED = "refresh output malformed"
+    REFRESHED_IDENTITY_MISMATCH = "refreshed identity mismatch"
+    REFRESH_TEMPORARILY_UNAVAILABLE = "refresh temporarily unavailable"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ProviderFailure:
+    """Secret-safe provider failure suitable for application boundaries."""
+
+    provider_id: ProviderId
+    kind: ProviderFailureKind
+    message: str
+    cause: ProviderFailureCause | None = None
+    action_required: bool = True
+    fields: tuple[str, ...] = ()
+
+
+class ProviderBoundaryError(UsageError):
+    """An untrusted provider payload violated its owning schema."""
+
+    def __init__(self, failure: ProviderFailure) -> None:
+        super().__init__(failure.message)
+        self.failure = failure
+
+
+class CredentialStageReader(Protocol):
+    """Read child-produced credentials through their qualified owner."""
+
+    def read(self) -> bytes | None:
+        """Return bounded qualified bytes or absence."""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class RefreshSuccess:
+    """Validated replacement credentials from one provider refresh."""
+
+    credentials: Credentials = field(repr=False)
+    plan: str | None = None
+
+
+type CredentialDetection = DetectedCredentials | ProviderFailure
+type RefreshResult = RefreshSuccess | ProviderFailure
 
 
 class Provider(ABC):
@@ -58,7 +97,7 @@ class Provider(ABC):
     """
 
     #: Stable provider id, used as a dict/config key.
-    id: str = ""
+    id: ProviderId
 
     #: Human-readable provider name for error messages and help.
     display_name: str = ""
@@ -70,15 +109,18 @@ class Provider(ABC):
     def detect_credentials(
         self,
         credential_home: Path | None = None,
-    ) -> DetectedCredentials | None:
+    ) -> CredentialDetection:
         """Read OAuth credentials from the local provider install.
 
         :param credential_home: Optional provider state directory to
             inspect instead of the default install location. Providers
             that do not support multiple state homes may ignore it.
-        :return: Detected credentials, or ``None`` when no local
-            login is found.
+        :return: Detected credentials or one explicit safe failure.
         """
+
+    @abstractmethod
+    def credentials_from_token(self, token: str) -> CredentialDetection:
+        """Validate one manually supplied token at its owning boundary."""
 
     @abstractmethod
     def fetch_usage(
@@ -97,28 +139,15 @@ class Provider(ABC):
         """
 
     @abstractmethod
-    def refresh_token(
+    def refresh_credentials(
         self,
         account: Account,
         http: HttpClient,
-    ) -> bool:
-        """Refresh the access token using the stored refresh token.
-
-        Providers or account types without refresh support should
-        return ``False`` immediately and let the caller raise an auth
-        error.
+    ) -> RefreshResult:
+        """Return refreshed credentials without mutating ``account``.
 
         :param account: Account whose token to refresh. Mutated
-            in-place on success.
+            only by the application after a successful result.
         :param http: Shared HTTP client.
-        :return: True on successful refresh, False otherwise.
-        """
-
-    @abstractmethod
-    def run_setup_token(self) -> str | None:
-        """Run the provider's long-lived token generator.
-
-        :return: A token string, or ``None`` on failure.
-        :raises UnsupportedOperationError: When the provider has no
-            equivalent of ``claude setup-token`` (Codex).
+        :return: Validated replacement credentials or a safe failure.
         """

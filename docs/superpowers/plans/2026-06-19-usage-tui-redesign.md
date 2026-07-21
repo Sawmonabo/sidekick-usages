@@ -1,39 +1,96 @@
 # Usage TUI Redesign ("Framed Panels") Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Subsequent token-activity correction (2026-07-10):** This executed plan
+> accurately records the earlier output-only local implementation, but that
+> metric, the top-level `lifetime.py` owner, and the Codex rollout cache are
+> superseded by the tracked
+> [token activity accuracy plan](./2026-07-10-token-activity-accuracy.md).
+> Task excerpts below remain historical execution evidence, not current
+> implementation authority.
 
-**Goal:** Replace the per-account braille-bar usage display with a provider-grouped heatmap of framed panels (per the approved spec), add a per-provider lifetime-output-tokens footer, and fix the one mislabeled account's plan.
+---
 
-**Architecture:** A new pure renderer in `render.py` takes *all* `(Account, UsageReport)` pairs plus a per-provider lifetime lookup and emits a top strip → one rounded `Panel` per provider (title + heat-tile matrix + lifetime footer) → legend. A new `lifetime.py` module reads local stats files (Claude pre-aggregated; Codex summed from rollouts with an incremental cache) and returns `(output_total, since)` per provider — the renderer *receives* these as parameters and never calls the data layer itself. The `check` caller collects successful reports during its existing fetch loop and renders the grouped overview once at the end. A small `set-plan` command corrects plans the usage API can't introspect.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use
+> superpowers:subagent-driven-development (recommended) or
+> superpowers:executing-plans to implement this plan task by task. Steps use
+> checkbox (`- [ ]`) syntax for tracking.
 
-**Tech Stack:** Python ≥3.14, Rich ≥13.9, Typer/Click, `uv` for all tooling, `pytest` ≥9, `ruff`, `ty`.
+**Goal:** Replace the per-account braille-bar usage display with a
+provider-grouped heatmap of framed panels, add a per-provider lifetime-output
+footer, and provide an explicit manual plan override.
+
+**Architecture:** A new pure renderer in `render.py` takes *all*
+`(Account, UsageReport)` pairs plus a per-provider lifetime lookup. It emits a
+responsive robot masthead → one rounded `Panel` per provider (provider-local
+account count + heat-tile matrix + lifetime footer) → legend. A new
+`lifetime.py` module reads local stats files: Claude is pre-aggregated and
+Codex rollouts use an incremental cache. It returns `(output_total, since)` per
+provider. The renderer *receives* those values and never calls the data layer.
+The `check` caller collects successful reports during its existing fetch loop
+and renders the grouped overview once. A small `set-plan` command handles
+plans the usage API cannot introspect.
+
+**Tech Stack:** Python ≥3.14, Rich ≥13.9, Typer/Click, `uv` for tooling,
+`pytest` ≥9, Ruff, and `ty`.
 
 ## Global Constraints
 
+> **Post-implementation refinements:** The final approved renderer uses the
+> responsive robot masthead, provider-local account counts, `(1,2)` panel
+> padding, and an 85-column binding floor. The original task code excerpts
+> below preserve the implementation sequence at the time they were written;
+> where an excerpt still shows the earlier global summary, `(0,0)` padding, or
+> 80-column prototype, this refinement and the approved design specification
+> supersede it. Current behavior is pinned by the focused verification at the
+> end of this plan.
+
 Every task implicitly includes these (copied from the spec):
 
-- **Python ≥3.14.** Run everything via `uv run` (e.g. `uv run pytest`, `uv run ruff`, `uv run ty`). Bare `python3` is the wrong interpreter (3.10) — the package needs 3.14. PEP 758 `except A, B:` (no parens) is valid here; do not "fix" it.
-- **ruff line-length = 79**, double quotes, target `py314`, isort first-party `sidekick_usages`. Run `uv run ruff format` then `uv run ruff check` before every commit.
-- **`ty` strict type checking** (errors on warnings). Run `uv run ty check` before every commit. All new code is fully type-annotated.
-- **pytest** config: `testpaths=["tests"]`, `--strict-markers --strict-config`. Test files are `tests/test_*.py`.
-- **Real data, verbatim.** Account labels and plan tags render exactly as stored; plan tag is suppressed only when empty or `"unknown"`.
-- **Width — hard floor 80 columns.** The widest real case (Codex + "Spark" block, 30-char name) must render at `Console(width=80)` with **no wrapped physical line** and the longest name intact. Below 80, degrade deliberately (legacy per-account view) — **never silently wrap**.
+- **Python ≥3.14.** Run everything through `uv run`, including pytest, Ruff,
+  and `ty`. Bare `python3` is the wrong interpreter (3.10). PEP 758
+  `except A, B:` syntax is valid here; do not "fix" it.
+- **Ruff line length = 79**, double quotes, target `py314`, and first-party
+  import root `sidekick_usages`. Run format and check before every commit.
+- **`ty` strict type checking** (errors on warnings). Run `uv run ty check`
+  before every commit. Fully type all new code.
+- **pytest** config: `testpaths=["tests"]`, `--strict-markers`, and
+  `--strict-config`. Test files are `tests/test_*.py`.
+- **Runtime data, verbatim.** Account labels and plan tags render exactly as
+  stored. Tests use reserved fixtures. Suppress the plan tag only when empty or
+  `"unknown"`.
+- **Width — hard floor 85 columns.** The reserved worst case (Codex + "Spark"
+  block + 30-character name) must render at `Console(width=85)` with **no
+  wrapped physical line** and the longest name intact. Below 85, deliberately
+  use the legacy per-account view; **never silently wrap**.
 - **Branch:** `feat/usage-tui-redesign`. Commit messages end with:
   `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`
-- **Plan-detection commits stay separate** from rendering commits (Task 8 is self-contained).
+- **Manual-plan commits stay separate** from rendering commits. Task 8 is
+  self-contained.
 
 ---
 
 ## File Structure
 
-- **`src/sidekick_usages/render.py`** (modify) — heat helpers, compact-reset helpers, window classifier, and the new `usage_overview(...)` grouped renderer + its private panel builders and the width formula. Existing `usage_report` / `account_header` are retained (error/empty blocks + degrade fallback).
-- **`src/sidekick_usages/lifetime.py`** (create) — `format_tokens`, `format_since`, `claude_lifetime_output`, `codex_lifetime_output` (+ incremental Codex cache). No Rich, no imports from `cli`/`render` (avoids cycles).
-- **`src/sidekick_usages/cli.py`** (modify) — `AppContext.collected`, a `_collect` helper, `_do_check` grouped rendering with lifetime threading, and the `set-plan` command.
-- **`tests/test_render.py`** (create) — heat bands, tiles, compact reset, classification, the grouped renderer, the **80-col width guard**, and the degrade path.
-- **`tests/test_lifetime.py`** (create) — token/`since` formatting, Claude sum, Codex sum + cache, against fixture files.
+- **`src/sidekick_usages/render.py`** (modify) — heat helpers, compact-reset
+  helpers, window classifier, `usage_overview(...)`, private panel builders,
+  and the width formula. Retain `usage_report` / `account_header` for error,
+  empty, and fallback rendering.
+- **`src/sidekick_usages/lifetime.py`** (create) — `format_tokens`,
+  `format_since`, `claude_lifetime_output`, `codex_lifetime_output`, and the
+  incremental Codex cache. Do not import Rich or `cli`/`render`.
+- **`src/sidekick_usages/cli.py`** (modify) — `AppContext.collected`, a
+  `_collect` helper, grouped `_do_check` rendering, lifetime threading, and
+  `set-plan`.
+- **`tests/test_render.py`** (create) — heat bands, tiles, compact reset,
+  classification, grouped rendering, the **85-column width guard**, and the
+  fallback path.
+- **`tests/test_lifetime.py`** (create) — token and `since` formatting, Claude
+  sum, Codex sum, and cache behavior against fixture files.
 - **`tests/test_cli_setplan.py`** (create) — `set-plan` behavior.
 
-Setup note: confirm the branch before Task 1 — `git rev-parse --abbrev-ref HEAD` should print `feat/usage-tui-redesign`. If not: `git checkout main && git checkout -b feat/usage-tui-redesign`.
+Setup note: confirm the branch before Task 1. The command
+`git rev-parse --abbrev-ref HEAD` should print `feat/usage-tui-redesign`. If
+not, create that branch from `main` before editing.
 
 ---
 
@@ -44,7 +101,9 @@ Setup note: confirm the branch before Task 1 — `git rev-parse --abbrev-ref HEA
 - Test: `tests/test_render.py`
 
 **Interfaces:**
-- Produces: `_HEAT_BANDS: list[tuple[int, str, str]]`, `_IDLE_FG: str`, `_TILE_WIDTH: int`, `_heat_band(pct: int) -> tuple[str, str] | None`, `_heat_tile(pct: int) -> rich.text.Text`.
+- Produces: `_HEAT_BANDS: list[tuple[int, str, str]]`, `_IDLE_FG: str`,
+  `_TILE_WIDTH: int`, `_heat_band(pct: int) -> tuple[str, str] | None`, and
+  `_heat_tile(pct: int) -> rich.text.Text`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -156,7 +215,8 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: `_TILE_WIDTH` (Task 1).
-- Produces: `_format_reset_compact(iso: str | None) -> str`, `_reset_cell(iso: str | None) -> rich.text.Text`.
+- Produces: `_format_reset_compact(iso: str | None) -> str` and
+  `_reset_cell(iso: str | None) -> rich.text.Text`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -192,7 +252,8 @@ Expected: FAIL (`_format_reset_compact` undefined).
 
 - [ ] **Step 3: Write minimal implementation**
 
-Add to `render.py` (reuses the existing `_SECONDS_PER_HOUR` / `_SECONDS_PER_DAY` and the `datetime`/`UTC` import already at the top):
+Add to `render.py`. Reuse the existing `_SECONDS_PER_HOUR`,
+`_SECONDS_PER_DAY`, and `datetime`/`UTC` imports.
 
 ```python
 def _format_reset_compact(iso: str | None) -> str:
@@ -261,9 +322,13 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - Test: `tests/test_render.py`
 
 **Interfaces:**
-- Produces: `_classify_window(name: str) -> tuple[str, str]` (returns `(length, group)`), `_length_hours(length: str) -> int`.
+- Produces: `_classify_window(name: str) -> tuple[str, str]`, returning
+  `(length, group)`, and `_length_hours(length: str) -> int`.
 
-Live window names confirmed: Claude emits `"5h"`, `"7d"`, `"7d Opus"`, `"7d OAuth"` (group label *after* the length); Codex emits `"5h"`, `"7d"`, `"Spark 5h"`, `"Spark 7d"` (group *before*). The `\d+[hd]`-anywhere rule handles both positions.
+Live window names confirmed: Claude emits `"5h"`, `"7d"`, `"7d Opus"`, and
+`"7d OAuth"` (group label *after* the length). Codex emits `"5h"`, `"7d"`,
+`"Spark 5h"`, and `"Spark 7d"` (group *before*). The `\d+[hd]`-anywhere rule
+handles both positions.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -365,11 +430,26 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - Test: `tests/test_lifetime.py`
 
 **Interfaces:**
-- Produces: `format_tokens(n: int) -> str`, `format_since(value: str | None) -> str`, `claude_lifetime_output() -> tuple[int, str | None]`, and overridable module constant `_CLAUDE_STATS_FILE: pathlib.Path`.
+- Produces: `format_tokens(n: int) -> str`,
+  `format_since(value: str | None) -> str`,
+  `claude_lifetime_output() -> tuple[int, str | None]`, and overridable module
+  constant `_CLAUDE_STATS_FILE: pathlib.Path`.
 
-Confirmed Claude schema (`~/.claude/stats-cache.json`): `modelUsage` is a dict of model → `{"outputTokens": int, ...}`; lifetime output = sum of `outputTokens`. `firstSessionDate` is the `since` anchor.
+Confirmed Claude schema (`~/.claude/stats-cache.json`): `modelUsage` maps each
+model to `{"outputTokens": int, ...}`. Lifetime output is the sum of
+`outputTokens`; `firstSessionDate` is the `since` anchor.
 
-> **Spec deviation (intentional, empirically verified):** Spec §6 says the Claude `since` is "the earliest date in `dailyModelTokens`." This plan reads top-level `firstSessionDate` instead. Verified against the live file: `firstSessionDate = "2025-12-28T23:26:31.884Z"`, and `dailyModelTokens` is a `list` of `{"date", "tokensByModel"}` whose earliest `date` is also `"2025-12-28"` (as is `dailyActivity[0].date`). Both yield `format_since(...) == "Dec 28"`, matching the approved mockup. The single-field read is O(1) and does not depend on the daily-series retention window, which is a separate list that could be truncated independently of the session-start record. Confirmed `firstSessionDate` is the first-*session* date, **not** the account-creation date (`oauthAccount.accountCreatedAt` is months earlier) — so it honestly bounds the `modelUsage` total.
+> **Spec deviation (intentional, empirically verified):** Spec §6 says Claude's
+> `since` value is the earliest date in `dailyModelTokens`. This plan reads the
+> top-level `firstSessionDate` instead. The observed
+> `firstSessionDate = "2025-12-28T23:26:31.884Z"`; `dailyModelTokens` is a list
+> of `{"date", "tokensByModel"}` whose earliest `date` is also `"2025-12-28"`,
+> as is `dailyActivity[0].date`. Both yield
+> `format_since(...) == "Dec 28"`, matching the approved mockup. The O(1)
+> single-field read does not depend on a daily-series retention window that
+> could be truncated independently. `firstSessionDate` is the first *session*
+> date, not the account-creation date (`oauthAccount.accountCreatedAt` is
+> earlier), so it honestly bounds the `modelUsage` total.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -528,9 +608,15 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: nothing from earlier tasks.
-- Produces: `codex_lifetime_output() -> tuple[int, str | None]`, overridable constants `_CODEX_SESSIONS_DIR: Path`, `_CODEX_CACHE_FILE: Path`.
+- Produces: `codex_lifetime_output() -> tuple[int, str | None]` and overridable
+  constants `_CODEX_SESSIONS_DIR: Path` and `_CODEX_CACHE_FILE: Path`.
 
-Confirmed Codex schema: each `~/.codex/sessions/**/rollout-*.jsonl` line may carry `payload.info.total_token_usage.output_tokens` (the session's *cumulative* total, repeated and growing). Per file take the **max**; sum across files. `since` = earliest rollout's date (from its filename `rollout-YYYY-MM-DD...`). ~1500 files exist, so cache per file by mtime and only re-read new/changed files.
+Confirmed Codex schema: each `~/.codex/sessions/**/rollout-*.jsonl` line may
+carry `payload.info.total_token_usage.output_tokens`, the session's repeated
+and growing *cumulative* total. Take the **maximum** per file and sum across
+files. `since` is the earliest rollout date from
+`rollout-YYYY-MM-DD...`. About 1500 files exist, so cache by filename and
+modification time and re-read only new or changed files.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -716,12 +802,22 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - Test: `tests/test_render.py`
 
 **Interfaces:**
-- Consumes: `_heat_tile`, `_reset_cell`, `_classify_window`, `_length_hours`, `_TILE_WIDTH` (Tasks 1-3); `format_tokens`, `format_since` (Task 4).
-- Produces: `usage_overview(pairs: list[tuple[Account, UsageReport]], lifetime: dict[str, tuple[int, str | None]], *, width: int) -> RenderableType`.
+- Consumes: `_heat_tile`, `_reset_cell`, `_classify_window`, `_length_hours`,
+  and `_TILE_WIDTH` from Tasks 1–3; `format_tokens` and `format_since` from
+  Task 4.
+- Produces:
+  `usage_overview(pairs: list[tuple[Account, UsageReport]],
+  lifetime: dict[str, tuple[int, str | None]], *, width: int) -> RenderableType`.
 
-`pairs` are ordered as the caller iterates accounts; the renderer groups by provider preserving first-seen order. `lifetime` maps `provider_id -> (output_total, since)`. The renderer never imports the data side of `lifetime` beyond the two pure formatters.
+`pairs` retain caller iteration order; the renderer groups by provider while
+preserving first-seen order. `lifetime` maps
+`provider_id -> (output_total, since)`. The renderer imports only the two pure
+formatters from the lifetime module, never its data-collection functions.
 
-The required-width formula (validated against the spec's measured 80/57): inner table = `Σ(col_widths) + 2·(n_cols−1)`; panel = inner + 2 (rounded borders) + 0 (zero horizontal panel padding). Below the binding provider's panel width, degrade to the legacy stacked view.
+The required width includes the measured table, rounded borders, and approved
+two-column horizontal side margins. The reserved Codex + Spark fixture binds
+at 85 columns. Below the binding provider's width, use the legacy stacked
+view.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -753,17 +849,17 @@ def _report(*windows):
 
 
 def _worst_case_pairs():
-    # 3 Claude + 2 Codex; the 30-char Codex name + Spark block is the
-    # binding width case (matches the user's real store).
+    # 3 Claude + 2 Codex; the reserved 30-character name + Spark block is
+    # the synthetic binding-width fixture.
     iso = _iso_in(hours=3, minutes=50)
     claude = [
-        (_acct("SAbossedgh@fortressinfosec"), _report(("5h", 94, iso), ("7d", 61, iso))),
-        (_acct("SAbossedgh@fortressinfosec@org", plan="team"), _report(("5h", 12, iso), ("7d", 73, iso))),
-        (_acct("a.sawmon@gmail"), _report(("5h", 40, iso), ("7d", 5, iso))),
+        (_acct("long.account.name@example.test"), _report(("5h", 94, iso), ("7d", 61, iso))),
+        (_acct("long.account.name@example.test", plan="team"), _report(("5h", 12, iso), ("7d", 73, iso))),
+        (_acct("long.account.name@example.test"), _report(("5h", 40, iso), ("7d", 5, iso))),
     ]
     codex = [
-        (_acct("a.sawmon@ymail.com", "codex", "pro"), _report(("5h", 8, iso), ("7d", 45, iso), ("Spark 5h", 0, iso), ("Spark 7d", 0, iso))),
-        (_acct("sabossedgh@fortressinfosec.com", "codex", "pro"), _report(("5h", 0, iso), ("7d", 0, iso), ("Spark 5h", 0, iso), ("Spark 7d", 0, iso))),
+        (_acct("long.account.name@example.test", "codex", "pro"), _report(("5h", 8, iso), ("7d", 45, iso), ("Spark 5h", 0, iso), ("Spark 7d", 0, iso))),
+        (_acct("long.account.name@example.test", "codex", "pro"), _report(("5h", 0, iso), ("7d", 0, iso), ("Spark 5h", 0, iso), ("Spark 7d", 0, iso))),
     ]
     return claude + codex
 
@@ -782,7 +878,7 @@ def test_width_guard_fits_80_columns():
     lines = out.split("\n")
     assert max(len(line) for line in lines) <= 80
     # longest name intact on a single physical line, not elided
-    assert any("sabossedgh@fortressinfosec.com" in line for line in lines)
+    assert any("long.account.name@example.test" in line for line in lines)
 
 
 def test_overview_shows_titles_and_lifetime():
@@ -801,7 +897,7 @@ def test_overview_degrades_below_80_to_legacy():
     # panel path; the legacy tag uses the lowercase provider id.
     out = _render_at(70, _worst_case_pairs())
     assert "CLAUDE" not in out
-    assert "a.sawmon@gmail" in out
+    assert "long.account.name@example.test" in out
 
 
 def test_overview_empty_pairs():
@@ -1087,14 +1183,19 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ### Task 7: Wire grouped rendering into `check`
 
 **Files:**
-- Modify: `src/sidekick_usages/cli.py` (`AppContext` ~line 90-108; `_do_check` lines 285-306; `_fetch_usage_and_render` line 401; `_handle_runtime_forbidden` line 350)
-- Test: `tests/test_cli_refresh.py` (regression only — must stay green unchanged)
+- Modify: `src/sidekick_usages/cli.py` (`AppContext`, `_do_check`,
+  `_fetch_usage_and_render`, and `_handle_runtime_forbidden`).
+- Test: `tests/test_cli_refresh.py` (regression only; it must stay green).
 
 **Interfaces:**
-- Consumes: `usage_overview` (Task 6); `claude_lifetime_output`, `codex_lifetime_output` (Tasks 4-5).
+- Consumes: `usage_overview` from Task 6 plus `claude_lifetime_output` and
+  `codex_lifetime_output` from Tasks 4–5.
 - Produces: `AppContext.collected`, `_collect(acct, report)`.
 
-Design: keep every fetch helper's `bool` contract intact (so all 8 existing `cli._fetch_and_render(...) is True/False` assertions pass unchanged). The two success-print sites *collect* instead of printing; `_do_check` renders the grouped overview once after the loop. Errors still print inline.
+Design: keep every fetch helper's `bool` contract intact so all eight existing
+`cli._fetch_and_render(...) is True/False` assertions remain unchanged. The
+two success sites *collect* instead of printing; `_do_check` renders the
+grouped overview once after the loop. Errors still print inline.
 
 - [ ] **Step 1: Add a focused regression test**
 
@@ -1121,7 +1222,8 @@ Expected: FAIL (`claude_lifetime_output` not importable in cli, or "CLAUDE" abse
 
 - [ ] **Step 3: Implement the wiring**
 
-In `cli.py`, extend the dataclass import and add the field. Change the existing `from dataclasses import dataclass` to:
+In `cli.py`, extend the dataclass import and add the field. Change the existing
+dataclass import to:
 
 ```python
 from dataclasses import dataclass, field
@@ -1138,7 +1240,10 @@ from sidekick_usages.render import account_header, usage_overview
 from sidekick_usages.report import UsageReport
 ```
 
-Replace the existing `from sidekick_usages.render import account_header, usage_report` line with the `account_header, usage_overview` import above — `usage_report` is no longer referenced in cli after this task (both call sites become `_collect`), so keeping it would be an unused import (ruff F401). Add the `UsageReport` import for the new annotations (`cli.py` does not currently import it).
+Replace the existing `account_header, usage_report` renderer import with the
+`account_header, usage_overview` import above. Both old call sites become
+`_collect`, so retaining `usage_report` would trigger Ruff F401. Add the
+`UsageReport` import for the new annotations.
 
 Add the field to `AppContext` (after `heartbeat_providers`, line ~108):
 
@@ -1232,12 +1337,15 @@ def _lifetime_for(
     }
 ```
 
-(Note: after this task `usage_report` is no longer referenced in `cli.py` — it remains used inside `render.py`'s own `_legacy_overview`. `account_header` stays imported in cli for the error blocks at lines ~2118/2130.)
+After this task, `usage_report` is no longer referenced in `cli.py`; it remains
+inside `render.py`'s `_legacy_overview`. `account_header` stays imported in the
+CLI for error blocks.
 
 - [ ] **Step 4: Run the targeted test, then the full refresh suite**
 
 Run: `uv run pytest tests/test_cli_refresh.py -v`
-Expected: PASS — the new grouped test **and** all pre-existing refresh tests (the `_fetch_and_render(...) is True/False` assertions are untouched).
+Expected: PASS — the grouped test and all pre-existing refresh tests. The
+`_fetch_and_render(...) is True/False` assertions remain untouched.
 
 - [ ] **Step 5: Run the whole suite, lint, type-check, commit**
 
@@ -1254,17 +1362,21 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 ---
 
-### Task 8: `set-plan` command + correct the mislabeled account
+### Task 8: Add the explicit `set-plan` command
 
 **Files:**
-- Modify: `src/sidekick_usages/cli.py` (add a command near the other `@app.command(...)` definitions)
+- Modify: `src/sidekick_usages/cli.py` (add a command near the other
+  `@app.command(...)` definitions)
 - Test: `tests/test_cli_setplan.py` (create)
 
 **Interfaces:**
 - Consumes: `AppContext`, `AccountStore`.
 - Produces: the `set-plan` CLI command.
 
-Context: the usage API cannot introspect an inference-only token's plan (no `user:profile` scope; the header probe carries no tier), so a manual override is the correct primitive. The user confirmed account `SAbossedgh@fortressinfosec` should read `max`. Kept in its own commit, separate from rendering.
+Context: the usage API cannot introspect an inference-only token's plan because
+the header probe carries no tier and the token lacks `user:profile`. A manual
+override is the correct primitive. Verify it only with an isolated test store
+and keep its commit separate from rendering.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1384,25 +1496,16 @@ git commit -m "feat(cli): add set-plan command for manual plan overrides
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```
 
-- [ ] **Step 6: Apply the real-data correction (one-time) and verify the showcase**
-
-```bash
-uv run sidekick-usages set-plan "SAbossedgh@fortressinfosec" max
-uv run sidekick-usages list          # row 1 Plan now reads "max"
-uv run sidekick-usages check         # grouped panels; no "unknown" chip
-```
-
-Expected: `list` shows `max` for that account; `check` renders the framed-panel overview with all five accounts labeled, no `unknown`.
-
----
-
 ## Final verification (after all tasks)
 
 ```bash
 uv run pytest                 # full suite green
 uv run ruff check             # clean
 uv run ty check               # clean
-uv run sidekick-usages check  # eyeball against the spec mockup
+uv run pytest tests/test_render.py -k \
+  "worst_case or degrades_below_floor or failure" -v
 ```
 
-Confirm at an 80-column terminal (`stty cols 80` or resize) that nothing wraps and `sabossedgh@fortressinfosec.com` stays on one line — the exact failure mode the width guard pins.
+Confirm through the test-owned 85-column renderer fixture that nothing wraps
+and `long.account.name@example.test` stays on one line. This is the exact
+failure mode pinned by the width guard and does not touch live account state.

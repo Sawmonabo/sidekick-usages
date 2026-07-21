@@ -1,5 +1,6 @@
 """Reusable OS scheduler backends for token refresh maintenance."""
 
+import enum
 import os
 import platform
 import shlex
@@ -8,13 +9,31 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import assert_never
 
-SERVICE_NAME = "sidekick-usages-refresh"
-LAUNCHD_LABEL = "com.sidekick-usages.refresh"
-CRON_BEGIN = "# sidekick-usages refresh begin"
-CRON_END = "# sidekick-usages refresh end"
+from sidekick_usages.core.types import ExitCode
+from sidekick_usages.errors import UsageError
+from sidekick_usages.scheduler_quiescence import (
+    CRON_BEGIN,
+    CRON_END,
+    LAUNCHD_LABEL,
+    SERVICE_NAME,
+    SchedulerProbeResult,
+    SchedulerQuiescenceAssessment,
+    assess_scheduler_quiescence,
+    powershell_command,
+)
+
 DAEMON_DIR_NAME = "sidekick-usages"
 WINDOWS_DAEMON_SUBDIR = "sidekick-usages\\daemon"
+
+
+class DaemonOperation(enum.StrEnum):
+    """Supported daemon manager operations."""
+
+    INSTALL = "install"
+    STATUS = "status"
+    UNINSTALL = "uninstall"
 
 
 @dataclass(frozen=True)
@@ -32,7 +51,7 @@ class DaemonOperationResult:
 
     backend: str
     message: str
-    exit_code: int = 0
+    exit_code: ExitCode = ExitCode.SUCCESS
 
 
 @dataclass(frozen=True)
@@ -73,6 +92,7 @@ class SystemCommandRunner:
         completed = subprocess.run(
             list(argv),
             input=input_text,
+            stdin=subprocess.DEVNULL if input_text is None else None,
             text=True,
             capture_output=True,
             check=False,
@@ -218,11 +238,14 @@ class CronBackend(SchedulerBackend):
         result = self.runner.run(("crontab", "-l"))
         if result.returncode != 0:
             return DaemonOperationResult(
-                self.id, "cron entry not installed", 1
+                self.id,
+                "cron entry not installed",
+                ExitCode.MANUAL_ACTION,
             )
         installed = CRON_BEGIN in result.stdout and CRON_END in result.stdout
         message = "cron entry installed" if installed else "cron entry missing"
-        return DaemonOperationResult(self.id, message, 0 if installed else 1)
+        exit_code = ExitCode.SUCCESS if installed else ExitCode.MANUAL_ACTION
+        return DaemonOperationResult(self.id, message, exit_code)
 
     def uninstall(self) -> DaemonOperationResult:
         """Remove the marked crontab block."""
@@ -300,6 +323,8 @@ class LaunchdBackend(SchedulerBackend):
         args = "\n".join(
             f"    <string>{xml_escape(arg)}</string>" for arg in self.command
         )
+        stdout_path = xml_escape(str(self.log_dir / "refresh.out.log"))
+        stderr_path = xml_escape(str(self.log_dir / "refresh.err.log"))
         return (
             '<?xml version="1.0" encoding="UTF-8"?>\n'
             '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
@@ -315,9 +340,9 @@ class LaunchdBackend(SchedulerBackend):
             "  <key>StartInterval</key>\n"
             "  <integer>1800</integer>\n"
             "  <key>StandardOutPath</key>\n"
-            f"  <string>{xml_escape(str(self.log_dir / 'refresh.out.log'))}</string>\n"
+            f"  <string>{stdout_path}</string>\n"
             "  <key>StandardErrorPath</key>\n"
-            f"  <string>{xml_escape(str(self.log_dir / 'refresh.err.log'))}</string>\n"
+            f"  <string>{stderr_path}</string>\n"
             "  <key>RunAtLoad</key>\n"
             "  <true/>\n"
             "</dict>\n"
@@ -326,7 +351,7 @@ class LaunchdBackend(SchedulerBackend):
 
 
 class HiddenWindowsLauncher:
-    """Generate silent Windows-side launcher artifacts for scheduled refresh."""
+    """Generate silent Windows launchers for scheduled refresh."""
 
     def __init__(
         self,
@@ -337,12 +362,13 @@ class HiddenWindowsLauncher:
         self.platform_info = platform_info
 
     def install_preamble(self) -> str:
-        """Return PowerShell that writes wrapper artifacts under LOCALAPPDATA."""
+        """Return PowerShell that writes wrappers under LOCALAPPDATA."""
         return "\n".join(
             (
                 "$daemonDir = Join-Path $env:LOCALAPPDATA "
                 f"{ps_quote(WINDOWS_DAEMON_SUBDIR)}",
-                "New-Item -ItemType Directory -Force -Path $daemonDir | Out-Null",
+                "New-Item -ItemType Directory -Force "
+                "-Path $daemonDir | Out-Null",
                 "$vbsPath = Join-Path $daemonDir 'refresh.vbs'",
                 "$ps1Path = Join-Path $daemonDir 'refresh.ps1'",
                 "$outPath = Join-Path $daemonDir 'refresh.out.log'",
@@ -400,8 +426,13 @@ class HiddenWindowsLauncher:
                 "  Remove-Item -LiteralPath $path "
                 "-Force -ErrorAction SilentlyContinue",
                 "}",
-                "Remove-Item -LiteralPath $daemonDir "
+                "$remaining = @(Get-ChildItem -LiteralPath $daemonDir "
+                "-Force -ErrorAction SilentlyContinue)",
+                "if ((Test-Path -LiteralPath $daemonDir) -and "
+                "$remaining.Count -eq 0) {",
+                "  Remove-Item -LiteralPath $daemonDir "
                 "-Force -ErrorAction SilentlyContinue",
+                "}",
             )
         )
 
@@ -465,7 +496,7 @@ class TaskSchedulerBackend(SchedulerBackend):
 
     def install(self) -> DaemonOperationResult:
         """Register the scheduled task for the current user."""
-        result = self.runner.run(self._powershell(self._install_script()))
+        result = self.runner.run(powershell_command(self._install_script()))
         return _result_from_command(
             self.id,
             result,
@@ -475,14 +506,14 @@ class TaskSchedulerBackend(SchedulerBackend):
     def status(self) -> DaemonOperationResult:
         """Return scheduled task status."""
         script = self.launcher.status_script()
-        result = self.runner.run(self._powershell(script))
+        result = self.runner.run(powershell_command(script))
         message = result.stdout or result.stderr or "task status checked"
         return DaemonOperationResult(self.id, message, _exit(result))
 
     def uninstall(self) -> DaemonOperationResult:
         """Unregister the scheduled task."""
         script = self.launcher.uninstall_script()
-        result = self.runner.run(self._powershell(script))
+        result = self.runner.run(powershell_command(script))
         return _result_from_command(
             self.id,
             result,
@@ -504,21 +535,10 @@ class TaskSchedulerBackend(SchedulerBackend):
                 "Register-ScheduledTask "
                 f"-TaskName {ps_quote(SERVICE_NAME)} "
                 "-Trigger $trigger -Action $action -Settings $settings "
-                "-Description 'Silently refresh sidekick-usages provider tokens' "
+                "-Description 'Silently refresh sidekick-usages provider "
+                "tokens' "
                 "-Force",
             )
-        )
-
-    @staticmethod
-    def _powershell(script: str) -> tuple[str, ...]:
-        """Return a PowerShell command argv."""
-        return (
-            "powershell.exe",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            script,
         )
 
 
@@ -536,6 +556,36 @@ class DaemonManager:
         self.platform_info = platform_info or PlatformInfo.detect()
         self.runner = runner or SystemCommandRunner()
 
+    def run(
+        self,
+        operation: str,
+        backend: str = "auto",
+    ) -> DaemonOperationResult:
+        """Parse and run one supported daemon operation.
+
+        :param operation: External operation name to parse.
+        :param backend: Scheduler backend name or ``"auto"``.
+        :returns: Result from the selected operation.
+        :raises UsageError: When the operation name is unsupported.
+        """
+        try:
+            operation_id = DaemonOperation(operation)
+        except ValueError as error:
+            expected = ", ".join(item.value for item in DaemonOperation)
+            raise UsageError(
+                f"Unknown daemon operation {operation!r}. "
+                f"Expected one of: {expected}."
+            ) from error
+
+        match operation_id:
+            case DaemonOperation.INSTALL:
+                return self.install(backend)
+            case DaemonOperation.STATUS:
+                return self.status(backend)
+            case DaemonOperation.UNINSTALL:
+                return self.uninstall(backend)
+        assert_never(operation_id)
+
     def install(self, backend: str = "auto") -> DaemonOperationResult:
         """Install the selected backend."""
         return self.backend(backend).install()
@@ -547,6 +597,26 @@ class DaemonManager:
     def uninstall(self, backend: str = "auto") -> DaemonOperationResult:
         """Uninstall the selected backend."""
         return self.backend(backend).uninstall()
+
+    def assess_quiescence(self) -> SchedulerQuiescenceAssessment:
+        """Inspect every scheduler backend that can coexist on this host."""
+
+        def probe(argv: tuple[str, ...]) -> SchedulerProbeResult:
+            result = self.runner.run(argv)
+            return SchedulerProbeResult(
+                result.returncode,
+                result.stdout,
+                result.stderr,
+            )
+
+        return assess_scheduler_quiescence(
+            system=self.platform_info.system,
+            home=self.platform_info.home,
+            uid=self.platform_info.uid,
+            is_wsl=self.platform_info.is_wsl,
+            has_user_systemd=self.platform_info.has_user_systemd,
+            probe=probe,
+        )
 
     def backend(self, requested: str) -> SchedulerBackend:
         """Build a backend instance by name or auto-detection."""
@@ -642,12 +712,14 @@ def _result_from_command(
     if result.returncode == 0:
         return DaemonOperationResult(backend, success_message)
     message = result.stderr or result.stdout or success_message
-    return DaemonOperationResult(backend, message, 3)
+    return DaemonOperationResult(backend, message, ExitCode.SCHEDULER_ERROR)
 
 
-def _exit(result: CommandResult) -> int:
+def _exit(result: CommandResult) -> ExitCode:
     """Map a command return code to the scheduler error code."""
-    return 0 if result.returncode == 0 else 3
+    if result.returncode == 0:
+        return ExitCode.SUCCESS
+    return ExitCode.SCHEDULER_ERROR
 
 
 def _replace_marked_block(text: str, block: str) -> str:

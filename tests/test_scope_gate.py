@@ -1,148 +1,176 @@
-"""Tests for OAuth-scope extraction and persistence.
+"""Focused provider-metadata and compatibility-store tests."""
 
-The CLI no longer skips fetching usage when scopes look
-inference-only — see :mod:`test_header_path` for the new routing
-that fetches via response headers instead. What these tests still
-pin is the upstream of that decision: the scope field must round-trip
-correctly through every layer so the routing has clean inputs.
+import base64
+import json
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta, timezone
+from pathlib import Path
 
-* :func:`sidekick_usages.providers.claude.ClaudeProvider._parse_blob`
-  surfaces a valid ``scopes`` array as
-  :attr:`DetectedCredentials.scopes` and tolerates the field being
-  missing or malformed.
-* :class:`sidekick_usages.store.Account` round-trips ``scopes``
-  through :meth:`to_dict` / :meth:`from_dict`, including legacy
-  accounts persisted before the field existed.
-"""
+import pytest
 
-from sidekick_usages.providers.claude import ClaudeProvider
-from sidekick_usages.store import Account
+from sidekick_usages.core.expiry import InvalidExpiry, KnownExpiry
+from sidekick_usages.core.models import (
+    Account,
+    ClaudeLoginCredentials,
+    ClaudeSetupTokenCredentials,
+    CodexCredentials,
+)
+from sidekick_usages.core.types import (
+    AccountLabel,
+    HeartbeatStatus,
+    RefreshStatus,
+)
+from sidekick_usages.persistence.errors import InvalidSchemaError
+from sidekick_usages.providers.base import ProviderBoundaryError
+from sidekick_usages.providers.claude.credential_schemas import (
+    claude_expiry,
+    parse_credentials_blob,
+)
+from sidekick_usages.providers.codex.schemas import jwt_expiry
+from sidekick_usages.serialization import JsonValue, decode_json_object
+from tests.test_support import make_account_store
 
 
-def _make_acct(scopes: list[str] | None) -> Account:
-    """Build a minimal Account fixture for round-trip tests.
-
-    :param scopes: Value to assign to :attr:`Account.scopes`.
-    :return: Account with sentinel fields and the given scopes.
-    """
-    return Account(
-        label="t",
-        provider_id="claude",
-        access_token="sk-ant-oat01-x",
-        scopes=scopes,
+def test_claude_parser_preserves_known_scope_order() -> None:
+    """A valid provider scope list remains ordered and immutable."""
+    detected = parse_credentials_blob(
+        {
+            "claudeAiOauth": {
+                "accessToken": "sk-ant-oat01-abc",
+                "refreshToken": "refresh-abc",
+                "expiresAt": 1_800_000_000_000,
+                "scopes": ["user:inference", "user:profile"],
+            }
+        }
     )
 
-
-def test_parse_blob_extracts_scopes_list() -> None:
-    """Scopes from the local creds file land on DetectedCredentials."""
-    blob = {
-        "claudeAiOauth": {
-            "accessToken": "sk-ant-oat01-abc",
-            "scopes": [
-                "user:file_upload",
-                "user:inference",
-                "user:mcp_servers",
-                "user:profile",
-                "user:sessions:claude_code",
-            ],
-            "subscriptionType": "max",
-        }
-    }
-    detected = ClaudeProvider._parse_blob(blob)
-    assert detected is not None
-    assert detected.scopes == [
-        "user:file_upload",
-        "user:inference",
-        "user:mcp_servers",
-        "user:profile",
-        "user:sessions:claude_code",
-    ]
+    assert isinstance(detected.credentials, ClaudeLoginCredentials)
+    assert detected.scopes == ("user:inference", "user:profile")
 
 
-def test_parse_blob_missing_scopes_yields_none() -> None:
-    """Older creds without ``scopes`` produce ``scopes=None``."""
-    blob = {"claudeAiOauth": {"accessToken": "sk-ant-oat01-abc"}}
-    detected = ClaudeProvider._parse_blob(blob)
-    assert detected is not None
-    assert detected.scopes is None
+def test_claude_parser_rejects_absent_login_scopes() -> None:
+    """Native login state cannot impersonate explicit setup-token input."""
+    with pytest.raises(ProviderBoundaryError):
+        parse_credentials_blob(
+            {
+                "claudeAiOauth": {
+                    "accessToken": "sk-ant-oat01-abc",
+                    "refreshToken": "refresh-abc",
+                    "expiresAt": 1_800_000_000_000,
+                }
+            }
+        )
 
 
-def test_parse_blob_rejects_malformed_scopes() -> None:
-    """Junk in ``scopes`` is treated as unknown, not crashed-on.
-
-    Defensive: future creds-file shape drift must not break detect.
-    """
-    blob = {
-        "claudeAiOauth": {
-            "accessToken": "sk-ant-oat01-abc",
-            "scopes": "not-a-list",
-        }
-    }
-    detected = ClaudeProvider._parse_blob(blob)
-    assert detected is not None
-    assert detected.scopes is None
-
-
-def test_parse_blob_rejects_mixed_type_scopes() -> None:
-    """Mixed-type ``scopes`` are rejected wholesale (not partial)."""
-    blob = {
-        "claudeAiOauth": {
-            "accessToken": "sk-ant-oat01-abc",
-            "scopes": ["user:inference", 42, None],
-        }
-    }
-    detected = ClaudeProvider._parse_blob(blob)
-    assert detected is not None
-    assert detected.scopes is None
+@pytest.mark.parametrize("scopes", ["not-a-list", ["user:inference", 42]])
+def test_claude_parser_rejects_malformed_scopes(scopes: JsonValue) -> None:
+    """Malformed scope metadata cannot become partially trusted state."""
+    with pytest.raises(ProviderBoundaryError):
+        parse_credentials_blob(
+            {
+                "claudeAiOauth": {
+                    "accessToken": "sk-ant-oat01-abc",
+                    "refreshToken": "refresh-abc",
+                    "expiresAt": 1_800_000_000_000,
+                    "scopes": scopes,
+                }
+            }
+        )
 
 
-def test_account_roundtrips_scopes() -> None:
-    """``scopes`` survives ``to_dict`` → ``from_dict``."""
-    original = _make_acct(["user:inference", "user:profile"])
-    restored = Account.from_dict(original.label, original.to_dict())
-    assert restored.scopes == ["user:inference", "user:profile"]
+def _jwt(payload: dict[str, object]) -> str:
+    encoded = base64.urlsafe_b64encode(json.dumps(payload).encode())
+    return f"e30.{encoded.decode().rstrip('=')}.sig"
 
 
-def test_account_from_dict_tolerates_missing_scopes_field() -> None:
-    """Accounts persisted before the scopes field load as None."""
-    legacy = {
-        "provider_id": "claude",
-        "access_token": "sk-ant-oat01-x",
-        "plan": "max",
-    }
-    restored = Account.from_dict("legacy", legacy)
-    assert restored.scopes is None
-
-
-def test_account_roundtrips_provider_account_id() -> None:
-    """Provider account identity survives persistence for Codex."""
-    original = Account(
-        label="codex-pro",
-        provider_id="codex",
-        access_token="eyJ.access.sig",
-        provider_account_id="acct_123",
+def test_provider_native_expiry_units_converge_and_fail_closed() -> None:
+    """Provider-native epochs converge and malformed values stay invalid."""
+    expected = KnownExpiry(
+        datetime(1970, 1, 1, tzinfo=UTC) + timedelta(seconds=1_800_000_000)
     )
 
-    restored = Account.from_dict(original.label, original.to_dict())
+    assert claude_expiry(1_800_000_000_000) == expected
+    assert jwt_expiry(_jwt({"exp": 1_800_000_000})) == expected
+    assert isinstance(claude_expiry(True), InvalidExpiry)
+    with pytest.raises(ProviderBoundaryError):
+        jwt_expiry(_jwt({"exp": True}))
 
-    assert restored.provider_account_id == "acct_123"
 
+def test_store_round_trips_exact_provider_state(tmp_path: Path) -> None:
+    """The compatibility codec preserves exact units and aware state."""
+    epoch = datetime(1970, 1, 1, tzinfo=UTC)
+    codex_expiry_seconds = 1_900_000_000
+    codex_expiry = epoch + timedelta(seconds=codex_expiry_seconds)
+    eastern = timezone(timedelta(hours=-4))
+    audit_time = datetime(2026, 6, 12, 8, 34, 56, 789000, tzinfo=eastern)
+    reset_time = datetime(2026, 6, 12, 9, tzinfo=eastern)
+    audit_time_utc = audit_time.astimezone(UTC)
+    reset_time_utc = reset_time.astimezone(UTC)
+    claude_account = Account(
+        label=AccountLabel("claude-team"),
+        credentials=ClaudeSetupTokenCredentials(
+            access_token="sk-ant-oat01-x",
+        ),
+        last_refresh_at=audit_time,
+        last_refresh_status=RefreshStatus.OK,
+        heartbeat_5h_reset_at=reset_time,
+        heartbeat_window_resets={"standard": reset_time},
+    )
+    codex_account = Account(
+        label=AccountLabel("codex-pro"),
+        credentials=CodexCredentials(
+            access_token="eyJ.access.sig",
+            refresh_token="refresh-123",
+            expiry=KnownExpiry(codex_expiry),
+            account_id="acct_123",
+            auth_home="/synthetic/codex-pro",
+            id_token="id-token-123",
+            auth_last_refresh="2026-06-12T00:00:00Z",
+        ),
+        last_heartbeat_at=audit_time,
+        last_heartbeat_status=HeartbeatStatus.WARMED,
+    )
+    store = make_account_store(tmp_path, (claude_account, codex_account))
 
-def test_account_roundtrips_codex_auth_home_metadata() -> None:
-    """Codex per-account auth homes survive persistence."""
-    original = Account(
-        label="codex-pro",
-        provider_id="codex",
-        access_token="eyJ.access.sig",
-        provider_account_id="acct_123",
-        refresh_token="refresh-123",
-        codex_home="/home/me/.codex-pro",
-        codex_id_token="id-token-123",
-        codex_last_refresh="2026-06-12T00:00:00Z",
+    raw = decode_json_object(store.path.read_bytes())
+    records = raw["accounts"]
+    assert isinstance(records, dict)
+    claude_record = records["claude-team"]
+    codex_record = records["codex-pro"]
+    assert isinstance(claude_record, dict)
+    assert isinstance(codex_record, dict)
+    assert claude_record["credential_kind"] == "setup_token"
+    assert "access_expires_at" not in claude_record
+    assert "scopes" not in claude_record
+    assert codex_record["expires_at"] == "2030-03-17T17:46:40.000000Z"
+    assert claude_record["last_refresh_at"] == "2026-06-12T12:34:56.789000Z"
+    assert (
+        claude_record["heartbeat_5h_reset_at"] == "2026-06-12T13:00:00.000000Z"
     )
 
-    restored = Account.from_dict(original.label, original.to_dict())
+    restored = make_account_store(tmp_path)
+    claude = restored.get("claude-team")
+    codex = restored.get("codex-pro")
 
-    assert restored.codex_home == "/home/me/.codex-pro"
-    assert restored.codex_id_token == "id-token-123"
-    assert restored.codex_last_refresh == "2026-06-12T00:00:00Z"
+    assert claude is not None
+    assert isinstance(claude.credentials, ClaudeSetupTokenCredentials)
+    assert claude.last_refresh_at == audit_time_utc
+    assert claude.heartbeat_5h_reset_at == reset_time_utc
+    assert claude.heartbeat_window_resets == {"standard": reset_time_utc}
+    assert codex is not None
+    assert codex.expiry == KnownExpiry(codex_expiry)
+    assert codex.provider_account_id == "acct_123"
+    assert codex.codex_home == "/synthetic/codex-pro"
+    assert codex.codex_id_token == "id-token-123"
+    assert codex.codex_last_refresh == "2026-06-12T00:00:00Z"
+    assert codex.last_heartbeat_at == audit_time_utc
+
+    assert isinstance(codex_account.credentials, CodexCredentials)
+    codex_account.credentials = replace(
+        codex_account.credentials,
+        expiry=InvalidExpiry(),
+    )
+    with pytest.raises(InvalidSchemaError):
+        store.persist(codex_account)
+    with pytest.raises(ValueError, match="Account labels"):
+        restored.rename("claude-team", "invalid\x00label")

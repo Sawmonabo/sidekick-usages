@@ -18,6 +18,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
 
     - name: Install uv
       uses: astral-sh/setup-uv@v8.1.0
@@ -47,6 +49,8 @@ jobs:
     needs: verify
     steps:
     - uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
 
     - name: Install uv
       uses: astral-sh/setup-uv@v8.1.0
@@ -66,20 +70,16 @@ jobs:
         fi
         echo "Tag $GITHUB_REF_NAME matches project version $PROJECT_VERSION"
 
-    - name: Build
-      run: uv build
-
-    - name: Smoke-test the wheel
-      run: |
-        uv venv verify-env
-        uv pip install --python verify-env/bin/python dist/*.whl
-        verify-env/bin/sidekick-usages --version
+    - name: Build and verify exact distributions
+      run: >-
+        uv run python packaging/smoke_wheel.py
+        --build --output-dir verified-dist
 
     - name: Upload distributions
       uses: actions/upload-artifact@v7
       with:
         name: dist
-        path: dist/
+        path: verified-dist/
         retention-days: 7
 
   # ---- Publish to PyPI (Trusted Publishing via OIDC) ------------------
@@ -105,11 +105,34 @@ jobs:
     permissions:
       id-token: write  # required for OIDC
     steps:
+    - uses: actions/checkout@v6
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v8.1.0
+
+    - name: Set up Python 3.14
+      run: uv python install 3.14
+
     - name: Download distributions
       uses: actions/download-artifact@v8
       with:
         name: dist
         path: dist/
+
+    - name: Resolve exact artifact names
+      id: artifacts
+      shell: bash
+      run: |
+        VERSION="${GITHUB_REF_NAME#v}"
+        echo "wheel=dist/sidekick_usages-${VERSION}-py3-none-any.whl" \
+          >> "$GITHUB_OUTPUT"
+        echo "sdist=dist/sidekick_usages-${VERSION}.tar.gz" \
+          >> "$GITHUB_OUTPUT"
+
+    - name: Re-verify downloaded wheel
+      run: >-
+        uv run python packaging/smoke_wheel.py
+        --wheel "${{ steps.artifacts.outputs.wheel }}"
 
     - name: Publish to PyPI
       uses: pypa/gh-action-pypi-publish@release/v1
@@ -137,6 +160,16 @@ jobs:
         name: dist
         path: dist/
 
+    - name: Resolve exact artifact names
+      id: artifacts
+      shell: bash
+      run: |
+        VERSION="${GITHUB_REF_NAME#v}"
+        echo "wheel=dist/sidekick_usages-${VERSION}-py3-none-any.whl" \
+          >> "$GITHUB_OUTPUT"
+        echo "sdist=dist/sidekick_usages-${VERSION}.tar.gz" \
+          >> "$GITHUB_OUTPUT"
+
     # release-please created the GitHub Release (with notes from CHANGELOG.md)
     # when it merged the release PR. softprops updates that existing release
     # in place to attach the built dist files; we deliberately omit `body`
@@ -149,6 +182,6 @@ jobs:
         draft: false
         prerelease: ${{ contains(github.ref_name, '-') }}
         files: |
-          dist/*.whl
-          dist/*.tar.gz
+          ${{ steps.artifacts.outputs.wheel }}
+          ${{ steps.artifacts.outputs.sdist }}
         fail_on_unmatched_files: true

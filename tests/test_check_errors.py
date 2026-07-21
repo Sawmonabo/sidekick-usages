@@ -1,25 +1,52 @@
-"""Tests for per-account fetch errors recorded and rendered in panels."""
+"""Command-boundary tests for typed usage-check outcomes."""
 
 import io
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
+from datetime import date
 from pathlib import Path
 
 from rich.console import Console
-from typer.testing import CliRunner
 
-from sidekick_usages import cli
+from sidekick_usages.core.models import (
+    Account,
+    ClaudeSetupTokenCredentials,
+    CodexCredentials,
+    TokenActivityReading,
+    TokenActivitySummary,
+    UsageReport,
+    UsageWindow,
+)
+from sidekick_usages.core.types import (
+    AccountLabel,
+    ExitCode,
+    ProviderId,
+    TokenActivityScope,
+)
 from sidekick_usages.errors import AuthError, TransientError
 from sidekick_usages.http import HttpClient
-from sidekick_usages.providers.base import DetectedCredentials, Provider
-from sidekick_usages.report import UsageReport, UsageWindow
-from sidekick_usages.store import Account, AccountStore
+from sidekick_usages.persistence.account_store import AccountStore
+from sidekick_usages.providers.base import (
+    CredentialDetection,
+    Provider,
+    ProviderFailure,
+    ProviderFailureKind,
+    RefreshResult,
+    RefreshSuccess,
+)
+from sidekick_usages.usage import AccountTokenActivitySource
+from tests.test_support import (
+    CliHarness,
+    FixedClock,
+    make_account_store_with_private,
+    make_app_context,
+)
 
 
 class _FakeProvider(Provider):
     """Provider test double with scripted fetch/refresh behavior."""
 
-    id = "codex"
+    id = ProviderId.CODEX
     display_name = "Codex CLI"
     token_pattern = re.compile(r".+")
 
@@ -29,18 +56,32 @@ class _FakeProvider(Provider):
         refresh_ok: bool = True,
         provider_id: str = "codex",
     ) -> None:
-        self.id = provider_id
+        self.id = ProviderId(provider_id)
         self.display_name = (
             "Codex CLI" if provider_id == "codex" else "Claude Code"
         )
         self.fetch_results = list(fetch_results)
         self.refresh_ok = refresh_ok
+        self.fetch_calls = 0
 
     def detect_credentials(
         self,
         credential_home: Path | None = None,
-    ) -> DetectedCredentials | None:
-        return None
+    ) -> CredentialDetection:
+        del credential_home
+        return ProviderFailure(
+            provider_id=self.id,
+            kind=ProviderFailureKind.MISSING,
+            message="No test credentials.",
+        )
+
+    def credentials_from_token(self, token: str) -> CredentialDetection:
+        del token
+        return ProviderFailure(
+            provider_id=self.id,
+            kind=ProviderFailureKind.UNSUPPORTED,
+            message="Manual test credentials are unsupported.",
+        )
 
     def fetch_usage(
         self,
@@ -48,150 +89,202 @@ class _FakeProvider(Provider):
         http: HttpClient,
     ) -> UsageReport:
         del http
+        self.fetch_calls += 1
         if not self.fetch_results:
             return UsageReport(
-                windows=[UsageWindow("5h", 0.0, None)],
+                windows=(UsageWindow("5h", 0.0, None),),
                 plan="pro",
-                raw={},
             )
         result = self.fetch_results.pop(0)
         if isinstance(result, Exception):
             raise result
         return result
 
-    def refresh_token(
+    def refresh_credentials(
         self,
         account: Account,
         http: HttpClient,
-    ) -> bool:
+    ) -> RefreshResult:
         del http
-        return self.refresh_ok
+        if not self.refresh_ok:
+            return ProviderFailure(
+                provider_id=self.id,
+                kind=ProviderFailureKind.REJECTED,
+                message="Test refresh rejected.",
+            )
+        return RefreshSuccess(credentials=account.credentials)
 
-    def run_setup_token(self) -> str | None:
-        return None
+
+class _ScriptedAccountActivity(AccountTokenActivitySource):
+    """Return account activity or raise its scripted operational error."""
+
+    provider_id = ProviderId.CODEX
+
+    def __init__(
+        self,
+        steps: Mapping[str, TokenActivityReading | TransientError],
+    ) -> None:
+        self.steps = dict(steps)
+        self.calls: list[AccountLabel] = []
+
+    def read(
+        self,
+        account: Account,
+        http: HttpClient,
+    ) -> TokenActivityReading:
+        del http
+        self.calls.append(account.label)
+        step = self.steps[str(account.label)]
+        if isinstance(step, TransientError):
+            raise step
+        return step
 
 
 def _acct(
-    label: str = "a.sawmon@ymail.com", provider_id: str = "codex"
+    label: str = "long.account.name@example.test", provider_id: str = "codex"
 ) -> Account:
+    provider = ProviderId(provider_id)
+    credentials = (
+        CodexCredentials(access_token=f"tok-{label}")
+        if provider is ProviderId.CODEX
+        else ClaudeSetupTokenCredentials(access_token=f"tok-{label}")
+    )
     return Account(
-        label=label,
-        provider_id=provider_id,
-        access_token="tok",
+        label=AccountLabel(label),
+        credentials=credentials,
         plan="pro",
     )
 
 
 def _install_ctx(
     tmp_path: Path,
-    provider: _FakeProvider,
-    account: Account,
+    providers: tuple[_FakeProvider, ...],
+    accounts: tuple[Account, ...],
     *,
-    width: int = 80,
-) -> tuple[AccountStore, io.StringIO, io.StringIO]:
-    store = AccountStore(tmp_path / "accounts.json")
-    store.upsert(account)
-    stdout = io.StringIO()
-    stderr = io.StringIO()
-    cli.set_context(
-        cli.AppContext(
-            store=store,
-            http=HttpClient(),
-            providers={provider.id: provider},
-            console=Console(file=stdout, width=width, force_terminal=False),
-            err_console=Console(file=stderr, force_terminal=False),
-        )
-    )
-    return store, stdout, stderr
-
-
-def test_auth_failure_is_recorded_not_printed(tmp_path: Path) -> None:
-    """A 401 with refresh_ok=False records a FetchFailure, prints nothing."""
-    acct = _acct()
-    provider = _FakeProvider(
-        fetch_results=[AuthError("Token expired")],
-        refresh_ok=False,
-    )
-    _, stdout, _ = _install_ctx(tmp_path, provider, acct)
-
-    result = cli._fetch_and_render(acct)
-
-    assert result is False
-    failures = cli._get_ctx().failures
-    assert len(failures) == 1
-    _, failure = failures[0]
-    assert failure.status == "token expired"
-    assert failure.detail[-1] == f"sidekick-usages refresh {acct.label}"
-    # Nothing printed at fetch time — output is empty
-    assert stdout.getvalue() == ""
-
-
-def test_refresh_command_quotes_spaced_label(tmp_path: Path) -> None:
-    """A label with spaces is shell-quoted in the recorded refresh command."""
-    acct = _acct(label="my work acct")
-    provider = _FakeProvider(
-        fetch_results=[AuthError("Token expired")],
-        refresh_ok=False,
-    )
-    _install_ctx(tmp_path, provider, acct)
-
-    result = cli._fetch_and_render(acct)
-
-    assert result is False
-    failures = cli._get_ctx().failures
-    assert len(failures) == 1
-    _, failure = failures[0]
-    assert failure.detail[-1] == "sidekick-usages refresh 'my work acct'"
-
-
-def test_generic_error_is_recorded(tmp_path: Path) -> None:
-    """A transient error records a FetchFailure with the message."""
-    acct = _acct()
-    provider = _FakeProvider(fetch_results=[TransientError("boom")])
-    _, stdout, _ = _install_ctx(tmp_path, provider, acct)
-
-    result = cli._fetch_and_render(acct)
-
-    assert result is False
-    failures = cli._get_ctx().failures
-    assert len(failures) == 1
-    _, failure = failures[0]
-    assert failure.status == "error"
-    assert "boom" in failure.detail
-    assert stdout.getvalue() == ""
-
-
-def test_check_renders_error_in_panel(tmp_path: Path, monkeypatch) -> None:
-    """Full check: always-401 account exits 1 and renders error in panel."""
-    import sidekick_usages.cli as cli_mod  # noqa: PLC0415
-
-    monkeypatch.setattr(cli_mod, "claude_lifetime_output", lambda: (1, None))
-    monkeypatch.setattr(cli_mod, "codex_lifetime_output", lambda: (1, None))
-
-    acct = _acct()
-    provider = _FakeProvider(
-        fetch_results=[AuthError("Token expired")],
-        refresh_ok=False,
+    account_activity_source: AccountTokenActivitySource | None = None,
+    width: int = 200,
+) -> tuple[CliHarness, AccountStore, io.StringIO, io.StringIO]:
+    store, private_credentials = make_account_store_with_private(
+        tmp_path,
+        accounts,
     )
     stdout = io.StringIO()
     stderr = io.StringIO()
-    store = AccountStore(tmp_path / "accounts.json")
-    store.upsert(acct)
-    cli.set_context(
-        cli.AppContext(
-            store=store,
-            http=HttpClient(),
-            providers={provider.id: provider},
-            console=Console(file=stdout, width=200, force_terminal=False),
-            err_console=Console(file=stderr, force_terminal=False),
-        )
+    clock = FixedClock()
+    http = HttpClient()
+    provider_registry: dict[ProviderId, Provider] = {
+        provider.id: provider for provider in providers
+    }
+    harness = CliHarness(
+        console=Console(file=stdout, width=width, force_terminal=False),
+        err_console=Console(file=stderr, force_terminal=False),
+        application=make_app_context(
+            store,
+            http,
+            provider_registry,
+            private_credentials,
+            clock,
+            heartbeat_providers={},
+            account_activity_sources=(
+                {}
+                if account_activity_source is None
+                else {ProviderId.CODEX: account_activity_source}
+            ),
+        ),
+    )
+    return harness, store, stdout, stderr
+
+
+def test_check_renders_partial_success_and_typed_auth_recovery(
+    tmp_path: Path,
+) -> None:
+    """Success and failure remain visible in their provider panels."""
+    claude = _FakeProvider(provider_id="claude")
+    report = UsageReport(
+        windows=(UsageWindow("5h", 0.0, None),),
+        plan="pro",
+    )
+    codex = _FakeProvider(
+        fetch_results=[report, AuthError("Token expired")],
+        refresh_ok=False,
+    )
+    activity = _ScriptedAccountActivity(
+        {
+            "codex-ok": TokenActivitySummary(
+                total_tokens=7_449_473_297,
+                scope=TokenActivityScope.ACCOUNT,
+                since=date(2026, 4, 7),
+            )
+        }
+    )
+    harness, _, stdout, _ = _install_ctx(
+        tmp_path,
+        (claude, codex),
+        (
+            _acct("claude-account", "claude"),
+            _acct("codex-ok"),
+            _acct("my work account"),
+        ),
+        account_activity_source=activity,
     )
 
-    result = CliRunner().invoke(cli.app, ["check"])
+    result = harness.invoke(["check"])
 
-    assert result.exit_code == 1
+    assert result.exit_code == ExitCode.MANUAL_ACTION
     out = stdout.getvalue()
+    assert "CLAUDE · 1 account" in out
+    assert "CODEX · 2 accounts" in out
+    assert "7,449,473,297 tokens" in out
+    assert "since Apr 7, 2026" in out
+    assert "known tokens" not in out
     assert "⚠ token expired" in out
-    assert "sidekick-usages refresh" in out
-    # The error appears INSIDE the panel — after the top strip
-    assert out.index("sidekick usages") < out.index("token expired")
+    assert "Log in to Codex CLI again, then run:" in out
+    assert "sidekick-usages refresh 'my work account'" in out
+    assert activity.calls == ["codex-ok"]
+
+
+def test_check_provider_filter_uses_only_selected_accounts(
+    tmp_path: Path,
+) -> None:
+    claude = _FakeProvider(provider_id="claude")
+    codex = _FakeProvider()
+    harness, _, stdout, _ = _install_ctx(
+        tmp_path,
+        (claude, codex),
+        (_acct("claude", "claude"), _acct("codex")),
+    )
+
+    result = harness.invoke(["--only", "codex", "check"])
+
+    assert result.exit_code == ExitCode.SUCCESS
+    assert claude.fetch_calls == 0
+    assert codex.fetch_calls == 1
+    out = stdout.getvalue()
+    assert "CODEX · 1 account" in out
+    assert "CLAUDE ·" not in out
+
+
+def test_activity_failure_renders_before_forcing_system_error(
+    tmp_path: Path,
+) -> None:
+    acct = _acct()
+    provider = _FakeProvider(
+        fetch_results=[TransientError("provider unavailable")]
+    )
+    activity = _ScriptedAccountActivity(
+        {str(acct.label): TransientError("test-only provider response detail")}
+    )
+    harness, _, stdout, _ = _install_ctx(
+        tmp_path,
+        (provider,),
+        (acct,),
+        account_activity_source=activity,
+    )
+
+    result = harness.invoke(["check"])
+
+    assert result.exit_code == ExitCode.SYSTEM_ERROR
+    out = stdout.getvalue()
+    assert "provider unavailable" in out
+    assert "token activity temporarily unavailable" in out
+    assert "test-only provider response detail" not in out

@@ -36,7 +36,16 @@ classifiers = [
   "Topic :: Software Development",
   "Topic :: Utilities"
 ]
-dependencies = ["click>=8.1", "typer>=0.15", "rich>=13.9"]
+dependencies = [
+  "click>=8.1",
+  "platformdirs==4.10.0",
+  "pydantic==2.13.4",
+  "portalocker==3.2.0",
+  "pywin32==312; sys_platform == 'win32'",
+  "rich>=13.9",
+  "typer>=0.15",
+  "urllib3==2.7.0"
+]
 
 [project.urls]
 Homepage = "https://github.com/Sawmonabo/sidekick-usages"
@@ -48,7 +57,10 @@ Changelog = "https://github.com/Sawmonabo/sidekick-usages/blob/main/CHANGELOG.md
 sidekick-usages = "sidekick_usages.cli:app"
 
 [dependency-groups]
-dev = ["ty>=0.0.35"]
+dev = [
+  "ty>=0.0.35",
+  "types-pywin32==312.0.0.20260609; sys_platform == 'win32'"
+]
 lint = [
   "bandit[toml]>=1.9.2",
   "codespell>=2.4.1",
@@ -80,6 +92,7 @@ extend-exclude = [".claude/", ".codex/"]
 
 [tool.ruff.lint]
 select = [
+  "ANN",  # annotations
   "B",  # bugbear
   "C",  # complexity
   "C4",  # comprehensions
@@ -100,18 +113,12 @@ select = [
   "UP",  # pyupgrade
   "W"  # pycodestyle warnings
 ]
-ignore = [
-  "E501",  # line too long (handled by formatter)
-  "B008",  # function call in default argument (typer uses this idiom)
-  "B905"  # zip without explicit strict
-]
-extend-ignore = ["E203"]
 
 [tool.ruff.lint.pylint]
 max-args = 9
 
-[tool.ruff.lint.per-file-ignores]
-"tests/**/*.py" = []
+[tool.ruff.lint.pycodestyle]
+max-doc-length = 79
 
 [tool.ruff.lint.isort]
 known-first-party = ["sidekick_usages"]
@@ -188,12 +195,6 @@ exclude_dirs = ["tests", ".venv", "venv", ".claude"]
 # https://bandit.readthedocs.io/en/latest/plugins/index.html
 skips = [
   "B101",  # assert_used: acceptable in tests and dev code
-  # B310 (urllib_urlopen): scheme is validated at the application
-  # layer via HttpClient._require_https, which raises ValueError
-  # for any non-HTTPS URL before urlopen is reached. Bandit's
-  # static analysis cannot see the validator. The audit it asks
-  # for is performed by that helper.
-  "B310",
   # B404 (import subprocess): this CLI's purpose is invoking other
   # CLIs (claude, codex, /usr/bin/security, powershell). Refusing
   # to import subprocess would break the project.
@@ -212,12 +213,6 @@ targets = ["src"]
 # ---------------------------------------------------------------------
 [tool.commitizen]
 name = "cz_conventional_commits"
-version = "0.5.0"
-version_files = ["src/sidekick_usages/__init__.py:__version__"]
-tag_format = "v$version"
-update_changelog_on_bump = true
-changelog_incremental = true
-major_version_zero = true
 allowed_prefixes = ["Merge", "Revert", "chore", "build", "ci"]
 
 [tool.commitizen.customize]

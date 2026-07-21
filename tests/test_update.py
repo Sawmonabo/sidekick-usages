@@ -11,21 +11,23 @@ Two surfaces are covered:
   :mod:`test_header_path`.
 """
 
+import io
 import subprocess
-from typing import Any
-from unittest.mock import patch
+from collections.abc import Mapping
 
 import pytest
-from typer.testing import CliRunner
+from rich.console import Console
 
-from sidekick_usages import __version__, cli
+from sidekick_usages import __version__
+from sidekick_usages.branding import ROBOT_LINES
+from sidekick_usages.cli.context import UpdateContext
 from sidekick_usages.errors import ForbiddenError
 from sidekick_usages.http import HttpClient
-from sidekick_usages.providers import PROVIDERS
-from sidekick_usages.store import AccountStore
+from sidekick_usages.serialization import JsonObject
 from sidekick_usages.update import (
     PACKAGE_NAME,
     InstallMethod,
+    UpdateService,
     detect_install_method,
     fetch_latest_release,
     is_newer,
@@ -33,6 +35,7 @@ from sidekick_usages.update import (
     parse_version,
     upgrade_command_for,
 )
+from tests.test_support import CliHarness
 
 
 class _FakeHttp(HttpClient):
@@ -44,7 +47,7 @@ class _FakeHttp(HttpClient):
 
     def __init__(
         self,
-        response_json: dict[str, Any] | None = None,
+        response_json: JsonObject | None = None,
         raise_on_get: Exception | None = None,
     ) -> None:
         """:param response_json: Canned body to return from ``get_json``.
@@ -53,15 +56,15 @@ class _FakeHttp(HttpClient):
             returning. Used to simulate rate-limit / network errors.
         """
         super().__init__()
-        self.response_json = response_json or {}
+        self.response_json: JsonObject = response_json or {}
         self.raise_on_get = raise_on_get
         self.calls: list[tuple[str, str]] = []
 
     def get_json(
         self,
         url: str,
-        headers: dict[str, str],
-    ) -> dict[str, Any]:
+        headers: Mapping[str, str],
+    ) -> JsonObject:
         """Stand-in for :meth:`HttpClient.get_json`."""
         del headers
         self.calls.append(("GET", url))
@@ -108,7 +111,35 @@ def test_is_newer_returns_false_for_older() -> None:
 def test_fetch_latest_release_strips_v_prefix() -> None:
     """``tag_name: v0.3.0`` becomes ``0.3.0``."""
     http = _FakeHttp(response_json={"tag_name": "v0.3.0"})
-    assert fetch_latest_release(http) == "0.3.0"
+    assert UpdateService(http).latest_release() == "0.3.0"
+
+
+def test_update_service_owns_detection_selection_and_execution() -> None:
+    """The command boundary needs no executable or subprocess access."""
+    commands: list[tuple[str, ...]] = []
+    service = UpdateService(
+        _FakeHttp(),
+        executable=(
+            "/home/user/.local/share/uv/tools/sidekick-usages/bin/python"
+        ),
+        command_executor=commands.append,
+    )
+    expected = ("uv", "tool", "upgrade", PACKAGE_NAME)
+
+    assert service.install_method() is InstallMethod.UV
+    assert service.upgrade(dry_run=True) == expected
+    assert commands == []
+    assert service.upgrade() == expected
+    assert commands == [expected]
+
+    unknown = UpdateService(
+        _FakeHttp(),
+        executable="/usr/bin/python",
+        command_executor=commands.append,
+    )
+    with pytest.raises(ValueError, match="install method"):
+        unknown.upgrade()
+    assert commands == [expected]
 
 
 def test_fetch_latest_release_targets_releases_endpoint() -> None:
@@ -221,91 +252,139 @@ def test_manual_instructions_lists_three_paths() -> None:
 
 
 # -- CLI: check-update -------------------------------------------
-def _install_fake_ctx(http: HttpClient) -> None:
-    """Inject a context with a fake HTTP client.
-
-    :param http: HTTP stand-in to wire into the CLI context.
-    """
-    cli.set_context(
-        cli.AppContext(
-            store=AccountStore(),
-            http=http,
-            providers=PROVIDERS,
-            console=cli.Console(),
-            err_console=cli.Console(stderr=True),
-        )
+def _cli_harness(
+    http: HttpClient,
+    *,
+    executable: str = "/usr/bin/python",
+    command_executor: list[tuple[str, ...]] | None = None,
+) -> tuple[CliHarness, io.StringIO, io.StringIO]:
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    commands = [] if command_executor is None else command_executor
+    return (
+        CliHarness(
+            console=Console(file=stdout, force_terminal=False),
+            err_console=Console(file=stderr, force_terminal=False),
+            update=UpdateContext(
+                UpdateService(
+                    http,
+                    executable=executable,
+                    command_executor=commands.append,
+                )
+            ),
+        ),
+        stdout,
+        stderr,
     )
 
 
 def test_check_update_reports_newer_version() -> None:
     """An advancing ``tag_name`` prints the upgrade hint."""
-    _install_fake_ctx(_FakeHttp(response_json={"tag_name": "v99.0.0"}))
-    result = CliRunner().invoke(cli.app, ["check-update"])
+    http = _FakeHttp(response_json={"tag_name": "v99.0.0"})
+    harness, stdout, _ = _cli_harness(http)
+    result = harness.invoke(["check-update"])
     assert result.exit_code == 0
-    assert "99.0.0" in result.stdout
-    assert "update" in result.stdout.lower()
+    assert "99.0.0" in stdout.getvalue()
+    assert "update" in stdout.getvalue().lower()
+    assert http.calls
 
 
 def test_check_update_reports_up_to_date() -> None:
     """When ``tag_name`` matches __version__, no upgrade hint."""
-    _install_fake_ctx(_FakeHttp(response_json={"tag_name": f"v{__version__}"}))
-    result = CliRunner().invoke(cli.app, ["check-update"])
+    harness, stdout, _ = _cli_harness(
+        _FakeHttp(response_json={"tag_name": f"v{__version__}"})
+    )
+    result = harness.invoke(["check-update"])
     assert result.exit_code == 0
-    assert "up to date" in result.stdout.lower()
+    assert "up to date" in stdout.getvalue().lower()
+    assert "sidekick usages · update status" in stdout.getvalue()
 
 
 def test_check_update_handles_rate_limit() -> None:
     """A 403 is rendered as a hint and exits 1 (not a crash)."""
-    _install_fake_ctx(_FakeHttp(raise_on_get=ForbiddenError("API rate limit")))
-    result = CliRunner().invoke(cli.app, ["check-update"])
+    harness, stdout, stderr = _cli_harness(
+        _FakeHttp(raise_on_get=ForbiddenError("API rate limit"))
+    )
+    result = harness.invoke(["check-update"])
     assert result.exit_code == 1
-    assert "rate limit" in result.stderr.lower()
+    assert "rate limit" in stderr.getvalue().lower()
+    assert "sidekick usages · update status" not in (
+        stdout.getvalue() + stderr.getvalue()
+    )
 
 
 # -- CLI: update -------------------------------------------------
 def test_update_dry_run_prints_command_without_running() -> None:
     """``--dry-run`` echoes the argv and never calls subprocess."""
-    _install_fake_ctx(_FakeHttp())
-    with (
-        patch(
-            "sidekick_usages.cli.detect_install_method",
-            return_value=InstallMethod.UV,
-        ),
-        patch("sidekick_usages.cli.subprocess.run") as run,
-    ):
-        result = CliRunner().invoke(cli.app, ["update", "--dry-run"])
+    commands: list[tuple[str, ...]] = []
+    harness, stdout, _ = _cli_harness(
+        _FakeHttp(),
+        executable="/home/u/.local/share/uv/tools/app/bin/python",
+        command_executor=commands,
+    )
+    result = harness.invoke(["update", "--dry-run"])
     assert result.exit_code == 0
-    assert "uv tool upgrade sidekick-usages" in result.stdout
-    run.assert_not_called()
+    assert "uv tool upgrade sidekick-usages" in stdout.getvalue()
+    assert ROBOT_LINES[2] not in stdout.getvalue()
+    assert commands == []
 
 
-def test_update_invokes_subprocess_for_detected_method() -> None:
+def test_update_invokes_selected_command() -> None:
     """Without ``--dry-run``, the detected argv is executed."""
-    _install_fake_ctx(_FakeHttp())
-    with (
-        patch(
-            "sidekick_usages.cli.detect_install_method",
-            return_value=InstallMethod.UV,
-        ),
-        patch(
-            "sidekick_usages.cli.subprocess.run",
-            return_value=subprocess.CompletedProcess(args=[], returncode=0),
-        ) as run,
-    ):
-        result = CliRunner().invoke(cli.app, ["update"])
+    commands: list[tuple[str, ...]] = []
+    harness, _, _ = _cli_harness(
+        _FakeHttp(),
+        executable="/home/u/.local/share/uv/tools/app/bin/python",
+        command_executor=commands,
+    )
+    result = harness.invoke(["update"])
     assert result.exit_code == 0
-    run.assert_called_once()
-    argv = run.call_args.args[0]
-    assert argv == ("uv", "tool", "upgrade", PACKAGE_NAME)
+    assert commands == [("uv", "tool", "upgrade", PACKAGE_NAME)]
+
+
+@pytest.mark.parametrize(
+    ("execution_error", "expected_exit", "expected_error"),
+    [
+        (FileNotFoundError("uv"), 1, "not found on PATH"),
+        (subprocess.CalledProcessError(7, ["uv"]), 7, None),
+    ],
+)
+def test_update_maps_typed_execution_failures(
+    execution_error: Exception,
+    expected_exit: int,
+    expected_error: str | None,
+) -> None:
+    """Infrastructure failures cross the service as bounded update errors."""
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+
+    def fail(_command: tuple[str, ...]) -> None:
+        raise execution_error
+
+    harness = CliHarness(
+        console=Console(file=stdout, force_terminal=False),
+        err_console=Console(file=stderr, force_terminal=False),
+        update=UpdateContext(
+            UpdateService(
+                _FakeHttp(),
+                executable=("/home/u/.local/share/uv/tools/app/bin/python"),
+                command_executor=fail,
+            )
+        ),
+    )
+
+    result = harness.invoke(["update"])
+
+    assert result.exit_code == expected_exit
+    if expected_error is None:
+        assert stderr.getvalue() == ""
+    else:
+        assert expected_error in stderr.getvalue()
 
 
 def test_update_unknown_method_exits_with_instructions() -> None:
     """UNKNOWN exits 1 and emits the manual-upgrade hint."""
-    _install_fake_ctx(_FakeHttp())
-    with patch(
-        "sidekick_usages.cli.detect_install_method",
-        return_value=InstallMethod.UNKNOWN,
-    ):
-        result = CliRunner().invoke(cli.app, ["update"])
+    harness, _, stderr = _cli_harness(_FakeHttp())
+    result = harness.invoke(["update"])
     assert result.exit_code == 1
-    assert "uv tool upgrade" in result.stderr
+    assert "uv tool upgrade" in stderr.getvalue()

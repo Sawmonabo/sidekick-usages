@@ -71,7 +71,10 @@ class SidekickUsages < Formula
 
   test do
     # Verify the binary runs and reports its version.
-    assert_match "sidekick-usages #{version}", shell_output("#{bin}/sidekick-usages --version")
+    assert_match(
+      "sidekick-usages #{version}",
+      shell_output("#{bin}/sidekick-usages --version"),
+    )
 
     # `list` with no saved accounts must exit 0 and print the empty-state hint.
     output = shell_output("#{bin}/sidekick-usages list 2>&1", 0)

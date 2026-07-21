@@ -4,57 +4,69 @@ import io
 from pathlib import Path
 
 from rich.console import Console
-from typer.testing import CliRunner
 
-from sidekick_usages import cli
+from sidekick_usages.core.models import Account, ClaudeSetupTokenCredentials
+from sidekick_usages.core.types import AccountLabel
 from sidekick_usages.http import HttpClient
-from sidekick_usages.store import Account, AccountStore
+from sidekick_usages.persistence.account_store import AccountStore
+from tests.test_support import (
+    CliHarness,
+    FixedClock,
+    make_account_store,
+    make_account_store_with_private,
+    make_app_context,
+)
 
 
-def _ctx(tmp_path: Path, account: Account) -> AccountStore:
-    store = AccountStore(tmp_path / "accounts.json")
-    store.upsert(account)
-    store.save()
-    cli.set_context(
-        cli.AppContext(
-            store=store,
-            http=HttpClient(),
-            providers={},
-            console=Console(file=io.StringIO(), force_terminal=False),
-            err_console=Console(file=io.StringIO(), force_terminal=False),
-        )
+def _ctx(tmp_path: Path, account: Account) -> tuple[AccountStore, CliHarness]:
+    store, private = make_account_store_with_private(tmp_path, (account,))
+    http = HttpClient()
+    clock = FixedClock()
+    harness = CliHarness(
+        console=Console(file=io.StringIO(), force_terminal=False),
+        err_console=Console(file=io.StringIO(), force_terminal=False),
+        application=make_app_context(
+            store,
+            http,
+            {},
+            private,
+            clock,
+            heartbeat_providers={},
+        ),
     )
-    return store
+    return store, harness
 
 
 def _acct(label: str, plan: str) -> Account:
     return Account(
-        label=label, provider_id="claude", access_token="t", plan=plan
+        label=AccountLabel(label),
+        credentials=ClaudeSetupTokenCredentials(access_token="t"),
+        plan=plan,
     )
 
 
-def test_set_plan_updates_and_persists(tmp_path):
-    _ctx(tmp_path, _acct("acme", "unknown"))
+def test_set_plan_updates_and_persists(tmp_path: Path) -> None:
+    _, harness = _ctx(tmp_path, _acct("acme", "unknown"))
 
-    result = CliRunner().invoke(cli.app, ["set-plan", "acme", "max"])
+    result = harness.invoke(["set-plan", "acme", "max"])
 
     assert result.exit_code == 0
-    saved = AccountStore(tmp_path / "accounts.json").load().get("acme")
+    saved = make_account_store(tmp_path).get("acme")
     assert saved is not None
     assert saved.plan == "max"
 
 
-def test_set_plan_unknown_label_errors(tmp_path):
-    _ctx(tmp_path, _acct("acme", "team"))
+def test_set_plan_unknown_label_errors(tmp_path: Path) -> None:
+    _, harness = _ctx(tmp_path, _acct("acme", "team"))
 
-    result = CliRunner().invoke(cli.app, ["set-plan", "nope", "max"])
+    result = harness.invoke(["set-plan", "nope", "max"])
 
     assert result.exit_code == 1
 
 
-def test_set_plan_rejects_empty_plan(tmp_path):
-    _ctx(tmp_path, _acct("acme", "team"))
+def test_set_plan_rejects_empty_plan(tmp_path: Path) -> None:
+    _, harness = _ctx(tmp_path, _acct("acme", "team"))
 
-    result = CliRunner().invoke(cli.app, ["set-plan", "acme", ""])
+    result = harness.invoke(["set-plan", "acme", ""])
 
     assert result.exit_code == 1
