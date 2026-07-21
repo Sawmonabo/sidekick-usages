@@ -21,6 +21,7 @@ from sidekick_usages.persistence._platform.posix_mounts import (
 )
 
 if sys.platform == "win32":
+    import ntsecuritycon
     import win32con
     import win32file
     import win32security
@@ -434,25 +435,25 @@ def test_windows_external_source_acl_separates_parent_and_file_access() -> (
     windows_security._validate_external_acl(
         inherited_read,
         trusted,
-        win32file.FILE_GENERIC_WRITE,
+        ntsecuritycon.FILE_WRITE_DATA,
     )
     with pytest.raises(NativeFilesystemError):
         windows_security._validate_external_acl(
             effective_write,
             trusted,
-            win32file.FILE_GENERIC_WRITE,
+            ntsecuritycon.FILE_WRITE_DATA,
         )
     with pytest.raises(NativeFilesystemError):
         windows_security._validate_external_acl(
             effective_read,
             trusted,
-            win32file.FILE_GENERIC_READ | win32file.FILE_GENERIC_WRITE,
+            ntsecuritycon.FILE_READ_DATA | ntsecuritycon.FILE_WRITE_DATA,
         )
     with pytest.raises(NativeFilesystemError):
         windows_security._validate_external_acl(
             unknown_inherit_only,
             trusted,
-            win32file.FILE_GENERIC_READ | win32file.FILE_GENERIC_WRITE,
+            ntsecuritycon.FILE_READ_DATA | ntsecuritycon.FILE_WRITE_DATA,
         )
 
 

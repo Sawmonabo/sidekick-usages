@@ -19,6 +19,30 @@ if sys.platform == "win32":
     import win32file
     import win32security
 
+    _DIRECTORY_MUTATION_ACCESS = (
+        ntsecuritycon.FILE_ADD_FILE
+        | ntsecuritycon.FILE_ADD_SUBDIRECTORY
+        | ntsecuritycon.FILE_DELETE_CHILD
+        | ntsecuritycon.FILE_WRITE_EA
+        | ntsecuritycon.FILE_WRITE_ATTRIBUTES
+        | win32con.DELETE
+        | win32con.WRITE_DAC
+        | win32con.WRITE_OWNER
+    )
+    _PRIVATE_FILE_ACCESS = (
+        ntsecuritycon.FILE_READ_DATA
+        | ntsecuritycon.FILE_READ_EA
+        | ntsecuritycon.FILE_READ_ATTRIBUTES
+        | ntsecuritycon.FILE_WRITE_DATA
+        | ntsecuritycon.FILE_APPEND_DATA
+        | ntsecuritycon.FILE_WRITE_EA
+        | ntsecuritycon.FILE_WRITE_ATTRIBUTES
+        | ntsecuritycon.FILE_EXECUTE
+        | win32con.DELETE
+        | win32con.WRITE_DAC
+        | win32con.WRITE_OWNER
+    )
+
     def _unsafe() -> NativeFilesystemError:
         return NativeFilesystemError(NativeFailureKind.UNSAFE)
 
@@ -287,28 +311,11 @@ if sys.platform == "win32":
 
     def validate_external_source_directory(handle: int) -> None:
         """Require a trusted owner and no untrusted namespace writer."""
-        _validate_external_security(
-            handle,
-            ntsecuritycon.FILE_ADD_FILE
-            | ntsecuritycon.FILE_ADD_SUBDIRECTORY
-            | ntsecuritycon.FILE_DELETE_CHILD
-            | ntsecuritycon.FILE_GENERIC_WRITE
-            | win32con.DELETE
-            | win32con.WRITE_DAC
-            | win32con.WRITE_OWNER,
-        )
+        _validate_external_security(handle, _DIRECTORY_MUTATION_ACCESS)
 
     def validate_external_private_source_file(handle: int) -> None:
         """Require a trusted owner and no untrusted file access."""
-        _validate_external_security(
-            handle,
-            ntsecuritycon.FILE_GENERIC_READ
-            | ntsecuritycon.FILE_GENERIC_WRITE
-            | ntsecuritycon.FILE_GENERIC_EXECUTE
-            | win32con.DELETE
-            | win32con.WRITE_DAC
-            | win32con.WRITE_OWNER,
-        )
+        _validate_external_security(handle, _PRIVATE_FILE_ACCESS)
 
 
 __all__ = [
