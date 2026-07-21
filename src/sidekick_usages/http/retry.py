@@ -77,7 +77,7 @@ _POLICIES = {
     HttpOperation.CLAUDE_PROBE: _RetryPolicy(
         ambiguous_transport=False,
         rate_limit=True,
-        server_status=False,
+        server_status=True,
     ),
     HttpOperation.CLAUDE_REFRESH: _RetryPolicy(
         ambiguous_transport=False,

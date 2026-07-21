@@ -36,7 +36,7 @@ RETRY_AFTER_SECONDS = 7
             1,
             TransientError,
         ),
-        (HttpOperation.CLAUDE_PROBE, 503, {}, 1, TransientError),
+        (HttpOperation.CLAUDE_PROBE, 529, {}, 3, TransientError),
         (HttpOperation.CLAUDE_PROBE, 429, {}, 3, RateLimitError),
         (HttpOperation.CLAUDE_REFRESH, 429, {}, 1, RateLimitError),
         (HttpOperation.CODEX_REFRESH, 429, {}, 1, RateLimitError),
