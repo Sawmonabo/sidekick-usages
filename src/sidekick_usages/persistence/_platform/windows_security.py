@@ -302,10 +302,16 @@ if sys.platform == "win32":
                 raise _unsafe()
             owner = descriptor.GetSecurityDescriptorOwner()
             dacl = descriptor.GetSecurityDescriptorDacl()
-            trusted = _allowed_sids()
-            if owner not in trusted or dacl is None:
+            trusted_owners = _allowed_sids()
+            if owner not in trusted_owners or dacl is None:
                 raise _unsafe()
-            _validate_external_acl(dacl, trusted, forbidden_access)
+            trusted_aces = (
+                *trusted_owners,
+                win32security.CreateWellKnownSid(
+                    win32security.WinCreatorOwnerRightsSid,
+                ),
+            )
+            _validate_external_acl(dacl, trusted_aces, forbidden_access)
         except pywintypes.error:
             raise _unsafe() from None
 

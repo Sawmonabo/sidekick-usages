@@ -27,6 +27,7 @@ from sidekick_usages.persistence.credential_refresh import (
     CredentialRefreshStateKind,
     CredentialRefreshTransactions,
 )
+from sidekick_usages.persistence.filesystem import PersistenceFilesystem
 from sidekick_usages.persistence.migrations.service import (
     PersistenceMigrationService,
 )
@@ -73,6 +74,12 @@ def _service(root: Path) -> PersistenceMigrationService:
         private_auth_migrator=CodexPrivateAuthMigrator(),
         released_v060_verifier=ReleasedV060Verifier(),
     )
+
+
+def _create_private_fixture_directory(path: Path) -> None:
+    """Create a test directory through the native private boundary."""
+    path.mkdir(mode=0o700)
+    PersistenceFilesystem(path / "fixture.json").repair_parent_permissions()
 
 
 @dataclass(slots=True)
@@ -244,9 +251,9 @@ def test_unsafe_refresh_evidence_blocks_account_migration(
     """Migration cannot ignore malformed private refresh state."""
     make_account_store(tmp_path, (login_account(),))
     root = make_application_paths(tmp_path).credential_refresh
-    root.mkdir(mode=0o700)
+    _create_private_fixture_directory(root)
     evidence = root / ("c" * 64)
-    evidence.mkdir(mode=0o700)
+    _create_private_fixture_directory(evidence)
     journal = evidence / "intent.json"
     journal.write_bytes(b"{")
     journal.chmod(0o600)
@@ -264,9 +271,9 @@ def test_doctor_reports_blocked_refresh_without_path_or_digest(
     make_account_store(tmp_path, (login_account(),))
     paths = make_application_paths(tmp_path)
     root = paths.credential_refresh
-    root.mkdir(mode=0o700)
+    _create_private_fixture_directory(root)
     evidence = root / ("d" * 64)
-    evidence.mkdir(mode=0o700)
+    _create_private_fixture_directory(evidence)
     journal = evidence / "intent.json"
     journal.write_bytes(b"{")
     journal.chmod(0o600)
@@ -287,7 +294,7 @@ def test_doctor_blocks_unexpected_refresh_root_file(
     """Only recognized lock sidecars may be direct refresh-root files."""
     make_account_store(tmp_path, (login_account(),))
     root = make_application_paths(tmp_path).credential_refresh
-    root.mkdir(mode=0o700)
+    _create_private_fixture_directory(root)
     unexpected = root / "unexpected-state.json"
     unexpected.write_bytes(b"test-only-unexpected-state")
     unexpected.chmod(0o600)
@@ -303,7 +310,7 @@ def test_full_reset_blocks_before_authority_when_refresh_namespace_is_unknown(
     """Reset cannot report clean while unexpected refresh files remain."""
     store = make_account_store(tmp_path, (login_account(),))
     root = make_application_paths(tmp_path).credential_refresh
-    root.mkdir(mode=0o700)
+    _create_private_fixture_directory(root)
     unexpected = root / "unexpected-state.json"
     unexpected.write_bytes(b"test-only-unexpected-state")
     unexpected.chmod(0o600)
