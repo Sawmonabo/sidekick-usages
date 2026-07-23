@@ -2,7 +2,7 @@
 
 **Investigation date:** 2026-07-23
 
-**Evidence cutoff:** 2026-07-23T23:14:00Z
+**Evidence cutoff:** 2026-07-23T23:30:00Z
 
 **Decisions:** Replace Sidekick-owned Codex OAuth refresh with one
 independently authenticated, Sidekick-owned `CODEX_HOME` per saved account and
@@ -95,8 +95,8 @@ installed Codex 0.145.0 binary generated a version-matched schema containing
 that same default method. [OpenAI app-server auth
 documentation](https://learn.chatgpt.com/docs/app-server#auth-endpoints).
 
-The requested native account selector is feasible on this Linux/WSL
-installation without intercepting either provider command:
+The requested native account selector is feasible on Linux, WSL, and macOS
+without intercepting either provider command:
 
 - the normal Sidekick dashboard can keep its current usage display and add a
   small up/down cursor before each account bullet;
@@ -106,6 +106,15 @@ installation without intercepting either provider command:
 - ordinary `codex` continues resolving to OpenAI's binary and, after one-time
   native daemon enrollment, follows Codex's shared app-server; and
 - maintenance remains independent and continues for every saved account.
+
+Anthropic now documents `CLAUDE_CONFIG_DIR` as useful for running multiple
+accounts side by side, including the fact that macOS keeps credentials in the
+system Keychain. Inspection of Anthropic's exact macOS arm64 and x64 Claude
+Code 2.1.218 packages confirmed how those statements compose: a non-default
+config directory selects a distinct Keychain service suffixed with the first
+eight hexadecimal characters of that normalized directory's SHA-256 digest.
+The default bare `claude` command continues using the unsuffixed native
+Keychain entry. This removes the earlier macOS isolation blocker.
 
 Claude's released changelog confirms parallel sessions share one credential
 store and that current sessions recover when credentials are refreshed
@@ -128,8 +137,12 @@ broker connection after the dashboard exits.
 The current live Codex sessions predate such setup: two processes are running,
 but the native app-server control socket is absent. They need one restart
 after daemon enrollment. Later daemon-connected ordinary TUIs can switch at
-their next safe request. `codex exec`, Windows Codex 0.145.0, and launches
-that bypass daemon reuse remain outside this first capability.
+their next safe request. `codex exec`, native Windows Codex 0.145.0, and
+launches that bypass daemon reuse remain outside this first capability.
+
+The required first-release platform set is Linux, WSL, and macOS. Native
+Windows is deliberately outside this design; it is not a substitute for any
+of those three required environments.
 
 No application source, credentials, login state, provider daemon, or token
 authority state was changed during this investigation. This research report
@@ -255,6 +268,36 @@ Sidekick adds no executable in front of either command. It does not change
 `PATH`, install aliases, replace symlinks, or require a new shell. Only the
 user's explicit `USE` action changes a provider runtime; background
 maintenance must never silently switch the active account.
+
+### Required platform contract
+
+The first release must provide the same product contract on:
+
+- Linux with a per-user systemd service;
+- WSL with a per-user systemd service while the distribution is active and a
+  Windows Task Scheduler rescue/start trigger because systemd does not keep a
+  WSL instance alive; and
+- macOS with a per-user LaunchAgent and the user's login Keychain.
+
+All three use one resident Sidekick supervisor per OS user, not one daemon per
+account or provider. That supervisor owns the selector control socket and the
+Codex refresh-broker connection. Due maintenance runs in isolated short-lived
+workers so provider imports, hangs, or crashes do not inflate or terminate the
+resident control plane.
+
+Provider homes and credential storage remain platform-specific:
+
+| Boundary | Linux | WSL | macOS |
+|---|---|---|---|
+| Claude private account | Private config directory and credential file | Private config directory and credential file | Private config directory and config-derived Keychain item |
+| Claude native selection | Default credential file | Default credential file | Default unsuffixed Keychain item |
+| Codex private account | Private `CODEX_HOME` | Private `CODEX_HOME` | Private `CODEX_HOME` |
+| Codex shared runtime | Official Unix control socket | Official Unix control socket | Official Unix control socket |
+| Supervisor recovery | systemd user manager | systemd plus Task Scheduler rescue | LaunchAgent |
+
+Native Windows is outside the first release. A platform adapter may share
+code with WSL support, but native Windows must not weaken or delay the three
+required environments.
 
 ## Superseded Launcher Analysis
 
@@ -605,6 +648,12 @@ subscription logins within one macOS user using documented storage behavior.
 “Limited” is the documented setup-token feature set, not a Sidekick
 limitation.
 
+> **Later correction:** This historical matrix is superseded. Current
+> Anthropic documentation explicitly identifies `CLAUDE_CONFIG_DIR` as useful
+> for multiple accounts, and the exact macOS 2.1.218 binaries prove distinct
+> config-derived Keychain services. The current Linux/WSL/macOS matrix appears
+> under [Required platform contract](#required-platform-contract).
+
 ### Rejected switching methods
 
 Do not:
@@ -693,8 +742,42 @@ The shared provider runtimes, not command resolution, carry the selection.
 ### Claude native-global switch
 
 Claude's native subscription credential is shared by ordinary local sessions.
-Anthropic documents the Linux and Windows credential file and the macOS
-Keychain. Its release-matched changelog confirms:
+Anthropic documents:
+
+- subscription credentials in a protected file on Linux and Windows;
+- subscription credentials in the system Keychain on macOS;
+- `CLAUDE_CONFIG_DIR` as the whole-profile boundary; and
+- that boundary as useful for running multiple accounts side by side.
+
+[Claude environment variable
+reference](https://code.claude.com/docs/en/env-vars#environment-variables),
+[Claude credential
+management](https://code.claude.com/docs/en/iam#credential-management).
+
+The exact official macOS arm64 and x64 packages for Claude Code 2.1.218 were
+downloaded from Anthropic's npm release and inspected without execution. Both
+credential backends:
+
+1. normalizes the selected config directory to NFC;
+2. computes the first eight hexadecimal characters of its SHA-256 digest when
+   `CLAUDE_CONFIG_DIR` is present;
+3. reads, updates, and deletes
+   `Claude Code-credentials-<directory-digest>` in Keychain; and
+4. uses the unsuffixed `Claude Code-credentials` service when
+   `CLAUDE_CONFIG_DIR` is absent.
+
+The macOS binary uses Keychain as the primary protected backend and has a
+plaintext-file fallback when a non-transient Keychain write fails. Sidekick
+must fail closed if that fallback appears on macOS; it must never silently
+accept downgraded credential storage. Every private account path must be one
+stable, absolute, normalized path because a different path string selects a
+different Keychain service.
+
+The current Sidekick provider reads only the unsuffixed macOS service and
+deliberately rejects its isolated refresh subprocess on Darwin. Those are
+implementation gaps in Sidekick, not an upstream feasibility limit.
+
+Claude's release-matched changelog also confirms:
 
 - parallel sessions share one credential store;
 - sessions recover when credentials were refreshed outside the session;
@@ -703,8 +786,6 @@ Keychain. Its release-matched changelog confirms:
 
 Sources:
 
-- [Claude credential
-  management](https://code.claude.com/docs/en/authentication#credential-management)
 - [shared credential
   store](https://github.com/anthropics/claude-code/blob/2982f951552e94f38cd972764ae94c1d90c41da3/CHANGELOG.md#L214-L220)
 - [external credential
@@ -712,28 +793,41 @@ Sources:
 - [different-account Remote
   Control](https://github.com/anthropics/claude-code/blob/2982f951552e94f38cd972764ae94c1d90c41da3/CHANGELOG.md#L837-L850)
 
-The installed Claude 2.1.218 binary exposes no public saved-token import
-command. A read-only system-call trace of `claude auth status --json` showed
-the binary repeatedly reading `~/.claude/.credentials.json` with mode `0600`.
-Sidekick's current refresh path already invokes the installed Claude login
-process with a saved refresh credential in a closed child environment. That
-input is undocumented and must be version-gated.
+Claude exposes no public saved-account selector or credential-export command.
+It does, however, document `CLAUDE_CODE_OAUTH_REFRESH_TOKEN` together with
+`CLAUDE_CODE_OAUTH_SCOPES`: `claude auth login` exchanges that refresh token
+directly instead of opening a browser. Sidekick's current Linux/WSL refresh
+path already uses this official login process in a closed child environment.
+The selector should use the same documented provider-owned transition, gated
+by a capability probe and post-operation identity verification.
+
+[Claude automated refresh-token
+provisioning](https://code.claude.com/docs/en/env-vars#environment-variables).
 
 The explicit Claude `USE` transaction should:
 
 1. lock provider-wide credential and selection state;
-2. identify and journal the current native account;
-3. retain its latest verified native generation under its saved authority;
-4. refresh the target through an isolated official Claude process;
-5. invoke the official Claude login process against the native authority;
-6. verify target identity with `claude auth status --json`;
-7. validate the resulting protected credential envelope;
-8. mark the target `native-active` and the prior account
+2. identify, read back, and journal the current native account without
+   modifying it;
+3. retain its latest verified generation by running official
+   `claude auth login` against that account's stable private
+   `CLAUDE_CONFIG_DIR`;
+4. verify the outgoing private authority before changing the native one;
+5. refresh and verify the target through its isolated official Claude
+   process;
+6. invoke official `claude auth login` with the default config boundary to
+   activate the target in the native credential authority;
+7. verify target identity with `claude auth status --json`;
+8. validate the resulting protected credential envelope and, on macOS, prove
+   no plaintext fallback was created;
+9. mark the target `native-active` and the prior account
    `private-inactive`; and
-9. commit the non-secret selection.
+10. commit the non-secret selection.
 
-Do not manually splice credential JSON. Rollback must use a verified provider
-transition rather than restoring potentially revoked bytes.
+Sidekick must not call `security add-generic-password`, splice credential
+JSON, or copy a Keychain payload. Official Claude owns every credential write.
+Rollback must run another verified official login transition rather than
+restoring potentially revoked bytes.
 
 New normal Claude terminals use the selected native account. Existing normal
 subscription sessions use it at their next auth resolution/provider request.
@@ -1129,6 +1223,58 @@ This is a materially better integration than:
 
 ## Comparative Analysis
 
+### Resident service topology
+
+The two credible service designs are:
+
+- **Option A, split control:** one resident Codex broker plus the existing
+  independent periodic OS scheduler for maintenance.
+- **Option B+, supervised workers:** one lean resident Sidekick supervisor
+  owns broker callbacks and durable scheduling, but launches every
+  credential-bearing maintenance operation in a bounded short-lived worker.
+
+A plain monolith that imports providers and performs maintenance inline is not
+equivalent to Option A: one hung refresh could miss Codex's ten-second callback
+window, and provider memory would remain resident. It is rejected.
+
+| Property | Option A: split control | Option B+: supervised workers |
+|---|---|---|
+| Codex callback latency | Excellent | Excellent through a dedicated priority lane |
+| Maintenance failure isolation | Excellent; separate scheduled process | Excellent only if every risky operation stays in a worker |
+| Crash recovery | Two independently supervised paths | One OS-supervised service plus a durable catch-up queue |
+| Scheduling after account or network change | Waits for the next OS timer unless explicitly kicked | Immediate event-driven reschedule |
+| Cross-path locking | Broker and scheduler must coordinate across processes | One coordinator still backed by durable cross-process locks |
+| Steady memory | Lean broker; maintenance memory is transient | Lean supervisor; maintenance memory is transient |
+| OS integration surface | Broker service plus timer/task definitions | One service definition plus WSL rescue trigger |
+| Operational state | Split across broker and scheduler status | One health/readiness surface |
+| Upgrade and rollback | Two lifecycle paths | One supervisor lifecycle; workers use the same installed version |
+| Platform fit | Linux, WSL, macOS | Linux, WSL, macOS |
+
+Single-point Linux measurements explain the worker boundary rather than set a
+performance promise:
+
+- a minimal Python control loop used about 19 MiB resident memory;
+- importing Sidekick maintenance code raised that to about 44 MiB;
+- an idle official Codex app-server used about 69 MiB immediately and about
+  89 MiB after two seconds.
+
+Therefore the preferred design is **Option B+**. It has the same meaningful
+failure isolation as Option A only under these non-negotiable conditions:
+
+1. the supervisor never imports provider-heavy maintenance code;
+2. refresh, usage, migration, and repair execute in killable bounded workers;
+3. Codex callbacks have a separate priority queue and cannot wait behind
+   maintenance;
+4. due work and retry state are durable and replayed after restart;
+5. the existing qualified locks remain the final cross-process authority; and
+6. systemd, Task Scheduler, or launchd restarts the supervisor.
+
+Under those conditions B+ provides richer and faster coordination without
+keeping more provider memory resident. If any condition is removed, Option A
+is safer.
+
+### Codex refresh method
+
 | Method | Validates selected home | Can refresh | Model usage | Preserves Codex ownership | Main weakness | Decision |
 |---|---:|---:|---:|---:|---|---|
 | Current Sidekick direct OAuth POST | Partly | Yes | None | No | Private protocol drift, duplicate writer, generic 401 | Remove |
@@ -1441,7 +1587,7 @@ The registration-only Typer root should continue composing cohesive command
 modules. `sidekick-usages check`, redirected I/O, and `--no-interactive` must
 remain non-blocking.
 
-### `daemon.py` and resident runtime broker
+### `daemon.py` and resident supervisor
 
 The current scheduler backends periodically launch
 `sidekick-usages maintain --quiet`. On systemd this is explicitly a
@@ -1449,7 +1595,8 @@ The current scheduler backends periodically launch
 Task Scheduler backend. That is correct for maintenance but cannot own the
 Codex refresh bridge.
 
-A separate user-session runtime service must:
+The preferred B+ design replaces that split lifecycle with one lean
+user-session supervisor. It must:
 
 - stay resident after the dashboard exits;
 - expose a private, peer-verified local control socket to the selector;
@@ -1458,12 +1605,27 @@ A separate user-session runtime service must:
 - refresh and inject the selected account before reporting ready;
 - reconnect and rehydrate selection after either process restarts;
 - stop or report not-ready rather than silently using the wrong account; and
-- remain operationally separate from periodic all-account maintenance.
+- persist due work and dispatch periodic all-account maintenance only through
+  bounded short-lived worker processes.
+
+The supervisor must keep its broker path operationally isolated from worker
+execution: separate priority queues, hard deadlines, bounded worker
+concurrency, durable retries, and no provider-heavy imports in the resident
+process. The existing one-shot timer should be removed only after the new
+service is installed and verified, so two schedulers never maintain the same
+account concurrently.
 
 On this WSL machine, the implementation must test real logon, WSL startup,
-user-systemd, and Windows Task Scheduler behavior. Merely running the broker
-inside the interactive dashboard would lose refresh capability as soon as the
-user exits.
+user-systemd, and Windows Task Scheduler behavior. The scheduled task becomes
+a rescue/start trigger, not a second maintenance scheduler, because Microsoft
+documents that systemd services do not keep a WSL instance alive. Merely
+running the broker inside the interactive dashboard would lose refresh
+capability as soon as the user exits.
+
+Linux installs the equivalent systemd user service. macOS installs one
+per-user LaunchAgent under the user's `Library/LaunchAgents`; it must run in
+the logged-in user context so official Claude can use that user's Keychain.
+None of these setup paths requires administrator rights.
 
 ### `providers/codex/`
 
@@ -1491,15 +1653,21 @@ Remove or deprecate:
 Own:
 
 - official native-login transition and JSON auth-status adapters;
+- stable per-account `CLAUDE_CONFIG_DIR` allocation;
 - native credential-envelope validation on file-backed platforms;
-- installed-version gating for the saved-refresh login input;
+- config-derived Keychain service discovery and read-only validation on
+  macOS;
+- rejection of macOS plaintext credential fallback;
+- capability gating for documented refresh-token provisioning;
 - higher-priority credential conflict detection;
 - installed binary discovery and compatibility; and
-- Linux, Windows, and Keychain capability distinctions.
+- Linux, WSL, and macOS capability distinctions.
 
 The current provider already stages CLI refresh in an isolated home. Native
 activation needs a separately named, explicitly authorized adapter; background
-maintenance must never call it.
+maintenance must never call it. Sidekick may read protected provider state for
+verification, but only official Claude may write credential files or Keychain
+items.
 
 ### `credentials/`
 
@@ -1601,6 +1769,12 @@ Before any live account test, add load-bearing tests for:
 - Claude in-flight requests finishing before the new account applies;
 - Claude credential-precedence conflict failing closed;
 - external Claude `/login` reconciliation;
+- two stable macOS config paths selecting different Keychain services;
+- macOS config-path spelling changes being rejected before they orphan a
+  Keychain authority;
+- a locked or unavailable Keychain failing closed;
+- macOS plaintext credential fallback being detected and rejected;
+- Claude activation and rollback using only official login writes;
 - selected account rename, removal, reset, and malformed state;
 - official Codex daemon start, readiness, restart, and version mismatch;
 - two daemon-connected Codex TUIs receiving one account update;
@@ -1610,16 +1784,21 @@ Before any live account test, add load-bearing tests for:
 - ordinary TUI connections ignoring, rather than racing, broker refresh;
 - broker restart rehydrating selected runtime auth;
 - the dashboard exiting while the resident broker remains healthy;
-- periodic `maintain --quiet` never being mistaken for broker readiness;
-- WSL logon and restart recovery for the resident broker;
+- a hung maintenance worker never delaying a Codex callback;
+- worker termination leaving the supervisor healthy;
+- durable due work replaying once after supervisor restart;
+- the legacy periodic timer being removed only after supervisor readiness;
+- Linux systemd-user and macOS LaunchAgent restart recovery;
+- WSL logon, distribution restart, and Task Scheduler rescue;
 - a missing internal-token capability failing closed;
 - a pre-daemon embedded Codex session requiring one restart;
-- `codex exec` and Windows coverage being reported accurately;
+- `codex exec` and native Windows exclusions being reported accurately;
 - non-TTY selection refusing to prompt;
-- Linux, Windows, and macOS support-matrix behavior;
+- Linux, WSL, and macOS support-matrix behavior;
 - canceled login after Codex cleared old auth;
 - doctor wording for healthy native plus failed saved state;
-- active default auth path never written; and
+- the default Codex auth path never being written;
+- Claude native credentials being written only by official Claude; and
 - token strings absent from logs, exceptions, reports, and representations.
 
 All provider HTTP/auth tests should use synthetic identities and mock
@@ -1671,42 +1850,60 @@ the official app-server daemon and the Sidekick refresh broker.
 An ordinary Codex TUI silently falls back to an embedded app-server when the
 control socket is absent. Sidekick therefore needs separate daemon, broker,
 and selected-identity readiness checks. Pre-daemon embedded sessions require
-one restart. `codex exec`, Windows 0.145.0, and non-replayable launch
+one restart. `codex exec`, native Windows 0.145.0, and non-replayable launch
 configuration remain outside the shared daemon and must be labeled
 accurately.
 
-### Resident broker availability
+### Resident supervisor availability
 
 Codex broadcasts external-token refresh requests to every connection and
 waits only ten seconds. The current periodic Sidekick scheduler cannot meet
 that contract. A single resident responder is required, with local peer
 authentication, crash restart, duplicate-instance prevention, and explicit
-not-ready behavior.
+not-ready behavior. The B+ supervisor must reserve callback capacity even
+while maintenance workers are starting, running, timing out, or being
+terminated.
 
 There is also a narrow restart window before the broker reapplies the selected
 external account. Because Sidekick does not wrap `codex`, it cannot intercept
-a launch during that window. The runtime service should supervise daemon
-startup and minimize the window, but absolute startup atomicity requires a
-stable upstream persistent external-auth or account-switch contract.
+a launch during that window. The systemd user service on Linux, combined
+systemd/Task Scheduler recovery on WSL, and LaunchAgent on macOS should
+supervise startup and minimize the window, but absolute startup atomicity
+requires a stable upstream persistent external-auth or account-switch
+contract.
 
-### Claude platform boundary
+### Claude macOS capability and Keychain availability
 
-Linux has the strongest evidence for native saved-account activation. Windows
-uses the same documented file model but still needs live lock, ACL, and
-running-session verification.
+The earlier macOS feasibility blocker is resolved. Current Anthropic
+documentation calls `CLAUDE_CONFIG_DIR` useful for multiple accounts, and the
+exact macOS 2.1.218 arm64 and x64 binaries prove that each configured path
+selects a distinct hashed Keychain service.
 
-macOS uses Keychain, and the current Sidekick CLI-refresh path deliberately
-avoids the installed-Claude staging method there. No supported saved-token
-import/export command was found. Browser `/login` is the fallback until a
-native Keychain-safe transition is proven.
+The remaining risk is compatibility, not architecture. The service-name
+derivation is binary evidence rather than a separately versioned public API.
+Sidekick must require a tested Claude release, authenticate each private path
+through official Claude, and verify the resulting identity and protected
+backend before accepting the account. It must not use the undocumented
+`CLAUDE_SECURESTORAGE_CONFIG_DIR` variable found in the binary.
+
+A locked, unavailable, or interaction-blocked login Keychain can prevent
+unattended maintenance. The supervisor must preserve the last known metrics,
+mark them stale with a timestamp, and request user repair. It must not unlock
+the Keychain, ask for a macOS password, or accept Claude's plaintext fallback.
 
 ### Claude maintenance contract
 
-Claude owns in-use subscription refresh, but no documented no-model forced
-refresh command was found. `claude auth status --json` is suitable for
-structured health, not a proven refresh operation. The current Sidekick
-staging path uses undocumented environment inputs and should not become the
-new selector's long-term authority without a separate compatibility decision.
+Claude owns in-use subscription refresh. It also documents automated
+refresh-token provisioning: with `CLAUDE_CODE_OAUTH_REFRESH_TOKEN` and
+`CLAUDE_CODE_OAUTH_SCOPES`, `claude auth login` exchanges the credential
+without opening a browser. That is the no-model provider-owned operation for
+inactive-account maintenance and explicit activation.
+
+`claude auth status --json` remains a structured health and identity check,
+not the refresh action. Every maintenance or activation success therefore
+requires an official login-process success plus a separate protected-state
+and identity read-back. Setup-token credentials remain non-refreshing and
+must never enter this transition.
 
 Claude setup tokens are explicitly non-refreshing one-year credentials.
 Product status must say “regenerate” rather than “refresh.”
@@ -1779,12 +1976,17 @@ contract analysis.
 | [Issue #10332](https://github.com/openai/codex/issues/10332) | Upstream issue plus maintainer response | 2026-02-04 | Limited refresh-token reuse window and concurrency nuance | Medium-high |
 | [PR #11802](https://github.com/openai/codex/pull/11802) | Merged upstream change | 2026-02-18 | Guarded reload and app-server unauthorized recovery | High |
 | [PR #27674](https://github.com/openai/codex/pull/27674) | Merged upstream change | 2026-06-12 | Revoke/clear existing auth before replacement login | High |
-| [Claude Code Authentication](https://code.claude.com/docs/en/authentication) | Official product docs | 2026-07-23 | Credential locations, `CLAUDE_CONFIG_DIR`, precedence, setup-token limits | High |
+| [Claude Code Authentication](https://code.claude.com/docs/en/iam) | Official product docs | 2026-07-23 | Credential locations, precedence, login renewal, setup-token limits | High |
+| [Claude Code environment variables](https://code.claude.com/docs/en/env-vars) | Official product docs | 2026-07-23 | Side-by-side accounts through `CLAUDE_CONFIG_DIR` and automated refresh-token provisioning | High |
 | [Claude Code quickstart](https://code.claude.com/docs/en/quickstart#step-2-log-in-to-your-account) | Official product docs | 2026-07-23 | `/login` is the native account-switch action | High |
+| [Claude issue #261](https://github.com/anthropics/claude-code/issues/261) | Official repository issue closed as completed | 2025-03-05 | `CLAUDE_CONFIG_DIR` accepted as the CLI multi-account boundary | Medium-high |
 | [Claude Code changelog](https://github.com/anthropics/claude-code/blob/2982f951552e94f38cd972764ae94c1d90c41da3/CHANGELOG.md) | Official repository changelog | Claude 2.1.218 | Shared credential store, outside-session refresh reload, different-account Remote Control behavior, and concurrent refresh | High for released behavior |
+| [`darwin-arm64`](https://www.npmjs.com/package/@anthropic-ai/claude-code-darwin-arm64/v/2.1.218) and [`darwin-x64`](https://www.npmjs.com/package/@anthropic-ai/claude-code-darwin-x64/v/2.1.218) Claude packages | Exact official platform packages and binaries | Claude 2.1.218 | Config-derived Keychain namespaces, official Keychain writes, and plaintext fallback behavior on both macOS architectures | High for this release |
+| [Microsoft WSL systemd](https://learn.microsoft.com/en-us/windows/wsl/systemd) | Official platform docs | 2025-03-17 | User services can run in WSL, but do not keep the distribution alive | High |
+| [Apple launchd guide](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html) | Official platform docs | Current archived platform guide | Per-user LaunchAgents, service restart, and user-session scope | High |
 | Installed schema generated from the local binary | Local binary-generated primary evidence | Codex 0.145.0 | Confirms the local binary exposes external login and refresh-broker messages and marks them internal-only | High |
 | Installed Codex empty-home, daemon-help, process, and socket probes | Local runtime evidence | Codex 0.145.0, 2026-07-23 | Confirms `CODEX_HOME` isolation, native daemon commands, and that current live sessions are embedded | High |
-| Installed Claude help, empty-home probes, and read-only system-call trace | Local runtime evidence | Claude 2.1.218, 2026-07-23 | Confirms local config-dir isolation, auth-status surfaces, and repeated native credential-file reads | High |
+| Installed Linux Claude help, empty-home probes, read-only trace, and exact macOS package inspection | Local and release-binary primary evidence | Claude 2.1.218, 2026-07-23 | Confirms Linux file isolation, macOS hashed Keychain isolation, auth-status surfaces, and provider-owned writes | High |
 | Live `codex doctor --json` | Local redacted runtime evidence | 2026-07-23 | Valid native session and authenticated WebSocket reachability | High |
 | Live Sidekick doctor and protected state comparison | Local runtime/persistence evidence | Sidekick 0.7.0, 2026-07-23 | Saved failures, internal consistency, generation divergence | High |
 | Sidekick source under `src/sidekick_usages/` | Local implementation | Commit `8c957b1e...` | Current import, refresh, tracking, persistence, doctor behavior, and periodic one-shot scheduler boundary | High |
