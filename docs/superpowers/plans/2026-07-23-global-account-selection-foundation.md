@@ -57,6 +57,30 @@ systemd user services, WSL Task Scheduler rescue, macOS LaunchAgents, pytest
 - Automated tests use synthetic identities and fake provider, process,
   filesystem, scheduler, socket, and clock boundaries. They never touch real
   credentials or public networks.
+- Keep the test suite deliberately small. Before adding a test, identify the
+  critical product, security, persistence, or recovery invariant that would
+  regress without it and search for an existing test that can carry the
+  assertion.
+- Default to no more than two new coherent behavior tests per numbered task.
+  A third requires a distinct security or crash-recovery invariant that
+  cannot be proved clearly by either existing test. This is a ceiling, not a
+  target.
+- Prove each invariant once at the highest stable public boundary. Do not add
+  private-helper tests, exhaustive enum or error permutations, duplicate
+  unit and integration assertions, broad snapshot matrices, test-count work,
+  or coverage-padding cases.
+- Parameterize only genuinely different provider or operating-system
+  behavior. Do not build cross-products. Extend or replace existing tests and
+  delete superseded cases instead of creating parallel suites.
+- The foundation may add only
+  `tests/test_credential_leases.py` and
+  `tests/test_managed_service_foundation.py`. This is a ceiling, not a target;
+  all other assertions extend an existing owner test. Do not mirror each new
+  production module with a test file.
+- Phase gates consolidate evidence from task tests and live verification.
+  They add no new acceptance suite unless a named release invariant is
+  otherwise unproved.
+- Verification-only phase gates do not create empty commits.
 - Use Python 3.14 native types. Add no `Any`, unjustified `cast`, blanket
   suppression, stringized annotations, unbounded input, or secret-bearing
   representation.
@@ -325,35 +349,27 @@ compose `credentials/`, providers, HTTP, maintenance, heartbeat, or usage.
 
 ### Tests first
 
-- [ ] Add `tests/test_core_accounts.py` for canonical UUID validation,
-  no-secret representations, valid Claude dual-authority state, invalid
-  provider/authority combinations, and immutable account identity.
-- [ ] Add `tests/test_persistence_account_schema_v3.py` for strict decoding,
-  duplicate IDs, duplicate provider identities, unknown keys, oversized
-  values, canonical encoding, and recursive token-key rejection.
-- [ ] Add `tests/test_persistence_managed_migration.py` for atomic v2-to-v3
-  conversion, random stable IDs through an injected ID factory, crash
-  recovery, label preservation, metrics preservation, and exact source-file
-  retention until commit.
-- [ ] Extend `tests/test_persistence_account_store.py` for ID-based get,
-  label lookup, rename without ID change, remove, reset, and provider
-  filtering.
-- [ ] Extend `tests/test_v060_compat.py` and
-  `tests/test_persistence_rollback_coordinator.py` with:
-  - a legacy/setup-token-only export that remains compatible;
-  - a managed-authority preflight failure;
-  - byte-for-byte proof that failure changed no artifact; and
-  - proof that managed tokens are never extracted from a private authority.
-- [ ] Run the new tests and confirm they fail because schema version three and
-  stable account IDs do not exist:
+- [ ] Extend the closest existing core/account-store test with one schema
+  contract scenario: stable ID survives rename, provider-qualified labels
+  resolve correctly, Claude may retain both authorities, and every public
+  representation and index encoding is secret-free. Include one
+  representative invalid authority combination.
+- [ ] Extend the existing migration/rollback suite with one transaction
+  scenario: v2 data migrates atomically with labels, setup-token metadata,
+  heartbeat, and metrics preserved; an injected interruption retains a
+  recoverable source; and any managed authority makes v0.6 preparation fail
+  before byte changes.
+- [ ] Do not create separate schema, store-operation, migration-crash, and
+  rollback-matrix files. Delete or fold any older assertion made redundant by
+  these two public-boundary scenarios.
+- [ ] Run the focused tests and confirm they fail because schema version three
+  and stable account IDs do not exist:
 
 ```bash
 uv run pytest \
-  tests/test_core_accounts.py \
-  tests/test_persistence_account_schema_v3.py \
-  tests/test_persistence_managed_migration.py \
+  tests/test_core_models.py \
   tests/test_persistence_account_store.py \
-  tests/test_v060_compat.py \
+  tests/test_persistence_migrations.py \
   tests/test_persistence_rollback_coordinator.py
 ```
 
@@ -421,21 +437,17 @@ uv run pytest \
 
 ### Tests first
 
-- [ ] Add `tests/test_credential_authorities.py` for protected reads,
-  missing/malformed/unreadable distinctions, authority retirement, and exact
-  account/provider matching.
-- [ ] Add `tests/test_credential_leases.py` proving:
-  - secrets are absent from `repr`, `str`, exceptions, and dataclass nesting;
-  - a lease is available only inside its context;
-  - a closed lease cannot be reused;
-  - a worker can resolve only its requested account authority; and
-  - managed authority metadata cannot be mistaken for a token.
-- [ ] Update provider, usage, heartbeat, activity, refresh, and credential
-  tests so public services receive a `SavedAccount` plus a typed fake
-  resolver.
-- [ ] Add an architecture test rejecting credential-authority imports from
-  `cli/`, `usage/render.py`, `daemon/supervisor.py`, and
-  `daemon/protocol.py`.
+- [ ] Add one credential-lease contract test in
+  `tests/test_credential_leases.py` covering exact
+  account/provider binding, context-only access, closed-lease rejection, and
+  secret absence from public representations and errors. Use one malformed
+  authority as the fail-closed case.
+- [ ] Adapt one existing refresh/usage service test to prove a typed resolver
+  opens the lease only around provider work and returns only sanitized state.
+  Let existing provider and heartbeat tests continue proving their own
+  behavior; do not duplicate them for the refactor.
+- [ ] Add the forbidden-import rule to the existing architecture test without
+  creating a separate test function.
 - [ ] Run the focused test set and confirm failure at the old embedded-token
   `Account` boundary.
 
@@ -464,7 +476,6 @@ uv run pytest \
 
 ```bash
 uv run pytest \
-  tests/test_credential_authorities.py \
   tests/test_credential_leases.py \
   tests/test_credential_output_safety.py \
   tests/test_credential_service.py \
@@ -475,8 +486,8 @@ uv run pytest \
   tests/test_architecture.py
 ```
 
-- [ ] Run the full provider test set to prove current behavior survives the
-  boundary change.
+- [ ] Run the existing provider owner tests affected by the typed boundary;
+  add no provider tests unless an existing critical behavior regresses.
 - [ ] Run Ruff and `ty`, inspect the diff for a second credential owner, then
   commit.
 
@@ -486,23 +497,17 @@ uv run pytest \
 
 ### Tests first
 
-- [ ] Add `tests/test_selection_models.py` for each legal and illegal runtime,
-  activation, and operation transition.
-- [ ] Add `tests/test_selected_state.py` for one independent selected record
-  per provider, strict provider read-back fields, external-active state, and
-  logged-out state.
-- [ ] Add `tests/test_activation_journal.py` for every interruption point:
-  `prepared`, `outgoing_retained`, `target_activated`,
-  `read_back_verified`, `committed`, `rolled_back`, and
-  `reconciliation_required`.
-- [ ] Add `tests/test_operation_queue.py` for independent account deadlines,
-  retry suppression, jitter through an injected source, catch-up-once
-  behavior, stable ordering, and permanent-failure reset on relevant state
-  change.
-- [ ] Add `tests/test_service_state.py` for protocol version, readiness,
-  startup generation, clean shutdown, and sanitized failure observations.
-- [ ] Add transaction tests for rename, remove, and reset while an account is
-  selected, journaled, or queued.
+- [ ] In `tests/test_managed_service_foundation.py`, add one state transaction
+  test that follows the normal legal activation path, keeps Claude and Codex
+  selections independent, persists one due item per account, survives rename
+  by stable ID, and rejects one representative illegal transition.
+- [ ] In the same file, add one restart test that interrupts after provider
+  mutation but before commit, then proves recovery follows provider
+  read-back, preserves independent due work, and yields either a verified
+  commit, official rollback request, or reconciliation-required state.
+- [ ] Do not test every enum edge, journal phase, queue ordering detail, or
+  service-state field separately. Strict schema decoding and persistence
+  primitives retain their existing focused coverage.
 
 ### Implementation
 
@@ -525,7 +530,8 @@ uv run pytest \
 
 ### Verify and commit
 
-- [ ] Run all new state tests and relevant persistence transaction suites.
+- [ ] Run the two state scenarios and the existing persistence transaction
+  regressions they touch.
 - [ ] Run `uv run python packaging/check_architecture.py`.
 - [ ] Run Ruff and `ty`, inspect encoded state for forbidden secret keys, then
   commit.
@@ -572,17 +578,15 @@ environment map, command path, arbitrary argv, or credential material.
 
 ### Tests first
 
-- [ ] Add `tests/test_daemon_protocol.py` for every message variant,
-  fragmented frames, multiple frames, EOF, invalid UTF-8, duplicate keys,
-  unknown keys, oversized frames, invalid IDs, unsupported versions, and
-  secret-shaped key rejection.
-- [ ] Add `tests/test_daemon_peer.py` for Linux/WSL `SO_PEERCRED`, macOS peer
-  identity, wrong user, unavailable proof, socket ownership, and feature
-  disablement on native Windows.
-- [ ] Add `tests/test_daemon_client.py` for connect timeout, handshake,
-  progress streaming, server exit, incompatible service, and cancellation.
-- [ ] Add fuzz-style bounded input cases without introducing a fuzzing runtime
-  dependency.
+- [ ] Extend `tests/test_managed_service_foundation.py` with one authenticated
+  client/server contract test covering fragmented framing, handshake, one
+  streamed operation, completion, and cancellation.
+- [ ] Add one small fail-closed table in the same file for the three distinct
+  trust boundaries: unproved peer, oversized or malformed frame, and
+  incompatible protocol. Assert no action dispatch and no secret-bearing
+  response.
+- [ ] Do not test every message variant, JSON error spelling, fragmentation
+  size, or EOF position. Do not add fuzz-style cases.
 
 ### Implementation
 
@@ -603,7 +607,7 @@ environment map, command path, arbitrary argv, or credential material.
 
 ### Verify and commit
 
-- [ ] Run the new daemon protocol, peer, and client tests.
+- [ ] Run the two daemon protocol scenarios.
 - [ ] Run existing `tests/test_daemon.py` to prove the package conversion
   retained the public lifecycle contract.
 - [ ] Run architecture, Ruff, and `ty` gates, then commit.
@@ -614,27 +618,17 @@ environment map, command path, arbitrary argv, or credential material.
 
 ### Tests first
 
-- [ ] Add `tests/test_daemon_supervisor.py` for singleton startup, readiness,
-  clean stop, crash restart state, no busy loop, and connection isolation.
-- [ ] Add `tests/test_daemon_workers.py` for exact executable invocation,
-  operation-ID-only arguments, minimal environment, sanitized stdout,
-  malformed result, timeout, graceful termination, forced kill, and
-  supervisor survival.
-- [ ] Add `tests/test_daemon_scheduler.py` for all-account enqueue,
-  independent failure continuation, startup catch-up once, network recovery,
-  jitter, permanent-failure suppression, and no duplicate dispatch.
-- [ ] Add `tests/test_daemon_priority.py` proving:
-  - a hung Claude worker cannot delay a Codex callback;
-  - unrelated Codex maintenance cannot delay a callback;
-  - same-authority lower-priority work is canceled and reaped;
-  - the callback lane obtains the authority lock within its budget;
-  - no lock inversion exists; and
-  - a failed callback returns before Codex's external ten-second deadline.
-- [ ] Add an import audit that starts the supervisor in a fresh interpreter
-  and rejects provider-heavy, HTTP, Rich, Typer, `prompt_toolkit`, and
-  credential modules in `sys.modules`. Before the Codex phase no provider
-  module is allowed; afterward only the audited Codex broker-wire leaf is
-  allowed.
+- [ ] Extend `tests/test_managed_service_foundation.py` with one supervisor
+  integration test with two due accounts: one worker times out, the other
+  completes, the supervisor remains ready, and restart neither loses nor
+  duplicates durable work. Assert operation-ID-only argv, the minimal
+  environment, and sanitized results in the same scenario.
+- [ ] Add one priority test in the same file where a same-authority
+  maintenance worker hangs and the reserved Codex callback preempts, reaps,
+  and responds inside the internal budget without lock inversion.
+- [ ] Extend the existing architecture/import audit to inspect one fresh
+  supervisor process. Do not create separate lifecycle, worker, scheduler,
+  priority-permutation, or import test suites.
 
 ### Implementation
 
@@ -676,8 +670,8 @@ sidekick-usages-worker = "sidekick_usages.daemon.worker_entrypoint:main"
 
 ### Verify and commit
 
-- [ ] Run all daemon supervisor, worker, scheduler, priority, state, and
-  architecture tests.
+- [ ] Run the two daemon-runtime scenarios plus the existing state and
+  architecture regressions they touch.
 - [ ] Measure a test supervisor after steady state and record resident memory,
   idle CPU, imports, and worker cleanup in the test artifact.
 - [ ] Require no more than 30 MiB resident memory on the documented reference
@@ -690,20 +684,17 @@ sidekick-usages-worker = "sidekick_usages.daemon.worker_entrypoint:main"
 
 ### Tests first
 
-- [ ] Replace one-shot systemd fixtures with a `Type=simple` user service,
-  restart policy, readiness checks, and no timer after transition.
-- [ ] Add WSL tests proving the Windows task starts the distribution and user
-  service only, carries no credentials, performs no maintenance, and is
-  created for the current user without elevation.
-- [ ] Add LaunchAgent tests for `RunAtLoad`, `KeepAlive`, exact executable,
-  owner-only plist, login-user context, and no periodic maintenance interval.
-- [ ] Add lifecycle tests for install, idempotent install, upgrade, partial
-  install recovery, readiness timeout, uninstall, and preservation of
-  account/provider state.
-- [ ] Add transition tests proving the legacy schedule remains until the new
-  supervisor is ready, queued, broker-ready when supported, maintenance-tested,
-  and restart-tested.
-- [ ] Add a test that fails when both legacy and new schedulers are active.
+- [ ] Replace the current service fixture test with one table-driven artifact
+  contract whose cases are only the genuinely different backends: Linux,
+  WSL rescue, macOS, and feature-disabled native Windows. Check user-level
+  execution, exact entry point, restart semantics, permissions, and absence
+  of credentials or periodic maintenance.
+- [ ] Add one lifecycle transition scenario covering fresh install,
+  idempotent rerun, verified restart, legacy scheduler removal only after
+  readiness, single-scheduler enforcement, and uninstall that preserves
+  accounts and provider state.
+- [ ] Do not add separate tests for each lifecycle verb, failure message,
+  architecture, or service-definition field.
 
 ### Implementation
 
@@ -732,7 +723,8 @@ sidekick-usages-worker = "sidekick_usages.daemon.worker_entrypoint:main"
 
 ### Verify and commit
 
-- [ ] Run `tests/test_daemon.py` and every new platform lifecycle test.
+- [ ] Run `tests/test_daemon.py`, including the artifact table and lifecycle
+  transition scenario.
 - [ ] Render each generated service artifact in a temporary directory and
   inspect exact paths, quoting, permissions, and absence of secrets.
 - [ ] Run architecture, Ruff, and `ty` gates, then commit.
@@ -743,22 +735,14 @@ sidekick-usages-worker = "sidekick_usages.daemon.worker_entrypoint:main"
 
 ### Tests first
 
-- [ ] Extend `tests/test_help.py` and `tests/test_architecture.py` for the
-  preserved `daemon install`, `daemon status`, and `daemon uninstall`
-  commands plus service protocol/version diagnostics.
-- [ ] Extend `tests/test_doctor.py` for:
-  - service installed/running/ready;
-  - stale service version;
-  - unsupported platform;
-  - socket permission or peer-proof failure;
-  - queue and journal recovery state;
-  - legacy scheduler conflict; and
-  - provider readiness kept separate from scheduler readiness.
-- [ ] Extend `tests/test_packaging.py`,
-  `tests/test_homebrew_generator.py`, and wheel smoke tests for the two
-  internal entry points.
-- [ ] Add upgrade tests that install a previous service definition and prove
-  safe replacement without touching accounts or provider state.
+- [ ] Extend one existing daemon CLI/doctor scenario to prove the three
+  lifecycle commands remain registered and scheduler, protocol, provider,
+  and recovery health remain distinct. Use one unhealthy state rather than a
+  diagnostic-state matrix.
+- [ ] Extend the existing wheel smoke boundary to prove both internal entry
+  points are shipped and callable without importing provider-heavy modules.
+  Let generated Homebrew and package inspections validate their existing
+  artifacts without duplicate Python assertions.
 
 ### Implementation
 
@@ -799,22 +783,22 @@ uv run python packaging/smoke_wheel.py --build
 
 ## 11. Task 8 — Foundation Integration Gate
 
-**Commit:** `test(daemon): verify managed service foundation`
+This is a verification-only gate. It creates no duplicate integration,
+crash, secret-leak, rollback, or platform matrix and requires no empty
+commit.
 
-- [ ] Add one fake-provider integration test that migrates two Claude and two
-  Codex accounts, starts the supervisor, queues all four, fails one worker,
-  completes the remaining three, restarts, and proves no duplicate work.
-- [ ] Add one crash matrix that terminates the process after every persisted
-  activation phase and proves startup chooses provider read-back rather than
-  journal preference.
-- [ ] Add one secret-leak matrix covering account index, selection, journals,
-  queue, service state, protocol frames, process arguments, stdout, stderr,
-  logs, errors, and representations.
-- [ ] Add one rollback matrix covering all-legacy compatibility, setup-token
-  compatibility, one managed Claude authority, one managed Codex authority,
-  and mixed providers.
-- [ ] Add one platform contract test proving native Windows is disabled while
-  Linux, WSL, macOS arm64, and macOS x64 select the correct service backend.
+- [ ] Map every foundation completion statement below to the smallest task
+  test that already proves it.
+- [ ] Confirm the two task-level integration scenarios together cover
+  multi-account continuation, durable restart, callback isolation, and
+  provider-read-back recovery.
+- [ ] Use the existing architecture, credential-output-safety, packaging,
+  filesystem-permission, and `git diff` checks for secret and ownership
+  evidence. Do not repeat the same assertion across every storage or output
+  surface.
+- [ ] If a critical completion statement has no evidence, add one focused
+  assertion to the nearest existing test. Do not create a phase-gate test
+  file.
 - [ ] Run the complete local gate:
 
 ```bash
@@ -836,7 +820,6 @@ uv run python packaging/smoke_wheel.py --build
   executable resolution, and tracked artifacts for secrets.
 - [ ] Confirm this phase does not mutate the machine's real accounts,
   provider logins, or installed scheduler.
-- [ ] Commit the integration evidence.
 
 ## 12. Foundation Completion Gate
 

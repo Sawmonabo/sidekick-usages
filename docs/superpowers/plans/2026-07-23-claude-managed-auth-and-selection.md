@@ -66,6 +66,18 @@ macOS Keychain through `/usr/bin/security`, Pydantic 2.13.4, Portalocker
 - Automated tests use synthetic profiles, fake Keychains, fake binaries,
   fake clocks, and fake provider identities. They never mutate real Claude
   state or use public network access.
+- Follow the foundation plan's lean-test contract. Reuse or replace existing
+  Claude tests, default to at most two new coherent behavior tests per task,
+  and add a third only for a separate security or crash-recovery invariant.
+- Prove behavior once through the highest stable Claude boundary. Do not add
+  a test per login error, journal phase, credential conflict, platform
+  spelling, or state permutation; retain only cases that exercise distinct
+  provider or operating-system behavior.
+- The Claude phase gate maps existing task evidence and adds no duplicate
+  end-to-end, secret-matrix, or platform-matrix suite.
+- The Claude phase may add only
+  `tests/test_claude_managed_runtime.py`; all other assertions extend
+  existing Claude owner tests. This is a ceiling, not a target.
 - Commit after each numbered task with the listed Conventional Commit
   message. Do not push until explicitly authorized.
 
@@ -144,22 +156,16 @@ reader. Remove platform and transition responsibilities after callers move.
 
 ### Tests first
 
-- [ ] Add `tests/test_claude_executable.py` for missing, ambiguous, wrong
-  vendor, unsupported version, executable replacement, and exact absolute
-  argv.
-- [ ] Add `tests/test_claude_profiles.py` for:
-  - stable profile derivation from account ID;
-  - rename preserving the profile;
-  - two accounts receiving distinct profiles;
-  - absolute canonical paths;
-  - containment under the Sidekick private Claude root;
-  - native profile distinction; and
-  - rejection of symlink/path escape.
-- [ ] Add `tests/test_claude_capabilities.py` for Linux, WSL, macOS arm64,
-  macOS x64, native Windows disablement, missing auth status, missing auth
-  login, missing JSON output, and refresh-token provisioning support.
-- [ ] Add a preflight test proving capability failure occurs before a login
-  child starts or native state changes.
+- [ ] Extend `tests/test_claude_provider_boundaries.py` with one supported
+  scenario covering exact executable provenance, stable ID-derived and
+  contained private profiles, rename stability, distinct accounts, and the
+  required official auth capabilities.
+- [ ] Add one fail-closed table whose cases are only genuinely different
+  gates: path escape, missing official login capability, and
+  feature-disabled native Windows. Prove no login child or native mutation
+  starts.
+- [ ] Do not create separate executable, profile, and capability permutation
+  suites.
 
 ### Implementation
 
@@ -191,9 +197,7 @@ claude auth login --help
 
 ```bash
 uv run pytest \
-  tests/test_claude_executable.py \
-  tests/test_claude_profiles.py \
-  tests/test_claude_capabilities.py \
+  tests/test_claude_provider_boundaries.py \
   tests/test_paths.py \
   tests/test_architecture.py
 ```
@@ -207,27 +211,15 @@ uv run pytest \
 
 ### Tests first
 
-- [ ] Extend `tests/test_claude_provider_boundaries.py` for one exact
-  `CLAUDE_CONFIG_DIR` rather than default-home-only detection.
-- [ ] Add `tests/test_claude_keychain.py` for:
-  - native unsuffixed service;
-  - two distinct config-derived services;
-  - the release-matched
-    `Claude Code-credentials-<first 8 SHA-256(config-dir)>` namespace;
-  - Apple Silicon and Intel behavior;
-  - item missing;
-  - Keychain locked;
-  - access denied;
-  - malformed output;
-  - bounded output;
-  - command timeout; and
-  - no password prompt or write command.
-- [ ] Add Linux and WSL cases for expected protected file, wrong permissions,
-  symlink, missing file, malformed envelope, oversized envelope, and identity
-  mismatch.
-- [ ] Add macOS plaintext-fallback detection and prove it blocks both
-  maintenance and activation.
-- [ ] Add secret-output tests for `/usr/bin/security` stdout and errors.
+- [ ] Extend the provider-boundary suite with one Linux/WSL protected-profile
+  scenario proving the exact `CLAUDE_CONFIG_DIR`, owner-only regular-file
+  read-back, identity binding, and fail-closed rejection of an unsafe file.
+- [ ] Add one macOS Keychain scenario proving native and two config-derived
+  service names, read-only bounded invocation on arm64 and x64, secret-safe
+  output, and fail-closed behavior for a locked Keychain or plaintext
+  fallback.
+- [ ] Do not add one test per Keychain status, file error, architecture, or
+  namespace component.
 
 ### Implementation
 
@@ -252,8 +244,8 @@ uv run pytest \
 
 ### Verify and commit
 
-- [ ] Run Claude credentials, Keychain, provider-boundary, output-safety,
-  filesystem, and architecture tests.
+- [ ] Run the two protected-storage scenarios plus existing output-safety,
+  filesystem, and architecture regressions they touch.
 - [ ] Run Ruff and `ty`.
 - [ ] Search production code for Keychain mutation commands. Only read-only
   lookup is allowed, then commit.
@@ -264,26 +256,16 @@ uv run pytest \
 
 ### Tests first
 
-- [ ] Add `tests/test_claude_official_login.py` for:
-  - browser login in a final private profile;
-  - refresh-token-provisioned login;
-  - exact minimal environment;
-  - refresh token absent from argv;
-  - scope propagation;
-  - status read-back;
-  - same identity;
-  - wrong identity;
-  - unchanged generation;
-  - canceled login;
-  - timeout;
-  - child crash; and
-  - redacted provider output.
-- [ ] Extend `tests/test_claude_refresh.py` for Linux, WSL, and both macOS
-  architectures using only the official CLI write path.
-- [ ] Add tests proving scheduled maintenance never targets the native profile
-  of an inactive account and never activates an account globally.
-- [ ] Add two-account tests proving independent private maintenance and
-  continuation after one account failure.
+- [ ] Extend `tests/test_claude_refresh.py` with one two-account maintenance
+  scenario using official login in each final private profile. Assert minimal
+  child environment, no token in argv, same-identity read-back, independent
+  authorities, no native activation, and continuation after one failure.
+- [ ] Add one fail-closed official-login scenario for wrong identity or
+  unverified generation, proving redacted output and unchanged prior
+  authority. Existing subprocess tests continue covering generic timeout and
+  child-exit mechanics.
+- [ ] Do not duplicate the same workflow across Linux, WSL, arm64, and x64
+  when the storage boundary tests already prove their distinct behavior.
 
 ### Implementation
 
@@ -314,8 +296,8 @@ uv run pytest \
 
 ### Verify and commit
 
-- [ ] Run official-login, Claude refresh, maintenance, queue, credential
-  authority, and multi-account tests.
+- [ ] Run the two official-maintenance scenarios plus existing queue and
+  credential-authority regressions they touch.
 - [ ] Run Ruff and `ty`.
 - [ ] Inspect child environments through synthetic fakes and confirm no
   parent credential variable leaks, then commit.
@@ -326,24 +308,18 @@ uv run pytest \
 
 ### Tests first
 
-- [ ] Add `tests/test_claude_managed_migration.py` for:
-  - setup-token-only account;
-  - legacy subscription-only account;
-  - one account with both credential modes;
-  - final private profile login;
-  - provider identity match;
-  - identity mismatch;
-  - cancellation;
-  - Keychain lock;
-  - preserved setup-token secret and expiry;
-  - retired legacy subscription secret only after commit;
-  - preserved metrics and heartbeat history; and
-  - no duplicate account row or token activity.
-- [ ] Add crash recovery after official login but before metadata commit.
-- [ ] Add a one-account failure test proving later Claude accounts continue.
-- [ ] Update setup-token save and restore tests so a preserved setup token is
-  one authority on a logical account, not a replacement for its managed
-  subscription authority.
+- [ ] In `tests/test_claude_managed_runtime.py`, add one two-account migration
+  scenario covering a setup-token plus legacy subscription account and a
+  second legacy account. Official private login preserves setup-token
+  lifetime, metrics, and heartbeat state, aggregates one logical row, commits
+  before legacy retirement, and continues when one account is canceled or
+  mismatched.
+- [ ] In the same file, add one interruption scenario after official login
+  but before metadata commit. Recovery verifies identity and either completes
+  the same transaction or requires reconciliation without losing either
+  original authority.
+- [ ] Fold existing setup-token save/restore assertions into the logical
+  dual-authority contract and delete superseded replacement semantics.
 
 ### Implementation
 
@@ -367,8 +343,8 @@ uv run pytest \
 
 ### Verify and commit
 
-- [ ] Run managed migration, setup-token, restore, lifetime, account
-  transaction, activity, and output-safety tests.
+- [ ] Run the two managed-migration scenarios plus existing setup-token,
+  lifetime, transaction, activity, and output-safety regressions they touch.
 - [ ] Run Ruff, `ty`, and architecture checks.
 - [ ] Inspect test account counts and metrics aggregation for duplication,
   then commit.
@@ -403,17 +379,16 @@ without a maintainable private authority.
 
 ### Tests first
 
-- [ ] Add `tests/test_claude_activation.py` for the complete transaction and
-  each preflight failure.
-- [ ] Force process death after each numbered mutation or journal boundary.
-- [ ] Cover source equals target, target not maintained, source unknown,
-  native logged out, wrong target identity, target private authority becoming
-  unusable, Keychain lock, and official child timeout.
-- [ ] Prove a healthy switch requires one activation request and no extra
-  confirmation when Remote Control is inactive.
-- [ ] Prove Codex selected state is untouched.
-- [ ] Add concurrent activation tests for provider lock and stable account
-  lock order.
+- [ ] Extend `tests/test_claude_managed_runtime.py` with one healthy
+  activation scenario that retains outgoing A, officially provisions B,
+  verifies native identity, commits from read-back, requires one request when
+  Remote Control is inactive, and leaves Codex state untouched.
+- [ ] Add one interruption scenario at the externally meaningful boundary
+  after native mutation and before commit. Recovery must serialize a
+  concurrent retry and produce verified commit, official rollback, or
+  reconciliation while keeping both private authorities usable.
+- [ ] Do not force death after every internal write or enumerate equivalent
+  preflight failures already covered by capability and storage tests.
 
 ### Implementation
 
@@ -435,8 +410,8 @@ without a maintainable private authority.
 
 ### Verify and commit
 
-- [ ] Run activation, journal, selected-state, provider lock, Keychain, and
-  secret-leak suites.
+- [ ] Run the two activation scenarios plus existing journal, provider-lock,
+  Keychain, and output-safety regressions they touch.
 - [ ] Run Ruff and `ty`.
 - [ ] Review every native write path and confirm it launches official Claude,
   then commit.
@@ -447,21 +422,16 @@ without a maintainable private authority.
 
 ### Tests first
 
-- [ ] Add `tests/test_claude_recovery.py` for:
-  - no native mutation;
-  - target already active;
-  - source active;
-  - another saved account active;
-  - unknown external identity active;
-  - logged out;
-  - incomplete unverified native mutation;
-  - official rollback success;
-  - official rollback failure; and
-  - malformed or unreadable state.
-- [ ] Add `tests/test_claude_reconciliation.py` for external `/login`,
-  external `/logout`, a race with Sidekick activation, no silent import,
-  and temporary external-active dashboard state.
-- [ ] Add a test proving recovery never writes captured credential bytes.
+- [ ] Extend the activation test boundary with one recovery scenario where
+  provider read-back differs from the journal: official rollback succeeds
+  once, and a failed rollback becomes reconciliation-required. Assert no
+  captured credential bytes are written.
+- [ ] Add one external-login race scenario to
+  `tests/test_claude_managed_runtime.py` where the official provider state
+  wins; a known account is related, an unknown account remains external, and
+  neither is silently imported.
+- [ ] Do not add separate cases for every possible prior native identity or
+  logout spelling.
 
 ### Implementation
 
@@ -482,8 +452,8 @@ without a maintainable private authority.
 
 ### Verify and commit
 
-- [ ] Run recovery, reconciliation, activation, service restart, and
-  persistence crash tests.
+- [ ] Run the two recovery/reconciliation scenarios plus existing activation
+  and persistence regressions they touch.
 - [ ] Run Ruff, `ty`, and architecture checks, then commit.
 
 ## 9. Task 7 — Higher-Priority Credentials, Remote Control, and Sessions
@@ -492,19 +462,16 @@ without a maintainable private authority.
 
 ### Tests first
 
-- [ ] Add `tests/test_claude_environment.py` for each higher-priority
-  credential mode and combinations. Prove Sidekick reports the conflict and
-  does not alter the parent environment.
-- [ ] Add `tests/test_claude_remote_control.py` for inactive, active,
-  unreadable, race-to-active, confirmation accepted, confirmation declined,
-  and non-interactive refusal.
-- [ ] Add session tests proving:
-  - a new bare `claude` resolves the unchanged vendor executable;
-  - an existing subscription session reads new auth on its next safe request;
-  - an in-flight request remains on its original auth;
-  - an explicitly environment-authenticated session stays outside switching;
-  - a background/remote session reports actual support; and
-  - native Windows reports unsupported.
+- [ ] Add one guard scenario covering a representative higher-priority
+  credential and active Remote Control. Prove Sidekick changes no parent
+  environment, requires the exact disruption approval, and refuses
+  non-interactive activation without it.
+- [ ] Add one session-boundary scenario proving bare `claude` still resolves
+  to the vendor executable, a supported existing subscription session adopts
+  the verified account only on its next safe request, and in-flight or
+  explicitly environment-authenticated work is not retargeted.
+- [ ] Do not enumerate equivalent environment combinations, confirmation
+  outcomes, or unsupported session labels.
 
 ### Implementation
 
@@ -524,8 +491,8 @@ without a maintainable private authority.
 
 ### Verify and commit
 
-- [ ] Run environment, Remote Control, activation, CLI, session, and output
-  tests.
+- [ ] Run the two guard/session scenarios plus existing CLI and output-safety
+  regressions they touch.
 - [ ] Run Ruff and `ty`.
 - [ ] Verify no test or production code edits the calling process environment,
   then commit.
@@ -536,19 +503,15 @@ without a maintainable private authority.
 
 ### Tests first
 
-- [ ] Update `tests/test_claude_refresh.py`,
-  `tests/test_claude_activity.py`, `tests/test_heartbeat.py`, and
-  `tests/test_usage_service.py` so:
-  - selected Claude uses verified native authority;
-  - inactive accounts use their private authorities;
-  - all accounts remain due independently;
-  - setup tokens receive lifetime/health checks but no refresh;
-  - one failure does not stop another; and
-  - stale metrics remain exact and timestamped.
-- [ ] Add an architecture check rejecting Claude direct OAuth refresh
-  endpoints and credential-bearing HTTP mutations.
-- [ ] Add a test rejecting a fallback from official CLI failure to direct
-  HTTP.
+- [ ] Extend one existing maintenance/usage scenario to prove selected Claude
+  uses verified native state, inactive accounts use private authorities, all
+  remain independently due, setup tokens receive fixed-lifetime checks but no
+  refresh, and one failure leaves exact timestamped stale metrics while later
+  accounts continue.
+- [ ] Extend the architecture check once to reject direct OAuth refresh and
+  credential-bearing HTTP mutation. Fold no-fallback proof into the official
+  login failure scenario and adapt existing activity/heartbeat assertions
+  without cloning the multi-account workflow.
 
 ### Implementation
 
@@ -592,25 +555,24 @@ uv run ty check src/ tests/
 
 ## 11. Task 9 — Claude Phase Gate
 
-**Commit:** `test(claude): verify managed multi-account selection`
+This is a verification-only gate. It creates no duplicate end-to-end,
+Keychain, setup-token, external-race, or secret matrix and requires no empty
+commit.
 
-- [ ] Add one end-to-end fake scenario with two managed subscription
-  accounts, one preserved setup token, selection A to B, outgoing retention,
-  next-request session change, and maintenance of unselected A.
-- [ ] Add one macOS scenario with two config-derived Keychain services,
-  native selection, Keychain lock, stale metrics, unlock, and recovery.
-- [ ] Add one setup-token-only scenario that starts official migration,
-  cancels, preserves all state, retries, succeeds, and appears as one account.
-- [ ] Add one external-login race scenario proving official provider choice
-  wins without silent import.
-- [ ] Add one complete secret matrix covering protected reads, child
-  environments, argv, stdout, stderr, persistence, journals, Sidekick
-  protocol, logs, errors, and representations.
+- [ ] Map every Claude completion statement below to the smallest task test,
+  foundation test, static check, or later authorized live check that proves
+  it.
+- [ ] Confirm the task scenarios collectively cover two managed accounts, one
+  preserved setup token, A-to-B selection, outgoing retention, next-request
+  session change, unselected maintenance, Keychain failure, and external
+  provider choice.
+- [ ] If a critical completion statement has no evidence, add one focused
+  assertion to the nearest existing test. Do not create a Claude phase-gate
+  test file.
 - [ ] Run the full project gate from the foundation plan.
 - [ ] Confirm ordinary `claude` path and symlink resolution remain unchanged
-  in a synthetic installation test.
+  through the existing packaging smoke boundary.
 - [ ] Confirm no real provider or current-machine mutation occurred.
-- [ ] Commit the phase evidence.
 
 ## 12. Claude Completion Gate
 

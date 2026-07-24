@@ -59,6 +59,18 @@ release-matched Codex CLI schema.
   never retargeted.
 - Automated tests use fake binaries, app servers, sockets, clocks, and
   credential homes. They never use a real Codex account or public network.
+- Follow the foundation plan's lean-test contract. Reuse or replace existing
+  Codex tests, default to at most two new coherent behavior tests per task,
+  and add a third only for a separate security or crash-recovery invariant.
+- Prove behavior once through the highest stable Codex boundary. Do not add a
+  test per JSON-RPC message, phase, error, field, launch mode, or state
+  permutation; use only representative fail-closed cases with distinct
+  production branches.
+- The Codex phase gate maps existing task evidence and adds no duplicate
+  end-to-end, secret-matrix, or unsupported-surface suite.
+- The Codex phase may add only
+  `tests/test_codex_managed_runtime.py`; all other assertions extend existing
+  Codex owner tests. This is a ceiling, not a target.
 - Do not add a JSON-RPC dependency. The consumed protocol is narrow, strict,
   bounded, and release-gated.
 - Keep provider-specific code in `providers/codex/`, transaction policy in
@@ -152,26 +164,16 @@ callers move; leave no second implementation.
 
 ### Tests first
 
-- [ ] Add `tests/test_codex_executable.py` for missing executable, ambiguous
-  path, wrong vendor output, unsupported version, changed executable during an
-  operation, and exact absolute argv.
-- [ ] Add `tests/test_codex_capabilities.py` with synthetic generated schemas
-  for:
-  - all required managed account methods;
-  - missing `account/read`;
-  - missing forced-refresh parameter;
-  - missing external token login;
-  - missing external refresh request;
-  - incompatible field shapes;
-  - a CLI/daemon version mismatch; and
-  - unknown additive fields that remain outside Sidekick's strict consumed
-    subset.
-- [ ] Add `tests/test_codex_jsonrpc.py` for initialize ordering, ID
-  correlation, notifications, server requests, fragmented lines, duplicate
-  keys, invalid UTF-8, oversized input, unexpected responses, timeout, child
-  exit, and redacted stderr.
-- [ ] Add a fixture generator that invokes only a synthetic Codex executable.
-  Automated tests must not invoke the installed binary.
+- [ ] Extend `tests/test_codex_provider.py` with one supported-boundary
+  scenario covering exact executable provenance, generated-schema
+  capability, JSON-RPC initialization, one request/notification exchange,
+  and bounded redacted shutdown.
+- [ ] Add one fail-closed scenario using a synthetic executable whose schema
+  lacks one required auth capability and whose response is malformed. Prove
+  failure occurs before a managed worker or shared-runtime mutation starts.
+- [ ] Keep both scenarios on a small fake executable. Do not create separate
+  executable, schema, and JSON-RPC permutation suites or invoke the installed
+  binary from automated tests.
 - [ ] Run the focused tests and confirm failure because the versioned
   app-server boundary does not exist.
 
@@ -219,9 +221,6 @@ codex app-server generate-json-schema \
 
 ```bash
 uv run pytest \
-  tests/test_codex_executable.py \
-  tests/test_codex_capabilities.py \
-  tests/test_codex_jsonrpc.py \
   tests/test_codex_provider.py \
   tests/test_architecture.py
 ```
@@ -235,27 +234,16 @@ uv run pytest \
 
 ### Tests first
 
-- [ ] Add `tests/test_codex_app_server.py` for initialized session lifecycle,
-  clean close, timeout, malformed messages, child failure, and concurrent
-  private homes.
-- [ ] Add `tests/test_codex_managed_account.py` for:
-  - `account/read` with `refreshToken: false`;
-  - `account/read` with `refreshToken: true`;
-  - same-account advanced generation;
-  - same-account unchanged generation;
-  - regressed generation;
-  - null account;
-  - wrong account;
-  - malformed protected state;
-  - provider success with unchanged protected state;
-  - transient failure with unchanged authority;
-  - rejected credential;
-  - file-backed storage requirement; and
-  - exact private-home containment.
-- [ ] Add serialization tests proving access, refresh, and ID tokens never
-  enter the managed account index or safe outcomes.
-- [ ] Add lock tests for same-home serialization and different-home
-  independence.
+- [ ] Extend `tests/test_credential_refresh_codex.py` with one two-home
+  scenario: both accounts are read without refresh, each is forced through
+  `account/read` with `refreshToken: true`, identity stays fixed, generation
+  advances, homes remain independent, and only sanitized metadata persists.
+- [ ] Add one focused fail-closed table containing only distinct trust
+  failures: wrong identity, non-advanced generation, and malformed protected
+  state. Prove the prior authority remains unchanged and no token reaches a
+  result or index.
+- [ ] Do not add separate lifecycle, serialization, containment, and lock
+  suites; assert those boundaries in the two managed-account scenarios.
 
 ### Implementation
 
@@ -294,8 +282,8 @@ uv run pytest \
 
 ### Verify and commit
 
-- [ ] Run managed account, existing Codex provider, refresh-authority,
-  credential-output, and locking tests.
+- [ ] Run the two managed-account scenarios plus existing Codex provider,
+  credential-output, and persistence regressions they touch.
 - [ ] Run Ruff, `ty`, and architecture checks.
 - [ ] Confirm no direct network request exists in the new managed path, then
   commit.
@@ -306,22 +294,17 @@ uv run pytest \
 
 ### Tests first
 
-- [ ] Add `tests/test_codex_managed_login.py` for app-server login start,
-  browser URL presentation, completion notification, cancellation, timeout,
-  wrong identity, revoked old auth, and final-home persistence.
-- [ ] Extend `tests/test_codex_auth_migration.py` for:
-  - no native `auth.json` import;
-  - no private-home copy;
-  - one independently authenticated home per account;
-  - legacy authority retained on cancel or mismatch;
-  - managed metadata committed before legacy retirement;
-  - preserved label, plan, heartbeat, and metrics history; and
-  - one failed account not blocking the next.
-- [ ] Add a recovery test that kills Sidekick after official login succeeds
-  but before the account index commits. Recovery must inspect the private home
-  and either finish the same-identity commit or require reconciliation.
-- [ ] Add a test proving two labels cannot adopt one private home or provider
-  identity accidentally.
+- [ ] Extend `tests/test_codex_auth_migration.py` with one two-account
+  migration scenario: each account logs in officially inside its final home,
+  one cancellation or identity mismatch retains its legacy authority without
+  blocking the other, and retry commits metadata before retiring legacy
+  state while preserving label, plan, heartbeat, and metrics.
+- [ ] Add one interruption scenario after official login but before metadata
+  commit. Recovery must verify the final home and either finish the
+  same-identity commit or require reconciliation; it must never import or
+  copy native `auth.json`.
+- [ ] Fold private-home uniqueness and no-copy assertions into these tests
+  rather than adding standalone cases.
 
 ### Implementation
 
@@ -348,8 +331,8 @@ uv run pytest \
 
 ### Verify and commit
 
-- [ ] Run managed-login, auth-migration, persistence transaction, recovery,
-  CLI Codex credential, and output-safety suites.
+- [ ] Run the two auth-migration scenarios plus existing persistence, CLI,
+  and output-safety regressions they touch.
 - [ ] Run Ruff and `ty`.
 - [ ] Inspect fake subprocess events and staged artifacts for token
   duplication, then commit.
@@ -360,26 +343,15 @@ uv run pytest \
 
 ### Tests first
 
-- [ ] Add `tests/test_codex_shared_daemon.py` for:
-  - `codex app-server daemon start`;
-  - idempotent start;
-  - version JSON validation;
-  - socket readiness;
-  - daemon restart;
-  - missing socket;
-  - stale socket;
-  - local/daemon version mismatch;
-  - unexpected socket ownership;
-  - daemon exit and reconnect; and
-  - no write to default `auth.json`.
-- [ ] Add `tests/test_codex_external_auth.py` for exact
-  `chatgptAuthTokens` install, bounded token inputs, `account/updated`,
-  expected identity read-back, wrong identity, null identity, malformed
-  response, and missing capability.
-- [ ] Add two fake TUI clients and prove both receive one account update from
-  the daemon.
-- [ ] Add a preflight test proving incompatibility fails before external
-  account installation.
+- [ ] In `tests/test_codex_managed_runtime.py`, add one shared-runtime
+  integration test covering idempotent official daemon startup, readiness,
+  selected-account installation, provider read-back, two connected fake TUI
+  observers, daemon reconnect, and no write to default `auth.json`.
+- [ ] In the same file, add one preflight rejection test for incompatible
+  version, schema, or socket ownership. Use a small table because these are
+  distinct trust authorities, and prove none reaches external account
+  installation.
+- [ ] Do not create separate daemon-lifecycle and external-auth test files.
 
 ### Implementation
 
@@ -410,7 +382,7 @@ codex app-server daemon version
 
 ### Verify and commit
 
-- [ ] Run all shared-daemon and external-auth tests.
+- [ ] Run the two shared-runtime scenarios.
 - [ ] Run the daemon priority and import audits from the foundation.
 - [ ] Run Ruff, `ty`, and architecture checks, then commit.
 
@@ -420,25 +392,16 @@ codex app-server daemon version
 
 ### Tests first
 
-- [ ] Add `tests/test_codex_broker.py` for:
-  - exactly one responder registration;
-  - request routing by previous Codex account ID;
-  - selected-account match;
-  - stale or unknown identity rejection;
-  - forced managed refresh;
-  - same-account advanced generation;
-  - unchanged or regressed generation failure;
-  - malformed request;
-  - duplicate request ID;
-  - daemon disconnect;
-  - supervisor restart and rehydration;
-  - response before the ten-second provider deadline; and
-  - secret absence outside the dedicated daemon response.
-- [ ] Add contention tests where same-home maintenance is healthy, completed,
-  hung, or killed.
-- [ ] Add a broadcast test proving fake TUI clients observe but never answer
-  the server request.
-- [ ] Add a dashboard-exit test proving the resident broker stays connected.
+- [ ] Extend `tests/test_codex_managed_runtime.py` with one broker lifecycle
+  scenario: exactly one responder routes the selected identity, forces an
+  advanced-generation refresh, survives dashboard exit and supervisor
+  restart, and rejects an unknown prior identity. Assert credential material
+  appears only in the dedicated official-daemon response.
+- [ ] Add one contention scenario in which same-home maintenance hangs and is
+  preempted and reaped before the internal callback deadline while observers
+  never answer the server request.
+- [ ] Do not enumerate request malformations, maintenance timing variants, or
+  disconnect permutations already covered by the protocol and worker tests.
 
 ### Implementation
 
@@ -469,8 +432,8 @@ codex app-server daemon version
 
 ### Verify and commit
 
-- [ ] Run broker, priority, managed refresh, shared daemon, protocol,
-  supervisor restart, and secret-leak suites.
+- [ ] Run the two broker scenarios plus the existing foundation protocol and
+  worker regressions they depend on.
 - [ ] Measure callback p95 under a hung general worker and record it separately
   from official daemon latency.
 - [ ] Run Ruff, `ty`, and architecture checks, then commit.
@@ -481,18 +444,16 @@ codex app-server daemon version
 
 ### Tests first
 
-- [ ] Add `tests/test_codex_activation.py` for every activation phase:
-  capability preflight, fresh target, external install, account update,
-  read-back, commit, and event publication.
-- [ ] Force process death after each journal phase and prove startup recovery
-  follows actual daemon identity.
-- [ ] Cover target already active, prior account active, unrelated saved
-  account active, unknown external account active, logged out, malformed
-  state, and daemon unavailable.
-- [ ] Prove a failed target does not silently activate another account.
-- [ ] Prove Claude selected state is not touched by a Codex switch.
-- [ ] Prove two simultaneous Codex activations serialize and the second uses
-  refreshed read-back rather than a stale source.
+- [ ] Extend `tests/test_codex_managed_runtime.py` with one activation
+  scenario that switches A to B through capability preflight, official
+  install, read-back, commit, and event publication. Prove a failed target
+  cannot select another account and Claude state is untouched.
+- [ ] Add one interruption scenario at the externally meaningful boundary
+  after official mutation and before commit. Startup must follow actual daemon
+  identity, serialize a concurrent retry, and produce verified commit,
+  rollback, or reconciliation rather than a stale pointer.
+- [ ] Do not force death after every internal journal write or enumerate all
+  equivalent prior-state spellings.
 
 ### Implementation
 
@@ -517,8 +478,8 @@ codex app-server daemon version
 
 ### Verify and commit
 
-- [ ] Run activation, journal, selected-state, concurrency, recovery, and
-  daemon restart suites.
+- [ ] Run the two activation scenarios plus existing journal and daemon
+  restart regressions they touch.
 - [ ] Run Ruff and `ty`, inspect journal fixtures for identities and secrets,
   then commit.
 
@@ -528,21 +489,16 @@ codex app-server daemon version
 
 ### Tests first
 
-- [ ] Add `tests/test_codex_reconciliation.py` for:
-  - external switch to another saved account;
-  - external login to an unknown identity;
-  - external logout;
-  - external login racing Sidekick activation;
-  - malformed external state;
-  - no silent import;
-  - temporary external dashboard state; and
-  - explicit later import workflow.
-- [ ] Update `tests/test_credential_refresh_codex.py`,
-  `tests/test_codex_heartbeat.py`, `tests/test_codex_activity.py`, and
-  `tests/test_usage_service.py` so every account uses its managed private home
-  regardless of selected state.
-- [ ] Add a multi-account test where account A is rejected, B refreshes, A
-  still shows stale metrics, and B records current metrics.
+- [ ] Extend the closest existing Codex maintenance test with one
+  multi-account scenario: A fails and retains timestamped stale metrics, B
+  refreshes and records current metrics, and selection does not change which
+  private home is maintained.
+- [ ] Add one reconciliation scenario to
+  `tests/test_codex_managed_runtime.py` where an external official login races
+  activation and wins. A known identity is related, an unknown identity
+  remains an external state, and neither is silently imported.
+- [ ] Adapt existing heartbeat, activity, and usage assertions instead of
+  duplicating the multi-account scenario in each suite.
 
 ### Implementation
 
@@ -563,8 +519,8 @@ codex app-server daemon version
 
 ### Verify and commit
 
-- [ ] Run reconciliation, maintenance, usage, heartbeat, activity, queue, and
-  multi-account suites.
+- [ ] Run the two reconciliation/maintenance scenarios plus existing usage,
+  heartbeat, activity, and queue regressions they touch.
 - [ ] Run Ruff, `ty`, and architecture checks, then commit.
 
 ## 10. Task 8 — Remove Direct OAuth and Copied-Auth Paths
@@ -573,14 +529,13 @@ codex app-server daemon version
 
 ### Tests first
 
-- [ ] Add an architecture check rejecting Codex private OAuth host/path
-  constants and credential-bearing refresh HTTP requests.
-- [ ] Add source-contract tests rejecting native `auth.json` copy, direct
-  default-home adoption, and token serialization in account metadata.
-- [ ] Update old tests so they assert managed app-server behavior instead of
-  direct OAuth responses or copied bundles.
-- [ ] Add command tests proving repair starts independent official login and
-  never asks the user to make the desired account native first.
+- [ ] Extend the existing architecture check once to reject private OAuth,
+  native `auth.json` copy/write, direct default-home adoption, and token
+  serialization outside qualified provider state.
+- [ ] Replace obsolete direct-OAuth and copied-bundle assertions with one
+  command-boundary test proving repair starts independent official login in
+  the final private home. Delete superseded tests rather than retaining both
+  implementations.
 
 ### Implementation
 
@@ -617,25 +572,23 @@ uv run ty check src/ tests/
 
 ## 11. Task 9 — Codex Phase Gate
 
-**Commit:** `test(codex): verify managed multi-account selection`
+This is a verification-only gate. It creates no duplicate end-to-end,
+compatibility, restart, unsupported-surface, or secret matrix and requires no
+empty commit.
 
-- [ ] Add one end-to-end fake scenario with two independently authenticated
-  homes, all-account maintenance, shared-daemon selection A to B, two
-  connected TUIs, a broker refresh for B, and continued maintenance for A.
-- [ ] Add one compatibility scenario proving missing internal capability
-  blocks before native mutation and preserves the prior selected account.
-- [ ] Add one restart scenario proving daemon and Sidekick restart rehydrate
-  the last provider-verified account and exactly one broker.
-- [ ] Add one unsupported-surface scenario for `codex exec`, pre-daemon TUI,
-  daemon-bypassing configuration, and native Windows.
-- [ ] Add one complete secret matrix covering private worker errors, JSON-RPC,
-  daemon messages, broker pipes, Sidekick protocol, persistence, logs,
-  arguments, and representations.
+- [ ] Map every Codex completion statement below to the smallest task test,
+  foundation test, static check, or later authorized live check that proves
+  it.
+- [ ] Confirm the task scenarios collectively cover two independent homes,
+  all-account maintenance, A-to-B selection, two observers, broker refresh,
+  failure isolation, restart, and pre-mutation capability rejection.
+- [ ] If a critical completion statement has no evidence, add one focused
+  assertion to the nearest existing test. Do not create a Codex phase-gate
+  test file.
 - [ ] Run the full project gate from the foundation plan.
-- [ ] Confirm ordinary `codex` path and symlink resolution remain unchanged in
-  a synthetic installation test.
+- [ ] Confirm ordinary `codex` path and symlink resolution remain unchanged
+  through the existing packaging smoke boundary.
 - [ ] Confirm no real provider or current-machine mutation occurred.
-- [ ] Commit the phase evidence.
 
 ## 12. Codex Completion Gate
 

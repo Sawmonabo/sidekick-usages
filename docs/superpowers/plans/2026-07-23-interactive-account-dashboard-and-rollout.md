@@ -61,6 +61,20 @@ WSL, macOS arm64, and macOS x64.
   p95 must target 50 ms on the documented reference machine.
 - Automated tests use synthetic account labels and fake services. Live labels
   and provider identities never enter tracked captures or fixtures.
+- Follow the foundation plan's lean-test contract. Reuse or replace current
+  render, CLI, and daemon tests, default to at most two new coherent behavior
+  tests per task, and add a third only for a separate terminal-restoration or
+  security invariant.
+- Keep only one representative wide render, one representative narrow
+  render, one main PTY journey, and one forced-cleanup PTY journey. Do not
+  snapshot every warning, width, key, or service state.
+- Release acceptance is a traceability review over existing focused tests,
+  benchmarks, packaging checks, and the authorized live rollout. It must not
+  create a second 24-gate acceptance test suite.
+- The dashboard phase may add only `tests/test_dashboard.py`,
+  `tests/test_dashboard_pty.py`, and the non-test helper
+  `tests/pty_support.py`; all render assertions extend `tests/test_render.py`.
+  This is a ceiling, not a target.
 - The current-machine migration occurs only in Task 9, after all automated
   gates pass. It uses the CLI and official provider processes, never manual
   credential file or Keychain edits.
@@ -168,22 +182,16 @@ The no-secret dashboard view contains:
 
 ### Tests first
 
-- [ ] Add `tests/test_dashboard_models.py` for:
-  - usage joined by stable account ID;
-  - selected account from provider read-back;
-  - independent Claude and Codex active state;
-  - missing metrics;
-  - stale metrics with timestamp;
-  - credential warning on an active account;
-  - unknown external row;
-  - no active identity;
-  - deleted/renamed accounts; and
-  - rejection of duplicate or mismatched provider IDs.
-- [ ] Add `tests/test_dashboard_service.py` for cached first load, supervisor
-  snapshot merge, service unavailable, partial account failure, external
-  state, and no credential-authority read.
-- [ ] Add an architecture test rejecting credential resolver, provider, HTTP,
-  and secret persistence imports from dashboard models and rendering.
+- [ ] In `tests/test_dashboard.py`, add one joined-snapshot test with
+  independent Claude and Codex read-back, stable-ID usage, one stale metric,
+  one actionable warning, and one unknown external row. Rename one saved
+  account in the same scenario to prove labels are not identity.
+- [ ] In the same file, add one degraded-cache scenario for unavailable
+  supervisor and partial account failure. Prove cached metrics remain
+  truthful, actions disable, and the read model cannot obtain credential
+  authority.
+- [ ] Extend the existing architecture rule without adding another test
+  function. Do not create separate model and service permutation suites.
 - [ ] Run the tests and confirm failure because the joined read model does not
   exist.
 
@@ -208,8 +216,8 @@ The no-secret dashboard view contains:
 
 ### Verify and commit
 
-- [ ] Run dashboard model/service, usage, activity snapshot, selected state,
-  and architecture tests.
+- [ ] Run the two dashboard-state scenarios plus existing usage, activity,
+  selected-state, and architecture regressions they touch.
 - [ ] Run Ruff and `ty`, inspect representations and fixtures for secrets,
   then commit.
 
@@ -219,25 +227,17 @@ The no-secret dashboard view contains:
 
 ### Tests first
 
-- [ ] Extend `tests/test_render.py` with exact wide renders for:
-  - one cursor in Claude;
-  - one cursor in Codex;
-  - active row warning;
-  - preview row;
-  - setup-token login action;
-  - rejected Codex repair action;
-  - stale metrics;
-  - external row;
-  - no active account; and
-  - transient footer progress.
-- [ ] Add narrow render cases at every existing width boundary.
-- [ ] Add assertions that healthy output contains none of:
+- [ ] Extend `tests/test_render.py` with one representative wide render that
+  contains both providers, exactly one cursor, one healthy row, one
+  actionable warning, stale metrics, an external row, and footer progress.
+- [ ] Add one representative narrow render of the same state. Assert both
+  preserve the existing masthead, panels, totals, and reset meaning while
+  containing none of:
   `IN USE`, `ACTIVATING`, `MIGRATION REQUIRED`, `CURRENT`, or a second
   cursor.
-- [ ] Preserve existing exact masthead, panels, reset countdowns, totals,
-  warning content, legend, and no-account behavior.
-- [ ] Add resize cases that render the same state wide, narrow, then wide
-  without losing cursor or active relation.
+- [ ] Do not add a snapshot for every warning, provider focus, width
+  boundary, or resize step. Existing rendering tests continue covering
+  unchanged masthead and no-account behavior.
 
 ### Implementation
 
@@ -258,7 +258,8 @@ The no-secret dashboard view contains:
 
 ### Verify and commit
 
-- [ ] Run all render, branding, reset display, and activity render tests.
+- [ ] Run the two render scenarios plus existing unchanged branding, reset,
+  and activity render regressions.
 - [ ] Generate synthetic before/after wide and narrow captures and inspect
   alignment manually.
 - [ ] Run Ruff and `ty`, confirm module line limits, then commit.
@@ -280,26 +281,17 @@ The no-secret dashboard view contains:
 
 ### Tests first
 
-- [ ] Add `tests/test_dashboard_controller.py` for every key transition,
-  provider focus, active-row restoration, preview cancellation, wrap or clamp
-  behavior, external rows, row removal during preview, and post-activation
-  cursor state.
-- [ ] Choose clamped movement at the first and last row. Assert it explicitly
-  so terminal auto-repeat cannot jump providers.
-- [ ] Add `tests/test_interactive_input.py` using a fake input/output boundary
-  for arrow sequences, `j`, `k`, Tab, Enter, Esc, `r`, `R`, `?`, `q`,
-  Ctrl-C, resize, EOF, and unknown keys.
-- [ ] Add import tests proving prompt_toolkit is absent after:
-  - package import;
-  - `--help`;
-  - `--version`;
-  - `check`;
-  - redirected default invocation;
-  - `--no-interactive`;
-  - supervisor startup; and
-  - worker startup.
-- [ ] Add terminal restoration tests for normal exit, exception, signal,
-  supervisor disconnect, malformed event, and worker crash.
+- [ ] Extend `tests/test_dashboard.py` with one infrastructure-free controller
+  journey covering clamped movement, provider focus, preview-only movement,
+  Esc restoration, Enter dispatch, refresh actions, help, and
+  post-activation cursor state. Do not test key aliases separately when they
+  map to the same action.
+- [ ] Add one lazy-composition test in the same file that samples help,
+  redirected invocation, supervisor startup, and a real TTY first paint.
+  Prove `prompt_toolkit` is imported only for the last path and no provider
+  work runs inside the key handler.
+- [ ] Leave real key decoding and terminal restoration to the two PTY
+  scenarios in Task 7; do not duplicate them with fake-input cases.
 
 ### Implementation
 
@@ -332,7 +324,8 @@ uv add "prompt-toolkit==3.0.52"
 
 ### Verify and commit
 
-- [ ] Run controller, input, import, render, help, and smoke tests.
+- [ ] Run the two controller/composition scenarios plus existing render,
+  help, and smoke regressions they touch.
 - [ ] Run `uv run python -X importtime -m sidekick_usages --help` and inspect
   that prompt_toolkit is absent.
 - [ ] Run packaging, Ruff, `ty`, and architecture checks, then commit.
@@ -343,28 +336,22 @@ uv add "prompt-toolkit==3.0.52"
 
 ### Tests first
 
-- [ ] Add `tests/test_cli_interactive_dashboard.py` for TTY default,
-  `--only`, no accounts, one provider, both providers, service disconnect,
-  activation success, activation rollback, reconciliation required, refresh,
-  and exit codes.
-- [ ] Add `tests/test_cli_use.py` for exact syntax:
+- [ ] Extend `tests/test_dashboard.py` with one CLI routing test proving TTY
+  default composes the dashboard, `--only` constrains focus, and redirected
+  input/output, `check`, and `--no-interactive` retain the existing one-shot
+  path and exit calculation.
+- [ ] Add one scriptable command test in the same file for the exact syntax:
 
 ```text
 sidekick-usages use <provider> <label>
 ```
 
-- [ ] Prove `use` never prompts and fails clearly when service install,
-  provider login, migration, Remote Control confirmation, or reconciliation
-  is required.
-- [ ] Prove
+- [ ] In that command test, prove `use` never prompts, returns one actionable
+  failure when preparation is required, and accepts
   `sidekick-usages use claude <label> --allow-remote-control-disconnect`
-  is the only non-interactive opt-in for a proven Remote Control disruption.
-- [ ] Add tests proving redirected stdin, redirected stdout, `check`, and
-  `--no-interactive` never construct the input controller.
-- [ ] Preserve `--only` as an interactive single-provider filter when default
-  invocation is a TTY; Tab is then a no-op.
-- [ ] Preserve current one-shot failure exit calculation for `check`,
-  redirected invocation, and `--no-interactive`.
+  only for a proven Remote Control disruption.
+- [ ] Do not build account-count, service-error, provider-error, or exit-code
+  matrices already covered by the controller and provider boundaries.
 
 ### Implementation
 
@@ -387,8 +374,8 @@ sidekick-usages use <provider> <label>
 
 ### Verify and commit
 
-- [ ] Run CLI interactive, `use`, usage command, help, architecture, smoke,
-  and render suites.
+- [ ] Run the two CLI scenarios plus existing usage, help, architecture,
+  smoke, and render regressions they touch.
 - [ ] Run Ruff and `ty`.
 - [ ] Inspect command help ordering and one-shot output compatibility, then
   commit.
@@ -399,22 +386,17 @@ sidekick-usages use <provider> <label>
 
 ### Tests first
 
-- [ ] Add `tests/test_cli_service_setup.py` for:
-  - dashboard rendered before prompt;
-  - one plain-language confirmation;
-  - declined setup;
-  - successful install and readiness;
-  - install failure;
-  - readiness timeout;
-  - stale protocol upgrade;
-  - WSL rescue setup;
-  - macOS LaunchAgent setup;
-  - native Windows unsupported;
-  - resumed original activation; and
-  - no repeated confirmation after verified setup.
-- [ ] Prove no administrator command, password prompt, `sudo`, shell edit, or
-  vendor executable mutation occurs.
-- [ ] Prove non-interactive `use` does not install or prompt.
+- [ ] Extend `tests/test_dashboard.py` with one guided-setup journey: render
+  first, ask once, install the user-level service, verify readiness, resume
+  the original activation, and skip repeat confirmation. Assert no
+  administrator command, password prompt, shell edit, or vendor executable
+  mutation occurs.
+- [ ] Add one refusal/failure journey in the same file proving decline or
+  bounded setup failure leaves the dashboard usable, preserves state, and
+  gives one corrective action; non-interactive `use` never installs or
+  prompts.
+- [ ] Reuse foundation platform-backend tests. Do not repeat Linux, WSL,
+  macOS, native Windows, stale-version, and timeout permutations here.
 
 ### Implementation
 
@@ -439,8 +421,8 @@ sidekick-usages use <provider> <label>
 
 ### Verify and commit
 
-- [ ] Run guided setup, daemon lifecycle, platform backend, interactive CLI,
-  and output-safety tests.
+- [ ] Run the two guided-setup scenarios plus existing daemon lifecycle,
+  interactive CLI, and output-safety regressions they touch.
 - [ ] Run Ruff, `ty`, and architecture checks, then commit.
 
 ## 8. Task 6 — Managed Migration Command, Warnings, and Doctor
@@ -449,29 +431,17 @@ sidekick-usages use <provider> <label>
 
 ### Tests first
 
-- [ ] Register and test:
-
-```text
-sidekick-usages migrate managed-auth
-```
-
-- [ ] Add `tests/test_cli_managed_migration.py` for secret-safe preview,
-  resumability, provider ordering, one-account failure continuation, browser
-  wait, cancellation, service readiness, setup-token preservation, Codex
-  independent login, and final all-account proof.
-- [ ] Add exact warning-copy tests for:
-  - Claude official login required;
-  - Codex rejected login repair;
-  - setup-token regeneration;
-  - stale metrics and retry;
-  - external login;
-  - provider unsupported;
-  - service unavailable;
-  - switch rolled back; and
-  - reconciliation required.
-- [ ] Extend doctor tests for the complete approved service, platform,
-  provider, private authority, native relation, metrics, queue, journal, and
-  manual-action report.
+- [ ] Extend `tests/test_dashboard.py` with one migration command journey for
+  `sidekick-usages migrate managed-auth`: secret-safe preview, resumable
+  provider ordering, one-account failure continuation, setup-token
+  preservation, independent Codex login, and final all-account proof.
+- [ ] Extend one existing doctor/render scenario with representative
+  login-required and reconciliation warnings plus separate service,
+  authority, native relation, metrics, queue, and journal health. Assert
+  warnings are account-specific and not persistent selection badges.
+- [ ] Do not snapshot every warning sentence or create separate browser,
+  cancellation, provider, and doctor-state matrices; provider plans already
+  prove those transitions.
 
 ### Implementation
 
@@ -495,8 +465,8 @@ sidekick-usages migrate managed-auth
 
 ### Verify and commit
 
-- [ ] Run migration CLI, doctor, warning render, provider migration,
-  persistence migration, and help tests.
+- [ ] Run the two migration/diagnostic scenarios plus existing provider and
+  persistence migration and help regressions they touch.
 - [ ] Run Ruff and `ty`, inspect output for real identities and secrets, then
   commit.
 
@@ -508,22 +478,15 @@ sidekick-usages migrate managed-auth
 
 - [ ] Add `tests/pty_support.py` using standard-library `pty`, selectors, and
   subprocess on Unix. Do not add `pexpect`.
-- [ ] Add `tests/test_dashboard_pty.py` for:
-  - first paint;
-  - arrows and `j`/`k`;
-  - Tab;
-  - Enter;
-  - Esc;
-  - refresh keys;
-  - help;
-  - resize;
-  - wide/narrow transition;
-  - no-color;
-  - service event while a key arrives;
-  - Ctrl-C;
-  - child crash;
-  - no duplicated full dashboard; and
-  - restored terminal echo and canonical mode.
+- [ ] In `tests/test_dashboard_pty.py`, add one main PTY journey covering
+  first paint, representative movement, Tab, Enter, Esc, refresh, help,
+  resize to narrow and back, and normal exit without duplicate full-dashboard
+  output.
+- [ ] In the same file, add one forced-cleanup PTY journey that interrupts
+  during a service event and proves Ctrl-C exit plus restored echo and
+  canonical mode after a child or supervisor failure.
+- [ ] Do not add separate PTY tests for key aliases, no-color, every resize,
+  every failure source, or behavior already proven in the pure controller.
 - [ ] Run PTY integration on Linux and both macOS architectures in CI.
 - [ ] Test WSL service and rescue generation automatically; retain real WSL
   stop/start for Task 9.
@@ -574,31 +537,23 @@ uv run python packaging/smoke_wheel.py --build
 - [ ] Record benchmark environment and exact results in the completion record.
 - [ ] Commit the gate and documentation changes.
 
-## 10. Task 8 — Automated Release Acceptance Matrix
+## 10. Task 8 — Release Acceptance Evidence Review
 
-**Commit:** `test: verify global account selection acceptance`
+This is a verification-only gate. It creates no
+`test_global_account_selection_acceptance.py`, repeats no full suite merely
+for test count, and requires no empty commit.
 
-- [ ] Encode all 24 design acceptance gates in
-  `tests/test_global_account_selection_acceptance.py` using typed fakes and
-  explicit evidence helpers.
-- [ ] Prove normal vendor executable and symlink resolution is unchanged.
-- [ ] Prove no wrapper, alias, function, PATH shim, or shell edit is produced.
-- [ ] Prove one healthy Enter switches only the focused provider.
-- [ ] Prove new and supported ongoing sessions change at their documented safe
-  boundary while in-flight work remains unchanged.
-- [ ] Prove every unselected account remains maintained and measured.
-- [ ] Prove setup tokens remain fixed-lifetime and invalid Codex accounts use
-  independent official login.
-- [ ] Prove one account failure does not stop another.
-- [ ] Prove external official login wins without silent import.
-- [ ] Prove every interrupted switch commits verified state, officially rolls
-  back, or blocks for reconciliation.
-- [ ] Prove service install/uninstall requires no administrator rights and
-  leaves provider logins untouched.
-- [ ] Prove managed-authority v0.6 rollback fails before mutation.
-- [ ] Run the complete gate twice from a clean test-state directory to catch
-  non-idempotent setup or migration.
-- [ ] Commit the acceptance evidence.
+- [ ] Map all 24 design acceptance gates to the smallest existing focused
+  test, static check, benchmark, packaging check, or authorized live rollout
+  step.
+- [ ] Confirm security and recovery invariants have automated evidence while
+  real provider-session and current-machine behaviors remain in Task 9.
+- [ ] Confirm no wrapper, alias, shell function, PATH shim, symlink
+  replacement, or shell edit can be produced by the implementation.
+- [ ] If a critical gate has no evidence, add one focused assertion to the
+  nearest existing task test. Do not add a parallel acceptance layer.
+- [ ] Run the complete local gate once from clean test state. Rerun only a
+  failed or nondeterministic focused check, not the entire suite by default.
 
 ## 11. Task 9 — Current-Machine Migration and Live Verification
 
@@ -719,7 +674,9 @@ uv run pytest tests/test_docs.py
 The feature is complete only when every item is true:
 
 - [ ] All four implementation plans are complete.
-- [ ] All 24 approved acceptance gates have automated evidence.
+- [ ] All 24 approved acceptance gates have proportionate evidence:
+  foundational security and recovery behavior is automated, while real
+  provider-session and current-machine behavior is verified in Task 9.
 - [ ] Linux, WSL, macOS arm64, and macOS x64 have required automated and live
   evidence.
 - [ ] Native Windows reports feature-disabled behavior accurately.
@@ -761,7 +718,7 @@ The four-plan suite covers every release gate from design Section 16:
 | 18. Supervisor performance | Foundation Task 8; Dashboard Task 7 |
 | 19. Required platform coverage | Foundation Task 6; Dashboard Tasks 7 and 9 |
 | 20. Pre-mutation capability failure | Codex Task 1; Claude Task 1 |
-| 21. Secret-leak matrix | Every phase gate; Dashboard Task 8 |
+| 21. Secret boundaries | Focused phase checks; Dashboard Task 8 |
 | 22. Guided install and clean uninstall | Foundation Tasks 6-7; Dashboard Task 5 |
 | 23. Current-machine migration | Dashboard Task 9 |
 | 24. Unsafe rollback refusal | Foundation Tasks 1 and 8 |
