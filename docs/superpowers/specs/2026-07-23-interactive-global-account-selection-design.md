@@ -712,6 +712,27 @@ Recovery reads actual provider state before taking action.
 
 Recovery never restores stale provider credential bytes.
 
+### 8.6 Backward compatibility
+
+The current schema-version-two account store remains readable as an explicit
+migration source.
+
+After a Claude or Codex subscription account is converted to a managed
+private authority, the old v0.6.0 flattened credential shape is no longer
+representable without extracting and duplicating provider tokens. Therefore:
+
+- rollback preparation must detect any managed authority;
+- it must fail before writing, removing, or changing any artifact;
+- it must explain that the installed older release cannot own managed
+  authorities;
+- it must not reconstruct the old schema from a private home or Keychain; and
+- uninstalling the supervisor must leave the current account store and
+  provider logins intact rather than downgrading them.
+
+Legacy and setup-token-only records may retain their existing compatibility
+behavior until they are migrated. Release verification must test both the
+remaining compatible path and the managed-authority rejection path.
+
 ## 9. Claude Activation
 
 ### 9.1 Capability preflight
@@ -1379,6 +1400,8 @@ The feature is releasable only when all of these statements are proven:
     rights and leave provider logins untouched.
 23. The current-machine migration and cross-account live verification are
     completed.
+24. Rollback to a token-owning older schema fails before mutation once a
+    managed authority exists.
 
 ## 17. Repository Ownership
 
