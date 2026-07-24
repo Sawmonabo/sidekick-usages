@@ -20,8 +20,8 @@ for external refresh requests.
 
 **Tech Stack:** Python 3.14, the foundation supervisor and persistence ports,
 official Codex app-server JSON-RPC, official Codex app-server daemon Unix
-socket, Pydantic 2.13.4, Portalocker 3.2.0, pytest 9, Ruff, `ty`, and the
-release-matched Codex CLI schema.
+socket, `websockets` 16.1.1, Pydantic 2.13.4, Portalocker 3.2.0, pytest 9,
+Ruff, `ty`, and the release-matched Codex CLI schema.
 
 ## Global Constraints
 
@@ -47,16 +47,29 @@ release-matched Codex CLI schema.
 - `chatgptAuthTokens` and its refresh request are unstable internal Codex
   contracts. Exact version and generated-schema capability checks must pass
   before any shared-runtime auth mutation.
+- Codex 0.145.0 does not return its active ChatGPT account ID through
+  `account/read` or `account/updated`. Activation therefore proves the token
+  claim, auth-file identity, and saved identity agree before sending; then
+  requires the exact correlated install response, external-auth update, and
+  explicit account readiness read. Do not describe this as an independent
+  daemon account-ID read-back.
 - A capability failure disables Codex switching before touching native auth.
   There is no fallback to `auth.json`, direct OAuth, `codex exec`, or copied
   credentials.
 - The Sidekick supervisor has one Codex daemon connection and one refresh
   responder. Dashboard and TUI connections never race to answer refresh.
+- Codex 0.145.0 broadcasts an external-token refresh request to every daemon
+  client and accepts the first response. Official TUIs do not answer it.
+  Sidekick guarantees exactly one Sidekick responder, but cannot exclude a
+  custom same-user daemon client from racing that response.
 - `codex exec`, native Windows, pre-daemon embedded TUIs, and launch
   configurations that bypass daemon reuse remain accurately unsupported.
 - Pre-daemon TUIs require one restart after enrollment. Later supported TUIs
   update on their next safe authenticated request. In-flight requests are
   never retargeted.
+- A daemon disconnect is fatal to attached Codex 0.145.0 TUIs. Sidekick
+  reconnects and rehydrates after daemon replacement, but affected TUIs must
+  be restarted. Routine switching never restarts the daemon.
 - Automated tests use fake binaries, app servers, sockets, clocks, and
   credential homes. They never use a real Codex account or public network.
 - Follow the foundation plan's lean-test contract. Reuse or replace existing
@@ -73,6 +86,13 @@ release-matched Codex CLI schema.
   Codex owner tests. This is a ceiling, not a target.
 - Do not add a JSON-RPC dependency. The consumed protocol is narrow, strict,
   bounded, and release-gated.
+- Use the pinned maintained `websockets` transport for the official
+  WebSocket-over-Unix-socket boundary. It supports Python 3.14, has no runtime
+  dependencies, and avoids a second security-sensitive RFC 6455
+  implementation. Connect only to `/rpc`, disable frame-payload logging, and
+  bound writes independently of the receiver thread. JSON-RPC decoding,
+  correlation, and release-specific `emittedAtMs` validation remain
+  Sidekick-owned.
 - Keep provider-specific code in `providers/codex/`, transaction policy in
   `credentials/`, and qualified state in `persistence/`.
 - Commit and push after each numbered task with the listed message under the
@@ -80,7 +100,7 @@ release-matched Codex CLI schema.
 
 ---
 
-- **Status:** In progress; foundation and Codex Tasks 1-2 complete
+- **Status:** In progress; foundation and Codex Tasks 1-4 complete
 - **Date:** 2026-07-23
 - **Repository:** `/home/sabossedgh/dev/sidekick-usages`
 - **Branch:** `develop`
@@ -129,7 +149,8 @@ The provider adapter exposes these typed operations:
 - start and observe official login in one final private home;
 - manage and connect to the default official daemon;
 - install one external runtime account;
-- read back the daemon's active identity;
+- corroborate one external runtime projection without inventing an unavailable
+  daemon account-ID read-back;
 - receive and answer an external refresh request; and
 - report unsupported session surfaces.
 
@@ -436,48 +457,55 @@ uv run pytest \
 
 ### Tests first
 
-- [ ] In `tests/test_codex_managed_runtime.py`, add one shared-runtime
+- [x] In `tests/test_codex_managed_runtime.py`, add one shared-runtime
   integration test covering idempotent official daemon startup, readiness,
-  selected-account installation, provider read-back, two connected fake TUI
-  observers, daemon reconnect, and no write to default `auth.json`.
-- [ ] In the same file, add one preflight rejection test for incompatible
+  selected-account installation, provider readiness read-back, two connected
+  fake TUI observers, broker reconnect and rehydration after daemon
+  replacement, and no write to default `auth.json`. Do not claim that TUIs
+  attached to the replaced daemon reconnect.
+- [x] In the same file, add one preflight rejection test for incompatible
   version, schema, or socket ownership. Use a small table because these are
   distinct trust authorities, and prove none reaches external account
   installation.
-- [ ] Do not create separate daemon-lifecycle and external-auth test files.
+- [x] Do not create separate daemon-lifecycle and external-auth test files.
 
 ### Implementation
 
-- [ ] Manage the official daemon with the resolved executable:
+- [x] Manage the official daemon with the resolved executable:
 
 ```bash
 codex app-server daemon start
 codex app-server daemon version
 ```
 
-- [ ] Connect through the official default Unix control socket only after
+- [x] Connect through the official default Unix control socket only after
   verifying owner, type, version, and readiness.
-- [ ] Keep daemon lifecycle distinct from the Sidekick supervisor lifecycle.
+- [x] Keep daemon lifecycle distinct from the Sidekick supervisor lifecycle.
   Sidekick may start and reconnect to it but does not replace its executable or
   socket.
-- [ ] Perform a fresh generated-schema capability probe before first external
+- [x] Perform a fresh generated-schema capability probe before first external
   auth installation after either process version changes.
-- [ ] Obtain a fresh selected-account lease inside a high-priority worker and
-  construct the exact release-matched `chatgptAuthTokens` request.
-- [ ] Send the ephemeral access token and account ID only to the official
+- [x] Expose a lock-assuming, worker-compatible selected-account lease and
+  construct the exact release-matched `chatgptAuthTokens` request. Task 5
+  owns high-priority worker dispatch.
+- [x] Send the ephemeral access token and account ID only to the official
   daemon connection. Do not write either to default `auth.json`.
-- [ ] Require `account/updated` plus explicit active-account read-back matching
-  the target identity before returning activation success.
-- [ ] Mark the provider not ready on daemon restart until the selected
+- [x] Before sending, require the token claim, managed auth-file account ID,
+  and saved provider identity to match. Then require the exact correlated
+  `chatgptAuthTokens` response, `account/updated` in external-auth mode, and
+  explicit non-null ChatGPT `account/read` before returning a
+  correlated-ready projection receipt. Do not persist or report this as an
+  independent daemon account-ID verification.
+- [x] Mark the provider not ready on daemon restart until the selected
   projection is rehydrated and verified.
-- [ ] Detect daemon-connected support separately from `codex exec`, embedded
+- [x] Detect daemon-connected support separately from `codex exec`, embedded
   pre-daemon TUIs, native Windows, and launch modes that bypass daemon reuse.
 
 ### Verify and commit
 
-- [ ] Run the two shared-runtime scenarios.
-- [ ] Run the daemon priority and import audits from the foundation.
-- [ ] Run Ruff, `ty`, and architecture checks, then commit.
+- [x] Run the two shared-runtime scenarios.
+- [x] Run the daemon priority and import audits from the foundation.
+- [x] Run Ruff, `ty`, and architecture checks, then commit.
 
 ## 9. Task 5 — Singleton Refresh Broker
 
@@ -500,8 +528,8 @@ codex app-server daemon version
 
 - [ ] Keep one long-lived official daemon connection in the lean supervisor.
   Decode only the small external-refresh request subset through the audited
-  `providers.codex.broker_wire` leaf. That leaf must not import app-server
-  process, auth, credential, HTTP, maintenance, or usage modules.
+  `providers/codex/broker/wire.py` leaf. That leaf must not import auth,
+  credential, HTTP, maintenance, persistence, or usage modules.
 - [ ] Validate request ID, previous account ID, selected account ID, daemon
   generation, and current activation state before dispatch.
 - [ ] Dispatch the foundation's reserved callback worker. It opens only the
@@ -539,12 +567,13 @@ codex app-server daemon version
 
 - [ ] Extend `tests/test_codex_managed_runtime.py` with one activation
   scenario that switches A to B through capability preflight, official
-  install, read-back, commit, and event publication. Prove a failed target
-  cannot select another account and Claude state is untouched.
+  install, correlated-ready proof, commit, and event publication. Prove a
+  failed target cannot select another account and Claude state is untouched.
 - [ ] Add one interruption scenario at the externally meaningful boundary
-  after official mutation and before commit. Startup must follow actual daemon
-  identity, serialize a concurrent retry, and produce verified commit,
-  rollback, or reconciliation rather than a stale pointer.
+  after official mutation and before commit. If native auth did not change,
+  startup must idempotently reinstall and re-prove the journaled target. A
+  deliberate external native login wins. Recovery must serialize concurrent
+  retry and never infer an unavailable daemon identity.
 - [ ] Do not force death after every internal journal write or enumerate all
   equivalent prior-state spellings.
 
@@ -557,15 +586,16 @@ codex app-server daemon version
   creation.
 - [ ] Force a target private-home read/refresh as due policy requires.
 - [ ] Journal `prepared`, install external auth, journal
-  `target_activated`, verify daemon identity, journal
-  `read_back_verified`, then atomically commit selected state and terminal
-  journal outcome.
-- [ ] On interruption, read the daemon first:
-  - matching target completes commit;
-  - matching source records rollback;
-  - another deliberate saved or external identity wins and reconciles;
-  - logged-out state remains logged out; and
-  - unreadable state enters reconciliation-required.
+  `target_activated`, require correlated readiness, journal
+  `provider_proof_verified`, then atomically commit selected state and
+  terminal journal outcome.
+- [ ] On interruption, compare the read-only native-auth observation with the
+  journal baseline first:
+  - a deliberate changed saved or external identity wins and reconciles;
+  - an unchanged native baseline permits idempotent target reinstall and
+    correlated proof;
+  - daemon replacement requires reconnect and reinstall; and
+  - unreadable or ambiguous state enters reconciliation-required.
 - [ ] Rehydrate the verified selection after daemon restart.
 - [ ] Publish only sanitized progress and completion events.
 
@@ -595,10 +625,10 @@ codex app-server daemon version
 
 ### Implementation
 
-- [ ] Reconcile `account/updated` and explicit startup read-back against stable
-  provider identities.
+- [ ] Treat `account/updated` as a change signal, then reconcile a read-only
+  native-auth identity and generation against stable provider identities.
 - [ ] When the identity matches a saved account, update selected state only
-  after read-back proof.
+  after the external native-auth transition is proven.
 - [ ] When it is unknown, store non-secret external-active state and block
   automatic attribution or metrics ownership.
 - [ ] Let a deliberate external login win over a stale Sidekick journal.
@@ -695,7 +725,8 @@ Do not begin the Claude plan until all statements are true:
 - [ ] The native default `auth.json` is never copied or written.
 - [ ] Direct private OAuth refresh no longer exists.
 - [ ] Exact-version and schema preflight occurs before shared auth mutation.
-- [ ] The official daemon read-back proves every successful activation.
+- [ ] The release-gated correlated proof establishes every successful
+  activation without claiming daemon account-ID read-back.
 - [ ] Exactly one broker answers refresh and survives dashboard exit.
 - [ ] A hung worker cannot consume the callback deadline.
 - [ ] New and daemon-connected supported TUIs receive account updates.

@@ -164,9 +164,12 @@ The first release does not:
   sessions observe the selected account.
 
 **Active account**
-: The account most recently proven by provider read-back to be active in that
-  provider's shared runtime. A persisted Sidekick pointer alone cannot prove
-  this state.
+: The account most recently proven through the strongest release-gated
+  provider activation contract available in that provider's shared runtime.
+  Claude requires identity read-back. Codex 0.145.0 requires a locally proven
+  token/account binding, correlated external-auth acceptance, an external-auth
+  update, and a non-null ChatGPT account readiness read. A persisted Sidekick
+  pointer alone cannot prove this state.
 
 **Navigation cursor**
 : The temporary account-row focus shown as `›`. It begins on the active
@@ -186,7 +189,9 @@ The first release does not:
 4. Durable credential writes belong only to the official Claude or Codex
    process.
 5. Sidekick never copies provider credential files to perform a switch.
-6. A successful switch requires provider identity read-back.
+6. A successful switch requires the strongest release-gated provider proof;
+   Sidekick never invents an identity field absent from the provider
+   protocol.
 7. A failed switch does not silently select a different account.
 8. An external official login wins over a stale Sidekick selection.
 9. Persisted selection contains no access, refresh, ID, or setup token.
@@ -649,9 +654,11 @@ Selected state contains only:
 
 It contains no friendly label as authority and no credential value.
 
-On supervisor startup, provider read-back is compared with this record:
+On supervisor startup, the strongest provider-specific proof is compared with
+this record:
 
-- a matching identity restores ready state;
+- a matching Claude read-back or live Codex correlated receipt restores ready
+  state;
 - a different saved identity reconciles to the external provider choice;
 - an unknown identity becomes an external-active state;
 - no identity becomes logged-out state; and
@@ -675,7 +682,7 @@ Valid phases are conceptually:
 prepared
 outgoing retained
 target activated
-read-back verified
+provider proof verified
 committed
 rolled back
 reconciliation required
@@ -697,12 +704,15 @@ callback cannot deadlock behind an unrelated provider operation.
 
 ### 8.5 Recovery decision
 
-Recovery reads actual provider state before taking action.
+Recovery acquires the strongest provider-specific proof before taking action.
 
 - If no native mutation occurred, the previous active account remains and the
   operation is closed as failed.
 - If the target is already proven active, Sidekick completes the commit.
 - If the previous account is proven active, Sidekick records rollback.
+- For Codex, an unchanged native-auth baseline cannot identify the daemon's
+  ephemeral account. Recovery idempotently reinstalls and re-proves the
+  journaled target; a changed deliberate native login wins instead.
 - If a different deliberate external identity is active, external choice
   wins and Sidekick reconciles.
 - If an incomplete Sidekick transition changed native state to an unverified
@@ -866,18 +876,26 @@ The Codex switch transaction is:
 
 1. acquire the Codex activation lock;
 2. verify the official native daemon and broker are ready;
-3. read and journal the daemon's current runtime identity;
+3. read and journal the strongest available daemon runtime observation;
 4. obtain a verified fresh target access token from managed Codex in the
    target private home;
-5. install that account ephemerally through version-gated
+5. require the token claim, managed auth-file account ID, and saved provider
+   identity to agree;
+6. install that account ephemerally through version-gated
    `chatgptAuthTokens`;
-6. verify that the daemon reports the expected identity;
-7. commit the sanitized selected-account record; and
-8. allow the daemon's account-update event to reach connected clients.
+7. require the exact correlated install response, an external-auth
+   `account/updated`, and a non-null ChatGPT `account/read`;
+8. record a correlated-ready projection without claiming an independent
+   daemon account-ID read-back;
+9. commit the sanitized selected-account record; and
+10. allow the daemon's account-update event to reach connected clients.
 
 The access token exists only in the credential worker, broker, and official
 daemon memory required for the operation. It is not written to selected
-state.
+state. Codex 0.145.0 does not return `chatgptAccountId` through
+`account/read` or `account/updated`; the later refresh callback's
+`previousAccountId` provides continuity evidence but is not an activation
+read-back.
 
 ### 10.3 Refresh broker
 
@@ -893,8 +911,14 @@ When Codex requests external-token refresh, the broker:
 6. stores only a sanitized outcome.
 
 The callback does not wait behind scheduled maintenance. Other connected TUIs
-must not answer the request. A stale, wrong-account, or late result is
-rejected.
+do not implement this response. A stale, wrong-account, or late Sidekick
+result is rejected.
+
+Codex 0.145.0 broadcasts the refresh request to every daemon client and uses
+the first response. Sidekick can guarantee one Sidekick responder, but it
+cannot prevent a custom process owned by the same operating-system user from
+connecting to the owner-only socket and racing a response. This is an
+upstream same-user trust boundary, not a claim of cross-user isolation.
 
 ### 10.4 Session coverage
 
@@ -909,6 +933,11 @@ After one-time daemon enrollment:
 Codex sessions started before daemon enrollment require one restart. The
 first migration handles that restart guidance.
 
+A daemon disconnect is fatal to attached Codex 0.145.0 TUIs. Sidekick
+reconnects its broker and rehydrates the selected projection after daemon
+replacement, but affected TUIs must be restarted. Routine switching never
+restarts the daemon.
+
 The first release does not claim switching for:
 
 - `codex exec`;
@@ -920,6 +949,21 @@ The first release does not claim switching for:
 
 `chatgptAuthTokens` is internal and unstable in the researched Codex release.
 The integration is therefore exact-version and capability gated.
+
+The official daemon transports JSON-RPC as WebSocket text messages at `/rpc`
+over its owner-only Unix socket. Sidekick adopts the pinned, maintained
+`websockets==16.1.1` synchronous client because Python's standard library and
+the existing HTTP transport do not implement RFC 6455. The BSD-3-Clause
+package supports Python 3.14 and has no runtime dependencies. Sidekick
+disables frame-payload logging, bounds writes without changing the receiver's
+socket mode, and continues to own strict JSON-RPC decoding, correlation, and
+release-specific `emittedAtMs` notification validation.
+
+The 0.145.0 lifecycle output reports `pid` only when a daemon is newly
+started. `alreadyRunning` and `version` omit it. Sidekick therefore detects
+replacement through the owner-, mode-, device-, and inode-qualified socket,
+which is available on Linux/WSL and macOS, rather than inventing a
+cross-platform process-ID contract.
 
 If the method or refresh-broker contract is absent:
 
@@ -935,7 +979,8 @@ If the method or refresh-broker contract is absent:
 
 An explicit official provider login outside Sidekick is authoritative.
 
-The supervisor observes native identity:
+The supervisor observes native identity through Claude read-back or the
+read-only default Codex auth state:
 
 - at dashboard startup;
 - before and after every switch;
@@ -960,9 +1005,11 @@ When it is unknown, Sidekick adds a temporary external row:
 The row is not silently imported, labeled, or assigned another account's
 metrics. The user may explicitly start an import or select a saved account.
 
-If an external login races a Sidekick switch, provider read-back decides the
-result. Sidekick never overwrites the deliberate external identity merely to
-make its journal match.
+If an external login races a Sidekick switch, the provider-specific proof
+decides the result. For Codex, `account/updated` triggers a read-only native
+auth observation because the daemon does not expose its account ID. Sidekick
+never overwrites the deliberate external identity merely to make its journal
+match.
 
 ## 12. Security and Secret Handling
 
@@ -1252,7 +1299,7 @@ Tests must prove:
 
 - the current wide and narrow dashboard contracts remain intact;
 - exactly one cursor appears in interactive mode;
-- initial focus matches provider read-back;
+- initial focus matches the provider-specific active proof;
 - Tab focuses the other provider's active account;
 - movement previews without switching;
 - Esc returns to the active account;
@@ -1283,7 +1330,7 @@ Tests must prove:
 - account failures do not stop later accounts;
 - no duplicate legacy schedule remains after transition;
 - every activation phase recovers from forced process death;
-- provider read-back, not the journal, decides recovery;
+- provider-specific proof, not the journal alone, decides recovery;
 - wrong-account, malformed, and partial provider state fails closed;
 - external login wins a race with Sidekick activation;
 - rollback uses an official provider transition;

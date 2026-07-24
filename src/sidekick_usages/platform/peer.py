@@ -1,4 +1,4 @@
-"""Operating-system proof for same-user control peers."""
+"""Operating-system proof for same-user local peers."""
 
 import ctypes
 import os
@@ -6,9 +6,8 @@ import socket
 import struct
 import sys
 
-from sidekick_usages.daemon.models.peer import PeerIdentity
-from sidekick_usages.daemon.types.peer import PeerFailureCode
-from sidekick_usages.daemon.types.ports import PeerSocket
+from sidekick_usages.platform.models import PeerIdentity
+from sidekick_usages.platform.types import PeerFailureCode, PeerSocket
 
 _LINUX_PEER_CREDENTIALS = struct.Struct("3i")
 

@@ -322,9 +322,8 @@ class CodexAuthMigrationCoordinator:
                 ProviderFailureKind.REJECTED,
                 "Codex did not advance the managed credential generation.",
             )
-        if (
-            expected.baseline is not None
-            and not after.advanced_from(expected.baseline)
+        if expected.baseline is not None and not after.advanced_from(
+            expected.baseline
         ):
             return _failure(
                 ProviderFailureKind.REJECTED,

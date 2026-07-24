@@ -2,10 +2,22 @@
 
 import json
 import os
+import sys
+import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
+from sidekick_usages.core.accounts.types import (
+    AuthorityGeneration,
+    AuthorityId,
+    ProviderIdentity,
+    SidekickAccountId,
+)
+from sidekick_usages.credentials.codex.authorities import (
+    CodexManagedAuthorityCoordinator,
+)
 from sidekick_usages.providers.codex.app_server.capabilities import (
     probe_codex_capabilities,
 )
@@ -15,23 +27,76 @@ from sidekick_usages.providers.codex.app_server.errors import (
 from sidekick_usages.providers.codex.app_server.executable import (
     discover_codex_executable,
 )
-from sidekick_usages.providers.codex.app_server.models import (
+from sidekick_usages.providers.codex.app_server.jsonrpc.models import (
     JsonRpcNotification,
 )
+from sidekick_usages.providers.codex.app_server.models import CodexExecutable
 from sidekick_usages.providers.codex.app_server.session import (
     CodexAppServerSession,
 )
 from sidekick_usages.providers.codex.app_server.types import (
     CodexAppServerFailure,
 )
-from tests.fakes.codex import (
+from sidekick_usages.providers.codex.broker.errors import CodexBrokerError
+from sidekick_usages.providers.codex.broker.service import CodexSharedRuntime
+from sidekick_usages.providers.codex.broker.types import CodexBrokerFailure
+from tests.fakes.codex.auth import managed_auth
+from tests.fakes.codex.daemon import FakeCodexDaemon
+from tests.fakes.codex.executable import (
     RAW_PROVIDER_SECRET,
-    write_codex_schema,
+    configure_codex_daemon_lifecycle,
     write_fake_codex,
+    write_fake_managed_codex,
+)
+from tests.fakes.codex.managed import (
+    managed_saved_account,
+    seed_managed_accounts,
+)
+from tests.fakes.codex.schema import write_codex_schema
+from tests.test_support import FixedClock
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Managed Codex runtimes require Linux, WSL, or macOS.",
 )
 
 SCHEMA_HASH_HEX_LENGTH = 64
-NEXT_REQUEST_AFTER_ACCOUNT_READ = 3
+_MANAGED_ACCOUNT_ID = SidekickAccountId("33333333-3333-4333-8333-333333333333")
+_MANAGED_AUTHORITY_ID = AuthorityId("cccccccc-cccc-4ccc-8ccc-cccccccccccc")
+_PROVIDER_IDENTITY = "workspace-account-alpha"
+_GENERATION = "2026-07-24T10:00:00.000000000Z"
+_NEXT_GENERATION = "2026-07-24T10:01:00.000000000Z"
+_NATIVE_AUTH_SENTINEL = b'{"native":"must-remain-unchanged"}\n'
+_INITIAL_LIFECYCLE_CALLS = 2
+_RECOVERED_LIFECYCLE_CALLS = 3
+_INITIAL_READY_READS = 1
+_REHYDRATED_READY_READS = 2
+
+
+@pytest.fixture
+def short_socket_root() -> Iterator[Path]:
+    """Provide a native home below the Unix socket path-length limit."""
+    with tempfile.TemporaryDirectory(prefix="sku-") as root:
+        yield Path(root)
+
+
+def _prepare_shared_runtime(
+    executable: CodexExecutable,
+    native_home: Path,
+    environment: dict[str, str],
+    expected_user_id: int | None,
+) -> None:
+    runtime = CodexSharedRuntime.create(
+        executable,
+        native_home,
+        environment=environment,
+        expected_user_id=expected_user_id,
+    )
+    runtime.prepare(
+        _MANAGED_ACCOUNT_ID,
+        ProviderIdentity(_PROVIDER_IDENTITY),
+        AuthorityGeneration(_GENERATION),
+    )
 
 
 def test_versioned_codex_app_server_boundary_is_complete(
@@ -67,7 +132,6 @@ def test_versioned_codex_app_server_boundary_is_complete(
         assert result["requiresOpenaiAuth"] is True
         assert isinstance(notification, JsonRpcNotification)
         assert notification.method == "account/updated"
-        assert session.next_request_id == NEXT_REQUEST_AFTER_ACCOUNT_READ
     assert session.closed
 
     events = [
@@ -92,7 +156,7 @@ def test_codex_app_server_boundary_fails_closed_and_redacted(
     tmp_path: Path,
 ) -> None:
     schema_root = tmp_path / "schema"
-    write_codex_schema(schema_root, external_auth=False)
+    write_codex_schema(schema_root, external_auth=True)
     write_fake_codex(tmp_path, schema_root)
     environment = {
         "HOME": str(tmp_path),
@@ -100,20 +164,6 @@ def test_codex_app_server_boundary_fails_closed_and_redacted(
         "PATH": os.pathsep.join((str(tmp_path), os.environ["PATH"])),
     }
     executable = discover_codex_executable(environment)
-
-    with pytest.raises(CodexAppServerError) as unsupported:
-        probe_codex_capabilities(executable, environment)
-
-    assert unsupported.value.code is (
-        CodexAppServerFailure.CAPABILITY_UNSUPPORTED
-    )
-    events = [
-        json.loads(line)
-        for line in (tmp_path / "events.jsonl").read_text().splitlines()
-    ]
-    assert ["app-server"] not in [event["argv"] for event in events]
-
-    write_codex_schema(schema_root, external_auth=True)
     capabilities = probe_codex_capabilities(executable, environment)
     codex_home = tmp_path / "private-codex-home"
     codex_home.mkdir()
@@ -131,3 +181,182 @@ def test_codex_app_server_boundary_fails_closed_and_redacted(
     process_id = int((tmp_path / "app-server.pid").read_text())
     with pytest.raises(ProcessLookupError):
         os.kill(process_id, 0)
+
+
+def test_shared_codex_runtime_is_idempotent_and_rehydrates(
+    tmp_path: Path,
+    short_socket_root: Path,
+) -> None:
+    schema_root = tmp_path / "schema"
+    native_home = short_socket_root / "native"
+    native_home.mkdir()
+    native_auth = native_home / "auth.json"
+    native_auth.write_bytes(_NATIVE_AUTH_SENTINEL)
+    os.chmod(native_auth, 0o600)
+    write_codex_schema(schema_root, external_auth=True)
+    write_fake_managed_codex(tmp_path, schema_root, native_home)
+    environment = {
+        "HOME": str(tmp_path),
+        "PATH": os.pathsep.join((str(tmp_path), os.environ["PATH"])),
+    }
+    executable = discover_codex_executable(environment)
+    capabilities = probe_codex_capabilities(executable, environment)
+    account = managed_saved_account(
+        _MANAGED_ACCOUNT_ID,
+        _MANAGED_AUTHORITY_ID,
+        "codex-alpha",
+        _PROVIDER_IDENTITY,
+        _GENERATION,
+    )
+    paths, store, private = seed_managed_accounts(
+        tmp_path,
+        (account,),
+        {
+            _MANAGED_ACCOUNT_ID: managed_auth(
+                _PROVIDER_IDENTITY,
+                _NEXT_GENERATION,
+            )
+        },
+    )
+    coordinator = CodexManagedAuthorityCoordinator(
+        paths,
+        store,
+        private,
+        capabilities,
+        FixedClock(),
+        environment=environment,
+    )
+
+    with FakeCodexDaemon(native_home) as daemon:
+        lifecycle = configure_codex_daemon_lifecycle(
+            tmp_path,
+            native_home,
+            daemon.socket_path,
+        )
+        runtime = CodexSharedRuntime.create(
+            executable,
+            native_home,
+            environment=environment,
+        )
+        observer_a = daemon.connect_tui()
+        observer_b = daemon.connect_tui()
+
+        first = coordinator.install_current_projection(
+            _MANAGED_ACCOUNT_ID,
+            runtime,
+        )
+        second = coordinator.install_current_projection(
+            _MANAGED_ACCOUNT_ID,
+            runtime,
+        )
+
+        assert second == first
+        assert runtime.ready
+        observer_a.wait_for_account_update()
+        observer_b.wait_for_account_update()
+        assert daemon.installed_account_ids == (_PROVIDER_IDENTITY,)
+        assert daemon.ready_account_read_count == _INITIAL_READY_READS
+        assert lifecycle.start_statuses == ("started", "alreadyRunning")
+        assert lifecycle.version_count == _INITIAL_LIFECYCLE_CALLS
+
+        daemon.replace()
+        assert not runtime.ready
+        observer_after_replacement = daemon.connect_tui()
+        coordinator.install_current_projection(
+            _MANAGED_ACCOUNT_ID,
+            runtime,
+        )
+
+        assert runtime.ready
+        observer_after_replacement.wait_for_account_update()
+        assert daemon.installed_account_ids == (
+            _PROVIDER_IDENTITY,
+            _PROVIDER_IDENTITY,
+        )
+        assert daemon.ready_account_read_count == _REHYDRATED_READY_READS
+        assert lifecycle.start_statuses == (
+            "started",
+            "alreadyRunning",
+            "alreadyRunning",
+        )
+        assert lifecycle.version_count == _RECOVERED_LIFECYCLE_CALLS
+
+        observer_a.close()
+        observer_b.close()
+        observer_after_replacement.close()
+        runtime.close()
+
+    assert native_auth.read_bytes() == _NATIVE_AUTH_SENTINEL
+
+
+def test_shared_codex_runtime_rejects_each_preflight_authority(
+    tmp_path: Path,
+    short_socket_root: Path,
+) -> None:
+    cases = (
+        (
+            "version",
+            True,
+            "0.146.0",
+            None,
+            CodexBrokerFailure.VERSION_UNSUPPORTED,
+        ),
+        (
+            "schema",
+            False,
+            "0.145.0",
+            None,
+            CodexBrokerFailure.PROTOCOL_UNSUPPORTED,
+        ),
+        (
+            "owner",
+            True,
+            "0.145.0",
+            os.geteuid() + 1,
+            CodexBrokerFailure.RUNTIME_UNSAFE,
+        ),
+    )
+    for (
+        name,
+        external_auth,
+        daemon_version,
+        expected_user_id,
+        expected_failure,
+    ) in cases:
+        root = tmp_path / name
+        root.mkdir()
+        schema_root = root / "schema"
+        native_home = short_socket_root / name
+        native_home.mkdir()
+        native_auth = native_home / "auth.json"
+        native_auth.write_bytes(_NATIVE_AUTH_SENTINEL)
+        os.chmod(native_auth, 0o600)
+        write_codex_schema(schema_root, external_auth=external_auth)
+        write_fake_managed_codex(root, schema_root, native_home)
+        environment = {
+            "HOME": str(root),
+            "PATH": os.pathsep.join((str(root), os.environ["PATH"])),
+        }
+        executable = discover_codex_executable(environment)
+
+        with FakeCodexDaemon(
+            native_home,
+            app_server_version=daemon_version,
+        ) as daemon:
+            configure_codex_daemon_lifecycle(
+                root,
+                native_home,
+                daemon.socket_path,
+                app_server_version=daemon_version,
+            )
+            with pytest.raises(CodexBrokerError) as rejected:
+                _prepare_shared_runtime(
+                    executable,
+                    native_home,
+                    environment,
+                    expected_user_id,
+                )
+
+            assert rejected.value.code is expected_failure
+            assert daemon.installed_account_ids == ()
+            assert native_auth.read_bytes() == _NATIVE_AUTH_SENTINEL

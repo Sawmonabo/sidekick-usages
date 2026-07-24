@@ -44,7 +44,6 @@ from sidekick_usages.core.selection.types import (
 )
 from sidekick_usages.core.types import AccountLabel, ProviderId
 from sidekick_usages.daemon.control.client import ControlClient
-from sidekick_usages.daemon.control.peer import PeerVerificationError
 from sidekick_usages.daemon.control.protocol import (
     PROTOCOL_VERSION,
     FrameDecoder,
@@ -57,7 +56,6 @@ from sidekick_usages.daemon.control.server import (
     ControlConnection,
     LocalControlServer,
 )
-from sidekick_usages.daemon.models.peer import PeerIdentity
 from sidekick_usages.daemon.models.protocol import (
     AcceptedPayload,
     AccountPayload,
@@ -78,11 +76,8 @@ from sidekick_usages.daemon.runtime.supervisor import (
     SupervisorRuntime,
     WakeupChannel,
 )
-from sidekick_usages.daemon.types.peer import PeerFailureCode
 from sidekick_usages.daemon.types.ports import (
     ControlDispatcher,
-    PeerSocket,
-    PeerVerifier,
     WorkerHandle,
 )
 from sidekick_usages.daemon.types.protocol import (
@@ -113,6 +108,13 @@ from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
 from sidekick_usages.persistence.supervisor.results import WorkerResultStore
 from sidekick_usages.persistence.supervisor.selection import SelectedStateStore
 from sidekick_usages.persistence.supervisor.service import ServiceStateStore
+from sidekick_usages.platform.models import PeerIdentity
+from sidekick_usages.platform.peer import PeerVerificationError
+from sidekick_usages.platform.types import (
+    PeerFailureCode,
+    PeerSocket,
+    PeerVerifier,
+)
 from tests.test_support import (
     REFERENCE_TIME,
     make_application_paths,

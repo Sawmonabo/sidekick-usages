@@ -15,7 +15,7 @@ from sidekick_usages.providers.codex.account import read_codex_account
 from sidekick_usages.providers.codex.app_server.errors import (
     CodexAppServerError,
 )
-from sidekick_usages.providers.codex.app_server.models import (
+from sidekick_usages.providers.codex.app_server.jsonrpc.models import (
     JsonRpcNotification,
 )
 from sidekick_usages.providers.codex.app_server.session import (

@@ -19,14 +19,14 @@ from sidekick_usages.persistence.credentials.repository import (
     authority_bundle_name,
 )
 from sidekick_usages.providers.claude.provider import ClaudeProvider
-from tests.fakes.codex import (
-    FakeCodexLogin,
+from tests.fakes.codex.auth import managed_auth
+from tests.fakes.codex.executable import (
     configure_codex_logins,
-    managed_auth,
-    managed_subscription,
-    write_codex_schema,
     write_fake_codex,
 )
+from tests.fakes.codex.managed import managed_subscription
+from tests.fakes.codex.models import FakeCodexLogin
+from tests.fakes.codex.schema import write_codex_schema
 from tests.test_cli_refresh import (
     _codex_acct,
     _FakeProvider,

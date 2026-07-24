@@ -8,6 +8,7 @@ from sidekick_usages.daemon.models.worker import WorkerResult
 from sidekick_usages.daemon.types.ports import WorkerExecutor
 from sidekick_usages.daemon.types.worker import WorkerOutcome
 from sidekick_usages.persistence.supervisor.authority import (
+    OperationAuthority,
     OperationAuthorityLock,
 )
 from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
@@ -20,8 +21,13 @@ class UnsupportedWorkerExecutor:
     def __init__(self, clock: Clock) -> None:
         self._clock = clock
 
-    def execute(self, operation: DueOperation) -> WorkerResult:
+    def execute(
+        self,
+        operation: DueOperation,
+        authority: OperationAuthority,
+    ) -> WorkerResult:
         """Return a typed unsupported result without opening credentials."""
+        authority.require(operation.account_id)
         return WorkerResult(
             operation_id=operation.operation_id,
             outcome=WorkerOutcome.UNSUPPORTED,
@@ -42,9 +48,9 @@ def run_isolated_worker(
     operation = queue.find(operation_id)
     if operation is None or operation.state is not OperationState.RUNNING:
         return False
-    with authority_lock.hold():
+    with authority_lock.hold() as authority:
         try:
-            result = executor.execute(operation)
+            result = executor.execute(operation, authority)
         except Exception:
             result = WorkerResult(
                 operation_id=operation_id,

@@ -10,10 +10,6 @@ from pathlib import Path
 
 from sidekick_usages import __version__
 from sidekick_usages.core.accounts.types import RequestId
-from sidekick_usages.daemon.control.peer import (
-    OperatingSystemPeerVerifier,
-    PeerVerificationError,
-)
 from sidekick_usages.daemon.control.protocol import (
     MAX_REQUESTS_PER_CONNECTION,
     PROTOCOL_VERSION,
@@ -34,13 +30,17 @@ from sidekick_usages.daemon.models.protocol import (
 from sidekick_usages.daemon.types.control import EndpointFailureCode
 from sidekick_usages.daemon.types.ports import (
     ControlDispatcher,
-    PeerVerifier,
 )
 from sidekick_usages.daemon.types.protocol import (
     EventKind,
     ProtocolErrorCode,
     RequestKind,
 )
+from sidekick_usages.platform.peer import (
+    OperatingSystemPeerVerifier,
+    PeerVerificationError,
+)
+from sidekick_usages.platform.types import PeerVerifier
 
 _RUNTIME_DIRECTORY_MODE = 0o700
 _SOCKET_MODE = 0o600

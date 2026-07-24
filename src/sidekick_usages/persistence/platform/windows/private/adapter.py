@@ -16,15 +16,6 @@ from sidekick_usages.persistence.platform.windows.private.tree import (
     RelativePath,
 )
 
-
-@dataclass(frozen=True, slots=True)
-class _RepairEntry:
-    relative: RelativePath
-    identity: Identity
-    directory: bool
-    security_valid: bool
-
-
 if sys.platform == "win32":
     import msvcrt
 
@@ -42,6 +33,17 @@ if sys.platform == "win32":
         WindowsPlatform,
     )
     from sidekick_usages.persistence.platform.windows.private import tree
+
+
+@dataclass(frozen=True, slots=True)
+class _RepairEntry:
+    relative: RelativePath
+    identity: Identity
+    directory: bool
+    security_valid: bool
+
+
+if sys.platform == "win32":
 
     def _native_error(kind: NativeFailureKind) -> NativeFilesystemError:
         return NativeFilesystemError(kind)

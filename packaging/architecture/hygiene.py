@@ -8,6 +8,7 @@ from architecture.models import ArchitectureFinding, SourceUnit
 from architecture.source import dotted_name, finding
 
 type _Declaration = ast.Assign | ast.AnnAssign | ast.TypeAlias
+type _Import = ast.Import | ast.ImportFrom
 
 _SUPPRESSION = re.compile(
     r"#\s*(?:noqa(?:\s*:)?|type:\s*ignore|nosec)(?:\b|$)",
@@ -34,6 +35,15 @@ def check_hygiene(
                     node,
                     "HYG007",
                     "module declarations must precede functions and classes",
+                )
+            )
+        for node in _late_module_imports(unit.tree):
+            violations.append(
+                finding(
+                    unit,
+                    node,
+                    "HYG005",
+                    "imports must remain in the module's initial import block",
                 )
             )
 
@@ -162,6 +172,39 @@ def _late_module_declarations(tree: ast.Module) -> tuple[_Declaration, ...]:
         for node in nodes
         if node.lineno > first_behavior
         and isinstance(node, (ast.AnnAssign, ast.Assign, ast.TypeAlias))
+    )
+
+
+def _late_module_imports(tree: ast.Module) -> tuple[_Import, ...]:
+    nodes = sorted(
+        _module_scope_nodes(tree.body),
+        key=lambda node: node.lineno,
+    )
+    first_declaration = next(
+        (
+            node.lineno
+            for node in nodes
+            if isinstance(
+                node,
+                (
+                    ast.AnnAssign,
+                    ast.Assign,
+                    ast.AsyncFunctionDef,
+                    ast.ClassDef,
+                    ast.FunctionDef,
+                    ast.TypeAlias,
+                ),
+            )
+        ),
+        None,
+    )
+    if first_declaration is None:
+        return ()
+    return tuple(
+        node
+        for node in nodes
+        if node.lineno > first_declaration
+        and isinstance(node, (ast.Import, ast.ImportFrom))
     )
 
 

@@ -9,8 +9,8 @@ from sidekick_usages.providers.base import (
     ProviderFailure,
     ProviderFailureKind,
 )
-from sidekick_usages.providers.codex.app_server.session import (
-    CodexAppServerSession,
+from sidekick_usages.providers.codex.app_server.jsonrpc.ports import (
+    JsonRpcRequester,
 )
 from sidekick_usages.providers.codex.models import CodexAccountObservation
 from sidekick_usages.serialization.json import JsonValue
@@ -19,7 +19,7 @@ ACCOUNT_READ_METHOD = "account/read"
 
 
 def read_codex_account(
-    session: CodexAppServerSession,
+    session: JsonRpcRequester,
     *,
     refresh_token: bool,
 ) -> CodexAccountObservation | ProviderFailure:
@@ -28,7 +28,10 @@ def read_codex_account(
         ACCOUNT_READ_METHOD,
         {"refreshToken": refresh_token},
     )
-    if type(result.get("requiresOpenaiAuth")) is not bool:
+    if (
+        set(result) != {"account", "requiresOpenaiAuth"}
+        or type(result.get("requiresOpenaiAuth")) is not bool
+    ):
         return _failure(
             ProviderFailureKind.MALFORMED,
             "Codex returned malformed account metadata.",
@@ -44,7 +47,11 @@ def _account_observation(
             ProviderFailureKind.MISSING,
             "The managed Codex home is logged out.",
         )
-    if not isinstance(account, dict):
+    if not isinstance(account, dict) or set(account) != {
+        "email",
+        "planType",
+        "type",
+    }:
         return _failure(
             ProviderFailureKind.MALFORMED,
             "Codex returned malformed account metadata.",

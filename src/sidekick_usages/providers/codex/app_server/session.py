@@ -4,16 +4,26 @@ from collections.abc import Mapping
 from pathlib import Path
 from types import TracebackType
 
-from sidekick_usages import __version__
 from sidekick_usages.providers.codex.app_server.errors import (
     CodexAppServerError,
 )
 from sidekick_usages.providers.codex.app_server.executable import (
     verify_codex_executable,
 )
-from sidekick_usages.providers.codex.app_server.jsonrpc import (
+from sidekick_usages.providers.codex.app_server.initialization import (
+    initialize_codex_app_server,
+)
+from sidekick_usages.providers.codex.app_server.jsonrpc.client import (
+    JsonRpcClient,
+)
+from sidekick_usages.providers.codex.app_server.jsonrpc.ports import (
     DEFAULT_JSON_RPC_TIMEOUT_SECONDS,
-    JsonRpcConnection,
+)
+from sidekick_usages.providers.codex.app_server.jsonrpc.stdio import (
+    JsonLinesTransport,
+)
+from sidekick_usages.providers.codex.app_server.jsonrpc.types import (
+    JsonRpcMessage,
 )
 from sidekick_usages.providers.codex.app_server.models import (
     CodexAppServerCapabilities,
@@ -23,16 +33,8 @@ from sidekick_usages.providers.codex.app_server.process import (
 )
 from sidekick_usages.providers.codex.app_server.types import (
     CodexAppServerFailure,
-    JsonRpcMessage,
 )
 from sidekick_usages.serialization.json import JsonObject
-
-CLIENT_NAME = "sidekick_usages"
-CLIENT_TITLE = "Sidekick Usages"
-INITIALIZE_METHOD = "initialize"
-INITIALIZED_METHOD = "initialized"
-_SUPPORTED_PLATFORM_FAMILIES = frozenset({"unix"})
-_SUPPORTED_PLATFORM_SYSTEMS = frozenset({"linux", "macos"})
 
 
 class CodexAppServerSession:
@@ -40,10 +42,12 @@ class CodexAppServerSession:
 
     def __init__(
         self,
-        connection: JsonRpcConnection,
+        connection: JsonRpcClient,
+        transport: JsonLinesTransport,
         codex_home: Path,
     ) -> None:
         self._connection = connection
+        self._transport = transport
         self._codex_home = codex_home
 
     @classmethod
@@ -63,7 +67,7 @@ class CodexAppServerSession:
             ) from None
         if not codex_home.is_absolute() or not resolved_home.is_dir():
             raise CodexAppServerError(CodexAppServerFailure.PROCESS_FAILED)
-        connection = JsonRpcConnection.open(
+        transport = JsonLinesTransport.open(
             (str(capabilities.executable.path), "app-server"),
             minimal_codex_environment(
                 environment,
@@ -71,24 +75,17 @@ class CodexAppServerSession:
             ),
             working_directory=resolved_home,
         )
+        connection = JsonRpcClient(transport)
         try:
-            result = connection.request(
-                INITIALIZE_METHOD,
-                {
-                    "capabilities": {"experimentalApi": True},
-                    "clientInfo": {
-                        "name": CLIENT_NAME,
-                        "title": CLIENT_TITLE,
-                        "version": __version__,
-                    },
-                },
+            initialize_codex_app_server(
+                connection,
+                resolved_home,
+                capabilities.executable.version,
             )
-            _validate_initialize_response(result, resolved_home)
-            connection.notify(INITIALIZED_METHOD)
         except CodexAppServerError:
             connection.close()
             raise
-        return cls(connection, resolved_home)
+        return cls(connection, transport, resolved_home)
 
     @property
     def codex_home(self) -> Path:
@@ -98,7 +95,7 @@ class CodexAppServerSession:
     @property
     def process_id(self) -> int:
         """Return the private app-server process identifier."""
-        return self._connection.process_id
+        return self._transport.process_id
 
     @property
     def next_request_id(self) -> int:
@@ -157,31 +154,3 @@ class CodexAppServerSession:
         """Always close and reap the private child."""
         del exception_type, exception, traceback
         self.close()
-
-
-def _validate_initialize_response(
-    result: JsonObject,
-    codex_home: Path,
-) -> None:
-    reported_home = result.get("codexHome")
-    platform_family = result.get("platformFamily")
-    platform_system = result.get("platformOs")
-    user_agent = result.get("userAgent")
-    if (
-        not isinstance(reported_home, str)
-        or not isinstance(platform_family, str)
-        or not isinstance(platform_system, str)
-        or not isinstance(user_agent, str)
-        or not user_agent
-        or platform_family not in _SUPPORTED_PLATFORM_FAMILIES
-        or platform_system not in _SUPPORTED_PLATFORM_SYSTEMS
-    ):
-        raise CodexAppServerError(CodexAppServerFailure.PROTOCOL_MALFORMED)
-    try:
-        resolved_reported_home = Path(reported_home).resolve(strict=True)
-    except OSError, ValueError:
-        raise CodexAppServerError(
-            CodexAppServerFailure.PROTOCOL_MALFORMED
-        ) from None
-    if resolved_reported_home != codex_home:
-        raise CodexAppServerError(CodexAppServerFailure.PROTOCOL_MALFORMED)

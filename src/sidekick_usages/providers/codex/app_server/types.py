@@ -2,20 +2,6 @@
 
 from enum import StrEnum
 
-from sidekick_usages.providers.codex.app_server.models import (
-    JsonRpcErrorResponse,
-    JsonRpcNotification,
-    JsonRpcResponse,
-    JsonRpcServerRequest,
-)
-
-type JsonRpcMessage = (
-    JsonRpcResponse
-    | JsonRpcErrorResponse
-    | JsonRpcNotification
-    | JsonRpcServerRequest
-)
-
 
 class CodexAppServerFailure(StrEnum):
     """Safe failure categories for the versioned app-server boundary."""

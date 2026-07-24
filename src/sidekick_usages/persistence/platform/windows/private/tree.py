@@ -11,6 +11,38 @@ from pathlib import Path
 from sidekick_usages.persistence.platform.errors import NativeFilesystemError
 from sidekick_usages.persistence.platform.types import NativeFailureKind
 
+if sys.platform == "win32":
+    import msvcrt
+
+    import pywintypes
+    import win32con
+    import win32file
+    import winerror
+
+    from sidekick_usages.persistence.platform.windows.files import (
+        open_directory,
+        open_existing,
+    )
+    from sidekick_usages.persistence.platform.windows.handles import (
+        close_descriptor,
+        close_handle,
+        descriptor_from_handle,
+        metadata,
+        open_delete_target,
+        owned_descriptor,
+        validate_stat,
+    )
+    from sidekick_usages.persistence.platform.windows.namespace import (
+        child_path,
+        path_attributes,
+        require_exact_entry,
+        validate_membership,
+    )
+    from sidekick_usages.persistence.platform.windows.security import (
+        private_security_attributes,
+        validate_security,
+    )
+
 type Identity = tuple[int, int]
 type RelativePath = tuple[str, ...]
 
@@ -47,36 +79,6 @@ class OpenedChain:
 
 
 if sys.platform == "win32":
-    import msvcrt
-
-    import pywintypes
-    import win32con
-    import win32file
-    import winerror
-
-    from sidekick_usages.persistence.platform.windows.files import (
-        open_directory,
-        open_existing,
-    )
-    from sidekick_usages.persistence.platform.windows.handles import (
-        close_descriptor,
-        close_handle,
-        descriptor_from_handle,
-        metadata,
-        open_delete_target,
-        owned_descriptor,
-        validate_stat,
-    )
-    from sidekick_usages.persistence.platform.windows.namespace import (
-        child_path,
-        path_attributes,
-        require_exact_entry,
-        validate_membership,
-    )
-    from sidekick_usages.persistence.platform.windows.security import (
-        private_security_attributes,
-        validate_security,
-    )
 
     def _native_error(kind: NativeFailureKind) -> NativeFilesystemError:
         return NativeFilesystemError(kind)

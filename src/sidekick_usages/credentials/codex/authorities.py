@@ -15,10 +15,13 @@ from sidekick_usages.core.accounts.types import (
     CredentialHealth,
     SidekickAccountId,
 )
+from sidekick_usages.core.models import CodexCredentials
 from sidekick_usages.core.types import ProviderId, RefreshStatus
 from sidekick_usages.credentials.codex.models import (
     CodexManagedAuthorityResult,
+    CodexProjectionLease,
 )
+from sidekick_usages.credentials.codex.ports import CodexProjectionInstaller
 from sidekick_usages.credentials.codex.types import CodexManagedOutcome
 from sidekick_usages.paths import ApplicationPaths, managed_codex_home
 from sidekick_usages.persistence.accounts.store import AccountStore
@@ -27,6 +30,7 @@ from sidekick_usages.persistence.private.credentials import (
     PrivateCredentialTree,
 )
 from sidekick_usages.persistence.supervisor.authority import (
+    OperationAuthority,
     OperationAuthorityLock,
 )
 from sidekick_usages.persistence.types.error import PersistenceCode
@@ -51,8 +55,13 @@ from sidekick_usages.providers.codex.auth import (
     CODEX_AUTH_FILE,
     CODEX_CONFIG_FILE,
     codex_generation_order,
+    managed_auth_snapshot,
+    parse_managed_auth_credentials,
     parse_managed_auth_snapshot,
     prepare_file_auth_config,
+)
+from sidekick_usages.providers.codex.broker.models import (
+    CodexProjectionReceipt,
 )
 from sidekick_usages.providers.codex.models import (
     CodexAccountObservation,
@@ -175,6 +184,58 @@ class CodexPrivateHomeAuthority:
         account_id: SidekickAccountId,
     ) -> CodexAuthSnapshot | ProviderFailure:
         """Read protected identity and generation through qualified paths."""
+        files = self._read_authority(account_id)
+        if isinstance(files, ProviderFailure):
+            return files
+        auth_payload, config_payload = files
+        return parse_managed_auth_snapshot(auth_payload, config_payload)
+
+    def projection(
+        self,
+        account_id: SidekickAccountId,
+        expected: CodexAuthSnapshot,
+    ) -> CodexProjectionLease | ProviderFailure:
+        """Open one locally identity-bound access-token projection."""
+        files = self._read_authority(account_id)
+        if isinstance(files, ProviderFailure):
+            return files
+        auth_payload, config_payload = files
+        detected = parse_managed_auth_credentials(
+            auth_payload,
+            config_payload,
+        )
+        if isinstance(detected, ProviderFailure):
+            return detected
+        snapshot = managed_auth_snapshot(detected)
+        if isinstance(snapshot, ProviderFailure):
+            return snapshot
+        credentials = detected.credentials
+        if (
+            not isinstance(credentials, CodexCredentials)
+            or credentials.account_id is None
+            or snapshot.provider_identity != expected.provider_identity
+            or snapshot.generation != expected.generation
+            or credentials.account_id != str(expected.provider_identity)
+        ):
+            return ProviderFailure(
+                provider_id=ProviderId.CODEX,
+                kind=ProviderFailureKind.IDENTITY_MISMATCH,
+                message=(
+                    "The managed Codex projection identity is inconsistent."
+                ),
+            )
+        return CodexProjectionLease(
+            account_id,
+            snapshot.provider_identity,
+            snapshot.generation,
+            snapshot.plan,
+            credentials.access_token,
+        )
+
+    def _read_authority(
+        self,
+        account_id: SidekickAccountId,
+    ) -> tuple[bytes | None, bytes | None] | ProviderFailure:
         relative = str(account_id)
         try:
             auth = self._private.read_relative_bundle_file(
@@ -190,7 +251,7 @@ class CodexPrivateHomeAuthority:
                 error,
                 "The managed Codex home cannot be read safely.",
             )
-        return parse_managed_auth_snapshot(
+        return (
             None if auth is None else auth.data,
             None if config is None else config.data,
         )
@@ -236,47 +297,183 @@ class CodexManagedAuthorityCoordinator:
         account_id: SidekickAccountId,
     ) -> CodexManagedAuthorityResult:
         """Read one private account without asking Codex to refresh it."""
-        return self._operate(account_id, refresh_token=False)
+        lock = OperationAuthorityLock(
+            self._paths.durable_operations,
+            account_id,
+        )
+        with lock.hold() as authority:
+            return self.read_with_authority(account_id, authority)
 
     def refresh(
         self,
         account_id: SidekickAccountId,
     ) -> CodexManagedAuthorityResult:
         """Force one private account through official managed refresh."""
-        return self._operate(account_id, refresh_token=True)
-
-    def _operate(
-        self,
-        account_id: SidekickAccountId,
-        *,
-        refresh_token: bool,
-    ) -> CodexManagedAuthorityResult:
         lock = OperationAuthorityLock(
             self._paths.durable_operations,
             account_id,
         )
-        with lock.hold():
-            account = self._saved_account(account_id)
-            expected = self._expected_snapshot(account)
-            if isinstance(expected, ProviderFailure):
-                return self._persist_provider_failure(account, expected)
-            before = self._snapshot(account_id)
-            if isinstance(before, ProviderFailure):
-                return self._persist_provider_failure(account, before)
+        with lock.hold() as authority:
+            return self.refresh_with_authority(account_id, authority)
+
+    def read_with_authority(
+        self,
+        account_id: SidekickAccountId,
+        authority: OperationAuthority,
+    ) -> CodexManagedAuthorityResult:
+        """Read while an isolated worker owns this account authority."""
+        return self._operate_with_authority(
+            account_id,
+            authority,
+            refresh_token=False,
+        )
+
+    def refresh_with_authority(
+        self,
+        account_id: SidekickAccountId,
+        authority: OperationAuthority,
+    ) -> CodexManagedAuthorityResult:
+        """Refresh while an isolated worker owns this account authority."""
+        return self._operate_with_authority(
+            account_id,
+            authority,
+            refresh_token=True,
+        )
+
+    def install_current_projection(
+        self,
+        account_id: SidekickAccountId,
+        installer: CodexProjectionInstaller,
+    ) -> CodexProjectionReceipt | CodexManagedAuthorityResult:
+        """Install the current proven generation without forcing refresh."""
+        lock = OperationAuthorityLock(
+            self._paths.durable_operations,
+            account_id,
+        )
+        with lock.hold() as authority:
+            return self.install_current_projection_with_authority(
+                account_id,
+                authority,
+                installer,
+            )
+
+    def install_current_projection_with_authority(
+        self,
+        account_id: SidekickAccountId,
+        authority: OperationAuthority,
+        installer: CodexProjectionInstaller,
+    ) -> CodexProjectionReceipt | CodexManagedAuthorityResult:
+        """Install current auth while one worker owns this account."""
+        authority.require(account_id)
+        account = self._saved_account(account_id)
+        expected = self._expected_snapshot(account)
+        if isinstance(expected, ProviderFailure):
+            return self._persist_provider_failure(account, expected)
+        return self._install_projection(
+            account,
+            expected,
+            installer,
+        )
+
+    def refresh_and_install_projection(
+        self,
+        account_id: SidekickAccountId,
+        installer: CodexProjectionInstaller,
+    ) -> CodexProjectionReceipt | CodexManagedAuthorityResult:
+        """Force official refresh before installing a fresh projection."""
+        lock = OperationAuthorityLock(
+            self._paths.durable_operations,
+            account_id,
+        )
+        with lock.hold() as authority:
+            return self.refresh_and_install_projection_with_authority(
+                account_id,
+                authority,
+                installer,
+            )
+
+    def refresh_and_install_projection_with_authority(
+        self,
+        account_id: SidekickAccountId,
+        authority: OperationAuthority,
+        installer: CodexProjectionInstaller,
+    ) -> CodexProjectionReceipt | CodexManagedAuthorityResult:
+        """Refresh and project while one worker owns this account."""
+        refreshed = self.refresh_with_authority(account_id, authority)
+        if refreshed.outcome is not CodexManagedOutcome.HEALTHY:
+            return refreshed
+        expected = self._expected_snapshot(refreshed.account)
+        if isinstance(expected, ProviderFailure):
+            return self._persist_provider_failure(
+                refreshed.account,
+                expected,
+            )
+        return self._install_projection(
+            refreshed.account,
+            expected,
+            installer,
+        )
+
+    def _operate_with_authority(
+        self,
+        account_id: SidekickAccountId,
+        authority: OperationAuthority,
+        *,
+        refresh_token: bool,
+    ) -> CodexManagedAuthorityResult:
+        authority.require(account_id)
+        account = self._saved_account(account_id)
+        expected = self._expected_snapshot(account)
+        if isinstance(expected, ProviderFailure):
+            return self._persist_provider_failure(account, expected)
+        before = self._snapshot(account_id)
+        if isinstance(before, ProviderFailure):
+            return self._persist_provider_failure(account, before)
+        if (
+            before.provider_identity != expected.provider_identity
+            or not before.not_older_than(expected)
+        ):
+            return self._persist_failure(
+                account,
+                CodexManagedOutcome.REJECTED,
+                health=CredentialHealth.RECONCILIATION_REQUIRED,
+            )
+        return self._run_app_server(
+            account,
+            before,
+            refresh_token=refresh_token,
+        )
+
+    def _install_projection(
+        self,
+        account: SavedAccount,
+        expected: CodexAuthSnapshot,
+        installer: CodexProjectionInstaller,
+    ) -> CodexProjectionReceipt | CodexManagedAuthorityResult:
+        ready = installer.prepare(
+            account.account_id,
+            expected.provider_identity,
+            expected.generation,
+        )
+        if ready is not None:
+            current = self._snapshot(account.account_id)
+            if isinstance(current, ProviderFailure):
+                return self._persist_provider_failure(account, current)
             if (
-                before.provider_identity != expected.provider_identity
-                or not before.not_older_than(expected)
+                current.provider_identity != expected.provider_identity
+                or current.generation != expected.generation
             ):
                 return self._persist_failure(
                     account,
                     CodexManagedOutcome.REJECTED,
                     health=CredentialHealth.RECONCILIATION_REQUIRED,
                 )
-            return self._run_app_server(
-                account,
-                before,
-                refresh_token=refresh_token,
-            )
+            return ready
+        projection = self._home.projection(account.account_id, expected)
+        if isinstance(projection, ProviderFailure):
+            return self._persist_provider_failure(account, projection)
+        with projection:
+            return installer.install(projection)
 
     def _run_app_server(
         self,

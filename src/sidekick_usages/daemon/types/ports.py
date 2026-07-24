@@ -5,7 +5,6 @@ from typing import Protocol
 
 from sidekick_usages.core.accounts.types import RequestId
 from sidekick_usages.core.selection.models import DueOperation
-from sidekick_usages.daemon.models.peer import PeerIdentity
 from sidekick_usages.daemon.models.protocol import (
     ControlEvent,
     ControlRequest,
@@ -16,6 +15,7 @@ from sidekick_usages.daemon.models.worker import (
     WorkerResult,
 )
 from sidekick_usages.daemon.types.worker import ExitNotifier
+from sidekick_usages.persistence.supervisor.authority import OperationAuthority
 
 
 class ControlDispatcher(Protocol):
@@ -26,29 +26,6 @@ class ControlDispatcher(Protocol):
 
     def cancel(self, request_id: RequestId) -> None:
         """Cancel work whose event stream disconnected."""
-
-
-class PeerSocket(Protocol):
-    """Socket operations required for operating-system peer proof."""
-
-    def fileno(self) -> int:
-        """Return the live file descriptor."""
-
-    def getsockopt(
-        self,
-        level: int,
-        option: int,
-        buffer_length: int,
-        /,
-    ) -> bytes:
-        """Read one socket option."""
-
-
-class PeerVerifier(Protocol):
-    """Prove that a local connection belongs to the effective user."""
-
-    def verify(self, connection: PeerSocket) -> PeerIdentity:
-        """Return a verified identity or fail closed."""
 
 
 class WorkerHandle(Protocol):
@@ -98,5 +75,9 @@ class OperationEventSink(Protocol):
 class WorkerExecutor(Protocol):
     """Execute one already-qualified durable operation."""
 
-    def execute(self, operation: DueOperation) -> WorkerResult:
+    def execute(
+        self,
+        operation: DueOperation,
+        authority: OperationAuthority,
+    ) -> WorkerResult:
         """Return one sanitized result for the exact operation."""

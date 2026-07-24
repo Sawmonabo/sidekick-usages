@@ -123,6 +123,17 @@ def parse_managed_auth_snapshot(
     config_payload: bytes | None,
 ) -> CodexAuthSnapshot | ProviderFailure:
     """Return only identity and generation from one file-backed home."""
+    detected = parse_managed_auth_credentials(auth_payload, config_payload)
+    if isinstance(detected, ProviderFailure):
+        return detected
+    return managed_auth_snapshot(detected)
+
+
+def parse_managed_auth_credentials(
+    auth_payload: bytes | None,
+    config_payload: bytes | None,
+) -> DetectedCredentials | ProviderFailure:
+    """Strictly decode one complete file-backed managed authority."""
     config_failure = _file_auth_config_failure(config_payload)
     if config_failure is not None:
         return config_failure
@@ -139,12 +150,13 @@ def parse_managed_auth_snapshot(
             ProviderFailureKind.MALFORMED,
             "The managed Codex auth state is malformed.",
         )
-    return _managed_snapshot(detected)
+    return detected
 
 
-def _managed_snapshot(
+def managed_auth_snapshot(
     detected: DetectedCredentials,
 ) -> CodexAuthSnapshot | ProviderFailure:
+    """Return protected identity metadata from decoded managed credentials."""
     credentials = detected.credentials
     if (
         not isinstance(credentials, CodexCredentials)

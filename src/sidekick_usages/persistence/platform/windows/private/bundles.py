@@ -13,9 +13,6 @@ from sidekick_usages.persistence.private.bundles.paths import (
     private_bundle_relative_components,
 )
 
-type _RelativePath = tuple[str, ...]
-
-
 if sys.platform == "win32":
     import msvcrt
 
@@ -48,6 +45,11 @@ if sys.platform == "win32":
         require_chain_identity,
         scan_tree,
     )
+
+type _RelativePath = tuple[str, ...]
+
+
+if sys.platform == "win32":
 
     def _native_error(kind: NativeFailureKind) -> NativeFilesystemError:
         return NativeFilesystemError(kind)

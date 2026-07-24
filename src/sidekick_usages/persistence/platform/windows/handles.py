@@ -15,9 +15,6 @@ from sidekick_usages.persistence.platform.types import NativeFailureKind
 if TYPE_CHECKING and sys.platform == "win32":
     import _win32typing
 
-_READ_CHUNK_BYTES = 64 * 1024
-
-
 if sys.platform == "win32":
     import msvcrt
 
@@ -34,6 +31,11 @@ if sys.platform == "win32":
     from sidekick_usages.persistence.platform.windows.security import (
         validate_security,
     )
+
+_READ_CHUNK_BYTES = 64 * 1024
+
+
+if sys.platform == "win32":
 
     def _native_error(kind: NativeFailureKind) -> NativeFilesystemError:
         return NativeFilesystemError(kind)

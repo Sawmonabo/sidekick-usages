@@ -30,9 +30,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 MAX_MODULE_LINES = 1000
 REVIEW_MODULE_LINES = 800
 MAX_CLI_APP_LINES = 200
-_CODEX_JSONRPC_FILE = (
-    "src/sidekick_usages/providers/codex/app_server/jsonrpc.py"
-)
+_CODEX_JSONRPC_ROOT = "src/sidekick_usages/providers/codex/app_server/jsonrpc/"
+_CODEX_BROKER_WIRE_FILE = "src/sidekick_usages/providers/codex/broker/wire.py"
 
 _SERVICE_FILES = frozenset(
     {
@@ -66,14 +65,13 @@ _CREDENTIAL_LEASE_CONSUMERS = frozenset(
 )
 _DAEMON_CONTROL_FILES = frozenset(
     {
-        "src/sidekick_usages/daemon/control/peer.py",
         "src/sidekick_usages/daemon/control/protocol.py",
+        "src/sidekick_usages/platform/peer.py",
     }
 )
 _RESIDENT_DAEMON_MODULES = frozenset(
     {
         "control/dispatch.py",
-        "control/peer.py",
         "control/protocol.py",
         "control/server.py",
         "runtime/diagnostics.py",
@@ -272,6 +270,12 @@ def _check_import(
             "transport and retry dependencies belong to http/",
         ),
         (
+            "DEP004",
+            path != _CODEX_BROKER_WIRE_FILE,
+            root == "websockets",
+            "WebSocket transport belongs only to the Codex broker wire",
+        ),
+        (
             "DEP008",
             path not in _CREDENTIAL_LEASE_CONSUMERS,
             matches(
@@ -335,7 +339,7 @@ def _check_import(
             ),
         )
         persistence_leak = matches(module, "sidekick_usages.persistence")
-        jsonrpc_leak = path == _CODEX_JSONRPC_FILE and matches(
+        jsonrpc_leak = path.startswith(_CODEX_JSONRPC_ROOT) and matches(
             module,
             "sidekick_usages.http",
         )

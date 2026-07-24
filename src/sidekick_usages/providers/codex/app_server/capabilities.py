@@ -162,6 +162,11 @@ def _validate_required_capabilities(
         "chatgptAuthTokens",
         ("accessToken", "chatgptAccountId", "type"),
     )
+    _require_property_anywhere(
+        login_params,
+        "chatgptPlanType",
+        "string",
+    )
     login_response = schemas["v2/LoginAccountResponse.json"]
     _require_variant(
         login_response,
@@ -222,6 +227,11 @@ def _validate_required_capabilities(
     _require_method(
         schemas["ServerNotification.json"],
         "account/updated",
+    )
+    _require_property(
+        schemas["ServerNotification.json"],
+        "emittedAtMs",
+        "integer",
     )
 
 

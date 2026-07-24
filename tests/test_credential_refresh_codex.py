@@ -73,9 +73,8 @@ from sidekick_usages.providers.codex.auth import (
     CODEX_FILE_AUTH_CONFIG,
     validate_auth_bundle_matches_account,
 )
-from tests.fakes.codex import (
-    codex_jwt,
-    managed_auth,
+from tests.fakes.codex.auth import codex_jwt, managed_auth
+from tests.fakes.codex.managed import (
     managed_coordinator,
     managed_generation,
     managed_saved_account,

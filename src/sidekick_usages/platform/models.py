@@ -1,4 +1,4 @@
-"""Operating-system peer identity models."""
+"""Operating-system boundary models."""
 
 from dataclasses import dataclass
 
