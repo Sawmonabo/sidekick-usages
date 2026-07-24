@@ -25,6 +25,7 @@ from sidekick_usages.core.types import (
     TokenActivityScope,
 )
 from sidekick_usages.credentials import CredentialService
+from sidekick_usages.credentials.authorities import AuthenticatedSavedAccount
 from sidekick_usages.errors import (
     ProviderIdentityError,
     TransientError,
@@ -100,7 +101,7 @@ class _ScriptedProvider(Provider):
         del token
         return self._unsupported()
 
-    def fetch_usage(
+    def _fetch_usage(
         self,
         account: Account,
         http: HttpClient,
@@ -120,7 +121,7 @@ class _ScriptedProvider(Provider):
             raise step
         return step
 
-    def refresh_credentials(
+    def _refresh_credentials(
         self,
         account: Account,
         http: HttpClient,
@@ -163,13 +164,14 @@ class _AccountActivity(AccountTokenActivitySource):
 
     def read(
         self,
-        account: Account,
+        account: AuthenticatedSavedAccount,
         http: HttpClient,
     ) -> TokenActivityReading:
         del http
-        self.calls.append(account.label)
-        self.account_ids.append(account.provider_account_id)
-        step = self.steps[str(account.label)]
+        runtime = account.lease.account
+        self.calls.append(runtime.label)
+        self.account_ids.append(runtime.provider_account_id)
+        step = self.steps[str(runtime.label)]
         if isinstance(step, UsageError):
             raise step
         return step

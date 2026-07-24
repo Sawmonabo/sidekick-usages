@@ -47,6 +47,7 @@ from sidekick_usages.persistence.account_store import AccountStore
 from sidekick_usages.providers.base import (
     CredentialDetection,
     Provider,
+    ProviderAuthenticatedAccount,
     ProviderFailure,
     ProviderFailureKind,
     RefreshResult,
@@ -128,7 +129,7 @@ class _FakeHeartbeatProvider(HeartbeatProvider):
 
     def inspect_window(
         self,
-        account: Account,
+        account: ProviderAuthenticatedAccount,
         http: HttpClient,
         target: HeartbeatTarget,
     ) -> UsageWindowState:
@@ -137,12 +138,13 @@ class _FakeHeartbeatProvider(HeartbeatProvider):
 
     def warm_window(
         self,
-        account: Account,
+        account: ProviderAuthenticatedAccount,
         http: HttpClient,
         target: HeartbeatTarget,
     ) -> HeartbeatProbeResult:
         del http, target
-        self.heartbeat_calls.append((account.label, account.access_token))
+        runtime = account.lease.account
+        self.heartbeat_calls.append((runtime.label, runtime.access_token))
         if self.heartbeat_results:
             return self.heartbeat_results.pop(0)
         return HeartbeatProbeResult(
@@ -181,7 +183,7 @@ class _FakeRefreshProvider(Provider):
             message="Manual test credentials are unsupported.",
         )
 
-    def fetch_usage(
+    def _fetch_usage(
         self,
         account: Account,
         http: HttpClient,
@@ -189,7 +191,7 @@ class _FakeRefreshProvider(Provider):
         del account, http
         return UsageReport()
 
-    def refresh_credentials(
+    def _refresh_credentials(
         self,
         account: Account,
         http: HttpClient,

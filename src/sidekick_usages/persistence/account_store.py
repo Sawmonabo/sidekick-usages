@@ -113,6 +113,10 @@ type OrphanedCredentialsObserver = Callable[
 ]
 
 
+class StableAccountIndexUnavailableError(RuntimeError):
+    """A schema-v2 store has not completed stable-ID migration."""
+
+
 class AccountStore:
     """Load, query, and transactionally persist current account state."""
 
@@ -330,7 +334,7 @@ class AccountStore:
         """Return the secret-free stable-ID account index."""
         self._require_loaded()
         if self._managed is None:
-            raise RuntimeError("Stable account IDs require schema version 3.")
+            raise StableAccountIndexUnavailableError("Schema 3 is required.")
         return self._managed.saved_accounts()
 
     def resolve_account_id(
@@ -341,7 +345,7 @@ class AccountStore:
         """Resolve one provider-qualified label to its stable account ID."""
         self._require_loaded()
         if self._managed is None:
-            raise RuntimeError("Stable account IDs require schema version 3.")
+            raise StableAccountIndexUnavailableError("Schema 3 is required.")
         return self._managed.account_id(provider_id, label)
 
     def persist(self, account: Account) -> None:
@@ -350,6 +354,19 @@ class AccountStore:
         :param account: Complete runtime account to persist.
         """
         self.persist_credentials(account)
+
+    def persist_state(
+        self,
+        account: SavedAccount,
+        *,
+        expected: SavedAccount | None = None,
+    ) -> None:
+        """Persist one schema-v3 account without reading credential values."""
+        self._require_loaded()
+        if self._managed is None:
+            raise StableAccountIndexUnavailableError("Schema 3 is required.")
+        self._managed.persist_state(account, expected=expected)
+        self._baseline = self._managed.baseline
 
     def persist_credentials(
         self,
@@ -777,4 +794,5 @@ __all__ = [
     "AccountStore",
     "AccountStoreStateError",
     "OrphanedCredentialsObserver",
+    "StableAccountIndexUnavailableError",
 ]

@@ -36,7 +36,7 @@ from sidekick_usages.providers.claude.usage import (
     USAGE_URL,
 )
 from sidekick_usages.serialization import JsonObject
-from tests.test_support import FixedClock
+from tests.test_support import FixedClock, authenticated_account
 
 #: Reference utilization values quoted verbatim from the unified
 #: rate-limit headers in ``anthropics/claude-code`` issue #12829.
@@ -148,7 +148,7 @@ _LIVE_HEADERS = {
 def test_fetch_via_headers_targets_messages_endpoint() -> None:
     """The probe POSTs to ``/v1/messages``, not ``/api/oauth/usage``."""
     http = _FakeHttp(response_headers=_LIVE_HEADERS)
-    _provider().fetch_usage(_acct(()), http)
+    _provider().validate_credentials(_acct(()), http)
     assert http.calls == [("POST", MESSAGES_URL)]
 
 
@@ -164,7 +164,7 @@ def test_fetch_via_headers_sends_bearer_auth_and_beta() -> None:
         acct.credentials,
         access_token="sk-ant-oat01-secret",
     )
-    _provider().fetch_usage(acct, http)
+    _provider().validate_credentials(acct, http)
     assert http.last_post_headers is not None
     assert (
         http.last_post_headers["Authorization"] == "Bearer sk-ant-oat01-secret"
@@ -180,7 +180,7 @@ def test_fetch_via_headers_sends_one_token_probe_body() -> None:
     server-side changes.
     """
     http = _FakeHttp(response_headers=_LIVE_HEADERS)
-    _provider().fetch_usage(_acct(()), http)
+    _provider().validate_credentials(_acct(()), http)
     assert http.last_post_body == {
         "model": PROBE_MODEL,
         "max_tokens": 1,
@@ -192,7 +192,7 @@ def test_fetch_via_headers_sends_one_token_probe_body() -> None:
 def test_fetch_via_headers_parses_5h_and_7d_windows() -> None:
     """Header-path fractions are normalized to display percentages."""
     http = _FakeHttp(response_headers=_LIVE_HEADERS)
-    report = _provider().fetch_usage(_acct(()), http)
+    report = _provider().validate_credentials(_acct(()), http)
     names = {w.name: w for w in report.windows}
     assert set(names) == {"5h", "7d"}
     assert round(names["5h"].utilization, 2) == _REF_5H_UTILIZATION_PERCENT
@@ -204,7 +204,7 @@ def test_fetch_via_headers_omits_window_when_headers_missing() -> None:
     """Missing 5h headers omit the 5h window — don't synthesize zeros."""
     headers = {k: v for k, v in _LIVE_HEADERS.items() if "-5h-" not in k}
     http = _FakeHttp(response_headers=headers)
-    report = _provider().fetch_usage(_acct(()), http)
+    report = _provider().validate_credentials(_acct(()), http)
     assert [w.name for w in report.windows] == ["7d"]
 
 
@@ -216,7 +216,7 @@ def test_fetch_via_headers_returns_empty_windows_on_empty_response() -> None:
     empty report (renderer shows no bars) rather than throwing.
     """
     http = _FakeHttp(response_headers={})
-    report = _provider().fetch_usage(_acct(()), http)
+    report = _provider().validate_credentials(_acct(()), http)
     assert report.windows == ()
 
 
@@ -235,7 +235,7 @@ def test_fetch_via_headers_rejects_malformed_window_atomically(
     http = _FakeHttp(response_headers={**_LIVE_HEADERS, header: value})
 
     with pytest.raises(ProviderBoundaryError) as exc_info:
-        _provider().fetch_usage(_acct(()), http)
+        _provider().validate_credentials(_acct(()), http)
 
     assert exc_info.value.failure.kind is ProviderFailureKind.MALFORMED
     assert value not in repr(exc_info.value.failure)
@@ -260,8 +260,11 @@ def test_oauth_boundaries_reject_malformed_window_safely(
 
     def invoke_boundary() -> object:
         if heartbeat:
-            return ClaudeHeartbeat().run(account, http)
-        return _provider().fetch_usage(account, http)
+            return ClaudeHeartbeat().run(
+                authenticated_account(account),
+                http,
+            )
+        return _provider().validate_credentials(account, http)
 
     with pytest.raises(ProviderBoundaryError) as exc_info:
         invoke_boundary()
@@ -283,7 +286,7 @@ def test_claude_oauth_heartbeat_skips_active_five_hour() -> None:
     )
 
     result = ClaudeHeartbeat().run(
-        _acct(("user:profile", "user:inference")),
+        authenticated_account(_acct(("user:profile", "user:inference"))),
         http,
     )
 
@@ -301,7 +304,7 @@ def test_claude_oauth_heartbeat_warms_inactive_five_hour() -> None:
     )
 
     result = ClaudeHeartbeat().run(
-        _acct(("user:profile", "user:inference")),
+        authenticated_account(_acct(("user:profile", "user:inference"))),
         http,
     )
 
@@ -320,7 +323,10 @@ def test_claude_setup_heartbeat_uses_header_probe() -> None:
     """Setup tokens warm by sending the tiny header probe."""
     http = _FakeHttp(response_headers=_LIVE_HEADERS)
 
-    result = ClaudeHeartbeat().run(_acct(("user:inference",)), http)
+    result = ClaudeHeartbeat().run(
+        authenticated_account(_acct(("user:inference",))),
+        http,
+    )
 
     assert result.status is HeartbeatStatus.WARMED
     assert result.warmed is True

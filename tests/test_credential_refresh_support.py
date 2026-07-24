@@ -23,8 +23,10 @@ from sidekick_usages.providers.base import (
     CredentialDetection,
     CredentialStageReader,
     Provider,
+    ProviderAuthenticatedAccount,
     RefreshResult,
     RefreshSuccess,
+    runtime_account,
 )
 from tests.test_support import REFERENCE_TIME
 
@@ -71,7 +73,7 @@ class RefreshProvider(Provider):
         del token
         return DetectedCredentials(credentials=login_account().credentials)
 
-    def fetch_usage(
+    def _fetch_usage(
         self,
         account: Account,
         http: HttpClient,
@@ -79,7 +81,7 @@ class RefreshProvider(Provider):
         del account, http
         return UsageReport()
 
-    def refresh_credentials(
+    def _refresh_credentials(
         self,
         account: Account,
         http: HttpClient,
@@ -121,7 +123,7 @@ class CodexRefreshProvider(Provider):
         del token
         raise AssertionError("token parsing was unexpected")
 
-    def fetch_usage(
+    def _fetch_usage(
         self,
         account: Account,
         http: HttpClient,
@@ -129,7 +131,7 @@ class CodexRefreshProvider(Provider):
         del account, http
         raise AssertionError("usage was unexpected")
 
-    def refresh_credentials(
+    def _refresh_credentials(
         self,
         account: Account,
         http: HttpClient,
@@ -160,7 +162,7 @@ class BlockingRefreshProvider(RefreshProvider):
         self._release = release
         self._calls_lock = Lock()
 
-    def refresh_credentials(
+    def _refresh_credentials(
         self,
         account: Account,
         http: HttpClient,
@@ -171,7 +173,7 @@ class BlockingRefreshProvider(RefreshProvider):
             raise AssertionError("same credential exchanged more than once")
         self._entered.set()
         assert self._release.wait(timeout=5)
-        return super().refresh_credentials(account, http)
+        return super()._refresh_credentials(account, http)
 
 
 class ParallelRefreshProvider(RefreshProvider):
@@ -182,7 +184,7 @@ class ParallelRefreshProvider(RefreshProvider):
         self._barrier = barrier
         self._calls_lock = Lock()
 
-    def refresh_credentials(
+    def _refresh_credentials(
         self,
         account: Account,
         http: HttpClient,
@@ -215,7 +217,7 @@ class CallbackRefreshProvider(RefreshProvider):
         super().__init__()
         self._callback = callback
 
-    def refresh_credentials(
+    def _refresh_credentials(
         self,
         account: Account,
         http: HttpClient,
@@ -232,7 +234,7 @@ class ManagedStageRefreshProvider(RefreshProvider):
         super().__init__()
         self.stage_home: Path | None = None
 
-    def refresh_credentials(
+    def _refresh_credentials(
         self,
         account: Account,
         http: HttpClient,
@@ -242,14 +244,18 @@ class ManagedStageRefreshProvider(RefreshProvider):
 
     def refresh_credentials_in_stage(
         self,
-        account: Account,
+        account: ProviderAuthenticatedAccount,
         http: HttpClient,
         stage_home: Path,
         stage_reader: CredentialStageReader,
     ) -> RefreshResult:
         del stage_reader
         self.stage_home = stage_home
-        return super().refresh_credentials(account, http)
+        return RefreshProvider._refresh_credentials(
+            self,
+            runtime_account(account),
+            http,
+        )
 
 
 class SimulatedCrashError(Exception):

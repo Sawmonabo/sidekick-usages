@@ -11,6 +11,10 @@ from sidekick_usages.heartbeat.models import (
     UsageWindowState,
 )
 from sidekick_usages.http import HttpClient
+from sidekick_usages.providers.base import (
+    ProviderAuthenticatedAccount,
+    runtime_account,
+)
 
 STANDARD_HEARTBEAT_TARGET = HeartbeatTarget(
     id="standard",
@@ -77,13 +81,13 @@ class HeartbeatProvider(ABC):
 
     def run(
         self,
-        account: Account,
+        account: ProviderAuthenticatedAccount,
         http: HttpClient,
         *,
         target_id: str | None = None,
     ) -> HeartbeatProbeResult:
         """Inspect the window and warm it if inactive."""
-        target = self.resolve_target(account, target_id)
+        target = self.resolve_target(runtime_account(account), target_id)
         state = self.inspect_window(account, http, target)
         if state.active:
             return HeartbeatProbeResult(
@@ -100,7 +104,7 @@ class HeartbeatProvider(ABC):
     @abstractmethod
     def inspect_window(
         self,
-        account: Account,
+        account: ProviderAuthenticatedAccount,
         http: HttpClient,
         target: HeartbeatTarget,
     ) -> UsageWindowState:
@@ -109,7 +113,7 @@ class HeartbeatProvider(ABC):
     @abstractmethod
     def warm_window(
         self,
-        account: Account,
+        account: ProviderAuthenticatedAccount,
         http: HttpClient,
         target: HeartbeatTarget,
     ) -> HeartbeatProbeResult:

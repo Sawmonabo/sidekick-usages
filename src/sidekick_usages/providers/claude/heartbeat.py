@@ -15,6 +15,10 @@ from sidekick_usages.heartbeat.models import (
 )
 from sidekick_usages.heartbeat.ports import HeartbeatProvider, warmed
 from sidekick_usages.http import HttpClient, HttpOperation
+from sidekick_usages.providers.base import (
+    ProviderAuthenticatedAccount,
+    runtime_account,
+)
 from sidekick_usages.providers.claude.credentials import (
     require_claude_credentials,
 )
@@ -67,13 +71,14 @@ class ClaudeHeartbeat(HeartbeatProvider):
 
     def inspect_window(
         self,
-        account: Account,
+        account: ProviderAuthenticatedAccount,
         http: HttpClient,
         target: HeartbeatTarget,
     ) -> UsageWindowState:
         """Inspect logins without letting setup tokens impersonate them."""
         del target
-        credentials = require_claude_credentials(account)
+        runtime = runtime_account(account)
+        credentials = require_claude_credentials(runtime)
         match credentials:
             case ClaudeSetupTokenCredentials():
                 return UsageWindowState(
@@ -88,7 +93,7 @@ class ClaudeHeartbeat(HeartbeatProvider):
             USAGE_URL,
             headers={
                 "Accept": "application/json",
-                "Authorization": f"Bearer {account.access_token}",
+                "Authorization": f"Bearer {runtime.access_token}",
                 "User-Agent": USER_AGENT,
                 "anthropic-beta": ANTHROPIC_BETA,
             },
@@ -109,11 +114,12 @@ class ClaudeHeartbeat(HeartbeatProvider):
 
     def warm_window(
         self,
-        account: Account,
+        account: ProviderAuthenticatedAccount,
         http: HttpClient,
         target: HeartbeatTarget,
     ) -> HeartbeatProbeResult:
         """Send one tiny Claude request and parse its reset header."""
+        runtime = runtime_account(account)
         headers = http.post_capture_headers(
             MESSAGES_URL,
             {
@@ -122,7 +128,7 @@ class ClaudeHeartbeat(HeartbeatProvider):
                 "messages": [{"role": "user", "content": "quota"}],
             },
             {
-                "Authorization": f"Bearer {account.access_token}",
+                "Authorization": f"Bearer {runtime.access_token}",
                 "anthropic-version": ANTHROPIC_API_VERSION,
                 "anthropic-beta": ANTHROPIC_BETA,
                 "User-Agent": USER_AGENT,

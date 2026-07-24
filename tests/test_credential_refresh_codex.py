@@ -203,7 +203,7 @@ class _CodexRefreshProvider(Provider):
         del token
         raise AssertionError("token parsing was unexpected")
 
-    def fetch_usage(
+    def _fetch_usage(
         self,
         account: Account,
         http: HttpClient,
@@ -211,7 +211,7 @@ class _CodexRefreshProvider(Provider):
         del account, http
         raise AssertionError("usage was unexpected")
 
-    def refresh_credentials(
+    def _refresh_credentials(
         self,
         account: Account,
         http: HttpClient,

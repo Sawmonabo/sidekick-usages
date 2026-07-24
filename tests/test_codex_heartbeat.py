@@ -13,6 +13,7 @@ from tests.test_heartbeat import (
     _FakeCodexHttp,
     _install_ctx,
 )
+from tests.test_support import authenticated_account
 
 
 def test_heartbeat_enable_accepts_codex_with_saved_account_id(
@@ -59,7 +60,7 @@ def test_codex_heartbeat_warms_standard_window_with_mini() -> None:
         ]
     )
 
-    result = _codex_heartbeat().run(account, http)
+    result = _codex_heartbeat().run(authenticated_account(account), http)
 
     assert result.status is HeartbeatStatus.WARMED
     assert result.reset_at == _STANDARD_RESET
@@ -131,7 +132,11 @@ def test_codex_heartbeat_warms_spark_window_with_spark_model() -> None:
         ]
     )
 
-    result = _codex_heartbeat().run(account, http, target_id="spark")
+    result = _codex_heartbeat().run(
+        authenticated_account(account),
+        http,
+        target_id="spark",
+    )
 
     assert result.status is HeartbeatStatus.WARMED
     assert result.reset_at == _SPARK_RESET
@@ -154,7 +159,7 @@ def test_codex_heartbeat_fails_when_target_window_stays_inactive() -> None:
         ]
     )
 
-    result = _codex_heartbeat().run(account, http)
+    result = _codex_heartbeat().run(authenticated_account(account), http)
 
     assert result.status is HeartbeatStatus.FAILED
     assert result.warmed is False
@@ -205,7 +210,7 @@ def test_codex_heartbeat_skips_when_usage_window_is_active() -> None:
         ]
     )
 
-    result = _codex_heartbeat().run(account, http)
+    result = _codex_heartbeat().run(authenticated_account(account), http)
 
     assert result.status is HeartbeatStatus.ACTIVE
     assert result.reset_at == _STANDARD_RESET

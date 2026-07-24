@@ -106,7 +106,7 @@ class CodexProvider(Provider):
             )
         return result
 
-    def fetch_usage(
+    def _fetch_usage(
         self,
         account: Account,
         http: HttpClient,
@@ -114,7 +114,7 @@ class CodexProvider(Provider):
         """Fetch usage through the Codex-owned usage adapter."""
         return fetch_usage(account, http)
 
-    def refresh_credentials(
+    def _refresh_credentials(
         self,
         account: Account,
         http: HttpClient,

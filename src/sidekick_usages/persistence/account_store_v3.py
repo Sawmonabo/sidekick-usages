@@ -35,6 +35,7 @@ from sidekick_usages.persistence.account_runtime_bridge import (
     merge_claude_authority,
     require_active_authority_kind,
     runtime_account_from_saved,
+    saved_account_from_runtime_state,
 )
 from sidekick_usages.persistence.account_schema_v3 import (
     VersionThreeDocument,
@@ -278,6 +279,45 @@ class ManagedAccountStore:
             source_guard=source_guard,
         )
 
+    def persist_state(
+        self,
+        account: SavedAccount,
+        *,
+        expected: SavedAccount | None = None,
+    ) -> None:
+        """Persist only one account's no-secret mutable index state."""
+        with self._lock_factory(self._filesystem).hold() as transaction:
+            coordinator = PrivateCredentialTransaction(
+                self._private,
+                self._filesystem.read_authority,
+            )
+            coordinator.recover()
+            self.load(self._snapshot_reader())
+            current = self._index.get(account.account_id)
+            if (
+                current is None
+                or (expected is not None and current != expected)
+                or current.provider_id is not account.provider_id
+                or current.label != account.label
+                or current.authority != account.authority
+            ):
+                raise SourceChangedError
+            runtime = dict(self._runtime)
+            runtime[account.account_id] = runtime_account_from_saved(
+                account,
+                runtime[account.account_id].credentials,
+            )
+            index = AccountIndex(tuple(self._index))
+            index.replace(account)
+            self._commit_locked(
+                transaction,
+                coordinator,
+                index,
+                runtime,
+                (),
+                source_guard=None,
+            )
+
     def merge_credential_refresh(
         self,
         label: AccountLabel,
@@ -312,6 +352,21 @@ class ManagedAccountStore:
                 candidate.last_refresh_at = update.completed_at
                 candidate.last_refresh_status = RefreshStatus.FAILED
                 candidate.last_refresh_error = update.message
+                index = AccountIndex(tuple(self._index))
+                index.replace(
+                    saved_account_from_runtime_state(saved, candidate)
+                )
+                runtime = dict(self._runtime)
+                runtime[saved.account_id] = candidate
+                self._commit_locked(
+                    transaction,
+                    coordinator,
+                    index,
+                    runtime,
+                    (),
+                    source_guard=None,
+                )
+                return copy_runtime_account(candidate)
             index, runtime, bundle = self._candidate_update(saved, candidate)
             bundles = (
                 (bundle,) if extra_bundle is None else (bundle, extra_bundle)

@@ -2,12 +2,14 @@
 
 import re
 from collections.abc import Iterator
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
 
 import pytest
 
+from sidekick_usages.core.accounts import SavedAccount
 from sidekick_usages.core.expiry import (
     Expiry,
     InvalidExpiry,
@@ -33,6 +35,11 @@ from sidekick_usages.credentials import (
     CredentialRefreshSuccess,
     CredentialUpdateResult,
     CredentialUpdateSuccess,
+)
+from sidekick_usages.credentials.authorities import (
+    AuthenticatedSavedAccount,
+    CredentialResolver,
+    EmbeddedAccountResolver,
 )
 from sidekick_usages.credentials.refresh import CredentialRefreshReason
 from sidekick_usages.errors import (
@@ -75,7 +82,7 @@ from sidekick_usages.usage import (
     UnknownProviderFailure,
     UsageCheckService,
 )
-from tests.test_support import REFERENCE_TIME, FixedClock
+from tests.test_support import REFERENCE_TIME, FixedClock, saved_account
 
 type FetchStep = UsageReport | UsageError
 
@@ -142,6 +149,12 @@ class InMemoryAccountStore(AccountStore):
         self._saved[str(saved.label)] = saved
         self.persisted.append(_copy_account(saved))
 
+    def saved_accounts(self) -> tuple[SavedAccount, ...]:
+        """Return stable synthetic metadata for resolver-bound scenarios."""
+        return tuple(
+            saved_account(account) for account in self._saved.values()
+        )
+
     def saved(self, label: str) -> Account:
         """Return one independent durable account for assertions."""
         return _copy_account(self._saved[label])
@@ -186,7 +199,7 @@ class ScriptedProvider(Provider):
             message="Manual test credentials are unsupported.",
         )
 
-    def fetch_usage(
+    def _fetch_usage(
         self,
         account: Account,
         http: HttpClient,
@@ -209,7 +222,7 @@ class ScriptedProvider(Provider):
             raise step
         return step
 
-    def refresh_credentials(
+    def _refresh_credentials(
         self,
         account: Account,
         http: HttpClient,
@@ -218,6 +231,37 @@ class ScriptedProvider(Provider):
         raise AssertionError(
             "Usage orchestration must refresh through CredentialRefresher."
         )
+
+
+class RecordingCredentialResolver:
+    """Record exact lease scope around provider calls."""
+
+    def __init__(self, store: InMemoryAccountStore) -> None:
+        self._store = store
+        self._embedded = EmbeddedAccountResolver()
+        self.events: list[str] = []
+
+    def open(
+        self,
+        account: SavedAccount,
+    ) -> AbstractContextManager[AuthenticatedSavedAccount]:
+        return self._open(account)
+
+    @contextmanager
+    def _open(
+        self,
+        account: SavedAccount,
+    ) -> Iterator[AuthenticatedSavedAccount]:
+        self.events.append(f"open:{account.label}")
+        runtime = self._store.get(
+            str(account.label),
+            provider_id=account.provider_id,
+        )
+        if runtime is None:
+            raise AssertionError("Resolver target disappeared.")
+        with self._embedded.open(runtime) as authenticated:
+            yield authenticated
+        self.events.append(f"close:{account.label}")
 
 
 class ScriptedCredentialCoordinator(CredentialRefresher):
@@ -346,6 +390,7 @@ def _service(
     *providers: ScriptedProvider,
     refresher: CredentialCoordinator | None = None,
     clock: FixedClock | None = None,
+    resolver: CredentialResolver | None = None,
 ) -> UsageCheckService:
     credential_refresher = refresher or ScriptedCredentialCoordinator(store)
     return UsageCheckService(
@@ -354,6 +399,7 @@ def _service(
         {provider.id: provider for provider in providers},
         credential_refresher,
         clock=clock or FixedClock(),
+        resolver=resolver,
     )
 
 
@@ -371,12 +417,14 @@ def test_filter_selects_store_accounts_and_returns_immutable_results(
         {"codex-one": [_report()], "codex-two": [_report()]},
     )
     clock = FixedClock()
+    resolver = RecordingCredentialResolver(store)
 
     result = _service(
         store,
         http,
         codex,
         clock=clock,
+        resolver=resolver,
     ).check(ProviderId.CODEX)
 
     assert [usage.label for usage in result.usages] == [
@@ -389,6 +437,13 @@ def test_filter_selects_store_accounts_and_returns_immutable_results(
     assert result.reference_time == REFERENCE_TIME
     assert clock.calls == 1
     assert AccountUsage.__dataclass_params__.frozen is True
+    assert resolver.events == [
+        "open:codex-one",
+        "close:codex-one",
+        "open:codex-two",
+        "close:codex-two",
+    ]
+    assert "test-only-codex-one-access" not in repr(result)
 
 
 def test_partial_success_keeps_usage_and_typed_failure(

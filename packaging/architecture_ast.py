@@ -19,6 +19,7 @@ VIOLATION_RULE_IDS = frozenset(
         "DEP005",
         "DEP006",
         "DEP007",
+        "DEP008",
         "PATH001",
         "PATH002",
         "TIME001",

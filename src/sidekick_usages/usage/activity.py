@@ -1,9 +1,11 @@
 """Application policy for scoped provider token activity."""
 
 from collections.abc import Mapping
+from contextlib import AbstractContextManager
 from datetime import date, datetime
 from typing import Protocol
 
+from sidekick_usages.core.accounts import SavedAccount
 from sidekick_usages.core.models import (
     Account,
     AccountTokenActivitySnapshot,
@@ -15,6 +17,11 @@ from sidekick_usages.core.types import (
     AccountLabel,
     ProviderId,
     TokenActivityScope,
+)
+from sidekick_usages.credentials.authorities import (
+    AuthenticatedSavedAccount,
+    CredentialResolver,
+    EmbeddedAccountResolver,
 )
 from sidekick_usages.errors import (
     AuthError,
@@ -61,7 +68,7 @@ class AccountTokenActivitySource(Protocol):
 
     def read(
         self,
-        account: Account,
+        account: AuthenticatedSavedAccount,
         http: HttpClient,
     ) -> TokenActivityReading:
         """Return one account-scoped activity reading."""
@@ -89,12 +96,15 @@ class TokenActivityCollector:
         local_sources: Mapping[ProviderId, LocalTokenActivitySource],
         account_sources: Mapping[ProviderId, AccountTokenActivitySource],
         snapshots: AccountTokenActivitySnapshots | None = None,
+        resolver: CredentialResolver | None = None,
     ) -> None:
         """Bind collection to validated provider source mappings."""
         self._http = http
         self._local_sources = dict(local_sources)
         self._account_sources = dict(account_sources)
         self._snapshots = snapshots
+        self._resolver = resolver
+        self._embedded_resolver = EmbeddedAccountResolver()
         if any(
             provider_id is not source.provider_id
             for provider_id, source in (
@@ -115,6 +125,7 @@ class TokenActivityCollector:
         accounts: tuple[Account, ...],
         eligible_accounts: tuple[Account, ...],
         reference_time: datetime,
+        saved_accounts: tuple[SavedAccount, ...] = (),
     ) -> tuple[ProviderTokenActivity, ...]:
         """Collect activity once from the selected provider population."""
         provider_order = tuple(dict.fromkeys(a.provider_id for a in accounts))
@@ -148,6 +159,7 @@ class TokenActivityCollector:
                         selected,
                         eligible,
                         reference_time,
+                        saved_accounts,
                     )
                 )
         return tuple(outcomes)
@@ -189,6 +201,7 @@ class TokenActivityCollector:
         selected: tuple[Account, ...],
         eligible: tuple[Account, ...],
         reference_time: datetime,
+        saved_accounts: tuple[SavedAccount, ...],
     ) -> ProviderTokenActivity:
         total = 0
         since_dates: list[date] = []
@@ -202,6 +215,7 @@ class TokenActivityCollector:
                 source,
                 selected_account if account is None else account,
                 reference_time,
+                saved_accounts,
                 fetch=account is not None,
             )
             issues.extend(account_issues)
@@ -266,36 +280,41 @@ class TokenActivityCollector:
         source: AccountTokenActivitySource,
         account: Account,
         reference_time: datetime,
+        saved_accounts: tuple[SavedAccount, ...],
         *,
         fetch: bool,
     ) -> tuple[TokenActivitySummary | None, tuple[TokenActivityIssue, ...]]:
         issues: list[TokenActivityIssue] = []
         if fetch:
             try:
-                reading = source.read(account, self._http)
+                with self._open_account(
+                    account,
+                    saved_accounts,
+                ) as authenticated:
+                    reading = source.read(authenticated, self._http)
+                    runtime = authenticated.lease.account
+                    if reading.scope is not TokenActivityScope.ACCOUNT:
+                        issues.append(
+                            TokenActivityIssue(
+                                kind=TokenActivityFailureKind.PROVIDER,
+                                message=(
+                                    "Provider token activity returned an "
+                                    "invalid scope."
+                                ),
+                                label=account.label,
+                            )
+                        )
+                    elif isinstance(reading, TokenActivitySummary):
+                        summary, snapshot_issue = self._save_snapshot(
+                            runtime,
+                            reading,
+                            reference_time,
+                        )
+                        if snapshot_issue is not None:
+                            issues.append(snapshot_issue)
+                        return summary, tuple(issues)
             except UsageError as error:
                 issues.append(self._issue(error, account.label))
-            else:
-                if reading.scope is not TokenActivityScope.ACCOUNT:
-                    issues.append(
-                        TokenActivityIssue(
-                            kind=TokenActivityFailureKind.PROVIDER,
-                            message=(
-                                "Provider token activity returned an invalid "
-                                "scope."
-                            ),
-                            label=account.label,
-                        )
-                    )
-                elif isinstance(reading, TokenActivitySummary):
-                    summary, snapshot_issue = self._save_snapshot(
-                        account,
-                        reading,
-                        reference_time,
-                    )
-                    if snapshot_issue is not None:
-                        issues.append(snapshot_issue)
-                    return summary, tuple(issues)
         snapshot, snapshot_issue = self._load_snapshot(account)
         if snapshot_issue is not None:
             issues.append(snapshot_issue)
@@ -338,6 +357,27 @@ class TokenActivityCollector:
         except ActivitySnapshotError as error:
             return summary, self._issue(error, account.label)
         return durable.summary, None
+
+    def _open_account(
+        self,
+        account: Account,
+        saved_accounts: tuple[SavedAccount, ...],
+    ) -> AbstractContextManager[AuthenticatedSavedAccount]:
+        """Open one activity credential lease at its provider boundary."""
+        if self._resolver is None:
+            return self._embedded_resolver.open(account)
+        saved = next(
+            (
+                candidate
+                for candidate in saved_accounts
+                if candidate.provider_id is account.provider_id
+                and candidate.label == account.label
+            ),
+            None,
+        )
+        if saved is None:
+            raise UsageError("The activity account changed.")
+        return self._resolver.open(saved)
 
     @staticmethod
     def _invalid_scope(

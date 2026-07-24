@@ -1,6 +1,7 @@
 """Provider-neutral serialized saved-credential refresh."""
 
 from collections.abc import Mapping
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
@@ -15,6 +16,11 @@ from sidekick_usages.core.models import (
     Credentials,
 )
 from sidekick_usages.core.types import AccountLabel, ProviderId
+from sidekick_usages.credentials.authorities import (
+    AuthenticatedSavedAccount,
+    CredentialResolver,
+    EmbeddedAccountResolver,
+)
 from sidekick_usages.credentials.codex import CodexCredentialCoordinator
 from sidekick_usages.credentials.models import (
     CredentialRefreshResult,
@@ -34,6 +40,7 @@ from sidekick_usages.persistence.private_bundle_writes import (
 from sidekick_usages.providers.base import (
     CredentialStageReader,
     Provider,
+    ProviderAuthenticatedAccount,
     ProviderBoundaryError,
     ProviderFailure,
     ProviderFailureCause,
@@ -49,7 +56,7 @@ class StagedCredentialRefreshProvider(Protocol):
 
     def refresh_credentials_in_stage(
         self,
-        account: Account,
+        account: ProviderAuthenticatedAccount,
         http: HttpClient,
         stage_home: Path,
         stage_reader: CredentialStageReader,
@@ -90,6 +97,7 @@ class CredentialRefreshCoordinator:
         *,
         clock: Clock,
         codex: CodexCredentialCoordinator | None = None,
+        resolver: CredentialResolver | None = None,
     ) -> None:
         """Bind refresh policy to provider and persistence capabilities."""
         self._store = store
@@ -98,6 +106,8 @@ class CredentialRefreshCoordinator:
         self._persistence = persistence
         self._clock = clock
         self._codex = codex
+        self._resolver = resolver
+        self._embedded_resolver = EmbeddedAccountResolver()
 
     def refresh(
         self,
@@ -201,19 +211,25 @@ class CredentialRefreshCoordinator:
                 )
             return CredentialRefreshSuccess(current.label)
         try:
-            if isinstance(provider, StagedCredentialRefreshProvider):
-                stage_home = self._persistence.prepare_provider_stage(lease)
-                refreshed = provider.refresh_credentials_in_stage(
-                    lease.account,
-                    self._http,
-                    stage_home,
-                    _LeaseCredentialStageReader(self._persistence, lease),
-                )
-            else:
-                refreshed = provider.refresh_credentials(
-                    lease.account,
-                    self._http,
-                )
+            with self._open_account(lease.account) as authenticated:
+                if isinstance(provider, StagedCredentialRefreshProvider):
+                    stage_home = self._persistence.prepare_provider_stage(
+                        lease
+                    )
+                    refreshed = provider.refresh_credentials_in_stage(
+                        authenticated,
+                        self._http,
+                        stage_home,
+                        _LeaseCredentialStageReader(
+                            self._persistence,
+                            lease,
+                        ),
+                    )
+                else:
+                    refreshed = provider.refresh_credentials(
+                        authenticated,
+                        self._http,
+                    )
         except ProviderBoundaryError as error:
             refreshed = error.failure
         completed_at = self._clock.now()
@@ -237,6 +253,26 @@ class CredentialRefreshCoordinator:
                 message="The refresh target no longer exists.",
             )
         return CredentialRefreshSuccess(committed.label)
+
+    def _open_account(
+        self,
+        account: Account,
+    ) -> AbstractContextManager[AuthenticatedSavedAccount]:
+        """Open one refresh credential lease at the provider boundary."""
+        if self._resolver is None:
+            return self._embedded_resolver.open(account)
+        saved = next(
+            (
+                candidate
+                for candidate in self._store.saved_accounts()
+                if candidate.provider_id is account.provider_id
+                and candidate.label == account.label
+            ),
+            None,
+        )
+        if saved is None:
+            raise CredentialRefreshTargetUnavailableError(account)
+        return self._resolver.open(saved)
 
     def _finish_failure(
         self,

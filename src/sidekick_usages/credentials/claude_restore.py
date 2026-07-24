@@ -57,7 +57,7 @@ type ClaudeSetupTokenRestorePreviewResult = (
 class _ClaudeUsageProvider(Protocol):
     """Expose only the existing provider usage-verification boundary."""
 
-    def fetch_usage(
+    def validate_credentials(
         self,
         account: Account,
         http: HttpClient,
@@ -179,7 +179,7 @@ class ClaudeSetupTokenRestoreService:
                 ProviderFailureKind.UNSUPPORTED,
                 "Claude provider verification is unavailable.",
             )
-        self._usage_provider.fetch_usage(candidate, self._http)
+        self._usage_provider.validate_credentials(candidate, self._http)
         source_guard = CredentialSourceGuard(
             self._prototype.authority_path,
             preview.source.fingerprint,

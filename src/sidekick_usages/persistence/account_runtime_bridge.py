@@ -18,6 +18,7 @@ from sidekick_usages.core.models import (
     Credentials,
 )
 from sidekick_usages.core.types import AccountLabel
+from sidekick_usages.persistence.account_index import legacy_error_code
 from sidekick_usages.persistence.artifacts import (
     AuthorityExpectation,
     ExpectedAuthority,
@@ -106,6 +107,38 @@ def runtime_account_from_saved(
         last_heartbeat_at=saved.last_heartbeat_at,
         last_heartbeat_status=saved.last_heartbeat_status,
         last_heartbeat_error=saved.last_heartbeat_error_code,
+    )
+
+
+def saved_account_from_runtime_state(
+    saved: SavedAccount,
+    account: Account,
+) -> SavedAccount:
+    """Copy only non-secret mutable runtime state into the saved index."""
+    if (
+        saved.label != account.label
+        or saved.provider_id is not account.provider_id
+    ):
+        raise ValueError("Runtime account identity does not match.")
+    return replace(
+        saved,
+        plan=account.plan,
+        last_refresh_at=account.last_refresh_at,
+        last_refresh_status=account.last_refresh_status,
+        last_refresh_error_code=legacy_error_code(account.last_refresh_error),
+        heartbeat_enabled=account.heartbeat_enabled,
+        heartbeat_5h_reset_at=account.heartbeat_5h_reset_at,
+        heartbeat_window_resets=(
+            tuple(account.heartbeat_window_resets.items())
+            if account.heartbeat_window_resets is not None
+            else None
+        ),
+        heartbeat_targets=account.heartbeat_targets,
+        last_heartbeat_at=account.last_heartbeat_at,
+        last_heartbeat_status=account.last_heartbeat_status,
+        last_heartbeat_error_code=legacy_error_code(
+            account.last_heartbeat_error
+        ),
     )
 
 
@@ -210,4 +243,5 @@ __all__ = [
     "merge_claude_authority",
     "require_active_authority_kind",
     "runtime_account_from_saved",
+    "saved_account_from_runtime_state",
 ]

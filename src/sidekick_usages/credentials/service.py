@@ -19,6 +19,9 @@ from sidekick_usages.core.types import (
     ProviderId,
     RefreshStatus,
 )
+from sidekick_usages.credentials.account_state import (
+    persist_provider_plan_without_credentials,
+)
 from sidekick_usages.credentials.claude_setup_save import (
     preview_claude_setup_token_save,
 )
@@ -468,9 +471,10 @@ class CredentialService:
             raise SourceChangedError
         candidate = _copy_account(current, credentials=account.credentials)
         candidate.plan = account.plan
-        if (
-            candidate.credentials == current.credentials
-            and candidate.plan == current.plan
+        if persist_provider_plan_without_credentials(
+            self._store,
+            current,
+            candidate,
         ):
             return CredentialUpdateSuccess(candidate.label)
 
@@ -750,7 +754,7 @@ class CredentialService:
     ) -> str | ProviderFailure | None:
         outcome: str | ProviderFailure | None = None
         try:
-            provider.fetch_usage(account, self._http)
+            provider.validate_credentials(account, self._http)
         except AuthError:
             outcome = _failure(
                 provider.id,

@@ -36,7 +36,11 @@ from sidekick_usages.providers.codex.auth import (
 from sidekick_usages.providers.codex.provider import CodexProvider
 from sidekick_usages.providers.codex.schemas import validate_refresh_payload
 from sidekick_usages.serialization import JsonObject
-from tests.test_support import REFERENCE_TIME, FixedClock
+from tests.test_support import (
+    REFERENCE_TIME,
+    FixedClock,
+    authenticated_account,
+)
 
 DETECTED_EXP = 1_800_000_000
 REFRESH_EXP = 1_900_000_000
@@ -349,7 +353,7 @@ def test_usage_validates_current_shape_and_required_headers() -> None:
     """Current usage becomes normalized windows with account-bound headers."""
     http = _UsageHttp(_usage_payload())
 
-    report = CodexProvider(FixedClock()).fetch_usage(_account(), http)
+    report = CodexProvider(FixedClock()).validate_credentials(_account(), http)
 
     assert http.headers is not None
     assert http.headers["ChatGPT-Account-Id"] == "acct_123"
@@ -374,7 +378,7 @@ def test_usage_rejects_malformed_window_without_exposing_input() -> None:
     primary["used_percent"] = raw_secret
 
     with pytest.raises(ProviderBoundaryError) as caught:
-        CodexProvider(FixedClock()).fetch_usage(
+        CodexProvider(FixedClock()).validate_credentials(
             _account(), _UsageHttp(payload)
         )
 
@@ -401,7 +405,10 @@ def test_refresh_returns_complete_replacement_without_hidden_mutation() -> (
         }
     )
 
-    result = CodexProvider(FixedClock()).refresh_credentials(account, http)
+    result = CodexProvider(FixedClock()).refresh_credentials(
+        authenticated_account(account),
+        http,
+    )
 
     assert isinstance(result, RefreshSuccess)
     assert isinstance(result.credentials, CodexCredentials)
@@ -439,7 +446,7 @@ def test_refresh_rejects_invalid_present_optional_tokens(
     payload[field_name] = invalid_value
 
     result = CodexProvider(FixedClock()).refresh_credentials(
-        account,
+        authenticated_account(account),
         _RefreshHttp(payload),
     )
 
@@ -520,7 +527,10 @@ def test_refresh_failures_are_typed_atomic_and_secret_safe(
     account = _account()
     original = account.credentials
 
-    result = CodexProvider(FixedClock()).refresh_credentials(account, http)
+    result = CodexProvider(FixedClock()).refresh_credentials(
+        authenticated_account(account),
+        http,
+    )
 
     assert isinstance(result, ProviderFailure)
     assert result.kind is expected_kind
@@ -539,7 +549,7 @@ def test_refresh_keeps_external_codex_home_read_only(tmp_path: Path) -> None:
     account = _account(auth_home=str(codex_home))
 
     result = CodexProvider(FixedClock()).refresh_credentials(
-        account,
+        authenticated_account(account),
         _RefreshHttp({"access_token": _access_token()}),
     )
 
@@ -665,7 +675,7 @@ def test_refresh_does_not_write_the_canonical_private_bundle(
     account = _account(auth_home=str(codex_home))
 
     result = CodexProvider(FixedClock()).refresh_credentials(
-        account,
+        authenticated_account(account),
         _RefreshHttp(
             {
                 "access_token": _access_token(),

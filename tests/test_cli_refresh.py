@@ -115,7 +115,7 @@ class _FakeProvider(Provider):
         )
         return DetectedCredentials(credentials=credentials)
 
-    def fetch_usage(
+    def _fetch_usage(
         self,
         account: Account,
         http: HttpClient,
@@ -137,7 +137,7 @@ class _FakeProvider(Provider):
             raise result
         return result
 
-    def refresh_credentials(
+    def _refresh_credentials(
         self,
         account: Account,
         http: HttpClient,

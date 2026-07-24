@@ -11,6 +11,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
 
+from sidekick_usages.core.accounts import SavedAccount
 from sidekick_usages.core.models import (
     Account,
     Credentials,
@@ -77,6 +78,31 @@ class CredentialStageReader(Protocol):
         """Return bounded qualified bytes or absence."""
 
 
+class CredentialAccountLease(Protocol):
+    """Expose one runtime account only while its credential lease is active."""
+
+    @property
+    def account(self) -> Account:
+        """Return the operation-scoped credential-bearing account."""
+
+
+class ProviderAuthenticatedAccount(Protocol):
+    """Worker-only saved account paired with one active credential lease."""
+
+    @property
+    def account(self) -> SavedAccount:
+        """Return the secret-free saved-account record."""
+
+    @property
+    def lease(self) -> CredentialAccountLease:
+        """Return the active operation-scoped credential lease."""
+
+
+def runtime_account(account: ProviderAuthenticatedAccount) -> Account:
+    """Return the runtime account through its active credential lease."""
+    return account.lease.account
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class RefreshSuccess:
     """Validated replacement credentials from one provider refresh."""
@@ -122,32 +148,71 @@ class Provider(ABC):
     def credentials_from_token(self, token: str) -> CredentialDetection:
         """Validate one manually supplied token at its owning boundary."""
 
-    @abstractmethod
     def fetch_usage(
         self,
-        account: Account,
+        account: ProviderAuthenticatedAccount,
         http: HttpClient,
     ) -> UsageReport:
-        """Call the provider's usage endpoint for one account.
+        """Call the provider usage endpoint within an active lease.
 
-        :param account: Account to query.
+        :param account: Authenticated saved account to query.
         :param http: Shared HTTP client (handles retries).
         :return: Parsed usage report.
         :raises AuthError: If the token is rejected.
         :raises RateLimitError: If rate-limited after retries.
         :raises TransientError: On 5xx or network failure.
         """
+        return self._fetch_usage(runtime_account(account), http)
 
     @abstractmethod
-    def refresh_credentials(
+    def _fetch_usage(
         self,
         account: Account,
+        http: HttpClient,
+    ) -> UsageReport:
+        """Implement provider usage against one active runtime account."""
+
+    def validate_credentials(
+        self,
+        account: Account,
+        http: HttpClient,
+    ) -> UsageReport:
+        """Validate an unsaved credential candidate without a saved lease."""
+        return self._fetch_usage(account, http)
+
+    def refresh_credentials(
+        self,
+        account: ProviderAuthenticatedAccount,
         http: HttpClient,
     ) -> RefreshResult:
         """Return refreshed credentials without mutating ``account``.
 
-        :param account: Account whose token to refresh. Mutated
-            only by the application after a successful result.
+        :param account: Authenticated saved account whose token to refresh.
         :param http: Shared HTTP client.
         :return: Validated replacement credentials or a safe failure.
         """
+        return self._refresh_credentials(runtime_account(account), http)
+
+    @abstractmethod
+    def _refresh_credentials(
+        self,
+        account: Account,
+        http: HttpClient,
+    ) -> RefreshResult:
+        """Implement refresh against one active runtime account."""
+
+
+__all__ = [
+    "CredentialAccountLease",
+    "CredentialDetection",
+    "CredentialStageReader",
+    "Provider",
+    "ProviderAuthenticatedAccount",
+    "ProviderBoundaryError",
+    "ProviderFailure",
+    "ProviderFailureCause",
+    "ProviderFailureKind",
+    "RefreshResult",
+    "RefreshSuccess",
+    "runtime_account",
+]

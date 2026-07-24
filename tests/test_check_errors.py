@@ -23,6 +23,7 @@ from sidekick_usages.core.types import (
     ProviderId,
     TokenActivityScope,
 )
+from sidekick_usages.credentials.authorities import AuthenticatedSavedAccount
 from sidekick_usages.errors import AuthError, TransientError
 from sidekick_usages.http import HttpClient
 from sidekick_usages.persistence.account_store import AccountStore
@@ -83,7 +84,7 @@ class _FakeProvider(Provider):
             message="Manual test credentials are unsupported.",
         )
 
-    def fetch_usage(
+    def _fetch_usage(
         self,
         account: Account,
         http: HttpClient,
@@ -100,7 +101,7 @@ class _FakeProvider(Provider):
             raise result
         return result
 
-    def refresh_credentials(
+    def _refresh_credentials(
         self,
         account: Account,
         http: HttpClient,
@@ -129,12 +130,13 @@ class _ScriptedAccountActivity(AccountTokenActivitySource):
 
     def read(
         self,
-        account: Account,
+        account: AuthenticatedSavedAccount,
         http: HttpClient,
     ) -> TokenActivityReading:
         del http
-        self.calls.append(account.label)
-        step = self.steps[str(account.label)]
+        runtime = account.lease.account
+        self.calls.append(runtime.label)
+        step = self.steps[str(runtime.label)]
         if isinstance(step, TransientError):
             raise step
         return step

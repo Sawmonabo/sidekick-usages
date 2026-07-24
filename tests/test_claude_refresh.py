@@ -35,7 +35,11 @@ from sidekick_usages.providers.claude.provider import (
     SetupTokenUnreadable,
 )
 from sidekick_usages.serialization import JsonObject
-from tests.test_support import REFERENCE_TIME, FixedClock
+from tests.test_support import (
+    REFERENCE_TIME,
+    FixedClock,
+    authenticated_account,
+)
 
 CLI_REFRESH_TIMEOUT_SECONDS = 60
 _FUTURE_EXPIRY = REFERENCE_TIME + timedelta(hours=1)
@@ -125,7 +129,10 @@ def test_refresh_missing_token_is_explicit_and_does_not_mutate() -> None:
     account = _account(setup_token=True)
     original = account.credentials
 
-    result = _provider().refresh_credentials(account, _FakeHttp())
+    result = _provider().refresh_credentials(
+        authenticated_account(account),
+        _FakeHttp(),
+    )
 
     assert isinstance(result, ProviderFailure)
     assert result.kind is ProviderFailureKind.MISSING
@@ -261,7 +268,7 @@ def test_cli_refresh_is_isolated_and_returns_complete_replacement(
     managed_stage = tmp_path / "managed-refresh-stage"
     managed_stage.mkdir(mode=0o700)
     result = _provider().refresh_credentials_in_stage(
-        account,
+        authenticated_account(account),
         _FakeHttp(),
         managed_stage,
         _PathStageReader(managed_stage / ".claude" / ".credentials.json"),
@@ -296,7 +303,10 @@ def test_macos_refresh_uses_http_without_invoking_cli(
         }
     )
 
-    result = _provider().refresh_credentials(_account(), http)
+    result = _provider().refresh_credentials(
+        authenticated_account(_account()),
+        http,
+    )
 
     assert isinstance(result, RefreshSuccess)
     assert _credentials(result).access_token == "sk-ant-oat01-new"
@@ -329,7 +339,10 @@ def test_http_refresh_preserves_scope_state_and_returns_new_credentials(
         }
     )
 
-    result = _provider().refresh_credentials(account, http)
+    result = _provider().refresh_credentials(
+        authenticated_account(account),
+        http,
+    )
 
     assert isinstance(result, RefreshSuccess)
     refreshed = _credentials(result)
@@ -353,7 +366,7 @@ def test_refresh_rejection_is_typed_and_secret_safe(
     raw_secret = "sk-ant-oat01-rejected-secret"
 
     result = _provider().refresh_credentials(
-        account,
+        authenticated_account(account),
         _FakeHttp(failure=AuthError(raw_secret)),
     )
 
@@ -372,7 +385,7 @@ def test_transient_refresh_failure_is_a_cause_without_recovery_copy(
     _disable_cli_refresh(monkeypatch)
 
     result = _provider().refresh_credentials(
-        _account(),
+        authenticated_account(_account()),
         _FakeHttp(failure=TransientError("raw provider detail")),
     )
 
@@ -419,7 +432,7 @@ def test_cli_rejection_is_authoritative_and_does_not_fallback(
     stage_home = tmp_path / "managed-refresh-stage"
     stage_home.mkdir(mode=0o700)
     result = _provider().refresh_credentials_in_stage(
-        account,
+        authenticated_account(account),
         http,
         stage_home,
         _PathStageReader(stage_home / ".claude" / ".credentials.json"),
@@ -538,7 +551,10 @@ def test_malformed_refresh_is_atomic_and_safe(
     response["provider_identity"] = raw_identity
 
     with pytest.raises(ProviderBoundaryError) as exc_info:
-        _provider().refresh_credentials(account, _FakeHttp(response))
+        _provider().refresh_credentials(
+            authenticated_account(account),
+            _FakeHttp(response),
+        )
 
     assert exc_info.value.failure.kind is kind
     assert exc_info.value.failure.cause is (
@@ -631,7 +647,10 @@ def test_expired_login_credential_fails_before_provider_contact() -> None:
     )
     http = _FakeHttp({"access_token": "sk-ant-oat01-unused"})
 
-    result = _provider().refresh_credentials(account, http)
+    result = _provider().refresh_credentials(
+        authenticated_account(account),
+        http,
+    )
 
     assert isinstance(result, ProviderFailure)
     assert result.cause is ProviderFailureCause.LOGIN_CREDENTIAL_EXPIRED

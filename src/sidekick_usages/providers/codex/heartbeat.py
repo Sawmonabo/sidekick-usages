@@ -11,6 +11,10 @@ from sidekick_usages.heartbeat.models import (
 )
 from sidekick_usages.heartbeat.ports import HeartbeatProvider, warmed
 from sidekick_usages.http import HttpClient, HttpOperation
+from sidekick_usages.providers.base import (
+    ProviderAuthenticatedAccount,
+    runtime_account,
+)
 from sidekick_usages.providers.codex.provider import CodexProvider
 from sidekick_usages.providers.codex.request import account_headers
 from sidekick_usages.serialization import JsonObject
@@ -61,7 +65,7 @@ class CodexHeartbeat(HeartbeatProvider):
 
     def inspect_window(
         self,
-        account: Account,
+        account: ProviderAuthenticatedAccount,
         http: HttpClient,
         target: HeartbeatTarget,
     ) -> UsageWindowState:
@@ -88,12 +92,12 @@ class CodexHeartbeat(HeartbeatProvider):
 
     def warm_window(
         self,
-        account: Account,
+        account: ProviderAuthenticatedAccount,
         http: HttpClient,
         target: HeartbeatTarget,
     ) -> HeartbeatProbeResult:
         """Warm one Codex window and then refresh its usage state."""
-        headers = account_headers(account)
+        headers = account_headers(runtime_account(account))
         headers["Accept"] = "text/event-stream"
         http.post_capture_headers(
             CODEX_RESPONSES_URL,

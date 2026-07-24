@@ -1,6 +1,7 @@
 """Provider-neutral account usage orchestration."""
 
 from collections.abc import Mapping
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Protocol, assert_never
@@ -20,8 +21,13 @@ from sidekick_usages.core.models import (
     Credentials,
     UsageReport,
 )
-from sidekick_usages.core.types import ProviderId
+from sidekick_usages.core.types import AccountLabel, ProviderId
 from sidekick_usages.credentials import CredentialUpdateResult
+from sidekick_usages.credentials.authorities import (
+    AuthenticatedSavedAccount,
+    CredentialResolver,
+    EmbeddedAccountResolver,
+)
 from sidekick_usages.credentials.refresh import CredentialRefreshReason
 from sidekick_usages.errors import (
     AuthError,
@@ -86,7 +92,8 @@ class CredentialCoordinator(CredentialRefresher, Protocol):
 
 @dataclass(frozen=True, slots=True)
 class _ActivityEligibleAccount:
-    account: Account
+    label: AccountLabel
+    provider_id: ProviderId
     outcome: AccountUsage | FetchFailure
 
 
@@ -120,6 +127,7 @@ class UsageCheckService:
         ]
         | None = None,
         activity_snapshots: AccountTokenActivitySnapshots | None = None,
+        resolver: CredentialResolver | None = None,
     ) -> None:
         """Bind usage checking to its invocation-scoped dependencies.
 
@@ -131,12 +139,15 @@ class UsageCheckService:
         :param local_activity_sources: Local-installation activity readers.
         :param account_activity_sources: Per-account activity readers.
         :param activity_snapshots: Durable last-successful account activity.
+        :param resolver: Qualified schema-v3 credential resolver.
         """
         self._store = store
         self._http = http
         self._providers = providers
         self._credentials = credentials
         self._clock = clock
+        self._resolver = resolver
+        self._embedded_resolver = EmbeddedAccountResolver()
         self._activity = TokenActivityCollector(
             http,
             ({} if local_activity_sources is None else local_activity_sources),
@@ -146,6 +157,7 @@ class UsageCheckService:
                 else account_activity_sources
             ),
             activity_snapshots,
+            resolver,
         )
         self._maintenance = TokenMaintenanceService(
             store,
@@ -167,6 +179,9 @@ class UsageCheckService:
             if provider_id is None
             else tuple(self._store.filter_by_provider(provider_id))
         )
+        saved_accounts = (
+            self._store.saved_accounts() if self._resolver is not None else ()
+        )
         reference_time = self._clock.now()
         usages: list[AccountUsage] = []
         failures: list[FetchFailure] = []
@@ -174,7 +189,12 @@ class UsageCheckService:
         for account in accounts:
             checked = self._check_account(account, reference_time)
             if isinstance(checked, _ActivityEligibleAccount):
-                eligible_accounts.append(checked.account)
+                eligible = self._store.get(
+                    str(checked.label),
+                    provider_id=checked.provider_id,
+                )
+                if eligible is not None:
+                    eligible_accounts.append(eligible)
             outcome = checked.outcome
             if isinstance(outcome, AccountUsage):
                 usages.append(outcome)
@@ -188,6 +208,7 @@ class UsageCheckService:
                 accounts,
                 tuple(eligible_accounts),
                 reference_time,
+                saved_accounts,
             ),
         )
 
@@ -240,10 +261,12 @@ class UsageCheckService:
         *,
         allow_auth_refresh: bool,
     ) -> _CheckedAccount:
-        before_credentials = account.credentials
-        before_plan = account.plan
         try:
-            report = provider.fetch_usage(account, self._http)
+            with self._open_account(account) as authenticated:
+                return self._fetch_authenticated(
+                    authenticated,
+                    provider,
+                )
         except AuthError as error:
             return self._handle_authentication(
                 account,
@@ -251,6 +274,20 @@ class UsageCheckService:
                 error,
                 allow_refresh=allow_auth_refresh,
             )
+
+    def _fetch_authenticated(
+        self,
+        authenticated: AuthenticatedSavedAccount,
+        provider: Provider,
+    ) -> _CheckedAccount:
+        """Fetch and persist provider state while one lease is active."""
+        account = authenticated.lease.account
+        before_credentials = account.credentials
+        before_plan = account.plan
+        try:
+            report = provider.fetch_usage(authenticated, self._http)
+        except AuthError:
+            raise
         except ForbiddenError as error:
             return self._handle_forbidden(
                 account,
@@ -292,6 +329,26 @@ class UsageCheckService:
         )
         return self._checked_outcome(account, outcome)
 
+    def _open_account(
+        self,
+        account: Account,
+    ) -> AbstractContextManager[AuthenticatedSavedAccount]:
+        """Open a qualified v3 lease or the isolated compatibility lease."""
+        if self._resolver is None:
+            return self._embedded_resolver.open(account)
+        saved = next(
+            (
+                candidate
+                for candidate in self._store.saved_accounts()
+                if candidate.provider_id is account.provider_id
+                and candidate.label == account.label
+            ),
+            None,
+        )
+        if saved is None:
+            raise SourceChangedError
+        return self._resolver.open(saved)
+
     def _complete_failure(
         self,
         account: Account,
@@ -323,7 +380,11 @@ class UsageCheckService:
             AuthenticationFailure | PersistenceFailure,
         ):
             return _ActivityIneligibleAccount(outcome)
-        return _ActivityEligibleAccount(account, outcome)
+        return _ActivityEligibleAccount(
+            account.label,
+            account.provider_id,
+            outcome,
+        )
 
     def _complete_fetch(
         self,

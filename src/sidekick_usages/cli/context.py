@@ -18,6 +18,7 @@ from sidekick_usages.credentials import (
     ClaudeSetupTokenRestoreService,
     CredentialService,
 )
+from sidekick_usages.credentials.authorities import credential_resolver_for
 from sidekick_usages.credentials.codex import CodexCredentialCoordinator
 from sidekick_usages.credentials.refresh import CredentialRefreshCoordinator
 from sidekick_usages.daemon import DaemonManager
@@ -419,6 +420,7 @@ def compose_app_context(
             private,
             clock=resolved_clock,
         )
+        resolver = credential_resolver_for(accounts, private)
         refresh_coordinator = CredentialRefreshCoordinator(
             accounts,
             http,
@@ -426,6 +428,7 @@ def compose_app_context(
             refresh_transactions,
             clock=resolved_clock,
             codex=codex_coordinator,
+            resolver=resolver,
         )
         credentials = CredentialService(
             accounts,
@@ -467,12 +470,14 @@ def compose_app_context(
             activity_snapshots=ActivitySnapshotStore(
                 resolved_paths.activity_snapshots
             ),
+            resolver=resolver,
         )
         heartbeat = HeartbeatService(
             accounts,
             http,
             heartbeat_map,
             clock=resolved_clock,
+            resolver=resolver,
         )
         maintenance = TokenMaintenanceService(
             accounts,

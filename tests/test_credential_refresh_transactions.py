@@ -39,6 +39,7 @@ from sidekick_usages.persistence.credential_refresh import (
 from sidekick_usages.persistence.errors import UnsafeManagedFileError
 from sidekick_usages.providers.base import (
     CredentialStageReader,
+    ProviderAuthenticatedAccount,
     ProviderFailure,
     ProviderFailureKind,
     RefreshResult,
@@ -74,7 +75,7 @@ class _BroadStageFailureProvider(_ManagedStageRefreshProvider):
 
     def refresh_credentials_in_stage(
         self,
-        account: Account,
+        account: ProviderAuthenticatedAccount,
         http: HttpClient,
         stage_home: Path,
         stage_reader: CredentialStageReader,

@@ -121,6 +121,15 @@ _MUTATIONS = (
         "import urllib3\n",
     ),
     _Mutation(
+        "DEP008",
+        "src/sidekick_usages/usage/render.py",
+        "from rich.console import Console, Group, RenderableType\n",
+        (
+            "from rich.console import Console, Group, RenderableType\n"
+            "from sidekick_usages.credentials import authorities\n"
+        ),
+    ),
+    _Mutation(
         "PATH001",
         "src/sidekick_usages/architecture_paths_fixture.py",
         "",

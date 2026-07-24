@@ -30,12 +30,14 @@ from sidekick_usages.providers.base import (
     CredentialDetection,
     CredentialStageReader,
     Provider,
+    ProviderAuthenticatedAccount,
     ProviderBoundaryError,
     ProviderFailure,
     ProviderFailureCause,
     ProviderFailureKind,
     RefreshResult,
     RefreshSuccess,
+    runtime_account,
 )
 from sidekick_usages.providers.claude.credential_schemas import (
     CLAUDE_TOKEN_PATTERN,
@@ -196,7 +198,7 @@ class ClaudeProvider(Provider):
             credentials=ClaudeSetupTokenCredentials(access_token=validated)
         )
 
-    def fetch_usage(
+    def _fetch_usage(
         self,
         account: Account,
         http: HttpClient,
@@ -204,7 +206,7 @@ class ClaudeProvider(Provider):
         """Fetch usage through the Claude credential-variant route."""
         return fetch_claude_usage(account, http)
 
-    def refresh_credentials(
+    def _refresh_credentials(
         self,
         account: Account,
         http: HttpClient,
@@ -230,7 +232,7 @@ class ClaudeProvider(Provider):
 
     def refresh_credentials_in_stage(
         self,
-        account: Account,
+        account: ProviderAuthenticatedAccount,
         http: HttpClient,
         stage_home: Path,
         stage_reader: CredentialStageReader,
@@ -242,7 +244,7 @@ class ClaudeProvider(Provider):
                 "Claude refresh staging is unavailable.",
                 cause=ProviderFailureCause.REFRESH_PROCESS_UNAVAILABLE,
             )
-        credentials = require_claude_credentials(account)
+        credentials = require_claude_credentials(runtime_account(account))
         if isinstance(credentials, ClaudeSetupTokenCredentials):
             return claude_failure(
                 ProviderFailureKind.MISSING,

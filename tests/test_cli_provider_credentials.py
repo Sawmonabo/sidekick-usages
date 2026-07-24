@@ -239,7 +239,7 @@ def test_setup_token_delegates_only_to_claude_capability(
     )
     monkeypatch.setattr(
         provider,
-        "fetch_usage",
+        "validate_credentials",
         lambda account, http: UsageReport(),
     )
     harness, store, stdout, stderr = _install_many_ctx(

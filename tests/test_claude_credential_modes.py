@@ -29,7 +29,11 @@ from sidekick_usages.providers.claude.credential_schemas import (
 )
 from sidekick_usages.providers.claude.usage import USAGE_URL
 from sidekick_usages.serialization import JsonObject
-from tests.test_support import REFERENCE_TIME, FixedClock
+from tests.test_support import (
+    REFERENCE_TIME,
+    FixedClock,
+    authenticated_account,
+)
 
 _ACCESS_EXPIRY = REFERENCE_TIME + timedelta(hours=1)
 _REFRESH_EXPIRY = REFERENCE_TIME + timedelta(days=30)
@@ -218,7 +222,7 @@ def test_login_scope_order_and_missing_identity_keep_oauth_route() -> None:
     account = _account(_login_credentials(), "native-login")
     http = _RouteHttp()
 
-    ClaudeProvider(FixedClock()).fetch_usage(account, http)
+    ClaudeProvider(FixedClock()).validate_credentials(account, http)
 
     assert http.calls == [("GET", USAGE_URL)]
 
@@ -237,7 +241,10 @@ def test_http_refresh_updates_both_expiry_lifetimes(
         "refresh_token_expires_in": 120,
     }
 
-    result = ClaudeProvider(FixedClock()).refresh_credentials(account, http)
+    result = ClaudeProvider(FixedClock()).refresh_credentials(
+        authenticated_account(account),
+        http,
+    )
 
     assert isinstance(result, RefreshSuccess)
     credentials = result.credentials
@@ -262,7 +269,10 @@ def test_http_refresh_preserves_proven_refresh_expiry_when_omitted(
         "expires_in": 60,
     }
 
-    result = ClaudeProvider(FixedClock()).refresh_credentials(account, http)
+    result = ClaudeProvider(FixedClock()).refresh_credentials(
+        authenticated_account(account),
+        http,
+    )
 
     assert isinstance(result, RefreshSuccess)
     credentials = result.credentials
@@ -289,7 +299,7 @@ def test_expired_refresh_credential_fails_before_provider_io(
     }
 
     result = ClaudeProvider(FixedClock()).refresh_credentials(
-        _account(credentials, "expired-refresh"),
+        authenticated_account(_account(credentials, "expired-refresh")),
         http,
     )
 

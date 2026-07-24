@@ -1,9 +1,11 @@
 """Policy and persistence for optional usage-window heartbeat."""
 
 from collections.abc import Iterable
+from contextlib import AbstractContextManager
 from datetime import datetime
 
 from sidekick_usages.clock import Clock
+from sidekick_usages.core.accounts import SavedAccount
 from sidekick_usages.core.expiry import (
     ExpiredExpiry,
     InvalidExpiry,
@@ -17,13 +19,22 @@ from sidekick_usages.core.types import (
     ProviderId,
     RefreshStatus,
 )
+from sidekick_usages.credentials.authorities import (
+    AuthenticatedSavedAccount,
+    CredentialResolver,
+    EmbeddedAccountResolver,
+)
 from sidekick_usages.errors import UsageError
 from sidekick_usages.heartbeat.models import (
     HeartbeatOutcome,
 )
 from sidekick_usages.heartbeat.ports import HeartbeatProvider
 from sidekick_usages.http import HttpClient
+from sidekick_usages.persistence.account_runtime_bridge import (
+    saved_account_from_runtime_state,
+)
 from sidekick_usages.persistence.account_store import AccountStore
+from sidekick_usages.persistence.errors import SourceChangedError
 
 
 class HeartbeatService:
@@ -36,11 +47,14 @@ class HeartbeatService:
         providers: dict[ProviderId, HeartbeatProvider],
         *,
         clock: Clock,
+        resolver: CredentialResolver | None = None,
     ) -> None:
         self.store = store
         self.http = http
         self._providers = dict(providers)
         self.clock = clock
+        self._resolver = resolver
+        self._embedded_resolver = EmbeddedAccountResolver()
 
     def support_label(self, account: Account) -> str:
         """Return display-ready support state without exposing adapters."""
@@ -124,7 +138,12 @@ class HeartbeatService:
             )
 
         try:
-            result = provider.run(account, self.http, target_id=target.id)
+            with self._open_account(account) as authenticated:
+                result = provider.run(
+                    authenticated,
+                    self.http,
+                    target_id=target.id,
+                )
         except UsageError as e:
             return self._record_failed(
                 account,
@@ -140,7 +159,7 @@ class HeartbeatService:
         )
         if result.reset_at:
             _set_target_reset(account, target.id, result.reset_at)
-        self.store.persist(account)
+        self._persist_state(account)
         if result.status is HeartbeatStatus.FAILED:
             exit_code = (
                 ExitCode.MANUAL_ACTION
@@ -163,6 +182,43 @@ class HeartbeatService:
             exit_code=exit_code,
             target_id=result.target_id,
             target_label=result.target_label,
+        )
+
+    def _open_account(
+        self,
+        account: Account,
+    ) -> AbstractContextManager[AuthenticatedSavedAccount]:
+        """Open one heartbeat credential lease at the provider boundary."""
+        if self._resolver is None:
+            return self._embedded_resolver.open(account)
+        saved = self._saved_account(account)
+        if saved is None:
+            raise UsageError("The heartbeat account changed.")
+        return self._resolver.open(saved)
+
+    def _persist_state(self, account: Account) -> None:
+        """Persist status without carrying credentials into the v3 index."""
+        if self._resolver is None:
+            self.store.persist(account)
+            return
+        saved = self._saved_account(account)
+        if saved is None:
+            raise SourceChangedError
+        self.store.persist_state(
+            saved_account_from_runtime_state(saved, account),
+            expected=saved,
+        )
+
+    def _saved_account(self, account: Account) -> SavedAccount | None:
+        """Return exact stable metadata for one transitional runtime view."""
+        return next(
+            (
+                candidate
+                for candidate in self.store.saved_accounts()
+                if candidate.provider_id is account.provider_id
+                and candidate.label == account.label
+            ),
+            None,
         )
 
     def _early_account_outcome(
@@ -249,7 +305,7 @@ class HeartbeatService:
                 account,
                 selected,
             )
-        self.store.persist(account)
+        self._persist_state(account)
         return HeartbeatOutcome(
             label=account.label,
             provider_id=account.provider_id,
@@ -300,7 +356,7 @@ class HeartbeatService:
             if not account.heartbeat_targets:
                 account.heartbeat_enabled = False
                 account.heartbeat_targets = None
-            self.store.persist(account)
+            self._persist_state(account)
             return HeartbeatOutcome(
                 label=account.label,
                 provider_id=account.provider_id,
@@ -308,7 +364,7 @@ class HeartbeatService:
                 message="disabled",
             )
         account.heartbeat_enabled = False
-        self.store.persist(account)
+        self._persist_state(account)
         return HeartbeatOutcome(
             label=account.label,
             provider_id=account.provider_id,
@@ -348,7 +404,7 @@ class HeartbeatService:
         account.last_heartbeat_at = reference_time
         account.last_heartbeat_status = HeartbeatStatus.UNSUPPORTED
         account.last_heartbeat_error = outcome.message
-        self.store.persist(account)
+        self._persist_state(account)
         return outcome
 
     def _unsupported_outcome(
@@ -376,7 +432,7 @@ class HeartbeatService:
         account.last_heartbeat_at = reference_time
         account.last_heartbeat_status = HeartbeatStatus.FAILED
         account.last_heartbeat_error = message
-        self.store.persist(account)
+        self._persist_state(account)
         return HeartbeatOutcome(
             label=account.label,
             provider_id=account.provider_id,

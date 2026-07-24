@@ -27,6 +27,7 @@ from sidekick_usages.providers.codex.activity import (
 )
 from sidekick_usages.providers.codex.schemas import parse_activity_response
 from sidekick_usages.serialization import JsonObject
+from tests.test_support import authenticated_account
 
 
 class CapturingHttp(HttpClient):
@@ -93,7 +94,7 @@ def test_profile_uses_exact_account_route_and_authoritative_lifetime() -> None:
         }
     )
 
-    result = CodexActivity().read(_account(), http)
+    result = CodexActivity().read(authenticated_account(_account()), http)
 
     assert result == TokenActivitySummary(
         total_tokens=7_449_473_297,
@@ -172,6 +173,6 @@ def test_authentication_failure_never_becomes_a_local_number() -> None:
     http = RejectingHttp({})
 
     with pytest.raises(AuthError):
-        CodexActivity().read(_account(), http)
+        CodexActivity().read(authenticated_account(_account()), http)
 
     assert http.request is not None

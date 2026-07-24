@@ -53,6 +53,16 @@ _RENDERER_FILES = frozenset(
         "src/sidekick_usages/usage/reset_display.py",
     }
 )
+_CREDENTIAL_LEASE_CONSUMERS = frozenset(
+    {
+        "src/sidekick_usages/cli/context.py",
+        "src/sidekick_usages/credentials/authorities.py",
+        "src/sidekick_usages/credentials/refresh.py",
+        "src/sidekick_usages/heartbeat/service.py",
+        "src/sidekick_usages/usage/activity.py",
+        "src/sidekick_usages/usage/service.py",
+    }
+)
 _PYDANTIC_OWNERS = frozenset(
     {
         "src/sidekick_usages/persistence/account_schema_v3.py",
@@ -329,6 +339,15 @@ def _check_import(
             "/http/" not in path,
             root in _TRANSPORT_ROOTS,
             "transport and retry dependencies belong to http/",
+        ),
+        (
+            "DEP008",
+            path not in _CREDENTIAL_LEASE_CONSUMERS,
+            matches(
+                module,
+                "sidekick_usages.credentials.authorities",
+            ),
+            "credential leases are private to worker service boundaries",
         ),
         (
             "PATH001",

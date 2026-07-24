@@ -135,7 +135,7 @@ class _Provider(Provider):
             credentials = CodexCredentials(access_token=token)
         return DetectedCredentials(credentials=credentials)
 
-    def fetch_usage(
+    def _fetch_usage(
         self,
         account: Account,
         http: HttpClient,
@@ -143,7 +143,7 @@ class _Provider(Provider):
         del account, http
         return UsageReport()
 
-    def refresh_credentials(
+    def _refresh_credentials(
         self,
         account: Account,
         http: HttpClient,

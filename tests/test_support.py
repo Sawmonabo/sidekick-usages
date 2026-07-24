@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Never
+from uuid import UUID, uuid5
 
 from rich.console import Console
 from typer.testing import CliRunner, Result
@@ -21,6 +22,12 @@ from sidekick_usages.cli.context import (
     UpdateContext,
 )
 from sidekick_usages.clock import Clock
+from sidekick_usages.core.accounts import (
+    AuthenticatedAccount,
+    AuthorityId,
+    SavedAccount,
+    SidekickAccountId,
+)
 from sidekick_usages.core.models import Account
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.credentials import (
@@ -37,6 +44,7 @@ from sidekick_usages.paths import (
     ApplicationPaths,
     PrivateCodexLocations,
 )
+from sidekick_usages.persistence.account_index import legacy_saved_account
 from sidekick_usages.persistence.account_store import AccountStore
 from sidekick_usages.persistence.credential_refresh import (
     CredentialRefreshTransactions,
@@ -45,7 +53,11 @@ from sidekick_usages.persistence.filesystem import PersistenceFilesystem
 from sidekick_usages.persistence.private_credentials import (
     PrivateCredentialTree,
 )
-from sidekick_usages.providers.base import Provider
+from sidekick_usages.providers.base import (
+    CredentialAccountLease,
+    Provider,
+    ProviderAuthenticatedAccount,
+)
 from sidekick_usages.providers.claude import (
     ClaudeSetupToken,
     SetupTokenCapture,
@@ -57,6 +69,35 @@ from sidekick_usages.usage import (
 )
 
 REFERENCE_TIME = datetime(2026, 6, 12, 12, 34, 56, 789000, tzinfo=UTC)
+_TEST_ACCOUNT_NAMESPACE = UUID("75cc2b04-05ea-43d2-b897-bc960c85cd63")
+_TEST_AUTHORITY_NAMESPACE = UUID("a050a4a2-357b-4923-aeed-ed5866475853")
+
+
+@dataclass(frozen=True, slots=True)
+class _TestCredentialLease:
+    """Expose a synthetic account at the provider test boundary."""
+
+    account: Account
+
+
+def saved_account(account: Account) -> SavedAccount:
+    """Return secret-free metadata for one synthetic runtime account."""
+    identity = f"{account.provider_id.value}\0{account.label}"
+    return legacy_saved_account(
+        account,
+        account_id=SidekickAccountId(
+            str(uuid5(_TEST_ACCOUNT_NAMESPACE, identity))
+        ),
+        authority_id=AuthorityId(
+            str(uuid5(_TEST_AUTHORITY_NAMESPACE, identity))
+        ),
+    )
+
+
+def authenticated_account(account: Account) -> ProviderAuthenticatedAccount:
+    """Wrap one synthetic runtime account for a direct provider test."""
+    lease: CredentialAccountLease = _TestCredentialLease(account)
+    return AuthenticatedAccount(account=saved_account(account), lease=lease)
 
 
 def make_application_paths(root: Path) -> ApplicationPaths:
