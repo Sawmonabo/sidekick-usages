@@ -1,12 +1,20 @@
-"""Secret-free saved-account and credential-authority vocabulary."""
+"""Secret-free saved-account and credential-authority models."""
 
-import unicodedata
 from dataclasses import dataclass, field, replace
 from datetime import datetime
-from enum import StrEnum
-from typing import ClassVar, Self
-from uuid import UUID
+from typing import ClassVar
 
+from sidekick_usages.core.accounts.types import (
+    AuthorityGeneration,
+    AuthorityId,
+    CredentialHealth,
+    ProviderIdentity,
+    SidekickAccountId,
+)
+from sidekick_usages.core.accounts.validation import (
+    MAX_METADATA_BYTES,
+    require_bounded_text,
+)
 from sidekick_usages.core.time import as_utc
 from sidekick_usages.core.types import (
     AccountLabel,
@@ -15,132 +23,11 @@ from sidekick_usages.core.types import (
     RefreshStatus,
 )
 
-_MAX_OPAQUE_BYTES = 4_096
-_MAX_METADATA_BYTES = 512
-
-
-def _require_bounded_text(
-    value: str,
-    *,
-    name: str,
-    maximum: int,
-) -> str:
-    """Return one nonempty bounded UTF-8 value without control characters."""
-    if not isinstance(value, str):
-        raise TypeError(f"{name} must be a string.")
-    try:
-        encoded = value.encode("utf-8")
-    except UnicodeEncodeError:
-        raise ValueError(f"{name} must be valid UTF-8.") from None
-    if not encoded or len(encoded) > maximum:
-        raise ValueError(f"{name} must be nonempty and bounded.")
-    if any(unicodedata.category(character) == "Cc" for character in value):
-        raise ValueError(f"{name} must not contain control characters.")
-    return value
-
-
-class _CanonicalUuid(str):
-    """Canonical lower-case UUID identifier."""
-
-    _name: ClassVar[str]
-
-    def __new__(cls, value: str) -> Self:
-        """Validate and construct one canonical UUID string."""
-        if not isinstance(value, str):
-            raise TypeError(f"{cls._name} must be a string.")
-        try:
-            parsed = UUID(value)
-        except ValueError, AttributeError, TypeError:
-            raise ValueError(
-                f"{cls._name} must be a canonical UUID."
-            ) from None
-        if str(parsed) != value:
-            raise ValueError(f"{cls._name} must be a canonical UUID.")
-        return super().__new__(cls, value)
-
-
-class SidekickAccountId(_CanonicalUuid):
-    """Stable Sidekick-owned account identifier."""
-
-    _name = "Sidekick account ID"
-
-
-class AuthorityId(_CanonicalUuid):
-    """Stable Sidekick-owned credential-authority identifier."""
-
-    _name = "Authority ID"
-
-
-class OperationId(_CanonicalUuid):
-    """Stable identifier for one durable Sidekick operation."""
-
-    _name = "Operation ID"
-
-
-class RequestId(_CanonicalUuid):
-    """Correlation identifier for one local control request."""
-
-    _name = "Request ID"
-
-
-@dataclass(frozen=True, slots=True)
-class ProviderIdentity:
-    """Bounded provider identity intentionally hidden from representations."""
-
-    value: str = field(repr=False)
-
-    def __post_init__(self) -> None:
-        """Require one complete bounded identity value."""
-        _require_bounded_text(
-            self.value,
-            name="Provider identity",
-            maximum=_MAX_OPAQUE_BYTES,
-        )
-
-    def __str__(self) -> str:
-        """Return the opaque value only at a qualified boundary."""
-        return self.value
-
-
-@dataclass(frozen=True, slots=True)
-class AuthorityGeneration:
-    """Bounded provider generation hidden from representations."""
-
-    value: str = field(repr=False)
-
-    def __post_init__(self) -> None:
-        """Require one complete bounded generation value."""
-        _require_bounded_text(
-            self.value,
-            name="Authority generation",
-            maximum=_MAX_OPAQUE_BYTES,
-        )
-
-    def __str__(self) -> str:
-        """Return the opaque value only at a qualified boundary."""
-        return self.value
-
-
-class CredentialHealth(StrEnum):
-    """Closed credential authority health states."""
-
-    HEALTHY = "healthy"
-    REFRESH_DUE = "refresh_due"
-    LOGIN_REQUIRED = "login_required"
-    MIGRATION_REQUIRED = "migration_required"
-    UNREADABLE = "unreadable"
-    MALFORMED = "malformed"
-    UNSUPPORTED = "unsupported"
-    RECONCILIATION_REQUIRED = "reconciliation_required"
-    UNKNOWN = "unknown"
-
-
-class MetricsFreshness(StrEnum):
-    """Closed account metrics freshness states."""
-
-    FRESH = "fresh"
-    STALE = "stale"
-    UNAVAILABLE = "unavailable"
+type ClaudeSubscriptionAuthority = (
+    ClaudeLegacyLoginAuthority | ClaudeManagedLoginAuthority
+)
+type CodexSubscriptionAuthority = CodexLegacyAuthority | CodexManagedAuthority
+type AccountAuthority = ClaudeAccountAuthority | CodexAccountAuthority
 
 
 def _optional_utc(value: datetime | None) -> datetime | None:
@@ -152,10 +39,10 @@ def _safe_metadata(value: str | None, *, name: str) -> str | None:
     """Validate one optional non-secret metadata value."""
     if value is None:
         return None
-    return _require_bounded_text(
+    return require_bounded_text(
         value,
         name=name,
-        maximum=_MAX_METADATA_BYTES,
+        maximum=MAX_METADATA_BYTES,
     )
 
 
@@ -224,16 +111,11 @@ class ClaudeManagedLoginAuthority:
     def __post_init__(self) -> None:
         """Normalize verification time and bound executable metadata."""
         object.__setattr__(self, "verified_at", as_utc(self.verified_at))
-        _require_bounded_text(
+        require_bounded_text(
             self.executable_version,
             name="Claude executable version",
-            maximum=_MAX_METADATA_BYTES,
+            maximum=MAX_METADATA_BYTES,
         )
-
-
-type ClaudeSubscriptionAuthority = (
-    ClaudeLegacyLoginAuthority | ClaudeManagedLoginAuthority
-)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -290,14 +172,11 @@ class CodexManagedAuthority:
     def __post_init__(self) -> None:
         """Normalize verification time and bound executable metadata."""
         object.__setattr__(self, "verified_at", as_utc(self.verified_at))
-        _require_bounded_text(
+        require_bounded_text(
             self.executable_version,
             name="Codex executable version",
-            maximum=_MAX_METADATA_BYTES,
+            maximum=MAX_METADATA_BYTES,
         )
-
-
-type CodexSubscriptionAuthority = CodexLegacyAuthority | CodexManagedAuthority
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -306,9 +185,6 @@ class CodexAccountAuthority:
 
     subscription: CodexSubscriptionAuthority
     provider_id: ClassVar[ProviderId] = ProviderId.CODEX
-
-
-type AccountAuthority = ClaudeAccountAuthority | CodexAccountAuthority
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -336,10 +212,10 @@ class SavedAccount:
         """Validate provider ownership and normalize operational state."""
         if self.authority.provider_id is not self.provider_id:
             raise ValueError("Account authority provider does not match.")
-        _require_bounded_text(
+        require_bounded_text(
             self.plan,
             name="Account plan",
-            maximum=_MAX_METADATA_BYTES,
+            maximum=MAX_METADATA_BYTES,
         )
         object.__setattr__(
             self,
@@ -376,10 +252,10 @@ class SavedAccount:
             normalized: list[tuple[str, datetime]] = []
             targets: set[str] = set()
             for target_id, reset_at in self.heartbeat_window_resets:
-                _require_bounded_text(
+                require_bounded_text(
                     target_id,
                     name="Heartbeat reset target",
-                    maximum=_MAX_METADATA_BYTES,
+                    maximum=MAX_METADATA_BYTES,
                 )
                 if target_id in targets:
                     raise ValueError("Heartbeat reset targets must be unique.")
@@ -392,10 +268,10 @@ class SavedAccount:
             )
         if self.heartbeat_targets is not None:
             for target_id in self.heartbeat_targets:
-                _require_bounded_text(
+                require_bounded_text(
                     target_id,
                     name="Heartbeat target",
-                    maximum=_MAX_METADATA_BYTES,
+                    maximum=MAX_METADATA_BYTES,
                 )
             if len(self.heartbeat_targets) != len(set(self.heartbeat_targets)):
                 raise ValueError("Heartbeat targets must be unique.")
@@ -420,25 +296,3 @@ class AuthenticatedAccount[LeaseT]:
 
     account: SavedAccount
     lease: LeaseT = field(repr=False)
-
-
-__all__ = [
-    "AccountAuthority",
-    "AuthenticatedAccount",
-    "AuthorityGeneration",
-    "AuthorityId",
-    "ClaudeAccountAuthority",
-    "ClaudeLegacyLoginAuthority",
-    "ClaudeManagedLoginAuthority",
-    "ClaudeSetupTokenAuthority",
-    "CodexAccountAuthority",
-    "CodexLegacyAuthority",
-    "CodexManagedAuthority",
-    "CredentialHealth",
-    "MetricsFreshness",
-    "OperationId",
-    "ProviderIdentity",
-    "RequestId",
-    "SavedAccount",
-    "SidekickAccountId",
-]

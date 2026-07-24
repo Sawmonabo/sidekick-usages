@@ -6,9 +6,9 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Protocol
 
-from sidekick_usages.core.accounts import (
+from sidekick_usages.core.accounts.models import SavedAccount
+from sidekick_usages.core.accounts.types import (
     AuthorityId,
-    SavedAccount,
     SidekickAccountId,
 )
 from sidekick_usages.core.models import (
@@ -36,11 +36,6 @@ from sidekick_usages.persistence.account_runtime_bridge import (
     require_active_authority_kind,
     runtime_account_from_saved,
     saved_account_from_runtime_state,
-)
-from sidekick_usages.persistence.account_schema_v3 import (
-    VersionThreeDocument,
-    decode_version_three,
-    encode_version_three,
 )
 from sidekick_usages.persistence.artifacts import (
     AuthorityExpectation,
@@ -76,6 +71,7 @@ from sidekick_usages.persistence.managed_migration import (
     new_account_id,
     new_authority_id,
 )
+from sidekick_usages.persistence.models.account import VersionThreeDocument
 from sidekick_usages.persistence.private_bundle_references import (
     canonical_private_accounts,
 )
@@ -84,6 +80,10 @@ from sidekick_usages.persistence.private_bundle_writes import (
 )
 from sidekick_usages.persistence.private_credentials import (
     PrivateCredentialTree,
+)
+from sidekick_usages.persistence.schema.account import (
+    decode_version_three,
+    encode_version_three,
 )
 
 

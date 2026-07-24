@@ -18,10 +18,6 @@ from sidekick_usages.persistence.assessment import (
     PersistenceIssue,
     assess_persistence,
 )
-from sidekick_usages.persistence.credential_transaction_schema import (
-    MigrationCredentialTransactionJournal,
-    decode_credential_journal,
-)
 from sidekick_usages.persistence.errors import (
     ManagedFileReadError,
     PersistenceCode,
@@ -77,8 +73,14 @@ from sidekick_usages.persistence.private_credentials import (
     PRIVATE_TRANSACTION_JOURNAL,
     PrivateCredentialTree,
 )
+from sidekick_usages.persistence.schema.transaction import (
+    MigrationCredentialTransactionJournal,
+    decode_credential_journal,
+)
 from sidekick_usages.persistence.schemas import encode_version_two
 from sidekick_usages.persistence.transforms import accounts_to_version_two
+
+__all__ = ["LocationEvidence", "LocationObserver"]
 
 _MIGRATE_ACCOUNTS_COMMAND = (
     "sidekick-usages",
@@ -349,8 +351,7 @@ class LocationObserver:
             account_digest = sha256_digest(observation.authority.content)
             private_digest = account_digest
         elif (
-            assessment.code in CURRENT_VERSION_TWO
-            and observation is not None
+            assessment.code in CURRENT_VERSION_TWO and observation is not None
         ):
             accounts = accounts_from_current(observation, assessment)
             private_auth = self.prepare_private_auth(
@@ -706,6 +707,3 @@ def _failure_assessment(
         message=str(error),
         issues=(issue,),
     )
-
-
-__all__ = ["LocationEvidence", "LocationObserver"]

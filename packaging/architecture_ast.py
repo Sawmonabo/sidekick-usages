@@ -12,6 +12,7 @@ VIOLATION_RULE_IDS = frozenset(
         "HYG002",
         "HYG003",
         "HYG004",
+        "HYG005",
         "DEP001",
         "DEP002",
         "DEP003",
@@ -101,6 +102,16 @@ class SourceUnit:
         return self.path.parts[:2] == ("src", "sidekick_usages")
 
 
+@dataclass(frozen=True, slots=True)
+class SourceMutation:
+    """One deliberate source change used to prove an architecture rule."""
+
+    rule_id: str
+    path: str
+    original: str
+    replacement: str
+
+
 def load_units(
     root: Path,
     overrides: Mapping[PurePosixPath, str],
@@ -143,7 +154,7 @@ def finding(
     )
 
 
-def imports(unit: SourceUnit) -> Iterable[tuple[ast.AST, str]]:
+def scan_imports(unit: SourceUnit) -> Iterable[tuple[ast.AST, str]]:
     """Yield resolved import candidates found in a source unit."""
     for node in ast.walk(unit.tree):
         if isinstance(node, ast.Import):
@@ -189,12 +200,12 @@ def matches_any(module: str, boundaries: Iterable[str]) -> bool:
     return any(matches(module, boundary) for boundary in boundaries)
 
 
-def name(node: ast.AST) -> str:
+def dotted_name(node: ast.AST) -> str:
     """Return a dotted name for simple name and attribute nodes."""
     if isinstance(node, ast.Name):
         return node.id
     if isinstance(node, ast.Attribute):
-        owner = name(node.value)
+        owner = dotted_name(node.value)
         return f"{owner}.{node.attr}" if owner else node.attr
     return "<dynamic>"
 
@@ -299,7 +310,8 @@ def assignment_literal(tree: ast.Module, target_name: str) -> object | None:
 def contains_call(node: ast.AST, call_name: str) -> bool:
     """Return whether a node contains a call to a simple dotted name."""
     return any(
-        isinstance(child, ast.Call) and name(child.func) == call_name
+        isinstance(child, ast.Call)
+        and dotted_name(child.func) == call_name
         for child in ast.walk(node)
     )
 

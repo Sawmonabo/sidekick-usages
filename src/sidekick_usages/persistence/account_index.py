@@ -2,17 +2,19 @@
 
 from collections.abc import Iterator
 
-from sidekick_usages.core.accounts import (
-    AuthorityGeneration,
-    AuthorityId,
+from sidekick_usages.core.accounts.models import (
     ClaudeAccountAuthority,
     ClaudeLegacyLoginAuthority,
     ClaudeSetupTokenAuthority,
     CodexAccountAuthority,
     CodexLegacyAuthority,
+    SavedAccount,
+)
+from sidekick_usages.core.accounts.types import (
+    AuthorityGeneration,
+    AuthorityId,
     CredentialHealth,
     ProviderIdentity,
-    SavedAccount,
     SidekickAccountId,
 )
 from sidekick_usages.core.expiry import KnownExpiry
@@ -23,9 +25,7 @@ from sidekick_usages.core.models import (
     CodexCredentials,
 )
 from sidekick_usages.core.types import AccountLabel, ProviderId
-from sidekick_usages.persistence.account_schema_v3 import (
-    VersionThreeDocument,
-)
+from sidekick_usages.persistence.models.account import VersionThreeDocument
 
 
 class AccountLabelAmbiguityError(ValueError):

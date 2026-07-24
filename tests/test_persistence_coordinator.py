@@ -9,7 +9,10 @@ import pytest
 
 from sidekick_usages.core.models import Account, ClaudeSetupTokenCredentials
 from sidekick_usages.core.types import AccountLabel, ExitCode
-from sidekick_usages.persistence._platform import FilesystemFamily
+from sidekick_usages.persistence._platform import (
+    FilesystemFamily,
+    FilesystemQualification,
+)
 from sidekick_usages.persistence.artifacts import (
     ArtifactGrammar,
     AuthorityExpectation,
@@ -30,10 +33,7 @@ from sidekick_usages.persistence.errors import (
     SourceChangedError,
     UnsafeManagedFileError,
 )
-from sidekick_usages.persistence.filesystem import (
-    FilesystemQualification,
-    PersistenceFilesystem,
-)
+from sidekick_usages.persistence.filesystem import PersistenceFilesystem
 from sidekick_usages.persistence.inventory import OrphanedPrivateCredentials
 from sidekick_usages.persistence.migrations.account import (
     AccountMigrationCoordinator,

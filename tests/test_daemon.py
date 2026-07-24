@@ -5,16 +5,18 @@ from pathlib import Path
 
 import pytest
 
-import sidekick_usages.daemon as daemon_module
-from sidekick_usages.daemon import (
+from sidekick_usages.daemon import scheduled_maintenance
+from sidekick_usages.daemon.models.maintenance import (
     CommandResult,
-    DaemonManager,
-    DaemonOperation,
     DaemonOperationResult,
     PlatformInfo,
+)
+from sidekick_usages.daemon.scheduled_maintenance import (
+    DaemonManager,
     SystemCommandRunner,
     resolve_maintenance_command,
 )
+from sidekick_usages.daemon.types.maintenance import DaemonOperation
 from sidekick_usages.errors import UsageError
 from sidekick_usages.scheduler_quiescence import (
     CRON_BEGIN,
@@ -167,7 +169,7 @@ def test_system_command_runner_controls_child_stdin(
         calls.append((command, input, stdin))
         return subprocess.CompletedProcess(command, 0, "output", "")
 
-    monkeypatch.setattr(daemon_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "run", fake_run)
 
     result = SystemCommandRunner().run(argv, input_text=input_text)
 
@@ -391,7 +393,8 @@ def test_default_maintenance_command_runs_maintain_quiet(
 ) -> None:
     """New daemon installs run the combined maintenance command."""
     monkeypatch.setattr(
-        "sidekick_usages.daemon.shutil.which",
+        scheduled_maintenance.shutil,
+        "which",
         lambda name: (
             "/usr/local/bin/sidekick-usages"
             if name == "sidekick-usages"

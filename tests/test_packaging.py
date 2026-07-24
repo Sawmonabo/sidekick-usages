@@ -120,7 +120,7 @@ def test_exact_wheel_selection_and_member_contract(tmp_path: Path) -> None:
         "sidekick_usages/persistence/credential_refresh_artifacts.py",
         "sidekick_usages/persistence/credential_refresh_merge.py",
         "sidekick_usages/persistence/credential_refresh_private_stage.py",
-        "sidekick_usages/persistence/credential_refresh_schema.py",
+        "sidekick_usages/persistence/schema/refresh.py",
         "sidekick_usages/persistence/credential_refresh_stage.py",
         "sidekick_usages/persistence/filesystem_access.py",
         "sidekick_usages/persistence/migrations/__init__.py",

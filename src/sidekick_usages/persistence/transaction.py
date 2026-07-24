@@ -11,14 +11,14 @@ from sidekick_usages.persistence.artifacts import (
     ManagedArtifact,
     Sha256Digest,
 )
-from sidekick_usages.persistence.filesystem import PersistenceFilesystem
+from sidekick_usages.persistence.private_filesystem import PrivateFilesystem
+from sidekick_usages.persistence.types.transaction import (
+    AccountTransactionFilesystem,
+)
 
+_TRANSACTION_KEY = object()
 
-class _TransactionKey:
-    """Module-private construction authority."""
-
-
-_TRANSACTION_KEY = _TransactionKey()
+__all__ = ["PersistenceTransaction"]
 
 
 class PersistenceTransaction:
@@ -28,8 +28,8 @@ class PersistenceTransaction:
 
     def __init__(
         self,
-        filesystem: PersistenceFilesystem,
-        key: _TransactionKey,
+        filesystem: PrivateFilesystem,
+        key: object,
     ) -> None:
         if key is not _TRANSACTION_KEY:
             raise ValueError(
@@ -46,7 +46,10 @@ class PersistenceTransaction:
     ) -> ManagedArtifact:
         """Publish or exactly reuse a content-addressed source snapshot."""
         with self._operation():
-            return self._filesystem._publish_immutable(generation, source)
+            return self._account_filesystem()._publish_immutable(
+                generation,
+                source,
+            )
 
     def publish_migration_snapshot(
         self,
@@ -55,7 +58,7 @@ class PersistenceTransaction:
     ) -> ManagedArtifact:
         """Publish validated bytes copied from another locked authority."""
         with self._operation():
-            return self._filesystem._publish_migration_snapshot(
+            return self._account_filesystem()._publish_migration_snapshot(
                 generation,
                 payload,
             )
@@ -67,7 +70,7 @@ class PersistenceTransaction:
     ) -> ManagedArtifact:
         """Publish or exactly reuse one canonical prototype receipt."""
         with self._operation():
-            return self._filesystem._publish_receipt(
+            return self._account_filesystem()._publish_receipt(
                 prototype_digest,
                 payload,
             )
@@ -80,7 +83,7 @@ class PersistenceTransaction:
     ) -> FileSnapshot:
         """Commit and prove exact authoritative bytes."""
         with self._operation():
-            return self._filesystem._commit_authority(
+            return self._account_filesystem()._commit_authority(
                 generation,
                 payload,
                 expected_source,
@@ -97,7 +100,12 @@ class PersistenceTransaction:
     def full_reset(self, expected_source: ExpectedAuthority) -> None:
         """Delete all credentials, then the exact authority last."""
         with self._operation():
-            self._filesystem._full_reset(expected_source)
+            self._account_filesystem()._full_reset(expected_source)
+
+    def _account_filesystem(self) -> AccountTransactionFilesystem:
+        if not isinstance(self._filesystem, AccountTransactionFilesystem):
+            raise TypeError("Account mutations require an account filesystem.")
+        return self._filesystem
 
     @contextmanager
     def _operation(self) -> Iterator[None]:
@@ -114,9 +122,6 @@ class PersistenceTransaction:
 
 
 def _begin_transaction(
-    filesystem: PersistenceFilesystem,
+    filesystem: PrivateFilesystem,
 ) -> PersistenceTransaction:
     return PersistenceTransaction(filesystem, _TRANSACTION_KEY)
-
-
-__all__ = ["PersistenceTransaction"]

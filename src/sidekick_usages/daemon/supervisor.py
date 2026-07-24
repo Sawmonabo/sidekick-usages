@@ -1,461 +1,231 @@
-"""Authenticated local connection and socket lifecycle boundaries."""
+"""Selector-driven resident supervisor and readiness owner."""
 
-import errno
-import os
+import selectors
 import socket
-import stat
-import sys
-from collections.abc import Iterator
 from contextlib import suppress
-from dataclasses import dataclass
-from enum import StrEnum
-from pathlib import Path
-from typing import Protocol
+from dataclasses import replace
+from threading import (
+    BoundedSemaphore,
+    Event,
+    Lock,
+    Thread,
+    current_thread,
+)
 
 from sidekick_usages import __version__
-from sidekick_usages.core.accounts import RequestId
-from sidekick_usages.daemon.peer import (
-    OperatingSystemPeerVerifier,
-    PeerVerificationError,
-    PeerVerifier,
+from sidekick_usages.clock import Clock
+from sidekick_usages.daemon.control import LocalControlServer
+from sidekick_usages.daemon.models.service import ServiceState
+from sidekick_usages.daemon.protocol import PROTOCOL_VERSION
+from sidekick_usages.daemon.recovery import ActivationRecoveryScheduler
+from sidekick_usages.daemon.scheduler import DurableScheduler
+from sidekick_usages.daemon.types.service import (
+    PackageVersion,
+    ServicePhase,
 )
-from sidekick_usages.daemon.protocol import (
-    MAX_REQUESTS_PER_CONNECTION,
-    PROTOCOL_VERSION,
-    UNATTRIBUTED_REQUEST_ID,
-    AcceptedPayload,
-    ConnectionClosedError,
-    ControlEvent,
-    ControlRequest,
-    EventKind,
-    EventPayload,
-    FailedPayload,
-    FramedTransport,
-    IncompatiblePayload,
-    ProtocolErrorCode,
-    ProtocolFailureError,
-    RequestKind,
-)
-
-_RUNTIME_DIRECTORY_MODE = 0o700
-_SOCKET_MODE = 0o600
-_LISTEN_BACKLOG = 16
-
-
-class ControlDispatcher(Protocol):
-    """Dispatch already-authenticated closed control requests."""
-
-    def dispatch(self, request: ControlRequest) -> Iterator[ControlEvent]:
-        """Yield sanitized events for one accepted request."""
-
-    def cancel(self, request_id: RequestId) -> None:
-        """Cancel work whose event stream disconnected."""
-
-
-class EndpointFailureCode(StrEnum):
-    """Safe local socket lifecycle failures."""
-
-    FEATURE_DISABLED = "feature_disabled"
-    UNSAFE_RUNTIME_DIRECTORY = "unsafe_runtime_directory"
-    UNSAFE_SOCKET_PATH = "unsafe_socket_path"
-    SOCKET_IN_USE = "socket_in_use"
-
-
-class EndpointError(OSError):
-    """The local control endpoint cannot be created safely."""
-
-    def __init__(self, code: EndpointFailureCode) -> None:
-        self.code = code
-        super().__init__(code.value)
-
-
-@dataclass(frozen=True, slots=True)
-class _SocketIdentity:
-    device: int
-    inode: int
-
-
-class ControlConnection:
-    """Serve one peer-proven, bounded local control connection."""
-
-    def __init__(
-        self,
-        connection: socket.socket,
-        peer_verifier: PeerVerifier,
-        dispatcher: ControlDispatcher,
-        *,
-        package_version: str = __version__,
-    ) -> None:
-        self._connection = connection
-        self._peer_verifier = peer_verifier
-        self._dispatcher = dispatcher
-        self._package_version = package_version
-
-    def serve(self) -> None:
-        """Authenticate first, negotiate versions, then dispatch actions."""
-        try:
-            self._peer_verifier.verify(self._connection)
-        except PeerVerificationError:
-            self._connection.close()
-            return
-
-        transport = FramedTransport(self._connection)
-        try:
-            handshake = self._receive_request(transport)
-            if handshake is None:
-                return
-            if handshake.kind is not RequestKind.HANDSHAKE:
-                self._send_failure(
-                    transport,
-                    handshake.request_id,
-                    ProtocolErrorCode.HANDSHAKE_REQUIRED,
-                )
-                return
-            incompatibility = self._incompatibility(handshake)
-            if incompatibility is not None:
-                self._send_incompatible(
-                    transport,
-                    handshake.request_id,
-                    incompatibility,
-                )
-                return
-            transport.send_event(
-                self.event(
-                    handshake.request_id,
-                    EventKind.ACCEPTED,
-                    AcceptedPayload(operation_id=None),
-                )
-            )
-            self._serve_actions(transport)
-        except BrokenPipeError, ConnectionClosedError, ConnectionResetError:
-            return
-        finally:
-            transport.close()
-
-    def event(
-        self,
-        request_id: RequestId,
-        kind: EventKind,
-        payload: EventPayload,
-    ) -> ControlEvent:
-        """Create one service-owned event envelope."""
-        return ControlEvent(
-            protocol_version=PROTOCOL_VERSION,
-            request_id=request_id,
-            kind=kind,
-            payload=payload,
-            package_version=self._package_version,
-        )
-
-    def _serve_actions(self, transport: FramedTransport) -> None:
-        request_count = 1
-        while True:
-            request = self._receive_request(transport)
-            if request is None:
-                return
-            request_count += 1
-            if request_count > MAX_REQUESTS_PER_CONNECTION:
-                self._send_failure(
-                    transport,
-                    request.request_id,
-                    ProtocolErrorCode.TOO_MANY_REQUESTS,
-                )
-                return
-            if request.kind is RequestKind.HANDSHAKE:
-                self._send_failure(
-                    transport,
-                    request.request_id,
-                    ProtocolErrorCode.DISPATCH_FAILED,
-                )
-                return
-            incompatibility = self._incompatibility(request)
-            if incompatibility is not None:
-                self._send_incompatible(
-                    transport,
-                    request.request_id,
-                    incompatibility,
-                )
-                return
-            if not self._dispatch(transport, request):
-                return
-
-    def _receive_request(
-        self,
-        transport: FramedTransport,
-    ) -> ControlRequest | None:
-        try:
-            return transport.receive_request()
-        except ProtocolFailureError as error:
-            with suppress(OSError):
-                self._send_failure(
-                    transport,
-                    UNATTRIBUTED_REQUEST_ID,
-                    error.code,
-                )
-            return None
-
-    def _dispatch(
-        self,
-        transport: FramedTransport,
-        request: ControlRequest,
-    ) -> bool:
-        terminal = False
-        try:
-            for event in self._dispatcher.dispatch(request):
-                if not self._valid_dispatch_event(request, event):
-                    self._send_failure(
-                        transport,
-                        request.request_id,
-                        ProtocolErrorCode.DISPATCH_FAILED,
-                    )
-                    return False
-                transport.send_event(event)
-                terminal = event.kind in {
-                    EventKind.COMPLETED,
-                    EventKind.FAILED,
-                    EventKind.INCOMPATIBLE,
-                    EventKind.SERVICE_STOPPING,
-                    EventKind.SNAPSHOT,
-                }
-                if terminal:
-                    return True
-            if not terminal:
-                self._send_failure(
-                    transport,
-                    request.request_id,
-                    ProtocolErrorCode.DISPATCH_FAILED,
-                )
-                return False
-        except BrokenPipeError, ConnectionResetError:
-            self._dispatcher.cancel(request.request_id)
-            return False
-        except Exception:
-            with suppress(OSError):
-                self._send_failure(
-                    transport,
-                    request.request_id,
-                    ProtocolErrorCode.DISPATCH_FAILED,
-                )
-            return False
-
-    def _valid_dispatch_event(
-        self,
-        request: ControlRequest,
-        event: ControlEvent,
-    ) -> bool:
-        return (
-            event.request_id == request.request_id
-            and event.protocol_version == PROTOCOL_VERSION
-            and event.package_version == self._package_version
-        )
-
-    def _incompatibility(
-        self,
-        request: ControlRequest,
-    ) -> ProtocolErrorCode | None:
-        if request.protocol_version != PROTOCOL_VERSION:
-            return ProtocolErrorCode.INCOMPATIBLE_PROTOCOL
-        if request.package_version != self._package_version:
-            return ProtocolErrorCode.INCOMPATIBLE_VERSION
-        return None
-
-    def _send_failure(
-        self,
-        transport: FramedTransport,
-        request_id: RequestId,
-        code: ProtocolErrorCode,
-    ) -> None:
-        transport.send_event(
-            self.event(
-                request_id,
-                EventKind.FAILED,
-                FailedPayload(operation_id=None, code=code),
-            )
-        )
-
-    def _send_incompatible(
-        self,
-        transport: FramedTransport,
-        request_id: RequestId,
-        code: ProtocolErrorCode,
-    ) -> None:
-        transport.send_event(
-            self.event(
-                request_id,
-                EventKind.INCOMPATIBLE,
-                IncompatiblePayload(code),
-            )
-        )
-
-
-class LocalControlServer:
-    """Owner-only Unix socket listener for one per-user supervisor."""
-
-    def __init__(
-        self,
-        runtime_directory: Path,
-        socket_path: Path,
-        dispatcher: ControlDispatcher,
-        *,
-        peer_verifier: PeerVerifier | None = None,
-        package_version: str = __version__,
-    ) -> None:
-        self._runtime_directory = runtime_directory
-        self._socket_path = socket_path
-        self._dispatcher = dispatcher
-        self._peer_verifier = (
-            OperatingSystemPeerVerifier()
-            if peer_verifier is None
-            else peer_verifier
-        )
-        self._package_version = package_version
-        self._listener: socket.socket | None = None
-        self._socket_identity: _SocketIdentity | None = None
-
-    def open(self) -> None:
-        """Create and listen on one qualified owner-only Unix socket."""
-        if sys.platform == "win32" or not hasattr(socket, "AF_UNIX"):
-            raise EndpointError(EndpointFailureCode.FEATURE_DISABLED)
-        self._prepare_runtime_directory()
-        self._remove_stale_socket()
-        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        bound_identity: _SocketIdentity | None = None
-        try:
-            listener.bind(str(self._socket_path))
-            os.chmod(self._socket_path, _SOCKET_MODE)
-            metadata = self._socket_path.lstat()
-            bound_identity = _SocketIdentity(
-                metadata.st_dev,
-                metadata.st_ino,
-            )
-            if (
-                metadata.st_uid != os.geteuid()
-                or stat.S_IMODE(metadata.st_mode) != _SOCKET_MODE
-                or not stat.S_ISSOCK(metadata.st_mode)
-            ):
-                raise EndpointError(EndpointFailureCode.UNSAFE_SOCKET_PATH)
-            listener.listen(_LISTEN_BACKLOG)
-        except EndpointError, OSError:
-            listener.close()
-            if bound_identity is not None:
-                self._remove_socket(bound_identity)
-            raise
-        self._listener = listener
-        self._socket_identity = bound_identity
-
-    def serve_once(self) -> None:
-        """Accept and fully serve one local connection."""
-        listener = self._listener
-        if listener is None:
-            raise RuntimeError("The local control server is not open.")
-        connection, _address = listener.accept()
-        ControlConnection(
-            connection,
-            self._peer_verifier,
-            self._dispatcher,
-            package_version=self._package_version,
-        ).serve()
-
-    def close(self) -> None:
-        """Close the listener and remove only its exact socket inode."""
-        listener = self._listener
-        self._listener = None
-        if listener is not None:
-            listener.close()
-        identity = self._socket_identity
-        self._socket_identity = None
-        if identity is None:
-            return
-        try:
-            metadata = self._socket_path.lstat()
-        except FileNotFoundError:
-            return
-        if (
-            stat.S_ISSOCK(metadata.st_mode)
-            and metadata.st_dev == identity.device
-            and metadata.st_ino == identity.inode
-        ):
-            self._socket_path.unlink()
-
-    def _prepare_runtime_directory(self) -> None:
-        self._runtime_directory.mkdir(
-            mode=_RUNTIME_DIRECTORY_MODE,
-            parents=True,
-            exist_ok=True,
-        )
-        try:
-            metadata = self._runtime_directory.lstat()
-        except OSError:
-            raise EndpointError(
-                EndpointFailureCode.UNSAFE_RUNTIME_DIRECTORY
-            ) from None
-        if (
-            not stat.S_ISDIR(metadata.st_mode)
-            or stat.S_ISLNK(metadata.st_mode)
-            or metadata.st_uid != os.geteuid()
-        ):
-            raise EndpointError(EndpointFailureCode.UNSAFE_RUNTIME_DIRECTORY)
-        if stat.S_IMODE(metadata.st_mode) != _RUNTIME_DIRECTORY_MODE:
-            os.chmod(self._runtime_directory, _RUNTIME_DIRECTORY_MODE)
-            hardened = self._runtime_directory.lstat()
-            if (
-                stat.S_IMODE(hardened.st_mode) != _RUNTIME_DIRECTORY_MODE
-                or hardened.st_uid != os.geteuid()
-            ):
-                raise EndpointError(
-                    EndpointFailureCode.UNSAFE_RUNTIME_DIRECTORY
-                )
-        if self._socket_path.parent != self._runtime_directory:
-            raise EndpointError(EndpointFailureCode.UNSAFE_SOCKET_PATH)
-
-    def _remove_stale_socket(self) -> None:
-        try:
-            metadata = self._socket_path.lstat()
-        except FileNotFoundError:
-            return
-        if (
-            not stat.S_ISSOCK(metadata.st_mode)
-            or metadata.st_uid != os.geteuid()
-        ):
-            raise EndpointError(EndpointFailureCode.UNSAFE_SOCKET_PATH)
-        probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        try:
-            probe.connect(str(self._socket_path))
-        except OSError as error:
-            if error.errno not in {errno.ECONNREFUSED, errno.ENOENT}:
-                raise EndpointError(
-                    EndpointFailureCode.UNSAFE_SOCKET_PATH
-                ) from None
-        else:
-            raise EndpointError(EndpointFailureCode.SOCKET_IN_USE)
-        finally:
-            probe.close()
-        current = self._socket_path.lstat()
-        if (
-            current.st_dev != metadata.st_dev
-            or current.st_ino != metadata.st_ino
-            or not stat.S_ISSOCK(current.st_mode)
-        ):
-            raise EndpointError(EndpointFailureCode.UNSAFE_SOCKET_PATH)
-        self._socket_path.unlink()
-
-    def _remove_socket(self, identity: _SocketIdentity) -> None:
-        try:
-            metadata = self._socket_path.lstat()
-        except FileNotFoundError:
-            return
-        if (
-            stat.S_ISSOCK(metadata.st_mode)
-            and metadata.st_dev == identity.device
-            and metadata.st_ino == identity.inode
-        ):
-            self._socket_path.unlink()
-
+from sidekick_usages.persistence.service_state import ServiceStateStore
 
 __all__ = [
-    "ControlConnection",
-    "ControlDispatcher",
-    "EndpointError",
-    "EndpointFailureCode",
-    "LocalControlServer",
+    "SupervisorRuntime",
+    "WakeupChannel",
 ]
+
+_MAX_CONTROL_CONNECTIONS = 4
+_CONNECTION_JOIN_SECONDS = 1.0
+_WAKE_BYTE = b"\x00"
+_WAKE_READ_BYTES = 4096
+
+
+class WakeupChannel:
+    """Coalescing explicit wakeup descriptor for selector work."""
+
+    def __init__(self) -> None:
+        self._reader, self._writer = socket.socketpair()
+        self._reader.setblocking(False)
+        self._writer.setblocking(False)
+        self._closed = False
+
+    def fileno(self) -> int:
+        """Return the selector-readable descriptor."""
+        return self._reader.fileno()
+
+    def notify(self) -> None:
+        """Wake the selector once; a pending byte already suffices."""
+        if self._closed:
+            return
+        with suppress(BlockingIOError, OSError):
+            self._writer.send(_WAKE_BYTE)
+
+    def drain(self) -> None:
+        """Drain all currently coalesced wake bytes."""
+        while not self._closed:
+            try:
+                chunk = self._reader.recv(_WAKE_READ_BYTES)
+            except BlockingIOError:
+                return
+            if not chunk:
+                return
+
+    def close(self) -> None:
+        """Close both descriptors exactly once."""
+        if self._closed:
+            return
+        self._closed = True
+        self._reader.close()
+        self._writer.close()
+
+
+class _ConnectionGroup:
+    """Bound concurrent authenticated connection threads."""
+
+    def __init__(self, server: LocalControlServer) -> None:
+        self._server = server
+        self._capacity = BoundedSemaphore(_MAX_CONTROL_CONNECTIONS)
+        self._lock = Lock()
+        self._connections: set[socket.socket] = set()
+        self._threads: set[Thread] = set()
+
+    def accept_ready(self) -> None:
+        """Accept one selector-ready peer or reject excess capacity."""
+        connection = self._server.accept_connection()
+        if connection is None:
+            return
+        if not self._capacity.acquire(blocking=False):
+            connection.close()
+            return
+        thread = Thread(
+            target=self._serve,
+            args=(connection,),
+            daemon=True,
+            name="sidekick-control",
+        )
+        with self._lock:
+            self._connections.add(connection)
+            self._threads.add(thread)
+        thread.start()
+
+    def close(self) -> None:
+        """Close active streams and join their bounded handler threads."""
+        with self._lock:
+            connections = tuple(self._connections)
+            threads = tuple(self._threads)
+        for connection in connections:
+            with suppress(OSError):
+                connection.shutdown(socket.SHUT_RDWR)
+            connection.close()
+        for thread in threads:
+            thread.join(timeout=_CONNECTION_JOIN_SECONDS)
+
+    def _serve(self, connection: socket.socket) -> None:
+        try:
+            self._server.serve_connection(connection)
+        finally:
+            with self._lock:
+                self._connections.discard(connection)
+                self._threads.discard(current_thread())
+            self._capacity.release()
+
+
+class SupervisorRuntime:
+    """Own the local selector, durable scheduler, and service truth."""
+
+    def __init__(
+        self,
+        server: LocalControlServer,
+        scheduler: DurableScheduler,
+        recovery: ActivationRecoveryScheduler,
+        service_state: ServiceStateStore,
+        clock: Clock,
+        wakeup: WakeupChannel,
+        stop_requested: Event,
+        *,
+        package_version: str = __version__,
+    ) -> None:
+        self._server = server
+        self._scheduler = scheduler
+        self._recovery = recovery
+        self._service_state = service_state
+        self._clock = clock
+        self._wakeup = wakeup
+        self._stop_requested = stop_requested
+        self._package_version = PackageVersion(package_version)
+        self._queue_recovered = False
+
+    def run(self) -> None:
+        """Run until explicit shutdown using only events and deadlines."""
+        connections = _ConnectionGroup(self._server)
+        self._publish(ServicePhase.STARTING)
+        self._server.open()
+        selector = selectors.DefaultSelector()
+        selector.register(self._server, selectors.EVENT_READ, "control")
+        selector.register(self._wakeup, selectors.EVENT_READ, "wakeup")
+        try:
+            self.recover()
+            self.run_cycle()
+            while not self._stop_requested.is_set():
+                timeout = self._scheduler.next_wait_seconds()
+                for key, _mask in selector.select(timeout):
+                    if key.data == "control":
+                        connections.accept_ready()
+                    else:
+                        self._wakeup.drain()
+                self.run_cycle()
+        finally:
+            self._publish(ServicePhase.STOPPING)
+            connections.close()
+            self._scheduler.shutdown()
+            selector.close()
+            self._server.close()
+            self._wakeup.close()
+
+    def recover(self) -> None:
+        """Recover durable queue and journal work before readiness."""
+        self._scheduler.recover()
+        self._queue_recovered = True
+        self._recovery.enroll(self._clock.now())
+
+    def run_cycle(self) -> None:
+        """Collect, dispatch, and publish one event-driven work cycle."""
+        self._scheduler.collect()
+        self._scheduler.dispatch_due()
+        self._publish(
+            ServicePhase.READY
+            if self._recovery.reconciled()
+            else ServicePhase.DEGRADED,
+            failure_code=(
+                None
+                if self._recovery.reconciled()
+                else "reconciliation_required"
+            ),
+        )
+
+    def _publish(
+        self,
+        phase: ServicePhase,
+        *,
+        failure_code: str | None = None,
+    ) -> None:
+        current = self._service_state.load()
+        journals_reconciled = self._recovery.reconciled()
+        candidate = ServiceState(
+            protocol_version=PROTOCOL_VERSION,
+            package_version=self._package_version,
+            phase=phase,
+            revision=1 if current is None else current.revision + 1,
+            observed_at=self._clock.now(),
+            queue_recovered=self._queue_recovered,
+            journals_reconciled=journals_reconciled,
+            active_workers=self._scheduler.active_count,
+            failure_code=failure_code,
+        )
+        if (
+            current is not None
+            and replace(
+                candidate,
+                revision=current.revision,
+                observed_at=current.observed_at,
+            )
+            == current
+        ):
+            return
+        self._service_state.save(candidate)

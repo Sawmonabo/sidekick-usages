@@ -18,6 +18,10 @@ from sidekick_usages.persistence.credential_ownership import (
     reject_duplicate_credential_ownership,
 )
 from sidekick_usages.persistence.errors import InvalidSchemaError
+from sidekick_usages.persistence.time_codec import (
+    canonical_timestamp,
+    parse_canonical_timestamp,
+)
 from sidekick_usages.serialization import JsonObject
 
 _CURRENT_SCHEMA_VERSION = 2
@@ -66,7 +70,7 @@ def _state_values(
         ),
         heartbeat_window_resets=(
             tuple(
-                (target_id, _schemas._parse_canonical_timestamp(reset_at))
+                (target_id, parse_canonical_timestamp(reset_at))
                 for target_id, reset_at in heartbeat_window_resets.items()
             )
             if heartbeat_window_resets is not None
@@ -120,12 +124,10 @@ def _claude_record(
             last_heartbeat_error=state.last_heartbeat_error,
             credential_kind=_schemas.ClaudeCredentialKind.SETUP_TOKEN,
         )
-    access_expiry = _schemas._parse_canonical_timestamp(
-        model.access_expires_at
-    )
+    access_expiry = parse_canonical_timestamp(model.access_expires_at)
     _schemas._expiry_native_value(ProviderId.CLAUDE, access_expiry)
     refresh_expiry = (
-        _schemas._parse_canonical_timestamp(model.refresh_expires_at)
+        parse_canonical_timestamp(model.refresh_expires_at)
         if model.refresh_expires_at is not None
         else None
     )
@@ -253,7 +255,7 @@ def _current_record_object(
         raise InvalidSchemaError
     _schemas._expiry_native_value(ProviderId.CLAUDE, record.expires_at)
     refresh_expiry = (
-        _schemas._canonical_timestamp(record.refresh_expires_at)
+        canonical_timestamp(record.refresh_expires_at)
         if record.refresh_expires_at is not None
         else None
     )
@@ -268,7 +270,7 @@ def _current_record_object(
         "credential_kind": "subscription_login",
         "access_token": record.access_token,
         "refresh_token": record.refresh_token,
-        "access_expires_at": _schemas._canonical_timestamp(record.expires_at),
+        "access_expires_at": canonical_timestamp(record.expires_at),
         "refresh_expires_at": refresh_expiry,
         "scopes": list(record.scopes),
         "claude_identity": identity,

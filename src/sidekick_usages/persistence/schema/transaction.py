@@ -2,6 +2,7 @@
 
 import json
 import re
+from functools import cache
 from typing import Annotated, Literal, Self
 
 from pydantic import (
@@ -24,16 +25,16 @@ from sidekick_usages.persistence.artifacts import (
     require_safe_basename,
 )
 from sidekick_usages.persistence.errors import InterruptedArtifactError
+from sidekick_usages.persistence.limits import (
+    MAX_ACCOUNTS,
+    MAX_DOCUMENT_BYTES,
+)
 from sidekick_usages.persistence.private_bundle_paths import (
     PRIVATE_TRANSACTION_DIRECTORY,
     PRIVATE_TRANSACTION_JOURNAL,
     portable_private_bundle_path_key,
     private_bundle_relative_components,
     require_portable_unique_private_bundle_paths,
-)
-from sidekick_usages.persistence.schemas import (
-    MAX_ACCOUNTS,
-    MAX_DOCUMENT_BYTES,
 )
 from sidekick_usages.serialization import JsonDecodeError, decode_json_value
 
@@ -43,6 +44,23 @@ _MAX_TRANSACTION_FILES = MAX_ACCOUNTS * _MAX_PRIVATE_FILES_PER_BUNDLE
 _MAX_BASENAME_BYTES = 255
 _STAGE_PATTERN = re.compile(r"stage-[0-9]{4}\.bin\Z", re.ASCII)
 _BACKUP_PATTERN = re.compile(r"backup-[0-9]{4}\.bin\Z", re.ASCII)
+
+type _SafeBasename = Annotated[str, AfterValidator(_safe_basename)]
+type _Digest = Annotated[str, AfterValidator(_digest)]
+type _StageBasename = Annotated[str, AfterValidator(_stage_basename)]
+type _BackupBasename = Annotated[str, AfterValidator(_backup_basename)]
+type _RelativeBundlePath = Annotated[
+    str,
+    AfterValidator(_relative_bundle_path),
+]
+type JournalAuthority = Annotated[
+    AbsentAuthority | PresentAuthority,
+    Field(discriminator="kind"),
+]
+type CredentialJournal = Annotated[
+    CredentialTransactionJournal | MigrationCredentialTransactionJournal,
+    Field(discriminator="journal_version"),
+]
 
 
 def _safe_basename(value: str) -> str:
@@ -74,16 +92,6 @@ def _relative_bundle_path(value: str) -> str:
     return value
 
 
-type _SafeBasename = Annotated[str, AfterValidator(_safe_basename)]
-type _Digest = Annotated[str, AfterValidator(_digest)]
-type _StageBasename = Annotated[str, AfterValidator(_stage_basename)]
-type _BackupBasename = Annotated[str, AfterValidator(_backup_basename)]
-type _RelativeBundlePath = Annotated[
-    str,
-    AfterValidator(_relative_bundle_path),
-]
-
-
 class AbsentAuthority(BaseModel):
     """Journal authority expectation for first persistence."""
 
@@ -102,12 +110,6 @@ class PresentAuthority(BaseModel):
     inode: int = Field(ge=0)
     size: int = Field(ge=0, le=MAX_DOCUMENT_BYTES)
     sha256: _Digest
-
-
-type JournalAuthority = Annotated[
-    AbsentAuthority | PresentAuthority,
-    Field(discriminator="kind"),
-]
 
 
 class CredentialSourceGuardRecord(BaseModel):
@@ -314,13 +316,10 @@ class MigrationCredentialTransactionJournal(BaseModel):
         return self
 
 
-type CredentialJournal = Annotated[
-    CredentialTransactionJournal | MigrationCredentialTransactionJournal,
-    Field(discriminator="journal_version"),
-]
-
-
-_JOURNAL_ADAPTER = TypeAdapter(CredentialJournal)
+@cache
+def _journal_adapter() -> TypeAdapter[CredentialJournal]:
+    """Build the strict journal adapter once without a late global."""
+    return TypeAdapter(CredentialJournal)
 
 
 def journal_authority(expected: ExpectedAuthority) -> JournalAuthority:
@@ -367,21 +366,6 @@ def decode_credential_journal(
             separators=(",", ":"),
             sort_keys=True,
         )
-        return _JOURNAL_ADAPTER.validate_json(canonical, strict=True)
+        return _journal_adapter().validate_json(canonical, strict=True)
     except JsonDecodeError, ValidationError:
         raise InterruptedArtifactError(PRIVATE_TRANSACTION_JOURNAL) from None
-
-
-__all__ = [
-    "AbsentAuthority",
-    "CredentialJournal",
-    "CredentialSourceGuardRecord",
-    "CredentialTransactionFile",
-    "CredentialTransactionJournal",
-    "MigrationCredentialTransactionFile",
-    "MigrationCredentialTransactionJournal",
-    "PresentAuthority",
-    "decode_credential_journal",
-    "encode_credential_journal",
-    "journal_authority",
-]

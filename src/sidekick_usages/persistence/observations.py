@@ -5,9 +5,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 
-from sidekick_usages.persistence.account_schema_v3 import (
-    VersionThreeDocument,
-)
+from sidekick_usages.persistence.models.account import VersionThreeDocument
 from sidekick_usages.persistence.schemas import (
     GenerationZeroDocument,
     PrototypeDocument,

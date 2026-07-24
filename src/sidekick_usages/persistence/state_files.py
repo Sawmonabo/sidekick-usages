@@ -12,8 +12,14 @@ from sidekick_usages.persistence.errors import (
     PersistenceCode,
     PersistenceError,
 )
-from sidekick_usages.persistence.filesystem import PersistenceFilesystem
+from sidekick_usages.persistence.private_filesystem import PrivateFilesystem
 from sidekick_usages.persistence.transaction import PersistenceTransaction
+
+__all__ = [
+    "ManagedStateConflictError",
+    "ManagedStateConflictKind",
+    "recover_state_file",
+]
 
 _MAX_RECOVERABLE_TEMPORARIES = 8
 
@@ -51,7 +57,7 @@ class ManagedStateConflictError(PersistenceError):
 
 
 def recover_state_file(
-    filesystem: PersistenceFilesystem,
+    filesystem: PrivateFilesystem,
     transaction: PersistenceTransaction,
 ) -> None:
     """Discard bounded interrupted candidates under the exact file lock."""
@@ -76,10 +82,3 @@ def recover_state_file(
             transaction.recover_or_discard_temporary(artifact)
             continue
         raise InvalidManagedArtifactError(artifact.basename)
-
-
-__all__ = [
-    "ManagedStateConflictError",
-    "ManagedStateConflictKind",
-    "recover_state_file",
-]

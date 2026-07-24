@@ -3,26 +3,26 @@
 from datetime import datetime
 from pathlib import Path
 
-from sidekick_usages.core.accounts import (
+from sidekick_usages.core.accounts.types import (
     OperationId,
     SidekickAccountId,
 )
-from sidekick_usages.core.selection import (
-    DueOperation,
-    OperationKind,
-    OperationState,
+from sidekick_usages.core.selection.models import DueOperation
+from sidekick_usages.core.selection.policy import (
     coalesce_due_operation,
     transition_operation,
 )
+from sidekick_usages.core.selection.types import OperationKind, OperationState
 from sidekick_usages.core.time import as_utc
 from sidekick_usages.persistence.artifacts import (
     AuthorityExpectation,
     FileSnapshot,
 )
-from sidekick_usages.persistence.filesystem import PersistenceFilesystem
 from sidekick_usages.persistence.locking import PersistenceLock
-from sidekick_usages.persistence.selection_schema import (
+from sidekick_usages.persistence.models.selection import (
     OperationQueueDocument,
+)
+from sidekick_usages.persistence.schema.selection import (
     decode_operation_queue,
     encode_operation_queue,
 )
@@ -31,6 +31,11 @@ from sidekick_usages.persistence.state_files import (
     ManagedStateConflictKind,
     recover_state_file,
 )
+from sidekick_usages.persistence.state_filesystem import (
+    ManagedStateFilesystem,
+)
+
+__all__ = ["OperationQueueStore"]
 
 _QUEUE_BASENAME = "queue.json"
 
@@ -43,7 +48,10 @@ class OperationQueueStore:
             raise ValueError("Durable-operation root must be absolute.")
         self.root = root
         self.path = root / _QUEUE_BASENAME
-        self._filesystem = PersistenceFilesystem(self.path)
+        self._filesystem = ManagedStateFilesystem(
+            self.path,
+            decode_operation_queue,
+        )
         self._lock = PersistenceLock(self._filesystem)
 
     def load(self) -> tuple[DueOperation, ...]:
@@ -62,6 +70,17 @@ class OperationQueueStore:
                 for operation in self.load()
                 if operation.account_id == account_id
                 and operation.kind is kind
+            ),
+            None,
+        )
+
+    def find(self, operation_id: OperationId) -> DueOperation | None:
+        """Load one exact durable operation by correlation ID."""
+        return next(
+            (
+                operation
+                for operation in self.load()
+                if operation.operation_id == operation_id
             ),
             None,
         )
@@ -206,6 +225,37 @@ class OperationQueueStore:
             self._commit(retained, snapshot)
             return len(owned)
 
+    def remove(
+        self,
+        operation_id: OperationId,
+        *,
+        expected_state: OperationState,
+    ) -> DueOperation:
+        """Remove one exact operation only from its proven state."""
+        with self._lock.hold() as transaction:
+            recover_state_file(self._filesystem, transaction)
+            snapshot = self._filesystem.read_opaque_private()
+            document = self._document(snapshot)
+            current = next(
+                (
+                    operation
+                    for operation in document.operations
+                    if operation.operation_id == operation_id
+                ),
+                None,
+            )
+            if current is None or current.state is not expected_state:
+                raise ManagedStateConflictError(
+                    ManagedStateConflictKind.CONCURRENT_CHANGE
+                )
+            retained = tuple(
+                operation
+                for operation in document.operations
+                if operation.operation_id != operation_id
+            )
+            self._commit(retained, snapshot)
+            return current
+
     def recover(self) -> None:
         """Discard bounded interrupted write candidates."""
         with self._lock.hold() as transaction:
@@ -240,6 +290,3 @@ class OperationQueueStore:
                 else snapshot.fingerprint
             ),
         )
-
-
-__all__ = ["OperationQueueStore"]

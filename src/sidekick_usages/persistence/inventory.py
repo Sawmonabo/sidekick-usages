@@ -1,14 +1,9 @@
 """Read-only inventory of qualified account persistence evidence."""
 
-from collections.abc import Callable
 from enum import StrEnum
 from pathlib import Path
-from typing import Protocol, assert_never
+from typing import assert_never
 
-from sidekick_usages.persistence.account_schema_v3 import (
-    decode_version_three,
-    encode_version_three,
-)
 from sidekick_usages.persistence.artifacts import (
     FileSnapshot,
     ManagedArtifact,
@@ -28,10 +23,7 @@ from sidekick_usages.persistence.errors import (
     UnsafeManagedFileError,
     UnsupportedFilesystemError,
 )
-from sidekick_usages.persistence.filesystem import (
-    FilesystemQualification,
-    PersistenceFilesystem,
-)
+from sidekick_usages.persistence.filesystem import PersistenceFilesystem
 from sidekick_usages.persistence.observations import (
     ArtifactKind,
     ArtifactObservation,
@@ -39,6 +31,10 @@ from sidekick_usages.persistence.observations import (
     AuthorityKind,
     AuthorityObservation,
     PersistenceObservation,
+)
+from sidekick_usages.persistence.schema.account import (
+    decode_version_three,
+    encode_version_three,
 )
 from sidekick_usages.persistence.schemas import (
     GenerationZeroDocument,
@@ -53,6 +49,16 @@ from sidekick_usages.persistence.schemas import (
     encode_version_one,
     encode_version_two,
 )
+from sidekick_usages.persistence.types.inventory import (
+    FilesystemFactory,
+    ReadOnlyPersistenceFilesystem,
+)
+
+__all__ = [
+    "OrphanedPrivateCredentials",
+    "PersistenceInventory",
+    "PrototypeMigrationIntent",
+]
 
 
 class OrphanedPrivateCredentials(StrEnum):
@@ -68,31 +74,6 @@ class PrototypeMigrationIntent(StrEnum):
 
     IMPORT = "import"
     REIMPORT = "reimport"
-
-
-class ReadOnlyPersistenceFilesystem(Protocol):
-    """Qualified operations required by passive inventory."""
-
-    def qualify(self) -> FilesystemQualification:
-        """Require an approved local filesystem."""
-
-    def discover_managed(self) -> tuple[ManagedArtifact, ...]:
-        """Return only siblings in the closed managed grammar."""
-
-    def read_authority(self) -> FileSnapshot | None:
-        """Read the bound path without following its final object."""
-
-    def read_external_private_source(self) -> FileSnapshot | None:
-        """Read a private import source from an owner-controlled parent."""
-
-    def read_managed(
-        self,
-        artifact: ManagedArtifact,
-    ) -> FileSnapshot | None:
-        """Bounded-read one exact previously discovered artifact."""
-
-
-type FilesystemFactory = Callable[[Path], ReadOnlyPersistenceFilesystem]
 
 
 def _read_version_three_authority(
@@ -624,12 +605,3 @@ def _readable_artifact(
             kind, artifact.basename, ArtifactState.VALID
         )
     return snapshot
-
-
-__all__ = [
-    "FilesystemFactory",
-    "OrphanedPrivateCredentials",
-    "PersistenceInventory",
-    "PrototypeMigrationIntent",
-    "ReadOnlyPersistenceFilesystem",
-]

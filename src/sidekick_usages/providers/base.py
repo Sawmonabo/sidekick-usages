@@ -11,7 +11,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
 
-from sidekick_usages.core.accounts import SavedAccount
+from sidekick_usages.core.accounts.models import SavedAccount
 from sidekick_usages.core.models import (
     Account,
     Credentials,

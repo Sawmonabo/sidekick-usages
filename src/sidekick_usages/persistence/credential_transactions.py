@@ -25,10 +25,6 @@ from sidekick_usages.persistence.credential_transaction_recovery import (
     CredentialTransactionRecovery,
     DivergentSourceOutcome,
 )
-from sidekick_usages.persistence.credential_transaction_schema import (
-    CredentialJournal,
-    encode_credential_journal,
-)
 from sidekick_usages.persistence.errors import (
     InterruptedArtifactError,
     SourceChangedError,
@@ -37,6 +33,10 @@ from sidekick_usages.persistence.private_credentials import (
     PRIVATE_TRANSACTION_JOURNAL,
     PreparedPrivateBundleWrite,
     PrivateCredentialTree,
+)
+from sidekick_usages.persistence.schema.transaction import (
+    CredentialJournal,
+    encode_credential_journal,
 )
 
 

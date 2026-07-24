@@ -13,19 +13,10 @@ from sidekick_usages.persistence.artifacts import (
     require_portable_unique_basenames,
     sha256_digest,
 )
-from sidekick_usages.persistence.credential_transaction_schema import (
-    CredentialJournal,
-    CredentialSourceGuardRecord,
-    CredentialTransactionFile,
-    CredentialTransactionJournal,
-    MigrationCredentialTransactionFile,
-    MigrationCredentialTransactionJournal,
-    encode_credential_journal,
-    journal_authority,
-)
 from sidekick_usages.persistence.errors import (
     PrivateCredentialCollisionError,
 )
+from sidekick_usages.persistence.limits import MAX_ACCOUNTS
 from sidekick_usages.persistence.private_bundle_paths import (
     portable_private_bundle_path_key,
     require_portable_unique_private_bundle_paths,
@@ -35,12 +26,31 @@ from sidekick_usages.persistence.private_credentials import (
     PrivateCredentialOwnership,
     PrivateCredentialTree,
 )
+from sidekick_usages.persistence.schema.transaction import (
+    CredentialJournal,
+    CredentialSourceGuardRecord,
+    CredentialTransactionFile,
+    CredentialTransactionJournal,
+    MigrationCredentialTransactionFile,
+    MigrationCredentialTransactionJournal,
+    encode_credential_journal,
+    journal_authority,
+)
 from sidekick_usages.persistence.schemas import (
-    MAX_ACCOUNTS,
     decode_generation_zero,
     decode_version_one,
     decode_version_two,
 )
+
+__all__ = [
+    "CredentialTransactionPlan",
+    "PlannedCredentialFile",
+    "build_migration_transaction_plan",
+    "build_runtime_transaction_plan",
+    "validate_migration_displaced",
+    "validate_migration_generations",
+    "validate_runtime_displaced",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -339,14 +349,3 @@ def validate_migration_generations(
         decode_version_two(payload)
     else:
         raise ValueError("Unsupported migration target generation.")
-
-
-__all__ = [
-    "CredentialTransactionPlan",
-    "PlannedCredentialFile",
-    "build_migration_transaction_plan",
-    "build_runtime_transaction_plan",
-    "validate_migration_displaced",
-    "validate_migration_generations",
-    "validate_runtime_displaced",
-]

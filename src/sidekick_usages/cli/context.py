@@ -21,7 +21,7 @@ from sidekick_usages.credentials import (
 from sidekick_usages.credentials.authorities import credential_resolver_for
 from sidekick_usages.credentials.codex import CodexCredentialCoordinator
 from sidekick_usages.credentials.refresh import CredentialRefreshCoordinator
-from sidekick_usages.daemon import DaemonManager
+from sidekick_usages.daemon.scheduled_maintenance import DaemonManager
 from sidekick_usages.doctor import DoctorService
 from sidekick_usages.heartbeat import HeartbeatProvider, HeartbeatService
 from sidekick_usages.http import HttpClient
@@ -99,6 +99,28 @@ from sidekick_usages.usage import (
     LocalTokenActivitySource,
     UsageCheckService,
 )
+
+__all__ = [
+    "AppContext",
+    "Composed",
+    "DaemonContext",
+    "DoctorBlocked",
+    "DoctorContext",
+    "DoctorFailed",
+    "DoctorReady",
+    "DoctorState",
+    "InvocationContext",
+    "PersistenceCommands",
+    "PersistenceContext",
+    "UpdateContext",
+    "compose_app_context",
+    "compose_daemon_context",
+    "compose_doctor_context",
+    "compose_persistence_context",
+    "compose_update_context",
+    "initialize_invocation",
+    "invocation_context",
+]
 
 
 class PersistenceCommands(Protocol):
@@ -787,26 +809,3 @@ def invocation_context(ctx: click.Context) -> InvocationContext:
     if not isinstance(ctx.obj, InvocationContext):
         raise TypeError("Expected an InvocationContext in ctx.obj.")
     return ctx.obj
-
-
-__all__ = [
-    "AppContext",
-    "Composed",
-    "DaemonContext",
-    "DoctorBlocked",
-    "DoctorContext",
-    "DoctorFailed",
-    "DoctorReady",
-    "DoctorState",
-    "InvocationContext",
-    "PersistenceCommands",
-    "PersistenceContext",
-    "UpdateContext",
-    "compose_app_context",
-    "compose_daemon_context",
-    "compose_doctor_context",
-    "compose_persistence_context",
-    "compose_update_context",
-    "initialize_invocation",
-    "invocation_context",
-]

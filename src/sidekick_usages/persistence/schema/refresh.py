@@ -10,7 +10,6 @@ from pydantic import (
     AfterValidator,
     BaseModel,
     ConfigDict,
-    TypeAdapter,
     ValidationError,
 )
 
@@ -46,6 +45,22 @@ _TIMESTAMP_PATTERN = re.compile(
     re.ASCII,
 )
 
+type _Sha256Value = Annotated[str, AfterValidator(require_sha256)]
+type _TimestampValue = Annotated[str, AfterValidator(_timestamp_value)]
+type CredentialKind = Literal["subscription_login", "codex_login"]
+type RefreshReason = Literal[
+    "scheduled_due",
+    "access_rejected",
+    "credential_required",
+    "operator_forced",
+]
+type StageState = Literal[
+    "intent",
+    "complete",
+    "committed",
+    "durability_uncertain",
+]
+
 
 class RefreshJournalDecodeError(ValueError):
     """Private refresh journal or stage violates its strict contract."""
@@ -70,23 +85,6 @@ def _timestamp_value(value: str) -> str:
     return value
 
 
-type _Sha256Value = Annotated[str, AfterValidator(require_sha256)]
-type _TimestampValue = Annotated[str, AfterValidator(_timestamp_value)]
-type CredentialKind = Literal["subscription_login", "codex_login"]
-type RefreshReason = Literal[
-    "scheduled_due",
-    "access_rejected",
-    "credential_required",
-    "operator_forced",
-]
-type StageState = Literal[
-    "intent",
-    "complete",
-    "committed",
-    "durability_uncertain",
-]
-
-
 class RefreshJournal(BaseModel):
     """Strict non-secret refresh intent and stage proof."""
 
@@ -101,9 +99,6 @@ class RefreshJournal(BaseModel):
     refresh_reason: RefreshReason
     stage_state: StageState
     staged_credential_sha256: _Sha256Value | None
-
-
-_JOURNAL_ADAPTER = TypeAdapter(RefreshJournal)
 
 
 def label_digest(label: AccountLabel) -> str:
@@ -170,7 +165,7 @@ def decode_refresh_journal(payload: bytes) -> RefreshJournal:
     """Decode one strict non-secret refresh journal."""
     try:
         value = decode_json_value(payload)
-        return _JOURNAL_ADAPTER.validate_python(value, strict=True)
+        return RefreshJournal.model_validate(value, strict=True)
     except JsonDecodeError, ValidationError:
         raise RefreshJournalDecodeError from None
 
@@ -185,21 +180,3 @@ def decode_staged_account(payload: bytes) -> Account:
     if len(accounts) != 1:
         raise RefreshJournalDecodeError
     return accounts[0]
-
-
-__all__ = [
-    "JOURNAL_BASENAME",
-    "JOURNAL_SCHEMA_VERSION",
-    "STAGE_BASENAME",
-    "RefreshJournal",
-    "RefreshJournalDecodeError",
-    "credential_digest",
-    "credential_kind",
-    "decode_refresh_journal",
-    "decode_staged_account",
-    "encode_refresh_journal",
-    "label_digest",
-    "refresh_reason",
-    "refresh_timestamp",
-    "require_sha256",
-]

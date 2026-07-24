@@ -7,14 +7,16 @@ from pathlib import Path
 
 import pytest
 
-from sidekick_usages.core.accounts import (
-    AuthorityGeneration as ManagedAuthorityGeneration,
-)
-from sidekick_usages.core.accounts import (
-    AuthorityId,
+from sidekick_usages.core.accounts.models import (
     ClaudeAccountAuthority,
     CodexAccountAuthority,
     CodexManagedAuthority,
+)
+from sidekick_usages.core.accounts.types import (
+    AuthorityGeneration as ManagedAuthorityGeneration,
+)
+from sidekick_usages.core.accounts.types import (
+    AuthorityId,
     CredentialHealth,
     ProviderIdentity,
     SidekickAccountId,
@@ -29,11 +31,6 @@ from sidekick_usages.core.models import (
 )
 from sidekick_usages.core.types import AccountLabel, ProviderId
 from sidekick_usages.paths import ApplicationPaths
-from sidekick_usages.persistence.account_schema_v3 import (
-    VersionThreeDocument,
-    decode_version_three,
-    encode_version_three,
-)
 from sidekick_usages.persistence.artifacts import (
     AuthorityExpectation,
     AuthorityGeneration,
@@ -61,8 +58,13 @@ from sidekick_usages.persistence.managed_rollback import (
 from sidekick_usages.persistence.migrations.service import (
     PersistenceMigrationService,
 )
+from sidekick_usages.persistence.models.account import VersionThreeDocument
 from sidekick_usages.persistence.private_credentials import (
     PrivateCredentialTree,
+)
+from sidekick_usages.persistence.schema.account import (
+    decode_version_three,
+    encode_version_three,
 )
 from sidekick_usages.persistence.schemas import (
     GenerationZeroDocument,

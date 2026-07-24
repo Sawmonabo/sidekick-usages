@@ -13,17 +13,13 @@ from architecture_ast import (
     ArchitectureFinding,
     ArchitectureReport,
     SourceUnit,
+    dotted_name,
     finding,
     function_node,
     load_units,
     matches,
     matches_any,
-)
-from architecture_ast import (
-    imports as scan_imports,
-)
-from architecture_ast import (
-    name as dotted_name,
+    scan_imports,
 )
 from architecture_ownership import check_ownership
 from architecture_value_contracts import check_value_contracts
@@ -69,17 +65,27 @@ _DAEMON_CONTROL_FILES = frozenset(
         "src/sidekick_usages/daemon/protocol.py",
     }
 )
+_RESIDENT_DAEMON_MODULES = frozenset(
+    {
+        "control.py",
+        "diagnostics.py",
+        "dispatch.py",
+        "entrypoint.py",
+        "peer.py",
+        "protocol.py",
+        "recovery.py",
+        "scheduler.py",
+        "supervisor.py",
+        "workers.py",
+    }
+)
 _PYDANTIC_OWNERS = frozenset(
     {
-        "src/sidekick_usages/persistence/account_schema_v3.py",
         "src/sidekick_usages/persistence/_schema_models.py",
         "src/sidekick_usages/persistence/activity_snapshots.py",
         "src/sidekick_usages/persistence/credential_authorities.py",
-        "src/sidekick_usages/persistence/credential_transaction_schema.py",
         "src/sidekick_usages/persistence/credential_refresh_private_stage.py",
-        "src/sidekick_usages/persistence/credential_refresh_schema.py",
         "src/sidekick_usages/persistence/credential_refresh_stage.py",
-        "src/sidekick_usages/persistence/selection_schema.py",
         "src/sidekick_usages/persistence/schemas.py",
         "src/sidekick_usages/providers/claude/credential_schemas.py",
         "src/sidekick_usages/providers/claude/schemas.py",
@@ -167,6 +173,16 @@ def _check_hygiene(
     violations: list[ArchitectureFinding],
 ) -> None:
     for unit in units:
+        scoped_imports = {
+            id(descendant)
+            for scope in ast.walk(unit.tree)
+            if isinstance(
+                scope,
+                (ast.AsyncFunctionDef, ast.ClassDef, ast.FunctionDef),
+            )
+            for descendant in ast.walk(scope)
+            if isinstance(descendant, (ast.Import, ast.ImportFrom))
+        }
         for number, line in enumerate(unit.source.splitlines(), start=1):
             if _SUPPRESSION.search(line) is not None:
                 violations.append(
@@ -205,6 +221,22 @@ def _check_hygiene(
                         node,
                         "HYG004",
                         "broad exception handler silently discards a failure",
+                    )
+                )
+            elif (
+                isinstance(node, (ast.Import, ast.ImportFrom))
+                and id(node) in scoped_imports
+            ) or (
+                isinstance(node, ast.Call)
+                and dotted_name(node.func)
+                in {"__import__", "importlib.import_module"}
+            ):
+                violations.append(
+                    finding(
+                        unit,
+                        node,
+                        "HYG005",
+                        "imports must be static and outside functions/classes",
                     )
                 )
 
@@ -358,7 +390,7 @@ def _check_import(
         ),
         (
             "DEP006",
-            path in _DAEMON_CONTROL_FILES,
+            _is_resident_daemon(path),
             matches_any(
                 module,
                 (
@@ -369,12 +401,17 @@ def _check_import(
                     "sidekick_usages.cli",
                     "sidekick_usages.credentials",
                     "sidekick_usages.http",
-                    "sidekick_usages.persistence",
                     "sidekick_usages.providers",
                     "sidekick_usages.usage",
                 ),
             ),
-            "daemon control primitives cannot import heavy application owners",
+            "resident daemon code cannot import heavy application owners",
+        ),
+        (
+            "DEP006",
+            path in _DAEMON_CONTROL_FILES,
+            matches(module, "sidekick_usages.persistence"),
+            "daemon control primitives cannot import persistence",
         ),
         (
             "PATH001",
@@ -384,7 +421,7 @@ def _check_import(
         ),
         (
             "SCHEMA001",
-            path not in _PYDANTIC_OWNERS,
+            not _is_pydantic_owner(path),
             root == "pydantic",
             "Pydantic belongs only to untrusted boundary schemas",
         ),
@@ -418,6 +455,25 @@ def _check_import(
                     "provider adapter crosses an unapproved boundary",
                 )
             )
+
+
+def _is_resident_daemon(path: str) -> bool:
+    prefix = "src/sidekick_usages/daemon/"
+    if not path.startswith(prefix):
+        return False
+    relative = path.removeprefix(prefix)
+    return (
+        relative in _RESIDENT_DAEMON_MODULES
+        or relative.startswith("models/")
+        or relative.startswith("types/")
+    )
+
+
+def _is_pydantic_owner(path: str) -> bool:
+    return (
+        path in _PYDANTIC_OWNERS
+        or path.startswith("src/sidekick_usages/persistence/schema/")
+    )
 
 
 def _check_renderer(

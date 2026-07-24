@@ -11,12 +11,28 @@ from typing import Protocol
 from sidekick_usages.core.models import Account
 from sidekick_usages.core.types import AccountLabel
 from sidekick_usages.persistence.artifacts import Sha256Digest
+from sidekick_usages.persistence.limits import MAX_ACCOUNTS
 from sidekick_usages.persistence.private_credentials import (
     PreparedPrivateBundleWrite,
     private_bundle_relative_components,
     require_portable_unique_private_bundle_paths,
 )
-from sidekick_usages.persistence.schemas import MAX_ACCOUNTS
+
+__all__ = [
+    "PreparedPrivateAuthCopy",
+    "PreparedPrivateAuthMigration",
+    "PreparedPrivateBundleWrite",
+    "PrivateAuthAccountAssessment",
+    "PrivateAuthBundleSnapshot",
+    "PrivateAuthHomeKind",
+    "PrivateAuthMigrationAssessment",
+    "PrivateAuthMigrationFailure",
+    "PrivateAuthMigrationFailureCode",
+    "PrivateAuthMigrationRequest",
+    "PrivateAuthMigrationResult",
+    "PrivateAuthMigrator",
+    "PrivateAuthPermission",
+]
 
 _MAX_PRIVATE_AUTH_FAILURE_MESSAGE_BYTES = 1024
 
@@ -263,20 +279,3 @@ class PrivateAuthMigrator(Protocol):
         request: PrivateAuthMigrationRequest,
     ) -> PrivateAuthMigrationResult:
         """Return deterministic prepared work or one safe failure."""
-
-
-__all__ = [
-    "PreparedPrivateAuthCopy",
-    "PreparedPrivateAuthMigration",
-    "PreparedPrivateBundleWrite",
-    "PrivateAuthAccountAssessment",
-    "PrivateAuthBundleSnapshot",
-    "PrivateAuthHomeKind",
-    "PrivateAuthMigrationAssessment",
-    "PrivateAuthMigrationFailure",
-    "PrivateAuthMigrationFailureCode",
-    "PrivateAuthMigrationRequest",
-    "PrivateAuthMigrationResult",
-    "PrivateAuthMigrator",
-    "PrivateAuthPermission",
-]

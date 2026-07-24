@@ -7,9 +7,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from sidekick_usages.core.types import ExitCode
-from sidekick_usages.persistence.account_schema_v3 import (
-    has_managed_authority,
-)
 from sidekick_usages.persistence.errors import (
     InvalidSchemaError,
     PersistenceCode,
@@ -24,6 +21,9 @@ from sidekick_usages.persistence.observations import (
     PersistenceObservation,
     StoredGeneration,
     require_safe_observation_basename,
+)
+from sidekick_usages.persistence.schema.account import (
+    has_managed_authority,
 )
 from sidekick_usages.persistence.schemas import (
     encode_generation_zero,

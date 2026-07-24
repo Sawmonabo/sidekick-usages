@@ -12,11 +12,11 @@ from architecture_ast import (
     assignment_literal,
     contains_call,
     contains_string,
+    dotted_name,
     finding,
     function_node,
-    imports,
     matches,
-    name,
+    scan_imports,
 )
 
 
@@ -56,7 +56,7 @@ def _check_paths(
                 )
             if (
                 isinstance(node, ast.Call)
-                and name(node.func) in {"Path", "PurePath"}
+                and dotted_name(node.func) in {"Path", "PurePath"}
                 and any(
                     isinstance(child, ast.Constant)
                     and isinstance(child.value, str)
@@ -78,7 +78,7 @@ def _check_paths(
                 continue
             if any(
                 isinstance(node, ast.Call)
-                and name(node.func) == "discover_application_paths"
+                and dotted_name(node.func) == "discover_application_paths"
                 for node in ast.walk(statement)
             ):
                 violations.append(
@@ -130,7 +130,7 @@ def _check_migrations(
         matches(module, "sidekick_usages.persistence.migrations.ports")
         and isinstance(node, ast.ImportFrom)
         and any(alias.name == "PrivateAuthMigrator" for alias in node.names)
-        for node, module in imports(service)
+        for node, module in scan_imports(service)
     )
     if service is not None and not has_port:
         violations.append(
@@ -159,7 +159,7 @@ def _check_http(
                 policy_owners.add(path)
             if (
                 isinstance(node, ast.Call)
-                and name(node.func) == "RetryExecutor"
+                and dotted_name(node.func) == "RetryExecutor"
             ):
                 executor_callers.add(path)
     valid = policy_owners == {"src/sidekick_usages/http/retry.py"} and (
@@ -196,10 +196,11 @@ def _client_contract_is_closed(client: SourceUnit) -> bool:
     typed = annotation is not None and ast.unparse(annotation) == "HTTPMethod"
     constructed = not any(
         isinstance(node, ast.Call)
-        and name(node.func) == "self._request"
+        and dotted_name(node.func) == "self._request"
         and (
             not node.args
-            or name(node.args[0]) not in {"HTTPMethod.GET", "HTTPMethod.POST"}
+            or dotted_name(node.args[0])
+            not in {"HTTPMethod.GET", "HTTPMethod.POST"}
         )
         for node in ast.walk(client.tree)
     )

@@ -23,11 +23,9 @@ from sidekick_usages.cli.context import (
 )
 from sidekick_usages.core.models import Account
 from sidekick_usages.core.types import ExitCode
-from sidekick_usages.daemon import (
-    DaemonManager,
-    DaemonOperation,
-    DaemonOperationResult,
-)
+from sidekick_usages.daemon.models.maintenance import DaemonOperationResult
+from sidekick_usages.daemon.scheduled_maintenance import DaemonManager
+from sidekick_usages.daemon.types.maintenance import DaemonOperation
 from sidekick_usages.persistence.artifacts import (
     AuthorityExpectation,
     AuthorityGeneration,

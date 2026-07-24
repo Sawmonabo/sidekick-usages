@@ -5,19 +5,17 @@ import os
 import socket
 import struct
 import sys
-from dataclasses import dataclass
-from enum import StrEnum
-from typing import Protocol
+
+from sidekick_usages.daemon.models.peer import PeerIdentity
+from sidekick_usages.daemon.types.peer import PeerFailureCode
+from sidekick_usages.daemon.types.ports import PeerSocket
+
+__all__ = [
+    "OperatingSystemPeerVerifier",
+    "PeerVerificationError",
+]
 
 _LINUX_PEER_CREDENTIALS = struct.Struct("3i")
-
-
-class PeerFailureCode(StrEnum):
-    """Safe reasons an operating system could not prove a local peer."""
-
-    DIFFERENT_USER = "different_user"
-    FEATURE_DISABLED = "feature_disabled"
-    PROOF_UNAVAILABLE = "proof_unavailable"
 
 
 class PeerVerificationError(PermissionError):
@@ -28,45 +26,6 @@ class PeerVerificationError(PermissionError):
         super().__init__(code.value)
 
 
-@dataclass(frozen=True, slots=True)
-class PeerIdentity:
-    """Verified operating-system identity for one local connection."""
-
-    effective_user_id: int
-
-    def __post_init__(self) -> None:
-        """Require a nonnegative effective user identifier."""
-        if (
-            isinstance(self.effective_user_id, bool)
-            or not isinstance(self.effective_user_id, int)
-            or self.effective_user_id < 0
-        ):
-            raise ValueError("Peer effective user ID is invalid.")
-
-
-class PeerSocket(Protocol):
-    """Socket operations required for operating-system peer proof."""
-
-    def fileno(self) -> int:
-        """Return the live file descriptor."""
-
-    def getsockopt(
-        self,
-        level: int,
-        option: int,
-        buffer_length: int,
-        /,
-    ) -> bytes:
-        """Read one socket option."""
-
-
-class PeerVerifier(Protocol):
-    """Prove that a local connection belongs to the effective user."""
-
-    def verify(self, connection: PeerSocket) -> PeerIdentity:
-        """Return a verified identity or fail closed."""
-
-
 class OperatingSystemPeerVerifier:
     """Use Linux or macOS peer credentials before request decoding."""
 
@@ -74,10 +33,7 @@ class OperatingSystemPeerVerifier:
         self._expected_user_id = expected_user_id
         if expected_user_id is None and sys.platform != "win32":
             self._expected_user_id = os.geteuid()
-        if (
-            self._expected_user_id is not None
-            and self._expected_user_id < 0
-        ):
+        if self._expected_user_id is not None and self._expected_user_id < 0:
             raise ValueError("Expected effective user ID is invalid.")
 
     def verify(self, connection: PeerSocket) -> PeerIdentity:
@@ -139,13 +95,3 @@ def _macos_peer_identity(connection: PeerSocket) -> PeerIdentity:
     if result != 0:
         raise PeerVerificationError(PeerFailureCode.PROOF_UNAVAILABLE)
     return PeerIdentity(effective_user_id.value)
-
-
-__all__ = [
-    "OperatingSystemPeerVerifier",
-    "PeerFailureCode",
-    "PeerIdentity",
-    "PeerSocket",
-    "PeerVerificationError",
-    "PeerVerifier",
-]

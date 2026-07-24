@@ -6,13 +6,6 @@ from pathlib import Path
 
 from sidekick_usages.core.models import Account
 from sidekick_usages.paths import ApplicationPaths
-from sidekick_usages.persistence.account_schema_v3 import (
-    SCHEMA_VERSION as MANAGED_SCHEMA_VERSION,
-)
-from sidekick_usages.persistence.account_schema_v3 import (
-    VersionThreeDocument,
-    decode_version_three,
-)
 from sidekick_usages.persistence.account_store_v3 import ManagedAccountStore
 from sidekick_usages.persistence.artifacts import (
     AuthorityExpectation,
@@ -81,6 +74,11 @@ from sidekick_usages.persistence.migrations.released_verification import (
     verifier_preflight,
     verifier_verify,
 )
+from sidekick_usages.persistence.models.account import VersionThreeDocument
+from sidekick_usages.persistence.schema.account import (
+    SCHEMA_VERSION as MANAGED_SCHEMA_VERSION,
+)
+from sidekick_usages.persistence.schema.account import decode_version_three
 from sidekick_usages.persistence.schemas import (
     CURRENT_SCHEMA_VERSION,
     encode_generation_zero,

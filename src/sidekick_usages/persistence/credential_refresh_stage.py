@@ -19,13 +19,13 @@ from sidekick_usages.persistence.credential_refresh_private_stage import (
     decode_private_refresh_stage,
     encode_private_refresh_stage,
 )
-from sidekick_usages.persistence.credential_refresh_schema import (
-    decode_staged_account,
-)
 from sidekick_usages.persistence.private_bundle_writes import (
     MAX_PRIVATE_BUNDLE_BYTES,
     MAX_PRIVATE_FILE_BYTES,
     PreparedPrivateBundleWrite,
+)
+from sidekick_usages.persistence.schema.refresh import (
+    decode_staged_account,
 )
 from sidekick_usages.persistence.schemas import encode_version_two
 from sidekick_usages.persistence.transforms import accounts_to_version_two

@@ -6,25 +6,35 @@ from collections.abc import Generator
 from pathlib import Path
 
 from sidekick_usages import __version__
-from sidekick_usages.core.accounts import SidekickAccountId
+from sidekick_usages.core.accounts.types import SidekickAccountId
 from sidekick_usages.core.types import ProviderId
-from sidekick_usages.daemon.protocol import (
-    PROTOCOL_VERSION,
+from sidekick_usages.daemon.models.protocol import (
     AcceptedPayload,
     AccountPayload,
-    ConnectedSocket,
     ControlEvent,
     ControlRequest,
     EmptyPayload,
-    EventKind,
-    FramedTransport,
     IncompatiblePayload,
-    ProtocolErrorCode,
     ProviderPayload,
-    RequestKind,
     RequestPayload,
+)
+from sidekick_usages.daemon.protocol import (
+    PROTOCOL_VERSION,
+    FramedTransport,
     new_request_id,
 )
+from sidekick_usages.daemon.types.protocol import (
+    ConnectedSocket,
+    EventKind,
+    ProtocolErrorCode,
+    RequestKind,
+)
+
+__all__ = [
+    "ControlClient",
+    "ServiceCompatibilityError",
+    "UnexpectedServiceEventError",
+]
 
 _DEFAULT_CONNECT_TIMEOUT_SECONDS = 5.0
 
@@ -235,10 +245,3 @@ class ControlClient:
             raise ServiceCompatibilityError(
                 ProtocolErrorCode.INCOMPATIBLE_VERSION
             )
-
-
-__all__ = [
-    "ControlClient",
-    "ServiceCompatibilityError",
-    "UnexpectedServiceEventError",
-]

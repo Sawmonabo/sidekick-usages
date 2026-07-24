@@ -18,10 +18,6 @@ from sidekick_usages.persistence.artifacts import (
     FileSnapshot,
 )
 from sidekick_usages.persistence.assessment import assess_persistence
-from sidekick_usages.persistence.credential_transaction_schema import (
-    CredentialTransactionJournal,
-    decode_credential_journal,
-)
 from sidekick_usages.persistence.credential_transactions import (
     CredentialSourceGuard,
     PrivateCredentialTransaction,
@@ -43,6 +39,10 @@ from sidekick_usages.persistence.private_credentials import (
     PRIVATE_TRANSACTION_JOURNAL,
     PreparedPrivateBundleWrite,
     PrivateCredentialTree,
+)
+from sidekick_usages.persistence.schema.transaction import (
+    CredentialTransactionJournal,
+    decode_credential_journal,
 )
 from sidekick_usages.persistence.schemas import (
     encode_version_two,

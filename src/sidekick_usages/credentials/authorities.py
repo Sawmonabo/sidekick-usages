@@ -7,10 +7,12 @@ from types import TracebackType
 from typing import Protocol, Self
 from uuid import UUID, uuid5
 
-from sidekick_usages.core.accounts import (
+from sidekick_usages.core.accounts.models import (
     AuthenticatedAccount,
-    AuthorityId,
     SavedAccount,
+)
+from sidekick_usages.core.accounts.types import (
+    AuthorityId,
     SidekickAccountId,
 )
 from sidekick_usages.core.models import Account

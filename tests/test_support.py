@@ -22,10 +22,12 @@ from sidekick_usages.cli.context import (
     UpdateContext,
 )
 from sidekick_usages.clock import Clock
-from sidekick_usages.core.accounts import (
+from sidekick_usages.core.accounts.models import (
     AuthenticatedAccount,
-    AuthorityId,
     SavedAccount,
+)
+from sidekick_usages.core.accounts.types import (
+    AuthorityId,
     SidekickAccountId,
 )
 from sidekick_usages.core.models import Account

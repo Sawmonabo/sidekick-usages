@@ -9,7 +9,11 @@ from sidekick_usages.persistence.artifacts import (
     AuthorityGeneration,
     sha256_digest,
 )
-from sidekick_usages.persistence.credential_transaction_schema import (
+from sidekick_usages.persistence.errors import InterruptedArtifactError
+from sidekick_usages.persistence.private_bundle_paths import (
+    require_portable_unique_private_bundle_paths,
+)
+from sidekick_usages.persistence.schema.transaction import (
     AbsentAuthority,
     CredentialSourceGuardRecord,
     CredentialTransactionJournal,
@@ -17,10 +21,6 @@ from sidekick_usages.persistence.credential_transaction_schema import (
     MigrationCredentialTransactionJournal,
     decode_credential_journal,
     encode_credential_journal,
-)
-from sidekick_usages.persistence.errors import InterruptedArtifactError
-from sidekick_usages.persistence.private_bundle_paths import (
-    require_portable_unique_private_bundle_paths,
 )
 
 _NEW_AUTH = b"test-only-new-private-auth"

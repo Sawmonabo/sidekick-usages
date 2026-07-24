@@ -1,6 +1,5 @@
 """Serialized and recoverable saved-credential refresh tests."""
 
-import importlib
 import os
 import stat
 import sys
@@ -108,33 +107,6 @@ class _BoundaryRecordingRefreshTransactions(CredentialRefreshTransactions):
     def recover(self) -> None:
         """Record a private refresh recovery scan."""
         self.crossings.append("recovery")
-
-
-def test_refresh_public_ports_have_one_closed_application_interface() -> None:
-    """Expose one label-and-reason coordinator behind a persistence port."""
-    try:
-        refresh = importlib.import_module(
-            "sidekick_usages.credentials.refresh"
-        )
-        persistence = importlib.import_module(
-            "sidekick_usages.persistence.credential_refresh"
-        )
-    except ModuleNotFoundError:
-        refresh = None
-        persistence = None
-
-    assert refresh is not None, "CredentialRefreshCoordinator is missing"
-    assert persistence is not None, "CredentialRefreshPersistence is missing"
-    values = tuple(reason.value for reason in refresh.CredentialRefreshReason)
-    assert values == (
-        "scheduled_due",
-        "access_rejected",
-        "credential_required",
-        "operator_forced",
-    )
-    assert hasattr(refresh, "CredentialRefreshCoordinator")
-    assert hasattr(persistence, "CredentialRefreshPersistence")
-    assert hasattr(persistence, "CredentialRefreshTransactions")
 
 
 def test_setup_token_returns_manual_action_without_lock_or_provider(

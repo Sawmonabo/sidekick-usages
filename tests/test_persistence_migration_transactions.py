@@ -24,10 +24,6 @@ from sidekick_usages.persistence.artifacts import (
     ManagedArtifact,
     sha256_digest,
 )
-from sidekick_usages.persistence.credential_transaction_schema import (
-    MigrationCredentialTransactionJournal,
-    decode_credential_journal,
-)
 from sidekick_usages.persistence.credential_transactions import (
     CredentialSourceGuard,
     PrivateCredentialTransaction,
@@ -42,6 +38,10 @@ from sidekick_usages.persistence.private_credentials import (
     PRIVATE_TRANSACTION_JOURNAL,
     PreparedPrivateBundleWrite,
     PrivateCredentialTree,
+)
+from sidekick_usages.persistence.schema.transaction import (
+    MigrationCredentialTransactionJournal,
+    decode_credential_journal,
 )
 from sidekick_usages.persistence.schemas import (
     GenerationZeroDocument,

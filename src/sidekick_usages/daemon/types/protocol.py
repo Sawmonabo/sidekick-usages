@@ -1,0 +1,90 @@
+"""Closed and structural types for the local supervisor protocol."""
+
+from enum import StrEnum
+from typing import Protocol
+
+__all__ = [
+    "CompletionOutcome",
+    "ConnectedSocket",
+    "EventKind",
+    "ProgressPhase",
+    "ProtocolErrorCode",
+    "RequestKind",
+    "ServiceStopReason",
+]
+
+
+class RequestKind(StrEnum):
+    """Closed client request vocabulary."""
+
+    HANDSHAKE = "handshake"
+    SNAPSHOT = "snapshot"
+    SUBSCRIBE = "subscribe"
+    ACTIVATE = "activate"
+    REFRESH_ACCOUNT = "refresh_account"
+    REFRESH_ALL = "refresh_all"
+    RECONCILE = "reconcile"
+    SHUTDOWN = "shutdown"
+
+
+class EventKind(StrEnum):
+    """Closed supervisor event vocabulary."""
+
+    ACCEPTED = "accepted"
+    SNAPSHOT = "snapshot"
+    PROGRESS = "progress"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    INCOMPATIBLE = "incompatible"
+    SERVICE_STOPPING = "service_stopping"
+
+
+class ProgressPhase(StrEnum):
+    """Sanitized operation progress phases."""
+
+    QUEUED = "queued"
+    STARTING = "starting"
+    RUNNING = "running"
+    VERIFYING = "verifying"
+    RECONCILING = "reconciling"
+
+
+class CompletionOutcome(StrEnum):
+    """Sanitized successful terminal outcomes."""
+
+    SUCCEEDED = "succeeded"
+    NO_CHANGE = "no_change"
+    CANCELLED = "cancelled"
+
+
+class ProtocolErrorCode(StrEnum):
+    """Safe protocol failures that never include rejected input."""
+
+    MALFORMED_FRAME = "malformed_frame"
+    FRAME_TOO_LARGE = "frame_too_large"
+    HANDSHAKE_REQUIRED = "handshake_required"
+    INCOMPATIBLE_PROTOCOL = "incompatible_protocol"
+    INCOMPATIBLE_VERSION = "incompatible_version"
+    TOO_MANY_REQUESTS = "too_many_requests"
+    DISPATCH_FAILED = "dispatch_failed"
+    FEATURE_DISABLED = "feature_disabled"
+
+
+class ServiceStopReason(StrEnum):
+    """Safe reasons for a supervisor stopping event."""
+
+    REQUESTED = "requested"
+    SHUTTING_DOWN = "shutting_down"
+
+
+class ConnectedSocket(Protocol):
+    """Minimal connected byte-stream socket used by the protocol."""
+
+    def recv(self, size: int, /) -> bytes:
+        """Receive at most ``size`` bytes."""
+
+    def sendall(self, data: bytes, /) -> None:
+        """Send all bytes or raise an operating-system error."""
+
+    def close(self) -> None:
+        """Close this connection."""

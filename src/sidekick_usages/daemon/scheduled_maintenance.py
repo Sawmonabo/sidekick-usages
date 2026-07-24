@@ -1,17 +1,21 @@
-"""Legacy OS scheduler backends retained during supervisor transition."""
+"""Cross-platform scheduled maintenance lifecycle."""
 
-import enum
 import os
 import platform
 import shlex
 import shutil
 import subprocess
 import sys
-from dataclasses import dataclass
 from pathlib import Path
 from typing import assert_never
 
 from sidekick_usages.core.types import ExitCode
+from sidekick_usages.daemon.models.maintenance import (
+    CommandResult,
+    DaemonOperationResult,
+    PlatformInfo,
+)
+from sidekick_usages.daemon.types.maintenance import DaemonOperation
 from sidekick_usages.errors import UsageError
 from sidekick_usages.scheduler_quiescence import (
     CRON_BEGIN,
@@ -26,57 +30,6 @@ from sidekick_usages.scheduler_quiescence import (
 
 DAEMON_DIR_NAME = "sidekick-usages"
 WINDOWS_DAEMON_SUBDIR = "sidekick-usages\\daemon"
-
-
-class DaemonOperation(enum.StrEnum):
-    """Supported daemon manager operations."""
-
-    INSTALL = "install"
-    STATUS = "status"
-    UNINSTALL = "uninstall"
-
-
-@dataclass(frozen=True)
-class CommandResult:
-    """Completed system command result."""
-
-    returncode: int
-    stdout: str
-    stderr: str
-
-
-@dataclass(frozen=True)
-class DaemonOperationResult:
-    """Result of an install/status/uninstall daemon operation."""
-
-    backend: str
-    message: str
-    exit_code: ExitCode = ExitCode.SUCCESS
-
-
-@dataclass(frozen=True)
-class PlatformInfo:
-    """Platform facts used by backend auto-detection."""
-
-    system: str
-    home: Path
-    uid: int
-    is_wsl: bool
-    wsl_distro: str | None
-    has_user_systemd: bool
-
-    @classmethod
-    def detect(cls) -> PlatformInfo:
-        """Detect platform facts from the current process."""
-        system = platform.system()
-        return cls(
-            system=system,
-            home=Path.home(),
-            uid=os.getuid() if hasattr(os, "getuid") else 0,
-            is_wsl=_detect_wsl(),
-            wsl_distro=os.environ.get("WSL_DISTRO_NAME"),
-            has_user_systemd=_has_user_systemd(system),
-        )
 
 
 class SystemCommandRunner:
@@ -553,7 +506,7 @@ class DaemonManager:
         runner: SystemCommandRunner | None = None,
     ) -> None:
         self.command = command or resolve_maintenance_command()
-        self.platform_info = platform_info or PlatformInfo.detect()
+        self.platform_info = platform_info or detect_platform_info()
         self.runner = runner or SystemCommandRunner()
 
     def run(
@@ -660,6 +613,19 @@ def resolve_maintenance_command() -> tuple[str, ...]:
         "sidekick_usages",
         "maintain",
         "--quiet",
+    )
+
+
+def detect_platform_info() -> PlatformInfo:
+    """Detect platform facts from the current process."""
+    system = platform.system()
+    return PlatformInfo(
+        system=system,
+        home=Path.home(),
+        uid=os.getuid() if hasattr(os, "getuid") else 0,
+        is_wsl=_detect_wsl(),
+        wsl_distro=os.environ.get("WSL_DISTRO_NAME"),
+        has_user_systemd=_has_user_systemd(system),
     )
 
 

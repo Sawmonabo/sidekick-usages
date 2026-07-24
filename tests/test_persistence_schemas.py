@@ -14,9 +14,11 @@ from sidekick_usages.persistence.errors import (
     SchemaIssue,
     SchemaIssueCode,
 )
-from sidekick_usages.persistence.schemas import (
+from sidekick_usages.persistence.limits import (
     MAX_ACCOUNTS,
     MAX_DOCUMENT_BYTES,
+)
+from sidekick_usages.persistence.schemas import (
     GenerationZeroDocument,
     PrototypeReceipt,
     VersionOneDocument,

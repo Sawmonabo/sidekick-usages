@@ -9,11 +9,9 @@ from sidekick_usages.branding import ROBOT_LINES
 from sidekick_usages.cli.context import DaemonContext
 from sidekick_usages.core.models import Account, ClaudeSetupTokenCredentials
 from sidekick_usages.core.types import AccountLabel, ExitCode
-from sidekick_usages.daemon import (
-    DaemonManager,
-    DaemonOperation,
-    DaemonOperationResult,
-)
+from sidekick_usages.daemon.models.maintenance import DaemonOperationResult
+from sidekick_usages.daemon.scheduled_maintenance import DaemonManager
+from sidekick_usages.daemon.types.maintenance import DaemonOperation
 from sidekick_usages.http import HttpClient
 from sidekick_usages.providers.registry import build_provider_registry
 from tests.test_support import (

@@ -55,6 +55,8 @@ Changelog = "https://github.com/Sawmonabo/sidekick-usages/blob/main/CHANGELOG.md
 
 [project.scripts]
 sidekick-usages = "sidekick_usages.cli:app"
+sidekick-usages-supervisor = "sidekick_usages.daemon.entrypoint:main"
+sidekick-usages-worker = "sidekick_usages.daemon.worker_entrypoint:main"
 
 [dependency-groups]
 dev = [
@@ -138,6 +140,7 @@ docstring-code-line-length = 79
 [tool.ty.environment]
 python-version = "3.14"
 python = ".venv"
+extra-paths = ["packaging"]
 
 [tool.ty.src]
 include = ["src/", "tests/"]
@@ -165,6 +168,7 @@ possibly-unresolved-reference = "warn"
 [tool.pytest.ini_options]
 minversion = "9.0.0"
 testpaths = ["tests"]
+pythonpath = ["packaging"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
 addopts = "-ra -v --tb=short --strict-markers --strict-config"

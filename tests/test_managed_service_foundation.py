@@ -4,14 +4,14 @@ import socket
 from collections.abc import Iterator
 from contextlib import suppress
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from threading import Event, Thread
 
 import pytest
 
 from sidekick_usages import __version__
-from sidekick_usages.core.accounts import (
+from sidekick_usages.core.accounts.types import (
     AuthorityGeneration,
     OperationId,
     ProviderIdentity,
@@ -23,54 +23,83 @@ from sidekick_usages.core.models import (
     ClaudeSetupTokenCredentials,
     CodexCredentials,
 )
-from sidekick_usages.core.selection import (
+from sidekick_usages.core.selection.models import (
+    ActivationRecord,
+    DueOperation,
+    SelectedAccountState,
+)
+from sidekick_usages.core.selection.policy import (
+    decide_activation_recovery,
+    transition_activation,
+)
+from sidekick_usages.core.selection.types import (
     ActivationOutcome,
     ActivationPhase,
-    ActivationRecord,
     ActivationRecoveryAction,
-    DueOperation,
     OperationKind,
     OperationPriority,
     OperationState,
     ProviderRuntimeState,
-    SelectedAccountState,
-    decide_activation_recovery,
-    transition_activation,
 )
 from sidekick_usages.core.types import AccountLabel, ProviderId
 from sidekick_usages.daemon.client import ControlClient
-from sidekick_usages.daemon.peer import (
-    PeerFailureCode,
-    PeerIdentity,
-    PeerSocket,
-    PeerVerificationError,
-    PeerVerifier,
+from sidekick_usages.daemon.control import (
+    ControlConnection,
+    LocalControlServer,
 )
-from sidekick_usages.daemon.protocol import (
-    PROTOCOL_VERSION,
+from sidekick_usages.daemon.models.peer import PeerIdentity
+from sidekick_usages.daemon.models.protocol import (
     AcceptedPayload,
     AccountPayload,
     CompletedPayload,
-    CompletionOutcome,
-    ConnectedSocket,
     ControlEvent,
     ControlRequest,
     EmptyPayload,
-    EventKind,
     EventPayload,
-    FrameDecoder,
     ProgressPayload,
-    ProgressPhase,
-    RequestKind,
+)
+from sidekick_usages.daemon.models.worker import (
+    WorkerLaunchSpec,
+    WorkerResult,
+)
+from sidekick_usages.daemon.peer import PeerVerificationError
+from sidekick_usages.daemon.protocol import (
+    PROTOCOL_VERSION,
+    FrameDecoder,
     decode_event,
     decode_request,
     encode_frame,
     encode_request,
     new_request_id,
 )
+from sidekick_usages.daemon.recovery import ActivationRecoveryScheduler
+from sidekick_usages.daemon.scheduler import DurableScheduler
 from sidekick_usages.daemon.supervisor import (
-    ControlConnection,
+    SupervisorRuntime,
+    WakeupChannel,
+)
+from sidekick_usages.daemon.types.peer import PeerFailureCode
+from sidekick_usages.daemon.types.ports import (
     ControlDispatcher,
+    PeerSocket,
+    PeerVerifier,
+    WorkerHandle,
+)
+from sidekick_usages.daemon.types.protocol import (
+    CompletionOutcome,
+    ConnectedSocket,
+    EventKind,
+    ProgressPhase,
+    RequestKind,
+)
+from sidekick_usages.daemon.types.service import ServicePhase
+from sidekick_usages.daemon.types.worker import (
+    ExitNotifier,
+    WorkerOutcome,
+)
+from sidekick_usages.daemon.workers import (
+    WorkerLaunchPlanner,
+    WorkerPool,
 )
 from sidekick_usages.paths import ApplicationPaths
 from sidekick_usages.persistence.account_index import AccountIndex
@@ -80,11 +109,16 @@ from sidekick_usages.persistence.activation_journal import (
 from sidekick_usages.persistence.filesystem import PersistenceFilesystem
 from sidekick_usages.persistence.operation_queue import OperationQueueStore
 from sidekick_usages.persistence.selected_state import SelectedStateStore
+from sidekick_usages.persistence.service_state import ServiceStateStore
+from sidekick_usages.persistence.worker_results import WorkerResultStore
 from tests.test_support import (
     REFERENCE_TIME,
     make_application_paths,
     saved_account,
 )
+
+_EXPECTED_WORKER_COUNT = 2
+_MONOTONIC_START = 100.0
 
 
 def _accounts() -> AccountIndex:
@@ -443,9 +477,7 @@ class _RecordingDispatcher:
     def dispatch(self, request: ControlRequest) -> Iterator[ControlEvent]:
         self.requests.append(request)
         if request.kind is RequestKind.ACTIVATE:
-            operation_id = OperationId(
-                "f619cb29-9f6e-40dd-b35d-cf6a6ed93f79"
-            )
+            operation_id = OperationId("f619cb29-9f6e-40dd-b35d-cf6a6ed93f79")
             yield _service_event(
                 request,
                 EventKind.ACCEPTED,
@@ -538,9 +570,7 @@ def _rejected_protocol_response(
 
 def test_authenticated_control_stream_frames_completes_and_cancels() -> None:
     """One peer-proven stream frames, completes, and cancels safely."""
-    account_id = SidekickAccountId(
-        "69b33871-dcd9-4e47-8ef8-f77d9944a956"
-    )
+    account_id = SidekickAccountId("69b33871-dcd9-4e47-8ef8-f77d9944a956")
     fragmented_request = ControlRequest(
         protocol_version=PROTOCOL_VERSION,
         request_id=new_request_id(),
@@ -624,3 +654,304 @@ def test_control_protocol_fails_closed_at_each_trust_boundary() -> None:
         decoder.finish()
         assert len(frames) == 1
         assert decode_event(frames[0]).kind is expected_kind
+
+
+@dataclass(slots=True)
+class _RuntimeClock:
+    """Deterministic wall and monotonic clocks for worker scheduling."""
+
+    wall_time: datetime = REFERENCE_TIME
+    monotonic_time: float = _MONOTONIC_START
+
+    def now(self) -> datetime:
+        return self.wall_time
+
+    def monotonic(self) -> float:
+        return self.monotonic_time
+
+    def advance(self, seconds: float) -> None:
+        self.wall_time += timedelta(seconds=seconds)
+        self.monotonic_time += seconds
+
+
+@dataclass(slots=True)
+class _FakeWorkerHandle:
+    """Controllable killable process boundary."""
+
+    operation_id: OperationId
+    events: list[str]
+    initial_exit_code: int | None
+    requires_kill: bool
+    terminated: bool = False
+    killed: bool = False
+
+    @property
+    def process_id(self) -> int:
+        return 4242
+
+    def poll(self) -> int | None:
+        return self.initial_exit_code
+
+    def wait(self, timeout_seconds: float | None) -> int | None:
+        del timeout_seconds
+        if self.initial_exit_code is not None:
+            return self.initial_exit_code
+        if self.killed:
+            return -9
+        if self.terminated and not self.requires_kill:
+            return -15
+        return None
+
+    def terminate_group(self) -> None:
+        self.events.append(f"terminate:{self.operation_id}")
+        self.terminated = True
+
+    def kill_group(self) -> None:
+        self.events.append(f"kill:{self.operation_id}")
+        self.killed = True
+
+
+class _FakeWorkerLauncher:
+    """Persist configured synthetic results when exact workers launch."""
+
+    def __init__(
+        self,
+        results: WorkerResultStore,
+        clock: _RuntimeClock,
+        successful: frozenset[OperationId],
+        requires_kill: frozenset[OperationId] = frozenset(),
+    ) -> None:
+        self._results = results
+        self._clock = clock
+        self._successful = successful
+        self._requires_kill = requires_kill
+        self.specs: list[WorkerLaunchSpec] = []
+        self.events: list[str] = []
+        self.handles: dict[OperationId, _FakeWorkerHandle] = {}
+
+    def launch(
+        self,
+        spec: WorkerLaunchSpec,
+        notify_exit: ExitNotifier,
+    ) -> WorkerHandle:
+        self.specs.append(spec)
+        self.events.append(f"launch:{spec.operation_id}")
+        succeeded = spec.operation_id in self._successful
+        if succeeded:
+            self._results.save(
+                WorkerResult(
+                    operation_id=spec.operation_id,
+                    outcome=WorkerOutcome.SUCCEEDED,
+                    finished_at=self._clock.now(),
+                )
+            )
+        handle = _FakeWorkerHandle(
+            spec.operation_id,
+            self.events,
+            0 if succeeded else None,
+            spec.operation_id in self._requires_kill,
+        )
+        self.handles[spec.operation_id] = handle
+        if succeeded:
+            notify_exit()
+        return handle
+
+
+class _NoopControlDispatcher:
+    """Unused control boundary for direct runtime-cycle scenarios."""
+
+    def dispatch(self, request: ControlRequest) -> Iterator[ControlEvent]:
+        del request
+        return iter(())
+
+    def cancel(self, request_id: RequestId) -> None:
+        del request_id
+
+
+def _worker_planner() -> WorkerLaunchPlanner:
+    return WorkerLaunchPlanner(
+        Path("/opt/sidekick/bin/sidekick-usages-worker"),
+        {
+            "ANTHROPIC_AUTH_TOKEN": "test-only-secret",
+            "CODEX_HOME": "/test-only-secret-home",
+            "HOME": "/synthetic/home",
+            "PATH": "/usr/bin",
+        },
+    )
+
+
+def _runtime_for(
+    state: _FoundationState,
+    scheduler: DurableScheduler,
+    recovery: ActivationRecoveryScheduler,
+    clock: _RuntimeClock,
+    wakeup: WakeupChannel,
+) -> SupervisorRuntime:
+    return SupervisorRuntime(
+        LocalControlServer(
+            state.paths.runtime_directory,
+            state.paths.supervisor_socket,
+            _NoopControlDispatcher(),
+            peer_verifier=_VerifiedPeer(),
+        ),
+        scheduler,
+        recovery,
+        ServiceStateStore(state.paths.service_state),
+        clock,
+        wakeup,
+        Event(),
+    )
+
+
+def test_supervisor_isolates_timeout_and_recovers_without_duplicate_work(
+    tmp_path: Path,
+) -> None:
+    """A timed-out account cannot block completion or restart recovery."""
+    state = _foundation_state(tmp_path)
+    first, second, third = state.operations
+    assert state.queue.remove_account(third.account_id) == 1
+    results = WorkerResultStore(state.paths.durable_operations)
+    clock = _RuntimeClock()
+    wakeup = WakeupChannel()
+    launcher = _FakeWorkerLauncher(
+        results,
+        clock,
+        frozenset({second.operation_id}),
+    )
+    workers = WorkerPool(
+        launcher,
+        _worker_planner(),
+        wakeup.notify,
+        general_timeout_seconds=5,
+        termination_grace_seconds=0.01,
+    )
+    scheduler = DurableScheduler(
+        state.queue,
+        results,
+        workers,
+        clock,
+        monotonic=clock.monotonic,
+    )
+    recovery = ActivationRecoveryScheduler(
+        state.journals,
+        state.queue,
+    )
+    runtime = _runtime_for(state, scheduler, recovery, clock, wakeup)
+
+    runtime.recover()
+    runtime.run_cycle()
+    runtime.run_cycle()
+    clock.advance(6)
+    runtime.run_cycle()
+
+    first_state = state.queue.find(first.operation_id)
+    second_state = state.queue.find(second.operation_id)
+    assert first_state is not None
+    assert first_state.state is OperationState.RETRY_WAIT
+    assert first_state.failure_code == "worker_timed_out"
+    assert second_state is not None
+    assert second_state.state is OperationState.SCHEDULED
+    service_state = ServiceStateStore(state.paths.service_state).load()
+    assert service_state is not None
+    assert service_state.phase is ServicePhase.READY
+    assert service_state.active_workers == 0
+
+    assert len(launcher.specs) == _EXPECTED_WORKER_COUNT
+    for spec in launcher.specs:
+        assert spec.argv == (
+            "/opt/sidekick/bin/sidekick-usages-worker",
+            str(spec.operation_id),
+        )
+        assert spec.environment_map() == {
+            "HOME": "/synthetic/home",
+            "PATH": "/usr/bin",
+        }
+    restarted_workers = WorkerPool(
+        _FakeWorkerLauncher(results, clock, frozenset()),
+        _worker_planner(),
+        lambda: None,
+    )
+    restarted = DurableScheduler(
+        OperationQueueStore(state.paths.durable_operations),
+        results,
+        restarted_workers,
+        clock,
+        monotonic=clock.monotonic,
+    )
+    assert restarted.recover() == ()
+    durable = OperationQueueStore(state.paths.durable_operations).load()
+    assert len(durable) == _EXPECTED_WORKER_COUNT
+    assert len({operation.operation_id for operation in durable}) == len(
+        durable
+    )
+    wakeup.close()
+
+
+def test_codex_callback_preempts_and_reaps_same_authority_worker(
+    tmp_path: Path,
+) -> None:
+    """The reserved callback lane reaps a hung lower-priority owner."""
+    paths = make_application_paths(tmp_path)
+    PersistenceFilesystem(paths.service_state).repair_parent_permissions()
+    clock = _RuntimeClock()
+    queue = OperationQueueStore(paths.durable_operations)
+    results = WorkerResultStore(paths.durable_operations)
+    account_id = SidekickAccountId("cd87ea15-3087-42b9-93b8-43d6ee429a5c")
+    maintenance = _operation(
+        account_id,
+        ProviderId.CODEX,
+        "b6b3c584-7ca9-49fa-845b-57b74c81980e",
+    )
+    callback = DueOperation(
+        operation_id=OperationId("5fac56f4-95d5-4ced-8b72-13c756bebc47"),
+        provider_id=ProviderId.CODEX,
+        account_id=account_id,
+        kind=OperationKind.REFRESH,
+        priority=OperationPriority.CODEX_CALLBACK,
+        state=OperationState.SCHEDULED,
+        due_at=clock.now(),
+        updated_at=clock.now(),
+    )
+    queue.enqueue(maintenance)
+    launcher = _FakeWorkerLauncher(
+        results,
+        clock,
+        frozenset({callback.operation_id}),
+        frozenset({maintenance.operation_id}),
+    )
+    workers = WorkerPool(
+        launcher,
+        _worker_planner(),
+        lambda: None,
+        general_limit=1,
+        callback_timeout_seconds=8,
+        termination_grace_seconds=0.01,
+    )
+    scheduler = DurableScheduler(
+        queue,
+        results,
+        workers,
+        clock,
+        monotonic=clock.monotonic,
+    )
+    scheduler.recover()
+    assert scheduler.dispatch_due()[0].operation_id == (
+        maintenance.operation_id
+    )
+    queue.enqueue(callback)
+    assert scheduler.dispatch_due()[0].operation_id == callback.operation_id
+    scheduler.collect()
+
+    assert launcher.events == [
+        f"launch:{maintenance.operation_id}",
+        f"terminate:{maintenance.operation_id}",
+        f"kill:{maintenance.operation_id}",
+        f"launch:{callback.operation_id}",
+    ]
+    retained = queue.find(maintenance.operation_id)
+    assert retained is not None
+    assert retained.state is OperationState.RETRY_WAIT
+    assert retained.failure_code == "worker_preempted"
+    assert queue.find(callback.operation_id) is None
+    assert workers.active_count == 0
+    assert clock.monotonic_time == _MONOTONIC_START

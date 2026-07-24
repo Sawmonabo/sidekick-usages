@@ -2,8 +2,7 @@
 
 from dataclasses import replace
 
-from sidekick_usages.core.accounts import (
-    AuthorityId,
+from sidekick_usages.core.accounts.models import (
     ClaudeAccountAuthority,
     ClaudeLegacyLoginAuthority,
     ClaudeManagedLoginAuthority,
@@ -11,6 +10,7 @@ from sidekick_usages.core.accounts import (
     CodexManagedAuthority,
     SavedAccount,
 )
+from sidekick_usages.core.accounts.types import AuthorityId
 from sidekick_usages.core.models import (
     Account,
     ClaudeLoginCredentials,

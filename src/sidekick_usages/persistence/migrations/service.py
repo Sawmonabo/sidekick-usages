@@ -8,9 +8,6 @@ from sidekick_usages.core.models import Account
 from sidekick_usages.paths import (
     ApplicationPaths,
 )
-from sidekick_usages.persistence.account_schema_v3 import (
-    SCHEMA_VERSION as MANAGED_SCHEMA_VERSION,
-)
 from sidekick_usages.persistence.account_store import AccountStore
 from sidekick_usages.persistence.artifacts import (
     AuthorityGeneration,
@@ -106,6 +103,9 @@ from sidekick_usages.persistence.migrations.rollback import (
 )
 from sidekick_usages.persistence.private_credentials import (
     PrivateCredentialTree,
+)
+from sidekick_usages.persistence.schema.account import (
+    SCHEMA_VERSION as MANAGED_SCHEMA_VERSION,
 )
 from sidekick_usages.persistence.schemas import (
     encode_version_two,

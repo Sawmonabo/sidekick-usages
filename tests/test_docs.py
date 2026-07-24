@@ -256,7 +256,7 @@ def test_architecture_spec_names_final_credential_and_refresh_owners() -> None:
         "persistence/credential_refresh_artifacts.py",
         "persistence/credential_refresh_merge.py",
         "persistence/credential_refresh_private_stage.py",
-        "persistence/credential_refresh_schema.py",
+        "persistence/schema/refresh.py",
         "persistence/credential_refresh_stage.py",
     ):
         assert module in architecture

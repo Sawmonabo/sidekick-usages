@@ -5,7 +5,7 @@ from contextlib import AbstractContextManager
 from datetime import datetime
 
 from sidekick_usages.clock import Clock
-from sidekick_usages.core.accounts import SavedAccount
+from sidekick_usages.core.accounts.models import SavedAccount
 from sidekick_usages.core.expiry import (
     ExpiredExpiry,
     InvalidExpiry,

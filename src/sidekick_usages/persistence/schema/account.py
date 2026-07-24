@@ -1,7 +1,6 @@
 """Strict schema-version-three no-secret account index codec."""
 
 import json
-from dataclasses import dataclass
 from datetime import datetime
 from typing import Annotated, Literal
 
@@ -10,14 +9,11 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    TypeAdapter,
     ValidationError,
 )
 
-from sidekick_usages.core.accounts import (
+from sidekick_usages.core.accounts.models import (
     AccountAuthority,
-    AuthorityGeneration,
-    AuthorityId,
     ClaudeAccountAuthority,
     ClaudeLegacyLoginAuthority,
     ClaudeManagedLoginAuthority,
@@ -25,9 +21,13 @@ from sidekick_usages.core.accounts import (
     CodexAccountAuthority,
     CodexLegacyAuthority,
     CodexManagedAuthority,
+    SavedAccount,
+)
+from sidekick_usages.core.accounts.types import (
+    AuthorityGeneration,
+    AuthorityId,
     CredentialHealth,
     ProviderIdentity,
-    SavedAccount,
     SidekickAccountId,
 )
 from sidekick_usages.core.types import (
@@ -41,14 +41,16 @@ from sidekick_usages.persistence.errors import (
     InvalidSchemaError,
     MalformedJsonError,
 )
-from sidekick_usages.persistence.schemas import (
-    MAX_ACCOUNTS,
+from sidekick_usages.persistence.limits import (
     MAX_DOCUMENT_BYTES,
-    _canonical_timestamp,
-    _parse_canonical_timestamp,
 )
+from sidekick_usages.persistence.models.account import VersionThreeDocument
 from sidekick_usages.persistence.state_validation import (
     validate_non_secret_state,
+)
+from sidekick_usages.persistence.time_codec import (
+    canonical_timestamp,
+    parse_canonical_timestamp,
 )
 from sidekick_usages.serialization import (
     JsonDecodeCode,
@@ -60,36 +62,11 @@ from sidekick_usages.serialization import (
 
 SCHEMA_VERSION = 3
 _MAX_METADATA_BYTES = 4_096
-
 _MODEL_CONFIG = ConfigDict(
     strict=True,
     extra="forbid",
     frozen=True,
 )
-
-
-def _canonical_uuid(value: str) -> str:
-    """Validate a canonical Sidekick UUID while preserving its text."""
-    SidekickAccountId(value)
-    return value
-
-
-def _canonical_time(value: str) -> str:
-    """Validate one canonical persisted UTC timestamp."""
-    _parse_canonical_timestamp(value)
-    return value
-
-
-def _bounded_text(value: str) -> str:
-    """Require one bounded nonempty UTF-8 metadata value."""
-    try:
-        encoded = value.encode("utf-8")
-    except UnicodeEncodeError:
-        raise ValueError("Metadata must be valid UTF-8.") from None
-    if not encoded or len(encoded) > _MAX_METADATA_BYTES:
-        raise ValueError("Metadata must be nonempty and bounded.")
-    return value
-
 
 type _Uuid = Annotated[str, AfterValidator(_canonical_uuid)]
 type _Timestamp = Annotated[str, AfterValidator(_canonical_time)]
@@ -105,6 +82,41 @@ type _Health = Literal[
     "reconciliation_required",
     "unknown",
 ]
+type _ClaudeSubscriptionModel = Annotated[
+    _ClaudeLegacyModel | _ClaudeManagedModel,
+    Field(discriminator="kind"),
+]
+type _CodexSubscriptionModel = Annotated[
+    _CodexLegacyModel | _CodexManagedModel,
+    Field(discriminator="kind"),
+]
+type _AccountModel = Annotated[
+    _ClaudeAccountModel | _CodexAccountModel,
+    Field(discriminator="provider_id"),
+]
+
+
+def _canonical_uuid(value: str) -> str:
+    """Validate a canonical Sidekick UUID while preserving its text."""
+    SidekickAccountId(value)
+    return value
+
+
+def _canonical_time(value: str) -> str:
+    """Validate one canonical persisted UTC timestamp."""
+    parse_canonical_timestamp(value)
+    return value
+
+
+def _bounded_text(value: str) -> str:
+    """Require one bounded nonempty UTF-8 metadata value."""
+    try:
+        encoded = value.encode("utf-8")
+    except UnicodeEncodeError:
+        raise ValueError("Metadata must be valid UTF-8.") from None
+    if not encoded or len(encoded) > _MAX_METADATA_BYTES:
+        raise ValueError("Metadata must be nonempty and bounded.")
+    return value
 
 
 class _ClaudeSetupTokenModel(BaseModel):
@@ -146,12 +158,6 @@ class _ClaudeManagedModel(BaseModel):
     health: _Health
 
 
-type _ClaudeSubscriptionModel = Annotated[
-    _ClaudeLegacyModel | _ClaudeManagedModel,
-    Field(discriminator="kind"),
-]
-
-
 class _ClaudeAuthorityModel(BaseModel):
     """Validated Claude authority envelope."""
 
@@ -188,12 +194,6 @@ class _CodexManagedModel(BaseModel):
     verified_at: _Timestamp
     executable_version: _BoundedText
     health: _Health
-
-
-type _CodexSubscriptionModel = Annotated[
-    _CodexLegacyModel | _CodexManagedModel,
-    Field(discriminator="kind"),
-]
 
 
 class _CodexAuthorityModel(BaseModel):
@@ -249,12 +249,6 @@ class _CodexAccountModel(_AccountStateModel):
     authority: _CodexAuthorityModel
 
 
-type _AccountModel = Annotated[
-    _ClaudeAccountModel | _CodexAccountModel,
-    Field(discriminator="provider_id"),
-]
-
-
 class _EnvelopeModel(BaseModel):
     """Strict schema-version-three document envelope."""
 
@@ -262,31 +256,6 @@ class _EnvelopeModel(BaseModel):
 
     schema_version: Literal[3]
     accounts: dict[_Uuid, _AccountModel]
-
-
-_ENVELOPE_ADAPTER = TypeAdapter(_EnvelopeModel)
-
-
-@dataclass(frozen=True, slots=True)
-class VersionThreeDocument:
-    """Validated schema-version-three accounts in insertion order."""
-
-    accounts: tuple[SavedAccount, ...]
-
-    def __post_init__(self) -> None:
-        """Reject duplicate IDs and provider-qualified labels."""
-        if len(self.accounts) > MAX_ACCOUNTS:
-            raise InvalidSchemaError
-        account_ids: set[SidekickAccountId] = set()
-        labels: set[tuple[ProviderId, AccountLabel]] = set()
-        for account in self.accounts:
-            if account.account_id in account_ids:
-                raise InvalidSchemaError
-            key = (account.provider_id, account.label)
-            if key in labels:
-                raise InvalidSchemaError
-            account_ids.add(account.account_id)
-            labels.add(key)
 
 
 def _decode_root(payload: bytes) -> JsonObject:
@@ -307,7 +276,7 @@ def _decode_root(payload: bytes) -> JsonObject:
 
 def _time(value: str | None) -> datetime | None:
     """Decode one optional canonical timestamp."""
-    return None if value is None else _parse_canonical_timestamp(value)
+    return None if value is None else parse_canonical_timestamp(value)
 
 
 def _identity(value: str | None) -> ProviderIdentity | None:
@@ -343,7 +312,7 @@ def _claude_authority(model: _ClaudeAuthorityModel) -> AccountAuthority:
             authority_id=AuthorityId(subscription.authority_id),
             provider_identity=ProviderIdentity(subscription.provider_identity),
             generation=AuthorityGeneration(subscription.generation),
-            verified_at=_parse_canonical_timestamp(subscription.verified_at),
+            verified_at=parse_canonical_timestamp(subscription.verified_at),
             executable_version=subscription.executable_version,
             health=CredentialHealth(subscription.health),
         )
@@ -376,7 +345,7 @@ def _codex_authority(model: _CodexAuthorityModel) -> AccountAuthority:
             authority_id=AuthorityId(subscription.authority_id),
             provider_identity=ProviderIdentity(subscription.provider_identity),
             generation=AuthorityGeneration(subscription.generation),
-            verified_at=_parse_canonical_timestamp(subscription.verified_at),
+            verified_at=parse_canonical_timestamp(subscription.verified_at),
             executable_version=subscription.executable_version,
             health=CredentialHealth(subscription.health),
         )
@@ -412,7 +381,7 @@ def _account(
         heartbeat_5h_reset_at=_time(model.heartbeat_5h_reset_at),
         heartbeat_window_resets=(
             tuple(
-                (target, _parse_canonical_timestamp(reset_at))
+                (target, parse_canonical_timestamp(reset_at))
                 for target, reset_at in resets.items()
             )
             if resets is not None
@@ -437,7 +406,7 @@ def decode_version_three(payload: bytes) -> VersionThreeDocument:
     """Decode one strict no-secret schema-version-three account index."""
     root = _decode_root(payload)
     try:
-        envelope = _ENVELOPE_ADAPTER.validate_python(root, strict=True)
+        envelope = _EnvelopeModel.model_validate(root, strict=True)
         document = VersionThreeDocument(
             tuple(
                 _account(account_id, account)
@@ -451,7 +420,7 @@ def decode_version_three(payload: bytes) -> VersionThreeDocument:
 
 def _timestamp(value: datetime | None) -> JsonValue:
     """Encode one optional aware timestamp."""
-    return None if value is None else _canonical_timestamp(value)
+    return None if value is None else canonical_timestamp(value)
 
 
 def _setup_object(
@@ -514,7 +483,7 @@ def _subscription_object(
         "authority_id": str(authority.authority_id),
         "provider_identity": str(authority.provider_identity),
         "generation": str(authority.generation),
-        "verified_at": _canonical_timestamp(authority.verified_at),
+        "verified_at": canonical_timestamp(authority.verified_at),
         "executable_version": authority.executable_version,
         "health": authority.health.value,
     }
@@ -558,7 +527,7 @@ def _account_object(account: SavedAccount) -> JsonObject:
         "heartbeat_5h_reset_at": _timestamp(account.heartbeat_5h_reset_at),
         "heartbeat_window_resets": (
             {
-                target: _canonical_timestamp(reset_at)
+                target: canonical_timestamp(reset_at)
                 for target, reset_at in resets
             }
             if resets is not None
@@ -612,12 +581,3 @@ def encode_version_three(document: VersionThreeDocument) -> bytes:
 def has_managed_authority(document: VersionThreeDocument) -> bool:
     """Return whether rollback must reject the complete account index."""
     return any(account.has_managed_authority for account in document.accounts)
-
-
-__all__ = [
-    "SCHEMA_VERSION",
-    "VersionThreeDocument",
-    "decode_version_three",
-    "encode_version_three",
-    "has_managed_authority",
-]

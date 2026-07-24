@@ -1,98 +1,76 @@
 """Bounded secret-free protocol for the local supervisor socket."""
 
-import json
 import struct
 from collections import deque
-from dataclasses import dataclass
-from enum import StrEnum
-from typing import Protocol
 from uuid import uuid4
 
-from sidekick_usages.core.accounts import (
+from sidekick_usages.core.accounts.types import (
     OperationId,
     RequestId,
     SidekickAccountId,
 )
+from sidekick_usages.core.selection.models import safe_outcome_code
 from sidekick_usages.core.types import ProviderId
+from sidekick_usages.daemon.models.protocol import (
+    AcceptedPayload,
+    AccountPayload,
+    CompletedPayload,
+    ControlEvent,
+    ControlRequest,
+    EmptyPayload,
+    EventPayload,
+    FailedPayload,
+    IncompatiblePayload,
+    ProgressPayload,
+    ProviderPayload,
+    RequestPayload,
+    ServiceStoppingPayload,
+    SnapshotPayload,
+)
+from sidekick_usages.daemon.types.protocol import (
+    CompletionOutcome,
+    ConnectedSocket,
+    EventKind,
+    ProgressPhase,
+    ProtocolErrorCode,
+    RequestKind,
+    ServiceStopReason,
+)
+from sidekick_usages.serialization import (
+    JsonDecodeError,
+    JsonEncodeError,
+    JsonObject,
+    JsonValue,
+    decode_integer_json_value,
+    encode_compact_json,
+)
+
+__all__ = [
+    "MAX_FRAME_BYTES",
+    "MAX_REQUESTS_PER_CONNECTION",
+    "PROTOCOL_VERSION",
+    "UNATTRIBUTED_REQUEST_ID",
+    "ConnectionClosedError",
+    "FrameDecoder",
+    "FrameTooLargeError",
+    "FramedTransport",
+    "MalformedFrameError",
+    "ProtocolFailureError",
+    "decode_event",
+    "decode_request",
+    "encode_event",
+    "encode_frame",
+    "encode_request",
+    "new_request_id",
+]
 
 PROTOCOL_VERSION = 1
 MAX_FRAME_BYTES = 65_536
-MAX_PACKAGE_VERSION_BYTES = 128
 MAX_REQUESTS_PER_CONNECTION = 128
 READ_CHUNK_BYTES = 16_384
 UNATTRIBUTED_REQUEST_ID = RequestId("00000000-0000-0000-0000-000000000000")
 
 _FRAME_PREFIX = struct.Struct(">I")
-_MAX_INTEGER = (1 << 63) - 1
-_MAX_PROTOCOL_VERSION = 65_535
-_MIN_PRINTABLE_ASCII = 0x21
-_MAX_PRINTABLE_ASCII = 0x7E
-
-type JsonScalar = str | int | bool | None
-type JsonValue = JsonScalar | list[JsonValue] | dict[str, JsonValue]
-
-
-class RequestKind(StrEnum):
-    """Closed client request vocabulary."""
-
-    HANDSHAKE = "handshake"
-    SNAPSHOT = "snapshot"
-    SUBSCRIBE = "subscribe"
-    ACTIVATE = "activate"
-    REFRESH_ACCOUNT = "refresh_account"
-    REFRESH_ALL = "refresh_all"
-    RECONCILE = "reconcile"
-    SHUTDOWN = "shutdown"
-
-
-class EventKind(StrEnum):
-    """Closed supervisor event vocabulary."""
-
-    ACCEPTED = "accepted"
-    SNAPSHOT = "snapshot"
-    PROGRESS = "progress"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    INCOMPATIBLE = "incompatible"
-    SERVICE_STOPPING = "service_stopping"
-
-
-class ProgressPhase(StrEnum):
-    """Sanitized operation progress phases."""
-
-    QUEUED = "queued"
-    STARTING = "starting"
-    RUNNING = "running"
-    VERIFYING = "verifying"
-    RECONCILING = "reconciling"
-
-
-class CompletionOutcome(StrEnum):
-    """Sanitized successful terminal outcomes."""
-
-    SUCCEEDED = "succeeded"
-    NO_CHANGE = "no_change"
-    CANCELLED = "cancelled"
-
-
-class ProtocolErrorCode(StrEnum):
-    """Safe protocol failures that never include rejected input."""
-
-    MALFORMED_FRAME = "malformed_frame"
-    FRAME_TOO_LARGE = "frame_too_large"
-    HANDSHAKE_REQUIRED = "handshake_required"
-    INCOMPATIBLE_PROTOCOL = "incompatible_protocol"
-    INCOMPATIBLE_VERSION = "incompatible_version"
-    TOO_MANY_REQUESTS = "too_many_requests"
-    DISPATCH_FAILED = "dispatch_failed"
-    FEATURE_DISABLED = "feature_disabled"
-
-
-class ServiceStopReason(StrEnum):
-    """Safe reasons for a supervisor stopping event."""
-
-    REQUESTED = "requested"
-    SHUTTING_DOWN = "shutting_down"
 
 
 class ProtocolFailureError(ValueError):
@@ -119,152 +97,6 @@ class MalformedFrameError(ProtocolFailureError):
 
 class ConnectionClosedError(ConnectionError):
     """The peer closed before another complete frame was available."""
-
-
-@dataclass(frozen=True, slots=True)
-class EmptyPayload:
-    """Payload for requests that accept no arguments."""
-
-
-@dataclass(frozen=True, slots=True)
-class AccountPayload:
-    """One stable account target without a label or credential."""
-
-    provider_id: ProviderId
-    account_id: SidekickAccountId
-
-
-@dataclass(frozen=True, slots=True)
-class ProviderPayload:
-    """One provider target without provider-owned identity."""
-
-    provider_id: ProviderId
-
-
-type RequestPayload = EmptyPayload | AccountPayload | ProviderPayload
-
-
-@dataclass(frozen=True, slots=True)
-class AcceptedPayload:
-    """Acknowledgement after durable acceptance or handshake."""
-
-    operation_id: OperationId | None
-
-
-@dataclass(frozen=True, slots=True)
-class SnapshotPayload:
-    """Bounded supervisor snapshot authority marker."""
-
-    revision: int
-    ready: bool
-
-    def __post_init__(self) -> None:
-        """Require a nonnegative bounded revision."""
-        _require_nonnegative_integer(self.revision)
-
-
-@dataclass(frozen=True, slots=True)
-class ProgressPayload:
-    """Sanitized progress for one accepted operation or subscription."""
-
-    operation_id: OperationId | None
-    phase: ProgressPhase
-
-
-@dataclass(frozen=True, slots=True)
-class CompletedPayload:
-    """Sanitized successful terminal result."""
-
-    operation_id: OperationId | None
-    outcome: CompletionOutcome
-
-
-@dataclass(frozen=True, slots=True)
-class FailedPayload:
-    """Sanitized failed terminal result."""
-
-    operation_id: OperationId | None
-    code: ProtocolErrorCode
-
-
-@dataclass(frozen=True, slots=True)
-class IncompatiblePayload:
-    """Version incompatibility reported before action dispatch."""
-
-    code: ProtocolErrorCode
-
-    def __post_init__(self) -> None:
-        """Restrict the payload to version negotiation failures."""
-        if self.code not in {
-            ProtocolErrorCode.INCOMPATIBLE_PROTOCOL,
-            ProtocolErrorCode.INCOMPATIBLE_VERSION,
-        }:
-            raise ValueError("Incompatible events require a version failure.")
-
-
-@dataclass(frozen=True, slots=True)
-class ServiceStoppingPayload:
-    """Sanitized service shutdown state."""
-
-    reason: ServiceStopReason
-
-
-type EventPayload = (
-    AcceptedPayload
-    | SnapshotPayload
-    | ProgressPayload
-    | CompletedPayload
-    | FailedPayload
-    | IncompatiblePayload
-    | ServiceStoppingPayload
-)
-
-
-@dataclass(frozen=True, slots=True)
-class ControlRequest:
-    """One strictly typed client request."""
-
-    protocol_version: int
-    request_id: RequestId
-    kind: RequestKind
-    payload: RequestPayload
-    package_version: str
-
-    def __post_init__(self) -> None:
-        """Validate envelope values and kind-specific payload ownership."""
-        _require_protocol_version(self.protocol_version)
-        _require_package_version(self.package_version)
-        _require_request_payload(self.kind, self.payload)
-
-
-@dataclass(frozen=True, slots=True)
-class ControlEvent:
-    """One strictly typed supervisor response or streamed event."""
-
-    protocol_version: int
-    request_id: RequestId
-    kind: EventKind
-    payload: EventPayload
-    package_version: str
-
-    def __post_init__(self) -> None:
-        """Validate envelope values and kind-specific payload ownership."""
-        _require_protocol_version(self.protocol_version)
-        _require_package_version(self.package_version)
-        _require_event_payload(self.kind, self.payload)
-
-
-class ConnectedSocket(Protocol):
-    """Minimal connected byte-stream socket used by the protocol."""
-
-    def recv(self, size: int, /) -> bytes:
-        """Receive at most ``size`` bytes."""
-
-    def sendall(self, data: bytes, /) -> None:
-        """Send all bytes or raise an operating-system error."""
-
-    def close(self) -> None:
-        """Close this connection."""
 
 
 class FrameDecoder:
@@ -442,43 +274,6 @@ def decode_event(payload: bytes) -> ControlEvent:
         raise MalformedFrameError from None
 
 
-def _require_request_payload(
-    kind: RequestKind,
-    payload: RequestPayload,
-) -> None:
-    account_kinds = {
-        RequestKind.ACTIVATE,
-        RequestKind.REFRESH_ACCOUNT,
-    }
-    provider_kinds = {RequestKind.RECONCILE}
-    if kind in account_kinds and isinstance(payload, AccountPayload):
-        return
-    if kind in provider_kinds and isinstance(payload, ProviderPayload):
-        return
-    if kind not in account_kinds | provider_kinds and isinstance(
-        payload, EmptyPayload
-    ):
-        return
-    raise ValueError("Request kind and payload do not match.")
-
-
-def _require_event_payload(
-    kind: EventKind,
-    payload: EventPayload,
-) -> None:
-    expected: dict[EventKind, type[EventPayload]] = {
-        EventKind.ACCEPTED: AcceptedPayload,
-        EventKind.SNAPSHOT: SnapshotPayload,
-        EventKind.PROGRESS: ProgressPayload,
-        EventKind.COMPLETED: CompletedPayload,
-        EventKind.FAILED: FailedPayload,
-        EventKind.INCOMPATIBLE: IncompatiblePayload,
-        EventKind.SERVICE_STOPPING: ServiceStoppingPayload,
-    }
-    if not isinstance(payload, expected[kind]):
-        raise ValueError("Event kind and payload do not match.")
-
-
 def _request_payload_to_json(payload: RequestPayload) -> JsonValue:
     if isinstance(payload, EmptyPayload):
         return {}
@@ -493,9 +288,7 @@ def _request_payload_to_json(payload: RequestPayload) -> JsonValue:
 def _event_payload_to_json(payload: EventPayload) -> JsonValue:
     result: dict[str, JsonValue]
     if isinstance(payload, AcceptedPayload):
-        result = {
-            "operation_id": _optional_operation_id(payload.operation_id)
-        }
+        result = {"operation_id": _optional_operation_id(payload.operation_id)}
     elif isinstance(payload, SnapshotPayload):
         result = {"ready": payload.ready, "revision": payload.revision}
     elif isinstance(payload, ProgressPayload):
@@ -510,7 +303,7 @@ def _event_payload_to_json(payload: EventPayload) -> JsonValue:
         }
     elif isinstance(payload, FailedPayload):
         result = {
-            "code": payload.code.value,
+            "code": payload.code,
             "operation_id": _optional_operation_id(payload.operation_id),
         }
     elif isinstance(payload, IncompatiblePayload):
@@ -572,7 +365,7 @@ def _decode_event_payload(
         _require_exact_keys(root, {"code", "operation_id"})
         result = FailedPayload(
             operation_id=_decode_optional_operation_id(root["operation_id"]),
-            code=ProtocolErrorCode(_require_string(root["code"])),
+            code=_require_safe_code(root["code"]),
         )
     elif kind is EventKind.INCOMPATIBLE:
         _require_exact_keys(root, {"code"})
@@ -599,14 +392,8 @@ def _decode_optional_operation_id(value: JsonValue) -> OperationId | None:
 
 def _encode_json(root: JsonValue) -> bytes:
     try:
-        return json.dumps(
-            root,
-            allow_nan=False,
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        ).encode("utf-8")
-    except TypeError, ValueError, UnicodeEncodeError:
+        return encode_compact_json(root)
+    except JsonEncodeError:
         raise MalformedFrameError from None
 
 
@@ -616,58 +403,19 @@ def _decode_json(payload: bytes) -> JsonValue:
             raise FrameTooLargeError
         raise MalformedFrameError
     try:
-        text = payload.decode("utf-8", errors="strict")
-        decoded: JsonValue = json.loads(
-            text,
-            object_pairs_hook=_strict_object,
-            parse_constant=_reject_constant,
-            parse_float=_reject_float,
-            parse_int=_parse_integer,
-        )
-    except (
-        json.JSONDecodeError,
-        UnicodeDecodeError,
-        TypeError,
-        ValueError,
-    ):
+        return decode_integer_json_value(payload)
+    except JsonDecodeError:
         raise MalformedFrameError from None
-    return decoded
 
 
-def _strict_object(
-    pairs: list[tuple[str, JsonValue]],
-) -> dict[str, JsonValue]:
-    result: dict[str, JsonValue] = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError("Duplicate JSON key.")
-        result[key] = value
-    return result
-
-
-def _reject_constant(_value: str) -> JsonValue:
-    raise ValueError("Non-finite JSON number.")
-
-
-def _reject_float(_value: str) -> JsonValue:
-    raise ValueError("Floating-point JSON values are unsupported.")
-
-
-def _parse_integer(value: str) -> int:
-    parsed = int(value)
-    if parsed < -_MAX_INTEGER or parsed > _MAX_INTEGER:
-        raise ValueError("JSON integer is out of range.")
-    return parsed
-
-
-def _require_object(value: JsonValue) -> dict[str, JsonValue]:
+def _require_object(value: JsonValue) -> JsonObject:
     if not isinstance(value, dict):
         raise MalformedFrameError
     return value
 
 
 def _require_exact_keys(
-    value: dict[str, JsonValue],
+    value: JsonObject,
     expected: set[str],
 ) -> None:
     if set(value) != expected:
@@ -686,87 +434,14 @@ def _require_integer(value: JsonValue) -> int:
     return value
 
 
-def _require_nonnegative_integer(value: int) -> None:
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, int)
-        or value < 0
-        or value > _MAX_INTEGER
-    ):
-        raise ValueError("Revision must be a nonnegative bounded integer.")
-
-
 def _require_boolean(value: JsonValue) -> bool:
     if not isinstance(value, bool):
         raise MalformedFrameError
     return value
 
 
-def _require_protocol_version(value: int) -> None:
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, int)
-        or not 1 <= value <= _MAX_PROTOCOL_VERSION
-    ):
-        raise ValueError("Protocol version must be a bounded integer.")
-
-
-def _require_package_version(value: str) -> None:
-    if not isinstance(value, str):
-        raise TypeError("Package version must be a string.")
-    try:
-        encoded = value.encode("ascii")
-    except UnicodeEncodeError:
-        raise ValueError("Package version must be printable ASCII.") from None
-    if (
-        not encoded
-        or len(encoded) > MAX_PACKAGE_VERSION_BYTES
-        or any(
-            character < _MIN_PRINTABLE_ASCII
-            or character > _MAX_PRINTABLE_ASCII
-            for character in encoded
-        )
-    ):
-        raise ValueError("Package version must be printable ASCII.")
-
-
-__all__ = [
-    "MAX_FRAME_BYTES",
-    "MAX_PACKAGE_VERSION_BYTES",
-    "MAX_REQUESTS_PER_CONNECTION",
-    "PROTOCOL_VERSION",
-    "UNATTRIBUTED_REQUEST_ID",
-    "AcceptedPayload",
-    "AccountPayload",
-    "CompletedPayload",
-    "CompletionOutcome",
-    "ConnectedSocket",
-    "ConnectionClosedError",
-    "ControlEvent",
-    "ControlRequest",
-    "EmptyPayload",
-    "EventKind",
-    "EventPayload",
-    "FailedPayload",
-    "FrameDecoder",
-    "FrameTooLargeError",
-    "FramedTransport",
-    "IncompatiblePayload",
-    "MalformedFrameError",
-    "ProgressPayload",
-    "ProgressPhase",
-    "ProtocolErrorCode",
-    "ProtocolFailureError",
-    "ProviderPayload",
-    "RequestKind",
-    "RequestPayload",
-    "ServiceStopReason",
-    "ServiceStoppingPayload",
-    "SnapshotPayload",
-    "decode_event",
-    "decode_request",
-    "encode_event",
-    "encode_frame",
-    "encode_request",
-    "new_request_id",
-]
+def _require_safe_code(value: JsonValue) -> str:
+    code = _require_string(value)
+    if safe_outcome_code(code) is None:
+        raise MalformedFrameError
+    return code

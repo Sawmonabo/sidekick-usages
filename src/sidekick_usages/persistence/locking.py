@@ -14,11 +14,21 @@ from sidekick_usages.persistence.errors import (
     PersistenceError,
     PersistenceFilesystemError,
 )
-from sidekick_usages.persistence.filesystem import PersistenceFilesystem
+from sidekick_usages.persistence.private_filesystem import PrivateFilesystem
 from sidekick_usages.persistence.transaction import (
     PersistenceTransaction,
     _begin_transaction,
 )
+
+__all__ = [
+    "LOCK_CHECK_INTERVAL_SECONDS",
+    "LOCK_TIMEOUT_SECONDS",
+    "LockFailurePhase",
+    "LockUnavailableError",
+    "PersistenceLock",
+    "StoreLockedError",
+    "TransactionReleaseError",
+]
 
 LOCK_TIMEOUT_SECONDS = 5.0
 LOCK_CHECK_INTERVAL_SECONDS = 0.1
@@ -249,7 +259,7 @@ class PersistenceLock:
 
     def __init__(
         self,
-        filesystem: PersistenceFilesystem,
+        filesystem: PrivateFilesystem,
         *,
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
@@ -295,14 +305,3 @@ class PersistenceLock:
         except BaseException as error:
             _release_after_invalidation(sidecar, error)
         return sidecar
-
-
-__all__ = [
-    "LOCK_CHECK_INTERVAL_SECONDS",
-    "LOCK_TIMEOUT_SECONDS",
-    "LockFailurePhase",
-    "LockUnavailableError",
-    "PersistenceLock",
-    "StoreLockedError",
-    "TransactionReleaseError",
-]

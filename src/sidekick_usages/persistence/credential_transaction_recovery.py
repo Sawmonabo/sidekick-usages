@@ -20,7 +20,15 @@ from sidekick_usages.persistence.artifacts import (
 from sidekick_usages.persistence.credential_transaction_plans import (
     CredentialTransactionPlan,
 )
-from sidekick_usages.persistence.credential_transaction_schema import (
+from sidekick_usages.persistence.errors import (
+    InterruptedArtifactError,
+    SourceChangedError,
+)
+from sidekick_usages.persistence.private_credentials import (
+    PRIVATE_TRANSACTION_JOURNAL,
+    PrivateCredentialTree,
+)
+from sidekick_usages.persistence.schema.transaction import (
     AbsentAuthority,
     CredentialJournal,
     CredentialSourceGuardRecord,
@@ -31,14 +39,6 @@ from sidekick_usages.persistence.credential_transaction_schema import (
     PresentAuthority,
     decode_credential_journal,
     journal_authority,
-)
-from sidekick_usages.persistence.errors import (
-    InterruptedArtifactError,
-    SourceChangedError,
-)
-from sidekick_usages.persistence.private_credentials import (
-    PRIVATE_TRANSACTION_JOURNAL,
-    PrivateCredentialTree,
 )
 
 type _AuthorityReader = Callable[[], FileSnapshot | None]

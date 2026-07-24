@@ -32,45 +32,6 @@ from sidekick_usages.persistence.credential_refresh_merge import (
     CredentialRefreshFailureMerge,
     CredentialRefreshSuccessMerge,
 )
-from sidekick_usages.persistence.credential_refresh_schema import (
-    JOURNAL_BASENAME as _JOURNAL_BASENAME,
-)
-from sidekick_usages.persistence.credential_refresh_schema import (
-    JOURNAL_SCHEMA_VERSION as _JOURNAL_SCHEMA_VERSION,
-)
-from sidekick_usages.persistence.credential_refresh_schema import (
-    STAGE_BASENAME as _STAGE_BASENAME,
-)
-from sidekick_usages.persistence.credential_refresh_schema import (
-    RefreshJournal as _RefreshJournal,
-)
-from sidekick_usages.persistence.credential_refresh_schema import (
-    RefreshReason as _RefreshReason,
-)
-from sidekick_usages.persistence.credential_refresh_schema import (
-    credential_digest as _credential_digest,
-)
-from sidekick_usages.persistence.credential_refresh_schema import (
-    credential_kind as _credential_kind,
-)
-from sidekick_usages.persistence.credential_refresh_schema import (
-    decode_refresh_journal as _decode_journal,
-)
-from sidekick_usages.persistence.credential_refresh_schema import (
-    encode_refresh_journal as _encode_journal,
-)
-from sidekick_usages.persistence.credential_refresh_schema import (
-    label_digest as _label_digest,
-)
-from sidekick_usages.persistence.credential_refresh_schema import (
-    refresh_reason as _refresh_reason,
-)
-from sidekick_usages.persistence.credential_refresh_schema import (
-    refresh_timestamp as _timestamp,
-)
-from sidekick_usages.persistence.credential_refresh_schema import (
-    require_sha256 as _require_sha256,
-)
 from sidekick_usages.persistence.credential_refresh_stage import (
     decode_credential_refresh_stage as _decode_stage,
 )
@@ -92,6 +53,45 @@ from sidekick_usages.persistence.private_bundle_writes import (
 )
 from sidekick_usages.persistence.private_credentials import (
     PrivateCredentialTree,
+)
+from sidekick_usages.persistence.schema.refresh import (
+    JOURNAL_BASENAME as _JOURNAL_BASENAME,
+)
+from sidekick_usages.persistence.schema.refresh import (
+    JOURNAL_SCHEMA_VERSION as _JOURNAL_SCHEMA_VERSION,
+)
+from sidekick_usages.persistence.schema.refresh import (
+    STAGE_BASENAME as _STAGE_BASENAME,
+)
+from sidekick_usages.persistence.schema.refresh import (
+    RefreshJournal as _RefreshJournal,
+)
+from sidekick_usages.persistence.schema.refresh import (
+    RefreshReason as _RefreshReason,
+)
+from sidekick_usages.persistence.schema.refresh import (
+    credential_digest as _credential_digest,
+)
+from sidekick_usages.persistence.schema.refresh import (
+    credential_kind as _credential_kind,
+)
+from sidekick_usages.persistence.schema.refresh import (
+    decode_refresh_journal as _decode_journal,
+)
+from sidekick_usages.persistence.schema.refresh import (
+    encode_refresh_journal as _encode_journal,
+)
+from sidekick_usages.persistence.schema.refresh import (
+    label_digest as _label_digest,
+)
+from sidekick_usages.persistence.schema.refresh import (
+    refresh_reason as _refresh_reason,
+)
+from sidekick_usages.persistence.schema.refresh import (
+    refresh_timestamp as _timestamp,
+)
+from sidekick_usages.persistence.schema.refresh import (
+    require_sha256 as _require_sha256,
 )
 
 _LOCK_DOMAIN = b"sidekick-usages credential refresh lock\0"

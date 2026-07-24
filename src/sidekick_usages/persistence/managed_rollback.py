@@ -2,10 +2,6 @@
 
 from pathlib import Path
 
-from sidekick_usages.persistence.account_schema_v3 import (
-    VersionThreeDocument,
-    has_managed_authority,
-)
 from sidekick_usages.persistence.artifacts import (
     FileFingerprint,
     FileSnapshot,
@@ -19,6 +15,8 @@ from sidekick_usages.persistence.errors import (
     InvalidSchemaError,
     ManagedRollbackCompatibilityError,
 )
+from sidekick_usages.persistence.models.account import VersionThreeDocument
+from sidekick_usages.persistence.schema.account import has_managed_authority
 
 
 def require_v060_compatible(document: VersionThreeDocument) -> None:

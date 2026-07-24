@@ -9,11 +9,11 @@ from architecture_ast import (
     class_fields,
     class_node,
     compact,
+    dotted_name,
     enum_values,
     finding,
     type_alias,
 )
-from architecture_ast import name as dotted_name
 
 
 def check_value_contracts(

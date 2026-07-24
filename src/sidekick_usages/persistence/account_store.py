@@ -5,7 +5,8 @@ from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Protocol, Self
 
-from sidekick_usages.core.accounts import SavedAccount, SidekickAccountId
+from sidekick_usages.core.accounts.models import SavedAccount
+from sidekick_usages.core.accounts.types import SidekickAccountId
 from sidekick_usages.core.models import Account, Credentials
 from sidekick_usages.core.types import (
     AccountLabel,
@@ -13,9 +14,6 @@ from sidekick_usages.core.types import (
     RefreshStatus,
 )
 from sidekick_usages.paths import AccountLocations
-from sidekick_usages.persistence.account_schema_v3 import (
-    decode_version_three,
-)
 from sidekick_usages.persistence.account_store_support import (
     AccountStoreStateError,
     baseline_matches,
@@ -70,6 +68,9 @@ from sidekick_usages.persistence.observations import (
 from sidekick_usages.persistence.private_credentials import (
     PreparedPrivateBundleWrite,
     PrivateCredentialTree,
+)
+from sidekick_usages.persistence.schema.account import (
+    decode_version_three,
 )
 from sidekick_usages.persistence.schemas import (
     decode_version_two,

@@ -21,24 +21,17 @@ from sidekick_usages.persistence.artifacts import (
     sha256_digest,
 )
 from sidekick_usages.persistence.errors import (
-    BackupConflictError,
     DurabilityUncertainError,
     InterruptedArtifactError,
-    InvalidManagedArtifactError,
     PersistenceError,
     PersistenceFilesystemError,
     ResetIncompleteError,
     SourceChangedError,
     UnsafeManagedFileError,
 )
-from sidekick_usages.persistence.schemas import (
-    MAX_DOCUMENT_BYTES,
-    decode_authority,
-    decode_generation_zero,
-    decode_prototype_receipt,
-    decode_version_one,
-    encode_version_one,
-)
+from sidekick_usages.persistence.limits import MAX_DOCUMENT_BYTES
+
+__all__ = ["RecoveryOperations"]
 
 _SINGLE_LINK = 1
 _INTERRUPTED_PUBLICATION_LINKS = 2
@@ -125,22 +118,7 @@ class RecoveryOperations:
         artifact: ManagedArtifact,
         payload: bytes,
     ) -> None:
-        try:
-            if artifact.kind is ManagedArtifactKind.AUTHORITY:
-                decode_authority(payload)
-                return
-            if artifact.kind is ManagedArtifactKind.PROTOTYPE_RECEIPT:
-                self._validate_recovery_receipt(artifact, payload)
-                return
-            self._validate_recovery_backup(artifact, payload)
-        except PersistenceFilesystemError:
-            raise
-        except PersistenceError:
-            if artifact.kind is ManagedArtifactKind.AUTHORITY:
-                raise
-            if artifact.kind is ManagedArtifactKind.PROTOTYPE_RECEIPT:
-                raise InvalidManagedArtifactError(artifact.basename) from None
-            raise BackupConflictError(artifact.basename) from None
+        raise NotImplementedError
 
     def _require_expected_authority(
         self,
@@ -183,31 +161,6 @@ class RecoveryOperations:
             ArtifactPurpose.RECEIPT: ManagedArtifactKind.PROTOTYPE_RECEIPT,
         }[temporary.purpose]
         return final.kind is expected_kind
-
-    @staticmethod
-    def _validate_recovery_receipt(
-        artifact: ManagedArtifact,
-        payload: bytes,
-    ) -> None:
-        receipt = decode_prototype_receipt(payload)
-        if receipt.prototype_sha256 != artifact.digest:
-            raise InvalidManagedArtifactError(artifact.basename)
-
-    @staticmethod
-    def _validate_recovery_backup(
-        artifact: ManagedArtifact,
-        payload: bytes,
-    ) -> None:
-        if artifact.digest != sha256_digest(payload):
-            raise BackupConflictError(artifact.basename)
-        if artifact.kind is ManagedArtifactKind.GENERATION_ZERO_BACKUP:
-            decode_generation_zero(payload)
-            return
-        if artifact.kind is ManagedArtifactKind.VERSION_ONE_SNAPSHOT:
-            document = decode_version_one(payload)
-            if encode_version_one(document) == payload:
-                return
-        raise BackupConflictError(artifact.basename)
 
     def _complete_interrupted_publication(
         self,
@@ -434,6 +387,3 @@ class RecoveryOperations:
                 self.grammar.authority_basename
             ) from None
         return removed
-
-
-__all__ = ["RecoveryOperations"]

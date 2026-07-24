@@ -1,46 +1,59 @@
 """Crash-recoverable provider activation journals and ordered locks."""
 
-from collections.abc import Callable, Iterator
-from contextlib import AbstractContextManager, ExitStack, contextmanager
+from collections.abc import Iterator
+from contextlib import ExitStack, contextmanager
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
-from typing import Protocol
 
-from sidekick_usages.core.accounts import (
+from sidekick_usages.core.accounts.types import (
     OperationId,
     SidekickAccountId,
 )
-from sidekick_usages.core.selection import (
-    ActivationOutcome,
-    ActivationPhase,
+from sidekick_usages.core.selection.models import (
     ActivationRecord,
-    ActivationRecoveryAction,
-    ProviderRuntimeState,
     SelectedAccountState,
+)
+from sidekick_usages.core.selection.policy import (
     decide_activation_recovery,
     transition_activation,
+)
+from sidekick_usages.core.selection.types import (
+    ActivationOutcome,
+    ActivationPhase,
+    ActivationRecoveryAction,
+    ProviderRuntimeState,
 )
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.persistence.artifacts import (
     AuthorityExpectation,
     FileSnapshot,
 )
-from sidekick_usages.persistence.filesystem import PersistenceFilesystem
 from sidekick_usages.persistence.locking import PersistenceLock
-from sidekick_usages.persistence.selected_state import SelectedStateStore
-from sidekick_usages.persistence.selection_schema import (
+from sidekick_usages.persistence.models.selection import (
     MAX_ACTIVATION_HISTORY,
     ActivationJournalDocument,
+)
+from sidekick_usages.persistence.private_filesystem import PrivateFilesystem
+from sidekick_usages.persistence.schema.selection import (
     decode_activation_journal,
     encode_activation_journal,
 )
+from sidekick_usages.persistence.selected_state import SelectedStateStore
 from sidekick_usages.persistence.state_files import (
     ManagedStateConflictError,
     ManagedStateConflictKind,
     recover_state_file,
 )
-from sidekick_usages.persistence.transaction import PersistenceTransaction
+from sidekick_usages.persistence.state_filesystem import (
+    ManagedStateFilesystem,
+)
+from sidekick_usages.persistence.types.activation import StateLockFactory
+
+__all__ = [
+    "ActivationJournalStore",
+    "ActivationJournalTransaction",
+]
 
 _ACCOUNT_LOCK_DIRECTORY = "account-locks"
 
@@ -50,24 +63,12 @@ def _account_id_key(account_id: SidekickAccountId) -> str:
     return str(account_id)
 
 
-class _StateLock(Protocol):
-    """Lock object used by activation coordination."""
-
-    def hold(
-        self,
-    ) -> AbstractContextManager[PersistenceTransaction]:
-        """Acquire one qualified state lock."""
-
-
-type StateLockFactory = Callable[[PersistenceFilesystem], _StateLock]
-
-
 class ActivationJournalTransaction:
     """Provider-and-account locked activation journal capability."""
 
     def __init__(
         self,
-        filesystem: PersistenceFilesystem,
+        filesystem: PrivateFilesystem,
         provider_id: ProviderId,
         account_ids: frozenset[SidekickAccountId],
     ) -> None:
@@ -488,20 +489,16 @@ class ActivationJournalStore:
     def _provider_filesystem(
         self,
         provider_id: ProviderId,
-    ) -> PersistenceFilesystem:
-        return PersistenceFilesystem(self.root / f"{provider_id.value}.json")
+    ) -> PrivateFilesystem:
+        return ManagedStateFilesystem(
+            self.root / f"{provider_id.value}.json",
+            decode_activation_journal,
+        )
 
     def _account_lock_filesystem(
         self,
         account_id: SidekickAccountId,
-    ) -> PersistenceFilesystem:
-        return PersistenceFilesystem(
+    ) -> PrivateFilesystem:
+        return PrivateFilesystem(
             self.root / _ACCOUNT_LOCK_DIRECTORY / str(account_id)
         )
-
-
-__all__ = [
-    "ActivationJournalStore",
-    "ActivationJournalTransaction",
-    "StateLockFactory",
-]

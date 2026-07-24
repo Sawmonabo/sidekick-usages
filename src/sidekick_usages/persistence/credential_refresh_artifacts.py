@@ -7,15 +7,6 @@ from enum import StrEnum
 from pathlib import Path
 
 from sidekick_usages.core.models import Account
-from sidekick_usages.persistence.credential_refresh_schema import (
-    JOURNAL_BASENAME,
-    STAGE_BASENAME,
-    credential_digest,
-    credential_kind,
-    decode_refresh_journal,
-    label_digest,
-    require_sha256,
-)
 from sidekick_usages.persistence.credential_refresh_stage import (
     decode_credential_refresh_stage,
 )
@@ -31,6 +22,15 @@ from sidekick_usages.persistence.locking import (
 )
 from sidekick_usages.persistence.private_credentials import (
     PrivateCredentialTree,
+)
+from sidekick_usages.persistence.schema.refresh import (
+    JOURNAL_BASENAME,
+    STAGE_BASENAME,
+    credential_digest,
+    credential_kind,
+    decode_refresh_journal,
+    label_digest,
+    require_sha256,
 )
 
 _LIFECYCLE_LOCK_BASENAME = "lifecycle.lock"

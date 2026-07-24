@@ -2120,7 +2120,7 @@ Credential refresh has one cohesive persistence family:
 
 - `persistence/credential_refresh.py` owns the lifecycle, credential-derived lock,
   stabilization, targeted commit, and recovery matrix;
-- `persistence/credential_refresh_schema.py` owns the non-secret journal;
+- `persistence/schema/refresh.py` owns the non-secret journal;
 - `persistence/credential_refresh_stage.py` owns one atomic secret replacement
   envelope;
 - `persistence/credential_refresh_private_stage.py` owns the nested Codex

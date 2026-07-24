@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from sidekick_usages.core.accounts import SavedAccount
+from sidekick_usages.core.accounts.models import SavedAccount
 from sidekick_usages.core.expiry import (
     Expiry,
     InvalidExpiry,

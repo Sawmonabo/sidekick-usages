@@ -7,10 +7,12 @@ from types import TracebackType
 
 import pytest
 
-from sidekick_usages.core.accounts import (
-    AuthorityId,
+from sidekick_usages.core.accounts.models import (
     ClaudeAccountAuthority,
     ClaudeLegacyLoginAuthority,
+)
+from sidekick_usages.core.accounts.types import (
+    AuthorityId,
     CredentialHealth,
     ProviderIdentity,
 )
@@ -22,11 +24,9 @@ from sidekick_usages.core.models import (
     CodexCredentials,
 )
 from sidekick_usages.core.types import AccountLabel, ProviderId
-from sidekick_usages.persistence._platform import FilesystemFamily
-from sidekick_usages.persistence.account_schema_v3 import (
-    VersionThreeDocument,
-    decode_version_three,
-    encode_version_three,
+from sidekick_usages.persistence._platform import (
+    FilesystemFamily,
+    FilesystemQualification,
 )
 from sidekick_usages.persistence.account_store import (
     AccountStore,
@@ -56,13 +56,15 @@ from sidekick_usages.persistence.errors import (
     ReplaceFailedError,
     SourceChangedError,
 )
-from sidekick_usages.persistence.filesystem import (
-    FilesystemQualification,
-    PersistenceFilesystem,
-)
+from sidekick_usages.persistence.filesystem import PersistenceFilesystem
 from sidekick_usages.persistence.inventory import OrphanedPrivateCredentials
 from sidekick_usages.persistence.managed_migration import (
     ManagedAccountMigrationService,
+)
+from sidekick_usages.persistence.models.account import VersionThreeDocument
+from sidekick_usages.persistence.schema.account import (
+    decode_version_three,
+    encode_version_three,
 )
 from sidekick_usages.persistence.schemas import (
     GenerationZeroDocument,

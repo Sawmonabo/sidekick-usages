@@ -4,10 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from sidekick_usages.persistence._platform import FilesystemFamily
-from sidekick_usages.persistence.account_schema_v3 import (
-    VersionThreeDocument,
-    encode_version_three,
+from sidekick_usages.persistence._platform import (
+    FilesystemFamily,
+    FilesystemQualification,
 )
 from sidekick_usages.persistence.artifacts import (
     ArtifactGrammar,
@@ -33,11 +32,12 @@ from sidekick_usages.persistence.errors import (
     UnsafeManagedFileError,
     UnsupportedFilesystemError,
 )
-from sidekick_usages.persistence.filesystem import FilesystemQualification
 from sidekick_usages.persistence.inventory import (
     OrphanedPrivateCredentials,
     PersistenceInventory,
 )
+from sidekick_usages.persistence.models.account import VersionThreeDocument
+from sidekick_usages.persistence.schema.account import encode_version_three
 from sidekick_usages.persistence.schemas import (
     GenerationZeroDocument,
     PrototypeReceipt,

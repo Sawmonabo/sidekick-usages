@@ -5,7 +5,10 @@ from pathlib import Path
 
 import pytest
 
-from sidekick_usages.core.accounts import AuthorityId, SidekickAccountId
+from sidekick_usages.core.accounts.types import (
+    AuthorityId,
+    SidekickAccountId,
+)
 from sidekick_usages.core.expiry import UnknownExpiry
 from sidekick_usages.core.models import Account, CodexCredentials
 from sidekick_usages.core.types import AccountLabel

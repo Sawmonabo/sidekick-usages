@@ -5,7 +5,7 @@ from contextlib import AbstractContextManager
 from datetime import date, datetime
 from typing import Protocol
 
-from sidekick_usages.core.accounts import SavedAccount
+from sidekick_usages.core.accounts.models import SavedAccount
 from sidekick_usages.core.models import (
     Account,
     AccountTokenActivitySnapshot,

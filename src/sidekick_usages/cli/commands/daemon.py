@@ -8,8 +8,10 @@ from sidekick_usages.branding import brand_header
 from sidekick_usages.cli.context import invocation_context
 from sidekick_usages.cli.help import BrandedTyperGroup, branded_command
 from sidekick_usages.core.types import ExitCode
-from sidekick_usages.daemon import DaemonOperation
+from sidekick_usages.daemon.types.maintenance import DaemonOperation
 from sidekick_usages.errors import UsageError
+
+__all__ = ["register"]
 
 _BACKEND_HELP = (
     "Scheduler backend: auto, systemd, cron, launchd, task-scheduler."
@@ -89,6 +91,3 @@ def register(application: typer.Typer) -> None:
     branded_command(daemon_app, "status")(status_cmd)
     branded_command(daemon_app, "uninstall")(uninstall_cmd)
     application.add_typer(daemon_app, name="daemon")
-
-
-__all__ = ["register"]

@@ -16,12 +16,14 @@ from pydantic import (
     ValidationError,
 )
 
-from sidekick_usages.core.accounts import (
-    AuthorityId,
+from sidekick_usages.core.accounts.models import (
     ClaudeAccountAuthority,
     ClaudeLegacyLoginAuthority,
     CodexLegacyAuthority,
     SavedAccount,
+)
+from sidekick_usages.core.accounts.types import (
+    AuthorityId,
     SidekickAccountId,
 )
 from sidekick_usages.core.expiry import KnownExpiry, UnknownExpiry
@@ -35,16 +37,16 @@ from sidekick_usages.core.models import (
 )
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.persistence.errors import InvalidSchemaError
+from sidekick_usages.persistence.limits import MAX_DOCUMENT_BYTES
 from sidekick_usages.persistence.private_bundle_writes import (
     PreparedPrivateBundleWrite,
 )
 from sidekick_usages.persistence.private_credentials import (
     PrivateCredentialTree,
 )
-from sidekick_usages.persistence.schemas import (
-    MAX_DOCUMENT_BYTES,
-    _canonical_timestamp,
-    _parse_canonical_timestamp,
+from sidekick_usages.persistence.time_codec import (
+    canonical_timestamp,
+    parse_canonical_timestamp,
 )
 from sidekick_usages.serialization import (
     JsonDecodeError,
@@ -52,6 +54,18 @@ from sidekick_usages.serialization import (
     JsonValue,
     decode_json_value,
 )
+
+__all__ = [
+    "AUTHORITY_BASENAME",
+    "CredentialAuthorityKind",
+    "CredentialAuthorityRepository",
+    "LegacyCredentialAuthority",
+    "authority_bundle_name",
+    "authority_for_account",
+    "decode_credential_authority",
+    "encode_credential_authority",
+    "referenced_legacy_authorities",
+]
 
 AUTHORITY_BASENAME = "authority.json"
 AUTHORITY_SCHEMA_VERSION = 1
@@ -76,7 +90,7 @@ def _canonical_uuid(value: str) -> str:
 
 def _timestamp(value: str) -> str:
     """Validate one canonical persisted timestamp."""
-    _parse_canonical_timestamp(value)
+    parse_canonical_timestamp(value)
     return value
 
 
@@ -231,7 +245,7 @@ def authority_for_account(
 
 def _optional_time(value: datetime | None) -> JsonValue:
     """Encode an optional canonical timestamp."""
-    return None if value is None else _canonical_timestamp(value)
+    return None if value is None else canonical_timestamp(value)
 
 
 def _authority_object(authority: LegacyCredentialAuthority) -> JsonObject:
@@ -255,11 +269,11 @@ def _authority_object(authority: LegacyCredentialAuthority) -> JsonObject:
             **common,
             "access_token": credentials.access_token,
             "refresh_token": credentials.refresh_token,
-            "access_expires_at": _canonical_timestamp(
+            "access_expires_at": canonical_timestamp(
                 credentials.access_expiry.at
             ),
             "refresh_expires_at": (
-                _canonical_timestamp(credentials.refresh_expiry.at)
+                canonical_timestamp(credentials.refresh_expiry.at)
                 if isinstance(credentials.refresh_expiry, KnownExpiry)
                 else None
             ),
@@ -278,7 +292,7 @@ def _authority_object(authority: LegacyCredentialAuthority) -> JsonObject:
         "access_token": credentials.access_token,
         "refresh_token": credentials.refresh_token,
         "expires_at": (
-            _canonical_timestamp(credentials.expiry.at)
+            canonical_timestamp(credentials.expiry.at)
             if isinstance(credentials.expiry, KnownExpiry)
             else None
         ),
@@ -328,11 +342,11 @@ def _decoded_authority(
             access_token=model.access_token,
             refresh_token=model.refresh_token,
             access_expiry=KnownExpiry(
-                _parse_canonical_timestamp(model.access_expires_at)
+                parse_canonical_timestamp(model.access_expires_at)
             ),
             refresh_expiry=(
                 KnownExpiry(
-                    _parse_canonical_timestamp(model.refresh_expires_at)
+                    parse_canonical_timestamp(model.refresh_expires_at)
                 )
                 if model.refresh_expires_at is not None
                 else UnknownExpiry()
@@ -353,7 +367,7 @@ def _decoded_authority(
             access_token=model.access_token,
             refresh_token=model.refresh_token,
             expiry=(
-                KnownExpiry(_parse_canonical_timestamp(model.expires_at))
+                KnownExpiry(parse_canonical_timestamp(model.expires_at))
                 if model.expires_at is not None
                 else UnknownExpiry()
             ),
@@ -471,16 +485,3 @@ class CredentialAuthorityRepository:
         ):
             raise InvalidSchemaError
         return authority
-
-
-__all__ = [
-    "AUTHORITY_BASENAME",
-    "CredentialAuthorityKind",
-    "CredentialAuthorityRepository",
-    "LegacyCredentialAuthority",
-    "authority_bundle_name",
-    "authority_for_account",
-    "decode_credential_authority",
-    "encode_credential_authority",
-    "referenced_legacy_authorities",
-]

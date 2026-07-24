@@ -25,9 +25,9 @@ from sidekick_usages.persistence.errors import (
     UnsafeManagedFileError,
 )
 from sidekick_usages.persistence.filesystem import PersistenceFilesystem
+from sidekick_usages.persistence.limits import MAX_DOCUMENT_BYTES
 from sidekick_usages.persistence.locking import PersistenceLock
 from sidekick_usages.persistence.schemas import (
-    MAX_DOCUMENT_BYTES,
     GenerationZeroDocument,
     PrototypeReceipt,
     VersionOneDocument,

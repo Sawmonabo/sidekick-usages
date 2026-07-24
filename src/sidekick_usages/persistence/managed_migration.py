@@ -7,16 +7,11 @@ from pathlib import Path
 from typing import Protocol
 from uuid import uuid4
 
-from sidekick_usages.core.accounts import (
+from sidekick_usages.core.accounts.types import (
     AuthorityId,
     SidekickAccountId,
 )
 from sidekick_usages.persistence.account_index import AccountIndex
-from sidekick_usages.persistence.account_schema_v3 import (
-    VersionThreeDocument,
-    decode_version_three,
-    encode_version_three,
-)
 from sidekick_usages.persistence.artifacts import (
     AuthorityExpectation,
     AuthorityGeneration,
@@ -34,11 +29,16 @@ from sidekick_usages.persistence.credential_transactions import (
 from sidekick_usages.persistence.errors import InvalidSchemaError
 from sidekick_usages.persistence.filesystem import PersistenceFilesystem
 from sidekick_usages.persistence.locking import PersistenceLock
+from sidekick_usages.persistence.models.account import VersionThreeDocument
 from sidekick_usages.persistence.private_bundle_writes import (
     PreparedPrivateBundleWrite,
 )
 from sidekick_usages.persistence.private_credentials import (
     PrivateCredentialTree,
+)
+from sidekick_usages.persistence.schema.account import (
+    decode_version_three,
+    encode_version_three,
 )
 from sidekick_usages.persistence.schemas import (
     VersionTwoDocument,

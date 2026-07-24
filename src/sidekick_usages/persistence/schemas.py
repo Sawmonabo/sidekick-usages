@@ -37,6 +37,14 @@ from sidekick_usages.persistence.errors import (
     SchemaIssue,
     SchemaIssueCode,
 )
+from sidekick_usages.persistence.limits import (
+    MAX_ACCOUNTS,
+    MAX_DOCUMENT_BYTES,
+)
+from sidekick_usages.persistence.time_codec import (
+    canonical_timestamp,
+    parse_canonical_timestamp,
+)
 from sidekick_usages.serialization import (
     JsonDecodeCode,
     JsonDecodeError,
@@ -45,8 +53,6 @@ from sidekick_usages.serialization import (
     decode_json_value,
 )
 
-MAX_DOCUMENT_BYTES = 16 * 1024 * 1024
-MAX_ACCOUNTS = 512
 CURRENT_SCHEMA_VERSION = 2
 
 _MIN_HISTORICAL_TIMESTAMP_LENGTH = 20
@@ -63,13 +69,6 @@ _HISTORICAL_TIMESTAMP = re.compile(
     r"(?P<day>[0-9]{2})T(?P<hour>[0-9]{2}):"
     r"(?P<minute>[0-9]{2}):(?P<second>[0-9]{2})"
     r"(?:\.(?P<fraction>[0-9]{1,6}))?(?:Z|\+00:00)\Z",
-    re.ASCII,
-)
-_CANONICAL_TIMESTAMP = re.compile(
-    r"(?P<year>[0-9]{4})-(?P<month>[0-9]{2})-"
-    r"(?P<day>[0-9]{2})T(?P<hour>[0-9]{2}):"
-    r"(?P<minute>[0-9]{2}):(?P<second>[0-9]{2})\."
-    r"(?P<fraction>[0-9]{6})Z\Z",
     re.ASCII,
 )
 _RECORD_FIELDS = (
@@ -378,27 +377,6 @@ def _parse_historical_timestamp(value: str) -> datetime:
     return _timestamp_from_match(match)
 
 
-def _parse_canonical_timestamp(value: str) -> datetime:
-    if not value.isascii():
-        raise InvalidSchemaError
-    match = _CANONICAL_TIMESTAMP.fullmatch(value)
-    if match is None:
-        raise InvalidSchemaError
-    return _timestamp_from_match(match)
-
-
-def _canonical_timestamp(value: datetime) -> str:
-    if value.tzinfo is None or value.utcoffset() is None:
-        raise InvalidSchemaError
-    utc_value = value.astimezone(UTC)
-    return (
-        f"{utc_value.year:04d}-{utc_value.month:02d}-"
-        f"{utc_value.day:02d}T{utc_value.hour:02d}:"
-        f"{utc_value.minute:02d}:{utc_value.second:02d}."
-        f"{utc_value.microsecond:06d}Z"
-    )
-
-
 def _native_expiry(provider_id: ProviderId, value: int) -> datetime:
     maximum = (
         _MAX_CLAUDE_EXPIRY
@@ -451,7 +429,7 @@ def _stored_timestamp(
     if value is None:
         return None
     if canonical:
-        return _parse_canonical_timestamp(value)
+        return parse_canonical_timestamp(value)
     return _parse_historical_timestamp(value)
 
 
@@ -466,14 +444,14 @@ def _record_from_model(
     if expiry_value is None:
         expires_at = None
     elif version_one and isinstance(expiry_value, str):
-        expires_at = _parse_canonical_timestamp(expiry_value)
+        expires_at = parse_canonical_timestamp(expiry_value)
         _expiry_native_value(provider_id, expires_at)
     elif not version_one and type(expiry_value) is int:
         expires_at = _native_expiry(provider_id, expiry_value)
     else:
         raise InvalidSchemaError
     timestamp_parser = (
-        _parse_canonical_timestamp
+        parse_canonical_timestamp
         if version_one
         else _parse_historical_timestamp
     )
@@ -653,7 +631,7 @@ def _reset_object(
     for target_id, reset_at in resets:
         if target_id in result:
             raise InvalidSchemaError
-        result[target_id] = _canonical_timestamp(reset_at)
+        result[target_id] = canonical_timestamp(reset_at)
     return result
 
 
@@ -666,7 +644,7 @@ def _record_object(
         expires_at: JsonValue = None
     elif version_one:
         _expiry_native_value(record.provider_id, record.expires_at)
-        expires_at = _canonical_timestamp(record.expires_at)
+        expires_at = canonical_timestamp(record.expires_at)
     else:
         expires_at = _expiry_native_value(
             record.provider_id,
@@ -684,7 +662,7 @@ def _record_object(
         "codex_id_token": record.codex_id_token,
         "codex_last_refresh": record.codex_last_refresh,
         "last_refresh_at": (
-            _canonical_timestamp(record.last_refresh_at)
+            canonical_timestamp(record.last_refresh_at)
             if record.last_refresh_at is not None
             else None
         ),
@@ -696,7 +674,7 @@ def _record_object(
         "last_refresh_error": record.last_refresh_error,
         "heartbeat_enabled": record.heartbeat_enabled,
         "heartbeat_5h_reset_at": (
-            _canonical_timestamp(record.heartbeat_5h_reset_at)
+            canonical_timestamp(record.heartbeat_5h_reset_at)
             if record.heartbeat_5h_reset_at is not None
             else None
         ),
@@ -709,7 +687,7 @@ def _record_object(
             else None
         ),
         "last_heartbeat_at": (
-            _canonical_timestamp(record.last_heartbeat_at)
+            canonical_timestamp(record.last_heartbeat_at)
             if record.last_heartbeat_at is not None
             else None
         ),
