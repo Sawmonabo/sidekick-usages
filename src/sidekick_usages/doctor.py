@@ -1,7 +1,7 @@
 """Read-only account diagnostics for ``sidekick-usages doctor``."""
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import assert_never
 
@@ -32,6 +32,7 @@ from sidekick_usages.core.types import (
 from sidekick_usages.credentials.claude_lifetime import (
     ClaudeLoginRenewalState,
 )
+from sidekick_usages.daemon.models.lifecycle import SupervisorHealth
 from sidekick_usages.doctor_credentials import (
     DoctorCredentialKind,
     IdentityState,
@@ -47,7 +48,6 @@ from sidekick_usages.heartbeat import (
 )
 from sidekick_usages.persistence.credential_refresh import (
     CredentialRefreshState,
-    CredentialRefreshStateKind,
 )
 from sidekick_usages.persistence.models.status import (
     PersistenceFailure,
@@ -63,6 +63,7 @@ class AccountDiagnostic:
 
     label: AccountLabel
     provider: ProviderId
+    provider_available: bool
     plan: str
     usage_route: str
     has_refresh_token: bool
@@ -96,11 +97,8 @@ class DoctorReadyResult:
 
     diagnostics: tuple[AccountDiagnostic, ...]
     persistence: PersistenceStatus
-    refresh_state: CredentialRefreshState = field(
-        default_factory=lambda: CredentialRefreshState(
-            CredentialRefreshStateKind.CLEAN
-        )
-    )
+    refresh_state: CredentialRefreshState
+    supervisor: SupervisorHealth
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,6 +106,7 @@ class DoctorFailedResult:
     """Completed bounded failure from doctor composition."""
 
     failure: PersistenceFailure
+    supervisor: SupervisorHealth
 
 
 type DoctorResult = DoctorReadyResult | DoctorFailedResult
@@ -175,6 +174,7 @@ class DoctorService:
         return AccountDiagnostic(
             label=account.label,
             provider=account.provider_id,
+            provider_available=provider is not None,
             plan=account.plan,
             usage_route=usage_route(account),
             has_refresh_token=bool(account.refresh_token),
@@ -234,12 +234,14 @@ def render_doctor(
         brand_header(width, section="doctor · account diagnostics")
     ]
     if isinstance(result, DoctorReadyResult):
+        parts.extend(_supervisor_lines(result.supervisor))
         parts.extend(_persistence_lines(result.persistence))
         parts.append(
             Text("  credential refresh: " + result.refresh_state.kind.value)
         )
         diagnostics = result.diagnostics
     elif isinstance(result, DoctorFailedResult):
+        parts.extend(_supervisor_lines(result.supervisor))
         parts.extend(_persistence_failure_lines(result.failure))
         diagnostics = ()
     else:
@@ -284,7 +286,51 @@ def doctor_json(result: DoctorResult) -> JsonObject:
     accounts: list[JsonValue] = [
         _diagnostic_dict(diagnostic) for diagnostic in diagnostics
     ]
-    return {"accounts": accounts, "persistence": persistence}
+    return {
+        "accounts": accounts,
+        "persistence": persistence,
+        "supervisor": _supervisor_dict(result.supervisor),
+    }
+
+
+def _supervisor_lines(health: SupervisorHealth) -> tuple[Text, ...]:
+    """Build independent human-readable supervisor health."""
+    supervisor_version = (
+        "unavailable"
+        if health.supervisor_version is None
+        else str(health.supervisor_version)
+    )
+    return (
+        Text("supervisor"),
+        Text(f"  backend: {health.backend}"),
+        Text(f"  CLI version: {health.cli_version}"),
+        Text(f"  supervisor version: {supervisor_version}"),
+        Text(f"  platform: {health.platform}"),
+        Text(f"  process: {health.process}"),
+        Text(f"  protocol: {health.protocol}"),
+        Text(f"  queue: {health.queue}"),
+        Text(f"  journal: {health.journal}"),
+        Text(f"  broker: {health.broker}"),
+    )
+
+
+def _supervisor_dict(health: SupervisorHealth) -> JsonObject:
+    """Build machine-readable independent supervisor health."""
+    return {
+        "backend": health.backend.value,
+        "cli_version": str(health.cli_version),
+        "supervisor_version": (
+            None
+            if health.supervisor_version is None
+            else str(health.supervisor_version)
+        ),
+        "platform": health.platform.value,
+        "process": health.process.value,
+        "protocol": health.protocol.value,
+        "queue": health.queue.value,
+        "journal": health.journal.value,
+        "broker": health.broker.value,
+    }
 
 
 def _persistence_lines(status: PersistenceStatus) -> tuple[Text, ...]:
@@ -340,6 +386,10 @@ def _auth_lines(diagnostic: AccountDiagnostic) -> tuple[Text, ...]:
         Text(
             "  authentication: "
             + authentication_label(diagnostic.credential_kind)
+        ),
+        Text(
+            "  provider adapter: "
+            + ("available" if diagnostic.provider_available else "unavailable")
         ),
         Text(f"  usage route: {diagnostic.usage_route}"),
         Text(
@@ -483,6 +533,7 @@ def _diagnostic_dict(diagnostic: AccountDiagnostic) -> JsonObject:
     return {
         "label": str(diagnostic.label),
         "provider": diagnostic.provider.value,
+        "provider_available": diagnostic.provider_available,
         "plan": diagnostic.plan,
         "usage_route": diagnostic.usage_route,
         "has_refresh_token": diagnostic.has_refresh_token,

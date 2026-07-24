@@ -115,6 +115,13 @@ class SidekickUsages < Formula
   end
 
   test do
+    %w[
+      sidekick-usages-supervisor
+      sidekick-usages-worker
+    ].each do |entry_point|
+      assert_predicate bin/entry_point, :executable?
+    end
+
     # Verify the binary runs and reports its version.
     assert_match(
       "sidekick-usages #{version}",

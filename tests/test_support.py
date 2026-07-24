@@ -40,6 +40,12 @@ from sidekick_usages.credentials.authorities import (
 )
 from sidekick_usages.credentials.codex import CodexCredentialCoordinator
 from sidekick_usages.credentials.refresh import CredentialRefreshCoordinator
+from sidekick_usages.daemon.models.lifecycle import SupervisorHealth
+from sidekick_usages.daemon.types.lifecycle import (
+    ServiceBackendId,
+    ServiceComponentState,
+)
+from sidekick_usages.daemon.types.service import PackageVersion
 from sidekick_usages.heartbeat import HeartbeatProvider, HeartbeatService
 from sidekick_usages.http import HttpClient
 from sidekick_usages.maintenance import TokenMaintenanceService
@@ -86,6 +92,24 @@ class _TestCredentialLease:
     """Expose a synthetic account at the provider test boundary."""
 
     account: Account
+
+
+def make_supervisor_health(
+    *,
+    queue: ServiceComponentState = ServiceComponentState.HEALTHY,
+) -> SupervisorHealth:
+    """Return one synthetic current supervisor observation."""
+    return SupervisorHealth(
+        backend=ServiceBackendId.SYSTEMD,
+        cli_version=PackageVersion("0.7.0"),
+        supervisor_version=PackageVersion("0.7.0"),
+        platform=ServiceComponentState.HEALTHY,
+        process=ServiceComponentState.HEALTHY,
+        protocol=ServiceComponentState.HEALTHY,
+        queue=queue,
+        journal=ServiceComponentState.HEALTHY,
+        broker=ServiceComponentState.NOT_REQUIRED,
+    )
 
 
 def saved_account(account: Account) -> SavedAccount:

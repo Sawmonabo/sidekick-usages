@@ -69,9 +69,7 @@ def detect_platform_info() -> PlatformInfo:
         uid=uid,
         user_name=_user_name(uid),
         is_wsl=is_wsl,
-        wsl_distro=(
-            os.environ.get("WSL_DISTRO_NAME") if is_wsl else None
-        ),
+        wsl_distro=(os.environ.get("WSL_DISTRO_NAME") if is_wsl else None),
         has_user_systemd=(
             system == "Linux"
             and shutil.which("systemctl") is not None
@@ -84,21 +82,14 @@ def resolve_supervisor_executable() -> Path:
     """Resolve the exact installed supervisor console script."""
     candidate = shutil.which(SUPERVISOR_ENTRY_POINT)
     if candidate is None:
-        raise ServiceLifecycleError(
-            ServiceFailureCode.EXECUTABLE_UNAVAILABLE
-        )
+        raise ServiceLifecycleError(ServiceFailureCode.EXECUTABLE_UNAVAILABLE)
     return qualify_supervisor_executable(Path(candidate))
 
 
 def qualify_supervisor_executable(candidate: Path) -> Path:
     """Resolve and validate one exact supervisor console-script path."""
-    if (
-        not candidate.is_absolute()
-        or candidate.name != SUPERVISOR_ENTRY_POINT
-    ):
-        raise ServiceLifecycleError(
-            ServiceFailureCode.EXECUTABLE_UNAVAILABLE
-        )
+    if not candidate.is_absolute() or candidate.name != SUPERVISOR_ENTRY_POINT:
+        raise ServiceLifecycleError(ServiceFailureCode.EXECUTABLE_UNAVAILABLE)
     try:
         executable = candidate.resolve(strict=True)
         metadata = executable.stat()
@@ -106,13 +97,10 @@ def qualify_supervisor_executable(candidate: Path) -> Path:
         raise ServiceLifecycleError(
             ServiceFailureCode.EXECUTABLE_UNAVAILABLE
         ) from None
-    if (
-        not stat.S_ISREG(metadata.st_mode)
-        or not os.access(executable, os.X_OK)
+    if not stat.S_ISREG(metadata.st_mode) or not os.access(
+        executable, os.X_OK
     ):
-        raise ServiceLifecycleError(
-            ServiceFailureCode.EXECUTABLE_UNAVAILABLE
-        )
+        raise ServiceLifecycleError(ServiceFailureCode.EXECUTABLE_UNAVAILABLE)
     return executable
 
 

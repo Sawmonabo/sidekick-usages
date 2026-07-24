@@ -91,8 +91,8 @@ overwritten.
 
 ## Permission recovery
 
-Preview the current roots with `doctor`, stop scheduled maintenance if it is
-active, then run:
+Preview the current roots with `doctor`, uninstall the resident supervisor if
+it is active, then run:
 
 ```bash
 sidekick-usages permissions repair
@@ -111,9 +111,9 @@ sidekick-usages reset --yes
 ```
 
 Use `--provider claude` or `--provider codex` to remove only that provider's
-accounts. Reset requires scheduled maintenance to be quiescent and deletes the
-matching Sidekick-owned credential authorities. It does not log out Claude
-Code or Codex CLI.
+accounts. Reset requires the resident supervisor to be absent and deletes the
+matching Sidekick-owned credential authorities. It does not log out Claude Code
+or Codex CLI.
 
 After reinstalling a clean-break release, recreate accounts with `add`,
 `claude setup-token`, or `codex login`. There is no automatic or hidden

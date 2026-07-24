@@ -29,6 +29,8 @@ from sidekick_usages.daemon.lifecycle.wsl import WslBackend
 from sidekick_usages.daemon.models.lifecycle import (
     DaemonOperationResult,
     PlatformInfo,
+    ServiceBackendStatus,
+    SupervisorHealth,
 )
 from sidekick_usages.daemon.types.lifecycle import (
     DaemonOperation,
@@ -150,6 +152,17 @@ class DaemonManager:
             _REMOVED_MESSAGE,
         )
 
+    def health(self) -> SupervisorHealth:
+        """Inspect independent supervisor components without mutation."""
+        try:
+            status = self._backend.status()
+        except ServiceLifecycleError:
+            status = ServiceBackendStatus(
+                self._backend.id,
+                ServiceLifecycleState.UNHEALTHY,
+            )
+        return self._readiness.health(status)
+
     def quiescent(self) -> bool:
         """Return whether no supported Sidekick user service is installed."""
         try:
@@ -205,10 +218,7 @@ def build_service_backend(
             runner,
             artifacts,
         )
-    if (
-        platform_info.system != "Linux"
-        or not platform_info.has_user_systemd
-    ):
+    if platform_info.system != "Linux" or not platform_info.has_user_systemd:
         return FeatureDisabledBackend()
     systemd = SystemdBackend(
         paths.systemd_user_service,
@@ -227,9 +237,7 @@ def build_daemon_manager(
     clock: Clock | None = None,
 ) -> DaemonManager:
     """Compose lifecycle management without importing resident runtime."""
-    resolved_paths = (
-        discover_application_paths() if paths is None else paths
-    )
+    resolved_paths = discover_application_paths() if paths is None else paths
     resolved_clock = SystemClock() if clock is None else clock
     platform_info = detect_platform_info()
     runner = SystemCommandRunner()

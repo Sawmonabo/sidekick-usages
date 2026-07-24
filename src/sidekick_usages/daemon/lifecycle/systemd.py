@@ -56,16 +56,12 @@ class SystemdBackend:
             )
         )
         self._require_success((*_SYSTEMCTL, "daemon-reload"))
-        self._require_success(
-            (*_SYSTEMCTL, "enable", SYSTEMD_SERVICE_NAME)
-        )
+        self._require_success((*_SYSTEMCTL, "enable", SYSTEMD_SERVICE_NAME))
         self.restart()
 
     def restart(self) -> None:
         """Restart the exact installed resident user service."""
-        self._require_success(
-            (*_SYSTEMCTL, "restart", SYSTEMD_SERVICE_NAME)
-        )
+        self._require_success((*_SYSTEMCTL, "restart", SYSTEMD_SERVICE_NAME))
 
     def status(self) -> ServiceBackendStatus:
         """Return strict installed/running systemd state."""
@@ -123,9 +119,7 @@ class SystemdBackend:
             )
         self._artifacts.delete(self._artifact_path)
         self._require_success((*_SYSTEMCTL, "daemon-reload"))
-        self._runner.run(
-            (*_SYSTEMCTL, "reset-failed", SYSTEMD_SERVICE_NAME)
-        )
+        self._runner.run((*_SYSTEMCTL, "reset-failed", SYSTEMD_SERVICE_NAME))
 
     def _require_success(self, argv: tuple[str, ...]) -> None:
         if self._runner.run(argv).returncode != 0:

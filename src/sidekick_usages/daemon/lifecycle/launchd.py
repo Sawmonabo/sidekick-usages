@@ -71,15 +71,11 @@ class LaunchdBackend:
                 str(self._artifact_path),
             )
         )
-        self._require_success(
-            ("launchctl", "kickstart", "-k", self._target)
-        )
+        self._require_success(("launchctl", "kickstart", "-k", self._target))
 
     def restart(self) -> None:
         """Restart the exact installed LaunchAgent."""
-        self._require_success(
-            ("launchctl", "kickstart", "-k", self._target)
-        )
+        self._require_success(("launchctl", "kickstart", "-k", self._target))
 
     def status(self) -> ServiceBackendStatus:
         """Return strict installed/running LaunchAgent state."""
@@ -107,9 +103,10 @@ class LaunchdBackend:
     def uninstall(self) -> None:
         """Boot out and remove only the Sidekick LaunchAgent."""
         self._runner.run(("launchctl", "bootout", self._target))
-        if self._runner.run(
-            ("launchctl", "print", self._target)
-        ).returncode == 0:
+        if (
+            self._runner.run(("launchctl", "print", self._target)).returncode
+            == 0
+        ):
             raise ServiceLifecycleError(ServiceFailureCode.COMMAND_FAILED)
         self._artifacts.delete(self._artifact_path)
 

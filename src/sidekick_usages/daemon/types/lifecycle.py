@@ -5,6 +5,7 @@ from enum import StrEnum
 __all__ = [
     "DaemonOperation",
     "ServiceBackendId",
+    "ServiceComponentState",
     "ServiceFailureCode",
     "ServiceLifecycleState",
 ]
@@ -25,6 +26,17 @@ class ServiceBackendId(StrEnum):
     WSL = "wsl"
     LAUNCHD = "launchd"
     FEATURE_DISABLED = "feature-disabled"
+
+
+class ServiceComponentState(StrEnum):
+    """Independent health state for one supervisor component."""
+
+    HEALTHY = "healthy"
+    UNHEALTHY = "unhealthy"
+    ABSENT = "absent"
+    UNAVAILABLE = "unavailable"
+    NOT_REQUIRED = "not_required"
+    FEATURE_DISABLED = "feature_disabled"
 
 
 class ServiceLifecycleState(StrEnum):

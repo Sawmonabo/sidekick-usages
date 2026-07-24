@@ -2,7 +2,10 @@
 
 from typing import Protocol
 
-from sidekick_usages.daemon.models.lifecycle import ServiceBackendStatus
+from sidekick_usages.daemon.models.lifecycle import (
+    ServiceBackendStatus,
+    SupervisorHealth,
+)
 from sidekick_usages.daemon.types.lifecycle import ServiceBackendId
 
 __all__ = ["ServiceBackend", "ServiceCleanup", "ServiceReadiness"]
@@ -37,6 +40,9 @@ class ServiceReadiness(Protocol):
 
     def complete_maintenance_pass(self) -> None:
         """Complete or truthfully settle one bounded readiness pass."""
+
+    def health(self, status: ServiceBackendStatus) -> SupervisorHealth:
+        """Inspect each resident-service component without mutation."""
 
 
 class ServiceCleanup(Protocol):

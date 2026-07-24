@@ -2,8 +2,8 @@
 
 This guide documents how `sidekick-usages` keeps saved Claude and
 Codex accounts fresh, how optional usage-window heartbeat fits into
-scheduled maintenance, how to diagnose auth problems, and how the
-cross-platform scheduler is installed.
+maintenance, how to diagnose auth problems, and how the cross-platform
+resident supervisor is managed.
 
 ## Mental model
 
@@ -16,18 +16,18 @@ cross-platform scheduler is installed.
 2. `sidekick-usages refresh --all` uses only refresh tokens already
    saved in the sidekick config.
 
-The daemon runs `sidekick-usages maintain --quiet`. That command first
-runs the second path above, then runs optional heartbeat/window warming
-for accounts where heartbeat is explicitly enabled. Refresh and
-heartbeat stay separate in code and behavior:
+`sidekick-usages maintain --quiet` is the explicit foreground maintenance
+command. It runs the second path above, then optional heartbeat/window warming
+for accounts where heartbeat is explicitly enabled. Refresh and heartbeat stay
+separate in code and behavior:
 
 - Refresh keeps saved access tokens valid.
 - Heartbeat intentionally sends a tiny provider request to open an
   inactive usage window.
 
-The scheduled path is intentionally safer for multi-account stores
-because it never copies the current global Claude or Codex login into
-arbitrary labels.
+The resident supervisor owns one durable per-account queue and delegates due
+work to bounded worker processes. Saved-account maintenance never copies the
+current global Claude or Codex login into arbitrary labels.
 
 ## Supported account types
 
@@ -52,8 +52,11 @@ sidekick-usages doctor --label <label>
 
 `doctor` is read-only. It does not rotate tokens. It reports:
 
+- CLI and supervisor versions
+- platform, process, protocol, queue, journal, and broker health separately
 - label
 - provider
+- provider-adapter availability
 - plan
 - usage route
 - credential kind
@@ -121,16 +124,16 @@ heartbeat-enabled accounts. See
 [heartbeat behavior and guardrails](./heartbeat.md) for commands, supported
 account types, provider targets, model requests, and persisted diagnostics.
 
-### Run full scheduled maintenance
+### Run full maintenance manually
 
 ```bash
 sidekick-usages maintain --quiet
 ```
 
-`maintain --quiet` is what the daemon installs. It refreshes saved
-tokens first, then heartbeats enabled accounts. If heartbeat is not
-enabled for any account, `maintain --quiet` behaves like token
-maintenance only.
+`maintain --quiet` refreshes saved tokens first, then heartbeats enabled
+accounts. If heartbeat is not enabled for any account, it behaves like token
+maintenance only. It is an explicit foreground command, not the installed
+service command.
 
 ### Import one current login explicitly
 
@@ -153,7 +156,7 @@ become the newly logged-in provider account.
 `--replace-auth-method` independently authorizes setup token to subscription
 login. When method and identity both change, both flags are required.
 
-## Daemon install
+## Resident supervisor lifecycle
 
 ```bash
 sidekick-usages daemon install
@@ -161,146 +164,96 @@ sidekick-usages daemon status
 sidekick-usages daemon uninstall
 ```
 
-The installed scheduler runs:
+The lifecycle is user-level only and requires no administrator privileges.
+There is no backend flag, timer, periodic task, or cron fallback. Installation
+enrolls saved accounts, starts the service, verifies the local handshake and
+durable recovery state, completes one bounded readiness pass, restarts the
+service, and verifies it again.
 
-```bash
-sidekick-usages maintain --quiet
-```
-
-It runs every 30 minutes. The scheduler is user-level only and does not
-require root or administrator privileges.
-
-### Backend selection
-
-`sidekick-usages daemon install --backend auto` chooses the backend from
-the current platform:
-
-| Platform | Default backend |
+| Platform | Integration |
 | --- | --- |
-| Windows native | Windows Task Scheduler via a silent `wscript.exe` wrapper |
-| WSL | Windows Task Scheduler via a silent `wscript.exe` wrapper |
-| macOS | launchd LaunchAgent |
-| Native Linux or Ubuntu with user systemd | systemd user timer |
-| Linux without user systemd | cron |
+| Linux | One systemd user service |
+| WSL | The same systemd user service plus one Windows logon rescue task |
+| macOS | One user LaunchAgent |
+| Native Windows | Resident supervision is explicitly disabled |
 
-You can override detection:
-
-```bash
-sidekick-usages daemon install --backend systemd
-sidekick-usages daemon install --backend cron
-sidekick-usages daemon install --backend launchd
-sidekick-usages daemon install --backend task-scheduler
-```
-
-For WSL, the default is Windows Task Scheduler because it can wake the
-distro. An in-WSL systemd timer only runs while the distro is already
-running, so use `--backend systemd` in WSL only if that tradeoff is
-intentional.
+`daemon status` is read-only. `doctor` goes further by reporting platform,
+process, protocol, queue, journal, and broker health independently. Neither
+command installs, restarts, refreshes, or repairs anything.
 
 ### Linux and Ubuntu
 
-The systemd backend writes:
+The systemd integration writes one service:
 
 ```text
-~/.config/systemd/user/sidekick-usages-refresh.service
-~/.config/systemd/user/sidekick-usages-refresh.timer
+~/.config/systemd/user/sidekick-usages.service
 ```
 
-The timer uses:
-
-```text
-OnBootSec=5m
-OnUnitActiveSec=30m
-RandomizedDelaySec=5m
-Persistent=true
-```
+It runs the exact installed `sidekick-usages-supervisor` executable and uses
+`Restart=on-failure`. It does not install a timer.
 
 Useful native commands:
 
 ```bash
-systemctl --user status sidekick-usages-refresh.timer
-systemctl --user list-timers sidekick-usages-refresh.timer
-journalctl --user -u sidekick-usages-refresh.service
+systemctl --user status sidekick-usages.service
+journalctl --user -u sidekick-usages.service
 ```
 
-If user systemd is unavailable, `--backend auto` falls back to a marked
-crontab block. Uninstall removes only the sidekick-marked block.
+If user systemd is unavailable, installation reports that resident supervision
+is unavailable. It does not silently select another scheduler.
 
 ### WSL
 
-The WSL default installs a Windows scheduled task that runs a
-sidekick-owned VBScript wrapper with `wscript.exe`:
+WSL uses the Linux systemd user service. It also installs one current-Windows-
+user logon rescue task whose only action starts that service:
 
 ```powershell
-wscript.exe //B //Nologo %LOCALAPPDATA%\sidekick-usages\daemon\refresh.vbs
+wsl.exe --distribution <distro> --user <linux-user> --exec \
+  systemctl --user start sidekick-usages.service
 ```
 
-The wrapper runs PowerShell hidden, and that PowerShell script runs:
-
-```powershell
-wsl.exe -d <distro-name> -- bash -lc 'sidekick-usages maintain --quiet'
-```
-
-This keeps refreshes working even when the distro is not already
-running, while avoiding the visible terminal flash that direct
-`wsl.exe` scheduled tasks can create. `daemon status` and
-`daemon uninstall` use the same Task Scheduler backend.
-
-Generated Windows-side files live under:
-
-```text
-%LOCALAPPDATA%\sidekick-usages\daemon\
-```
-
-The wrapper appends output to:
-
-```text
-refresh.out.log
-refresh.err.log
-```
+The rescue task never runs maintenance, refreshes tokens, or handles provider
+credentials. Status validates its exact action, description, and trigger.
 
 ### Windows native
 
-The Windows backend uses PowerShell and Task Scheduler, but the
-scheduled task action points at `wscript.exe`, not the console
-executable directly. This prevents periodic refreshes from flashing a
-terminal window.
-
-```powershell
-Register-ScheduledTask
-Get-ScheduledTask
-Get-ScheduledTaskInfo
-Unregister-ScheduledTask
-```
-
-The task name is:
-
-```text
-sidekick-usages-refresh
-```
-
-Generated launcher and log files live under:
-
-```text
-%LOCALAPPDATA%\sidekick-usages\daemon\
-```
+Native Windows returns a feature-disabled result. Linux/WSL and macOS are the
+supported resident-service platforms.
 
 ### macOS
 
-The launchd backend writes:
+The launchd integration writes one LaunchAgent and two diagnostic log paths:
 
 ```text
-~/Library/LaunchAgents/com.sidekick-usages.refresh.plist
-~/Library/Logs/sidekick-usages/refresh.out.log
-~/Library/Logs/sidekick-usages/refresh.err.log
+~/Library/LaunchAgents/com.sidekick-usages.supervisor.plist
+~/Library/Logs/sidekick-usages/supervisor.out.log
+~/Library/Logs/sidekick-usages/supervisor.err.log
 ```
+
+The LaunchAgent starts at login and restarts only after an unsuccessful exit.
+It has no interval.
 
 Useful native commands:
 
 ```bash
-launchctl print gui/$(id -u)/com.sidekick-usages.refresh
-launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.sidekick-usages.refresh.plist
+launchctl print gui/$(id -u)/com.sidekick-usages.supervisor
 ```
+
+### Uninstall boundary
+
+`sidekick-usages daemon uninstall` removes only the Sidekick-owned service,
+WSL rescue task or LaunchAgent, local socket, service state, and sanitized
+diagnostic logs. It preserves:
+
+- the saved-account index
+- protected private credentials
+- usage and activity metrics
+- durable account state
+- the current native Claude and Codex logins
+- provider executables and shell configuration
+
+Sidekick creates no `claude` or `codex` wrapper or alias. Normal provider CLI
+commands continue reading their native login locations.
 
 ## Exit codes
 
@@ -309,9 +262,9 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.sidekick-usages.refres
 | 0 | All refreshable accounts are fresh or refreshed, and heartbeat accounts are active/warmed/skipped. |
 | 1 | At least one account needs manual login or provider action. |
 | 2 | Config or provider/system error during refresh, heartbeat, or doctor. |
-| 3 | Scheduler install, status, or uninstall error. |
+| 3 | Resident-service install, status, or uninstall error. |
 
-Schedulers should tolerate exit code 1 as an action-needed state. A
+Maintenance automation should tolerate exit code 1 as an action-needed state. A
 later run can still refresh other accounts after you fix the rejected
 account.
 
@@ -387,12 +340,8 @@ Confirm PowerShell is reachable from WSL:
 powershell.exe -NoProfile -Command '$PSVersionTable.PSVersion'
 ```
 
-If PowerShell is unavailable, either fix Windows interop or explicitly
-install an in-WSL backend:
-
-```bash
-sidekick-usages daemon install --backend systemd
-```
+If PowerShell interop is unavailable, fix WSL interoperability before
+installing. Sidekick does not install a reduced or alternate backend.
 
 ### The daemon installed but nothing rotates
 
@@ -414,8 +363,8 @@ expiry.
 
 ## Module architecture
 
-The implementation is split so scheduler behavior is reusable and
-testable:
+The implementation keeps foreground maintenance, durable supervision, and
+platform lifecycle ownership separate:
 
 - `sidekick_usages.maintenance.TokenMaintenanceService` owns saved-token
   access-refresh policy, derived Claude login-renewal warnings, per-account
@@ -432,19 +381,18 @@ testable:
   port. Concrete adapters such as `ClaudeHeartbeat` and
   `CodexHeartbeat` own provider endpoint details instead of adding
   heartbeat methods to the generic usage provider abstraction.
-- `sidekick_usages.doctor.DoctorService` builds one read-only result.
-  Pure human and JSON presenters consume that same completed result.
-- `sidekick_usages.daemon.DaemonManager` selects a scheduler backend
-  and delegates install/status/uninstall.
-- `sidekick_usages.daemon.SchedulerBackend` is the reusable backend
-  base class.
-- `SystemdBackend`, `CronBackend`, `LaunchdBackend`, and
-  `TaskSchedulerBackend` implement OS-specific scheduling.
-- `HiddenWindowsLauncher` generates the Windows/WSL no-console
-  launcher artifacts and preserves scheduler exit codes through the
-  wrapper process.
+- `sidekick_usages.doctor.DoctorService` builds read-only provider and account
+  results. Supervisor lifecycle inspection supplies independent platform,
+  process, protocol, queue, journal, and broker health to the same presenters.
+- `sidekick_usages.daemon.lifecycle.manager.DaemonManager` delegates
+  install/status/uninstall and read-only health to the selected user-service
+  integration.
+- `SystemdBackend`, `WslBackend`, and `LaunchdBackend` own their exact
+  platform artifacts and commands. Native Windows is feature-disabled.
+- `SupervisorRuntime` owns one resident control socket and durable scheduler.
+  Bounded worker processes own provider work.
 - `SystemCommandRunner` is injected so tests can verify generated
-  commands without touching the host scheduler.
+  commands without touching the host service manager.
 
 The CLI stays thin: commands parse Typer options, request one narrow lazily
 composed context, render completed results, and map outcomes to exit codes.

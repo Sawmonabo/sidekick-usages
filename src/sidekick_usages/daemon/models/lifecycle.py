@@ -6,8 +6,16 @@ from pathlib import Path
 from sidekick_usages.core.types import ExitCode
 from sidekick_usages.daemon.types.lifecycle import (
     ServiceBackendId,
+    ServiceComponentState,
     ServiceLifecycleState,
 )
+from sidekick_usages.daemon.types.service import PackageVersion
+
+_MAX_ARTIFACT_BYTES = 256 * 1024
+_MAX_COMMAND_OUTPUT_BYTES = 256 * 1024
+_MAX_IDENTITY_BYTES = 256
+_MAX_MESSAGE_BYTES = 1024
+_SERVICE_ARTIFACT_MODE = 0o600
 
 __all__ = [
     "CommandResult",
@@ -15,13 +23,8 @@ __all__ = [
     "PlatformInfo",
     "ServiceArtifact",
     "ServiceBackendStatus",
+    "SupervisorHealth",
 ]
-
-_MAX_ARTIFACT_BYTES = 256 * 1024
-_MAX_COMMAND_OUTPUT_BYTES = 256 * 1024
-_MAX_IDENTITY_BYTES = 256
-_MAX_MESSAGE_BYTES = 1024
-_SERVICE_ARTIFACT_MODE = 0o600
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,6 +115,46 @@ class ServiceBackendStatus:
             ServiceLifecycleState,
         ):
             raise ValueError("Service status values are invalid.")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SupervisorHealth:
+    """Independent secret-free health for the resident supervisor."""
+
+    backend: ServiceBackendId
+    cli_version: PackageVersion
+    supervisor_version: PackageVersion | None
+    platform: ServiceComponentState
+    process: ServiceComponentState
+    protocol: ServiceComponentState
+    queue: ServiceComponentState
+    journal: ServiceComponentState
+    broker: ServiceComponentState
+
+    def __post_init__(self) -> None:
+        """Require closed component states and bounded versions."""
+        if not isinstance(self.backend, ServiceBackendId):
+            raise ValueError("Supervisor backend is invalid.")
+        if not isinstance(self.cli_version, PackageVersion):
+            raise ValueError("CLI package version is invalid.")
+        if self.supervisor_version is not None and not isinstance(
+            self.supervisor_version,
+            PackageVersion,
+        ):
+            raise ValueError("Supervisor package version is invalid.")
+        components = (
+            self.platform,
+            self.process,
+            self.protocol,
+            self.queue,
+            self.journal,
+            self.broker,
+        )
+        if not all(
+            isinstance(component, ServiceComponentState)
+            for component in components
+        ):
+            raise ValueError("Supervisor component health is invalid.")
 
 
 @dataclass(frozen=True, slots=True)

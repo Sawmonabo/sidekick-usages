@@ -76,6 +76,7 @@ _RESIDENT_DAEMON_MODULES = frozenset(
         "recovery.py",
         "scheduler.py",
         "supervisor.py",
+        "worker_entrypoint.py",
         "workers.py",
     }
 )

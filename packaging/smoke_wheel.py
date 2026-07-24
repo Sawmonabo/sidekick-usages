@@ -28,6 +28,11 @@ UNSUPPORTED_SELECTION_KEYS = frozenset(
         "sources",
     }
 )
+CONSOLE_SCRIPT_NAMES: tuple[str, ...] = (
+    "sidekick-usages",
+    "sidekick-usages-supervisor",
+    "sidekick-usages-worker",
+)
 SMOKE_ARGUMENTS: tuple[tuple[str, ...], ...] = (
     ("--version",),
     ("--help",),
@@ -335,13 +340,19 @@ def _uv_executable() -> str:
     return uv
 
 
-def _venv_commands(venv: Path) -> tuple[Path, Path]:
-    """Return the platform-specific Python and console entry points."""
+def _venv_commands(venv: Path) -> tuple[Path, tuple[Path, ...]]:
+    """Return the platform-specific Python and installed console scripts."""
     if os.name == "nt":
         scripts = venv / "Scripts"
-        return scripts / "python.exe", scripts / "sidekick-usages.exe"
+        return (
+            scripts / "python.exe",
+            tuple(scripts / f"{name}.exe" for name in CONSOLE_SCRIPT_NAMES),
+        )
     scripts = venv / "bin"
-    return scripts / "python", scripts / "sidekick-usages"
+    return (
+        scripts / "python",
+        tuple(scripts / name for name in CONSOLE_SCRIPT_NAMES),
+    )
 
 
 def _clean_subprocess_env() -> dict[str, str]:
@@ -377,6 +388,64 @@ def _isolated_command_env(home: Path) -> dict[str, str]:
     return env
 
 
+def _installed_origin_check() -> str:
+    """Return the isolated installed-module provenance check."""
+    return """
+import importlib.metadata
+import pathlib
+import sys
+
+import platformdirs
+import sidekick_usages
+import sidekick_usages.cli.app
+import sidekick_usages.cli.context
+import sidekick_usages.persistence.filesystem
+import sidekick_usages.persistence.locking
+import sidekick_usages.persistence.private_credentials
+import sidekick_usages.persistence.transaction
+
+origin = pathlib.Path(sidekick_usages.__file__).resolve()
+prefix = pathlib.Path(sys.prefix).resolve()
+dependency = pathlib.Path(platformdirs.__file__).resolve()
+assert origin.is_relative_to(prefix), (origin, prefix)
+assert dependency.is_relative_to(prefix), (dependency, prefix)
+assert importlib.metadata.version("platformdirs") == "4.10.0"
+"""
+
+
+def _internal_entry_point_check() -> str:
+    """Return the isolated internal-entry-point import check."""
+    return """
+import importlib.metadata
+import sys
+
+distribution = importlib.metadata.distribution("sidekick-usages")
+points = {
+    point.name: point
+    for point in distribution.entry_points
+    if point.group == "console_scripts"
+}
+expected = set(sys.argv[1:])
+assert set(points) == expected, set(points)
+internal = set(sys.argv[2:])
+loaded = tuple(points[name].load() for name in sorted(internal))
+assert all(callable(point) for point in loaded)
+forbidden = tuple(
+    name
+    for name in sys.modules
+    if name.startswith(
+        (
+            "sidekick_usages.credentials",
+            "sidekick_usages.http",
+            "sidekick_usages.providers",
+            "sidekick_usages.usage",
+        )
+    )
+)
+assert not forbidden, forbidden
+"""
+
+
 def verify_installed_wheel(wheel: Path) -> None:
     """Install the wheel and exercise both entry paths outside the checkout."""
     uv = _uv_executable()
@@ -400,43 +469,38 @@ def verify_installed_wheel(wheel: Path) -> None:
             cwd=run_dir,
             env=install_env,
         )
-        python, console = _venv_commands(venv)
+        python, scripts = _venv_commands(venv)
         _run(
             [uv, "pip", "install", "--python", str(python), str(wheel)],
             cwd=run_dir,
             env=install_env,
         )
+        missing_scripts = [
+            script.name for script in scripts if not script.is_file()
+        ]
+        if missing_scripts:
+            raise WheelVerificationError(
+                f"Installed console scripts are missing: {missing_scripts!r}."
+            )
 
-        origin_check = (
-            "import importlib.metadata, pathlib, sidekick_usages, sys; "
-            "import sidekick_usages.cli.app; "
-            "import sidekick_usages.cli.context; "
-            "import sidekick_usages.persistence.filesystem; "
-            "import sidekick_usages.persistence.locking; "
-            "import sidekick_usages.persistence.private_credentials; "
-            "import sidekick_usages.persistence.transaction; "
-            "origin = pathlib.Path(sidekick_usages.__file__).resolve(); "
-            "prefix = pathlib.Path(sys.prefix).resolve(); "
-            "dependency = pathlib.Path("
-            "sys.modules['platformdirs'].__file__).resolve(); "
-            "assert origin.is_relative_to(prefix), (origin, prefix); "
-            "assert dependency.is_relative_to(prefix), "
-            "(dependency, prefix); "
-            "assert importlib.metadata.version('platformdirs') == '4.10.0'; "
-            "scripts = {point.name for point in "
-            "importlib.metadata.distribution("
-            "'sidekick-usages').entry_points}; "
-            "assert {'sidekick-usages', 'sidekick-usages-supervisor', "
-            "'sidekick-usages-worker'} <= scripts"
+        _run(
+            [
+                str(python),
+                "-c",
+                _internal_entry_point_check(),
+                *CONSOLE_SCRIPT_NAMES,
+            ],
+            cwd=run_dir,
+            env=env,
         )
         _run(
-            [str(python), "-c", origin_check],
+            [str(python), "-c", _installed_origin_check()],
             cwd=run_dir,
             env=env,
         )
 
         entry_points = (
-            (str(console),),
+            (str(scripts[0]),),
             (str(python), "-m", "sidekick_usages"),
         )
         for entry_point in entry_points:

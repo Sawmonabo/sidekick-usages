@@ -19,13 +19,18 @@ from sidekick_usages.daemon.models.lifecycle import (
     CommandResult,
     PlatformInfo,
     ServiceBackendStatus,
+    SupervisorHealth,
 )
 from sidekick_usages.daemon.types.lifecycle import (
     ServiceBackendId,
+    ServiceComponentState,
     ServiceLifecycleState,
 )
 from sidekick_usages.paths import ApplicationPaths
-from tests.test_support import make_application_paths
+from tests.test_support import (
+    make_application_paths,
+    make_supervisor_health,
+)
 
 _OWNER_FILE_MODE = 0o600
 
@@ -70,6 +75,13 @@ class ReadyLifecycle:
 
     def complete_maintenance_pass(self) -> None:
         self.events.append("maintain")
+
+    def health(self, status: ServiceBackendStatus) -> SupervisorHealth:
+        self.events.append("health")
+        return replace(
+            make_supervisor_health(),
+            backend=status.backend,
+        )
 
 
 class RecordingBackend:
@@ -252,6 +264,7 @@ def test_lifecycle_is_idempotent_and_uninstall_preserves_user_state(
     first = manager.install()
     second = manager.install()
     status = manager.status()
+    health = manager.health()
     removed = manager.uninstall()
 
     install_sequence = [
@@ -268,11 +281,14 @@ def test_lifecycle_is_idempotent_and_uninstall_preserves_user_state(
         *install_sequence,
         "status",
         "ready",
+        "status",
+        "health",
         "uninstall",
     ]
     assert first.state is ServiceLifecycleState.READY
     assert second.state is ServiceLifecycleState.READY
     assert status.state is ServiceLifecycleState.READY
+    assert health.process is ServiceComponentState.HEALTHY
     assert removed.state is ServiceLifecycleState.ABSENT
     assert paths.service_state.exists() is False
     assert paths.service_logs.exists() is False

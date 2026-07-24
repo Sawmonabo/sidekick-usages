@@ -55,7 +55,10 @@ def check_value_contracts(
             ("claude_setup_token", "ClaudeSetupToken"),
         ),
         "PersistenceContext": (("persistence", "PersistenceService"),),
-        "DoctorContext": (("state", "DoctorState"),),
+        "DoctorContext": (
+            ("state", "DoctorState"),
+            ("supervisor", "SupervisorHealth"),
+        ),
         "DaemonContext": (("daemon", "DaemonManager"),),
         "UpdateContext": (("update", "UpdateService"),),
     }

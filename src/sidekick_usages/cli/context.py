@@ -20,6 +20,7 @@ from sidekick_usages.daemon.lifecycle.manager import (
     DaemonManager,
     build_daemon_manager,
 )
+from sidekick_usages.daemon.models.lifecycle import SupervisorHealth
 from sidekick_usages.doctor import DoctorService
 from sidekick_usages.heartbeat import HeartbeatProvider, HeartbeatService
 from sidekick_usages.http import HttpClient
@@ -141,6 +142,7 @@ class DoctorContext:
     """Closed doctor-state context."""
 
     state: DoctorState
+    supervisor: SupervisorHealth
 
 
 @dataclass(frozen=True, slots=True)
@@ -211,11 +213,14 @@ def _provider_maps(
     return provider_map, heartbeat_map
 
 
-def _persistence(paths: ApplicationPaths) -> PersistenceService:
-    daemon = build_daemon_manager(paths=paths)
+def _persistence(
+    paths: ApplicationPaths,
+    daemon: DaemonManager | None = None,
+) -> PersistenceService:
+    manager = build_daemon_manager(paths=paths) if daemon is None else daemon
     return PersistenceService(
         paths,
-        maintenance_quiescent=daemon.quiescent,
+        maintenance_quiescent=manager.quiescent,
     )
 
 
@@ -388,7 +393,12 @@ def compose_doctor_context(
             providers,
             heartbeat_providers,
         )
-        persistence = _persistence(resolved_paths)
+        daemon = build_daemon_manager(
+            paths=resolved_paths,
+            clock=resolved_clock,
+        )
+        supervisor = daemon.health()
+        persistence = _persistence(resolved_paths, daemon)
         try:
             accounts = persistence.open_store()
             status = persistence.status(accounts)
@@ -397,7 +407,8 @@ def compose_doctor_context(
             return DoctorContext(
                 DoctorFailed(
                     _persistence_failure(error, resolved_paths.accounts)
-                )
+                ),
+                supervisor,
             )
         return DoctorContext(
             DoctorReady(
@@ -409,7 +420,8 @@ def compose_doctor_context(
                 ),
                 status,
                 refresh_status,
-            )
+            ),
+            supervisor,
         )
 
     return _compose(build)

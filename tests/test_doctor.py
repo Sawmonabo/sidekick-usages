@@ -21,6 +21,7 @@ from sidekick_usages.core.models import (
     CodexCredentials,
 )
 from sidekick_usages.core.types import AccountLabel, ExitCode
+from sidekick_usages.daemon.types.lifecycle import ServiceComponentState
 from sidekick_usages.doctor import DoctorService
 from sidekick_usages.persistence.credential_refresh import (
     CredentialRefreshState,
@@ -41,6 +42,11 @@ from tests.test_support import (
     CliHarness,
     FixedClock,
     make_account_store,
+    make_supervisor_health,
+)
+
+_SUPERVISOR_HEALTH = make_supervisor_health(
+    queue=ServiceComponentState.UNHEALTHY,
 )
 
 
@@ -66,7 +72,8 @@ def _harness(
                 len(accounts),
             ),
             CredentialRefreshState(CredentialRefreshStateKind.CLEAN),
-        )
+        ),
+        _SUPERVISOR_HEALTH,
     )
     return (
         CliHarness(
@@ -119,6 +126,7 @@ def test_json_reports_current_auth_state_without_secrets(
     assert accounts["team"]["refresh_expiry_state"] == "valid"
     assert accounts["team"]["identity_state"] == "known"
     assert accounts["team"]["can_auto_refresh"] is True
+    assert accounts["team"]["provider_available"] is True
     assert accounts["setup"]["credential_kind"] == "setup_token"
     assert accounts["setup"]["can_auto_refresh"] is False
     assert payload["persistence"] == {
@@ -126,6 +134,17 @@ def test_json_reports_current_auth_state_without_secrets(
         "path": str(tmp_path / "accounts.json"),
         "account_count": 2,
         "credential_refresh": "clean",
+    }
+    assert payload["supervisor"] == {
+        "backend": "systemd",
+        "cli_version": "0.7.0",
+        "supervisor_version": "0.7.0",
+        "platform": "healthy",
+        "process": "healthy",
+        "protocol": "healthy",
+        "queue": "unhealthy",
+        "journal": "healthy",
+        "broker": "not_required",
     }
     rendered = output.getvalue()
     for secret in (
@@ -176,22 +195,22 @@ def test_json_represents_current_store_failure(tmp_path: Path) -> None:
     harness = CliHarness(
         console=Console(file=output, force_terminal=False),
         err_console=Console(file=io.StringIO(), force_terminal=False),
-        doctor=DoctorContext(DoctorFailed(failure)),
+        doctor=DoctorContext(DoctorFailed(failure), _SUPERVISOR_HEALTH),
     )
 
     result = harness.invoke(["doctor", "--json"])
 
     assert result.exit_code == ExitCode.SYSTEM_ERROR
-    assert json.loads(output.getvalue()) == {
-        "accounts": [],
-        "persistence": {
-            "state": "unreadable",
-            "account_count": None,
-            "path": str(path),
-            "artifact_basename": "accounts.json",
-            "message": "The account store could not be read safely.",
-        },
+    payload = json.loads(output.getvalue())
+    assert payload["accounts"] == []
+    assert payload["persistence"] == {
+        "state": "unreadable",
+        "account_count": None,
+        "path": str(path),
+        "artifact_basename": "accounts.json",
+        "message": "The account store could not be read safely.",
     }
+    assert payload["supervisor"]["queue"] == "unhealthy"
 
 
 def test_filters_are_composable(tmp_path: Path) -> None:

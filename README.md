@@ -313,8 +313,8 @@ rollout total is used as a fallback.
 | `sidekick-usages set-plan <label> <plan>` | Correct a display plan that the provider cannot introspect. |
 | `sidekick-usages refresh <label>` | Import the current matching local login into one saved login label; method and identity changes require separate authorization. |
 | `sidekick-usages refresh --all [--force] [--quiet]` | Rotate due saved refresh tokens without reading the current global login. |
-| `sidekick-usages maintain [--quiet]` | Refresh due tokens, then heartbeat opted-in accounts; used by the daemon. |
-| `sidekick-usages doctor [--provider ...] [--label ...] [--json]` | Report auth, refresh, usage-route, heartbeat, and manual-action diagnostics. |
+| `sidekick-usages maintain [--quiet]` | Manually refresh due tokens, then heartbeat opted-in accounts. |
+| `sidekick-usages doctor [--provider ...] [--label ...] [--json]` | Report independent supervisor, persistence, provider, auth, refresh, and heartbeat health. |
 | `sidekick-usages codex login <label>` | Run Codex login and import a private account copy; supports `--device-auth`, `--codex-home`, and `--replace-identity`. |
 | `sidekick-usages codex export <label> --codex-home <path>` | Export complete saved Codex credentials to an isolated file-backed home. |
 | `sidekick-usages claude setup-token` | Run Claude's long-lived token generator and save its output. |
@@ -322,7 +322,7 @@ rollout total is used as a fallback.
 | `sidekick-usages reset [--provider <id>] [-y]` | Delete all accounts or one provider's accounts. |
 | `sidekick-usages check-update` | Query the latest GitHub release. |
 | `sidekick-usages update [--dry-run]` | Run the detected `uv`, pipx, or Homebrew upgrade command. |
-| `sidekick-usages daemon install\|status\|uninstall` | Manage user-level scheduled maintenance. |
+| `sidekick-usages daemon install\|status\|uninstall` | Manage the current user's resident account supervisor. |
 | `sidekick-usages heartbeat ...` | Inspect, warm, enable, disable, or report usage-window heartbeat state. |
 | `sidekick-usages --version` | Print the installed version. |
 
@@ -379,7 +379,7 @@ target warms with `gpt-5.4-mini`; the separate `spark` target uses
 `gpt-5.3-codex-spark` and is opt-in. Cached future reset times prevent repeated
 probes for the same target.
 
-Install user-level scheduled maintenance with:
+Manage the user-level resident supervisor with:
 
 ```bash
 sidekick-usages daemon install
@@ -387,27 +387,33 @@ sidekick-usages daemon status
 sidekick-usages daemon uninstall
 ```
 
-`--backend auto` selects:
-
 | Platform | Backend |
 | --- | --- |
-| Native Windows | Windows Task Scheduler through a hidden `wscript.exe` wrapper |
-| WSL | Windows Task Scheduler through a hidden wrapper that invokes `wsl.exe` |
-| macOS | User LaunchAgent through launchd |
-| Linux with `systemctl` | User-level systemd timer |
-| Other Linux/Unix | Marked user crontab block |
+| Linux | One systemd user service |
+| WSL | The same systemd user service plus a Windows logon rescue task |
+| macOS | One user LaunchAgent |
+| Native Windows | Resident supervision is explicitly disabled |
 
-The schedule runs `sidekick-usages maintain --quiet` every 30 minutes. It uses
-saved sidekick credentials only and does not import the current global provider
-login. See [token maintenance and daemon operations](./docs/token-maintenance.md)
-and [heartbeat behavior and guardrails](./docs/heartbeat.md) for backend files,
-logs, exit codes, and recovery procedures.
+There is no backend override, timer, or cron fallback. The service owns one
+durable queue and launches bounded workers when account work is due. The WSL
+rescue task only starts the Linux service; it never refreshes credentials
+itself.
+
+`daemon uninstall` removes only Sidekick's service definition, WSL rescue task
+or LaunchAgent, socket, service state, and diagnostic logs. It preserves saved
+accounts, private credentials, usage metrics, and the active native Claude and
+Codex logins. It creates no shell alias or wrapper, so normal `claude` and
+`codex` commands continue to use their native login locations.
+
+See [token maintenance and daemon operations](./docs/token-maintenance.md) and
+[heartbeat behavior and guardrails](./docs/heartbeat.md) for lifecycle, health,
+exit-code, and recovery details.
 
 ## Security and network access
 
-- `accounts.json` contains raw OAuth credentials. On Unix it is written with
-  mode `0600`; private Codex auth directories/files use `0700`/`0600`. On
-  Windows, protection relies on the current user's filesystem ACLs.
+- `accounts.json` is a secret-free account index. Raw provider credentials live
+  only in the protected private authority tree. Unix directories/files use
+  `0700`/`0600`; Windows protection uses the current user's filesystem ACLs.
 - `list` masks token values, and `doctor --json` excludes access tokens,
   refresh tokens, id tokens, and raw provider credentials.
 - Interactive token entry is hidden. Piped stdin is consumed only when local
@@ -559,8 +565,8 @@ interval when available and run the command again. See
 
 ### Daemon is installed but accounts do not rotate
 
-Run the same command as the scheduler, then inspect diagnostics and backend
-status:
+Run maintenance explicitly, then inspect independent supervisor and account
+health:
 
 ```bash
 sidekick-usages maintain --quiet
@@ -604,7 +610,7 @@ If it is missing, run `claude auth login` and retry `add` or `refresh`.
 - `src/sidekick_usages/usage/`: usage results, application service, and Rich
   presentation; `branding.py` is the one robot and product-copy source.
 - `tests/`: focused pytest coverage for CLI behavior, providers, HTTP errors,
-  storage, rendering, maintenance, packaging, and cross-platform schedulers.
+  storage, rendering, maintenance, packaging, and cross-platform supervision.
 - `docs/`: shared operational guides, provider research and schemas,
   architecture specifications, and implementation records.
 - `packaging/homebrew/`: formula generator and in-tree formula copy.

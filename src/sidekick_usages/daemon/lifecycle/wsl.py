@@ -53,9 +53,10 @@ class WslBackend:
     def install(self) -> None:
         """Install the Linux service and current-user logon rescue."""
         self._systemd.install()
-        if self._runner.run(
-            (*_POWERSHELL, self._install_script())
-        ).returncode != 0:
+        if (
+            self._runner.run((*_POWERSHELL, self._install_script())).returncode
+            != 0
+        ):
             raise ServiceLifecycleError(ServiceFailureCode.COMMAND_FAILED)
 
     def restart(self) -> None:
@@ -82,9 +83,12 @@ class WslBackend:
 
     def uninstall(self) -> None:
         """Remove the rescue task, then the Linux user service."""
-        if self._runner.run(
-            (*_POWERSHELL, self._uninstall_script())
-        ).returncode != 0:
+        if (
+            self._runner.run(
+                (*_POWERSHELL, self._uninstall_script())
+            ).returncode
+            != 0
+        ):
             raise ServiceLifecycleError(ServiceFailureCode.COMMAND_FAILED)
         if self._rescue_status() is not ServiceLifecycleState.ABSENT:
             raise ServiceLifecycleError(ServiceFailureCode.COMMAND_FAILED)
@@ -159,9 +163,7 @@ class WslBackend:
     def _rescue_arguments(self) -> str:
         distribution = self._platform.wsl_distro
         if distribution is None:
-            raise ServiceLifecycleError(
-                ServiceFailureCode.ARTIFACT_UNSAFE
-            )
+            raise ServiceLifecycleError(ServiceFailureCode.ARTIFACT_UNSAFE)
         return subprocess.list2cmdline(
             [
                 "--distribution",

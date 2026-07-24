@@ -17,11 +17,9 @@ from sidekick_usages.doctor import (
     DoctorFailedResult,
     DoctorReadyResult,
     DoctorResult,
+    doctor_exit_code,
     doctor_json,
     render_doctor,
-)
-from sidekick_usages.doctor import (
-    doctor_exit_code as account_doctor_exit_code,
 )
 from sidekick_usages.persistence.errors import (
     exit_code_for_persistence_code,
@@ -89,12 +87,13 @@ def doctor_cmd(
 ) -> None:
     """Report what is healthy and what needs login."""
     invocation = invocation_context(ctx)
-    state = invocation.require_doctor(ctx).state
+    doctor = invocation.require_doctor(ctx)
+    state = doctor.state
     provider_filter = _provider_filter(ctx, provider_id)
     if isinstance(state, DoctorFailed):
         _write_result(
             invocation,
-            DoctorFailedResult(state.failure),
+            DoctorFailedResult(state.failure, doctor.supervisor),
             json_output=json_output,
         )
         code = exit_code_for_persistence_code(state.failure.code)
@@ -114,6 +113,7 @@ def doctor_cmd(
                         (),
                         state.persistence,
                         state.refresh_state,
+                        doctor.supervisor,
                     ),
                     json_output=json_output,
                 )
@@ -128,10 +128,11 @@ def doctor_cmd(
                 tuple(diagnostics),
                 state.persistence,
                 state.refresh_state,
+                doctor.supervisor,
             ),
             json_output=json_output,
         )
-        code = account_doctor_exit_code(diagnostics)
+        code = doctor_exit_code(diagnostics)
         if code:
             raise typer.Exit(code=code)
         return

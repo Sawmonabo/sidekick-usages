@@ -26,18 +26,19 @@ sidekick-usages maintain --quiet
 ```
 
 `sidekick-usages heartbeat <label>` runs one explicit warm attempt for a
-saved account. It does not enable daemon heartbeat.
+saved account. It does not enable background heartbeat.
 
 `sidekick-usages heartbeat enable <label>` opts one supported account
-into daemon heartbeat. `sidekick-usages heartbeat disable <label>` turns
+into background heartbeat. `sidekick-usages heartbeat disable <label>` turns
 it back off.
 
-`sidekick-usages heartbeat --all --quiet` is scheduler-safe. It only
+`sidekick-usages heartbeat --all --quiet` is automation-safe. It only
 checks accounts with heartbeat enabled and prints only accounts that
 need manual action.
 
-`sidekick-usages maintain --quiet` is what the daemon runs. It refreshes
-saved tokens first, then runs heartbeat for enabled accounts.
+`sidekick-usages maintain --quiet` runs the same policy explicitly in the
+foreground: refresh saved tokens first, then heartbeat enabled accounts. The
+resident supervisor does not shell out to this command.
 
 ## Supported providers
 
@@ -69,25 +70,19 @@ relevant window targets:
 
 Use `--target spark` for a one-shot Spark warm, or
 `heartbeat enable <label> --target all` if you intentionally want the
-daemon to keep both the standard and Spark windows warm. Sidekick reads
-usage again after each model request and only reports `warmed` when the
+background policy to keep both the standard and Spark windows warm. Sidekick
+reads usage again after each model request and only reports `warmed` when the
 target window becomes active.
 
 Codex API-key mode is not heartbeat supported. The heartbeat implementation
 is for saved ChatGPT OAuth accounts whose usage is displayed by the Codex
 usage endpoint.
 
-## Daemon behavior
+## Maintenance behavior
 
 Heartbeat is default-off and per-account opt-in.
 
-Every daemon tick runs:
-
-```bash
-sidekick-usages maintain --quiet
-```
-
-That command:
+Foreground maintenance and bounded resident workers apply the same policy:
 
 1. Refreshes due saved tokens using stored refresh tokens.
 2. Checks heartbeat-enabled accounts.
@@ -95,7 +90,7 @@ That command:
 4. Sends a tiny warming request only when the account is supported and
    the 5-hour window appears inactive.
 
-The v1 policy is any time. If heartbeat is enabled and the scheduler
+The v1 policy is any time. If heartbeat is enabled and maintenance
 finds an inactive supported 5-hour window, it may warm it regardless of
 time of day. Disable heartbeat for an account if that is not what you want:
 
@@ -139,8 +134,8 @@ account data:
 }
 ```
 
-When `heartbeat_targets` is absent or `null`, daemon
-heartbeat uses the provider default targets. For Codex, that default is
+When `heartbeat_targets` is absent or `null`, background heartbeat uses the
+provider default targets. For Codex, that default is
 `standard` only; Spark warming must be requested explicitly.
 
 `last_heartbeat_status` is one of:
@@ -164,9 +159,9 @@ sidekick-usages heartbeat status
 
 Common states:
 
-- `heartbeat: off`: the account supports heartbeat, but daemon warming
+- `heartbeat: off`: the account supports heartbeat, but background warming
   is disabled.
-- `heartbeat: on`: daemon warming is enabled for the account.
+- `heartbeat: on`: background warming is enabled for the account.
 - `heartbeat: unsupported`: the provider or saved credential cannot safely
   warm a window.
 - `heartbeat: needs-login`: the last heartbeat failed because auth or

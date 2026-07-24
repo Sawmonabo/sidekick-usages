@@ -3,6 +3,7 @@
 import time
 from collections.abc import Callable
 from datetime import datetime
+from typing import assert_never
 
 from sidekick_usages import __version__
 from sidekick_usages.clock import Clock
@@ -18,12 +19,22 @@ from sidekick_usages.core.selection.types import (
     OperationPriority,
     OperationState,
 )
+from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.client import ControlClient
 from sidekick_usages.daemon.control import cleanup_control_endpoint
 from sidekick_usages.daemon.diagnostics import SanitizedDiagnosticLog
 from sidekick_usages.daemon.lifecycle.errors import ServiceLifecycleError
+from sidekick_usages.daemon.models.lifecycle import (
+    ServiceBackendStatus,
+    SupervisorHealth,
+)
+from sidekick_usages.daemon.models.service import ServiceState
 from sidekick_usages.daemon.protocol import PROTOCOL_VERSION
-from sidekick_usages.daemon.types.lifecycle import ServiceFailureCode
+from sidekick_usages.daemon.types.lifecycle import (
+    ServiceComponentState,
+    ServiceFailureCode,
+    ServiceLifecycleState,
+)
 from sidekick_usages.daemon.types.protocol import EventKind
 from sidekick_usages.daemon.types.service import (
     PackageVersion,
@@ -31,6 +42,9 @@ from sidekick_usages.daemon.types.service import (
 )
 from sidekick_usages.paths import ApplicationPaths
 from sidekick_usages.persistence.account_store import AccountStore
+from sidekick_usages.persistence.activation_journal import (
+    ActivationJournalStore,
+)
 from sidekick_usages.persistence.errors import PersistenceError
 from sidekick_usages.persistence.operation_queue import OperationQueueStore
 from sidekick_usages.persistence.private_credentials import (
@@ -101,18 +115,14 @@ class SupervisorReadiness:
             or state.package_version != PackageVersion(__version__)
             or state.phase is not ServicePhase.READY
         ):
-            raise ServiceLifecycleError(
-                ServiceFailureCode.SERVICE_UNHEALTHY
-            )
+            raise ServiceLifecycleError(ServiceFailureCode.SERVICE_UNHEALTHY)
         enrolled = {
             operation.account_id
             for operation in operations
             if operation.kind is OperationKind.MAINTAIN
         }
         if any(account.account_id not in enrolled for account in accounts):
-            raise ServiceLifecycleError(
-                ServiceFailureCode.QUEUE_INCOMPLETE
-            )
+            raise ServiceLifecycleError(ServiceFailureCode.QUEUE_INCOMPLETE)
         if any(_requires_codex_broker(account) for account in accounts):
             raise ServiceLifecycleError(
                 ServiceFailureCode.CODEX_BROKER_UNAVAILABLE
@@ -147,15 +157,145 @@ class SupervisorReadiness:
                 )
             self._sleep(min(_READINESS_WAIT_SECONDS, remaining))
 
+    def health(self, status: ServiceBackendStatus) -> SupervisorHealth:
+        """Inspect components independently without installing or repairing."""
+        platform, process = _backend_health(status.state)
+        accounts_readable = True
+        try:
+            accounts = self._accounts()
+        except PersistenceError, ValueError:
+            accounts = ()
+            accounts_readable = False
+        broker = _broker_health(accounts, accounts_readable)
+        unavailable = (
+            ServiceComponentState.FEATURE_DISABLED
+            if process is ServiceComponentState.FEATURE_DISABLED
+            else ServiceComponentState.UNAVAILABLE
+        )
+        if (
+            unavailable is ServiceComponentState.FEATURE_DISABLED
+            and broker is not ServiceComponentState.NOT_REQUIRED
+        ):
+            broker = ServiceComponentState.FEATURE_DISABLED
+        if process is not ServiceComponentState.HEALTHY:
+            return SupervisorHealth(
+                backend=status.backend,
+                cli_version=PackageVersion(__version__),
+                supervisor_version=None,
+                platform=platform,
+                process=process,
+                protocol=unavailable,
+                queue=unavailable,
+                journal=unavailable,
+                broker=broker,
+            )
+
+        state_readable = True
+        try:
+            state = self._state.load()
+        except PersistenceError, ValueError:
+            state = None
+            state_readable = False
+        return SupervisorHealth(
+            backend=status.backend,
+            cli_version=PackageVersion(__version__),
+            supervisor_version=(
+                None if state is None else state.package_version
+            ),
+            platform=platform,
+            process=process,
+            protocol=self._protocol_health(state, state_readable),
+            queue=self._queue_health(
+                state,
+                state_readable,
+                accounts,
+                accounts_readable,
+            ),
+            journal=self._journal_health(state, state_readable),
+            broker=broker,
+        )
+
+    def _protocol_health(
+        self,
+        state: ServiceState | None,
+        state_readable: bool,
+    ) -> ServiceComponentState:
+        """Inspect socket negotiation and persisted version agreement."""
+        try:
+            self._verify_handshake()
+        except ServiceLifecycleError:
+            return ServiceComponentState.UNHEALTHY
+        if not state_readable:
+            return ServiceComponentState.UNHEALTHY
+        if state is None:
+            return ServiceComponentState.UNAVAILABLE
+        if (
+            state.protocol_version != PROTOCOL_VERSION
+            or state.package_version != PackageVersion(__version__)
+        ):
+            return ServiceComponentState.UNHEALTHY
+        return ServiceComponentState.HEALTHY
+
+    def _queue_health(
+        self,
+        state: ServiceState | None,
+        state_readable: bool,
+        accounts: tuple[SavedAccount, ...],
+        accounts_readable: bool,
+    ) -> ServiceComponentState:
+        """Inspect durable scheduler recovery and account enrollment."""
+        if not state_readable or not accounts_readable:
+            return ServiceComponentState.UNHEALTHY
+        if state is None:
+            return ServiceComponentState.UNAVAILABLE
+        if not state.queue_recovered:
+            return ServiceComponentState.UNHEALTHY
+        try:
+            operations = self._queue.load()
+        except PersistenceError, ValueError:
+            return ServiceComponentState.UNHEALTHY
+        enrolled = {
+            operation.account_id
+            for operation in operations
+            if operation.kind is OperationKind.MAINTAIN
+        }
+        if any(account.account_id not in enrolled for account in accounts):
+            return ServiceComponentState.UNHEALTHY
+        return ServiceComponentState.HEALTHY
+
+    def _journal_health(
+        self,
+        state: ServiceState | None,
+        state_readable: bool,
+    ) -> ServiceComponentState:
+        """Inspect persisted recovery proof and unfinished activations."""
+        if not state_readable:
+            return ServiceComponentState.UNHEALTHY
+        if state is None:
+            return ServiceComponentState.UNAVAILABLE
+        if not state.journals_reconciled:
+            return ServiceComponentState.UNHEALTHY
+        journals = ActivationJournalStore(self._paths.activation_journals)
+        try:
+            unfinished = any(
+                journals.load(provider_id).active is not None
+                for provider_id in ProviderId
+            )
+        except PersistenceError, ValueError:
+            return ServiceComponentState.UNHEALTHY
+        return (
+            ServiceComponentState.UNHEALTHY
+            if unfinished
+            else ServiceComponentState.HEALTHY
+        )
+
     def _accounts(self) -> tuple[SavedAccount, ...]:
         private = PrivateCredentialTree(
             self._paths.private_credentials,
             account_path=self._paths.accounts,
         )
         return (
-            AccountStore(self._paths.accounts, private)
-            .load()
-            .saved_accounts()
+            AccountStore(self._paths.accounts, private).load().saved_accounts()
         )
 
     def _verify_handshake(self) -> None:
@@ -182,9 +322,7 @@ class SupervisorReadiness:
                 ServiceFailureCode.HANDSHAKE_FAILED
             ) from None
         if not events or events[-1].kind is not EventKind.COMPLETED:
-            raise ServiceLifecycleError(
-                ServiceFailureCode.SERVICE_UNHEALTHY
-            )
+            raise ServiceLifecycleError(ServiceFailureCode.SERVICE_UNHEALTHY)
 
 
 class RuntimeCleanup:
@@ -214,6 +352,49 @@ def _requires_codex_broker(account: SavedAccount) -> bool:
         authority,
         CodexAccountAuthority,
     ) and isinstance(authority.subscription, CodexManagedAuthority)
+
+
+def _backend_health(
+    state: ServiceLifecycleState,
+) -> tuple[ServiceComponentState, ServiceComponentState]:
+    match state:
+        case ServiceLifecycleState.ABSENT:
+            return (
+                ServiceComponentState.HEALTHY,
+                ServiceComponentState.ABSENT,
+            )
+        case ServiceLifecycleState.READY:
+            return (
+                ServiceComponentState.HEALTHY,
+                ServiceComponentState.HEALTHY,
+            )
+        case ServiceLifecycleState.INSTALLED:
+            return (
+                ServiceComponentState.HEALTHY,
+                ServiceComponentState.UNHEALTHY,
+            )
+        case ServiceLifecycleState.UNHEALTHY:
+            return (
+                ServiceComponentState.UNHEALTHY,
+                ServiceComponentState.UNHEALTHY,
+            )
+        case ServiceLifecycleState.FEATURE_DISABLED:
+            return (
+                ServiceComponentState.FEATURE_DISABLED,
+                ServiceComponentState.FEATURE_DISABLED,
+            )
+    return assert_never(state)
+
+
+def _broker_health(
+    accounts: tuple[SavedAccount, ...],
+    accounts_readable: bool,
+) -> ServiceComponentState:
+    if not accounts_readable:
+        return ServiceComponentState.UNAVAILABLE
+    if any(_requires_codex_broker(account) for account in accounts):
+        return ServiceComponentState.UNAVAILABLE
+    return ServiceComponentState.NOT_REQUIRED
 
 
 def _maintenance_settled(

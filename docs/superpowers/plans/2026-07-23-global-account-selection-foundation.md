@@ -701,37 +701,37 @@ sidekick-usages-worker = "sidekick_usages.daemon.worker_entrypoint:main"
 
 ### Tests first
 
-- [ ] Extend one existing daemon CLI/doctor scenario to prove the three
+- [x] Extend one existing daemon CLI/doctor scenario to prove the three
   lifecycle commands remain registered and scheduler, protocol, provider,
   and recovery health remain distinct. Use one unhealthy state rather than a
   diagnostic-state matrix.
-- [ ] Extend the existing wheel smoke boundary to prove both internal entry
+- [x] Extend the existing wheel smoke boundary to prove both internal entry
   points are shipped and callable without importing provider-heavy modules.
   Let generated Homebrew and package inspections validate their existing
   artifacts without duplicate Python assertions.
 
 ### Implementation
 
-- [ ] Update the existing daemon command owner, lazy context, and help adapter
+- [x] Update the existing daemon command owner, lazy context, and help adapter
   to compose `DaemonManager` without importing the resident runtime into
   ordinary help or non-daemon commands.
-- [ ] Report process, protocol, queue, journal, platform, and broker health
+- [x] Report process, protocol, queue, journal, platform, and broker health
   independently.
-- [ ] Preserve existing exit-code behavior and add no implicit installation
+- [x] Preserve existing exit-code behavior and add no implicit installation
   to non-interactive commands.
-- [ ] Add internal entry points to `pyproject.toml`, regenerate `uv.lock`, and
+- [x] Add internal entry points to `pyproject.toml`, regenerate `uv.lock`, and
   update packaging smoke verification.
-- [ ] Update `packaging/homebrew/generate.py`; regenerate its owned formula
+- [x] Update `packaging/homebrew/generate.py`; regenerate its owned formula
   output instead of editing generated files by hand.
-- [ ] Update architecture checks for the daemon package and forbidden resident
+- [x] Update architecture checks for the daemon package and forbidden resident
   imports.
-- [ ] Document manual service lifecycle and complete uninstall behavior in
+- [x] Document manual service lifecycle and complete uninstall behavior in
   `README.md` and the owning operational documentation. Guided first-use
   presentation remains for the dashboard plan.
 
 ### Verify and commit
 
-- [ ] Run:
+- [x] Run:
 
 ```bash
 uv run pytest \
@@ -745,7 +745,7 @@ uv run python packaging/check_architecture.py
 uv run python packaging/smoke_wheel.py --build
 ```
 
-- [ ] Run Ruff and `ty`, regenerate and inspect package metadata, then commit.
+- [x] Run Ruff and `ty`, regenerate and inspect package metadata, then commit.
 
 ## 11. Task 8 — Maintainable Exact Wheel Artifact Contract
 

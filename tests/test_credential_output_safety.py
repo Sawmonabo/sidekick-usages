@@ -10,11 +10,12 @@ from pathlib import Path
 import pytest
 from rich.console import Console
 
+import sidekick_usages.credentials.codex
+import sidekick_usages.providers.claude.provider
 from sidekick_usages.core.expiry import KnownExpiry, UnknownExpiry
 from sidekick_usages.core.models import Account, ClaudeLoginCredentials
 from sidekick_usages.core.types import AccountLabel, ProviderId
 from sidekick_usages.credentials import CredentialService
-from sidekick_usages.credentials import codex as credential_codex
 from sidekick_usages.credentials.authorities import credential_resolver_for
 from sidekick_usages.credentials.refresh import CredentialRefreshCoordinator
 from sidekick_usages.doctor import (
@@ -27,6 +28,8 @@ from sidekick_usages.errors import AuthError
 from sidekick_usages.http import HttpClient, HttpOperation
 from sidekick_usages.maintenance import TokenMaintenanceService
 from sidekick_usages.persistence.credential_refresh import (
+    CredentialRefreshState,
+    CredentialRefreshStateKind,
     CredentialRefreshTransactions,
 )
 from sidekick_usages.persistence.errors import ReplaceFailedError
@@ -38,7 +41,6 @@ from sidekick_usages.persistence.models.artifact import (
 from sidekick_usages.persistence.models.status import PersistenceStatus
 from sidekick_usages.persistence.types.status import PersistenceState
 from sidekick_usages.providers.base import ProviderFailure, ProviderFailureKind
-from sidekick_usages.providers.claude import provider as claude_provider_module
 from sidekick_usages.providers.claude.provider import ClaudeProvider
 from sidekick_usages.serialization import JsonObject
 from tests.test_credential_service import (
@@ -53,6 +55,7 @@ from tests.test_support import (
     REFERENCE_TIME,
     FixedClock,
     make_application_paths,
+    make_supervisor_health,
 )
 
 
@@ -97,7 +100,7 @@ def test_export_protects_paths_and_publishes_auth_authority_last(
         )
 
     monkeypatch.setattr(
-        credential_codex.PersistenceFilesystem,
+        sidekick_usages.credentials.codex.PersistenceFilesystem,
         "commit_opaque_private",
         fail_auth,
     )
@@ -158,7 +161,7 @@ def test_provider_secret_never_crosses_persisted_or_doctor_error_channels(
         refresh_coordinator=refresh,
     )
     monkeypatch.setattr(
-        claude_provider_module.shutil,
+        sidekick_usages.providers.claude.provider.shutil,
         "which",
         lambda _name: None,
     )
@@ -195,6 +198,8 @@ def test_provider_secret_never_crosses_persisted_or_doctor_error_channels(
             store.path,
             1,
         ),
+        CredentialRefreshState(CredentialRefreshStateKind.CLEAN),
+        make_supervisor_health(),
     )
     human_output = io.StringIO()
     Console(file=human_output, force_terminal=False).print(
