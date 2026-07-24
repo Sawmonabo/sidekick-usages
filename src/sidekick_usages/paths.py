@@ -7,6 +7,7 @@ from pathlib import Path, PurePosixPath
 
 from platformdirs import PlatformDirs
 
+from sidekick_usages.core.accounts.types import SidekickAccountId
 from sidekick_usages.errors import UsageError
 
 _XDG_HOME_VARIABLES = ("XDG_DATA_HOME",)
@@ -61,6 +62,17 @@ class ApplicationPaths:
     supervisor_socket: Path
     systemd_user_service: Path
     launch_agent: Path
+
+
+def managed_codex_home(
+    paths: ApplicationPaths,
+    account_id: SidekickAccountId,
+) -> Path:
+    """Derive one private Codex home from its stable account ID."""
+    root = paths.private_codex_profiles
+    if not root.is_absolute():
+        raise ValueError("Private Codex profile root must be absolute.")
+    return root / str(account_id)
 
 
 def discover_application_paths() -> ApplicationPaths:

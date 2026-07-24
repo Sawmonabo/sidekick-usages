@@ -4,13 +4,19 @@ import json
 import os
 import re
 import subprocess
+import tomllib
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
+from sidekick_usages.core.accounts.types import (
+    AuthorityGeneration,
+    ProviderIdentity,
+)
 from sidekick_usages.core.models import (
     Account,
     CodexCredentials,
+    DetectedCredentials,
 )
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.errors import InvalidPayloadError, UsageError
@@ -20,6 +26,7 @@ from sidekick_usages.providers.base import (
     ProviderFailure,
     ProviderFailureKind,
 )
+from sidekick_usages.providers.codex.models import CodexAuthSnapshot
 from sidekick_usages.providers.codex.schemas import (
     account_id_from_token,
     auth_blob_access_token,
@@ -33,6 +40,13 @@ CODEX_AUTH_FILE = "auth.json"
 CODEX_CONFIG_FILE = "config.toml"
 CODEX_FILE_AUTH_CONFIG = 'cli_auth_credentials_store = "file"'
 _MAX_AUTH_BYTES = 1024 * 1024
+_CODEX_GENERATION_PATTERN = re.compile(
+    r"(?P<year>[0-9]{4})-(?P<month>[0-9]{2})-"
+    r"(?P<day>[0-9]{2})T(?P<hour>[0-9]{2}):"
+    r"(?P<minute>[0-9]{2}):(?P<second>[0-9]{2})"
+    r"(?:\.(?P<fraction>[0-9]{1,9}))?Z\Z",
+    re.ASCII,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,6 +124,101 @@ def read_auth_blob(
             ProviderFailureKind.MALFORMED,
             "Codex auth.json is not valid JSON; run `codex login` again.",
         )
+
+
+def parse_managed_auth_snapshot(
+    auth_payload: bytes | None,
+    config_payload: bytes | None,
+) -> CodexAuthSnapshot | ProviderFailure:
+    """Return only identity and generation from one file-backed home."""
+    config_failure = _file_auth_config_failure(config_payload)
+    if config_failure is not None:
+        return config_failure
+    if auth_payload is None:
+        return _failure(
+            ProviderFailureKind.MISSING,
+            "The managed Codex home is logged out.",
+        )
+    try:
+        blob = decode_json_object(auth_payload)
+        detected = parse_auth_credentials(blob)
+    except InvalidPayloadError, ProviderBoundaryError:
+        return _failure(
+            ProviderFailureKind.MALFORMED,
+            "The managed Codex auth state is malformed.",
+        )
+    return _managed_snapshot(detected)
+
+
+def _managed_snapshot(
+    detected: DetectedCredentials,
+) -> CodexAuthSnapshot | ProviderFailure:
+    credentials = detected.credentials
+    if (
+        not isinstance(credentials, CodexCredentials)
+        or credentials.account_id is None
+        or credentials.auth_last_refresh is None
+    ):
+        return _failure(
+            ProviderFailureKind.MALFORMED,
+            "The managed Codex auth state is incomplete.",
+        )
+    order = codex_generation_order(credentials.auth_last_refresh)
+    if isinstance(order, ProviderFailure):
+        return order
+    try:
+        return CodexAuthSnapshot(
+            provider_identity=ProviderIdentity(credentials.account_id),
+            generation=AuthorityGeneration(credentials.auth_last_refresh),
+            generation_order=order,
+            plan=detected.plan,
+        )
+    except TypeError, ValueError:
+        return _failure(
+            ProviderFailureKind.MALFORMED,
+            "The managed Codex auth metadata is malformed.",
+        )
+
+
+def codex_generation_order(
+    value: str,
+) -> tuple[int, int, int, int, int, int, int] | ProviderFailure:
+    """Return the exact provider timestamp order without losing nanos."""
+    match = _CODEX_GENERATION_PATTERN.fullmatch(value)
+    if match is None:
+        return _failure(
+            ProviderFailureKind.MALFORMED,
+            "The managed Codex credential generation is malformed.",
+        )
+    values = tuple(
+        int(match.group(name))
+        for name in (
+            "year",
+            "month",
+            "day",
+            "hour",
+            "minute",
+            "second",
+        )
+    )
+    try:
+        datetime(*values, tzinfo=UTC)
+    except ValueError:
+        return _failure(
+            ProviderFailureKind.MALFORMED,
+            "The managed Codex credential generation is malformed.",
+        )
+    fraction = match.group("fraction") or ""
+    nanoseconds = int(fraction.ljust(9, "0"))
+    return (
+        values[0],
+        values[1],
+        values[2],
+        values[3],
+        values[4],
+        values[5],
+        nanoseconds,
+    )
 
 
 def detect_auth_credentials(
@@ -312,6 +421,29 @@ def prepare_file_auth_config(
     else:
         updated = text.rstrip() + f"\n{line}\n"
     return updated.encode()
+
+
+def _file_auth_config_failure(
+    payload: bytes | None,
+) -> ProviderFailure | None:
+    if payload is None:
+        return _failure(
+            ProviderFailureKind.UNSUPPORTED,
+            "The managed Codex home is not configured for file auth.",
+        )
+    try:
+        document = tomllib.loads(payload.decode("utf-8"))
+    except UnicodeDecodeError, tomllib.TOMLDecodeError:
+        return _failure(
+            ProviderFailureKind.MALFORMED,
+            "The managed Codex config is malformed.",
+        )
+    if document.get("cli_auth_credentials_store") != "file":
+        return _failure(
+            ProviderFailureKind.UNSUPPORTED,
+            "The managed Codex home is not configured for file auth.",
+        )
+    return None
 
 
 def validate_auth_bundle_owner(

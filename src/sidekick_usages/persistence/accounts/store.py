@@ -32,6 +32,7 @@ from sidekick_usages.persistence.accounts.index import (
     saved_account_from_runtime,
 )
 from sidekick_usages.persistence.accounts.runtime_bridge import (
+    CredentialAuthorityUnavailableError,
     active_stored_reference,
     authority_baseline_matches,
     copy_runtime_account,
@@ -40,6 +41,9 @@ from sidekick_usages.persistence.accounts.runtime_bridge import (
     require_active_authority_kind,
     runtime_account_from_saved,
     saved_account_from_runtime_state,
+)
+from sidekick_usages.persistence.credentials.codex import (
+    managed_codex_transition_matches,
 )
 from sidekick_usages.persistence.credentials.refresh.merge import (
     CredentialRefreshMerge,
@@ -184,19 +188,26 @@ class AccountStore:
     def __len__(self) -> int:
         """Return the managed account count."""
         self._require_loaded()
-        return len(self._runtime)
+        return len(self._index)
 
     def __contains__(self, label: object) -> bool:
         """Return whether any provider owns an exact label."""
         self._require_loaded()
-        return any(
-            account.label == label for account in self._runtime.values()
-        )
+        return any(account.label == label for account in self._index)
 
     def saved_accounts(self) -> tuple[SavedAccount, ...]:
         """Return immutable secret-free accounts in insertion order."""
         self._require_loaded()
         return tuple(self._index)
+
+    def read_saved(
+        self,
+        account_id: SidekickAccountId,
+    ) -> SavedAccount | None:
+        """Reopen and return one secret-free account by stable ID."""
+        self._require_loaded()
+        self._reload()
+        return self._index.get(account_id)
 
     def resolve_account_id(
         self,
@@ -222,7 +233,10 @@ class AccountStore:
         )
         if account is None:
             return None
-        return copy_runtime_account(self._runtime[account.account_id])
+        runtime = self._runtime.get(account.account_id)
+        if runtime is None:
+            raise CredentialAuthorityUnavailableError
+        return copy_runtime_account(runtime)
 
     def read_fresh(
         self,
@@ -232,13 +246,8 @@ class AccountStore:
     ) -> Account | None:
         """Reopen and adopt the complete v3 index under its lock."""
         self._require_loaded()
-        with self._lock_factory(self._filesystem).hold():
-            PrivateCredentialTransaction(
-                self._private,
-                self._filesystem.read_authority,
-            ).recover()
-            self._adopt_snapshot(self._read_snapshot())
-            return self.get(str(label), provider_id=provider_id)
+        self._reload()
+        return self.get(str(label), provider_id=provider_id)
 
     def find_by_token(
         self,
@@ -322,19 +331,25 @@ class AccountStore:
             coordinator.recover()
             self._adopt_snapshot(self._read_snapshot())
             current = self._index.get(account.account_id)
+            authority_matches = current is not None and (
+                current.authority == account.authority
+                or managed_codex_transition_matches(current, account)
+            )
             if (
                 current is None
                 or (expected is not None and current != expected)
                 or current.provider_id is not account.provider_id
                 or current.label != account.label
-                or current.authority != account.authority
+                or not authority_matches
             ):
                 raise SourceChangedError
             runtime = dict(self._runtime)
-            runtime[account.account_id] = runtime_account_from_saved(
-                account,
-                runtime[account.account_id].credentials,
-            )
+            current_runtime = runtime.get(account.account_id)
+            if current_runtime is not None:
+                runtime[account.account_id] = runtime_account_from_saved(
+                    account,
+                    current_runtime.credentials,
+                )
             index = AccountIndex(tuple(self._index))
             index.replace(account)
             self._commit_locked(
@@ -425,7 +440,7 @@ class AccountStore:
         index = AccountIndex(tuple(self._index))
         index.remove(saved.account_id)
         runtime = dict(self._runtime)
-        del runtime[saved.account_id]
+        runtime.pop(saved.account_id, None)
         self._commit(index, runtime, ())
         return True
 
@@ -448,10 +463,12 @@ class AccountStore:
         index = AccountIndex(tuple(self._index))
         index.replace(renamed)
         runtime = dict(self._runtime)
-        runtime[saved.account_id] = copy_runtime_account(
-            runtime[saved.account_id],
-            label=new_label,
-        )
+        current_runtime = runtime.get(saved.account_id)
+        if current_runtime is not None:
+            runtime[saved.account_id] = copy_runtime_account(
+                current_runtime,
+                label=new_label,
+            )
         self._commit(index, runtime, ())
         return True
 
@@ -742,6 +759,8 @@ class AccountStore:
                 ):
                     raise InvalidSchemaError
                 payloads[(saved.account_id, authority_id)] = payload
+            if saved.has_managed_authority:
+                continue
             active_id = active_stored_reference(saved)
             active_payload = payloads.get((saved.account_id, active_id))
             if active_payload is None:
@@ -802,6 +821,14 @@ class AccountStore:
         if snapshot is not None:
             decode_version_three(snapshot.data)
         return snapshot
+
+    def _reload(self) -> None:
+        with self._lock_factory(self._filesystem).hold():
+            PrivateCredentialTransaction(
+                self._private,
+                self._filesystem.read_authority,
+            ).recover()
+            self._adopt_snapshot(self._read_snapshot())
 
     def _require_loaded(self) -> None:
         if not self._loaded:

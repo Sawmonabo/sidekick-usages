@@ -24,7 +24,7 @@ from sidekick_usages.providers.codex.app_server.session import (
 from sidekick_usages.providers.codex.app_server.types import (
     CodexAppServerFailure,
 )
-from tests.fakes.codex_app_server import (
+from tests.fakes.codex import (
     RAW_PROVIDER_SECRET,
     write_codex_schema,
     write_fake_codex,
@@ -84,7 +84,7 @@ def test_versioned_codex_app_server_boundary_is_complete(
     assert Path(events[1]["argv"][4]).name == "schema"
     assert not Path(events[1]["argv"][4]).exists()
     assert events[2]["argv"] == ["app-server"]
-    assert all(event["openai_api_key"] is None for event in events)
+    assert all(event.get("openai_api_key") is None for event in events)
     assert events[-1]["codex_home"] == str(codex_home)
 
 

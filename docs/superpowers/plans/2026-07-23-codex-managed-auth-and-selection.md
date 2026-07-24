@@ -80,8 +80,7 @@ release-matched Codex CLI schema.
 
 ---
 
-- **Status:** In progress; foundation and Task 1 complete, namespace cleanup
-  active
+- **Status:** In progress; foundation and Codex Tasks 1-2 complete
 - **Date:** 2026-07-23
 - **Repository:** `/home/sabossedgh/dev/sidekick-usages`
 - **Branch:** `develop`
@@ -328,28 +327,28 @@ uv run pytest \
 
 ### Tests first
 
-- [ ] Extend `tests/test_credential_refresh_codex.py` with one two-home
+- [x] Extend `tests/test_credential_refresh_codex.py` with one two-home
   scenario: both accounts are read without refresh, each is forced through
   `account/read` with `refreshToken: true`, identity stays fixed, generation
   advances, homes remain independent, and only sanitized metadata persists.
-- [ ] Add one focused fail-closed table containing only distinct trust
+- [x] Add one focused fail-closed table containing only distinct trust
   failures: wrong identity, non-advanced generation, and malformed protected
   state. Prove the prior authority remains unchanged and no token reaches a
   result or index.
-- [ ] Do not add separate lifecycle, serialization, containment, and lock
+- [x] Do not add separate lifecycle, serialization, containment, and lock
   suites; assert those boundaries in the two managed-account scenarios.
 
 ### Implementation
 
-- [ ] Derive each private `CODEX_HOME` from the stable account ID through
+- [x] Derive each private `CODEX_HOME` from the stable account ID through
   `paths.py`. Never accept a user-supplied home for a managed authority.
-- [ ] Require official file-backed Codex auth storage in private homes.
-- [ ] Snapshot the protected auth envelope before and after the app-server
+- [x] Require official file-backed Codex auth storage in private homes.
+- [x] Snapshot the protected auth envelope before and after the app-server
   operation using the existing strict reader. Keep token values
   non-represented and inside the worker.
-- [ ] Implement read-only state with `account/read` and
+- [x] Implement read-only state with `account/read` and
   `refreshToken: false`.
-- [ ] Implement forced refresh with:
+- [x] Implement forced refresh with:
 
 ```json
 {
@@ -360,26 +359,26 @@ uv run pytest \
 }
 ```
 
-- [ ] Treat the app-server response as necessary but insufficient. Success
+- [x] Treat the app-server response as necessary but insufficient. Success
   requires:
   - a non-null account;
   - expected stable provider identity;
   - valid protected post-state;
   - the same identity before and after; and
   - an advanced provider-owned generation for forced refresh.
-- [ ] Return strict sanitized outcomes for healthy, unchanged, rejected,
+- [x] Return strict sanitized outcomes for healthy, unchanged, rejected,
   logged out, incompatible, malformed, timeout, and transient states.
-- [ ] Persist only generation, identity, version, timestamps, health, and
+- [x] Persist only generation, identity, version, timestamps, health, and
   action-required metadata.
-- [ ] Use the qualified authority lock shared by scheduled refresh, broker
+- [x] Use the qualified authority lock shared by scheduled refresh, broker
   refresh, migration, and activation.
 
 ### Verify and commit
 
-- [ ] Run the two managed-account scenarios plus existing Codex provider,
+- [x] Run the two managed-account scenarios plus existing Codex provider,
   credential-output, and persistence regressions they touch.
-- [ ] Run Ruff, `ty`, and architecture checks.
-- [ ] Confirm no direct network request exists in the new managed path, then
+- [x] Run Ruff, `ty`, and architecture checks.
+- [x] Confirm no direct network request exists in the new managed path, then
   commit.
 
 ## 7. Task 3 — Independent Final-Home Login and Legacy Migration
