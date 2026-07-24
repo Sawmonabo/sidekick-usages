@@ -19,7 +19,7 @@ from sidekick_usages.core.models import (
 )
 from sidekick_usages.core.types import AccountLabel, ProviderId
 from sidekick_usages.credentials.authorities import credential_resolver_for
-from sidekick_usages.credentials.codex import (
+from sidekick_usages.credentials.codex.coordinator import (
     CodexCredentialCoordinator,
     private_codex_home,
 )
@@ -28,8 +28,8 @@ from sidekick_usages.credentials.refresh import (
     CredentialRefreshReason,
 )
 from sidekick_usages.http import HttpClient
-from sidekick_usages.persistence.account_store import AccountStore
-from sidekick_usages.persistence.credential_refresh import (
+from sidekick_usages.persistence.accounts.store import AccountStore
+from sidekick_usages.persistence.credentials.refresh.service import (
     CredentialRefreshArtifacts,
     CredentialRefreshCrashPoint,
     CredentialRefreshRecoveryBlockedError,
@@ -37,12 +37,14 @@ from sidekick_usages.persistence.credential_refresh import (
     CredentialRefreshTransactions,
 )
 from sidekick_usages.persistence.errors import ReplaceFailedError
-from sidekick_usages.persistence.filesystem import PersistenceFilesystem
+from sidekick_usages.persistence.filesystem.service import (
+    PersistenceFilesystem,
+)
 from sidekick_usages.persistence.models.artifact import ExpectedAuthority
-from sidekick_usages.persistence.private_bundle_writes import (
+from sidekick_usages.persistence.private.bundles.writes import (
     PreparedPrivateBundleWrite,
 )
-from sidekick_usages.persistence.private_credentials import (
+from sidekick_usages.persistence.private.credentials import (
     PrivateCredentialTree,
 )
 from sidekick_usages.providers.base import (

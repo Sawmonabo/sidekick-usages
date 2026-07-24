@@ -16,13 +16,13 @@ from sidekick_usages.credentials.refresh import (
     CredentialRefreshReason,
 )
 from sidekick_usages.http import HttpClient
-from sidekick_usages.persistence.credential_refresh import (
+from sidekick_usages.persistence.credentials.refresh.service import (
     CredentialRefreshCrashPoint,
     CredentialRefreshRecoveryBlockedError,
     CredentialRefreshTransactions,
 )
 from sidekick_usages.persistence.errors import DurabilityUncertainError
-from sidekick_usages.persistence.private_bundle_writes import (
+from sidekick_usages.persistence.private.bundles.writes import (
     MAX_PRIVATE_FILE_BYTES,
 )
 from tests.test_credential_refresh_support import (

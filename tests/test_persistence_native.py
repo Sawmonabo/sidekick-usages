@@ -7,36 +7,51 @@ from pathlib import Path
 
 import pytest
 
-from sidekick_usages.persistence._platform import (
+from sidekick_usages.persistence.platform.contracts import (
     FilesystemFamily,
     NativeFailureKind,
     NativeFilesystemError,
-    posix,
 )
-from sidekick_usages.persistence._platform import (
-    posix_mounts as mounts,
+from sidekick_usages.persistence.platform.posix import mounts
+from sidekick_usages.persistence.platform.posix.adapter import (
+    PosixPlatform,
+    _owned_descriptor,
 )
-from sidekick_usages.persistence._platform.posix_mounts import (
+from sidekick_usages.persistence.platform.posix.mounts import (
     _classify_linux_filesystem,
 )
 
 if sys.platform == "win32":
     import ntsecuritycon
+    import win32api
     import win32con
     import win32file
     import win32security
 
-    from sidekick_usages.persistence._platform import (
-        windows_namespace,
-        windows_security,
+    from sidekick_usages.persistence.platform.windows import namespace
+    from sidekick_usages.persistence.platform.windows.namespace import (
+        existing_ancestor,
+        qualify_local_ntfs,
+    )
+    from sidekick_usages.persistence.platform.windows.security import (
+        _allowed_sids,
+        _validate_acl,
+        _validate_external_acl,
     )
 else:
-    from sidekick_usages.persistence._platform import macos
+    import fcntl
+
+    from sidekick_usages.persistence.platform.macos import adapter
+    from sidekick_usages.persistence.platform.macos.adapter import (
+        MacOSPlatform,
+    )
 from sidekick_usages.persistence.errors import (
     UnsafeManagedFileError,
     UnsupportedFilesystemError,
 )
-from sidekick_usages.persistence.filesystem import PersistenceFilesystem
+from sidekick_usages.persistence.filesystem.service import (
+    PersistenceFilesystem,
+)
 from sidekick_usages.persistence.locking import PersistenceLock
 from sidekick_usages.persistence.models.account import VersionThreeDocument
 from sidekick_usages.persistence.schema.account import encode_version_three
@@ -172,11 +187,11 @@ def test_unknown_descriptor_failure_is_preserved_with_cleanup_fact(
             raise OSError("injected close failure")
         original_close(candidate)
 
-    monkeypatch.setattr(posix.os, "close", fail_target_close)
+    monkeypatch.setattr(os, "close", fail_target_close)
     try:
         with (
             pytest.raises(KeyboardInterrupt) as exc_info,
-            posix._owned_descriptor(
+            _owned_descriptor(
                 descriptor,
                 NativeFailureKind.UNREADABLE,
             ),
@@ -236,8 +251,8 @@ def test_posix_removal_rejects_pre_unlink_namespace_replacement(
             )
         original_unlink(path, dir_fd=dir_fd)
 
-    monkeypatch.setattr(posix.os, "unlink", replace_immediately_before_unlink)
-    platform = posix.PosixPlatform()
+    monkeypatch.setattr(os, "unlink", replace_immediately_before_unlink)
+    platform = PosixPlatform()
 
     def remove() -> bool:
         if allow_interrupted_link:
@@ -265,11 +280,11 @@ def test_macos_requires_apfs_and_issues_full_file_sync(
     reported = {"filesystem": "apfs"}
 
     monkeypatch.setattr(
-        macos,
+        adapter,
         "_filesystem_name",
         lambda _descriptor: reported["filesystem"],
     )
-    platform = macos.MacOSPlatform()
+    platform = MacOSPlatform()
     assert platform.qualify(tmp_path) is FilesystemFamily.APFS
 
     reported["filesystem"] = "ext4"
@@ -286,9 +301,9 @@ def test_macos_requires_apfs_and_issues_full_file_sync(
         calls.append(("F_FULLFSYNC", descriptor, operation))
         return 0
 
-    monkeypatch.setattr(macos.os, "fsync", synchronize)
-    monkeypatch.setattr(macos.fcntl, "F_FULLFSYNC", 51, raising=False)
-    monkeypatch.setattr(macos.fcntl, "fcntl", full_synchronize)
+    monkeypatch.setattr(os, "fsync", synchronize)
+    monkeypatch.setattr(fcntl, "F_FULLFSYNC", 51, raising=False)
+    monkeypatch.setattr(fcntl, "fcntl", full_synchronize)
     platform._synchronize_file(7)
 
     assert calls == [("fsync", 7, None), ("F_FULLFSYNC", 7, 51)]
@@ -296,12 +311,12 @@ def test_macos_requires_apfs_and_issues_full_file_sync(
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS APFS gate")
 def test_macos_real_descriptor_reports_apfs(tmp_path: Path) -> None:
-    assert macos.MacOSPlatform().qualify(tmp_path) is FilesystemFamily.APFS
+    assert MacOSPlatform().qualify(tmp_path) is FilesystemFamily.APFS
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows DACL policy")
 def test_windows_dacl_rejects_missing_inherited_and_foreign_access() -> None:
-    allowed = windows_security._allowed_sids()
+    allowed = _allowed_sids()
 
     valid = win32security.ACL()
     for sid in allowed:
@@ -310,7 +325,7 @@ def test_windows_dacl_rejects_missing_inherited_and_foreign_access() -> None:
             win32file.FILE_ALL_ACCESS,
             sid,
         )
-    windows_security._validate_acl(valid, directory=False)
+    _validate_acl(valid, directory=False)
 
     missing_principal = win32security.ACL()
     for sid in allowed[:-1]:
@@ -364,7 +379,7 @@ def test_windows_dacl_rejects_missing_inherited_and_foreign_access() -> None:
 
     for candidate in (missing_principal, inherited, foreign):
         with pytest.raises(NativeFilesystemError) as exc_info:
-            windows_security._validate_acl(candidate, directory=False)
+            _validate_acl(candidate, directory=False)
         assert exc_info.value.kind is NativeFailureKind.UNSAFE
 
     for candidate, directory in (
@@ -372,7 +387,7 @@ def test_windows_dacl_rejects_missing_inherited_and_foreign_access() -> None:
         (missing_directory_inheritance, True),
     ):
         with pytest.raises(NativeFilesystemError) as exc_info:
-            windows_security._validate_acl(candidate, directory=directory)
+            _validate_acl(candidate, directory=directory)
         assert exc_info.value.kind is NativeFailureKind.UNSAFE
 
 
@@ -380,7 +395,7 @@ def test_windows_dacl_rejects_missing_inherited_and_foreign_access() -> None:
 def test_windows_external_source_acl_separates_parent_and_file_access() -> (
     None
 ):
-    trusted = windows_security._allowed_sids()
+    trusted = _allowed_sids()
     world = win32security.CreateWellKnownSid(win32security.WinWorldSid)
     inherited_read = win32security.ACL()
     inherited_read.AddAccessAllowedAceEx(
@@ -409,25 +424,25 @@ def test_windows_external_source_acl_separates_parent_and_file_access() -> (
         win32security.CreateWellKnownSid(win32security.WinLowLabelSid),
     )
 
-    windows_security._validate_external_acl(
+    _validate_external_acl(
         inherited_read,
         trusted,
         ntsecuritycon.FILE_WRITE_DATA,
     )
     with pytest.raises(NativeFilesystemError):
-        windows_security._validate_external_acl(
+        _validate_external_acl(
             effective_write,
             trusted,
             ntsecuritycon.FILE_WRITE_DATA,
         )
     with pytest.raises(NativeFilesystemError):
-        windows_security._validate_external_acl(
+        _validate_external_acl(
             effective_read,
             trusted,
             ntsecuritycon.FILE_READ_DATA | ntsecuritycon.FILE_WRITE_DATA,
         )
     with pytest.raises(NativeFilesystemError):
-        windows_security._validate_external_acl(
+        _validate_external_acl(
             unknown_inherit_only,
             trusted,
             ntsecuritycon.FILE_READ_DATA | ntsecuritycon.FILE_WRITE_DATA,
@@ -452,23 +467,23 @@ def test_windows_requires_non_reparse_fixed_ntfs_with_persistent_acls(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        windows_namespace,
+        namespace,
         "path_attributes",
         lambda _path: (
             stat.FILE_ATTRIBUTE_DIRECTORY | stat.FILE_ATTRIBUTE_REPARSE_POINT
         ),
     )
     with pytest.raises(NativeFilesystemError) as exc_info:
-        windows_namespace.existing_ancestor(Path("C:/state"))
+        existing_ancestor(Path("C:/state"))
     assert exc_info.value.kind is NativeFailureKind.UNSAFE
 
     monkeypatch.setattr(
-        windows_namespace.win32file,
+        win32file,
         "GetVolumePathName",
         lambda _path: "C:\\",
     )
     monkeypatch.setattr(
-        windows_namespace.win32file,
+        win32file,
         "GetDriveTypeW",
         lambda _path: win32file.DRIVE_FIXED,
     )
@@ -477,7 +492,7 @@ def test_windows_requires_non_reparse_fixed_ntfs_with_persistent_acls(
         "filesystem": "NTFS",
     }
     monkeypatch.setattr(
-        windows_namespace.win32api,
+        win32api,
         "GetVolumeInformation",
         lambda _path: (
             "",
@@ -487,10 +502,7 @@ def test_windows_requires_non_reparse_fixed_ntfs_with_persistent_acls(
             volume["filesystem"],
         ),
     )
-    assert (
-        windows_namespace.qualify_local_ntfs(Path("C:/state"))
-        is FilesystemFamily.NTFS
-    )
+    assert qualify_local_ntfs(Path("C:/state")) is FilesystemFamily.NTFS
 
     for flags, filesystem in (
         (0, "NTFS"),
@@ -498,5 +510,5 @@ def test_windows_requires_non_reparse_fixed_ntfs_with_persistent_acls(
     ):
         volume.update(flags=flags, filesystem=filesystem)
         with pytest.raises(NativeFilesystemError) as exc_info:
-            windows_namespace.qualify_local_ntfs(Path("C:/state"))
+            qualify_local_ntfs(Path("C:/state"))
         assert exc_info.value.kind is NativeFailureKind.UNSUPPORTED

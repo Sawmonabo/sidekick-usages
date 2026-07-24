@@ -28,9 +28,9 @@ from sidekick_usages.core.types import (
     ProviderId,
     RefreshStatus,
 )
-from sidekick_usages.credentials.codex import private_codex_home
+from sidekick_usages.credentials.codex.coordinator import private_codex_home
 from sidekick_usages.http import HttpClient
-from sidekick_usages.persistence.account_store import AccountStore
+from sidekick_usages.persistence.accounts.store import AccountStore
 from sidekick_usages.providers.base import (
     CredentialDetection,
     Provider,

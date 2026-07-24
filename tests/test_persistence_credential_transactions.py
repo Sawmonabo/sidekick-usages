@@ -5,23 +5,27 @@ from typing import Never
 
 import pytest
 
-from sidekick_usages.persistence.credential_transactions import (
+from sidekick_usages.persistence.credentials.transactions.transaction import (
     PrivateCredentialTransaction,
 )
-from sidekick_usages.persistence.filesystem import PersistenceFilesystem
+from sidekick_usages.persistence.filesystem.service import (
+    PersistenceFilesystem,
+)
+from sidekick_usages.persistence.filesystem.transaction import (
+    PersistenceTransaction,
+)
 from sidekick_usages.persistence.locking import PersistenceLock
 from sidekick_usages.persistence.models.account import VersionThreeDocument
 from sidekick_usages.persistence.models.artifact import (
     ExpectedAuthority,
 )
-from sidekick_usages.persistence.private_bundle_writes import (
+from sidekick_usages.persistence.private.bundles.writes import (
     PreparedPrivateBundleWrite,
 )
-from sidekick_usages.persistence.private_credentials import (
+from sidekick_usages.persistence.private.credentials import (
     PrivateCredentialTree,
 )
 from sidekick_usages.persistence.schema.account import encode_version_three
-from sidekick_usages.persistence.transaction import PersistenceTransaction
 from sidekick_usages.persistence.types.artifact import AuthorityExpectation
 from tests.test_support import make_application_paths
 

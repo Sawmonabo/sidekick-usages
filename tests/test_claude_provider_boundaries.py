@@ -12,15 +12,15 @@ from sidekick_usages.providers.base import (
 )
 from sidekick_usages.providers.claude import ClaudeProvider, ClaudeSetupToken
 from sidekick_usages.providers.claude import provider as provider_module
-from sidekick_usages.providers.claude.credential_schemas import (
-    parse_credentials_blob,
-)
 from sidekick_usages.providers.claude.provider import (
     SetupTokenSuccess,
     SetupTokenTimedOut,
     SetupTokenUnreadable,
 )
-from sidekick_usages.providers.claude.schemas import oauth_usage_windows
+from sidekick_usages.providers.claude.schema.credentials import (
+    parse_credentials_blob,
+)
+from sidekick_usages.providers.claude.schema.usage import oauth_usage_windows
 from sidekick_usages.serialization import JsonObject
 from tests.test_claude_refresh import _FUTURE_EXPIRY_MS, _provider
 

@@ -22,13 +22,15 @@ from sidekick_usages.core.types import (
 from sidekick_usages.credentials.account_state import (
     persist_provider_plan_without_credentials,
 )
-from sidekick_usages.credentials.claude_setup_save import (
+from sidekick_usages.credentials.claude.setup_save import (
     preview_claude_setup_token_save,
 )
-from sidekick_usages.credentials.claude_transitions import (
+from sidekick_usages.credentials.claude.transitions import (
     apply_claude_transition,
 )
-from sidekick_usages.credentials.codex import CodexCredentialCoordinator
+from sidekick_usages.credentials.codex.coordinator import (
+    CodexCredentialCoordinator,
+)
 from sidekick_usages.credentials.models import (
     ClaudeSetupTokenSavePreview,
     CredentialExportResult,
@@ -56,9 +58,9 @@ from sidekick_usages.errors import (
     TransientError,
 )
 from sidekick_usages.http import HttpClient
-from sidekick_usages.persistence.account_store import AccountStore
+from sidekick_usages.persistence.accounts.store import AccountStore
 from sidekick_usages.persistence.errors import SourceChangedError
-from sidekick_usages.persistence.private_credentials import (
+from sidekick_usages.persistence.private.credentials import (
     PreparedPrivateBundleWrite,
     PrivateCredentialTree,
 )

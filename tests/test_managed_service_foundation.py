@@ -43,8 +43,17 @@ from sidekick_usages.core.selection.types import (
     ProviderRuntimeState,
 )
 from sidekick_usages.core.types import AccountLabel, ProviderId
-from sidekick_usages.daemon.client import ControlClient
-from sidekick_usages.daemon.control import (
+from sidekick_usages.daemon.control.client import ControlClient
+from sidekick_usages.daemon.control.peer import PeerVerificationError
+from sidekick_usages.daemon.control.protocol import (
+    PROTOCOL_VERSION,
+    FrameDecoder,
+    decode_event,
+    decode_request,
+    encode_frame,
+    encode_request,
+)
+from sidekick_usages.daemon.control.server import (
     ControlConnection,
     LocalControlServer,
 )
@@ -63,18 +72,9 @@ from sidekick_usages.daemon.models.worker import (
     WorkerLaunchSpec,
     WorkerResult,
 )
-from sidekick_usages.daemon.peer import PeerVerificationError
-from sidekick_usages.daemon.protocol import (
-    PROTOCOL_VERSION,
-    FrameDecoder,
-    decode_event,
-    decode_request,
-    encode_frame,
-    encode_request,
-)
-from sidekick_usages.daemon.recovery import ActivationRecoveryScheduler
-from sidekick_usages.daemon.scheduler import DurableScheduler
-from sidekick_usages.daemon.supervisor import (
+from sidekick_usages.daemon.runtime.recovery import ActivationRecoveryScheduler
+from sidekick_usages.daemon.runtime.scheduler import DurableScheduler
+from sidekick_usages.daemon.runtime.supervisor import (
     SupervisorRuntime,
     WakeupChannel,
 )
@@ -97,20 +97,22 @@ from sidekick_usages.daemon.types.worker import (
     ExitNotifier,
     WorkerOutcome,
 )
-from sidekick_usages.daemon.workers import (
+from sidekick_usages.daemon.worker.pool import (
     WorkerLaunchPlanner,
     WorkerPool,
 )
 from sidekick_usages.paths import ApplicationPaths
-from sidekick_usages.persistence.account_index import AccountIndex
-from sidekick_usages.persistence.activation_journal import (
+from sidekick_usages.persistence.accounts.index import AccountIndex
+from sidekick_usages.persistence.filesystem.service import (
+    PersistenceFilesystem,
+)
+from sidekick_usages.persistence.supervisor.activation import (
     ActivationJournalStore,
 )
-from sidekick_usages.persistence.filesystem import PersistenceFilesystem
-from sidekick_usages.persistence.operation_queue import OperationQueueStore
-from sidekick_usages.persistence.selected_state import SelectedStateStore
-from sidekick_usages.persistence.service_state import ServiceStateStore
-from sidekick_usages.persistence.worker_results import WorkerResultStore
+from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
+from sidekick_usages.persistence.supervisor.results import WorkerResultStore
+from sidekick_usages.persistence.supervisor.selection import SelectedStateStore
+from sidekick_usages.persistence.supervisor.service import ServiceStateStore
 from tests.test_support import (
     REFERENCE_TIME,
     make_application_paths,

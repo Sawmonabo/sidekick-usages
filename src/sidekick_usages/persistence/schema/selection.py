@@ -28,7 +28,7 @@ from sidekick_usages.persistence.models.selection import (
     OperationQueueDocument,
     SelectedStateDocument,
 )
-from sidekick_usages.persistence.state_fields import (
+from sidekick_usages.persistence.state.fields import (
     require_exact_keys,
     require_integer,
     require_list,
@@ -37,7 +37,7 @@ from sidekick_usages.persistence.state_fields import (
     require_schema_version,
     require_string,
 )
-from sidekick_usages.persistence.state_json import (
+from sidekick_usages.persistence.state.json import (
     decode_state_object,
     encode_state_object,
 )

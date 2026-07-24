@@ -1,0 +1,1 @@
+"""Codex credential coordination."""

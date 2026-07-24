@@ -5,7 +5,7 @@ from datetime import datetime
 
 from sidekick_usages.core.models import Credentials
 from sidekick_usages.core.types import AccountLabel
-from sidekick_usages.persistence.private_bundle_writes import (
+from sidekick_usages.persistence.private.bundles.writes import (
     PreparedPrivateBundleWrite,
 )
 

@@ -26,7 +26,7 @@ from sidekick_usages.core.types import (
 from sidekick_usages.credentials.authorities import AuthenticatedSavedAccount
 from sidekick_usages.errors import AuthError, TransientError
 from sidekick_usages.http import HttpClient
-from sidekick_usages.persistence.account_store import AccountStore
+from sidekick_usages.persistence.accounts.store import AccountStore
 from sidekick_usages.providers.base import (
     CredentialDetection,
     Provider,

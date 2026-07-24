@@ -24,10 +24,10 @@ from sidekick_usages.providers.base import (
     ProviderFailureCause,
     ProviderFailureKind,
 )
-from sidekick_usages.providers.claude.credential_schemas import (
+from sidekick_usages.providers.claude.schema.credentials import (
     parse_credentials_blob,
 )
-from sidekick_usages.providers.claude.schemas import (
+from sidekick_usages.providers.claude.schema.usage import (
     claude_failure,
 )
 from sidekick_usages.serialization import decode_json_object

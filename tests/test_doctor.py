@@ -22,8 +22,8 @@ from sidekick_usages.core.models import (
 )
 from sidekick_usages.core.types import AccountLabel, ExitCode
 from sidekick_usages.daemon.types.lifecycle import ServiceComponentState
-from sidekick_usages.doctor import DoctorService
-from sidekick_usages.persistence.credential_refresh import (
+from sidekick_usages.doctor.service import DoctorService
+from sidekick_usages.persistence.credentials.refresh.service import (
     CredentialRefreshState,
     CredentialRefreshStateKind,
 )

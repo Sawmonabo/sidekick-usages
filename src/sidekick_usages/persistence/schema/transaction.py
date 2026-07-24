@@ -26,7 +26,7 @@ from sidekick_usages.persistence.limits import (
     MAX_DOCUMENT_BYTES,
 )
 from sidekick_usages.persistence.models.artifact import ExpectedAuthority
-from sidekick_usages.persistence.private_bundle_paths import (
+from sidekick_usages.persistence.private.bundles.paths import (
     PRIVATE_TRANSACTION_DIRECTORY,
     PRIVATE_TRANSACTION_JOURNAL,
 )

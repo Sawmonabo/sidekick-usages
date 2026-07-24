@@ -20,7 +20,7 @@ from sidekick_usages.cli.context import (
 from sidekick_usages.core.models import Account, ClaudeSetupTokenCredentials
 from sidekick_usages.core.types import AccountLabel, ProviderId
 from sidekick_usages.http import HttpClient
-from sidekick_usages.persistence.account_store import AccountStore
+from sidekick_usages.persistence.accounts.store import AccountStore
 from sidekick_usages.persistence.errors import ManagedFileReadError
 from sidekick_usages.update import UpdateService
 from tests.test_support import make_account_store, make_application_paths

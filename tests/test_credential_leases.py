@@ -20,10 +20,10 @@ from sidekick_usages.credentials.authorities import (
     MismatchedCredentialAuthorityError,
     ProtectedCredentialAuthorityReader,
 )
-from sidekick_usages.persistence.account_runtime_bridge import (
+from sidekick_usages.persistence.accounts.runtime_bridge import (
     active_stored_reference,
 )
-from sidekick_usages.persistence.credential_repository import (
+from sidekick_usages.persistence.credentials.repository import (
     CredentialAuthorityRepository,
 )
 from sidekick_usages.persistence.errors import InvalidSchemaError

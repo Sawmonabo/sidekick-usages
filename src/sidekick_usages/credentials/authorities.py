@@ -17,13 +17,13 @@ from sidekick_usages.core.accounts.types import (
 from sidekick_usages.core.models import Account
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.errors import UsageError
-from sidekick_usages.persistence.account_runtime_bridge import (
+from sidekick_usages.persistence.accounts.runtime_bridge import (
     CredentialAuthorityUnavailableError,
     active_stored_reference,
     require_active_authority_kind,
     runtime_account_from_saved,
 )
-from sidekick_usages.persistence.credential_repository import (
+from sidekick_usages.persistence.credentials.repository import (
     CredentialAuthorityRepository,
 )
 from sidekick_usages.persistence.errors import (
@@ -33,7 +33,7 @@ from sidekick_usages.persistence.errors import (
 from sidekick_usages.persistence.models.credential import (
     StoredCredentialAuthority,
 )
-from sidekick_usages.persistence.private_credentials import (
+from sidekick_usages.persistence.private.credentials import (
     PrivateCredentialTree,
 )
 

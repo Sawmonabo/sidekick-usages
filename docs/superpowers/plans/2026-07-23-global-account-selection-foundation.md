@@ -87,7 +87,7 @@ systemd user services, WSL Task Scheduler rescue, macOS LaunchAgents, pytest
 - Keep each module below 1000 lines and perform a cohesion split before
   approximately 800 lines. Do not add service behavior to the current
   740-line `daemon.py`, 790-line `credentials/service.py`, or 788-line
-  `persistence/account_store.py`.
+  `persistence/accounts/store.py`.
 - Use `apply_patch` for hand-authored edits. Use owning generators for lock,
   packaging, and Homebrew output.
 - Each task must leave the package installable and its currently exposed
@@ -280,18 +280,19 @@ imports out of `core/`.
 Keep these focused owners:
 
 - `persistence/schema/account.py`: strict schema-version-three codec;
-- `persistence/account_index.py`: no-secret account index transactions;
-- `persistence/credential_repository.py`: protected per-account authority
+- `persistence/accounts/index.py`: no-secret account index transactions;
+- `persistence/credentials/repository.py`: protected per-account authority
   reads and writes;
-- `persistence/selected_state.py`: provider selected-state store;
-- `persistence/activation_journal.py`: activation state machine persistence;
-- `persistence/operation_queue.py`: durable due/retry operations;
-- `persistence/service_state.py`: service protocol and readiness observations;
-- `persistence/state_validation.py`: recursive no-secret key and value
+- `persistence/supervisor/selection.py`: provider selected-state store;
+- `persistence/supervisor/activation.py`: activation state machine persistence;
+- `persistence/supervisor/queue.py`: durable due/retry operations;
+- `persistence/supervisor/service.py`: service protocol and readiness
+  observations;
+- `persistence/state/validation.py`: recursive no-secret key and value
   validation for all non-secret state.
 
-`persistence/account_store.py` remains the public account workflow facade.
-It delegates schema, protected credentials, filesystem qualification, and
+`persistence/accounts/store.py` remains the account workflow owner. It
+delegates schema, protected credentials, filesystem qualification, and
 transaction behavior to their owning modules.
 
 ### 3.3 Application paths
@@ -332,21 +333,21 @@ from presentation or selection state.
 
 The `src/sidekick_usages/daemon/` package owns:
 
-- `daemon/__init__.py`: stable exports used by CLI composition;
+- thin package initializers with no compatibility exports;
 - `daemon/models/`: lifecycle and safe progress models;
 - `daemon/types/`: closed daemon values grouped by owner;
-- `daemon/protocol.py`: bounded version-one message codec;
-- `daemon/peer.py`: Linux, WSL, and macOS peer-user verification;
-- `daemon/client.py`: short-lived CLI control client;
-- `daemon/supervisor.py`: lean event loop and readiness owner;
-- `daemon/workers.py`: worker process launch, timeout, and termination;
-- `daemon/scheduler.py`: durable queue wakeup and retry dispatch;
-- `daemon/recovery.py`: startup activation recovery dispatch;
+- `daemon/control/protocol.py`: bounded version-one message codec;
+- `daemon/control/peer.py`: Linux, WSL, and macOS peer-user verification;
+- `daemon/control/client.py`: short-lived CLI control client;
+- `daemon/runtime/supervisor.py`: lean event loop and readiness owner;
+- `daemon/worker/pool.py`: worker process launch, timeout, and termination;
+- `daemon/runtime/scheduler.py`: durable queue wakeup and retry dispatch;
+- `daemon/runtime/recovery.py`: startup activation recovery dispatch;
 - `daemon/lifecycle/`: generated artifacts, native command execution,
   Linux/WSL/macOS backends, platform detection, readiness, cleanup, and the
-  public lifecycle facade;
-- `daemon/entrypoint.py`: supervisor console entry point; and
-- `daemon/worker_entrypoint.py`: provider-heavy worker console entry point.
+  lifecycle owner;
+- `daemon/runtime/entrypoint.py`: supervisor console entry point; and
+- `daemon/worker/entrypoint.py`: provider-heavy worker console entry point.
 
 The supervisor import graph ends at standard-library modules, `clock.py`,
 `core/`, qualified persistence state modules, and the lightweight daemon
@@ -604,8 +605,8 @@ environment map, command path, arbitrary argv, or credential material.
 
 ```toml
 sidekick-usages = "sidekick_usages.cli:app"
-sidekick-usages-supervisor = "sidekick_usages.daemon.entrypoint:main"
-sidekick-usages-worker = "sidekick_usages.daemon.worker_entrypoint:main"
+sidekick-usages-supervisor = "sidekick_usages.daemon.runtime.entrypoint:main"
+sidekick-usages-worker = "sidekick_usages.daemon.worker.entrypoint:main"
 ```
 
 - [x] Keep the original public entry point unchanged. The two internal entry

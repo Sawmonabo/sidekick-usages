@@ -14,7 +14,7 @@ from sidekick_usages.core.types import (
     RefreshStatus,
     highest_exit_code,
 )
-from sidekick_usages.credentials.claude_lifetime import (
+from sidekick_usages.credentials.claude.lifetime import (
     ClaudeLoginRenewalState,
 )
 from sidekick_usages.heartbeat import heartbeat_exit_code

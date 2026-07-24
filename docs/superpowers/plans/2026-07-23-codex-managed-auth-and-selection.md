@@ -75,12 +75,13 @@ release-matched Codex CLI schema.
   bounded, and release-gated.
 - Keep provider-specific code in `providers/codex/`, transaction policy in
   `credentials/`, and qualified state in `persistence/`.
-- Commit after each numbered task with the listed message. Do not push until
-  explicitly authorized.
+- Commit and push after each numbered task with the listed message under the
+  current explicit authorization.
 
 ---
 
-- **Status:** In progress; foundation and Task 1 complete
+- **Status:** In progress; foundation and Task 1 complete, namespace cleanup
+  active
 - **Date:** 2026-07-23
 - **Repository:** `/home/sabossedgh/dev/sidekick-usages`
 - **Branch:** `develop`
@@ -136,23 +137,30 @@ The provider adapter exposes these typed operations:
 ## 2. Target File Map
 
 Create focused modules rather than expanding the current 615-line `auth.py`,
-536-line `credentials/codex.py`, or 427-line `auth_migration.py`:
+536-line `credentials/codex/coordinator.py`, or 427-line
+`auth_migration.py`:
 
-- `providers/codex/executable.py`: exact executable and version discovery;
-- `providers/codex/capabilities.py`: generated-schema and version gate;
-- `providers/codex/jsonrpc.py`: bounded JSON-lines framing and correlation;
-- `providers/codex/app_server.py`: private managed app-server lifecycle;
+- `providers/codex/app_server/executable.py`: exact executable and version
+  discovery;
+- `providers/codex/app_server/capabilities.py`: generated-schema and version
+  gate;
+- `providers/codex/app_server/jsonrpc.py`: bounded JSON-lines framing and
+  correlation;
+- `providers/codex/app_server/session.py`: private managed app-server
+  lifecycle;
 - `providers/codex/account.py`: strict account read and generation snapshots;
 - `providers/codex/login.py`: final-home official login workflow;
-- `providers/codex/daemon.py`: official daemon lifecycle and socket discovery;
-- `providers/codex/broker_wire.py`: lightweight bounded daemon messages;
-- `providers/codex/external_auth.py`: strict unstable external-auth messages;
-- `providers/codex/broker.py`: provider-specific callback validation;
+- `providers/codex/broker/daemon.py`: official daemon lifecycle and socket
+  discovery;
+- `providers/codex/broker/wire.py`: lightweight bounded daemon messages;
+- `providers/codex/broker/external_auth.py`: strict unstable external-auth
+  messages;
+- `providers/codex/broker/service.py`: provider-specific callback validation;
 - `providers/codex/session_support.py`: supported/unsupported launch status;
-- `credentials/codex_authorities.py`: managed-home orchestration;
-- `credentials/codex_activation.py`: provider activation transaction;
-- `credentials/codex_reconciliation.py`: native external-choice policy; and
-- `persistence/codex_authorities.py`: no-secret managed metadata transaction.
+- `credentials/codex/authorities.py`: managed-home orchestration;
+- `credentials/codex/activation.py`: provider activation transaction;
+- `credentials/codex/reconciliation.py`: native external-choice policy; and
+- `persistence/credentials/codex.py`: no-secret managed metadata transaction.
 
 Keep `providers/codex/auth.py` as the protected credential-envelope reader and
 official auth subprocess boundary. Remove obsolete responsibilities after
@@ -230,7 +238,91 @@ uv run pytest \
 - [x] Run Ruff and `ty`, inspect every subprocess call for absolute argv and
   bounded output, then commit.
 
-## 4. Task 2 — Managed Private-Home Read and Refresh
+## 4. Task 1A — Repository Namespace Cohesion
+
+**Commit:** `refactor(architecture): organize owner namespaces`
+
+### Existing behavior
+
+- [x] Use the existing provider, credential, account-store, private-tree,
+  managed-service, native-filesystem, daemon, usage, CLI, packaging, and
+  architecture suites as the load-bearing baseline.
+- [x] Add no new behavior tests for file moves. A test that can fail only
+  because an internal module path changed is not a product test.
+
+### Implementation
+
+- [x] Replace repeated flat filename families with direct owner packages
+  across the complete production tree:
+  - `credentials/{claude,codex}/` for provider-specific coordination;
+  - `daemon/{control,runtime,worker}/` for resident control, supervisor, and
+    isolated-worker boundaries;
+  - `doctor/` for diagnostics and credential classification;
+  - `providers/codex/app_server/` for the exact executable, capability,
+    process, JSON-RPC, and initialized-session boundary;
+  - `providers/claude/schema/` for credential and usage schemas;
+  - `usage/presentation/` for Rich and narrow rendering;
+  - `persistence/accounts/` for the index, runtime bridge, and store;
+  - `persistence/credentials/` and
+    `persistence/credentials/{refresh,transactions}/` for credential
+    authority, refresh, repository, planning, commit, and recovery;
+  - `persistence/private/` and `persistence/private/bundles/` for private
+    filesystem, credential tree, contracts, paths, references, and writes;
+  - `persistence/filesystem/` for qualified access and transactions;
+  - `persistence/schema/refresh/` for refresh journals and stages;
+  - `persistence/state/` for shared strict non-secret state mechanics;
+  - `persistence/supervisor/` for activation, selected state, operation
+    authority, operation queue, service state, and worker results;
+  - `persistence/platform/{macos,posix,windows}/` for native adapters; and
+  - nested native `private/` packages where tree, bundle, and adapter modules
+    form another coherent family.
+- [x] Move implementations rather than re-exporting them. Delete the old flat
+  modules and update every caller to import the owning module directly.
+- [x] Keep package `__init__.py` files registration-free and free of
+  compatibility facades.
+- [x] Keep constants, global aliases, and `__all__` directly below imports.
+- [x] Extend the architecture gate across every production folder. Reject
+  retired flat namespaces and any new unreviewed repeated prefix or suffix
+  family.
+
+### Verify and commit
+
+- [x] Prove no retired module or import remains with `rg`.
+- [x] Run the existing focused persistence, credential, managed-service,
+  native-filesystem, CLI, packaging, and architecture suites.
+- [x] Run Ruff, `ty`, the full suite, and pre-commit, then commit and push.
+
+## 5. Task 1B — Repository Module Conventions
+
+**Commit:** `refactor(architecture): enforce module conventions`
+
+### Existing behavior
+
+- [ ] Add no product tests. Use the existing architecture mutation table and
+  complete suite to prove this source-shape-only section.
+
+### Implementation
+
+- [ ] Apply every approved module convention to all production folders:
+  static top-level imports only, no import aliases, declaration blocks
+  directly after imports, and no late constants, globals, aliases, or
+  `__all__`.
+- [ ] Keep models, schemas, and types in an owner-local designated module or
+  package. Split mixed modules when a declaration cannot live in the top
+  declaration block without depending on a later implementation.
+- [ ] Remove compatibility re-export facades and import implementations
+  directly from their owners.
+- [ ] Add repository-wide architecture rules for these conventions without
+  per-file allowlists or blanket suppressions.
+
+### Verify and commit
+
+- [ ] Prove no function-local import, import alias, late declaration,
+  misplaced model/schema/type module, or compatibility facade remains.
+- [ ] Run Ruff, `ty`, the architecture mutation table, the full suite, and
+  pre-commit, then commit and push.
+
+## 6. Task 2 — Managed Private-Home Read and Refresh
 
 **Commit:** `feat(codex): refresh managed private authorities`
 
@@ -290,7 +382,7 @@ uv run pytest \
 - [ ] Confirm no direct network request exists in the new managed path, then
   commit.
 
-## 5. Task 3 — Independent Final-Home Login and Legacy Migration
+## 7. Task 3 — Independent Final-Home Login and Legacy Migration
 
 **Commit:** `feat(codex): migrate accounts to independent managed homes`
 
@@ -339,7 +431,7 @@ uv run pytest \
 - [ ] Inspect fake subprocess events and staged artifacts for token
   duplication, then commit.
 
-## 6. Task 4 — Official Shared-Daemon Lifecycle and Read-Back
+## 8. Task 4 — Official Shared-Daemon Lifecycle and Read-Back
 
 **Commit:** `feat(codex): manage official shared daemon`
 
@@ -388,7 +480,7 @@ codex app-server daemon version
 - [ ] Run the daemon priority and import audits from the foundation.
 - [ ] Run Ruff, `ty`, and architecture checks, then commit.
 
-## 7. Task 5 — Singleton Refresh Broker
+## 9. Task 5 — Singleton Refresh Broker
 
 **Commit:** `feat(codex): answer shared-daemon refresh requests`
 
@@ -440,7 +532,7 @@ codex app-server daemon version
   from official daemon latency.
 - [ ] Run Ruff, `ty`, and architecture checks, then commit.
 
-## 8. Task 6 — Codex Activation and Crash Recovery
+## 10. Task 6 — Codex Activation and Crash Recovery
 
 **Commit:** `feat(codex): activate verified shared accounts`
 
@@ -485,7 +577,7 @@ codex app-server daemon version
 - [ ] Run Ruff and `ty`, inspect journal fixtures for identities and secrets,
   then commit.
 
-## 9. Task 7 — External Login Reconciliation and Maintenance Integration
+## 11. Task 7 — External Login Reconciliation and Maintenance Integration
 
 **Commit:** `feat(codex): reconcile external account changes`
 
@@ -525,7 +617,7 @@ codex app-server daemon version
   heartbeat, activity, and queue regressions they touch.
 - [ ] Run Ruff, `ty`, and architecture checks, then commit.
 
-## 10. Task 8 — Remove Direct OAuth and Copied-Auth Paths
+## 12. Task 8 — Remove Direct OAuth and Copied-Auth Paths
 
 **Commit:** `refactor(codex): remove duplicate token refresh ownership`
 
@@ -543,8 +635,8 @@ codex app-server daemon version
 
 - [ ] Remove direct token refresh from `providers/codex/provider.py`.
 - [ ] Remove copied-bundle creation and native import from
-  `credentials/codex.py`, `providers/codex/auth_migration.py`, and their
-  persistence transaction paths.
+  `credentials/codex/coordinator.py`, `providers/codex/auth_migration.py`,
+  and their persistence transaction paths.
 - [ ] Remove obsolete private OAuth schemas, request helpers, tests, and error
   copy.
 - [ ] Retain protected `auth.json` reading only for worker-scoped verification
@@ -572,7 +664,7 @@ uv run ty check src/ tests/
   It must match no production call or copy path.
 - [ ] Commit after the complete Codex suite is green.
 
-## 11. Task 9 — Codex Phase Gate
+## 13. Task 9 — Codex Phase Gate
 
 This is a verification-only gate. It creates no duplicate end-to-end,
 compatibility, restart, unsupported-surface, or secret matrix and requires no
@@ -592,7 +684,7 @@ empty commit.
   through the existing packaging smoke boundary.
 - [ ] Confirm no real provider or current-machine mutation occurred.
 
-## 12. Codex Completion Gate
+## 14. Codex Completion Gate
 
 Do not begin the Claude plan until all statements are true:
 

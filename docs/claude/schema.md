@@ -691,10 +691,10 @@ stability promise.
 
 The current implementation has two cohesive Claude schema owners:
 
-- [`providers/claude/credential_schemas.py`](../../src/sidekick_usages/providers/claude/credential_schemas.py)
+- [`providers/claude/schema/credentials.py`](../../src/sidekick_usages/providers/claude/schema/credentials.py)
   owns strict credential-envelope, token-account, setup-token, and refresh
   response validation plus expiry normalization.
-- [`providers/claude/schemas.py`](../../src/sidekick_usages/providers/claude/schemas.py)
+- [`providers/claude/schema/usage.py`](../../src/sidekick_usages/providers/claude/schema/usage.py)
   owns strict usage, header, activity-cache, and transcript-record validation.
 - [`providers/claude/activity.py`](../../src/sidekick_usages/providers/claude/activity.py)
   owns read-only Claude config discovery, bounded file traversal, cache reads,

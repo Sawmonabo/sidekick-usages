@@ -28,9 +28,9 @@ from sidekick_usages.usage import (
     TokenActivityFailureKind,
     TokenActivityIssue,
     UsageCheckResult,
-    render,
 )
-from sidekick_usages.usage.reset_display import compact_reset_text
+from sidekick_usages.usage.presentation import overview
+from sidekick_usages.usage.presentation.reset import compact_reset_text
 from tests.test_support import REFERENCE_TIME
 
 
@@ -39,23 +39,23 @@ def _time_after(**delta: float) -> datetime:
 
 
 def test_heat_band_picks_inclusive_lower_bounds() -> None:
-    assert render._heat_band(90) == ("#ffe6e6", "#b03030")
-    assert render._heat_band(89) == ("#fff4e0", "#9c6f12")
-    assert render._heat_band(70) == ("#fff4e0", "#9c6f12")
-    assert render._heat_band(40) == ("#e2fbff", "#1b6a87")
-    assert render._heat_band(1) == ("#dfffe9", "#1d5e35")
-    assert render._heat_band(0) is None
+    assert overview._heat_band(90) == ("#ffe6e6", "#b03030")
+    assert overview._heat_band(89) == ("#fff4e0", "#9c6f12")
+    assert overview._heat_band(70) == ("#fff4e0", "#9c6f12")
+    assert overview._heat_band(40) == ("#e2fbff", "#1b6a87")
+    assert overview._heat_band(1) == ("#dfffe9", "#1d5e35")
+    assert overview._heat_band(0) is None
 
 
 def test_heat_tile_zero_is_grey_filled_percent() -> None:
-    tile = render._heat_tile(0)
-    assert tile.plain == f"{'0%':^{render._TILE_WIDTH}}"
-    assert tile.style == f"{render._ZERO_FG} on {render._ZERO_BG}"
+    tile = overview._heat_tile(0)
+    assert tile.plain == f"{'0%':^{overview._TILE_WIDTH}}"
+    assert tile.style == f"{overview._ZERO_FG} on {overview._ZERO_BG}"
 
 
 def test_heat_tile_nonzero_is_centered_percent_on_band() -> None:
-    tile = render._heat_tile(94)
-    assert tile.plain == f"{'94%':^{render._TILE_WIDTH}}"
+    tile = overview._heat_tile(94)
+    assert tile.plain == f"{'94%':^{overview._TILE_WIDTH}}"
     assert tile.style == "#ffe6e6 on #b03030"
 
 
@@ -92,14 +92,14 @@ def test_format_reset_compact_buckets() -> None:
 
 
 def test_reset_cell_is_centered_dim() -> None:
-    cell = render._reset_cell(
+    cell = overview._reset_cell(
         _time_after(hours=3, minutes=50),
         REFERENCE_TIME,
     )
-    assert cell.plain == f"{'3h 50m':^{render._TILE_WIDTH}}"
+    assert cell.plain == f"{'3h 50m':^{overview._TILE_WIDTH}}"
     assert cell.style == "grey42"
-    assert render._reset_cell(None, REFERENCE_TIME).plain == (
-        f"{'':^{render._TILE_WIDTH}}"
+    assert overview._reset_cell(None, REFERENCE_TIME).plain == (
+        f"{'':^{overview._TILE_WIDTH}}"
     )
 
 
@@ -115,11 +115,11 @@ def test_reset_cell_is_centered_dim() -> None:
     ],
 )
 def test_classify_window(name: str, expected: tuple[str, str]) -> None:
-    assert render._classify_window(name) == expected
+    assert overview._classify_window(name) == expected
 
 
 def test_length_hours_orders_5h_before_7d() -> None:
-    assert render._length_hours("5h") < render._length_hours("7d")
+    assert overview._length_hours("5h") < overview._length_hours("7d")
 
 
 def _usage(
@@ -242,7 +242,7 @@ def _render_at(
     # panel-corner assertions below fail.
     console = Console(width=width, file=buf, legacy_windows=False)
     console.print(
-        render.usage_overview(
+        overview.usage_overview(
             _result(usages, failures=failures),
             width=width,
         )
@@ -448,7 +448,7 @@ def test_subtitle_not_truncated_when_wider_than_content() -> None:
     buf = io.StringIO()
     console = Console(width=200, file=buf)
     console.print(
-        render.usage_overview(
+        overview.usage_overview(
             _result(usages, activities=activities),
             width=200,
         )
@@ -515,7 +515,7 @@ def test_claude_auth_recovery_has_one_mode_appropriate_action(
         credential_kind=credential_kind,
     )
 
-    status, detail = render._failure_copy(failure)
+    status, detail = overview._failure_copy(failure)
 
     assert status == "authentication failed"
     assert detail == expected_lines
@@ -579,7 +579,7 @@ def test_failures_widen_shared_panels() -> None:
     buf = io.StringIO()
     console = Console(width=200, file=buf)
     console.print(
-        render.usage_overview(
+        overview.usage_overview(
             _result(usages, failures=failures),
             width=200,
         )
@@ -604,7 +604,7 @@ def test_narrow_layout_renders_failures() -> None:
     buf = io.StringIO()
     console = Console(width=_NARROW_TEST_WIDTH, file=buf)
     console.print(
-        render.usage_overview(
+        overview.usage_overview(
             _result(usages, failures=failures),
             width=_NARROW_TEST_WIDTH,
         )
@@ -662,7 +662,7 @@ def test_partial_activity_keeps_usage_and_actionable_warning(
     )
     buf = io.StringIO()
     Console(width=width, file=buf).print(
-        render.usage_overview(
+        overview.usage_overview(
             _result(usages, activities=activities),
             width=width,
         )

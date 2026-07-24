@@ -29,10 +29,10 @@ from sidekick_usages.heartbeat.models import (
 )
 from sidekick_usages.heartbeat.ports import HeartbeatProvider
 from sidekick_usages.http import HttpClient
-from sidekick_usages.persistence.account_runtime_bridge import (
+from sidekick_usages.persistence.accounts.runtime_bridge import (
     saved_account_from_runtime_state,
 )
-from sidekick_usages.persistence.account_store import AccountStore
+from sidekick_usages.persistence.accounts.store import AccountStore
 from sidekick_usages.persistence.errors import SourceChangedError
 
 

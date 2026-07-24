@@ -6,18 +6,22 @@ from pathlib import Path
 
 import pytest
 
-from sidekick_usages.providers.codex.app_server import CodexAppServerSession
-from sidekick_usages.providers.codex.capabilities import (
+from sidekick_usages.providers.codex.app_server.capabilities import (
     probe_codex_capabilities,
 )
-from sidekick_usages.providers.codex.errors import CodexAppServerError
-from sidekick_usages.providers.codex.executable import (
+from sidekick_usages.providers.codex.app_server.errors import (
+    CodexAppServerError,
+)
+from sidekick_usages.providers.codex.app_server.executable import (
     discover_codex_executable,
 )
-from sidekick_usages.providers.codex.models.app_server import (
+from sidekick_usages.providers.codex.app_server.models import (
     JsonRpcNotification,
 )
-from sidekick_usages.providers.codex.types.app_server import (
+from sidekick_usages.providers.codex.app_server.session import (
+    CodexAppServerSession,
+)
+from sidekick_usages.providers.codex.app_server.types import (
     CodexAppServerFailure,
 )
 from tests.fakes.codex_app_server import (

@@ -16,7 +16,7 @@ from sidekick_usages.core.models import (
 )
 from sidekick_usages.core.types import AccountLabel, ProviderId
 from sidekick_usages.http import HttpClient
-from sidekick_usages.persistence.credential_refresh import (
+from sidekick_usages.persistence.credentials.refresh.service import (
     CredentialRefreshCrashPoint,
 )
 from sidekick_usages.providers.base import (

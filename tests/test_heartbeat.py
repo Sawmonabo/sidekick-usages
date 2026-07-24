@@ -43,7 +43,7 @@ from sidekick_usages.heartbeat.render import (
     render_heartbeat_status,
 )
 from sidekick_usages.http import HttpClient, HttpOperation
-from sidekick_usages.persistence.account_store import AccountStore
+from sidekick_usages.persistence.accounts.store import AccountStore
 from sidekick_usages.providers.base import (
     CredentialDetection,
     Provider,

@@ -371,7 +371,7 @@ platform lifecycle ownership separate:
   outcomes, and diagnostic persistence.
 - `sidekick_usages.credentials.CredentialRefreshCoordinator` owns the single
   provider-neutral saved-credential refresh entry point.
-- `sidekick_usages.persistence.credential_refresh` and its focused schema,
+- `sidekick_usages.persistence.credentials.refresh.service` and its focused schema,
   stage, merge, artifact, and private-stage modules own credential-derived
   locking, private staging, targeted commit, assessment, and recovery.
 - `sidekick_usages.heartbeat.HeartbeatService` owns optional

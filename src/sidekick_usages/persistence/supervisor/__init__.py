@@ -1,0 +1,1 @@
+"""Resident supervisor state persistence."""

@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from rich.console import Console
 
-import sidekick_usages.credentials.codex
+import sidekick_usages.credentials.codex.coordinator
 import sidekick_usages.providers.claude.provider
 from sidekick_usages.core.expiry import KnownExpiry, UnknownExpiry
 from sidekick_usages.core.models import Account, ClaudeLoginCredentials
@@ -18,7 +18,7 @@ from sidekick_usages.core.types import AccountLabel, ProviderId
 from sidekick_usages.credentials import CredentialService
 from sidekick_usages.credentials.authorities import credential_resolver_for
 from sidekick_usages.credentials.refresh import CredentialRefreshCoordinator
-from sidekick_usages.doctor import (
+from sidekick_usages.doctor.service import (
     DoctorReadyResult,
     DoctorService,
     doctor_json,
@@ -27,13 +27,15 @@ from sidekick_usages.doctor import (
 from sidekick_usages.errors import AuthError
 from sidekick_usages.http import HttpClient, HttpOperation
 from sidekick_usages.maintenance import TokenMaintenanceService
-from sidekick_usages.persistence.credential_refresh import (
+from sidekick_usages.persistence.credentials.refresh.service import (
     CredentialRefreshState,
     CredentialRefreshStateKind,
     CredentialRefreshTransactions,
 )
 from sidekick_usages.persistence.errors import ReplaceFailedError
-from sidekick_usages.persistence.filesystem import PersistenceFilesystem
+from sidekick_usages.persistence.filesystem.service import (
+    PersistenceFilesystem,
+)
 from sidekick_usages.persistence.models.artifact import (
     ExpectedAuthority,
     FileSnapshot,
@@ -100,7 +102,7 @@ def test_export_protects_paths_and_publishes_auth_authority_last(
         )
 
     monkeypatch.setattr(
-        sidekick_usages.credentials.codex.PersistenceFilesystem,
+        sidekick_usages.credentials.codex.coordinator.PersistenceFilesystem,
         "commit_opaque_private",
         fail_auth,
     )

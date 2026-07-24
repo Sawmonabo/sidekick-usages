@@ -22,7 +22,7 @@ from sidekick_usages.providers.base import (
 from sidekick_usages.providers.claude.credentials import (
     require_claude_credentials,
 )
-from sidekick_usages.providers.claude.schemas import (
+from sidekick_usages.providers.claude.schema.usage import (
     header_reset,
     oauth_usage_window,
 )

@@ -41,7 +41,7 @@ from sidekick_usages.maintenance import (
     CredentialRefresher,
     TokenMaintenanceService,
 )
-from sidekick_usages.persistence.account_store import AccountStore
+from sidekick_usages.persistence.accounts.store import AccountStore
 from sidekick_usages.persistence.errors import (
     PersistenceError,
     SourceChangedError,

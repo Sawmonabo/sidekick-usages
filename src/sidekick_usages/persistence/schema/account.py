@@ -45,7 +45,7 @@ from sidekick_usages.persistence.limits import (
     MAX_DOCUMENT_BYTES,
 )
 from sidekick_usages.persistence.models.account import VersionThreeDocument
-from sidekick_usages.persistence.state_validation import (
+from sidekick_usages.persistence.state.validation import (
     validate_non_secret_state,
 )
 from sidekick_usages.persistence.time_codec import (

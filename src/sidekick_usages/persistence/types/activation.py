@@ -4,8 +4,10 @@ from collections.abc import Callable
 from contextlib import AbstractContextManager
 from typing import Protocol
 
-from sidekick_usages.persistence.private_filesystem import PrivateFilesystem
-from sidekick_usages.persistence.transaction import PersistenceTransaction
+from sidekick_usages.persistence.filesystem.transaction import (
+    PersistenceTransaction,
+)
+from sidekick_usages.persistence.private.filesystem import PrivateFilesystem
 
 type StateLockFactory = Callable[[PrivateFilesystem], StateLock]
 

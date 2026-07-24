@@ -17,7 +17,7 @@ from sidekick_usages.core.models import (
 from sidekick_usages.core.types import AccountLabel
 from sidekick_usages.errors import AuthError
 from sidekick_usages.http import HttpClient, HttpOperation
-from sidekick_usages.persistence.private_credentials import (
+from sidekick_usages.persistence.private.credentials import (
     PrivateCredentialTree,
 )
 from sidekick_usages.providers.base import (

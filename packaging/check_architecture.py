@@ -28,7 +28,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 MAX_MODULE_LINES = 1000
 REVIEW_MODULE_LINES = 800
 MAX_CLI_APP_LINES = 200
-_CODEX_JSONRPC_FILE = "src/sidekick_usages/providers/codex/jsonrpc.py"
+MIN_NAMESPACE_FAMILY_SIZE = 2
+_CODEX_JSONRPC_FILE = (
+    "src/sidekick_usages/providers/codex/app_server/jsonrpc.py"
+)
 
 _SERVICE_FILES = frozenset(
     {
@@ -44,10 +47,10 @@ _RENDERER_FILES = frozenset(
     {
         "src/sidekick_usages/branding.py",
         "src/sidekick_usages/heartbeat/render.py",
-        "src/sidekick_usages/usage/activity_render.py",
-        "src/sidekick_usages/usage/narrow_render.py",
-        "src/sidekick_usages/usage/render.py",
-        "src/sidekick_usages/usage/reset_display.py",
+        "src/sidekick_usages/usage/presentation/activity.py",
+        "src/sidekick_usages/usage/presentation/narrow.py",
+        "src/sidekick_usages/usage/presentation/overview.py",
+        "src/sidekick_usages/usage/presentation/reset.py",
     }
 )
 _CREDENTIAL_LEASE_CONSUMERS = frozenset(
@@ -62,29 +65,29 @@ _CREDENTIAL_LEASE_CONSUMERS = frozenset(
 )
 _DAEMON_CONTROL_FILES = frozenset(
     {
-        "src/sidekick_usages/daemon/peer.py",
-        "src/sidekick_usages/daemon/protocol.py",
+        "src/sidekick_usages/daemon/control/peer.py",
+        "src/sidekick_usages/daemon/control/protocol.py",
     }
 )
 _RESIDENT_DAEMON_MODULES = frozenset(
     {
-        "control.py",
-        "diagnostics.py",
-        "dispatch.py",
-        "entrypoint.py",
-        "peer.py",
-        "protocol.py",
-        "recovery.py",
-        "scheduler.py",
-        "supervisor.py",
-        "worker_entrypoint.py",
-        "workers.py",
+        "control/dispatch.py",
+        "control/peer.py",
+        "control/protocol.py",
+        "control/server.py",
+        "runtime/diagnostics.py",
+        "runtime/entrypoint.py",
+        "runtime/recovery.py",
+        "runtime/scheduler.py",
+        "runtime/supervisor.py",
+        "worker/entrypoint.py",
+        "worker/pool.py",
     }
 )
 _PYDANTIC_OWNERS = frozenset(
     {
-        "src/sidekick_usages/providers/claude/credential_schemas.py",
-        "src/sidekick_usages/providers/claude/schemas.py",
+        "src/sidekick_usages/providers/claude/schema/credentials.py",
+        "src/sidekick_usages/providers/claude/schema/usage.py",
         "src/sidekick_usages/providers/codex/schemas.py",
         "src/sidekick_usages/serialization/json.py",
     }
@@ -350,7 +353,7 @@ def _check_import(
                         (
                             "sidekick_usages.cli",
                             "sidekick_usages.daemon",
-                            "sidekick_usages.doctor",
+                            "sidekick_usages.doctor.service",
                             "sidekick_usages.heartbeat",
                             "sidekick_usages.maintenance",
                             "sidekick_usages.update",
@@ -634,8 +637,11 @@ def _check_activity_contract(
                 for term in ("codex-lifetime-cache", "rollout")
             ):
                 invalid.append((unit, None))
-        if path == "src/sidekick_usages/usage/activity_render.py" and any(
-            term in unit.source for term in ("known tokens", "local CLI")
+        if (
+            path == "src/sidekick_usages/usage/presentation/activity.py"
+            and any(
+                term in unit.source for term in ("known tokens", "local CLI")
+            )
         ):
             invalid.append((unit, None))
     if missing or invalid:
@@ -778,13 +784,9 @@ def _check_source_shape(
                 f"stale converted modules remain: {stale}",
             )
         )
-    platform_init = "src/sidekick_usages/persistence/_platform/__init__.py"
+    _check_flat_namespaces(units, violations)
     for unit in units:
-        if (
-            not unit.production
-            or unit.path.name != "__init__.py"
-            or str(unit.path) == platform_init
-        ):
+        if not unit.production or unit.path.name != "__init__.py":
             continue
         definition = next(
             (
@@ -801,6 +803,47 @@ def _check_source_shape(
             violations.append(
                 finding(unit, definition, "PKG001", "initializer is not thin")
             )
+
+
+def _check_flat_namespaces(
+    units: Sequence[SourceUnit],
+    violations: list[ArchitectureFinding],
+) -> None:
+    families: dict[
+        tuple[PurePosixPath, str, str],
+        list[SourceUnit],
+    ] = {}
+    for unit in units:
+        if not unit.production or unit.path.name == "__init__.py":
+            continue
+        stem = unit.path.stem
+        if stem.startswith("__"):
+            continue
+        tokens = stem.split("_")
+        families.setdefault(
+            (unit.path.parent, "prefix", tokens[0]),
+            [],
+        ).append(unit)
+        if len(tokens) > 1:
+            families.setdefault(
+                (unit.path.parent, "suffix", tokens[-1]),
+                [],
+            ).append(unit)
+    for (parent, kind, token), members in sorted(
+        families.items(),
+        key=lambda item: tuple(str(value) for value in item[0]),
+    ):
+        if len(members) < MIN_NAMESPACE_FAMILY_SIZE:
+            continue
+        names = sorted(unit.path.name for unit in members)
+        violations.append(
+            ArchitectureFinding(
+                min(unit.path for unit in members),
+                1,
+                "PKG002",
+                (f"flat {kind} family {token!r} in {parent}: {names}"),
+            )
+        )
 
 
 def _check_project(

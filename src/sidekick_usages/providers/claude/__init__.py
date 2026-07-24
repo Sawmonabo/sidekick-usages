@@ -4,7 +4,6 @@ from sidekick_usages.providers.claude.activity import (
     ClaudeActivity,
     discover_claude_config_dir,
 )
-from sidekick_usages.providers.claude.credential_schemas import PROFILE_SCOPE
 from sidekick_usages.providers.claude.provider import (
     ClaudeProvider,
     ClaudeSetupToken,
@@ -15,6 +14,7 @@ from sidekick_usages.providers.claude.provider import (
     SetupTokenTimedOut,
     SetupTokenUnreadable,
 )
+from sidekick_usages.providers.claude.schema.credentials import PROFILE_SCOPE
 
 __all__ = [
     "PROFILE_SCOPE",

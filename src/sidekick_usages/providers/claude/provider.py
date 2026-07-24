@@ -39,17 +39,17 @@ from sidekick_usages.providers.base import (
     RefreshSuccess,
     runtime_account,
 )
-from sidekick_usages.providers.claude.credential_schemas import (
-    CLAUDE_TOKEN_PATTERN,
-    parse_refresh_credentials,
-    validate_setup_token,
-)
 from sidekick_usages.providers.claude.credentials import (
     detect_credentials,
     parse_detected_credentials,
     require_claude_credentials,
 )
-from sidekick_usages.providers.claude.schemas import claude_failure
+from sidekick_usages.providers.claude.schema.credentials import (
+    CLAUDE_TOKEN_PATTERN,
+    parse_refresh_credentials,
+    validate_setup_token,
+)
+from sidekick_usages.providers.claude.schema.usage import claude_failure
 from sidekick_usages.providers.claude.usage import (
     fetch_usage as fetch_claude_usage,
 )

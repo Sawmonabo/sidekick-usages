@@ -15,7 +15,7 @@ from sidekick_usages.credentials import (
     CredentialRefreshSuccess,
     LocalCredentialSource,
 )
-from sidekick_usages.credentials.codex import private_codex_home
+from sidekick_usages.credentials.codex.coordinator import private_codex_home
 from sidekick_usages.providers.base import ProviderFailure, ProviderFailureKind
 from tests.test_credential_service import (
     _account,

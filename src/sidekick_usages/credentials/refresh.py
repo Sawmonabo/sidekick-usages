@@ -20,20 +20,22 @@ from sidekick_usages.credentials.authorities import (
     AuthenticatedSavedAccount,
     CredentialResolver,
 )
-from sidekick_usages.credentials.codex import CodexCredentialCoordinator
+from sidekick_usages.credentials.codex.coordinator import (
+    CodexCredentialCoordinator,
+)
 from sidekick_usages.credentials.models import (
     CredentialRefreshResult,
     CredentialRefreshSuccess,
 )
 from sidekick_usages.http import HttpClient
-from sidekick_usages.persistence.account_store import AccountStore
-from sidekick_usages.persistence.credential_refresh import (
+from sidekick_usages.persistence.accounts.store import AccountStore
+from sidekick_usages.persistence.credentials.refresh.service import (
     CredentialRefreshLease,
     CredentialRefreshPersistence,
     CredentialRefreshTargetUnavailableError,
     CredentialRefreshUnstableError,
 )
-from sidekick_usages.persistence.private_bundle_writes import (
+from sidekick_usages.persistence.private.bundles.writes import (
     PreparedPrivateBundleWrite,
 )
 from sidekick_usages.providers.base import (

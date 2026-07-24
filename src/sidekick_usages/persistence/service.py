@@ -3,21 +3,23 @@
 from collections.abc import Callable
 
 from sidekick_usages.paths import ApplicationPaths
-from sidekick_usages.persistence.account_store import AccountStore
-from sidekick_usages.persistence.credential_refresh import (
-    CredentialRefreshTransactions,
-)
-from sidekick_usages.persistence.credential_refresh_artifacts import (
+from sidekick_usages.persistence.accounts.store import AccountStore
+from sidekick_usages.persistence.credentials.refresh.artifacts import (
     CredentialRefreshArtifacts,
     CredentialRefreshState,
 )
+from sidekick_usages.persistence.credentials.refresh.service import (
+    CredentialRefreshTransactions,
+)
 from sidekick_usages.persistence.errors import SupervisorActiveError
-from sidekick_usages.persistence.filesystem import PersistenceFilesystem
+from sidekick_usages.persistence.filesystem.service import (
+    PersistenceFilesystem,
+)
 from sidekick_usages.persistence.models.status import (
     PermissionRepairResult,
     PersistenceStatus,
 )
-from sidekick_usages.persistence.private_credentials import (
+from sidekick_usages.persistence.private.credentials import (
     PrivateCredentialTree,
 )
 from sidekick_usages.persistence.types.status import PersistenceState

@@ -9,7 +9,7 @@ import pytest
 from sidekick_usages.persistence.errors import (
     PrivateCredentialArtifactError,
 )
-from sidekick_usages.persistence.private_credentials import (
+from sidekick_usages.persistence.private.credentials import (
     PrivateCredentialTree,
 )
 from sidekick_usages.persistence.types.credential import (

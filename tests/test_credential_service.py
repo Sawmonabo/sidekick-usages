@@ -28,15 +28,17 @@ from sidekick_usages.credentials import (
     TokenPromptSpec,
 )
 from sidekick_usages.credentials.authorities import credential_resolver_for
-from sidekick_usages.credentials.codex import private_codex_home
+from sidekick_usages.credentials.codex.coordinator import private_codex_home
 from sidekick_usages.credentials.refresh import CredentialRefreshCoordinator
 from sidekick_usages.http import HttpClient
-from sidekick_usages.persistence.account_store import AccountStore
-from sidekick_usages.persistence.credential_refresh import (
+from sidekick_usages.persistence.accounts.store import AccountStore
+from sidekick_usages.persistence.credentials.refresh.service import (
     CredentialRefreshTransactions,
 )
-from sidekick_usages.persistence.filesystem import PersistenceFilesystem
-from sidekick_usages.persistence.private_credentials import (
+from sidekick_usages.persistence.filesystem.service import (
+    PersistenceFilesystem,
+)
+from sidekick_usages.persistence.private.credentials import (
     PreparedPrivateBundleWrite,
     PrivateCredentialTree,
 )

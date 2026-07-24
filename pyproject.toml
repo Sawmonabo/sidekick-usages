@@ -55,8 +55,8 @@ Changelog = "https://github.com/Sawmonabo/sidekick-usages/blob/main/CHANGELOG.md
 
 [project.scripts]
 sidekick-usages = "sidekick_usages.cli:app"
-sidekick-usages-supervisor = "sidekick_usages.daemon.entrypoint:main"
-sidekick-usages-worker = "sidekick_usages.daemon.worker_entrypoint:main"
+sidekick-usages-supervisor = "sidekick_usages.daemon.runtime.entrypoint:main"
+sidekick-usages-worker = "sidekick_usages.daemon.worker.entrypoint:main"
 
 [dependency-groups]
 dev = [

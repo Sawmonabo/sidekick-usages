@@ -12,7 +12,7 @@ from sidekick_usages.http import HttpClient, HttpOperation
 from sidekick_usages.providers.claude.credentials import (
     require_claude_credentials,
 )
-from sidekick_usages.providers.claude.schemas import (
+from sidekick_usages.providers.claude.schema.usage import (
     header_usage_window,
     oauth_usage_windows,
 )

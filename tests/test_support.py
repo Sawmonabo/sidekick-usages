@@ -38,7 +38,9 @@ from sidekick_usages.credentials.authorities import (
     CredentialLease,
     credential_resolver_for,
 )
-from sidekick_usages.credentials.codex import CodexCredentialCoordinator
+from sidekick_usages.credentials.codex.coordinator import (
+    CodexCredentialCoordinator,
+)
 from sidekick_usages.credentials.refresh import CredentialRefreshCoordinator
 from sidekick_usages.daemon.models.lifecycle import SupervisorHealth
 from sidekick_usages.daemon.types.lifecycle import (
@@ -50,21 +52,23 @@ from sidekick_usages.heartbeat import HeartbeatProvider, HeartbeatService
 from sidekick_usages.http import HttpClient
 from sidekick_usages.maintenance import TokenMaintenanceService
 from sidekick_usages.paths import ApplicationPaths
-from sidekick_usages.persistence.account_index import (
+from sidekick_usages.persistence.accounts.index import (
     saved_account_from_runtime,
 )
-from sidekick_usages.persistence.account_runtime_bridge import (
+from sidekick_usages.persistence.accounts.runtime_bridge import (
     active_stored_reference,
 )
-from sidekick_usages.persistence.account_store import AccountStore
-from sidekick_usages.persistence.credential_refresh import (
+from sidekick_usages.persistence.accounts.store import AccountStore
+from sidekick_usages.persistence.credentials.refresh.service import (
     CredentialRefreshTransactions,
 )
-from sidekick_usages.persistence.credential_repository import (
+from sidekick_usages.persistence.credentials.repository import (
     authority_for_account,
 )
-from sidekick_usages.persistence.filesystem import PersistenceFilesystem
-from sidekick_usages.persistence.private_credentials import (
+from sidekick_usages.persistence.filesystem.service import (
+    PersistenceFilesystem,
+)
+from sidekick_usages.persistence.private.credentials import (
     PrivateCredentialTree,
 )
 from sidekick_usages.providers.base import (

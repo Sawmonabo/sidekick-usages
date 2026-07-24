@@ -24,7 +24,7 @@ from sidekick_usages.providers.base import (
 )
 from sidekick_usages.providers.claude import ClaudeProvider
 from sidekick_usages.providers.claude import provider as provider_module
-from sidekick_usages.providers.claude.credential_schemas import (
+from sidekick_usages.providers.claude.schema.credentials import (
     parse_credentials_blob,
 )
 from sidekick_usages.providers.claude.usage import USAGE_URL

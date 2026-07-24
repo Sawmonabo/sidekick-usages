@@ -6,7 +6,7 @@ from sidekick_usages.daemon.types.service import (
     ServicePhase,
 )
 from sidekick_usages.persistence.errors import InvalidSchemaError
-from sidekick_usages.persistence.state_fields import (
+from sidekick_usages.persistence.state.fields import (
     require_boolean,
     require_exact_keys,
     require_integer,
@@ -14,7 +14,7 @@ from sidekick_usages.persistence.state_fields import (
     require_schema_version,
     require_string,
 )
-from sidekick_usages.persistence.state_json import (
+from sidekick_usages.persistence.state.json import (
     decode_state_object,
     encode_state_object,
 )

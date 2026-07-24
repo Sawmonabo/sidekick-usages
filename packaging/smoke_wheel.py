@@ -399,10 +399,10 @@ import platformdirs
 import sidekick_usages
 import sidekick_usages.cli.app
 import sidekick_usages.cli.context
-import sidekick_usages.persistence.filesystem
+import sidekick_usages.persistence.filesystem.service
 import sidekick_usages.persistence.locking
-import sidekick_usages.persistence.private_credentials
-import sidekick_usages.persistence.transaction
+import sidekick_usages.persistence.private.credentials
+import sidekick_usages.persistence.filesystem.transaction
 
 origin = pathlib.Path(sidekick_usages.__file__).resolve()
 prefix = pathlib.Path(sys.prefix).resolve()

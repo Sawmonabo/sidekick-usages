@@ -16,7 +16,9 @@ from sidekick_usages.persistence.errors import (
     DurabilityUncertainError,
     UnsafeManagedFileError,
 )
-from sidekick_usages.persistence.filesystem import PersistenceFilesystem
+from sidekick_usages.persistence.filesystem.service import (
+    PersistenceFilesystem,
+)
 from sidekick_usages.persistence.locking import (
     LOCK_CHECK_INTERVAL_SECONDS,
     LOCK_TIMEOUT_SECONDS,

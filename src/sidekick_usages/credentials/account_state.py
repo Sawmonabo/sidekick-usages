@@ -3,7 +3,7 @@
 from dataclasses import replace
 
 from sidekick_usages.core.models import Account
-from sidekick_usages.persistence.account_store import AccountStore
+from sidekick_usages.persistence.accounts.store import AccountStore
 from sidekick_usages.persistence.errors import SourceChangedError
 
 

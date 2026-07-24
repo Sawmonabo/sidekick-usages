@@ -94,7 +94,7 @@ _MUTATIONS = (
     ),
     architecture_ast.SourceMutation(
         "DEP008",
-        "src/sidekick_usages/usage/render.py",
+        "src/sidekick_usages/usage/presentation/overview.py",
         "from rich.console import Console, Group, RenderableType\n",
         (
             "from rich.console import Console, Group, RenderableType\n"
@@ -173,6 +173,12 @@ _MUTATIONS = (
         "src/sidekick_usages/render.py",
         "",
         '"""Stale converted module."""\n',
+    ),
+    architecture_ast.SourceMutation(
+        "PKG002",
+        "src/sidekick_usages/usage/activity_extra.py",
+        "",
+        '"""Deliberate flat namespace fixture."""\n',
     ),
     architecture_ast.SourceMutation(
         "SCHEMA001",

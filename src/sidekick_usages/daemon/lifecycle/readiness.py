@@ -20,16 +20,16 @@ from sidekick_usages.core.selection.types import (
     OperationState,
 )
 from sidekick_usages.core.types import ProviderId
-from sidekick_usages.daemon.client import ControlClient
-from sidekick_usages.daemon.control import cleanup_control_endpoint
-from sidekick_usages.daemon.diagnostics import SanitizedDiagnosticLog
+from sidekick_usages.daemon.control.client import ControlClient
+from sidekick_usages.daemon.control.protocol import PROTOCOL_VERSION
+from sidekick_usages.daemon.control.server import cleanup_control_endpoint
 from sidekick_usages.daemon.lifecycle.errors import ServiceLifecycleError
 from sidekick_usages.daemon.models.lifecycle import (
     ServiceBackendStatus,
     SupervisorHealth,
 )
 from sidekick_usages.daemon.models.service import ServiceState
-from sidekick_usages.daemon.protocol import PROTOCOL_VERSION
+from sidekick_usages.daemon.runtime.diagnostics import SanitizedDiagnosticLog
 from sidekick_usages.daemon.types.lifecycle import (
     ServiceComponentState,
     ServiceFailureCode,
@@ -41,16 +41,16 @@ from sidekick_usages.daemon.types.service import (
     ServicePhase,
 )
 from sidekick_usages.paths import ApplicationPaths
-from sidekick_usages.persistence.account_store import AccountStore
-from sidekick_usages.persistence.activation_journal import (
-    ActivationJournalStore,
-)
+from sidekick_usages.persistence.accounts.store import AccountStore
 from sidekick_usages.persistence.errors import PersistenceError
-from sidekick_usages.persistence.operation_queue import OperationQueueStore
-from sidekick_usages.persistence.private_credentials import (
+from sidekick_usages.persistence.private.credentials import (
     PrivateCredentialTree,
 )
-from sidekick_usages.persistence.service_state import ServiceStateStore
+from sidekick_usages.persistence.supervisor.activation import (
+    ActivationJournalStore,
+)
+from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
+from sidekick_usages.persistence.supervisor.service import ServiceStateStore
 
 __all__ = ["RuntimeCleanup", "SupervisorReadiness"]
 

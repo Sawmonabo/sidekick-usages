@@ -14,7 +14,7 @@ from sidekick_usages.credentials.refresh import (
     CredentialRefreshReason,
 )
 from sidekick_usages.http import HttpClient
-from sidekick_usages.persistence.credential_refresh import (
+from sidekick_usages.persistence.credentials.refresh.service import (
     CredentialRefreshTransactions,
 )
 from tests.test_credential_refresh_support import (

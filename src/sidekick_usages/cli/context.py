@@ -14,23 +14,25 @@ from sidekick_usages.clock import Clock, SystemClock
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.credentials import CredentialService
 from sidekick_usages.credentials.authorities import credential_resolver_for
-from sidekick_usages.credentials.codex import CodexCredentialCoordinator
+from sidekick_usages.credentials.codex.coordinator import (
+    CodexCredentialCoordinator,
+)
 from sidekick_usages.credentials.refresh import CredentialRefreshCoordinator
 from sidekick_usages.daemon.lifecycle.manager import (
     DaemonManager,
     build_daemon_manager,
 )
 from sidekick_usages.daemon.models.lifecycle import SupervisorHealth
-from sidekick_usages.doctor import DoctorService
+from sidekick_usages.doctor.service import DoctorService
 from sidekick_usages.heartbeat import HeartbeatProvider, HeartbeatService
 from sidekick_usages.http import HttpClient
 from sidekick_usages.maintenance import TokenMaintenanceService
 from sidekick_usages.paths import ApplicationPaths, discover_application_paths
-from sidekick_usages.persistence.account_store import AccountStore
+from sidekick_usages.persistence.accounts.store import AccountStore
 from sidekick_usages.persistence.activity_snapshots import (
     ActivitySnapshotStore,
 )
-from sidekick_usages.persistence.credential_refresh import (
+from sidekick_usages.persistence.credentials.refresh.service import (
     CredentialRefreshState,
     CredentialRefreshTransactions,
 )

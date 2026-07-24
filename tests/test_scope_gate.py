@@ -22,7 +22,7 @@ from sidekick_usages.core.types import (
 )
 from sidekick_usages.persistence.errors import InvalidSchemaError
 from sidekick_usages.providers.base import ProviderBoundaryError
-from sidekick_usages.providers.claude.credential_schemas import (
+from sidekick_usages.providers.claude.schema.credentials import (
     claude_expiry,
     parse_credentials_blob,
 )

@@ -6,11 +6,11 @@ from pathlib import Path
 from sidekick_usages.core.expiry import UnknownExpiry
 from sidekick_usages.core.models import Account, CodexCredentials
 from sidekick_usages.core.types import AccountLabel
-from sidekick_usages.persistence.account_runtime_bridge import (
+from sidekick_usages.persistence.accounts.runtime_bridge import (
     active_stored_reference,
 )
-from sidekick_usages.persistence.account_store import AccountStore
-from sidekick_usages.persistence.credential_repository import (
+from sidekick_usages.persistence.accounts.store import AccountStore
+from sidekick_usages.persistence.credentials.repository import (
     CredentialAuthorityRepository,
 )
 from tests.test_support import (

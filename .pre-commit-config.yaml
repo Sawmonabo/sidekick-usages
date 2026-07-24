@@ -37,7 +37,7 @@ repos:
   - id: name-tests-test
     args: [--pytest-test-first]
     files: ^tests/
-    exclude: ^tests/(conftest\.py|fixtures/|helpers/)
+    exclude: ^tests/(conftest\.py|fakes/|fixtures/|helpers/)
   - id: no-commit-to-branch
     args: [--branch, main, --branch, master]
   - id: trailing-whitespace

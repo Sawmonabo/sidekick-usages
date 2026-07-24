@@ -13,11 +13,11 @@ from sidekick_usages.persistence.errors import (
     PersistenceError,
     PersistenceFilesystemError,
 )
-from sidekick_usages.persistence.private_filesystem import PrivateFilesystem
-from sidekick_usages.persistence.transaction import (
+from sidekick_usages.persistence.filesystem.transaction import (
     PersistenceTransaction,
     _begin_transaction,
 )
+from sidekick_usages.persistence.private.filesystem import PrivateFilesystem
 from sidekick_usages.persistence.types.error import PersistenceCode
 
 __all__ = [

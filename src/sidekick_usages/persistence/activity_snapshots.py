@@ -12,7 +12,9 @@ from sidekick_usages.persistence.errors import (
     ActivitySnapshotError,
     PersistenceError,
 )
-from sidekick_usages.persistence.filesystem import PersistenceFilesystem
+from sidekick_usages.persistence.filesystem.service import (
+    PersistenceFilesystem,
+)
 from sidekick_usages.persistence.locking import PersistenceLock
 from sidekick_usages.persistence.schema.activity import (
     ACTIVITY_SCHEMA_VERSION,

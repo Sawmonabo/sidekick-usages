@@ -17,7 +17,7 @@ from sidekick_usages.core.types import (
     ProviderId,
     RefreshStatus,
 )
-from sidekick_usages.credentials.claude_lifetime import (
+from sidekick_usages.credentials.claude.lifetime import (
     ClaudeLoginRenewalState,
 )
 from sidekick_usages.maintenance import TokenMaintenanceService

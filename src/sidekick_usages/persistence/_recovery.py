@@ -2,12 +2,6 @@
 
 from pathlib import Path
 
-from sidekick_usages.persistence._platform import (
-    NativeFailureKind,
-    NativeFile,
-    NativeFilesystemError,
-    NativePlatform,
-)
 from sidekick_usages.persistence.artifacts import ArtifactGrammar
 from sidekick_usages.persistence.errors import (
     DurabilityUncertainError,
@@ -22,6 +16,12 @@ from sidekick_usages.persistence.models.artifact import (
     FileIdentity,
     FileSnapshot,
     ManagedArtifact,
+)
+from sidekick_usages.persistence.platform.contracts import (
+    NativeFailureKind,
+    NativeFile,
+    NativeFilesystemError,
+    NativePlatform,
 )
 from sidekick_usages.persistence.types.artifact import (
     ArtifactPurpose,

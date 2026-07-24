@@ -13,7 +13,7 @@ from sidekick_usages.cli.context import (
 )
 from sidekick_usages.cli.help import branded_command
 from sidekick_usages.core.types import ExitCode, ProviderId
-from sidekick_usages.doctor import (
+from sidekick_usages.doctor.service import (
     DoctorFailedResult,
     DoctorReadyResult,
     DoctorResult,
