@@ -23,9 +23,6 @@ if sys.platform == "win32":
 
     from sidekick_usages.persistence._platform import windows_files
     from sidekick_usages.persistence._platform.windows_files import (
-        copy_private_file as _copy_private_file,
-    )
-    from sidekick_usages.persistence._platform.windows_files import (
         create_private_file as _create_private_file,
     )
     from sidekick_usages.persistence._platform.windows_files import (
@@ -376,20 +373,6 @@ if sys.platform == "win32":
             """Read one bounded protected non-reparse sibling."""
             return _read_file(parent, basename, limit)
 
-        def read_external_private_source(
-            self,
-            parent: Path,
-            basename: str,
-            limit: int,
-        ) -> NativeFile | None:
-            """Read one private source below an owner-controlled parent."""
-            return _read_file(
-                parent,
-                basename,
-                limit,
-                external_source=True,
-            )
-
         def create_private(
             self,
             parent: Path,
@@ -398,21 +381,6 @@ if sys.platform == "win32":
         ) -> NativeFile:
             """Create a private write-through file and verify it."""
             return _create_private_file(parent, basename, data)
-
-        def copy_private(
-            self,
-            parent: Path,
-            source_basename: str,
-            destination_basename: str,
-            expected: bytes,
-        ) -> NativeFile:
-            """Copy security with ``CopyFileW`` and verify exact bytes."""
-            return _copy_private_file(
-                parent,
-                source_basename,
-                destination_basename,
-                expected,
-            )
 
         def publish_no_replace(
             self,

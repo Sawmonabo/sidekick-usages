@@ -275,54 +275,6 @@ if sys.platform == "win32":
                 raise _native_error(NativeFailureKind.WRITE)
             return reopened
 
-    def copy_private_file(
-        parent: Path,
-        source_basename: str,
-        destination_basename: str,
-        expected: bytes,
-    ) -> NativeFile:
-        """Copy validated source bytes into a newly protected file."""
-        parent_descriptor = open_directory(parent)
-        with owned_descriptor(
-            parent_descriptor,
-            NativeFailureKind.CREATE,
-        ):
-            source_descriptor = open_existing(
-                parent,
-                source_basename,
-                parent_descriptor,
-                writable=False,
-            )
-            with owned_descriptor(
-                source_descriptor,
-                NativeFailureKind.UNREADABLE,
-            ):
-                source = read_descriptor(
-                    source_descriptor,
-                    metadata(
-                        parent_descriptor,
-                        NativeFailureKind.UNREADABLE,
-                    ).st_dev,
-                    len(expected),
-                )
-                if source.data != expected:
-                    raise _native_error(NativeFailureKind.CHANGED)
-                copied = create_private_file(
-                    parent,
-                    destination_basename,
-                    expected,
-                )
-                validate_membership(
-                    parent_descriptor,
-                    msvcrt.get_osfhandle(source_descriptor),
-                    source_basename,
-                )
-                if not require_exact_entry(parent, source_basename):
-                    raise _native_error(NativeFailureKind.CHANGED)
-            if copied.data != expected:
-                raise _native_error(NativeFailureKind.WRITE)
-            return copied
-
     def publish_no_replace(
         parent: Path,
         temporary_basename: str,
@@ -509,7 +461,6 @@ if sys.platform == "win32":
 
 
 __all__ = [
-    "copy_private_file",
     "create_private_file",
     "harden_file",
     "open_directory",

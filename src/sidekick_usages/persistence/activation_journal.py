@@ -25,11 +25,8 @@ from sidekick_usages.core.selection.types import (
     ProviderRuntimeState,
 )
 from sidekick_usages.core.types import ProviderId
-from sidekick_usages.persistence.artifacts import (
-    AuthorityExpectation,
-    FileSnapshot,
-)
 from sidekick_usages.persistence.locking import PersistenceLock
+from sidekick_usages.persistence.models.artifact import FileSnapshot
 from sidekick_usages.persistence.models.selection import (
     MAX_ACTIVATION_HISTORY,
     ActivationJournalDocument,
@@ -49,6 +46,7 @@ from sidekick_usages.persistence.state_filesystem import (
     ManagedStateFilesystem,
 )
 from sidekick_usages.persistence.types.activation import StateLockFactory
+from sidekick_usages.persistence.types.artifact import AuthorityExpectation
 
 __all__ = [
     "ActivationJournalStore",

@@ -4,10 +4,10 @@ from collections.abc import Iterator
 
 from sidekick_usages.core.accounts.models import (
     ClaudeAccountAuthority,
-    ClaudeLegacyLoginAuthority,
     ClaudeSetupTokenAuthority,
+    ClaudeStoredLoginAuthority,
     CodexAccountAuthority,
-    CodexLegacyAuthority,
+    CodexStoredAuthority,
     SavedAccount,
 )
 from sidekick_usages.core.accounts.types import (
@@ -27,14 +27,21 @@ from sidekick_usages.core.models import (
 from sidekick_usages.core.types import AccountLabel, ProviderId
 from sidekick_usages.persistence.models.account import VersionThreeDocument
 
+__all__ = [
+    "AccountIndex",
+    "AccountLabelAmbiguityError",
+    "safe_error_code",
+    "saved_account_from_runtime",
+]
+
 
 class AccountLabelAmbiguityError(ValueError):
     """A label-only lookup matches more than one provider."""
 
 
-def legacy_error_code(value: str | None) -> str | None:
-    """Collapse legacy display text to one non-secret durable code."""
-    return None if value is None else "legacy_failure"
+def safe_error_code(value: str | None) -> str | None:
+    """Collapse provider display text to one non-secret durable code."""
+    return None if value is None else "provider_failure"
 
 
 def _provider_identity(account: Account) -> ProviderIdentity | None:
@@ -58,11 +65,11 @@ def _provider_identity(account: Account) -> ProviderIdentity | None:
     return None
 
 
-def _legacy_authority(
+def _stored_authority(
     account: Account,
     authority_id: AuthorityId,
 ) -> ClaudeAccountAuthority | CodexAccountAuthority:
-    """Create secret-free authority metadata for one legacy account."""
+    """Create secret-free authority metadata for stored credentials."""
     credentials = account.credentials
     if isinstance(credentials, ClaudeSetupTokenCredentials):
         return ClaudeAccountAuthority(
@@ -75,7 +82,7 @@ def _legacy_authority(
         )
     if isinstance(credentials, ClaudeLoginCredentials):
         return ClaudeAccountAuthority(
-            subscription=ClaudeLegacyLoginAuthority(
+            subscription=ClaudeStoredLoginAuthority(
                 authority_id=authority_id,
                 provider_identity=_provider_identity(account),
                 access_expires_at=credentials.access_expiry.at,
@@ -84,7 +91,7 @@ def _legacy_authority(
                     if isinstance(credentials.refresh_expiry, KnownExpiry)
                     else None
                 ),
-                health=CredentialHealth.MIGRATION_REQUIRED,
+                health=CredentialHealth.UNKNOWN,
                 observed_at=account.last_refresh_at,
             )
         )
@@ -94,7 +101,7 @@ def _legacy_authority(
         else None
     )
     return CodexAccountAuthority(
-        subscription=CodexLegacyAuthority(
+        subscription=CodexStoredAuthority(
             authority_id=authority_id,
             provider_identity=_provider_identity(account),
             expires_at=(
@@ -103,31 +110,30 @@ def _legacy_authority(
                 else None
             ),
             generation=generation,
-            health=CredentialHealth.MIGRATION_REQUIRED,
+            health=CredentialHealth.UNKNOWN,
             observed_at=account.last_refresh_at,
         )
     )
 
 
-def legacy_saved_account(
+def saved_account_from_runtime(
     account: Account,
     *,
     account_id: SidekickAccountId,
     authority_id: AuthorityId,
 ) -> SavedAccount:
-    """Convert one legacy runtime account to secret-free index metadata."""
+    """Convert one runtime account to secret-free index metadata."""
     return SavedAccount(
         account_id=account_id,
         label=account.label,
         provider_id=account.provider_id,
         plan=account.plan,
-        authority=_legacy_authority(account, authority_id),
-        credential_health=CredentialHealth.MIGRATION_REQUIRED,
+        authority=_stored_authority(account, authority_id),
+        credential_health=CredentialHealth.UNKNOWN,
         last_refresh_at=account.last_refresh_at,
         last_refresh_status=account.last_refresh_status,
-        last_refresh_error_code=legacy_error_code(account.last_refresh_error),
+        last_refresh_error_code=safe_error_code(account.last_refresh_error),
         heartbeat_enabled=account.heartbeat_enabled,
-        heartbeat_5h_reset_at=account.heartbeat_5h_reset_at,
         heartbeat_window_resets=(
             tuple(account.heartbeat_window_resets.items())
             if account.heartbeat_window_resets is not None
@@ -136,7 +142,7 @@ def legacy_saved_account(
         heartbeat_targets=account.heartbeat_targets,
         last_heartbeat_at=account.last_heartbeat_at,
         last_heartbeat_status=account.last_heartbeat_status,
-        last_heartbeat_error_code=legacy_error_code(
+        last_heartbeat_error_code=safe_error_code(
             account.last_heartbeat_error
         ),
     )
@@ -215,15 +221,15 @@ class AccountIndex:
         self._labels[target_key] = account.account_id
         self._accounts[account.account_id] = account
 
-    def add_legacy(
+    def add_runtime(
         self,
         account: Account,
         *,
         account_id: SidekickAccountId,
         authority_id: AuthorityId,
     ) -> SavedAccount:
-        """Convert and add one legacy runtime account without its secret."""
-        saved = legacy_saved_account(
+        """Convert and add one runtime account without its secret."""
+        saved = saved_account_from_runtime(
             account,
             account_id=account_id,
             authority_id=authority_id,
@@ -275,11 +281,3 @@ class AccountIndex:
     def document(self) -> VersionThreeDocument:
         """Return the current immutable document candidate."""
         return VersionThreeDocument(tuple(self._accounts.values()))
-
-
-__all__ = [
-    "AccountIndex",
-    "AccountLabelAmbiguityError",
-    "legacy_error_code",
-    "legacy_saved_account",
-]

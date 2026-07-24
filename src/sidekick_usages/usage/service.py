@@ -26,7 +26,6 @@ from sidekick_usages.credentials import CredentialUpdateResult
 from sidekick_usages.credentials.authorities import (
     AuthenticatedSavedAccount,
     CredentialResolver,
-    EmbeddedAccountResolver,
 )
 from sidekick_usages.credentials.refresh import CredentialRefreshReason
 from sidekick_usages.errors import (
@@ -127,7 +126,7 @@ class UsageCheckService:
         ]
         | None = None,
         activity_snapshots: AccountTokenActivitySnapshots | None = None,
-        resolver: CredentialResolver | None = None,
+        resolver: CredentialResolver,
     ) -> None:
         """Bind usage checking to its invocation-scoped dependencies.
 
@@ -147,7 +146,6 @@ class UsageCheckService:
         self._credentials = credentials
         self._clock = clock
         self._resolver = resolver
-        self._embedded_resolver = EmbeddedAccountResolver()
         self._activity = TokenActivityCollector(
             http,
             ({} if local_activity_sources is None else local_activity_sources),
@@ -179,9 +177,7 @@ class UsageCheckService:
             if provider_id is None
             else tuple(self._store.filter_by_provider(provider_id))
         )
-        saved_accounts = (
-            self._store.saved_accounts() if self._resolver is not None else ()
-        )
+        saved_accounts = self._store.saved_accounts()
         reference_time = self._clock.now()
         usages: list[AccountUsage] = []
         failures: list[FetchFailure] = []
@@ -333,9 +329,7 @@ class UsageCheckService:
         self,
         account: Account,
     ) -> AbstractContextManager[AuthenticatedSavedAccount]:
-        """Open a qualified v3 lease or the isolated compatibility lease."""
-        if self._resolver is None:
-            return self._embedded_resolver.open(account)
+        """Open one qualified credential lease."""
         saved = next(
             (
                 candidate
@@ -468,11 +462,11 @@ class UsageCheckService:
         except PersistenceError as error:
             return self._persistence_failure(account, error)
         if outcome.refreshed:
-            refreshed = self._store.get(str(account.label))
-            if (
-                refreshed is None
-                or refreshed.provider_id is not account.provider_id
-            ):
+            refreshed = self._store.get(
+                str(account.label),
+                provider_id=account.provider_id,
+            )
+            if refreshed is None:
                 return self._persistence_failure(
                     account,
                     SourceChangedError(),

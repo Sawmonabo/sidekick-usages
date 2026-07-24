@@ -1,5 +1,6 @@
 """Identifiers and closed values for secret-free saved accounts."""
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import ClassVar, Self
@@ -55,6 +56,10 @@ class RequestId(_CanonicalUuid):
     _name = "Request ID"
 
 
+type AccountIdFactory = Callable[[], SidekickAccountId]
+type AuthorityIdFactory = Callable[[], AuthorityId]
+
+
 @dataclass(frozen=True, slots=True)
 class ProviderIdentity:
     """Bounded provider identity hidden from representations."""
@@ -99,7 +104,6 @@ class CredentialHealth(StrEnum):
     HEALTHY = "healthy"
     REFRESH_DUE = "refresh_due"
     LOGIN_REQUIRED = "login_required"
-    MIGRATION_REQUIRED = "migration_required"
     UNREADABLE = "unreadable"
     MALFORMED = "malformed"
     UNSUPPORTED = "unsupported"

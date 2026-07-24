@@ -5,7 +5,6 @@ from contextlib import AbstractContextManager, contextmanager
 from enum import StrEnum
 from types import TracebackType
 from typing import Protocol, Self
-from uuid import UUID, uuid5
 
 from sidekick_usages.core.accounts.models import (
     AuthenticatedAccount,
@@ -18,28 +17,46 @@ from sidekick_usages.core.accounts.types import (
 from sidekick_usages.core.models import Account
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.errors import UsageError
-from sidekick_usages.persistence.account_index import legacy_saved_account
 from sidekick_usages.persistence.account_runtime_bridge import (
-    ManagedAuthorityResolutionError,
-    active_legacy_reference,
+    CredentialAuthorityUnavailableError,
+    active_stored_reference,
     require_active_authority_kind,
     runtime_account_from_saved,
 )
-from sidekick_usages.persistence.account_store import (
-    StableAccountIndexUnavailableError,
-)
-from sidekick_usages.persistence.credential_authorities import (
+from sidekick_usages.persistence.credential_repository import (
     CredentialAuthorityRepository,
-    LegacyCredentialAuthority,
-    authority_for_account,
 )
 from sidekick_usages.persistence.errors import (
     InvalidSchemaError,
     PersistenceFilesystemError,
 )
+from sidekick_usages.persistence.models.credential import (
+    StoredCredentialAuthority,
+)
 from sidekick_usages.persistence.private_credentials import (
     PrivateCredentialTree,
 )
+
+__all__ = [
+    "AuthenticatedAccountResolver",
+    "AuthenticatedSavedAccount",
+    "ClosedCredentialLeaseError",
+    "CredentialAuthorityError",
+    "CredentialAuthorityFailureKind",
+    "CredentialAuthorityReader",
+    "CredentialLease",
+    "CredentialLeaseFactory",
+    "CredentialResolver",
+    "MalformedCredentialAuthorityError",
+    "ManagedCredentialAuthorityError",
+    "MismatchedCredentialAuthorityError",
+    "MissingCredentialAuthorityError",
+    "ProtectedCredentialAuthorityReader",
+    "RetiredCredentialAuthorityError",
+    "SavedAccountSource",
+    "UnreadableCredentialAuthorityError",
+    "credential_resolver_for",
+]
 
 
 class CredentialAuthorityFailureKind(StrEnum):
@@ -141,7 +158,7 @@ class ClosedCredentialLeaseError(CredentialAuthorityError):
 class CredentialAuthorityReader(Protocol):
     """Read one qualified authority without exposing persistence details."""
 
-    def read(self, account: SavedAccount) -> LegacyCredentialAuthority:
+    def read(self, account: SavedAccount) -> StoredCredentialAuthority:
         """Return the exact protected authority for ``account``."""
 
 
@@ -156,22 +173,22 @@ class CredentialResolver(Protocol):
 
 
 class SavedAccountSource(Protocol):
-    """Expose a stable no-secret account index after migration."""
+    """Expose the stable no-secret current account index."""
 
     def saved_accounts(self) -> tuple[SavedAccount, ...]:
         """Return the loaded stable account index."""
 
 
 class ProtectedCredentialAuthorityReader:
-    """Read legacy authorities through qualified protected persistence."""
+    """Read stored authorities through qualified protected persistence."""
 
     def __init__(self, repository: CredentialAuthorityRepository) -> None:
         self._repository = repository
 
-    def read(self, account: SavedAccount) -> LegacyCredentialAuthority:
+    def read(self, account: SavedAccount) -> StoredCredentialAuthority:
         """Read and validate the account's exact active authority."""
         try:
-            authority_id = active_legacy_reference(account)
+            authority_id = active_stored_reference(account)
             authority = self._repository.read(
                 account.account_id,
                 authority_id,
@@ -179,7 +196,7 @@ class ProtectedCredentialAuthorityReader:
             if authority is None:
                 raise MissingCredentialAuthorityError
             require_active_authority_kind(account, authority)
-        except ManagedAuthorityResolutionError:
+        except CredentialAuthorityUnavailableError:
             raise ManagedCredentialAuthorityError from None
         except InvalidSchemaError:
             raise MalformedCredentialAuthorityError from None
@@ -209,12 +226,12 @@ class CredentialLease:
     def __init__(
         self,
         account: SavedAccount,
-        authority: LegacyCredentialAuthority,
+        authority: StoredCredentialAuthority,
     ) -> None:
         """Bind one protected authority to its exact saved account."""
         try:
-            expected_authority_id = active_legacy_reference(account)
-        except ManagedAuthorityResolutionError:
+            expected_authority_id = active_stored_reference(account)
+        except CredentialAuthorityUnavailableError:
             raise ManagedCredentialAuthorityError from None
         except InvalidSchemaError:
             raise MalformedCredentialAuthorityError from None
@@ -227,7 +244,7 @@ class CredentialLease:
         self._account_id = account.account_id
         self._authority_id = authority.authority_id
         self._provider_id = account.provider_id
-        self._authority: LegacyCredentialAuthority | None = authority
+        self._authority: StoredCredentialAuthority | None = authority
         self._saved: SavedAccount | None = account
         self._runtime: Account | None = None
         self._closed = False
@@ -331,84 +348,15 @@ class AuthenticatedAccountResolver:
 def credential_resolver_for(
     source: SavedAccountSource,
     tree: PrivateCredentialTree,
-) -> CredentialResolver | None:
-    """Compose protected leases only for a schema-v3 account source."""
-    try:
-        source.saved_accounts()
-    except StableAccountIndexUnavailableError:
-        return None
+) -> CredentialResolver:
+    """Compose protected leases for the current stable account source."""
+    source.saved_accounts()
     return AuthenticatedAccountResolver(
         ProtectedCredentialAuthorityReader(CredentialAuthorityRepository(tree))
     )
 
 
-_COMPATIBILITY_ACCOUNT_NAMESPACE = UUID("31813015-a2d8-46a2-85d5-f63704a76c25")
-_COMPATIBILITY_AUTHORITY_NAMESPACE = UUID(
-    "97cc1d31-152c-4c99-93ec-876c95002cdc"
-)
-
-
-class EmbeddedAccountResolver:
-    """Lease schema-v2 runtime credentials during staged compatibility."""
-
-    def open(
-        self,
-        account: Account,
-    ) -> AbstractContextManager[AuthenticatedSavedAccount]:
-        """Return a scoped authenticated projection of one legacy account."""
-        return self._open(account)
-
-    @contextmanager
-    def _open(
-        self,
-        account: Account,
-    ) -> Iterator[AuthenticatedSavedAccount]:
-        key = f"{account.provider_id.value}\0{account.label}"
-        account_id = SidekickAccountId(
-            str(uuid5(_COMPATIBILITY_ACCOUNT_NAMESPACE, key))
-        )
-        authority_id = AuthorityId(
-            str(uuid5(_COMPATIBILITY_AUTHORITY_NAMESPACE, key))
-        )
-        saved = legacy_saved_account(
-            account,
-            account_id=account_id,
-            authority_id=authority_id,
-        )
-        authority = authority_for_account(
-            account,
-            account_id=account_id,
-            authority_id=authority_id,
-        )
-        lease = CredentialLease(saved, authority)
-        with lease:
-            yield AuthenticatedAccount(account=saved, lease=lease)
-
-
 type CredentialLeaseFactory = Callable[
     [SavedAccount],
     AbstractContextManager[AuthenticatedSavedAccount],
-]
-
-
-__all__ = [
-    "AuthenticatedAccountResolver",
-    "AuthenticatedSavedAccount",
-    "ClosedCredentialLeaseError",
-    "CredentialAuthorityError",
-    "CredentialAuthorityFailureKind",
-    "CredentialAuthorityReader",
-    "CredentialLease",
-    "CredentialLeaseFactory",
-    "CredentialResolver",
-    "EmbeddedAccountResolver",
-    "MalformedCredentialAuthorityError",
-    "ManagedCredentialAuthorityError",
-    "MismatchedCredentialAuthorityError",
-    "MissingCredentialAuthorityError",
-    "ProtectedCredentialAuthorityReader",
-    "RetiredCredentialAuthorityError",
-    "SavedAccountSource",
-    "UnreadableCredentialAuthorityError",
-    "credential_resolver_for",
 ]

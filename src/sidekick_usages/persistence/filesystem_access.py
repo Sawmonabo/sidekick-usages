@@ -21,13 +21,9 @@ elif sys.platform.startswith("linux"):
     from sidekick_usages.persistence._platform.posix import PosixPlatform
 from sidekick_usages.persistence.artifacts import (
     ArtifactGrammar,
-    FileSnapshot,
-    ManagedArtifact,
-    ManagedArtifactKind,
     require_safe_basename,
 )
 from sidekick_usages.persistence.errors import (
-    BackupConflictError,
     CandidateWriteError,
     DurabilityUncertainError,
     InterruptedArtifactError,
@@ -40,6 +36,11 @@ from sidekick_usages.persistence.errors import (
     UnsupportedFilesystemError,
 )
 from sidekick_usages.persistence.limits import MAX_DOCUMENT_BYTES
+from sidekick_usages.persistence.models.artifact import (
+    FileSnapshot,
+    ManagedArtifact,
+)
+from sidekick_usages.persistence.types.artifact import ManagedArtifactKind
 
 __all__ = ["PersistenceFilesystemAccess"]
 
@@ -135,26 +136,6 @@ class PersistenceFilesystemAccess(RecoveryOperations):
         """Read the current authority without following its final object."""
         self.qualify()
         return self._read(self.grammar.authority_basename, MAX_DOCUMENT_BYTES)
-
-    def read_external_private_source(self) -> FileSnapshot | None:
-        """Read one private import source from an owner-controlled parent."""
-        self.qualify()
-        try:
-            native = self._native.read_external_private_source(
-                self._parent,
-                self.grammar.authority_basename,
-                MAX_DOCUMENT_BYTES,
-            )
-        except NativeFilesystemError as error:
-            raise self._read_error(
-                self.grammar.authority_basename,
-                error,
-            ) from None
-        if native is None:
-            return None
-        if native.link_count != _SINGLE_LINK:
-            raise UnsafeManagedFileError(self.grammar.authority_basename)
-        return self._native_snapshot(native)
 
     def read_managed(
         self,
@@ -279,16 +260,6 @@ class PersistenceFilesystemAccess(RecoveryOperations):
             artifact = self.grammar.parse(basename)
             if artifact is None:
                 return ManagedFileReadError(basename)
-            if artifact.kind in {
-                ManagedArtifactKind.GENERATION_ZERO_BACKUP,
-                ManagedArtifactKind.VERSION_ONE_SNAPSHOT,
-                ManagedArtifactKind.VERSION_TWO_SNAPSHOT,
-                ManagedArtifactKind.VERSION_THREE_SNAPSHOT,
-            }:
-                return BackupConflictError(basename)
-            if artifact.kind in {
-                ManagedArtifactKind.AUTHORITY,
-                ManagedArtifactKind.PROTOTYPE_RECEIPT,
-            }:
+            if artifact.kind is ManagedArtifactKind.AUTHORITY:
                 return InvalidManagedArtifactError(basename)
         return ManagedFileReadError(basename)

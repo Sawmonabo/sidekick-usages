@@ -62,6 +62,7 @@ from tests.test_support import (
     REFERENCE_TIME,
     CliHarness,
     FixedClock,
+    RuntimeCredentialResolver,
     make_account_store,
     make_account_store_with_private,
     make_app_context,
@@ -220,7 +221,6 @@ def _acct(
     provider_id: ProviderId = ProviderId.CLAUDE,
     provider_account_id: str | None = None,
     heartbeat_enabled: bool = False,
-    heartbeat_5h_reset_at: datetime | None = None,
     heartbeat_window_resets: dict[str, datetime] | None = None,
     heartbeat_targets: tuple[str, ...] | None = None,
 ) -> Account:
@@ -240,7 +240,6 @@ def _acct(
         credentials=credentials,
         plan="team",
         heartbeat_enabled=heartbeat_enabled,
-        heartbeat_5h_reset_at=heartbeat_5h_reset_at,
         heartbeat_window_resets=heartbeat_window_resets,
         heartbeat_targets=heartbeat_targets,
     )
@@ -250,7 +249,7 @@ def _claude_login_acct(
     *,
     access_expiry_at: datetime,
     heartbeat_enabled: bool = False,
-    heartbeat_5h_reset_at: datetime | None = None,
+    heartbeat_window_resets: dict[str, datetime] | None = None,
 ) -> Account:
     return Account(
         label=AccountLabel("team"),
@@ -263,7 +262,7 @@ def _claude_login_acct(
         ),
         plan="team",
         heartbeat_enabled=heartbeat_enabled,
-        heartbeat_5h_reset_at=heartbeat_5h_reset_at,
+        heartbeat_window_resets=heartbeat_window_resets,
     )
 
 
@@ -336,7 +335,6 @@ def test_account_roundtrips_heartbeat_metadata(tmp_path: Path) -> None:
         [
             _acct(
                 heartbeat_enabled=True,
-                heartbeat_5h_reset_at=_STANDARD_RESET,
                 heartbeat_window_resets={
                     "standard": _STANDARD_RESET,
                     "spark": _SPARK_RESET,
@@ -356,7 +354,6 @@ def test_account_roundtrips_heartbeat_metadata(tmp_path: Path) -> None:
 
     assert restored is not None
     assert restored.heartbeat_enabled is True
-    assert restored.heartbeat_5h_reset_at == _STANDARD_RESET
     assert restored.heartbeat_window_resets == {
         "standard": _STANDARD_RESET,
         "spark": _SPARK_RESET,
@@ -376,6 +373,7 @@ def test_heartbeat_all_skips_disabled_accounts(tmp_path: Path) -> None:
         HttpClient(),
         {ProviderId.CLAUDE: provider},
         clock=FixedClock(),
+        resolver=RuntimeCredentialResolver(store),
     )
 
     outcomes = service.heartbeat_all()
@@ -395,6 +393,7 @@ def test_heartbeat_service_owns_support_display_and_explicit_empty_mapping(
         HttpClient(),
         injected,
         clock=FixedClock(),
+        resolver=RuntimeCredentialResolver(store),
     )
     injected[ProviderId.CLAUDE] = _FakeHeartbeatProvider()
 
@@ -406,6 +405,7 @@ def test_heartbeat_service_owns_support_display_and_explicit_empty_mapping(
         HttpClient(),
         injected,
         clock=FixedClock(),
+        resolver=RuntimeCredentialResolver(store),
     )
     assert configured.support_label(account) == "off"
     account.last_heartbeat_status = HeartbeatStatus.FAILED
@@ -421,6 +421,7 @@ def test_heartbeat_label_runs_even_when_disabled(tmp_path: Path) -> None:
         HttpClient(),
         {ProviderId.CLAUDE: provider},
         clock=FixedClock(),
+        resolver=RuntimeCredentialResolver(store),
     )
 
     outcome = service.heartbeat_account(
@@ -432,7 +433,7 @@ def test_heartbeat_label_runs_even_when_disabled(tmp_path: Path) -> None:
     saved = make_account_store(tmp_path).get("team")
     assert saved is not None
     assert saved.last_heartbeat_status is HeartbeatStatus.WARMED
-    assert saved.heartbeat_5h_reset_at == _STANDARD_RESET
+    assert saved.heartbeat_window_resets == {"standard": _STANDARD_RESET}
 
 
 def test_heartbeat_decision_samples_clock_once(tmp_path: Path) -> None:
@@ -445,7 +446,7 @@ def test_heartbeat_decision_samples_clock_once(tmp_path: Path) -> None:
             _claude_login_acct(
                 heartbeat_enabled=True,
                 access_expiry_at=REFERENCE_TIME + timedelta(hours=1),
-                heartbeat_5h_reset_at=_STANDARD_RESET,
+                heartbeat_window_resets={"standard": _STANDARD_RESET},
             )
         ],
     )
@@ -454,6 +455,7 @@ def test_heartbeat_decision_samples_clock_once(tmp_path: Path) -> None:
         HttpClient(),
         {ProviderId.CLAUDE: provider},
         clock=clock,
+        resolver=RuntimeCredentialResolver(store),
     )
 
     outcome = service.heartbeat_account(store.get("team"))
@@ -484,6 +486,7 @@ def test_heartbeat_cache_is_target_specific(tmp_path: Path) -> None:
         HttpClient(),
         {ProviderId.CODEX: provider},
         clock=clock,
+        resolver=RuntimeCredentialResolver(store),
     )
 
     outcome = service.heartbeat_account(
@@ -513,6 +516,7 @@ def test_heartbeat_persists_failure_per_account(tmp_path: Path) -> None:
         HttpClient(),
         {ProviderId.CLAUDE: provider},
         clock=clock,
+        resolver=RuntimeCredentialResolver(store),
     )
 
     outcome = service.heartbeat_account(store.get("team"))
@@ -523,7 +527,7 @@ def test_heartbeat_persists_failure_per_account(tmp_path: Path) -> None:
     assert saved is not None
     assert saved.last_heartbeat_at == REFERENCE_TIME
     assert saved.last_heartbeat_status is HeartbeatStatus.FAILED
-    assert saved.last_heartbeat_error == "rate limited"
+    assert saved.last_heartbeat_error == "provider_failure"
 
 
 def test_heartbeat_enable_disable_and_status_cli(tmp_path: Path) -> None:
@@ -576,7 +580,6 @@ def test_status_builders_share_one_typed_row_for_human_and_json() -> None:
     """Human and machine views cannot derive different account facts."""
     account = _acct(
         heartbeat_enabled=True,
-        heartbeat_5h_reset_at=_STANDARD_RESET,
         heartbeat_window_resets={
             "standard": _STANDARD_RESET,
             "spark": _SPARK_RESET,
@@ -600,7 +603,6 @@ def test_status_builders_share_one_typed_row_for_human_and_json() -> None:
                 "heartbeat": "on",
                 "heartbeat_supported": True,
                 "heartbeat_enabled": True,
-                "heartbeat_5h_reset_at": "2026-06-12T18:00:00Z",
                 "heartbeat_window_resets": {
                     "standard": "2026-06-12T18:00:00Z",
                     "spark": "2026-06-12T19:00:00Z",

@@ -10,11 +10,11 @@ one lean per-user supervisor, isolated worker runtime, and Linux, WSL, and
 macOS service lifecycle required by global Claude and Codex account
 selection.
 
-**Architecture:** Migrate the token-owning schema-version-two account store
-into a stable-ID schema-version-three index plus qualified protected
-credential authorities. Convert `daemon.py` into a cohesive package whose
-resident process owns only a bounded peer-authenticated Unix socket, durable
-scheduling, activation recovery, and a reserved Codex callback lane.
+**Architecture:** Use one clean-break stable-ID schema-version-three index plus
+qualified protected credential authorities. The runtime does not read or
+convert earlier Sidekick layouts. Convert `daemon.py` into a cohesive package
+whose resident process owns only a bounded peer-authenticated Unix socket,
+durable scheduling, activation recovery, and a reserved Codex callback lane.
 Provider-heavy work stays in hard-deadline child processes. Existing
 filesystem locks remain the final cross-process authority.
 
@@ -36,12 +36,12 @@ systemd user services, WSL Task Scheduler rescue, macOS LaunchAgents, pytest
 - The schema-version-three account index, selected state, activation journal,
   queue, service state, socket protocol, process arguments, and logs contain
   no credential values.
-- Existing setup tokens and legacy migration credentials may move only through
-  a qualified, atomic CLI migration into owner-only Sidekick secret
-  authorities. They are never duplicated and are deleted only after a
-  provider-owned replacement is proven.
-- Once any account has a managed Claude or Codex authority, preparation for
-  Sidekick 0.6.0 rollback must fail before any mutation.
+- Do not add compatibility readers, migration commands, rollback writers,
+  deprecated aliases, or re-export facades. Earlier Sidekick state is not a
+  runtime input.
+- At final rollout, uninstall the current local installation, install the
+  clean-break build, and recreate each account through supported Sidekick and
+  official provider login commands. Never copy or edit credential files.
 - The supervisor must not import provider-heavy modules, HTTP clients, Rich,
   Typer, `prompt_toolkit`, Keychain adapters, or credential schemas. The Codex
   phase may add one audited lightweight broker-wire leaf that imports only the
@@ -92,12 +92,12 @@ systemd user services, WSL Task Scheduler rescue, macOS LaunchAgents, pytest
   packaging, and Homebrew output.
 - Each task must leave the package installable and its currently exposed
   commands valid.
-- Commit after each numbered task with the listed Conventional Commit
-  message. Do not push until explicitly authorized.
+- Commit and push after each numbered task with the listed Conventional
+  Commit message.
 
 ---
 
-- **Status:** Approved; not implemented
+- **Status:** Approved; implementation in progress
 - **Date:** 2026-07-23
 - **Repository:** `/home/sabossedgh/dev/sidekick-usages`
 - **Branch:** `develop`
@@ -116,10 +116,10 @@ The completed foundation provides these boundaries without implementing
 provider-specific switching:
 
 1. Every saved account has a random stable Sidekick account ID that survives
-   rename, selection, migration, and restart.
+   rename, selection, and restart.
 2. `accounts.json` contains labels, plans, health, provider identity, and
    authority metadata, but no access, refresh, ID, or setup token.
-3. Existing setup tokens and pre-managed login credentials live in separate
+3. Stored setup tokens and provider login credentials live in separate
    owner-only per-account authorities until their provider plan replaces or
    retires them.
 4. A read-only account record and a short-lived credential lease are distinct
@@ -131,8 +131,8 @@ provider-specific switching:
    starts bounded workers.
 9. Linux and macOS use one resident user service. WSL uses that same Linux
    service plus a Windows logon rescue trigger, never a second scheduler.
-10. The legacy periodic scheduler is removed only after the new service is
-    ready and has completed a truthful maintenance pass.
+10. The final current-machine rollout removes the installed periodic
+    scheduler before installing and verifying the new resident service.
 
 The account index uses this structural shape. Exact JSON key order is
 canonical and tested.
@@ -150,17 +150,29 @@ canonical and tested.
         "setup_token": {
           "authority_id": "a050a4a2-357b-4923-aeed-ed5866475853",
           "expires_at": null,
-          "health": "healthy"
+          "health": "healthy",
+          "observed_at": null
         },
         "subscription": {
-          "kind": "legacy",
+          "kind": "stored",
           "authority_id": "671bd641-87e7-450c-91c9-04863abf3462",
           "provider_identity": null,
-          "generation": null,
-          "health": "migration_required"
+          "access_expires_at": null,
+          "refresh_expires_at": null,
+          "health": "healthy",
+          "observed_at": null
         }
       },
-      "credential_health": "migration_required"
+      "credential_health": "healthy",
+      "last_refresh_at": null,
+      "last_refresh_status": null,
+      "last_refresh_error_code": null,
+      "heartbeat_enabled": false,
+      "heartbeat_window_resets": null,
+      "heartbeat_targets": null,
+      "last_heartbeat_at": null,
+      "last_heartbeat_status": null,
+      "last_heartbeat_error_code": null
     }
   }
 }
@@ -180,16 +192,16 @@ A Claude authority record has optional `setup_token` and `subscription`
 members. `setup_token` contains an authority ID, fixed expiry when known,
 health, and observation time. `subscription` is exactly one of:
 
-- `legacy`, containing an authority ID plus available identity and expiry
+- `stored`, containing an authority ID plus available identity and expiry
   metadata; or
 - `managed`, containing an authority ID, complete provider identity, provider
   generation, verified time, executable version, and health.
 
 A Codex authority record has exactly one `subscription` member with the same
-`legacy` or `managed` distinction. A managed Codex record requires complete
+`stored` or `managed` distinction. A managed Codex record requires complete
 provider identity and generation.
 
-Every legacy or setup-token authority ID resolves to one owner-only secret
+Every stored or setup-token authority ID resolves to one owner-only secret
 file whose strict schema binds schema version, authority ID, Sidekick account
 ID, provider, credential kind, and the minimum credential fields for that
 kind. A managed provider-owned private profile is derived from the Sidekick
@@ -214,22 +226,23 @@ mutation.
 
 ### 3.1 Core
 
-Create `src/sidekick_usages/core/accounts.py` with:
+Keep account types in the cohesive `src/sidekick_usages/core/accounts/`
+package:
 
 - `SidekickAccountId`, a validated canonical UUID string;
 - `AuthorityId`, a validated opaque identifier;
 - `AuthorityGeneration`, a bounded opaque provider generation;
 - `CredentialHealth`, with `healthy`, `refresh_due`, `login_required`,
-  `migration_required`, `unreadable`, `malformed`, `unsupported`,
-  `reconciliation_required`, and `unknown`;
+  `unreadable`, `malformed`, `unsupported`, `reconciliation_required`, and
+  `unknown`;
 - `MetricsFreshness`, with `fresh`, `stale`, and `unavailable`;
 - `ClaudeSetupTokenAuthority`, containing only secret-reference presence and
   fixed-lifetime metadata;
-- `ClaudeLegacyLoginAuthority`;
+- `ClaudeStoredLoginAuthority`;
 - `ClaudeManagedLoginAuthority`;
 - `ClaudeAccountAuthority`, which permits a setup token and one subscription
   authority on the same logical account;
-- `CodexLegacyAuthority`;
+- `CodexStoredAuthority`;
 - `CodexManagedAuthority`;
 - `SavedAccount`, the immutable no-secret account record; and
 - `AuthenticatedAccount`, the worker-only combination of a saved account and
@@ -255,8 +268,8 @@ Create `src/sidekick_usages/core/selection.py` with:
 `ProviderRuntimeState` distinguishes `saved_active`, `external_active`,
 `logged_out`, `unreadable`, and `unsupported`. `ActivationPhase` uses the
 seven persisted names listed in Task 3. `OperationKind` distinguishes
-`maintain`, `refresh`, `usage`, `activity`, `login`, `migrate`, `activate`,
-`repair`, and `reconcile`. Priority order is `codex_callback`,
+`maintain`, `refresh`, `usage`, `activity`, `login`, `activate`, `repair`,
+and `reconcile`. Priority order is `codex_callback`,
 `interactive`, then `scheduled`.
 
 Keep path values, Pydantic, filesystem access, process behavior, and provider
@@ -264,23 +277,22 @@ imports out of `core/`.
 
 ### 3.2 Persistence
 
-Create these focused owners:
+Keep these focused owners:
 
-- `persistence/account_schema_v3.py`: strict schema-version-three codec;
+- `persistence/schema/account.py`: strict schema-version-three codec;
 - `persistence/account_index.py`: no-secret account index transactions;
-- `persistence/credential_authorities.py`: protected per-account secret
-  authority reads, one-time migration writes, and verified retirement;
+- `persistence/credential_repository.py`: protected per-account authority
+  reads and writes;
 - `persistence/selected_state.py`: provider selected-state store;
 - `persistence/activation_journal.py`: activation state machine persistence;
 - `persistence/operation_queue.py`: durable due/retry operations;
 - `persistence/service_state.py`: service protocol and readiness observations;
-- `persistence/managed_migration.py`: atomic v2-to-v3 migration;
-- `persistence/managed_rollback.py`: v0.6 compatibility preflight; and
 - `persistence/state_validation.py`: recursive no-secret key and value
   validation for all non-secret state.
 
-`persistence/account_store.py` remains the public account workflow facade but
-delegates version-three work to the new owners. Do not grow it past 800 lines.
+`persistence/account_store.py` remains the public account workflow facade.
+It delegates schema, protected credentials, filesystem qualification, and
+transaction behavior to their owning modules.
 
 ### 3.3 Application paths
 
@@ -332,7 +344,6 @@ Atomically replace `src/sidekick_usages/daemon.py` with:
 - `daemon/systemd.py`: Linux and WSL user service backend;
 - `daemon/launchd.py`: macOS LaunchAgent backend;
 - `daemon/wsl.py`: Windows rescue-task generation and verification;
-- `daemon/legacy.py`: old schedule detection and safe retirement;
 - `daemon/manager.py`: public install, status, readiness, and uninstall
   facade;
 - `daemon/entrypoint.py`: supervisor console entry point; and
@@ -343,93 +354,51 @@ The supervisor import graph ends at standard-library modules, `clock.py`,
 package. The worker entry point is the only daemon package module allowed to
 compose `credentials/`, providers, HTTP, maintenance, heartbeat, or usage.
 
-## 4. Task 1 — Stable Account IDs and No-Secret Schema Version Three
+## 4. Task 1 — Clean-Break Stable Account Storage
 
-**Commit:** `feat(persistence): add managed account authorities`
+**Commits:** `feat(persistence): add managed account authorities`,
+`refactor(persistence): remove compatibility storage`
 
-### Tests first
+### Tests
 
-- [ ] Extend the closest existing core/account-store test with one schema
-  contract scenario: stable ID survives rename, provider-qualified labels
-  resolve correctly, Claude may retain both authorities, and every public
-  representation and index encoding is secret-free. Include one
-  representative invalid authority combination.
-- [ ] Extend the existing migration/rollback suite with one transaction
-  scenario: v2 data migrates atomically with labels, setup-token metadata,
-  heartbeat, and metrics preserved; an injected interruption retains a
-  recoverable source; and any managed authority makes v0.6 preparation fail
-  before byte changes.
-- [ ] Do not create separate schema, store-operation, migration-crash, and
-  rollback-matrix files. Delete or fold any older assertion made redundant by
-  these two public-boundary scenarios.
-- [ ] Run the focused tests and confirm they fail because schema version three
-  and stable account IDs do not exist:
-
-```bash
-uv run pytest \
-  tests/test_core_models.py \
-  tests/test_persistence_account_store.py \
-  tests/test_persistence_migrations.py \
-  tests/test_persistence_rollback_coordinator.py
-```
+- [x] Keep three account-store tests proving secret separation, stable
+  identity/state updates, and authority removal.
+- [x] Keep two credential-transaction tests proving authority-last publication
+  and recovery.
+- [x] Prove provider-qualified labels do not share refresh locks or journals.
+- [x] Delete migration, rollback, compatibility, and duplicated schema
+  permutation suites.
 
 ### Implementation
 
-- [ ] Add the core account types from Section 3.1. Use a canonical lowercase
-  hyphenated UUID. Generate IDs only at the application or persistence
-  boundary through an injected factory.
-- [ ] Add strict version-three Pydantic declarations. Key the account map by
-  stable ID and retain the label as mutable metadata.
-- [ ] Represent Claude setup-token and subscription authorities separately so
-  one logical account can own both without duplicate dashboard rows or
-  metrics.
-- [ ] Represent legacy Claude and Codex credentials only by an
-  `AuthorityId`. Do not place their values or filesystem paths in
-  `accounts.json`.
-- [ ] Move each existing secret exactly once into a qualified owner-only
-  per-account authority during the v2-to-v3 CLI migration. Stage all files,
-  validate them, fsync them, atomically publish the index, and retain recovery
-  evidence until the transaction commits.
-- [ ] Preserve setup-token fixed-lifetime metadata and all current refresh,
-  heartbeat, metrics, plan, and label state.
-- [ ] Update `AccountStore` so public account workflows use stable IDs
-  internally while accepting exact labels at current CLI boundaries.
-- [ ] Enforce exact label uniqueness within one provider while allowing the
-  same user-facing label for different providers. Label-only legacy commands
-  must reject cross-provider ambiguity and show their provider-qualified
-  equivalent. Preserve exact Unicode label behavior.
-- [ ] Update rename, remove, reset, prototype import, location migration, and
-  credential-ownership checks to transact the index and its referenced
-  authorities together.
-- [ ] Update released-v0.6 conversion so it can read legacy authorities only
-  when no managed authority exists. Any managed authority rejects the whole
-  conversion in preflight.
-- [ ] Delete a legacy authority only after its managed provider replacement
-  is committed. A failed or canceled replacement retains the original
-  authority.
-- [ ] Update `paths.py` and path tests for every new qualified path. Enforce
-  owner-only traversal and files using the existing platform-specific
-  filesystem primitives.
+- [x] Generate canonical stable account and authority IDs at the persistence
+  boundary through injectable factories.
+- [x] Store one strict schema-version-three secret-free index keyed by stable
+  account ID.
+- [x] Represent Claude setup-token and subscription authorities separately.
+- [x] Reference every stored Claude and Codex credential through an
+  `AuthorityId`; never place credential values or paths in `accounts.json`.
+- [x] Commit the account index and protected authority through one qualified,
+  authority-last transaction with crash recovery.
+- [x] Keep public workflows label-friendly while using stable IDs internally.
+- [x] Enforce provider-qualified label uniqueness and exact Unicode labels.
+- [x] Update rename, remove, reset, refresh, and credential ownership to
+  transact the index and referenced authorities together.
+- [x] Delete every compatibility reader, migration or rollback command,
+  prototype importer, deprecated alias, released-version bundle, and
+  compatibility CI job.
+- [x] Keep schemas, models, and enums in owner-local `schema/`, `models/`, and
+  `types/` packages. Keep imports at module scope and use direct symbol names.
+- [x] Update `paths.py`, operator docs, and focused tests for the sole current
+  application-data layout.
 
-### Verify and commit
+### Verification
 
-- [ ] Run the focused tests until green.
-- [ ] Run persistence, migration, v0.6, core, and path suites:
-
-```bash
-uv run pytest \
-  tests/test_core_models.py \
-  tests/test_core_types.py \
-  tests/test_persistence_*.py \
-  tests/test_v060_*.py \
-  tests/test_paths.py
-```
-
-- [ ] Run `uv run ruff check src/ tests/` and
-  `uv run ty check src/ tests/`.
-- [ ] Inspect tracked JSON fixtures and test output for credential-shaped
-  values and real labels.
-- [ ] Commit with the listed message.
+- [x] Run all tests: 567 passed and 7 platform-specific tests skipped.
+- [x] Run Ruff, `ty`, the architecture gate, Bandit, codespell, dependency
+  security checks, Markdown lint, and the isolated exact-wheel smoke.
+- [x] Inspect tracked source and test output for credential-shaped values and
+  real account labels.
 
 ## 5. Task 2 — Operation-Scoped Credential Leases
 
@@ -437,42 +406,42 @@ uv run pytest \
 
 ### Tests first
 
-- [ ] Add one credential-lease contract test in
+- [x] Add one credential-lease contract test in
   `tests/test_credential_leases.py` covering exact
   account/provider binding, context-only access, closed-lease rejection, and
   secret absence from public representations and errors. Use one malformed
   authority as the fail-closed case.
-- [ ] Adapt one existing refresh/usage service test to prove a typed resolver
+- [x] Adapt one existing refresh/usage service test to prove a typed resolver
   opens the lease only around provider work and returns only sanitized state.
   Let existing provider and heartbeat tests continue proving their own
   behavior; do not duplicate them for the refactor.
-- [ ] Add the forbidden-import rule to the existing architecture test without
+- [x] Add the forbidden-import rule to the existing architecture test without
   creating a separate test function.
-- [ ] Run the focused test set and confirm failure at the old embedded-token
+- [x] Run the focused test set and confirm failure at the old embedded-token
   `Account` boundary.
 
 ### Implementation
 
-- [ ] Implement `CredentialLease` and the authority reader without exposing a
+- [x] Implement `CredentialLease` and the authority reader without exposing a
   token property on `SavedAccount`.
-- [ ] Introduce a worker-only `AuthenticatedAccount` and change the provider
+- [x] Introduce a worker-only `AuthenticatedAccount` and change the provider
   protocol so credential-bearing methods accept that type.
-- [ ] Refactor usage, refresh, heartbeat, and activity orchestration to open
+- [x] Refactor usage, refresh, heartbeat, and activity orchestration to open
   one lease at the last responsible moment and close it before returning a
   sanitized result.
-- [ ] Keep refresh and heartbeat status mutations in account-index
+- [x] Keep refresh and heartbeat status mutations in account-index
   transactions; never return credentials merely to persist status.
-- [ ] Remove durable token properties from the public saved-account model.
-- [ ] Retain compatibility decoding only in the migration boundary. New
-  account-index writes cannot serialize credential values.
-- [ ] Update `providers/base.py`, `providers/registry.py`, and test fakes with
+- [x] Remove durable token properties from the public saved-account model.
+- [x] Keep one strict current account-index codec. It cannot decode or
+  serialize credential values.
+- [x] Update `providers/base.py`, `providers/registry.py`, and test fakes with
   exact typed ports. Do not add a generic dictionary payload.
-- [ ] Add recursive secret-field guards to all non-secret persistence and
+- [x] Add recursive secret-field guards to all non-secret persistence and
   daemon message encoders.
 
 ### Verify and commit
 
-- [ ] Run:
+- [x] Run:
 
 ```bash
 uv run pytest \
@@ -486,9 +455,9 @@ uv run pytest \
   tests/test_architecture.py
 ```
 
-- [ ] Run the existing provider owner tests affected by the typed boundary;
+- [x] Run the existing provider owner tests affected by the typed boundary;
   add no provider tests unless an existing critical behavior regresses.
-- [ ] Run Ruff and `ty`, inspect the diff for a second credential owner, then
+- [x] Run Ruff and `ty`, inspect the diff for a second credential owner, then
   commit.
 
 ## 6. Task 3 — Selected State, Activation Journal, and Durable Queue
@@ -497,43 +466,43 @@ uv run pytest \
 
 ### Tests first
 
-- [ ] In `tests/test_managed_service_foundation.py`, add one state transaction
+- [x] In `tests/test_managed_service_foundation.py`, add one state transaction
   test that follows the normal legal activation path, keeps Claude and Codex
   selections independent, persists one due item per account, survives rename
   by stable ID, and rejects one representative illegal transition.
-- [ ] In the same file, add one restart test that interrupts after provider
+- [x] In the same file, add one restart test that interrupts after provider
   mutation but before commit, then proves recovery follows provider
   read-back, preserves independent due work, and yields either a verified
   commit, official rollback request, or reconciliation-required state.
-- [ ] Do not test every enum edge, journal phase, queue ordering detail, or
+- [x] Do not test every enum edge, journal phase, queue ordering detail, or
   service-state field separately. Strict schema decoding and persistence
   primitives retain their existing focused coverage.
 
 ### Implementation
 
-- [ ] Implement the closed core state types and transition functions.
-- [ ] Store selected state by provider with account ID, provider identity,
+- [x] Implement the closed core state types and transition functions.
+- [x] Store selected state by provider with account ID, provider identity,
   runtime generation, verified time, and safe outcome. A label is never the
   authoritative key.
-- [ ] Store one active journal per provider plus bounded terminal history.
-- [ ] Enforce provider activation lock before account locks and sorted stable
+- [x] Store one active journal per provider plus bounded terminal history.
+- [x] Enforce provider activation lock before account locks and sorted stable
   account-ID order when two authorities are needed.
-- [ ] Store one due/retry record per account and operation kind. Coalesce
+- [x] Store one due/retry record per account and operation kind. Coalesce
   duplicate due events rather than appending unbounded work.
-- [ ] Store wall-clock deadlines as aware UTC and acquire monotonic deadlines
+- [x] Store wall-clock deadlines as aware UTC and acquire monotonic deadlines
   only inside a running process.
-- [ ] On account rename, preserve all ID-keyed state. On remove or reset,
+- [x] On account rename, preserve all ID-keyed state. On remove or reset,
   reject unsafe deletion or perform the explicit transaction required by the
   owning command.
-- [ ] Enforce bounded files, strict schemas, owner-only permissions, atomic
+- [x] Enforce bounded files, strict schemas, owner-only permissions, atomic
   writes, locks, and startup recovery using existing persistence primitives.
 
 ### Verify and commit
 
-- [ ] Run the two state scenarios and the existing persistence transaction
+- [x] Run the two state scenarios and the existing persistence transaction
   regressions they touch.
-- [ ] Run `uv run python packaging/check_architecture.py`.
-- [ ] Run Ruff and `ty`, inspect encoded state for forbidden secret keys, then
+- [x] Run `uv run python packaging/check_architecture.py`.
+- [x] Run Ruff and `ty`, inspect encoded state for forbidden secret keys, then
   commit.
 
 ## 7. Task 4 — Bounded Local Protocol and Same-User Client
@@ -578,39 +547,39 @@ environment map, command path, arbitrary argv, or credential material.
 
 ### Tests first
 
-- [ ] Extend `tests/test_managed_service_foundation.py` with one authenticated
+- [x] Extend `tests/test_managed_service_foundation.py` with one authenticated
   client/server contract test covering fragmented framing, handshake, one
   streamed operation, completion, and cancellation.
-- [ ] Add one small fail-closed table in the same file for the three distinct
+- [x] Add one small fail-closed table in the same file for the three distinct
   trust boundaries: unproved peer, oversized or malformed frame, and
   incompatible protocol. Assert no action dispatch and no secret-bearing
   response.
-- [ ] Do not test every message variant, JSON error spelling, fragmentation
+- [x] Do not test every message variant, JSON error spelling, fragmentation
   size, or EOF position. Do not add fuzz-style cases.
 
 ### Implementation
 
-- [ ] Convert `daemon.py` to the package layout in Section 3.5 in one atomic
+- [x] Convert `daemon.py` to the package layout in Section 3.5 in one atomic
   change. Preserve existing imported public names through
   `daemon/__init__.py`.
-- [ ] Implement strict frame models and a stateful bounded decoder.
-- [ ] Create the runtime directory and socket with owner-only permissions
+- [x] Implement strict frame models and a stateful bounded decoder.
+- [x] Create the runtime directory and socket with owner-only permissions
   before listening.
-- [ ] Verify the peer effective user before decoding an action payload. Fail
+- [x] Verify the peer effective user before decoding an action payload. Fail
   closed when the operating system cannot prove it.
-- [ ] Rate-limit malformed and excessive requests per connection without an
+- [x] Rate-limit malformed and excessive requests per connection without an
   idle polling loop.
-- [ ] Make the client reject a protocol or installed-version mismatch before
+- [x] Make the client reject a protocol or installed-version mismatch before
   sending an activation.
-- [ ] Add architecture rules that prevent provider, credential, HTTP,
+- [x] Add architecture rules that prevent provider, credential, HTTP,
   presentation, and interactive imports in the protocol and peer modules.
 
 ### Verify and commit
 
-- [ ] Run the two daemon protocol scenarios.
-- [ ] Run existing `tests/test_daemon.py` to prove the package conversion
+- [x] Run the two daemon protocol scenarios.
+- [x] Run existing `tests/test_daemon.py` to prove the package conversion
   retained the public lifecycle contract.
-- [ ] Run architecture, Ruff, and `ty` gates, then commit.
+- [x] Run architecture, Ruff, and `ty` gates, then commit.
 
 ## 8. Task 5 — Lean Supervisor, Isolated Workers, and Durable Scheduling
 
@@ -618,21 +587,21 @@ environment map, command path, arbitrary argv, or credential material.
 
 ### Tests first
 
-- [ ] Extend `tests/test_managed_service_foundation.py` with one supervisor
+- [x] Extend `tests/test_managed_service_foundation.py` with one supervisor
   integration test with two due accounts: one worker times out, the other
   completes, the supervisor remains ready, and restart neither loses nor
   duplicates durable work. Assert operation-ID-only argv, the minimal
   environment, and sanitized results in the same scenario.
-- [ ] Add one priority test in the same file where a same-authority
+- [x] Add one priority test in the same file where a same-authority
   maintenance worker hangs and the reserved Codex callback preempts, reaps,
   and responds inside the internal budget without lock inversion.
-- [ ] Extend the existing architecture/import audit to inspect one fresh
+- [x] Extend the existing architecture/import audit to inspect one fresh
   supervisor process. Do not create separate lifecycle, worker, scheduler,
   priority-permutation, or import test suites.
 
 ### Implementation
 
-- [ ] Add internal console scripts:
+- [x] Add internal console scripts:
 
 ```toml
 sidekick-usages = "sidekick_usages.cli:app"
@@ -640,43 +609,43 @@ sidekick-usages-supervisor = "sidekick_usages.daemon.entrypoint:main"
 sidekick-usages-worker = "sidekick_usages.daemon.worker_entrypoint:main"
 ```
 
-- [ ] Keep the original public entry point unchanged. The two internal entry
+- [x] Keep the original public entry point unchanged. The two internal entry
   points are service implementation details, not provider wrappers.
-- [ ] Implement an event-driven supervisor using selectors, monotonic
+- [x] Implement an event-driven supervisor using selectors, monotonic
   deadlines, and explicit wakeups. Do not add an asynchronous framework.
-- [ ] Start workers with the exact installed worker entry point, one operation
+- [x] Start workers with the exact installed worker entry point, one operation
   ID, a minimal allowlisted environment, a new process group, closed
   unrelated descriptors, bounded stdout/stderr, and no shell.
-- [ ] Make workers read their strict operation record from qualified
+- [x] Make workers read their strict operation record from qualified
   persistence, acquire the owning authority lock, perform one operation,
   atomically write a sanitized result, and exit.
-- [ ] Keep general maintenance concurrency bounded. Reserve a separate Codex
+- [x] Keep general maintenance concurrency bounded. Reserve a separate Codex
   callback slot that does not acquire the general worker semaphore.
-- [ ] Give the internal Codex callback path an eight-second total budget. If a
+- [x] Give the internal Codex callback path an eight-second total budget. If a
   lower-priority worker owns the same Codex authority, request cancellation,
   terminate it if it does not release promptly, reap it, and dispatch the
   callback worker. Return a typed failure rather than crossing the provider's
   ten-second deadline.
-- [ ] Never preempt an activation after native mutation. Such work is governed
+- [x] Never preempt an activation after native mutation. Such work is governed
   by its activation journal and recovery path, not normal maintenance
   priority.
-- [ ] Dispatch every due account even when an earlier result is permanent,
+- [x] Dispatch every due account even when an earlier result is permanent,
   transient, malformed, or timed out.
-- [ ] Reconcile unfinished journals before declaring provider switching ready.
-- [ ] Persist queue updates before acknowledging actions and result updates
+- [x] Reconcile unfinished journals before declaring provider switching ready.
+- [x] Persist queue updates before acknowledging actions and result updates
   before deleting completed work.
-- [ ] Implement sanitized rotating local diagnostics keyed only by account ID,
+- [x] Implement sanitized rotating local diagnostics keyed only by account ID,
   provider, operation ID, phase, duration, version, and typed result.
 
 ### Verify and commit
 
-- [ ] Run the two daemon-runtime scenarios plus the existing state and
+- [x] Run the two daemon-runtime scenarios plus the existing state and
   architecture regressions they touch.
 - [ ] Measure a test supervisor after steady state and record resident memory,
   idle CPU, imports, and worker cleanup in the test artifact.
 - [ ] Require no more than 30 MiB resident memory on the documented reference
   machine. Measure the official Codex daemon separately.
-- [ ] Run Ruff and `ty`, inspect child arguments and logs, then commit.
+- [x] Run Ruff and `ty`, inspect child arguments and logs, then commit.
 
 ## 9. Task 6 — Linux, WSL, and macOS User-Service Lifecycle
 
@@ -690,9 +659,8 @@ sidekick-usages-worker = "sidekick_usages.daemon.worker_entrypoint:main"
   execution, exact entry point, restart semantics, permissions, and absence
   of credentials or periodic maintenance.
 - [ ] Add one lifecycle transition scenario covering fresh install,
-  idempotent rerun, verified restart, legacy scheduler removal only after
-  readiness, single-scheduler enforcement, and uninstall that preserves
-  accounts and provider state.
+  idempotent rerun, verified restart, single-service enforcement, and
+  uninstall that preserves accounts and provider state.
 - [ ] Do not add separate tests for each lifecycle verb, failure message,
   architecture, or service-definition field.
 
@@ -713,9 +681,8 @@ sidekick-usages-worker = "sidekick_usages.daemon.worker_entrypoint:main"
   3. verify every saved account has due state;
   4. verify the Codex broker when Codex support is enabled;
   5. complete one bounded maintenance pass or record truthful account errors;
-  6. restart and re-check the service;
-  7. remove the legacy timer or task; and
-  8. re-check that only one scheduler remains.
+  6. restart and re-check the service; and
+  7. re-check that only one resident service is active.
 - [ ] Uninstall only the Sidekick service, socket, rescue trigger, and
   service-owned transient state. Leave accounts, private authorities,
   selected provider logins, metrics, and provider daemons untouched.
@@ -729,7 +696,7 @@ sidekick-usages-worker = "sidekick_usages.daemon.worker_entrypoint:main"
   inspect exact paths, quoting, permissions, and absence of secrets.
 - [ ] Run architecture, Ruff, and `ty` gates, then commit.
 
-## 10. Task 7 — Daemon CLI, Doctor, Packaging, and Compatibility
+## 10. Task 7 — Daemon CLI, Doctor, and Packaging
 
 **Commit:** `feat(cli): expose managed supervisor lifecycle`
 
@@ -749,8 +716,8 @@ sidekick-usages-worker = "sidekick_usages.daemon.worker_entrypoint:main"
 - [ ] Update the existing daemon command owner, lazy context, and help adapter
   to compose `DaemonManager` without importing the resident runtime into
   ordinary help or non-daemon commands.
-- [ ] Report process, protocol, queue, journal, platform, broker, and legacy
-  scheduler health independently.
+- [ ] Report process, protocol, queue, journal, platform, and broker health
+  independently.
 - [ ] Preserve existing exit-code behavior and add no implicit installation
   to non-interactive commands.
 - [ ] Add internal entry points to `pyproject.toml`, regenerate `uv.lock`, and
@@ -787,51 +754,51 @@ uv run python packaging/smoke_wheel.py --build
 
 ### Research first
 
-- [ ] Audit `packaging/smoke_wheel.py`, the build backend configuration,
+- [x] Audit `packaging/smoke_wheel.py`, the build backend configuration,
   wheel `RECORD`, source-control manifests, package data, console-script
   metadata, and the existing packaging tests to identify why production files
   currently have to be repeated by hand.
-- [ ] Compare a maintained packaging-standard or build-backend mechanism with
+- [x] Compare a maintained packaging-standard or build-backend mechanism with
   a small local derivation. Judge each option on exactness, accidental-file
   detection, deleted-file detection, editable-install independence,
   cross-platform behavior, source-distribution execution, maintenance cost,
   and failure clarity.
-- [ ] Record the build-versus-adopt decision in
+- [x] Record the build-versus-adopt decision in
   `docs/superpowers/research/`. The decision must identify one authoritative
   source for shipped files and explain how unexpected and missing artifacts
   both fail closed.
-- [ ] Do not retain, generate, or relocate another exhaustive Python filename
+- [x] Do not retain, generate, or relocate another exhaustive Python filename
   tuple. A generated dump with the same two-source synchronization problem is
   not an improvement.
 
 ### Tests first
 
-- [ ] Replace the existing file-list assertions with the smallest artifact
+- [x] Replace the existing file-list assertions with the smallest artifact
   boundary that proves one freshly built wheel is self-contained, contains
   only intended package and metadata files, exposes the required entry
   points, and imports outside the checkout.
-- [ ] Keep at most one focused regression for the derived file contract and
+- [x] Keep at most one focused regression for the derived file contract and
   one installed-wheel smoke scenario. Extend existing packaging tests; do not
   create a packaging permutation suite.
 
 ### Implementation
 
-- [ ] Make the build configuration or another existing package-owned source
+- [x] Make the build configuration or another existing package-owned source
   the single authority for wheel contents.
-- [ ] Derive the expected artifact contract mechanically from that authority,
+- [x] Derive the expected artifact contract mechanically from that authority,
   normalize paths portably, and compare it with the exact wheel `RECORD`.
-- [ ] Keep explicit assertions only for semantic release requirements that
+- [x] Keep explicit assertions only for semantic release requirements that
   cannot be derived, such as console scripts, required metadata, forbidden
   credential material, and execution outside the checkout.
-- [ ] Separate build orchestration, artifact inspection, and installed smoke
+- [x] Separate build orchestration, artifact inspection, and installed smoke
   behavior into cohesive units only where the rule of three supports it.
-- [ ] Preserve exact-one-wheel selection and isolated installation. Do not
+- [x] Preserve exact-one-wheel selection and isolated installation. Do not
   weaken the verifier to broad prefix checks or merely import the editable
   working tree.
 
 ### Verify and commit
 
-- [ ] Run:
+- [x] Run:
 
 ```bash
 uv run pytest tests/test_packaging.py
@@ -840,7 +807,7 @@ uv run ruff check packaging/ tests/test_packaging.py
 uv run ty check packaging/ tests/test_packaging.py
 ```
 
-- [ ] Inspect the implementation for repeated file inventories, platform path
+- [x] Inspect the implementation for repeated file inventories, platform path
   assumptions, and editable-install leakage, then commit and push.
 
 ## 12. Task 9 — Foundation Integration Gate
@@ -888,7 +855,7 @@ uv run python packaging/smoke_wheel.py --build
 Do not begin the Codex plan until all statements are true:
 
 - [ ] Schema version three has stable IDs and a no-secret account index.
-- [ ] Legacy/setup secrets are protected, referenced, and never duplicated.
+- [ ] Stored/setup secrets are protected, referenced, and never duplicated.
 - [ ] Managed-authority rollback fails before mutation.
 - [ ] Rendering and selection cannot access credential leases.
 - [ ] Selected state, journals, queue, and service state are strict and
@@ -898,6 +865,7 @@ Do not begin the Codex plan until all statements are true:
 - [ ] Worker timeout and crash do not terminate the supervisor.
 - [ ] Codex callback capacity is reserved and lock ordering is proven.
 - [ ] Linux, WSL, and macOS lifecycle artifacts pass automated tests.
-- [ ] The legacy schedule transition cannot leave two schedulers active.
+- [ ] The installed current-machine scheduler is removed before the resident
+  service is installed, and only one resident service remains active.
 - [ ] Normal `claude` and `codex` executable resolution is unchanged.
 - [ ] No live provider mutation has occurred.

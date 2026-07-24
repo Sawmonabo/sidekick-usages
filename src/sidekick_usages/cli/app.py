@@ -15,12 +15,10 @@ from sidekick_usages.cli.commands import (
     doctor,
     heartbeat,
     maintenance,
-    migrate,
     permissions,
     updates,
     usage,
 )
-from sidekick_usages.cli.commands.migrate import persistence_error_exit_code
 from sidekick_usages.cli.context import (
     InvocationContext,
     initialize_invocation,
@@ -28,7 +26,10 @@ from sidekick_usages.cli.context import (
 from sidekick_usages.cli.help import BrandedTyperGroup
 from sidekick_usages.core.types import ExitCode, ProviderId
 from sidekick_usages.errors import UsageError
-from sidekick_usages.persistence.errors import PersistenceError
+from sidekick_usages.persistence.errors import (
+    PersistenceError,
+    exit_code_for_persistence_code,
+)
 
 
 def _version_callback(value: bool) -> None:
@@ -91,7 +92,6 @@ def create_app() -> typer.Typer:
     heartbeat.register(application)
     maintenance.register(application)
     doctor.register(application)
-    migrate.register(application)
     permissions.register(application)
     daemon.register(application)
     updates.register(application)
@@ -115,7 +115,7 @@ def run(argv: list[str] | None = None) -> int:
         return int(exit_code)
     except PersistenceError as error:
         InvocationContext().err_console.print(f"[red]{error}[/red]")
-        return int(persistence_error_exit_code(error))
+        return int(exit_code_for_persistence_code(error.code))
     except UsageError as error:
         InvocationContext().err_console.print(f"[red]{error}[/red]")
         return int(ExitCode.MANUAL_ACTION)

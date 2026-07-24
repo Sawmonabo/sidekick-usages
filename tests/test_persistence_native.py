@@ -32,22 +32,17 @@ if sys.platform == "win32":
     )
 else:
     from sidekick_usages.persistence._platform import macos
-from sidekick_usages.persistence.artifacts import (
-    AuthorityExpectation,
-    AuthorityGeneration,
-)
 from sidekick_usages.persistence.errors import (
     UnsafeManagedFileError,
     UnsupportedFilesystemError,
 )
 from sidekick_usages.persistence.filesystem import PersistenceFilesystem
 from sidekick_usages.persistence.locking import PersistenceLock
-from sidekick_usages.persistence.schemas import (
-    VersionOneDocument,
-    encode_version_one,
-)
+from sidekick_usages.persistence.models.account import VersionThreeDocument
+from sidekick_usages.persistence.schema.account import encode_version_three
+from sidekick_usages.persistence.types.artifact import AuthorityExpectation
 
-VERSION_ONE = encode_version_one(VersionOneDocument(()))
+AUTHORITY_PAYLOAD = encode_version_three(VersionThreeDocument(()))
 PRIVATE_DIRECTORY_MODE = 0o700
 PRIVATE_FILE_MODE = 0o600
 
@@ -87,8 +82,7 @@ def test_fresh_tree_is_private_and_committable(tmp_path: Path) -> None:
 
     with PersistenceLock(filesystem).hold() as transaction:
         transaction.commit_authority(
-            AuthorityGeneration.VERSION_ONE,
-            VERSION_ONE,
+            AUTHORITY_PAYLOAD,
             AuthorityExpectation.ABSENT,
         )
 
@@ -98,7 +92,7 @@ def test_fresh_tree_is_private_and_committable(tmp_path: Path) -> None:
             == PRIVATE_DIRECTORY_MODE
         )
         assert stat.S_IMODE(authority.stat().st_mode) == PRIVATE_FILE_MODE
-    assert authority.read_bytes() == VERSION_ONE
+    assert authority.read_bytes() == AUTHORITY_PAYLOAD
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX ancestor permissions")
@@ -126,34 +120,17 @@ def test_case_variant_and_insecure_mode_never_become_authority(
     filesystem = PersistenceFilesystem(tmp_path / "state" / "accounts.json")
     filesystem._prepare_parent()
     variant = filesystem.authority_path.with_name("ACCOUNTS.JSON")
-    variant.write_bytes(VERSION_ONE)
+    variant.write_bytes(AUTHORITY_PAYLOAD)
     variant.chmod(0o600)
 
     with pytest.raises(UnsafeManagedFileError):
         filesystem.read_authority()
-    assert variant.read_bytes() == VERSION_ONE
+    assert variant.read_bytes() == AUTHORITY_PAYLOAD
 
-    filesystem.authority_path.write_bytes(VERSION_ONE)
+    filesystem.authority_path.write_bytes(AUTHORITY_PAYLOAD)
     filesystem.authority_path.chmod(0o640)
     with pytest.raises(UnsafeManagedFileError):
         filesystem.read_authority()
-
-
-@pytest.mark.skipif(os.name == "nt", reason="POSIX parent mode policy")
-@pytest.mark.parametrize("parent_mode", [0o720, 0o702])
-def test_external_private_source_rejects_writable_parent(
-    tmp_path: Path,
-    parent_mode: int,
-) -> None:
-    parent = tmp_path / "external"
-    parent.mkdir(mode=0o700)
-    source = parent / "accounts.json"
-    source.write_bytes(VERSION_ONE)
-    source.chmod(PRIVATE_FILE_MODE)
-    parent.chmod(parent_mode)
-
-    with pytest.raises(UnsafeManagedFileError):
-        PersistenceFilesystem(source).read_external_private_source()
 
 
 def test_qualification_preserves_security_vs_capability_codes(

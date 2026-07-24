@@ -1,7 +1,7 @@
 """Strict Codex payload schemas and provider-native time conversion."""
 
+import binascii
 from base64 import b64decode
-from binascii import Error as Base64Error
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Annotated
@@ -321,7 +321,7 @@ def _decode_jwt(token: str) -> _JwtSchema:
         value = decode_json_object(
             b64decode(payload, altchars=b"-_", validate=True)
         )
-    except Base64Error, InvalidPayloadError, ValueError:
+    except binascii.Error, InvalidPayloadError, ValueError:
         raise ProviderBoundaryError(
             _failure(
                 ProviderFailureKind.MALFORMED,

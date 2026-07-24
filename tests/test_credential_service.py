@@ -27,6 +27,7 @@ from sidekick_usages.credentials import (
     TokenCredentialSource,
     TokenPromptSpec,
 )
+from sidekick_usages.credentials.authorities import credential_resolver_for
 from sidekick_usages.credentials.codex import private_codex_home
 from sidekick_usages.credentials.refresh import CredentialRefreshCoordinator
 from sidekick_usages.http import HttpClient
@@ -62,14 +63,14 @@ _PRIVATE_FILE_MODE = 0o600
 def test_private_codex_cache_keys_do_not_collapse_distinct_labels(
     tmp_path: Path,
 ) -> None:
-    """Legacy-equivalent sanitized labels receive distinct durable keys."""
-    locations = make_application_paths(tmp_path).private_codex
+    """Sanitized labels receive distinct durable private keys."""
+    root = make_application_paths(tmp_path).private_credentials
 
-    first = private_codex_home(locations.canonical, "a b")
-    second = private_codex_home(locations.canonical, "a@b")
+    first = private_codex_home(root, "a b")
+    second = private_codex_home(root, "a@b")
 
     assert first != second
-    assert first.parent == second.parent == locations.canonical
+    assert first.parent == second.parent == root
 
 
 def _access_token(account_id: str) -> str:
@@ -216,17 +217,12 @@ def _dependencies(
     accounts: tuple[Account, ...] = (),
 ) -> tuple[AccountStore, PrivateCredentialTree]:
     paths = make_application_paths(root)
-    PersistenceFilesystem(paths.accounts.canonical).repair_parent_permissions()
+    PersistenceFilesystem(paths.accounts).repair_parent_permissions()
     private = PrivateCredentialTree(
-        paths.private_codex.canonical,
-        account_path=paths.accounts.canonical,
-        existing_root=paths.private_codex.existing_sidekick,
+        paths.private_credentials,
+        account_path=paths.accounts,
     )
-    store = AccountStore(
-        paths.accounts,
-        orphaned_credentials_observer=private.observe,
-        private_credentials=private,
-    ).load()
+    store = AccountStore(paths.accounts, private).load()
     for account in accounts:
         store.persist(account)
     return store, private
@@ -248,6 +244,7 @@ def _service(
             make_application_paths(root).credential_refresh,
         ),
         clock=FixedClock(),
+        resolver=credential_resolver_for(store, private),
     )
     service = CredentialService(
         store,
@@ -551,7 +548,7 @@ def test_codex_identity_must_be_proven_before_saved_secrets_are_merged(
         assert outcome.kind is ProviderFailureKind.IDENTITY_MISMATCH
         assert store.path.read_bytes() == authority_before
         assert store.get("team") == account
-        assert not private.root.exists()
+        assert not private_codex_home(private.root, "team").exists()
 
 
 def test_explicit_identity_replacement_never_retains_old_codex_secrets(
@@ -667,7 +664,7 @@ def test_manual_codex_token_never_adopts_the_active_login(
     assert saved.codex_home is None
     assert saved.refresh_token is None
     assert saved.codex_id_token is None
-    assert private.observe().value == "absent"
+    assert not private_codex_home(private.root, "team").exists()
     assert active_auth.read_bytes() == active_bytes
     authority = store.path.read_text()
     assert "active-refresh-secret" not in authority
@@ -834,17 +831,14 @@ def test_codex_usage_identity_discovery_updates_bundle_and_authority(
         providers,
         credentials,
         clock=clock,
+        resolver=credential_resolver_for(store, private),
     ).check()
 
     assert result.failures == ()
     assert len(result.usages) == 1
     assert result.usages[0].plan == "pro"
     paths = make_application_paths(tmp_path)
-    restored = AccountStore(
-        paths.accounts,
-        orphaned_credentials_observer=private.observe,
-        private_credentials=private,
-    ).load()
+    restored = AccountStore(paths.accounts, private).load()
     saved = restored.get("team")
     assert saved is not None
     assert saved.provider_account_id == "acct-discovered"

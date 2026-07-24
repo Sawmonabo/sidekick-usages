@@ -291,7 +291,6 @@ class Account:
 
     _AWARE_TIME_FIELDS: ClassVar[frozenset[str]] = frozenset(
         {
-            "heartbeat_5h_reset_at",
             "last_heartbeat_at",
             "last_refresh_at",
         }
@@ -304,7 +303,6 @@ class Account:
     last_refresh_status: RefreshStatus | None = None
     last_refresh_error: str | None = None
     heartbeat_enabled: bool = False
-    heartbeat_5h_reset_at: datetime | None = None
     heartbeat_window_resets: Mapping[str, datetime] | None = None
     heartbeat_targets: tuple[str, ...] | None = None
     last_heartbeat_at: datetime | None = None

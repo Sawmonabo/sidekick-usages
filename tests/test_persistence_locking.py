@@ -12,10 +12,8 @@ import portalocker
 import pytest
 
 import sidekick_usages.persistence.locking as locking_module
-from sidekick_usages.persistence.artifacts import AuthorityExpectation
 from sidekick_usages.persistence.errors import (
     DurabilityUncertainError,
-    PersistenceCode,
     UnsafeManagedFileError,
 )
 from sidekick_usages.persistence.filesystem import PersistenceFilesystem
@@ -26,6 +24,9 @@ from sidekick_usages.persistence.locking import (
     StoreLockedError,
     TransactionReleaseError,
 )
+from sidekick_usages.persistence.models.artifact import FileSnapshot
+from sidekick_usages.persistence.types.artifact import AuthorityExpectation
+from sidekick_usages.persistence.types.error import PersistenceCode
 
 
 class InjectedFailureError(Exception):
@@ -311,17 +312,28 @@ def test_context_exit_waits_for_inflight_operation_and_invalidates(
     monkeypatch.setattr(portalocker, "lock", lambda *_args: None)
     monkeypatch.setattr(portalocker, "unlock", lambda *_args: None)
 
-    def blocking_reset(_expected: AuthorityExpectation) -> None:
+    def blocking_commit(
+        _payload: bytes,
+        _expected: AuthorityExpectation,
+    ) -> FileSnapshot:
         started.set()
         assert release.wait(timeout=5)
+        raise InjectedFailureError
 
-    monkeypatch.setattr(filesystem, "_full_reset", blocking_reset)
+    monkeypatch.setattr(filesystem, "_commit_authority", blocking_commit)
     context = PersistenceLock(filesystem).hold()
     transaction = context.__enter__()
-    worker = threading.Thread(
-        target=transaction.full_reset,
-        args=(AuthorityExpectation.ABSENT,),
-    )
+
+    def commit_authority() -> None:
+        try:
+            transaction.commit_authority(
+                b"test-only-payload",
+                AuthorityExpectation.ABSENT,
+            )
+        except InjectedFailureError:
+            return
+
+    worker = threading.Thread(target=commit_authority)
     worker.start()
     assert started.wait(timeout=5)
 
@@ -338,4 +350,7 @@ def test_context_exit_waits_for_inflight_operation_and_invalidates(
 
     assert exited.is_set()
     with pytest.raises(RuntimeError, match="no longer active"):
-        transaction.full_reset(AuthorityExpectation.ABSENT)
+        transaction.commit_authority(
+            b"test-only-payload",
+            AuthorityExpectation.ABSENT,
+        )

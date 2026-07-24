@@ -19,7 +19,6 @@ from sidekick_usages.core.types import AccountLabel, ProviderId
 from sidekick_usages.credentials.authorities import (
     AuthenticatedSavedAccount,
     CredentialResolver,
-    EmbeddedAccountResolver,
 )
 from sidekick_usages.credentials.codex import CodexCredentialCoordinator
 from sidekick_usages.credentials.models import (
@@ -97,7 +96,7 @@ class CredentialRefreshCoordinator:
         *,
         clock: Clock,
         codex: CodexCredentialCoordinator | None = None,
-        resolver: CredentialResolver | None = None,
+        resolver: CredentialResolver,
     ) -> None:
         """Bind refresh policy to provider and persistence capabilities."""
         self._store = store
@@ -107,16 +106,19 @@ class CredentialRefreshCoordinator:
         self._clock = clock
         self._codex = codex
         self._resolver = resolver
-        self._embedded_resolver = EmbeddedAccountResolver()
 
     def refresh(
         self,
         *,
+        provider_id: ProviderId,
         label: AccountLabel,
         reason: CredentialRefreshReason,
     ) -> CredentialRefreshResult:
         """Refresh one exact saved account for one closed caller reason."""
-        observed = self._store.read_fresh(label)
+        observed = self._store.read_fresh(
+            label,
+            provider_id=provider_id,
+        )
         if observed is not None and isinstance(
             observed.credentials,
             ClaudeSetupTokenCredentials,
@@ -124,6 +126,7 @@ class CredentialRefreshCoordinator:
             return _setup_token_failure()
         with self._persistence.hold_lifecycle():
             return self._refresh_held(
+                provider_id=provider_id,
                 label=label,
                 reason=reason,
                 observed=observed,
@@ -132,6 +135,7 @@ class CredentialRefreshCoordinator:
     def _refresh_held(
         self,
         *,
+        provider_id: ProviderId,
         label: AccountLabel,
         reason: CredentialRefreshReason,
         observed: Account | None,
@@ -141,6 +145,7 @@ class CredentialRefreshCoordinator:
         started_at = self._clock.now()
         try:
             with self._persistence.hold_stable(
+                provider_id=provider_id,
                 label=label,
                 reason=reason.value,
                 started_at=started_at,
@@ -259,8 +264,6 @@ class CredentialRefreshCoordinator:
         account: Account,
     ) -> AbstractContextManager[AuthenticatedSavedAccount]:
         """Open one refresh credential lease at the provider boundary."""
-        if self._resolver is None:
-            return self._embedded_resolver.open(account)
         saved = next(
             (
                 candidate

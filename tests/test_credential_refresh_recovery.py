@@ -34,6 +34,7 @@ from tests.test_credential_refresh_support import (
 from tests.test_support import (
     REFERENCE_TIME,
     FixedClock,
+    RuntimeCredentialResolver,
     make_account_store,
     make_application_paths,
 )
@@ -72,10 +73,12 @@ def test_every_crash_point_recovers_without_another_provider_call(
         {ProviderId.CLAUDE: provider},
         interrupted,
         clock=FixedClock(),
+        resolver=RuntimeCredentialResolver(store),
     )
 
     with pytest.raises(SimulatedCrashError):
         coordinator.refresh(
+            provider_id=ProviderId.CLAUDE,
             label=label,
             reason=CredentialRefreshReason.OPERATOR_FORCED,
         )
@@ -114,6 +117,7 @@ def test_interrupted_nonwritable_provider_stage_recovers_locally(
     root = tmp_path / "credential-refresh"
     interrupted = CredentialRefreshTransactions(store, root)
     with interrupted.hold_stable(
+        provider_id=ProviderId.CLAUDE,
         label=label,
         reason=CredentialRefreshReason.CREDENTIAL_REQUIRED.value,
         started_at=REFERENCE_TIME,
@@ -147,6 +151,7 @@ def test_application_startup_recovers_safe_provider_stage(
         paths.credential_refresh,
     )
     with interrupted.hold_stable(
+        provider_id=ProviderId.CLAUDE,
         label=label,
         reason=CredentialRefreshReason.CREDENTIAL_REQUIRED.value,
         started_at=REFERENCE_TIME,
@@ -183,6 +188,7 @@ def test_interrupted_writable_provider_stage_remains_blocked(
     root = tmp_path / "credential-refresh"
     interrupted = CredentialRefreshTransactions(store, root)
     with interrupted.hold_stable(
+        provider_id=ProviderId.CLAUDE,
         label=label,
         reason=CredentialRefreshReason.CREDENTIAL_REQUIRED.value,
         started_at=REFERENCE_TIME,
@@ -206,6 +212,7 @@ def test_macos_acl_free_provider_stage_recovers(tmp_path: Path) -> None:
     root = tmp_path / "credential-refresh"
     interrupted = CredentialRefreshTransactions(store, root)
     with interrupted.hold_stable(
+        provider_id=ProviderId.CLAUDE,
         label=label,
         reason=CredentialRefreshReason.CREDENTIAL_REQUIRED.value,
         started_at=REFERENCE_TIME,
@@ -230,6 +237,7 @@ def test_macos_extended_acl_provider_stage_remains_blocked(
     root = tmp_path / "credential-refresh"
     interrupted = CredentialRefreshTransactions(store, root)
     with interrupted.hold_stable(
+        provider_id=ProviderId.CLAUDE,
         label=label,
         reason=CredentialRefreshReason.CREDENTIAL_REQUIRED.value,
         started_at=REFERENCE_TIME,
@@ -280,6 +288,7 @@ def test_recovery_skips_one_active_provider_stage_and_resolves_another(
 
     def hold_active_stage() -> None:
         with active.hold_stable(
+            provider_id=ProviderId.CLAUDE,
             label=active_label,
             reason=CredentialRefreshReason.CREDENTIAL_REQUIRED.value,
             started_at=REFERENCE_TIME,
@@ -298,6 +307,7 @@ def test_recovery_skips_one_active_provider_stage_and_resolves_another(
     assert entered.wait(timeout=5)
     stale = CredentialRefreshTransactions(store, root)
     with stale.hold_stable(
+        provider_id=ProviderId.CLAUDE,
         label=stale_label,
         reason=CredentialRefreshReason.CREDENTIAL_REQUIRED.value,
         started_at=REFERENCE_TIME,
@@ -339,9 +349,11 @@ def test_complete_stage_recovery_does_not_resurrect_changed_target(
             faults=CrashAt(CredentialRefreshCrashPoint.STAGE_COMPLETE),
         ),
         clock=FixedClock(),
+        resolver=RuntimeCredentialResolver(store),
     )
     with pytest.raises(SimulatedCrashError):
         coordinator.refresh(
+            provider_id=ProviderId.CLAUDE,
             label=label,
             reason=CredentialRefreshReason.OPERATOR_FORCED,
         )
@@ -429,10 +441,12 @@ def test_durability_uncertainty_retains_evidence_and_blocks_recovery(
         {ProviderId.CLAUDE: RefreshProvider()},
         CredentialRefreshTransactions(store, root),
         clock=FixedClock(),
+        resolver=RuntimeCredentialResolver(store),
     )
 
     with pytest.raises(CredentialRefreshRecoveryBlockedError):
         coordinator.refresh(
+            provider_id=ProviderId.CLAUDE,
             label=label,
             reason=CredentialRefreshReason.OPERATOR_FORCED,
         )

@@ -3,10 +3,7 @@
 from dataclasses import replace
 
 from sidekick_usages.core.models import Account
-from sidekick_usages.persistence.account_store import (
-    AccountStore,
-    StableAccountIndexUnavailableError,
-)
+from sidekick_usages.persistence.account_store import AccountStore
 from sidekick_usages.persistence.errors import SourceChangedError
 
 
@@ -20,10 +17,7 @@ def persist_provider_plan_without_credentials(
         return False
     if candidate.plan == current.plan:
         return True
-    try:
-        saved_accounts = store.saved_accounts()
-    except StableAccountIndexUnavailableError:
-        return False
+    saved_accounts = store.saved_accounts()
     saved = next(
         (
             item

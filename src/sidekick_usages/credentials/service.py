@@ -503,23 +503,22 @@ class CredentialService:
     def refresh(
         self,
         *,
+        provider_id: ProviderId,
         label: AccountLabel,
         reason: CredentialRefreshReason,
     ) -> CredentialRefreshResult:
         """Delegate every rotating saved refresh to the coordinator."""
         if self._refresh is None:
-            account = self._store.get(str(label))
-            provider_id = (
-                account.provider_id
-                if account is not None
-                else ProviderId.CLAUDE
-            )
             return _failure(
                 provider_id,
                 ProviderFailureKind.UNSUPPORTED,
                 "Credential refresh coordination is unavailable.",
             )
-        return self._refresh.refresh(label=label, reason=reason)
+        return self._refresh.refresh(
+            provider_id=provider_id,
+            label=label,
+            reason=reason,
+        )
 
     def login_codex(
         self,
@@ -645,12 +644,16 @@ class CredentialService:
             and account.refresh_token is not None
         ):
             refreshed = self.refresh(
+                provider_id=account.provider_id,
                 label=account.label,
                 reason=CredentialRefreshReason.CREDENTIAL_REQUIRED,
             )
             if isinstance(refreshed, ProviderFailure):
                 return refreshed
-            saved = self._store.get(label)
+            saved = self._store.get(
+                label,
+                provider_id=account.provider_id,
+            )
             if saved is None:
                 raise RuntimeError("Refreshed account disappeared from store.")
             result = self._codex.export(

@@ -14,26 +14,18 @@ from pydantic import (
 )
 
 from sidekick_usages.core.models import (
-    Account,
     ClaudeLoginCredentials,
     ClaudeSetupTokenCredentials,
     CodexCredentials,
     Credentials,
 )
-from sidekick_usages.core.types import AccountLabel
-from sidekick_usages.persistence.errors import PersistenceError
-from sidekick_usages.persistence.schemas import (
-    VersionTwoDocument,
-    decode_version_two,
-    encode_version_two,
-)
-from sidekick_usages.persistence.transforms import (
-    accounts_to_version_two,
-    version_two_to_accounts,
+from sidekick_usages.core.types import AccountLabel, ProviderId
+from sidekick_usages.persistence.schema.credential import (
+    encode_credentials,
 )
 from sidekick_usages.serialization import JsonDecodeError, decode_json_value
 
-LABEL_DOMAIN = b"sidekick-usages credential refresh label\0"
+ACCOUNT_KEY_DOMAIN = b"sidekick-usages credential refresh account\0"
 CREDENTIAL_DOMAIN = b"sidekick-usages credential refresh credential\0"
 JOURNAL_BASENAME = "intent.json"
 STAGE_BASENAME = "replacement.json"
@@ -92,7 +84,7 @@ class RefreshJournal(BaseModel):
 
     schema_version: Literal[1]
     provider_id: Literal["claude", "codex"]
-    account_label_digest: _Sha256Value
+    account_key_digest: _Sha256Value
     expected_credential_kind: CredentialKind
     expected_credential_sha256: _Sha256Value
     operation_started_at: _TimestampValue
@@ -101,24 +93,26 @@ class RefreshJournal(BaseModel):
     staged_credential_sha256: _Sha256Value | None
 
 
-def label_digest(label: AccountLabel) -> str:
-    """Return domain-separated non-secret journal routing metadata."""
+def account_key_digest(
+    provider_id: ProviderId,
+    label: AccountLabel,
+) -> str:
+    """Return provider-qualified non-secret journal routing metadata."""
     return hashlib.sha256(
-        LABEL_DOMAIN + str(label).encode("utf-8")
+        ACCOUNT_KEY_DOMAIN
+        + provider_id.value.encode("utf-8")
+        + b"\0"
+        + str(label).encode("utf-8")
     ).hexdigest()
 
 
 def credential_digest(credentials: Credentials) -> str:
     """Digest one canonical secret-bearing credential record."""
-    record = Account(
-        label=AccountLabel("credential-record"),
-        credentials=credentials,
-    )
-    payload = encode_version_two(accounts_to_version_two((record,)))
+    payload = encode_credentials(credentials)
     return hashlib.sha256(CREDENTIAL_DOMAIN + payload).hexdigest()
 
 
-def credential_kind(credentials: Credentials) -> CredentialKind:
+def refresh_credential_kind(credentials: Credentials) -> CredentialKind:
     """Return the exact persisted rotating credential kind."""
     if isinstance(credentials, ClaudeLoginCredentials):
         return "subscription_login"
@@ -168,15 +162,3 @@ def decode_refresh_journal(payload: bytes) -> RefreshJournal:
         return RefreshJournal.model_validate(value, strict=True)
     except JsonDecodeError, ValidationError:
         raise RefreshJournalDecodeError from None
-
-
-def decode_staged_account(payload: bytes) -> Account:
-    """Decode exactly one strict schema-v2 staged target account."""
-    try:
-        document: VersionTwoDocument = decode_version_two(payload)
-        accounts = version_two_to_accounts(document)
-    except PersistenceError, TypeError, ValueError:
-        raise RefreshJournalDecodeError from None
-    if len(accounts) != 1:
-        raise RefreshJournalDecodeError
-    return accounts[0]

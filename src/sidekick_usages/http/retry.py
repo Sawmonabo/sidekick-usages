@@ -12,7 +12,7 @@ from enum import Enum, StrEnum
 from http import HTTPStatus
 from typing import NoReturn
 
-from urllib3 import exceptions as urllib3_exceptions
+import urllib3.exceptions
 
 from sidekick_usages.clock import Clock
 from sidekick_usages.errors import RateLimitError, TransientError
@@ -354,7 +354,7 @@ def _run_attempt(
     """Run one attempt and retain only a safe failure category."""
     try:
         return attempt(remaining), None
-    except urllib3_exceptions.HTTPError as error:
+    except urllib3.exceptions.HTTPError as error:
         failure = _classify_transport_failure(error)
     except OSError:
         failure = _TransportFailure.AMBIGUOUS
@@ -367,27 +367,27 @@ def _rejects_retry(result: HttpAttempt) -> bool:
 
 
 def _classify_transport_failure(
-    error: urllib3_exceptions.HTTPError,
+    error: urllib3.exceptions.HTTPError,
 ) -> _TransportFailure:
     """Classify a urllib3 failure without exporting its details."""
-    if isinstance(error, urllib3_exceptions.MaxRetryError):
+    if isinstance(error, urllib3.exceptions.MaxRetryError):
         reason = error.reason
-        if isinstance(reason, urllib3_exceptions.HTTPError):
+        if isinstance(reason, urllib3.exceptions.HTTPError):
             return _classify_transport_failure(reason)
-    if isinstance(error, urllib3_exceptions.ProxyError):
+    if isinstance(error, urllib3.exceptions.ProxyError):
         original = error.original_error
-        if isinstance(original, urllib3_exceptions.ConnectTimeoutError):
+        if isinstance(original, urllib3.exceptions.ConnectTimeoutError):
             return _TransportFailure.PROVEN_CONNECT
         return _TransportFailure.AMBIGUOUS
-    if isinstance(error, urllib3_exceptions.ConnectTimeoutError):
+    if isinstance(error, urllib3.exceptions.ConnectTimeoutError):
         return _TransportFailure.PROVEN_CONNECT
     if isinstance(
         error,
         (
-            urllib3_exceptions.ReadTimeoutError,
-            urllib3_exceptions.ProtocolError,
-            urllib3_exceptions.IncompleteRead,
-            urllib3_exceptions.InvalidChunkLength,
+            urllib3.exceptions.ReadTimeoutError,
+            urllib3.exceptions.ProtocolError,
+            urllib3.exceptions.IncompleteRead,
+            urllib3.exceptions.InvalidChunkLength,
         ),
     ):
         return _TransportFailure.AMBIGUOUS

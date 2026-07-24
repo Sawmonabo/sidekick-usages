@@ -1,7 +1,7 @@
 """Portable bounded namespace grammar for private credential bundles."""
 
+import ntpath
 import unicodedata
-from ntpath import isreserved as is_windows_reserved
 
 from sidekick_usages.persistence.artifacts import (
     portable_basename_key,
@@ -36,7 +36,7 @@ def _validate_private_bundle_component(component: str) -> None:
         raise ValueError("Private bundle components must use NFC text.")
     if (
         ":" in component
-        or is_windows_reserved(component)
+        or ntpath.isreserved(component)
         or (component.partition(".")[0].casefold() == "clock$")
     ):
         raise ValueError("Private bundle component is platform-reserved.")

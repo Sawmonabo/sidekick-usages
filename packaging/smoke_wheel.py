@@ -2,6 +2,7 @@
 """Build and verify the exact sidekick-usages wheel in isolation."""
 
 import argparse
+import csv
 import os
 import shutil
 import subprocess
@@ -14,268 +15,19 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PYPROJECT_PATH = REPO_ROOT / "pyproject.toml"
-SOURCE_EXCLUDED_DIRECTORIES = frozenset(
-    {"__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache"}
-)
-
-REQUIRED_CLI_MEMBERS = frozenset(
+MINIMUM_SOURCE_PACKAGE_PARTS = 2
+RECORD_COLUMN_COUNT = 3
+IGNORED_SOURCE_DIRECTORIES = frozenset({"__pycache__"})
+UNSUPPORTED_SELECTION_KEYS = frozenset(
     {
-        "sidekick_usages/cli/__init__.py",
-        "sidekick_usages/cli/app.py",
-        "sidekick_usages/cli/context.py",
-        "sidekick_usages/cli/help.py",
-        "sidekick_usages/cli/token_input.py",
-        "sidekick_usages/cli/commands/__init__.py",
-        "sidekick_usages/cli/commands/accounts.py",
-        "sidekick_usages/cli/commands/claude.py",
-        "sidekick_usages/cli/commands/codex.py",
-        "sidekick_usages/cli/commands/credentials.py",
-        "sidekick_usages/cli/commands/daemon.py",
-        "sidekick_usages/cli/commands/doctor.py",
-        "sidekick_usages/cli/commands/heartbeat.py",
-        "sidekick_usages/cli/commands/maintenance.py",
-        "sidekick_usages/cli/commands/migrate.py",
-        "sidekick_usages/cli/commands/permissions.py",
-        "sidekick_usages/cli/commands/updates.py",
-        "sidekick_usages/cli/commands/usage.py",
+        "artifacts",
+        "exclude",
+        "force-include",
+        "include",
+        "only-include",
+        "sources",
     }
 )
-
-REQUIRED_WHEEL_MEMBERS = frozenset(
-    {
-        "sidekick_usages/__init__.py",
-        "sidekick_usages/__main__.py",
-        "sidekick_usages/branding.py",
-        "sidekick_usages/clock.py",
-        "sidekick_usages/core/__init__.py",
-        "sidekick_usages/core/accounts/__init__.py",
-        "sidekick_usages/core/accounts/models.py",
-        "sidekick_usages/core/accounts/types.py",
-        "sidekick_usages/core/accounts/validation.py",
-        "sidekick_usages/credentials/__init__.py",
-        "sidekick_usages/credentials/account_state.py",
-        "sidekick_usages/credentials/authorities.py",
-        "sidekick_usages/credentials/claude_lifetime.py",
-        "sidekick_usages/credentials/claude_restore.py",
-        "sidekick_usages/credentials/claude_setup_save.py",
-        "sidekick_usages/credentials/claude_transitions.py",
-        "sidekick_usages/credentials/codex.py",
-        "sidekick_usages/credentials/models.py",
-        "sidekick_usages/credentials/refresh.py",
-        "sidekick_usages/credentials/service.py",
-        "sidekick_usages/core/expiry.py",
-        "sidekick_usages/core/models.py",
-        "sidekick_usages/core/selection/__init__.py",
-        "sidekick_usages/core/selection/models.py",
-        "sidekick_usages/core/selection/policy.py",
-        "sidekick_usages/core/selection/types.py",
-        "sidekick_usages/core/time.py",
-        "sidekick_usages/core/types.py",
-        "sidekick_usages/daemon/__init__.py",
-        "sidekick_usages/daemon/client.py",
-        "sidekick_usages/daemon/control.py",
-        "sidekick_usages/daemon/diagnostics.py",
-        "sidekick_usages/daemon/dispatch.py",
-        "sidekick_usages/daemon/entrypoint.py",
-        "sidekick_usages/daemon/scheduled_maintenance.py",
-        "sidekick_usages/daemon/models/__init__.py",
-        "sidekick_usages/daemon/models/control.py",
-        "sidekick_usages/daemon/models/diagnostics.py",
-        "sidekick_usages/daemon/models/maintenance.py",
-        "sidekick_usages/daemon/models/peer.py",
-        "sidekick_usages/daemon/models/protocol.py",
-        "sidekick_usages/daemon/models/scheduler.py",
-        "sidekick_usages/daemon/models/service.py",
-        "sidekick_usages/daemon/models/worker.py",
-        "sidekick_usages/daemon/peer.py",
-        "sidekick_usages/daemon/protocol.py",
-        "sidekick_usages/daemon/recovery.py",
-        "sidekick_usages/daemon/scheduler.py",
-        "sidekick_usages/daemon/supervisor.py",
-        "sidekick_usages/daemon/types/__init__.py",
-        "sidekick_usages/daemon/types/control.py",
-        "sidekick_usages/daemon/types/maintenance.py",
-        "sidekick_usages/daemon/types/peer.py",
-        "sidekick_usages/daemon/types/ports.py",
-        "sidekick_usages/daemon/types/protocol.py",
-        "sidekick_usages/daemon/types/service.py",
-        "sidekick_usages/daemon/types/worker.py",
-        "sidekick_usages/daemon/worker_entrypoint.py",
-        "sidekick_usages/daemon/worker_runtime.py",
-        "sidekick_usages/daemon/workers.py",
-        "sidekick_usages/doctor.py",
-        "sidekick_usages/doctor_credentials.py",
-        "sidekick_usages/errors.py",
-        "sidekick_usages/http/__init__.py",
-        "sidekick_usages/http/client.py",
-        "sidekick_usages/http/retry.py",
-        "sidekick_usages/heartbeat/__init__.py",
-        "sidekick_usages/heartbeat/models.py",
-        "sidekick_usages/heartbeat/ports.py",
-        "sidekick_usages/heartbeat/render.py",
-        "sidekick_usages/heartbeat/service.py",
-        "sidekick_usages/maintenance.py",
-        "sidekick_usages/paths.py",
-        "sidekick_usages/persistence/__init__.py",
-        "sidekick_usages/persistence/_compat/v060-reader.zip",
-        "sidekick_usages/persistence/_current_schema.py",
-        "sidekick_usages/persistence/_platform/__init__.py",
-        "sidekick_usages/persistence/_platform/macos.py",
-        "sidekick_usages/persistence/_platform/macos_acl.py",
-        "sidekick_usages/persistence/_platform/posix.py",
-        "sidekick_usages/persistence/_platform/posix_files.py",
-        "sidekick_usages/persistence/_platform/posix_mounts.py",
-        "sidekick_usages/persistence/_platform/posix_namespace.py",
-        "sidekick_usages/persistence/_platform/posix_private.py",
-        "sidekick_usages/persistence/_platform/posix_private_bundles.py",
-        "sidekick_usages/persistence/_platform/posix_private_platform.py",
-        "sidekick_usages/persistence/_platform/posix_provider_stage.py",
-        "sidekick_usages/persistence/_platform/windows.py",
-        "sidekick_usages/persistence/_platform/windows_files.py",
-        "sidekick_usages/persistence/_platform/windows_handles.py",
-        "sidekick_usages/persistence/_platform/windows_namespace.py",
-        "sidekick_usages/persistence/_platform/windows_private.py",
-        "sidekick_usages/persistence/_platform/windows_private_bundles.py",
-        "sidekick_usages/persistence/_platform/windows_private_tree.py",
-        "sidekick_usages/persistence/activity_snapshots.py",
-        "sidekick_usages/persistence/_platform/windows_security.py",
-        "sidekick_usages/persistence/_recovery.py",
-        "sidekick_usages/persistence/_schema_models.py",
-        "sidekick_usages/persistence/_prototype_receipt_schema.py",
-        "sidekick_usages/persistence/account_index.py",
-        "sidekick_usages/persistence/account_runtime_bridge.py",
-        "sidekick_usages/persistence/account_store.py",
-        "sidekick_usages/persistence/account_store_support.py",
-        "sidekick_usages/persistence/account_store_v3.py",
-        "sidekick_usages/persistence/account_validation.py",
-        "sidekick_usages/persistence/activation_journal.py",
-        "sidekick_usages/persistence/artifacts.py",
-        "sidekick_usages/persistence/assessment.py",
-        "sidekick_usages/persistence/credential_authorities.py",
-        "sidekick_usages/persistence/credential_refresh.py",
-        "sidekick_usages/persistence/credential_refresh_artifacts.py",
-        "sidekick_usages/persistence/credential_refresh_merge.py",
-        "sidekick_usages/persistence/credential_refresh_private_stage.py",
-        "sidekick_usages/persistence/schema/refresh.py",
-        "sidekick_usages/persistence/credential_refresh_stage.py",
-        "sidekick_usages/persistence/credential_ownership.py",
-        "sidekick_usages/persistence/schema/transaction.py",
-        "sidekick_usages/persistence/credential_transaction_plans.py",
-        "sidekick_usages/persistence/credential_transaction_recovery.py",
-        "sidekick_usages/persistence/credential_transactions.py",
-        "sidekick_usages/persistence/errors.py",
-        "sidekick_usages/persistence/filesystem.py",
-        "sidekick_usages/persistence/filesystem_access.py",
-        "sidekick_usages/persistence/inventory.py",
-        "sidekick_usages/persistence/locking.py",
-        "sidekick_usages/persistence/limits.py",
-        "sidekick_usages/persistence/managed_migration.py",
-        "sidekick_usages/persistence/managed_rollback.py",
-        "sidekick_usages/persistence/migrations/__init__.py",
-        "sidekick_usages/persistence/migrations/account.py",
-        "sidekick_usages/persistence/migrations/account_codecs.py",
-        "sidekick_usages/persistence/migrations/account_preview.py",
-        "sidekick_usages/persistence/migrations/credential_kinds.py",
-        "sidekick_usages/persistence/migrations/errors.py",
-        "sidekick_usages/persistence/migrations/location.py",
-        "sidekick_usages/persistence/migrations/location_state.py",
-        "sidekick_usages/persistence/migrations/observer.py",
-        "sidekick_usages/persistence/migrations/ports.py",
-        "sidekick_usages/persistence/migrations/released_verification.py",
-        "sidekick_usages/persistence/migrations/rollback.py",
-        "sidekick_usages/persistence/migrations/service.py",
-        "sidekick_usages/persistence/models/__init__.py",
-        "sidekick_usages/persistence/models/account.py",
-        "sidekick_usages/persistence/models/selection.py",
-        "sidekick_usages/persistence/observations.py",
-        "sidekick_usages/persistence/operation_queue.py",
-        "sidekick_usages/persistence/operation_authority.py",
-        "sidekick_usages/persistence/private_bundle_paths.py",
-        "sidekick_usages/persistence/private_bundle_references.py",
-        "sidekick_usages/persistence/private_bundle_writes.py",
-        "sidekick_usages/persistence/private_credential_contracts.py",
-        "sidekick_usages/persistence/private_credentials.py",
-        "sidekick_usages/persistence/private_filesystem.py",
-        "sidekick_usages/persistence/schema/__init__.py",
-        "sidekick_usages/persistence/schema/account.py",
-        "sidekick_usages/persistence/schemas.py",
-        "sidekick_usages/persistence/schema/selection.py",
-        "sidekick_usages/persistence/schema/service.py",
-        "sidekick_usages/persistence/schema/worker.py",
-        "sidekick_usages/persistence/selected_state.py",
-        "sidekick_usages/persistence/service_state.py",
-        "sidekick_usages/persistence/state_fields.py",
-        "sidekick_usages/persistence/state_files.py",
-        "sidekick_usages/persistence/state_filesystem.py",
-        "sidekick_usages/persistence/state_json.py",
-        "sidekick_usages/persistence/state_validation.py",
-        "sidekick_usages/persistence/time_codec.py",
-        "sidekick_usages/persistence/transaction.py",
-        "sidekick_usages/persistence/transforms.py",
-        "sidekick_usages/persistence/types/__init__.py",
-        "sidekick_usages/persistence/types/activation.py",
-        "sidekick_usages/persistence/types/inventory.py",
-        "sidekick_usages/persistence/types/transaction.py",
-        "sidekick_usages/persistence/v060.py",
-        "sidekick_usages/persistence/worker_results.py",
-        "sidekick_usages/providers/claude/__init__.py",
-        "sidekick_usages/providers/claude/activity.py",
-        "sidekick_usages/providers/claude/credential_schemas.py",
-        "sidekick_usages/providers/claude/credentials.py",
-        "sidekick_usages/providers/claude/heartbeat.py",
-        "sidekick_usages/providers/claude/provider.py",
-        "sidekick_usages/providers/claude/schemas.py",
-        "sidekick_usages/providers/claude/usage.py",
-        "sidekick_usages/providers/codex/__init__.py",
-        "sidekick_usages/providers/codex/activity.py",
-        "sidekick_usages/providers/codex/auth.py",
-        "sidekick_usages/providers/codex/auth_migration.py",
-        "sidekick_usages/providers/codex/heartbeat.py",
-        "sidekick_usages/providers/codex/provider.py",
-        "sidekick_usages/providers/codex/request.py",
-        "sidekick_usages/providers/codex/schemas.py",
-        "sidekick_usages/providers/codex/usage.py",
-        "sidekick_usages/providers/__init__.py",
-        "sidekick_usages/providers/base.py",
-        "sidekick_usages/providers/registry.py",
-        "sidekick_usages/scheduler_quiescence.py",
-        "sidekick_usages/serialization/__init__.py",
-        "sidekick_usages/serialization/json.py",
-        "sidekick_usages/usage/__init__.py",
-        "sidekick_usages/usage/activity.py",
-        "sidekick_usages/usage/activity_render.py",
-        "sidekick_usages/usage/narrow_render.py",
-        "sidekick_usages/usage/models.py",
-        "sidekick_usages/usage/render.py",
-        "sidekick_usages/usage/reset_display.py",
-        "sidekick_usages/usage/service.py",
-        "sidekick_usages/update.py",
-    }
-    | REQUIRED_CLI_MEMBERS
-)
-FORBIDDEN_WHEEL_MEMBERS = frozenset(
-    {
-        "sidekick_usages/http.py",
-        "sidekick_usages/lifetime.py",
-        "sidekick_usages/render.py",
-        "sidekick_usages/cli.py",
-        "sidekick_usages/daemon.py",
-        "sidekick_usages/cli_help.py",
-        "sidekick_usages/token_input.py",
-        "sidekick_usages/report.py",
-        "sidekick_usages/store.py",
-        "sidekick_usages/heartbeat/base.py",
-        "sidekick_usages/heartbeat/claude.py",
-        "sidekick_usages/heartbeat/codex.py",
-        "sidekick_usages/heartbeat/domain.py",
-        "sidekick_usages/heartbeat/registry.py",
-        "sidekick_usages/providers/claude.py",
-        "sidekick_usages/providers/codex.py",
-        "sidekick_usages/persistence/migration_errors.py",
-        "sidekick_usages/persistence/migrations.py",
-    }
-)
-
 SMOKE_ARGUMENTS: tuple[tuple[str, ...], ...] = (
     ("--version",),
     ("--help",),
@@ -283,16 +35,11 @@ SMOKE_ARGUMENTS: tuple[tuple[str, ...], ...] = (
     ("daemon", "status", "--help"),
     ("doctor", "--help"),
     ("add", "--help"),
-    ("migrate", "locations", "--help"),
     ("claude", "--help"),
     ("claude", "setup-token", "--help"),
-    ("claude", "restore-setup-token", "--help"),
     ("codex", "--help"),
     ("codex", "login", "--help"),
     ("codex", "export", "--help"),
-    ("setup-token", "--help"),
-    ("codex-login", "--help"),
-    ("codex-export", "--help"),
 )
 
 
@@ -300,21 +47,115 @@ class WheelVerificationError(RuntimeError):
     """The built artifact does not satisfy the release contract."""
 
 
-def project_identity() -> tuple[str, str]:
-    """Return the normalized distribution name and declared version.
+def _project_configuration() -> dict[str, object]:
+    """Return the strict project configuration mapping."""
+    try:
+        configuration = tomllib.loads(PYPROJECT_PATH.read_text())
+    except (OSError, tomllib.TOMLDecodeError) as error:
+        raise WheelVerificationError(
+            f"Cannot read project configuration: {PYPROJECT_PATH}"
+        ) from error
+    return configuration
 
-    :return: ``(wheel_distribution_name, version)``.
-    """
-    project = tomllib.loads(PYPROJECT_PATH.read_text())["project"]
-    name = str(project["name"]).replace("-", "_").replace(".", "_")
-    return name, str(project["version"])
+
+def _required_mapping(
+    owner: dict[str, object],
+    name: str,
+) -> dict[str, object]:
+    """Return one required nested project table."""
+    value = owner.get(name)
+    if not isinstance(value, dict):
+        raise WheelVerificationError(
+            f"Project configuration table {name!r} is missing."
+        )
+    return value
+
+
+def project_identity() -> tuple[str, str]:
+    """Return the normalized distribution name and declared version."""
+    project = _required_mapping(_project_configuration(), "project")
+    name = project.get("name")
+    version = project.get("version")
+    if not isinstance(name, str) or not isinstance(version, str):
+        raise WheelVerificationError(
+            "Project name and version must be static strings."
+        )
+    return name.replace("-", "_").replace(".", "_"), version
+
+
+def package_source_root() -> Path:
+    """Return the sole package root declared by the Hatch wheel target."""
+    tool = _required_mapping(_project_configuration(), "tool")
+    hatch = _required_mapping(tool, "hatch")
+    build = _required_mapping(hatch, "build")
+    targets = _required_mapping(build, "targets")
+    wheel = _required_mapping(targets, "wheel")
+    unsupported = sorted(
+        UNSUPPORTED_SELECTION_KEYS.intersection(build)
+        | UNSUPPORTED_SELECTION_KEYS.intersection(wheel)
+    )
+    packages = wheel.get("packages")
+    if unsupported:
+        raise WheelVerificationError(
+            "Wheel source derivation does not support additional selection "
+            f"keys: {unsupported!r}."
+        )
+    if (
+        not isinstance(packages, list)
+        or len(packages) != 1
+        or not isinstance(packages[0], str)
+    ):
+        raise WheelVerificationError(
+            "The wheel target must declare exactly one package root."
+        )
+    relative = Path(packages[0])
+    if (
+        relative.is_absolute()
+        or ".." in relative.parts
+        or len(relative.parts) < MINIMUM_SOURCE_PACKAGE_PARTS
+    ):
+        raise WheelVerificationError(
+            "The wheel package root must be a confined src-layout path."
+        )
+    root = REPO_ROOT / relative
+    if not root.is_dir() or not (root / "__init__.py").is_file():
+        raise WheelVerificationError(
+            f"Declared wheel package root is invalid: {relative}"
+        )
+    return root
+
+
+def expected_package_members() -> frozenset[str]:
+    """Derive the exact pure-Python artifact contract from the package root."""
+    root = package_source_root()
+    package_name = root.name
+    source_files: list[Path] = []
+    unsupported: list[str] = []
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(root)
+        if IGNORED_SOURCE_DIRECTORIES.intersection(relative.parts):
+            continue
+        if path.is_symlink() or path.suffix != ".py":
+            unsupported.append(relative.as_posix())
+            continue
+        source_files.append(relative)
+    if unsupported:
+        raise WheelVerificationError(
+            "The package contains undeclared data or unsafe links: "
+            f"{sorted(unsupported)!r}."
+        )
+    members = frozenset(
+        f"{package_name}/{relative.as_posix()}" for relative in source_files
+    )
+    if f"{package_name}/__init__.py" not in members:
+        raise WheelVerificationError("The declared package is empty.")
+    return members
 
 
 def expected_artifact_names() -> tuple[str, str]:
-    """Return the exact wheel and source-distribution filenames.
-
-    :return: ``(wheel_filename, sdist_filename)``.
-    """
+    """Return the exact wheel and source-distribution filenames."""
     name, version = project_identity()
     return (
         f"{name}-{version}-py3-none-any.whl",
@@ -323,13 +164,7 @@ def expected_artifact_names() -> tuple[str, str]:
 
 
 def require_exact_wheel(directory: Path) -> Path:
-    """Select the sole wheel only when its filename is exact.
-
-    :param directory: Artifact directory to inspect.
-    :return: The exact wheel path.
-    :raises WheelVerificationError: If the directory is missing or its wheel
-        set is not exactly the expected singleton.
-    """
+    """Select the sole wheel only when its filename is exact."""
     expected_wheel, _ = expected_artifact_names()
     if not directory.is_dir():
         raise WheelVerificationError(
@@ -347,12 +182,7 @@ def require_exact_wheel(directory: Path) -> Path:
 
 
 def require_exact_sdist(directory: Path) -> Path:
-    """Select the sole source distribution when its filename is exact.
-
-    :param directory: Artifact directory to inspect.
-    :return: The exact source-distribution path.
-    :raises WheelVerificationError: If the sdist set is not exact.
-    """
+    """Select the sole source distribution when its filename is exact."""
     _, expected_sdist = expected_artifact_names()
     sdist_names = sorted(
         path.name
@@ -368,12 +198,7 @@ def require_exact_sdist(directory: Path) -> Path:
 
 
 def require_exact_distribution_set(directory: Path) -> tuple[Path, Path]:
-    """Require one exact wheel, one exact sdist, and no sibling files.
-
-    :param directory: Downloaded or newly built distribution directory.
-    :return: ``(wheel, sdist)``.
-    :raises WheelVerificationError: If an unexpected sibling artifact exists.
-    """
+    """Require one exact wheel, one exact sdist, and no sibling files."""
     wheel = require_exact_wheel(directory)
     sdist = require_exact_sdist(directory)
     expected = sorted((wheel.name, sdist.name))
@@ -385,83 +210,99 @@ def require_exact_distribution_set(directory: Path) -> tuple[Path, Path]:
     return wheel, sdist
 
 
-def verify_wheel_members(wheel: Path) -> None:
-    """Verify required package members and reject stale module remnants.
+def _verify_members(
+    artifact: str,
+    expected: frozenset[str],
+    observed: frozenset[str],
+) -> None:
+    """Require exact source-derived package membership."""
+    missing = sorted(expected - observed)
+    unexpected = sorted(observed - expected)
+    if missing or unexpected:
+        raise WheelVerificationError(
+            f"{artifact} member contract failed; missing={missing!r}, "
+            f"unexpected={unexpected!r}."
+        )
 
-    :param wheel: Exact wheel to inspect.
-    :raises WheelVerificationError: If the archive is malformed or its member
-        contract is violated.
-    """
+
+def verify_wheel_members(wheel: Path) -> None:
+    """Verify exact source-derived package members without a file manifest."""
+    expected = expected_package_members()
+    prefix = f"{package_source_root().name}/"
+    name, version = project_identity()
+    record_name = f"{name}-{version}.dist-info/RECORD"
     try:
         with zipfile.ZipFile(wheel) as archive:
-            members = frozenset(archive.namelist())
-    except zipfile.BadZipFile as error:
+            names = tuple(
+                entry.filename
+                for entry in archive.infolist()
+                if not entry.is_dir()
+            )
+            record_rows = tuple(
+                csv.reader(
+                    archive.read(record_name).decode("utf-8").splitlines()
+                )
+            )
+    except (OSError, zipfile.BadZipFile) as error:
         raise WheelVerificationError(
             f"Invalid wheel archive: {wheel}"
         ) from error
-
-    package_members = frozenset(
-        member for member in members if member.startswith("sidekick_usages/")
-    )
-    missing = sorted(REQUIRED_WHEEL_MEMBERS - package_members)
-    unexpected = sorted(package_members - REQUIRED_WHEEL_MEMBERS)
-    forbidden = sorted(FORBIDDEN_WHEEL_MEMBERS & members)
-    if missing or unexpected or forbidden:
+    except (KeyError, UnicodeDecodeError, csv.Error) as error:
+        raise WheelVerificationError("Wheel RECORD is invalid.") from error
+    if len(names) != len(set(names)):
+        raise WheelVerificationError("Wheel contains duplicate members.")
+    if any(len(row) != RECORD_COLUMN_COUNT for row in record_rows):
+        raise WheelVerificationError("Wheel RECORD rows are invalid.")
+    recorded = tuple(row[0] for row in record_rows)
+    if len(recorded) != len(set(recorded)) or set(recorded) != set(names):
         raise WheelVerificationError(
-            f"Wheel member contract failed; missing={missing!r}, "
-            f"unexpected={unexpected!r}, "
-            f"forbidden={forbidden!r}."
+            "Wheel members and RECORD inventory differ."
         )
+    observed = frozenset(
+        member for member in names if member.startswith(prefix)
+    )
+    recorded_package = frozenset(
+        member for member in recorded if member.startswith(prefix)
+    )
+    _verify_members("Wheel", expected, observed)
+    _verify_members("Wheel RECORD", expected, recorded_package)
 
 
 def verify_source_members() -> None:
-    """Verify the checkout has the final package without flat remnants."""
-    package_root = REPO_ROOT / "src"
-    members = frozenset(
-        path.relative_to(package_root).as_posix()
-        for path in package_root.joinpath("sidekick_usages").rglob("*")
-        if path.is_file()
-        and not SOURCE_EXCLUDED_DIRECTORIES.intersection(path.parts)
-    )
-    missing = sorted(REQUIRED_WHEEL_MEMBERS - members)
-    unexpected = sorted(members - REQUIRED_WHEEL_MEMBERS)
-    forbidden = sorted(FORBIDDEN_WHEEL_MEMBERS & members)
-    if missing or unexpected or forbidden:
-        raise WheelVerificationError(
-            f"Source member contract failed; missing={missing!r}, "
-            f"unexpected={unexpected!r}, "
-            f"forbidden={forbidden!r}."
-        )
+    """Verify the declared package remains pure Python and confined."""
+    expected_package_members()
 
 
 def verify_sdist_members(sdist: Path) -> None:
-    """Verify the source distribution contains the same CLI contract."""
-    archive_root = sdist.name.removesuffix(".tar.gz")
-    prefix = f"{archive_root}/src/"
+    """Verify the sdist contains the exact source-derived package tree."""
+    expected_sdist = expected_artifact_names()[1]
+    archive_root = expected_sdist.removesuffix(".tar.gz")
+    package_root = package_source_root()
+    source_parent = package_root.parent.relative_to(REPO_ROOT).as_posix()
+    prefix = f"{archive_root}/{source_parent}/"
+    expected = frozenset(
+        prefix + member for member in expected_package_members()
+    )
+    package_prefix = prefix + f"{package_root.name}/"
     try:
         with tarfile.open(sdist, mode="r:gz") as archive:
-            members = frozenset(archive.getnames())
+            names = tuple(
+                member.name
+                for member in archive.getmembers()
+                if member.isfile()
+            )
     except (OSError, tarfile.TarError) as error:
         raise WheelVerificationError(
             f"Invalid source distribution archive: {sdist}"
         ) from error
-    required = frozenset(prefix + member for member in REQUIRED_WHEEL_MEMBERS)
-    package_prefix = prefix + "sidekick_usages/"
-    package_members = frozenset(
-        member for member in members if member.startswith(package_prefix)
-    )
-    forbidden_contract = frozenset(
-        prefix + member for member in FORBIDDEN_WHEEL_MEMBERS
-    )
-    missing = sorted(required - members)
-    unexpected = sorted(package_members - required)
-    forbidden = sorted(forbidden_contract & members)
-    if missing or unexpected or forbidden:
+    if len(names) != len(set(names)):
         raise WheelVerificationError(
-            f"Source distribution member contract failed; "
-            f"missing={missing!r}, unexpected={unexpected!r}, "
-            f"forbidden={forbidden!r}."
+            "Source distribution contains duplicate members."
         )
+    observed = frozenset(
+        member for member in names if member.startswith(package_prefix)
+    )
+    _verify_members("Source distribution", expected, observed)
 
 
 def _run(
@@ -518,8 +359,6 @@ def _clean_subprocess_env() -> dict[str, str]:
         {
             "COLUMNS": "120",
             "NO_COLOR": "1",
-            # Captured standard streams are pipes, where Python honors this
-            # override on Windows as well as POSIX hosts.
             "PYTHONIOENCODING": "utf-8",
             "PYTHONNOUSERSITE": "1",
             "TERM": "dumb",
@@ -539,12 +378,7 @@ def _isolated_command_env(home: Path) -> dict[str, str]:
 
 
 def verify_installed_wheel(wheel: Path) -> None:
-    """Install the wheel into a fresh venv and exercise both entry paths.
-
-    :param wheel: Exact wheel to install.
-    :raises WheelVerificationError: If installation, import isolation, or a
-        command smoke check fails.
-    """
+    """Install the wheel and exercise both entry paths outside the checkout."""
     uv = _uv_executable()
     with tempfile.TemporaryDirectory(prefix="sidekick-wheel-runtime-") as raw:
         runtime_root = Path(raw)
@@ -588,67 +422,15 @@ def verify_installed_wheel(wheel: Path) -> None:
             "assert origin.is_relative_to(prefix), (origin, prefix); "
             "assert dependency.is_relative_to(prefix), "
             "(dependency, prefix); "
-            "assert importlib.metadata.version('platformdirs') == '4.10.0'"
+            "assert importlib.metadata.version('platformdirs') == '4.10.0'; "
+            "scripts = {point.name for point in "
+            "importlib.metadata.distribution("
+            "'sidekick-usages').entry_points}; "
+            "assert {'sidekick-usages', 'sidekick-usages-supervisor', "
+            "'sidekick-usages-worker'} <= scripts"
         )
         _run(
             [str(python), "-c", origin_check],
-            cwd=run_dir,
-            env=env,
-        )
-
-        compatibility_check = """
-from datetime import UTC, datetime
-from pathlib import Path
-
-from sidekick_usages.core.expiry import KnownExpiry, UnknownExpiry
-from sidekick_usages.core.models import Account, ClaudeLoginCredentials
-from sidekick_usages.core.types import AccountLabel
-from sidekick_usages.persistence.artifacts import (
-    FileFingerprint,
-    FileIdentity,
-    FileSnapshot,
-    sha256_digest,
-)
-from sidekick_usages.persistence.schemas import encode_generation_zero
-from sidekick_usages.persistence.transforms import (
-    accounts_to_version_one,
-    version_one_to_v060,
-)
-from sidekick_usages.persistence.v060 import ReleasedV060Verifier
-
-account = Account(
-    label=AccountLabel("claude-wheel-测试"),
-    credentials=ClaudeLoginCredentials(
-        access_token="test-only-wheel-access",
-        refresh_token="test-only-wheel-refresh",
-        access_expiry=KnownExpiry(datetime(2027, 1, 1, tzinfo=UTC)),
-        refresh_expiry=UnknownExpiry(),
-        scopes=("user:profile",),
-    ),
-    plan="team",
-)
-payload = encode_generation_zero(
-    version_one_to_v060(accounts_to_version_one((account,)))
-)
-authority = Path("synthetic-accounts.json").resolve()
-authority.write_bytes(payload)
-metadata = authority.stat()
-expected = FileSnapshot(
-    FileFingerprint(
-        FileIdentity(metadata.st_dev, metadata.st_ino),
-        sha256_digest(payload),
-        len(payload),
-    ),
-    metadata.st_nlink,
-    payload,
-)
-verifier = ReleasedV060Verifier()
-verifier.preflight()
-verifier.verify(authority, expected)
-authority.unlink()
-"""
-        _run(
-            [str(python), "-c", compatibility_check],
             cwd=run_dir,
             env=env,
         )
@@ -679,13 +461,7 @@ authority.unlink()
 
 
 def build_distributions(output_dir: Path) -> Path:
-    """Build into a new output directory and return the exact wheel.
-
-    :param output_dir: Directory that must not exist before this call.
-    :return: Exact newly built wheel.
-    :raises WheelVerificationError: If the directory already exists or the
-        built artifact set is not exact.
-    """
+    """Build into a new output directory and return the exact wheel."""
     if output_dir.exists():
         raise WheelVerificationError(
             f"Refusing non-fresh output directory: {output_dir}"
@@ -707,11 +483,7 @@ def build_distributions(output_dir: Path) -> Path:
 
 
 def verify_exact_wheel(wheel: Path) -> None:
-    """Verify one explicitly selected wheel and its isolated runtime.
-
-    :param wheel: Wheel path whose name and sibling wheel set must be exact.
-    :raises WheelVerificationError: If any artifact or runtime gate fails.
-    """
+    """Verify one explicitly selected wheel and its isolated runtime."""
     selected, sdist = require_exact_distribution_set(wheel.parent)
     if selected.resolve() != wheel.resolve():
         raise WheelVerificationError(
@@ -724,6 +496,7 @@ def verify_exact_wheel(wheel: Path) -> None:
 
 
 def _parser() -> argparse.ArgumentParser:
+    """Return the release-verification argument parser."""
     parser = argparse.ArgumentParser(
         description="Build or verify the exact sidekick-usages wheel.",
     )

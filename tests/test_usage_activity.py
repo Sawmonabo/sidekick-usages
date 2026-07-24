@@ -33,8 +33,10 @@ from sidekick_usages.errors import (
 )
 from sidekick_usages.http import HttpClient
 from sidekick_usages.persistence.account_store import AccountStore
-from sidekick_usages.persistence.activity_snapshots import (
+from sidekick_usages.persistence.errors import (
     ActivitySnapshotError,
+)
+from sidekick_usages.persistence.types.error import (
     ActivitySnapshotFailureKind,
 )
 from sidekick_usages.providers.base import (
@@ -60,6 +62,7 @@ from sidekick_usages.usage import (
 from tests.test_support import (
     REFERENCE_TIME,
     FixedClock,
+    RuntimeCredentialResolver,
     make_account_store_with_private,
 )
 
@@ -310,6 +313,7 @@ def _service(
                 else {ProviderId.CODEX: account_activity}
             ),
             activity_snapshots=activity_snapshots,
+            resolver=RuntimeCredentialResolver(store),
         ),
         store,
     )

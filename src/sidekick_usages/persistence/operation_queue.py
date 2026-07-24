@@ -14,11 +14,8 @@ from sidekick_usages.core.selection.policy import (
 )
 from sidekick_usages.core.selection.types import OperationKind, OperationState
 from sidekick_usages.core.time import as_utc
-from sidekick_usages.persistence.artifacts import (
-    AuthorityExpectation,
-    FileSnapshot,
-)
 from sidekick_usages.persistence.locking import PersistenceLock
+from sidekick_usages.persistence.models.artifact import FileSnapshot
 from sidekick_usages.persistence.models.selection import (
     OperationQueueDocument,
 )
@@ -34,6 +31,7 @@ from sidekick_usages.persistence.state_files import (
 from sidekick_usages.persistence.state_filesystem import (
     ManagedStateFilesystem,
 )
+from sidekick_usages.persistence.types.artifact import AuthorityExpectation
 
 __all__ = ["OperationQueueStore"]
 

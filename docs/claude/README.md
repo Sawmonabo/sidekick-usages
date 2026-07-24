@@ -41,18 +41,6 @@ credential. Changing authentication method requires
 `--replace-auth-method`; changing a known or unprovable identity requires
 `--replace-identity`. When both change, both authorizations are required.
 
-An import-only prototype may still contain an earlier setup token for one
-label. Restore only that exact record through the transactional command:
-
-```bash
-sidekick-usages claude restore-setup-token <label>
-sidekick-usages claude restore-setup-token <label> --yes
-```
-
-The restore reads but does not modify the prototype, replaces only the named
-current Claude credential, preserves unrelated accounts, and makes no provider
-request.
-
 ## Lifetime model
 
 Subscription logins have independent lifetimes:
@@ -94,10 +82,10 @@ flowchart LR
 
     Setup["setup-token credential"]
     Login["subscription-login credential"]
-    Restore["restore exact prototype label"]
     Import["import current matching login"]
+    Replace["capture a new setup token"]
 
-    Restore --> Setup
+    Replace --> Setup
     Import --> Login
     Setup -- "replace auth method" --> Login
     Login -- "replace auth method and identity authority" --> Setup

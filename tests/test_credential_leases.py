@@ -21,16 +21,14 @@ from sidekick_usages.credentials.authorities import (
     ProtectedCredentialAuthorityReader,
 )
 from sidekick_usages.persistence.account_runtime_bridge import (
-    active_legacy_reference,
+    active_stored_reference,
 )
-from sidekick_usages.persistence.account_store import AccountStore
-from sidekick_usages.persistence.credential_authorities import (
+from sidekick_usages.persistence.credential_repository import (
     CredentialAuthorityRepository,
-    LegacyCredentialAuthority,
 )
 from sidekick_usages.persistence.errors import InvalidSchemaError
-from sidekick_usages.persistence.managed_migration import (
-    ManagedAccountMigrationService,
+from sidekick_usages.persistence.models.credential import (
+    StoredCredentialAuthority,
 )
 from tests.test_support import (
     make_account_store_with_private,
@@ -47,7 +45,7 @@ class _MalformedRepository(CredentialAuthorityRepository):
         self,
         account_id: SidekickAccountId,
         authority_id: AuthorityId,
-    ) -> LegacyCredentialAuthority | None:
+    ) -> StoredCredentialAuthority | None:
         del account_id, authority_id
         raise InvalidSchemaError
 
@@ -56,7 +54,7 @@ def test_credential_lease_is_bound_scoped_redacted_and_fail_closed(
     tmp_path: Path,
 ) -> None:
     secret = "test-only-lease-access-secret"
-    legacy, private = make_account_store_with_private(
+    store, private = make_account_store_with_private(
         tmp_path,
         (
             Account(
@@ -71,15 +69,9 @@ def test_credential_lease_is_bound_scoped_redacted_and_fail_closed(
             ),
         ),
     )
-    ManagedAccountMigrationService(legacy.path, private).migrate()
-    store = AccountStore(
-        legacy.locations,
-        orphaned_credentials_observer=private.observe,
-        private_credentials=private,
-    ).load()
     saved = store.saved_accounts()[0]
     repository = CredentialAuthorityRepository(private)
-    authority_id = active_legacy_reference(saved)
+    authority_id = active_stored_reference(saved)
     authority = repository.read(
         saved.account_id,
         authority_id,

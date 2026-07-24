@@ -10,7 +10,6 @@ import portalocker
 from portalocker import LockFlags
 
 from sidekick_usages.persistence.errors import (
-    PersistenceCode,
     PersistenceError,
     PersistenceFilesystemError,
 )
@@ -19,6 +18,7 @@ from sidekick_usages.persistence.transaction import (
     PersistenceTransaction,
     _begin_transaction,
 )
+from sidekick_usages.persistence.types.error import PersistenceCode
 
 __all__ = [
     "LOCK_CHECK_INTERVAL_SECONDS",

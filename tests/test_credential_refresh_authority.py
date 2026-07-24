@@ -22,7 +22,11 @@ from tests.test_credential_refresh_support import (
     RefreshProvider,
     login_account,
 )
-from tests.test_support import FixedClock, make_account_store
+from tests.test_support import (
+    FixedClock,
+    RuntimeCredentialResolver,
+    make_account_store,
+)
 
 
 def test_fresh_rotating_authority_replaces_cached_setup_token(
@@ -53,9 +57,11 @@ def test_fresh_rotating_authority_replaces_cached_setup_token(
             tmp_path / "credential-refresh",
         ),
         clock=FixedClock(),
+        resolver=RuntimeCredentialResolver(stale_store),
     )
 
     result = coordinator.refresh(
+        provider_id=ProviderId.CLAUDE,
         label=label,
         reason=CredentialRefreshReason.OPERATOR_FORCED,
     )
@@ -83,9 +89,11 @@ def test_fresh_present_authority_replaces_cached_missing_state(
             tmp_path / "credential-refresh",
         ),
         clock=FixedClock(),
+        resolver=RuntimeCredentialResolver(stale_store),
     )
 
     result = coordinator.refresh(
+        provider_id=ProviderId.CLAUDE,
         label=label,
         reason=CredentialRefreshReason.OPERATOR_FORCED,
     )
@@ -129,9 +137,11 @@ def test_stabilized_provider_replaces_cached_same_label_provider(
             tmp_path / "credential-refresh",
         ),
         clock=FixedClock(),
+        resolver=RuntimeCredentialResolver(stale_store),
     )
 
     result = coordinator.refresh(
+        provider_id=ProviderId.CODEX,
         label=label,
         reason=CredentialRefreshReason.OPERATOR_FORCED,
     )

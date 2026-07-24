@@ -65,16 +65,6 @@ sidekick-usages claude setup-token --label <label> --force
 This captures a new setup token. It does not import the active subscription
 login.
 
-If the import-only prototype contains the exact earlier setup-token record and
-that is the credential the operator wants, preview the targeted restore:
-
-```bash
-sidekick-usages claude restore-setup-token <label>
-```
-
-The command makes no model request and does not validate the restored token
-against the provider.
-
 ### Subscription login rejected or expiring
 
 First sign in to the same Claude account intentionally:

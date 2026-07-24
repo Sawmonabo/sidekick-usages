@@ -7,15 +7,8 @@ from enum import StrEnum
 from pathlib import Path
 
 from sidekick_usages.core.models import Account
-from sidekick_usages.persistence.credential_refresh_stage import (
-    decode_credential_refresh_stage,
-)
-from sidekick_usages.persistence.errors import (
-    PersistenceCode,
-    PersistenceError,
-)
+from sidekick_usages.persistence.errors import PersistenceError
 from sidekick_usages.persistence.filesystem import PersistenceFilesystem
-from sidekick_usages.persistence.inventory import OrphanedPrivateCredentials
 from sidekick_usages.persistence.locking import (
     PersistenceLock,
     StoreLockedError,
@@ -26,12 +19,19 @@ from sidekick_usages.persistence.private_credentials import (
 from sidekick_usages.persistence.schema.refresh import (
     JOURNAL_BASENAME,
     STAGE_BASENAME,
+    account_key_digest,
     credential_digest,
-    credential_kind,
     decode_refresh_journal,
-    label_digest,
+    refresh_credential_kind,
     require_sha256,
 )
+from sidekick_usages.persistence.schema.refresh_stage import (
+    decode_credential_refresh_stage,
+)
+from sidekick_usages.persistence.types.credential import (
+    PrivateCredentialState,
+)
+from sidekick_usages.persistence.types.error import PersistenceCode
 
 _LIFECYCLE_LOCK_BASENAME = "lifecycle.lock"
 _ROUTED_LOCK_SUFFIXES = (".refresh.lock", ".evidence.lock")
@@ -155,7 +155,7 @@ class CredentialRefreshArtifacts:
             observed = self._tree.observe()
         except PersistenceError:
             raise CredentialRefreshRecoveryBlockedError from None
-        if observed is not OrphanedPrivateCredentials.ABSENT:
+        if observed is not PrivateCredentialState.ABSENT:
             raise CredentialRefreshRecoveryBlockedError
 
     def destroy_transactions(self) -> None:
@@ -184,7 +184,7 @@ class CredentialRefreshArtifacts:
             raise CredentialRefreshRecoveryBlockedError
         journal = decode_refresh_journal(journal_snapshot.data)
         if (
-            journal.account_label_digest != directory.name
+            journal.account_key_digest != directory.name
             or journal.stage_state == "durability_uncertain"
         ):
             raise CredentialRefreshRecoveryBlockedError
@@ -193,12 +193,16 @@ class CredentialRefreshArtifacts:
             if journal.stage_state != "intent":
                 raise CredentialRefreshRecoveryBlockedError
             return
-        staged = decode_credential_refresh_stage(stage.data).account
+        staged = decode_credential_refresh_stage(stage.data)
         staged_digest = credential_digest(staged.credentials)
         if (
-            label_digest(staged.label) != journal.account_label_digest
-            or staged.provider_id.value != journal.provider_id
-            or credential_kind(staged.credentials)
+            account_key_digest(
+                staged.credentials.provider_id,
+                staged.label,
+            )
+            != journal.account_key_digest
+            or staged.credentials.provider_id.value != journal.provider_id
+            or refresh_credential_kind(staged.credentials)
             != journal.expected_credential_kind
             or (
                 journal.staged_credential_sha256 is not None

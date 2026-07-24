@@ -45,31 +45,26 @@ from sidekick_usages.providers.base import (
     RefreshSuccess,
 )
 from tests.test_credential_refresh_support import (
-    BlockingRefreshProvider as _BlockingRefreshProvider,
+    BlockingRefreshProvider,
+    CallbackRefreshProvider,
+    ManagedStageRefreshProvider,
+    ParallelRefreshProvider,
+    RefreshProvider,
+    login_account,
 )
-from tests.test_credential_refresh_support import (
-    CallbackRefreshProvider as _CallbackRefreshProvider,
+from tests.test_support import (
+    REFERENCE_TIME,
+    FixedClock,
+    RuntimeCredentialResolver,
+    make_account_store,
 )
-from tests.test_credential_refresh_support import (
-    ManagedStageRefreshProvider as _ManagedStageRefreshProvider,
-)
-from tests.test_credential_refresh_support import (
-    ParallelRefreshProvider as _ParallelRefreshProvider,
-)
-from tests.test_credential_refresh_support import (
-    RefreshProvider as _RefreshProvider,
-)
-from tests.test_credential_refresh_support import (
-    login_account as _login_account,
-)
-from tests.test_support import REFERENCE_TIME, FixedClock, make_account_store
 
 _TWO_CALLERS = 2
 _PRIVATE_DIRECTORY_MODE = 0o700
 _PRIVATE_FILE_MODE = 0o600
 
 
-class _BroadStageFailureProvider(_ManagedStageRefreshProvider):
+class _BroadStageFailureProvider(ManagedStageRefreshProvider):
     """Model a provider that creates one conventional non-private directory."""
 
     def refresh_credentials_in_stage(
@@ -127,16 +122,18 @@ def test_setup_token_returns_manual_action_without_lock_or_provider(
     )
     refresh_root = tmp_path / "credential-refresh"
     persistence = _BoundaryRecordingRefreshTransactions(store, refresh_root)
-    provider = _RefreshProvider()
+    provider = RefreshProvider()
     coordinator = CredentialRefreshCoordinator(
         store,
         HttpClient(),
         {ProviderId.CLAUDE: provider},
         persistence,
         clock=FixedClock(),
+        resolver=RuntimeCredentialResolver(store),
     )
 
     result = coordinator.refresh(
+        provider_id=ProviderId.CLAUDE,
         label=label,
         reason=CredentialRefreshReason.OPERATOR_FORCED,
     )
@@ -155,8 +152,8 @@ def test_operator_forced_refresh_commits_one_targeted_replacement(
 ) -> None:
     """The concrete transaction owns the durable rotating refresh."""
     label = AccountLabel("claude-team")
-    store = make_account_store(tmp_path, (_login_account(),))
-    provider = _RefreshProvider()
+    store = make_account_store(tmp_path, (login_account(),))
+    provider = RefreshProvider()
     persistence = CredentialRefreshTransactions(
         store,
         tmp_path / "credential-refresh",
@@ -167,9 +164,11 @@ def test_operator_forced_refresh_commits_one_targeted_replacement(
         {ProviderId.CLAUDE: provider},
         persistence,
         clock=FixedClock(),
+        resolver=RuntimeCredentialResolver(store),
     )
 
     result = coordinator.refresh(
+        provider_id=ProviderId.CLAUDE,
         label=label,
         reason=CredentialRefreshReason.OPERATOR_FORCED,
     )
@@ -191,10 +190,10 @@ def test_same_credential_has_one_exchange_and_waiter_reacquires_new_lock(
 ) -> None:
     """A stale waiter never calls the provider under the old-token lock."""
     label = AccountLabel("claude-team")
-    store = make_account_store(tmp_path, (_login_account(),))
+    store = make_account_store(tmp_path, (login_account(),))
     entered = Event()
     release = Event()
-    provider = _BlockingRefreshProvider(entered, release)
+    provider = BlockingRefreshProvider(entered, release)
     root = tmp_path / "credential-refresh"
     coordinator = CredentialRefreshCoordinator(
         store,
@@ -202,6 +201,7 @@ def test_same_credential_has_one_exchange_and_waiter_reacquires_new_lock(
         {ProviderId.CLAUDE: provider},
         CredentialRefreshTransactions(store, root),
         clock=FixedClock(),
+        resolver=RuntimeCredentialResolver(store),
     )
     results: list[CredentialRefreshResult] = []
     failures: list[BaseException] = []
@@ -210,6 +210,7 @@ def test_same_credential_has_one_exchange_and_waiter_reacquires_new_lock(
         try:
             results.append(
                 coordinator.refresh(
+                    provider_id=ProviderId.CLAUDE,
                     label=label,
                     reason=CredentialRefreshReason.SCHEDULED_DUE,
                 )
@@ -240,10 +241,10 @@ def test_stabilization_uses_authority_written_by_independent_store(
 ) -> None:
     """Fresh preflight avoids ever acquiring the stale operation lock."""
     label = AccountLabel("claude-team")
-    stale_store = make_account_store(tmp_path, (_login_account(),))
+    stale_store = make_account_store(tmp_path, (login_account(),))
     current_store = make_account_store(tmp_path)
-    current_store.persist(_login_account(generation="rotated"))
-    provider = _RefreshProvider()
+    current_store.persist(login_account(generation="rotated"))
+    provider = RefreshProvider()
     root = tmp_path / "credential-refresh"
     coordinator = CredentialRefreshCoordinator(
         stale_store,
@@ -251,9 +252,11 @@ def test_stabilization_uses_authority_written_by_independent_store(
         {ProviderId.CLAUDE: provider},
         CredentialRefreshTransactions(stale_store, root),
         clock=FixedClock(),
+        resolver=RuntimeCredentialResolver(stale_store),
     )
 
     result = coordinator.refresh(
+        provider_id=ProviderId.CLAUDE,
         label=label,
         reason=CredentialRefreshReason.OPERATOR_FORCED,
     )
@@ -274,11 +277,11 @@ def test_different_refresh_credentials_exchange_concurrently(
     store = make_account_store(
         tmp_path,
         (
-            _login_account(str(first_label), generation="first"),
-            _login_account(str(second_label), generation="second"),
+            login_account(str(first_label), generation="first"),
+            login_account(str(second_label), generation="second"),
         ),
     )
-    provider = _ParallelRefreshProvider(Barrier(2))
+    provider = ParallelRefreshProvider(Barrier(2))
     coordinator = CredentialRefreshCoordinator(
         store,
         HttpClient(),
@@ -288,6 +291,7 @@ def test_different_refresh_credentials_exchange_concurrently(
             tmp_path / "credential-refresh",
         ),
         clock=FixedClock(),
+        resolver=RuntimeCredentialResolver(store),
     )
     results: list[CredentialRefreshResult] = []
     failures: list[BaseException] = []
@@ -296,6 +300,7 @@ def test_different_refresh_credentials_exchange_concurrently(
         try:
             results.append(
                 coordinator.refresh(
+                    provider_id=ProviderId.CLAUDE,
                     label=label,
                     reason=CredentialRefreshReason.OPERATOR_FORCED,
                 )
@@ -330,8 +335,8 @@ def test_targeted_merge_rebases_unrelated_write_and_target_heartbeat(
     store = make_account_store(
         tmp_path,
         (
-            _login_account(str(target_label)),
-            _login_account(str(other_label), generation="other"),
+            login_account(str(target_label)),
+            login_account(str(other_label), generation="other"),
         ),
     )
 
@@ -361,15 +366,17 @@ def test_targeted_merge_rebases_unrelated_write_and_target_heartbeat(
     coordinator = CredentialRefreshCoordinator(
         store,
         HttpClient(),
-        {ProviderId.CLAUDE: _CallbackRefreshProvider(mutate_concurrently)},
+        {ProviderId.CLAUDE: CallbackRefreshProvider(mutate_concurrently)},
         CredentialRefreshTransactions(
             store,
             tmp_path / "credential-refresh",
         ),
         clock=FixedClock(),
+        resolver=RuntimeCredentialResolver(store),
     )
 
     result = coordinator.refresh(
+        provider_id=ProviderId.CLAUDE,
         label=target_label,
         reason=CredentialRefreshReason.OPERATOR_FORCED,
     )
@@ -389,7 +396,7 @@ def test_provider_without_plan_preserves_concurrent_target_plan(
 ) -> None:
     """Absent provider plan evidence never republishes a stale plan."""
     label = AccountLabel("claude-team")
-    store = make_account_store(tmp_path, (_login_account(),))
+    store = make_account_store(tmp_path, (login_account(),))
 
     def update_plan(account: Account) -> RefreshResult:
         external = make_account_store(tmp_path)
@@ -413,15 +420,17 @@ def test_provider_without_plan_preserves_concurrent_target_plan(
     coordinator = CredentialRefreshCoordinator(
         store,
         HttpClient(),
-        {ProviderId.CLAUDE: _CallbackRefreshProvider(update_plan)},
+        {ProviderId.CLAUDE: CallbackRefreshProvider(update_plan)},
         CredentialRefreshTransactions(
             store,
             tmp_path / "credential-refresh",
         ),
         clock=FixedClock(),
+        resolver=RuntimeCredentialResolver(store),
     )
 
     result = coordinator.refresh(
+        provider_id=ProviderId.CLAUDE,
         label=label,
         reason=CredentialRefreshReason.OPERATOR_FORCED,
     )
@@ -439,14 +448,14 @@ def test_changed_or_removed_target_is_never_resurrected(
 ) -> None:
     """Provider output cannot recreate or overwrite a changed target."""
     label = AccountLabel("claude-team")
-    store = make_account_store(tmp_path, (_login_account(),))
+    store = make_account_store(tmp_path, (login_account(),))
 
     def replace_or_remove(account: Account) -> RefreshResult:
         external = make_account_store(tmp_path)
         if remove_target:
             assert external.remove(str(label))
         else:
-            replacement = _login_account(generation="manual")
+            replacement = login_account(generation="manual")
             external.persist(replacement)
         previous = account.credentials
         assert isinstance(previous, ClaudeLoginCredentials)
@@ -463,15 +472,17 @@ def test_changed_or_removed_target_is_never_resurrected(
     coordinator = CredentialRefreshCoordinator(
         store,
         HttpClient(),
-        {ProviderId.CLAUDE: _CallbackRefreshProvider(replace_or_remove)},
+        {ProviderId.CLAUDE: CallbackRefreshProvider(replace_or_remove)},
         CredentialRefreshTransactions(
             store,
             tmp_path / "credential-refresh",
         ),
         clock=FixedClock(),
+        resolver=RuntimeCredentialResolver(store),
     )
 
     coordinator.refresh(
+        provider_id=ProviderId.CLAUDE,
         label=label,
         reason=CredentialRefreshReason.OPERATOR_FORCED,
     )
@@ -490,11 +501,11 @@ def test_late_failure_cannot_overwrite_a_newer_success(
 ) -> None:
     """Failure diagnostics use the same exact credential guard."""
     label = AccountLabel("claude-team")
-    store = make_account_store(tmp_path, (_login_account(),))
+    store = make_account_store(tmp_path, (login_account(),))
 
     def succeed_elsewhere(account: Account) -> RefreshResult:
         external = make_account_store(tmp_path)
-        replacement = _login_account(generation="newer")
+        replacement = login_account(generation="newer")
         replacement.last_refresh_at = REFERENCE_TIME
         replacement.last_refresh_status = RefreshStatus.OK
         replacement.last_refresh_error = None
@@ -508,15 +519,17 @@ def test_late_failure_cannot_overwrite_a_newer_success(
     coordinator = CredentialRefreshCoordinator(
         store,
         HttpClient(),
-        {ProviderId.CLAUDE: _CallbackRefreshProvider(succeed_elsewhere)},
+        {ProviderId.CLAUDE: CallbackRefreshProvider(succeed_elsewhere)},
         CredentialRefreshTransactions(
             store,
             tmp_path / "credential-refresh",
         ),
         clock=FixedClock(),
+        resolver=RuntimeCredentialResolver(store),
     )
 
     result = coordinator.refresh(
+        provider_id=ProviderId.CLAUDE,
         label=label,
         reason=CredentialRefreshReason.OPERATOR_FORCED,
     )
@@ -534,10 +547,10 @@ def test_target_disappearance_during_stabilization_is_typed(
 ) -> None:
     """A post-lock disappearance returns the closed refresh result type."""
     label = AccountLabel("claude-team")
-    stale_store = make_account_store(tmp_path, (_login_account(),))
+    stale_store = make_account_store(tmp_path, (login_account(),))
     external = make_account_store(tmp_path)
     assert external.remove(str(label))
-    provider = _RefreshProvider()
+    provider = RefreshProvider()
     coordinator = CredentialRefreshCoordinator(
         stale_store,
         HttpClient(),
@@ -547,9 +560,11 @@ def test_target_disappearance_during_stabilization_is_typed(
             tmp_path / "credential-refresh",
         ),
         clock=FixedClock(),
+        resolver=RuntimeCredentialResolver(stale_store),
     )
 
     result = coordinator.refresh(
+        provider_id=ProviderId.CLAUDE,
         label=label,
         reason=CredentialRefreshReason.OPERATOR_FORCED,
     )
@@ -565,17 +580,21 @@ def test_bounded_stabilization_exhaustion_is_typed(
 ) -> None:
     """Repeated durable changes return a retryable closed outcome."""
     label = AccountLabel("claude-team")
-    store = make_account_store(tmp_path, (_login_account(),))
+    store = make_account_store(tmp_path, (login_account(),))
     external = make_account_store(tmp_path)
-    provider = _RefreshProvider()
+    provider = RefreshProvider()
     original_read = store.read_fresh
     generation = 0
 
-    def keep_changing(requested: AccountLabel) -> Account | None:
+    def keep_changing(
+        requested: AccountLabel,
+        *,
+        provider_id: ProviderId | None = None,
+    ) -> Account | None:
         nonlocal generation
         generation += 1
-        external.persist(_login_account(generation=f"race-{generation}"))
-        return original_read(requested)
+        external.persist(login_account(generation=f"race-{generation}"))
+        return original_read(requested, provider_id=provider_id)
 
     monkeypatch.setattr(store, "read_fresh", keep_changing)
     coordinator = CredentialRefreshCoordinator(
@@ -587,9 +606,11 @@ def test_bounded_stabilization_exhaustion_is_typed(
             tmp_path / "credential-refresh",
         ),
         clock=FixedClock(),
+        resolver=RuntimeCredentialResolver(store),
     )
 
     result = coordinator.refresh(
+        provider_id=ProviderId.CLAUDE,
         label=label,
         reason=CredentialRefreshReason.OPERATOR_FORCED,
     )
@@ -605,8 +626,8 @@ def test_staged_provider_uses_only_transactions_owned_private_home(
 ) -> None:
     """CLI-capable providers cannot fall through to an unmanaged refresh."""
     label = AccountLabel("claude-team")
-    store = make_account_store(tmp_path, (_login_account(),))
-    provider = _ManagedStageRefreshProvider()
+    store = make_account_store(tmp_path, (login_account(),))
+    provider = ManagedStageRefreshProvider()
     root = tmp_path / "credential-refresh"
     coordinator = CredentialRefreshCoordinator(
         store,
@@ -614,9 +635,11 @@ def test_staged_provider_uses_only_transactions_owned_private_home(
         {ProviderId.CLAUDE: provider},
         CredentialRefreshTransactions(store, root),
         clock=FixedClock(),
+        resolver=RuntimeCredentialResolver(store),
     )
 
     result = coordinator.refresh(
+        provider_id=ProviderId.CLAUDE,
         label=label,
         reason=CredentialRefreshReason.OPERATOR_FORCED,
     )
@@ -636,7 +659,7 @@ def test_provider_created_nonwritable_directory_is_cleaned_after_failure(
 ) -> None:
     """A conventional provider directory cannot strand failed refresh state."""
     label = AccountLabel("claude-team")
-    store = make_account_store(tmp_path, (_login_account(),))
+    store = make_account_store(tmp_path, (login_account(),))
     provider = _BroadStageFailureProvider()
     root = tmp_path / "credential-refresh"
     coordinator = CredentialRefreshCoordinator(
@@ -645,9 +668,11 @@ def test_provider_created_nonwritable_directory_is_cleaned_after_failure(
         {ProviderId.CLAUDE: provider},
         CredentialRefreshTransactions(store, root),
         clock=FixedClock(),
+        resolver=RuntimeCredentialResolver(store),
     )
 
     result = coordinator.refresh(
+        provider_id=ProviderId.CLAUDE,
         label=label,
         reason=CredentialRefreshReason.OPERATOR_FORCED,
     )
@@ -664,12 +689,13 @@ def test_claude_stage_reader_normalizes_then_reads_provider_output(
 ) -> None:
     """The injected reader hardens only provider output before parsing it."""
     label = AccountLabel("claude-team")
-    store = make_account_store(tmp_path, (_login_account(),))
+    store = make_account_store(tmp_path, (login_account(),))
     transactions = CredentialRefreshTransactions(
         store,
         tmp_path / "credential-refresh",
     )
     with transactions.hold_stable(
+        provider_id=ProviderId.CLAUDE,
         label=label,
         reason=CredentialRefreshReason.OPERATOR_FORCED.value,
         started_at=REFERENCE_TIME,
@@ -705,12 +731,13 @@ def test_claude_stage_reader_rejects_unsafe_file_identity(
 ) -> None:
     """Links and exposed modes cannot become refreshed authority."""
     label = AccountLabel("claude-team")
-    store = make_account_store(tmp_path, (_login_account(),))
+    store = make_account_store(tmp_path, (login_account(),))
     transactions = CredentialRefreshTransactions(
         store,
         tmp_path / "credential-refresh",
     )
     with transactions.hold_stable(
+        provider_id=ProviderId.CLAUDE,
         label=label,
         reason=CredentialRefreshReason.OPERATOR_FORCED.value,
         started_at=REFERENCE_TIME,
@@ -739,12 +766,13 @@ def test_claude_stage_reader_rejects_path_replacement_during_read(
 ) -> None:
     """The staged path must still name the descriptor that was read."""
     label = AccountLabel("claude-team")
-    store = make_account_store(tmp_path, (_login_account(),))
+    store = make_account_store(tmp_path, (login_account(),))
     transactions = CredentialRefreshTransactions(
         store,
         tmp_path / "credential-refresh",
     )
     with transactions.hold_stable(
+        provider_id=ProviderId.CLAUDE,
         label=label,
         reason=CredentialRefreshReason.OPERATOR_FORCED.value,
         started_at=REFERENCE_TIME,

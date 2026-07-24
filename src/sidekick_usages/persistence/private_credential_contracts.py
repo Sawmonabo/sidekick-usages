@@ -1,43 +1,22 @@
 """Typed contracts for private credential persistence adapters."""
 
 from collections.abc import Callable
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
 from sidekick_usages.persistence._platform import NativeFile
-from sidekick_usages.persistence.inventory import OrphanedPrivateCredentials
-
-
-@dataclass(frozen=True, slots=True)
-class PrivateCredentialRepairResult:
-    """Verified outcome of one explicit private-permission repair."""
-
-    root: Path
-    account_parent_repaired: bool
-    directories_repaired: int
-    files_repaired: int
-    artifacts_present: bool
-
-    def __post_init__(self) -> None:
-        if not self.root.is_absolute():
-            raise ValueError(
-                "Private credential repair root must be absolute."
-            )
-        if type(self.account_parent_repaired) is not bool:
-            raise TypeError("account_parent_repaired must be Boolean.")
-        if self.directories_repaired < 0 or self.files_repaired < 0:
-            raise ValueError(
-                "Private credential repair counts cannot be negative."
-            )
-        if type(self.artifacts_present) is not bool:
-            raise TypeError("artifacts_present must be Boolean.")
+from sidekick_usages.persistence.models.credential import (
+    PrivateCredentialRepairResult,
+)
+from sidekick_usages.persistence.types.credential import (
+    PrivateCredentialState,
+)
 
 
 class PrivateCredentialArtifacts(Protocol):
     """Sidekick-owned credential artifacts used by reset coordination."""
 
-    def observe(self) -> OrphanedPrivateCredentials:
+    def observe(self) -> PrivateCredentialState:
         """Return closed presence evidence or fail without guessing."""
 
     def destroy_all(self) -> None:
@@ -152,5 +131,4 @@ __all__ = [
     "PrivateBundleNative",
     "PrivateCredentialArtifacts",
     "PrivateCredentialNative",
-    "PrivateCredentialRepairResult",
 ]

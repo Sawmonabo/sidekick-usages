@@ -10,7 +10,6 @@ from sidekick_usages.core.types import ExitCode, ProviderId
 from sidekick_usages.providers.claude import provider as claude_provider_module
 from sidekick_usages.providers.claude.provider import ClaudeProvider
 from sidekick_usages.providers.codex import auth as codex_auth_module
-from sidekick_usages.providers.codex.provider import CodexProvider
 from tests.test_cli_refresh import (
     _codex_acct,
     _codex_cache_home,
@@ -29,21 +28,11 @@ pytestmark = pytest.mark.usefixtures(
 )
 
 
-@pytest.mark.parametrize(
-    ("command", "deprecated"),
-    [
-        (["codex", "login"], False),
-        (["codex-login"], True),
-    ],
-)
 def test_codex_login_runs_plain_cli_and_imports_private_bundle(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    command: list[str],
-    *,
-    deprecated: bool,
 ) -> None:
-    """Both spellings leave global ~/.codex as the explicit source."""
+    """Canonical login leaves global ~/.codex as the explicit source."""
     provider = _FakeProvider(
         detected=_detected(
             access_token="eyJ-current.access.sig",
@@ -73,11 +62,10 @@ def test_codex_login_runs_plain_cli_and_imports_private_bundle(
 
     monkeypatch.setattr(codex_auth_module.subprocess, "run", fake_run)
 
-    result = harness.invoke([*command, "team"])
+    result = harness.invoke(["codex", "login", "team"])
 
     assert result.exit_code == 0
-    assert ("DeprecationWarning" in result.stderr) is deprecated
-    assert "DeprecationWarning" not in result.stdout
+    assert "DeprecationWarning" not in result.output
     assert "Updated Codex login for 'team'." in stdout.getvalue()
     assert len(calls) == 1
     assert calls[0]["argv"] == ["codex", "login"]
@@ -93,21 +81,11 @@ def test_codex_login_runs_plain_cli_and_imports_private_bundle(
     assert cached["tokens"]["id_token"] == "id-token-current"
 
 
-@pytest.mark.parametrize(
-    ("command", "deprecated"),
-    [
-        (["codex", "export"], False),
-        (["codex-export"], True),
-    ],
-)
 def test_codex_export_writes_saved_credentials_to_home(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    command: list[str],
-    *,
-    deprecated: bool,
 ) -> None:
-    """Both spellings export the same saved credentials and warning channel."""
+    """Canonical export writes saved credentials without warning output."""
     codex_home = tmp_path / "codex-team"
     acct = _codex_acct(
         access_token="eyJ-current.access.sig",
@@ -121,12 +99,17 @@ def test_codex_export_writes_saved_credentials_to_home(
     harness, store, stdout, _ = _install_ctx(tmp_path, provider, acct)
 
     result = harness.invoke(
-        [*command, "team", "--codex-home", str(codex_home)],
+        [
+            "codex",
+            "export",
+            "team",
+            "--codex-home",
+            str(codex_home),
+        ],
     )
 
     assert result.exit_code == 0
-    assert ("DeprecationWarning" in result.stderr) is deprecated
-    assert "DeprecationWarning" not in result.stdout
+    assert "DeprecationWarning" not in result.output
     assert "Exported 'team' to Codex home" in stdout.getvalue()
     auth = json.loads((codex_home / "auth.json").read_text())
     assert auth["auth_mode"] == "chatgpt"
@@ -197,21 +180,11 @@ def test_codex_export_reads_default_source_without_mutating_it(
         assert not (target_home / "config.toml").exists()
 
 
-@pytest.mark.parametrize(
-    ("command", "deprecated"),
-    [
-        (["claude", "setup-token"], False),
-        (["setup-token", "claude"], True),
-    ],
-)
 def test_setup_token_delegates_only_to_claude_capability(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    command: list[str],
-    *,
-    deprecated: bool,
 ) -> None:
-    """Both spellings delegate to Claude's one narrow capability."""
+    """Canonical setup-token delegates to Claude's narrow capability."""
     token = "sk-ant-oat01-synthetic-setup-token"
     raw_secret = "oauth-code=must-not-reach-terminal"
     provider = ClaudeProvider(FixedClock())
@@ -250,12 +223,11 @@ def test_setup_token_delegates_only_to_claude_capability(
     )
 
     result = harness.invoke(
-        [*command, "--label", "setup"],
+        ["claude", "setup-token", "--label", "setup"],
     )
 
     assert result.exit_code == 0
-    assert ("DeprecationWarning" in result.stderr) is deprecated
-    assert "DeprecationWarning" not in result.stdout
+    assert "DeprecationWarning" not in result.output
     assert "Saved 'setup'." in stdout.getvalue()
     assert raw_secret not in result.output
     assert raw_secret not in stdout.getvalue()
@@ -263,19 +235,3 @@ def test_setup_token_delegates_only_to_claude_capability(
     saved = store.get("setup")
     assert saved is not None
     assert saved.access_token == token
-
-
-def test_setup_token_codex_returns_typed_unsupported_outcome(
-    tmp_path: Path,
-) -> None:
-    """Codex setup-token fails cleanly without a generic provider method."""
-    harness, _, _, stderr = _install_many_ctx(
-        tmp_path,
-        {ProviderId.CODEX: CodexProvider(FixedClock())},
-        (),
-    )
-
-    result = harness.invoke(["setup-token", "codex"])
-
-    assert result.exit_code == 1
-    assert "doesn't expose a long-lived token generator" in stderr.getvalue()

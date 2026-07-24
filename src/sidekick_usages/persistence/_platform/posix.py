@@ -332,21 +332,6 @@ class PosixPlatform:
             allow_interrupted_link=True,
         )
 
-    def read_external_private_source(
-        self,
-        parent: Path,
-        basename: str,
-        limit: int,
-    ) -> NativeFile | None:
-        """Read one private source below a non-writable owned parent."""
-        return self._read_file(
-            parent,
-            basename,
-            limit,
-            private_parent=False,
-            allow_interrupted_link=False,
-        )
-
     def _read_file(
         self,
         parent: Path,
@@ -502,17 +487,6 @@ class PosixPlatform:
         if reopened is None or reopened.data != data:
             raise _native_error(NativeFailureKind.WRITE)
         return reopened
-
-    def copy_private(
-        self,
-        parent: Path,
-        source_basename: str,
-        destination_basename: str,
-        expected: bytes,
-    ) -> NativeFile:
-        """Create an exact synchronized private copy."""
-        del source_basename
-        return self.create_private(parent, destination_basename, expected)
 
     def publish_no_replace(
         self,

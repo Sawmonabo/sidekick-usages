@@ -6,14 +6,6 @@ from sidekick_usages.persistence._platform import (
     NativeFailureKind,
     NativeFilesystemError,
 )
-from sidekick_usages.persistence.artifacts import (
-    ArtifactPurpose,
-    AuthorityExpectation,
-    ExpectedAuthority,
-    FileFingerprint,
-    FileIdentity,
-    FileSnapshot,
-)
 from sidekick_usages.persistence.errors import (
     CandidateWriteError,
     DurabilityUncertainError,
@@ -27,6 +19,16 @@ from sidekick_usages.persistence.filesystem_access import (
     PersistenceFilesystemAccess,
 )
 from sidekick_usages.persistence.limits import MAX_DOCUMENT_BYTES
+from sidekick_usages.persistence.models.artifact import (
+    ExpectedAuthority,
+    FileFingerprint,
+    FileIdentity,
+    FileSnapshot,
+)
+from sidekick_usages.persistence.types.artifact import (
+    ArtifactPurpose,
+    AuthorityExpectation,
+)
 
 __all__ = ["PrivateFilesystem"]
 
@@ -120,7 +122,7 @@ class PrivateFilesystem(PersistenceFilesystemAccess):
         self,
         payload: bytes,
         expected_source: ExpectedAuthority,
-        validate: Callable[[bytes], None] | None,
+        validate: Callable[[bytes], object] | None,
     ) -> FileSnapshot:
         """Commit exact bytes with optional boundary-specific validation."""
         self._prepare_parent()
@@ -193,25 +195,14 @@ class PrivateFilesystem(PersistenceFilesystemAccess):
         self,
         purpose: ArtifactPurpose,
         payload: bytes,
-        *,
-        copy_source: bool = False,
     ) -> tuple[str, FileSnapshot]:
         for _attempt in range(_TEMPORARY_CREATE_ATTEMPTS):
             basename = self.grammar.temporary_basename(purpose)
             try:
-                native = (
-                    self._native.copy_private(
-                        self._parent,
-                        self.grammar.authority_basename,
-                        basename,
-                        payload,
-                    )
-                    if copy_source
-                    else self._native.create_private(
-                        self._parent,
-                        basename,
-                        payload,
-                    )
+                native = self._native.create_private(
+                    self._parent,
+                    basename,
+                    payload,
                 )
             except NativeFilesystemError as error:
                 if error.kind is NativeFailureKind.EXISTS:

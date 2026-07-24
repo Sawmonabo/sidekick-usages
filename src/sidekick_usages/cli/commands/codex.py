@@ -11,12 +11,7 @@ from sidekick_usages.cli.context import invocation_context
 from sidekick_usages.cli.help import BrandedTyperGroup, branded_command
 from sidekick_usages.providers.base import ProviderFailure
 
-_LOGIN_ALIAS_HELP = (
-    "Use `sidekick-usages codex login`; this alias is removed in 0.9.0."
-)
-_EXPORT_ALIAS_HELP = (
-    "Use `sidekick-usages codex export`; this alias is removed in 0.9.0."
-)
+__all__ = ["register"]
 
 
 def codex_login_cmd(
@@ -111,7 +106,7 @@ def codex_export_cmd(
 
 
 def register(application: typer.Typer) -> None:
-    """Register the Codex group and deprecated top-level aliases."""
+    """Register the Codex credential command group."""
     codex_app = typer.Typer(
         cls=BrandedTyperGroup,
         help="Manage saved Codex CLI login credentials.",
@@ -120,18 +115,3 @@ def register(application: typer.Typer) -> None:
     branded_command(codex_app, "login")(codex_login_cmd)
     branded_command(codex_app, "export")(codex_export_cmd)
     application.add_typer(codex_app, name="codex")
-    branded_command(
-        application,
-        "codex-login",
-        help=_LOGIN_ALIAS_HELP,
-        deprecated=True,
-    )(codex_login_cmd)
-    branded_command(
-        application,
-        "codex-export",
-        help=_EXPORT_ALIAS_HELP,
-        deprecated=True,
-    )(codex_export_cmd)
-
-
-__all__ = ["register"]

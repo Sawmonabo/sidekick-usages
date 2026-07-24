@@ -26,41 +26,15 @@ class PathDiscoveryError(UsageError):
 
 
 @dataclass(frozen=True, slots=True)
-class AccountLocations:
-    """Locations participating in account-store compatibility.
-
-    :ivar canonical: Native account-store location.
-    :ivar existing_sidekick: Existing Sidekick account-store location.
-    :ivar prototype_cc_usage: Import-only cc-usage prototype location.
-    """
-
-    canonical: Path
-    existing_sidekick: Path
-    prototype_cc_usage: Path
-
-
-@dataclass(frozen=True, slots=True)
-class PrivateCodexLocations:
-    """Sidekick-owned private Codex credential locations.
-
-    :ivar canonical: Native private Codex root.
-    :ivar existing_sidekick: Existing Sidekick private Codex root.
-    """
-
-    canonical: Path
-    existing_sidekick: Path
-
-
-@dataclass(frozen=True, slots=True)
 class ApplicationPaths:
     """Sidekick-owned paths resolved for one application invocation.
 
-    :ivar accounts: Account-store compatibility locations.
-    :ivar private_codex: Private Codex credential locations.
+    :ivar accounts: Current account-index authority.
+    :ivar private_credentials: Protected Sidekick credential root.
+    :ivar private_codex_profiles: Stable private Codex profile root.
     :ivar activity_snapshots: Canonical token-activity snapshot file.
     :ivar credential_refresh: Canonical private refresh-state root.
     :ivar private_claude_profiles: Stable private Claude profile root.
-    :ivar credential_authorities: Protected legacy authority root.
     :ivar selected_state: Provider selected-state authority.
     :ivar activation_journals: Provider activation journal root.
     :ivar durable_operations: Durable due and retry operation root.
@@ -71,12 +45,12 @@ class ApplicationPaths:
     :ivar supervisor_lock: Per-user supervisor singleton lock.
     """
 
-    accounts: AccountLocations
-    private_codex: PrivateCodexLocations
+    accounts: Path
+    private_credentials: Path
+    private_codex_profiles: Path
     activity_snapshots: Path
     credential_refresh: Path
     private_claude_profiles: Path
-    credential_authorities: Path
     selected_state: Path
     activation_journals: Path
     durable_operations: Path
@@ -88,14 +62,12 @@ class ApplicationPaths:
 
 
 def discover_application_paths() -> ApplicationPaths:
-    """Discover native and compatibility paths without side effects.
+    """Discover current Sidekick paths without side effects.
 
     :return: Sidekick-owned paths for the current user.
     :raises PathDiscoveryError: If an environment override is unsafe.
     """
     _validate_environment()
-    home = Path.home()
-    compatibility_root = home / ".config" / "sidekick-usages"
     native = PlatformDirs(
         appname="sidekick-usages",
         appauthor=False,
@@ -107,23 +79,15 @@ def discover_application_paths() -> ApplicationPaths:
         use_site_for_root=False,
     )
     native_data_root = native.user_data_path
+    private_root = native_data_root / "credentials"
     runtime_directory = native.user_runtime_path
     return ApplicationPaths(
-        accounts=AccountLocations(
-            canonical=native_data_root / "accounts.json",
-            existing_sidekick=compatibility_root / "accounts.json",
-            prototype_cc_usage=(
-                home / ".config" / "cc-usage" / "accounts.json"
-            ),
-        ),
-        private_codex=PrivateCodexLocations(
-            canonical=native_data_root / "codex",
-            existing_sidekick=compatibility_root / "codex",
-        ),
+        accounts=native_data_root / "accounts.json",
+        private_credentials=private_root,
+        private_codex_profiles=private_root / "codex",
         activity_snapshots=native_data_root / "token-activity.json",
         credential_refresh=native_data_root / "credential-refresh",
-        private_claude_profiles=native_data_root / "claude",
-        credential_authorities=native_data_root / "codex",
+        private_claude_profiles=private_root / "claude",
         selected_state=native_data_root / "selected-accounts.json",
         activation_journals=native_data_root / "activation-journals",
         durable_operations=native_data_root / "operations",

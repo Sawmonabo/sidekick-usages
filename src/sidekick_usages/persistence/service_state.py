@@ -3,11 +3,8 @@
 from pathlib import Path
 
 from sidekick_usages.daemon.models.service import ServiceState
-from sidekick_usages.persistence.artifacts import (
-    AuthorityExpectation,
-    FileSnapshot,
-)
 from sidekick_usages.persistence.locking import PersistenceLock
+from sidekick_usages.persistence.models.artifact import FileSnapshot
 from sidekick_usages.persistence.schema.service import (
     decode_service_state,
     encode_service_state,
@@ -20,6 +17,7 @@ from sidekick_usages.persistence.state_files import (
 from sidekick_usages.persistence.state_filesystem import (
     ManagedStateFilesystem,
 )
+from sidekick_usages.persistence.types.artifact import AuthorityExpectation
 
 __all__ = ["ServiceStateStore"]
 

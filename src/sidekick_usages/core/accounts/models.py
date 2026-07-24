@@ -24,9 +24,9 @@ from sidekick_usages.core.types import (
 )
 
 type ClaudeSubscriptionAuthority = (
-    ClaudeLegacyLoginAuthority | ClaudeManagedLoginAuthority
+    ClaudeStoredLoginAuthority | ClaudeManagedLoginAuthority
 )
-type CodexSubscriptionAuthority = CodexLegacyAuthority | CodexManagedAuthority
+type CodexSubscriptionAuthority = CodexStoredAuthority | CodexManagedAuthority
 type AccountAuthority = ClaudeAccountAuthority | CodexAccountAuthority
 
 
@@ -66,8 +66,8 @@ class ClaudeSetupTokenAuthority:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class ClaudeLegacyLoginAuthority:
-    """Reference-only metadata for a pre-managed Claude login."""
+class ClaudeStoredLoginAuthority:
+    """Reference-only metadata for a Sidekick-stored Claude login."""
 
     authority_id: AuthorityId
     provider_identity: ProviderIdentity | None
@@ -75,10 +75,10 @@ class ClaudeLegacyLoginAuthority:
     refresh_expires_at: datetime | None
     health: CredentialHealth
     observed_at: datetime | None = None
-    kind: ClassVar[str] = "legacy"
+    kind: ClassVar[str] = "stored"
 
     def __post_init__(self) -> None:
-        """Normalize legacy login timestamps."""
+        """Normalize stored login timestamps."""
         object.__setattr__(
             self,
             "access_expires_at",
@@ -136,8 +136,8 @@ class ClaudeAccountAuthority:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class CodexLegacyAuthority:
-    """Reference-only metadata for a pre-managed Codex login."""
+class CodexStoredAuthority:
+    """Reference-only metadata for a Sidekick-stored Codex login."""
 
     authority_id: AuthorityId
     provider_identity: ProviderIdentity | None
@@ -145,10 +145,10 @@ class CodexLegacyAuthority:
     generation: AuthorityGeneration | None
     health: CredentialHealth
     observed_at: datetime | None = None
-    kind: ClassVar[str] = "legacy"
+    kind: ClassVar[str] = "stored"
 
     def __post_init__(self) -> None:
-        """Normalize legacy Codex timestamps."""
+        """Normalize stored Codex timestamps."""
         object.__setattr__(self, "expires_at", _optional_utc(self.expires_at))
         object.__setattr__(
             self,
@@ -201,7 +201,6 @@ class SavedAccount:
     last_refresh_status: RefreshStatus | None = None
     last_refresh_error_code: str | None = None
     heartbeat_enabled: bool = False
-    heartbeat_5h_reset_at: datetime | None = None
     heartbeat_window_resets: tuple[tuple[str, datetime], ...] | None = None
     heartbeat_targets: tuple[str, ...] | None = None
     last_heartbeat_at: datetime | None = None
@@ -221,11 +220,6 @@ class SavedAccount:
             self,
             "last_refresh_at",
             _optional_utc(self.last_refresh_at),
-        )
-        object.__setattr__(
-            self,
-            "heartbeat_5h_reset_at",
-            _optional_utc(self.heartbeat_5h_reset_at),
         )
         object.__setattr__(
             self,
@@ -291,8 +285,8 @@ class SavedAccount:
 
 
 @dataclass(frozen=True, slots=True)
-class AuthenticatedAccount[LeaseT]:
+class AuthenticatedAccount[LeaseType]:
     """Worker-only account record paired with an operation-scoped lease."""
 
     account: SavedAccount
-    lease: LeaseT = field(repr=False)
+    lease: LeaseType = field(repr=False)

@@ -2,18 +2,18 @@
 
 from enum import StrEnum
 
-from sidekick_usages.persistence.artifacts import (
-    ArtifactPurpose,
-    ManagedArtifactKind,
-)
 from sidekick_usages.persistence.errors import (
     InterruptedArtifactError,
     InvalidManagedArtifactError,
-    PersistenceCode,
     PersistenceError,
 )
 from sidekick_usages.persistence.private_filesystem import PrivateFilesystem
 from sidekick_usages.persistence.transaction import PersistenceTransaction
+from sidekick_usages.persistence.types.artifact import (
+    ArtifactPurpose,
+    ManagedArtifactKind,
+)
+from sidekick_usages.persistence.types.error import PersistenceCode
 
 __all__ = [
     "ManagedStateConflictError",

@@ -15,6 +15,7 @@ from sidekick_usages.core.models import Account, ClaudeLoginCredentials
 from sidekick_usages.core.types import AccountLabel, ProviderId
 from sidekick_usages.credentials import CredentialService
 from sidekick_usages.credentials import codex as credential_codex
+from sidekick_usages.credentials.authorities import credential_resolver_for
 from sidekick_usages.credentials.refresh import CredentialRefreshCoordinator
 from sidekick_usages.doctor import (
     DoctorReadyResult,
@@ -25,31 +26,17 @@ from sidekick_usages.doctor import (
 from sidekick_usages.errors import AuthError
 from sidekick_usages.http import HttpClient, HttpOperation
 from sidekick_usages.maintenance import TokenMaintenanceService
-from sidekick_usages.persistence.artifacts import (
-    ExpectedAuthority,
-    FileSnapshot,
-    Sha256Digest,
-)
-from sidekick_usages.persistence.assessment import PersistenceAssessment
 from sidekick_usages.persistence.credential_refresh import (
     CredentialRefreshTransactions,
 )
-from sidekick_usages.persistence.errors import (
-    PersistenceCode,
-    ReplaceFailedError,
-)
+from sidekick_usages.persistence.errors import ReplaceFailedError
 from sidekick_usages.persistence.filesystem import PersistenceFilesystem
-from sidekick_usages.persistence.migrations.location import (
-    CanonicalSelection,
-    LocationCandidate,
-    LocationMigrationAssessment,
-    LocationRole,
-    ReadyLocationSelection,
+from sidekick_usages.persistence.models.artifact import (
+    ExpectedAuthority,
+    FileSnapshot,
 )
-from sidekick_usages.persistence.migrations.ports import (
-    PrivateAuthMigrationAssessment,
-)
-from sidekick_usages.persistence.observations import StoredGeneration
+from sidekick_usages.persistence.models.status import PersistenceStatus
+from sidekick_usages.persistence.types.status import PersistenceState
 from sidekick_usages.providers.base import ProviderFailure, ProviderFailureKind
 from sidekick_usages.providers.claude import provider as claude_provider_module
 from sidekick_usages.providers.claude.provider import ClaudeProvider
@@ -160,6 +147,7 @@ def test_provider_secret_never_crosses_persisted_or_doctor_error_channels(
             make_application_paths(tmp_path).credential_refresh,
         ),
         clock=clock,
+        resolver=credential_resolver_for(store, private),
     )
     service = CredentialService(
         store,
@@ -200,40 +188,14 @@ def test_provider_secret_never_crosses_persisted_or_doctor_error_channels(
         {},
         clock,
     ).diagnostics()
-    schema = PersistenceAssessment(
-        code=PersistenceCode.CURRENT,
-        generation=StoredGeneration.VERSION_ONE,
-        schema_version=1,
-        account_count=1,
-        safe_path=store.path,
-        artifact_basename=None,
-        write_blocked=False,
-        next_command=None,
-        message="Account storage is current.",
-        issues=(),
+    completed = DoctorReadyResult(
+        tuple(diagnostics),
+        PersistenceStatus(
+            PersistenceState.CURRENT,
+            store.path,
+            1,
+        ),
     )
-    candidate = LocationCandidate(
-        role=LocationRole.CANONICAL,
-        path=store.path,
-        assessment=schema,
-        account_digest=Sha256Digest("a" * 64),
-        private_auth_digest=Sha256Digest("b" * 64),
-    )
-    selection: ReadyLocationSelection = CanonicalSelection(candidate)
-    assessment: LocationMigrationAssessment[ReadyLocationSelection] = (
-        LocationMigrationAssessment(
-            selection=selection,
-            candidates=(candidate,),
-            source=store.path,
-            destination=store.path,
-            private_auth_summary=PrivateAuthMigrationAssessment(()),
-            artifact_basename=None,
-            issues=(),
-            write_blocked=False,
-            next_command=None,
-        )
-    )
-    completed = DoctorReadyResult(tuple(diagnostics), assessment)
     human_output = io.StringIO()
     Console(file=human_output, force_terminal=False).print(
         render_doctor(completed, width=80)

@@ -20,11 +20,13 @@ from sidekick_usages.core.types import (
     TokenActivityScope,
 )
 from sidekick_usages.persistence.activity_snapshots import (
-    ActivitySnapshotError,
-    ActivitySnapshotFailureKind,
     ActivitySnapshotStore,
 )
+from sidekick_usages.persistence.errors import ActivitySnapshotError
 from sidekick_usages.persistence.filesystem import PersistenceFilesystem
+from sidekick_usages.persistence.types.error import (
+    ActivitySnapshotFailureKind,
+)
 
 _FETCHED_AT = datetime(2026, 7, 11, 4, 30, tzinfo=UTC)
 _ACCOUNT_COUNT = 2

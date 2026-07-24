@@ -8,8 +8,10 @@ from sidekick_usages.persistence.errors import (
     PrivateCredentialCollisionError,
 )
 from sidekick_usages.persistence.private_credentials import (
-    PrivateCredentialOwnership,
     PrivateCredentialTree,
+)
+from sidekick_usages.persistence.types.credential import (
+    PrivateCredentialOwnership,
 )
 
 

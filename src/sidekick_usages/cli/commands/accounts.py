@@ -9,12 +9,12 @@ from rich.table import Table
 from rich.text import Text
 
 from sidekick_usages.branding import PROVIDER_COLORS, brand_header
-from sidekick_usages.cli.commands.migrate import exit_persistence_error
 from sidekick_usages.cli.context import invocation_context
 from sidekick_usages.cli.help import branded_command
+from sidekick_usages.cli.persistence import exit_persistence_failure
 from sidekick_usages.core.types import AccountLabel, ExitCode, ProviderId
 from sidekick_usages.persistence.errors import PersistenceError
-from sidekick_usages.persistence.migrations.errors import (
+from sidekick_usages.scheduler_quiescence import (
     SchedulerMutationBlockedError,
 )
 
@@ -89,7 +89,7 @@ def remove_cmd(
 ) -> None:
     """Delete a saved account."""
     invocation = invocation_context(ctx)
-    if not invocation.require_app(ctx).accounts.remove_credentials(label):
+    if not invocation.require_app(ctx).accounts.remove(label):
         invocation.err_console.print(
             f"[yellow]No account named '{label}'.[/yellow]"
         )
@@ -145,11 +145,11 @@ def _reset_provider(
 ) -> None:
     invocation = invocation_context(ctx)
     try:
-        cleared = invocation.require_app(
-            ctx
-        ).accounts.reset_provider_credentials(provider_id)
+        cleared = invocation.require_app(ctx).accounts.reset_provider(
+            provider_id
+        )
     except PersistenceError as error:
-        exit_persistence_error(ctx, error)
+        exit_persistence_failure(ctx, error)
     invocation.console.print(
         f"[green]Cleared {cleared} {provider_id} account(s).[/green]"
     )
@@ -192,14 +192,14 @@ def reset_cmd(
     else:
         persistence = invocation.require_persistence(ctx).persistence
         try:
-            assessment = persistence.mutation_preview()
+            status = persistence.status()
         except (SchedulerMutationBlockedError, PersistenceError) as error:
-            exit_persistence_error(ctx, error)
-        validated_count = assessment.account_count
-        count = 0 if validated_count is None else validated_count
+            exit_persistence_failure(ctx, error)
+        validated_count = status.account_count
+        count = status.account_count
         scope = (
             f"{count} validated account(s) and all managed credential "
-            f"artifacts at {assessment.safe_path}"
+            f"artifacts at {status.path}"
         )
     if count == 0 and provider_id is not None:
         invocation.console.print("[dim]Nothing to reset.[/dim]")
@@ -224,9 +224,9 @@ def reset_cmd(
         _reset_provider(ctx, provider_id)
         return
     try:
-        invocation.require_persistence(ctx).persistence.full_reset()
+        invocation.require_persistence(ctx).persistence.reset_all()
     except (SchedulerMutationBlockedError, PersistenceError) as error:
-        exit_persistence_error(ctx, error)
+        exit_persistence_failure(ctx, error)
     if validated_count is None:
         invocation.console.print(
             "[green]Cleared all managed account and credential "

@@ -29,12 +29,10 @@ VIOLATION_RULE_IDS = frozenset(
         "CTX001",
         "CTX002",
         "CLI001",
-        "MIG001",
         "HTTP001",
         "BRAND001",
         "PKG001",
         "SCHEMA001",
-        "MODEL001",
         "ACT001",
     }
 )
@@ -45,8 +43,6 @@ STALE_SOURCE_FILES = frozenset(
         "src/sidekick_usages/cli_help.py",
         "src/sidekick_usages/http.py",
         "src/sidekick_usages/lifetime.py",
-        "src/sidekick_usages/persistence/migration_errors.py",
-        "src/sidekick_usages/persistence/migrations.py",
         "src/sidekick_usages/providers/claude.py",
         "src/sidekick_usages/providers/codex.py",
         "src/sidekick_usages/render.py",
@@ -310,8 +306,7 @@ def assignment_literal(tree: ast.Module, target_name: str) -> object | None:
 def contains_call(node: ast.AST, call_name: str) -> bool:
     """Return whether a node contains a call to a simple dotted name."""
     return any(
-        isinstance(child, ast.Call)
-        and dotted_name(child.func) == call_name
+        isinstance(child, ast.Call) and dotted_name(child.func) == call_name
         for child in ast.walk(node)
     )
 

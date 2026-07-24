@@ -289,12 +289,12 @@ def _install_empty_ctx(
 
 def _codex_cache_dir(tmp_path: Path) -> Path:
     """Return the injected private Codex root for a test context."""
-    return make_application_paths(tmp_path).private_codex.canonical
+    return make_application_paths(tmp_path).private_credentials
 
 
 def _codex_cache_home(tmp_path: Path, label: str = "team") -> Path:
     """Return the deterministic collision-resistant private bundle path."""
-    root = make_application_paths(tmp_path).private_codex.canonical
+    root = make_application_paths(tmp_path).private_credentials
     return private_codex_home(root, label)
 
 
@@ -617,7 +617,9 @@ def test_setup_token_requires_both_login_replacement_authorizations(
         last_refresh_status=RefreshStatus.FAILED,
         last_refresh_error="provider rejected refresh",
         heartbeat_enabled=True,
-        heartbeat_5h_reset_at=REFERENCE_TIME + timedelta(hours=2),
+        heartbeat_window_resets={
+            "standard": REFERENCE_TIME + timedelta(hours=2)
+        },
         heartbeat_targets=("standard",),
         last_heartbeat_at=REFERENCE_TIME,
     )
@@ -671,7 +673,9 @@ def test_setup_token_requires_both_login_replacement_authorizations(
     )
     assert saved.plan == "max"
     assert saved.heartbeat_enabled is True
-    assert saved.heartbeat_5h_reset_at == REFERENCE_TIME + timedelta(hours=2)
+    assert saved.heartbeat_window_resets == {
+        "standard": REFERENCE_TIME + timedelta(hours=2)
+    }
     assert saved.heartbeat_targets == ("standard",)
     assert saved.last_heartbeat_at == REFERENCE_TIME
     assert saved.last_refresh_at is None
@@ -681,8 +685,6 @@ def test_setup_token_requires_both_login_replacement_authorizations(
     for stale in (
         "stale-refresh-secret",
         "stale:scope",
-        "stale-account",
-        "stale-organization",
     ):
         assert stale not in authority
     assert "Updated 'team'." in stdout.getvalue()
@@ -692,16 +694,8 @@ def test_setup_token_requires_both_login_replacement_authorizations(
     ) in re.sub(r"\s+", " ", stderr.getvalue())
 
 
-@pytest.mark.parametrize(
-    "command",
-    [
-        ("claude", "setup-token"),
-        ("setup-token", "claude"),
-    ],
-)
 def test_setup_token_unknown_login_identity_still_requires_authorization(
     tmp_path: Path,
-    command: tuple[str, ...],
 ) -> None:
     """An identity-free historical login cannot prove token equivalence."""
     account = Account(
@@ -725,7 +719,9 @@ def test_setup_token_unknown_login_identity_still_requires_authorization(
     )
     authority_before = store.path.read_bytes()
 
-    refused = harness.invoke([*command, "--label", "historical", "--force"])
+    refused = harness.invoke(
+        ["claude", "setup-token", "--label", "historical", "--force"]
+    )
 
     assert refused.exit_code == ExitCode.MANUAL_ACTION
     assert setup_token.calls == 0
@@ -733,7 +729,8 @@ def test_setup_token_unknown_login_identity_still_requires_authorization(
 
     replaced = harness.invoke(
         [
-            *command,
+            "claude",
+            "setup-token",
             "--label",
             "historical",
             "--force",

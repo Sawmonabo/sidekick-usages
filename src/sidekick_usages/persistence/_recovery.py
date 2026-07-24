@@ -8,28 +8,26 @@ from sidekick_usages.persistence._platform import (
     NativeFilesystemError,
     NativePlatform,
 )
-from sidekick_usages.persistence.artifacts import (
-    ArtifactGrammar,
-    ArtifactPurpose,
-    AuthorityExpectation,
+from sidekick_usages.persistence.artifacts import ArtifactGrammar
+from sidekick_usages.persistence.errors import (
+    DurabilityUncertainError,
+    InterruptedArtifactError,
+    PersistenceFilesystemError,
+    UnsafeManagedFileError,
+)
+from sidekick_usages.persistence.limits import MAX_DOCUMENT_BYTES
+from sidekick_usages.persistence.models.artifact import (
     ExpectedAuthority,
     FileFingerprint,
     FileIdentity,
     FileSnapshot,
     ManagedArtifact,
+)
+from sidekick_usages.persistence.types.artifact import (
+    ArtifactPurpose,
     ManagedArtifactKind,
     sha256_digest,
 )
-from sidekick_usages.persistence.errors import (
-    DurabilityUncertainError,
-    InterruptedArtifactError,
-    PersistenceError,
-    PersistenceFilesystemError,
-    ResetIncompleteError,
-    SourceChangedError,
-    UnsafeManagedFileError,
-)
-from sidekick_usages.persistence.limits import MAX_DOCUMENT_BYTES
 
 __all__ = ["RecoveryOperations"]
 
@@ -152,15 +150,10 @@ class RecoveryOperations:
             or temporary.purpose is None
         ):
             return False
-        expected_kind = {
-            ArtifactPurpose.AUTHORITY: ManagedArtifactKind.AUTHORITY,
-            ArtifactPurpose.BACKUP: (
-                ManagedArtifactKind.GENERATION_ZERO_BACKUP
-            ),
-            ArtifactPurpose.SNAPSHOT: ManagedArtifactKind.VERSION_ONE_SNAPSHOT,
-            ArtifactPurpose.RECEIPT: ManagedArtifactKind.PROTOTYPE_RECEIPT,
-        }[temporary.purpose]
-        return final.kind is expected_kind
+        return (
+            temporary.purpose is ArtifactPurpose.AUTHORITY
+            and final.kind is ManagedArtifactKind.AUTHORITY
+        )
 
     def _complete_interrupted_publication(
         self,
@@ -245,145 +238,3 @@ class RecoveryOperations:
                 raise NativeFilesystemError(NativeFailureKind.REMOVE)
         except NativeFilesystemError, PersistenceFilesystemError:
             raise InterruptedArtifactError(temporary.basename) from None
-
-    def _delete_credential_artifact(
-        self,
-        artifact: ManagedArtifact,
-    ) -> bool:
-        """Delete one validated credential artifact and harden its removal."""
-        if artifact.kind not in {
-            ManagedArtifactKind.GENERATION_ZERO_BACKUP,
-            ManagedArtifactKind.VERSION_ONE_SNAPSHOT,
-            ManagedArtifactKind.TEMPORARY,
-        }:
-            raise ValueError("Reset can delete only credential artifacts.")
-        if self.grammar.parse(artifact.basename) != artifact:
-            raise ValueError("Artifact does not belong to this authority.")
-        snapshot = self.read_managed(artifact)
-        if snapshot is None:
-            return False
-        if artifact.kind is not ManagedArtifactKind.TEMPORARY:
-            self._validate_recovery_artifact(artifact, snapshot.data)
-        try:
-            identity = snapshot.fingerprint.identity
-            removed = self._native.remove_validated(
-                self._parent,
-                artifact.basename,
-                identity.device,
-                identity.inode,
-            )
-            if removed:
-                self._native.harden_cleanup(self._parent)
-            if self._read(artifact.basename, MAX_DOCUMENT_BYTES) is not None:
-                raise ResetIncompleteError(artifact.basename)
-        except NativeFilesystemError, PersistenceFilesystemError:
-            raise ResetIncompleteError(artifact.basename) from None
-        return removed
-
-    def _full_reset(self, expected_source: ExpectedAuthority) -> None:
-        """Delete validated credentials before the exact authority."""
-        self._require_expected_authority(expected_source)
-        credentials = self._credential_artifacts()
-        for artifact in credentials:
-            snapshot = self.read_managed(artifact)
-            if snapshot is None:
-                continue
-            if artifact.kind is not ManagedArtifactKind.TEMPORARY:
-                self._validate_recovery_artifact(artifact, snapshot.data)
-        mutated = self._delete_reset_credentials(credentials)
-        self._require_no_credentials(reset_started=mutated)
-        try:
-            self._delete_authority(expected_source)
-        except PersistenceError:
-            if mutated:
-                raise ResetIncompleteError(
-                    self.grammar.authority_basename
-                ) from None
-            raise
-        self._require_reset_empty()
-
-    def _credential_artifacts(self) -> tuple[ManagedArtifact, ...]:
-        kinds = {
-            ManagedArtifactKind.GENERATION_ZERO_BACKUP,
-            ManagedArtifactKind.VERSION_ONE_SNAPSHOT,
-            ManagedArtifactKind.TEMPORARY,
-        }
-        return tuple(
-            artifact
-            for artifact in self.discover_managed()
-            if artifact.kind in kinds
-        )
-
-    def _delete_reset_credentials(
-        self,
-        credentials: tuple[ManagedArtifact, ...],
-    ) -> bool:
-        mutated = False
-        for artifact in credentials:
-            try:
-                mutated = self._delete_credential_artifact(artifact) or mutated
-            except PersistenceError:
-                raise ResetIncompleteError(artifact.basename) from None
-        return mutated
-
-    def _require_no_credentials(self, *, reset_started: bool) -> None:
-        try:
-            remaining = self._credential_artifacts()
-        except PersistenceError:
-            if reset_started:
-                raise ResetIncompleteError(
-                    self.grammar.authority_basename
-                ) from None
-            raise
-        if remaining:
-            raise ResetIncompleteError(remaining[0].basename)
-
-    def _require_reset_empty(self) -> None:
-        try:
-            self._require_no_credentials(reset_started=True)
-            if self.read_authority() is not None:
-                raise ResetIncompleteError(self.grammar.authority_basename)
-        except PersistenceError:
-            raise ResetIncompleteError(
-                self.grammar.authority_basename
-            ) from None
-
-    def _delete_authority(
-        self,
-        expected_source: ExpectedAuthority,
-    ) -> bool:
-        """Delete the exact authority last and harden its removal."""
-        self._require_expected_authority(expected_source)
-        if expected_source is AuthorityExpectation.ABSENT:
-            return False
-        identity = expected_source.identity
-        try:
-            removed = self._native.remove_validated(
-                self._parent,
-                self.grammar.authority_basename,
-                identity.device,
-                identity.inode,
-            )
-        except NativeFilesystemError as error:
-            if error.kind is NativeFailureKind.CHANGED:
-                raise SourceChangedError from None
-            raise ResetIncompleteError(
-                self.grammar.authority_basename
-            ) from None
-        if not removed:
-            raise SourceChangedError
-        try:
-            self._native.harden_cleanup(self._parent)
-            if (
-                self._read(
-                    self.grammar.authority_basename,
-                    MAX_DOCUMENT_BYTES,
-                )
-                is not None
-            ):
-                raise ResetIncompleteError(self.grammar.authority_basename)
-        except NativeFilesystemError, PersistenceFilesystemError:
-            raise ResetIncompleteError(
-                self.grammar.authority_basename
-            ) from None
-        return removed

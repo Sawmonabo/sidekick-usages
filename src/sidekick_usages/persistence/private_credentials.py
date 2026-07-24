@@ -3,7 +3,6 @@
 import os
 import sys
 from collections.abc import Callable, Mapping
-from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
 
@@ -36,15 +35,7 @@ elif sys.platform.startswith("linux"):
     from sidekick_usages.persistence._platform.posix_private_platform import (
         PosixPrivateCredentialPlatform,
     )
-from sidekick_usages.persistence.artifacts import (
-    AuthorityExpectation,
-    ExpectedAuthority,
-    FileFingerprint,
-    FileIdentity,
-    FileSnapshot,
-    require_safe_basename,
-    sha256_digest,
-)
+from sidekick_usages.persistence.artifacts import require_safe_basename
 from sidekick_usages.persistence.errors import (
     CandidateWriteError,
     DurabilityUncertainError,
@@ -57,8 +48,16 @@ from sidekick_usages.persistence.errors import (
     UnsupportedFilesystemError,
 )
 from sidekick_usages.persistence.filesystem import PersistenceFilesystem
-from sidekick_usages.persistence.inventory import OrphanedPrivateCredentials
 from sidekick_usages.persistence.locking import PersistenceLock
+from sidekick_usages.persistence.models.artifact import (
+    ExpectedAuthority,
+    FileFingerprint,
+    FileIdentity,
+    FileSnapshot,
+)
+from sidekick_usages.persistence.models.credential import (
+    PrivateCredentialRepairResult,
+)
 from sidekick_usages.persistence.private_bundle_paths import (
     MAX_PRIVATE_BUNDLE_COMPONENT_BYTES,
     MAX_PRIVATE_BUNDLE_COMPONENTS,
@@ -67,9 +66,6 @@ from sidekick_usages.persistence.private_bundle_paths import (
     portable_private_bundle_path_key,
     private_bundle_relative_components,
     require_portable_unique_private_bundle_paths,
-)
-from sidekick_usages.persistence.private_bundle_paths import (
-    PRIVATE_TRANSACTION_JOURNAL as _PRIVATE_TRANSACTION_JOURNAL,
 )
 from sidekick_usages.persistence.private_bundle_writes import (
     MAX_PRIVATE_BUNDLE_BYTES,
@@ -81,19 +77,27 @@ from sidekick_usages.persistence.private_credential_contracts import (
     PrivateBundleNative,
     PrivateCredentialArtifacts,
     PrivateCredentialNative,
-    PrivateCredentialRepairResult,
+)
+from sidekick_usages.persistence.types.artifact import (
+    AuthorityExpectation,
+    sha256_digest,
+)
+from sidekick_usages.persistence.types.credential import (
+    PrivateCredentialOwnership,
+    PrivateCredentialState,
 )
 
-PRIVATE_TRANSACTION_JOURNAL = _PRIVATE_TRANSACTION_JOURNAL
-
-
-class PrivateCredentialOwnership(StrEnum):
-    """Closed lexical ownership classes for a requested private bundle."""
-
-    CANONICAL = "canonical"
-    EXISTING_COMPATIBILITY = "existing_compatibility"
-    EXTERNAL = "external"
-
+__all__ = [
+    "MAX_PRIVATE_BUNDLE_COMPONENTS",
+    "MAX_PRIVATE_BUNDLE_COMPONENT_BYTES",
+    "MAX_PRIVATE_BUNDLE_PATH_BYTES",
+    "PreparedPrivateBundleWrite",
+    "PrivateCredentialArtifacts",
+    "PrivateCredentialTree",
+    "portable_private_bundle_path_key",
+    "private_bundle_relative_components",
+    "require_portable_unique_private_bundle_paths",
+]
 
 type _FilesystemFactory = Callable[[Path], PersistenceFilesystem]
 
@@ -138,7 +142,6 @@ class PrivateCredentialTree:
         root: Path,
         *,
         account_path: Path | None = None,
-        existing_root: Path | None = None,
         _native: PrivateCredentialNative | None = None,
         _bundle_native: PrivateBundleNative | None = None,
         _filesystem_factory: _FilesystemFactory = PersistenceFilesystem,
@@ -150,13 +153,8 @@ class PrivateCredentialTree:
             if not account_path.is_absolute():
                 raise ValueError("Account authority path must be absolute.")
             require_safe_basename(account_path.name)
-        if existing_root is not None:
-            if not existing_root.is_absolute():
-                raise ValueError("Existing credential root must be absolute.")
-            require_safe_basename(existing_root.name)
         self.root = root
         self._account_path = account_path
-        self._existing_root = existing_root or root
         self._filesystem_factory = _filesystem_factory
         try:
             self._native = _native or _current_platform()
@@ -169,19 +167,19 @@ class PrivateCredentialTree:
         """Return the reserved private transaction directory."""
         return self.root / PRIVATE_TRANSACTION_DIRECTORY
 
-    def observe(self) -> OrphanedPrivateCredentials:
+    def observe(self) -> PrivateCredentialState:
         """Return safely proven private credential presence."""
         try:
             if os.path.lexists(self.transaction_directory):
                 self._native.contains_artifacts(self.transaction_directory)
-                return OrphanedPrivateCredentials.INTERRUPTED
+                return PrivateCredentialState.INTERRUPTED
             present = self._native.contains_artifacts(self.root)
         except NativeFilesystemError as error:
             raise _passive_error(error, self.root.name) from None
         return (
-            OrphanedPrivateCredentials.PRESENT
+            PrivateCredentialState.PRESENT
             if present
-            else OrphanedPrivateCredentials.ABSENT
+            else PrivateCredentialState.ABSENT
         )
 
     def list_owned_directories(self) -> tuple[Path, ...]:
@@ -228,13 +226,6 @@ class PrivateCredentialTree:
         if canonical_relative is not None:
             private_bundle_relative_components(canonical_relative.as_posix())
             return PrivateCredentialOwnership.CANONICAL
-        try:
-            existing_relative = bundle_path.relative_to(self._existing_root)
-        except ValueError:
-            existing_relative = None
-        if existing_relative is not None:
-            private_bundle_relative_components(existing_relative.as_posix())
-            return PrivateCredentialOwnership.EXISTING_COMPATIBILITY
         return PrivateCredentialOwnership.EXTERNAL
 
     def relative_bundle_path(self, bundle_path: Path) -> str:
@@ -681,7 +672,7 @@ class PrivateCredentialTree:
             observed = self.observe()
         except PersistenceFilesystemError:
             raise DurabilityUncertainError(bundle_path.name) from None
-        if observed is not OrphanedPrivateCredentials.PRESENT:
+        if observed is not PrivateCredentialState.PRESENT:
             raise DurabilityUncertainError(bundle_path.name)
 
     def write_bundle(
@@ -749,22 +740,5 @@ class PrivateCredentialTree:
                 account_parent_repaired=account_parent_repaired,
                 directories_repaired=directories,
                 files_repaired=files,
-                artifacts_present=(
-                    observed is OrphanedPrivateCredentials.PRESENT
-                ),
+                artifacts_present=(observed is PrivateCredentialState.PRESENT),
             )
-
-
-__all__ = [
-    "MAX_PRIVATE_BUNDLE_COMPONENTS",
-    "MAX_PRIVATE_BUNDLE_COMPONENT_BYTES",
-    "MAX_PRIVATE_BUNDLE_PATH_BYTES",
-    "PreparedPrivateBundleWrite",
-    "PrivateCredentialArtifacts",
-    "PrivateCredentialOwnership",
-    "PrivateCredentialRepairResult",
-    "PrivateCredentialTree",
-    "portable_private_bundle_path_key",
-    "private_bundle_relative_components",
-    "require_portable_unique_private_bundle_paths",
-]

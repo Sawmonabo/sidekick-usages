@@ -22,7 +22,6 @@ from sidekick_usages.core.types import (
 from sidekick_usages.credentials.authorities import (
     AuthenticatedSavedAccount,
     CredentialResolver,
-    EmbeddedAccountResolver,
 )
 from sidekick_usages.errors import UsageError
 from sidekick_usages.heartbeat.models import (
@@ -47,14 +46,13 @@ class HeartbeatService:
         providers: dict[ProviderId, HeartbeatProvider],
         *,
         clock: Clock,
-        resolver: CredentialResolver | None = None,
+        resolver: CredentialResolver,
     ) -> None:
         self.store = store
         self.http = http
         self._providers = dict(providers)
         self.clock = clock
         self._resolver = resolver
-        self._embedded_resolver = EmbeddedAccountResolver()
 
     def support_label(self, account: Account) -> str:
         """Return display-ready support state without exposing adapters."""
@@ -189,8 +187,6 @@ class HeartbeatService:
         account: Account,
     ) -> AbstractContextManager[AuthenticatedSavedAccount]:
         """Open one heartbeat credential lease at the provider boundary."""
-        if self._resolver is None:
-            return self._embedded_resolver.open(account)
         saved = self._saved_account(account)
         if saved is None:
             raise UsageError("The heartbeat account changed.")
@@ -198,9 +194,6 @@ class HeartbeatService:
 
     def _persist_state(self, account: Account) -> None:
         """Persist status without carrying credentials into the v3 index."""
-        if self._resolver is None:
-            self.store.persist(account)
-            return
         saved = self._saved_account(account)
         if saved is None:
             raise SourceChangedError
@@ -210,7 +203,7 @@ class HeartbeatService:
         )
 
     def _saved_account(self, account: Account) -> SavedAccount | None:
-        """Return exact stable metadata for one transitional runtime view."""
+        """Return exact stable metadata for one runtime view."""
         return next(
             (
                 candidate
@@ -515,14 +508,10 @@ def _merge_targets(
 
 
 def _target_reset(account: Account, target_id: str) -> datetime | None:
-    """Return a cached reset for one target, with legacy field fallback."""
-    if account.heartbeat_window_resets:
-        value = account.heartbeat_window_resets.get(target_id)
-        if value:
-            return value
-    if target_id == "standard":
-        return account.heartbeat_5h_reset_at
-    return None
+    """Return the cached reset for one target."""
+    if not account.heartbeat_window_resets:
+        return None
+    return account.heartbeat_window_resets.get(target_id)
 
 
 def _set_target_reset(
@@ -530,12 +519,10 @@ def _set_target_reset(
     target_id: str,
     reset_at: datetime,
 ) -> None:
-    """Persist one target reset and keep the legacy standard field current."""
+    """Persist one target reset."""
     resets = dict(account.heartbeat_window_resets or {})
     resets[target_id] = reset_at
     account.heartbeat_window_resets = resets
-    if target_id == "standard":
-        account.heartbeat_5h_reset_at = reset_at
 
 
 def _missing_account() -> HeartbeatOutcome:

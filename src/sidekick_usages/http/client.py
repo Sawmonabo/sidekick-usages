@@ -12,7 +12,6 @@ from http import HTTPMethod, HTTPStatus
 from types import TracebackType
 
 import urllib3
-from urllib3 import exceptions as urllib3_exceptions
 from urllib3.util import Timeout
 
 from sidekick_usages.clock import Clock, SystemClock
@@ -307,7 +306,7 @@ class HttpClient(AbstractContextManager["HttpClient"]):
                 self._proxy_url = proxy_url
             return self._proxy_manager
         except (
-            urllib3_exceptions.HTTPError,
+            urllib3.exceptions.HTTPError,
             ValueError,
             OSError,
         ):
@@ -395,9 +394,9 @@ def _read_bounded(
     payload = b""
     try:
         payload = response.read(limit + 1, decode_content=True)
-    except urllib3_exceptions.DecodeError:
+    except urllib3.exceptions.DecodeError:
         invalid_encoding = True
-    except urllib3_exceptions.HTTPError, OSError:
+    except urllib3.exceptions.HTTPError, OSError:
         read_failure = True
     if invalid_encoding or read_failure or len(payload) > limit:
         response.close()
@@ -413,7 +412,7 @@ def _read_bounded(
     if read_failure:
         if discard_oversized:
             return b""
-        raise urllib3_exceptions.ProtocolError(
+        raise urllib3.exceptions.ProtocolError(
             "bounded response read failed"
         ) from None
     if len(payload) > limit:

@@ -88,7 +88,7 @@ def main() -> int:
                 clock,
                 time.monotonic,
             ),
-        )
+        ),
     )
     request_stop = partial(_request_stop, stop_requested, wakeup)
     dispatcher = SupervisorDispatcher(

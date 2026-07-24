@@ -18,6 +18,7 @@ from sidekick_usages.core.models import (
     UsageReport,
 )
 from sidekick_usages.core.types import AccountLabel, ProviderId
+from sidekick_usages.credentials.authorities import credential_resolver_for
 from sidekick_usages.credentials.codex import (
     CodexCredentialCoordinator,
     private_codex_home,
@@ -28,10 +29,6 @@ from sidekick_usages.credentials.refresh import (
 )
 from sidekick_usages.http import HttpClient
 from sidekick_usages.persistence.account_store import AccountStore
-from sidekick_usages.persistence.artifacts import (
-    AuthorityGeneration,
-    ExpectedAuthority,
-)
 from sidekick_usages.persistence.credential_refresh import (
     CredentialRefreshArtifacts,
     CredentialRefreshCrashPoint,
@@ -41,8 +38,11 @@ from sidekick_usages.persistence.credential_refresh import (
 )
 from sidekick_usages.persistence.errors import ReplaceFailedError
 from sidekick_usages.persistence.filesystem import PersistenceFilesystem
-from sidekick_usages.persistence.private_credentials import (
+from sidekick_usages.persistence.models.artifact import ExpectedAuthority
+from sidekick_usages.persistence.private_bundle_writes import (
     PreparedPrivateBundleWrite,
+)
+from sidekick_usages.persistence.private_credentials import (
     PrivateCredentialTree,
 )
 from sidekick_usages.providers.base import (
@@ -77,11 +77,10 @@ class _AuthorityFailure:
 
     def commit_authority(
         self,
-        generation: AuthorityGeneration,
         payload: bytes,
         expected_source: ExpectedAuthority,
     ) -> Never:
-        del generation, payload, expected_source
+        del payload, expected_source
         raise ReplaceFailedError
 
 
@@ -94,11 +93,10 @@ class _AuthorityCrash:
 
     def commit_authority(
         self,
-        generation: AuthorityGeneration,
         payload: bytes,
         expected_source: ExpectedAuthority,
     ) -> Never:
-        del generation, payload, expected_source
+        del payload, expected_source
         raise _SimulatedAuthorityCrash
 
 
@@ -236,16 +234,12 @@ def _seed(
 ) -> tuple[AccountStore, PrivateCredentialTree, Path]:
     """Seed one account and exact matching canonical private bundle."""
     paths = make_application_paths(root)
-    PersistenceFilesystem(paths.accounts.canonical).repair_parent_permissions()
+    PersistenceFilesystem(paths.accounts).repair_parent_permissions()
     private = PrivateCredentialTree(
-        paths.private_codex.canonical,
-        account_path=paths.accounts.canonical,
+        paths.private_credentials,
+        account_path=paths.accounts,
     )
-    store = AccountStore(
-        paths.accounts,
-        orphaned_credentials_observer=private.observe,
-        private_credentials=private,
-    ).load()
+    store = AccountStore(paths.accounts, private).load()
     bundle = private_codex_home(private.root, str(_LABEL))
     account = _account(bundle)
     store.persist_credentials(
@@ -268,15 +262,10 @@ def _reopen(
     """Open the same authority with an optional failing commit boundary."""
     paths = make_application_paths(root)
     if transaction is None:
-        return AccountStore(
-            paths.accounts,
-            orphaned_credentials_observer=private.observe,
-            private_credentials=private,
-        ).load()
+        return AccountStore(paths.accounts, private).load()
     return AccountStore(
         paths.accounts,
-        orphaned_credentials_observer=private.observe,
-        private_credentials=private,
+        private,
         lock_factory=lambda _filesystem: _InjectedLock(transaction),
     ).load()
 
@@ -299,6 +288,7 @@ def _coordinator(
         ),
         clock=clock,
         codex=CodexCredentialCoordinator(store, private, clock=clock),
+        resolver=credential_resolver_for(store, private),
     )
 
 
@@ -330,6 +320,7 @@ def test_codex_rotation_commits_matching_account_and_private_bundle(
     coordinator = _coordinator(tmp_path, store, private, provider)
 
     coordinator.refresh(
+        provider_id=ProviderId.CODEX,
         label=_LABEL,
         reason=CredentialRefreshReason.OPERATOR_FORCED,
     )
@@ -360,10 +351,12 @@ def test_codex_stage_is_one_recoverable_account_and_bundle_envelope(
         ),
         clock=clock,
         codex=CodexCredentialCoordinator(store, private, clock=clock),
+        resolver=credential_resolver_for(store, private),
     )
 
     with pytest.raises(SimulatedCrashError):
         coordinator.refresh(
+            provider_id=ProviderId.CODEX,
             label=_LABEL,
             reason=CredentialRefreshReason.OPERATOR_FORCED,
         )
@@ -389,6 +382,7 @@ def test_codex_bundle_failure_rolls_back_then_recovers_both_targets(
 
     with pytest.raises(ReplaceFailedError):
         _coordinator(tmp_path, failed_store, private, provider).refresh(
+            provider_id=ProviderId.CODEX,
             label=_LABEL,
             reason=CredentialRefreshReason.OPERATOR_FORCED,
         )
@@ -414,6 +408,7 @@ def test_codex_bundle_crash_recovers_without_newer_account_authority(
 
     with pytest.raises(_SimulatedAuthorityCrash):
         _coordinator(tmp_path, crashing_store, private, provider).refresh(
+            provider_id=ProviderId.CODEX,
             label=_LABEL,
             reason=CredentialRefreshReason.OPERATOR_FORCED,
         )
@@ -451,9 +446,11 @@ def test_malformed_codex_combined_stage_is_blocked_without_publication(
         ),
         clock=clock,
         codex=CodexCredentialCoordinator(store, private, clock=clock),
+        resolver=credential_resolver_for(store, private),
     )
     with pytest.raises(SimulatedCrashError):
         coordinator.refresh(
+            provider_id=ProviderId.CODEX,
             label=_LABEL,
             reason=CredentialRefreshReason.OPERATOR_FORCED,
         )

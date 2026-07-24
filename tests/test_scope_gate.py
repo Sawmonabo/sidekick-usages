@@ -97,7 +97,7 @@ def test_provider_native_expiry_units_converge_and_fail_closed() -> None:
 
 
 def test_store_round_trips_exact_provider_state(tmp_path: Path) -> None:
-    """The compatibility codec preserves exact units and aware state."""
+    """The current store preserves exact units and keeps secrets private."""
     epoch = datetime(1970, 1, 1, tzinfo=UTC)
     codex_expiry_seconds = 1_900_000_000
     codex_expiry = epoch + timedelta(seconds=codex_expiry_seconds)
@@ -113,7 +113,6 @@ def test_store_round_trips_exact_provider_state(tmp_path: Path) -> None:
         ),
         last_refresh_at=audit_time,
         last_refresh_status=RefreshStatus.OK,
-        heartbeat_5h_reset_at=reset_time,
         heartbeat_window_resets={"standard": reset_time},
     )
     codex_account = Account(
@@ -132,21 +131,31 @@ def test_store_round_trips_exact_provider_state(tmp_path: Path) -> None:
     )
     store = make_account_store(tmp_path, (claude_account, codex_account))
 
-    raw = decode_json_object(store.path.read_bytes())
+    authority_text = store.path.read_text()
+    raw = decode_json_object(authority_text.encode())
     records = raw["accounts"]
     assert isinstance(records, dict)
-    claude_record = records["claude-team"]
-    codex_record = records["codex-pro"]
+    claude_record = next(
+        record
+        for record in records.values()
+        if isinstance(record, dict) and record.get("label") == "claude-team"
+    )
+    codex_record = next(
+        record
+        for record in records.values()
+        if isinstance(record, dict) and record.get("label") == "codex-pro"
+    )
     assert isinstance(claude_record, dict)
     assert isinstance(codex_record, dict)
-    assert claude_record["credential_kind"] == "setup_token"
-    assert "access_expires_at" not in claude_record
-    assert "scopes" not in claude_record
-    assert codex_record["expires_at"] == "2030-03-17T17:46:40.000000Z"
+    assert "sk-ant-oat01-x" not in authority_text
+    assert "refresh-123" not in authority_text
+    assert "id-token-123" not in authority_text
+    codex_authority = codex_record["authority"]
+    assert isinstance(codex_authority, dict)
+    codex_subscription = codex_authority["subscription"]
+    assert isinstance(codex_subscription, dict)
+    assert codex_subscription["expires_at"] == "2030-03-17T17:46:40.000000Z"
     assert claude_record["last_refresh_at"] == "2026-06-12T12:34:56.789000Z"
-    assert (
-        claude_record["heartbeat_5h_reset_at"] == "2026-06-12T13:00:00.000000Z"
-    )
 
     restored = make_account_store(tmp_path)
     claude = restored.get("claude-team")
@@ -155,7 +164,6 @@ def test_store_round_trips_exact_provider_state(tmp_path: Path) -> None:
     assert claude is not None
     assert isinstance(claude.credentials, ClaudeSetupTokenCredentials)
     assert claude.last_refresh_at == audit_time_utc
-    assert claude.heartbeat_5h_reset_at == reset_time_utc
     assert claude.heartbeat_window_resets == {"standard": reset_time_utc}
     assert codex is not None
     assert codex.expiry == KnownExpiry(codex_expiry)
@@ -172,5 +180,3 @@ def test_store_round_trips_exact_provider_state(tmp_path: Path) -> None:
     )
     with pytest.raises(InvalidSchemaError):
         store.persist(codex_account)
-    with pytest.raises(ValueError, match="Account labels"):
-        restored.rename("claude-team", "invalid\x00label")

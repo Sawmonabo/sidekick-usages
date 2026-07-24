@@ -45,7 +45,6 @@ class HeartbeatStatusRow:
     heartbeat: str
     heartbeat_supported: bool
     heartbeat_enabled: bool
-    heartbeat_5h_reset_at: str | None
     heartbeat_window_resets: tuple[tuple[str, str], ...] | None
     heartbeat_targets: tuple[str, ...] | None
     last_heartbeat_at: str | None
@@ -135,10 +134,6 @@ def render_heartbeat_status(
                 ),
             )
         )
-        if row.heartbeat_5h_reset_at is not None:
-            parts.append(
-                Text(f"  cached 5h reset: {row.heartbeat_5h_reset_at}")
-            )
         if row.heartbeat_window_resets:
             parts.extend(
                 Text(f"  cached {target_id} reset: {reset_at}")
@@ -177,7 +172,6 @@ def _heartbeat_status_row(
         heartbeat=support_label,
         heartbeat_supported=support_label != "unsupported",
         heartbeat_enabled=account.heartbeat_enabled,
-        heartbeat_5h_reset_at=_optional_time(account.heartbeat_5h_reset_at),
         heartbeat_window_resets=(
             tuple(
                 (target_id, _format_time(reset_at))
@@ -214,7 +208,6 @@ def _heartbeat_status_dict(row: HeartbeatStatusRow) -> JsonObject:
         "heartbeat": row.heartbeat,
         "heartbeat_supported": row.heartbeat_supported,
         "heartbeat_enabled": row.heartbeat_enabled,
-        "heartbeat_5h_reset_at": row.heartbeat_5h_reset_at,
         "heartbeat_window_resets": window_resets,
         "heartbeat_targets": targets,
         "last_heartbeat_at": row.last_heartbeat_at,

@@ -114,8 +114,7 @@ sidekick-usages heartbeat disable <label>
   heartbeat are independent transitions.
 - Does not run for accounts whose last token refresh failed.
 - Does not probe again while the target-specific cached reset is still
-  in the future. The legacy `heartbeat_5h_reset_at` field mirrors the
-  default `standard` target for backward compatibility.
+  in the future.
 - Uses the closed HTTP operation policy: only safe, explicitly reviewed
   heartbeat failures can retry within the bounded attempt budget.
 - Records last heartbeat status and error on the account.
@@ -129,7 +128,6 @@ account data:
 ```json
 {
   "heartbeat_enabled": true,
-  "heartbeat_5h_reset_at": "<UTC_TIMESTAMP>",
   "heartbeat_window_resets": {
     "standard": "<UTC_TIMESTAMP>",
     "spark": "<UTC_TIMESTAMP>"

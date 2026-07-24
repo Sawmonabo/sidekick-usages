@@ -42,16 +42,11 @@ def _no_composition_context(calls: list[str]) -> InvocationContext:
         ["refresh", "--help"],
         ["doctor", "--help"],
         ["daemon", "status", "--help"],
-        ["migrate", "accounts", "--help"],
         ["claude", "--help"],
         ["claude", "setup-token", "--help"],
-        ["claude", "restore-setup-token", "--help"],
         ["codex", "--help"],
         ["codex", "login", "--help"],
         ["codex", "export", "--help"],
-        ["setup-token", "--help"],
-        ["codex-login", "--help"],
-        ["codex-export", "--help"],
     ],
 )
 def test_help_is_branded_before_usage_without_loading_state(
@@ -77,7 +72,6 @@ def test_help_is_branded_before_usage_without_loading_state(
         ["refresh"],
         ["claude"],
         ["claude", "setup-token"],
-        ["claude", "restore-setup-token"],
         ["codex"],
         ["codex", "login"],
         ["heartbeat"],
@@ -205,7 +199,7 @@ def test_doctor_help_does_not_advertise_removed_auth_option() -> None:
     [
         (
             ["claude", "--help"],
-            ("setup-token", "restore-setup-token"),
+            ("setup-token",),
         ),
         (["codex", "--help"], ("login", "export")),
     ],
@@ -223,16 +217,16 @@ def test_provider_help_lists_only_canonical_commands(
     assert "deprecated" not in output.lower()
 
 
-def test_root_help_marks_only_compatibility_spellings_deprecated() -> None:
-    """Root help leads with provider groups and bounded alias migration."""
+def test_root_help_has_only_canonical_provider_groups() -> None:
+    """Root help exposes provider groups without compatibility aliases."""
     result = CliRunner().invoke(app, ["--help"])
 
     assert result.exit_code == 0
     output = click.unstyle(result.stdout)
-    aliases = ("setup-token", "codex-login", "codex-export")
-    assert all(command in output for command in ("claude", "codex", *aliases))
-    assert output.count("(deprecated)") == len(aliases)
-    assert output.count("removed in 0.9.0") == len(aliases)
+    assert all(command in output for command in ("claude", "codex"))
+    assert "codex-login" not in output
+    assert "codex-export" not in output
+    assert "(deprecated)" not in output
     assert result.stderr == ""
 
 

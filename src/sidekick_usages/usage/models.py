@@ -12,7 +12,7 @@ from sidekick_usages.core.types import (
     ProviderId,
     TokenActivityScope,
 )
-from sidekick_usages.persistence.errors import PersistenceCode
+from sidekick_usages.persistence.types.error import PersistenceCode
 from sidekick_usages.providers.base import ProviderFailure
 
 

@@ -279,8 +279,7 @@ record says otherwise.
 Credential discovery reads `$CODEX_HOME/auth.json` when `CODEX_HOME` is set,
 otherwise `~/.codex/auth.json`. Sidekick copies each imported account into a
 private file-backed Codex home under Sidekick's selected application-data
-directory. Existing 0.6.0 installations keep using the compatibility location
-until an explicit location migration.
+directory.
 
 `sidekick-usages codex login` follows the same rule: without `--codex-home` it
 logs in through the normal `~/.codex` home; with an explicit home it configures
@@ -319,10 +318,6 @@ rollout total is used as a fallback.
 | `sidekick-usages codex login <label>` | Run Codex login and import a private account copy; supports `--device-auth`, `--codex-home`, and `--replace-identity`. |
 | `sidekick-usages codex export <label> --codex-home <path>` | Export complete saved Codex credentials to an isolated file-backed home. |
 | `sidekick-usages claude setup-token` | Run Claude's long-lived token generator and save its output. |
-| `sidekick-usages claude restore-setup-token <label>` | Preview and transactionally restore one exact setup token from the import-only prototype. |
-| `sidekick-usages migrate accounts` | Explicitly upgrade stored schema or import the prototype source. |
-| `sidekick-usages migrate locations` | Preview and explicitly relocate durable state; conflicts require `--replace-conflicting-destination`. |
-| `sidekick-usages migrate prepare-rollback --target v0.6.0` | Prepare and verify exact released-0.6.0 compatibility before downgrade. |
 | `sidekick-usages permissions repair` | Preview and repair Sidekick-owned credential permissions. |
 | `sidekick-usages reset [--provider <id>] [-y]` | Delete all accounts or one provider's accounts. |
 | `sidekick-usages check-update` | Query the latest GitHub release. |
@@ -333,12 +328,6 @@ rollout total is used as a fallback.
 
 Append `--help` or `-h` to the root command, any command group, or any command
 to see its options.
-
-Starting with release 0.7.0, `sidekick-usages setup-token claude`,
-`sidekick-usages codex-login`, and `sidekick-usages codex-export` are deprecated
-compatibility aliases. They remain available throughout 0.8.x and are removed
-in 0.9.0. Invoking an alias adds a human-facing warning to stderr without
-changing the command's stdout.
 
 ### Refresh identity safety
 
@@ -451,62 +440,40 @@ pool, timeout, payload-bound, retry-safety, and error contracts.
 
 ## Persistence and recovery
 
-The upcoming 0.7.0 release introduces native per-user application-data
-locations on Linux, WSL, macOS, and Windows. Upgrading does not silently
-relocate an existing 0.6.0 store: compatibility data remains authoritative
-until the operator runs `sidekick-usages migrate locations`. A fresh
-installation writes directly to the native location.
+Sidekick uses one native per-user application-data layout on Linux, WSL,
+macOS, and Windows. The account index is secret-free; provider credentials and
+private homes live under a separate protected authority. `doctor` reports
+current store and recovery state without exposing either credentials or
+provider identities.
 
-`doctor` reports the selected source and destination, candidate conflicts,
-partial transactions, safe private-auth evidence, and the exact next command.
-Migration retains compatibility data and immutable backups. Preparing a
-downgrade requires the explicit current-release command:
-
-```bash
-sidekick-usages migrate prepare-rollback --target v0.6.0
-```
-
-Do not manually copy or edit account and private-auth files. See
-[persistence locations, migration, and recovery](./docs/persistence-and-recovery.md)
-for the platform path matrix, migration procedure, stable doctor states,
-permission recovery, and verified rollback sequence.
+Do not manually copy or edit account, credential, journal, or private-home
+files. See [persistence and recovery](./docs/persistence-and-recovery.md) for
+the platform path matrix, permission repair, reset behavior, and supported
+account recovery flows.
 
 ## Configuration
 
-The active account store is selected from the native and compatibility
-locations documented above. On Linux and WSL, a fresh store defaults to
-`~/.local/share/sidekick-usages/accounts.json`; an upgraded 0.6.0 store remains
-at `~/.config/sidekick-usages/accounts.json` until explicit migration.
+On Linux and WSL, the current store defaults to
+`~/.local/share/sidekick-usages/accounts.json`. macOS and Windows use their
+native per-user application-data locations.
 
-The current stored authority is a strict schema-version-two envelope. Labels
-are keys under `accounts`, and canonical timestamps are fixed-width UTC
-strings. Claude records contain an explicit `credential_kind` discriminator:
+The current account index is a strict schema-version-three envelope keyed by
+stable Sidekick account identifiers. Each record carries a provider-qualified
+label and references a protected credential authority:
 
-- `setup_token` stores only setup-compatible credential state and shared
-  account status. It cannot contain refresh, expiry, scope, or stable-login
-  identity fields.
-- `subscription_login` requires a refresh credential, access expiry, login
-  scopes, and an explicit known-or-unknown login expiry. A complete nested
-  Claude identity may be present; half-identities are invalid.
-- Codex retains its provider-specific refresh and private-bundle metadata.
-
-Every envelope and record rejects extra or inconsistent fields. Schema-one
-state is migration evidence, not runtime-current state; use
-`sidekick-usages migrate accounts` instead of editing it.
+- Claude setup-token and subscription authorities are independent.
+- Claude and Codex stored-login authorities record only safe health, expiry,
+  identity, and generation metadata in the account index.
+- Provider credential values remain exclusively in the protected credential
+  tree.
 
 Important field semantics:
 
-- Schema-two access and login expiry values use canonical UTC text. Migration
-  still validates released 0.6.0 Claude-millisecond and Codex-second values.
+- Access, refresh, audit, and heartbeat times use canonical UTC text.
 - `provider_account_id` binds Codex requests and protects explicit imports from
   cross-account replacement when the id is known.
-- `codex_home`, `codex_id_token`, and `codex_last_refresh` preserve enough
-  private auth metadata to refresh or export a CLI-compatible Codex account.
 - Refresh and heartbeat diagnostics are redacted user-facing state. Heartbeat
   targets and reset caches may be absent and remain target-specific.
-- If only `~/.config/cc-usage/accounts.json` exists, `doctor` directs the
-  operator to `sidekick-usages migrate accounts`. The prototype is left in
-  place after import.
 
 Do not edit the store by hand. Use CLI commands so identity checks, file modes,
 private Codex credential bundles, and diagnostics remain consistent.
@@ -541,9 +508,6 @@ active subscription login:
 ```bash
 sidekick-usages claude setup-token --label <setup-label> --force
 ```
-
-If the exact earlier setup-token record remains in the import-only prototype,
-preview `sidekick-usages claude restore-setup-token <setup-label>`.
 
 For Codex, use its explicit login workflow:
 
@@ -633,9 +597,9 @@ If it is missing, run `claude auth login` and retry `add` or `refresh`.
   retry policy.
 - `src/sidekick_usages/persistence/`: strict schemas, qualified filesystem
   operations, account/private transactions, credential-refresh recovery, and
-  provider-neutral migrations.
+  selected-account state.
 - `src/sidekick_usages/credentials/`: provider-neutral credential workflows,
-  Claude transition/lifetime/restore policy, serialized refresh coordination,
+  Claude transition/lifetime policy, serialized refresh coordination,
   and private Codex bundle coordination.
 - `src/sidekick_usages/usage/`: usage results, application service, and Rich
   presentation; `branding.py` is the one robot and product-copy source.

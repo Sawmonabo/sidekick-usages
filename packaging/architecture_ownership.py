@@ -1,4 +1,4 @@
-"""Single-owner architecture rules for paths, migrations, HTTP, and brand."""
+"""Single-owner architecture rules for paths, HTTP, and brand."""
 
 import ast
 from collections.abc import Sequence
@@ -15,8 +15,6 @@ from architecture_ast import (
     dotted_name,
     finding,
     function_node,
-    matches,
-    scan_imports,
 )
 
 
@@ -27,7 +25,6 @@ def check_ownership(
     """Enforce each approved single-owner production contract."""
     production = tuple(unit for unit in units if unit.production)
     _check_paths(production, violations)
-    _check_migrations(production, violations)
     _check_http(production, violations)
     _check_brand(production, violations)
 
@@ -96,49 +93,6 @@ def _check_paths(
                 1,
                 "PATH002",
                 f"ApplicationPaths owners are {sorted(owners)}",
-            )
-        )
-
-
-def _check_migrations(
-    units: Sequence[SourceUnit],
-    violations: list[ArchitectureFinding],
-) -> None:
-    owner = "src/sidekick_usages/persistence/migrations/service.py"
-    rollback_owner = (
-        "src/sidekick_usages/persistence/migrations/rollback.py"
-    )
-    for unit in units:
-        if str(unit.path) in {owner, rollback_owner}:
-            continue
-        for node in ast.walk(unit.tree):
-            if (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-                and node.func.attr == "commit_migration"
-            ):
-                violations.append(
-                    finding(
-                        unit,
-                        node,
-                        "MIG001",
-                        "second migration coordinator",
-                    )
-                )
-    service = next((unit for unit in units if str(unit.path) == owner), None)
-    has_port = service is not None and any(
-        matches(module, "sidekick_usages.persistence.migrations.ports")
-        and isinstance(node, ast.ImportFrom)
-        and any(alias.name == "PrivateAuthMigrator" for alias in node.names)
-        for node, module in scan_imports(service)
-    )
-    if service is not None and not has_port:
-        violations.append(
-            finding(
-                service,
-                None,
-                "MIG001",
-                "PrivateAuthMigrator port missing",
             )
         )
 

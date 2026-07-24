@@ -6,7 +6,6 @@ from sidekick_usages.core.accounts.types import SidekickAccountId
 from sidekick_usages.core.selection.models import SelectedAccountState
 from sidekick_usages.core.selection.types import ProviderRuntimeState
 from sidekick_usages.core.types import ProviderId
-from sidekick_usages.persistence.artifacts import AuthorityExpectation
 from sidekick_usages.persistence.locking import PersistenceLock
 from sidekick_usages.persistence.models.selection import SelectedStateDocument
 from sidekick_usages.persistence.schema.selection import (
@@ -21,6 +20,7 @@ from sidekick_usages.persistence.state_files import (
 from sidekick_usages.persistence.state_filesystem import (
     ManagedStateFilesystem,
 )
+from sidekick_usages.persistence.types.artifact import AuthorityExpectation
 
 __all__ = ["SelectedStateStore"]
 

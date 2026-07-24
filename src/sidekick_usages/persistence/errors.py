@@ -1,42 +1,39 @@
 """Typed failures for the account persistence boundary."""
 
-from dataclasses import dataclass
-from enum import StrEnum
-
+from sidekick_usages.core.types import ExitCode
 from sidekick_usages.errors import UsageError
+from sidekick_usages.persistence.types.error import (
+    ActivitySnapshotFailureKind,
+    PersistenceCode,
+)
+
+
+class ActivitySnapshotError(UsageError):
+    """A token-activity snapshot could not be trusted or persisted."""
+
+    def __init__(self, kind: ActivitySnapshotFailureKind) -> None:
+        self.kind = kind
+        message = {
+            ActivitySnapshotFailureKind.READ: (
+                "Saved token activity cannot be read safely."
+            ),
+            ActivitySnapshotFailureKind.MALFORMED: (
+                "Saved token activity is malformed."
+            ),
+            ActivitySnapshotFailureKind.WRITE: (
+                "Fresh token activity could not be saved durably."
+            ),
+            ActivitySnapshotFailureKind.CONFLICT: (
+                "Saved token activity changed concurrently."
+            ),
+        }[kind]
+        super().__init__(message)
 
 
 class PersistenceError(UsageError):
     """Base for safe account-persistence failures."""
 
     code: PersistenceCode
-
-
-class PersistenceCode(StrEnum):
-    """Closed passive and operation-time persistence outcomes."""
-
-    UNSUPPORTED_FILESYSTEM = "unsupported_filesystem"
-    UNSAFE_PERMISSIONS = "unsafe_permissions"
-    UNREADABLE = "unreadable"
-    DUPLICATE_KEY = "duplicate_key"
-    MALFORMED_JSON = "malformed_json"
-    FUTURE_SCHEMA = "future_schema"
-    INVALID_SCHEMA = "invalid_schema"
-    BACKUP_CONFLICT = "backup_conflict"
-    INTERRUPTED_ARTIFACTS = "interrupted_artifacts"
-    LEGACY_WRITER_DETECTED = "legacy_writer_detected"
-    ROLLBACK_PREPARED = "rollback_prepared"
-    MIGRATION_REQUIRED = "migration_required"
-    PROTOTYPE_IMPORT_REQUIRED = "prototype_import_required"
-    PROTOTYPE_IMPORTED = "prototype_imported"
-    CURRENT = "current"
-    EMPTY = "empty"
-    ROLLBACK_REQUIRED = "rollback_required"
-    STORE_LOCKED = "store_locked"
-    SOURCE_CHANGED = "source_changed"
-    REPLACE_FAILED = "replace_failed"
-    DURABILITY_UNCERTAIN = "durability_uncertain"
-    RESET_INCOMPLETE = "reset_incomplete"
 
 
 class PersistenceSchemaError(PersistenceError):
@@ -59,32 +56,10 @@ class DuplicateKeyError(PersistenceSchemaError):
         super().__init__("Account data contains a duplicate JSON member.")
 
 
-class SchemaIssueCode(StrEnum):
-    """Safe validation failure categories owned by persistence."""
-
-    MISSING_FIELD = "missing_field"
-    UNEXPECTED_FIELD = "unexpected_field"
-    INVALID_TYPE = "invalid_type"
-    INVALID_VALUE = "invalid_value"
-
-
-@dataclass(frozen=True, slots=True)
-class SchemaIssue:
-    """One input-free validation location and failure category."""
-
-    path: tuple[str | int, ...]
-    code: SchemaIssueCode
-    message: str
-
-
 class InvalidSchemaError(PersistenceSchemaError):
     """A persisted JSON value violates its generation contract."""
 
-    def __init__(
-        self,
-        issues: tuple[SchemaIssue, ...] = (),
-    ) -> None:
-        self.issues = issues
+    def __init__(self) -> None:
         self.code = PersistenceCode.INVALID_SCHEMA
         super().__init__("Account data does not match a supported schema.")
 
@@ -122,29 +97,6 @@ class FutureSchemaError(PersistenceSchemaError):
         super().__init__(
             "Account data uses an unsupported schema version; "
             "install compatible software."
-        )
-
-
-class RollbackCompatibilityError(PersistenceError):
-    """The released rollback reader cannot preserve current state."""
-
-    def __init__(self) -> None:
-        self.code = PersistenceCode.ROLLBACK_REQUIRED
-        super().__init__(
-            "Rollback cannot preserve an explicit empty heartbeat "
-            "collection; normalize it intentionally before retrying."
-        )
-
-
-class ManagedRollbackCompatibilityError(RollbackCompatibilityError):
-    """A released rollback cannot own a provider-managed authority."""
-
-    def __init__(self) -> None:
-        self.code = PersistenceCode.ROLLBACK_REQUIRED
-        PersistenceError.__init__(
-            self,
-            "Rollback cannot preserve provider-managed authorities; "
-            "the older release cannot own them.",
         )
 
 
@@ -242,17 +194,6 @@ class SourceChangedError(PersistenceFilesystemError):
         )
 
 
-class BackupConflictError(PersistenceFilesystemError):
-    """An immutable content-addressed target is not exact."""
-
-    def __init__(self, basename: str) -> None:
-        super().__init__(
-            PersistenceCode.BACKUP_CONFLICT,
-            "An immutable account artifact conflicts with its identity.",
-            basename,
-        )
-
-
 class ReplaceFailedError(PersistenceFilesystemError):
     """Native replacement failed before success was observed."""
 
@@ -323,3 +264,15 @@ class PrivateCredentialCollisionError(PersistenceFilesystemError):
             "A private credential bundle belongs to another account.",
             basename,
         )
+
+
+def exit_code_for_persistence_code(code: PersistenceCode) -> ExitCode:
+    """Map one current persistence failure to a process outcome."""
+    if code in {
+        PersistenceCode.FUTURE_SCHEMA,
+        PersistenceCode.INTERRUPTED_ARTIFACTS,
+        PersistenceCode.STORE_LOCKED,
+        PersistenceCode.SOURCE_CHANGED,
+    }:
+        return ExitCode.MANUAL_ACTION
+    return ExitCode.SYSTEM_ERROR

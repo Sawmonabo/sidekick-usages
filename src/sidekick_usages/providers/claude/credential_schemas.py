@@ -242,7 +242,7 @@ def parse_credentials_blob(blob: JsonObject) -> DetectedCredentials:
 
 
 def claude_expiry(value: JsonValue | None) -> Expiry:
-    """Normalize one raw Claude millisecond timestamp for compatibility."""
+    """Normalize one raw Claude millisecond timestamp."""
     if value is None:
         return UnknownExpiry()
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:

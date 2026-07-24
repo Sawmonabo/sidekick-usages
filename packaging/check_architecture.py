@@ -81,23 +81,10 @@ _RESIDENT_DAEMON_MODULES = frozenset(
 )
 _PYDANTIC_OWNERS = frozenset(
     {
-        "src/sidekick_usages/persistence/_schema_models.py",
-        "src/sidekick_usages/persistence/activity_snapshots.py",
-        "src/sidekick_usages/persistence/credential_authorities.py",
-        "src/sidekick_usages/persistence/credential_refresh_private_stage.py",
-        "src/sidekick_usages/persistence/credential_refresh_stage.py",
-        "src/sidekick_usages/persistence/schemas.py",
         "src/sidekick_usages/providers/claude/credential_schemas.py",
         "src/sidekick_usages/providers/claude/schemas.py",
         "src/sidekick_usages/providers/codex/schemas.py",
         "src/sidekick_usages/serialization/json.py",
-    }
-)
-_PROVIDER_PERSISTENCE_IMPORTS = frozenset(
-    {
-        "sidekick_usages.persistence.artifacts",
-        "sidekick_usages.persistence.migrations.ports",
-        "sidekick_usages.persistence.private_credentials",
     }
 )
 _TRANSPORT_ROOTS = frozenset({"httpx", "requests", "tenacity", "urllib3"})
@@ -442,10 +429,7 @@ def _check_import(
                 "sidekick_usages.usage",
             ),
         )
-        persistence_leak = matches(module, "sidekick_usages.persistence") and (
-            not path.endswith("/providers/codex/auth_migration.py")
-            or not matches_any(module, _PROVIDER_PERSISTENCE_IMPORTS)
-        )
+        persistence_leak = matches(module, "sidekick_usages.persistence")
         if forbidden_provider or persistence_leak:
             violations.append(
                 finding(
@@ -470,9 +454,8 @@ def _is_resident_daemon(path: str) -> bool:
 
 
 def _is_pydantic_owner(path: str) -> bool:
-    return (
-        path in _PYDANTIC_OWNERS
-        or path.startswith("src/sidekick_usages/persistence/schema/")
+    return path in _PYDANTIC_OWNERS or path.startswith(
+        "src/sidekick_usages/persistence/schema/"
     )
 
 
@@ -685,7 +668,6 @@ def _check_cli(
         "doctor.py": {"require_doctor"},
         "heartbeat.py": {"require_app"},
         "maintenance.py": {"require_app"},
-        "migrate.py": {"require_persistence"},
         "permissions.py": {"require_persistence"},
         "updates.py": {"require_update"},
         "usage.py": {"require_app"},

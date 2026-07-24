@@ -6,6 +6,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import assert_never
 
+from sidekick_usages.core.types import ExitCode
+from sidekick_usages.errors import UsageError
+
 SERVICE_NAME = "sidekick-usages-refresh"
 LAUNCHD_LABEL = "com.sidekick-usages.refresh"
 CRON_BEGIN = "# sidekick-usages refresh begin"
@@ -83,6 +86,18 @@ class SchedulerQuiescenceAssessment:
     def write_blocked(self) -> bool:
         """Return whether persistence mutation must remain blocked."""
         return not self.quiescent
+
+
+class SchedulerMutationBlockedError(UsageError):
+    """Installed or unassessable schedules block state mutation."""
+
+    exit_code = ExitCode.SCHEDULER_ERROR
+
+    def __init__(self, assessment: SchedulerQuiescenceAssessment) -> None:
+        self.assessment = assessment
+        super().__init__(
+            "Scheduled Sidekick maintenance must be stopped before mutation."
+        )
 
 
 def assess_scheduler_quiescence(

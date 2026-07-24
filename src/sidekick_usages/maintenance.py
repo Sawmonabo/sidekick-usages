@@ -47,6 +47,7 @@ class CredentialRefresher(Protocol):
     def refresh(
         self,
         *,
+        provider_id: ProviderId,
         label: AccountLabel,
         reason: CredentialRefreshReason,
     ) -> CredentialRefreshResult:
@@ -213,6 +214,7 @@ class TokenMaintenanceService:
         """Refresh one policy-approved account through its configured path."""
         try:
             result = self.credentials.refresh(
+                provider_id=account.provider_id,
                 label=account.label,
                 reason=reason,
             )

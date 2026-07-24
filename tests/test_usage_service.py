@@ -2,7 +2,6 @@
 
 import re
 from collections.abc import Iterator
-from contextlib import AbstractContextManager, contextmanager
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
@@ -37,9 +36,7 @@ from sidekick_usages.credentials import (
     CredentialUpdateSuccess,
 )
 from sidekick_usages.credentials.authorities import (
-    AuthenticatedSavedAccount,
     CredentialResolver,
-    EmbeddedAccountResolver,
 )
 from sidekick_usages.credentials.refresh import CredentialRefreshReason
 from sidekick_usages.errors import (
@@ -82,7 +79,12 @@ from sidekick_usages.usage import (
     UnknownProviderFailure,
     UsageCheckService,
 )
-from tests.test_support import REFERENCE_TIME, FixedClock, saved_account
+from tests.test_support import (
+    REFERENCE_TIME,
+    FixedClock,
+    RuntimeCredentialResolver,
+    saved_account,
+)
 
 type FetchStep = UsageReport | UsageError
 
@@ -233,37 +235,6 @@ class ScriptedProvider(Provider):
         )
 
 
-class RecordingCredentialResolver:
-    """Record exact lease scope around provider calls."""
-
-    def __init__(self, store: InMemoryAccountStore) -> None:
-        self._store = store
-        self._embedded = EmbeddedAccountResolver()
-        self.events: list[str] = []
-
-    def open(
-        self,
-        account: SavedAccount,
-    ) -> AbstractContextManager[AuthenticatedSavedAccount]:
-        return self._open(account)
-
-    @contextmanager
-    def _open(
-        self,
-        account: SavedAccount,
-    ) -> Iterator[AuthenticatedSavedAccount]:
-        self.events.append(f"open:{account.label}")
-        runtime = self._store.get(
-            str(account.label),
-            provider_id=account.provider_id,
-        )
-        if runtime is None:
-            raise AssertionError("Resolver target disappeared.")
-        with self._embedded.open(runtime) as authenticated:
-            yield authenticated
-        self.events.append(f"close:{account.label}")
-
-
 class ScriptedCredentialCoordinator(CredentialRefresher):
     """Script the already-coordinated credential-service boundary."""
 
@@ -279,12 +250,13 @@ class ScriptedCredentialCoordinator(CredentialRefresher):
     def refresh(
         self,
         *,
+        provider_id: ProviderId,
         label: AccountLabel,
         reason: CredentialRefreshReason,
     ) -> CredentialRefreshResult:
         del reason
         account = self.store.get(str(label))
-        if account is None:
+        if account is None or account.provider_id is not provider_id:
             raise AssertionError("Scripted refresh target disappeared.")
         self.calls.append(str(label))
         step = (
@@ -393,13 +365,14 @@ def _service(
     resolver: CredentialResolver | None = None,
 ) -> UsageCheckService:
     credential_refresher = refresher or ScriptedCredentialCoordinator(store)
+    credential_resolver = resolver or RuntimeCredentialResolver(store)
     return UsageCheckService(
         store,
         http,
         {provider.id: provider for provider in providers},
         credential_refresher,
         clock=clock or FixedClock(),
-        resolver=resolver,
+        resolver=credential_resolver,
     )
 
 
@@ -417,7 +390,7 @@ def test_filter_selects_store_accounts_and_returns_immutable_results(
         {"codex-one": [_report()], "codex-two": [_report()]},
     )
     clock = FixedClock()
-    resolver = RecordingCredentialResolver(store)
+    resolver = RuntimeCredentialResolver(store)
 
     result = _service(
         store,

@@ -4,7 +4,6 @@ from pathlib import Path
 
 from sidekick_usages.core.accounts.types import OperationId
 from sidekick_usages.daemon.models.worker import WorkerResult
-from sidekick_usages.persistence.artifacts import AuthorityExpectation
 from sidekick_usages.persistence.locking import PersistenceLock
 from sidekick_usages.persistence.schema.worker import (
     decode_worker_result,
@@ -16,6 +15,7 @@ from sidekick_usages.persistence.state_files import (
 from sidekick_usages.persistence.state_filesystem import (
     ManagedStateFilesystem,
 )
+from sidekick_usages.persistence.types.artifact import AuthorityExpectation
 
 __all__ = ["WorkerResultStore"]
 

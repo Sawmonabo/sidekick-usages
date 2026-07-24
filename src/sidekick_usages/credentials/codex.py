@@ -14,17 +14,19 @@ from sidekick_usages.credentials.models import (
     CredentialExportSuccess,
 )
 from sidekick_usages.persistence.account_store import AccountStore
-from sidekick_usages.persistence.artifacts import (
-    AuthorityExpectation,
+from sidekick_usages.persistence.errors import PersistenceError
+from sidekick_usages.persistence.filesystem import PersistenceFilesystem
+from sidekick_usages.persistence.models.artifact import (
     ExpectedAuthority,
     FileSnapshot,
 )
-from sidekick_usages.persistence.errors import PersistenceError
-from sidekick_usages.persistence.filesystem import PersistenceFilesystem
 from sidekick_usages.persistence.private_credentials import (
     PreparedPrivateBundleWrite,
-    PrivateCredentialOwnership,
     PrivateCredentialTree,
+)
+from sidekick_usages.persistence.types.artifact import AuthorityExpectation
+from sidekick_usages.persistence.types.credential import (
+    PrivateCredentialOwnership,
 )
 from sidekick_usages.providers.base import (
     ProviderFailure,

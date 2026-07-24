@@ -3,12 +3,12 @@
 from collections.abc import Callable
 from pathlib import Path
 
-from sidekick_usages.persistence.artifacts import (
-    ManagedArtifact,
+from sidekick_usages.persistence.errors import InvalidManagedArtifactError
+from sidekick_usages.persistence.models.artifact import ManagedArtifact
+from sidekick_usages.persistence.private_filesystem import PrivateFilesystem
+from sidekick_usages.persistence.types.artifact import (
     ManagedArtifactKind,
 )
-from sidekick_usages.persistence.errors import InvalidManagedArtifactError
-from sidekick_usages.persistence.private_filesystem import PrivateFilesystem
 
 __all__ = ["ManagedStateFilesystem"]
 

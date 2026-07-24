@@ -83,14 +83,6 @@ class NativePlatform(Protocol):
     ) -> NativeFile | None:
         """No-follow read one protected regular object when present."""
 
-    def read_external_private_source(
-        self,
-        parent: Path,
-        basename: str,
-        limit: int,
-    ) -> NativeFile | None:
-        """Read one private file from an owner-controlled external parent."""
-
     def create_private(
         self,
         parent: Path,
@@ -98,15 +90,6 @@ class NativePlatform(Protocol):
         data: bytes,
     ) -> NativeFile:
         """Create, synchronize, reopen, and verify one private file."""
-
-    def copy_private(
-        self,
-        parent: Path,
-        source_basename: str,
-        destination_basename: str,
-        expected: bytes,
-    ) -> NativeFile:
-        """Create and verify a private exact copy of an existing file."""
 
     def publish_no_replace(
         self,

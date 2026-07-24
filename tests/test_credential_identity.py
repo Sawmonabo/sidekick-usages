@@ -15,6 +15,7 @@ from sidekick_usages.credentials import (
     CredentialRefreshSuccess,
     LocalCredentialSource,
 )
+from sidekick_usages.credentials.codex import private_codex_home
 from sidekick_usages.providers.base import ProviderFailure, ProviderFailureKind
 from tests.test_credential_service import (
     _account,
@@ -116,4 +117,4 @@ def test_codex_known_identity_mismatch_overrides_equal_access_bytes(
     assert isinstance(outcome, ProviderFailure)
     assert outcome.kind is ProviderFailureKind.IDENTITY_MISMATCH
     assert store.path.read_bytes() == authority_before
-    assert not private.root.exists()
+    assert not private_codex_home(private.root, "team").exists()

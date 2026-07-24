@@ -1,11 +1,11 @@
-"""Transitional runtime projection for protected legacy authorities."""
+"""Runtime projection for protected credential authorities."""
 
 from dataclasses import replace
 
 from sidekick_usages.core.accounts.models import (
     ClaudeAccountAuthority,
-    ClaudeLegacyLoginAuthority,
     ClaudeManagedLoginAuthority,
+    ClaudeStoredLoginAuthority,
     CodexAccountAuthority,
     CodexManagedAuthority,
     SavedAccount,
@@ -18,30 +18,42 @@ from sidekick_usages.core.models import (
     Credentials,
 )
 from sidekick_usages.core.types import AccountLabel
-from sidekick_usages.persistence.account_index import legacy_error_code
-from sidekick_usages.persistence.artifacts import (
-    AuthorityExpectation,
+from sidekick_usages.persistence.account_index import safe_error_code
+from sidekick_usages.persistence.errors import (
+    InvalidSchemaError,
+    PersistenceError,
+)
+from sidekick_usages.persistence.models.artifact import (
     ExpectedAuthority,
     FileSnapshot,
 )
-from sidekick_usages.persistence.credential_authorities import (
-    CredentialAuthorityKind,
-    LegacyCredentialAuthority,
+from sidekick_usages.persistence.models.credential import (
+    StoredCredentialAuthority,
 )
-from sidekick_usages.persistence.errors import (
-    InvalidSchemaError,
-    PersistenceCode,
-    PersistenceError,
-)
+from sidekick_usages.persistence.types.artifact import AuthorityExpectation
+from sidekick_usages.persistence.types.credential import StoredCredentialKind
+from sidekick_usages.persistence.types.error import PersistenceCode
+
+__all__ = [
+    "CredentialAuthorityUnavailableError",
+    "active_stored_reference",
+    "authority_baseline_matches",
+    "copy_runtime_account",
+    "credential_authority_reference",
+    "merge_claude_authority",
+    "require_active_authority_kind",
+    "runtime_account_from_saved",
+    "saved_account_from_runtime_state",
+]
 
 
-class ManagedAuthorityResolutionError(PersistenceError):
+class CredentialAuthorityUnavailableError(PersistenceError):
     """A provider-managed authority needs its provider-specific resolver."""
 
     def __init__(self) -> None:
-        self.code = PersistenceCode.MIGRATION_REQUIRED
+        self.code = PersistenceCode.AUTHORITY_UNAVAILABLE
         super().__init__(
-            "Managed account credentials require the provider resolver."
+            "Account credentials require their provider authority resolver."
         )
 
 
@@ -50,7 +62,7 @@ def copy_runtime_account(
     *,
     label: AccountLabel | None = None,
 ) -> Account:
-    """Return one independently mutable transitional runtime account."""
+    """Return one independently mutable runtime account."""
     resets = account.heartbeat_window_resets
     return Account(
         label=account.label if label is None else label,
@@ -60,7 +72,6 @@ def copy_runtime_account(
         last_refresh_status=account.last_refresh_status,
         last_refresh_error=account.last_refresh_error,
         heartbeat_enabled=account.heartbeat_enabled,
-        heartbeat_5h_reset_at=account.heartbeat_5h_reset_at,
         heartbeat_window_resets=(
             dict(resets.items()) if resets is not None else None
         ),
@@ -71,19 +82,19 @@ def copy_runtime_account(
     )
 
 
-def active_legacy_reference(account: SavedAccount) -> AuthorityId:
-    """Return the protected authority used by transitional runtime services."""
+def active_stored_reference(account: SavedAccount) -> AuthorityId:
+    """Return the protected authority used by runtime services."""
     authority = account.authority
     if isinstance(authority, ClaudeAccountAuthority):
-        if isinstance(authority.subscription, ClaudeLegacyLoginAuthority):
+        if isinstance(authority.subscription, ClaudeStoredLoginAuthority):
             return authority.subscription.authority_id
         if isinstance(authority.subscription, ClaudeManagedLoginAuthority):
-            raise ManagedAuthorityResolutionError
+            raise CredentialAuthorityUnavailableError
         if authority.setup_token is not None:
             return authority.setup_token.authority_id
         raise InvalidSchemaError
     if isinstance(authority.subscription, CodexManagedAuthority):
-        raise ManagedAuthorityResolutionError
+        raise CredentialAuthorityUnavailableError
     return authority.subscription.authority_id
 
 
@@ -91,7 +102,7 @@ def runtime_account_from_saved(
     saved: SavedAccount,
     credentials: Credentials,
 ) -> Account:
-    """Combine secret-free metadata with qualified legacy credentials."""
+    """Combine secret-free metadata with qualified stored credentials."""
     resets = saved.heartbeat_window_resets
     return Account(
         label=saved.label,
@@ -101,7 +112,6 @@ def runtime_account_from_saved(
         last_refresh_status=saved.last_refresh_status,
         last_refresh_error=saved.last_refresh_error_code,
         heartbeat_enabled=saved.heartbeat_enabled,
-        heartbeat_5h_reset_at=saved.heartbeat_5h_reset_at,
         heartbeat_window_resets=(dict(resets) if resets is not None else None),
         heartbeat_targets=saved.heartbeat_targets,
         last_heartbeat_at=saved.last_heartbeat_at,
@@ -125,9 +135,8 @@ def saved_account_from_runtime_state(
         plan=account.plan,
         last_refresh_at=account.last_refresh_at,
         last_refresh_status=account.last_refresh_status,
-        last_refresh_error_code=legacy_error_code(account.last_refresh_error),
+        last_refresh_error_code=safe_error_code(account.last_refresh_error),
         heartbeat_enabled=account.heartbeat_enabled,
-        heartbeat_5h_reset_at=account.heartbeat_5h_reset_at,
         heartbeat_window_resets=(
             tuple(account.heartbeat_window_resets.items())
             if account.heartbeat_window_resets is not None
@@ -136,7 +145,7 @@ def saved_account_from_runtime_state(
         heartbeat_targets=account.heartbeat_targets,
         last_heartbeat_at=account.last_heartbeat_at,
         last_heartbeat_status=account.last_heartbeat_status,
-        last_heartbeat_error_code=legacy_error_code(
+        last_heartbeat_error_code=safe_error_code(
             account.last_heartbeat_error
         ),
     )
@@ -161,16 +170,16 @@ def credential_authority_reference(
             raise ValueError("Account provider cannot change.")
         subscription = authority.subscription
         if isinstance(subscription, ClaudeManagedLoginAuthority):
-            raise ManagedAuthorityResolutionError
+            raise CredentialAuthorityUnavailableError
         return (
             subscription.authority_id
-            if isinstance(subscription, ClaudeLegacyLoginAuthority)
+            if isinstance(subscription, ClaudeStoredLoginAuthority)
             else None
         )
     if not isinstance(authority, CodexAccountAuthority):
         raise ValueError("Account provider cannot change.")
     if isinstance(authority.subscription, CodexManagedAuthority):
-        raise ManagedAuthorityResolutionError
+        raise CredentialAuthorityUnavailableError
     return authority.subscription.authority_id
 
 
@@ -207,19 +216,19 @@ def merge_claude_authority(
 
 def require_active_authority_kind(
     saved: SavedAccount,
-    authority: LegacyCredentialAuthority,
+    authority: StoredCredentialAuthority,
 ) -> None:
     """Require the active protected payload to match index metadata."""
-    expected: CredentialAuthorityKind
+    expected: StoredCredentialKind
     if isinstance(saved.authority, CodexAccountAuthority):
-        expected = CredentialAuthorityKind.CODEX_SUBSCRIPTION
+        expected = StoredCredentialKind.CODEX_LOGIN
     elif isinstance(
         saved.authority.subscription,
-        ClaudeLegacyLoginAuthority,
+        ClaudeStoredLoginAuthority,
     ):
-        expected = CredentialAuthorityKind.CLAUDE_SUBSCRIPTION
+        expected = StoredCredentialKind.CLAUDE_LOGIN
     else:
-        expected = CredentialAuthorityKind.CLAUDE_SETUP_TOKEN
+        expected = StoredCredentialKind.CLAUDE_SETUP
     if authority.kind is not expected:
         raise InvalidSchemaError
 
@@ -232,16 +241,3 @@ def authority_baseline_matches(
     if baseline is AuthorityExpectation.ABSENT:
         return observed is None
     return observed is not None and observed.fingerprint == baseline
-
-
-__all__ = [
-    "ManagedAuthorityResolutionError",
-    "active_legacy_reference",
-    "authority_baseline_matches",
-    "copy_runtime_account",
-    "credential_authority_reference",
-    "merge_claude_authority",
-    "require_active_authority_kind",
-    "runtime_account_from_saved",
-    "saved_account_from_runtime_state",
-]

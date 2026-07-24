@@ -15,12 +15,12 @@ from pydantic import (
 from sidekick_usages.core.accounts.models import (
     AccountAuthority,
     ClaudeAccountAuthority,
-    ClaudeLegacyLoginAuthority,
     ClaudeManagedLoginAuthority,
     ClaudeSetupTokenAuthority,
+    ClaudeStoredLoginAuthority,
     CodexAccountAuthority,
-    CodexLegacyAuthority,
     CodexManagedAuthority,
+    CodexStoredAuthority,
     SavedAccount,
 )
 from sidekick_usages.core.accounts.types import (
@@ -75,7 +75,6 @@ type _Health = Literal[
     "healthy",
     "refresh_due",
     "login_required",
-    "migration_required",
     "unreadable",
     "malformed",
     "unsupported",
@@ -83,11 +82,11 @@ type _Health = Literal[
     "unknown",
 ]
 type _ClaudeSubscriptionModel = Annotated[
-    _ClaudeLegacyModel | _ClaudeManagedModel,
+    _ClaudeStoredModel | _ClaudeManagedModel,
     Field(discriminator="kind"),
 ]
 type _CodexSubscriptionModel = Annotated[
-    _CodexLegacyModel | _CodexManagedModel,
+    _CodexStoredModel | _CodexManagedModel,
     Field(discriminator="kind"),
 ]
 type _AccountModel = Annotated[
@@ -130,12 +129,12 @@ class _ClaudeSetupTokenModel(BaseModel):
     observed_at: _Timestamp | None
 
 
-class _ClaudeLegacyModel(BaseModel):
-    """Validated pre-managed Claude subscription metadata."""
+class _ClaudeStoredModel(BaseModel):
+    """Validated Sidekick-stored Claude subscription metadata."""
 
     model_config = _MODEL_CONFIG
 
-    kind: Literal["legacy"]
+    kind: Literal["stored"]
     authority_id: _Uuid
     provider_identity: _BoundedText | None
     access_expires_at: _Timestamp | None
@@ -168,12 +167,12 @@ class _ClaudeAuthorityModel(BaseModel):
     subscription: _ClaudeSubscriptionModel | None
 
 
-class _CodexLegacyModel(BaseModel):
-    """Validated pre-managed Codex subscription metadata."""
+class _CodexStoredModel(BaseModel):
+    """Validated Sidekick-stored Codex subscription metadata."""
 
     model_config = _MODEL_CONFIG
 
-    kind: Literal["legacy"]
+    kind: Literal["stored"]
     authority_id: _Uuid
     provider_identity: _BoundedText | None
     expires_at: _Timestamp | None
@@ -217,7 +216,6 @@ class _AccountStateModel(BaseModel):
     last_refresh_status: Literal["ok", "skipped", "failed"] | None
     last_refresh_error_code: _BoundedText | None
     heartbeat_enabled: bool
-    heartbeat_5h_reset_at: _Timestamp | None
     heartbeat_window_resets: dict[_BoundedText, _Timestamp] | None
     heartbeat_targets: list[_BoundedText] | None
     last_heartbeat_at: _Timestamp | None
@@ -298,8 +296,8 @@ def _claude_authority(model: _ClaudeAuthorityModel) -> AccountAuthority:
         )
     )
     subscription = model.subscription
-    if isinstance(subscription, _ClaudeLegacyModel):
-        subscription_authority = ClaudeLegacyLoginAuthority(
+    if isinstance(subscription, _ClaudeStoredModel):
+        subscription_authority = ClaudeStoredLoginAuthority(
             authority_id=AuthorityId(subscription.authority_id),
             provider_identity=_identity(subscription.provider_identity),
             access_expires_at=_time(subscription.access_expires_at),
@@ -327,8 +325,8 @@ def _claude_authority(model: _ClaudeAuthorityModel) -> AccountAuthority:
 def _codex_authority(model: _CodexAuthorityModel) -> AccountAuthority:
     """Convert validated Codex authority metadata to core types."""
     subscription = model.subscription
-    if isinstance(subscription, _CodexLegacyModel):
-        authority = CodexLegacyAuthority(
+    if isinstance(subscription, _CodexStoredModel):
+        authority = CodexStoredAuthority(
             authority_id=AuthorityId(subscription.authority_id),
             provider_identity=_identity(subscription.provider_identity),
             expires_at=_time(subscription.expires_at),
@@ -378,7 +376,6 @@ def _account(
         ),
         last_refresh_error_code=model.last_refresh_error_code,
         heartbeat_enabled=model.heartbeat_enabled,
-        heartbeat_5h_reset_at=_time(model.heartbeat_5h_reset_at),
         heartbeat_window_resets=(
             tuple(
                 (target, parse_canonical_timestamp(reset_at))
@@ -439,16 +436,16 @@ def _setup_object(
 
 def _subscription_object(
     authority: (
-        ClaudeLegacyLoginAuthority
+        ClaudeStoredLoginAuthority
         | ClaudeManagedLoginAuthority
-        | CodexLegacyAuthority
+        | CodexStoredAuthority
         | CodexManagedAuthority
     ),
 ) -> JsonObject:
     """Encode one provider subscription authority."""
-    if isinstance(authority, ClaudeLegacyLoginAuthority):
+    if isinstance(authority, ClaudeStoredLoginAuthority):
         return {
-            "kind": "legacy",
+            "kind": "stored",
             "authority_id": str(authority.authority_id),
             "provider_identity": (
                 str(authority.provider_identity)
@@ -460,9 +457,9 @@ def _subscription_object(
             "health": authority.health.value,
             "observed_at": _timestamp(authority.observed_at),
         }
-    if isinstance(authority, CodexLegacyAuthority):
+    if isinstance(authority, CodexStoredAuthority):
         return {
-            "kind": "legacy",
+            "kind": "stored",
             "authority_id": str(authority.authority_id),
             "provider_identity": (
                 str(authority.provider_identity)
@@ -524,7 +521,6 @@ def _account_object(account: SavedAccount) -> JsonObject:
         ),
         "last_refresh_error_code": account.last_refresh_error_code,
         "heartbeat_enabled": account.heartbeat_enabled,
-        "heartbeat_5h_reset_at": _timestamp(account.heartbeat_5h_reset_at),
         "heartbeat_window_resets": (
             {
                 target: canonical_timestamp(reset_at)
@@ -579,5 +575,5 @@ def encode_version_three(document: VersionThreeDocument) -> bytes:
 
 
 def has_managed_authority(document: VersionThreeDocument) -> bool:
-    """Return whether rollback must reject the complete account index."""
+    """Return whether any account uses a provider-managed authority."""
     return any(account.has_managed_authority for account in document.accounts)

@@ -3,22 +3,15 @@
 import hashlib
 from collections.abc import Iterator
 from contextlib import AbstractContextManager, contextmanager
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
 
 from sidekick_usages.core.models import Account, Credentials
-from sidekick_usages.core.types import (
-    AccountLabel,
-    RefreshStatus,
-)
+from sidekick_usages.core.types import AccountLabel, ProviderId
 from sidekick_usages.persistence.account_store import AccountStore
-from sidekick_usages.persistence.artifacts import (
-    AuthorityExpectation,
-    FileFingerprint,
-)
 from sidekick_usages.persistence.credential_refresh_artifacts import (
     CredentialRefreshActiveError,
     CredentialRefreshArtifacts,
@@ -32,12 +25,6 @@ from sidekick_usages.persistence.credential_refresh_merge import (
     CredentialRefreshFailureMerge,
     CredentialRefreshSuccessMerge,
 )
-from sidekick_usages.persistence.credential_refresh_stage import (
-    decode_credential_refresh_stage as _decode_stage,
-)
-from sidekick_usages.persistence.credential_refresh_stage import (
-    encode_credential_refresh_stage as _encode_stage,
-)
 from sidekick_usages.persistence.errors import (
     DurabilityUncertainError,
     PersistenceError,
@@ -48,6 +35,7 @@ from sidekick_usages.persistence.locking import (
     PersistenceLock,
     StoreLockedError,
 )
+from sidekick_usages.persistence.models.artifact import FileFingerprint
 from sidekick_usages.persistence.private_bundle_writes import (
     PreparedPrivateBundleWrite,
 )
@@ -55,44 +43,40 @@ from sidekick_usages.persistence.private_credentials import (
     PrivateCredentialTree,
 )
 from sidekick_usages.persistence.schema.refresh import (
-    JOURNAL_BASENAME as _JOURNAL_BASENAME,
+    JOURNAL_BASENAME,
+    JOURNAL_SCHEMA_VERSION,
+    STAGE_BASENAME,
+    RefreshJournal,
+    RefreshReason,
+    account_key_digest,
+    credential_digest,
+    decode_refresh_journal,
+    encode_refresh_journal,
+    refresh_credential_kind,
+    refresh_reason,
+    refresh_timestamp,
+    require_sha256,
 )
-from sidekick_usages.persistence.schema.refresh import (
-    JOURNAL_SCHEMA_VERSION as _JOURNAL_SCHEMA_VERSION,
+from sidekick_usages.persistence.schema.refresh_stage import (
+    decode_credential_refresh_stage,
+    encode_credential_refresh_stage,
 )
-from sidekick_usages.persistence.schema.refresh import (
-    STAGE_BASENAME as _STAGE_BASENAME,
-)
-from sidekick_usages.persistence.schema.refresh import (
-    RefreshJournal as _RefreshJournal,
-)
-from sidekick_usages.persistence.schema.refresh import (
-    RefreshReason as _RefreshReason,
-)
-from sidekick_usages.persistence.schema.refresh import (
-    credential_digest as _credential_digest,
-)
-from sidekick_usages.persistence.schema.refresh import (
-    credential_kind as _credential_kind,
-)
-from sidekick_usages.persistence.schema.refresh import (
-    decode_refresh_journal as _decode_journal,
-)
-from sidekick_usages.persistence.schema.refresh import (
-    encode_refresh_journal as _encode_journal,
-)
-from sidekick_usages.persistence.schema.refresh import (
-    label_digest as _label_digest,
-)
-from sidekick_usages.persistence.schema.refresh import (
-    refresh_reason as _refresh_reason,
-)
-from sidekick_usages.persistence.schema.refresh import (
-    refresh_timestamp as _timestamp,
-)
-from sidekick_usages.persistence.schema.refresh import (
-    require_sha256 as _require_sha256,
-)
+from sidekick_usages.persistence.types.artifact import AuthorityExpectation
+
+__all__ = [
+    "CredentialRefreshActiveError",
+    "CredentialRefreshArtifacts",
+    "CredentialRefreshCrashPoint",
+    "CredentialRefreshFaults",
+    "CredentialRefreshLease",
+    "CredentialRefreshPersistence",
+    "CredentialRefreshRecoveryBlockedError",
+    "CredentialRefreshState",
+    "CredentialRefreshStateKind",
+    "CredentialRefreshTargetUnavailableError",
+    "CredentialRefreshTransactions",
+    "CredentialRefreshUnstableError",
+]
 
 _LOCK_DOMAIN = b"sidekick-usages credential refresh lock\0"
 _MAX_STABILIZATION_ATTEMPTS = 4
@@ -143,6 +127,7 @@ class CredentialRefreshPersistence(Protocol):
     def hold_stable(
         self,
         *,
+        provider_id: ProviderId,
         label: AccountLabel,
         reason: str,
         started_at: datetime,
@@ -210,7 +195,7 @@ class CredentialRefreshTransactions:
         try:
             directories = self._tree.list_owned_directories_shallow()
             for directory in directories:
-                _require_sha256(directory.name)
+                require_sha256(directory.name)
                 evidence_lock = PersistenceLock(
                     PersistenceFilesystem(
                         self._root / _evidence_basename(directory.name)
@@ -237,7 +222,7 @@ class CredentialRefreshTransactions:
 
     @contextmanager
     def hold_lifecycle(self) -> Iterator[None]:
-        """Join the shared set excluded by migration and full reset."""
+        """Join the shared set excluded by maintenance and full reset."""
         lifecycle = PersistenceLock(
             PersistenceFilesystem(self._root / "lifecycle"),
             shared=True,
@@ -249,15 +234,19 @@ class CredentialRefreshTransactions:
     def hold_stable(
         self,
         *,
+        provider_id: ProviderId,
         label: AccountLabel,
         reason: str,
         started_at: datetime,
     ) -> Iterator[CredentialRefreshLease]:
         """Hold only a lock proven to match the reloaded target token."""
-        validated_reason = _refresh_reason(reason)
+        validated_reason = refresh_reason(reason)
         latest: Account | None = None
         for _attempt in range(_MAX_STABILIZATION_ATTEMPTS):
-            account = self._store.read_fresh(label)
+            account = self._store.read_fresh(
+                label,
+                provider_id=provider_id,
+            )
             latest = account
             if account is None or account.refresh_token is None:
                 raise CredentialRefreshTargetUnavailableError(account)
@@ -268,7 +257,10 @@ class CredentialRefreshTransactions:
                 )
             )
             with lock.hold():
-                current = self._store.read_fresh(label)
+                current = self._store.read_fresh(
+                    label,
+                    provider_id=provider_id,
+                )
                 latest = current
                 if (
                     current is None
@@ -276,14 +268,20 @@ class CredentialRefreshTransactions:
                     or current.credentials != expected
                 ):
                     continue
-                directory = self._root / _label_digest(current.label)
+                directory = self._root / account_key_digest(
+                    current.provider_id,
+                    current.label,
+                )
                 evidence_lock = PersistenceLock(
                     PersistenceFilesystem(
                         self._root / _evidence_basename(directory.name)
                     )
                 )
                 with evidence_lock.hold():
-                    current = self._store.read_fresh(label)
+                    current = self._store.read_fresh(
+                        label,
+                        provider_id=provider_id,
+                    )
                     latest = current
                     if (
                         current is None
@@ -291,7 +289,10 @@ class CredentialRefreshTransactions:
                         or current.credentials != expected
                     ):
                         continue
-                    directory = self._root / _label_digest(current.label)
+                    directory = self._root / account_key_digest(
+                        current.provider_id,
+                        current.label,
+                    )
                     if self._tree.relative_bundle_present(directory.name):
                         raise CredentialRefreshRecoveryBlockedError
                     journal = _intent_journal(
@@ -301,8 +302,8 @@ class CredentialRefreshTransactions:
                     )
                     snapshot = self._tree.write_owned_file(
                         directory,
-                        _JOURNAL_BASENAME,
-                        _encode_journal(journal),
+                        JOURNAL_BASENAME,
+                        encode_refresh_journal(journal),
                         expected_source=AuthorityExpectation.ABSENT,
                     )
                     self._faults.reached(
@@ -327,23 +328,16 @@ class CredentialRefreshTransactions:
         private_bundle: PreparedPrivateBundleWrite | None = None,
     ) -> Account | None:
         """Stage, target-merge, prove, and clean one provider result."""
-        staged = _staged_account(
-            lease.account,
+        stage_payload = encode_credential_refresh_stage(
+            lease.account.label,
             credentials,
-            plan,
             completed_at,
+            plan,
+            private_bundle,
         )
-        if private_bundle is not None and (
-            staged.codex_home is None
-            or Path(staged.codex_home) != private_bundle.path
-        ):
-            raise ValueError(
-                "Refresh private bundle does not match its account."
-            )
-        stage_payload = _encode_stage(staged, plan, private_bundle)
         self._tree.write_owned_file(
             lease._directory,
-            _STAGE_BASENAME,
+            STAGE_BASENAME,
             stage_payload,
             expected_source=AuthorityExpectation.ABSENT,
         )
@@ -354,22 +348,22 @@ class CredentialRefreshTransactions:
         complete = current_journal.model_copy(
             update={
                 "stage_state": "complete",
-                "staged_credential_sha256": _credential_digest(
-                    staged.credentials
-                ),
+                "staged_credential_sha256": credential_digest(credentials),
             }
         )
         journal_snapshot = self._tree.write_owned_file(
             lease._directory,
-            _JOURNAL_BASENAME,
-            _encode_journal(complete),
+            JOURNAL_BASENAME,
+            encode_refresh_journal(complete),
             expected_source=lease._journal_fingerprint,
         )
         self._faults.reached(CredentialRefreshCrashPoint.STAGE_COMPLETE)
         try:
             committed = self._merge_staged(
                 complete,
-                staged,
+                lease.account.label,
+                credentials,
+                completed_at,
                 plan,
                 private_bundle,
             )
@@ -379,8 +373,8 @@ class CredentialRefreshTransactions:
             )
             self._tree.write_owned_file(
                 lease._directory,
-                _JOURNAL_BASENAME,
-                _encode_journal(uncertain),
+                JOURNAL_BASENAME,
+                encode_refresh_journal(uncertain),
                 expected_source=journal_snapshot.fingerprint,
             )
             raise CredentialRefreshRecoveryBlockedError from None
@@ -393,8 +387,8 @@ class CredentialRefreshTransactions:
         )
         self._tree.write_owned_file(
             lease._directory,
-            _JOURNAL_BASENAME,
-            _encode_journal(committed_journal),
+            JOURNAL_BASENAME,
+            encode_refresh_journal(committed_journal),
             expected_source=journal_snapshot.fingerprint,
         )
         self._faults.reached(CredentialRefreshCrashPoint.JOURNAL_COMMITTED)
@@ -439,7 +433,10 @@ class CredentialRefreshTransactions:
         lease: CredentialRefreshLease,
     ) -> Account | None:
         """Clean intent and return the freshly stabilized target."""
-        current = self._store.read_fresh(lease.account.label)
+        current = self._store.read_fresh(
+            lease.account.label,
+            provider_id=lease.account.provider_id,
+        )
         self._cleanup(lease._directory)
         return current
 
@@ -463,35 +460,39 @@ class CredentialRefreshTransactions:
 
     def _recover_directory(self, directory: Path) -> None:
         try:
-            _require_sha256(directory.name)
+            require_sha256(directory.name)
         except ValueError:
             raise CredentialRefreshRecoveryBlockedError from None
         journal = self._read_journal(directory)
-        if journal.account_label_digest != directory.name:
+        if journal.account_key_digest != directory.name:
             raise CredentialRefreshRecoveryBlockedError
         if journal.stage_state == "durability_uncertain":
             raise CredentialRefreshRecoveryBlockedError
         stage_snapshot = self._tree.read_owned_file(
             directory,
-            _STAGE_BASENAME,
+            STAGE_BASENAME,
         )
         if stage_snapshot is None:
             if journal.stage_state == "intent":
                 self._cleanup(directory)
                 return
             raise CredentialRefreshRecoveryBlockedError
-        decoded_stage = _decode_stage(stage_snapshot.data)
-        staged = decoded_stage.account
+        decoded_stage = decode_credential_refresh_stage(stage_snapshot.data)
         plan_update = decoded_stage.plan_update
         private_bundle = decoded_stage.private_bundle
         if (
-            _label_digest(staged.label) != journal.account_label_digest
-            or staged.provider_id.value != journal.provider_id
-            or _credential_kind(staged.credentials)
+            account_key_digest(
+                decoded_stage.credentials.provider_id,
+                decoded_stage.label,
+            )
+            != journal.account_key_digest
+            or decoded_stage.credentials.provider_id.value
+            != journal.provider_id
+            or refresh_credential_kind(decoded_stage.credentials)
             != journal.expected_credential_kind
         ):
             raise CredentialRefreshRecoveryBlockedError
-        staged_digest = _credential_digest(staged.credentials)
+        staged_digest = credential_digest(decoded_stage.credentials)
         if (
             journal.staged_credential_sha256 is not None
             and journal.staged_credential_sha256 != staged_digest
@@ -505,7 +506,9 @@ class CredentialRefreshTransactions:
         )
         self._merge_staged(
             completed,
-            staged,
+            decoded_stage.label,
+            decoded_stage.credentials,
+            decoded_stage.completed_at,
             plan_update,
             private_bundle,
         )
@@ -513,46 +516,49 @@ class CredentialRefreshTransactions:
 
     def _merge_staged(
         self,
-        journal: _RefreshJournal,
-        staged: Account,
+        journal: RefreshJournal,
+        label: AccountLabel,
+        credentials: Credentials,
+        completed_at: datetime,
         plan_update: str | None,
         private_bundle: PreparedPrivateBundleWrite | None = None,
     ) -> Account | None:
-        current = self._store.read_fresh(staged.label)
+        current = self._store.read_fresh(
+            label,
+            provider_id=credentials.provider_id,
+        )
         if current is None:
             return None
-        current_digest = _credential_digest(current.credentials)
-        staged_digest = _credential_digest(staged.credentials)
+        current_digest = credential_digest(current.credentials)
+        staged_digest = credential_digest(credentials)
         if current_digest == staged_digest:
             return current
         if (
             current.provider_id.value != journal.provider_id
-            or _credential_kind(current.credentials)
+            or refresh_credential_kind(current.credentials)
             != journal.expected_credential_kind
             or current_digest != journal.expected_credential_sha256
         ):
             return None
-        if staged.last_refresh_at is None:
-            raise CredentialRefreshRecoveryBlockedError
         return self._store.merge_credential_refresh(
-            staged.label,
+            label,
             current.credentials,
             CredentialRefreshSuccessMerge(
-                staged.credentials,
+                credentials,
                 plan_update,
-                staged.last_refresh_at,
+                completed_at,
                 private_bundle,
             ),
         )
 
-    def _read_journal(self, directory: Path) -> _RefreshJournal:
+    def _read_journal(self, directory: Path) -> RefreshJournal:
         snapshot = self._tree.read_owned_file(
             directory,
-            _JOURNAL_BASENAME,
+            JOURNAL_BASENAME,
         )
         if snapshot is None:
             raise CredentialRefreshRecoveryBlockedError
-        return _decode_journal(snapshot.data)
+        return decode_refresh_journal(snapshot.data)
 
     def _cleanup(self, directory: Path) -> None:
         self._tree.harden_provider_stage(directory)
@@ -573,66 +579,27 @@ def _operation_basename(account: Account) -> str:
     return f"{digest}.refresh"
 
 
-def _evidence_basename(label_digest: str) -> str:
-    _require_sha256(label_digest)
-    return f"{label_digest}.evidence"
+def _evidence_basename(account_digest: str) -> str:
+    require_sha256(account_digest)
+    return f"{account_digest}.evidence"
 
 
 def _intent_journal(
     account: Account,
-    reason: _RefreshReason,
+    reason: RefreshReason,
     started_at: datetime,
-) -> _RefreshJournal:
-    return _RefreshJournal(
-        schema_version=_JOURNAL_SCHEMA_VERSION,
+) -> RefreshJournal:
+    return RefreshJournal(
+        schema_version=JOURNAL_SCHEMA_VERSION,
         provider_id=account.provider_id.value,
-        account_label_digest=_label_digest(account.label),
-        expected_credential_kind=_credential_kind(account.credentials),
-        expected_credential_sha256=_credential_digest(account.credentials),
-        operation_started_at=_timestamp(started_at),
+        account_key_digest=account_key_digest(
+            account.provider_id,
+            account.label,
+        ),
+        expected_credential_kind=refresh_credential_kind(account.credentials),
+        expected_credential_sha256=credential_digest(account.credentials),
+        operation_started_at=refresh_timestamp(started_at),
         refresh_reason=reason,
         stage_state="intent",
         staged_credential_sha256=None,
     )
-
-
-def _staged_account(
-    account: Account,
-    credentials: Credentials,
-    plan: str | None,
-    completed_at: datetime,
-) -> Account:
-    candidate = _copy_account(account)
-    candidate.credentials = credentials
-    if plan is not None:
-        candidate.plan = plan
-    candidate.last_refresh_at = completed_at
-    candidate.last_refresh_status = RefreshStatus.OK
-    candidate.last_refresh_error = None
-    return candidate
-
-
-def _copy_account(account: Account) -> Account:
-    resets = account.heartbeat_window_resets
-    return replace(
-        account,
-        heartbeat_window_resets=(
-            dict(resets.items()) if resets is not None else None
-        ),
-    )
-
-
-__all__ = [
-    "CredentialRefreshActiveError",
-    "CredentialRefreshArtifacts",
-    "CredentialRefreshCrashPoint",
-    "CredentialRefreshFaults",
-    "CredentialRefreshLease",
-    "CredentialRefreshPersistence",
-    "CredentialRefreshRecoveryBlockedError",
-    "CredentialRefreshState",
-    "CredentialRefreshStateKind",
-    "CredentialRefreshTargetUnavailableError",
-    "CredentialRefreshTransactions",
-    "CredentialRefreshUnstableError",
-]

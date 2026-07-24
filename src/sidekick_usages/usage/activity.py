@@ -21,7 +21,6 @@ from sidekick_usages.core.types import (
 from sidekick_usages.credentials.authorities import (
     AuthenticatedSavedAccount,
     CredentialResolver,
-    EmbeddedAccountResolver,
 )
 from sidekick_usages.errors import (
     AuthError,
@@ -32,7 +31,7 @@ from sidekick_usages.errors import (
     UsageError,
 )
 from sidekick_usages.http import HttpClient
-from sidekick_usages.persistence.activity_snapshots import (
+from sidekick_usages.persistence.errors import (
     ActivitySnapshotError,
 )
 from sidekick_usages.providers.base import (
@@ -104,7 +103,6 @@ class TokenActivityCollector:
         self._account_sources = dict(account_sources)
         self._snapshots = snapshots
         self._resolver = resolver
-        self._embedded_resolver = EmbeddedAccountResolver()
         if any(
             provider_id is not source.provider_id
             for provider_id, source in (
@@ -365,7 +363,9 @@ class TokenActivityCollector:
     ) -> AbstractContextManager[AuthenticatedSavedAccount]:
         """Open one activity credential lease at its provider boundary."""
         if self._resolver is None:
-            return self._embedded_resolver.open(account)
+            raise UsageError(
+                "The activity credential resolver is unavailable."
+            )
         saved = next(
             (
                 candidate

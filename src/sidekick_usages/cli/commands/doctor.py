@@ -6,7 +6,6 @@ from typing import Annotated, assert_never
 import typer
 
 from sidekick_usages.cli.context import (
-    DoctorBlocked,
     DoctorFailed,
     DoctorReady,
     InvocationContext,
@@ -15,7 +14,6 @@ from sidekick_usages.cli.context import (
 from sidekick_usages.cli.help import branded_command
 from sidekick_usages.core.types import ExitCode, ProviderId
 from sidekick_usages.doctor import (
-    DoctorBlockedResult,
     DoctorFailedResult,
     DoctorReadyResult,
     DoctorResult,
@@ -25,15 +23,8 @@ from sidekick_usages.doctor import (
 from sidekick_usages.doctor import (
     doctor_exit_code as account_doctor_exit_code,
 )
-from sidekick_usages.persistence.assessment import (
-    doctor_exit_code as persistence_doctor_exit_code,
-)
-from sidekick_usages.persistence.migrations.location import (
-    BlockedLocationSelection,
-    CandidateBlockedSelection,
-    ConflictSelection,
-    PartialSelection,
-    PrototypeSelection,
+from sidekick_usages.persistence.errors import (
+    exit_code_for_persistence_code,
 )
 
 
@@ -72,17 +63,6 @@ def _write_result(
     )
 
 
-def _blocked_exit_code(selection: BlockedLocationSelection) -> ExitCode:
-    """Map one closed blocking location state to a process outcome."""
-    if isinstance(selection, PrototypeSelection):
-        return ExitCode.MANUAL_ACTION
-    if isinstance(selection, CandidateBlockedSelection):
-        return persistence_doctor_exit_code(selection.persistence_code)
-    if isinstance(selection, (ConflictSelection, PartialSelection)):
-        return ExitCode.SYSTEM_ERROR
-    assert_never(selection)
-
-
 def doctor_cmd(
     ctx: typer.Context,
     provider_id: Annotated[
@@ -111,23 +91,13 @@ def doctor_cmd(
     invocation = invocation_context(ctx)
     state = invocation.require_doctor(ctx).state
     provider_filter = _provider_filter(ctx, provider_id)
-    if isinstance(state, DoctorBlocked):
-        _write_result(
-            invocation,
-            DoctorBlockedResult(state.assessment),
-            json_output=json_output,
-        )
-        code = _blocked_exit_code(state.assessment.selection)
-        if code:
-            raise typer.Exit(code=code)
-        return
     if isinstance(state, DoctorFailed):
         _write_result(
             invocation,
             DoctorFailedResult(state.failure),
             json_output=json_output,
         )
-        code = persistence_doctor_exit_code(state.failure.code)
+        code = exit_code_for_persistence_code(state.failure.code)
         if code:
             raise typer.Exit(code=code)
         return
@@ -142,7 +112,7 @@ def doctor_cmd(
                     invocation,
                     DoctorReadyResult(
                         (),
-                        state.assessment,
+                        state.persistence,
                         state.refresh_state,
                     ),
                     json_output=json_output,
@@ -156,7 +126,7 @@ def doctor_cmd(
             invocation,
             DoctorReadyResult(
                 tuple(diagnostics),
-                state.assessment,
+                state.persistence,
                 state.refresh_state,
             ),
             json_output=json_output,

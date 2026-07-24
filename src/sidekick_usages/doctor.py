@@ -1,6 +1,5 @@
 """Read-only account diagnostics for ``sidekick-usages doctor``."""
 
-import shlex
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -46,24 +45,13 @@ from sidekick_usages.heartbeat import (
     HeartbeatProvider,
     heartbeat_supported_label,
 )
-from sidekick_usages.persistence.assessment import (
-    PersistenceAssessment,
-    PersistenceCompositionFailure,
-)
 from sidekick_usages.persistence.credential_refresh import (
     CredentialRefreshState,
     CredentialRefreshStateKind,
 )
-from sidekick_usages.persistence.migrations.location import (
-    BlockedLocationSelection,
-    LocationCandidate,
-    LocationMigrationAssessment,
-    ReadyLocationSelection,
-)
-from sidekick_usages.persistence.migrations.ports import (
-    PrivateAuthAccountAssessment,
-    PrivateAuthMigrationAssessment,
-    PrivateAuthMigrationFailure,
+from sidekick_usages.persistence.models.status import (
+    PersistenceFailure,
+    PersistenceStatus,
 )
 from sidekick_usages.providers.base import Provider
 from sidekick_usages.serialization import JsonObject, JsonValue
@@ -94,7 +82,6 @@ class AccountDiagnostic:
     heartbeat_supported: bool
     heartbeat_enabled: bool
     heartbeat: str
-    heartbeat_5h_reset_at: datetime | None
     heartbeat_window_resets: Mapping[str, datetime] | None
     heartbeat_targets: tuple[str, ...] | None
     last_heartbeat_at: datetime | None
@@ -105,10 +92,10 @@ class AccountDiagnostic:
 
 @dataclass(frozen=True, slots=True)
 class DoctorReadyResult:
-    """Completed diagnostics for one ready persistence location."""
+    """Completed diagnostics for the current persistence store."""
 
     diagnostics: tuple[AccountDiagnostic, ...]
-    assessment: LocationMigrationAssessment[ReadyLocationSelection]
+    persistence: PersistenceStatus
     refresh_state: CredentialRefreshState = field(
         default_factory=lambda: CredentialRefreshState(
             CredentialRefreshStateKind.CLEAN
@@ -117,22 +104,13 @@ class DoctorReadyResult:
 
 
 @dataclass(frozen=True, slots=True)
-class DoctorBlockedResult:
-    """Completed location assessment that blocks account diagnostics."""
-
-    assessment: LocationMigrationAssessment[BlockedLocationSelection]
-
-
-@dataclass(frozen=True, slots=True)
 class DoctorFailedResult:
     """Completed bounded failure from doctor composition."""
 
-    failure: PersistenceCompositionFailure
+    failure: PersistenceFailure
 
 
-type DoctorResult = (
-    DoctorReadyResult | DoctorBlockedResult | DoctorFailedResult
-)
+type DoctorResult = DoctorReadyResult | DoctorFailedResult
 
 
 class DoctorService:
@@ -224,7 +202,6 @@ class DoctorService:
             ),
             heartbeat_enabled=account.heartbeat_enabled,
             heartbeat=heartbeat_supported_label(account, heartbeat_provider),
-            heartbeat_5h_reset_at=account.heartbeat_5h_reset_at,
             heartbeat_window_resets=account.heartbeat_window_resets,
             heartbeat_targets=account.heartbeat_targets,
             last_heartbeat_at=account.last_heartbeat_at,
@@ -257,14 +234,11 @@ def render_doctor(
         brand_header(width, section="doctor · account diagnostics")
     ]
     if isinstance(result, DoctorReadyResult):
-        parts.extend(_location_lines(result.assessment))
+        parts.extend(_persistence_lines(result.persistence))
         parts.append(
             Text("  credential refresh: " + result.refresh_state.kind.value)
         )
         diagnostics = result.diagnostics
-    elif isinstance(result, DoctorBlockedResult):
-        parts.extend(_location_lines(result.assessment))
-        diagnostics = ()
     elif isinstance(result, DoctorFailedResult):
         parts.extend(_persistence_failure_lines(result.failure))
         diagnostics = ()
@@ -300,11 +274,8 @@ def doctor_json(result: DoctorResult) -> JsonObject:
     persistence: JsonObject
     if isinstance(result, DoctorReadyResult):
         diagnostics = result.diagnostics
-        persistence = _location_dict(result.assessment)
+        persistence = _persistence_dict(result.persistence)
         persistence["credential_refresh"] = result.refresh_state.kind.value
-    elif isinstance(result, DoctorBlockedResult):
-        diagnostics = ()
-        persistence = _location_dict(result.assessment)
     elif isinstance(result, DoctorFailedResult):
         diagnostics = ()
         persistence = _persistence_failure_dict(result.failure)
@@ -316,245 +287,51 @@ def doctor_json(result: DoctorResult) -> JsonObject:
     return {"accounts": accounts, "persistence": persistence}
 
 
-def _location_lines[S: ReadyLocationSelection | BlockedLocationSelection](
-    assessment: LocationMigrationAssessment[S],
-) -> tuple[Text, ...]:
-    """Build safe human lines for one complete location assessment."""
-    lines = [
+def _persistence_lines(status: PersistenceStatus) -> tuple[Text, ...]:
+    """Build human-readable current persistence status."""
+    return (
         Text("persistence"),
-        Text(f"  location: {assessment.selection.code}"),
-        Text(f"  source: {assessment.source}"),
-        Text(f"  destination: {assessment.destination}"),
-        Text(
-            "  write blocked: " + ("yes" if assessment.write_blocked else "no")
-        ),
-    ]
-    if len(assessment.candidates) == 1:
-        candidate = assessment.candidates[0]
-        lines.append(Text(f"  candidate: {candidate.role}"))
-        lines.extend(_schema_lines(candidate.assessment, indent="  "))
-    elif assessment.candidates:
-        lines.append(Text("  candidates:"))
-        for candidate in assessment.candidates:
-            lines.append(Text(f"    {candidate.role}:"))
-            lines.extend(_schema_lines(candidate.assessment, indent="      "))
-    lines.extend(_private_auth_lines(assessment.private_auth_summary))
-    if assessment.artifact_basename is not None:
-        lines.append(Text(f"  artifact: {assessment.artifact_basename}"))
-    if assessment.next_command is not None:
-        lines.append(Text("  next: " + " ".join(assessment.next_command)))
-    if assessment.issues:
-        lines.append(Text("  findings:"))
-        for issue in assessment.issues:
-            artifact = (
-                f" ({issue.artifact_basename})"
-                if issue.artifact_basename is not None
-                else ""
-            )
-            lines.append(Text(f"    {issue.code}{artifact}: {issue.message}"))
-    return tuple(lines)
-
-
-def _schema_lines(
-    assessment: PersistenceAssessment,
-    *,
-    indent: str,
-) -> tuple[Text, ...]:
-    count = (
-        str(assessment.account_count)
-        if assessment.account_count is not None
-        else "unknown"
+        Text(f"  state: {status.state}"),
+        Text(f"  path: {status.path}"),
+        Text(f"  validated accounts: {status.account_count}"),
     )
-    lines = [
-        Text(f"{indent}state: {assessment.code}"),
-        Text(f"{indent}generation: {assessment.generation}"),
-        Text(f"{indent}path: {assessment.safe_path}"),
-        Text(f"{indent}validated accounts: {count}"),
-        Text(f"{indent}message: {assessment.message}"),
-    ]
-    if assessment.artifact_basename is not None:
-        lines.append(Text(f"{indent}artifact: {assessment.artifact_basename}"))
-    if assessment.next_command is not None:
-        lines.append(
-            Text(f"{indent}next: " + " ".join(assessment.next_command))
-        )
-    if assessment.guidance is not None:
-        lines.append(Text(f"{indent}guidance: {assessment.guidance}"))
-    return tuple(lines)
 
 
-def _private_auth_lines(
-    summary: PrivateAuthMigrationAssessment | PrivateAuthMigrationFailure,
-) -> tuple[Text, ...]:
-    if isinstance(summary, PrivateAuthMigrationFailure):
-        lines = [
-            Text(f"  private auth: {summary.code}"),
-            Text(f"  private auth message: {summary.message}"),
-        ]
-        if summary.accounts:
-            lines.append(
-                Text(
-                    "  private auth accounts: "
-                    + ", ".join(str(label) for label in summary.accounts)
-                )
-            )
-        return tuple(lines)
-    lines = [Text(f"  private auth copies: {summary.copies_required}")]
-    lines.extend(
-        _private_auth_account_line(account) for account in summary.accounts
-    )
-    return tuple(lines)
-
-
-def _private_auth_account_line(
-    account: PrivateAuthAccountAssessment,
-) -> Text:
-    copy = " · copy required" if account.copy_required else ""
-    return Text(f"  private auth {account.label}: {account.kind}{copy}")
-
-
-def _location_dict[S: ReadyLocationSelection | BlockedLocationSelection](
-    assessment: LocationMigrationAssessment[S],
-) -> JsonObject:
-    candidates: list[JsonValue] = [
-        _candidate_dict(candidate) for candidate in assessment.candidates
-    ]
-    issues: list[JsonValue] = [
-        {
-            "code": issue.code.value,
-            "artifact_basename": issue.artifact_basename,
-            "message": issue.message,
-        }
-        for issue in assessment.issues
-    ]
+def _persistence_dict(status: PersistenceStatus) -> JsonObject:
+    """Build machine-readable current persistence status."""
     return {
-        "code": assessment.selection.code.value,
-        "source": str(assessment.source),
-        "destination": str(assessment.destination),
-        "artifact_basename": assessment.artifact_basename,
-        "write_blocked": assessment.write_blocked,
-        "next_command": _command_json(assessment.next_command),
-        "private_auth": _private_auth_dict(assessment.private_auth_summary),
-        "candidates": candidates,
-        "issues": issues,
-    }
-
-
-def _candidate_dict(candidate: LocationCandidate) -> JsonObject:
-    return {
-        "role": candidate.role.value,
-        "path": str(candidate.path),
-        "schema": _persistence_dict(candidate.assessment),
-    }
-
-
-def _persistence_dict(assessment: PersistenceAssessment) -> JsonObject:
-    """Build one secret-free machine-readable schema record."""
-    issues: list[JsonValue] = [
-        {
-            "code": issue.code.value,
-            "artifact_basename": issue.artifact_basename,
-            "message": issue.message,
-        }
-        for issue in assessment.issues
-    ]
-    return {
-        "code": assessment.code.value,
-        "generation": assessment.generation.value,
-        "schema_version": assessment.schema_version,
-        "account_count": assessment.account_count,
-        "safe_path": str(assessment.safe_path),
-        "artifact_basename": assessment.artifact_basename,
-        "write_blocked": assessment.write_blocked,
-        "next_command": _command_json(assessment.next_command),
-        "message": assessment.message,
-        "guidance": assessment.guidance,
-        "issues": issues,
-    }
-
-
-def _private_auth_dict(
-    summary: PrivateAuthMigrationAssessment | PrivateAuthMigrationFailure,
-) -> JsonObject:
-    if isinstance(summary, PrivateAuthMigrationFailure):
-        accounts: list[JsonValue] = []
-        accounts.extend(str(label) for label in summary.accounts)
-        return {
-            "code": summary.code.value,
-            "message": summary.message,
-            "accounts": accounts,
-        }
-    accounts: list[JsonValue] = [
-        _private_auth_account_dict(account) for account in summary.accounts
-    ]
-    return {
-        "copies_required": summary.copies_required,
-        "accounts": accounts,
-    }
-
-
-def _private_auth_account_dict(
-    account: PrivateAuthAccountAssessment,
-) -> JsonObject:
-    return {
-        "label": str(account.label),
-        "kind": account.kind.value,
-        "copy_required": account.copy_required,
+        "state": status.state.value,
+        "path": str(status.path),
+        "account_count": status.account_count,
     }
 
 
 def _persistence_failure_lines(
-    failure: PersistenceCompositionFailure,
+    failure: PersistenceFailure,
 ) -> tuple[Text, ...]:
     """Build safe human lines for one passive composition failure."""
     lines = [
         Text("persistence"),
-        Text("  location: unavailable"),
         Text(f"  state: {failure.code}"),
-        Text(f"  path: {failure.safe_path}"),
+        Text(f"  path: {failure.path}"),
         Text(f"  message: {failure.message}"),
     ]
     if failure.artifact_basename is not None:
         lines.append(Text(f"  artifact: {failure.artifact_basename}"))
-    if failure.guidance is not None:
-        lines.append(Text(f"  guidance: {failure.guidance}"))
-    if failure.next_command is not None:
-        lines.append(Text("  next: " + shlex.join(failure.next_command)))
     return tuple(lines)
 
 
 def _persistence_failure_dict(
-    failure: PersistenceCompositionFailure,
+    failure: PersistenceFailure,
 ) -> JsonObject:
     """Build one secret-free machine-readable composition failure."""
-    issues: list[JsonValue] = [
-        {
-            "code": failure.code.value,
-            "artifact_basename": failure.artifact_basename,
-            "message": failure.message,
-        }
-    ]
     return {
-        "code": failure.code.value,
-        "generation": "unknown",
-        "schema_version": None,
+        "state": failure.code.value,
         "account_count": None,
-        "safe_path": str(failure.safe_path),
+        "path": str(failure.path),
         "artifact_basename": failure.artifact_basename,
-        "write_blocked": True,
-        "next_command": _command_json(failure.next_command),
         "message": failure.message,
-        "guidance": failure.guidance,
-        "issues": issues,
     }
-
-
-def _command_json(command: tuple[str, ...] | None) -> JsonValue:
-    if command is None:
-        return None
-    encoded: list[JsonValue] = []
-    encoded.extend(command)
-    return encoded
 
 
 def _auth_lines(diagnostic: AccountDiagnostic) -> tuple[Text, ...]:
@@ -619,13 +396,6 @@ def _heartbeat_lines(diagnostic: AccountDiagnostic) -> tuple[Text, ...]:
             + ("yes" if diagnostic.heartbeat_enabled else "no")
         ),
     ]
-    if diagnostic.heartbeat_5h_reset_at:
-        lines.append(
-            Text(
-                "  cached 5h reset: "
-                + _format_machine_time(diagnostic.heartbeat_5h_reset_at)
-            )
-        )
     if diagnostic.heartbeat_window_resets:
         lines.extend(
             Text(
@@ -738,9 +508,6 @@ def _diagnostic_dict(diagnostic: AccountDiagnostic) -> JsonObject:
         "heartbeat_supported": diagnostic.heartbeat_supported,
         "heartbeat_enabled": diagnostic.heartbeat_enabled,
         "heartbeat": diagnostic.heartbeat,
-        "heartbeat_5h_reset_at": _optional_machine_time(
-            diagnostic.heartbeat_5h_reset_at
-        ),
         "heartbeat_window_resets": window_resets,
         "heartbeat_targets": targets,
         "last_heartbeat_at": _optional_machine_time(

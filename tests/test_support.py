@@ -1,7 +1,7 @@
 """Shared deterministic test dependencies."""
 
-from collections.abc import Callable, Iterable, Mapping
-from contextlib import ExitStack
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from contextlib import AbstractContextManager, ExitStack, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -32,24 +32,30 @@ from sidekick_usages.core.accounts.types import (
 )
 from sidekick_usages.core.models import Account
 from sidekick_usages.core.types import ProviderId
-from sidekick_usages.credentials import (
-    ClaudeSetupTokenRestoreService,
-    CredentialService,
+from sidekick_usages.credentials import CredentialService
+from sidekick_usages.credentials.authorities import (
+    AuthenticatedSavedAccount,
+    CredentialLease,
+    credential_resolver_for,
 )
 from sidekick_usages.credentials.codex import CodexCredentialCoordinator
 from sidekick_usages.credentials.refresh import CredentialRefreshCoordinator
 from sidekick_usages.heartbeat import HeartbeatProvider, HeartbeatService
 from sidekick_usages.http import HttpClient
 from sidekick_usages.maintenance import TokenMaintenanceService
-from sidekick_usages.paths import (
-    AccountLocations,
-    ApplicationPaths,
-    PrivateCodexLocations,
+from sidekick_usages.paths import ApplicationPaths
+from sidekick_usages.persistence.account_index import (
+    saved_account_from_runtime,
 )
-from sidekick_usages.persistence.account_index import legacy_saved_account
+from sidekick_usages.persistence.account_runtime_bridge import (
+    active_stored_reference,
+)
 from sidekick_usages.persistence.account_store import AccountStore
 from sidekick_usages.persistence.credential_refresh import (
     CredentialRefreshTransactions,
+)
+from sidekick_usages.persistence.credential_repository import (
+    authority_for_account,
 )
 from sidekick_usages.persistence.filesystem import PersistenceFilesystem
 from sidekick_usages.persistence.private_credentials import (
@@ -85,7 +91,7 @@ class _TestCredentialLease:
 def saved_account(account: Account) -> SavedAccount:
     """Return secret-free metadata for one synthetic runtime account."""
     identity = f"{account.provider_id.value}\0{account.label}"
-    return legacy_saved_account(
+    return saved_account_from_runtime(
         account,
         account_id=SidekickAccountId(
             str(uuid5(_TEST_ACCOUNT_NAMESPACE, identity))
@@ -102,24 +108,54 @@ def authenticated_account(account: Account) -> ProviderAuthenticatedAccount:
     return AuthenticatedAccount(account=saved_account(account), lease=lease)
 
 
+class RuntimeCredentialResolver:
+    """Open typed test leases from one in-memory runtime account source."""
+
+    def __init__(self, source: AccountStore) -> None:
+        self._source = source
+        self.events: list[str] = []
+
+    def open(
+        self,
+        account: SavedAccount,
+    ) -> AbstractContextManager[AuthenticatedSavedAccount]:
+        """Return one unopened synthetic credential lease."""
+        return self._open(account)
+
+    @contextmanager
+    def _open(
+        self,
+        account: SavedAccount,
+    ) -> Iterator[AuthenticatedSavedAccount]:
+        self.events.append(f"open:{account.label}")
+        runtime = self._source.get(
+            str(account.label),
+            provider_id=account.provider_id,
+        )
+        if runtime is None:
+            raise AssertionError("Resolver target disappeared.")
+        authority = authority_for_account(
+            runtime,
+            account_id=account.account_id,
+            authority_id=active_stored_reference(account),
+        )
+        lease = CredentialLease(account, authority)
+        with lease:
+            yield AuthenticatedAccount(account=account, lease=lease)
+        self.events.append(f"close:{account.label}")
+
+
 def make_application_paths(root: Path) -> ApplicationPaths:
     """Build isolated Sidekick-owned locations below ``root``."""
     account_file = root / "accounts.json"
-    private_codex_root = root / "sidekick-codex-cache"
+    private_root = root / "credentials"
     return ApplicationPaths(
-        accounts=AccountLocations(
-            canonical=account_file,
-            existing_sidekick=account_file,
-            prototype_cc_usage=root / "prototype" / "accounts.json",
-        ),
-        private_codex=PrivateCodexLocations(
-            canonical=private_codex_root,
-            existing_sidekick=private_codex_root,
-        ),
+        accounts=account_file,
+        private_credentials=private_root,
+        private_codex_profiles=private_root / "codex",
         activity_snapshots=root / "token-activity.json",
         credential_refresh=root / "credential-refresh",
-        private_claude_profiles=root / "claude",
-        credential_authorities=private_codex_root,
+        private_claude_profiles=private_root / "claude",
         selected_state=root / "selected-accounts.json",
         activation_journals=root / "activation-journals",
         durable_operations=root / "operations",
@@ -146,17 +182,12 @@ def make_account_store_with_private(
 ) -> tuple[AccountStore, PrivateCredentialTree]:
     """Build a store and the exact private tree injected into it."""
     paths = make_application_paths(root)
-    PersistenceFilesystem(paths.accounts.canonical).repair_parent_permissions()
+    PersistenceFilesystem(paths.accounts).repair_parent_permissions()
     private_credentials = PrivateCredentialTree(
-        paths.private_codex.canonical,
-        account_path=paths.accounts.canonical,
-        existing_root=paths.private_codex.existing_sidekick,
+        paths.private_credentials,
+        account_path=paths.accounts,
     )
-    store = AccountStore(
-        paths.accounts,
-        orphaned_credentials_observer=private_credentials.observe,
-        private_credentials=private_credentials,
-    ).load()
+    store = AccountStore(paths.accounts, private_credentials).load()
     for account in accounts:
         store.persist(account)
     return store, private_credentials
@@ -207,6 +238,7 @@ def make_app_context(
     heartbeat_map = (
         {} if heartbeat_providers is None else dict(heartbeat_providers)
     )
+    resolver = credential_resolver_for(store, private_credentials)
     codex_coordinator = CodexCredentialCoordinator(
         store,
         private_credentials,
@@ -222,6 +254,7 @@ def make_app_context(
         ),
         clock=clock,
         codex=codex_coordinator,
+        resolver=resolver,
     )
     credential_service = CredentialService(
         store,
@@ -242,6 +275,7 @@ def make_app_context(
             clock=clock,
             local_activity_sources=local_activity_sources,
             account_activity_sources=account_activity_sources,
+            resolver=resolver,
         ),
         credentials=credential_service,
         heartbeat=HeartbeatService(
@@ -249,6 +283,7 @@ def make_app_context(
             http,
             heartbeat_map,
             clock=clock,
+            resolver=resolver,
         ),
         maintenance=TokenMaintenanceService(
             store,
@@ -259,11 +294,6 @@ def make_app_context(
             _UnexpectedClaudeSetupToken()
             if claude_setup_token is None
             else claude_setup_token
-        ),
-        claude_setup_restore=ClaudeSetupTokenRestoreService(
-            store,
-            http,
-            providers.get(ProviderId.CLAUDE),
         ),
     )
 
@@ -338,6 +368,7 @@ __all__ = [
     "REFERENCE_TIME",
     "CliHarness",
     "FixedClock",
+    "RuntimeCredentialResolver",
     "make_account_store",
     "make_account_store_with_private",
     "make_app_context",

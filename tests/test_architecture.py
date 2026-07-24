@@ -157,12 +157,6 @@ _MUTATIONS = (
         "    compose_app_context()\n    return application\n",
     ),
     architecture_ast.SourceMutation(
-        "MIG001",
-        "src/sidekick_usages/persistence/architecture_migration_fixture.py",
-        "",
-        "transaction.commit_migration()\n",
-    ),
-    architecture_ast.SourceMutation(
         "HTTP001",
         "src/sidekick_usages/architecture_retry_fixture.py",
         "",
@@ -185,12 +179,6 @@ _MUTATIONS = (
         "src/sidekick_usages/architecture_schema_fixture.py",
         "",
         "from pydantic import TypeAdapter\n",
-    ),
-    architecture_ast.SourceMutation(
-        "MODEL001",
-        "src/sidekick_usages/persistence/migrations/location.py",
-        '    EMPTY = "empty"\n',
-        '    EMPTY = "emptied"\n',
     ),
     architecture_ast.SourceMutation(
         "ACT001",
@@ -328,7 +316,7 @@ def test_concrete_owner_boundaries_reject_reverse_dependencies(
             "DEP003",
         ),
         (
-            "src/sidekick_usages/persistence/migrations/import_fixture.py",
+            "src/sidekick_usages/persistence/schema/import_fixture.py",
             "from ... import providers as boundary\n",
             "DEP003",
         ),
@@ -401,21 +389,17 @@ def test_cli_command_surface_is_registered_once_by_focused_owners() -> None:
         "check-update",
         "claude",
         "codex",
-        "codex-export",
-        "codex-login",
         "daemon",
         "doctor",
         "heartbeat",
         "list",
         "maintain",
-        "migrate",
         "permissions",
         "refresh",
         "remove",
         "rename",
         "reset",
         "set-plan",
-        "setup-token",
         "update",
     }
     nested = {
@@ -424,10 +408,9 @@ def test_cli_command_surface_is_registered_once_by_focused_owners() -> None:
         if isinstance(command, click.Group)
     }
     assert nested == {
-        "claude": {"restore-setup-token", "setup-token"},
+        "claude": {"setup-token"},
         "codex": {"export", "login"},
         "daemon": {"install", "status", "uninstall"},
         "heartbeat": {"disable", "enable", "run-label", "status"},
-        "migrate": {"accounts", "locations", "prepare-rollback"},
         "permissions": {"repair"},
     }

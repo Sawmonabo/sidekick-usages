@@ -10,7 +10,6 @@ from architecture_ast import (
     class_node,
     compact,
     dotted_name,
-    enum_values,
     finding,
     type_alias,
 )
@@ -24,22 +23,13 @@ def check_value_contracts(
     by_path = {str(unit.path): unit for unit in units}
     paths = by_path.get("src/sidekick_usages/paths.py")
     path_fields = {
-        "AccountLocations": (
-            ("canonical", "Path"),
-            ("existing_sidekick", "Path"),
-            ("prototype_cc_usage", "Path"),
-        ),
-        "PrivateCodexLocations": (
-            ("canonical", "Path"),
-            ("existing_sidekick", "Path"),
-        ),
         "ApplicationPaths": (
-            ("accounts", "AccountLocations"),
-            ("private_codex", "PrivateCodexLocations"),
+            ("accounts", "Path"),
+            ("private_credentials", "Path"),
+            ("private_codex_profiles", "Path"),
             ("activity_snapshots", "Path"),
             ("credential_refresh", "Path"),
             ("private_claude_profiles", "Path"),
-            ("credential_authorities", "Path"),
             ("selected_state", "Path"),
             ("activation_journals", "Path"),
             ("durable_operations", "Path"),
@@ -62,12 +52,8 @@ def check_value_contracts(
             ("heartbeat", "HeartbeatService"),
             ("maintenance", "TokenMaintenanceService"),
             ("claude_setup_token", "ClaudeSetupToken"),
-            (
-                "claude_setup_restore",
-                "ClaudeSetupTokenRestoreService",
-            ),
         ),
-        "PersistenceContext": (("persistence", "PersistenceCommands"),),
+        "PersistenceContext": (("persistence", "PersistenceService"),),
         "DoctorContext": (("state", "DoctorState"),),
         "DaemonContext": (("daemon", "DaemonManager"),),
         "UpdateContext": (("update", "UpdateService"),),
@@ -76,7 +62,7 @@ def check_value_contracts(
         _require_fields(context, context_fields, "CTX001", violations)
         alias = type_alias(context.tree, "DoctorState")
         if alias is None or compact(ast.unparse(alias.value)) != (
-            "DoctorReady|DoctorBlocked|DoctorFailed"
+            "DoctorReady|DoctorFailed"
         ):
             violations.append(
                 finding(context, alias, "CTX001", "DoctorState is not closed")
@@ -90,27 +76,6 @@ def check_value_contracts(
         }
         _require_fields(context, composed, "CTX002", violations)
         _check_close_once(context, violations)
-
-    location = by_path.get(
-        "src/sidekick_usages/persistence/migrations/location.py"
-    )
-    expected_codes = {
-        "EMPTY": "empty",
-        "PROTOTYPE_ONLY": "prototype_only",
-        "COMPATIBILITY_SELECTED": "compatibility_selected",
-        "CANONICAL_SELECTED": "canonical_selected",
-        "EQUIVALENT_SELECTED": "equivalent_selected",
-        "CONFLICT": "conflict",
-        "PARTIAL": "partial",
-        "CANDIDATE_BLOCKED": "candidate_blocked",
-    }
-    if (
-        location is not None
-        and enum_values(location.tree, "LocationCode") != expected_codes
-    ):
-        violations.append(
-            finding(location, None, "MODEL001", "LocationCode changed")
-        )
 
 
 def _require_fields(

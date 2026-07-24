@@ -143,8 +143,7 @@ sidekick-usages refresh <label> --from-codex-home <path>
 
 Use this only when you intentionally want to update one saved login label from
 the provider's current local login. For Claude setup-token credentials, use
-`sidekick-usages claude setup-token` or the exact-label
-`sidekick-usages claude restore-setup-token` recovery instead.
+`sidekick-usages claude setup-token` instead.
 
 If a saved provider account id exists and the current login belongs to
 a different provider account, sidekick refuses the update. Use
@@ -318,12 +317,10 @@ account.
 
 ## Config fields
 
-`doctor` reports the selected account source and destination. Existing 0.6.0
-installations can remain at `~/.config/sidekick-usages/accounts.json`; fresh
-installations of the upcoming 0.7.0 release use the operating system's native
-application-data directory. See
-[persistence locations, migration, and recovery](./persistence-and-recovery.md)
-before inspecting or moving a store.
+`doctor` reports the current account authority and protected refresh state.
+Sidekick uses one native per-user application-data layout. See
+[persistence and recovery](./persistence-and-recovery.md) before repairing or
+resetting a store.
 
 Refresh diagnostics may be absent when no attempt has been recorded. When
 present, the current schema uses these fields:
