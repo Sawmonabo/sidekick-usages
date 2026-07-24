@@ -42,7 +42,8 @@ class ApplicationPaths:
     :ivar service_logs: Sanitized supervisor diagnostic root.
     :ivar runtime_directory: Owner-only local control runtime root.
     :ivar supervisor_socket: Local supervisor control socket.
-    :ivar supervisor_lock: Per-user supervisor singleton lock.
+    :ivar systemd_user_service: Linux user-service definition.
+    :ivar launch_agent: macOS per-user LaunchAgent definition.
     """
 
     accounts: Path
@@ -58,7 +59,8 @@ class ApplicationPaths:
     service_logs: Path
     runtime_directory: Path
     supervisor_socket: Path
-    supervisor_lock: Path
+    systemd_user_service: Path
+    launch_agent: Path
 
 
 def discover_application_paths() -> ApplicationPaths:
@@ -95,7 +97,19 @@ def discover_application_paths() -> ApplicationPaths:
         service_logs=native.user_log_path,
         runtime_directory=runtime_directory,
         supervisor_socket=runtime_directory / "supervisor.sock",
-        supervisor_lock=runtime_directory / "supervisor.lock",
+        systemd_user_service=(
+            Path.home()
+            / ".config"
+            / "systemd"
+            / "user"
+            / "sidekick-usages.service"
+        ),
+        launch_agent=(
+            Path.home()
+            / "Library"
+            / "LaunchAgents"
+            / "com.sidekick-usages.supervisor.plist"
+        ),
     )
 
 

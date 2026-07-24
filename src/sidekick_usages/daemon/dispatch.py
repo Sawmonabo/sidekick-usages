@@ -3,10 +3,10 @@
 from collections import deque
 from collections.abc import Callable, Iterator
 from threading import Condition
-from uuid import uuid4
 
 from sidekick_usages import __version__
 from sidekick_usages.clock import Clock
+from sidekick_usages.core.accounts.identifiers import new_operation_id
 from sidekick_usages.core.accounts.types import (
     OperationId,
     RequestId,
@@ -51,10 +51,6 @@ from sidekick_usages.persistence.service_state import ServiceStateStore
 __all__ = ["OperationEventHub", "SupervisorDispatcher"]
 
 _MAX_RETAINED_UPDATES = 512
-
-
-def _new_operation_id() -> OperationId:
-    return OperationId(str(uuid4()))
 
 
 class OperationEventHub(OperationEventSink):
@@ -202,7 +198,7 @@ class SupervisorDispatcher:
         wake: Callable[[], None],
         request_stop: Callable[[], None],
         *,
-        operation_id_factory: Callable[[], OperationId] = _new_operation_id,
+        operation_id_factory: Callable[[], OperationId] = new_operation_id,
         package_version: str = __version__,
     ) -> None:
         self._queue = queue

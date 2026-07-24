@@ -16,7 +16,10 @@ from sidekick_usages.credentials import CredentialService
 from sidekick_usages.credentials.authorities import credential_resolver_for
 from sidekick_usages.credentials.codex import CodexCredentialCoordinator
 from sidekick_usages.credentials.refresh import CredentialRefreshCoordinator
-from sidekick_usages.daemon.scheduled_maintenance import DaemonManager
+from sidekick_usages.daemon.lifecycle.manager import (
+    DaemonManager,
+    build_daemon_manager,
+)
 from sidekick_usages.doctor import DoctorService
 from sidekick_usages.heartbeat import HeartbeatProvider, HeartbeatService
 from sidekick_usages.http import HttpClient
@@ -209,9 +212,10 @@ def _provider_maps(
 
 
 def _persistence(paths: ApplicationPaths) -> PersistenceService:
+    daemon = build_daemon_manager(paths=paths)
     return PersistenceService(
         paths,
-        scheduler_assessor=DaemonManager().assess_quiescence,
+        maintenance_quiescent=daemon.quiescent,
     )
 
 
@@ -411,9 +415,16 @@ def compose_doctor_context(
     return _compose(build)
 
 
-def compose_daemon_context() -> Composed[DaemonContext]:
-    """Compose scheduler-management services only."""
-    return _compose(lambda _resources: DaemonContext(DaemonManager()))
+def compose_daemon_context(
+    *,
+    paths: ApplicationPaths | None = None,
+) -> Composed[DaemonContext]:
+    """Compose resident-service lifecycle management only."""
+    return _compose(
+        lambda _resources: DaemonContext(
+            build_daemon_manager(paths=_resolved_paths(paths))
+        )
+    )
 
 
 def compose_update_context(
@@ -507,7 +518,7 @@ class InvocationContext:
         return value
 
     def require_daemon(self, ctx: click.Context) -> DaemonContext:
-        """Return the scheduler-management context."""
+        """Return the resident-service lifecycle context."""
         value = self._daemon.require(ctx)
         if not isinstance(value, DaemonContext):
             raise TypeError("Daemon composer returned the wrong context.")

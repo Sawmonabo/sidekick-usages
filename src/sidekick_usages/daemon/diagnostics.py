@@ -64,8 +64,32 @@ class SanitizedDiagnosticLog:
         finally:
             os.close(descriptor)
 
+    def clear(self) -> None:
+        """Remove only known supervisor diagnostic files."""
+        if not self._root.exists():
+            return
+        self._require_safe_root()
+        paths = (
+            self._path,
+            *(self._rotated(index) for index in range(1, _RETAINED_LOGS + 1)),
+            self._root / "supervisor.out.log",
+            self._root / "supervisor.err.log",
+        )
+        for path in paths:
+            self._remove_known_file(path)
+        try:
+            self._root.rmdir()
+        except OSError:
+            return
+
     def _prepare_root(self) -> None:
         self._root.mkdir(mode=_DIRECTORY_MODE, parents=True, exist_ok=True)
+        self._require_safe_root()
+        if stat.S_IMODE(self._root.stat().st_mode) != _DIRECTORY_MODE:
+            os.chmod(self._root, _DIRECTORY_MODE)
+            self._require_safe_root()
+
+    def _require_safe_root(self) -> None:
         metadata = self._root.lstat()
         if (
             not stat.S_ISDIR(metadata.st_mode)
@@ -73,8 +97,6 @@ class SanitizedDiagnosticLog:
             or metadata.st_uid != os.geteuid()
         ):
             raise OSError("Unsafe supervisor diagnostic directory.")
-        if stat.S_IMODE(metadata.st_mode) != _DIRECTORY_MODE:
-            os.chmod(self._root, _DIRECTORY_MODE)
 
     def _rotate_if_needed(self, incoming_bytes: int) -> None:
         try:
@@ -107,6 +129,20 @@ class SanitizedDiagnosticLog:
 
     def _rotated(self, index: int) -> Path:
         return self._root / f"{_LOG_BASENAME}.{index}"
+
+    @staticmethod
+    def _remove_known_file(path: Path) -> None:
+        try:
+            metadata = path.lstat()
+        except FileNotFoundError:
+            return
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+        ):
+            raise OSError("Unsafe supervisor diagnostic file.")
+        path.unlink()
 
 
 class DiagnosticOperationSink(OperationEventSink):

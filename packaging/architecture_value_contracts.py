@@ -37,7 +37,8 @@ def check_value_contracts(
             ("service_logs", "Path"),
             ("runtime_directory", "Path"),
             ("supervisor_socket", "Path"),
-            ("supervisor_lock", "Path"),
+            ("systemd_user_service", "Path"),
+            ("launch_agent", "Path"),
         ),
     }
     if paths is not None:

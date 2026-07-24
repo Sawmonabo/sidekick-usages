@@ -36,6 +36,14 @@ class PersistenceError(UsageError):
     code: PersistenceCode
 
 
+class SupervisorActiveError(PersistenceError):
+    """A resident supervisor blocks destructive persistence mutation."""
+
+    def __init__(self) -> None:
+        self.code = PersistenceCode.STORE_LOCKED
+        super().__init__("Stop the Sidekick supervisor before this operation.")
+
+
 class PersistenceSchemaError(PersistenceError):
     """A persisted document failed its lexical or schema contract."""
 

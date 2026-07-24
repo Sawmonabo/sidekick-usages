@@ -1,530 +1,338 @@
-"""Reusable daemon backend architecture tests."""
+"""Load-bearing resident-service lifecycle contracts."""
 
-import subprocess
+import os
+import stat
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from sidekick_usages.daemon import scheduled_maintenance
-from sidekick_usages.daemon.models.maintenance import (
-    CommandResult,
-    DaemonOperationResult,
-    PlatformInfo,
-)
-from sidekick_usages.daemon.scheduled_maintenance import (
+from sidekick_usages.core.types import ExitCode
+from sidekick_usages.daemon.lifecycle.artifacts import ServiceArtifactStore
+from sidekick_usages.daemon.lifecycle.commands import SystemCommandRunner
+from sidekick_usages.daemon.lifecycle.manager import (
     DaemonManager,
-    SystemCommandRunner,
-    resolve_maintenance_command,
+    build_service_backend,
 )
-from sidekick_usages.daemon.types.maintenance import DaemonOperation
-from sidekick_usages.errors import UsageError
-from sidekick_usages.scheduler_quiescence import (
-    CRON_BEGIN,
-    CRON_END,
-    SchedulerBackendId,
-    SchedulerBackendState,
+from sidekick_usages.daemon.lifecycle.readiness import RuntimeCleanup
+from sidekick_usages.daemon.models.lifecycle import (
+    CommandResult,
+    PlatformInfo,
+    ServiceBackendStatus,
 )
+from sidekick_usages.daemon.types.lifecycle import (
+    ServiceBackendId,
+    ServiceLifecycleState,
+)
+from sidekick_usages.paths import ApplicationPaths
+from tests.test_support import make_application_paths
+
+_OWNER_FILE_MODE = 0o600
 
 
 class RecordingRunner(SystemCommandRunner):
-    """Command runner that records calls without touching the host."""
+    """Record native commands and return healthy synthetic status."""
 
     def __init__(self) -> None:
-        self.calls: list[tuple[tuple[str, ...], str | None]] = []
+        self.calls: list[tuple[str, ...]] = []
 
-    def run(
-        self,
-        argv: tuple[str, ...],
-        *,
-        input_text: str | None = None,
-    ) -> CommandResult:
-        self.calls.append((argv, input_text))
-        return CommandResult(returncode=0, stdout="", stderr="")
-
-
-class RecordingDaemonManager(DaemonManager):
-    """Daemon manager that records operation dispatch without side effects."""
-
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, str]] = []
-
-    def install(self, backend: str = "auto") -> DaemonOperationResult:
-        """Record an install dispatch."""
-        self.calls.append(("install", backend))
-        return DaemonOperationResult(backend, "installed")
-
-    def status(self, backend: str = "auto") -> DaemonOperationResult:
-        """Record a status dispatch."""
-        self.calls.append(("status", backend))
-        return DaemonOperationResult(backend, "healthy")
-
-    def uninstall(self, backend: str = "auto") -> DaemonOperationResult:
-        """Record an uninstall dispatch."""
-        self.calls.append(("uninstall", backend))
-        return DaemonOperationResult(backend, "removed")
+    def run(self, argv: tuple[str, ...]) -> CommandResult:
+        self.calls.append(argv)
+        if argv[:3] == ("systemctl", "--user", "show"):
+            return CommandResult(
+                0,
+                (
+                    "LoadState=loaded\n"
+                    "ActiveState=active\n"
+                    "SubState=running\n"
+                    "UnitFileState=enabled\n"
+                ),
+                "",
+            )
+        if argv[:2] == ("launchctl", "print"):
+            return CommandResult(0, "state = running\n", "")
+        if argv[0] == "powershell.exe" and "Get-ScheduledTask" in argv[-1]:
+            return CommandResult(0, "sidekick-rescue-installed\n", "")
+        return CommandResult(0, "", "")
 
 
-class QuiescenceRunner(SystemCommandRunner):
-    """Return scripted read-only results by scheduler backend."""
+class ReadyLifecycle:
+    """Record the exact readiness sequence without provider activity."""
 
-    def __init__(
-        self,
-        results: dict[SchedulerBackendId, CommandResult],
-    ) -> None:
-        self.results = results
-        self.calls: list[SchedulerBackendId] = []
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
 
-    def run(
-        self,
-        argv: tuple[str, ...],
-        *,
-        input_text: str | None = None,
-    ) -> CommandResult:
-        del input_text
-        backend = {
-            "systemctl": SchedulerBackendId.SYSTEMD,
-            "crontab": SchedulerBackendId.CRON,
-            "launchctl": SchedulerBackendId.LAUNCHD,
-            "powershell.exe": SchedulerBackendId.TASK_SCHEDULER,
-        }[argv[0]]
-        self.calls.append(backend)
-        return self.results[backend]
+    def enroll_accounts(self) -> None:
+        self.events.append("enroll")
+
+    def verify_ready(self) -> None:
+        self.events.append("ready")
+
+    def complete_maintenance_pass(self) -> None:
+        self.events.append("maintain")
+
+
+class RecordingBackend:
+    """Record one healthy backend lifecycle."""
+
+    id = ServiceBackendId.SYSTEMD
+
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
+
+    def install(self) -> None:
+        self.events.append("install")
+
+    def restart(self) -> None:
+        self.events.append("restart")
+
+    def status(self) -> ServiceBackendStatus:
+        self.events.append("status")
+        return ServiceBackendStatus(
+            self.id,
+            ServiceLifecycleState.READY,
+        )
+
+    def uninstall(self) -> None:
+        self.events.append("uninstall")
 
 
 def _platform(
     tmp_path: Path,
     *,
-    system: str = "Linux",
+    system: str,
     is_wsl: bool = False,
-    has_user_systemd: bool = True,
 ) -> PlatformInfo:
-    """Build a deterministic platform fixture."""
     return PlatformInfo(
         system=system,
         home=tmp_path,
-        uid=501,
+        uid=os.geteuid(),
+        user_name="sidekick-user",
         is_wsl=is_wsl,
-        wsl_distro="Ubuntu" if is_wsl else None,
-        has_user_systemd=has_user_systemd,
+        wsl_distro="Sidekick-Distro" if is_wsl else None,
+        has_user_systemd=system == "Linux",
     )
 
 
-def _absent_scheduler_results() -> dict[SchedulerBackendId, CommandResult]:
-    """Return successful native probes with no Sidekick schedule."""
-    return {
-        SchedulerBackendId.SYSTEMD: CommandResult(
-            returncode=0,
-            stdout=(
-                "LoadState=not-found\nActiveState=inactive\nUnitFileState=\n"
-            ),
-            stderr="",
-        ),
-        SchedulerBackendId.CRON: CommandResult(0, "", ""),
-        SchedulerBackendId.LAUNCHD: CommandResult(
-            returncode=0,
-            stdout="gui domain contains unrelated services",
-            stderr="",
-        ),
-        SchedulerBackendId.TASK_SCHEDULER: CommandResult(
-            returncode=0,
-            stdout="sidekick-schedule-absent\n",
-            stderr="",
-        ),
-    }
+def _supervisor_executable(tmp_path: Path) -> Path:
+    executable = tmp_path / "bin" / "sidekick-usages-supervisor"
+    executable.parent.mkdir()
+    executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    executable.chmod(0o755)
+    return executable
 
 
 @pytest.mark.parametrize(
-    ("argv", "input_text", "expected_stdin"),
+    ("system", "is_wsl", "backend_id"),
     [
-        (
-            ("powershell.exe", "-NoProfile", "-Command", "probe"),
-            None,
-            subprocess.DEVNULL,
-        ),
-        (("crontab", "-"), "updated crontab\n", None),
+        ("Linux", False, ServiceBackendId.SYSTEMD),
+        ("Linux", True, ServiceBackendId.WSL),
+        ("Darwin", False, ServiceBackendId.LAUNCHD),
+        ("Windows", False, ServiceBackendId.FEATURE_DISABLED),
     ],
-    ids=("no-input-scheduler-probe", "explicit-input"),
+    ids=("linux", "wsl", "macos", "native-windows"),
 )
-def test_system_command_runner_controls_child_stdin(
-    monkeypatch: pytest.MonkeyPatch,
-    argv: tuple[str, ...],
-    input_text: str | None,
-    expected_stdin: int | None,
-) -> None:
-    """Commands cannot inherit stdin unless the caller supplies input."""
-    calls: list[tuple[list[str], str | None, int | None]] = []
-
-    def fake_run(
-        command: list[str],
-        *,
-        input: str | None,
-        stdin: int | None = None,
-        text: bool,
-        capture_output: bool,
-        check: bool,
-    ) -> subprocess.CompletedProcess[str]:
-        assert text is True
-        assert capture_output is True
-        assert check is False
-        calls.append((command, input, stdin))
-        return subprocess.CompletedProcess(command, 0, "output", "")
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-
-    result = SystemCommandRunner().run(argv, input_text=input_text)
-
-    assert result == CommandResult(0, "output", "")
-    assert calls == [(list(argv), input_text, expected_stdin)]
-
-
-@pytest.mark.parametrize(
-    ("operation", "message"),
-    [
-        (DaemonOperation.INSTALL, "installed"),
-        (DaemonOperation.STATUS, "healthy"),
-        (DaemonOperation.UNINSTALL, "removed"),
-    ],
-)
-def test_daemon_manager_dispatches_exact_operation(
-    operation: DaemonOperation,
-    message: str,
-) -> None:
-    """Each supported operation dispatches once to its matching method."""
-    manager = RecordingDaemonManager()
-
-    result = manager.run(operation, "systemd")
-
-    assert manager.calls == [(operation.value, "systemd")]
-    assert result == DaemonOperationResult("systemd", message)
-
-
-def test_invalid_daemon_operation_cannot_dispatch() -> None:
-    """Invalid operation input cannot reach a scheduler mutation method."""
-    manager = RecordingDaemonManager()
-
-    with pytest.raises(UsageError) as exc_info:
-        manager.run("destroy", "systemd")
-
-    assert str(exc_info.value) == (
-        "Unknown daemon operation 'destroy'. "
-        "Expected one of: install, status, uninstall."
-    )
-    assert manager.calls == []
-
-
-def test_wsl_task_scheduler_uses_hidden_windows_wrapper(
-    tmp_path: Path,
-) -> None:
-    """WSL scheduled refresh runs through a Windows-local hidden wrapper."""
-    runner = RecordingRunner()
-    manager = DaemonManager(
-        command=("sidekick-usages", "maintain", "--quiet"),
-        platform_info=_platform(tmp_path, is_wsl=True),
-        runner=runner,
-    )
-
-    result = manager.install("task-scheduler")
-
-    assert result.backend == "task-scheduler"
-    script = runner.calls[0][0][-1]
-    assert "New-ScheduledTaskAction -Execute 'wscript.exe'" in script
-    assert "//B //Nologo" in script
-    assert "$env:LOCALAPPDATA" in script
-    assert "Set-Content -Path $vbsPath" in script
-    assert "Set-Content -Path $ps1Path" in script
-    assert "wsl.exe" in script
-    assert "'-d' 'Ubuntu'" in script
-    assert "sidekick-usages maintain --quiet" in script
-    assert "shell.Run(command, 0, True)" in script
-    assert "WScript.Quit code" in script
-    assert "refresh.out.log" in script
-    assert "refresh.err.log" in script
-    assert "New-ScheduledTaskAction -Execute 'wsl.exe'" not in script
-
-
-def test_windows_task_scheduler_uses_hidden_windows_wrapper(
-    tmp_path: Path,
-) -> None:
-    """Native Windows scheduled refresh also avoids direct console launch."""
-    runner = RecordingRunner()
-    manager = DaemonManager(
-        command=(
-            "C:\\Program Files\\sidekick\\sidekick-usages.exe",
-            "maintain",
-            "--quiet",
-        ),
-        platform_info=_platform(tmp_path, system="Windows"),
-        runner=runner,
-    )
-
-    result = manager.install("task-scheduler")
-
-    assert result.backend == "task-scheduler"
-    script = runner.calls[0][0][-1]
-    assert "New-ScheduledTaskAction -Execute 'wscript.exe'" in script
-    assert "$env:LOCALAPPDATA" in script
-    assert "Set-Content -Path $vbsPath" in script
-    assert "Set-Content -Path $ps1Path" in script
-    assert "sidekick-usages.exe" in script
-    assert "shell.Run(command, 0, True)" in script
-    assert "WScript.Quit code" in script
-    assert "'maintain' '--quiet'" in script
-    assert "refresh.out.log" in script
-    assert "refresh.err.log" in script
-    assert (
-        "New-ScheduledTaskAction "
-        "-Execute 'C:\\Program Files\\sidekick\\sidekick-usages.exe'"
-    ) not in script
-
-
-def test_task_scheduler_uninstall_removes_generated_launcher_artifacts(
-    tmp_path: Path,
-) -> None:
-    """Task Scheduler uninstall removes generated wrappers, not logs."""
-    runner = RecordingRunner()
-    manager = DaemonManager(
-        command=("sidekick-usages", "maintain", "--quiet"),
-        platform_info=_platform(tmp_path, is_wsl=True),
-        runner=runner,
-    )
-
-    result = manager.uninstall("task-scheduler")
-
-    assert result.backend == "task-scheduler"
-    script = runner.calls[0][0][-1]
-    assert "Unregister-ScheduledTask" in script
-    assert "refresh.vbs" in script
-    assert "refresh.ps1" in script
-    assert "refresh.out.log" not in script
-    assert "refresh.err.log" not in script
-    assert "Get-ChildItem -LiteralPath $daemonDir" in script
-    assert "$remaining.Count -eq 0" in script
-    assert "Remove-Item -LiteralPath $daemonDir" in script
-
-
-def test_daemon_manager_auto_selects_wsl_task_scheduler(
-    tmp_path: Path,
-) -> None:
-    """WSL defaults to Windows Task Scheduler so refresh can wake WSL."""
-    runner = RecordingRunner()
-    manager = DaemonManager(
-        command=("sidekick-usages", "refresh", "--all", "--quiet"),
-        platform_info=_platform(tmp_path, is_wsl=True),
-        runner=runner,
-    )
-
-    result = manager.install("auto")
-
-    assert result.backend == "task-scheduler"
-    assert runner.calls
-    argv, _ = runner.calls[0]
-    assert argv[0] == "powershell.exe"
-    assert "wscript.exe" in argv[-1]
-    assert "refresh.vbs" in argv[-1]
-
-
-def test_systemd_backend_writes_user_service_and_timer(
-    tmp_path: Path,
-) -> None:
-    """Systemd backend writes reusable user-level unit files."""
-    runner = RecordingRunner()
-    manager = DaemonManager(
-        command=("sidekick-usages", "maintain", "--quiet"),
-        platform_info=_platform(tmp_path),
-        runner=runner,
-    )
-
-    result = manager.install("systemd")
-
-    assert result.backend == "systemd"
-    service = (
-        tmp_path
-        / ".config"
-        / "systemd"
-        / "user"
-        / "sidekick-usages-refresh.service"
-    )
-    timer = (
-        tmp_path
-        / ".config"
-        / "systemd"
-        / "user"
-        / "sidekick-usages-refresh.timer"
-    )
-    assert "sidekick-usages maintain --quiet" in service.read_text()
-    assert "OnUnitActiveSec=30m" in timer.read_text()
-    assert runner.calls[-1][0] == (
-        "systemctl",
-        "--user",
-        "enable",
-        "--now",
-        "sidekick-usages-refresh.timer",
-    )
-
-
-def test_launchd_backend_writes_launch_agent(tmp_path: Path) -> None:
-    """Launchd backend is a reusable class with deterministic plist output."""
-    runner = RecordingRunner()
-    manager = DaemonManager(
-        command=("sidekick-usages", "refresh", "--all", "--quiet"),
-        platform_info=_platform(tmp_path, system="Darwin"),
-        runner=runner,
-    )
-
-    result = manager.install("launchd")
-
-    assert result.backend == "launchd"
-    plist = (
-        tmp_path
-        / "Library"
-        / "LaunchAgents"
-        / "com.sidekick-usages.refresh.plist"
-    )
-    text = plist.read_text()
-    assert "<integer>1800</integer>" in text
-    assert "<string>sidekick-usages</string>" in text
-    assert "<key>StandardOutPath</key>" in text
-    assert "<key>StandardErrorPath</key>" in text
-    assert runner.calls[0][0][:3] == ("launchctl", "bootstrap", "gui/501")
-
-
-def test_default_maintenance_command_runs_maintain_quiet(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """New daemon installs run the combined maintenance command."""
-    monkeypatch.setattr(
-        scheduled_maintenance.shutil,
-        "which",
-        lambda name: (
-            "/usr/local/bin/sidekick-usages"
-            if name == "sidekick-usages"
-            else None
-        ),
-    )
-
-    assert resolve_maintenance_command() == (
-        "/usr/local/bin/sidekick-usages",
-        "maintain",
-        "--quiet",
-    )
-
-
-@pytest.mark.parametrize(
-    ("system", "is_wsl", "expected"),
-    [
-        (
-            "Linux",
-            False,
-            (SchedulerBackendId.SYSTEMD, SchedulerBackendId.CRON),
-        ),
-        (
-            "Darwin",
-            False,
-            (SchedulerBackendId.LAUNCHD, SchedulerBackendId.CRON),
-        ),
-        ("Windows", False, (SchedulerBackendId.TASK_SCHEDULER,)),
-        (
-            "Linux",
-            True,
-            (
-                SchedulerBackendId.SYSTEMD,
-                SchedulerBackendId.CRON,
-                SchedulerBackendId.TASK_SCHEDULER,
-            ),
-        ),
-    ],
-)
-def test_quiescence_checks_every_coexisting_backend(
+def test_service_artifacts_are_user_scoped_resident_and_secret_free(
     tmp_path: Path,
     system: str,
     is_wsl: bool,
-    expected: tuple[SchedulerBackendId, ...],
+    backend_id: ServiceBackendId,
 ) -> None:
-    runner = QuiescenceRunner(_absent_scheduler_results())
-    manager = DaemonManager(
-        platform_info=_platform(tmp_path, system=system, is_wsl=is_wsl),
-        runner=runner,
-    )
-
-    assessment = manager.assess_quiescence()
-
-    assert tuple(item.backend for item in assessment.observations) == expected
-    assert tuple(item.state for item in assessment.observations) == (
-        SchedulerBackendState.ABSENT,
-    ) * len(expected)
-    assert runner.calls == list(expected)
-    assert assessment.quiescent is True
-    assert assessment.write_blocked is False
-
-
-def test_coexisting_installed_and_active_schedules_all_block(
-    tmp_path: Path,
-) -> None:
-    results = _absent_scheduler_results()
-    results[SchedulerBackendId.SYSTEMD] = CommandResult(
-        returncode=0,
-        stdout=(
-            "ActiveState=active\nUnitFileState=enabled\nLoadState=loaded\n"
+    """Each supported OS gets one exact resident-service contract."""
+    home = tmp_path / "home"
+    paths = replace(
+        make_application_paths(tmp_path / "state"),
+        service_logs=home / "Library" / "Logs" / "sidekick-usages",
+        systemd_user_service=(
+            home / ".config" / "systemd" / "user" / "sidekick-usages.service"
         ),
-        stderr="",
+        launch_agent=(
+            home
+            / "Library"
+            / "LaunchAgents"
+            / "com.sidekick-usages.supervisor.plist"
+        ),
     )
-    results[SchedulerBackendId.CRON] = CommandResult(
-        returncode=0,
-        stdout=f"{CRON_BEGIN}\njob\n{CRON_END}\n",
-        stderr="",
+    platform_info = _platform(
+        home,
+        system=system,
+        is_wsl=is_wsl,
     )
-    runner = QuiescenceRunner(results)
+    runner = RecordingRunner()
+    executable = _supervisor_executable(tmp_path)
+    backend = build_service_backend(
+        platform_info,
+        executable,
+        paths,
+        runner,
+        ServiceArtifactStore(platform_info.home, platform_info.uid),
+    )
     manager = DaemonManager(
-        platform_info=_platform(tmp_path),
-        runner=runner,
+        backend,
+        ReadyLifecycle([]),
+        RuntimeCleanup(paths),
     )
 
-    assessment = manager.assess_quiescence()
+    result = manager.install()
 
-    assert tuple(item.state for item in assessment.observations) == (
-        SchedulerBackendState.INSTALLED,
-        SchedulerBackendState.INSTALLED,
+    assert result.backend is backend_id
+    if backend_id is ServiceBackendId.FEATURE_DISABLED:
+        assert result.state is ServiceLifecycleState.FEATURE_DISABLED
+        assert result.exit_code is ExitCode.MANUAL_ACTION
+        assert runner.calls == []
+        return
+
+    assert result.state is ServiceLifecycleState.READY
+    assert result.exit_code is ExitCode.SUCCESS
+    artifact_text = _service_artifact(platform_info, backend_id).read_text(
+        encoding="utf-8"
     )
-    assert runner.calls == [
-        SchedulerBackendId.SYSTEMD,
-        SchedulerBackendId.CRON,
-    ]
-    assert assessment.write_blocked is True
+    assert str(executable) in artifact_text
+    assert "sidekick-usages-supervisor" in artifact_text
+    assert "maintain" not in artifact_text
+    assert "refresh" not in artifact_text
+    assert "token" not in artifact_text.lower()
+    assert (
+        stat.S_IMODE(
+            _service_artifact(platform_info, backend_id).stat().st_mode
+        )
+        == _OWNER_FILE_MODE
+    )
+
+    if backend_id in {ServiceBackendId.SYSTEMD, ServiceBackendId.WSL}:
+        assert "Restart=on-failure" in artifact_text
+        assert "WantedBy=default.target" in artifact_text
+        assert (
+            not _service_artifact(
+                platform_info,
+                backend_id,
+            )
+            .with_suffix(".timer")
+            .exists()
+        )
+    if backend_id is ServiceBackendId.LAUNCHD:
+        assert "<key>RunAtLoad</key>" in artifact_text
+        assert "<key>SuccessfulExit</key>" in artifact_text
+        assert "<false/>" in artifact_text
+        assert "StartInterval" not in artifact_text
+    if backend_id is ServiceBackendId.WSL:
+        rescue = next(
+            argv[-1]
+            for argv in runner.calls
+            if argv[0] == "powershell.exe"
+            and "Register-ScheduledTask" in argv[-1]
+        )
+        assert (
+            "New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME" in rescue
+        )
+        assert "Sidekick-Distro" in rescue
+        assert "sidekick-user" in rescue
+        assert "systemctl" in rescue
+        assert "--user" in rescue
+        assert "start" in rescue
+        assert "maintain" not in rescue
+        assert "refresh" not in rescue
+        assert "token" not in rescue.lower()
 
 
-def test_unassessable_wsl_backends_block_without_short_circuit_or_raw_errors(
+def test_lifecycle_is_idempotent_and_uninstall_preserves_user_state(
     tmp_path: Path,
 ) -> None:
-    raw_error = "synthetic native scheduler detail"
-    results = {
-        backend: CommandResult(7, "", raw_error)
-        for backend in (
-            SchedulerBackendId.SYSTEMD,
-            SchedulerBackendId.CRON,
-            SchedulerBackendId.TASK_SCHEDULER,
-        )
-    }
-    runner = QuiescenceRunner(results)
+    """Install, restart, status, and cleanup touch only service ownership."""
+    paths = make_application_paths(tmp_path / "state")
+    _write_user_state_sentinels(paths, tmp_path)
+    _write_service_state_sentinels(paths)
+    events: list[str] = []
     manager = DaemonManager(
-        platform_info=_platform(tmp_path, is_wsl=True),
-        runner=runner,
+        RecordingBackend(events),
+        ReadyLifecycle(events),
+        RuntimeCleanup(paths),
     )
 
-    first = manager.assess_quiescence()
-    second = manager.assess_quiescence()
+    first = manager.install()
+    second = manager.install()
+    status = manager.status()
+    removed = manager.uninstall()
 
-    expected_backends = [
-        SchedulerBackendId.SYSTEMD,
-        SchedulerBackendId.CRON,
-        SchedulerBackendId.TASK_SCHEDULER,
+    install_sequence = [
+        "enroll",
+        "install",
+        "ready",
+        "maintain",
+        "restart",
+        "ready",
+        "status",
     ]
-    assert tuple(item.state for item in first.observations) == (
-        SchedulerBackendState.UNASSESSABLE,
-    ) * len(expected_backends)
-    assert runner.calls == expected_backends * 2
-    assert first == second
-    assert first.write_blocked is True
-    assert raw_error not in repr(first)
-    assert {item.message for item in first.observations} == {
-        "Sidekick schedule status could not be assessed."
-    }
+    assert events == [
+        *install_sequence,
+        *install_sequence,
+        "status",
+        "ready",
+        "uninstall",
+    ]
+    assert first.state is ServiceLifecycleState.READY
+    assert second.state is ServiceLifecycleState.READY
+    assert status.state is ServiceLifecycleState.READY
+    assert removed.state is ServiceLifecycleState.ABSENT
+    assert paths.service_state.exists() is False
+    assert paths.service_logs.exists() is False
+    assert paths.runtime_directory.exists() is False
+    assert paths.accounts.read_text(encoding="utf-8") == "account-index"
+    assert paths.activity_snapshots.read_text(encoding="utf-8") == "metrics"
+    assert (paths.private_credentials / "authority").read_text(
+        encoding="utf-8"
+    ) == "credential"
+    assert (tmp_path / "native-provider-login").read_text(
+        encoding="utf-8"
+    ) == "provider"
+
+
+def _service_artifact(
+    platform_info: PlatformInfo,
+    backend_id: ServiceBackendId,
+) -> Path:
+    if backend_id is ServiceBackendId.LAUNCHD:
+        return (
+            platform_info.home
+            / "Library"
+            / "LaunchAgents"
+            / "com.sidekick-usages.supervisor.plist"
+        )
+    return (
+        platform_info.home
+        / ".config"
+        / "systemd"
+        / "user"
+        / "sidekick-usages.service"
+    )
+
+
+def _write_user_state_sentinels(
+    paths: ApplicationPaths,
+    tmp_path: Path,
+) -> None:
+    paths.accounts.parent.mkdir(mode=0o700, parents=True)
+    paths.accounts.write_text("account-index", encoding="utf-8")
+    paths.activity_snapshots.write_text("metrics", encoding="utf-8")
+    paths.private_credentials.mkdir()
+    (paths.private_credentials / "authority").write_text(
+        "credential",
+        encoding="utf-8",
+    )
+    (tmp_path / "native-provider-login").write_text(
+        "provider",
+        encoding="utf-8",
+    )
+
+
+def _write_service_state_sentinels(paths: ApplicationPaths) -> None:
+    paths.service_state.write_text("transient", encoding="utf-8")
+    paths.service_state.chmod(_OWNER_FILE_MODE)
+    paths.service_logs.mkdir(mode=0o700)
+    log = paths.service_logs / "supervisor.jsonl"
+    log.write_text(
+        "transient",
+        encoding="utf-8",
+    )
+    log.chmod(_OWNER_FILE_MODE)
+    paths.runtime_directory.mkdir(mode=0o700)

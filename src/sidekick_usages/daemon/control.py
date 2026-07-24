@@ -46,6 +46,7 @@ __all__ = [
     "ControlConnection",
     "EndpointError",
     "LocalControlServer",
+    "cleanup_control_endpoint",
 ]
 
 _RUNTIME_DIRECTORY_MODE = 0o700
@@ -59,6 +60,34 @@ class EndpointError(OSError):
     def __init__(self, code: EndpointFailureCode) -> None:
         self.code = code
         super().__init__(code.value)
+
+
+def cleanup_control_endpoint(
+    runtime_directory: Path,
+    socket_path: Path,
+) -> None:
+    """Remove only an inactive Sidekick socket and its empty directory."""
+    if socket_path.parent != runtime_directory:
+        raise EndpointError(EndpointFailureCode.UNSAFE_SOCKET_PATH)
+    try:
+        metadata = runtime_directory.lstat()
+    except FileNotFoundError:
+        return
+    except OSError:
+        raise EndpointError(
+            EndpointFailureCode.UNSAFE_RUNTIME_DIRECTORY
+        ) from None
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or stat.S_ISLNK(metadata.st_mode)
+        or metadata.st_uid != os.geteuid()
+    ):
+        raise EndpointError(EndpointFailureCode.UNSAFE_RUNTIME_DIRECTORY)
+    _remove_inactive_socket(socket_path)
+    try:
+        runtime_directory.rmdir()
+    except OSError:
+        return
 
 
 class ControlConnection:
@@ -418,35 +447,7 @@ class LocalControlServer:
             raise EndpointError(EndpointFailureCode.UNSAFE_SOCKET_PATH)
 
     def _remove_stale_socket(self) -> None:
-        try:
-            metadata = self._socket_path.lstat()
-        except FileNotFoundError:
-            return
-        if (
-            not stat.S_ISSOCK(metadata.st_mode)
-            or metadata.st_uid != os.geteuid()
-        ):
-            raise EndpointError(EndpointFailureCode.UNSAFE_SOCKET_PATH)
-        probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        try:
-            probe.connect(str(self._socket_path))
-        except OSError as error:
-            if error.errno not in {errno.ECONNREFUSED, errno.ENOENT}:
-                raise EndpointError(
-                    EndpointFailureCode.UNSAFE_SOCKET_PATH
-                ) from None
-        else:
-            raise EndpointError(EndpointFailureCode.SOCKET_IN_USE)
-        finally:
-            probe.close()
-        current = self._socket_path.lstat()
-        if (
-            current.st_dev != metadata.st_dev
-            or current.st_ino != metadata.st_ino
-            or not stat.S_ISSOCK(current.st_mode)
-        ):
-            raise EndpointError(EndpointFailureCode.UNSAFE_SOCKET_PATH)
-        self._socket_path.unlink()
+        _remove_inactive_socket(self._socket_path)
 
     def _remove_socket(self, identity: SocketIdentity) -> None:
         try:
@@ -459,3 +460,35 @@ class LocalControlServer:
             and metadata.st_ino == identity.inode
         ):
             self._socket_path.unlink()
+
+
+def _remove_inactive_socket(socket_path: Path) -> None:
+    try:
+        metadata = socket_path.lstat()
+    except FileNotFoundError:
+        return
+    if not stat.S_ISSOCK(metadata.st_mode) or metadata.st_uid != os.geteuid():
+        raise EndpointError(EndpointFailureCode.UNSAFE_SOCKET_PATH)
+    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        probe.connect(str(socket_path))
+    except OSError as error:
+        if error.errno not in {errno.ECONNREFUSED, errno.ENOENT}:
+            raise EndpointError(
+                EndpointFailureCode.UNSAFE_SOCKET_PATH
+            ) from None
+    else:
+        raise EndpointError(EndpointFailureCode.SOCKET_IN_USE)
+    finally:
+        probe.close()
+    try:
+        current = socket_path.lstat()
+    except FileNotFoundError:
+        return
+    if (
+        current.st_dev != metadata.st_dev
+        or current.st_ino != metadata.st_ino
+        or not stat.S_ISSOCK(current.st_mode)
+    ):
+        raise EndpointError(EndpointFailureCode.UNSAFE_SOCKET_PATH)
+    socket_path.unlink()

@@ -10,9 +10,6 @@ from sidekick_usages.cli.context import invocation_context
 from sidekick_usages.cli.help import BrandedTyperGroup, branded_command
 from sidekick_usages.cli.persistence import exit_persistence_failure
 from sidekick_usages.persistence.errors import PersistenceError
-from sidekick_usages.scheduler_quiescence import (
-    SchedulerMutationBlockedError,
-)
 
 
 def repair_permissions_cmd(
@@ -44,7 +41,7 @@ def repair_permissions_cmd(
         raise typer.Exit()
     try:
         result = service.repair_permissions()
-    except (SchedulerMutationBlockedError, PersistenceError) as error:
+    except PersistenceError as error:
         exit_persistence_failure(ctx, error)
     invocation.console.print(
         "[green]Permissions repaired and verified.[/green]"

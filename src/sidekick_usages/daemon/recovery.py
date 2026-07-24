@@ -2,8 +2,8 @@
 
 from collections.abc import Callable
 from datetime import datetime
-from uuid import uuid4
 
+from sidekick_usages.core.accounts.identifiers import new_operation_id
 from sidekick_usages.core.accounts.types import OperationId
 from sidekick_usages.core.selection.models import DueOperation
 from sidekick_usages.core.selection.types import (
@@ -20,10 +20,6 @@ from sidekick_usages.persistence.operation_queue import OperationQueueStore
 __all__ = ["ActivationRecoveryScheduler"]
 
 
-def _new_operation_id() -> OperationId:
-    return OperationId(str(uuid4()))
-
-
 class ActivationRecoveryScheduler:
     """Enroll unfinished journals before switching can become ready."""
 
@@ -32,7 +28,7 @@ class ActivationRecoveryScheduler:
         journals: ActivationJournalStore,
         queue: OperationQueueStore,
         *,
-        operation_id_factory: Callable[[], OperationId] = _new_operation_id,
+        operation_id_factory: Callable[[], OperationId] = new_operation_id,
     ) -> None:
         self._journals = journals
         self._queue = queue

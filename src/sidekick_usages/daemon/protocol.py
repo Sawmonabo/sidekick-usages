@@ -2,7 +2,6 @@
 
 import struct
 from collections import deque
-from uuid import uuid4
 
 from sidekick_usages.core.accounts.types import (
     OperationId,
@@ -61,7 +60,6 @@ __all__ = [
     "encode_event",
     "encode_frame",
     "encode_request",
-    "new_request_id",
 ]
 
 PROTOCOL_VERSION = 1
@@ -182,11 +180,6 @@ class FramedTransport:
     def close(self) -> None:
         """Close the connected stream."""
         self._connection.close()
-
-
-def new_request_id() -> RequestId:
-    """Return one canonical random request correlation ID."""
-    return RequestId(str(uuid4()))
 
 
 def encode_frame(payload: bytes) -> bytes:

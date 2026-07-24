@@ -9,9 +9,13 @@ from sidekick_usages.branding import ROBOT_LINES
 from sidekick_usages.cli.context import DaemonContext
 from sidekick_usages.core.models import Account, ClaudeSetupTokenCredentials
 from sidekick_usages.core.types import AccountLabel, ExitCode
-from sidekick_usages.daemon.models.maintenance import DaemonOperationResult
-from sidekick_usages.daemon.scheduled_maintenance import DaemonManager
-from sidekick_usages.daemon.types.maintenance import DaemonOperation
+from sidekick_usages.daemon.lifecycle.manager import DaemonManager
+from sidekick_usages.daemon.models.lifecycle import DaemonOperationResult
+from sidekick_usages.daemon.types.lifecycle import (
+    DaemonOperation,
+    ServiceBackendId,
+    ServiceLifecycleState,
+)
 from sidekick_usages.http import HttpClient
 from sidekick_usages.providers.registry import build_provider_registry
 from tests.test_support import (
@@ -107,8 +111,7 @@ def test_daemon_header_is_limited_to_successful_status(
 
         def run(
             self,
-            operation: str,
-            backend: str = "auto",
+            operation: DaemonOperation | str,
         ) -> DaemonOperationResult:
             operation_id = DaemonOperation(operation)
             if operation_id is DaemonOperation.STATUS:
@@ -118,12 +121,21 @@ def test_daemon_header_is_limited_to_successful_status(
                     else "missing"
                 )
                 return DaemonOperationResult(
-                    backend,
+                    ServiceBackendId.SYSTEMD,
+                    (
+                        ServiceLifecycleState.READY
+                        if self.status_exit_code is ExitCode.SUCCESS
+                        else ServiceLifecycleState.ABSENT
+                    ),
                     message,
                     self.status_exit_code,
                 )
             if operation_id is DaemonOperation.INSTALL:
-                return DaemonOperationResult(backend, "installed")
+                return DaemonOperationResult(
+                    ServiceBackendId.SYSTEMD,
+                    ServiceLifecycleState.READY,
+                    "installed",
+                )
             raise AssertionError(
                 f"Unexpected daemon operation: {operation_id.value}"
             )
@@ -135,7 +147,7 @@ def test_daemon_header_is_limited_to_successful_status(
     output = status_stdout.getvalue()
     assert output.count(ROBOT_LINES[2]) == 1
     assert "daemon status" in output
-    assert "auto: healthy" in output
+    assert "systemd: healthy" in output
 
     install_cli, install_stdout, _ = _install_context(tmp_path / "install", [])
     install_cli.daemon = DaemonContext(FakeDaemonManager())
@@ -143,7 +155,7 @@ def test_daemon_header_is_limited_to_successful_status(
     assert result.exit_code == 0
     output = install_stdout.getvalue()
     assert ROBOT_LINES[2] not in output
-    assert output.strip() == "auto: installed"
+    assert output.strip() == "systemd: installed"
 
     FakeDaemonManager.status_exit_code = ExitCode.MANUAL_ACTION
     failed_cli, failed_stdout, _ = _install_context(
@@ -154,4 +166,4 @@ def test_daemon_header_is_limited_to_successful_status(
     assert result.exit_code == 1
     output = failed_stdout.getvalue()
     assert ROBOT_LINES[2] not in output
-    assert output.strip() == "auto: missing"
+    assert output.strip() == "systemd: missing"

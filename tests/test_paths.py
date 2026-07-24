@@ -84,7 +84,19 @@ def test_discovery_maps_platform_roots_to_one_current_layout(
     assert paths.service_state == root / "service-state.json"
     assert paths.service_logs == root / "logs"
     assert paths.supervisor_socket == root / "runtime" / "supervisor.sock"
-    assert paths.supervisor_lock == root / "runtime" / "supervisor.lock"
+    assert paths.systemd_user_service == (
+        Path.home()
+        / ".config"
+        / "systemd"
+        / "user"
+        / "sidekick-usages.service"
+    )
+    assert paths.launch_agent == (
+        Path.home()
+        / "Library"
+        / "LaunchAgents"
+        / "com.sidekick-usages.supervisor.plist"
+    )
 
 
 @pytest.mark.parametrize(

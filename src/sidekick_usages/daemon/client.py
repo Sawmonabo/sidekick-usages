@@ -6,6 +6,7 @@ from collections.abc import Generator
 from pathlib import Path
 
 from sidekick_usages import __version__
+from sidekick_usages.core.accounts.identifiers import new_request_id
 from sidekick_usages.core.accounts.types import SidekickAccountId
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.models.protocol import (
@@ -21,7 +22,6 @@ from sidekick_usages.daemon.models.protocol import (
 from sidekick_usages.daemon.protocol import (
     PROTOCOL_VERSION,
     FramedTransport,
-    new_request_id,
 )
 from sidekick_usages.daemon.types.protocol import (
     ConnectedSocket,

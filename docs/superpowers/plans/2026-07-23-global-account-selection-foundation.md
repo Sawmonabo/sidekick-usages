@@ -306,7 +306,7 @@ Extend `ApplicationPaths` in `paths.py` with qualified roots for:
 - service state;
 - service logs;
 - the owner-only runtime directory; and
-- the supervisor socket and singleton lock.
+- the supervisor socket.
 
 All per-account paths are derived from `SidekickAccountId`, never from a
 friendly label or raw provider identity.
@@ -330,10 +330,11 @@ from presentation or selection state.
 
 ### 3.5 Daemon package
 
-Atomically replace `src/sidekick_usages/daemon.py` with:
+The `src/sidekick_usages/daemon/` package owns:
 
 - `daemon/__init__.py`: stable exports used by CLI composition;
-- `daemon/models.py`: service lifecycle and safe progress results;
+- `daemon/models/`: lifecycle and safe progress models;
+- `daemon/types/`: closed daemon values grouped by owner;
 - `daemon/protocol.py`: bounded version-one message codec;
 - `daemon/peer.py`: Linux, WSL, and macOS peer-user verification;
 - `daemon/client.py`: short-lived CLI control client;
@@ -341,11 +342,9 @@ Atomically replace `src/sidekick_usages/daemon.py` with:
 - `daemon/workers.py`: worker process launch, timeout, and termination;
 - `daemon/scheduler.py`: durable queue wakeup and retry dispatch;
 - `daemon/recovery.py`: startup activation recovery dispatch;
-- `daemon/systemd.py`: Linux and WSL user service backend;
-- `daemon/launchd.py`: macOS LaunchAgent backend;
-- `daemon/wsl.py`: Windows rescue-task generation and verification;
-- `daemon/manager.py`: public install, status, readiness, and uninstall
-  facade;
+- `daemon/lifecycle/`: generated artifacts, native command execution,
+  Linux/WSL/macOS backends, platform detection, readiness, cleanup, and the
+  public lifecycle facade;
 - `daemon/entrypoint.py`: supervisor console entry point; and
 - `daemon/worker_entrypoint.py`: provider-heavy worker console entry point.
 
@@ -653,29 +652,29 @@ sidekick-usages-worker = "sidekick_usages.daemon.worker_entrypoint:main"
 
 ### Tests first
 
-- [ ] Replace the current service fixture test with one table-driven artifact
+- [x] Replace the current service fixture test with one table-driven artifact
   contract whose cases are only the genuinely different backends: Linux,
   WSL rescue, macOS, and feature-disabled native Windows. Check user-level
   execution, exact entry point, restart semantics, permissions, and absence
   of credentials or periodic maintenance.
-- [ ] Add one lifecycle transition scenario covering fresh install,
+- [x] Add one lifecycle transition scenario covering fresh install,
   idempotent rerun, verified restart, single-service enforcement, and
   uninstall that preserves accounts and provider state.
-- [ ] Do not add separate tests for each lifecycle verb, failure message,
+- [x] Do not add separate tests for each lifecycle verb, failure message,
   architecture, or service-definition field.
 
 ### Implementation
 
-- [ ] Replace the existing systemd timer with a resident user service using
+- [x] Replace the existing systemd timer with a resident user service using
   the exact installed supervisor entry point and `Restart=on-failure`.
-- [ ] On WSL, install the same systemd user service and generate a current-user
+- [x] On WSL, install the same systemd user service and generate a current-user
   Windows Task Scheduler logon rescue. The rescue starts WSL and asks the user
   manager to start Sidekick; it never calls `maintain`.
-- [ ] On macOS, install one per-user LaunchAgent under
+- [x] On macOS, install one per-user LaunchAgent under
   `~/Library/LaunchAgents` in the GUI login context.
-- [ ] Keep service definitions versioned and generated from typed models.
+- [x] Keep service definitions versioned and generated from typed models.
   Reject executable or path ambiguity before writing.
-- [ ] Implement the transition readiness sequence exactly:
+- [x] Implement the transition readiness sequence exactly:
   1. install and start the resident service;
   2. complete protocol handshake;
   3. verify every saved account has due state;
@@ -683,18 +682,18 @@ sidekick-usages-worker = "sidekick_usages.daemon.worker_entrypoint:main"
   5. complete one bounded maintenance pass or record truthful account errors;
   6. restart and re-check the service; and
   7. re-check that only one resident service is active.
-- [ ] Uninstall only the Sidekick service, socket, rescue trigger, and
+- [x] Uninstall only the Sidekick service, socket, rescue trigger, and
   service-owned transient state. Leave accounts, private authorities,
   selected provider logins, metrics, and provider daemons untouched.
-- [ ] Return a clear feature-disabled result on native Windows.
+- [x] Return a clear feature-disabled result on native Windows.
 
 ### Verify and commit
 
-- [ ] Run `tests/test_daemon.py`, including the artifact table and lifecycle
+- [x] Run `tests/test_daemon.py`, including the artifact table and lifecycle
   transition scenario.
-- [ ] Render each generated service artifact in a temporary directory and
+- [x] Render each generated service artifact in a temporary directory and
   inspect exact paths, quoting, permissions, and absence of secrets.
-- [ ] Run architecture, Ruff, and `ty` gates, then commit.
+- [x] Run architecture, Ruff, and `ty` gates, then commit.
 
 ## 10. Task 7 — Daemon CLI, Doctor, and Packaging
 

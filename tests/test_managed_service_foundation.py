@@ -11,6 +11,7 @@ from threading import Event, Thread
 import pytest
 
 from sidekick_usages import __version__
+from sidekick_usages.core.accounts.identifiers import new_request_id
 from sidekick_usages.core.accounts.types import (
     AuthorityGeneration,
     OperationId,
@@ -70,7 +71,6 @@ from sidekick_usages.daemon.protocol import (
     decode_request,
     encode_frame,
     encode_request,
-    new_request_id,
 )
 from sidekick_usages.daemon.recovery import ActivationRecoveryScheduler
 from sidekick_usages.daemon.scheduler import DurableScheduler

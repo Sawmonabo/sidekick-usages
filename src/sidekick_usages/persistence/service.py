@@ -11,6 +11,7 @@ from sidekick_usages.persistence.credential_refresh_artifacts import (
     CredentialRefreshArtifacts,
     CredentialRefreshState,
 )
+from sidekick_usages.persistence.errors import SupervisorActiveError
 from sidekick_usages.persistence.filesystem import PersistenceFilesystem
 from sidekick_usages.persistence.models.status import (
     PermissionRepairResult,
@@ -20,12 +21,8 @@ from sidekick_usages.persistence.private_credentials import (
     PrivateCredentialTree,
 )
 from sidekick_usages.persistence.types.status import PersistenceState
-from sidekick_usages.scheduler_quiescence import (
-    SchedulerMutationBlockedError,
-    SchedulerQuiescenceAssessment,
-)
 
-type SchedulerAssessor = Callable[[], SchedulerQuiescenceAssessment]
+type MaintenanceQuiescent = Callable[[], bool]
 
 
 class PersistenceService:
@@ -35,10 +32,10 @@ class PersistenceService:
         self,
         paths: ApplicationPaths,
         *,
-        scheduler_assessor: SchedulerAssessor,
+        maintenance_quiescent: MaintenanceQuiescent,
     ) -> None:
         self.paths = paths
-        self._scheduler_assessor = scheduler_assessor
+        self._maintenance_quiescent = maintenance_quiescent
         self._filesystem = PersistenceFilesystem(paths.accounts)
         self._private = PrivateCredentialTree(
             paths.private_credentials,
@@ -72,9 +69,9 @@ class PersistenceService:
 
     def reset_all(self) -> int:
         """Delete all Sidekick account and credential state."""
-        self._require_scheduler_quiescence()
+        self._require_maintenance_quiescence()
         with self._refresh.hold_quiescent():
-            self._require_scheduler_quiescence()
+            self._require_maintenance_quiescence()
             store = self.open_store()
             CredentialRefreshTransactions(
                 store,
@@ -87,13 +84,12 @@ class PersistenceService:
 
     def repair_permissions(self) -> PermissionRepairResult:
         """Repair current Sidekick-owned credential permissions."""
-        self._require_scheduler_quiescence()
+        self._require_maintenance_quiescence()
         repair = self._private.repair_permissions(
-            locked_precondition=self._require_scheduler_quiescence,
+            locked_precondition=self._require_maintenance_quiescence,
         )
         return PermissionRepairResult(repair, self.status())
 
-    def _require_scheduler_quiescence(self) -> None:
-        assessment = self._scheduler_assessor()
-        if not assessment.quiescent:
-            raise SchedulerMutationBlockedError(assessment)
+    def _require_maintenance_quiescence(self) -> None:
+        if not self._maintenance_quiescent():
+            raise SupervisorActiveError

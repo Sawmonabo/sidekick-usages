@@ -163,7 +163,13 @@ def make_application_paths(root: Path) -> ApplicationPaths:
         service_logs=root / "logs",
         runtime_directory=root / "runtime",
         supervisor_socket=root / "runtime" / "supervisor.sock",
-        supervisor_lock=root / "runtime" / "supervisor.lock",
+        systemd_user_service=root / "home/systemd/sidekick-usages.service",
+        launch_agent=(
+            root
+            / "home"
+            / "LaunchAgents"
+            / "com.sidekick-usages.supervisor.plist"
+        ),
     )
 
 

@@ -1,6 +1,4 @@
-"""Scheduled-maintenance daemon command group."""
-
-from typing import Annotated
+"""Resident supervisor lifecycle command group."""
 
 import typer
 
@@ -8,24 +6,19 @@ from sidekick_usages.branding import brand_header
 from sidekick_usages.cli.context import invocation_context
 from sidekick_usages.cli.help import BrandedTyperGroup, branded_command
 from sidekick_usages.core.types import ExitCode
-from sidekick_usages.daemon.types.maintenance import DaemonOperation
+from sidekick_usages.daemon.types.lifecycle import DaemonOperation
 from sidekick_usages.errors import UsageError
 
 __all__ = ["register"]
-
-_BACKEND_HELP = (
-    "Scheduler backend: auto, systemd, cron, launchd, task-scheduler."
-)
 
 
 def _run(
     ctx: typer.Context,
     operation: DaemonOperation,
-    backend: str,
 ) -> None:
     invocation = invocation_context(ctx)
     try:
-        result = invocation.require_daemon(ctx).daemon.run(operation, backend)
+        result = invocation.require_daemon(ctx).daemon.run(operation)
     except (UsageError, ValueError) as error:
         invocation.err_console.print(f"[red]{error}[/red]")
         raise typer.Exit(code=ExitCode.SCHEDULER_ERROR) from error
@@ -47,44 +40,26 @@ def _run(
         raise typer.Exit(code=result.exit_code)
 
 
-def install_cmd(
-    ctx: typer.Context,
-    backend: Annotated[
-        str,
-        typer.Option("--backend", help=_BACKEND_HELP),
-    ] = "auto",
-) -> None:
-    """Install scheduled saved-token refresh for the current user."""
-    _run(ctx, DaemonOperation.INSTALL, backend)
+def install_cmd(ctx: typer.Context) -> None:
+    """Install and verify the current user's resident supervisor."""
+    _run(ctx, DaemonOperation.INSTALL)
 
 
-def status_cmd(
-    ctx: typer.Context,
-    backend: Annotated[
-        str,
-        typer.Option("--backend", help=_BACKEND_HELP),
-    ] = "auto",
-) -> None:
-    """Inspect scheduled saved-token refresh for the current user."""
-    _run(ctx, DaemonOperation.STATUS, backend)
+def status_cmd(ctx: typer.Context) -> None:
+    """Inspect the current user's resident supervisor."""
+    _run(ctx, DaemonOperation.STATUS)
 
 
-def uninstall_cmd(
-    ctx: typer.Context,
-    backend: Annotated[
-        str,
-        typer.Option("--backend", help=_BACKEND_HELP),
-    ] = "auto",
-) -> None:
-    """Remove scheduled saved-token refresh for the current user."""
-    _run(ctx, DaemonOperation.UNINSTALL, backend)
+def uninstall_cmd(ctx: typer.Context) -> None:
+    """Remove only the current user's Sidekick supervisor."""
+    _run(ctx, DaemonOperation.UNINSTALL)
 
 
 def register(application: typer.Typer) -> None:
     """Create and register the daemon command group."""
     daemon_app = typer.Typer(
         cls=BrandedTyperGroup,
-        help="Install, inspect, or remove scheduled token refresh.",
+        help="Install, inspect, or remove the resident account supervisor.",
         rich_markup_mode="rich",
     )
     branded_command(daemon_app, "install")(install_cmd)

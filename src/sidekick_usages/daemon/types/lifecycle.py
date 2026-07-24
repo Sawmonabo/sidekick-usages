@@ -1,0 +1,50 @@
+"""Closed values for per-user resident-service lifecycle."""
+
+from enum import StrEnum
+
+__all__ = [
+    "DaemonOperation",
+    "ServiceBackendId",
+    "ServiceFailureCode",
+    "ServiceLifecycleState",
+]
+
+
+class DaemonOperation(StrEnum):
+    """Supported resident-service lifecycle operations."""
+
+    INSTALL = "install"
+    STATUS = "status"
+    UNINSTALL = "uninstall"
+
+
+class ServiceBackendId(StrEnum):
+    """Supported operating-system service integrations."""
+
+    SYSTEMD = "systemd"
+    WSL = "wsl"
+    LAUNCHD = "launchd"
+    FEATURE_DISABLED = "feature-disabled"
+
+
+class ServiceLifecycleState(StrEnum):
+    """Observed state of one complete platform integration."""
+
+    ABSENT = "absent"
+    INSTALLED = "installed"
+    READY = "ready"
+    UNHEALTHY = "unhealthy"
+    FEATURE_DISABLED = "feature_disabled"
+
+
+class ServiceFailureCode(StrEnum):
+    """Safe resident-service lifecycle failures."""
+
+    ARTIFACT_UNSAFE = "artifact_unsafe"
+    COMMAND_FAILED = "command_failed"
+    EXECUTABLE_UNAVAILABLE = "executable_unavailable"
+    HANDSHAKE_FAILED = "handshake_failed"
+    MAINTENANCE_TIMEOUT = "maintenance_timeout"
+    QUEUE_INCOMPLETE = "queue_incomplete"
+    SERVICE_UNHEALTHY = "service_unhealthy"
+    CODEX_BROKER_UNAVAILABLE = "codex_broker_unavailable"

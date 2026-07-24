@@ -14,9 +14,6 @@ from sidekick_usages.cli.help import branded_command
 from sidekick_usages.cli.persistence import exit_persistence_failure
 from sidekick_usages.core.types import AccountLabel, ExitCode, ProviderId
 from sidekick_usages.persistence.errors import PersistenceError
-from sidekick_usages.scheduler_quiescence import (
-    SchedulerMutationBlockedError,
-)
 
 _MIN_TOKEN_LENGTH_FOR_MASKING = 30
 
@@ -193,7 +190,7 @@ def reset_cmd(
         persistence = invocation.require_persistence(ctx).persistence
         try:
             status = persistence.status()
-        except (SchedulerMutationBlockedError, PersistenceError) as error:
+        except PersistenceError as error:
             exit_persistence_failure(ctx, error)
         validated_count = status.account_count
         count = status.account_count
@@ -225,7 +222,7 @@ def reset_cmd(
         return
     try:
         invocation.require_persistence(ctx).persistence.reset_all()
-    except (SchedulerMutationBlockedError, PersistenceError) as error:
+    except PersistenceError as error:
         exit_persistence_failure(ctx, error)
     if validated_count is None:
         invocation.console.print(

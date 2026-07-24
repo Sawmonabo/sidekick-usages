@@ -72,6 +72,13 @@ class ServiceStateStore:
             recover_state_file(self._filesystem, transaction)
             self.load()
 
+    def clear(self) -> None:
+        """Delete the exact service-state authority when present."""
+        with self._lock.hold():
+            snapshot = self._filesystem.read_opaque_private()
+            if snapshot is not None:
+                self._filesystem.delete_opaque_private(snapshot.fingerprint)
+
     @staticmethod
     def _decode(snapshot: FileSnapshot | None) -> ServiceState | None:
         return (
