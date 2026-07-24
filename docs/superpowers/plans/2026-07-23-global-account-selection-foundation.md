@@ -781,7 +781,69 @@ uv run python packaging/smoke_wheel.py --build
 
 - [ ] Run Ruff and `ty`, regenerate and inspect package metadata, then commit.
 
-## 11. Task 8 — Foundation Integration Gate
+## 11. Task 8 — Maintainable Exact Wheel Artifact Contract
+
+**Commit:** `refactor(packaging): derive exact wheel artifact contract`
+
+### Research first
+
+- [ ] Audit `packaging/smoke_wheel.py`, the build backend configuration,
+  wheel `RECORD`, source-control manifests, package data, console-script
+  metadata, and the existing packaging tests to identify why production files
+  currently have to be repeated by hand.
+- [ ] Compare a maintained packaging-standard or build-backend mechanism with
+  a small local derivation. Judge each option on exactness, accidental-file
+  detection, deleted-file detection, editable-install independence,
+  cross-platform behavior, source-distribution execution, maintenance cost,
+  and failure clarity.
+- [ ] Record the build-versus-adopt decision in
+  `docs/superpowers/research/`. The decision must identify one authoritative
+  source for shipped files and explain how unexpected and missing artifacts
+  both fail closed.
+- [ ] Do not retain, generate, or relocate another exhaustive Python filename
+  tuple. A generated dump with the same two-source synchronization problem is
+  not an improvement.
+
+### Tests first
+
+- [ ] Replace the existing file-list assertions with the smallest artifact
+  boundary that proves one freshly built wheel is self-contained, contains
+  only intended package and metadata files, exposes the required entry
+  points, and imports outside the checkout.
+- [ ] Keep at most one focused regression for the derived file contract and
+  one installed-wheel smoke scenario. Extend existing packaging tests; do not
+  create a packaging permutation suite.
+
+### Implementation
+
+- [ ] Make the build configuration or another existing package-owned source
+  the single authority for wheel contents.
+- [ ] Derive the expected artifact contract mechanically from that authority,
+  normalize paths portably, and compare it with the exact wheel `RECORD`.
+- [ ] Keep explicit assertions only for semantic release requirements that
+  cannot be derived, such as console scripts, required metadata, forbidden
+  credential material, and execution outside the checkout.
+- [ ] Separate build orchestration, artifact inspection, and installed smoke
+  behavior into cohesive units only where the rule of three supports it.
+- [ ] Preserve exact-one-wheel selection and isolated installation. Do not
+  weaken the verifier to broad prefix checks or merely import the editable
+  working tree.
+
+### Verify and commit
+
+- [ ] Run:
+
+```bash
+uv run pytest tests/test_packaging.py
+uv run python packaging/smoke_wheel.py --build
+uv run ruff check packaging/ tests/test_packaging.py
+uv run ty check packaging/ tests/test_packaging.py
+```
+
+- [ ] Inspect the implementation for repeated file inventories, platform path
+  assumptions, and editable-install leakage, then commit and push.
+
+## 12. Task 9 — Foundation Integration Gate
 
 This is a verification-only gate. It creates no duplicate integration,
 crash, secret-leak, rollback, or platform matrix and requires no empty
@@ -821,7 +883,7 @@ uv run python packaging/smoke_wheel.py --build
 - [ ] Confirm this phase does not mutate the machine's real accounts,
   provider logins, or installed scheduler.
 
-## 12. Foundation Completion Gate
+## 13. Foundation Completion Gate
 
 Do not begin the Codex plan until all statements are true:
 
