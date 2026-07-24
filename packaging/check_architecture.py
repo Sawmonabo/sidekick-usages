@@ -63,6 +63,12 @@ _CREDENTIAL_LEASE_CONSUMERS = frozenset(
         "src/sidekick_usages/usage/service.py",
     }
 )
+_DAEMON_CONTROL_FILES = frozenset(
+    {
+        "src/sidekick_usages/daemon/peer.py",
+        "src/sidekick_usages/daemon/protocol.py",
+    }
+)
 _PYDANTIC_OWNERS = frozenset(
     {
         "src/sidekick_usages/persistence/account_schema_v3.py",
@@ -349,6 +355,26 @@ def _check_import(
                 "sidekick_usages.credentials.authorities",
             ),
             "credential leases are private to worker service boundaries",
+        ),
+        (
+            "DEP006",
+            path in _DAEMON_CONTROL_FILES,
+            matches_any(
+                module,
+                (
+                    "click",
+                    "prompt_toolkit",
+                    "rich",
+                    "typer",
+                    "sidekick_usages.cli",
+                    "sidekick_usages.credentials",
+                    "sidekick_usages.http",
+                    "sidekick_usages.persistence",
+                    "sidekick_usages.providers",
+                    "sidekick_usages.usage",
+                ),
+            ),
+            "daemon control primitives cannot import heavy application owners",
         ),
         (
             "PATH001",

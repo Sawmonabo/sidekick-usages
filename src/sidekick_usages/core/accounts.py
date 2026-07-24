@@ -77,6 +77,12 @@ class OperationId(_CanonicalUuid):
     _name = "Operation ID"
 
 
+class RequestId(_CanonicalUuid):
+    """Correlation identifier for one local control request."""
+
+    _name = "Request ID"
+
+
 @dataclass(frozen=True, slots=True)
 class ProviderIdentity:
     """Bounded provider identity intentionally hidden from representations."""
@@ -432,6 +438,7 @@ __all__ = [
     "MetricsFreshness",
     "OperationId",
     "ProviderIdentity",
+    "RequestId",
     "SavedAccount",
     "SidekickAccountId",
 ]

@@ -1,15 +1,21 @@
 """Load-bearing durable state and recovery scenarios for the supervisor."""
 
+import socket
+from collections.abc import Iterator
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
+from threading import Event, Thread
 
 import pytest
 
+from sidekick_usages import __version__
 from sidekick_usages.core.accounts import (
     AuthorityGeneration,
     OperationId,
     ProviderIdentity,
+    RequestId,
     SidekickAccountId,
 )
 from sidekick_usages.core.models import (
@@ -32,6 +38,40 @@ from sidekick_usages.core.selection import (
     transition_activation,
 )
 from sidekick_usages.core.types import AccountLabel, ProviderId
+from sidekick_usages.daemon.client import ControlClient
+from sidekick_usages.daemon.peer import (
+    PeerFailureCode,
+    PeerIdentity,
+    PeerSocket,
+    PeerVerificationError,
+    PeerVerifier,
+)
+from sidekick_usages.daemon.protocol import (
+    PROTOCOL_VERSION,
+    AcceptedPayload,
+    AccountPayload,
+    CompletedPayload,
+    CompletionOutcome,
+    ConnectedSocket,
+    ControlEvent,
+    ControlRequest,
+    EmptyPayload,
+    EventKind,
+    EventPayload,
+    FrameDecoder,
+    ProgressPayload,
+    ProgressPhase,
+    RequestKind,
+    decode_event,
+    decode_request,
+    encode_frame,
+    encode_request,
+    new_request_id,
+)
+from sidekick_usages.daemon.supervisor import (
+    ControlConnection,
+    ControlDispatcher,
+)
 from sidekick_usages.paths import ApplicationPaths
 from sidekick_usages.persistence.account_index import AccountIndex
 from sidekick_usages.persistence.activation_journal import (
@@ -355,3 +395,232 @@ def test_interrupted_activation_recovers_from_provider_read_back(
         OperationQueueStore(state.paths.durable_operations).load()
         == state.queue.load()
     )
+
+
+class _FragmentingSocket:
+    """Send deliberately small fragments through a real socket."""
+
+    def __init__(self, connection: socket.socket) -> None:
+        self._connection = connection
+
+    def recv(self, size: int, /) -> bytes:
+        return self._connection.recv(size)
+
+    def sendall(self, data: bytes, /) -> None:
+        for offset in range(0, len(data), 3):
+            self._connection.sendall(data[offset : offset + 3])
+
+    def close(self) -> None:
+        with suppress(OSError):
+            self._connection.shutdown(socket.SHUT_RDWR)
+        self._connection.close()
+
+
+class _VerifiedPeer:
+    """Synthetic proof boundary for protocol contract tests."""
+
+    def verify(self, connection: PeerSocket) -> PeerIdentity:
+        del connection
+        return PeerIdentity(1000)
+
+
+class _RejectedPeer:
+    """Synthetic operating-system proof failure."""
+
+    def verify(self, connection: PeerSocket) -> PeerIdentity:
+        del connection
+        raise PeerVerificationError(PeerFailureCode.PROOF_UNAVAILABLE)
+
+
+@dataclass(slots=True)
+class _RecordingDispatcher:
+    """Record authenticated actions and expose one cancellable stream."""
+
+    requests: list[ControlRequest]
+    cancellations: list[RequestId]
+    release_subscription: Event
+
+    def dispatch(self, request: ControlRequest) -> Iterator[ControlEvent]:
+        self.requests.append(request)
+        if request.kind is RequestKind.ACTIVATE:
+            operation_id = OperationId(
+                "f619cb29-9f6e-40dd-b35d-cf6a6ed93f79"
+            )
+            yield _service_event(
+                request,
+                EventKind.ACCEPTED,
+                AcceptedPayload(operation_id),
+            )
+            yield _service_event(
+                request,
+                EventKind.PROGRESS,
+                ProgressPayload(operation_id, ProgressPhase.VERIFYING),
+            )
+            yield _service_event(
+                request,
+                EventKind.COMPLETED,
+                CompletedPayload(
+                    operation_id,
+                    CompletionOutcome.SUCCEEDED,
+                ),
+            )
+            return
+        if request.kind is RequestKind.SUBSCRIBE:
+            yield _service_event(
+                request,
+                EventKind.ACCEPTED,
+                AcceptedPayload(operation_id=None),
+            )
+            self.release_subscription.wait(timeout=2)
+            yield _service_event(
+                request,
+                EventKind.PROGRESS,
+                ProgressPayload(
+                    operation_id=None,
+                    phase=ProgressPhase.RUNNING,
+                ),
+            )
+            return
+        raise AssertionError("Unexpected synthetic dispatch request.")
+
+    def cancel(self, request_id: RequestId) -> None:
+        self.cancellations.append(request_id)
+
+
+def _service_event(
+    request: ControlRequest,
+    kind: EventKind,
+    payload: EventPayload,
+) -> ControlEvent:
+    return ControlEvent(
+        protocol_version=PROTOCOL_VERSION,
+        request_id=request.request_id,
+        kind=kind,
+        payload=payload,
+        package_version=__version__,
+    )
+
+
+def _serve_protocol_connection(
+    connection: socket.socket,
+    verifier: PeerVerifier,
+    dispatcher: ControlDispatcher,
+) -> None:
+    ControlConnection(connection, verifier, dispatcher).serve()
+
+
+def _rejected_protocol_response(
+    verifier: PeerVerifier,
+    outbound: bytes,
+    dispatcher: _RecordingDispatcher,
+) -> bytes:
+    server_socket, client_socket = socket.socketpair()
+    client_socket.sendall(outbound)
+    server = Thread(
+        target=_serve_protocol_connection,
+        args=(server_socket, verifier, dispatcher),
+    )
+    server.start()
+    server.join(timeout=2)
+    assert not server.is_alive()
+    response = bytearray()
+    while True:
+        try:
+            chunk = client_socket.recv(65_540)
+        except ConnectionResetError:
+            break
+        if not chunk:
+            break
+        response.extend(chunk)
+    client_socket.close()
+    return bytes(response)
+
+
+def test_authenticated_control_stream_frames_completes_and_cancels() -> None:
+    """One peer-proven stream frames, completes, and cancels safely."""
+    account_id = SidekickAccountId(
+        "69b33871-dcd9-4e47-8ef8-f77d9944a956"
+    )
+    fragmented_request = ControlRequest(
+        protocol_version=PROTOCOL_VERSION,
+        request_id=new_request_id(),
+        kind=RequestKind.ACTIVATE,
+        payload=AccountPayload(ProviderId.CLAUDE, account_id),
+        package_version=__version__,
+    )
+    frame = encode_request(fragmented_request)
+    decoder = FrameDecoder()
+    decoded_frames: list[bytes] = []
+    for byte in frame:
+        decoded_frames.extend(decoder.feed(bytes((byte,))))
+    decoder.finish()
+    assert len(decoded_frames) == 1
+    assert decode_request(decoded_frames[0]) == fragmented_request
+
+    server_socket, client_socket = socket.socketpair()
+    dispatcher = _RecordingDispatcher([], [], Event())
+    server = Thread(
+        target=_serve_protocol_connection,
+        args=(server_socket, _VerifiedPeer(), dispatcher),
+    )
+    server.start()
+    fragmented_client: ConnectedSocket = _FragmentingSocket(client_socket)
+    client = ControlClient(fragmented_client)
+
+    activation = tuple(client.activate(ProviderId.CLAUDE, account_id))
+    assert tuple(event.kind for event in activation) == (
+        EventKind.ACCEPTED,
+        EventKind.PROGRESS,
+        EventKind.COMPLETED,
+    )
+    subscription = client.subscribe()
+    accepted = next(subscription)
+    assert accepted.kind is EventKind.ACCEPTED
+    subscription.close()
+    dispatcher.release_subscription.set()
+    server.join(timeout=2)
+
+    assert not server.is_alive()
+    assert tuple(request.kind for request in dispatcher.requests) == (
+        RequestKind.ACTIVATE,
+        RequestKind.SUBSCRIBE,
+    )
+    assert dispatcher.cancellations == [accepted.request_id]
+
+
+def test_control_protocol_fails_closed_at_each_trust_boundary() -> None:
+    """Unproved peers, malformed input, and mismatches never dispatch."""
+    malformed = encode_frame(
+        b'{"credential":"test-only-secret","kind":"activate"}'
+    )
+    incompatible = encode_request(
+        ControlRequest(
+            protocol_version=PROTOCOL_VERSION + 1,
+            request_id=new_request_id(),
+            kind=RequestKind.HANDSHAKE,
+            payload=EmptyPayload(),
+            package_version=__version__,
+        )
+    )
+    cases: tuple[tuple[PeerVerifier, bytes, EventKind | None], ...] = (
+        (_RejectedPeer(), malformed, None),
+        (_VerifiedPeer(), malformed, EventKind.FAILED),
+        (_VerifiedPeer(), incompatible, EventKind.INCOMPATIBLE),
+    )
+    for verifier, outbound, expected_kind in cases:
+        dispatcher = _RecordingDispatcher([], [], Event())
+        response = _rejected_protocol_response(
+            verifier,
+            outbound,
+            dispatcher,
+        )
+        assert dispatcher.requests == []
+        assert b"test-only-secret" not in response
+        if expected_kind is None:
+            assert response == b""
+            continue
+        decoder = FrameDecoder()
+        frames = decoder.feed(response)
+        decoder.finish()
+        assert len(frames) == 1
+        assert decode_event(frames[0]).kind is expected_kind

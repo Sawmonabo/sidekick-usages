@@ -1,4 +1,4 @@
-"""Reusable OS scheduler backends for token refresh maintenance."""
+"""Legacy OS scheduler backends retained during supervisor transition."""
 
 import enum
 import os
