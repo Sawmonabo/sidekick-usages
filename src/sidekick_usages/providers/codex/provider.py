@@ -14,7 +14,8 @@ from sidekick_usages.core.models import (
 )
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.errors import AuthError
-from sidekick_usages.http import HttpClient, HttpOperation
+from sidekick_usages.http.client import HttpClient
+from sidekick_usages.http.types import HttpOperation
 from sidekick_usages.providers.base import (
     CredentialDetection,
     Provider,
@@ -38,7 +39,7 @@ from sidekick_usages.providers.codex.schemas import (
     validate_refresh_payload,
 )
 from sidekick_usages.providers.codex.usage import fetch_usage
-from sidekick_usages.serialization import JsonObject
+from sidekick_usages.serialization.json import JsonObject
 
 OAUTH_REFRESH_ENDPOINT = "https://auth.openai.com/oauth/token"
 OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
@@ -214,6 +215,3 @@ def _failure(kind: ProviderFailureKind, message: str) -> ProviderFailure:
         kind=kind,
         message=message,
     )
-
-
-__all__ = ["CodexProvider"]

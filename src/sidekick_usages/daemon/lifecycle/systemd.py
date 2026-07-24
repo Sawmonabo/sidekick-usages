@@ -19,8 +19,6 @@ from sidekick_usages.daemon.types.lifecycle import (
     ServiceLifecycleState,
 )
 
-__all__ = ["SystemdBackend"]
-
 _SYSTEMCTL = ("systemctl", "--user")
 _STATUS_PROPERTIES = (
     "--property=LoadState",

@@ -15,7 +15,7 @@ from sidekick_usages.core.models import (
     UsageReport,
 )
 from sidekick_usages.core.types import AccountLabel, ProviderId
-from sidekick_usages.http import HttpClient
+from sidekick_usages.http.client import HttpClient
 from sidekick_usages.persistence.credentials.refresh.service import (
     CredentialRefreshCrashPoint,
 )
@@ -272,17 +272,3 @@ class CrashAt:
         """Crash only at the selected transaction event."""
         if point is self.point:
             raise SimulatedCrashError
-
-
-__all__ = [
-    "ACCESS_EXPIRY",
-    "BlockingRefreshProvider",
-    "CallbackRefreshProvider",
-    "CodexRefreshProvider",
-    "CrashAt",
-    "ManagedStageRefreshProvider",
-    "ParallelRefreshProvider",
-    "RefreshProvider",
-    "SimulatedCrashError",
-    "login_account",
-]

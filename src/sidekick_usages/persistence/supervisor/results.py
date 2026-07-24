@@ -17,8 +17,6 @@ from sidekick_usages.persistence.state.filesystem import (
 )
 from sidekick_usages.persistence.types.artifact import AuthorityExpectation
 
-__all__ = ["WorkerResultStore"]
-
 _RESULT_DIRECTORY = "results"
 
 

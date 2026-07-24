@@ -10,8 +10,10 @@ from typer.testing import CliRunner
 
 from sidekick_usages import __version__
 from sidekick_usages.branding import BRAND_DESCRIPTION, ROBOT_LINES
-from sidekick_usages.cli import app
+from sidekick_usages.cli.app import create_app
 from sidekick_usages.cli.context import InvocationContext
+
+CLI_APP = create_app()
 
 
 def _sentinel(
@@ -54,7 +56,7 @@ def test_help_is_branded_before_usage_without_loading_state(
 ) -> None:
     calls: list[str] = []
     result = CliRunner().invoke(
-        app,
+        CLI_APP,
         args,
         obj=_no_composition_context(calls),
     )
@@ -84,12 +86,12 @@ def test_short_help_alias_matches_long_help_at_every_command_level(
     """Root settings provide equivalent help through nested command levels."""
     calls: list[str] = []
     short = CliRunner().invoke(
-        app,
+        CLI_APP,
         [*path, "-h"],
         obj=_no_composition_context(calls),
     )
     long = CliRunner().invoke(
-        app,
+        CLI_APP,
         [*path, "--help"],
         obj=_no_composition_context(calls),
     )
@@ -114,7 +116,7 @@ def test_leaf_and_nested_help_share_one_header(
     args: list[str],
     usage: str,
 ) -> None:
-    result = CliRunner().invoke(app, args, env={"CI": "true"})
+    result = CliRunner().invoke(CLI_APP, args, env={"CI": "true"})
     assert result.exit_code == 0
     output = click.unstyle(result.output)
     assert output.count(ROBOT_LINES[2]) == 1
@@ -144,7 +146,7 @@ def test_help_uses_one_width_policy(
     shows_description: bool,
 ) -> None:
     result = CliRunner().invoke(
-        app,
+        CLI_APP,
         args,
         env={"COLUMNS": "80"},
         terminal_width=width,
@@ -163,18 +165,18 @@ def test_help_uses_one_width_policy(
 def test_help_width_override_does_not_leak_to_errors() -> None:
     runner = CliRunner()
     baseline_error = runner.invoke(
-        app,
+        CLI_APP,
         ["doctor", "--unknown-option"],
         env={"COLUMNS": "80"},
     )
     help_result = runner.invoke(
-        app,
+        CLI_APP,
         ["doctor", "--help"],
         env={"COLUMNS": "80"},
         terminal_width=120,
     )
     error_result = runner.invoke(
-        app,
+        CLI_APP,
         ["doctor", "--unknown-option"],
         env={"COLUMNS": "80"},
     )
@@ -188,7 +190,7 @@ def test_help_width_override_does_not_leak_to_errors() -> None:
 
 
 def test_doctor_help_does_not_advertise_removed_auth_option() -> None:
-    result = CliRunner().invoke(app, ["doctor", "--help"])
+    result = CliRunner().invoke(CLI_APP, ["doctor", "--help"])
 
     assert result.exit_code == 0
     assert "--auth" not in click.unstyle(result.output)
@@ -209,7 +211,7 @@ def test_provider_help_lists_only_canonical_commands(
     commands: tuple[str, ...],
 ) -> None:
     """Provider groups advertise their owned canonical capabilities."""
-    result = CliRunner().invoke(app, args)
+    result = CliRunner().invoke(CLI_APP, args)
 
     assert result.exit_code == 0
     output = click.unstyle(result.stdout)
@@ -219,7 +221,7 @@ def test_provider_help_lists_only_canonical_commands(
 
 def test_root_help_has_only_canonical_provider_groups() -> None:
     """Root help exposes provider groups without compatibility aliases."""
-    result = CliRunner().invoke(app, ["--help"])
+    result = CliRunner().invoke(CLI_APP, ["--help"])
 
     assert result.exit_code == 0
     output = click.unstyle(result.stdout)
@@ -234,7 +236,7 @@ def test_version_is_exact_and_does_not_compose_any_context() -> None:
     """The eager version path stays unbranded and skips operational state."""
     calls: list[str] = []
     version_result = CliRunner().invoke(
-        app,
+        CLI_APP,
         ["--version"],
         obj=_no_composition_context(calls),
     )

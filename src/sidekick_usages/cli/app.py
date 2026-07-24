@@ -100,13 +100,10 @@ def create_app() -> typer.Typer:
     return application
 
 
-app = create_app()
-
-
 def run(argv: list[str] | None = None) -> int:
     """Run the CLI and translate typed boundary failures to process codes."""
     try:
-        result: object = app(args=argv, standalone_mode=False)
+        result: object = create_app()(args=argv, standalone_mode=False)
         return result if isinstance(result, int) else 0
     except typer.Exit as error:
         exit_code = (
@@ -122,6 +119,3 @@ def run(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         sys.stderr.write("\nInterrupted.\n")
         return 130
-
-
-__all__ = ["app", "create_app", "run"]

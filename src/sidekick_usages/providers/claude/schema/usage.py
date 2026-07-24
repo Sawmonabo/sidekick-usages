@@ -4,6 +4,7 @@ import math
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
+from functools import cache
 from typing import Annotated
 
 from pydantic import (
@@ -23,7 +24,7 @@ from sidekick_usages.providers.base import (
     ProviderFailureCause,
     ProviderFailureKind,
 )
-from sidekick_usages.serialization import JsonObject, JsonValue
+from sidekick_usages.serialization.json import JsonObject, JsonValue
 
 _MAX_METADATA_BYTES = 4_096
 _MAX_UTILIZATION_PERCENT = 100
@@ -75,6 +76,13 @@ _OAUTH_USAGE_BUCKETS: tuple[tuple[str, str], ...] = (
 )
 
 
+type _Metadata = Annotated[str, AfterValidator(_metadata)]
+type _Utilization = Annotated[
+    int | float,
+    AfterValidator(_utilization),
+]
+
+
 def _bounded_string(value: str, maximum: int) -> str:
     try:
         encoded = value.encode("utf-8")
@@ -100,13 +108,6 @@ def _utilization(value: int | float) -> int | float:
     ):
         raise ValueError
     return value
-
-
-type _Metadata = Annotated[str, AfterValidator(_metadata)]
-type _Utilization = Annotated[
-    int | float,
-    AfterValidator(_utilization),
-]
 
 
 class _ClaudeUsageWindow(BaseModel):
@@ -224,16 +225,42 @@ class _ClaudeAssistantRecord(BaseModel):
     message: _ClaudeAssistantMessage
 
 
-_USAGE_ADAPTER = TypeAdapter(_ClaudeUsageResponse)
-_USAGE_WINDOW_ADAPTER = TypeAdapter(_ClaudeUsageWindow)
-_HEADER_WINDOW_ADAPTER = TypeAdapter(_ClaudeHeaderWindow)
-_HEADER_RESET_ADAPTER = TypeAdapter(_ClaudeHeaderReset)
-_HEADERS_ADAPTER = TypeAdapter(
-    dict[str, str],
-    config=ConfigDict(strict=True),
-)
-_ACTIVITY_CACHE_ADAPTER = TypeAdapter(_ClaudeActivityCache)
-_ASSISTANT_RECORD_ADAPTER = TypeAdapter(_ClaudeAssistantRecord)
+@cache
+def _usage_adapter() -> TypeAdapter[_ClaudeUsageResponse]:
+    return TypeAdapter(_ClaudeUsageResponse)
+
+
+@cache
+def _usage_window_adapter() -> TypeAdapter[_ClaudeUsageWindow]:
+    return TypeAdapter(_ClaudeUsageWindow)
+
+
+@cache
+def _header_window_adapter() -> TypeAdapter[_ClaudeHeaderWindow]:
+    return TypeAdapter(_ClaudeHeaderWindow)
+
+
+@cache
+def _header_reset_adapter() -> TypeAdapter[_ClaudeHeaderReset]:
+    return TypeAdapter(_ClaudeHeaderReset)
+
+
+@cache
+def _headers_adapter() -> TypeAdapter[dict[str, str]]:
+    return TypeAdapter(
+        dict[str, str],
+        config=ConfigDict(strict=True),
+    )
+
+
+@cache
+def _activity_cache_adapter() -> TypeAdapter[_ClaudeActivityCache]:
+    return TypeAdapter(_ClaudeActivityCache)
+
+
+@cache
+def _assistant_record_adapter() -> TypeAdapter[_ClaudeAssistantRecord]:
+    return TypeAdapter(_ClaudeAssistantRecord)
 
 
 @dataclass(frozen=True, slots=True)
@@ -355,7 +382,7 @@ def _activity_time(value: str) -> datetime:
 def parse_activity_cache(value: JsonObject) -> ClaudeActivityCache:
     """Validate and aggregate Claude's historical activity cache."""
     validated = _validate(
-        _ACTIVITY_CACHE_ADAPTER,
+        _activity_cache_adapter(),
         value,
         boundary="activity cache",
     )
@@ -386,7 +413,7 @@ def parse_activity_record(
     if value.get("type") != "assistant":
         return None
     validated = _validate(
-        _ASSISTANT_RECORD_ADAPTER,
+        _assistant_record_adapter(),
         value,
         boundary="activity transcript",
     )
@@ -436,7 +463,7 @@ def oauth_usage_window(
     if value is None:
         return None
     validated = _validate(
-        _USAGE_WINDOW_ADAPTER,
+        _usage_window_adapter(),
         value,
         boundary="usage",
     )
@@ -451,7 +478,7 @@ def oauth_usage_windows(
     value: JsonObject,
 ) -> tuple[UsageWindow, ...]:
     """Validate and normalize all requested OAuth usage buckets."""
-    validated = _validate(_USAGE_ADAPTER, value, boundary="usage")
+    validated = _validate(_usage_adapter(), value, boundary="usage")
     windows_by_key = {
         "five_hour": validated.five_hour,
         "seven_day": validated.seven_day,
@@ -479,7 +506,7 @@ def header_usage_window(
 ) -> UsageWindow | None:
     """Validate one unified rate-limit header pair when present."""
     headers = _validate(
-        _HEADERS_ADAPTER,
+        _headers_adapter(),
         response_headers,
         boundary="header",
     )
@@ -495,7 +522,7 @@ def header_usage_window(
             )
         ) from None
     validated = _validate(
-        _HEADER_WINDOW_ADAPTER,
+        _header_window_adapter(),
         {"utilization": util_raw, "reset": reset_raw},
         boundary="header",
     )
@@ -516,7 +543,7 @@ def header_reset(
 ) -> datetime | None:
     """Validate one unified Claude rate-limit reset header."""
     headers = _validate(
-        _HEADERS_ADAPTER,
+        _headers_adapter(),
         response_headers,
         boundary="header",
     )
@@ -524,7 +551,7 @@ def header_reset(
     if reset_raw is None:
         return None
     validated = _validate(
-        _HEADER_RESET_ADAPTER,
+        _header_reset_adapter(),
         {"reset": reset_raw},
         boundary="header",
     )

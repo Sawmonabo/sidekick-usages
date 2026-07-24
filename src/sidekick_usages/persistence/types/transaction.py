@@ -7,8 +7,6 @@ from sidekick_usages.persistence.models.artifact import (
     FileSnapshot,
 )
 
-__all__ = ["AccountTransactionFilesystem"]
-
 
 @runtime_checkable
 class AccountTransactionFilesystem(Protocol):

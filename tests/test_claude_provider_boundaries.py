@@ -4,15 +4,16 @@ import sys
 
 import pytest
 
+import sidekick_usages.providers.claude.provider
 from sidekick_usages.core.models import DetectedCredentials
 from sidekick_usages.providers.base import (
     ProviderBoundaryError,
     ProviderFailure,
     ProviderFailureKind,
 )
-from sidekick_usages.providers.claude import ClaudeProvider, ClaudeSetupToken
-from sidekick_usages.providers.claude import provider as provider_module
 from sidekick_usages.providers.claude.provider import (
+    ClaudeProvider,
+    ClaudeSetupToken,
     SetupTokenSuccess,
     SetupTokenTimedOut,
     SetupTokenUnreadable,
@@ -21,7 +22,7 @@ from sidekick_usages.providers.claude.schema.credentials import (
     parse_credentials_blob,
 )
 from sidekick_usages.providers.claude.schema.usage import oauth_usage_windows
-from sidekick_usages.serialization import JsonObject
+from sidekick_usages.serialization.json import JsonObject
 from tests.test_claude_refresh import _FUTURE_EXPIRY_MS, _provider
 
 SETUP_TOKEN_TIMEOUT_SECONDS = 600
@@ -107,7 +108,7 @@ def test_setup_token_capture_returns_no_arbitrary_process_output(
     first_token = "sk-ant-oat01-synthetic-token"
     raw_secret = "oauth-code=arbitrary-secret-sentinel"
     monkeypatch.setattr(
-        provider_module.shutil,
+        sidekick_usages.providers.claude.provider.shutil,
         "which",
         lambda name: "/usr/bin/claude" if name == "claude" else None,
     )
@@ -115,10 +116,10 @@ def test_setup_token_capture_returns_no_arbitrary_process_output(
     def capture(
         command: list[str],
         timeout: int,
-    ) -> provider_module._CapturedSetupOutput:
+    ) -> sidekick_usages.providers.claude.provider._CapturedSetupOutput:
         assert command == ["/usr/bin/claude", "setup-token"]
         assert timeout == SETUP_TOKEN_TIMEOUT_SECONDS
-        return provider_module._CapturedSetupOutput(
+        return sidekick_usages.providers.claude.provider._CapturedSetupOutput(
             0,
             f"{raw_secret}\nToken: {first_token}\n".encode(),
         )

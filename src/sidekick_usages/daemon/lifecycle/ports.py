@@ -8,8 +8,6 @@ from sidekick_usages.daemon.models.lifecycle import (
 )
 from sidekick_usages.daemon.types.lifecycle import ServiceBackendId
 
-__all__ = ["ServiceBackend", "ServiceCleanup", "ServiceReadiness"]
-
 
 class ServiceBackend(Protocol):
     """One complete operating-system user-service integration."""

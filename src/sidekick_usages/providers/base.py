@@ -20,7 +20,10 @@ from sidekick_usages.core.models import (
 )
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.errors import UsageError
-from sidekick_usages.http import HttpClient
+from sidekick_usages.http.client import HttpClient
+
+type CredentialDetection = DetectedCredentials | ProviderFailure
+type RefreshResult = RefreshSuccess | ProviderFailure
 
 
 class ProviderFailureKind(StrEnum):
@@ -111,10 +114,6 @@ class RefreshSuccess:
     plan: str | None = None
 
 
-type CredentialDetection = DetectedCredentials | ProviderFailure
-type RefreshResult = RefreshSuccess | ProviderFailure
-
-
 class Provider(ABC):
     """Abstract base class for one AI assistant integration.
 
@@ -200,19 +199,3 @@ class Provider(ABC):
         http: HttpClient,
     ) -> RefreshResult:
         """Implement refresh against one active runtime account."""
-
-
-__all__ = [
-    "CredentialAccountLease",
-    "CredentialDetection",
-    "CredentialStageReader",
-    "Provider",
-    "ProviderAuthenticatedAccount",
-    "ProviderBoundaryError",
-    "ProviderFailure",
-    "ProviderFailureCause",
-    "ProviderFailureKind",
-    "RefreshResult",
-    "RefreshSuccess",
-    "runtime_account",
-]

@@ -22,8 +22,10 @@ from sidekick_usages.persistence.models.artifact import (
     ExpectedAuthority,
     FileSnapshot,
 )
-from sidekick_usages.persistence.private.credentials import (
+from sidekick_usages.persistence.private.bundles.writes import (
     PreparedPrivateBundleWrite,
+)
+from sidekick_usages.persistence.private.credentials import (
     PrivateCredentialTree,
 )
 from sidekick_usages.persistence.types.artifact import AuthorityExpectation
@@ -531,10 +533,3 @@ class CodexCredentialCoordinator:
                 "Refusing to run Codex login over saved private credentials.",
             )
         return None
-
-
-__all__ = [
-    "CodexCredentialCoordinator",
-    "PreparedCodexCredentialRefresh",
-    "private_codex_home",
-]

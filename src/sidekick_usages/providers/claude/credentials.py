@@ -30,7 +30,7 @@ from sidekick_usages.providers.claude.schema.credentials import (
 from sidekick_usages.providers.claude.schema.usage import (
     claude_failure,
 )
-from sidekick_usages.serialization import decode_json_object
+from sidekick_usages.serialization.json import decode_json_object
 
 _MAX_CREDENTIAL_BYTES = 1024 * 1024
 _KEYCHAIN_ITEM_NOT_FOUND_EXIT = (-25300) % 256

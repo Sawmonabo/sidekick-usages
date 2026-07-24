@@ -5,16 +5,12 @@ import fcntl
 import os
 from pathlib import Path
 
-from sidekick_usages.persistence.platform.contracts import (
+from sidekick_usages.persistence.platform.errors import NativeFilesystemError
+from sidekick_usages.persistence.platform.posix import namespace
+from sidekick_usages.persistence.platform.posix.adapter import PosixPlatform
+from sidekick_usages.persistence.platform.types import (
     FilesystemFamily,
     NativeFailureKind,
-    NativeFilesystemError,
-)
-from sidekick_usages.persistence.platform.posix.adapter import (
-    PosixPlatform,
-    _existing_ancestor,
-    _open_directory,
-    _owned_descriptor,
 )
 
 _FILESYSTEM_TYPE_NAME_BYTES = 16
@@ -71,9 +67,9 @@ class MacOSPlatform(PosixPlatform):
 
     def qualify(self, parent: Path) -> FilesystemFamily:
         """Require APFS for the securely opened actual directory."""
-        ancestor = _existing_ancestor(parent)
-        descriptor = _open_directory(ancestor, private=False)
-        with _owned_descriptor(
+        ancestor = namespace.existing_ancestor(parent)
+        descriptor = namespace.open_directory(ancestor, private=False)
+        with namespace.owned_descriptor(
             descriptor,
             NativeFailureKind.UNSUPPORTED,
         ):
@@ -93,6 +89,3 @@ class MacOSPlatform(PosixPlatform):
             raise NativeFilesystemError(
                 NativeFailureKind.SYNCHRONIZE
             ) from None
-
-
-__all__ = ["MacOSPlatform"]

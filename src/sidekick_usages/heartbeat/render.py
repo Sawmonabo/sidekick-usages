@@ -17,7 +17,7 @@ from sidekick_usages.core.types import (
     ProviderId,
 )
 from sidekick_usages.heartbeat.models import HeartbeatOutcome
-from sidekick_usages.serialization import JsonObject, JsonValue
+from sidekick_usages.serialization.json import JsonObject, JsonValue
 
 
 class HeartbeatOutputChannel(StrEnum):
@@ -244,15 +244,3 @@ def _format_time(value: datetime) -> str:
 def _optional_time(value: datetime | None) -> str | None:
     """Encode an optional heartbeat timestamp."""
     return _format_time(value) if value is not None else None
-
-
-__all__ = [
-    "HeartbeatChannelRenderable",
-    "HeartbeatOutputChannel",
-    "HeartbeatStatusRow",
-    "build_heartbeat_status_rows",
-    "heartbeat_status_json",
-    "render_heartbeat_outcome",
-    "render_heartbeat_outcomes",
-    "render_heartbeat_status",
-]

@@ -9,10 +9,7 @@ import typer
 from sidekick_usages.cli.context import invocation_context
 from sidekick_usages.cli.help import BrandedTyperGroup, branded_command
 from sidekick_usages.core.types import ExitCode, ProviderId
-from sidekick_usages.heartbeat import (
-    HeartbeatOutcome,
-    heartbeat_exit_code,
-)
+from sidekick_usages.heartbeat.models import HeartbeatOutcome
 from sidekick_usages.heartbeat.render import (
     HeartbeatOutputChannel,
     build_heartbeat_status_rows,
@@ -20,6 +17,7 @@ from sidekick_usages.heartbeat.render import (
     render_heartbeat_outcomes,
     render_heartbeat_status,
 )
+from sidekick_usages.heartbeat.service import heartbeat_exit_code
 
 
 class _HeartbeatGroup(BrandedTyperGroup):
@@ -284,6 +282,3 @@ def register(application: typer.Typer) -> None:
     branded_command(heartbeat_app, "disable")(heartbeat_disable_cmd)
     branded_command(heartbeat_app, "status")(heartbeat_status_cmd)
     application.add_typer(heartbeat_app, name="heartbeat")
-
-
-__all__ = ["register", "render_outcomes"]

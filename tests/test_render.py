@@ -16,7 +16,7 @@ from sidekick_usages.core.types import (
     TokenActivityScope,
 )
 from sidekick_usages.persistence.errors import PersistenceCode
-from sidekick_usages.usage import (
+from sidekick_usages.usage.models import (
     AccountUsage,
     AuthenticationFailure,
     CompleteTokenActivity,
@@ -32,6 +32,27 @@ from sidekick_usages.usage import (
 from sidekick_usages.usage.presentation import overview
 from sidekick_usages.usage.presentation.reset import compact_reset_text
 from tests.test_support import REFERENCE_TIME
+
+_ACTIVITIES = (
+    CompleteTokenActivity(
+        provider_id=ProviderId.CLAUDE,
+        summary=TokenActivitySummary(
+            total_tokens=903_464_085,
+            scope=TokenActivityScope.LOCAL_INSTALLATION,
+            since=date(2025, 12, 28),
+        ),
+    ),
+    CompleteTokenActivity(
+        provider_id=ProviderId.CODEX,
+        summary=TokenActivitySummary(
+            total_tokens=7_449_473_297,
+            scope=TokenActivityScope.ACCOUNT,
+            since=date(2026, 4, 7),
+        ),
+    ),
+)
+_PANEL_FLOOR = 85
+_NARROW_TEST_WIDTH = 40
 
 
 def _time_after(**delta: float) -> datetime:
@@ -201,33 +222,6 @@ def _worst_case_usages() -> list[AccountUsage]:
         ),
     ]
     return claude + codex
-
-
-_ACTIVITIES = (
-    CompleteTokenActivity(
-        provider_id=ProviderId.CLAUDE,
-        summary=TokenActivitySummary(
-            total_tokens=903_464_085,
-            scope=TokenActivityScope.LOCAL_INSTALLATION,
-            since=date(2025, 12, 28),
-        ),
-    ),
-    CompleteTokenActivity(
-        provider_id=ProviderId.CODEX,
-        summary=TokenActivitySummary(
-            total_tokens=7_449_473_297,
-            scope=TokenActivityScope.ACCOUNT,
-            since=date(2026, 4, 7),
-        ),
-    ),
-)
-
-#: The documented panel floor (spec §8/§10). The Framed-Panels redesign
-#: must render as real panels — not the narrow fallback — for the worst-case
-#: store at this width. If a change pushes the binding panel width past it,
-#: the floor guard below fails instead of the layout silently degrading.
-_PANEL_FLOOR = 85
-_NARROW_TEST_WIDTH = 40
 
 
 def _render_at(

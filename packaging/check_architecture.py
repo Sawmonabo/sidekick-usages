@@ -2,17 +2,20 @@
 """Enforce Sidekick's repository-specific architecture contracts."""
 
 import ast
-import re
 import sys
 import tomllib
 from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePosixPath
 
-from architecture_ast import (
-    STALE_SOURCE_FILES,
+from architecture.hygiene import check_hygiene
+from architecture.models import (
     ArchitectureFinding,
     ArchitectureReport,
     SourceUnit,
+)
+from architecture.ownership import check_ownership
+from architecture.shape import check_source_shape
+from architecture.source import (
     dotted_name,
     finding,
     function_node,
@@ -21,14 +24,12 @@ from architecture_ast import (
     matches_any,
     scan_imports,
 )
-from architecture_ownership import check_ownership
-from architecture_value_contracts import check_value_contracts
+from architecture.values import check_value_contracts
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MAX_MODULE_LINES = 1000
 REVIEW_MODULE_LINES = 800
 MAX_CLI_APP_LINES = 200
-MIN_NAMESPACE_FAMILY_SIZE = 2
 _CODEX_JSONRPC_FILE = (
     "src/sidekick_usages/providers/codex/app_server/jsonrpc.py"
 )
@@ -93,10 +94,6 @@ _PYDANTIC_OWNERS = frozenset(
     }
 )
 _TRANSPORT_ROOTS = frozenset({"httpx", "requests", "tenacity", "urllib3"})
-_SUPPRESSION = re.compile(
-    r"#\s*(?:noqa(?:\s*:)?|type:\s*ignore|nosec)(?:\b|$)",
-    re.IGNORECASE,
-)
 
 
 def check_repository(
@@ -115,14 +112,14 @@ def check_repository(
     violations: list[ArchitectureFinding] = []
     warnings: list[ArchitectureFinding] = []
     _check_sizes(units, violations, warnings)
-    _check_hygiene(units, violations)
+    check_hygiene(units, violations)
     _check_import_boundaries(units, violations)
     _check_time_and_settings(units, violations)
     check_value_contracts(units, violations)
     _check_activity_contract(units, violations)
     _check_cli(units, violations)
     check_ownership(units, violations)
-    _check_source_shape(units, violations)
+    check_source_shape(units, violations)
     project_text = pyproject_override or root.joinpath(
         "pyproject.toml"
     ).read_text(encoding="utf-8")
@@ -158,103 +155,6 @@ def _check_sizes(
                     f"module has {lines} lines; review cohesion",
                 )
             )
-
-
-def _check_hygiene(
-    units: Sequence[SourceUnit],
-    violations: list[ArchitectureFinding],
-) -> None:
-    for unit in units:
-        scoped_imports = {
-            id(descendant)
-            for scope in ast.walk(unit.tree)
-            if isinstance(
-                scope,
-                (ast.AsyncFunctionDef, ast.ClassDef, ast.FunctionDef),
-            )
-            for descendant in ast.walk(scope)
-            if isinstance(descendant, (ast.Import, ast.ImportFrom))
-        }
-        for number, line in enumerate(unit.source.splitlines(), start=1):
-            if _SUPPRESSION.search(line) is not None:
-                violations.append(
-                    ArchitectureFinding(
-                        unit.path,
-                        number,
-                        "HYG003",
-                        "source suppression requires architecture approval",
-                    )
-                )
-        for node in ast.walk(unit.tree):
-            if _is_any(node) or (
-                isinstance(node, ast.Call)
-                and dotted_name(node.func) in {"cast", "typing.cast"}
-            ):
-                violations.append(
-                    finding(unit, node, "HYG001", "Any and cast are forbidden")
-                )
-            elif (
-                isinstance(node, ast.ImportFrom)
-                and node.module == "__future__"
-                and any(alias.name == "annotations" for alias in node.names)
-            ):
-                violations.append(
-                    finding(
-                        unit,
-                        node,
-                        "HYG002",
-                        "legacy future annotations import is forbidden",
-                    )
-                )
-            elif isinstance(node, ast.ExceptHandler) and _silently_broad(node):
-                violations.append(
-                    finding(
-                        unit,
-                        node,
-                        "HYG004",
-                        "broad exception handler silently discards a failure",
-                    )
-                )
-            elif (
-                isinstance(node, (ast.Import, ast.ImportFrom))
-                and id(node) in scoped_imports
-            ) or (
-                isinstance(node, ast.Call)
-                and dotted_name(node.func)
-                in {"__import__", "importlib.import_module"}
-            ):
-                violations.append(
-                    finding(
-                        unit,
-                        node,
-                        "HYG005",
-                        "imports must be static and outside functions/classes",
-                    )
-                )
-
-
-def _is_any(node: ast.AST) -> bool:
-    return (isinstance(node, ast.Name) and node.id == "Any") or (
-        isinstance(node, ast.Attribute)
-        and node.attr == "Any"
-        and isinstance(node.value, ast.Name)
-        and node.value.id == "typing"
-    )
-
-
-def _silently_broad(handler: ast.ExceptHandler) -> bool:
-    broad = handler.type is None or dotted_name(handler.type) in {
-        "BaseException",
-        "Exception",
-    }
-    return (
-        broad
-        and bool(handler.body)
-        and all(
-            isinstance(statement, (ast.Continue, ast.Pass))
-            for statement in handler.body
-        )
-    )
 
 
 def _check_import_boundaries(
@@ -765,83 +665,6 @@ def _check_command_context(
                 None,
                 "CLI001",
                 "command uses the wrong context or imports the global app",
-            )
-        )
-
-
-def _check_source_shape(
-    units: Sequence[SourceUnit],
-    violations: list[ArchitectureFinding],
-) -> None:
-    present = {str(unit.path) for unit in units}
-    stale = sorted(STALE_SOURCE_FILES & present)
-    if stale:
-        violations.append(
-            ArchitectureFinding(
-                PurePosixPath("src/sidekick_usages"),
-                1,
-                "PKG001",
-                f"stale converted modules remain: {stale}",
-            )
-        )
-    _check_flat_namespaces(units, violations)
-    for unit in units:
-        if not unit.production or unit.path.name != "__init__.py":
-            continue
-        definition = next(
-            (
-                node
-                for node in unit.tree.body
-                if isinstance(
-                    node,
-                    (ast.AsyncFunctionDef, ast.ClassDef, ast.FunctionDef),
-                )
-            ),
-            None,
-        )
-        if definition is not None:
-            violations.append(
-                finding(unit, definition, "PKG001", "initializer is not thin")
-            )
-
-
-def _check_flat_namespaces(
-    units: Sequence[SourceUnit],
-    violations: list[ArchitectureFinding],
-) -> None:
-    families: dict[
-        tuple[PurePosixPath, str, str],
-        list[SourceUnit],
-    ] = {}
-    for unit in units:
-        if not unit.production or unit.path.name == "__init__.py":
-            continue
-        stem = unit.path.stem
-        if stem.startswith("__"):
-            continue
-        tokens = stem.split("_")
-        families.setdefault(
-            (unit.path.parent, "prefix", tokens[0]),
-            [],
-        ).append(unit)
-        if len(tokens) > 1:
-            families.setdefault(
-                (unit.path.parent, "suffix", tokens[-1]),
-                [],
-            ).append(unit)
-    for (parent, kind, token), members in sorted(
-        families.items(),
-        key=lambda item: tuple(str(value) for value in item[0]),
-    ):
-        if len(members) < MIN_NAMESPACE_FAMILY_SIZE:
-            continue
-        names = sorted(unit.path.name for unit in members)
-        violations.append(
-            ArchitectureFinding(
-                min(unit.path for unit in members),
-                1,
-                "PKG002",
-                (f"flat {kind} family {token!r} in {parent}: {names}"),
             )
         )
 

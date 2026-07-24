@@ -30,12 +30,6 @@ _VERSION_PATTERN = re.compile(
     r"codex-cli (?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)"
 )
 
-__all__ = [
-    "SUPPORTED_CODEX_VERSION",
-    "discover_codex_executable",
-    "verify_codex_executable",
-]
-
 
 def discover_codex_executable(
     environment: Mapping[str, str] | None = None,

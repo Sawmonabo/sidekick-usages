@@ -21,11 +21,6 @@ from sidekick_usages.daemon.worker.pool import (
 from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
 from sidekick_usages.persistence.supervisor.results import WorkerResultStore
 
-__all__ = [
-    "DurableScheduler",
-    "NullOperationEventSink",
-]
-
 _SCHEDULE_INTERVAL = timedelta(minutes=5)
 _MINIMUM_RETRY = timedelta(minutes=1)
 _MAXIMUM_RETRY = timedelta(hours=1)

@@ -8,7 +8,7 @@ from sidekick_usages.branding import brand_header
 from sidekick_usages.cli.context import invocation_context
 from sidekick_usages.cli.help import branded_command
 from sidekick_usages.core.types import ExitCode, ProviderId, highest_exit_code
-from sidekick_usages.usage import activity_has_failure
+from sidekick_usages.usage.models import activity_has_failure
 from sidekick_usages.usage.presentation.overview import usage_overview
 
 
@@ -70,6 +70,3 @@ def print_no_accounts(
 def register(application: typer.Typer) -> None:
     """Register the usage command exactly once."""
     branded_command(application, "check")(check_cmd)
-
-
-__all__ = ["register", "run"]

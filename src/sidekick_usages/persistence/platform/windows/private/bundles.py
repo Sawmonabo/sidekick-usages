@@ -6,11 +6,9 @@ from pathlib import Path
 from sidekick_usages.persistence.artifacts import (
     require_portable_unique_basenames,
 )
-from sidekick_usages.persistence.platform.contracts import (
-    NativeFailureKind,
-    NativeFile,
-    NativeFilesystemError,
-)
+from sidekick_usages.persistence.platform.errors import NativeFilesystemError
+from sidekick_usages.persistence.platform.models import NativeFile
+from sidekick_usages.persistence.platform.types import NativeFailureKind
 from sidekick_usages.persistence.private.bundles.paths import (
     private_bundle_relative_components,
 )
@@ -387,6 +385,3 @@ if sys.platform == "win32":
                         raise _native_error(NativeFailureKind.CHANGED)
                     delete_empty_tree(target_path)
                     require_chain_identity(opened, parent_chain)
-
-
-__all__ = ["WindowsPrivateBundlePlatform"]

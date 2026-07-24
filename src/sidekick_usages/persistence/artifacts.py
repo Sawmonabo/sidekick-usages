@@ -13,14 +13,6 @@ from sidekick_usages.persistence.types.artifact import (
     ManagedArtifactKind,
 )
 
-__all__ = [
-    "ArtifactGrammar",
-    "is_safe_basename",
-    "portable_basename_key",
-    "require_portable_unique_basenames",
-    "require_safe_basename",
-]
-
 TEMPORARY_TOKEN_PATTERN = re.compile(r"[0-9a-f]{32}\Z", re.ASCII)
 
 

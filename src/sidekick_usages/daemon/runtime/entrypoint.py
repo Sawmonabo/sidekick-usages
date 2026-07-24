@@ -39,8 +39,6 @@ from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
 from sidekick_usages.persistence.supervisor.results import WorkerResultStore
 from sidekick_usages.persistence.supervisor.service import ServiceStateStore
 
-__all__ = ["main"]
-
 _EXIT_OK = 0
 
 

@@ -16,7 +16,7 @@ from sidekick_usages.daemon.types.lifecycle import (
     ServiceBackendId,
     ServiceLifecycleState,
 )
-from sidekick_usages.http import HttpClient
+from sidekick_usages.http.client import HttpClient
 from sidekick_usages.providers.registry import build_provider_registry
 from tests.test_support import (
     CliHarness,

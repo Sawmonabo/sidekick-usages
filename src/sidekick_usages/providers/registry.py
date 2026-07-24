@@ -35,6 +35,3 @@ def build_heartbeat_registry(
     if codex is not None:
         heartbeats[ProviderId.CODEX] = CodexHeartbeat(codex)
     return heartbeats
-
-
-__all__ = ["build_heartbeat_registry", "build_provider_registry"]

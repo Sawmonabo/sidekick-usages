@@ -3,10 +3,8 @@
 import sys
 from typing import TYPE_CHECKING
 
-from sidekick_usages.persistence.platform.contracts import (
-    NativeFailureKind,
-    NativeFilesystemError,
-)
+from sidekick_usages.persistence.platform.errors import NativeFilesystemError
+from sidekick_usages.persistence.platform.types import NativeFailureKind
 
 if TYPE_CHECKING and sys.platform == "win32":
     import _win32typing
@@ -322,13 +320,3 @@ if sys.platform == "win32":
     def validate_external_private_source_file(handle: int) -> None:
         """Require a trusted owner and no untrusted file access."""
         _validate_external_security(handle, _PRIVATE_FILE_ACCESS)
-
-
-__all__ = [
-    "private_security_attributes",
-    "repair_security",
-    "validate_external_private_source_file",
-    "validate_external_source_directory",
-    "validate_repair_owner",
-    "validate_security",
-]

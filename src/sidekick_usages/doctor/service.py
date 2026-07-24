@@ -42,11 +42,9 @@ from sidekick_usages.doctor.credentials import (
     expiry_time,
     refresh_expiry_display,
 )
-from sidekick_usages.heartbeat import (
-    HeartbeatProvider,
-    heartbeat_supported_label,
-)
-from sidekick_usages.persistence.credentials.refresh.service import (
+from sidekick_usages.heartbeat.ports import HeartbeatProvider
+from sidekick_usages.heartbeat.service import heartbeat_supported_label
+from sidekick_usages.persistence.credentials.refresh.artifacts import (
     CredentialRefreshState,
 )
 from sidekick_usages.persistence.models.status import (
@@ -54,7 +52,9 @@ from sidekick_usages.persistence.models.status import (
     PersistenceStatus,
 )
 from sidekick_usages.providers.base import Provider
-from sidekick_usages.serialization import JsonObject, JsonValue
+from sidekick_usages.serialization.json import JsonObject, JsonValue
+
+type DoctorResult = DoctorReadyResult | DoctorFailedResult
 
 
 @dataclass(frozen=True)
@@ -107,9 +107,6 @@ class DoctorFailedResult:
 
     failure: PersistenceFailure
     supervisor: SupervisorHealth
-
-
-type DoctorResult = DoctorReadyResult | DoctorFailedResult
 
 
 class DoctorService:

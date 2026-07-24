@@ -6,11 +6,9 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from types import MappingProxyType
 
-from sidekick_usages.persistence.platform.contracts import (
-    NativeFailureKind,
-    NativeFile,
-    NativeFilesystemError,
-)
+from sidekick_usages.persistence.platform.errors import NativeFilesystemError
+from sidekick_usages.persistence.platform.models import NativeFile
+from sidekick_usages.persistence.platform.types import NativeFailureKind
 
 if sys.platform == "darwin":
     from sidekick_usages.persistence.platform.macos.adapter import (
@@ -65,23 +63,16 @@ from sidekick_usages.persistence.models.credential import (
     PrivateCredentialRepairResult,
 )
 from sidekick_usages.persistence.private.bundles.paths import (
-    MAX_PRIVATE_BUNDLE_COMPONENT_BYTES,
-    MAX_PRIVATE_BUNDLE_COMPONENTS,
-    MAX_PRIVATE_BUNDLE_PATH_BYTES,
     PRIVATE_TRANSACTION_DIRECTORY,
-    portable_private_bundle_path_key,
     private_bundle_relative_components,
-    require_portable_unique_private_bundle_paths,
 )
 from sidekick_usages.persistence.private.bundles.writes import (
     MAX_PRIVATE_BUNDLE_BYTES,
     MAX_PRIVATE_FILE_BYTES,
     MAX_PRIVATE_FILES,
-    PreparedPrivateBundleWrite,
 )
-from sidekick_usages.persistence.private.contracts import (
+from sidekick_usages.persistence.private.ports import (
     PrivateBundleNative,
-    PrivateCredentialArtifacts,
     PrivateCredentialNative,
 )
 from sidekick_usages.persistence.types.artifact import (
@@ -92,18 +83,6 @@ from sidekick_usages.persistence.types.credential import (
     PrivateCredentialOwnership,
     PrivateCredentialState,
 )
-
-__all__ = [
-    "MAX_PRIVATE_BUNDLE_COMPONENTS",
-    "MAX_PRIVATE_BUNDLE_COMPONENT_BYTES",
-    "MAX_PRIVATE_BUNDLE_PATH_BYTES",
-    "PreparedPrivateBundleWrite",
-    "PrivateCredentialArtifacts",
-    "PrivateCredentialTree",
-    "portable_private_bundle_path_key",
-    "private_bundle_relative_components",
-    "require_portable_unique_private_bundle_paths",
-]
 
 type _FilesystemFactory = Callable[[Path], PersistenceFilesystem]
 

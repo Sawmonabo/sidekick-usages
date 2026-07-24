@@ -5,13 +5,13 @@ from pathlib import Path
 from typing import IO
 
 from sidekick_usages.persistence._recovery import RecoveryOperations
-from sidekick_usages.persistence.platform.contracts import (
+from sidekick_usages.persistence.platform.errors import NativeFilesystemError
+from sidekick_usages.persistence.platform.models import (
     FilesystemQualification,
-    NativeFailureKind,
     NativeFile,
-    NativeFilesystemError,
-    NativePlatform,
 )
+from sidekick_usages.persistence.platform.ports import NativePlatform
+from sidekick_usages.persistence.platform.types import NativeFailureKind
 
 if sys.platform == "darwin":
     from sidekick_usages.persistence.platform.macos.adapter import (
@@ -47,8 +47,6 @@ from sidekick_usages.persistence.models.artifact import (
     ManagedArtifact,
 )
 from sidekick_usages.persistence.types.artifact import ManagedArtifactKind
-
-__all__ = ["PersistenceFilesystemAccess"]
 
 _SINGLE_LINK = 1
 

@@ -15,9 +15,9 @@ import sidekick_usages.providers.claude.provider
 from sidekick_usages.core.expiry import KnownExpiry, UnknownExpiry
 from sidekick_usages.core.models import Account, ClaudeLoginCredentials
 from sidekick_usages.core.types import AccountLabel, ProviderId
-from sidekick_usages.credentials import CredentialService
 from sidekick_usages.credentials.authorities import credential_resolver_for
 from sidekick_usages.credentials.refresh import CredentialRefreshCoordinator
+from sidekick_usages.credentials.service import CredentialService
 from sidekick_usages.doctor.service import (
     DoctorReadyResult,
     DoctorService,
@@ -25,11 +25,14 @@ from sidekick_usages.doctor.service import (
     render_doctor,
 )
 from sidekick_usages.errors import AuthError
-from sidekick_usages.http import HttpClient, HttpOperation
+from sidekick_usages.http.client import HttpClient
+from sidekick_usages.http.types import HttpOperation
 from sidekick_usages.maintenance import TokenMaintenanceService
-from sidekick_usages.persistence.credentials.refresh.service import (
+from sidekick_usages.persistence.credentials.refresh.artifacts import (
     CredentialRefreshState,
     CredentialRefreshStateKind,
+)
+from sidekick_usages.persistence.credentials.refresh.service import (
     CredentialRefreshTransactions,
 )
 from sidekick_usages.persistence.errors import ReplaceFailedError
@@ -44,7 +47,7 @@ from sidekick_usages.persistence.models.status import PersistenceStatus
 from sidekick_usages.persistence.types.status import PersistenceState
 from sidekick_usages.providers.base import ProviderFailure, ProviderFailureKind
 from sidekick_usages.providers.claude.provider import ClaudeProvider
-from sidekick_usages.serialization import JsonObject
+from sidekick_usages.serialization.json import JsonObject
 from tests.test_credential_service import (
     _PRIVATE_DIRECTORY_MODE,
     _PRIVATE_FILE_MODE,

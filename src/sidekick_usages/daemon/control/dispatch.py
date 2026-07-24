@@ -48,8 +48,6 @@ from sidekick_usages.daemon.types.worker import WorkerOutcome
 from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
 from sidekick_usages.persistence.supervisor.service import ServiceStateStore
 
-__all__ = ["OperationEventHub", "SupervisorDispatcher"]
-
 _MAX_RETAINED_UPDATES = 512
 
 

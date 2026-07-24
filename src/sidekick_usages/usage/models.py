@@ -15,6 +15,13 @@ from sidekick_usages.core.types import (
 from sidekick_usages.persistence.types.error import PersistenceCode
 from sidekick_usages.providers.base import ProviderFailure
 
+type ProviderTokenActivity = (
+    CompleteTokenActivity
+    | PartialTokenActivity
+    | UnavailableTokenActivity
+    | FailedTokenActivity
+)
+
 
 class FetchFailureKind(StrEnum):
     """Closed terminal outcomes for one account usage request."""
@@ -231,14 +238,6 @@ class FailedTokenActivity:
             raise ValueError("Activity issue labels must match their scope.")
 
 
-type ProviderTokenActivity = (
-    CompleteTokenActivity
-    | PartialTokenActivity
-    | UnavailableTokenActivity
-    | FailedTokenActivity
-)
-
-
 def activity_has_failure(activity: ProviderTokenActivity) -> bool:
     """Return whether an activity outcome has an attempted-read failure."""
     if isinstance(activity, FailedTokenActivity):
@@ -271,28 +270,3 @@ class UsageCheckResult:
             raise ValueError(
                 "Usage results contain duplicate provider activity."
             )
-
-
-__all__ = [
-    "AccountUsage",
-    "AuthenticationFailure",
-    "CompleteTokenActivity",
-    "FailedTokenActivity",
-    "FetchFailure",
-    "FetchFailureKind",
-    "ForbiddenFailure",
-    "InvalidExpiryFailure",
-    "PartialTokenActivity",
-    "PersistenceFailure",
-    "ProviderPayloadFailure",
-    "ProviderTokenActivity",
-    "RateLimitFailure",
-    "RefreshRejectedFailure",
-    "TokenActivityFailureKind",
-    "TokenActivityIssue",
-    "TransientFailure",
-    "UnavailableTokenActivity",
-    "UnknownProviderFailure",
-    "UsageCheckResult",
-    "activity_has_failure",
-]

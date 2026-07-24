@@ -17,19 +17,15 @@ from sidekick_usages.persistence.models.artifact import (
     FileSnapshot,
     ManagedArtifact,
 )
-from sidekick_usages.persistence.platform.contracts import (
-    NativeFailureKind,
-    NativeFile,
-    NativeFilesystemError,
-    NativePlatform,
-)
+from sidekick_usages.persistence.platform.errors import NativeFilesystemError
+from sidekick_usages.persistence.platform.models import NativeFile
+from sidekick_usages.persistence.platform.ports import NativePlatform
+from sidekick_usages.persistence.platform.types import NativeFailureKind
 from sidekick_usages.persistence.types.artifact import (
     ArtifactPurpose,
     ManagedArtifactKind,
     sha256_digest,
 )
-
-__all__ = ["RecoveryOperations"]
 
 _SINGLE_LINK = 1
 _INTERRUPTED_PUBLICATION_LINKS = 2

@@ -3,19 +3,9 @@
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from sidekick_usages.serialization import JsonObject
+from sidekick_usages.serialization.json import JsonObject
 
 _SHA256_HEX_LENGTH = 64
-
-__all__ = [
-    "CodexAppServerCapabilities",
-    "CodexExecutable",
-    "CodexVersion",
-    "JsonRpcErrorResponse",
-    "JsonRpcNotification",
-    "JsonRpcResponse",
-    "JsonRpcServerRequest",
-]
 
 
 @dataclass(frozen=True, slots=True, order=True)

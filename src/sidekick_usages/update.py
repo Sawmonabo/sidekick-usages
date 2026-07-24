@@ -10,7 +10,7 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
-from sidekick_usages.http import HttpClient
+from sidekick_usages.http.client import HttpClient
 
 #: GitHub Releases API endpoint for the canonical repo. Returns the
 #: most recent non-draft, non-prerelease release as JSON.
@@ -24,6 +24,9 @@ PACKAGE_NAME = "sidekick-usages"
 
 #: Accept header recommended by GitHub's REST API docs.
 _GITHUB_ACCEPT = "application/vnd.github+json"
+
+
+type _CommandExecutor = Callable[[tuple[str, ...]], None]
 
 
 class InstallMethod(enum.Enum):
@@ -140,9 +143,6 @@ def manual_instructions() -> str:
         "  pipx upgrade sidekick-usages\n"
         "  brew upgrade sidekick-usages"
     )
-
-
-type _CommandExecutor = Callable[[tuple[str, ...]], None]
 
 
 def _execute_upgrade(command: tuple[str, ...]) -> None:

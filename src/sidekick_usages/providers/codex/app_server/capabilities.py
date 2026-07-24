@@ -25,7 +25,7 @@ from sidekick_usages.providers.codex.app_server.process import (
 from sidekick_usages.providers.codex.app_server.types import (
     CodexAppServerFailure,
 )
-from sidekick_usages.serialization import (
+from sidekick_usages.serialization.json import (
     JsonObject,
     JsonValue,
     decode_json_object,
@@ -49,8 +49,6 @@ SCHEMA_FILES = (
 _MAX_SCHEMA_FILE_BYTES = 512 * 1024
 _MAX_SCHEMA_DEPTH = 32
 _SCHEMA_COMMAND_TIMEOUT_SECONDS = 20.0
-
-__all__ = ["SCHEMA_FILES", "probe_codex_capabilities"]
 
 
 def probe_codex_capabilities(

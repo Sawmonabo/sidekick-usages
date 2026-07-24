@@ -14,11 +14,6 @@ from sidekick_usages.daemon.types.service import PackageVersion
 
 MAX_DIAGNOSTIC_DURATION_MILLISECONDS = 24 * 60 * 60 * 1000
 
-__all__ = [
-    "MAX_DIAGNOSTIC_DURATION_MILLISECONDS",
-    "DiagnosticEvent",
-]
-
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class DiagnosticEvent:

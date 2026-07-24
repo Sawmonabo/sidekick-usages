@@ -9,8 +9,6 @@ from sidekick_usages.persistence.private.filesystem import PrivateFilesystem
 from sidekick_usages.persistence.schema.account import decode_version_three
 from sidekick_usages.persistence.types.artifact import ManagedArtifactKind
 
-__all__ = ["PersistenceFilesystem"]
-
 
 class PersistenceFilesystem(PrivateFilesystem):
     """Filesystem facade bound to one current account index."""

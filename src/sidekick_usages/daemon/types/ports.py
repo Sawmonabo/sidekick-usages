@@ -17,16 +17,6 @@ from sidekick_usages.daemon.models.worker import (
 )
 from sidekick_usages.daemon.types.worker import ExitNotifier
 
-__all__ = [
-    "ControlDispatcher",
-    "OperationEventSink",
-    "PeerSocket",
-    "PeerVerifier",
-    "WorkerExecutor",
-    "WorkerHandle",
-    "WorkerLauncher",
-]
-
 
 class ControlDispatcher(Protocol):
     """Dispatch already-authenticated closed control requests."""

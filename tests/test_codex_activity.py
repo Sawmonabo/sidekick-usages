@@ -16,7 +16,7 @@ from sidekick_usages.core.types import (
     TokenActivityScope,
 )
 from sidekick_usages.errors import AuthError
-from sidekick_usages.http import HttpClient
+from sidekick_usages.http.client import HttpClient
 from sidekick_usages.providers.base import (
     ProviderBoundaryError,
     ProviderFailureKind,
@@ -26,7 +26,7 @@ from sidekick_usages.providers.codex.activity import (
     CodexActivity,
 )
 from sidekick_usages.providers.codex.schemas import parse_activity_response
-from sidekick_usages.serialization import JsonObject
+from sidekick_usages.serialization.json import JsonObject
 from tests.test_support import authenticated_account
 
 

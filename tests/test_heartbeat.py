@@ -27,14 +27,13 @@ from sidekick_usages.core.types import (
     ProviderId,
     RefreshStatus,
 )
-from sidekick_usages.heartbeat import (
+from sidekick_usages.heartbeat.models import (
     HeartbeatOutcome,
     HeartbeatProbeResult,
-    HeartbeatProvider,
-    HeartbeatService,
     HeartbeatTarget,
     UsageWindowState,
 )
+from sidekick_usages.heartbeat.ports import HeartbeatProvider
 from sidekick_usages.heartbeat.render import (
     HeartbeatOutputChannel,
     build_heartbeat_status_rows,
@@ -42,7 +41,9 @@ from sidekick_usages.heartbeat.render import (
     render_heartbeat_outcomes,
     render_heartbeat_status,
 )
-from sidekick_usages.http import HttpClient, HttpOperation
+from sidekick_usages.heartbeat.service import HeartbeatService
+from sidekick_usages.http.client import HttpClient
+from sidekick_usages.http.types import HttpOperation
 from sidekick_usages.persistence.accounts.store import AccountStore
 from sidekick_usages.providers.base import (
     CredentialDetection,
@@ -53,11 +54,11 @@ from sidekick_usages.providers.base import (
     RefreshResult,
     RefreshSuccess,
 )
-from sidekick_usages.providers.codex import CodexProvider
 from sidekick_usages.providers.codex.heartbeat import (
     CodexHeartbeat,
 )
-from sidekick_usages.serialization import JsonObject
+from sidekick_usages.providers.codex.provider import CodexProvider
+from sidekick_usages.serialization.json import JsonObject
 from tests.test_support import (
     REFERENCE_TIME,
     CliHarness,

@@ -12,28 +12,31 @@ from rich.console import Console
 
 from sidekick_usages.clock import Clock, SystemClock
 from sidekick_usages.core.types import ProviderId
-from sidekick_usages.credentials import CredentialService
 from sidekick_usages.credentials.authorities import credential_resolver_for
 from sidekick_usages.credentials.codex.coordinator import (
     CodexCredentialCoordinator,
 )
 from sidekick_usages.credentials.refresh import CredentialRefreshCoordinator
+from sidekick_usages.credentials.service import CredentialService
 from sidekick_usages.daemon.lifecycle.manager import (
     DaemonManager,
     build_daemon_manager,
 )
 from sidekick_usages.daemon.models.lifecycle import SupervisorHealth
 from sidekick_usages.doctor.service import DoctorService
-from sidekick_usages.heartbeat import HeartbeatProvider, HeartbeatService
-from sidekick_usages.http import HttpClient
+from sidekick_usages.heartbeat.ports import HeartbeatProvider
+from sidekick_usages.heartbeat.service import HeartbeatService
+from sidekick_usages.http.client import HttpClient
 from sidekick_usages.maintenance import TokenMaintenanceService
 from sidekick_usages.paths import ApplicationPaths, discover_application_paths
 from sidekick_usages.persistence.accounts.store import AccountStore
 from sidekick_usages.persistence.activity_snapshots import (
     ActivitySnapshotStore,
 )
-from sidekick_usages.persistence.credentials.refresh.service import (
+from sidekick_usages.persistence.credentials.refresh.artifacts import (
     CredentialRefreshState,
+)
+from sidekick_usages.persistence.credentials.refresh.service import (
     CredentialRefreshTransactions,
 )
 from sidekick_usages.persistence.errors import (
@@ -47,43 +50,25 @@ from sidekick_usages.persistence.models.status import (
 )
 from sidekick_usages.persistence.service import PersistenceService
 from sidekick_usages.providers.base import Provider
-from sidekick_usages.providers.claude import (
+from sidekick_usages.providers.claude.activity import (
     ClaudeActivity,
-    ClaudeProvider,
-    ClaudeSetupToken,
     discover_claude_config_dir,
 )
-from sidekick_usages.providers.codex import CodexActivity
+from sidekick_usages.providers.claude.provider import (
+    ClaudeProvider,
+    ClaudeSetupToken,
+)
+from sidekick_usages.providers.codex.activity import CodexActivity
 from sidekick_usages.providers.registry import (
     build_heartbeat_registry,
     build_provider_registry,
 )
 from sidekick_usages.update import UpdateService
-from sidekick_usages.usage import (
+from sidekick_usages.usage.activity import (
     AccountTokenActivitySource,
     LocalTokenActivitySource,
-    UsageCheckService,
 )
-
-__all__ = [
-    "AppContext",
-    "Composed",
-    "DaemonContext",
-    "DoctorContext",
-    "DoctorFailed",
-    "DoctorReady",
-    "DoctorState",
-    "InvocationContext",
-    "PersistenceContext",
-    "UpdateContext",
-    "compose_app_context",
-    "compose_daemon_context",
-    "compose_doctor_context",
-    "compose_persistence_context",
-    "compose_update_context",
-    "initialize_invocation",
-    "invocation_context",
-]
+from sidekick_usages.usage.service import UsageCheckService
 
 type DoctorState = DoctorReady | DoctorFailed
 

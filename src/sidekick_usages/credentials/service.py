@@ -57,11 +57,13 @@ from sidekick_usages.errors import (
     RateLimitError,
     TransientError,
 )
-from sidekick_usages.http import HttpClient
+from sidekick_usages.http.client import HttpClient
 from sidekick_usages.persistence.accounts.store import AccountStore
 from sidekick_usages.persistence.errors import SourceChangedError
-from sidekick_usages.persistence.private.credentials import (
+from sidekick_usages.persistence.private.bundles.writes import (
     PreparedPrivateBundleWrite,
+)
+from sidekick_usages.persistence.private.credentials import (
     PrivateCredentialTree,
 )
 from sidekick_usages.providers.base import (
@@ -794,6 +796,3 @@ class CredentialService:
         """Return the provider-neutral validation warning for forbidden use."""
         del account, provider, error
         return "Token saved, but the usage endpoint denied this scope."
-
-
-__all__ = ["CredentialService"]

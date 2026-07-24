@@ -6,15 +6,9 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from sidekick_usages.persistence.platform.contracts import (
-    NativeFailureKind,
-    NativePlatform,
-)
 from sidekick_usages.persistence.platform.macos.acl import has_extended_acl
-from sidekick_usages.persistence.platform.posix.adapter import (
-    _close_descriptor_stack,
-    _no_follow_flag,
-)
+from sidekick_usages.persistence.platform.ports import NativePlatform
+from sidekick_usages.persistence.platform.posix import namespace
 from sidekick_usages.persistence.platform.posix.private.tree import (
     _entry_metadata,
     _Identity,
@@ -25,15 +19,14 @@ from sidekick_usages.persistence.platform.posix.private.tree import (
     _open_repair_relative_directory,
     _open_repair_tree,
     _OpenedTree,
-    _owned_descriptor,
     _RelativePath,
     _repair_directory_permissions,
     _RepairDirectory,
-    _require_exact_entry,
     _require_root_identity,
     _scan_tree,
     _synchronize_namespace,
 )
+from sidekick_usages.persistence.platform.types import NativeFailureKind
 
 _PRIVATE_DIRECTORY_MODE = 0o700
 _PRIVATE_FILE_MODE = 0o600
@@ -71,7 +64,9 @@ def _open_stage_regular(
     expected: _Identity,
 ) -> int:
     """Open one stable provider file whose mode may be read-broad."""
-    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK | _no_follow_flag()
+    flags = (
+        os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK | namespace.no_follow_flag()
+    )
     try:
         descriptor = os.open(
             basename,
@@ -97,12 +92,12 @@ def _open_stage_regular(
         if (
             metadata.st_dev,
             metadata.st_ino,
-        ) != expected or _require_exact_entry(
+        ) != expected or namespace.require_exact_entry(
             parent_descriptor, basename
         ) != expected:
             raise _native_error(NativeFailureKind.CHANGED)
     except BaseException as error:
-        _close_descriptor_stack([descriptor], error)
+        namespace.close_descriptor_stack([descriptor], error)
     return descriptor
 
 
@@ -133,7 +128,7 @@ def _scan_stage_tree(
             relative,
             identities,
         )
-        with _owned_descriptor(
+        with namespace.owned_descriptor(
             descriptor,
             NativeFailureKind.UNREADABLE,
         ):
@@ -145,7 +140,7 @@ def _scan_stage_tree(
                         descriptor,
                         basename,
                     )
-                    with _owned_descriptor(
+                    with namespace.owned_descriptor(
                         child,
                         NativeFailureKind.UNREADABLE,
                     ):
@@ -175,7 +170,7 @@ def _scan_stage_tree(
                     opened.root_device,
                     identity,
                 )
-                with _owned_descriptor(
+                with namespace.owned_descriptor(
                     file_descriptor,
                     NativeFailureKind.UNREADABLE,
                 ):
@@ -203,7 +198,7 @@ def _repair_stage_file(
         entry.relative[:-1],
         identities,
     )
-    with _owned_descriptor(parent, NativeFailureKind.HARDEN):
+    with namespace.owned_descriptor(parent, NativeFailureKind.HARDEN):
         basename = entry.relative[-1]
         descriptor = _open_stage_regular(
             parent,
@@ -211,7 +206,7 @@ def _repair_stage_file(
             opened.root_device,
             entry.identity,
         )
-        with _owned_descriptor(descriptor, NativeFailureKind.HARDEN):
+        with namespace.owned_descriptor(descriptor, NativeFailureKind.HARDEN):
             metadata = _metadata(descriptor, NativeFailureKind.CHANGED)
             if stat.S_IMODE(metadata.st_mode) != entry.mode:
                 raise _native_error(NativeFailureKind.CHANGED)
@@ -228,7 +223,8 @@ def _repair_stage_file(
                 or hardened.st_uid != os.geteuid()
                 or hardened.st_nlink != 1
                 or stat.S_IMODE(hardened.st_mode) != _PRIVATE_FILE_MODE
-                or _require_exact_entry(parent, basename) != entry.identity
+                or namespace.require_exact_entry(parent, basename)
+                != entry.identity
             ):
                 raise _native_error(NativeFailureKind.HARDEN)
         _synchronize_namespace(parent)
@@ -273,6 +269,3 @@ def harden_provider_stage(
                 )
         _scan_tree(opened)
         return (repaired_directories, repaired_files)
-
-
-__all__ = ["harden_provider_stage"]

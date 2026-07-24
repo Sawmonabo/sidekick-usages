@@ -2,14 +2,12 @@
 
 from pathlib import Path
 
-from sidekick_usages.persistence.platform.contracts import (
-    NativeFailureKind,
-    NativePlatform,
-)
+from sidekick_usages.persistence.platform.ports import NativePlatform
 from sidekick_usages.persistence.platform.posix.private import tree
 from sidekick_usages.persistence.platform.posix.provider_stage import (
     harden_provider_stage,
 )
+from sidekick_usages.persistence.platform.types import NativeFailureKind
 
 
 class PosixPrivateCredentialPlatform:
@@ -156,6 +154,3 @@ class PosixPrivateCredentialPlatform:
                 opened.parent_descriptor,
                 root_entry,
             )
-
-
-__all__ = ["PosixPrivateCredentialPlatform"]

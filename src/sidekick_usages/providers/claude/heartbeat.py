@@ -14,7 +14,8 @@ from sidekick_usages.heartbeat.models import (
     UsageWindowState,
 )
 from sidekick_usages.heartbeat.ports import HeartbeatProvider, warmed
-from sidekick_usages.http import HttpClient, HttpOperation
+from sidekick_usages.http.client import HttpClient
+from sidekick_usages.http.types import HttpOperation
 from sidekick_usages.providers.base import (
     ProviderAuthenticatedAccount,
     runtime_account,

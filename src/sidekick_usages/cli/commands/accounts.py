@@ -243,6 +243,3 @@ def register(application: typer.Typer) -> None:
     branded_command(application, "rename")(rename_cmd)
     branded_command(application, "set-plan")(set_plan_cmd)
     branded_command(application, "reset")(reset_cmd)
-
-
-__all__ = ["register", "validated_label"]

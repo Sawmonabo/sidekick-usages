@@ -5,11 +5,11 @@ from pathlib import Path
 
 import pytest
 
+import sidekick_usages.providers.claude.provider
+import sidekick_usages.providers.codex.auth
 from sidekick_usages.core.models import UsageReport
 from sidekick_usages.core.types import ExitCode, ProviderId
-from sidekick_usages.providers.claude import provider as claude_provider_module
 from sidekick_usages.providers.claude.provider import ClaudeProvider
-from sidekick_usages.providers.codex import auth as codex_auth_module
 from tests.test_cli_refresh import (
     _codex_acct,
     _codex_cache_home,
@@ -60,7 +60,9 @@ def test_codex_login_runs_plain_cli_and_imports_private_bundle(
             call["env"] = env
         calls.append(call)
 
-    monkeypatch.setattr(codex_auth_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        sidekick_usages.providers.codex.auth.subprocess, "run", fake_run
+    )
 
     result = harness.invoke(["codex", "login", "team"])
 
@@ -189,7 +191,7 @@ def test_setup_token_delegates_only_to_claude_capability(
     raw_secret = "oauth-code=must-not-reach-terminal"
     provider = ClaudeProvider(FixedClock())
     monkeypatch.setattr(
-        claude_provider_module.shutil,
+        sidekick_usages.providers.claude.provider.shutil,
         "which",
         lambda name: "/usr/bin/claude" if name == "claude" else None,
     )
@@ -197,10 +199,10 @@ def test_setup_token_delegates_only_to_claude_capability(
     def capture(
         command: list[str],
         timeout: int,
-    ) -> claude_provider_module._CapturedSetupOutput:
+    ) -> sidekick_usages.providers.claude.provider._CapturedSetupOutput:
         assert command == ["/usr/bin/claude", "setup-token"]
         assert timeout > 0
-        return claude_provider_module._CapturedSetupOutput(
+        return sidekick_usages.providers.claude.provider._CapturedSetupOutput(
             0,
             f"{raw_secret}\nToken: {token}\n".encode(),
         )

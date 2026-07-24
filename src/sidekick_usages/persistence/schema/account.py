@@ -52,7 +52,7 @@ from sidekick_usages.persistence.time_codec import (
     canonical_timestamp,
     parse_canonical_timestamp,
 )
-from sidekick_usages.serialization import (
+from sidekick_usages.serialization.json import (
     JsonDecodeCode,
     JsonDecodeError,
     JsonObject,

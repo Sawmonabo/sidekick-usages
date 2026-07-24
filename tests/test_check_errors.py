@@ -25,7 +25,7 @@ from sidekick_usages.core.types import (
 )
 from sidekick_usages.credentials.authorities import AuthenticatedSavedAccount
 from sidekick_usages.errors import AuthError, TransientError
-from sidekick_usages.http import HttpClient
+from sidekick_usages.http.client import HttpClient
 from sidekick_usages.persistence.accounts.store import AccountStore
 from sidekick_usages.providers.base import (
     CredentialDetection,
@@ -35,7 +35,7 @@ from sidekick_usages.providers.base import (
     RefreshResult,
     RefreshSuccess,
 )
-from sidekick_usages.usage import AccountTokenActivitySource
+from sidekick_usages.usage.activity import AccountTokenActivitySource
 from tests.test_support import (
     CliHarness,
     FixedClock,

@@ -7,7 +7,7 @@ from rich.console import Console
 
 from sidekick_usages.core.models import Account, ClaudeSetupTokenCredentials
 from sidekick_usages.core.types import AccountLabel
-from sidekick_usages.http import HttpClient
+from sidekick_usages.http.client import HttpClient
 from sidekick_usages.persistence.accounts.store import AccountStore
 from tests.test_support import (
     CliHarness,

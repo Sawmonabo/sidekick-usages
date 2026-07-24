@@ -42,13 +42,6 @@ from sidekick_usages.daemon.types.protocol import (
     RequestKind,
 )
 
-__all__ = [
-    "ControlConnection",
-    "EndpointError",
-    "LocalControlServer",
-    "cleanup_control_endpoint",
-]
-
 _RUNTIME_DIRECTORY_MODE = 0o700
 _SOCKET_MODE = 0o600
 _LISTEN_BACKLOG = 16

@@ -20,8 +20,6 @@ from sidekick_usages.daemon.types.lifecycle import (
     ServiceLifecycleState,
 )
 
-__all__ = ["LaunchdBackend"]
-
 
 class LaunchdBackend:
     """One resident LaunchAgent in the current GUI login context."""

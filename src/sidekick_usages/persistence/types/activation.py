@@ -11,11 +11,6 @@ from sidekick_usages.persistence.private.filesystem import PrivateFilesystem
 
 type StateLockFactory = Callable[[PrivateFilesystem], StateLock]
 
-__all__ = [
-    "StateLock",
-    "StateLockFactory",
-]
-
 
 class StateLock(Protocol):
     """Lock object used by activation coordination."""

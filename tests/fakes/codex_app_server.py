@@ -5,15 +5,9 @@ import sys
 import textwrap
 from pathlib import Path
 
-from sidekick_usages.serialization import JsonObject, JsonValue
+from sidekick_usages.serialization.json import JsonObject, JsonValue
 
 RAW_PROVIDER_SECRET = "raw-provider-secret"
-
-__all__ = [
-    "RAW_PROVIDER_SECRET",
-    "write_codex_schema",
-    "write_fake_codex",
-]
 
 
 def write_codex_schema(root: Path, *, external_auth: bool) -> None:

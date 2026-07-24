@@ -34,18 +34,6 @@ from sidekick_usages.persistence.types.artifact import AuthorityExpectation
 from sidekick_usages.persistence.types.credential import StoredCredentialKind
 from sidekick_usages.persistence.types.error import PersistenceCode
 
-__all__ = [
-    "CredentialAuthorityUnavailableError",
-    "active_stored_reference",
-    "authority_baseline_matches",
-    "copy_runtime_account",
-    "credential_authority_reference",
-    "merge_claude_authority",
-    "require_active_authority_kind",
-    "runtime_account_from_saved",
-    "saved_account_from_runtime_state",
-]
-
 
 class CredentialAuthorityUnavailableError(PersistenceError):
     """A provider-managed authority needs its provider-specific resolver."""

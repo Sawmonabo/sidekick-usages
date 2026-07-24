@@ -2,6 +2,7 @@
 
 import re
 from datetime import UTC, datetime, timedelta
+from functools import cache
 from typing import Annotated
 
 from pydantic import (
@@ -34,7 +35,7 @@ from sidekick_usages.providers.claude.schema.usage import (
     _validate,
     claude_failure,
 )
-from sidekick_usages.serialization import JsonObject, JsonValue
+from sidekick_usages.serialization.json import JsonObject, JsonValue
 
 CLAUDE_TOKEN_PATTERN = re.compile(
     r"sk-ant-oat01-[A-Za-z0-9_-]+",
@@ -47,6 +48,16 @@ _MAX_METADATA_BYTES = 4_096
 _MAX_PLAN_BYTES = 256
 _MAX_SCOPES = 128
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+
+
+type _Token = Annotated[str, AfterValidator(_token)]
+type _Metadata = Annotated[str, AfterValidator(_metadata)]
+type _Plan = Annotated[str, AfterValidator(_plan)]
+type _Scopes = Annotated[list[_Metadata], AfterValidator(_scopes)]
+type _NonnegativeInteger = Annotated[
+    int,
+    AfterValidator(_nonnegative_integer),
+]
 
 
 def _token(value: str) -> str:
@@ -76,16 +87,6 @@ def _nonnegative_integer(value: int) -> int:
     if value < 0:
         raise ValueError
     return value
-
-
-type _Token = Annotated[str, AfterValidator(_token)]
-type _Metadata = Annotated[str, AfterValidator(_metadata)]
-type _Plan = Annotated[str, AfterValidator(_plan)]
-type _Scopes = Annotated[list[_Metadata], AfterValidator(_scopes)]
-type _NonnegativeInteger = Annotated[
-    int,
-    AfterValidator(_nonnegative_integer),
-]
 
 
 class _ClaudeTokenAccount(BaseModel):
@@ -148,16 +149,30 @@ class _ClaudeRefreshResponse(BaseModel):
     refresh_token_expires_in: _NonnegativeInteger | None = None
 
 
-_CREDENTIALS_ADAPTER = TypeAdapter(_ClaudeCredentialsEnvelope)
-_REFRESH_ADAPTER = TypeAdapter(_ClaudeRefreshResponse)
-_EXPIRES_IN_ADAPTER = TypeAdapter(
-    _NonnegativeInteger,
-    config=ConfigDict(strict=True),
-)
-_SETUP_TOKEN_ADAPTER = TypeAdapter(
-    Annotated[str, AfterValidator(_token)],
-    config=ConfigDict(strict=True),
-)
+@cache
+def _credentials_adapter() -> TypeAdapter[_ClaudeCredentialsEnvelope]:
+    return TypeAdapter(_ClaudeCredentialsEnvelope)
+
+
+@cache
+def _refresh_adapter() -> TypeAdapter[_ClaudeRefreshResponse]:
+    return TypeAdapter(_ClaudeRefreshResponse)
+
+
+@cache
+def _expires_in_adapter() -> TypeAdapter[_NonnegativeInteger]:
+    return TypeAdapter(
+        _NonnegativeInteger,
+        config=ConfigDict(strict=True),
+    )
+
+
+@cache
+def _setup_token_adapter() -> TypeAdapter[str]:
+    return TypeAdapter(
+        Annotated[str, AfterValidator(_token)],
+        config=ConfigDict(strict=True),
+    )
 
 
 def _timestamp_expiry(value: int, field: str) -> KnownExpiry:
@@ -199,7 +214,7 @@ def _login_identity(
 def parse_credentials_blob(blob: JsonObject) -> DetectedCredentials:
     """Validate and normalize complete Claude Code login credentials."""
     validated = _validate(
-        _CREDENTIALS_ADAPTER,
+        _credentials_adapter(),
         blob,
         boundary="credential",
     )
@@ -259,7 +274,7 @@ def refresh_expiry(
 ) -> KnownExpiry:
     """Normalize one strict Claude refresh-relative expiry duration."""
     validated = _validate(
-        _EXPIRES_IN_ADAPTER,
+        _expires_in_adapter(),
         value,
         boundary="refresh expiry",
     )
@@ -285,7 +300,7 @@ def parse_refresh_credentials(
 ) -> ClaudeLoginCredentials:
     """Validate a refresh response and build complete login credentials."""
     validated = _validate(
-        _REFRESH_ADAPTER,
+        _refresh_adapter(),
         value,
         boundary="refresh",
     )
@@ -330,7 +345,7 @@ def parse_refresh_credentials(
 def validate_setup_token(value: str) -> str:
     """Validate one token captured from Claude's setup-token process."""
     try:
-        validated = _SETUP_TOKEN_ADAPTER.validate_python(value, strict=True)
+        validated = _setup_token_adapter().validate_python(value, strict=True)
     except ValidationError:
         raise ProviderBoundaryError(
             claude_failure(
@@ -346,13 +361,3 @@ def validate_setup_token(value: str) -> str:
             )
         ) from None
     return validated
-
-
-__all__ = [
-    "CLAUDE_TOKEN_PATTERN",
-    "claude_expiry",
-    "parse_credentials_blob",
-    "parse_refresh_credentials",
-    "refresh_expiry",
-    "validate_setup_token",
-]

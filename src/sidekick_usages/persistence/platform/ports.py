@@ -1,63 +1,10 @@
-"""Native persistence platform contracts."""
+"""Native persistence operation ports."""
 
-from dataclasses import dataclass, field
-from enum import StrEnum
 from pathlib import Path
 from typing import IO, Protocol
 
-
-class FilesystemFamily(StrEnum):
-    """Qualified local filesystems supported by persistence."""
-
-    EXT4 = "ext4"
-    XFS = "xfs"
-    BTRFS = "btrfs"
-    APFS = "apfs"
-    NTFS = "ntfs"
-
-
-@dataclass(frozen=True, slots=True)
-class FilesystemQualification:
-    """Approved filesystem family for one authority path."""
-
-    family: FilesystemFamily
-    authority_path: Path
-
-
-class NativeFailureKind(StrEnum):
-    """Closed failure categories translated by the persistence facade."""
-
-    UNSUPPORTED = "unsupported"
-    UNSAFE = "unsafe"
-    UNREADABLE = "unreadable"
-    TOO_LARGE = "too_large"
-    CHANGED = "changed"
-    EXISTS = "exists"
-    CREATE = "create"
-    WRITE = "write"
-    SYNCHRONIZE = "synchronize"
-    PUBLISH = "publish"
-    REPLACE = "replace"
-    HARDEN = "harden"
-    REMOVE = "remove"
-
-
-class NativeFilesystemError(Exception):
-    """An input-free native failure awaiting facade translation."""
-
-    def __init__(self, kind: NativeFailureKind) -> None:
-        self.kind = kind
-        super().__init__(f"Native persistence operation failed: {kind}.")
-
-
-@dataclass(frozen=True, slots=True)
-class NativeFile:
-    """Validated bounded bytes plus stable open-handle identity."""
-
-    device: int
-    inode: int
-    link_count: int
-    data: bytes = field(repr=False)
+from sidekick_usages.persistence.platform.models import NativeFile
+from sidekick_usages.persistence.platform.types import FilesystemFamily
 
 
 class NativePlatform(Protocol):
@@ -150,13 +97,3 @@ class NativePlatform(Protocol):
         sidecar: IO[bytes],
     ) -> None:
         """Prove the locked handle still names the exact sidecar path."""
-
-
-__all__ = [
-    "FilesystemFamily",
-    "FilesystemQualification",
-    "NativeFailureKind",
-    "NativeFile",
-    "NativeFilesystemError",
-    "NativePlatform",
-]

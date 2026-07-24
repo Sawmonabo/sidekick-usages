@@ -3,11 +3,9 @@
 import os
 import stat
 
-from sidekick_usages.persistence.platform.contracts import (
-    NativeFailureKind,
-    NativeFile,
-    NativeFilesystemError,
-)
+from sidekick_usages.persistence.platform.errors import NativeFilesystemError
+from sidekick_usages.persistence.platform.models import NativeFile
+from sidekick_usages.persistence.platform.types import NativeFailureKind
 
 _READ_CHUNK_BYTES = 64 * 1024
 
@@ -89,6 +87,3 @@ def read_descriptor(
         link_count=after.st_nlink,
         data=data,
     )
-
-
-__all__ = ["read_descriptor", "validate_file"]

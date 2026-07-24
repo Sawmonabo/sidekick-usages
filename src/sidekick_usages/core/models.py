@@ -21,6 +21,11 @@ _MAX_CLAUDE_SCOPES = 128
 _CLAUDE_PROFILE_SCOPE = "user:profile"
 
 
+type ClaudeCredentials = ClaudeSetupTokenCredentials | ClaudeLoginCredentials
+type Credentials = ClaudeCredentials | CodexCredentials
+type TokenActivityReading = TokenActivitySummary | TokenActivityUnavailable
+
+
 def _require_bounded_claude_identity(value: str) -> None:
     """Reject identity values that are empty, malformed, or unbounded."""
     if not isinstance(value, str):
@@ -118,9 +123,6 @@ class ClaudeLoginCredentials:
             raise TypeError("Claude login identity must be complete.")
 
 
-type ClaudeCredentials = ClaudeSetupTokenCredentials | ClaudeLoginCredentials
-
-
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CodexCredentials:
     """Codex credential material and provider-owned auth metadata."""
@@ -134,9 +136,6 @@ class CodexCredentials:
     auth_home: str | None = None
     id_token: str | None = field(default=None, repr=False)
     auth_last_refresh: str | None = None
-
-
-type Credentials = ClaudeCredentials | CodexCredentials
 
 
 def _refresh_token(credentials: Credentials) -> str | None:
@@ -226,9 +225,6 @@ class TokenActivityUnavailable:
         """Require an explicit unavailable scope."""
         if not isinstance(self.scope, TokenActivityScope):
             raise TypeError("Token activity scope must be explicit.")
-
-
-type TokenActivityReading = TokenActivitySummary | TokenActivityUnavailable
 
 
 @dataclass(frozen=True, slots=True)

@@ -23,14 +23,14 @@ from sidekick_usages.errors import (
     InvalidPayloadError,
     TransientError,
 )
+from sidekick_usages.http.models import HttpAttempt
 from sidekick_usages.http.retry import (
     CONNECT_TIMEOUT_SECONDS,
     READ_TIMEOUT_SECONDS,
-    HttpAttempt,
-    HttpOperation,
     RetryExecutor,
 )
-from sidekick_usages.serialization import (
+from sidekick_usages.http.types import HttpOperation
+from sidekick_usages.serialization.json import (
     JsonObject,
     decode_json_object,
 )

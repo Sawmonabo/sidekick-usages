@@ -24,14 +24,14 @@ from sidekick_usages.core.types import (
     ProviderId,
     TokenActivityScope,
 )
-from sidekick_usages.credentials import CredentialService
 from sidekick_usages.credentials.authorities import AuthenticatedSavedAccount
+from sidekick_usages.credentials.service import CredentialService
 from sidekick_usages.errors import (
     ProviderIdentityError,
     TransientError,
     UsageError,
 )
-from sidekick_usages.http import HttpClient
+from sidekick_usages.http.client import HttpClient
 from sidekick_usages.persistence.accounts.store import AccountStore
 from sidekick_usages.persistence.errors import (
     ActivitySnapshotError,
@@ -46,19 +46,21 @@ from sidekick_usages.providers.base import (
     ProviderFailureKind,
     RefreshResult,
 )
-from sidekick_usages.usage import (
+from sidekick_usages.usage.activity import (
     AccountTokenActivitySnapshots,
     AccountTokenActivitySource,
-    CompleteTokenActivity,
     LocalTokenActivitySource,
+)
+from sidekick_usages.usage.models import (
+    CompleteTokenActivity,
     PartialTokenActivity,
     RefreshRejectedFailure,
     TokenActivityFailureKind,
     TransientFailure,
     UnavailableTokenActivity,
-    UsageCheckService,
     activity_has_failure,
 )
+from sidekick_usages.usage.service import UsageCheckService
 from tests.test_support import (
     REFERENCE_TIME,
     FixedClock,

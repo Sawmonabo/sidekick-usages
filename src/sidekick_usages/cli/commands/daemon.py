@@ -9,8 +9,6 @@ from sidekick_usages.core.types import ExitCode
 from sidekick_usages.daemon.types.lifecycle import DaemonOperation
 from sidekick_usages.errors import UsageError
 
-__all__ = ["register"]
-
 
 def _run(
     ctx: typer.Context,

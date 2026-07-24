@@ -28,7 +28,7 @@ from sidekick_usages.heartbeat.models import (
     HeartbeatOutcome,
 )
 from sidekick_usages.heartbeat.ports import HeartbeatProvider
-from sidekick_usages.http import HttpClient
+from sidekick_usages.http.client import HttpClient
 from sidekick_usages.persistence.accounts.runtime_bridge import (
     saved_account_from_runtime_state,
 )

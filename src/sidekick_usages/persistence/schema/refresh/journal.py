@@ -23,7 +23,10 @@ from sidekick_usages.core.types import AccountLabel, ProviderId
 from sidekick_usages.persistence.schema.credential import (
     encode_credentials,
 )
-from sidekick_usages.serialization import JsonDecodeError, decode_json_value
+from sidekick_usages.serialization.json import (
+    JsonDecodeError,
+    decode_json_value,
+)
 
 ACCOUNT_KEY_DOMAIN = b"sidekick-usages credential refresh account\0"
 CREDENTIAL_DOMAIN = b"sidekick-usages credential refresh credential\0"

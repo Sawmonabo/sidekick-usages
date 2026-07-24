@@ -2,8 +2,6 @@
 
 from enum import StrEnum
 
-__all__ = ["ActivitySnapshotFailureKind", "PersistenceCode"]
-
 
 class ActivitySnapshotFailureKind(StrEnum):
     """Closed failures from the token-activity snapshot boundary."""

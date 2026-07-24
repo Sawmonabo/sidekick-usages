@@ -8,11 +8,9 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from sidekick_usages.persistence.platform.contracts import (
-    NativeFailureKind,
-    NativeFile,
-    NativeFilesystemError,
-)
+from sidekick_usages.persistence.platform.errors import NativeFilesystemError
+from sidekick_usages.persistence.platform.models import NativeFile
+from sidekick_usages.persistence.platform.types import NativeFailureKind
 
 if TYPE_CHECKING and sys.platform == "win32":
     import _win32typing
@@ -355,18 +353,3 @@ if sys.platform == "win32":
         except BaseException as error:
             close_descriptor(descriptor, error)
         return descriptor
-
-
-__all__ = [
-    "close_descriptor",
-    "close_handle",
-    "descriptor_from_handle",
-    "metadata",
-    "open_delete_target",
-    "open_mutation_source",
-    "owned_descriptor",
-    "owned_handle",
-    "read_descriptor",
-    "validate_stat",
-    "write_handle",
-]

@@ -6,11 +6,6 @@ _MAX_PACKAGE_VERSION_BYTES = 128
 _MIN_PRINTABLE_ASCII = 0x21
 _MAX_PRINTABLE_ASCII = 0x7E
 
-__all__ = [
-    "PackageVersion",
-    "ServicePhase",
-]
-
 
 class PackageVersion(str):
     """Bounded printable installed-package version."""

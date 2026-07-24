@@ -11,11 +11,11 @@ from sidekick_usages.core.models import (
     DetectedCredentials,
 )
 from sidekick_usages.core.types import AccountLabel, ProviderId
-from sidekick_usages.credentials import (
+from sidekick_usages.credentials.codex.coordinator import private_codex_home
+from sidekick_usages.credentials.models import (
     CredentialRefreshSuccess,
     LocalCredentialSource,
 )
-from sidekick_usages.credentials.codex.coordinator import private_codex_home
 from sidekick_usages.providers.base import ProviderFailure, ProviderFailureKind
 from tests.test_credential_service import (
     _account,

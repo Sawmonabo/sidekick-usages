@@ -18,14 +18,7 @@ from sidekick_usages.persistence.time_codec import (
     canonical_timestamp,
     parse_canonical_timestamp,
 )
-from sidekick_usages.serialization import JsonObject
-
-__all__ = [
-    "MAX_WORKER_RESULT_BYTES",
-    "WORKER_RESULT_SCHEMA_VERSION",
-    "decode_worker_result",
-    "encode_worker_result",
-]
+from sidekick_usages.serialization.json import JsonObject
 
 WORKER_RESULT_SCHEMA_VERSION = 1
 MAX_WORKER_RESULT_BYTES = 16 * 1024

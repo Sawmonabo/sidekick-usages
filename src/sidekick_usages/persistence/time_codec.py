@@ -5,8 +5,6 @@ from datetime import UTC, datetime
 
 from sidekick_usages.persistence.errors import InvalidSchemaError
 
-__all__ = ["canonical_timestamp", "parse_canonical_timestamp"]
-
 _CANONICAL_TIMESTAMP = re.compile(
     r"(?P<year>[0-9]{4})-(?P<month>[0-9]{2})-"
     r"(?P<day>[0-9]{2})T(?P<hour>[0-9]{2}):"

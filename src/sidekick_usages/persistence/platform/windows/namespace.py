@@ -6,10 +6,10 @@ import sys
 from pathlib import Path
 
 from sidekick_usages.persistence.artifacts import portable_basename_key
-from sidekick_usages.persistence.platform.contracts import (
+from sidekick_usages.persistence.platform.errors import NativeFilesystemError
+from sidekick_usages.persistence.platform.types import (
     FilesystemFamily,
     NativeFailureKind,
-    NativeFilesystemError,
 )
 
 if sys.platform == "win32":
@@ -138,13 +138,3 @@ if sys.platform == "win32":
         ):
             raise _native_error(NativeFailureKind.UNSUPPORTED)
         return FilesystemFamily.NTFS
-
-
-__all__ = [
-    "child_path",
-    "existing_ancestor",
-    "path_attributes",
-    "qualify_local_ntfs",
-    "require_exact_entry",
-    "validate_membership",
-]

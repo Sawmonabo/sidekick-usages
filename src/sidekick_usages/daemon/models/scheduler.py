@@ -7,11 +7,6 @@ from sidekick_usages.core.selection.types import OperationState
 from sidekick_usages.daemon.types.protocol import ProgressPhase
 from sidekick_usages.daemon.types.worker import WorkerOutcome
 
-__all__ = [
-    "OperationUpdate",
-    "SchedulerCompletion",
-]
-
 
 @dataclass(frozen=True, slots=True)
 class SchedulerCompletion:

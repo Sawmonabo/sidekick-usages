@@ -1,7 +1,7 @@
 """Codex usage requests and validated response conversion."""
 
 from sidekick_usages.core.models import Account, UsageReport
-from sidekick_usages.http import HttpClient
+from sidekick_usages.http.client import HttpClient
 from sidekick_usages.providers.codex.request import account_headers
 from sidekick_usages.providers.codex.schemas import parse_usage_response
 
@@ -22,6 +22,3 @@ def fetch_usage(account: Account, http: HttpClient) -> UsageReport:
         headers=headers,
     )
     return parse_usage_response(data)
-
-
-__all__ = ["fetch_usage"]

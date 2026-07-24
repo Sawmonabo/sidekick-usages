@@ -16,7 +16,7 @@ from sidekick_usages.core.models import (
     ClaudeSetupTokenCredentials,
 )
 from sidekick_usages.core.types import ExitCode, ProviderId
-from sidekick_usages.credentials import (
+from sidekick_usages.credentials.models import (
     LocalCredentialSource,
     TokenCredentialSource,
     TokenPromptSpec,
@@ -353,6 +353,3 @@ def register(application: typer.Typer) -> None:
     """Register the sole add and refresh command owners."""
     branded_command(application, "add")(add_cmd)
     branded_command(application, "refresh")(refresh_cmd)
-
-
-__all__ = ["exit_credential_failure", "register"]

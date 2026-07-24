@@ -9,8 +9,6 @@ from sidekick_usages.providers.codex.app_server.models import (
     JsonRpcServerRequest,
 )
 
-__all__ = ["CodexAppServerFailure", "JsonRpcMessage"]
-
 type JsonRpcMessage = (
     JsonRpcResponse
     | JsonRpcErrorResponse

@@ -28,23 +28,28 @@ from sidekick_usages.persistence.time_codec import (
     canonical_timestamp,
     parse_canonical_timestamp,
 )
-from sidekick_usages.serialization import (
+from sidekick_usages.serialization.json import (
     JsonDecodeError,
     JsonObject,
     decode_json_value,
 )
-
-__all__ = [
-    "CredentialDecodeError",
-    "decode_credentials",
-    "encode_credentials",
-]
 
 CREDENTIAL_SCHEMA_VERSION = 1
 MAX_CREDENTIAL_METADATA_BYTES = 4_096
 MAX_CREDENTIAL_SECRET_BYTES = 1024 * 1024
 MAX_CLAUDE_SCOPES = 128
 MODEL_CONFIG = ConfigDict(strict=True, extra="forbid", frozen=True)
+
+
+type TimestampValue = Annotated[str, AfterValidator(_timestamp)]
+type SecretValue = Annotated[str, AfterValidator(_secret)]
+type MetadataValue = Annotated[str, AfterValidator(_metadata)]
+type CredentialModel = Annotated[
+    ClaudeSetupCredentialModel
+    | ClaudeSubscriptionCredentialModel
+    | CodexSubscriptionCredentialModel,
+    Field(discriminator="credential_kind"),
+]
 
 
 class CredentialDecodeError(ValueError):
@@ -74,11 +79,6 @@ def _metadata(value: str) -> str:
     if not encoded or len(encoded) > MAX_CREDENTIAL_METADATA_BYTES:
         raise ValueError("Credential metadata must be nonempty and bounded.")
     return value
-
-
-type TimestampValue = Annotated[str, AfterValidator(_timestamp)]
-type SecretValue = Annotated[str, AfterValidator(_secret)]
-type MetadataValue = Annotated[str, AfterValidator(_metadata)]
 
 
 class ClaudeIdentityModel(BaseModel):
@@ -135,14 +135,6 @@ class CodexSubscriptionCredentialModel(BaseModel):
     auth_home: MetadataValue | None
     id_token: SecretValue | None
     auth_last_refresh: MetadataValue | None
-
-
-type CredentialModel = Annotated[
-    ClaudeSetupCredentialModel
-    | ClaudeSubscriptionCredentialModel
-    | CodexSubscriptionCredentialModel,
-    Field(discriminator="credential_kind"),
-]
 
 
 def _credential_object(credentials: Credentials) -> JsonObject:

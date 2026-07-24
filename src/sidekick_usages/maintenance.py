@@ -26,11 +26,11 @@ from sidekick_usages.core.types import (
     ProviderId,
     RefreshStatus,
 )
-from sidekick_usages.credentials import CredentialRefreshResult
 from sidekick_usages.credentials.claude.lifetime import (
     ClaudeLoginRenewalState,
     classify_claude_login_renewal,
 )
+from sidekick_usages.credentials.models import CredentialRefreshResult
 from sidekick_usages.credentials.refresh import CredentialRefreshReason
 from sidekick_usages.errors import RateLimitError, TransientError, UsageError
 from sidekick_usages.persistence.accounts.store import AccountStore

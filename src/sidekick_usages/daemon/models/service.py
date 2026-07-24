@@ -13,8 +13,6 @@ from sidekick_usages.daemon.types.service import (
 _MAX_ACTIVE_WORKERS = 64
 _MAX_PROTOCOL_VERSION = 65_535
 
-__all__ = ["ServiceState"]
-
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ServiceState:

@@ -49,10 +49,3 @@ def classify_claude_login_renewal(
             return ClaudeLoginRenewalState.RENEWAL_DUE
         return ClaudeLoginRenewalState.CURRENT
     raise AssertionError(f"Unexpected expiry classification: {expiry!r}")
-
-
-__all__ = [
-    "CLAUDE_LOGIN_RENEWAL_WINDOW",
-    "ClaudeLoginRenewalState",
-    "classify_claude_login_renewal",
-]

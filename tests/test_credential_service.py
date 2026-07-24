@@ -19,18 +19,18 @@ from sidekick_usages.core.models import (
     UsageReport,
 )
 from sidekick_usages.core.types import AccountLabel, ProviderId, RefreshStatus
-from sidekick_usages.credentials import (
+from sidekick_usages.credentials.authorities import credential_resolver_for
+from sidekick_usages.credentials.codex.coordinator import private_codex_home
+from sidekick_usages.credentials.models import (
     CredentialRefreshSuccess,
     CredentialSaveSuccess,
-    CredentialService,
     LocalCredentialSource,
     TokenCredentialSource,
     TokenPromptSpec,
 )
-from sidekick_usages.credentials.authorities import credential_resolver_for
-from sidekick_usages.credentials.codex.coordinator import private_codex_home
 from sidekick_usages.credentials.refresh import CredentialRefreshCoordinator
-from sidekick_usages.http import HttpClient
+from sidekick_usages.credentials.service import CredentialService
+from sidekick_usages.http.client import HttpClient
 from sidekick_usages.persistence.accounts.store import AccountStore
 from sidekick_usages.persistence.credentials.refresh.service import (
     CredentialRefreshTransactions,
@@ -38,8 +38,10 @@ from sidekick_usages.persistence.credentials.refresh.service import (
 from sidekick_usages.persistence.filesystem.service import (
     PersistenceFilesystem,
 )
-from sidekick_usages.persistence.private.credentials import (
+from sidekick_usages.persistence.private.bundles.writes import (
     PreparedPrivateBundleWrite,
+)
+from sidekick_usages.persistence.private.credentials import (
     PrivateCredentialTree,
 )
 from sidekick_usages.providers.base import (
@@ -49,9 +51,9 @@ from sidekick_usages.providers.base import (
     ProviderFailureKind,
     RefreshResult,
 )
-from sidekick_usages.providers.codex import CodexProvider
-from sidekick_usages.serialization import JsonObject
-from sidekick_usages.usage import UsageCheckService
+from sidekick_usages.providers.codex.provider import CodexProvider
+from sidekick_usages.serialization.json import JsonObject
+from sidekick_usages.usage.service import UsageCheckService
 from tests.test_support import (
     REFERENCE_TIME,
     FixedClock,

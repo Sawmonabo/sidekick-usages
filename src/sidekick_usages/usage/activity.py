@@ -30,7 +30,7 @@ from sidekick_usages.errors import (
     TransientError,
     UsageError,
 )
-from sidekick_usages.http import HttpClient
+from sidekick_usages.http.client import HttpClient
 from sidekick_usages.persistence.errors import (
     ActivitySnapshotError,
 )
@@ -435,11 +435,3 @@ class TokenActivityCollector:
             kind = TokenActivityFailureKind.PROVIDER
             message = "Provider token activity is unavailable."
         return TokenActivityIssue(kind=kind, message=message, label=label)
-
-
-__all__ = [
-    "AccountTokenActivitySnapshots",
-    "AccountTokenActivitySource",
-    "LocalTokenActivitySource",
-    "TokenActivityCollector",
-]

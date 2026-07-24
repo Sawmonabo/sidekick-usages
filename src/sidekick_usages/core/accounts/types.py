@@ -11,6 +11,9 @@ from sidekick_usages.core.accounts.validation import (
     require_bounded_text,
 )
 
+type AccountIdFactory = Callable[[], SidekickAccountId]
+type AuthorityIdFactory = Callable[[], AuthorityId]
+
 
 class _CanonicalUuid(str):
     """Canonical lower-case UUID identifier."""
@@ -54,10 +57,6 @@ class RequestId(_CanonicalUuid):
     """Correlation identifier for one local control request."""
 
     _name = "Request ID"
-
-
-type AccountIdFactory = Callable[[], SidekickAccountId]
-type AuthorityIdFactory = Callable[[], AuthorityId]
 
 
 @dataclass(frozen=True, slots=True)

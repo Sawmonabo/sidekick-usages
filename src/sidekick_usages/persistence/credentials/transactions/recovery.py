@@ -383,9 +383,3 @@ class CredentialTransactionRecovery:
         ):
             return _AuthorityState.TARGET
         return _AuthorityState.THIRD
-
-
-__all__ = [
-    "CredentialSourceGuard",
-    "CredentialTransactionRecovery",
-]

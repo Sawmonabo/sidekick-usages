@@ -7,20 +7,9 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from sidekick_usages.persistence.platform.contracts import (
-    NativeFailureKind,
-    NativeFilesystemError,
-)
-from sidekick_usages.persistence.platform.posix.adapter import (
-    _close_descriptor_stack,
-    _no_follow_flag,
-    _open_child_directory,
-    _open_directory,
-    _owned_descriptor,
-    _path_metadata,
-    _require_exact_entry,
-    _validate_file,
-)
+from sidekick_usages.persistence.platform.errors import NativeFilesystemError
+from sidekick_usages.persistence.platform.posix import files, namespace
+from sidekick_usages.persistence.platform.types import NativeFailureKind
 
 type _Identity = tuple[int, int]
 type _RelativePath = tuple[str, ...]
@@ -80,10 +69,15 @@ def _open_repair_child_directory(
     basename: str,
 ) -> int:
     """Open one owner-owned directory without accepting a path race."""
-    expected = _require_exact_entry(parent_descriptor, basename)
+    expected = namespace.require_exact_entry(parent_descriptor, basename)
     if expected is None:
         raise _native_error(NativeFailureKind.CHANGED)
-    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | _no_follow_flag()
+    flags = (
+        os.O_RDONLY
+        | os.O_CLOEXEC
+        | os.O_DIRECTORY
+        | namespace.no_follow_flag()
+    )
     try:
         descriptor = os.open(basename, flags, dir_fd=parent_descriptor)
     except OSError:
@@ -99,35 +93,36 @@ def _open_repair_child_directory(
             or metadata.st_uid != os.geteuid()
             or metadata.st_dev != parent_metadata.st_dev
             or (metadata.st_dev, metadata.st_ino) != expected
-            or _require_exact_entry(parent_descriptor, basename) != expected
+            or namespace.require_exact_entry(parent_descriptor, basename)
+            != expected
         ):
             raise _native_error(NativeFailureKind.UNSAFE)
     except BaseException as error:
-        _close_descriptor_stack([descriptor], error)
+        namespace.close_descriptor_stack([descriptor], error)
     return descriptor
 
 
 @contextmanager
 def _open_tree(root: Path) -> Iterator[_OpenedTree | None]:
-    parent_metadata = _path_metadata(root.parent)
+    parent_metadata = namespace.path_metadata(root.parent)
     if parent_metadata is None:
         yield None
         return
-    parent_descriptor = _open_directory(root.parent, private=False)
-    with _owned_descriptor(
+    parent_descriptor = namespace.open_directory(root.parent, private=False)
+    with namespace.owned_descriptor(
         parent_descriptor,
         NativeFailureKind.UNREADABLE,
     ):
-        identity = _require_exact_entry(parent_descriptor, root.name)
+        identity = namespace.require_exact_entry(parent_descriptor, root.name)
         if identity is None:
             yield None
             return
-        root_descriptor = _open_child_directory(
+        root_descriptor = namespace.open_child_directory(
             parent_descriptor,
             root.name,
             private=True,
         )
-        with _owned_descriptor(
+        with namespace.owned_descriptor(
             root_descriptor,
             NativeFailureKind.UNREADABLE,
         ):
@@ -149,16 +144,16 @@ def _open_tree(root: Path) -> Iterator[_OpenedTree | None]:
 @contextmanager
 def _open_repair_tree(root: Path) -> Iterator[_OpenedTree | None]:
     """Open a tree whose directories may have the released broad mode."""
-    parent_metadata = _path_metadata(root.parent)
+    parent_metadata = namespace.path_metadata(root.parent)
     if parent_metadata is None:
         yield None
         return
-    parent_descriptor = _open_directory(root.parent, private=True)
-    with _owned_descriptor(
+    parent_descriptor = namespace.open_directory(root.parent, private=True)
+    with namespace.owned_descriptor(
         parent_descriptor,
         NativeFailureKind.UNREADABLE,
     ):
-        identity = _require_exact_entry(parent_descriptor, root.name)
+        identity = namespace.require_exact_entry(parent_descriptor, root.name)
         if identity is None:
             yield None
             return
@@ -166,7 +161,7 @@ def _open_repair_tree(root: Path) -> Iterator[_OpenedTree | None]:
             parent_descriptor,
             root.name,
         )
-        with _owned_descriptor(
+        with namespace.owned_descriptor(
             root_descriptor,
             NativeFailureKind.UNREADABLE,
         ):
@@ -187,7 +182,7 @@ def _open_repair_tree(root: Path) -> Iterator[_OpenedTree | None]:
 
 def _require_root_identity(opened: _OpenedTree) -> None:
     if (
-        _require_exact_entry(
+        namespace.require_exact_entry(
             opened.parent_descriptor,
             opened.root_basename,
         )
@@ -216,7 +211,7 @@ def _open_relative_directory(
     try:
         for component in relative:
             traversed = (*traversed, component)
-            child = _open_child_directory(
+            child = namespace.open_child_directory(
                 current,
                 component,
                 private=True,
@@ -230,9 +225,9 @@ def _open_relative_directory(
                 raise _native_error(NativeFailureKind.CHANGED)
             current = child
     except BaseException as error:
-        _close_descriptor_stack(descriptors, error)
+        namespace.close_descriptor_stack(descriptors, error)
     final = descriptors.pop()
-    _close_descriptor_stack(descriptors)
+    namespace.close_descriptor_stack(descriptors)
     return final
 
 
@@ -258,9 +253,9 @@ def _open_repair_relative_directory(
                 raise _native_error(NativeFailureKind.CHANGED)
             current = child
     except BaseException as error:
-        _close_descriptor_stack(descriptors, error)
+        namespace.close_descriptor_stack(descriptors, error)
     final = descriptors.pop()
-    _close_descriptor_stack(descriptors)
+    namespace.close_descriptor_stack(descriptors)
     return final
 
 
@@ -278,7 +273,7 @@ def _namespace_snapshot(
     names = _list_names(descriptor)
     entries: list[tuple[str, _Identity]] = []
     for name in names:
-        identity = _require_exact_entry(descriptor, name)
+        identity = namespace.require_exact_entry(descriptor, name)
         if identity is None:
             raise _native_error(NativeFailureKind.CHANGED)
         entries.append((name, identity))
@@ -292,7 +287,7 @@ def _entry_metadata(
     basename: str,
 ) -> tuple[_Identity, os.stat_result]:
     """Return stable no-follow metadata for one exact child name."""
-    identity = _require_exact_entry(descriptor, basename)
+    identity = namespace.require_exact_entry(descriptor, basename)
     if identity is None:
         raise _native_error(NativeFailureKind.CHANGED)
     try:
@@ -316,7 +311,9 @@ def _open_regular(
     root_device: int,
     expected: _Identity,
 ) -> int:
-    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK | _no_follow_flag()
+    flags = (
+        os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK | namespace.no_follow_flag()
+    )
     try:
         descriptor = os.open(
             basename,
@@ -329,7 +326,7 @@ def _open_regular(
         raise _native_error(NativeFailureKind.UNSAFE) from None
     try:
         metadata = _metadata(descriptor, NativeFailureKind.UNREADABLE)
-        _validate_file(
+        files.validate_file(
             metadata,
             root_device,
             allow_interrupted_link=False,
@@ -337,12 +334,12 @@ def _open_regular(
         if (
             metadata.st_dev,
             metadata.st_ino,
-        ) != expected or _require_exact_entry(
+        ) != expected or namespace.require_exact_entry(
             parent_descriptor, basename
         ) != expected:
             raise _native_error(NativeFailureKind.CHANGED)
     except BaseException as error:
-        _close_descriptor_stack([descriptor], error)
+        namespace.close_descriptor_stack([descriptor], error)
     return descriptor
 
 
@@ -355,17 +352,17 @@ def _scan_direct_tree(opened: _OpenedTree) -> tuple[_TreeEntry, ...]:
         (),
         {(): opened.root_identity},
     )
-    with _owned_descriptor(descriptor, NativeFailureKind.UNREADABLE):
+    with namespace.owned_descriptor(descriptor, NativeFailureKind.UNREADABLE):
         for basename in _list_names(descriptor):
             identity, metadata = _entry_metadata(descriptor, basename)
             if stat.S_ISDIR(metadata.st_mode):
                 _validate_directory(metadata, opened.root_device)
-                child = _open_child_directory(
+                child = namespace.open_child_directory(
                     descriptor,
                     basename,
                     private=True,
                 )
-                with _owned_descriptor(
+                with namespace.owned_descriptor(
                     child,
                     NativeFailureKind.UNREADABLE,
                 ):
@@ -388,7 +385,7 @@ def _scan_direct_tree(opened: _OpenedTree) -> tuple[_TreeEntry, ...]:
                 opened.root_device,
                 identity,
             )
-            with _owned_descriptor(
+            with namespace.owned_descriptor(
                 file_descriptor,
                 NativeFailureKind.UNREADABLE,
             ):
@@ -408,7 +405,7 @@ def _scan_tree(
     while pending:
         relative = pending.pop()
         descriptor = _open_relative_directory(opened, relative, identities)
-        with _owned_descriptor(
+        with namespace.owned_descriptor(
             descriptor,
             NativeFailureKind.UNREADABLE,
         ):
@@ -417,12 +414,12 @@ def _scan_tree(
                 child_relative = (*relative, basename)
                 if stat.S_ISDIR(metadata.st_mode):
                     _validate_directory(metadata, opened.root_device)
-                    child = _open_child_directory(
+                    child = namespace.open_child_directory(
                         descriptor,
                         basename,
                         private=True,
                     )
-                    with _owned_descriptor(
+                    with namespace.owned_descriptor(
                         child,
                         NativeFailureKind.UNREADABLE,
                     ):
@@ -447,7 +444,7 @@ def _scan_tree(
                     opened.root_device,
                     identity,
                 )
-                with _owned_descriptor(
+                with namespace.owned_descriptor(
                     file_descriptor,
                     NativeFailureKind.UNREADABLE,
                 ):
@@ -490,7 +487,7 @@ def _scan_repair_tree(
             relative,
             identities,
         )
-        with _owned_descriptor(
+        with namespace.owned_descriptor(
             descriptor,
             NativeFailureKind.UNREADABLE,
         ):
@@ -502,7 +499,7 @@ def _scan_repair_tree(
                         descriptor,
                         basename,
                     )
-                    with _owned_descriptor(
+                    with namespace.owned_descriptor(
                         child,
                         NativeFailureKind.UNREADABLE,
                     ):
@@ -530,7 +527,7 @@ def _scan_repair_tree(
                     opened.root_device,
                     identity,
                 )
-                with _owned_descriptor(
+                with namespace.owned_descriptor(
                     file_descriptor,
                     NativeFailureKind.UNREADABLE,
                 ):
@@ -553,9 +550,9 @@ def _require_repair_directory_identity(
         directory.relative[:-1],
         identities,
     )
-    with _owned_descriptor(parent, NativeFailureKind.CHANGED):
+    with namespace.owned_descriptor(parent, NativeFailureKind.CHANGED):
         if (
-            _require_exact_entry(parent, directory.relative[-1])
+            namespace.require_exact_entry(parent, directory.relative[-1])
             != directory.identity
         ):
             raise _native_error(NativeFailureKind.CHANGED)
@@ -572,7 +569,7 @@ def _repair_directory_permissions(
         directory.relative,
         identities,
     )
-    with _owned_descriptor(descriptor, NativeFailureKind.HARDEN):
+    with namespace.owned_descriptor(descriptor, NativeFailureKind.HARDEN):
         metadata = _metadata(descriptor, NativeFailureKind.CHANGED)
         if (
             (metadata.st_dev, metadata.st_ino) != directory.identity
@@ -619,7 +616,7 @@ def _delete_file(
         opened.root_device,
         entry.identity,
     )
-    with _owned_descriptor(descriptor, NativeFailureKind.REMOVE):
+    with namespace.owned_descriptor(descriptor, NativeFailureKind.REMOVE):
         try:
             os.unlink(basename, dir_fd=parent_descriptor)
         except FileNotFoundError:
@@ -637,12 +634,12 @@ def _delete_directory(
     entry: _TreeEntry,
 ) -> None:
     basename = entry.relative[-1]
-    descriptor = _open_child_directory(
+    descriptor = namespace.open_child_directory(
         parent_descriptor,
         basename,
         private=True,
     )
-    with _owned_descriptor(descriptor, NativeFailureKind.REMOVE):
+    with namespace.owned_descriptor(descriptor, NativeFailureKind.REMOVE):
         before_namespace = _namespace_snapshot(parent_descriptor)
         metadata = _metadata(descriptor, NativeFailureKind.REMOVE)
         if (metadata.st_dev, metadata.st_ino) != entry.identity or _list_names(
@@ -681,8 +678,10 @@ def _delete_entry(
         parent_relative,
         identities,
     )
-    with _owned_descriptor(parent_descriptor, NativeFailureKind.REMOVE):
-        observed = _require_exact_entry(
+    with namespace.owned_descriptor(
+        parent_descriptor, NativeFailureKind.REMOVE
+    ):
+        observed = namespace.require_exact_entry(
             parent_descriptor,
             entry.relative[-1],
         )
@@ -693,13 +692,10 @@ def _delete_entry(
         else:
             _delete_file(opened, parent_descriptor, entry)
         if (
-            _require_exact_entry(
+            namespace.require_exact_entry(
                 parent_descriptor,
                 entry.relative[-1],
             )
             is not None
         ):
             raise _native_error(NativeFailureKind.CHANGED)
-
-
-__all__: list[str] = []

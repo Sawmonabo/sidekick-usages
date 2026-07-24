@@ -123,12 +123,3 @@ def narrow_activity_lines(
             )
         return tuple(lines)
     return (_state_text(activity),)
-
-
-__all__ = [
-    "activity_failure_label",
-    "format_tokens_compact",
-    "format_tokens_exact",
-    "narrow_activity_lines",
-    "panel_activity_text",
-]

@@ -11,7 +11,7 @@ from uuid import UUID, uuid5
 from rich.console import Console
 from typer.testing import CliRunner, Result
 
-from sidekick_usages.cli import app
+from sidekick_usages.cli.app import create_app
 from sidekick_usages.cli.context import (
     AppContext,
     Composed,
@@ -32,7 +32,6 @@ from sidekick_usages.core.accounts.types import (
 )
 from sidekick_usages.core.models import Account
 from sidekick_usages.core.types import ProviderId
-from sidekick_usages.credentials import CredentialService
 from sidekick_usages.credentials.authorities import (
     AuthenticatedSavedAccount,
     CredentialLease,
@@ -42,14 +41,16 @@ from sidekick_usages.credentials.codex.coordinator import (
     CodexCredentialCoordinator,
 )
 from sidekick_usages.credentials.refresh import CredentialRefreshCoordinator
+from sidekick_usages.credentials.service import CredentialService
 from sidekick_usages.daemon.models.lifecycle import SupervisorHealth
 from sidekick_usages.daemon.types.lifecycle import (
     ServiceBackendId,
     ServiceComponentState,
 )
 from sidekick_usages.daemon.types.service import PackageVersion
-from sidekick_usages.heartbeat import HeartbeatProvider, HeartbeatService
-from sidekick_usages.http import HttpClient
+from sidekick_usages.heartbeat.ports import HeartbeatProvider
+from sidekick_usages.heartbeat.service import HeartbeatService
+from sidekick_usages.http.client import HttpClient
 from sidekick_usages.maintenance import TokenMaintenanceService
 from sidekick_usages.paths import ApplicationPaths
 from sidekick_usages.persistence.accounts.index import (
@@ -76,19 +77,20 @@ from sidekick_usages.providers.base import (
     Provider,
     ProviderAuthenticatedAccount,
 )
-from sidekick_usages.providers.claude import (
+from sidekick_usages.providers.claude.provider import (
     ClaudeSetupToken,
     SetupTokenCapture,
 )
-from sidekick_usages.usage import (
+from sidekick_usages.usage.activity import (
     AccountTokenActivitySource,
     LocalTokenActivitySource,
-    UsageCheckService,
 )
+from sidekick_usages.usage.service import UsageCheckService
 
 REFERENCE_TIME = datetime(2026, 6, 12, 12, 34, 56, 789000, tzinfo=UTC)
 _TEST_ACCOUNT_NAMESPACE = UUID("75cc2b04-05ea-43d2-b897-bc960c85cd63")
 _TEST_AUTHORITY_NAMESPACE = UUID("a050a4a2-357b-4923-aeed-ed5866475853")
+_CLI_APP = create_app()
 
 
 @dataclass(frozen=True, slots=True)
@@ -363,7 +365,7 @@ class CliHarness:
     ) -> Result:
         """Invoke with new presentation and composition state."""
         return CliRunner().invoke(
-            app,
+            _CLI_APP,
             arguments,
             input=input_text,
             obj=InvocationContext(
@@ -396,15 +398,3 @@ class CliHarness:
                 ),
             ),
         )
-
-
-__all__ = [
-    "REFERENCE_TIME",
-    "CliHarness",
-    "FixedClock",
-    "RuntimeCredentialResolver",
-    "make_account_store",
-    "make_account_store_with_private",
-    "make_app_context",
-    "make_application_paths",
-]

@@ -24,7 +24,7 @@ from sidekick_usages.providers.claude.schema.usage import (
     parse_activity_cache,
     parse_activity_record,
 )
-from sidekick_usages.serialization import decode_json_object
+from sidekick_usages.serialization.json import decode_json_object
 
 _STATS_CACHE_NAME = "stats-cache.json"
 _PROJECTS_DIRECTORY = "projects"
@@ -35,6 +35,9 @@ _MAX_TOKEN_COUNT = 9_223_372_036_854_775_807
 _PROJECT_DEPTH = 1
 _SESSION_DEPTH = 2
 _SUBAGENT_DEPTH = 3
+
+
+type _ActivityFile = tuple[Path, bool]
 
 
 def discover_claude_config_dir(
@@ -154,9 +157,6 @@ def _load_cache(path: Path) -> ClaudeActivityCache | None:
             ProviderFailureKind.MALFORMED,
             "Claude activity cache is malformed.",
         ) from None
-
-
-type _ActivityFile = tuple[Path, bool]
 
 
 def _activity_files(root: Path) -> tuple[_ActivityFile, ...]:
@@ -365,6 +365,3 @@ def _snapshot_lines(path: Path) -> Iterator[bytes]:
                     "Claude activity transcript record is too large.",
                 )
             yield line
-
-
-__all__ = ["ClaudeActivity", "discover_claude_config_dir"]

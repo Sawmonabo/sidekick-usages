@@ -27,13 +27,15 @@ from sidekick_usages.credentials.refresh import (
     CredentialRefreshCoordinator,
     CredentialRefreshReason,
 )
-from sidekick_usages.http import HttpClient
+from sidekick_usages.http.client import HttpClient
 from sidekick_usages.persistence.accounts.store import AccountStore
-from sidekick_usages.persistence.credentials.refresh.service import (
+from sidekick_usages.persistence.credentials.refresh.artifacts import (
     CredentialRefreshArtifacts,
-    CredentialRefreshCrashPoint,
     CredentialRefreshRecoveryBlockedError,
     CredentialRefreshStateKind,
+)
+from sidekick_usages.persistence.credentials.refresh.service import (
+    CredentialRefreshCrashPoint,
     CredentialRefreshTransactions,
 )
 from sidekick_usages.persistence.errors import ReplaceFailedError

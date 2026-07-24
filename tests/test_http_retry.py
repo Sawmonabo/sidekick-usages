@@ -5,16 +5,16 @@ from datetime import timedelta
 from email.utils import format_datetime
 
 import pytest
-from urllib3 import exceptions as urllib3_exceptions
+from urllib3.exceptions import ConnectTimeoutError, HTTPError, ProtocolError
 
 from sidekick_usages.errors import RateLimitError, TransientError
-from sidekick_usages.http import HttpOperation
+from sidekick_usages.http.models import HttpAttempt
 from sidekick_usages.http.retry import (
     RETRY_AFTER_CAP_SECONDS,
-    HttpAttempt,
     RetryExecutor,
     parse_retry_after,
 )
+from sidekick_usages.http.types import HttpOperation
 from tests.test_support import REFERENCE_TIME, FixedClock
 
 RETRY_AFTER_SECONDS = 7
@@ -74,24 +74,24 @@ def test_closed_operation_status_matrix(
     [
         (
             HttpOperation.CLAUDE_REFRESH,
-            urllib3_exceptions.ConnectTimeoutError(None, "connect"),
+            ConnectTimeoutError(None, "connect"),
             3,
         ),
         (
             HttpOperation.SAFE_READ,
-            urllib3_exceptions.ProtocolError("ambiguous read"),
+            ProtocolError("ambiguous read"),
             3,
         ),
         (
             HttpOperation.CLAUDE_REFRESH,
-            urllib3_exceptions.ProtocolError("ambiguous send"),
+            ProtocolError("ambiguous send"),
             1,
         ),
     ],
 )
 def test_closed_operation_transport_matrix(
     operation: HttpOperation,
-    failure: urllib3_exceptions.HTTPError,
+    failure: HTTPError,
     attempts: int,
 ) -> None:
     """POST retries require proof that the request was never sent."""
@@ -260,7 +260,7 @@ def test_transport_errors_are_redacted_and_drop_library_context() -> None:
     executor = RetryExecutor(clock=FixedClock())
 
     def attempt(_remaining: float) -> HttpAttempt:
-        raise urllib3_exceptions.ProtocolError(f"failed with {secret}")
+        raise ProtocolError(f"failed with {secret}")
 
     with pytest.raises(TransientError) as exc_info:
         executor.execute(HttpOperation.CLAUDE_REFRESH, attempt)

@@ -142,6 +142,3 @@ def doctor_cmd(
 def register(application: typer.Typer) -> None:
     """Register the doctor command exactly once."""
     branded_command(application, "doctor")(doctor_cmd)
-
-
-__all__ = ["register"]

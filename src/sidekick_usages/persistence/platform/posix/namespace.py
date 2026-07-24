@@ -7,10 +7,8 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from sidekick_usages.persistence.platform.contracts import (
-    NativeFailureKind,
-    NativeFilesystemError,
-)
+from sidekick_usages.persistence.platform.errors import NativeFilesystemError
+from sidekick_usages.persistence.platform.types import NativeFailureKind
 
 PRIVATE_DIRECTORY_MODE = 0o700
 PRIVATE_FILE_MODE = 0o600
@@ -247,19 +245,3 @@ def extend_parent_chain(
                 os.fsync(parent_descriptor)
             except OSError:
                 raise _native_error(NativeFailureKind.SYNCHRONIZE) from None
-
-
-__all__ = [
-    "PRIVATE_DIRECTORY_MODE",
-    "PRIVATE_FILE_MODE",
-    "close_descriptor",
-    "close_descriptor_stack",
-    "existing_ancestor",
-    "extend_parent_chain",
-    "no_follow_flag",
-    "open_child_directory",
-    "open_directory",
-    "owned_descriptor",
-    "path_metadata",
-    "require_exact_entry",
-]

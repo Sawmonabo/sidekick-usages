@@ -14,8 +14,6 @@ from sidekick_usages.persistence.types.transaction import (
     AccountTransactionFilesystem,
 )
 
-__all__ = ["PersistenceTransaction"]
-
 TRANSACTION_KEY = object()
 
 

@@ -2,8 +2,6 @@
 
 from dataclasses import dataclass
 
-__all__ = ["PeerIdentity"]
-
 
 @dataclass(frozen=True, slots=True)
 class PeerIdentity:

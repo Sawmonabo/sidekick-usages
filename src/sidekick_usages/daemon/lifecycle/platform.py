@@ -25,13 +25,6 @@ from sidekick_usages.daemon.types.lifecycle import (
     ServiceLifecycleState,
 )
 
-__all__ = [
-    "FeatureDisabledBackend",
-    "detect_platform_info",
-    "qualify_supervisor_executable",
-    "resolve_supervisor_executable",
-]
-
 _SYSTEMD_RUNTIME = Path("/run/systemd/system")
 _WSL_OS_RELEASE = Path("/proc/sys/kernel/osrelease")
 

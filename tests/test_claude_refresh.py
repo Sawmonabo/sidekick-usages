@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+import sidekick_usages.providers.claude.credentials
+import sidekick_usages.providers.claude.provider
 from sidekick_usages.core.expiry import KnownExpiry, UnknownExpiry
 from sidekick_usages.core.models import (
     Account,
@@ -19,7 +21,8 @@ from sidekick_usages.core.models import (
 )
 from sidekick_usages.core.types import AccountLabel
 from sidekick_usages.errors import AuthError, TransientError
-from sidekick_usages.http import HttpClient, HttpOperation
+from sidekick_usages.http.client import HttpClient
+from sidekick_usages.http.types import HttpOperation
 from sidekick_usages.providers.base import (
     ProviderBoundaryError,
     ProviderFailure,
@@ -27,14 +30,12 @@ from sidekick_usages.providers.base import (
     ProviderFailureKind,
     RefreshSuccess,
 )
-from sidekick_usages.providers.claude import ClaudeProvider
-from sidekick_usages.providers.claude import credentials as credentials_module
-from sidekick_usages.providers.claude import provider as provider_module
 from sidekick_usages.providers.claude.provider import (
+    ClaudeProvider,
     SetupTokenTimedOut,
     SetupTokenUnreadable,
 )
-from sidekick_usages.serialization import JsonObject
+from sidekick_usages.serialization.json import JsonObject
 from tests.test_support import (
     REFERENCE_TIME,
     FixedClock,
@@ -116,7 +117,11 @@ def _account(
 
 
 def _disable_cli_refresh(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(provider_module.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(
+        sidekick_usages.providers.claude.provider.shutil,
+        "which",
+        lambda _name: None,
+    )
 
 
 def _credentials(result: RefreshSuccess) -> ClaudeLoginCredentials:
@@ -150,7 +155,11 @@ def test_cli_refresh_is_isolated_and_returns_complete_replacement(
     active_home.mkdir()
     sentinel = active_home / "credentials-must-not-change"
     sentinel.write_text("active")
-    monkeypatch.setattr(provider_module.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(
+        sidekick_usages.providers.claude.provider.platform,
+        "system",
+        lambda: "Linux",
+    )
     inherited = {
         "LANG": "C.UTF-8",
         "PATH": "/usr/bin",
@@ -197,7 +206,7 @@ def test_cli_refresh_is_isolated_and_returns_complete_replacement(
     ):
         monkeypatch.setenv(variable, str(active_home))
     monkeypatch.setattr(
-        provider_module.shutil,
+        sidekick_usages.providers.claude.provider.shutil,
         "which",
         lambda name: "/usr/bin/claude" if name == "claude" else None,
     )
@@ -209,7 +218,7 @@ def test_cli_refresh_is_isolated_and_returns_complete_replacement(
         env: dict[str, str],
         cwd: Path,
         umask: int,
-    ) -> provider_module._CapturedSetupOutput:
+    ) -> sidekick_usages.providers.claude.provider._CapturedSetupOutput:
         assert command == ["/usr/bin/claude", "auth", "login", "--claudeai"]
         assert env["CLAUDE_CODE_OAUTH_REFRESH_TOKEN"] == "refresh-old"
         config_dir = Path(env["CLAUDE_CONFIG_DIR"])
@@ -257,7 +266,9 @@ def test_cli_refresh_is_isolated_and_returns_complete_replacement(
                 }
             )
         )
-        return provider_module._CapturedSetupOutput(0, b"")
+        return sidekick_usages.providers.claude.provider._CapturedSetupOutput(
+            0, b""
+        )
 
     monkeypatch.setattr(
         ClaudeProvider,
@@ -289,12 +300,20 @@ def test_cli_refresh_is_isolated_and_returns_complete_replacement(
 def test_macos_refresh_uses_http_without_invoking_cli(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(provider_module.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(
+        sidekick_usages.providers.claude.provider.platform,
+        "system",
+        lambda: "Darwin",
+    )
 
     def unexpected_cli_lookup(_name: str) -> str | None:
         pytest.fail("macOS saved-account refresh must not invoke Claude CLI")
 
-    monkeypatch.setattr(provider_module.shutil, "which", unexpected_cli_lookup)
+    monkeypatch.setattr(
+        sidekick_usages.providers.claude.provider.shutil,
+        "which",
+        unexpected_cli_lookup,
+    )
     http = _FakeHttp(
         {
             "access_token": "sk-ant-oat01-new",
@@ -402,9 +421,13 @@ def test_cli_rejection_is_authoritative_and_does_not_fallback(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(provider_module.platform, "system", lambda: "Linux")
     monkeypatch.setattr(
-        provider_module.shutil,
+        sidekick_usages.providers.claude.provider.platform,
+        "system",
+        lambda: "Linux",
+    )
+    monkeypatch.setattr(
+        sidekick_usages.providers.claude.provider.shutil,
         "which",
         lambda _name: "/usr/bin/claude",
     )
@@ -413,9 +436,9 @@ def test_cli_rejection_is_authoritative_and_does_not_fallback(
         command: list[str],
         timeout: int,
         **_kwargs: object,
-    ) -> provider_module._CapturedSetupOutput:
+    ) -> sidekick_usages.providers.claude.provider._CapturedSetupOutput:
         assert timeout == CLI_REFRESH_TIMEOUT_SECONDS
-        return provider_module._CapturedSetupOutput(
+        return sidekick_usages.providers.claude.provider._CapturedSetupOutput(
             1,
             b"rejected sk-ant-oat01-raw-secret",
         )
@@ -614,8 +637,16 @@ def test_detection_distinguishes_credential_source_states(
     payload: bytes | None,
     expected_kind: ProviderFailureKind | None,
 ) -> None:
-    monkeypatch.setattr(credentials_module.platform, "system", lambda: "Linux")
-    monkeypatch.setattr(credentials_module.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(
+        sidekick_usages.providers.claude.credentials.platform,
+        "system",
+        lambda: "Linux",
+    )
+    monkeypatch.setattr(
+        sidekick_usages.providers.claude.credentials.Path,
+        "home",
+        lambda: tmp_path,
+    )
     path = tmp_path / ".claude" / ".credentials.json"
     if payload is not None:
         path.parent.mkdir(parents=True)
@@ -662,8 +693,16 @@ def test_detection_reports_unreadable_credentials(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(credentials_module.platform, "system", lambda: "Linux")
-    monkeypatch.setattr(credentials_module.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(
+        sidekick_usages.providers.claude.credentials.platform,
+        "system",
+        lambda: "Linux",
+    )
+    monkeypatch.setattr(
+        sidekick_usages.providers.claude.credentials.Path,
+        "home",
+        lambda: tmp_path,
+    )
     path = tmp_path / ".claude" / ".credentials.json"
     path.parent.mkdir(parents=True)
     path.write_text("{}")
@@ -671,7 +710,11 @@ def test_detection_reports_unreadable_credentials(
     def unreadable(_path: Path) -> bytes:
         raise PermissionError
 
-    monkeypatch.setattr(credentials_module, "_read_bounded", unreadable)
+    monkeypatch.setattr(
+        sidekick_usages.providers.claude.credentials,
+        "_read_bounded",
+        unreadable,
+    )
 
     result = _provider().detect_credentials()
 
@@ -693,8 +736,16 @@ def test_detection_never_bypasses_a_nonmissing_primary_source(
     primary_state: str,
     expected_kind: ProviderFailureKind,
 ) -> None:
-    monkeypatch.setattr(credentials_module.platform, "system", lambda: "Linux")
-    monkeypatch.setattr(credentials_module.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(
+        sidekick_usages.providers.claude.credentials.platform,
+        "system",
+        lambda: "Linux",
+    )
+    monkeypatch.setattr(
+        sidekick_usages.providers.claude.credentials.Path,
+        "home",
+        lambda: tmp_path,
+    )
     primary = tmp_path / ".claude" / ".credentials.json"
     fallback = tmp_path / ".config" / "claude" / ".credentials.json"
     primary.parent.mkdir(parents=True)
@@ -731,7 +782,9 @@ def test_detection_never_bypasses_a_nonmissing_primary_source(
         )
     )
     if primary_state == "unreadable":
-        read_bounded = credentials_module._read_bounded
+        read_bounded = (
+            sidekick_usages.providers.claude.credentials._read_bounded
+        )
 
         def read_with_primary_failure(path: Path) -> bytes:
             if path == primary:
@@ -739,7 +792,7 @@ def test_detection_never_bypasses_a_nonmissing_primary_source(
             return read_bounded(path)
 
         monkeypatch.setattr(
-            credentials_module,
+            sidekick_usages.providers.claude.credentials,
             "_read_bounded",
             read_with_primary_failure,
         )
@@ -763,7 +816,7 @@ def test_macos_keychain_distinguishes_absence_from_access_failure(
     expected: ProviderFailureKind,
 ) -> None:
     monkeypatch.setattr(
-        credentials_module.platform,
+        sidekick_usages.providers.claude.credentials.platform,
         "system",
         lambda: "Darwin",
     )
@@ -771,7 +824,9 @@ def test_macos_keychain_distinguishes_absence_from_access_failure(
     def fail(*_args: object, **_kwargs: object) -> None:
         raise subprocess.CalledProcessError(return_code, ["security"])
 
-    monkeypatch.setattr(credentials_module.subprocess, "run", fail)
+    monkeypatch.setattr(
+        sidekick_usages.providers.claude.credentials.subprocess, "run", fail
+    )
 
     result = _provider().detect_credentials()
 

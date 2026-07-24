@@ -24,7 +24,7 @@ from sidekick_usages.providers.codex.app_server.types import (
     CodexAppServerFailure,
     JsonRpcMessage,
 )
-from sidekick_usages.serialization import JsonObject
+from sidekick_usages.serialization.json import JsonObject
 
 CLIENT_NAME = "sidekick_usages"
 CLIENT_TITLE = "Sidekick Usages"
@@ -32,8 +32,6 @@ INITIALIZE_METHOD = "initialize"
 INITIALIZED_METHOD = "initialized"
 _SUPPORTED_PLATFORM_FAMILIES = frozenset({"unix"})
 _SUPPORTED_PLATFORM_SYSTEMS = frozenset({"linux", "macos"})
-
-__all__ = ["CodexAppServerSession"]
 
 
 class CodexAppServerSession:
@@ -58,7 +56,7 @@ class CodexAppServerSession:
         verify_codex_executable(capabilities.executable)
         try:
             resolved_home = codex_home.resolve(strict=True)
-        except (OSError, ValueError):
+        except OSError, ValueError:
             raise CodexAppServerError(
                 CodexAppServerFailure.PROCESS_FAILED
             ) from None
@@ -169,7 +167,7 @@ def _validate_initialize_response(
         raise CodexAppServerError(CodexAppServerFailure.PROTOCOL_MALFORMED)
     try:
         resolved_reported_home = Path(reported_home).resolve(strict=True)
-    except (OSError, ValueError):
+    except OSError, ValueError:
         raise CodexAppServerError(
             CodexAppServerFailure.PROTOCOL_MALFORMED
         ) from None

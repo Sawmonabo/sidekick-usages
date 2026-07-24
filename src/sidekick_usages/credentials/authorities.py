@@ -37,25 +37,10 @@ from sidekick_usages.persistence.private.credentials import (
     PrivateCredentialTree,
 )
 
-__all__ = [
-    "AuthenticatedAccountResolver",
-    "AuthenticatedSavedAccount",
-    "ClosedCredentialLeaseError",
-    "CredentialAuthorityError",
-    "CredentialAuthorityFailureKind",
-    "CredentialAuthorityReader",
-    "CredentialLease",
-    "CredentialLeaseFactory",
-    "CredentialResolver",
-    "MalformedCredentialAuthorityError",
-    "ManagedCredentialAuthorityError",
-    "MismatchedCredentialAuthorityError",
-    "MissingCredentialAuthorityError",
-    "ProtectedCredentialAuthorityReader",
-    "RetiredCredentialAuthorityError",
-    "SavedAccountSource",
-    "UnreadableCredentialAuthorityError",
-    "credential_resolver_for",
+type AuthenticatedSavedAccount = AuthenticatedAccount[CredentialLease]
+type CredentialLeaseFactory = Callable[
+    [SavedAccount],
+    AbstractContextManager[AuthenticatedSavedAccount],
 ]
 
 
@@ -318,9 +303,6 @@ class CredentialLease:
         return "<CredentialLease redacted>"
 
 
-type AuthenticatedSavedAccount = AuthenticatedAccount[CredentialLease]
-
-
 class AuthenticatedAccountResolver:
     """Open one credential lease for one saved-account operation."""
 
@@ -354,9 +336,3 @@ def credential_resolver_for(
     return AuthenticatedAccountResolver(
         ProtectedCredentialAuthorityReader(CredentialAuthorityRepository(tree))
     )
-
-
-type CredentialLeaseFactory = Callable[
-    [SavedAccount],
-    AbstractContextManager[AuthenticatedSavedAccount],
-]

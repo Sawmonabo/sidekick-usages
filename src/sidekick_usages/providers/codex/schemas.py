@@ -4,6 +4,7 @@ import binascii
 from base64 import b64decode
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
+from functools import cache
 from typing import Annotated
 
 from pydantic import (
@@ -30,7 +31,7 @@ from sidekick_usages.providers.base import (
     ProviderFailure,
     ProviderFailureKind,
 )
-from sidekick_usages.serialization import (
+from sidekick_usages.serialization.json import (
     JsonObject,
     decode_json_object,
 )
@@ -42,43 +43,6 @@ _MAX_METADATA_BYTES = 4_096
 _MAX_PLAN_BYTES = 256
 _MAX_TIMESTAMP_BYTES = 4_096
 _MAX_TOKEN_COUNT = 9_223_372_036_854_775_807
-
-
-def _bounded_utf8(value: str, maximum: int) -> str:
-    try:
-        encoded = value.encode("utf-8")
-    except UnicodeEncodeError as error:
-        raise ValueError from error
-    if not encoded or len(encoded) > maximum:
-        raise ValueError
-    return value
-
-
-def _token(value: str) -> str:
-    return _bounded_utf8(value, _MAX_TOKEN_BYTES)
-
-
-def _metadata(value: str) -> str:
-    return _bounded_utf8(value, _MAX_METADATA_BYTES)
-
-
-def _plan(value: str) -> str:
-    return _bounded_utf8(value, _MAX_PLAN_BYTES)
-
-
-def _timestamp(value: str) -> str:
-    return _bounded_utf8(value, _MAX_TIMESTAMP_BYTES)
-
-
-type _TokenString = Annotated[str, AfterValidator(_token)]
-type _MetadataString = Annotated[str, AfterValidator(_metadata)]
-type _PlanString = Annotated[str, AfterValidator(_plan)]
-type _OpaqueTimestamp = Annotated[str, AfterValidator(_timestamp)]
-_Utilization = Annotated[
-    int | float,
-    Field(ge=0, le=100, allow_inf_nan=False),
-]
-_Epoch = Annotated[int | float, Field(ge=0, allow_inf_nan=False)]
 _SAFE_PATH_SEGMENTS = frozenset(
     {
         "access_token",
@@ -112,6 +76,43 @@ _SAFE_PATH_SEGMENTS = frozenset(
         "used_percent",
     }
 )
+
+
+type _TokenString = Annotated[str, AfterValidator(_token)]
+type _MetadataString = Annotated[str, AfterValidator(_metadata)]
+type _PlanString = Annotated[str, AfterValidator(_plan)]
+type _OpaqueTimestamp = Annotated[str, AfterValidator(_timestamp)]
+type _Utilization = Annotated[
+    int | float,
+    Field(ge=0, le=100, allow_inf_nan=False),
+]
+type _Epoch = Annotated[int | float, Field(ge=0, allow_inf_nan=False)]
+
+
+def _bounded_utf8(value: str, maximum: int) -> str:
+    try:
+        encoded = value.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise ValueError from error
+    if not encoded or len(encoded) > maximum:
+        raise ValueError
+    return value
+
+
+def _token(value: str) -> str:
+    return _bounded_utf8(value, _MAX_TOKEN_BYTES)
+
+
+def _metadata(value: str) -> str:
+    return _bounded_utf8(value, _MAX_METADATA_BYTES)
+
+
+def _plan(value: str) -> str:
+    return _bounded_utf8(value, _MAX_PLAN_BYTES)
+
+
+def _timestamp(value: str) -> str:
+    return _bounded_utf8(value, _MAX_TIMESTAMP_BYTES)
 
 
 class _ProviderModel(BaseModel):
@@ -215,16 +216,42 @@ class _TokenUsageProfileSchema(_ProviderModel):
     stats: _TokenUsageStatsSchema
 
 
-_AUTH_ADAPTER = TypeAdapter(_AuthDocumentSchema)
-_AUTH_IDENTITY_ADAPTER = TypeAdapter(_AuthIdentityDocumentSchema)
-_JWT_ADAPTER = TypeAdapter(_JwtSchema)
-_REFRESH_ADAPTER = TypeAdapter(_RefreshSchema)
-_USAGE_ADAPTER = TypeAdapter(_UsageResponseSchema)
-_TOKEN_USAGE_PROFILE_ADAPTER = TypeAdapter(_TokenUsageProfileSchema)
-_TOKEN_ADAPTER = TypeAdapter(
-    _TokenString,
-    config=ConfigDict(strict=True),
-)
+@cache
+def _auth_adapter() -> TypeAdapter[_AuthDocumentSchema]:
+    return TypeAdapter(_AuthDocumentSchema)
+
+
+@cache
+def _auth_identity_adapter() -> TypeAdapter[_AuthIdentityDocumentSchema]:
+    return TypeAdapter(_AuthIdentityDocumentSchema)
+
+
+@cache
+def _jwt_adapter() -> TypeAdapter[_JwtSchema]:
+    return TypeAdapter(_JwtSchema)
+
+
+@cache
+def _refresh_adapter() -> TypeAdapter[_RefreshSchema]:
+    return TypeAdapter(_RefreshSchema)
+
+
+@cache
+def _usage_adapter() -> TypeAdapter[_UsageResponseSchema]:
+    return TypeAdapter(_UsageResponseSchema)
+
+
+@cache
+def _token_usage_profile_adapter() -> TypeAdapter[_TokenUsageProfileSchema]:
+    return TypeAdapter(_TokenUsageProfileSchema)
+
+
+@cache
+def _token_adapter() -> TypeAdapter[_TokenString]:
+    return TypeAdapter(
+        _TokenString,
+        config=ConfigDict(strict=True),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -304,7 +331,7 @@ def _validate[T](
 def _decode_jwt(token: str) -> _JwtSchema:
     """Decode and validate one JWT payload without trusting its signature."""
     token = _validate(
-        _TOKEN_ADAPTER,
+        _token_adapter(),
         token,
         message="Codex access-token metadata is malformed; log in again.",
     )
@@ -329,7 +356,7 @@ def _decode_jwt(token: str) -> _JwtSchema:
             )
         ) from None
     return _validate(
-        _JWT_ADAPTER,
+        _jwt_adapter(),
         value,
         message="Codex access-token metadata is malformed; log in again.",
     )
@@ -367,7 +394,7 @@ def plan_from_token(token: str) -> str | None:
 def parse_auth_credentials(blob: JsonObject) -> DetectedCredentials:
     """Validate a Codex auth document and construct runtime credentials."""
     document = _validate(
-        _AUTH_ADAPTER,
+        _auth_adapter(),
         blob,
         message="Codex auth.json is incomplete or malformed; log in again.",
     )
@@ -458,7 +485,7 @@ def _auth_blob_identity(
 ) -> tuple[str | None, str | None]:
     """Return the auth document's exact access token and consistent id."""
     document = _validate(
-        _AUTH_IDENTITY_ADAPTER,
+        _auth_identity_adapter(),
         blob,
         message="Codex auth.json identity metadata is malformed.",
     )
@@ -494,7 +521,7 @@ def _consistent_account_id(
 def validate_refresh_payload(value: JsonObject) -> RefreshPayload:
     """Validate one Codex OAuth refresh response."""
     response = _validate(
-        _REFRESH_ADAPTER,
+        _refresh_adapter(),
         value,
         message="Codex returned an invalid token-refresh response.",
     )
@@ -543,7 +570,7 @@ def refresh_expiry(
 def parse_usage_response(value: JsonObject) -> UsageReport:
     """Validate and normalize one Codex usage response."""
     response = _validate(
-        _USAGE_ADAPTER,
+        _usage_adapter(),
         value,
         message="Codex returned an invalid usage response.",
     )
@@ -597,7 +624,7 @@ def parse_usage_response(value: JsonObject) -> UsageReport:
 def parse_activity_response(value: JsonObject) -> TokenActivitySummary:
     """Validate and normalize one Codex account activity profile."""
     profile = _validate(
-        _TOKEN_USAGE_PROFILE_ADAPTER,
+        _token_usage_profile_adapter(),
         value,
         message="Codex token activity response is incomplete or malformed.",
     )
@@ -706,19 +733,3 @@ def _epoch_time(value: int | float) -> datetime:
                 "Codex returned an invalid usage reset timestamp.",
             )
         ) from None
-
-
-__all__ = [
-    "RefreshPayload",
-    "account_id_from_token",
-    "auth_blob_access_token",
-    "auth_blob_account_id",
-    "credentials_from_access_token",
-    "jwt_expiry",
-    "parse_activity_response",
-    "parse_auth_credentials",
-    "parse_usage_response",
-    "plan_from_token",
-    "refresh_expiry",
-    "validate_refresh_payload",
-]

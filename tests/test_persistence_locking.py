@@ -11,7 +11,7 @@ from typing import IO
 import portalocker
 import pytest
 
-import sidekick_usages.persistence.locking as locking_module
+import sidekick_usages.persistence.locking
 from sidekick_usages.persistence.errors import (
     DurabilityUncertainError,
     UnsafeManagedFileError,
@@ -176,7 +176,7 @@ def test_transaction_construction_failure_releases_and_closes(
 
     monkeypatch.setattr(portalocker, "unlock", record_unlock)
     monkeypatch.setattr(
-        locking_module,
+        sidekick_usages.persistence.locking,
         "_begin_transaction",
         lambda _filesystem: (_ for _ in ()).throw(expected),
     )

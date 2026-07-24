@@ -13,11 +13,6 @@ from sidekick_usages.persistence.supervisor.authority import (
 from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
 from sidekick_usages.persistence.supervisor.results import WorkerResultStore
 
-__all__ = [
-    "UnsupportedWorkerExecutor",
-    "run_isolated_worker",
-]
-
 
 class UnsupportedWorkerExecutor:
     """Truthful foundation executor until provider adapters are installed."""

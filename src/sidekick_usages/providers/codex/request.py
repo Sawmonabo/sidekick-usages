@@ -33,6 +33,3 @@ def account_headers(account: Account) -> dict[str, str]:
         "ChatGPT-Account-Id": account_id(account),
         "User-Agent": CODEX_USER_AGENT,
     }
-
-
-__all__ = ["CODEX_USER_AGENT", "account_headers", "account_id"]

@@ -65,6 +65,3 @@ def register(application: typer.Typer) -> None:
     )
     branded_command(permissions_app, "repair")(repair_permissions_cmd)
     application.add_typer(permissions_app, name="permissions")
-
-
-__all__ = ["register"]

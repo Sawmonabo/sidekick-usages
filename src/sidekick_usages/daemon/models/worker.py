@@ -28,14 +28,6 @@ ALLOWED_WORKER_ENVIRONMENT_KEYS = frozenset(
 )
 _MAX_ENVIRONMENT_VALUE_BYTES = 16 * 1024
 
-__all__ = [
-    "ALLOWED_WORKER_ENVIRONMENT_KEYS",
-    "ActiveWorker",
-    "WorkerExit",
-    "WorkerLaunchSpec",
-    "WorkerResult",
-]
-
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class WorkerResult:

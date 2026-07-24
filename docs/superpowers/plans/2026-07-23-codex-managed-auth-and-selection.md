@@ -267,7 +267,7 @@ uv run pytest \
     `persistence/credentials/{refresh,transactions}/` for credential
     authority, refresh, repository, planning, commit, and recovery;
   - `persistence/private/` and `persistence/private/bundles/` for private
-    filesystem, credential tree, contracts, paths, references, and writes;
+    filesystem, credential tree, ports, paths, references, and writes;
   - `persistence/filesystem/` for qualified access and transactions;
   - `persistence/schema/refresh/` for refresh journals and stages;
   - `persistence/state/` for shared strict non-secret state mechanics;
@@ -298,28 +298,28 @@ uv run pytest \
 
 ### Existing behavior
 
-- [ ] Add no product tests. Use the existing architecture mutation table and
+- [x] Add no product tests. Use the existing architecture mutation table and
   complete suite to prove this source-shape-only section.
 
 ### Implementation
 
-- [ ] Apply every approved module convention to all production folders:
+- [x] Apply every approved module convention to all production folders:
   static top-level imports only, no import aliases, declaration blocks
   directly after imports, and no late constants, globals, aliases, or
   `__all__`.
-- [ ] Keep models, schemas, and types in an owner-local designated module or
+- [x] Keep models, schemas, and types in an owner-local designated module or
   package. Split mixed modules when a declaration cannot live in the top
   declaration block without depending on a later implementation.
-- [ ] Remove compatibility re-export facades and import implementations
+- [x] Remove compatibility re-export facades and import implementations
   directly from their owners.
-- [ ] Add repository-wide architecture rules for these conventions without
+- [x] Add repository-wide architecture rules for these conventions without
   per-file allowlists or blanket suppressions.
 
 ### Verify and commit
 
-- [ ] Prove no function-local import, import alias, late declaration,
+- [x] Prove no function-local import, import alias, late declaration,
   misplaced model/schema/type module, or compatibility facade remains.
-- [ ] Run Ruff, `ty`, the architecture mutation table, the full suite, and
+- [x] Run Ruff, `ty`, the architecture mutation table, the full suite, and
   pre-commit, then commit and push.
 
 ## 6. Task 2 — Managed Private-Home Read and Refresh

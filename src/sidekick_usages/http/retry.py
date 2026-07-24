@@ -5,10 +5,8 @@ import random
 import re
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
 from datetime import UTC
 from email.utils import parsedate_to_datetime
-from enum import Enum, StrEnum
 from http import HTTPStatus
 from typing import NoReturn
 
@@ -16,6 +14,16 @@ import urllib3.exceptions
 
 from sidekick_usages.clock import Clock
 from sidekick_usages.errors import RateLimitError, TransientError
+from sidekick_usages.http.models import (
+    HttpAttempt,
+    RetryPolicy,
+    TerminalState,
+)
+from sidekick_usages.http.types import (
+    HttpOperation,
+    TerminalOutcome,
+    TransportFailure,
+)
 
 TOTAL_ATTEMPTS = 3
 OPERATION_BUDGET_SECONDS = 15.0
@@ -37,93 +45,38 @@ _RETRYABLE_SERVER_STATUSES = frozenset(
 _DELAY_SECONDS_RE = re.compile(r"[0-9]+")
 _SERVER_ERROR_START = 500
 _SERVER_ERROR_END = 600
-
-
-class HttpOperation(StrEnum):
-    """Closed operation classes with reviewed retry safety."""
-
-    SAFE_READ = "safe_read"
-    CLAUDE_PROBE = "claude_probe"
-    CLAUDE_REFRESH = "claude_refresh"
-    CODEX_REFRESH = "codex_refresh"
-    CLAUDE_HEARTBEAT = "claude_heartbeat"
-    CODEX_HEARTBEAT = "codex_heartbeat"
-
-
-@dataclass(frozen=True, slots=True)
-class HttpAttempt:
-    """Bounded result of one transport attempt."""
-
-    status_code: int
-    headers: dict[str, str]
-    body: bytes
-
-
-@dataclass(frozen=True, slots=True)
-class _RetryPolicy:
-    """Retry permissions for one closed operation class."""
-
-    ambiguous_transport: bool
-    rate_limit: bool
-    server_status: bool
-
-
 _POLICIES = {
-    HttpOperation.SAFE_READ: _RetryPolicy(
+    HttpOperation.SAFE_READ: RetryPolicy(
         ambiguous_transport=True,
         rate_limit=True,
         server_status=True,
     ),
-    HttpOperation.CLAUDE_PROBE: _RetryPolicy(
+    HttpOperation.CLAUDE_PROBE: RetryPolicy(
         ambiguous_transport=False,
         rate_limit=True,
         server_status=True,
     ),
-    HttpOperation.CLAUDE_REFRESH: _RetryPolicy(
+    HttpOperation.CLAUDE_REFRESH: RetryPolicy(
         ambiguous_transport=False,
         rate_limit=False,
         server_status=False,
     ),
-    HttpOperation.CODEX_REFRESH: _RetryPolicy(
+    HttpOperation.CODEX_REFRESH: RetryPolicy(
         ambiguous_transport=False,
         rate_limit=False,
         server_status=False,
     ),
-    HttpOperation.CLAUDE_HEARTBEAT: _RetryPolicy(
+    HttpOperation.CLAUDE_HEARTBEAT: RetryPolicy(
         ambiguous_transport=False,
         rate_limit=True,
         server_status=False,
     ),
-    HttpOperation.CODEX_HEARTBEAT: _RetryPolicy(
+    HttpOperation.CODEX_HEARTBEAT: RetryPolicy(
         ambiguous_transport=False,
         rate_limit=False,
         server_status=False,
     ),
 }
-
-
-class _TransportFailure(Enum):
-    """Safety classification for a failed transport attempt."""
-
-    PROVEN_CONNECT = "proven_connect"
-    AMBIGUOUS = "ambiguous"
-    TERMINAL = "terminal"
-
-
-class _TerminalOutcome(Enum):
-    """Typed terminal outcome retained outside exception handlers."""
-
-    TRANSPORT = "transport"
-    SERVER = "server"
-    RATE_LIMIT = "rate_limit"
-
-
-@dataclass(frozen=True, slots=True)
-class _TerminalState:
-    """Last typed outcome available if the elapsed budget expires."""
-
-    outcome: _TerminalOutcome
-    retry_after: int | None = None
 
 
 class RetryExecutor:
@@ -158,7 +111,7 @@ class RetryExecutor:
         policy = _POLICIES[operation]
         started_at = self._monotonic()
         attempt_number = 0
-        terminal = _TerminalState(_TerminalOutcome.TRANSPORT)
+        terminal = TerminalState(TerminalOutcome.TRANSPORT)
         last_valid_retry_after: int | None = None
 
         while attempt_number < TOTAL_ATTEMPTS:
@@ -179,7 +132,7 @@ class RetryExecutor:
                 outcome, delay, retry_after = decision
                 if retry_after is not None:
                     last_valid_retry_after = retry_after
-                terminal = _TerminalState(
+                terminal = TerminalState(
                     outcome,
                     last_valid_retry_after,
                 )
@@ -193,7 +146,7 @@ class RetryExecutor:
 
             if transport_failure is None:
                 raise AssertionError("missing transport failure")
-            terminal = _TerminalState(_TerminalOutcome.TRANSPORT)
+            terminal = TerminalState(TerminalOutcome.TRANSPORT)
             delay = self._transport_delay(
                 transport_failure,
                 policy,
@@ -215,10 +168,10 @@ class RetryExecutor:
     def _response_decision(
         self,
         result: HttpAttempt,
-        policy: _RetryPolicy,
+        policy: RetryPolicy,
         attempt_number: int,
         started_at: float,
-    ) -> tuple[_TerminalOutcome, float | None, int | None] | None:
+    ) -> tuple[TerminalOutcome, float | None, int | None] | None:
         """Return a terminal or retry decision for one response."""
         status = result.status_code
         if status == HTTPStatus.TOO_MANY_REQUESTS:
@@ -236,7 +189,7 @@ class RetryExecutor:
                 if may_retry
                 else None
             )
-            return _TerminalOutcome.RATE_LIMIT, delay, retry_after
+            return TerminalOutcome.RATE_LIMIT, delay, retry_after
 
         if _SERVER_ERROR_START <= status < _SERVER_ERROR_END:
             retry_after = parse_retry_after(
@@ -257,19 +210,19 @@ class RetryExecutor:
                 if may_retry
                 else None
             )
-            return _TerminalOutcome.SERVER, delay, retry_after
+            return TerminalOutcome.SERVER, delay, retry_after
         return None
 
     def _transport_delay(
         self,
-        failure: _TransportFailure,
-        policy: _RetryPolicy,
+        failure: TransportFailure,
+        policy: RetryPolicy,
         attempt_number: int,
         started_at: float,
     ) -> float | None:
         """Return a safe retry delay for a transport failure."""
-        may_retry = failure is _TransportFailure.PROVEN_CONNECT or (
-            failure is _TransportFailure.AMBIGUOUS
+        may_retry = failure is TransportFailure.PROVEN_CONNECT or (
+            failure is TransportFailure.AMBIGUOUS
             and policy.ambiguous_transport
         )
         if not may_retry:
@@ -350,14 +303,14 @@ def _parse_http_date(value: str, clock: Clock) -> int | None:
 def _run_attempt(
     attempt: Callable[[float], HttpAttempt],
     remaining: float,
-) -> tuple[HttpAttempt | None, _TransportFailure | None]:
+) -> tuple[HttpAttempt | None, TransportFailure | None]:
     """Run one attempt and retain only a safe failure category."""
     try:
         return attempt(remaining), None
     except urllib3.exceptions.HTTPError as error:
         failure = _classify_transport_failure(error)
     except OSError:
-        failure = _TransportFailure.AMBIGUOUS
+        failure = TransportFailure.AMBIGUOUS
     return None, failure
 
 
@@ -368,7 +321,7 @@ def _rejects_retry(result: HttpAttempt) -> bool:
 
 def _classify_transport_failure(
     error: urllib3.exceptions.HTTPError,
-) -> _TransportFailure:
+) -> TransportFailure:
     """Classify a urllib3 failure without exporting its details."""
     if isinstance(error, urllib3.exceptions.MaxRetryError):
         reason = error.reason
@@ -377,10 +330,10 @@ def _classify_transport_failure(
     if isinstance(error, urllib3.exceptions.ProxyError):
         original = error.original_error
         if isinstance(original, urllib3.exceptions.ConnectTimeoutError):
-            return _TransportFailure.PROVEN_CONNECT
-        return _TransportFailure.AMBIGUOUS
+            return TransportFailure.PROVEN_CONNECT
+        return TransportFailure.AMBIGUOUS
     if isinstance(error, urllib3.exceptions.ConnectTimeoutError):
-        return _TransportFailure.PROVEN_CONNECT
+        return TransportFailure.PROVEN_CONNECT
     if isinstance(
         error,
         (
@@ -390,21 +343,21 @@ def _classify_transport_failure(
             urllib3.exceptions.InvalidChunkLength,
         ),
     ):
-        return _TransportFailure.AMBIGUOUS
-    return _TransportFailure.TERMINAL
+        return TransportFailure.AMBIGUOUS
+    return TransportFailure.TERMINAL
 
 
 def _raise_terminal(
-    terminal: _TerminalState,
+    terminal: TerminalState,
     attempts: int,
 ) -> NoReturn:
     """Raise one credential-safe Sidekick terminal error."""
-    if terminal.outcome is _TerminalOutcome.RATE_LIMIT:
+    if terminal.outcome is TerminalOutcome.RATE_LIMIT:
         raise RateLimitError(
             f"Rate limited (HTTP 429) after {attempts} attempts.",
             retry_after=terminal.retry_after,
         ) from None
-    if terminal.outcome is _TerminalOutcome.SERVER:
+    if terminal.outcome is TerminalOutcome.SERVER:
         raise TransientError(
             f"Provider server failure after {attempts} attempts."
         ) from None

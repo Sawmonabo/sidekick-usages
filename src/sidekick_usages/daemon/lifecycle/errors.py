@@ -3,8 +3,6 @@
 from sidekick_usages.daemon.types.lifecycle import ServiceFailureCode
 from sidekick_usages.errors import UsageError
 
-__all__ = ["ServiceLifecycleError"]
-
 _MESSAGES = {
     ServiceFailureCode.ARTIFACT_UNSAFE: (
         "The Sidekick user-service definition cannot be written safely."

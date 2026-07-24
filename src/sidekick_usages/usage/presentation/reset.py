@@ -50,6 +50,3 @@ def compact_reset_text(
         return f"{hours}h {minutes}m"
     days, remainder = divmod(seconds, _SECONDS_PER_DAY)
     return f"{days}d {remainder // _SECONDS_PER_HOUR}h"
-
-
-__all__ = ["compact_reset_text", "reset_text"]

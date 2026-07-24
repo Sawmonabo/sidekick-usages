@@ -2,8 +2,6 @@
 
 from dataclasses import dataclass
 
-__all__ = ["SocketIdentity"]
-
 
 @dataclass(frozen=True, slots=True)
 class SocketIdentity:

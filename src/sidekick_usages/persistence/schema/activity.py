@@ -19,12 +19,24 @@ from sidekick_usages.core.models import (
 from sidekick_usages.core.time import as_utc
 from sidekick_usages.core.types import ProviderId, TokenActivityScope
 from sidekick_usages.persistence.types.artifact import Sha256Digest
-from sidekick_usages.serialization import JsonDecodeError, decode_json_value
+from sidekick_usages.serialization.json import (
+    JsonDecodeError,
+    decode_json_value,
+)
 
 ACTIVITY_SCHEMA_VERSION = 1
 MAX_ACTIVITY_RECORDS = 4_096
 MAX_TOKEN_COUNT = 9_223_372_036_854_775_807
 MODEL_CONFIG = ConfigDict(strict=True, extra="forbid", frozen=True)
+
+
+type DigestText = Annotated[str, AfterValidator(_digest)]
+type DateText = Annotated[str, AfterValidator(_date_text)]
+type TimestampText = Annotated[str, AfterValidator(_timestamp_text)]
+type SnapshotRecords = Annotated[
+    dict[DigestText, ActivitySnapshotRecord],
+    AfterValidator(_records),
+]
 
 
 class ActivitySnapshotDecodeError(ValueError):
@@ -73,11 +85,6 @@ def _records(
     return value
 
 
-type DigestText = Annotated[str, AfterValidator(_digest)]
-type DateText = Annotated[str, AfterValidator(_date_text)]
-type TimestampText = Annotated[str, AfterValidator(_timestamp_text)]
-
-
 class ActivitySnapshotRecord(BaseModel):
     """Strict persisted snapshot record."""
 
@@ -87,12 +94,6 @@ class ActivitySnapshotRecord(BaseModel):
     total_tokens: int = Field(ge=0, le=MAX_TOKEN_COUNT)
     since: DateText | None
     fetched_at: TimestampText
-
-
-type SnapshotRecords = Annotated[
-    dict[DigestText, ActivitySnapshotRecord],
-    AfterValidator(_records),
-]
 
 
 class ActivitySnapshotDocument(BaseModel):

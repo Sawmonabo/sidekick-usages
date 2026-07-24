@@ -5,10 +5,10 @@ import platform
 import re
 from pathlib import Path
 
-from sidekick_usages.persistence.platform.contracts import (
+from sidekick_usages.persistence.platform.errors import NativeFilesystemError
+from sidekick_usages.persistence.platform.types import (
     FilesystemFamily,
     NativeFailureKind,
-    NativeFilesystemError,
 )
 
 _MOUNTINFO_PATH = Path("/proc/self/mountinfo")
@@ -108,6 +108,3 @@ def filesystem_for_descriptor(descriptor: int) -> FilesystemFamily:
     ):
         raise _unsupported()
     return _classify_linux_filesystem(filesystem_name)
-
-
-__all__ = ["filesystem_for_descriptor"]

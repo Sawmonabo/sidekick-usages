@@ -26,14 +26,14 @@ from sidekick_usages.credentials.refresh import (
     CredentialRefreshCoordinator,
     CredentialRefreshReason,
 )
-from sidekick_usages.http import HttpClient
+from sidekick_usages.http.client import HttpClient
 from sidekick_usages.persistence.accounts.store import AccountStore
 from sidekick_usages.persistence.credentials.refresh.service import (
     CredentialRefreshTransactions,
 )
 from sidekick_usages.persistence.errors import UnsafeManagedFileError
-from sidekick_usages.persistence.platform.contracts import NativeFile
-from sidekick_usages.persistence.platform.posix.private import bundles
+from sidekick_usages.persistence.platform.models import NativeFile
+from sidekick_usages.persistence.platform.posix import files
 from sidekick_usages.providers.base import (
     CredentialStageReader,
     ProviderAuthenticatedAccount,
@@ -782,7 +782,7 @@ def test_claude_stage_reader_rejects_path_replacement_during_read(
         replacement = tmp_path / "replacement-credentials.json"
         replacement.write_bytes(b"test-only-replacement-credentials")
         replacement.chmod(0o600)
-        original_read = bundles._read_descriptor
+        original_read = files.read_descriptor
         swapped = False
 
         def swap_during_read(
@@ -797,8 +797,8 @@ def test_claude_stage_reader_rejects_path_replacement_during_read(
             return original_read(descriptor, root_device, limit)
 
         monkeypatch.setattr(
-            bundles,
-            "_read_descriptor",
+            files,
+            "read_descriptor",
             swap_during_read,
         )
 

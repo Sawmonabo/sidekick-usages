@@ -29,7 +29,7 @@ from sidekick_usages.core.types import (
     RefreshStatus,
 )
 from sidekick_usages.credentials.codex.coordinator import private_codex_home
-from sidekick_usages.http import HttpClient
+from sidekick_usages.http.client import HttpClient
 from sidekick_usages.persistence.accounts.store import AccountStore
 from sidekick_usages.providers.base import (
     CredentialDetection,
@@ -39,7 +39,7 @@ from sidekick_usages.providers.base import (
     RefreshResult,
     RefreshSuccess,
 )
-from sidekick_usages.providers.claude import (
+from sidekick_usages.providers.claude.provider import (
     ClaudeSetupToken,
     SetupTokenCapture,
     SetupTokenSuccess,

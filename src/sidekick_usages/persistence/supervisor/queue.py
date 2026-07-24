@@ -33,8 +33,6 @@ from sidekick_usages.persistence.state.filesystem import (
 )
 from sidekick_usages.persistence.types.artifact import AuthorityExpectation
 
-__all__ = ["OperationQueueStore"]
-
 _QUEUE_BASENAME = "queue.json"
 
 

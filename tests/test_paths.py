@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-import sidekick_usages.paths as paths_module
+import sidekick_usages.paths
 from sidekick_usages.paths import PathDiscoveryError
 
 
@@ -57,11 +57,11 @@ def test_discovery_maps_platform_roots_to_one_current_layout(
             monkeypatch.delenv(name, raising=False)
     for name, value in environment.items():
         monkeypatch.setenv(name, value)
-    monkeypatch.setattr(paths_module.sys, "platform", platform_name)
+    monkeypatch.setattr(sidekick_usages.paths.sys, "platform", platform_name)
 
     root = Path(data_root)
     monkeypatch.setattr(
-        paths_module,
+        sidekick_usages.paths,
         "PlatformDirs",
         lambda **_arguments: _NativePaths(
             root,
@@ -70,7 +70,7 @@ def test_discovery_maps_platform_roots_to_one_current_layout(
         ),
     )
 
-    paths = paths_module.discover_application_paths()
+    paths = sidekick_usages.paths.discover_application_paths()
 
     assert paths.accounts == root / "accounts.json"
     assert paths.private_credentials == root / "credentials"
@@ -121,9 +121,9 @@ def test_discovery_rejects_unsafe_environment_before_platform_resolution(
         if name.startswith("WIN_PD_OVERRIDE_"):
             monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv(variable, value)
-    monkeypatch.setattr(paths_module.sys, "platform", platform_name)
+    monkeypatch.setattr(sidekick_usages.paths.sys, "platform", platform_name)
     monkeypatch.setattr(
-        paths_module,
+        sidekick_usages.paths,
         "PlatformDirs",
         lambda **_arguments: pytest.fail(
             "Unsafe environments must fail before PlatformDirs."
@@ -131,7 +131,7 @@ def test_discovery_rejects_unsafe_environment_before_platform_resolution(
     )
 
     with pytest.raises(PathDiscoveryError) as failure:
-        paths_module.discover_application_paths()
+        sidekick_usages.paths.discover_application_paths()
 
     assert failure.value.variable == variable
     assert value not in str(failure.value)

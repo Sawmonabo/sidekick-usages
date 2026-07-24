@@ -6,8 +6,6 @@ from sidekick_usages.daemon.lifecycle.errors import ServiceLifecycleError
 from sidekick_usages.daemon.models.lifecycle import CommandResult
 from sidekick_usages.daemon.types.lifecycle import ServiceFailureCode
 
-__all__ = ["SystemCommandRunner"]
-
 _COMMAND_TIMEOUT_SECONDS = 20.0
 
 

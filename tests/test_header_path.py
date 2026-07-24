@@ -22,20 +22,21 @@ from sidekick_usages.core.models import (
     ClaudeSetupTokenCredentials,
 )
 from sidekick_usages.core.types import AccountLabel, HeartbeatStatus
-from sidekick_usages.http import HttpClient, HttpOperation
+from sidekick_usages.http.client import HttpClient
+from sidekick_usages.http.types import HttpOperation
 from sidekick_usages.providers.base import (
     ProviderBoundaryError,
     ProviderFailureKind,
 )
-from sidekick_usages.providers.claude import ClaudeProvider
 from sidekick_usages.providers.claude.heartbeat import ClaudeHeartbeat
+from sidekick_usages.providers.claude.provider import ClaudeProvider
 from sidekick_usages.providers.claude.usage import (
     ANTHROPIC_BETA,
     MESSAGES_URL,
     PROBE_MODEL,
     USAGE_URL,
 )
-from sidekick_usages.serialization import JsonObject
+from sidekick_usages.serialization.json import JsonObject
 from tests.test_support import FixedClock, authenticated_account
 
 #: Reference utilization values quoted verbatim from the unified
@@ -46,6 +47,14 @@ _REF_5H_UTILIZATION_PERCENT = 1.84
 _REF_7D_UTILIZATION_PERCENT = 73.7
 _REF_5H_RESET_AT = datetime.fromtimestamp(1778915400, tz=UTC)
 _OAUTH_RESET_AT = datetime(2026, 6, 12, 18, tzinfo=UTC)
+_LIVE_HEADERS = {
+    "anthropic-ratelimit-unified-5h-utilization": "0.0184",
+    "anthropic-ratelimit-unified-5h-reset": "1778915400",
+    "anthropic-ratelimit-unified-7d-utilization": "0.737",
+    "anthropic-ratelimit-unified-7d-reset": "1779192000",
+    "anthropic-ratelimit-unified-representative-claim": "five_hour",
+    "anthropic-ratelimit-unified-status": "allowed",
+}
 
 
 def _provider() -> ClaudeProvider:
@@ -129,19 +138,6 @@ def _acct(scopes: tuple[str, ...] | None) -> Account:
         label=AccountLabel("t"),
         credentials=credentials,
     )
-
-
-#: Sample mid-window response. Numbers match the verbatim
-#: ``anthropic-ratelimit-unified-*`` values quoted in
-#: ``anthropics/claude-code`` issue #12829.
-_LIVE_HEADERS = {
-    "anthropic-ratelimit-unified-5h-utilization": "0.0184",
-    "anthropic-ratelimit-unified-5h-reset": "1778915400",
-    "anthropic-ratelimit-unified-7d-utilization": "0.737",
-    "anthropic-ratelimit-unified-7d-reset": "1779192000",
-    "anthropic-ratelimit-unified-representative-claim": "five_hour",
-    "anthropic-ratelimit-unified-status": "allowed",
-}
 
 
 # -- public header route: request shape ---------------------------

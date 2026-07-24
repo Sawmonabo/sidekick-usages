@@ -2,8 +2,9 @@
 
 import ast
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+
+from architecture.models import ArchitectureFinding, SourceUnit
 
 VIOLATION_RULE_IDS = frozenset(
     {
@@ -13,6 +14,8 @@ VIOLATION_RULE_IDS = frozenset(
         "HYG003",
         "HYG004",
         "HYG005",
+        "HYG006",
+        "HYG007",
         "DEP001",
         "DEP002",
         "DEP003",
@@ -33,6 +36,7 @@ VIOLATION_RULE_IDS = frozenset(
         "BRAND001",
         "PKG001",
         "PKG002",
+        "PKG003",
         "SCHEMA001",
         "ACT001",
     }
@@ -104,6 +108,8 @@ STALE_SOURCE_FILES = frozenset(
         "src/sidekick_usages/persistence/private_credential_contracts.py",
         "src/sidekick_usages/persistence/private_credentials.py",
         "src/sidekick_usages/persistence/private_filesystem.py",
+        "src/sidekick_usages/persistence/private/contracts.py",
+        "src/sidekick_usages/persistence/platform/contracts.py",
         "src/sidekick_usages/persistence/schema/private_refresh.py",
         "src/sidekick_usages/persistence/schema/refresh.py",
         "src/sidekick_usages/persistence/schema/refresh_stage.py",
@@ -149,52 +155,6 @@ ROBOT_ART = (
 )
 
 
-@dataclass(frozen=True, slots=True, order=True)
-class ArchitectureFinding:
-    """One stable architecture diagnostic."""
-
-    path: PurePosixPath
-    line: int
-    rule_id: str
-    message: str
-
-    def render(self) -> str:
-        """Render a terminal-friendly diagnostic."""
-        return f"{self.path}:{self.line}: {self.rule_id} {self.message}"
-
-
-@dataclass(frozen=True, slots=True)
-class ArchitectureReport:
-    """Complete errors and review warnings for one repository snapshot."""
-
-    violations: tuple[ArchitectureFinding, ...]
-    warnings: tuple[ArchitectureFinding, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class SourceUnit:
-    """One parsed repository source file."""
-
-    path: PurePosixPath
-    source: str
-    tree: ast.Module
-
-    @property
-    def production(self) -> bool:
-        """Return whether the source belongs to the installed package."""
-        return self.path.parts[:2] == ("src", "sidekick_usages")
-
-
-@dataclass(frozen=True, slots=True)
-class SourceMutation:
-    """One deliberate source change used to prove an architecture rule."""
-
-    rule_id: str
-    path: str
-    original: str
-    replacement: str
-
-
 def load_units(
     root: Path,
     overrides: Mapping[PurePosixPath, str],
@@ -204,6 +164,7 @@ def load_units(
     units: list[SourceUnit] = []
     paths = (*root.joinpath("src").rglob("*.py"),)
     paths += (*root.joinpath("tests").rglob("*.py"),)
+    paths += (*root.joinpath("packaging").rglob("*.py"),)
     for source_path in sorted(paths):
         relative = PurePosixPath(source_path.relative_to(root).as_posix())
         source = remaining.pop(

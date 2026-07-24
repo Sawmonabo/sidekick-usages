@@ -27,7 +27,7 @@ from sidekick_usages.providers.codex.app_server.types import (
     CodexAppServerFailure,
     JsonRpcMessage,
 )
-from sidekick_usages.serialization import (
+from sidekick_usages.serialization.json import (
     JsonEncodeError,
     JsonObject,
     decode_json_object,
@@ -42,12 +42,6 @@ _MAX_REQUEST_ID = (1 << 63) - 1
 _MAX_SERVER_REQUEST_ID_BYTES = 256
 _READ_CHUNK_BYTES = 64 * 1024
 _UNICODE_CONTROL_LIMIT = 0x20
-
-__all__ = [
-    "DEFAULT_JSON_RPC_TIMEOUT_SECONDS",
-    "MAX_JSON_RPC_LINE_BYTES",
-    "JsonRpcConnection",
-]
 
 
 class JsonRpcConnection:

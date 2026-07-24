@@ -3,16 +3,6 @@
 from enum import StrEnum
 from typing import Protocol
 
-__all__ = [
-    "CompletionOutcome",
-    "ConnectedSocket",
-    "EventKind",
-    "ProgressPhase",
-    "ProtocolErrorCode",
-    "RequestKind",
-    "ServiceStopReason",
-]
-
 
 class RequestKind(StrEnum):
     """Closed client request vocabulary."""

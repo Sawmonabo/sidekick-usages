@@ -8,25 +8,19 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from sidekick_usages.persistence.platform.contracts import (
-    NativeFailureKind,
-    NativeFilesystemError,
-)
+from sidekick_usages.persistence.platform.errors import NativeFilesystemError
+from sidekick_usages.persistence.platform.types import NativeFailureKind
 from sidekick_usages.persistence.platform.windows.private.tree import (
-    Identity as _Identity,
-)
-from sidekick_usages.persistence.platform.windows.private.tree import (
-    OpenedTree as _OpenedTree,
-)
-from sidekick_usages.persistence.platform.windows.private.tree import (
-    RelativePath as _RelativePath,
+    Identity,
+    OpenedTree,
+    RelativePath,
 )
 
 
 @dataclass(frozen=True, slots=True)
 class _RepairEntry:
-    relative: _RelativePath
-    identity: _Identity
+    relative: RelativePath
+    identity: Identity
     directory: bool
     security_valid: bool
 
@@ -38,76 +32,16 @@ if sys.platform == "win32":
     import win32con
     import win32file
 
+    from sidekick_usages.persistence.platform.windows import (
+        files,
+        handles,
+        namespace,
+        security,
+    )
     from sidekick_usages.persistence.platform.windows.adapter import (
         WindowsPlatform,
-        _open_directory,
     )
-    from sidekick_usages.persistence.platform.windows.handles import (
-        close_descriptor as _close_descriptor,
-    )
-    from sidekick_usages.persistence.platform.windows.handles import (
-        close_handle as _close_handle,
-    )
-    from sidekick_usages.persistence.platform.windows.handles import (
-        descriptor_from_handle as _descriptor_from_handle,
-    )
-    from sidekick_usages.persistence.platform.windows.handles import (
-        metadata as _metadata,
-    )
-    from sidekick_usages.persistence.platform.windows.handles import (
-        owned_descriptor as _owned_descriptor,
-    )
-    from sidekick_usages.persistence.platform.windows.handles import (
-        validate_stat as _validate_stat,
-    )
-    from sidekick_usages.persistence.platform.windows.namespace import (
-        child_path as _child_path,
-    )
-    from sidekick_usages.persistence.platform.windows.namespace import (
-        path_attributes as _path_attributes,
-    )
-    from sidekick_usages.persistence.platform.windows.namespace import (
-        require_exact_entry as _require_exact_entry,
-    )
-    from sidekick_usages.persistence.platform.windows.namespace import (
-        validate_membership as _validate_membership,
-    )
-    from sidekick_usages.persistence.platform.windows.private.tree import (
-        delete_empty_tree as _delete_empty_tree,
-    )
-    from sidekick_usages.persistence.platform.windows.private.tree import (
-        delete_entry as _delete_entry,
-    )
-    from sidekick_usages.persistence.platform.windows.private.tree import (
-        list_names as _list_names,
-    )
-    from sidekick_usages.persistence.platform.windows.private.tree import (
-        open_tree as _open_tree,
-    )
-    from sidekick_usages.persistence.platform.windows.private.tree import (
-        require_root_identity as _require_root_identity,
-    )
-    from sidekick_usages.persistence.platform.windows.private.tree import (
-        scan_direct_tree as _scan_direct_tree,
-    )
-    from sidekick_usages.persistence.platform.windows.private.tree import (
-        scan_tree as _scan_tree,
-    )
-    from sidekick_usages.persistence.platform.windows.security import (
-        repair_security as _repair_security,
-    )
-    from sidekick_usages.persistence.platform.windows.security import (
-        validate_external_private_source_file as _validate_external_file,
-    )
-    from sidekick_usages.persistence.platform.windows.security import (
-        validate_external_source_directory as _validate_external_directory,
-    )
-    from sidekick_usages.persistence.platform.windows.security import (
-        validate_repair_owner as _validate_repair_owner,
-    )
-    from sidekick_usages.persistence.platform.windows.security import (
-        validate_security as _validate_security,
-    )
+    from sidekick_usages.persistence.platform.windows.private import tree
 
     def _native_error(kind: NativeFailureKind) -> NativeFilesystemError:
         return NativeFilesystemError(kind)
@@ -154,9 +88,11 @@ if sys.platform == "win32":
         directory: bool,
     ) -> int:
         """Open an owner-owned child for exact DACL repair."""
-        if not _require_exact_entry(parent, basename):
+        if not namespace.require_exact_entry(parent, basename):
             raise _native_error(NativeFailureKind.CHANGED)
-        attributes = _path_attributes(_child_path(parent, basename))
+        attributes = namespace.path_attributes(
+            namespace.child_path(parent, basename)
+        )
         if attributes is None or (
             attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT
             or bool(attributes & stat.FILE_ATTRIBUTE_DIRECTORY)
@@ -171,7 +107,7 @@ if sys.platform == "win32":
             flags |= win32file.FILE_ATTRIBUTE_NORMAL
         try:
             handle = win32file.CreateFile(
-                str(_child_path(parent, basename)),
+                str(namespace.child_path(parent, basename)),
                 win32file.GENERIC_READ
                 | win32con.READ_CONTROL
                 | win32con.WRITE_DAC,
@@ -184,18 +120,20 @@ if sys.platform == "win32":
         except pywintypes.error:
             raise _native_error(NativeFailureKind.UNSAFE) from None
         try:
-            _validate_repair_owner(int(handle))
-            _validate_membership(parent_descriptor, int(handle), basename)
+            security.validate_repair_owner(int(handle))
+            namespace.validate_membership(
+                parent_descriptor, int(handle), basename
+            )
         except BaseException as error:
-            _close_handle(handle, error)
-        descriptor = _descriptor_from_handle(handle, os_flags)
+            handles.close_handle(handle, error)
+        descriptor = handles.descriptor_from_handle(handle, os_flags)
         try:
-            metadata = _metadata(descriptor, NativeFailureKind.UNSAFE)
-            parent_metadata = _metadata(
+            metadata = handles.metadata(descriptor, NativeFailureKind.UNSAFE)
+            parent_metadata = handles.metadata(
                 parent_descriptor,
                 NativeFailureKind.UNSAFE,
             )
-            _validate_stat(
+            handles.validate_stat(
                 metadata,
                 directory=directory,
                 directory_device=(
@@ -206,21 +144,21 @@ if sys.platform == "win32":
             if metadata.st_dev != parent_metadata.st_dev:
                 raise _native_error(NativeFailureKind.UNSAFE)
         except BaseException as error:
-            _close_descriptor(descriptor, error)
+            handles.close_descriptor(descriptor, error)
         return descriptor
 
     @contextmanager
-    def _open_repair_tree(root: Path) -> Iterator[_OpenedTree | None]:
+    def _open_repair_tree(root: Path) -> Iterator[OpenedTree | None]:
         """Open a current-user-owned tree before exact DACL repair."""
-        if _path_attributes(root.parent) is None:
+        if namespace.path_attributes(root.parent) is None:
             yield None
             return
-        parent_descriptor = _open_directory(root.parent, private=True)
-        with _owned_descriptor(
+        parent_descriptor = files.open_directory(root.parent, private=True)
+        with handles.owned_descriptor(
             parent_descriptor,
             NativeFailureKind.UNREADABLE,
         ):
-            if not _require_exact_entry(root.parent, root.name):
+            if not namespace.require_exact_entry(root.parent, root.name):
                 yield None
                 return
             root_descriptor = _open_repair_child(
@@ -229,15 +167,15 @@ if sys.platform == "win32":
                 parent_descriptor,
                 directory=True,
             )
-            with _owned_descriptor(
+            with handles.owned_descriptor(
                 root_descriptor,
                 NativeFailureKind.UNREADABLE,
             ):
-                metadata = _metadata(
+                metadata = handles.metadata(
                     root_descriptor,
                     NativeFailureKind.UNREADABLE,
                 )
-                yield _OpenedTree(
+                yield OpenedTree(
                     root,
                     parent_descriptor,
                     root_descriptor,
@@ -247,9 +185,9 @@ if sys.platform == "win32":
                 )
 
     def _open_repair_relative_directory(
-        opened: _OpenedTree,
-        relative: _RelativePath,
-        identities: dict[_RelativePath, _Identity],
+        opened: OpenedTree,
+        relative: RelativePath,
+        identities: dict[RelativePath, Identity],
     ) -> tuple[Path, int]:
         """Reopen an owner-owned directory chain by exact identity."""
         try:
@@ -258,7 +196,7 @@ if sys.platform == "win32":
             raise _native_error(NativeFailureKind.UNREADABLE) from None
         descriptors = [current_descriptor]
         current_path = opened.root_path
-        traversed: _RelativePath = ()
+        traversed: RelativePath = ()
         try:
             for component in relative:
                 traversed = (*traversed, component)
@@ -269,7 +207,9 @@ if sys.platform == "win32":
                     directory=True,
                 )
                 descriptors.append(child)
-                metadata = _metadata(child, NativeFailureKind.UNREADABLE)
+                metadata = handles.metadata(
+                    child, NativeFailureKind.UNREADABLE
+                )
                 if (
                     metadata.st_dev,
                     metadata.st_ino,
@@ -286,26 +226,26 @@ if sys.platform == "win32":
     def _security_is_valid(descriptor: int, *, directory: bool) -> bool:
         try:
             handle = msvcrt.get_osfhandle(descriptor)
-            _validate_security(handle, directory=directory)
+            security.validate_security(handle, directory=directory)
         except OSError, NativeFilesystemError:
             return False
         return True
 
     def _scan_repair_tree(
-        opened: _OpenedTree,
+        opened: OpenedTree,
     ) -> tuple[
         tuple[_RepairEntry, ...],
-        dict[_RelativePath, _Identity],
+        dict[RelativePath, Identity],
     ]:
         """Preflight every owner-owned object before changing any DACL."""
-        _require_root_identity(opened)
-        identities: dict[_RelativePath, _Identity] = {(): opened.root_identity}
+        tree.require_root_identity(opened)
+        identities: dict[RelativePath, Identity] = {(): opened.root_identity}
         root_security_valid = _security_is_valid(
             opened.root_descriptor,
             directory=True,
         )
         if not root_security_valid:
-            _validate_external_directory(
+            security.validate_external_source_directory(
                 _descriptor_handle(
                     opened.root_descriptor,
                     NativeFailureKind.UNSAFE,
@@ -319,7 +259,7 @@ if sys.platform == "win32":
                 root_security_valid,
             )
         ]
-        pending: list[_RelativePath] = [()]
+        pending: list[RelativePath] = [()]
         while pending:
             relative = pending.pop()
             path, descriptor = _open_repair_relative_directory(
@@ -327,12 +267,14 @@ if sys.platform == "win32":
                 relative,
                 identities,
             )
-            with _owned_descriptor(
+            with handles.owned_descriptor(
                 descriptor,
                 NativeFailureKind.UNREADABLE,
             ):
-                for basename in _list_names(path):
-                    attributes = _path_attributes(_child_path(path, basename))
+                for basename in tree.list_names(path):
+                    attributes = namespace.path_attributes(
+                        namespace.child_path(path, basename)
+                    )
                     if attributes is None or (
                         attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT
                     ):
@@ -346,11 +288,11 @@ if sys.platform == "win32":
                         descriptor,
                         directory=directory,
                     )
-                    with _owned_descriptor(
+                    with handles.owned_descriptor(
                         child,
                         NativeFailureKind.UNREADABLE,
                     ):
-                        metadata = _metadata(
+                        metadata = handles.metadata(
                             child,
                             NativeFailureKind.UNREADABLE,
                         )
@@ -365,9 +307,13 @@ if sys.platform == "win32":
                                 NativeFailureKind.UNSAFE,
                             )
                             if directory:
-                                _validate_external_directory(handle)
+                                security.validate_external_source_directory(
+                                    handle
+                                )
                             else:
-                                _validate_external_file(handle)
+                                security.validate_external_private_source_file(
+                                    handle
+                                )
                     child_relative = (*relative, basename)
                     entries.append(
                         _RepairEntry(
@@ -380,13 +326,13 @@ if sys.platform == "win32":
                     if directory:
                         identities[child_relative] = identity
                         pending.append(child_relative)
-        _require_root_identity(opened)
+        tree.require_root_identity(opened)
         return tuple(entries), identities
 
     def _repair_entry_permissions(
-        opened: _OpenedTree,
+        opened: OpenedTree,
         entry: _RepairEntry,
-        identities: dict[_RelativePath, _Identity],
+        identities: dict[RelativePath, Identity],
     ) -> bool:
         """Install one exact DACL while its preflight identity is held."""
         parent_to_close: int | None = None
@@ -412,11 +358,11 @@ if sys.platform == "win32":
                     directory=entry.directory,
                 )
                 basename = entry.relative[-1]
-            with _owned_descriptor(
+            with handles.owned_descriptor(
                 descriptor,
                 NativeFailureKind.HARDEN,
             ):
-                metadata = _metadata(
+                metadata = handles.metadata(
                     descriptor,
                     NativeFailureKind.CHANGED,
                 )
@@ -426,23 +372,25 @@ if sys.platform == "win32":
                     descriptor,
                     NativeFailureKind.UNSAFE,
                 )
-                _validate_membership(
+                namespace.validate_membership(
                     parent_descriptor,
                     handle,
                     basename,
                 )
-                _validate_repair_owner(handle)
+                security.validate_repair_owner(handle)
                 if not entry.security_valid:
-                    _repair_security(handle, directory=entry.directory)
+                    security.repair_security(handle, directory=entry.directory)
                 else:
-                    _validate_security(handle, directory=entry.directory)
-                after = _metadata(
+                    security.validate_security(
+                        handle, directory=entry.directory
+                    )
+                after = handles.metadata(
                     descriptor,
                     NativeFailureKind.HARDEN,
                 )
                 if (after.st_dev, after.st_ino) != entry.identity:
                     raise _native_error(NativeFailureKind.CHANGED)
-                _validate_membership(
+                namespace.validate_membership(
                     parent_descriptor,
                     handle,
                     basename,
@@ -450,10 +398,10 @@ if sys.platform == "win32":
                 repaired = not entry.security_valid
         except BaseException as error:
             if parent_to_close is not None:
-                _close_descriptor(parent_to_close, error)
+                handles.close_descriptor(parent_to_close, error)
             raise
         if parent_to_close is not None:
-            _close_descriptor(parent_to_close)
+            handles.close_descriptor(parent_to_close)
         return repaired
 
     class WindowsPrivateCredentialPlatform:
@@ -495,7 +443,7 @@ if sys.platform == "win32":
                         repaired_directories += 1
                     else:
                         repaired_files += 1
-                _scan_tree(opened)
+                tree.scan_tree(opened)
                 return (repaired_directories, repaired_files)
 
         def harden_provider_stage(self, root: Path) -> tuple[int, int]:
@@ -505,19 +453,19 @@ if sys.platform == "win32":
         def contains_artifacts(self, root: Path) -> bool:
             """Validate the complete tree and report any descendants."""
             self._qualifier.qualify(root)
-            with _open_tree(root) as opened:
+            with tree.open_tree(root) as opened:
                 if opened is None:
                     return False
-                entries, _identities = _scan_tree(opened)
+                entries, _identities = tree.scan_tree(opened)
                 return bool(entries)
 
         def list_directories(self, root: Path) -> tuple[str, ...]:
             """Validate the tree and list direct child directories."""
             self._qualifier.qualify(root)
-            with _open_tree(root) as opened:
+            with tree.open_tree(root) as opened:
                 if opened is None:
                     return ()
-                entries, _identities = _scan_tree(opened)
+                entries, _identities = tree.scan_tree(opened)
                 return tuple(
                     sorted(
                         entry.relative[0]
@@ -529,13 +477,13 @@ if sys.platform == "win32":
         def list_directories_shallow(self, root: Path) -> tuple[str, ...]:
             """Validate only direct children and return directories."""
             self._qualifier.qualify(root)
-            with _open_tree(root) as opened:
+            with tree.open_tree(root) as opened:
                 if opened is None:
                     return ()
                 return tuple(
                     sorted(
                         entry.relative[0]
-                        for entry in _scan_direct_tree(opened)
+                        for entry in tree.scan_direct_tree(opened)
                         if entry.directory
                     )
                 )
@@ -543,10 +491,10 @@ if sys.platform == "win32":
         def list_files(self, root: Path) -> tuple[str, ...]:
             """Validate the tree and list direct child files."""
             self._qualifier.qualify(root)
-            with _open_tree(root) as opened:
+            with tree.open_tree(root) as opened:
                 if opened is None:
                     return ()
-                entries, _identities = _scan_tree(opened)
+                entries, _identities = tree.scan_tree(opened)
                 return tuple(
                     sorted(
                         entry.relative[0]
@@ -558,10 +506,10 @@ if sys.platform == "win32":
         def destroy_artifacts(self, root: Path) -> None:
             """Prevalidate then handle-delete every descendant bottom-up."""
             self._qualifier.qualify(root)
-            with _open_tree(root) as opened:
+            with tree.open_tree(root) as opened:
                 if opened is None:
                     return
-                entries, identities = _scan_tree(opened)
+                entries, identities = tree.scan_tree(opened)
                 for entry in sorted(
                     entries,
                     key=lambda candidate: (
@@ -570,15 +518,12 @@ if sys.platform == "win32":
                     ),
                     reverse=True,
                 ):
-                    _delete_entry(opened, entry, identities)
-                remaining, _remaining_identities = _scan_tree(opened)
+                    tree.delete_entry(opened, entry, identities)
+                remaining, _remaining_identities = tree.scan_tree(opened)
                 if remaining:
                     raise _native_error(NativeFailureKind.CHANGED)
 
         def destroy_tree(self, root: Path) -> None:
             """Delete one exact validated private tree including its root."""
             self.destroy_artifacts(root)
-            _delete_empty_tree(root)
-
-
-__all__ = ["WindowsPrivateCredentialPlatform"]
+            tree.delete_empty_tree(root)

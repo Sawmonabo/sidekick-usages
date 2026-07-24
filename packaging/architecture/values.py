@@ -1,11 +1,10 @@
-"""Frozen value-shape contracts for the architecture gate."""
+"""Frozen value-shape checks for the architecture gate."""
 
 import ast
 from collections.abc import Mapping, Sequence
 
-from architecture_ast import (
-    ArchitectureFinding,
-    SourceUnit,
+from architecture.models import ArchitectureFinding, SourceUnit
+from architecture.source import (
     class_fields,
     class_node,
     compact,
@@ -152,6 +151,3 @@ def _check_close_once(
                 "one lazy Composed owner must register close exactly once",
             )
         )
-
-
-__all__ = ["check_value_contracts"]

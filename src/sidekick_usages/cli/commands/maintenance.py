@@ -17,7 +17,7 @@ from sidekick_usages.core.types import (
 from sidekick_usages.credentials.claude.lifetime import (
     ClaudeLoginRenewalState,
 )
-from sidekick_usages.heartbeat import heartbeat_exit_code
+from sidekick_usages.heartbeat.service import heartbeat_exit_code
 from sidekick_usages.maintenance import RefreshOutcome, refresh_exit_code
 
 
@@ -119,6 +119,3 @@ def maintain_cmd(
 def register(application: typer.Typer) -> None:
     """Register the maintenance command exactly once."""
     branded_command(application, "maintain")(maintain_cmd)
-
-
-__all__ = ["register", "run_refresh_all"]

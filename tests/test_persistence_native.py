@@ -7,18 +7,18 @@ from pathlib import Path
 
 import pytest
 
-from sidekick_usages.persistence.platform.contracts import (
-    FilesystemFamily,
-    NativeFailureKind,
-    NativeFilesystemError,
-)
+from sidekick_usages.persistence.platform.errors import NativeFilesystemError
 from sidekick_usages.persistence.platform.posix import mounts
-from sidekick_usages.persistence.platform.posix.adapter import (
-    PosixPlatform,
-    _owned_descriptor,
-)
+from sidekick_usages.persistence.platform.posix.adapter import PosixPlatform
 from sidekick_usages.persistence.platform.posix.mounts import (
     _classify_linux_filesystem,
+)
+from sidekick_usages.persistence.platform.posix.namespace import (
+    owned_descriptor,
+)
+from sidekick_usages.persistence.platform.types import (
+    FilesystemFamily,
+    NativeFailureKind,
 )
 
 if sys.platform == "win32":
@@ -191,7 +191,7 @@ def test_unknown_descriptor_failure_is_preserved_with_cleanup_fact(
     try:
         with (
             pytest.raises(KeyboardInterrupt) as exc_info,
-            _owned_descriptor(
+            owned_descriptor(
                 descriptor,
                 NativeFailureKind.UNREADABLE,
             ),

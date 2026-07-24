@@ -48,11 +48,6 @@ from sidekick_usages.persistence.supervisor.selection import SelectedStateStore
 from sidekick_usages.persistence.types.activation import StateLockFactory
 from sidekick_usages.persistence.types.artifact import AuthorityExpectation
 
-__all__ = [
-    "ActivationJournalStore",
-    "ActivationJournalTransaction",
-]
-
 _ACCOUNT_LOCK_DIRECTORY = "account-locks"
 
 

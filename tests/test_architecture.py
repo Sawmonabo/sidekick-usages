@@ -2,7 +2,8 @@
 
 from pathlib import Path
 
-import architecture_ast
+import architecture.models
+import architecture.source
 import check_architecture
 import click
 import pytest
@@ -14,85 +15,97 @@ REPO_ROOT = Path(__file__).parents[1]
 
 
 _MUTATIONS = (
-    architecture_ast.SourceMutation(
+    architecture.models.SourceMutation(
         "SIZE001",
         "tests/oversized_architecture_fixture.py",
         "",
         "# deliberate line\n" * 1001,
     ),
-    architecture_ast.SourceMutation(
+    architecture.models.SourceMutation(
         "HYG001",
         "tests/architecture_any_fixture.py",
         "",
         "from typing import Any\nvalue: Any\n",
     ),
-    architecture_ast.SourceMutation(
+    architecture.models.SourceMutation(
         "HYG002",
         "tests/architecture_future_fixture.py",
         "",
         "from __future__ import annotations\n",
     ),
-    architecture_ast.SourceMutation(
+    architecture.models.SourceMutation(
         "HYG003",
         "tests/architecture_suppression_fixture.py",
         "",
         "value = 1  # no" + "qa\n",
     ),
-    architecture_ast.SourceMutation(
+    architecture.models.SourceMutation(
         "HYG004",
         "tests/architecture_exception_fixture.py",
         "",
         "try:\n    raise RuntimeError\nexcept Exception:\n    pass\n",
     ),
-    architecture_ast.SourceMutation(
+    architecture.models.SourceMutation(
         "HYG005",
         "tests/architecture_nested_import_fixture.py",
         "",
         "def load() -> None:\n    import pathlib\n",
     ),
-    architecture_ast.SourceMutation(
+    architecture.models.SourceMutation(
+        "HYG006",
+        "tests/architecture_alias_fixture.py",
+        "",
+        "import pathlib as paths\n",
+    ),
+    architecture.models.SourceMutation(
+        "HYG007",
+        "tests/architecture_late_declaration_fixture.py",
+        "",
+        "def load() -> None:\n    pass\n\nVALUE = 1\n",
+    ),
+    architecture.models.SourceMutation(
         "DEP001",
         "src/sidekick_usages/core/architecture_fixture.py",
         "",
         "import rich\n",
     ),
-    architecture_ast.SourceMutation(
+    architecture.models.SourceMutation(
         "DEP002",
         "src/sidekick_usages/architecture_fixture.py",
         "",
         "from sidekick_usages.cli import context\n",
     ),
-    architecture_ast.SourceMutation(
+    architecture.models.SourceMutation(
         "DEP003",
         "src/sidekick_usages/persistence/architecture_fixture.py",
         "",
         "from sidekick_usages.providers import base\n",
     ),
-    architecture_ast.SourceMutation(
+    architecture.models.SourceMutation(
         "DEP004",
         "src/sidekick_usages/providers/architecture_fixture.py",
         "",
         "from sidekick_usages.usage import service\n",
     ),
-    architecture_ast.SourceMutation(
+    architecture.models.SourceMutation(
         "DEP005",
         "src/sidekick_usages/http/architecture_fixture.py",
         "",
         "from sidekick_usages.providers import base\n",
     ),
-    architecture_ast.SourceMutation(
+    architecture.models.SourceMutation(
         "DEP006",
         "src/sidekick_usages/usage/service.py",
         "from dataclasses import dataclass\n",
         ("from dataclasses import dataclass\nfrom rich.text import Text\n"),
     ),
-    architecture_ast.SourceMutation(
+    architecture.models.SourceMutation(
         "DEP007",
         "src/sidekick_usages/architecture_transport_fixture.py",
         "",
         "import urllib3\n",
     ),
-    architecture_ast.SourceMutation(
+    architecture.models.SourceMutation(
         "DEP008",
         "src/sidekick_usages/usage/presentation/overview.py",
         "from rich.console import Console, Group, RenderableType\n",
@@ -101,25 +114,25 @@ _MUTATIONS = (
             "from sidekick_usages.credentials import authorities\n"
         ),
     ),
-    architecture_ast.SourceMutation(
+    architecture.models.SourceMutation(
         "PATH001",
         "src/sidekick_usages/architecture_paths_fixture.py",
         "",
         "import platformdirs\n",
     ),
-    architecture_ast.SourceMutation(
+    architecture.models.SourceMutation(
         "PATH002",
         "src/sidekick_usages/architecture_path_owner_fixture.py",
         "",
         "class ApplicationPaths:\n    pass\n",
     ),
-    architecture_ast.SourceMutation(
+    architecture.models.SourceMutation(
         "TIME001",
         "src/sidekick_usages/usage/architecture_time_fixture.py",
         "",
         "from datetime import datetime\nnow = datetime.now()\n",
     ),
-    architecture_ast.SourceMutation(
+    architecture.models.SourceMutation(
         "TIME002",
         "src/sidekick_usages/core/time.py",
         "    return value.astimezone(UTC)\n",
@@ -129,19 +142,19 @@ _MUTATIONS = (
             "    return datetime.fromisoformat(value)\n"
         ),
     ),
-    architecture_ast.SourceMutation(
+    architecture.models.SourceMutation(
         "CFG001",
         "pyproject.toml",
         "dependencies = [\n",
         'dependencies = [\n  "pydantic-settings==2.14.2",\n',
     ),
-    architecture_ast.SourceMutation(
+    architecture.models.SourceMutation(
         "CTX001",
         "src/sidekick_usages/cli/context.py",
         "    accounts: AccountStore\n",
         "    paths: ApplicationPaths\n",
     ),
-    architecture_ast.SourceMutation(
+    architecture.models.SourceMutation(
         "CTX002",
         "src/sidekick_usages/cli/context.py",
         "            ctx.find_root().call_on_close(owner.close)\n",
@@ -150,43 +163,52 @@ _MUTATIONS = (
             "            ctx.find_root().call_on_close(owner.close)\n"
         ),
     ),
-    architecture_ast.SourceMutation(
+    architecture.models.SourceMutation(
         "CLI001",
         "src/sidekick_usages/cli/app.py",
         "    return application\n",
         "    compose_app_context()\n    return application\n",
     ),
-    architecture_ast.SourceMutation(
+    architecture.models.SourceMutation(
         "HTTP001",
         "src/sidekick_usages/architecture_retry_fixture.py",
         "",
         "_POLICIES = {}\n",
     ),
-    architecture_ast.SourceMutation(
+    architecture.models.SourceMutation(
         "BRAND001",
         "src/sidekick_usages/architecture_brand_fixture.py",
         "",
         "ROBOT_LINES = ()\n",
     ),
-    architecture_ast.SourceMutation(
+    architecture.models.SourceMutation(
         "PKG001",
-        "src/sidekick_usages/render.py",
-        "",
-        '"""Stale converted module."""\n',
+        "src/sidekick_usages/usage/__init__.py",
+        '"""Usage collection, aggregation, and presentation."""\n',
+        (
+            '"""Usage collection, aggregation, and presentation."""\n\n'
+            "from sidekick_usages.usage import models\n"
+        ),
     ),
-    architecture_ast.SourceMutation(
+    architecture.models.SourceMutation(
         "PKG002",
         "src/sidekick_usages/usage/activity_extra.py",
         "",
         '"""Deliberate flat namespace fixture."""\n',
     ),
-    architecture_ast.SourceMutation(
+    architecture.models.SourceMutation(
+        "PKG003",
+        "src/sidekick_usages/misc_types.py",
+        "",
+        '"""Deliberate owner-module naming violation."""\n',
+    ),
+    architecture.models.SourceMutation(
         "SCHEMA001",
         "src/sidekick_usages/architecture_schema_fixture.py",
         "",
         "from pydantic import TypeAdapter\n",
     ),
-    architecture_ast.SourceMutation(
+    architecture.models.SourceMutation(
         "ACT001",
         "src/sidekick_usages/activity_architecture_fixture.py",
         "",
@@ -202,7 +224,7 @@ def test_real_tree_satisfies_every_static_architecture_contract() -> None:
     assert report.violations == ()
 
 
-def _deliberately_broken_report() -> architecture_ast.ArchitectureReport:
+def _deliberately_broken_report() -> architecture.models.ArchitectureReport:
     """Apply one precise violation per rule to a single in-memory snapshot."""
     source_overrides: dict[str, str] = {}
     pyproject_override = (REPO_ROOT / "pyproject.toml").read_text(
@@ -244,10 +266,10 @@ def test_every_static_rule_rejects_a_deliberate_violation() -> None:
     report = _deliberately_broken_report()
 
     assert {violation.rule_id for violation in report.violations} == (
-        architecture_ast.VIOLATION_RULE_IDS
+        architecture.source.VIOLATION_RULE_IDS
     )
     assert {mutation.rule_id for mutation in _MUTATIONS} == (
-        architecture_ast.VIOLATION_RULE_IDS
+        architecture.source.VIOLATION_RULE_IDS
     )
 
 

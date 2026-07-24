@@ -165,15 +165,3 @@ def expiry_time(expiry: ClassifiedExpiry) -> datetime | None:
     if isinstance(expiry, ValidExpiry | ExpiredExpiry):
         return expiry.at
     return None
-
-
-__all__ = [
-    "CredentialDiagnostic",
-    "DoctorCredentialKind",
-    "IdentityState",
-    "access_expiry_display",
-    "authentication_label",
-    "diagnose_credentials",
-    "expiry_time",
-    "refresh_expiry_display",
-]

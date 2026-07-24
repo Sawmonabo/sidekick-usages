@@ -10,8 +10,6 @@ from sidekick_usages.persistence.types.artifact import (
     ManagedArtifactKind,
 )
 
-__all__ = ["ManagedStateFilesystem"]
-
 
 class ManagedStateFilesystem(PrivateFilesystem):
     """Bind common private-file transactions to one state decoder."""

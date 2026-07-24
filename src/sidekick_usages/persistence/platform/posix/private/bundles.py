@@ -9,22 +9,12 @@ from pathlib import Path
 from sidekick_usages.persistence.artifacts import (
     require_portable_unique_basenames,
 )
-from sidekick_usages.persistence.platform.contracts import (
-    NativeFailureKind,
-    NativeFile,
-    NativeFilesystemError,
-    NativePlatform,
-)
+from sidekick_usages.persistence.platform.errors import NativeFilesystemError
+from sidekick_usages.persistence.platform.models import NativeFile
+from sidekick_usages.persistence.platform.ports import NativePlatform
+from sidekick_usages.persistence.platform.posix import files, namespace
 from sidekick_usages.persistence.platform.posix.adapter import (
-    _close_descriptor_stack,
-    _no_follow_flag,
-    _open_child_directory,
-    _owned_descriptor,
     _remove_exact_entry,
-    _require_exact_entry,
-)
-from sidekick_usages.persistence.platform.posix.files import (
-    read_descriptor as _read_descriptor,
 )
 from sidekick_usages.persistence.platform.posix.namespace import (
     PRIVATE_DIRECTORY_MODE,
@@ -39,6 +29,7 @@ from sidekick_usages.persistence.platform.posix.private.tree import (
     _scan_tree,
     _TreeEntry,
 )
+from sidekick_usages.persistence.platform.types import NativeFailureKind
 from sidekick_usages.persistence.private.bundles.paths import (
     private_bundle_relative_components,
 )
@@ -80,7 +71,7 @@ def _require_chain_identity(
             continue
         parent = chain.descriptors[index - 1]
         basename = chain.components[index - 1]
-        observed = _require_exact_entry(parent, basename)
+        observed = namespace.require_exact_entry(parent, basename)
         if final_may_be_absent and index == len(chain.descriptors) - 1:
             if observed not in {None, chain.identities[index]}:
                 raise _native_error(NativeFailureKind.CHANGED)
@@ -95,7 +86,7 @@ def _open_chain_child(
     *,
     create: bool,
 ) -> tuple[int, _Identity] | None:
-    identity = _require_exact_entry(parent, component)
+    identity = namespace.require_exact_entry(parent, component)
     if identity is None:
         if not create:
             return None
@@ -110,16 +101,16 @@ def _open_chain_child(
             raise _native_error(NativeFailureKind.CHANGED) from None
         except OSError:
             raise _native_error(NativeFailureKind.CREATE) from None
-        identity = _require_exact_entry(parent, component)
+        identity = namespace.require_exact_entry(parent, component)
         if identity is None:
             raise _native_error(NativeFailureKind.CHANGED)
-    child = _open_child_directory(parent, component, private=True)
+    child = namespace.open_child_directory(parent, component, private=True)
     metadata = _metadata(child, NativeFailureKind.UNREADABLE)
     if (
         metadata.st_dev,
         metadata.st_ino,
     ) != identity or metadata.st_dev != opened.root_device:
-        _close_descriptor_stack(
+        namespace.close_descriptor_stack(
             [child],
             _native_error(NativeFailureKind.CHANGED),
         )
@@ -173,7 +164,7 @@ def _open_component_chain(
             )
     except BaseException as error:
         primary = error
-    _close_descriptor_stack(descriptors, primary)
+    namespace.close_descriptor_stack(descriptors, primary)
 
 
 def _read_relative_file(
@@ -184,22 +175,24 @@ def _read_relative_file(
 ) -> NativeFile | None:
     _require_chain_identity(opened, chain)
     parent = chain.descriptors[-1]
-    identity = _require_exact_entry(parent, basename)
+    identity = namespace.require_exact_entry(parent, basename)
     if identity is None:
         return None
-    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK | _no_follow_flag()
+    flags = (
+        os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK | namespace.no_follow_flag()
+    )
     try:
         descriptor = os.open(basename, flags, dir_fd=parent)
     except FileNotFoundError:
         raise _native_error(NativeFailureKind.CHANGED) from None
     except OSError:
         raise _native_error(NativeFailureKind.UNSAFE) from None
-    with _owned_descriptor(descriptor, NativeFailureKind.UNREADABLE):
+    with namespace.owned_descriptor(descriptor, NativeFailureKind.UNREADABLE):
         metadata = _metadata(descriptor, NativeFailureKind.UNREADABLE)
         if (metadata.st_dev, metadata.st_ino) != identity:
             raise _native_error(NativeFailureKind.CHANGED)
-        result = _read_descriptor(descriptor, opened.root_device, limit)
-        if _require_exact_entry(parent, basename) != identity:
+        result = files.read_descriptor(descriptor, opened.root_device, limit)
+        if namespace.require_exact_entry(parent, basename) != identity:
             raise _native_error(NativeFailureKind.CHANGED)
     _require_chain_identity(opened, chain)
     return result
@@ -305,7 +298,7 @@ def _delete_relative_file(
         os.fsync(parent)
     except OSError:
         raise _native_error(NativeFailureKind.SYNCHRONIZE) from None
-    if _require_exact_entry(parent, basename) is not None:
+    if namespace.require_exact_entry(parent, basename) is not None:
         raise _native_error(NativeFailureKind.CHANGED)
     _require_chain_identity(opened, chain)
 
@@ -609,6 +602,3 @@ class PosixPrivateBundlePlatform:
                         True,
                     ),
                 )
-
-
-__all__ = ["PosixPrivateBundlePlatform"]

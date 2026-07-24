@@ -27,7 +27,7 @@ from sidekick_usages.credentials.models import (
     CredentialRefreshResult,
     CredentialRefreshSuccess,
 )
-from sidekick_usages.http import HttpClient
+from sidekick_usages.http.client import HttpClient
 from sidekick_usages.persistence.accounts.store import AccountStore
 from sidekick_usages.persistence.credentials.refresh.service import (
     CredentialRefreshLease,
@@ -365,11 +365,3 @@ def _target_unavailable_failure(account: Account | None) -> ProviderFailure:
 def _provider_id(account: Account | None) -> ProviderId:
     """Return fresh provider identity or the provider-neutral fallback."""
     return ProviderId.CLAUDE if account is None else account.provider_id
-
-
-__all__ = [
-    "CredentialRefreshCoordinator",
-    "CredentialRefreshPersistence",
-    "CredentialRefreshReason",
-    "StagedCredentialRefreshProvider",
-]

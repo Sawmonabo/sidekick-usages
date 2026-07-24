@@ -70,6 +70,3 @@ def has_extended_acl(descriptor: int) -> bool:
     if result is None:
         raise OSError(errno.EIO, os.strerror(errno.EIO))
     return result
-
-
-__all__ = ["has_extended_acl"]

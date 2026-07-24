@@ -2,8 +2,6 @@
 
 from enum import StrEnum
 
-__all__ = ["PeerFailureCode"]
-
 
 class PeerFailureCode(StrEnum):
     """Safe reasons an operating system could not prove a local peer."""

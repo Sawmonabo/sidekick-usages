@@ -22,8 +22,8 @@ from sidekick_usages import __version__
 from sidekick_usages.branding import ROBOT_LINES
 from sidekick_usages.cli.context import UpdateContext
 from sidekick_usages.errors import ForbiddenError
-from sidekick_usages.http import HttpClient
-from sidekick_usages.serialization import JsonObject
+from sidekick_usages.http.client import HttpClient
+from sidekick_usages.serialization.json import JsonObject
 from sidekick_usages.update import (
     PACKAGE_NAME,
     InstallMethod,

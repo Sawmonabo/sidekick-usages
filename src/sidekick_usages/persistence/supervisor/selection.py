@@ -22,8 +22,6 @@ from sidekick_usages.persistence.state.filesystem import (
 )
 from sidekick_usages.persistence.types.artifact import AuthorityExpectation
 
-__all__ = ["SelectedStateStore"]
-
 
 class SelectedStateStore:
     """Persist the last verified runtime state independently per provider."""

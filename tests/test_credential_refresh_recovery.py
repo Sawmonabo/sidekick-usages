@@ -15,7 +15,7 @@ from sidekick_usages.credentials.refresh import (
     CredentialRefreshCoordinator,
     CredentialRefreshReason,
 )
-from sidekick_usages.http import HttpClient
+from sidekick_usages.http.client import HttpClient
 from sidekick_usages.persistence.credentials.refresh.service import (
     CredentialRefreshCrashPoint,
     CredentialRefreshRecoveryBlockedError,

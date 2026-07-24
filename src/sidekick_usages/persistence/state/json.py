@@ -9,7 +9,7 @@ from sidekick_usages.persistence.limits import MAX_DOCUMENT_BYTES
 from sidekick_usages.persistence.state.validation import (
     validate_non_secret_state,
 )
-from sidekick_usages.serialization import (
+from sidekick_usages.serialization.json import (
     JsonDecodeCode,
     JsonDecodeError,
     JsonEncodeError,
@@ -18,11 +18,6 @@ from sidekick_usages.serialization import (
     encode_canonical_json,
     validate_integer_json_value,
 )
-
-__all__ = [
-    "decode_state_object",
-    "encode_state_object",
-]
 
 
 def _validate_limit(maximum: int) -> None:

@@ -22,14 +22,7 @@ from sidekick_usages.persistence.time_codec import (
     canonical_timestamp,
     parse_canonical_timestamp,
 )
-from sidekick_usages.serialization import JsonObject
-
-__all__ = [
-    "MAX_SERVICE_STATE_BYTES",
-    "SERVICE_STATE_SCHEMA_VERSION",
-    "decode_service_state",
-    "encode_service_state",
-]
+from sidekick_usages.serialization.json import JsonObject
 
 SERVICE_STATE_SCHEMA_VERSION = 1
 MAX_SERVICE_STATE_BYTES = 32 * 1024

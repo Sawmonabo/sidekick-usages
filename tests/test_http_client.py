@@ -6,7 +6,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
 
 import pytest
-from urllib3 import exceptions as urllib3_exceptions
+from urllib3.exceptions import ProtocolError
 from urllib3.util import Timeout
 
 from sidekick_usages.errors import (
@@ -16,13 +16,16 @@ from sidekick_usages.errors import (
     InsecureUrlError,
     InvalidPayloadError,
 )
-from sidekick_usages.http import HttpClient, HttpOperation
 from sidekick_usages.http.client import (
     DISCARD_BODY_LIMIT,
     FORM_REQUEST_LIMIT,
     JSON_REQUEST_LIMIT,
     JSON_RESPONSE_LIMIT,
+    HttpClient,
 )
+from sidekick_usages.http.types import HttpOperation
+
+type _Outcome = _Response | BaseException
 
 
 class _Response:
@@ -56,9 +59,6 @@ class _Response:
     def release_conn(self) -> None:
         """Record returning a reusable connection to the pool."""
         self.release_calls += 1
-
-
-type _Outcome = _Response | BaseException
 
 
 class _Manager:
@@ -334,7 +334,7 @@ def test_auth_status_survives_broken_optional_error_body(
     """A failed diagnostic read cannot demote a terminal 401."""
     response = _Response(
         HTTPStatus.UNAUTHORIZED,
-        read_error=urllib3_exceptions.ProtocolError("broken body"),
+        read_error=ProtocolError("broken body"),
     )
     manager = _Manager([response])
     client = HttpClient()

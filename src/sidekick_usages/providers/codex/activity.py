@@ -2,7 +2,7 @@
 
 from sidekick_usages.core.models import TokenActivityReading
 from sidekick_usages.core.types import ProviderId
-from sidekick_usages.http import HttpClient
+from sidekick_usages.http.client import HttpClient
 from sidekick_usages.providers.base import (
     ProviderAuthenticatedAccount,
     runtime_account,
@@ -29,6 +29,3 @@ class CodexActivity:
         return parse_activity_response(
             http.get_json(ACTIVITY_URL, headers=headers)
         )
-
-
-__all__ = ["ACTIVITY_URL", "CodexActivity"]

@@ -1,4 +1,4 @@
-"""Contracts for private credential persistence adapters."""
+"""Private credential persistence ports."""
 
 from collections.abc import Callable
 from pathlib import Path
@@ -7,7 +7,7 @@ from typing import Protocol
 from sidekick_usages.persistence.models.credential import (
     PrivateCredentialRepairResult,
 )
-from sidekick_usages.persistence.platform.contracts import NativeFile
+from sidekick_usages.persistence.platform.models import NativeFile
 from sidekick_usages.persistence.types.credential import (
     PrivateCredentialState,
 )
@@ -125,10 +125,3 @@ class PrivateBundleNative(Protocol):
         relative: tuple[str, ...],
     ) -> None:
         """Delete one exact relative bundle through qualified components."""
-
-
-__all__ = [
-    "PrivateBundleNative",
-    "PrivateCredentialArtifacts",
-    "PrivateCredentialNative",
-]

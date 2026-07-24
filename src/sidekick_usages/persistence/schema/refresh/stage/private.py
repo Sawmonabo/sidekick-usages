@@ -22,16 +22,13 @@ from sidekick_usages.persistence.private.bundles.writes import (
     MAX_PRIVATE_FILE_BYTES,
     PreparedPrivateBundleWrite,
 )
-from sidekick_usages.serialization import JsonDecodeError, decode_json_value
+from sidekick_usages.serialization.json import (
+    JsonDecodeError,
+    decode_json_value,
+)
 
 _SCHEMA_VERSION = 1
 _MAX_PATH_BYTES = 4096
-
-__all__ = [
-    "RefreshPrivateStageDecodeError",
-    "decode_private_refresh_stage",
-    "encode_private_refresh_stage",
-]
 
 type _Basename = Annotated[str, AfterValidator(_basename_value)]
 type _PathValue = Annotated[str, AfterValidator(_path_value)]

@@ -19,8 +19,6 @@ from sidekick_usages.persistence.state.filesystem import (
 )
 from sidekick_usages.persistence.types.artifact import AuthorityExpectation
 
-__all__ = ["ServiceStateStore"]
-
 
 class ServiceStateStore:
     """Persist monotonic sanitized supervisor observations."""

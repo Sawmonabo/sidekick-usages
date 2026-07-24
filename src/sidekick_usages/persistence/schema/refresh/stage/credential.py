@@ -37,16 +37,22 @@ from sidekick_usages.persistence.time_codec import (
     canonical_timestamp,
     parse_canonical_timestamp,
 )
-from sidekick_usages.serialization import JsonDecodeError, decode_json_value
-
-__all__ = [
-    "CredentialRefreshStageDecodeError",
-    "decode_credential_refresh_stage",
-    "encode_credential_refresh_stage",
-]
+from sidekick_usages.serialization.json import (
+    JsonDecodeError,
+    decode_json_value,
+)
 
 SCHEMA_VERSION = 1
 MODEL_CONFIG = ConfigDict(strict=True, extra="forbid", frozen=True)
+
+
+type CredentialBase64 = Annotated[
+    str,
+    AfterValidator(_credential_base64),
+]
+type BundleBase64 = Annotated[str, AfterValidator(_bundle_base64)]
+type LabelValue = Annotated[str, AfterValidator(_label)]
+type TimestampValue = Annotated[str, AfterValidator(_timestamp)]
 
 
 class CredentialRefreshStageDecodeError(ValueError):
@@ -86,15 +92,6 @@ def _label(value: str) -> str:
 def _timestamp(value: str) -> str:
     parse_canonical_timestamp(value)
     return value
-
-
-type CredentialBase64 = Annotated[
-    str,
-    AfterValidator(_credential_base64),
-]
-type BundleBase64 = Annotated[str, AfterValidator(_bundle_base64)]
-type LabelValue = Annotated[str, AfterValidator(_label)]
-type TimestampValue = Annotated[str, AfterValidator(_timestamp)]
 
 
 class _CredentialRefreshStage(BaseModel):

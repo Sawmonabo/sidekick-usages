@@ -17,8 +17,6 @@ from sidekick_usages.persistence.supervisor.activation import (
 )
 from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
 
-__all__ = ["ActivationRecoveryScheduler"]
-
 
 class ActivationRecoveryScheduler:
     """Enroll unfinished journals before switching can become ready."""

@@ -39,8 +39,6 @@ _FAILURE_MESSAGES = {
     ),
 }
 
-__all__ = ["CodexAppServerError"]
-
 
 class CodexAppServerError(UsageError):
     """One typed app-server failure containing no provider output."""

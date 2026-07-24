@@ -8,7 +8,8 @@ from sidekick_usages.core.models import (
     ClaudeSetupTokenCredentials,
     UsageReport,
 )
-from sidekick_usages.http import HttpClient, HttpOperation
+from sidekick_usages.http.client import HttpClient
+from sidekick_usages.http.types import HttpOperation
 from sidekick_usages.providers.claude.credentials import (
     require_claude_credentials,
 )

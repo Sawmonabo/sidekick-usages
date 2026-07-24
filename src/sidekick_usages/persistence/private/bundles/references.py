@@ -34,6 +34,3 @@ def canonical_private_accounts(
                 raise PrivateCredentialCollisionError(path.name)
             references[path] = account
     return references
-
-
-__all__ = ["canonical_private_accounts"]

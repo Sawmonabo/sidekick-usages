@@ -12,8 +12,6 @@ from sidekick_usages.persistence.filesystem.transaction import (
 )
 from sidekick_usages.persistence.locking import PersistenceLock
 
-__all__ = ["OperationAuthorityLock"]
-
 _ACCOUNT_LOCK_DIRECTORY = "account-locks"
 
 

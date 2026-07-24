@@ -9,9 +9,9 @@ from sidekick_usages.cli.commands.credentials import exit_credential_failure
 from sidekick_usages.cli.context import invocation_context
 from sidekick_usages.cli.help import BrandedTyperGroup, branded_command
 from sidekick_usages.core.types import ExitCode, ProviderId
-from sidekick_usages.credentials import TokenCredentialSource
+from sidekick_usages.credentials.models import TokenCredentialSource
 from sidekick_usages.providers.base import ProviderFailure
-from sidekick_usages.providers.claude import (
+from sidekick_usages.providers.claude.provider import (
     SetupTokenCapture,
     SetupTokenMissing,
     SetupTokenRejected,
@@ -148,6 +148,3 @@ def register(application: typer.Typer) -> None:
     )
     branded_command(claude_app, "setup-token")(setup_token_cmd)
     application.add_typer(claude_app, name="claude")
-
-
-__all__ = ["register"]

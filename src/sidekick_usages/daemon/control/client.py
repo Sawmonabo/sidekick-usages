@@ -30,12 +30,6 @@ from sidekick_usages.daemon.types.protocol import (
     RequestKind,
 )
 
-__all__ = [
-    "ControlClient",
-    "ServiceCompatibilityError",
-    "UnexpectedServiceEventError",
-]
-
 _DEFAULT_CONNECT_TIMEOUT_SECONDS = 5.0
 
 

@@ -9,8 +9,6 @@ from sidekick_usages.daemon.lifecycle.errors import ServiceLifecycleError
 from sidekick_usages.daemon.models.lifecycle import ServiceArtifact
 from sidekick_usages.daemon.types.lifecycle import ServiceFailureCode
 
-__all__ = ["ServiceArtifactStore"]
-
 _DIRECTORY_MODE = 0o700
 _FILE_MODE = 0o600
 

@@ -10,14 +10,15 @@ from sidekick_usages.heartbeat.models import (
     UsageWindowState,
 )
 from sidekick_usages.heartbeat.ports import HeartbeatProvider, warmed
-from sidekick_usages.http import HttpClient, HttpOperation
+from sidekick_usages.http.client import HttpClient
+from sidekick_usages.http.types import HttpOperation
 from sidekick_usages.providers.base import (
     ProviderAuthenticatedAccount,
     runtime_account,
 )
 from sidekick_usages.providers.codex.provider import CodexProvider
 from sidekick_usages.providers.codex.request import account_headers
-from sidekick_usages.serialization import JsonObject
+from sidekick_usages.serialization.json import JsonObject
 
 CODEX_RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses"
 CODEX_STANDARD_HEARTBEAT_MODEL = "gpt-5.4-mini"
@@ -182,13 +183,3 @@ def _heartbeat_body(model: str) -> JsonObject:
         "stream": True,
         "include": [],
     }
-
-
-__all__ = [
-    "CODEX_RESPONSES_URL",
-    "CODEX_STANDARD_HEARTBEAT_MODEL",
-    "SPARK_HEARTBEAT_MODEL",
-    "SPARK_TARGET",
-    "STANDARD_TARGET",
-    "CodexHeartbeat",
-]

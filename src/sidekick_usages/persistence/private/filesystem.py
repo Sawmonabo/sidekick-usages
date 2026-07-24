@@ -21,16 +21,12 @@ from sidekick_usages.persistence.models.artifact import (
     FileIdentity,
     FileSnapshot,
 )
-from sidekick_usages.persistence.platform.contracts import (
-    NativeFailureKind,
-    NativeFilesystemError,
-)
+from sidekick_usages.persistence.platform.errors import NativeFilesystemError
+from sidekick_usages.persistence.platform.types import NativeFailureKind
 from sidekick_usages.persistence.types.artifact import (
     ArtifactPurpose,
     AuthorityExpectation,
 )
-
-__all__ = ["PrivateFilesystem"]
 
 _TEMPORARY_CREATE_ATTEMPTS = 32
 

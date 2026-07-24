@@ -25,7 +25,8 @@ from sidekick_usages.core.models import (
 )
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.errors import AuthError, TransientError
-from sidekick_usages.http import HttpClient, HttpOperation
+from sidekick_usages.http.client import HttpClient
+from sidekick_usages.http.types import HttpOperation
 from sidekick_usages.providers.base import (
     CredentialDetection,
     CredentialStageReader,
@@ -50,9 +51,7 @@ from sidekick_usages.providers.claude.schema.credentials import (
     validate_setup_token,
 )
 from sidekick_usages.providers.claude.schema.usage import claude_failure
-from sidekick_usages.providers.claude.usage import (
-    fetch_usage as fetch_claude_usage,
-)
+from sidekick_usages.providers.claude.usage import fetch_usage
 
 OAUTH_REFRESH_ENDPOINT = "https://platform.claude.com/v1/oauth/token"
 OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
@@ -72,6 +71,17 @@ _INHERITED_REFRESH_ENVIRONMENT = (
     "TMP",
     "TMPDIR",
     "WINDIR",
+)
+
+type SetupTokenCapture = (
+    SetupTokenSuccess
+    | SetupTokenMissing
+    | SetupTokenRejected
+    | SetupTokenTimedOut
+    | SetupTokenUnreadable
+)
+type _SetupProcessResult = (
+    _CapturedSetupOutput | SetupTokenTimedOut | SetupTokenUnreadable
 )
 
 
@@ -110,18 +120,6 @@ class _CapturedSetupOutput:
 
     return_code: int
     output: bytes = field(repr=False)
-
-
-type SetupTokenCapture = (
-    SetupTokenSuccess
-    | SetupTokenMissing
-    | SetupTokenRejected
-    | SetupTokenTimedOut
-    | SetupTokenUnreadable
-)
-type _SetupProcessResult = (
-    _CapturedSetupOutput | SetupTokenTimedOut | SetupTokenUnreadable
-)
 
 
 def _closed_refresh_environment(
@@ -204,7 +202,7 @@ class ClaudeProvider(Provider):
         http: HttpClient,
     ) -> UsageReport:
         """Fetch usage through the Claude credential-variant route."""
-        return fetch_claude_usage(account, http)
+        return fetch_usage(account, http)
 
     def _refresh_credentials(
         self,
@@ -609,15 +607,3 @@ def _terminate_process(process: subprocess.Popen[bytes]) -> None:
     _kill_process(process)
     with suppress(OSError, subprocess.SubprocessError):
         process.wait()
-
-
-__all__ = [
-    "ClaudeProvider",
-    "ClaudeSetupToken",
-    "SetupTokenCapture",
-    "SetupTokenMissing",
-    "SetupTokenRejected",
-    "SetupTokenSuccess",
-    "SetupTokenTimedOut",
-    "SetupTokenUnreadable",
-]

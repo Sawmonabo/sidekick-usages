@@ -7,6 +7,11 @@ from typing import ClassVar, assert_never
 from sidekick_usages.core.time import as_utc
 from sidekick_usages.core.types import ExpiryState
 
+type Expiry = KnownExpiry | UnknownExpiry | InvalidExpiry
+type ClassifiedExpiry = (
+    ValidExpiry | ExpiredExpiry | UnknownExpiry | InvalidExpiry
+)
+
 
 @dataclass(frozen=True, slots=True)
 class KnownExpiry:
@@ -32,9 +37,6 @@ class InvalidExpiry:
     state: ClassVar[ExpiryState] = ExpiryState.INVALID
 
 
-type Expiry = KnownExpiry | UnknownExpiry | InvalidExpiry
-
-
 @dataclass(frozen=True, slots=True)
 class ValidExpiry:
     """An authoritative expiry strictly later than the reference time."""
@@ -55,11 +57,6 @@ class ExpiredExpiry:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "at", as_utc(self.at))
-
-
-type ClassifiedExpiry = (
-    ValidExpiry | ExpiredExpiry | UnknownExpiry | InvalidExpiry
-)
 
 
 def classify_expiry(

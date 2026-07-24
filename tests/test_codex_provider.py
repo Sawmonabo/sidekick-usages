@@ -16,7 +16,8 @@ from sidekick_usages.core.models import (
 )
 from sidekick_usages.core.types import AccountLabel
 from sidekick_usages.errors import AuthError
-from sidekick_usages.http import HttpClient, HttpOperation
+from sidekick_usages.http.client import HttpClient
+from sidekick_usages.http.types import HttpOperation
 from sidekick_usages.persistence.private.credentials import (
     PrivateCredentialTree,
 )
@@ -35,7 +36,7 @@ from sidekick_usages.providers.codex.auth import (
 )
 from sidekick_usages.providers.codex.provider import CodexProvider
 from sidekick_usages.providers.codex.schemas import validate_refresh_payload
-from sidekick_usages.serialization import JsonObject
+from sidekick_usages.serialization.json import JsonObject
 from tests.test_support import (
     REFERENCE_TIME,
     FixedClock,

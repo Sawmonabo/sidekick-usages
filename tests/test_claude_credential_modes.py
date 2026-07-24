@@ -5,6 +5,7 @@ from datetime import timedelta
 
 import pytest
 
+import sidekick_usages.providers.claude.provider
 from sidekick_usages.core.expiry import KnownExpiry, UnknownExpiry
 from sidekick_usages.core.models import (
     Account,
@@ -15,20 +16,20 @@ from sidekick_usages.core.models import (
     DetectedCredentials,
 )
 from sidekick_usages.core.types import AccountLabel
-from sidekick_usages.http import HttpClient, HttpOperation
+from sidekick_usages.http.client import HttpClient
+from sidekick_usages.http.types import HttpOperation
 from sidekick_usages.providers.base import (
     ProviderBoundaryError,
     ProviderFailure,
     ProviderFailureKind,
     RefreshSuccess,
 )
-from sidekick_usages.providers.claude import ClaudeProvider
-from sidekick_usages.providers.claude import provider as provider_module
+from sidekick_usages.providers.claude.provider import ClaudeProvider
 from sidekick_usages.providers.claude.schema.credentials import (
     parse_credentials_blob,
 )
 from sidekick_usages.providers.claude.usage import USAGE_URL
-from sidekick_usages.serialization import JsonObject
+from sidekick_usages.serialization.json import JsonObject
 from tests.test_support import (
     REFERENCE_TIME,
     FixedClock,
@@ -231,7 +232,11 @@ def test_http_refresh_updates_both_expiry_lifetimes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Refresh duration fields update their corresponding lifetimes."""
-    monkeypatch.setattr(provider_module.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(
+        sidekick_usages.providers.claude.provider.shutil,
+        "which",
+        lambda _name: None,
+    )
     account = _account(_login_credentials(with_identity=True), "refresh")
     http = _RouteHttp()
     http.refresh_response = {
@@ -261,7 +266,11 @@ def test_http_refresh_preserves_proven_refresh_expiry_when_omitted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An omitted replacement lifetime cannot erase proven metadata."""
-    monkeypatch.setattr(provider_module.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(
+        sidekick_usages.providers.claude.provider.shutil,
+        "which",
+        lambda _name: None,
+    )
     account = _account(_login_credentials(), "preserve-expiry")
     http = _RouteHttp()
     http.refresh_response = {
@@ -284,7 +293,11 @@ def test_expired_refresh_credential_fails_before_provider_io(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An expired login credential cannot trigger another provider call."""
-    monkeypatch.setattr(provider_module.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(
+        sidekick_usages.providers.claude.provider.shutil,
+        "which",
+        lambda _name: None,
+    )
     credentials = ClaudeLoginCredentials(
         access_token="sk-ant-oat01-expired-refresh",
         refresh_token="refresh-expired",

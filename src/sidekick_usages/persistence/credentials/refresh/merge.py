@@ -8,6 +8,10 @@ from sidekick_usages.persistence.private.bundles.writes import (
     PreparedPrivateBundleWrite,
 )
 
+type CredentialRefreshMerge = (
+    CredentialRefreshSuccessMerge | CredentialRefreshFailureMerge
+)
+
 
 @dataclass(frozen=True, slots=True)
 class CredentialRefreshSuccessMerge:
@@ -25,15 +29,3 @@ class CredentialRefreshFailureMerge:
 
     message: str
     completed_at: datetime
-
-
-type CredentialRefreshMerge = (
-    CredentialRefreshSuccessMerge | CredentialRefreshFailureMerge
-)
-
-
-__all__ = [
-    "CredentialRefreshFailureMerge",
-    "CredentialRefreshMerge",
-    "CredentialRefreshSuccessMerge",
-]

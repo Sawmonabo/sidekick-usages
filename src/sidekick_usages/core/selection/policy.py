@@ -18,13 +18,6 @@ from sidekick_usages.core.selection.types import (
 )
 from sidekick_usages.core.time import as_utc
 
-__all__ = [
-    "coalesce_due_operation",
-    "decide_activation_recovery",
-    "transition_activation",
-    "transition_operation",
-]
-
 _ACTIVATION_TRANSITIONS: dict[
     ActivationPhase,
     frozenset[ActivationPhase],

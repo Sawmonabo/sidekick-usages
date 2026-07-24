@@ -27,7 +27,7 @@ from sidekick_usages.persistence.schema.credential import (
     decode_credentials,
     encode_credentials,
 )
-from sidekick_usages.serialization import (
+from sidekick_usages.serialization.json import (
     JsonDecodeError,
     decode_json_value,
 )
@@ -35,6 +35,13 @@ from sidekick_usages.serialization import (
 AUTHORITY_BASENAME = "authority.json"
 AUTHORITY_SCHEMA_VERSION = 1
 MODEL_CONFIG = ConfigDict(strict=True, extra="forbid", frozen=True)
+
+
+type UuidValue = Annotated[str, AfterValidator(_canonical_uuid)]
+type CredentialBase64 = Annotated[
+    str,
+    AfterValidator(_credential_base64),
+]
 
 
 def _canonical_uuid(value: str) -> str:
@@ -51,13 +58,6 @@ def _credential_base64(value: str) -> str:
     if base64.b64encode(payload).decode("ascii") != value:
         raise ValueError
     return value
-
-
-type UuidValue = Annotated[str, AfterValidator(_canonical_uuid)]
-type CredentialBase64 = Annotated[
-    str,
-    AfterValidator(_credential_base64),
-]
 
 
 class _AuthorityModel(BaseModel):

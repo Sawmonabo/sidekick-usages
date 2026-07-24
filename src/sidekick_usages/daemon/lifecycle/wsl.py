@@ -23,8 +23,6 @@ from sidekick_usages.daemon.types.lifecycle import (
     ServiceLifecycleState,
 )
 
-__all__ = ["WslBackend"]
-
 _POWERSHELL = (
     "powershell.exe",
     "-NoProfile",

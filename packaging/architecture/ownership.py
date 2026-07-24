@@ -4,10 +4,9 @@ import ast
 from collections.abc import Sequence
 from pathlib import PurePosixPath
 
-from architecture_ast import (
+from architecture.models import ArchitectureFinding, SourceUnit
+from architecture.source import (
     ROBOT_ART,
-    ArchitectureFinding,
-    SourceUnit,
     assigned_names,
     assignment_literal,
     contains_call,

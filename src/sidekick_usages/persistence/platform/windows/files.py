@@ -5,11 +5,9 @@ import stat
 import sys
 from pathlib import Path
 
-from sidekick_usages.persistence.platform.contracts import (
-    NativeFailureKind,
-    NativeFile,
-    NativeFilesystemError,
-)
+from sidekick_usages.persistence.platform.errors import NativeFilesystemError
+from sidekick_usages.persistence.platform.models import NativeFile
+from sidekick_usages.persistence.platform.types import NativeFailureKind
 
 if sys.platform == "win32":
     import msvcrt
@@ -458,17 +456,3 @@ if sys.platform == "win32":
             if require_exact_entry(parent, basename):
                 raise _native_error(NativeFailureKind.CHANGED)
             return True
-
-
-__all__ = [
-    "create_private_file",
-    "harden_file",
-    "open_directory",
-    "open_existing",
-    "open_external_source_directory",
-    "publish_no_replace",
-    "read_file",
-    "remove_candidate",
-    "remove_validated",
-    "replace_file",
-]

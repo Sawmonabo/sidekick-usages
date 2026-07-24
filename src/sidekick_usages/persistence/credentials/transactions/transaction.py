@@ -39,6 +39,8 @@ from sidekick_usages.persistence.types.artifact import (
     Sha256Digest,
 )
 
+type _AuthorityReader = Callable[[], FileSnapshot | None]
+
 
 class _AuthorityCommitter(Protocol):
     """Held-lock authority operation used at the final commit point."""
@@ -49,9 +51,6 @@ class _AuthorityCommitter(Protocol):
         expected_source: ExpectedAuthority,
     ) -> FileSnapshot:
         """Commit and prove exact authoritative bytes."""
-
-
-type _AuthorityReader = Callable[[], FileSnapshot | None]
 
 
 class PrivateCredentialTransaction:
@@ -198,9 +197,3 @@ class PrivateCredentialTransaction:
                     planned.base.data,
                     expected_source=AuthorityExpectation.ABSENT,
                 )
-
-
-__all__ = [
-    "CredentialSourceGuard",
-    "PrivateCredentialTransaction",
-]

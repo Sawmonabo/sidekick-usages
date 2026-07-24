@@ -42,6 +42,3 @@ class TokenInput:
             return None
         match = self._token_pattern.search(text)
         return match.group(0) if match is not None else None
-
-
-__all__ = ["TokenInput"]

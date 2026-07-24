@@ -10,7 +10,7 @@ from sidekick_usages.heartbeat.models import (
     HeartbeatTarget,
     UsageWindowState,
 )
-from sidekick_usages.http import HttpClient
+from sidekick_usages.http.client import HttpClient
 from sidekick_usages.providers.base import (
     ProviderAuthenticatedAccount,
     runtime_account,

@@ -16,8 +16,10 @@ from sidekick_usages.persistence.models.artifact import (
     ExpectedAuthority,
     FileSnapshot,
 )
-from sidekick_usages.persistence.private.credentials import (
+from sidekick_usages.persistence.private.bundles.writes import (
     PreparedPrivateBundleWrite,
+)
+from sidekick_usages.persistence.private.credentials import (
     PrivateCredentialTree,
 )
 from sidekick_usages.persistence.schema.transaction import (
@@ -34,13 +36,6 @@ from sidekick_usages.persistence.types.artifact import (
 from sidekick_usages.persistence.types.credential import (
     PrivateCredentialOwnership,
 )
-
-__all__ = [
-    "CredentialTransactionPlan",
-    "PlannedCredentialFile",
-    "build_runtime_transaction_plan",
-    "validate_runtime_displaced",
-]
 
 
 @dataclass(frozen=True, slots=True)

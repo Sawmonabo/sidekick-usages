@@ -35,7 +35,7 @@ from sidekick_usages.daemon.types.protocol import (
     RequestKind,
     ServiceStopReason,
 )
-from sidekick_usages.serialization import (
+from sidekick_usages.serialization.json import (
     JsonDecodeError,
     JsonEncodeError,
     JsonObject,
@@ -43,24 +43,6 @@ from sidekick_usages.serialization import (
     decode_integer_json_value,
     encode_compact_json,
 )
-
-__all__ = [
-    "MAX_FRAME_BYTES",
-    "MAX_REQUESTS_PER_CONNECTION",
-    "PROTOCOL_VERSION",
-    "UNATTRIBUTED_REQUEST_ID",
-    "ConnectionClosedError",
-    "FrameDecoder",
-    "FrameTooLargeError",
-    "FramedTransport",
-    "MalformedFrameError",
-    "ProtocolFailureError",
-    "decode_event",
-    "decode_request",
-    "encode_event",
-    "encode_frame",
-    "encode_request",
-]
 
 PROTOCOL_VERSION = 1
 MAX_FRAME_BYTES = 65_536

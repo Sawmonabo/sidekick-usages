@@ -34,6 +34,3 @@ def persist_provider_plan_without_credentials(
         expected=saved,
     )
     return True
-
-
-__all__ = ["persist_provider_plan_without_credentials"]

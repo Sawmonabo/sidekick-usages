@@ -3,7 +3,7 @@
 import re
 
 from sidekick_usages.persistence.errors import InvalidSchemaError
-from sidekick_usages.serialization import JsonValue
+from sidekick_usages.serialization.json import JsonValue
 
 _FORBIDDEN_KEYS = frozenset(
     {
@@ -48,6 +48,3 @@ def validate_non_secret_state(value: JsonValue) -> None:
         return
     if isinstance(value, str) and _SECRET_VALUE.fullmatch(value) is not None:
         raise InvalidSchemaError
-
-
-__all__ = ["validate_non_secret_state"]

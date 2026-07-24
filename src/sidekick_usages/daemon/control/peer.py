@@ -10,11 +10,6 @@ from sidekick_usages.daemon.models.peer import PeerIdentity
 from sidekick_usages.daemon.types.peer import PeerFailureCode
 from sidekick_usages.daemon.types.ports import PeerSocket
 
-__all__ = [
-    "OperatingSystemPeerVerifier",
-    "PeerVerificationError",
-]
-
 _LINUX_PEER_CREDENTIALS = struct.Struct("3i")
 
 

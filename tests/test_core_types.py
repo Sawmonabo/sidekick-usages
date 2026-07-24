@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from sidekick_usages.core import (
+from sidekick_usages.core.types import (
     ExitCode,
     ProviderId,
     TokenActivityScope,

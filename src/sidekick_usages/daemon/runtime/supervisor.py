@@ -25,11 +25,6 @@ from sidekick_usages.daemon.types.service import (
 )
 from sidekick_usages.persistence.supervisor.service import ServiceStateStore
 
-__all__ = [
-    "SupervisorRuntime",
-    "WakeupChannel",
-]
-
 _MAX_CONTROL_CONNECTIONS = 4
 _CONNECTION_JOIN_SECONDS = 1.0
 _WAKE_BYTE = b"\x00"

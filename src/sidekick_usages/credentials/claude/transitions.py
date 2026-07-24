@@ -105,9 +105,3 @@ def apply_claude_transition(
             "--replace-identity."
         )
     return incoming
-
-
-__all__ = [
-    "apply_claude_transition",
-    "authorize_claude_setup_token_transition",
-]

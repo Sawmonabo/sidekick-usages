@@ -95,6 +95,3 @@ def register(application: typer.Typer) -> None:
     """Register update commands exactly once."""
     branded_command(application, "check-update")(check_update_cmd)
     branded_command(application, "update")(update_cmd)
-
-
-__all__ = ["register"]

@@ -8,8 +8,6 @@ from sidekick_usages.core.types import AccountLabel, ProviderId
 from sidekick_usages.persistence.errors import InvalidSchemaError
 from sidekick_usages.persistence.limits import MAX_ACCOUNTS
 
-__all__ = ["VersionThreeDocument"]
-
 
 @dataclass(frozen=True, slots=True)
 class VersionThreeDocument:

@@ -9,6 +9,13 @@ from sidekick_usages.providers.base import ProviderFailure
 
 _MAX_PROMPT_METADATA_BYTES = 1024
 
+type CredentialSource = LocalCredentialSource | TokenCredentialSource
+type CredentialSaveResult = CredentialSaveSuccess | ProviderFailure
+type CredentialRefreshResult = CredentialRefreshSuccess | ProviderFailure
+type CredentialUpdateResult = CredentialUpdateSuccess | ProviderFailure
+type CredentialLoginResult = CredentialLoginSuccess | ProviderFailure
+type CredentialExportResult = CredentialExportSuccess | ProviderFailure
+
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class TokenPromptSpec:
@@ -51,9 +58,6 @@ class TokenCredentialSource:
 
     provider_id: ProviderId
     token: str = field(repr=False)
-
-
-type CredentialSource = LocalCredentialSource | TokenCredentialSource
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,29 +105,3 @@ class CredentialExportSuccess:
     label: AccountLabel
     target_home: Path
     auth_path: Path
-
-
-type CredentialSaveResult = CredentialSaveSuccess | ProviderFailure
-type CredentialRefreshResult = CredentialRefreshSuccess | ProviderFailure
-type CredentialUpdateResult = CredentialUpdateSuccess | ProviderFailure
-type CredentialLoginResult = CredentialLoginSuccess | ProviderFailure
-type CredentialExportResult = CredentialExportSuccess | ProviderFailure
-
-
-__all__ = [
-    "ClaudeSetupTokenSavePreview",
-    "CredentialExportResult",
-    "CredentialExportSuccess",
-    "CredentialLoginResult",
-    "CredentialLoginSuccess",
-    "CredentialRefreshResult",
-    "CredentialRefreshSuccess",
-    "CredentialSaveResult",
-    "CredentialSaveSuccess",
-    "CredentialSource",
-    "CredentialUpdateResult",
-    "CredentialUpdateSuccess",
-    "LocalCredentialSource",
-    "TokenCredentialSource",
-    "TokenPromptSpec",
-]

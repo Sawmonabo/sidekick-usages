@@ -2,8 +2,6 @@
 
 from enum import StrEnum
 
-__all__ = ["EndpointFailureCode"]
-
 
 class EndpointFailureCode(StrEnum):
     """Safe local socket lifecycle failures."""

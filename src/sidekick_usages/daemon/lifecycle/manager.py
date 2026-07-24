@@ -41,12 +41,6 @@ from sidekick_usages.daemon.types.lifecycle import (
 from sidekick_usages.errors import UsageError
 from sidekick_usages.paths import ApplicationPaths, discover_application_paths
 
-__all__ = [
-    "DaemonManager",
-    "build_daemon_manager",
-    "build_service_backend",
-]
-
 _FEATURE_DISABLED_MESSAGE = (
     "Resident account supervision is disabled on native Windows."
 )

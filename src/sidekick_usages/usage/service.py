@@ -22,11 +22,11 @@ from sidekick_usages.core.models import (
     UsageReport,
 )
 from sidekick_usages.core.types import AccountLabel, ProviderId
-from sidekick_usages.credentials import CredentialUpdateResult
 from sidekick_usages.credentials.authorities import (
     AuthenticatedSavedAccount,
     CredentialResolver,
 )
+from sidekick_usages.credentials.models import CredentialUpdateResult
 from sidekick_usages.credentials.refresh import CredentialRefreshReason
 from sidekick_usages.errors import (
     AuthError,
@@ -36,7 +36,7 @@ from sidekick_usages.errors import (
     TransientError,
     UsageError,
 )
-from sidekick_usages.http import HttpClient
+from sidekick_usages.http.client import HttpClient
 from sidekick_usages.maintenance import (
     CredentialRefresher,
     TokenMaintenanceService,
@@ -76,6 +76,9 @@ from sidekick_usages.usage.models import (
 _CODEX_USAGE_REFRESH_MARGIN = timedelta(seconds=60)
 
 
+type _CheckedAccount = _ActivityEligibleAccount | _ActivityIneligibleAccount
+
+
 class CredentialCoordinator(CredentialRefresher, Protocol):
     """Credential mutations required by usage orchestration."""
 
@@ -99,9 +102,6 @@ class _ActivityEligibleAccount:
 @dataclass(frozen=True, slots=True)
 class _ActivityIneligibleAccount:
     outcome: FetchFailure
-
-
-type _CheckedAccount = _ActivityEligibleAccount | _ActivityIneligibleAccount
 
 
 class UsageCheckService:
@@ -608,11 +608,3 @@ def _authentication_cause(credentials: Credentials) -> str:
             return "Codex rejected the saved login."
         case unexpected:
             assert_never(unexpected)
-
-
-__all__ = [
-    "AccountTokenActivitySource",
-    "CredentialCoordinator",
-    "LocalTokenActivitySource",
-    "UsageCheckService",
-]

@@ -34,7 +34,10 @@ from sidekick_usages.persistence.types.artifact import (
     AuthorityExpectation,
     Sha256Digest,
 )
-from sidekick_usages.serialization import JsonDecodeError, decode_json_value
+from sidekick_usages.serialization.json import (
+    JsonDecodeError,
+    decode_json_value,
+)
 
 _MAX_JOURNAL_BYTES = 4 * 1024 * 1024
 _MAX_PRIVATE_FILES_PER_BUNDLE = 16

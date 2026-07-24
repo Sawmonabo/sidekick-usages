@@ -3,7 +3,7 @@
 import pytest
 
 from sidekick_usages.errors import InvalidPayloadError
-from sidekick_usages.serialization import (
+from sidekick_usages.serialization.json import (
     JsonDecodeCode,
     JsonDecodeError,
     decode_json_object,

@@ -18,12 +18,6 @@ from sidekick_usages.daemon.models.scheduler import SchedulerCompletion
 from sidekick_usages.daemon.types.ports import OperationEventSink
 from sidekick_usages.daemon.types.service import PackageVersion
 
-__all__ = [
-    "CompositeOperationSink",
-    "DiagnosticOperationSink",
-    "SanitizedDiagnosticLog",
-]
-
 _LOG_BASENAME = "supervisor.jsonl"
 _MAX_LOG_BYTES = 256 * 1024
 _RETAINED_LOGS = 3

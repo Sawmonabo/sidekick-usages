@@ -1,0 +1,1 @@
+"""Repository architecture verification package."""

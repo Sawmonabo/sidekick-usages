@@ -8,10 +8,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from sidekick_usages.persistence.platform.contracts import (
-    NativeFailureKind,
-    NativeFilesystemError,
-)
+from sidekick_usages.persistence.platform.errors import NativeFilesystemError
+from sidekick_usages.persistence.platform.types import NativeFailureKind
 
 type Identity = tuple[int, int]
 type RelativePath = tuple[str, ...]
@@ -630,22 +628,3 @@ if sys.platform == "win32":
             )
             if require_exact_entry(root.parent, root.name):
                 raise _native_error(NativeFailureKind.CHANGED)
-
-
-__all__ = [
-    "Identity",
-    "OpenedChain",
-    "OpenedTree",
-    "RelativePath",
-    "TreeEntry",
-    "delete_empty_tree",
-    "delete_entry",
-    "list_names",
-    "open_component_chain",
-    "open_relative_directory",
-    "open_tree",
-    "require_chain_identity",
-    "require_root_identity",
-    "scan_direct_tree",
-    "scan_tree",
-]

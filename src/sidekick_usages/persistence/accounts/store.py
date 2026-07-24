@@ -28,12 +28,10 @@ from sidekick_usages.core.types import (
 )
 from sidekick_usages.persistence.accounts.index import (
     AccountIndex,
-    AccountLabelAmbiguityError,
     safe_error_code,
     saved_account_from_runtime,
 )
 from sidekick_usages.persistence.accounts.runtime_bridge import (
-    CredentialAuthorityUnavailableError,
     active_stored_reference,
     authority_baseline_matches,
     copy_runtime_account,
@@ -92,11 +90,11 @@ from sidekick_usages.persistence.schema.authority import (
 )
 from sidekick_usages.persistence.types.artifact import AuthorityExpectation
 
-__all__ = [
-    "AccountLabelAmbiguityError",
-    "AccountStore",
-    "CredentialAuthorityUnavailableError",
+type LockFactory = Callable[
+    [PersistenceFilesystem],
+    _AccountPersistenceLock,
 ]
+type FilesystemFactory = Callable[[Path], PersistenceFilesystem]
 
 
 class _AccountPersistenceTransaction(Protocol):
@@ -117,13 +115,6 @@ class _AccountPersistenceLock(Protocol):
         self,
     ) -> AbstractContextManager[_AccountPersistenceTransaction]:
         """Acquire the account lock."""
-
-
-type LockFactory = Callable[
-    [PersistenceFilesystem],
-    _AccountPersistenceLock,
-]
-type FilesystemFactory = Callable[[Path], PersistenceFilesystem]
 
 
 class AccountStore:
