@@ -200,9 +200,11 @@ Native account selection may ship only with these invariants:
    successful authenticated fetch. On failure, Sidekick shows an explicit
    unavailable or last-known result with its timestamp; it never presents
    stale data as current.
-7. `IN USE` comes from provider read-back and is independent of credential and
-   metrics health. An account can be selected yet unhealthy, or unselected yet
-   healthy and fully measured.
+7. Active-account state comes from provider read-back and is independent of
+   credential and metrics health. The approved dashboard communicates that
+   state by initially anchoring the focused provider's cursor on the active
+   account, not by adding an `IN USE` row label. An account can be active yet
+   unhealthy, or inactive yet healthy and fully measured.
 
 The managed private-home design described below resolves the failed Codex
 authority problem while preserving the current all-account enumeration
@@ -678,6 +680,12 @@ historical section.
 
 ## Native Global Account Selection
 
+> **Approved UI correction:** The tracked
+> [interactive global account-selection design](../specs/2026-07-23-interactive-global-account-selection-design.md)
+> supersedes this research mock's `IN USE` labels. The final design uses one
+> cursor in the focused provider, starts it on the provider-verified active
+> account, and reserves row text for actionable warnings.
+
 ### Product contract
 
 The normal `sidekick-usages` command should retain its current Rich usage
@@ -685,21 +693,22 @@ dashboard and become interactive on a TTY:
 
 ```text
 ╭─ CLAUDE · 2 accounts ─────────────────────────────╮
-│ › ● work       max       21%   5h      IN USE    │
+│ › ● work       max       21%   5h                │
 │   ● personal   pro       04%   5h                │
 ╰───────────────────────────────────────────────────╯
 
 ╭─ CODEX · 2 accounts ──────────────────────────────╮
 │   ● work       team      18%   5h                 │
-│ › ● personal   plus     42%   5h      IN USE     │
+│   ● personal   plus     42%   5h                 │
 ╰───────────────────────────────────────────────────╯
 
-↑↓ move   Tab provider   Enter use   r refresh   Esc/q exit
+↑↓ move   Tab provider   Enter use   r refresh   Esc cancel   q exit
 ```
 
-The `›` cursor moves vertically across the existing account bullets. Enter
-activates that account for its provider. The `IN USE` marker reflects provider
-read-back, not merely a stored selection label.
+The `›` cursor moves vertically across the focused provider's existing
+account bullets. It begins on the provider-verified active account, and Tab
+begins on the other provider's verified active account. Enter activates the
+highlighted account. No persistent active-account label is added.
 
 The default remains safe for automation:
 
@@ -1575,7 +1584,7 @@ Own:
 
 - the TTY cursor embedded in the normal usage dashboard;
 - cursor movement, provider jumps, Enter-to-use, refresh, and exit keys;
-- provider-verified `IN USE` presentation;
+- provider-verified initial cursor placement and active-account restoration;
 - the explicit non-interactive selection command;
 - authenticated local communication with the resident selection broker;
 - non-TTY render-and-exit behavior;
