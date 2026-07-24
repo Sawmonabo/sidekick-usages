@@ -38,6 +38,7 @@ SCHEMA_FILES = (
     "v2/GetAccountResponse.json",
     "v2/LoginAccountParams.json",
     "v2/LoginAccountResponse.json",
+    "v2/AccountLoginCompletedNotification.json",
     "v2/AccountUpdatedNotification.json",
     "ChatgptAuthTokensRefreshParams.json",
     "ChatgptAuthTokensRefreshResponse.json",
@@ -79,6 +80,7 @@ def probe_codex_capabilities(
                 codex_home=codex_home,
             ),
             timeout_seconds=_SCHEMA_COMMAND_TIMEOUT_SECONDS,
+            working_directory=codex_home,
         )
         raw_schemas, schemas = _read_required_schemas(schema_directory)
         _validate_required_capabilities(schemas)
@@ -173,7 +175,18 @@ def _validate_required_capabilities(
     )
     _require_variant(login_response, "chatgptAuthTokens", ("type",))
 
+    login_completed = schemas["v2/AccountLoginCompletedNotification.json"]
+    _require_names(login_completed, "required", ("success",))
+    _require_property(login_completed, "error", "string")
+    _require_property(login_completed, "loginId", "string")
+    _require_property(login_completed, "success", "boolean")
+
     account_updated = schemas["v2/AccountUpdatedNotification.json"]
+    _require_property_enum(
+        account_updated,
+        "authMode",
+        "chatgpt",
+    )
     _require_property_enum(
         account_updated,
         "authMode",
@@ -201,6 +214,10 @@ def _validate_required_capabilities(
     _require_method(
         schemas["ServerRequest.json"],
         "account/chatgptAuthTokens/refresh",
+    )
+    _require_method(
+        schemas["ServerNotification.json"],
+        "account/login/completed",
     )
     _require_method(
         schemas["ServerNotification.json"],

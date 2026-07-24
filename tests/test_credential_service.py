@@ -22,7 +22,6 @@ from sidekick_usages.core.types import AccountLabel, ProviderId, RefreshStatus
 from sidekick_usages.credentials.authorities import credential_resolver_for
 from sidekick_usages.credentials.codex.coordinator import private_codex_home
 from sidekick_usages.credentials.models import (
-    CredentialRefreshSuccess,
     CredentialSaveSuccess,
     LocalCredentialSource,
     TokenCredentialSource,
@@ -504,84 +503,6 @@ def test_effective_same_claude_login_preserves_refresh_diagnostic(
     assert saved.last_refresh_at == REFERENCE_TIME
     assert saved.last_refresh_status is RefreshStatus.FAILED
     assert saved.last_refresh_error == "Provider rejected the saved login."
-
-
-@pytest.mark.parametrize(
-    ("saved_id", "incoming_id", "accepted"),
-    [
-        ("acct-same", "acct-same", True),
-        ("acct-old", "acct-new", False),
-        (None, "acct-new", False),
-        ("acct-old", None, False),
-    ],
-)
-def test_codex_identity_must_be_proven_before_saved_secrets_are_merged(
-    tmp_path: Path,
-    saved_id: str | None,
-    incoming_id: str | None,
-    accepted: bool,
-) -> None:
-    account = _account(saved_id)
-    detected = DetectedCredentials(
-        credentials=_codex_credentials(incoming_id, generation="02"),
-        plan="pro",
-    )
-    service, store, private = _service(
-        tmp_path,
-        _Provider(ProviderId.CODEX, detected),
-        (account,),
-    )
-    authority_before = store.path.read_bytes()
-
-    outcome = service.refresh_from_source(
-        "team",
-        LocalCredentialSource(provider_id=ProviderId.CODEX),
-        replace_identity=False,
-    )
-
-    if accepted:
-        assert isinstance(outcome, CredentialRefreshSuccess)
-        saved = store.get("team")
-        assert saved is not None
-        assert saved.access_token == "access-02"
-        assert saved.refresh_token == "refresh-02"
-        assert saved.provider_account_id == "acct-same"
-        assert private.observe().value == "present"
-    else:
-        assert isinstance(outcome, ProviderFailure)
-        assert outcome.kind is ProviderFailureKind.IDENTITY_MISMATCH
-        assert store.path.read_bytes() == authority_before
-        assert store.get("team") == account
-        assert not private_codex_home(private.root, "team").exists()
-
-
-def test_explicit_identity_replacement_never_retains_old_codex_secrets(
-    tmp_path: Path,
-) -> None:
-    account = _account("acct-old")
-    incoming = _codex_credentials("acct-new", generation="02")
-    detected = DetectedCredentials(credentials=incoming, plan="pro")
-    service, store, _ = _service(
-        tmp_path,
-        _Provider(ProviderId.CODEX, detected),
-        (account,),
-    )
-
-    outcome = service.refresh_from_source(
-        "team",
-        LocalCredentialSource(provider_id=ProviderId.CODEX),
-        replace_identity=True,
-    )
-
-    assert isinstance(outcome, CredentialRefreshSuccess)
-    saved = store.get("team")
-    assert saved is not None
-    assert saved.provider_account_id == "acct-new"
-    assert saved.refresh_token == "refresh-02"
-    assert saved.codex_id_token == "id-02"
-    assert saved.codex_last_refresh == "2026-07-02T00:00:00Z"
-    assert "refresh-01" not in store.path.read_text()
-    assert "id-01" not in store.path.read_text()
 
 
 def test_local_codex_save_commits_account_and_private_bundle_together(

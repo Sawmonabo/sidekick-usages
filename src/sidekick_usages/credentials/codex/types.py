@@ -1,6 +1,11 @@
-"""Closed outcomes for managed Codex authority operations."""
+"""Closed managed-Codex outcomes and presentation port."""
 
+from collections.abc import Callable
 from enum import StrEnum
+
+from sidekick_usages.providers.codex.models import CodexLoginEvent
+
+type CodexLoginEventSink = Callable[[CodexLoginEvent], None]
 
 
 class CodexManagedOutcome(StrEnum):

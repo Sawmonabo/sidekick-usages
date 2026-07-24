@@ -4,9 +4,13 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+from rich.text import Text
 
 from sidekick_usages.cli.commands.accounts import validated_label
-from sidekick_usages.cli.commands.credentials import exit_credential_failure
+from sidekick_usages.cli.commands.credentials import (
+    exit_credential_failure,
+    render_codex_login_event,
+)
 from sidekick_usages.cli.context import invocation_context
 from sidekick_usages.cli.help import BrandedTyperGroup, branded_command
 from sidekick_usages.providers.base import ProviderFailure
@@ -15,16 +19,6 @@ from sidekick_usages.providers.base import ProviderFailure
 def codex_login_cmd(
     ctx: typer.Context,
     label: Annotated[str, typer.Argument(help="Account label to update.")],
-    codex_home: Annotated[
-        Path | None,
-        typer.Option(
-            "--codex-home",
-            help=(
-                "Advanced: run login against this source CODEX_HOME "
-                "before importing a private sidekick copy."
-            ),
-        ),
-    ] = None,
     device_auth: Annotated[
         bool,
         typer.Option(
@@ -32,32 +26,23 @@ def codex_login_cmd(
             help="Use Codex CLI device authentication.",
         ),
     ] = False,
-    replace_identity: Annotated[
-        bool,
-        typer.Option(
-            "--replace-identity",
-            help=(
-                "Allow replacing the saved provider account id with the "
-                "login from this Codex home."
-            ),
-        ),
-    ] = False,
 ) -> None:
-    """Run ``codex login`` and import a private sidekick auth copy."""
+    """Authenticate a saved account in its final managed Codex home."""
     invocation = invocation_context(ctx)
+    account_label = validated_label(ctx, label)
     result = invocation.require_app(ctx).credentials.login_codex(
-        validated_label(ctx, label),
-        source_home=(
-            codex_home.expanduser() if codex_home is not None else None
-        ),
+        account_label,
         device_auth=device_auth,
-        replace_identity=replace_identity,
+        events=lambda event: render_codex_login_event(
+            invocation.console,
+            event,
+        ),
     )
     if isinstance(result, ProviderFailure):
         exit_credential_failure(ctx, result)
-    invocation.console.print(
-        f"[green]Updated Codex login for '{label}'.[/green]"
-    )
+    message = Text("Managed Codex login ready for ", style="green")
+    message.append(f"'{account_label}'.")
+    invocation.console.print(message)
 
 
 def codex_export_cmd(

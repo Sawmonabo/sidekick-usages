@@ -31,11 +31,14 @@ from sidekick_usages.credentials.claude.transitions import (
 from sidekick_usages.credentials.codex.coordinator import (
     CodexCredentialCoordinator,
 )
+from sidekick_usages.credentials.codex.migration import (
+    CodexAuthMigrationCoordinator,
+)
+from sidekick_usages.credentials.codex.types import CodexLoginEventSink
 from sidekick_usages.credentials.models import (
     ClaudeSetupTokenSavePreview,
     CredentialExportResult,
     CredentialLoginResult,
-    CredentialLoginSuccess,
     CredentialRefreshResult,
     CredentialRefreshSuccess,
     CredentialSaveResult,
@@ -129,6 +132,7 @@ class CredentialService:
         clock: Clock,
         refresh_coordinator: CredentialRefreshCoordinator | None = None,
         codex_coordinator: CodexCredentialCoordinator | None = None,
+        codex_auth_migration: CodexAuthMigrationCoordinator | None = None,
     ) -> None:
         """Bind credential workflows to invocation-scoped dependencies.
 
@@ -144,6 +148,7 @@ class CredentialService:
         self._private = private_credentials
         self._clock = clock
         self._refresh = refresh_coordinator
+        self._codex_auth_migration = codex_auth_migration
         self._codex = (
             codex_coordinator
             if codex_coordinator is not None
@@ -399,7 +404,7 @@ class CredentialService:
             replace_identity=replace_identity,
         )
 
-    def refresh_from_source(
+    def refresh_claude_from_source(
         self,
         label: str,
         source: LocalCredentialSource,
@@ -407,19 +412,19 @@ class CredentialService:
         replace_identity: bool,
         replace_auth_method: bool = False,
     ) -> CredentialRefreshResult:
-        """Import one local login into an existing saved account."""
-        account = self._store.get(label)
+        """Import one local Claude login into an existing saved account."""
+        if source.provider_id is not ProviderId.CLAUDE:
+            return _failure(
+                source.provider_id,
+                ProviderFailureKind.UNSUPPORTED,
+                "Local-login import is supported only for Claude.",
+            )
+        account = self._store.get(label, provider_id=ProviderId.CLAUDE)
         if account is None:
             return _failure(
                 source.provider_id,
                 ProviderFailureKind.MISSING,
                 f"No account named '{label}'.",
-            )
-        if account.provider_id is not source.provider_id:
-            return _failure(
-                source.provider_id,
-                ProviderFailureKind.IDENTITY_MISMATCH,
-                "The credential source belongs to another provider.",
             )
         detected = self.resolve(source)
         if isinstance(detected, ProviderFailure):
@@ -438,23 +443,7 @@ class CredentialService:
         candidate.last_refresh_at = reference_time
         candidate.last_refresh_status = RefreshStatus.OK
         candidate.last_refresh_error = None
-        private_bundle: PreparedPrivateBundleWrite | None = None
-        if candidate.provider_id is ProviderId.CODEX:
-            prepared = self._codex.prepare_account(
-                candidate,
-                account,
-                source_home=source.credential_home,
-                use_existing_source=False,
-                require_bundle=True,
-                reference_time=reference_time,
-            )
-            if isinstance(prepared, ProviderFailure):
-                return prepared
-            candidate, private_bundle = prepared
-        self._store.persist_credentials(
-            candidate,
-            private_bundle=private_bundle,
-        )
+        self._store.persist_credentials(candidate)
         return CredentialRefreshSuccess(candidate.label)
 
     def persist_provider_update(
@@ -528,11 +517,10 @@ class CredentialService:
         self,
         label: AccountLabel,
         *,
-        source_home: Path | None,
         device_auth: bool,
-        replace_identity: bool,
+        events: CodexLoginEventSink,
     ) -> CredentialLoginResult:
-        """Run Codex login and atomically import its resulting credentials."""
+        """Authenticate one saved account inside its final managed home."""
         provider = self._providers.get(ProviderId.CODEX)
         if provider is None:
             return _failure(
@@ -540,81 +528,17 @@ class CredentialService:
                 ProviderFailureKind.UNSUPPORTED,
                 "Codex provider is not registered.",
             )
-        normalized = (
-            source_home.expanduser() if source_home is not None else None
-        )
-        login = self._codex.login(normalized, device_auth=device_auth)
-        if isinstance(login, ProviderFailure):
-            return login
-        detected = self.resolve(
-            LocalCredentialSource(
-                provider_id=ProviderId.CODEX,
-                credential_home=normalized,
-            )
-        )
-        if isinstance(detected, ProviderFailure):
-            return detected
-        resolved = self._codex_login_candidate(
-            label,
-            detected,
-            replace_identity=replace_identity,
-        )
-        if isinstance(resolved, ProviderFailure):
-            return resolved
-        candidate, existing = resolved
-        prepared = self._codex.prepare_account(
-            candidate,
-            existing,
-            source_home=normalized,
-            use_existing_source=False,
-            require_bundle=True,
-            reference_time=self._clock.now(),
-        )
-        if isinstance(prepared, ProviderFailure):
-            return prepared
-        candidate, private_bundle = prepared
-        self._store.persist_credentials(
-            candidate,
-            private_bundle=private_bundle,
-        )
-        return CredentialLoginSuccess(label, existing is None)
-
-    def _codex_login_candidate(
-        self,
-        label: AccountLabel,
-        detected: DetectedCredentials,
-        *,
-        replace_identity: bool,
-    ) -> tuple[Account, Account | None] | ProviderFailure:
-        """Build one Codex login candidate without durable mutation."""
-        existing = self._store.get(str(label))
-        if (
-            existing is not None
-            and existing.provider_id is not ProviderId.CODEX
-        ):
+        if self._codex_auth_migration is None:
             return _failure(
                 ProviderId.CODEX,
-                ProviderFailureKind.IDENTITY_MISMATCH,
-                f"'{label}' belongs to another provider.",
+                ProviderFailureKind.UNSUPPORTED,
+                "Managed Codex login is not available.",
             )
-        if existing is None:
-            candidate = Account(
-                label=label,
-                credentials=detected.credentials,
-                plan=detected.plan,
-            )
-        else:
-            candidate = _copy_account(existing)
-            applied = self._apply_detected(
-                candidate,
-                detected,
-                replace_identity=replace_identity,
-                replace_auth_method=False,
-            )
-            if isinstance(applied, ProviderFailure):
-                return applied
-            candidate = applied
-        return candidate, existing
+        return self._codex_auth_migration.migrate(
+            label,
+            device_auth=device_auth,
+            events=events,
+        )
 
     def export_codex(
         self,

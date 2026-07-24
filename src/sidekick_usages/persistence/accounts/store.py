@@ -44,6 +44,7 @@ from sidekick_usages.persistence.accounts.runtime_bridge import (
 )
 from sidekick_usages.persistence.credentials.codex import (
     managed_codex_transition_matches,
+    stored_codex_transition_matches,
 )
 from sidekick_usages.persistence.credentials.refresh.merge import (
     CredentialRefreshMerge,
@@ -352,6 +353,41 @@ class AccountStore:
                 )
             index = AccountIndex(tuple(self._index))
             index.replace(account)
+            self._commit_locked(
+                transaction,
+                coordinator,
+                index,
+                runtime,
+                (),
+                source_guard=None,
+            )
+
+    def migrate_codex_authority(
+        self,
+        account: SavedAccount,
+        *,
+        expected: SavedAccount,
+    ) -> None:
+        """Atomically replace one stored Codex authority with managed state."""
+        self._require_loaded()
+        with self._lock_factory(self._filesystem).hold() as transaction:
+            coordinator = PrivateCredentialTransaction(
+                self._private,
+                self._filesystem.read_authority,
+            )
+            coordinator.recover()
+            self._adopt_snapshot(self._read_snapshot())
+            current = self._index.get(account.account_id)
+            if (
+                current != expected
+                or current is None
+                or not stored_codex_transition_matches(current, account)
+            ):
+                raise SourceChangedError
+            index = AccountIndex(tuple(self._index))
+            index.replace(account)
+            runtime = dict(self._runtime)
+            runtime.pop(account.account_id, None)
             self._commit_locked(
                 transaction,
                 coordinator,

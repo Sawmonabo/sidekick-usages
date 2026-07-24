@@ -57,17 +57,20 @@ def _account_observation(
         )
     email = account.get("email")
     plan = account.get("planType")
-    if not isinstance(email, str) or not isinstance(plan, str):
+    if (email is not None and not isinstance(email, str)) or not isinstance(
+        plan, str
+    ):
         return _failure(
             ProviderFailureKind.MALFORMED,
             "Codex returned malformed account metadata.",
         )
     try:
-        require_bounded_text(
-            email,
-            name="Codex account email",
-            maximum=MAX_METADATA_BYTES,
-        )
+        if email is not None:
+            require_bounded_text(
+                email,
+                name="Codex account email",
+                maximum=MAX_METADATA_BYTES,
+            )
         require_bounded_text(
             plan,
             name="Codex plan",

@@ -16,6 +16,9 @@ from sidekick_usages.credentials.authorities import credential_resolver_for
 from sidekick_usages.credentials.codex.coordinator import (
     CodexCredentialCoordinator,
 )
+from sidekick_usages.credentials.codex.migration import (
+    CodexAuthMigrationCoordinator,
+)
 from sidekick_usages.credentials.refresh import CredentialRefreshCoordinator
 from sidekick_usages.credentials.service import CredentialService
 from sidekick_usages.daemon.lifecycle.manager import (
@@ -289,6 +292,12 @@ def compose_app_context(
             clock=resolved_clock,
             refresh_coordinator=refresh_coordinator,
             codex_coordinator=codex_coordinator,
+            codex_auth_migration=CodexAuthMigrationCoordinator(
+                resolved_paths,
+                accounts,
+                persistence.managed_codex_profiles,
+                resolved_clock,
+            ),
         )
         if local_activity_sources is None:
             local_activity_map: dict[

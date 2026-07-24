@@ -92,10 +92,9 @@ class CredentialUpdateSuccess:
 
 @dataclass(frozen=True, slots=True)
 class CredentialLoginSuccess:
-    """One Codex login was imported into Sidekick-owned storage."""
+    """One Codex managed login was verified and committed."""
 
     label: AccountLabel
-    created: bool
 
 
 @dataclass(frozen=True, slots=True)

@@ -387,47 +387,47 @@ uv run pytest \
 
 ### Tests first
 
-- [ ] Extend `tests/test_codex_auth_migration.py` with one two-account
+- [x] Extend `tests/test_cli_provider_credentials.py` with one two-account
   migration scenario: each account logs in officially inside its final home,
   one cancellation or identity mismatch retains its legacy authority without
   blocking the other, and retry commits metadata before retiring legacy
   state while preserving label, plan, heartbeat, and metrics.
-- [ ] Add one interruption scenario after official login but before metadata
+- [x] Add one interruption scenario after official login but before metadata
   commit. Recovery must verify the final home and either finish the
   same-identity commit or require reconciliation; it must never import or
   copy native `auth.json`.
-- [ ] Fold private-home uniqueness and no-copy assertions into these tests
+- [x] Fold private-home uniqueness and no-copy assertions into these tests
   rather than adding standalone cases.
 
 ### Implementation
 
-- [ ] Allocate the final stable home before login and authenticate it in place.
+- [x] Allocate the final stable home before login and authenticate it in place.
   Do not use a disposable source directory.
-- [ ] Prefer app-server `account/login/start` and its completion
+- [x] Prefer app-server `account/login/start` and its completion
   notifications. Use a narrowly controlled `codex login` child only if the
   exact supported binary lacks the required managed login method and the
   approved design is formally updated first.
-- [ ] Surface the provider URL or device step through a sanitized worker event.
+- [x] Surface the provider URL or device step through a sanitized worker event.
   Never put provider credentials in the event.
-- [ ] Allow only unavoidable user browser, MFA, password, or consent input.
-- [ ] Verify the final provider identity against the saved logical account
+- [x] Allow only unavoidable user browser, MFA, password, or consent input.
+- [x] Verify the final provider identity against the saved logical account
   before converting authority metadata.
-- [ ] Record the managed authority transaction, prove official refresh, then
+- [x] Record the managed authority transaction, prove official refresh, then
   retire the legacy duplicated credential. Preserve it on every unsuccessful
   path.
-- [ ] Migrate accounts independently and continue after account-scoped manual
+- [x] Migrate accounts independently and continue after account-scoped manual
   action.
-- [ ] Update `codex-login` and repair command workflows to use final managed
+- [x] Update `codex login` and repair command workflows to use final managed
   homes. Remove any option that treats the active native login as a source for
   managed accounts.
-- [ ] Keep the default native home unchanged throughout migration.
+- [x] Keep the default native home unchanged throughout migration.
 
 ### Verify and commit
 
-- [ ] Run the two auth-migration scenarios plus existing persistence, CLI,
+- [x] Run the two auth-migration scenarios plus existing persistence, CLI,
   and output-safety regressions they touch.
-- [ ] Run Ruff and `ty`.
-- [ ] Inspect fake subprocess events and staged artifacts for token
+- [x] Run Ruff and `ty`.
+- [x] Inspect fake subprocess events and staged artifacts for token
   duplication, then commit.
 
 ## 8. Task 4 — Official Shared-Daemon Lifecycle and Read-Back

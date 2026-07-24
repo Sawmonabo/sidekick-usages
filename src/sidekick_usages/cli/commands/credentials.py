@@ -5,17 +5,19 @@ from pathlib import Path
 from typing import Annotated, NoReturn
 
 import typer
+from rich.console import Console
+from rich.text import Text
 
 from sidekick_usages.cli.commands.accounts import validated_label
 from sidekick_usages.cli.commands.maintenance import run_refresh_all
-from sidekick_usages.cli.context import invocation_context
+from sidekick_usages.cli.context import AppContext, invocation_context
 from sidekick_usages.cli.help import branded_command
 from sidekick_usages.cli.token_input import TokenInput
 from sidekick_usages.core.models import (
     ClaudeLoginCredentials,
     ClaudeSetupTokenCredentials,
 )
-from sidekick_usages.core.types import ExitCode, ProviderId
+from sidekick_usages.core.types import AccountLabel, ExitCode, ProviderId
 from sidekick_usages.credentials.models import (
     LocalCredentialSource,
     TokenCredentialSource,
@@ -25,6 +27,7 @@ from sidekick_usages.providers.base import (
     ProviderFailure,
     ProviderFailureKind,
 )
+from sidekick_usages.providers.codex.models import CodexLoginEvent
 
 
 def exit_credential_failure(
@@ -38,6 +41,19 @@ def exit_credential_failure(
         f"[red]{prefix}{failure.message}[/red]"
     )
     raise typer.Exit(code=ExitCode.MANUAL_ACTION)
+
+
+def render_codex_login_event(
+    console: Console,
+    event: CodexLoginEvent,
+) -> None:
+    """Render one ephemeral provider-controlled login step."""
+    console.print("[cyan]Complete the official Codex sign-in:[/cyan]")
+    console.print(Text(event.authorization_url))
+    if event.user_code is not None:
+        code = Text("Device code: ", style="cyan")
+        code.append(event.user_code)
+        console.print(code)
 
 
 def _usage_error(ctx: typer.Context, message: str) -> NoReturn:
@@ -76,6 +92,56 @@ def _prompt_for_token(
         if spec.setup_hint is not None:
             invocation.console.print(f"[dim]Tip: {spec.setup_hint}[/dim]")
     return TokenInput(spec.token_pattern, invocation.err_console).read()
+
+
+def _refresh_managed_codex(
+    ctx: typer.Context,
+    app_context: AppContext,
+    label: AccountLabel,
+    *,
+    replace_identity: bool,
+    replace_auth_method: bool,
+) -> bool:
+    """Run managed Codex repair when the label belongs to Codex."""
+    account_id = app_context.accounts.resolve_account_id(
+        ProviderId.CODEX,
+        label,
+    )
+    if account_id is None:
+        return False
+    if (
+        app_context.accounts.resolve_account_id(ProviderId.CLAUDE, label)
+        is not None
+    ):
+        _usage_error(
+            ctx,
+            f"Account label '{label}' exists for both providers.",
+        )
+    if replace_identity:
+        _usage_error(
+            ctx,
+            "--replace-identity applies only to Claude accounts.",
+        )
+    if replace_auth_method:
+        _usage_error(
+            ctx,
+            "--replace-auth-method applies only to Claude accounts.",
+        )
+    invocation = invocation_context(ctx)
+    result = app_context.credentials.login_codex(
+        label,
+        device_auth=False,
+        events=lambda event: render_codex_login_event(
+            invocation.console,
+            event,
+        ),
+    )
+    if isinstance(result, ProviderFailure):
+        exit_credential_failure(ctx, result)
+    message = Text("Managed Codex login ready for ", style="green")
+    message.append(f"'{label}'.")
+    invocation.console.print(message)
+    return True
 
 
 def add_cmd(
@@ -207,22 +273,12 @@ def refresh_cmd(
             help="With --all, refresh even if tokens are still fresh.",
         ),
     ] = False,
-    from_codex_home: Annotated[
-        Path | None,
-        typer.Option(
-            "--from-codex-home",
-            help=(
-                "Read Codex credentials from this CODEX_HOME instead "
-                "of the saved/default home."
-            ),
-        ),
-    ] = None,
     replace_identity: Annotated[
         bool,
         typer.Option(
             "--replace-identity",
             help=(
-                "Allow replacing the saved provider account id with the "
+                "Allow replacing a saved Claude provider identity with the "
                 "current local login."
             ),
         ),
@@ -238,12 +294,10 @@ def refresh_cmd(
         ),
     ] = False,
 ) -> None:
-    """Replace a saved account's token with the local CLI login.
+    """Repair one account or refresh all accounts from owned authorities.
 
-    With a label, reads the current login from the provider's local
-    install and writes the new access token into that saved account.
-    With ``--all``, uses only saved refresh tokens and never adopts
-    the current global provider login.
+    A Codex label starts official login in its managed home. A Claude label
+    imports the current Claude login. ``--all`` uses saved authorities only.
     """
     narrowed = _validate_refresh_args(
         ctx,
@@ -251,7 +305,6 @@ def refresh_cmd(
         all_accounts=all_accounts,
         quiet=quiet,
         force=force,
-        from_codex_home=from_codex_home,
         replace_identity=replace_identity,
         replace_auth_method=replace_auth_method,
     )
@@ -262,29 +315,28 @@ def refresh_cmd(
         raise AssertionError("Refresh label validation failed.")
     invocation = invocation_context(ctx)
     app_context = invocation.require_app(ctx)
-    account = app_context.accounts.get(narrowed)
+    account_label = validated_label(ctx, narrowed)
+    if _refresh_managed_codex(
+        ctx,
+        app_context,
+        account_label,
+        replace_identity=replace_identity,
+        replace_auth_method=replace_auth_method,
+    ):
+        return
+    account = app_context.accounts.get(
+        narrowed,
+        provider_id=ProviderId.CLAUDE,
+    )
     if account is None:
         invocation.err_console.print(
             f"[yellow]No account named '{narrowed}'.[/yellow]"
         )
         raise typer.Exit(code=ExitCode.MANUAL_ACTION)
-    if (
-        from_codex_home is not None
-        and account.provider_id is not ProviderId.CODEX
-    ):
-        _usage_error(
-            ctx,
-            "--from-codex-home requires a saved Codex account.",
-        )
-    result = app_context.credentials.refresh_from_source(
+    result = app_context.credentials.refresh_claude_from_source(
         narrowed,
         LocalCredentialSource(
             provider_id=account.provider_id,
-            credential_home=(
-                from_codex_home.expanduser()
-                if from_codex_home is not None
-                else None
-            ),
         ),
         replace_identity=replace_identity,
         replace_auth_method=replace_auth_method,
@@ -314,7 +366,6 @@ def _validate_refresh_args(
     all_accounts: bool,
     quiet: bool,
     force: bool,
-    from_codex_home: Path | None,
     replace_identity: bool,
     replace_auth_method: bool,
 ) -> str | None:
@@ -323,11 +374,6 @@ def _validate_refresh_args(
             _usage_error(
                 ctx,
                 "--all cannot be combined with an account label.",
-            )
-        if from_codex_home is not None:
-            _usage_error(
-                ctx,
-                "--from-codex-home only applies to a label refresh.",
             )
         if replace_identity:
             _usage_error(

@@ -43,12 +43,21 @@ class PersistenceService:
             paths.private_credentials,
             account_path=paths.accounts,
         )
+        self._managed_codex = PrivateCredentialTree(
+            paths.private_codex_profiles,
+            account_path=paths.accounts,
+        )
         self._refresh = CredentialRefreshArtifacts(paths.credential_refresh)
 
     @property
     def private_credentials(self) -> PrivateCredentialTree:
         """Return the shared protected credential boundary."""
         return self._private
+
+    @property
+    def managed_codex_profiles(self) -> PrivateCredentialTree:
+        """Return the stable private Codex-home boundary."""
+        return self._managed_codex
 
     def open_store(self) -> AccountStore:
         """Return one recovered and loaded current account store."""

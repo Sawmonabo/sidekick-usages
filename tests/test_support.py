@@ -40,6 +40,9 @@ from sidekick_usages.credentials.authorities import (
 from sidekick_usages.credentials.codex.coordinator import (
     CodexCredentialCoordinator,
 )
+from sidekick_usages.credentials.codex.migration import (
+    CodexAuthMigrationCoordinator,
+)
 from sidekick_usages.credentials.refresh import CredentialRefreshCoordinator
 from sidekick_usages.credentials.service import CredentialService
 from sidekick_usages.daemon.models.lifecycle import SupervisorHealth
@@ -274,6 +277,7 @@ def make_app_context(
     heartbeat_map = (
         {} if heartbeat_providers is None else dict(heartbeat_providers)
     )
+    paths = make_application_paths(store.path.parent)
     resolver = credential_resolver_for(store, private_credentials)
     codex_coordinator = CodexCredentialCoordinator(
         store,
@@ -286,7 +290,7 @@ def make_app_context(
         providers,
         CredentialRefreshTransactions(
             store,
-            make_application_paths(store.path.parent).credential_refresh,
+            paths.credential_refresh,
         ),
         clock=clock,
         codex=codex_coordinator,
@@ -300,6 +304,15 @@ def make_app_context(
         clock=clock,
         refresh_coordinator=refresh_coordinator,
         codex_coordinator=codex_coordinator,
+        codex_auth_migration=CodexAuthMigrationCoordinator(
+            paths,
+            store,
+            PrivateCredentialTree(
+                paths.private_codex_profiles,
+                account_path=paths.accounts,
+            ),
+            clock,
+        ),
     )
     return AppContext(
         accounts=store,

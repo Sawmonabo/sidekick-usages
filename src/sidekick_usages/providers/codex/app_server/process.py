@@ -80,6 +80,7 @@ def run_bounded_codex_command(
     *,
     timeout_seconds: float,
     maximum_output_bytes: int,
+    working_directory: Path | None = None,
     monotonic: Callable[[], float] = time.monotonic,
 ) -> bytes:
     """Run one command and return strictly bounded stdout."""
@@ -91,6 +92,7 @@ def run_bounded_codex_command(
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
+        working_directory=working_directory,
     )
     stream = process.stdout
     if stream is None:
@@ -135,6 +137,7 @@ def run_quiet_codex_command(
     environment: Mapping[str, str],
     *,
     timeout_seconds: float,
+    working_directory: Path | None = None,
 ) -> None:
     """Run one bounded command while discarding provider output."""
     if timeout_seconds <= 0:
@@ -145,6 +148,7 @@ def run_quiet_codex_command(
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        working_directory=working_directory,
     )
     try:
         return_code = process.wait(timeout=timeout_seconds)
@@ -160,6 +164,8 @@ def run_quiet_codex_command(
 def start_codex_json_lines(
     argv: tuple[str, ...],
     environment: Mapping[str, str],
+    *,
+    working_directory: Path,
 ) -> subprocess.Popen[bytes]:
     """Start one isolated Codex child with JSON-lines stdio."""
     return _start_codex_process(
@@ -168,6 +174,7 @@ def start_codex_json_lines(
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
+        working_directory=working_directory,
     )
 
 
@@ -199,6 +206,7 @@ def _start_codex_process(
     stdin: int,
     stdout: int,
     stderr: int,
+    working_directory: Path | None,
 ) -> subprocess.Popen[bytes]:
     if sys.platform == "win32":
         raise CodexAppServerError(CodexAppServerFailure.CAPABILITY_UNSUPPORTED)
@@ -206,6 +214,13 @@ def _start_codex_process(
         not argv
         or not Path(argv[0]).is_absolute()
         or any(not argument or "\0" in argument for argument in argv)
+        or (
+            working_directory is not None
+            and (
+                not working_directory.is_absolute()
+                or not working_directory.is_dir()
+            )
+        )
     ):
         raise CodexAppServerError(CodexAppServerFailure.EXECUTABLE_UNSAFE)
     try:
@@ -213,6 +228,7 @@ def _start_codex_process(
             list(argv),
             close_fds=True,
             env=dict(environment),
+            cwd=working_directory,
             shell=False,
             start_new_session=True,
             stdin=stdin,

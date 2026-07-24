@@ -1,6 +1,5 @@
-"""Stable-identity authority regressions for credential replacement."""
+"""Claude stable-identity authority regressions."""
 
-from dataclasses import replace
 from pathlib import Path
 
 from sidekick_usages.core.expiry import KnownExpiry, UnknownExpiry
@@ -11,15 +10,12 @@ from sidekick_usages.core.models import (
     DetectedCredentials,
 )
 from sidekick_usages.core.types import AccountLabel, ProviderId
-from sidekick_usages.credentials.codex.coordinator import private_codex_home
 from sidekick_usages.credentials.models import (
     CredentialRefreshSuccess,
     LocalCredentialSource,
 )
 from sidekick_usages.providers.base import ProviderFailure, ProviderFailureKind
 from tests.test_credential_service import (
-    _account,
-    _codex_credentials,
     _Provider,
     _service,
 )
@@ -67,7 +63,7 @@ def test_claude_known_identity_mismatch_overrides_equal_access_bytes(
     )
     authority_before = store.path.read_bytes()
 
-    refused = service.refresh_from_source(
+    refused = service.refresh_claude_from_source(
         "team",
         LocalCredentialSource(provider_id=ProviderId.CLAUDE),
         replace_identity=False,
@@ -77,7 +73,7 @@ def test_claude_known_identity_mismatch_overrides_equal_access_bytes(
     assert refused.kind is ProviderFailureKind.IDENTITY_MISMATCH
     assert store.path.read_bytes() == authority_before
 
-    replaced = service.refresh_from_source(
+    replaced = service.refresh_claude_from_source(
         "team",
         LocalCredentialSource(provider_id=ProviderId.CLAUDE),
         replace_identity=True,
@@ -87,34 +83,3 @@ def test_claude_known_identity_mismatch_overrides_equal_access_bytes(
     saved = store.get("team")
     assert saved is not None
     assert saved.credentials == incoming
-
-
-def test_codex_known_identity_mismatch_overrides_equal_access_bytes(
-    tmp_path: Path,
-) -> None:
-    """Codex account IDs outrank equality of copied access material."""
-    account = _account("acct-saved")
-    incoming = replace(
-        _codex_credentials("acct-incoming", generation="02"),
-        access_token=account.access_token,
-    )
-    service, store, private = _service(
-        tmp_path,
-        _Provider(
-            ProviderId.CODEX,
-            DetectedCredentials(credentials=incoming, plan="pro"),
-        ),
-        (account,),
-    )
-    authority_before = store.path.read_bytes()
-
-    outcome = service.refresh_from_source(
-        "team",
-        LocalCredentialSource(provider_id=ProviderId.CODEX),
-        replace_identity=False,
-    )
-
-    assert isinstance(outcome, ProviderFailure)
-    assert outcome.kind is ProviderFailureKind.IDENTITY_MISMATCH
-    assert store.path.read_bytes() == authority_before
-    assert not private_codex_home(private.root, "team").exists()

@@ -127,16 +127,14 @@ codex login
 sidekick-usages add codex --label <codex-label>
 ```
 
-For another Codex account, use an isolated source home when the normal
-`~/.codex` login must remain unchanged:
+Move the saved Codex label into its independent managed home:
 
 ```bash
-sidekick-usages codex login <codex-label> --codex-home <isolated-home>
+sidekick-usages codex login <codex-label>
 ```
 
-Without `--codex-home`, `sidekick-usages codex login` runs the normal Codex
-login flow against `~/.codex`; that provider login changes the active Codex
-account before sidekick imports its private copy.
+The official sign-in runs directly inside the label's stable Sidekick-managed
+Codex home. It does not read, copy, or change the native `~/.codex` login.
 
 Claude's long-lived setup token is also supported:
 
@@ -276,14 +274,14 @@ research, app-server schema guidance, and architecture status. Proposed
 behavior there is not part of the current runtime unless an implementation
 record says otherwise.
 
-Credential discovery reads `$CODEX_HOME/auth.json` when `CODEX_HOME` is set,
-otherwise `~/.codex/auth.json`. Sidekick copies each imported account into a
-private file-backed Codex home under Sidekick's selected application-data
-directory.
+Initial legacy credential discovery reads `$CODEX_HOME/auth.json` when
+`CODEX_HOME` is set, otherwise `~/.codex/auth.json`.
 
-`sidekick-usages codex login` follows the same rule: without `--codex-home` it
-logs in through the normal `~/.codex` home; with an explicit home it configures
-file-backed auth there and leaves the normal home untouched.
+`sidekick-usages codex login <label>` and `sidekick-usages refresh <label>`
+authenticate a saved Codex label directly in its stable managed home. Sidekick
+verifies the expected provider identity and an advanced provider-owned
+generation before committing the managed authority and retiring the legacy
+credential copy. The native Codex home remains untouched.
 
 Usage calls `https://chatgpt.com/backend-api/codex/usage` with the saved bearer
 token and `ChatGPT-Account-Id`. It reports the primary 5-hour window, secondary
@@ -311,11 +309,11 @@ rollout total is used as a fallback.
 | `sidekick-usages remove <label>` | Delete one saved account. |
 | `sidekick-usages rename <old> <new>` | Rename one saved account. |
 | `sidekick-usages set-plan <label> <plan>` | Correct a display plan that the provider cannot introspect. |
-| `sidekick-usages refresh <label>` | Import the current matching local login into one saved login label; method and identity changes require separate authorization. |
+| `sidekick-usages refresh <label>` | Repair a Codex label through official managed-home login, or import the current matching Claude login. |
 | `sidekick-usages refresh --all [--force] [--quiet]` | Rotate due saved refresh tokens without reading the current global login. |
 | `sidekick-usages maintain [--quiet]` | Manually refresh due tokens, then heartbeat opted-in accounts. |
 | `sidekick-usages doctor [--provider ...] [--label ...] [--json]` | Report independent supervisor, persistence, provider, auth, refresh, and heartbeat health. |
-| `sidekick-usages codex login <label>` | Run Codex login and import a private account copy; supports `--device-auth`, `--codex-home`, and `--replace-identity`. |
+| `sidekick-usages codex login <label>` | Run official Codex login in the label's final managed home; supports `--device-auth`. |
 | `sidekick-usages codex export <label> --codex-home <path>` | Export complete saved Codex credentials to an isolated file-backed home. |
 | `sidekick-usages claude setup-token` | Run Claude's long-lived token generator and save its output. |
 | `sidekick-usages permissions repair` | Preview and repair Sidekick-owned credential permissions. |
@@ -331,15 +329,16 @@ to see its options.
 
 ### Refresh identity safety
 
-`refresh <label>` imports the provider's current local login. It is the normal
-recovery path for a subscription-login label, not a blanket repair for a
-Claude setup-token credential. When both the saved account and detected login
-expose provider account ids, Sidekick refuses a mismatch. Use
-`--replace-identity` only when intentionally reassigning the label. Converting
-a Claude setup-token label to a subscription login additionally requires
-`--replace-auth-method`; both flags are required when both method and identity
-change. `refresh --all` never performs local-login detection and never replaces
-saved identities from the active Claude or Codex login.
+For Claude, `refresh <label>` imports the current local login. It is the normal
+recovery path for a subscription-login label, not a blanket repair for a setup
+token. Sidekick refuses a known identity mismatch unless
+`--replace-identity` is explicit. Converting a Claude setup-token label to a
+subscription login additionally requires `--replace-auth-method`; both flags
+are required when both method and identity change.
+
+For Codex, `refresh <label>` starts official browser login in the label's final
+managed home. It never imports the active native login, and Claude replacement
+flags are rejected. `refresh --all` uses only saved or managed authorities.
 
 ### Updating a Git-tag installation
 
@@ -521,9 +520,9 @@ For Codex, use its explicit login workflow:
 sidekick-usages codex login <codex-label>
 ```
 
-If a known provider account id differs, `refresh` refuses the replacement. Do
-not bypass this with `--replace-identity` unless changing the label's account is
-intentional.
+For Claude, a known provider-account mismatch requires the explicit
+`--replace-identity` authorization. Codex instead verifies its managed-home
+login against the already saved identity.
 
 For non-obvious Claude failures, use the
 [Claude debugging guide](./docs/claude/debugging.md). It covers separate
@@ -549,10 +548,8 @@ Re-import a complete ChatGPT login:
 sidekick-usages codex login <label>
 ```
 
-Use `--codex-home <path>` only when deliberately working with an isolated Codex
-home. `sidekick-usages codex export` also requires complete id-token,
-account-id, and refresh metadata; one successful `sidekick-usages codex login`
-normally supplies it.
+The login runs only in the account's stable Sidekick-managed home. It does not
+adopt or overwrite the native Codex login.
 
 ### HTTP 429 or transient network errors
 

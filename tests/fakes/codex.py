@@ -6,6 +6,7 @@ import os
 import sys
 import textwrap
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 
@@ -57,7 +58,24 @@ from tests.test_support import (
 
 RAW_PROVIDER_SECRET = "raw-provider-secret"
 NEXT_AUTH_FILE = "next-auth.json"
+LOGIN_CONFIG_FILE = "login-config.json"
 MANAGED_FILE_CONFIG = f"{CODEX_FILE_AUTH_CONFIG}\n".encode()
+_LOGIN_OUTCOMES = frozenset({"cancelled", "success"})
+
+
+@dataclass(frozen=True, slots=True)
+class FakeCodexLogin:
+    """One official fake-login result for a private Codex home."""
+
+    provider_identity: str
+    login_generation: str
+    refresh_generation: str
+    outcome: str = "success"
+
+    def __post_init__(self) -> None:
+        """Reject unsupported fake outcomes."""
+        if self.outcome not in _LOGIN_OUTCOMES:
+            raise ValueError("Fake Codex login outcome is invalid.")
 
 
 def codex_jwt(account_id: str, generation: str) -> str:
@@ -216,6 +234,32 @@ def managed_generation(
     return generation
 
 
+def configure_codex_logins(
+    root: Path,
+    logins: Mapping[Path, FakeCodexLogin],
+) -> None:
+    """Configure synthetic official login results by exact final home."""
+    payload = {
+        str(home): {
+            "login_auth": managed_auth(
+                login.provider_identity,
+                login.login_generation,
+            ).decode(),
+            "outcome": login.outcome,
+            "refresh_auth": managed_auth(
+                login.provider_identity,
+                login.refresh_generation,
+            ).decode(),
+        }
+        for home, login in logins.items()
+    }
+    (root / LOGIN_CONFIG_FILE).write_text(
+        json.dumps(payload),
+        encoding="utf-8",
+    )
+    (root / "mode").write_text("normal", encoding="utf-8")
+
+
 def write_codex_schema(root: Path, *, external_auth: bool) -> None:
     """Write the minimal release-shaped schema required by the probe."""
     login_variants: list[JsonValue] = [
@@ -280,6 +324,14 @@ def write_codex_schema(root: Path, *, external_auth: bool) -> None:
         ),
         "v2/LoginAccountParams.json": {"oneOf": login_variants},
         "v2/LoginAccountResponse.json": {"oneOf": login_response_variants},
+        "v2/AccountLoginCompletedNotification.json": _object_schema(
+            {
+                "error": {"type": _json_values("string", "null")},
+                "loginId": {"type": _json_values("string", "null")},
+                "success": {"type": "boolean"},
+            },
+            required=("success",),
+        ),
         "v2/AccountUpdatedNotification.json": _object_schema(
             {
                 "authMode": {
@@ -320,7 +372,10 @@ def write_codex_schema(root: Path, *, external_auth: bool) -> None:
         "ServerRequest.json": _method_schema(
             "account/chatgptAuthTokens/refresh"
         ),
-        "ServerNotification.json": _method_schema("account/updated"),
+        "ServerNotification.json": _method_schema(
+            "account/login/completed",
+            "account/updated",
+        ),
     }
     for relative, payload in schemas_by_path.items():
         target = root / relative
@@ -352,10 +407,27 @@ def write_fake_codex(tmp_path: Path, schema_root: Path) -> Path:
             PID_PATH = Path({json.dumps(str(pid_path))})
             RAW_SECRET = {json.dumps(RAW_PROVIDER_SECRET)}
             NEXT_AUTH_FILE = {json.dumps(NEXT_AUTH_FILE)}
+            LOGIN_CONFIG_FILE = Path(
+                {json.dumps(str(tmp_path / LOGIN_CONFIG_FILE))}
+            )
+
+            def login_config():
+                if not LOGIN_CONFIG_FILE.exists():
+                    return None
+                configured = json.loads(
+                    LOGIN_CONFIG_FILE.read_text(encoding="utf-8")
+                )
+                return configured.get(os.environ["CODEX_HOME"])
+
+            def write_auth(home, payload):
+                auth_path = home / "auth.json"
+                auth_path.write_text(payload, encoding="utf-8")
+                os.chmod(auth_path, 0o600)
 
             event = {{
                 "argv": sys.argv[1:],
                 "codex_home": os.environ.get("CODEX_HOME"),
+                "cwd": os.getcwd(),
                 "openai_api_key": os.environ.get("OPENAI_API_KEY"),
             }}
             with EVENTS_PATH.open("a", encoding="utf-8") as stream:
@@ -401,12 +473,106 @@ def write_fake_codex(tmp_path: Path, schema_root: Path) -> Path:
                         json.dumps({{"id": request_id, "result": result}}),
                         flush=True,
                     )
+                elif request["method"] == "account/login/start":
+                    with EVENTS_PATH.open("a", encoding="utf-8") as stream:
+                        stream.write(
+                            json.dumps(
+                                {{
+                                    "codex_home": os.environ["CODEX_HOME"],
+                                    "cwd": os.getcwd(),
+                                    "method": request["method"],
+                                    "params": request["params"],
+                                }}
+                            )
+                            + "\\n"
+                        )
+                    configured = login_config()
+                    if configured is None:
+                        print(
+                            json.dumps(
+                                {{
+                                    "id": request_id,
+                                    "error": {{
+                                        "code": -32000,
+                                        "message": RAW_SECRET,
+                                    }},
+                                }}
+                            ),
+                            flush=True,
+                        )
+                        continue
+                    print(
+                        json.dumps(
+                            {{
+                                "method": "configWarning",
+                                "params": {{"message": "synthetic warning"}},
+                            }}
+                        ),
+                        flush=True,
+                    )
+                    home = Path(os.environ["CODEX_HOME"])
+                    login_id = "login-" + home.name
+                    login_type = request["params"]["type"]
+                    if login_type == "chatgptDeviceCode":
+                        result = {{
+                            "loginId": login_id,
+                            "type": login_type,
+                            "userCode": "SAFE-CODE",
+                            "verificationUrl": (
+                                "https://auth.openai.com/codex/device"
+                            ),
+                        }}
+                    else:
+                        result = {{
+                            "authUrl": (
+                                "https://auth.openai.com/oauth/authorize"
+                                "?state=synthetic"
+                            ),
+                            "loginId": login_id,
+                            "type": login_type,
+                        }}
+                    print(
+                        json.dumps({{"id": request_id, "result": result}}),
+                        flush=True,
+                    )
+                    succeeded = configured["outcome"] == "success"
+                    if succeeded:
+                        write_auth(home, configured["login_auth"])
+                    print(
+                        json.dumps(
+                            {{
+                                "method": "account/login/completed",
+                                "params": {{
+                                    "error": (
+                                        None if succeeded else RAW_SECRET
+                                    ),
+                                    "loginId": login_id,
+                                    "success": succeeded,
+                                }},
+                            }}
+                        ),
+                        flush=True,
+                    )
+                    if succeeded:
+                        print(
+                            json.dumps(
+                                {{
+                                    "method": "account/updated",
+                                    "params": {{
+                                        "authMode": "chatgpt",
+                                        "planType": "pro",
+                                    }},
+                                }}
+                            ),
+                            flush=True,
+                        )
                 elif request["method"] == "account/read":
                     with EVENTS_PATH.open("a", encoding="utf-8") as stream:
                         stream.write(
                             json.dumps(
                                 {{
                                     "codex_home": os.environ["CODEX_HOME"],
+                                    "cwd": os.getcwd(),
                                     "method": request["method"],
                                     "params": request["params"],
                                 }}
@@ -418,6 +584,10 @@ def write_fake_codex(tmp_path: Path, schema_root: Path) -> Path:
                         next_auth = home / NEXT_AUTH_FILE
                         if next_auth.exists():
                             os.replace(next_auth, home / "auth.json")
+                        else:
+                            configured = login_config()
+                            if configured is not None:
+                                write_auth(home, configured["refresh_auth"])
                     notification = {{
                         "method": "account/updated",
                         "params": {{
@@ -427,7 +597,7 @@ def write_fake_codex(tmp_path: Path, schema_root: Path) -> Path:
                     }}
                     result = {{
                         "account": {{
-                            "email": "person@example.test",
+                            "email": None,
                             "planType": "pro",
                             "type": "chatgpt",
                         }},

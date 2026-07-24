@@ -135,23 +135,28 @@ accounts. If heartbeat is not enabled for any account, it behaves like token
 maintenance only. It is an explicit foreground command, not the installed
 service command.
 
-### Import one current login explicitly
+### Repair one saved login
 
 ```bash
+# Claude
 sidekick-usages refresh <label>
 sidekick-usages refresh <label> --replace-identity
 sidekick-usages refresh <label> --replace-auth-method
-sidekick-usages refresh <label> --from-codex-home <path>
+
+# Codex
+sidekick-usages refresh <label>
+sidekick-usages codex login <label> [--device-auth]
 ```
 
-Use this only when you intentionally want to update one saved login label from
-the provider's current local login. For Claude setup-token credentials, use
-`sidekick-usages claude setup-token` instead.
+For Claude, `refresh` intentionally updates one saved label from the current
+Claude login. For Claude setup-token credentials, use
+`sidekick-usages claude setup-token` instead. The replacement flags apply only
+to Claude.
 
-If a saved provider account id exists and the current login belongs to
-a different provider account, sidekick refuses the update. Use
-`--replace-identity` only when you intentionally want the label to
-become the newly logged-in provider account.
+For Codex, either command starts the official sign-in inside that account's
+final Sidekick-managed Codex home. It does not read or replace the active native
+Codex login. `refresh` uses browser login; `codex login --device-auth` selects
+the official device flow.
 
 `--replace-auth-method` independently authorizes setup token to subscription
 login. When method and identity both change, both flags are required.
@@ -323,14 +328,15 @@ For a Claude setup-token label, capture a replacement of the same method:
 sidekick-usages claude setup-token --label <label> --force
 ```
 
-For Codex, you can also use:
+For Codex, use either managed-home repair command:
 
 ```bash
+sidekick-usages refresh <label>
 sidekick-usages codex login <label>
 ```
 
-Use `--replace-identity` only if you intentionally want to replace the
-saved provider account id behind that label.
+Sidekick verifies that the completed login belongs to the saved Codex identity.
+It never repairs a Codex label by importing the active native login.
 
 ### WSL install fails
 

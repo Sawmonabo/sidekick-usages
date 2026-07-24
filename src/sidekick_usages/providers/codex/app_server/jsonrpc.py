@@ -6,6 +6,7 @@ import subprocess
 import time
 from collections import deque
 from collections.abc import Callable, Mapping
+from pathlib import Path
 from typing import NoReturn
 
 from sidekick_usages.errors import InvalidPayloadError
@@ -83,11 +84,16 @@ class JsonRpcConnection:
         argv: tuple[str, ...],
         environment: Mapping[str, str],
         *,
+        working_directory: Path,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> JsonRpcConnection:
         """Start one exact JSON-lines subprocess connection."""
         return cls(
-            start_codex_json_lines(argv, environment),
+            start_codex_json_lines(
+                argv,
+                environment,
+                working_directory=working_directory,
+            ),
             monotonic,
         )
 

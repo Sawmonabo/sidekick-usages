@@ -2,6 +2,7 @@
 
 from collections.abc import Mapping
 from dataclasses import replace
+from datetime import datetime
 
 from sidekick_usages.clock import Clock
 from sidekick_usages.core.accounts.models import (
@@ -10,6 +11,7 @@ from sidekick_usages.core.accounts.models import (
     SavedAccount,
 )
 from sidekick_usages.core.accounts.types import (
+    AuthorityId,
     CredentialHealth,
     SidekickAccountId,
 )
@@ -50,6 +52,7 @@ from sidekick_usages.providers.codex.auth import (
     CODEX_CONFIG_FILE,
     codex_generation_order,
     parse_managed_auth_snapshot,
+    prepare_file_auth_config,
 )
 from sidekick_usages.providers.codex.models import (
     CodexAccountObservation,
@@ -57,12 +60,8 @@ from sidekick_usages.providers.codex.models import (
 )
 
 _APP_SERVER_OUTCOMES = {
-    CodexAppServerFailure.EXECUTABLE_MISSING: (
-        CodexManagedOutcome.INCOMPATIBLE
-    ),
-    CodexAppServerFailure.EXECUTABLE_UNSAFE: (
-        CodexManagedOutcome.INCOMPATIBLE
-    ),
+    CodexAppServerFailure.EXECUTABLE_MISSING: CodexManagedOutcome.INCOMPATIBLE,
+    CodexAppServerFailure.EXECUTABLE_UNSAFE: CodexManagedOutcome.INCOMPATIBLE,
     CodexAppServerFailure.VERSION_UNSUPPORTED: (
         CodexManagedOutcome.INCOMPATIBLE
     ),
@@ -75,6 +74,13 @@ _APP_SERVER_OUTCOMES = {
     CodexAppServerFailure.REQUEST_REJECTED: CodexManagedOutcome.REJECTED,
     CodexAppServerFailure.PROTOCOL_TIMEOUT: CodexManagedOutcome.TIMED_OUT,
     CodexAppServerFailure.PROTOCOL_CLOSED: CodexManagedOutcome.TRANSIENT,
+}
+_APP_SERVER_FAILURE_KINDS = {
+    CodexManagedOutcome.INCOMPATIBLE: ProviderFailureKind.UNSUPPORTED,
+    CodexManagedOutcome.TRANSIENT: ProviderFailureKind.UNREADABLE,
+    CodexManagedOutcome.TIMED_OUT: ProviderFailureKind.UNREADABLE,
+    CodexManagedOutcome.MALFORMED: ProviderFailureKind.MALFORMED,
+    CodexManagedOutcome.REJECTED: ProviderFailureKind.REJECTED,
 }
 _PROVIDER_OUTCOMES = {
     ProviderFailureKind.MISSING: CodexManagedOutcome.LOGGED_OUT,
@@ -104,6 +110,103 @@ _PERSISTENCE_FAILURE_KINDS = {
 }
 
 
+class CodexPrivateHomeAuthority:
+    """Qualified private-home access shared by Codex credential workflows."""
+
+    def __init__(
+        self,
+        paths: ApplicationPaths,
+        private: PrivateCredentialTree,
+        capabilities: CodexAppServerCapabilities,
+        *,
+        environment: Mapping[str, str] | None = None,
+    ) -> None:
+        if private.root != paths.private_codex_profiles:
+            raise ValueError("Managed Codex tree does not match app paths.")
+        self._paths = paths
+        self._private = private
+        self._capabilities = capabilities
+        self._environment = None if environment is None else dict(environment)
+
+    @property
+    def executable_version(self) -> str:
+        """Return the exact capability-proven Codex version."""
+        return str(self._capabilities.executable.version)
+
+    def configure(
+        self,
+        account_id: SidekickAccountId,
+    ) -> ProviderFailure | None:
+        """Create or verify one final home with file-backed auth storage."""
+        relative = str(account_id)
+        home = managed_codex_home(self._paths, account_id)
+        try:
+            present = self._private.relative_bundle_present(relative)
+            current = self._private.read_relative_bundle_file(
+                relative,
+                CODEX_CONFIG_FILE,
+            )
+            prepared = prepare_file_auth_config(
+                None if current is None else current.data
+            )
+            if isinstance(prepared, ProviderFailure):
+                return prepared
+            if current is not None and current.data == prepared:
+                return None
+            self._private.write_bundle(
+                home,
+                {CODEX_CONFIG_FILE: prepared},
+                expected_bundle_present=present,
+                expected_files={
+                    CODEX_CONFIG_FILE: (
+                        None if current is None else current.data
+                    )
+                },
+            )
+        except PersistenceFilesystemError as error:
+            return _private_failure(
+                error,
+                "The managed Codex home cannot be prepared safely.",
+            )
+        return None
+
+    def snapshot(
+        self,
+        account_id: SidekickAccountId,
+    ) -> CodexAuthSnapshot | ProviderFailure:
+        """Read protected identity and generation through qualified paths."""
+        relative = str(account_id)
+        try:
+            auth = self._private.read_relative_bundle_file(
+                relative,
+                CODEX_AUTH_FILE,
+            )
+            config = self._private.read_relative_bundle_file(
+                relative,
+                CODEX_CONFIG_FILE,
+            )
+        except PersistenceFilesystemError as error:
+            return _private_failure(
+                error,
+                "The managed Codex home cannot be read safely.",
+            )
+        return parse_managed_auth_snapshot(
+            None if auth is None else auth.data,
+            None if config is None else config.data,
+        )
+
+    def open_session(
+        self,
+        account_id: SidekickAccountId,
+    ) -> CodexAppServerSession:
+        """Open one bounded app server against the exact final home."""
+        return CodexAppServerSession.open(
+            self._capabilities,
+            managed_codex_home(self._paths, account_id),
+            self._environment,
+        )
+
+
 class CodexManagedAuthorityCoordinator:
     """Read and refresh one stable provider-owned Codex home at a time."""
 
@@ -117,14 +220,16 @@ class CodexManagedAuthorityCoordinator:
         *,
         environment: Mapping[str, str] | None = None,
     ) -> None:
-        if private.root != paths.private_codex_profiles:
-            raise ValueError("Managed Codex tree does not match app paths.")
         self._paths = paths
         self._store = store
-        self._private = private
         self._capabilities = capabilities
         self._clock = clock
-        self._environment = None if environment is None else dict(environment)
+        self._home = CodexPrivateHomeAuthority(
+            paths,
+            private,
+            capabilities,
+            environment=environment,
+        )
 
     def read(
         self,
@@ -180,13 +285,8 @@ class CodexManagedAuthorityCoordinator:
         *,
         refresh_token: bool,
     ) -> CodexManagedAuthorityResult:
-        home = managed_codex_home(self._paths, account.account_id)
         try:
-            session = CodexAppServerSession.open(
-                self._capabilities,
-                home,
-                self._environment,
-            )
+            session = self._home.open_session(account.account_id)
         except CodexAppServerError as error:
             return self._persist_failure(
                 account,
@@ -266,30 +366,7 @@ class CodexManagedAuthorityCoordinator:
         self,
         account_id: SidekickAccountId,
     ) -> CodexAuthSnapshot | ProviderFailure:
-        relative = str(account_id)
-        try:
-            auth = self._private.read_relative_bundle_file(
-                relative,
-                CODEX_AUTH_FILE,
-            )
-            config = self._private.read_relative_bundle_file(
-                relative,
-                CODEX_CONFIG_FILE,
-            )
-        except PersistenceFilesystemError as error:
-            kind = _PERSISTENCE_FAILURE_KINDS.get(
-                error.code,
-                ProviderFailureKind.MALFORMED,
-            )
-            return ProviderFailure(
-                provider_id=ProviderId.CODEX,
-                kind=kind,
-                message="The managed Codex home cannot be read safely.",
-            )
-        return parse_managed_auth_snapshot(
-            None if auth is None else auth.data,
-            None if config is None else config.data,
-        )
+        return self._home.snapshot(account_id)
 
     def _expected_snapshot(
         self,
@@ -362,31 +439,85 @@ class CodexManagedAuthorityCoordinator:
     ) -> CodexManagedAuthorityResult:
         previous = self._managed_authority(account)
         verified_at = self._clock.now()
-        authority = CodexManagedAuthority(
-            authority_id=previous.authority_id,
-            provider_identity=snapshot.provider_identity,
-            generation=snapshot.generation,
-            verified_at=verified_at,
-            executable_version=str(self._capabilities.executable.version),
-            health=CredentialHealth.HEALTHY,
-        )
-        candidate = replace(
+        candidate = managed_codex_account(
             account,
+            previous.authority_id,
+            snapshot,
             plan=observed.plan,
-            authority=CodexAccountAuthority(subscription=authority),
-            credential_health=CredentialHealth.HEALTHY,
-            last_refresh_at=(
-                verified_at if refreshed else account.last_refresh_at
-            ),
-            last_refresh_status=(
-                RefreshStatus.OK if refreshed else account.last_refresh_status
-            ),
-            last_refresh_error_code=(
-                None if refreshed else account.last_refresh_error_code
-            ),
+            executable_version=str(self._capabilities.executable.version),
+            verified_at=verified_at,
+            refreshed=refreshed,
         )
         self._store.persist_state(candidate, expected=account)
         return CodexManagedAuthorityResult(
             CodexManagedOutcome.HEALTHY,
             candidate,
         )
+
+
+def codex_app_server_failure(
+    error: CodexAppServerError,
+) -> ProviderFailure:
+    """Convert one secret-safe app-server error to provider vocabulary."""
+    outcome = _APP_SERVER_OUTCOMES[error.code]
+    return ProviderFailure(
+        provider_id=ProviderId.CODEX,
+        kind=_APP_SERVER_FAILURE_KINDS[outcome],
+        message=str(error),
+        action_required=outcome
+        not in {
+            CodexManagedOutcome.TIMED_OUT,
+            CodexManagedOutcome.TRANSIENT,
+        },
+    )
+
+
+def managed_codex_account(
+    account: SavedAccount,
+    authority_id: AuthorityId,
+    snapshot: CodexAuthSnapshot,
+    *,
+    plan: str,
+    executable_version: str,
+    verified_at: datetime,
+    refreshed: bool,
+) -> SavedAccount:
+    """Build one healthy managed account from a proven private snapshot."""
+    authority = CodexManagedAuthority(
+        authority_id=authority_id,
+        provider_identity=snapshot.provider_identity,
+        generation=snapshot.generation,
+        verified_at=verified_at,
+        executable_version=executable_version,
+        health=CredentialHealth.HEALTHY,
+    )
+    return replace(
+        account,
+        plan=plan,
+        authority=CodexAccountAuthority(subscription=authority),
+        credential_health=CredentialHealth.HEALTHY,
+        last_refresh_at=(
+            verified_at if refreshed else account.last_refresh_at
+        ),
+        last_refresh_status=(
+            RefreshStatus.OK if refreshed else account.last_refresh_status
+        ),
+        last_refresh_error_code=(
+            None if refreshed else account.last_refresh_error_code
+        ),
+    )
+
+
+def _private_failure(
+    error: PersistenceFilesystemError,
+    message: str,
+) -> ProviderFailure:
+    kind = _PERSISTENCE_FAILURE_KINDS.get(
+        error.code,
+        ProviderFailureKind.MALFORMED,
+    )
+    return ProviderFailure(
+        provider_id=ProviderId.CODEX,
+        kind=kind,
+        message=message,
+    )

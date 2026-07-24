@@ -12,6 +12,7 @@ from sidekick_usages.providers.codex.app_server.executable import (
     verify_codex_executable,
 )
 from sidekick_usages.providers.codex.app_server.jsonrpc import (
+    DEFAULT_JSON_RPC_TIMEOUT_SECONDS,
     JsonRpcConnection,
 )
 from sidekick_usages.providers.codex.app_server.models import (
@@ -68,6 +69,7 @@ class CodexAppServerSession:
                 environment,
                 codex_home=resolved_home,
             ),
+            working_directory=resolved_home,
         )
         try:
             result = connection.request(
@@ -112,13 +114,23 @@ class CodexAppServerSession:
         self,
         method: str,
         params: JsonObject,
+        *,
+        timeout_seconds: float = DEFAULT_JSON_RPC_TIMEOUT_SECONDS,
     ) -> JsonObject:
         """Send one correlated app-server request."""
-        return self._connection.request(method, params)
+        return self._connection.request(
+            method,
+            params,
+            timeout_seconds=timeout_seconds,
+        )
 
-    def receive(self) -> JsonRpcMessage:
+    def receive(
+        self,
+        *,
+        timeout_seconds: float = DEFAULT_JSON_RPC_TIMEOUT_SECONDS,
+    ) -> JsonRpcMessage:
         """Receive one queued notification or server request."""
-        return self._connection.receive()
+        return self._connection.receive(timeout_seconds=timeout_seconds)
 
     def respond(
         self,

@@ -39,14 +39,11 @@ from sidekick_usages.providers.base import (
 from sidekick_usages.providers.codex.auth import (
     CODEX_AUTH_FILE,
     CODEX_CONFIG_FILE,
-    LoginSuccess,
     codex_auth_path,
     default_codex_home,
     prepare_export_bundle,
-    prepare_file_auth_config,
     prepare_private_bundle,
     prepare_private_bundle_from_auth_bytes,
-    run_login,
     validate_auth_bundle_matches_account,
     validate_auth_bundle_owner,
 )
@@ -105,39 +102,6 @@ class CodexCredentialCoordinator:
         self._store = store
         self._private = private_credentials
         self._clock = clock
-
-    def login(
-        self,
-        source_home: Path | None,
-        *,
-        device_auth: bool,
-    ) -> LoginSuccess | ProviderFailure:
-        """Prepare an explicit home, run login, and prove its auth file."""
-        normalized = (
-            source_home.expanduser() if source_home is not None else None
-        )
-        try:
-            if normalized is not None:
-                prepared = self._prepare_login_home(normalized)
-                if prepared is not None:
-                    return prepared
-            result = run_login(normalized, device_auth=device_auth)
-            if isinstance(result, ProviderFailure) or normalized is None:
-                return result
-            auth = PersistenceFilesystem(
-                normalized / CODEX_AUTH_FILE
-            ).read_opaque_private()
-        except OSError, PersistenceError:
-            return _failure(
-                ProviderFailureKind.UNREADABLE,
-                "The Codex login home could not be verified safely.",
-            )
-        if auth is None:
-            return _failure(
-                ProviderFailureKind.MISSING,
-                "Codex login completed without a protected auth.json.",
-            )
-        return result
 
     def prepare_account(
         self,
@@ -472,64 +436,3 @@ class CodexCredentialCoordinator:
                 keys.add(key)
                 homes.append(home)
         return tuple(homes)
-
-    def _prepare_login_home(
-        self,
-        source_home: Path,
-    ) -> ProviderFailure | None:
-        if (failure := self._validate_login_source(source_home)) is not None:
-            return failure
-        config_fs = PersistenceFilesystem(source_home / CODEX_CONFIG_FILE)
-        config_fs.repair_parent_permissions()
-        auth_fs = PersistenceFilesystem(source_home / CODEX_AUTH_FILE)
-        auth_fs.read_opaque_private()
-        existing = config_fs.read_opaque_private()
-        config = prepare_file_auth_config(
-            None if existing is None else existing.data
-        )
-        if isinstance(config, ProviderFailure):
-            return config
-        final = config_fs.commit_opaque_private(
-            config,
-            expected_source=self._expected(existing),
-        )
-        proof = config_fs.read_opaque_private()
-        if proof is None or proof.data != final.data or final.data != config:
-            return _failure(
-                ProviderFailureKind.UNREADABLE,
-                "The Codex login home config could not be verified safely.",
-            )
-        return None
-
-    def _validate_login_source(
-        self,
-        source_home: Path,
-    ) -> ProviderFailure | None:
-        if source_home.name == CODEX_AUTH_FILE:
-            return _failure(
-                ProviderFailureKind.UNSUPPORTED,
-                "A Codex login source must be a home directory.",
-            )
-        try:
-            source = source_home.resolve()
-            private = self._private.root.resolve()
-            saved = {
-                Path(account.codex_home).resolve()
-                for account in self._store
-                if account.codex_home is not None
-            }
-        except OSError, RuntimeError:
-            return _failure(
-                ProviderFailureKind.UNREADABLE,
-                "The requested Codex login home could not be resolved.",
-            )
-        if (
-            source == private
-            or source.is_relative_to(private)
-            or source in saved
-        ):
-            return _failure(
-                ProviderFailureKind.UNSUPPORTED,
-                "Refusing to run Codex login over saved private credentials.",
-            )
-        return None

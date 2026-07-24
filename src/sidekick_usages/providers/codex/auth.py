@@ -3,7 +3,6 @@
 import json
 import os
 import re
-import subprocess
 import tomllib
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -47,13 +46,6 @@ _CODEX_GENERATION_PATTERN = re.compile(
     r"(?:\.(?P<fraction>[0-9]{1,9}))?Z\Z",
     re.ASCII,
 )
-
-
-@dataclass(frozen=True, slots=True)
-class LoginSuccess:
-    """Codex login completed against the requested source home."""
-
-    source_home: Path | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -232,41 +224,6 @@ def detect_auth_credentials(
         return parse_auth_credentials(blob)
     except ProviderBoundaryError as error:
         return error.failure
-
-
-def run_login(
-    source_home: Path | None,
-    *,
-    device_auth: bool,
-) -> LoginSuccess | ProviderFailure:
-    """Run Codex login without terminal or presentation behavior."""
-    normalized = source_home.expanduser() if source_home is not None else None
-    try:
-        command = ["codex", "login"]
-        if device_auth:
-            command.append("--device-auth")
-        if normalized is None:
-            subprocess.run(command, check=True)
-        else:
-            environment = os.environ.copy()
-            environment[CODEX_HOME_ENV] = str(normalized)
-            subprocess.run(command, check=True, env=environment)
-    except FileNotFoundError:
-        return _failure(
-            ProviderFailureKind.UNSUPPORTED,
-            "Codex CLI was not found on PATH; install it and retry.",
-        )
-    except subprocess.CalledProcessError:
-        return _failure(
-            ProviderFailureKind.REJECTED,
-            "Codex login did not complete successfully.",
-        )
-    except OSError, subprocess.SubprocessError:
-        return _failure(
-            ProviderFailureKind.UNREADABLE,
-            "Codex login could not access its requested state home.",
-        )
-    return LoginSuccess(normalized)
 
 
 def prepare_private_bundle(
