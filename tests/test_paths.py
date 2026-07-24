@@ -18,6 +18,8 @@ from tests.test_support import make_account_store, make_application_paths
 @dataclass(frozen=True, slots=True)
 class _NativePaths:
     user_data_path: Path
+    user_runtime_path: Path
+    user_log_path: Path
 
 
 @pytest.mark.parametrize(
@@ -85,7 +87,11 @@ def test_discovery_maps_the_frozen_native_matrix_without_side_effects(
 
     def platform_dirs(**arguments: object) -> _NativePaths:
         calls.append(arguments)
-        return _NativePaths(Path(data_root))
+        return _NativePaths(
+            Path(data_root),
+            Path(data_root) / "runtime",
+            Path(data_root) / "logs",
+        )
 
     monkeypatch.setattr(paths_module, "PlatformDirs", platform_dirs)
 
@@ -106,6 +112,22 @@ def test_discovery_maps_the_frozen_native_matrix_without_side_effects(
     )
     assert paths.activity_snapshots == Path(data_root) / "token-activity.json"
     assert paths.credential_refresh == Path(data_root) / "credential-refresh"
+    assert paths.private_claude_profiles == Path(data_root) / "claude"
+    assert paths.credential_authorities == Path(data_root) / "codex"
+    assert paths.selected_state == (Path(data_root) / "selected-accounts.json")
+    assert paths.activation_journals == (
+        Path(data_root) / "activation-journals"
+    )
+    assert paths.durable_operations == Path(data_root) / "operations"
+    assert paths.service_state == Path(data_root) / "service-state.json"
+    assert paths.service_logs == Path(data_root) / "logs"
+    assert paths.runtime_directory == Path(data_root) / "runtime"
+    assert paths.supervisor_socket == (
+        Path(data_root) / "runtime" / "supervisor.sock"
+    )
+    assert paths.supervisor_lock == (
+        Path(data_root) / "runtime" / "supervisor.lock"
+    )
     assert calls == [
         {
             "appname": "sidekick-usages",

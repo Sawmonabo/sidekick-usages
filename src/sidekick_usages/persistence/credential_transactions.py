@@ -123,6 +123,9 @@ class PrivateCredentialTransaction:
         payload: bytes,
         expected_source: ExpectedAuthority,
         *,
+        target_generation: AuthorityGeneration = (
+            AuthorityGeneration.VERSION_TWO
+        ),
         private_bundles: tuple[PreparedPrivateBundleWrite, ...],
         displaced_bundles: Iterable[Path],
         source_guard: CredentialSourceGuard | None = None,
@@ -132,6 +135,7 @@ class PrivateCredentialTransaction:
         :param transaction: Capability proving the account lock is held.
         :param payload: Canonical target current authority bytes.
         :param expected_source: Exact old authority expectation.
+        :param target_generation: Validated target account generation.
         :param private_bundles: Bounded private target mutations.
         :param displaced_bundles: Old canonical homes no longer referenced.
         :param source_guard: Optional distinct authority retained unchanged.
@@ -145,7 +149,7 @@ class PrivateCredentialTransaction:
         )
         if not private_bundles and not displaced and source_guard is None:
             return transaction.commit_authority(
-                AuthorityGeneration.VERSION_TWO,
+                target_generation,
                 payload,
                 expected_source,
             )
@@ -171,7 +175,7 @@ class PrivateCredentialTransaction:
                 source_guard,
             )
             final = transaction.commit_authority(
-                AuthorityGeneration.VERSION_TWO,
+                target_generation,
                 payload,
                 expected_source,
             )

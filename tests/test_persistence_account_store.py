@@ -1,11 +1,19 @@
 """Transactional runtime account-store behavior tests."""
 
 from contextlib import AbstractContextManager
+from dataclasses import replace
 from pathlib import Path
 from types import TracebackType
 
 import pytest
 
+from sidekick_usages.core.accounts import (
+    AuthorityId,
+    ClaudeAccountAuthority,
+    ClaudeLegacyLoginAuthority,
+    CredentialHealth,
+    ProviderIdentity,
+)
 from sidekick_usages.core.expiry import KnownExpiry, UnknownExpiry
 from sidekick_usages.core.models import (
     Account,
@@ -15,9 +23,17 @@ from sidekick_usages.core.models import (
 )
 from sidekick_usages.core.types import AccountLabel, ProviderId
 from sidekick_usages.persistence._platform import FilesystemFamily
+from sidekick_usages.persistence.account_schema_v3 import (
+    VersionThreeDocument,
+    decode_version_three,
+    encode_version_three,
+)
 from sidekick_usages.persistence.account_store import (
     AccountStore,
     AccountStoreStateError,
+)
+from sidekick_usages.persistence.account_store_v3 import (
+    AccountLabelAmbiguityError,
 )
 from sidekick_usages.persistence.artifacts import (
     ArtifactGrammar,
@@ -45,6 +61,9 @@ from sidekick_usages.persistence.filesystem import (
     PersistenceFilesystem,
 )
 from sidekick_usages.persistence.inventory import OrphanedPrivateCredentials
+from sidekick_usages.persistence.managed_migration import (
+    ManagedAccountMigrationService,
+)
 from sidekick_usages.persistence.schemas import (
     GenerationZeroDocument,
     VersionTwoDocument,
@@ -56,7 +75,11 @@ from sidekick_usages.persistence.transforms import (
     accounts_to_version_two,
     version_two_to_accounts,
 )
-from tests.test_support import REFERENCE_TIME, make_application_paths
+from tests.test_support import (
+    REFERENCE_TIME,
+    make_account_store_with_private,
+    make_application_paths,
+)
 
 
 def _snapshot(payload: bytes, *, inode: int) -> FileSnapshot:
@@ -273,7 +296,7 @@ def _store(
             PersistenceCode.MIGRATION_REQUIRED,
         ),
         (
-            b'{"schema_version":3,"accounts":{}}\n',
+            b'{"schema_version":4,"accounts":{}}\n',
             FutureSchemaError,
             PersistenceCode.FUTURE_SCHEMA,
         ),
@@ -485,3 +508,87 @@ def test_crud_mutations_commit_one_complete_ordered_candidate(
     assert filesystem.snapshot is not None
     document = decode_version_two(filesystem.snapshot.data)
     assert document == VersionTwoDocument(())
+
+
+def test_managed_store_preserves_ids_and_qualifies_duplicate_labels(
+    tmp_path: Path,
+) -> None:
+    """The public store keeps stable IDs and rejects ambiguous old syntax."""
+    source = _account("shared-label", ProviderId.CLAUDE)
+    _legacy, private = make_account_store_with_private(tmp_path, (source,))
+    paths = make_application_paths(tmp_path)
+    ManagedAccountMigrationService(
+        paths.accounts.canonical,
+        private,
+    ).migrate()
+    store = AccountStore(
+        paths.accounts,
+        orphaned_credentials_observer=private.observe,
+        private_credentials=private,
+    ).load()
+    saved = store.saved_accounts()[0]
+    assert isinstance(saved.authority, ClaudeAccountAuthority)
+    dual = replace(
+        saved,
+        authority=ClaudeAccountAuthority(
+            setup_token=saved.authority.setup_token,
+            subscription=ClaudeLegacyLoginAuthority(
+                authority_id=AuthorityId(
+                    "671bd641-87e7-450c-91c9-04863abf3462"
+                ),
+                provider_identity=ProviderIdentity(
+                    "synthetic-claude-identity"
+                ),
+                access_expires_at=REFERENCE_TIME,
+                refresh_expires_at=None,
+                health=CredentialHealth.MIGRATION_REQUIRED,
+            ),
+        ),
+    )
+    document = VersionThreeDocument((dual,))
+    encoded = encode_version_three(document)
+    assert decode_version_three(encoded) == document
+    assert "synthetic-claude-identity" not in repr(document)
+    assert b"access_token" not in encoded
+    assert b"refresh_token" not in encoded
+    assert b"id_token" not in encoded
+    with pytest.raises(ValueError, match="require"):
+        ClaudeAccountAuthority()
+
+    original_id = store.resolve_account_id(
+        ProviderId.CLAUDE,
+        source.label,
+    )
+    assert original_id is not None
+
+    assert store.rename("shared-label", "renamed") is True
+    assert (
+        store.resolve_account_id(
+            ProviderId.CLAUDE,
+            AccountLabel("renamed"),
+        )
+        == original_id
+    )
+    codex = _account("renamed", ProviderId.CODEX)
+    store.persist(codex)
+
+    with pytest.raises(AccountLabelAmbiguityError):
+        store.get("renamed")
+
+    assert (
+        store.get(
+            "renamed",
+            provider_id=ProviderId.CLAUDE,
+        )
+        is not None
+    )
+    assert (
+        store.get(
+            "renamed",
+            provider_id=ProviderId.CODEX,
+        )
+        == codex
+    )
+    payload = paths.accounts.canonical.read_bytes()
+    assert b"test-only-shared-label-access" not in payload
+    assert b"test-only-renamed-access" not in payload

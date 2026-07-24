@@ -8,9 +8,11 @@ from sidekick_usages.core.models import Account
 from sidekick_usages.paths import (
     ApplicationPaths,
 )
+from sidekick_usages.persistence.account_schema_v3 import (
+    SCHEMA_VERSION as MANAGED_SCHEMA_VERSION,
+)
 from sidekick_usages.persistence.account_store import AccountStore
 from sidekick_usages.persistence.artifacts import (
-    AuthorityExpectation,
     AuthorityGeneration,
     FileSnapshot,
 )
@@ -18,7 +20,6 @@ from sidekick_usages.persistence.assessment import (
     PersistenceAssessment,
     PersistenceCompositionFailure,
     PersistenceOperationResult,
-    make_operation_result,
 )
 from sidekick_usages.persistence.credential_refresh import (
     CredentialRefreshArtifacts,
@@ -32,12 +33,14 @@ from sidekick_usages.persistence.credential_transactions import (
     PrivateCredentialTransaction,
 )
 from sidekick_usages.persistence.errors import (
-    PersistenceCode,
     PersistenceError,
     SourceChangedError,
 )
 from sidekick_usages.persistence.filesystem import PersistenceFilesystem
 from sidekick_usages.persistence.locking import PersistenceLock
+from sidekick_usages.persistence.managed_migration import (
+    ManagedAccountMigrationService,
+)
 from sidekick_usages.persistence.migrations.account import (
     AccountFilesystemFactory,
     AccountLockFactory,
@@ -52,7 +55,6 @@ from sidekick_usages.persistence.migrations.account_preview import (
 )
 from sidekick_usages.persistence.migrations.errors import (
     LocationMigrationStateError,
-    PrivateAuthMigrationStateError,
     SchedulerMutationBlockedError,
 )
 from sidekick_usages.persistence.migrations.location import (
@@ -79,9 +81,6 @@ from sidekick_usages.persistence.migrations.location_state import (
     LocationMigrationWork as _LocationMigrationWork,
 )
 from sidekick_usages.persistence.migrations.location_state import (
-    RollbackTarget as _RollbackTarget,
-)
-from sidekick_usages.persistence.migrations.location_state import (
     RuntimePersistence,
 )
 from sidekick_usages.persistence.migrations.location_state import (
@@ -100,23 +99,19 @@ from sidekick_usages.persistence.migrations.observer import (
 )
 from sidekick_usages.persistence.migrations.ports import (
     PreparedPrivateAuthMigration,
-    PrivateAuthMigrationFailure,
     PrivateAuthMigrator,
 )
-from sidekick_usages.persistence.migrations.released_verification import (
-    verifier_preflight,
-    verifier_verify,
+from sidekick_usages.persistence.migrations.rollback import (
+    PersistenceRollbackService,
 )
 from sidekick_usages.persistence.private_credentials import (
     PrivateCredentialTree,
 )
 from sidekick_usages.persistence.schemas import (
-    encode_generation_zero,
     encode_version_two,
 )
 from sidekick_usages.persistence.transforms import (
     accounts_to_version_two,
-    version_two_to_v060,
 )
 from sidekick_usages.scheduler_quiescence import (
     SchedulerQuiescenceAssessment,
@@ -152,6 +147,15 @@ class PersistenceMigrationService:
             private_auth_migrator=private_auth_migrator,
             filesystem_factory=filesystem_factory,
             private_tree_factory=private_tree_factory,
+        )
+        self._rollback = PersistenceRollbackService(
+            paths,
+            self._observer,
+            scheduler_assessor=scheduler_assessor,
+            released_v060_verifier=released_v060_verifier,
+            filesystem_factory=filesystem_factory,
+            lock_factory=lock_factory,
+            hold_location_state=self._hold_location_state,
         )
 
     def assess_locations(
@@ -325,7 +329,17 @@ class PersistenceMigrationService:
         if not is_ready_location_selection(observed.selection):
             raise LocationMigrationStateError(observed)
         before = ready_location_assessment(observed)
-        accounts = self._account(_ready_role(before.selection)).read_accounts()
+        role = _ready_role(before.selection)
+        private = self._observer.tree(role)
+        accounts = tuple(
+            AccountStore(
+                self._observer.account_locations(role),
+                orphaned_credentials_observer=private.observe,
+                private_credentials=private,
+                filesystem_factory=self._filesystem_factory,
+                lock_factory=self._lock_factory,
+            ).load()
+        )
         current = self.assess_locations()
         if current != before:
             raise LocationMigrationStateError(current)
@@ -341,13 +355,26 @@ class PersistenceMigrationService:
             self._resolve_refresh_transactions()
             assessment = self.assess_locations()
             role = _operation_role(assessment)
-            return self._account(role).migrate_accounts(
+            current = self._account(role).assess()
+            if current.schema_version == MANAGED_SCHEMA_VERSION:
+                return current
+            self._account(role).migrate_accounts(
                 reimport_prototype=reimport_prototype
             )
+            self._require_scheduler_quiescence()
+            ManagedAccountMigrationService(
+                self._observer.account_path(role),
+                self._observer.tree(role),
+                filesystem_factory=self._filesystem_factory,
+                lock_factory=self._lock_factory,
+            ).migrate()
+            return self._account(role).assess()
 
     def prepare_rollback(self) -> PersistenceOperationResult:
         """Prepare exact released-v0.6.0 compatibility."""
+        self._rollback.preflight()
         with self._refresh_artifacts.hold_quiescent():
+            self._rollback.preflight()
             self._resolve_refresh_transactions()
             return self._prepare_rollback_quiescent()
 
@@ -355,12 +382,15 @@ class PersistenceMigrationService:
         """Prepare rollback while refresh lifecycle exclusion is held."""
         assessment = self.assess_locations()
         role = _operation_role(assessment)
+        current = self._account(role).assess()
+        if current.schema_version == MANAGED_SCHEMA_VERSION:
+            return self._rollback.prepare_managed(role)
         if (
             role is LocationRole.CANONICAL
             and self.paths.accounts.canonical
             != self.paths.accounts.existing_sidekick
         ):
-            return self._prepare_native_rollback(assessment)
+            return self._rollback.prepare_native(assessment)
         return self._account(role).prepare_rollback()
 
     def full_reset(self) -> PersistenceAssessment:
@@ -444,128 +474,6 @@ class PersistenceMigrationService:
             canonical_filesystem=filesystems[LocationRole.CANONICAL],
             compatibility_transaction=transactions[LocationRole.COMPATIBILITY],
             canonical_transaction=transactions[LocationRole.CANONICAL],
-        )
-
-    def _prepare_native_rollback(
-        self,
-        preview: LocationMigrationAssessment[RuntimePersistenceSelection],
-    ) -> PersistenceOperationResult:
-        if not isinstance(
-            preview.selection,
-            (CanonicalSelection, EquivalentSelection),
-        ):
-            raise LocationMigrationStateError(preview)
-        self._require_scheduler_quiescence()
-        verifier_preflight(self._released_v060_verifier)
-        with ExitStack() as stack:
-            held = self._hold_location_state(stack)
-            self._require_scheduler_quiescence()
-            verifier_preflight(self._released_v060_verifier)
-            evidence = self._observer.observe()
-            locked = self._observer.assess_evidence(evidence)
-            source = self._observer.evidence_for_role(
-                evidence,
-                LocationRole.CANONICAL,
-            )
-            if source is None or source.authority_digest is None:
-                raise LocationMigrationStateError(locked)
-            source_snapshot = held.canonical_filesystem.read_authority()
-            if (
-                source_snapshot is None
-                or source_snapshot.fingerprint.digest
-                != source.authority_digest
-            ):
-                raise SourceChangedError
-            prepared = self._observer.prepare_private_auth(
-                source.accounts,
-                source_role=LocationRole.CANONICAL,
-                target_role=LocationRole.COMPATIBILITY,
-            )
-            if isinstance(prepared, PrivateAuthMigrationFailure):
-                raise PrivateAuthMigrationStateError(prepared)
-            if not isinstance(prepared, PreparedPrivateAuthMigration):
-                raise TypeError(
-                    "Private-auth migrator returned an invalid result."
-                )
-
-            target = self._rollback_target(held, evidence)
-            if target.snapshot is not None:
-                held.compatibility_transaction.publish_immutable(
-                    AuthorityGeneration.VERSION_TWO,
-                    target.snapshot,
-                )
-
-            rollback_document = accounts_to_version_two(prepared.accounts)
-            rollback_version_two = encode_version_two(rollback_document)
-            lineage = (
-                held.compatibility_transaction.publish_migration_snapshot(
-                    AuthorityGeneration.VERSION_TWO,
-                    rollback_version_two,
-                )
-            )
-            payload = encode_generation_zero(
-                version_two_to_v060(rollback_document)
-            )
-            guard = self._credential_source_guard(
-                LocationRole.CANONICAL,
-                held.canonical_filesystem,
-                source.accounts,
-            )
-            committed = PrivateCredentialTransaction(
-                self._observer.tree(LocationRole.COMPATIBILITY),
-                held.compatibility_filesystem.read_authority,
-            ).commit_migration(
-                held.compatibility_transaction,
-                AuthorityGeneration.GENERATION_ZERO,
-                payload,
-                target.expected,
-                base_generation=target.base_generation,
-                private_bundles=prepared.private_bundles,
-                displaced_bundles=(),
-                source_guard=guard,
-            )
-            verifier_verify(
-                self._released_v060_verifier,
-                self.paths.accounts.existing_sidekick,
-                committed,
-            )
-            postcondition = self._account(LocationRole.COMPATIBILITY).assess()
-            if postcondition.code is not PersistenceCode.ROLLBACK_PREPARED:
-                raise LocationMigrationStateError(self.assess_locations())
-            return make_operation_result(
-                PersistenceCode.ROLLBACK_PREPARED,
-                postcondition,
-                artifact_basename=lineage.basename,
-            )
-
-    def _rollback_target(
-        self,
-        held: _HeldLocationState,
-        evidence: tuple[LocationEvidence, ...],
-    ) -> _RollbackTarget:
-        observed = self._observer.evidence_for_role(
-            evidence,
-            LocationRole.COMPATIBILITY,
-        )
-        snapshot = held.compatibility_filesystem.read_authority()
-        if snapshot is None:
-            if observed is not None:
-                raise SourceChangedError
-            return _RollbackTarget(
-                None,
-                AuthorityExpectation.ABSENT,
-                None,
-            )
-        if (
-            observed is None
-            or observed.authority_digest is None
-            or snapshot.fingerprint.digest != observed.authority_digest
-        ):
-            raise SourceChangedError
-        return _RollbackTarget(
-            snapshot,
-            snapshot.fingerprint,
-            AuthorityGeneration.VERSION_TWO,
         )
 
     def _prepare_location_work(

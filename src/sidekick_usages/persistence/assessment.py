@@ -7,6 +7,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from sidekick_usages.core.types import ExitCode
+from sidekick_usages.persistence.account_schema_v3 import (
+    has_managed_authority,
+)
 from sidekick_usages.persistence.errors import (
     InvalidSchemaError,
     PersistenceCode,
@@ -126,9 +129,10 @@ _ARTIFACT_RANK: dict[ArtifactKind, int] = {
     ArtifactKind.V0_BACKUP: 2,
     ArtifactKind.V1_SNAPSHOT: 3,
     ArtifactKind.V2_SNAPSHOT: 4,
-    ArtifactKind.TEMPORARY: 5,
-    ArtifactKind.PROTOTYPE_RECEIPT: 6,
-    ArtifactKind.PROTOTYPE: 7,
+    ArtifactKind.V3_SNAPSHOT: 5,
+    ArtifactKind.TEMPORARY: 6,
+    ArtifactKind.PROTOTYPE_RECEIPT: 7,
+    ArtifactKind.PROTOTYPE: 8,
 }
 
 _MESSAGE: dict[PersistenceCode, str] = {
@@ -224,6 +228,7 @@ def _artifact_failure_issue(
         ArtifactKind.V0_BACKUP,
         ArtifactKind.V1_SNAPSHOT,
         ArtifactKind.V2_SNAPSHOT,
+        ArtifactKind.V3_SNAPSHOT,
     }:
         code = PersistenceCode.BACKUP_CONFLICT
     elif artifact.kind is ArtifactKind.PROTOTYPE:
@@ -302,7 +307,11 @@ def _snapshot_reverses_to_authority(
     snapshot: ArtifactObservation,
     authority: AuthorityObservation,
 ) -> bool:
-    if snapshot.version_two is None or authority.content is None:
+    if authority.content is None:
+        return False
+    if snapshot.version_three is not None:
+        return _version_three_snapshot_matches(snapshot, authority)
+    if snapshot.version_two is None:
         return False
     try:
         reversed_document = version_two_to_v060(snapshot.version_two)
@@ -310,6 +319,46 @@ def _snapshot_reverses_to_authority(
     except InvalidSchemaError, RollbackCompatibilityError:
         return False
     return encoded == authority.content
+
+
+def _version_three_snapshot_matches(
+    snapshot: ArtifactObservation,
+    authority: AuthorityObservation,
+) -> bool:
+    """Match a legacy-only v3 lineage to its released account state."""
+    document = snapshot.version_three
+    released = authority.generation_zero
+    if (
+        document is None
+        or released is None
+        or has_managed_authority(document)
+        or len(document.accounts) != len(released.accounts)
+    ):
+        return False
+    for account, record in zip(
+        document.accounts,
+        released.accounts,
+        strict=True,
+    ):
+        if (
+            account.label != record.label
+            or account.provider_id is not record.provider_id
+            or account.plan != record.plan
+            or account.last_refresh_at != record.last_refresh_at
+            or account.last_refresh_status is not record.last_refresh_status
+            or account.last_refresh_error_code != record.last_refresh_error
+            or account.heartbeat_enabled is not record.heartbeat_enabled
+            or account.heartbeat_5h_reset_at != record.heartbeat_5h_reset_at
+            or account.heartbeat_window_resets
+            != record.heartbeat_window_resets
+            or account.heartbeat_targets != record.heartbeat_targets
+            or account.last_heartbeat_at != record.last_heartbeat_at
+            or account.last_heartbeat_status
+            is not record.last_heartbeat_status
+            or account.last_heartbeat_error_code != record.last_heartbeat_error
+        ):
+            return False
+    return True
 
 
 type _LogicalResult = tuple[_RankedIssue, int | None, bool]
@@ -321,11 +370,13 @@ def _generation_zero_issue(
 ) -> _LogicalResult:
     snapshots = tuple(
         artifact
-        for artifact in _artifacts_of_kind(
-            artifacts,
+        for artifact in artifacts
+        if artifact.kind
+        in {
             ArtifactKind.V2_SNAPSHOT,
-        )
-        if artifact.state is ArtifactState.VALID
+            ArtifactKind.V3_SNAPSHOT,
+        }
+        and artifact.state is ArtifactState.VALID
     )
     if any(
         _snapshot_reverses_to_authority(snapshot, authority)
@@ -376,6 +427,19 @@ def _version_two_issue(
     return _ranked_issue(code), authority.account_count, False
 
 
+def _version_three_issue(
+    authority: AuthorityObservation,
+    artifacts: tuple[ArtifactObservation, ...],
+) -> _LogicalResult:
+    """Return current state for a validated secret-free account index."""
+    del artifacts
+    return (
+        _ranked_issue(PersistenceCode.CURRENT),
+        authority.account_count,
+        False,
+    )
+
+
 def _absent_issue(
     observation: PersistenceObservation,
     artifacts: tuple[ArtifactObservation, ...],
@@ -388,6 +452,7 @@ def _absent_issue(
             ArtifactKind.V0_BACKUP,
             ArtifactKind.V1_SNAPSHOT,
             ArtifactKind.V2_SNAPSHOT,
+            ArtifactKind.V3_SNAPSHOT,
             ArtifactKind.TEMPORARY,
         }
     )
@@ -447,6 +512,8 @@ def _logical_issue(
         return _version_one_issue(authority, artifacts)
     if authority.kind is AuthorityKind.VERSION_TWO:
         return _version_two_issue(authority, artifacts)
+    if authority.kind is AuthorityKind.VERSION_THREE:
+        return _version_three_issue(authority, artifacts)
     if authority.kind is AuthorityKind.ABSENT:
         return _absent_issue(observation, artifacts)
     failure = _authority_failure_issue(authority)
@@ -467,6 +534,7 @@ def _interruption_issues(
                 ArtifactKind.V0_BACKUP,
                 ArtifactKind.V1_SNAPSHOT,
                 ArtifactKind.V2_SNAPSHOT,
+                ArtifactKind.V3_SNAPSHOT,
             )
         )
     issues = [

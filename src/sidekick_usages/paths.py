@@ -59,12 +59,32 @@ class ApplicationPaths:
     :ivar private_codex: Private Codex credential locations.
     :ivar activity_snapshots: Canonical token-activity snapshot file.
     :ivar credential_refresh: Canonical private refresh-state root.
+    :ivar private_claude_profiles: Stable private Claude profile root.
+    :ivar credential_authorities: Protected legacy authority root.
+    :ivar selected_state: Provider selected-state authority.
+    :ivar activation_journals: Provider activation journal root.
+    :ivar durable_operations: Durable due and retry operation root.
+    :ivar service_state: Supervisor readiness state authority.
+    :ivar service_logs: Sanitized supervisor diagnostic root.
+    :ivar runtime_directory: Owner-only local control runtime root.
+    :ivar supervisor_socket: Local supervisor control socket.
+    :ivar supervisor_lock: Per-user supervisor singleton lock.
     """
 
     accounts: AccountLocations
     private_codex: PrivateCodexLocations
     activity_snapshots: Path
     credential_refresh: Path
+    private_claude_profiles: Path
+    credential_authorities: Path
+    selected_state: Path
+    activation_journals: Path
+    durable_operations: Path
+    service_state: Path
+    service_logs: Path
+    runtime_directory: Path
+    supervisor_socket: Path
+    supervisor_lock: Path
 
 
 def discover_application_paths() -> ApplicationPaths:
@@ -87,6 +107,7 @@ def discover_application_paths() -> ApplicationPaths:
         use_site_for_root=False,
     )
     native_data_root = native.user_data_path
+    runtime_directory = native.user_runtime_path
     return ApplicationPaths(
         accounts=AccountLocations(
             canonical=native_data_root / "accounts.json",
@@ -101,6 +122,16 @@ def discover_application_paths() -> ApplicationPaths:
         ),
         activity_snapshots=native_data_root / "token-activity.json",
         credential_refresh=native_data_root / "credential-refresh",
+        private_claude_profiles=native_data_root / "claude",
+        credential_authorities=native_data_root / "codex",
+        selected_state=native_data_root / "selected-accounts.json",
+        activation_journals=native_data_root / "activation-journals",
+        durable_operations=native_data_root / "operations",
+        service_state=native_data_root / "service-state.json",
+        service_logs=native.user_log_path,
+        runtime_directory=runtime_directory,
+        supervisor_socket=runtime_directory / "supervisor.sock",
+        supervisor_lock=runtime_directory / "supervisor.lock",
     )
 
 

@@ -38,6 +38,16 @@ def check_value_contracts(
             ("private_codex", "PrivateCodexLocations"),
             ("activity_snapshots", "Path"),
             ("credential_refresh", "Path"),
+            ("private_claude_profiles", "Path"),
+            ("credential_authorities", "Path"),
+            ("selected_state", "Path"),
+            ("activation_journals", "Path"),
+            ("durable_operations", "Path"),
+            ("service_state", "Path"),
+            ("service_logs", "Path"),
+            ("runtime_directory", "Path"),
+            ("supervisor_socket", "Path"),
+            ("supervisor_lock", "Path"),
         ),
     }
     if paths is not None:

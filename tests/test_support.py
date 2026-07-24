@@ -75,6 +75,16 @@ def make_application_paths(root: Path) -> ApplicationPaths:
         ),
         activity_snapshots=root / "token-activity.json",
         credential_refresh=root / "credential-refresh",
+        private_claude_profiles=root / "claude",
+        credential_authorities=private_codex_root,
+        selected_state=root / "selected-accounts.json",
+        activation_journals=root / "activation-journals",
+        durable_operations=root / "operations",
+        service_state=root / "service-state.json",
+        service_logs=root / "logs",
+        runtime_directory=root / "runtime",
+        supervisor_socket=root / "runtime" / "supervisor.sock",
+        supervisor_lock=root / "runtime" / "supervisor.lock",
     )
 
 

@@ -55,8 +55,10 @@ _RENDERER_FILES = frozenset(
 )
 _PYDANTIC_OWNERS = frozenset(
     {
+        "src/sidekick_usages/persistence/account_schema_v3.py",
         "src/sidekick_usages/persistence/_schema_models.py",
         "src/sidekick_usages/persistence/activity_snapshots.py",
+        "src/sidekick_usages/persistence/credential_authorities.py",
         "src/sidekick_usages/persistence/credential_transaction_schema.py",
         "src/sidekick_usages/persistence/credential_refresh_private_stage.py",
         "src/sidekick_usages/persistence/credential_refresh_schema.py",

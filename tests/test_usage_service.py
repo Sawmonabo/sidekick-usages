@@ -122,9 +122,18 @@ class InMemoryAccountStore(AccountStore):
             if account.provider_id is provider_id
         ]
 
-    def get(self, label: str) -> Account | None:
+    def get(
+        self,
+        label: str,
+        *,
+        provider_id: ProviderId | None = None,
+    ) -> Account | None:
         account = self._saved.get(label)
-        return _copy_account(account) if account is not None else None
+        if account is None or (
+            provider_id is not None and account.provider_id is not provider_id
+        ):
+            return None
+        return _copy_account(account)
 
     def persist(self, account: Account) -> None:
         if self.persist_error is not None:

@@ -12,6 +12,9 @@ from sidekick_usages.persistence._platform import (
     NativePlatform,
 )
 from sidekick_usages.persistence._recovery import RecoveryOperations
+from sidekick_usages.persistence.account_schema_v3 import (
+    decode_version_three,
+)
 
 if sys.platform == "darwin":
     from sidekick_usages.persistence._platform.macos import MacOSPlatform
@@ -287,6 +290,7 @@ class PersistenceFilesystemAccess(RecoveryOperations):
                 ManagedArtifactKind.GENERATION_ZERO_BACKUP,
                 ManagedArtifactKind.VERSION_ONE_SNAPSHOT,
                 ManagedArtifactKind.VERSION_TWO_SNAPSHOT,
+                ManagedArtifactKind.VERSION_THREE_SNAPSHOT,
             }:
                 return BackupConflictError(basename)
             if artifact.kind in {
@@ -305,8 +309,10 @@ class PersistenceFilesystemAccess(RecoveryOperations):
             decode_generation_zero(payload)
         elif generation is AuthorityGeneration.VERSION_ONE:
             decode_version_one(payload)
-        else:
+        elif generation is AuthorityGeneration.VERSION_TWO:
             decode_version_two(payload)
+        else:
+            decode_version_three(payload)
 
 
 __all__ = ["PersistenceFilesystemAccess"]

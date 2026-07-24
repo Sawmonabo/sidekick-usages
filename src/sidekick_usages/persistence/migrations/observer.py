@@ -67,6 +67,7 @@ from sidekick_usages.persistence.migrations.ports import (
 from sidekick_usages.persistence.observations import (
     ArtifactKind,
     ArtifactState,
+    AuthorityKind,
     StoredGeneration,
 )
 from sidekick_usages.persistence.private_bundle_paths import (
@@ -340,7 +341,17 @@ class LocationObserver:
             PrivateAuthMigrationResult | PrivateAuthMigrationAssessment
         ) = PrivateAuthMigrationAssessment(())
         lineage_account_digests: frozenset[Sha256Digest] = frozenset()
-        if assessment.code in CURRENT_VERSION_TWO and observation is not None:
+        if (
+            observation is not None
+            and observation.authority.kind is AuthorityKind.VERSION_THREE
+            and observation.authority.content is not None
+        ):
+            account_digest = sha256_digest(observation.authority.content)
+            private_digest = account_digest
+        elif (
+            assessment.code in CURRENT_VERSION_TWO
+            and observation is not None
+        ):
             accounts = accounts_from_current(observation, assessment)
             private_auth = self.prepare_private_auth(
                 accounts,

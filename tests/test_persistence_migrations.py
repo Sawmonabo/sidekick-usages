@@ -1,11 +1,24 @@
-"""Pure transformation tests for account persistence generations."""
+"""Account persistence generation migration tests."""
 
 import json
 from dataclasses import replace
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
+from sidekick_usages.core.accounts import (
+    AuthorityGeneration as ManagedAuthorityGeneration,
+)
+from sidekick_usages.core.accounts import (
+    AuthorityId,
+    ClaudeAccountAuthority,
+    CodexAccountAuthority,
+    CodexManagedAuthority,
+    CredentialHealth,
+    ProviderIdentity,
+    SidekickAccountId,
+)
 from sidekick_usages.core.expiry import KnownExpiry, UnknownExpiry
 from sidekick_usages.core.models import (
     Account,
@@ -15,9 +28,41 @@ from sidekick_usages.core.models import (
     CodexCredentials,
 )
 from sidekick_usages.core.types import AccountLabel, ProviderId
+from sidekick_usages.paths import ApplicationPaths
+from sidekick_usages.persistence.account_schema_v3 import (
+    VersionThreeDocument,
+    decode_version_three,
+    encode_version_three,
+)
+from sidekick_usages.persistence.artifacts import (
+    AuthorityExpectation,
+    AuthorityGeneration,
+    ExpectedAuthority,
+    FileSnapshot,
+)
+from sidekick_usages.persistence.credential_authorities import (
+    CredentialAuthorityRepository,
+)
 from sidekick_usages.persistence.errors import (
     InvalidSchemaError,
+    PersistenceCode,
+    ReplaceFailedError,
     RollbackCompatibilityError,
+)
+from sidekick_usages.persistence.filesystem import PersistenceFilesystem
+from sidekick_usages.persistence.inventory import OrphanedPrivateCredentials
+from sidekick_usages.persistence.locking import PersistenceLock
+from sidekick_usages.persistence.managed_migration import (
+    ManagedAccountMigrationService,
+)
+from sidekick_usages.persistence.managed_rollback import (
+    require_v060_compatible,
+)
+from sidekick_usages.persistence.migrations.service import (
+    PersistenceMigrationService,
+)
+from sidekick_usages.persistence.private_credentials import (
+    PrivateCredentialTree,
 )
 from sidekick_usages.persistence.schemas import (
     GenerationZeroDocument,
@@ -27,17 +72,97 @@ from sidekick_usages.persistence.schemas import (
     decode_version_one,
     encode_generation_zero,
     encode_version_one,
+    encode_version_two,
 )
 from sidekick_usages.persistence.transforms import (
     accounts_to_version_one,
+    accounts_to_version_two,
     generation_zero_to_version_one,
     version_one_to_accounts,
     version_one_to_v060,
 )
+from sidekick_usages.persistence.v060 import ReleasedV060Verifier
+from sidekick_usages.providers.codex.auth_migration import (
+    CodexPrivateAuthMigrator,
+)
+from sidekick_usages.scheduler_quiescence import (
+    SchedulerBackendId,
+    SchedulerBackendObservation,
+    SchedulerBackendState,
+    SchedulerQuiescenceAssessment,
+)
+from tests.test_support import make_application_paths
 
 EXPIRY = datetime(2026, 7, 11, 12, tzinfo=UTC)
 CLAUDE_EXPIRY_MILLISECONDS = 1_783_771_200_000
 CODEX_EXPIRY_SECONDS = 1_783_771_200
+QUIET = SchedulerQuiescenceAssessment(
+    (
+        SchedulerBackendObservation(
+            SchedulerBackendId.SYSTEMD,
+            SchedulerBackendState.ABSENT,
+            "Sidekick scheduler is absent.",
+        ),
+    )
+)
+
+
+class _FailingVersionThreeFilesystem(PersistenceFilesystem):
+    """Inject one exact final-index commit failure."""
+
+    fail_version_three = True
+
+    def _commit_authority(
+        self,
+        generation: AuthorityGeneration,
+        payload: bytes,
+        expected_source: ExpectedAuthority,
+    ) -> FileSnapshot:
+        if (
+            generation is AuthorityGeneration.VERSION_THREE
+            and self.fail_version_three
+        ):
+            self.fail_version_three = False
+            raise ReplaceFailedError()
+        return super()._commit_authority(
+            generation,
+            payload,
+            expected_source,
+        )
+
+
+class _AccountIds:
+    """Deterministic stable account IDs for one migration test."""
+
+    def __init__(self) -> None:
+        self._values = iter(
+            (
+                SidekickAccountId("75cc2b04-05ea-43d2-b897-bc960c85cd63"),
+                SidekickAccountId("af5c2e51-9119-4e1c-9a6d-d4855501dc83"),
+                SidekickAccountId("252a72de-fdf0-453d-92c3-e079fb02cb76"),
+                SidekickAccountId("a41986db-92d3-4c11-8731-f75016d66d66"),
+            )
+        )
+
+    def __call__(self) -> SidekickAccountId:
+        return next(self._values)
+
+
+class _AuthorityIds:
+    """Deterministic protected authority IDs for one migration test."""
+
+    def __init__(self) -> None:
+        self._values = iter(
+            (
+                AuthorityId("a050a4a2-357b-4923-aeed-ed5866475853"),
+                AuthorityId("671bd641-87e7-450c-91c9-04863abf3462"),
+                AuthorityId("b9b27663-d780-40c6-9cc3-afc8a288571e"),
+                AuthorityId("da1065bd-f162-46a8-af45-d82cfa012f89"),
+            )
+        )
+
+    def __call__(self) -> AuthorityId:
+        return next(self._values)
 
 
 def _stored_record(
@@ -263,3 +388,191 @@ def test_version_one_rejects_unrepresentable_claude_login_metadata(
 
     with pytest.raises(InvalidSchemaError):
         accounts_to_version_one((account,))
+
+
+def _verify_managed_rollback_boundary(
+    paths: ApplicationPaths,
+    filesystem: PersistenceFilesystem,
+    tree: PrivateCredentialTree,
+    document: VersionThreeDocument,
+    metrics: Path,
+) -> None:
+    codex = document.accounts[1]
+    assert isinstance(codex.authority, CodexAccountAuthority)
+    legacy = codex.authority.subscription
+    managed_codex = replace(
+        codex,
+        authority=CodexAccountAuthority(
+            subscription=CodexManagedAuthority(
+                authority_id=legacy.authority_id,
+                provider_identity=ProviderIdentity("acct_test_only"),
+                generation=ManagedAuthorityGeneration("generation-2"),
+                verified_at=EXPIRY,
+                executable_version="1.2.3",
+                health=CredentialHealth.HEALTHY,
+            )
+        ),
+        credential_health=CredentialHealth.HEALTHY,
+    )
+    managed = VersionThreeDocument((document.accounts[0], managed_codex))
+    blocked_payload = encode_version_three(managed)
+    with pytest.raises(RollbackCompatibilityError):
+        require_v060_compatible(managed)
+
+    current = filesystem.read_authority()
+    assert current is not None
+    with PersistenceLock(filesystem).hold() as transaction:
+        transaction.commit_authority(
+            AuthorityGeneration.VERSION_THREE,
+            blocked_payload,
+            current.fingerprint,
+        )
+    rollback = PersistenceMigrationService(
+        paths,
+        scheduler_assessor=lambda: QUIET,
+        private_auth_migrator=CodexPrivateAuthMigrator(),
+        released_v060_verifier=ReleasedV060Verifier(),
+    )
+    protected_before = tuple(
+        path.name for path in tree.list_owned_directories()
+    )
+    with pytest.raises(RollbackCompatibilityError):
+        rollback.prepare_rollback()
+
+    blocked = filesystem.read_authority()
+    assert blocked is not None
+    assert blocked.data == blocked_payload
+    assert tuple(path.name for path in tree.list_owned_directories()) == (
+        protected_before
+    )
+    with PersistenceLock(filesystem).hold() as transaction:
+        restored = transaction.commit_authority(
+            AuthorityGeneration.VERSION_THREE,
+            encode_version_three(document),
+            blocked.fingerprint,
+        )
+    assert decode_version_three(restored.data) == document
+
+    result = rollback.prepare_rollback()
+    released = filesystem.read_authority()
+    assert result.code is PersistenceCode.ROLLBACK_PREPARED
+    assert released is not None
+    assert len(decode_generation_zero(released.data).accounts) == len(
+        document.accounts
+    )
+    assert tree.observe() is OrphanedPrivateCredentials.ABSENT
+    assert metrics.read_bytes() == (
+        b"synthetic metrics remain independently owned"
+    )
+
+
+def test_managed_migration_is_atomic_and_blocks_unsafe_rollback(
+    tmp_path: Path,
+) -> None:
+    """Secrets move once, interruption recovers, and managed rollback stops."""
+    paths = make_application_paths(tmp_path)
+    source_accounts = (
+        Account(
+            label=AccountLabel("claude-max"),
+            credentials=ClaudeSetupTokenCredentials(
+                access_token="test-only-claude-access"
+            ),
+            plan="max",
+            heartbeat_enabled=True,
+            heartbeat_targets=("standard",),
+        ),
+        Account(
+            label=AccountLabel("codex-pro"),
+            credentials=CodexCredentials(
+                access_token="test-only-codex-access",
+                refresh_token="test-only-codex-refresh",
+                expiry=KnownExpiry(EXPIRY),
+                account_id="acct_test_only",
+                id_token="test-only-codex-id",
+            ),
+            plan="pro",
+        ),
+    )
+    source_payload = encode_version_two(
+        accounts_to_version_two(source_accounts)
+    )
+    filesystem = _FailingVersionThreeFilesystem(paths.accounts.canonical)
+    filesystem.repair_parent_permissions()
+    with PersistenceLock(filesystem).hold() as transaction:
+        transaction.commit_authority(
+            AuthorityGeneration.VERSION_TWO,
+            source_payload,
+            AuthorityExpectation.ABSENT,
+        )
+    metrics = paths.activity_snapshots
+    metrics.parent.mkdir(parents=True, exist_ok=True)
+    metrics.write_bytes(b"synthetic metrics remain independently owned")
+    tree = PrivateCredentialTree(
+        paths.credential_authorities,
+        account_path=paths.accounts.canonical,
+    )
+    service = ManagedAccountMigrationService(
+        paths.accounts.canonical,
+        tree,
+        account_id_factory=_AccountIds(),
+        authority_id_factory=_AuthorityIds(),
+        filesystem_factory=lambda _path: filesystem,
+    )
+
+    with pytest.raises(ReplaceFailedError):
+        service.migrate()
+
+    preserved = filesystem.read_authority()
+    assert preserved is not None
+    assert preserved.data == source_payload
+    assert tree.observe() is OrphanedPrivateCredentials.ABSENT
+
+    document = service.migrate()
+    snapshot = filesystem.read_authority()
+    assert snapshot is not None
+    assert decode_version_three(snapshot.data) == document
+    assert metrics.read_bytes() == (
+        b"synthetic metrics remain independently owned"
+    )
+    assert tuple(account.label for account in document.accounts) == (
+        "claude-max",
+        "codex-pro",
+    )
+    assert document.accounts[0].heartbeat_enabled is True
+    assert document.accounts[0].heartbeat_targets == ("standard",)
+    assert all(
+        secret not in snapshot.data
+        for secret in (
+            b"test-only-claude-access",
+            b"test-only-codex-access",
+            b"test-only-codex-refresh",
+            b"test-only-codex-id",
+        )
+    )
+    repository = CredentialAuthorityRepository(tree)
+    for saved, expected in zip(
+        document.accounts,
+        source_accounts,
+        strict=True,
+    ):
+        authority = saved.authority
+        reference = (
+            authority.setup_token or authority.subscription
+            if isinstance(authority, ClaudeAccountAuthority)
+            else authority.subscription
+        )
+        assert reference is not None
+        protected = repository.read(
+            saved.account_id,
+            reference.authority_id,
+        )
+        assert protected is not None
+        assert protected.credentials == expected.credentials
+
+    _verify_managed_rollback_boundary(
+        paths,
+        filesystem,
+        tree,
+        document,
+        metrics,
+    )

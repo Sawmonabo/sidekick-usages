@@ -5,6 +5,9 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 
+from sidekick_usages.persistence.account_schema_v3 import (
+    VersionThreeDocument,
+)
 from sidekick_usages.persistence.schemas import (
     GenerationZeroDocument,
     PrototypeDocument,
@@ -23,6 +26,7 @@ class StoredGeneration(StrEnum):
     GENERATION_ZERO = "generation_zero"
     VERSION_ONE = "version_one"
     VERSION_TWO = "version_two"
+    VERSION_THREE = "version_three"
     FUTURE = "future"
     UNKNOWN = "unknown"
 
@@ -34,6 +38,7 @@ class AuthorityKind(StrEnum):
     GENERATION_ZERO = "generation_zero"
     VERSION_ONE = "version_one"
     VERSION_TWO = "version_two"
+    VERSION_THREE = "version_three"
     FUTURE = "future"
     DUPLICATE_KEY = "duplicate_key"
     MALFORMED_JSON = "malformed_json"
@@ -50,6 +55,7 @@ class ArtifactKind(StrEnum):
     V0_BACKUP = "v0_backup"
     V1_SNAPSHOT = "v1_snapshot"
     V2_SNAPSHOT = "v2_snapshot"
+    V3_SNAPSHOT = "v3_snapshot"
     PROTOTYPE_RECEIPT = "prototype_receipt"
     TEMPORARY = "temporary"
     PROTOTYPE = "prototype"
@@ -81,6 +87,10 @@ class AuthorityObservation:
     )
     version_one: VersionOneDocument | None = field(default=None, repr=False)
     version_two: VersionTwoDocument | None = field(default=None, repr=False)
+    version_three: VersionThreeDocument | None = field(
+        default=None,
+        repr=False,
+    )
     future_schema_version: int | None = None
 
     def __post_init__(self) -> None:
@@ -88,11 +98,13 @@ class AuthorityObservation:
             self.generation_zero,
             self.version_one,
             self.version_two,
+            self.version_three,
         )
         selected = {
             AuthorityKind.GENERATION_ZERO: self.generation_zero,
             AuthorityKind.VERSION_ONE: self.version_one,
             AuthorityKind.VERSION_TWO: self.version_two,
+            AuthorityKind.VERSION_THREE: self.version_three,
         }
         if self.kind in selected:
             valid = (
@@ -124,6 +136,7 @@ class AuthorityObservation:
             AuthorityKind.GENERATION_ZERO: StoredGeneration.GENERATION_ZERO,
             AuthorityKind.VERSION_ONE: StoredGeneration.VERSION_ONE,
             AuthorityKind.VERSION_TWO: StoredGeneration.VERSION_TWO,
+            AuthorityKind.VERSION_THREE: StoredGeneration.VERSION_THREE,
             AuthorityKind.FUTURE: StoredGeneration.FUTURE,
         }.get(self.kind, StoredGeneration.UNKNOWN)
 
@@ -134,12 +147,19 @@ class AuthorityObservation:
             return 1
         if self.kind is AuthorityKind.VERSION_TWO:
             return 2
+        if self.kind is AuthorityKind.VERSION_THREE:
+            return 3
         return self.future_schema_version
 
     @property
     def account_count(self) -> int | None:
         """Return a validated authoritative account count when known."""
-        document = self.generation_zero or self.version_one or self.version_two
+        document = (
+            self.generation_zero
+            or self.version_one
+            or self.version_two
+            or self.version_three
+        )
         return len(document.accounts) if document is not None else None
 
 
@@ -157,6 +177,10 @@ class ArtifactObservation:
     )
     version_one: VersionOneDocument | None = field(default=None, repr=False)
     version_two: VersionTwoDocument | None = field(default=None, repr=False)
+    version_three: VersionThreeDocument | None = field(
+        default=None,
+        repr=False,
+    )
     prototype: PrototypeDocument | None = field(default=None, repr=False)
     receipt: PrototypeReceipt | None = field(default=None, repr=False)
 
@@ -189,6 +213,7 @@ class ArtifactObservation:
             self.generation_zero,
             self.version_one,
             self.version_two,
+            self.version_three,
             self.prototype,
             self.receipt,
         )
@@ -199,6 +224,7 @@ class ArtifactObservation:
             ArtifactKind.V0_BACKUP: self.generation_zero is not None,
             ArtifactKind.V1_SNAPSHOT: self.version_one is not None,
             ArtifactKind.V2_SNAPSHOT: self.version_two is not None,
+            ArtifactKind.V3_SNAPSHOT: self.version_three is not None,
             ArtifactKind.PROTOTYPE: self.prototype is not None,
             ArtifactKind.PROTOTYPE_RECEIPT: self.receipt is not None,
         }

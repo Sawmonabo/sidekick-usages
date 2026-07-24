@@ -136,6 +136,18 @@ class RollbackCompatibilityError(PersistenceError):
         )
 
 
+class ManagedRollbackCompatibilityError(RollbackCompatibilityError):
+    """A released rollback cannot own a provider-managed authority."""
+
+    def __init__(self) -> None:
+        self.code = PersistenceCode.ROLLBACK_REQUIRED
+        PersistenceError.__init__(
+            self,
+            "Rollback cannot preserve provider-managed authorities; "
+            "the older release cannot own them.",
+        )
+
+
 class PersistenceFilesystemError(PersistenceError):
     """Base for input-free qualified filesystem failures."""
 

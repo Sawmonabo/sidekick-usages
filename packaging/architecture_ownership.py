@@ -105,8 +105,11 @@ def _check_migrations(
     violations: list[ArchitectureFinding],
 ) -> None:
     owner = "src/sidekick_usages/persistence/migrations/service.py"
+    rollback_owner = (
+        "src/sidekick_usages/persistence/migrations/rollback.py"
+    )
     for unit in units:
-        if str(unit.path) == owner:
+        if str(unit.path) in {owner, rollback_owner}:
             continue
         for node in ast.walk(unit.tree):
             if (

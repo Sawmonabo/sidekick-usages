@@ -5,6 +5,10 @@ from pathlib import Path
 import pytest
 
 from sidekick_usages.persistence._platform import FilesystemFamily
+from sidekick_usages.persistence.account_schema_v3 import (
+    VersionThreeDocument,
+    encode_version_three,
+)
 from sidekick_usages.persistence.artifacts import (
     ArtifactGrammar,
     FileFingerprint,
@@ -56,6 +60,7 @@ PROTOTYPE_PATH = _QUALIFIED_ROOT / "prototype" / "accounts.json"
 GENERATION_ZERO = encode_generation_zero(GenerationZeroDocument(()))
 VERSION_ONE = encode_version_one(VersionOneDocument(()))
 VERSION_TWO = encode_version_two(VersionTwoDocument(()))
+VERSION_THREE = encode_version_three(VersionThreeDocument(()))
 PROTOTYPE = b'{"primary":{"token":"test-only-secret","plan":"max"}}'
 PROTOTYPE_VERSION_ONE = encode_version_one(
     prototype_to_version_one(decode_prototype(PROTOTYPE))
@@ -63,7 +68,7 @@ PROTOTYPE_VERSION_ONE = encode_version_one(
 PROTOTYPE_VERSION_TWO = encode_version_two(
     prototype_to_version_two(decode_prototype(PROTOTYPE))
 )
-FUTURE_SCHEMA_VERSION = 3
+FUTURE_SCHEMA_VERSION = 4
 
 
 def _snapshot(payload: bytes, *, inode: int = 1) -> FileSnapshot:
@@ -156,6 +161,7 @@ def _inventory(
         ("generation-zero", AuthorityKind.GENERATION_ZERO, True),
         ("version-one", AuthorityKind.VERSION_ONE, True),
         ("version-two", AuthorityKind.VERSION_TWO, True),
+        ("version-three", AuthorityKind.VERSION_THREE, True),
         ("future", AuthorityKind.FUTURE, False),
         ("duplicate", AuthorityKind.DUPLICATE_KEY, False),
         ("malformed", AuthorityKind.MALFORMED_JSON, False),
@@ -178,7 +184,8 @@ def test_authority_classification_is_exact_and_qualifies_first(
         "generation-zero": GENERATION_ZERO,
         "version-one": VERSION_ONE,
         "version-two": VERSION_TWO,
-        "future": b'{"schema_version":3,"accounts":{}}',
+        "version-three": VERSION_THREE,
+        "future": b'{"schema_version":4,"accounts":{}}',
         "duplicate": b'{"same":1,"same":2}',
         "malformed": b'{"test-only-secret":',
         "invalid": b'{"account":true}',

@@ -5,6 +5,10 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Protocol, assert_never
 
+from sidekick_usages.persistence.account_schema_v3 import (
+    decode_version_three,
+    encode_version_three,
+)
 from sidekick_usages.persistence.artifacts import (
     FileSnapshot,
     ManagedArtifact,
@@ -89,6 +93,62 @@ class ReadOnlyPersistenceFilesystem(Protocol):
 
 
 type FilesystemFactory = Callable[[Path], ReadOnlyPersistenceFilesystem]
+
+
+def _read_version_three_authority(
+    snapshot: FileSnapshot,
+) -> AuthorityObservation | None:
+    """Return v3 evidence without changing legacy error classification."""
+    try:
+        version_three = decode_version_three(snapshot.data)
+    except PersistenceSchemaError:
+        return None
+    return AuthorityObservation(
+        AuthorityKind.VERSION_THREE,
+        content=snapshot.data,
+        version_three=version_three,
+    )
+
+
+def _read_legacy_authority(
+    snapshot: FileSnapshot,
+) -> AuthorityObservation:
+    """Classify one pre-v3 authority through the released codecs."""
+    try:
+        document = decode_authority(snapshot.data)
+    except DuplicateKeyError:
+        observation = AuthorityObservation(AuthorityKind.DUPLICATE_KEY)
+    except MalformedJsonError:
+        observation = AuthorityObservation(AuthorityKind.MALFORMED_JSON)
+    except FutureSchemaError as error:
+        observation = AuthorityObservation(
+            AuthorityKind.FUTURE,
+            future_schema_version=error.schema_version,
+        )
+    except InvalidSchemaError:
+        observation = AuthorityObservation(AuthorityKind.INVALID_SCHEMA)
+    else:
+        if isinstance(document, GenerationZeroDocument):
+            observation = AuthorityObservation(
+                AuthorityKind.GENERATION_ZERO,
+                content=snapshot.data,
+                generation_zero=document,
+            )
+        elif isinstance(document, VersionOneDocument):
+            observation = AuthorityObservation(
+                AuthorityKind.VERSION_ONE,
+                content=snapshot.data,
+                version_one=document,
+            )
+        elif isinstance(document, VersionTwoDocument):
+            observation = AuthorityObservation(
+                AuthorityKind.VERSION_TWO,
+                content=snapshot.data,
+                version_two=document,
+            )
+        else:
+            assert_never(document)
+    return observation
 
 
 class PersistenceInventory:
@@ -219,41 +279,10 @@ class PersistenceInventory:
         snapshot = filesystem.read_authority()
         if snapshot is None:
             return AuthorityObservation(AuthorityKind.ABSENT)
-        try:
-            document = decode_authority(snapshot.data)
-        except DuplicateKeyError:
-            observation = AuthorityObservation(AuthorityKind.DUPLICATE_KEY)
-        except MalformedJsonError:
-            observation = AuthorityObservation(AuthorityKind.MALFORMED_JSON)
-        except FutureSchemaError as error:
-            observation = AuthorityObservation(
-                AuthorityKind.FUTURE,
-                future_schema_version=error.schema_version,
-            )
-        except InvalidSchemaError:
-            observation = AuthorityObservation(AuthorityKind.INVALID_SCHEMA)
-        else:
-            if isinstance(document, GenerationZeroDocument):
-                observation = AuthorityObservation(
-                    AuthorityKind.GENERATION_ZERO,
-                    content=snapshot.data,
-                    generation_zero=document,
-                )
-            elif isinstance(document, VersionOneDocument):
-                observation = AuthorityObservation(
-                    AuthorityKind.VERSION_ONE,
-                    content=snapshot.data,
-                    version_one=document,
-                )
-            elif isinstance(document, VersionTwoDocument):
-                observation = AuthorityObservation(
-                    AuthorityKind.VERSION_TWO,
-                    content=snapshot.data,
-                    version_two=document,
-                )
-            else:
-                assert_never(document)
-        return observation
+        managed = _read_version_three_authority(snapshot)
+        if managed is not None:
+            return managed
+        return _read_legacy_authority(snapshot)
 
     @classmethod
     def _classify_authority(
@@ -381,25 +410,19 @@ class PersistenceInventory:
 
 
 def _artifact_kind(kind: ManagedArtifactKind) -> ArtifactKind:
-    match kind:
-        case ManagedArtifactKind.LOCK:
-            return ArtifactKind.LOCK
-        case ManagedArtifactKind.GENERATION_ZERO_BACKUP:
-            return ArtifactKind.V0_BACKUP
-        case ManagedArtifactKind.VERSION_ONE_SNAPSHOT:
-            return ArtifactKind.V1_SNAPSHOT
-        case ManagedArtifactKind.VERSION_TWO_SNAPSHOT:
-            return ArtifactKind.V2_SNAPSHOT
-        case ManagedArtifactKind.PROTOTYPE_RECEIPT:
-            return ArtifactKind.PROTOTYPE_RECEIPT
-        case ManagedArtifactKind.TEMPORARY:
-            return ArtifactKind.TEMPORARY
-        case ManagedArtifactKind.AUTHORITY:
-            raise ValueError(
-                "Authority is not a managed artifact observation."
-            )
-        case _ as unreachable:
-            assert_never(unreachable)
+    if kind is ManagedArtifactKind.AUTHORITY:
+        raise ValueError("Authority is not a managed artifact observation.")
+    return {
+        ManagedArtifactKind.LOCK: ArtifactKind.LOCK,
+        ManagedArtifactKind.GENERATION_ZERO_BACKUP: ArtifactKind.V0_BACKUP,
+        ManagedArtifactKind.VERSION_ONE_SNAPSHOT: ArtifactKind.V1_SNAPSHOT,
+        ManagedArtifactKind.VERSION_TWO_SNAPSHOT: ArtifactKind.V2_SNAPSHOT,
+        ManagedArtifactKind.VERSION_THREE_SNAPSHOT: ArtifactKind.V3_SNAPSHOT,
+        ManagedArtifactKind.PROTOTYPE_RECEIPT: (
+            ArtifactKind.PROTOTYPE_RECEIPT
+        ),
+        ManagedArtifactKind.TEMPORARY: ArtifactKind.TEMPORARY,
+    }[kind]
 
 
 def _prototype_eligible(
@@ -429,6 +452,7 @@ def _prototype_eligible(
         ArtifactKind.V0_BACKUP,
         ArtifactKind.V1_SNAPSHOT,
         ArtifactKind.V2_SNAPSHOT,
+        ArtifactKind.V3_SNAPSHOT,
         ArtifactKind.TEMPORARY,
     }
     return not any(artifact.kind in blocking for artifact in artifacts)
@@ -444,6 +468,8 @@ def _validate_managed_artifact(
         return _version_one_snapshot(artifact, snapshot)
     if artifact.kind is ManagedArtifactKind.VERSION_TWO_SNAPSHOT:
         return _version_two_snapshot(artifact, snapshot)
+    if artifact.kind is ManagedArtifactKind.VERSION_THREE_SNAPSHOT:
+        return _version_three_snapshot(artifact, snapshot)
     if artifact.kind is ManagedArtifactKind.PROTOTYPE_RECEIPT:
         return _prototype_receipt(artifact, snapshot)
     raise ValueError("Managed artifact has no content validator.")
@@ -512,6 +538,28 @@ def _version_two_snapshot(
     )
 
 
+def _version_three_snapshot(
+    artifact: ManagedArtifact,
+    snapshot: FileSnapshot,
+) -> ArtifactObservation:
+    if artifact.digest != snapshot.fingerprint.digest:
+        return _artifact_failure(artifact, ArtifactKind.V3_SNAPSHOT)
+    try:
+        document = decode_version_three(snapshot.data)
+        canonical = encode_version_three(document)
+    except PersistenceSchemaError:
+        return _artifact_failure(artifact, ArtifactKind.V3_SNAPSHOT)
+    if canonical != snapshot.data:
+        return _artifact_failure(artifact, ArtifactKind.V3_SNAPSHOT)
+    return ArtifactObservation(
+        ArtifactKind.V3_SNAPSHOT,
+        artifact.basename,
+        ArtifactState.VALID,
+        content=snapshot.data,
+        version_three=document,
+    )
+
+
 def _prototype_receipt(
     artifact: ManagedArtifact,
     snapshot: FileSnapshot,
@@ -556,6 +604,7 @@ def _oversized_artifact(
         ArtifactKind.V0_BACKUP,
         ArtifactKind.V1_SNAPSHOT,
         ArtifactKind.V2_SNAPSHOT,
+        ArtifactKind.V3_SNAPSHOT,
     }:
         state = ArtifactState.CONFLICT
     else:

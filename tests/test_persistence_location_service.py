@@ -113,6 +113,16 @@ def _paths(root: Path) -> ApplicationPaths:
         ),
         activity_snapshots=root / "token-activity.json",
         credential_refresh=canonical / "credential-refresh",
+        private_claude_profiles=canonical / "claude",
+        credential_authorities=canonical / "codex",
+        selected_state=canonical / "selected-accounts.json",
+        activation_journals=canonical / "activation-journals",
+        durable_operations=canonical / "operations",
+        service_state=canonical / "service-state.json",
+        service_logs=canonical / "logs",
+        runtime_directory=canonical / "runtime",
+        supervisor_socket=canonical / "runtime" / "supervisor.sock",
+        supervisor_lock=canonical / "runtime" / "supervisor.lock",
     )
 
 
