@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 
-import sidekick_usages.providers.codex.schemas as schemas_module
 from sidekick_usages.core.expiry import KnownExpiry
 from sidekick_usages.core.models import (
     Account,
@@ -27,6 +26,7 @@ from sidekick_usages.providers.base import (
     ProviderFailureKind,
     RefreshSuccess,
 )
+from sidekick_usages.providers.codex import schemas
 from sidekick_usages.providers.codex.auth import (
     PreparedCodexAuthBundle,
     auth_blob_account_id,
@@ -479,7 +479,7 @@ def test_oversized_access_token_is_rejected_before_jwt_decode(
     def unexpected_decode(*_args: object, **_kwargs: object) -> bytes:
         pytest.fail("oversized access tokens must not reach base64 decoding")
 
-    monkeypatch.setattr(schemas_module, "b64decode", unexpected_decode)
+    monkeypatch.setattr(schemas, "b64decode", unexpected_decode)
 
     result = CodexProvider(FixedClock()).credentials_from_token("x" * 262_145)
 

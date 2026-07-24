@@ -80,7 +80,7 @@ release-matched Codex CLI schema.
 
 ---
 
-- **Status:** Approved; blocked on foundation implementation
+- **Status:** In progress; foundation and Task 1 complete
 - **Date:** 2026-07-23
 - **Repository:** `/home/sabossedgh/dev/sidekick-usages`
 - **Branch:** `develop`
@@ -164,25 +164,26 @@ callers move; leave no second implementation.
 
 ### Tests first
 
-- [ ] Extend `tests/test_codex_provider.py` with one supported-boundary
-  scenario covering exact executable provenance, generated-schema
-  capability, JSON-RPC initialization, one request/notification exchange,
-  and bounded redacted shutdown.
-- [ ] Add one fail-closed scenario using a synthetic executable whose schema
+- [x] Add one supported-boundary scenario to the phase's sole approved
+  `tests/test_codex_managed_runtime.py` owner. Cover exact executable
+  provenance, generated-schema capability, JSON-RPC initialization, one
+  request/notification exchange, and bounded redacted shutdown without
+  pushing the near-limit provider test module past its cohesion threshold.
+- [x] Add one fail-closed scenario using a synthetic executable whose schema
   lacks one required auth capability and whose response is malformed. Prove
   failure occurs before a managed worker or shared-runtime mutation starts.
-- [ ] Keep both scenarios on a small fake executable. Do not create separate
+- [x] Keep both scenarios on a small fake executable. Do not create separate
   executable, schema, and JSON-RPC permutation suites or invoke the installed
   binary from automated tests.
-- [ ] Run the focused tests and confirm failure because the versioned
+- [x] Run the focused tests and confirm failure because the versioned
   app-server boundary does not exist.
 
 ### Implementation
 
-- [ ] Resolve Codex once through `shutil.which`, require an absolute regular
+- [x] Resolve Codex once through `shutil.which`, require an absolute regular
   executable, obtain `codex --version`, and retain immutable provenance for
   the operation.
-- [ ] Generate the experimental JSON schema in a qualified temporary
+- [x] Generate the experimental JSON schema in a qualified temporary
   directory using:
 
 ```bash
@@ -192,15 +193,15 @@ codex app-server generate-json-schema \
   --out "$SIDEKICK_CODEX_SCHEMA_DIR"
 ```
 
-- [ ] Parse only the generated files required for managed `account/read`,
+- [x] Parse only the generated files required for managed `account/read`,
   official login, `chatgptAuthTokens`, `account/updated`, and
   `account/chatgptAuthTokens/refresh`.
-- [ ] Hash the capability schema only for local compatibility-cache
+- [x] Hash the capability schema only for local compatibility-cache
   invalidation. Never log or confuse that schema hash with a credential
   generation.
-- [ ] Pin compatibility to the exact major/minor/patch and required schema
+- [x] Pin compatibility to the exact major/minor/patch and required schema
   shapes. A new installed version is unsupported until the probe passes.
-- [ ] Implement a bounded JSON-RPC session over stdio with:
+- [x] Implement a bounded JSON-RPC session over stdio with:
   - 1 MiB maximum line;
   - strict duplicate-key rejection;
   - monotonically allocated request IDs;
@@ -208,24 +209,25 @@ codex app-server generate-json-schema \
   - separate response, notification, and server-request types;
   - monotonic deadlines; and
   - forced child termination and reaping on failure.
-- [ ] Use a minimal child environment with the requested private
+- [x] Use a minimal child environment with the requested private
   `CODEX_HOME`. Do not inherit credential environment variables.
-- [ ] Redact provider output at the subprocess boundary before raising typed
+- [x] Redact provider output at the subprocess boundary before raising typed
   errors.
-- [ ] Update architecture checks so generic JSON-RPC framing does not import
+- [x] Update architecture checks so generic JSON-RPC framing does not import
   credentials, HTTP, CLI, or presentation modules.
 
 ### Verify and commit
 
-- [ ] Run:
+- [x] Run:
 
 ```bash
 uv run pytest \
   tests/test_codex_provider.py \
+  tests/test_codex_managed_runtime.py \
   tests/test_architecture.py
 ```
 
-- [ ] Run Ruff and `ty`, inspect every subprocess call for absolute argv and
+- [x] Run Ruff and `ty`, inspect every subprocess call for absolute argv and
   bounded output, then commit.
 
 ## 4. Task 2 — Managed Private-Home Read and Refresh

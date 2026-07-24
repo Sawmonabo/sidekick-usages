@@ -28,6 +28,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 MAX_MODULE_LINES = 1000
 REVIEW_MODULE_LINES = 800
 MAX_CLI_APP_LINES = 200
+_CODEX_JSONRPC_FILE = "src/sidekick_usages/providers/codex/jsonrpc.py"
 
 _SERVICE_FILES = frozenset(
     {
@@ -431,7 +432,11 @@ def _check_import(
             ),
         )
         persistence_leak = matches(module, "sidekick_usages.persistence")
-        if forbidden_provider or persistence_leak:
+        jsonrpc_leak = path == _CODEX_JSONRPC_FILE and matches(
+            module,
+            "sidekick_usages.http",
+        )
+        if forbidden_provider or persistence_leak or jsonrpc_leak:
             violations.append(
                 finding(
                     unit,
