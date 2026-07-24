@@ -71,6 +71,12 @@ class AuthorityId(_CanonicalUuid):
     _name = "Authority ID"
 
 
+class OperationId(_CanonicalUuid):
+    """Stable identifier for one durable Sidekick operation."""
+
+    _name = "Operation ID"
+
+
 @dataclass(frozen=True, slots=True)
 class ProviderIdentity:
     """Bounded provider identity intentionally hidden from representations."""
@@ -424,6 +430,7 @@ __all__ = [
     "CodexManagedAuthority",
     "CredentialHealth",
     "MetricsFreshness",
+    "OperationId",
     "ProviderIdentity",
     "SavedAccount",
     "SidekickAccountId",

@@ -73,6 +73,7 @@ _PYDANTIC_OWNERS = frozenset(
         "src/sidekick_usages/persistence/credential_refresh_private_stage.py",
         "src/sidekick_usages/persistence/credential_refresh_schema.py",
         "src/sidekick_usages/persistence/credential_refresh_stage.py",
+        "src/sidekick_usages/persistence/selection_schema.py",
         "src/sidekick_usages/persistence/schemas.py",
         "src/sidekick_usages/providers/claude/credential_schemas.py",
         "src/sidekick_usages/providers/claude/schemas.py",
