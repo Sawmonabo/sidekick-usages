@@ -1,7 +1,6 @@
 # Design Spec — Interactive Global Claude and Codex Account Selection
 
-- **Status:** Design decisions approved; tracked-spec review pending; not
-  implemented
+- **Status:** Approved 2026-07-23; not implemented
 - **Date:** 2026-07-23
 - **Repository:** `sidekick-usages`
 - **Branch:** `develop`
