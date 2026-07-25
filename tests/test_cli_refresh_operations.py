@@ -1,6 +1,5 @@
 """CLI import, bulk refresh, and add workflow regression tests."""
 
-import json
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
@@ -22,13 +21,11 @@ from sidekick_usages.providers.base import (
 )
 from tests.test_cli_refresh import (
     _claude_login_account,
-    _codex_cache_home,
     _detected,
     _FakeProvider,
     _install_empty_ctx,
     _install_many_ctx,
     _isolate_default_codex_home,
-    _seconds,
 )
 from tests.test_support import REFERENCE_TIME, FixedClock
 
@@ -271,40 +268,6 @@ def test_refresh_all_persists_failed_refresh_diagnostic(
     assert saved.access_token == "sk-ant-oat01-old"
     assert saved.last_refresh_status is RefreshStatus.FAILED
     assert saved.last_refresh_error is not None
-
-
-def test_add_codex_uses_default_login_and_writes_private_bundle(
-    tmp_path: Path,
-) -> None:
-    """Adding Codex from the default login saves a private auth bundle."""
-    provider = _FakeProvider(
-        detected=_detected(
-            access_token="eyJ-current.access.sig",
-            provider_id="codex",
-            refresh_token="refresh-current",
-            expiry=_seconds(1_770_000_000),
-            plan="pro",
-            provider_account_id="acct_current",
-            id_token="id-token-current",
-            last_refresh="2026-06-12T00:00:00Z",
-        ),
-        provider_id="codex",
-    )
-    harness, store, _, _ = _install_empty_ctx(tmp_path, provider)
-
-    result = harness.invoke(["add", "codex", "--label", "team"])
-
-    assert result.exit_code == 0
-    assert provider.credential_homes == [None]
-    saved = store.get("team")
-    assert saved is not None
-    cache_home = _codex_cache_home(tmp_path)
-    assert saved.codex_home == str(cache_home)
-    assert saved.provider_account_id == "acct_current"
-    assert saved.codex_id_token == "id-token-current"
-    assert saved.codex_last_refresh == "2026-06-12T00:00:00Z"
-    cached = json.loads((cache_home / "auth.json").read_text())
-    assert cached["tokens"]["access_token"] == "eyJ-current.access.sig"
 
 
 @pytest.mark.parametrize("failure_kind", list(ProviderFailureKind))

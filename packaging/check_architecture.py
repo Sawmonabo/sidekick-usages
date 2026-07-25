@@ -7,6 +7,7 @@ import tomllib
 from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePosixPath
 
+from architecture.codex import check_codex_auth_ownership
 from architecture.hygiene import check_hygiene
 from architecture.models import (
     ArchitectureFinding,
@@ -118,6 +119,7 @@ def check_repository(
     _check_time_and_settings(units, violations)
     check_value_contracts(units, violations)
     _check_activity_contract(units, violations)
+    check_codex_auth_ownership(units, violations)
     _check_cli(units, violations)
     check_ownership(units, violations)
     check_source_shape(units, violations)

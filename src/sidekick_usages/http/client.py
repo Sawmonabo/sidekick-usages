@@ -36,7 +36,6 @@ from sidekick_usages.serialization.json import (
 )
 
 JSON_REQUEST_LIMIT = 1024 * 1024
-FORM_REQUEST_LIMIT = 256 * 1024
 JSON_RESPONSE_LIMIT = 4 * 1024 * 1024
 DISCARD_BODY_LIMIT = 64 * 1024
 ERROR_BODY_LIMIT = 64 * 1024
@@ -139,34 +138,6 @@ class HttpClient(AbstractContextManager["HttpClient"]):
             discard_oversized=True,
         )
         return result.headers
-
-    def post_form(
-        self,
-        url: str,
-        data: Mapping[str, str],
-        headers: Mapping[str, str] | None = None,
-        *,
-        operation: HttpOperation,
-    ) -> JsonObject:
-        """POST bounded form data and decode a JSON-object response."""
-        _require_operation(operation, HttpOperation.CODEX_REFRESH)
-        body = urllib.parse.urlencode(data).encode("utf-8")
-        _require_request_bound(body, FORM_REQUEST_LIMIT)
-        request_headers = {
-            "Content-Type": "application/x-www-form-urlencoded",
-            "Accept": "application/json",
-        }
-        if headers is not None:
-            request_headers.update(headers)
-        result = self._request(
-            HTTPMethod.POST,
-            url,
-            request_headers,
-            body=body,
-            operation=operation,
-            response_limit=JSON_RESPONSE_LIMIT,
-        )
-        return decode_json_object(result.body)
 
     def post_json(
         self,

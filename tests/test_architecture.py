@@ -96,8 +96,11 @@ _MUTATIONS = (
     architecture.models.SourceMutation(
         "DEP006",
         "src/sidekick_usages/usage/service.py",
-        "from dataclasses import dataclass\n",
-        ("from dataclasses import dataclass\nfrom rich.text import Text\n"),
+        "from dataclasses import dataclass, replace\n",
+        (
+            "from dataclasses import dataclass, replace\n"
+            "from rich.text import Text\n"
+        ),
     ),
     architecture.models.SourceMutation(
         "DEP007",
@@ -213,6 +216,12 @@ _MUTATIONS = (
         "src/sidekick_usages/activity_architecture_fixture.py",
         "",
         "import sidekick_usages.lifetime\n",
+    ),
+    architecture.models.SourceMutation(
+        "CODEX001",
+        "src/sidekick_usages/providers/codex/retired_auth_fixture.py",
+        "",
+        'TOKEN_ENDPOINT = "https://auth.openai.com/oauth/token"\n',
     ),
 )
 

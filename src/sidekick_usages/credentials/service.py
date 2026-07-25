@@ -2,15 +2,13 @@
 
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from pathlib import Path
 
 from sidekick_usages.clock import Clock
-from sidekick_usages.core.expiry import InvalidExpiry, UnknownExpiry
+from sidekick_usages.core.expiry import InvalidExpiry
 from sidekick_usages.core.models import (
     Account,
     ClaudeLoginCredentials,
     ClaudeSetupTokenCredentials,
-    CodexCredentials,
     Credentials,
     DetectedCredentials,
 )
@@ -28,16 +26,12 @@ from sidekick_usages.credentials.claude.setup_save import (
 from sidekick_usages.credentials.claude.transitions import (
     apply_claude_transition,
 )
-from sidekick_usages.credentials.codex.coordinator import (
-    CodexCredentialCoordinator,
-)
 from sidekick_usages.credentials.codex.migration import (
     CodexAuthMigrationCoordinator,
 )
 from sidekick_usages.credentials.codex.types import CodexLoginEventSink
 from sidekick_usages.credentials.models import (
     ClaudeSetupTokenSavePreview,
-    CredentialExportResult,
     CredentialLoginResult,
     CredentialRefreshResult,
     CredentialRefreshSuccess,
@@ -47,7 +41,6 @@ from sidekick_usages.credentials.models import (
     CredentialUpdateResult,
     CredentialUpdateSuccess,
     LocalCredentialSource,
-    TokenCredentialSource,
     TokenPromptSpec,
 )
 from sidekick_usages.credentials.refresh import (
@@ -63,12 +56,6 @@ from sidekick_usages.errors import (
 from sidekick_usages.http.client import HttpClient
 from sidekick_usages.persistence.accounts.store import AccountStore
 from sidekick_usages.persistence.errors import SourceChangedError
-from sidekick_usages.persistence.private.bundles.writes import (
-    PreparedPrivateBundleWrite,
-)
-from sidekick_usages.persistence.private.credentials import (
-    PrivateCredentialTree,
-)
 from sidekick_usages.providers.base import (
     CredentialDetection,
     Provider,
@@ -127,11 +114,9 @@ class CredentialService:
         store: AccountStore,
         http: HttpClient,
         providers: Mapping[ProviderId, Provider],
-        private_credentials: PrivateCredentialTree,
         *,
         clock: Clock,
         refresh_coordinator: CredentialRefreshCoordinator | None = None,
-        codex_coordinator: CodexCredentialCoordinator | None = None,
         codex_auth_migration: CodexAuthMigrationCoordinator | None = None,
     ) -> None:
         """Bind credential workflows to invocation-scoped dependencies.
@@ -139,25 +124,14 @@ class CredentialService:
         :param store: Loaded transactional account store.
         :param http: Shared provider HTTP facade.
         :param providers: Closed provider adapter registry.
-        :param private_credentials: Shared private credential tree.
         :param clock: Aware application wall clock.
         """
         self._store = store
         self._http = http
         self._providers = providers
-        self._private = private_credentials
         self._clock = clock
         self._refresh = refresh_coordinator
         self._codex_auth_migration = codex_auth_migration
-        self._codex = (
-            codex_coordinator
-            if codex_coordinator is not None
-            else CodexCredentialCoordinator(
-                store,
-                private_credentials,
-                clock=clock,
-            )
-        )
 
     def prompt_spec(
         self,
@@ -270,32 +244,9 @@ class CredentialService:
                 return validation
             warning = validation
 
-        private_bundle: PreparedPrivateBundleWrite | None = None
-        if candidate.provider_id is ProviderId.CODEX:
-            require_bundle = isinstance(source, LocalCredentialSource)
-            prepared = self._codex.prepare_account(
-                candidate,
-                previous,
-                source_home=(
-                    source.credential_home
-                    if isinstance(source, LocalCredentialSource)
-                    else None
-                ),
-                use_existing_source=isinstance(
-                    source,
-                    TokenCredentialSource,
-                ),
-                require_bundle=require_bundle,
-                reference_time=self._clock.now(),
-            )
-            if isinstance(prepared, ProviderFailure):
-                return prepared
-            candidate, private_bundle = prepared
-
         self._store.persist_credentials(
             candidate,
             previous_label=save_plan.previous_label,
-            private_bundle=private_bundle,
         )
         return CredentialSaveSuccess(
             candidate.label,
@@ -471,26 +422,16 @@ class CredentialService:
         ):
             return CredentialUpdateSuccess(candidate.label)
 
-        private_bundle: PreparedPrivateBundleWrite | None = None
         if (
             candidate.provider_id is ProviderId.CODEX
             and candidate.credentials != current.credentials
         ):
-            prepared = self._codex.prepare_account(
-                candidate,
-                current,
-                source_home=None,
-                use_existing_source=True,
-                require_bundle=False,
-                reference_time=self._clock.now(),
+            return _failure(
+                ProviderId.CODEX,
+                ProviderFailureKind.REJECTED,
+                "Codex credential changes require official managed login.",
             )
-            if isinstance(prepared, ProviderFailure):
-                return prepared
-            candidate, private_bundle = prepared
-        self._store.persist_credentials(
-            candidate,
-            private_bundle=private_bundle,
-        )
+        self._store.persist_credentials(candidate)
         return CredentialUpdateSuccess(candidate.label)
 
     def refresh(
@@ -540,57 +481,6 @@ class CredentialService:
             events=events,
         )
 
-    def export_codex(
-        self,
-        label: str,
-        target_home: Path,
-        *,
-        source_home: Path | None = None,
-    ) -> CredentialExportResult:
-        """Export one saved account without mutating an active Codex login."""
-        account = self._store.get(label)
-        if account is None:
-            return _failure(
-                ProviderId.CODEX,
-                ProviderFailureKind.MISSING,
-                f"No account named '{label}'.",
-            )
-        if account.provider_id is not ProviderId.CODEX:
-            return _failure(
-                ProviderId.CODEX,
-                ProviderFailureKind.IDENTITY_MISMATCH,
-                f"'{label}' is not a Codex account.",
-            )
-        result = self._codex.export(
-            account,
-            target_home,
-            source_home=source_home,
-        )
-        if (
-            isinstance(result, ProviderFailure)
-            and result.kind is ProviderFailureKind.INCOMPLETE
-            and account.refresh_token is not None
-        ):
-            refreshed = self.refresh(
-                provider_id=account.provider_id,
-                label=account.label,
-                reason=CredentialRefreshReason.CREDENTIAL_REQUIRED,
-            )
-            if isinstance(refreshed, ProviderFailure):
-                return refreshed
-            saved = self._store.get(
-                label,
-                provider_id=account.provider_id,
-            )
-            if saved is None:
-                raise RuntimeError("Refreshed account disappeared from store.")
-            result = self._codex.export(
-                saved,
-                target_home,
-                source_home=source_home,
-            )
-        return result
-
     def _apply_detected(
         self,
         account: Account,
@@ -629,45 +519,6 @@ class CredentialService:
             if isinstance(applied, ProviderFailure):
                 return applied
             account.credentials = applied
-        elif isinstance(current, CodexCredentials) and isinstance(
-            incoming,
-            CodexCredentials,
-        ):
-            old_id = current.account_id
-            new_id = incoming.account_id
-            if old_id is not None and new_id is not None:
-                identity_proven = old_id == new_id
-            else:
-                identity_proven = current.access_token == incoming.access_token
-            if not replace_identity and not identity_proven:
-                return _failure(
-                    ProviderId.CODEX,
-                    ProviderFailureKind.IDENTITY_MISMATCH,
-                    "Refusing Codex credentials without matching identity; "
-                    "use --replace-identity to replace this label.",
-                )
-            if replace_identity:
-                account.credentials = replace(incoming, auth_home=None)
-            else:
-                account.credentials = replace(
-                    current,
-                    access_token=incoming.access_token,
-                    refresh_token=(
-                        incoming.refresh_token
-                        if incoming.refresh_token is not None
-                        else current.refresh_token
-                    ),
-                    expiry=(
-                        incoming.expiry
-                        if not isinstance(incoming.expiry, UnknownExpiry)
-                        else current.expiry
-                    ),
-                    account_id=incoming.account_id or current.account_id,
-                    id_token=incoming.id_token or current.id_token,
-                    auth_last_refresh=(
-                        incoming.auth_last_refresh or current.auth_last_refresh
-                    ),
-                )
         else:
             return _failure(
                 account.provider_id,

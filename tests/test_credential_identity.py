@@ -53,12 +53,9 @@ def test_claude_known_identity_mismatch_overrides_equal_access_bytes(
             organization_id="test-only-incoming-organization",
         ),
     )
-    service, store, _ = _service(
+    service, store = _service(
         tmp_path,
-        _Provider(
-            ProviderId.CLAUDE,
-            DetectedCredentials(credentials=incoming, plan="team"),
-        ),
+        _Provider(DetectedCredentials(credentials=incoming, plan="team")),
         (account,),
     )
     authority_before = store.path.read_bytes()

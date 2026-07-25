@@ -13,9 +13,6 @@ from rich.console import Console
 from sidekick_usages.clock import Clock, SystemClock
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.credentials.authorities import credential_resolver_for
-from sidekick_usages.credentials.codex.coordinator import (
-    CodexCredentialCoordinator,
-)
 from sidekick_usages.credentials.codex.migration import (
     CodexAuthMigrationCoordinator,
 )
@@ -271,11 +268,6 @@ def compose_app_context(
             raise _ApplicationCompositionError(
                 _persistence_failure(error, resolved_paths.accounts)
             ) from None
-        codex_coordinator = CodexCredentialCoordinator(
-            accounts,
-            private,
-            clock=resolved_clock,
-        )
         resolver = credential_resolver_for(accounts, private)
         refresh_coordinator = CredentialRefreshCoordinator(
             accounts,
@@ -283,17 +275,14 @@ def compose_app_context(
             provider_map,
             refresh_transactions,
             clock=resolved_clock,
-            codex=codex_coordinator,
             resolver=resolver,
         )
         credentials = CredentialService(
             accounts,
             http,
             provider_map,
-            private,
             clock=resolved_clock,
             refresh_coordinator=refresh_coordinator,
-            codex_coordinator=codex_coordinator,
             codex_auth_migration=CodexAuthMigrationCoordinator(
                 resolved_paths,
                 accounts,

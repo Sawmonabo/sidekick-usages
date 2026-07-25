@@ -28,7 +28,6 @@ from sidekick_usages.core.types import (
     ProviderId,
     RefreshStatus,
 )
-from sidekick_usages.credentials.codex.coordinator import private_codex_home
 from sidekick_usages.http.client import HttpClient
 from sidekick_usages.persistence.accounts.store import AccountStore
 from sidekick_usages.providers.base import (
@@ -50,7 +49,6 @@ from tests.test_support import (
     FixedClock,
     make_account_store_with_private,
     make_app_context,
-    make_application_paths,
 )
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
@@ -285,17 +283,6 @@ def _install_empty_ctx(
         ),
     )
     return harness, store, stdout, stderr
-
-
-def _codex_cache_dir(tmp_path: Path) -> Path:
-    """Return the injected private Codex root for a test context."""
-    return make_application_paths(tmp_path).private_credentials
-
-
-def _codex_cache_home(tmp_path: Path, label: str = "team") -> Path:
-    """Return the deterministic collision-resistant private bundle path."""
-    root = make_application_paths(tmp_path).private_credentials
-    return private_codex_home(root, label)
 
 
 def _claude_login_account(

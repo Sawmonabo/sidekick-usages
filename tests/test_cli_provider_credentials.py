@@ -30,7 +30,6 @@ from tests.fakes.codex.schema import write_codex_schema
 from tests.test_cli_refresh import (
     _codex_acct,
     _FakeProvider,
-    _install_ctx,
     _install_many_ctx,
     _isolate_default_codex_home,
 )
@@ -321,105 +320,6 @@ def test_codex_login_recovers_proven_home_after_interrupted_commit(
     assert events.count('"method": "account/login/start"') == 1
     assert "https://auth.openai.com/codex/device" in stdout.getvalue()
     assert "SAFE-CODE" in stdout.getvalue()
-
-
-def test_codex_export_writes_saved_credentials_to_home(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Canonical export writes saved credentials without warning output."""
-    codex_home = tmp_path / "codex-team"
-    acct = _codex_acct(
-        access_token="eyJ-current.access.sig",
-        refresh_token="refresh-current",
-        provider_account_id="acct_current",
-        id_token="id-token-current",
-        last_refresh="2026-06-12T00:00:00Z",
-    )
-    provider = _FakeProvider(provider_id="codex")
-    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "missing-default"))
-    harness, store, stdout, _ = _install_ctx(tmp_path, provider, acct)
-
-    result = harness.invoke(
-        [
-            "codex",
-            "export",
-            "team",
-            "--codex-home",
-            str(codex_home),
-        ],
-    )
-
-    assert result.exit_code == 0
-    assert "DeprecationWarning" not in result.output
-    assert "Exported 'team' to Codex home" in stdout.getvalue()
-    auth = json.loads((codex_home / "auth.json").read_text())
-    assert auth["auth_mode"] == "chatgpt"
-    assert auth["last_refresh"] == "2026-06-12T00:00:00Z"
-    assert auth["tokens"] == {
-        "access_token": "eyJ-current.access.sig",
-        "refresh_token": "refresh-current",
-        "id_token": "id-token-current",
-        "account_id": "acct_current",
-    }
-    saved = store.get("team")
-    assert saved is not None
-    assert saved.codex_home is None
-
-
-@pytest.mark.parametrize(
-    ("source_account_id", "expected_exit"),
-    [
-        ("acct_current", ExitCode.SUCCESS),
-        ("acct_other", ExitCode.MANUAL_ACTION),
-    ],
-)
-def test_codex_export_reads_default_source_without_mutating_it(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    source_account_id: str,
-    expected_exit: ExitCode,
-) -> None:
-    source_home = tmp_path / "default-codex"
-    source_home.mkdir()
-    source_auth = source_home / "auth.json"
-    source_auth.write_text(
-        json.dumps(
-            {
-                "future_metadata": {"preserve": True},
-                "tokens": {
-                    "account_id": source_account_id,
-                    "id_token": "id-from-default-source",
-                },
-            }
-        )
-    )
-    original_source = source_auth.read_bytes()
-    monkeypatch.setenv("CODEX_HOME", str(source_home))
-    target_home = tmp_path / "exported-codex"
-    account = _codex_acct(
-        access_token="eyJ-current.access.sig",
-        refresh_token="refresh-current",
-        provider_account_id="acct_current",
-        id_token=None,
-    )
-    provider = _FakeProvider(provider_id="codex")
-    harness, _, _, _ = _install_ctx(tmp_path, provider, account)
-
-    result = harness.invoke(
-        ["codex", "export", "team", "--codex-home", str(target_home)],
-    )
-
-    assert result.exit_code == expected_exit
-    assert source_auth.read_bytes() == original_source
-    assert provider.refresh_calls == 0
-    if expected_exit is ExitCode.SUCCESS:
-        exported = json.loads((target_home / "auth.json").read_text())
-        assert exported["tokens"]["id_token"] == "id-from-default-source"
-    else:
-        assert target_home.is_dir()
-        assert not (target_home / "auth.json").exists()
-        assert not (target_home / "config.toml").exists()
 
 
 def test_setup_token_delegates_only_to_claude_capability(

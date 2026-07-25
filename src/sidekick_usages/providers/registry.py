@@ -18,7 +18,7 @@ def build_provider_registry(
     """Build the closed provider registry in display order."""
     return {
         ProviderId.CLAUDE: ClaudeProvider(clock),
-        ProviderId.CODEX: CodexProvider(clock),
+        ProviderId.CODEX: CodexProvider(),
     }
 
 

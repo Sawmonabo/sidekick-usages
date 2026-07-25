@@ -293,7 +293,7 @@ def _service(
     account_activity: AccountTokenActivitySource | None = None,
     activity_snapshots: AccountTokenActivitySnapshots | None = None,
 ) -> tuple[UsageCheckService, AccountStore]:
-    store, private = make_account_store_with_private(tmp_path, accounts)
+    store, _private = make_account_store_with_private(tmp_path, accounts)
     registry: dict[ProviderId, Provider] = {
         provider.id: provider for provider in providers
     }
@@ -301,7 +301,6 @@ def _service(
         store,
         http,
         registry,
-        private,
         clock=FixedClock(),
     )
     return (

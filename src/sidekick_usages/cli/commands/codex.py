@@ -1,6 +1,5 @@
-"""Codex login and credential-export command adapters."""
+"""Official managed Codex login command adapter."""
 
-from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -45,49 +44,6 @@ def codex_login_cmd(
     invocation.console.print(message)
 
 
-def codex_export_cmd(
-    ctx: typer.Context,
-    label: Annotated[
-        str,
-        typer.Argument(help="Saved Codex account label."),
-    ],
-    codex_home: Annotated[
-        Path,
-        typer.Option(
-            "--codex-home",
-            help="Target isolated Codex CODEX_HOME.",
-        ),
-    ],
-    source_codex_home: Annotated[
-        Path | None,
-        typer.Option(
-            "--source-codex-home",
-            help=(
-                "Optional source CODEX_HOME whose auth.json belongs to "
-                "this account."
-            ),
-        ),
-    ] = None,
-) -> None:
-    """Export a saved Codex account into a file-backed Codex home."""
-    invocation = invocation_context(ctx)
-    exported = invocation.require_app(ctx).credentials.export_codex(
-        label,
-        codex_home,
-        source_home=source_codex_home,
-    )
-    if isinstance(exported, ProviderFailure):
-        exit_credential_failure(
-            ctx,
-            exported,
-            prefix=f"Cannot export '{label}': ",
-        )
-    invocation.console.print(
-        f"[green]Exported '{label}' to Codex home "
-        f"{exported.target_home}.[/green]"
-    )
-
-
 def register(application: typer.Typer) -> None:
     """Register the Codex credential command group."""
     codex_app = typer.Typer(
@@ -96,5 +52,4 @@ def register(application: typer.Typer) -> None:
         rich_markup_mode="rich",
     )
     branded_command(codex_app, "login")(codex_login_cmd)
-    branded_command(codex_app, "export")(codex_export_cmd)
     application.add_typer(codex_app, name="codex")

@@ -14,7 +14,6 @@ type CredentialSaveResult = CredentialSaveSuccess | ProviderFailure
 type CredentialRefreshResult = CredentialRefreshSuccess | ProviderFailure
 type CredentialUpdateResult = CredentialUpdateSuccess | ProviderFailure
 type CredentialLoginResult = CredentialLoginSuccess | ProviderFailure
-type CredentialExportResult = CredentialExportSuccess | ProviderFailure
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -95,12 +94,3 @@ class CredentialLoginSuccess:
     """One Codex managed login was verified and committed."""
 
     label: AccountLabel
-
-
-@dataclass(frozen=True, slots=True)
-class CredentialExportSuccess:
-    """One account was exported to a protected isolated Codex home."""
-
-    label: AccountLabel
-    target_home: Path
-    auth_path: Path

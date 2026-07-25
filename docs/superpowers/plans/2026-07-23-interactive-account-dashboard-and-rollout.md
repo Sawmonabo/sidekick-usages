@@ -57,8 +57,17 @@ WSL, macOS arm64, and macOS x64.
 - `prompt_toolkit` is imported only after TTY checks and first paint. The
   supervisor, workers, help, and non-interactive paths must not import it.
 - No provider or credential operation runs in the input/render loop.
+- After cached first paint, start every saved-account lookup together as one
+  concurrent background wave. Never serialize first-load work by provider or
+  account. Do not implement this as one operating-system process per account;
+  use one memory-bounded multiplexing owner, while mutations remain in the
+  existing isolated worker boundary.
 - Cached first paint must complete within 250 ms and local input-to-feedback
   p95 must target 50 ms on the documented reference machine.
+- Measure peak memory and first complete refresh for the real saved-account
+  count. Concurrency is accepted only when it stays inside the supervisor
+  memory gate and every account begins without avoidable provider-level
+  serialization.
 - Automated tests use synthetic account labels and fake services. Live labels
   and provider identities never enter tracked captures or fixtures.
 - Follow the foundation plan's lean-test contract. Reuse or replace current
@@ -204,6 +213,10 @@ The no-secret dashboard view contains:
   `service_unavailable`.
 - [ ] Join account index, selected state, service state, and persisted metrics
   by stable account ID.
+- [ ] Render cached state first, then enter one lookup per saved account into
+  the same concurrent wave before awaiting any result. Publish results
+  independently as each account completes; preserve deterministic provider
+  and account display order.
 - [ ] Use provider read-back relation as the only active-account signal.
 - [ ] Insert a temporary external row only when actual provider identity is
   unknown to Sidekick. Give it no saved metrics or implicit label.
@@ -218,6 +231,10 @@ The no-secret dashboard view contains:
 
 - [ ] Run the two dashboard-state scenarios plus existing usage, activity,
   selected-state, and architecture regressions they touch.
+- [ ] Record one timing trace proving all saved accounts begin in the same
+  bounded wave, a slow account does not delay completed rows, and peak memory
+  stays within the supervisor gate. Extend the joined-snapshot scenario; do
+  not add a performance test matrix.
 - [ ] Run Ruff and `ty`, inspect representations and fixtures for secrets,
   then commit.
 

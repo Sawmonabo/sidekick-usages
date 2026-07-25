@@ -51,13 +51,14 @@ require the provider's normal login flow.
 - macOS, Linux, WSL, or native Windows.
 - Python 3.14 or newer. Homebrew and `uv --python 3.14` provision an
   appropriate interpreter when needed.
-- A normal Claude Code or Codex ChatGPT login for credential auto-detection.
-  Install and sign in to the provider CLI before running `add` or `refresh`.
+- A normal Claude Code login for Claude credential auto-detection.
+- A supported Codex CLI for official login and refresh inside each saved
+  account's managed home.
 - `git` and [`uv`](https://docs.astral.sh/uv/) for the Git-tag installation
   path below.
 
-Codex API-key mode is not supported. The Codex integration reads ChatGPT OAuth
-credentials from `auth.json` and requires the associated ChatGPT account id.
+Codex API-key mode is not supported. Codex ChatGPT credentials are read only
+inside the exact protected managed home during worker-scoped operations.
 Claude supports Claude Code OAuth logins and Claude `setup-token` credentials,
 not Anthropic API keys.
 
@@ -115,19 +116,15 @@ above when you need a stable, reproducible version.
 
 ### Save provider accounts
 
-Log in normally, then import the current provider login under a stable label:
+Import a Claude login under a stable label:
 
 ```bash
 # Claude Code subscription login
 claude auth login
 sidekick-usages add claude --label <claude-label>
-
-# Codex ChatGPT login
-codex login
-sidekick-usages add codex --label <codex-label>
 ```
 
-Move the saved Codex label into its independent managed home:
+Authenticate an existing Codex label in its independent managed home:
 
 ```bash
 sidekick-usages codex login <codex-label>
@@ -163,9 +160,9 @@ sidekick-usages set-plan <label> max
 sidekick-usages remove <label>
 ```
 
-`add` is idempotent by access token. It auto-detects provider credentials first,
-then falls back to piped stdin or a hidden prompt when no local login is found.
-Use `--force` only to replace an existing label intentionally.
+Claude `add` is idempotent by access token. It auto-detects Claude credentials
+first, then falls back to piped stdin or a hidden prompt when no local login is
+found. Use `--force` only to replace an existing label intentionally.
 
 ## What it reports
 
@@ -274,20 +271,18 @@ research, app-server schema guidance, and architecture status. Proposed
 behavior there is not part of the current runtime unless an implementation
 record says otherwise.
 
-Initial legacy credential discovery reads `$CODEX_HOME/auth.json` when
-`CODEX_HOME` is set, otherwise `~/.codex/auth.json`.
-
 `sidekick-usages codex login <label>` and `sidekick-usages refresh <label>`
 authenticate a saved Codex label directly in its stable managed home. Sidekick
 verifies the expected provider identity and an advanced provider-owned
-generation before committing the managed authority and retiring the legacy
-credential copy. The native Codex home remains untouched.
+generation before committing the managed authority. Protected authentication
+state is verified only inside that managed home. The native Codex home remains
+untouched.
 
-Usage calls `https://chatgpt.com/backend-api/codex/usage` with the saved bearer
-token and `ChatGPT-Account-Id`. It reports the primary 5-hour window, secondary
-7-day window, and provider-returned additional model limits. Expiring access
-tokens rotate through `https://auth.openai.com/oauth/token`; rotated data is
-written to the saved account's private credential bundle, not the active
+Usage calls `https://chatgpt.com/backend-api/codex/usage` with a short-lived
+projection from the exact account's protected managed home. It reports the
+primary 5-hour window, secondary 7-day window, and provider-returned additional
+model limits. The official Codex process owns refresh inside each managed home;
+Sidekick does not perform a private OAuth exchange or touch the active
 `~/.codex` login.
 
 Token activity independently calls
@@ -304,17 +299,16 @@ rollout total is used as a fallback.
 | `sidekick-usages` | Run `check` for every saved account. |
 | `sidekick-usages check` | Explicit form of the default usage check. |
 | `sidekick-usages --only <provider>` | Check only `claude` or `codex` accounts. |
-| `sidekick-usages add <provider>` | Save auto-detected, piped, prompted, or `--token` credentials; supports `--label`, `--plan`, `--codex-home`, and `--force`. |
+| `sidekick-usages add claude` | Save auto-detected, piped, prompted, or `--token` Claude credentials; supports `--label`, `--plan`, and `--force`. |
 | `sidekick-usages list` | List labels, providers, plans, heartbeat state, and masked tokens. |
 | `sidekick-usages remove <label>` | Delete one saved account. |
 | `sidekick-usages rename <old> <new>` | Rename one saved account. |
 | `sidekick-usages set-plan <label> <plan>` | Correct a display plan that the provider cannot introspect. |
 | `sidekick-usages refresh <label>` | Repair a Codex label through official managed-home login, or import the current matching Claude login. |
-| `sidekick-usages refresh --all [--force] [--quiet]` | Rotate due saved refresh tokens without reading the current global login. |
+| `sidekick-usages refresh --all [--force] [--quiet]` | Maintain every due saved authority without reading the current global login. |
 | `sidekick-usages maintain [--quiet]` | Manually refresh due tokens, then heartbeat opted-in accounts. |
 | `sidekick-usages doctor [--provider ...] [--label ...] [--json]` | Report independent supervisor, persistence, provider, auth, refresh, and heartbeat health. |
 | `sidekick-usages codex login <label>` | Run official Codex login in the label's final managed home; supports `--device-auth`. |
-| `sidekick-usages codex export <label> --codex-home <path>` | Export complete saved Codex credentials to an isolated file-backed home. |
 | `sidekick-usages claude setup-token` | Run Claude's long-lived token generator and save its output. |
 | `sidekick-usages permissions repair` | Preview and repair Sidekick-owned credential permissions. |
 | `sidekick-usages reset [--provider <id>] [-y]` | Delete all accounts or one provider's accounts. |
@@ -351,7 +345,8 @@ is intentionally pinned, so update it by rerunning the tagged `uv tool install
 
 Token refresh and heartbeat are separate:
 
-- `refresh --all` keeps saved access tokens valid using stored refresh tokens.
+- `refresh --all` maintains Claude stored authorities and each independent
+  Codex managed home.
 - Heartbeat intentionally sends a tiny model request to open an inactive usage
   window. It consumes provider quota and does not create free quota.
 - `maintain --quiet` performs token refresh first, then heartbeat for accounts
@@ -432,13 +427,15 @@ Runtime network destinations are:
 | Claude usage and tiny header probe | `api.anthropic.com` |
 | Claude direct refresh fallback | `platform.claude.com` |
 | Codex usage, token activity, and heartbeat | `chatgpt.com` |
-| Codex token refresh | `auth.openai.com` |
+| Official Codex login and refresh | Provider destinations owned by Codex CLI |
 | Explicit release check | `api.github.com` |
 
-Provider credentials are sent only to that provider's usage, model, or OAuth
-hosts. GitHub release checks do not include provider credentials. Installation
-and explicit updates additionally contact the selected package manager's normal
-GitHub, Homebrew, or package-index destinations.
+Provider credentials are sent only through that provider's owned usage, model,
+or authentication client. The official managed Codex process owns Codex
+authentication traffic. GitHub release checks do not include provider
+credentials. Installation and explicit updates additionally contact the
+selected package manager's normal GitHub, Homebrew, or package-index
+destinations.
 
 See [HTTP transport and retry behavior](./docs/networking.md) for proxy, TLS,
 pool, timeout, payload-bound, retry-safety, and error contracts.
@@ -467,32 +464,40 @@ stable Sidekick account identifiers. Each record carries a provider-qualified
 label and references a protected credential authority:
 
 - Claude setup-token and subscription authorities are independent.
-- Claude and Codex stored-login authorities record only safe health, expiry,
-  identity, and generation metadata in the account index.
+- Claude stored-login and Codex managed authorities record only safe health,
+  expiry, identity, and generation metadata in the account index.
 - Provider credential values remain exclusively in the protected credential
   tree.
 
 Important field semantics:
 
 - Access, refresh, audit, and heartbeat times use canonical UTC text.
-- `provider_account_id` binds Codex requests and protects explicit imports from
-  cross-account replacement when the id is known.
+- `provider_account_id` binds Codex requests and managed authority updates to
+  the expected account when the id is known.
 - Refresh and heartbeat diagnostics are redacted user-facing state. Heartbeat
   targets and reset caches may be absent and remain target-specific.
 
 Do not edit the store by hand. Use CLI commands so identity checks, file modes,
-private Codex credential bundles, and diagnostics remain consistent.
+managed Codex homes, and diagnostics remain consistent.
 
 ## Troubleshooting
 
 ### No accounts saved
 
-Log in to the provider CLI, then import it:
+Import a Claude login:
 
 ```bash
 sidekick-usages add claude --label <claude-label>
-sidekick-usages add codex --label <codex-label>
 ```
+
+Official Codex login repairs an existing enrolled label:
+
+```bash
+sidekick-usages codex login <codex-label>
+```
+
+It does not create a Codex account after a clean reset. Clean enrollment is
+part of the in-progress interactive account rollout.
 
 ### HTTP 401 or failed refresh
 
@@ -542,7 +547,7 @@ sidekick-usages set-plan <label> <plan>
 
 ### Missing Codex account id
 
-Re-import a complete ChatGPT login:
+Repair the existing label with official managed login:
 
 ```bash
 sidekick-usages codex login <label>
@@ -555,9 +560,9 @@ adopt or overwrite the native Codex login.
 
 The HTTP client retries only when the closed operation-safety policy permits
 it. Safe reads may retry selected 429, 5xx, and ambiguous transport failures;
-OAuth refreshes and heartbeat model requests fail closed when repetition could
-duplicate a mutation. After attempts stop, wait for the shown `Retry-After`
-interval when available and run the command again. See
+Credential refreshes and heartbeat model requests fail closed when repetition
+could duplicate a mutation. After attempts stop, wait for the shown
+`Retry-After` interval when available and run the command again. See
 [HTTP transport and retry behavior](./docs/networking.md).
 
 ### Daemon is installed but accounts do not rotate
@@ -603,7 +608,7 @@ If it is missing, run `claude auth login` and retry `add` or `refresh`.
   selected-account state.
 - `src/sidekick_usages/credentials/`: provider-neutral credential workflows,
   Claude transition/lifetime policy, serialized refresh coordination,
-  and private Codex bundle coordination.
+  and managed Codex home and authority coordination.
 - `src/sidekick_usages/usage/`: usage results, application service, and Rich
   presentation; `branding.py` is the one robot and product-copy source.
 - `tests/`: focused pytest coverage for CLI behavior, providers, HTTP errors,

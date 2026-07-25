@@ -100,7 +100,7 @@ Ruff, `ty`, and the release-matched Codex CLI schema.
 
 ---
 
-- **Status:** In progress; foundation and Codex Tasks 1-4 complete
+- **Status:** In progress; Codex Tasks 1-8 implemented, phase gate pending
 - **Date:** 2026-07-23
 - **Repository:** `/home/sabossedgh/dev/sidekick-usages`
 - **Branch:** `develop`
@@ -246,7 +246,7 @@ codex app-server generate-json-schema \
 
 ### Verify and commit
 
-- [x] Run:
+- [ ] Run:
 
 ```bash
 uv run pytest \
@@ -568,45 +568,45 @@ codex app-server daemon version
 
 ### Tests first
 
-- [ ] Extend `tests/test_codex_managed_runtime.py` with one activation
+- [x] Extend `tests/test_codex_managed_runtime.py` with one activation
   scenario that switches A to B through capability preflight, official
   install, correlated-ready proof, commit, and event publication. Prove a
   failed target cannot select another account and Claude state is untouched.
-- [ ] Add one interruption scenario at the externally meaningful boundary
+- [x] Add one interruption scenario at the externally meaningful boundary
   after official mutation and before commit. If native auth did not change,
   startup must idempotently reinstall and re-prove the journaled target. A
   deliberate external native login wins. Recovery must serialize concurrent
   retry and never infer an unavailable daemon identity.
-- [ ] Do not force death after every internal journal write or enumerate all
+- [x] Do not force death after every internal journal write or enumerate all
   equivalent prior-state spellings.
 
 ### Implementation
 
-- [ ] Add `CodexActivationService` under `credentials/` using the foundation
+- [x] Add `CodexActivationService` under `credentials/` using the foundation
   activation journal and provider lock.
-- [ ] Preflight executable, schema, daemon, broker, target authority,
+- [x] Preflight executable, schema, daemon, broker, target authority,
   higher-level service readiness, and expected identity before journal
   creation.
-- [ ] Force a target private-home read/refresh as due policy requires.
-- [ ] Journal `prepared`, install external auth, journal
+- [x] Force a target private-home read/refresh as due policy requires.
+- [x] Journal `prepared`, install external auth, journal
   `target_activated`, require correlated readiness, journal
   `provider_proof_verified`, then atomically commit selected state and
   terminal journal outcome.
-- [ ] On interruption, compare the read-only native-auth observation with the
+- [x] On interruption, compare the read-only native-auth observation with the
   journal baseline first:
   - a deliberate changed saved or external identity wins and reconciles;
   - an unchanged native baseline permits idempotent target reinstall and
     correlated proof;
   - daemon replacement requires reconnect and reinstall; and
   - unreadable or ambiguous state enters reconciliation-required.
-- [ ] Rehydrate the verified selection after daemon restart.
-- [ ] Publish only sanitized progress and completion events.
+- [x] Rehydrate the verified selection after daemon restart.
+- [x] Publish only sanitized progress and completion events.
 
 ### Verify and commit
 
-- [ ] Run the two activation scenarios plus existing journal and daemon
+- [x] Run the two activation scenarios plus existing journal and daemon
   restart regressions they touch.
-- [ ] Run Ruff and `ty`, inspect journal fixtures for identities and secrets,
+- [x] Run Ruff and `ty`, inspect journal fixtures for identities and secrets,
   then commit.
 
 ## 11. Task 7 — External Login Reconciliation and Maintenance Integration
@@ -615,39 +615,39 @@ codex app-server daemon version
 
 ### Tests first
 
-- [ ] Extend the closest existing Codex maintenance test with one
+- [x] Extend the closest existing Codex maintenance test with one
   multi-account scenario: A fails and retains timestamped stale metrics, B
   refreshes and records current metrics, and selection does not change which
   private home is maintained.
-- [ ] Add one reconciliation scenario to
+- [x] Add one reconciliation scenario to
   `tests/test_codex_managed_runtime.py` where an external official login races
   activation and wins. A known identity is related, an unknown identity
   remains an external state, and neither is silently imported.
-- [ ] Adapt existing heartbeat, activity, and usage assertions instead of
+- [x] Adapt existing heartbeat, activity, and usage assertions instead of
   duplicating the multi-account scenario in each suite.
 
 ### Implementation
 
-- [ ] Treat `account/updated` as a change signal, then reconcile a read-only
+- [x] Treat `account/updated` as a change signal, then reconcile a read-only
   native-auth identity and generation against stable provider identities.
-- [ ] When the identity matches a saved account, update selected state only
+- [x] When the identity matches a saved account, update selected state only
   after the external native-auth transition is proven.
-- [ ] When it is unknown, store non-secret external-active state and block
+- [x] When it is unknown, store non-secret external-active state and block
   automatic attribution or metrics ownership.
-- [ ] Let a deliberate external login win over a stale Sidekick journal.
-- [ ] Route scheduled refresh, explicit refresh, heartbeat, usage, and token
+- [x] Let a deliberate external login win over a stale Sidekick journal.
+- [x] Route scheduled refresh, explicit refresh, heartbeat, usage, and token
   activity through the managed authority coordinator for every saved Codex
   account.
-- [ ] Keep credential health, metrics freshness, and active state independent.
-- [ ] Timestamp stale metrics and retain the last exact account-scoped value.
-- [ ] Enqueue immediate due work on 401, startup, network recovery, migration,
+- [x] Keep credential health, metrics freshness, and active state independent.
+- [x] Timestamp stale metrics and retain the last exact account-scoped value.
+- [x] Enqueue immediate due work on 401, startup, network recovery, migration,
   explicit refresh, runtime restart, and persisted retry.
 
 ### Verify and commit
 
-- [ ] Run the two reconciliation/maintenance scenarios plus existing usage,
+- [x] Run the two reconciliation/maintenance scenarios plus existing usage,
   heartbeat, activity, and queue regressions they touch.
-- [ ] Run Ruff, `ty`, and architecture checks, then commit.
+- [x] Run Ruff, `ty`, and architecture checks, then commit.
 
 ## 12. Task 8 — Remove Direct OAuth and Copied-Auth Paths
 
@@ -655,46 +655,60 @@ codex app-server daemon version
 
 ### Tests first
 
-- [ ] Extend the existing architecture check once to reject private OAuth,
+- [x] Extend the existing architecture check once to reject private OAuth,
   native `auth.json` copy/write, direct default-home adoption, and token
   serialization outside qualified provider state.
-- [ ] Replace obsolete direct-OAuth and copied-bundle assertions with one
+- [x] Replace obsolete direct-OAuth and copied-bundle assertions with one
   command-boundary test proving repair starts independent official login in
   the final private home. Delete superseded tests rather than retaining both
   implementations.
 
 ### Implementation
 
-- [ ] Remove direct token refresh from `providers/codex/provider.py`.
-- [ ] Remove copied-bundle creation and native import from
+- [x] Remove direct token refresh from `providers/codex/provider.py`.
+- [x] Remove copied-bundle creation and native import from
   `credentials/codex/coordinator.py`, `providers/codex/auth_migration.py`,
   and their persistence transaction paths.
-- [ ] Remove obsolete private OAuth schemas, request helpers, tests, and error
+- [x] Remove obsolete private OAuth schemas, request helpers, tests, and error
   copy.
-- [ ] Retain protected `auth.json` reading only for worker-scoped verification
+- [x] Retain protected `auth.json` reading only for worker-scoped verification
   of the exact private managed home.
-- [ ] Make all unmanaged legacy Codex accounts report migration or login
+- [x] Make all unmanaged legacy Codex accounts report migration or login
   required; never silently fall back.
-- [ ] Search the repository for duplicate token writers, native-home copy
+- [x] Search the repository for duplicate token writers, native-home copy
   paths, and private OAuth endpoints. Remove every final-production path.
 
 ### Verify and commit
 
-- [ ] Run:
+- [x] Run the smallest load-bearing Task 8 checks:
 
 ```bash
 rg -n \
   "auth\\.openai\\.com/oauth/token|copy.*auth\\.json|auth\\.json.*copy" \
   src tests
-uv run pytest tests/test_codex_*.py tests/test_credential_refresh_codex.py
+uv run pytest -q \
+  tests/test_cli_provider_credentials.py::\
+test_codex_login_migrates_accounts_independently_without_native_copy \
+  tests/test_credential_refresh_codex.py::\
+test_managed_codex_maintenance_continues_across_account_failure \
+  tests/test_architecture.py::\
+test_real_tree_satisfies_every_static_architecture_contract \
+  tests/test_architecture.py::\
+test_every_static_rule_rejects_a_deliberate_violation \
+  tests/test_codex_provider.py::\
+test_usage_validates_current_shape_and_required_headers \
+  tests/test_credential_service.py::\
+test_source_failures_remain_distinct_and_tokens_are_secret_safe
 uv run python packaging/check_architecture.py
-uv run ruff check src/ tests/
+uv run ruff check src/ tests/ packaging/
 uv run ty check src/ tests/
 ```
 
-- [ ] The search may match explicit negative architecture-test strings only.
+- [x] The search may match explicit negative architecture-test strings only.
   It must match no production call or copy path.
-- [ ] Commit after the complete Codex suite is green.
+- [x] Delete superseded direct-OAuth and copied-auth tests rather than running
+  or replacing them. The full-project gate remains Task 9.
+- [x] Commit after the focused Task 8 gates are green.
 
 ## 13. Task 9 — Codex Phase Gate
 

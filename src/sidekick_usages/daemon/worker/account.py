@@ -60,7 +60,7 @@ class CodexManagedAccountService:
         service = UsageCheckService(
             self._store,
             self._http,
-            {ProviderId.CODEX: CodexProvider(self._clock)},
+            {ProviderId.CODEX: CodexProvider()},
             None,
             clock=self._clock,
             account_activity_sources={
@@ -84,7 +84,7 @@ class CodexManagedAccountService:
             self._coordinator,
             authority,
         )
-        provider = CodexProvider(self._clock)
+        provider = CodexProvider()
         service = HeartbeatService(
             self._store,
             self._http,

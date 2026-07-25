@@ -1,16 +1,13 @@
-"""Credential export and diagnostic output-safety tests."""
+"""Credential diagnostic output-safety test."""
 
 import io
 import json
-import os
-import stat
 from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
 from rich.console import Console
 
-import sidekick_usages.credentials.codex.coordinator
 import sidekick_usages.providers.claude.provider
 from sidekick_usages.core.expiry import KnownExpiry, UnknownExpiry
 from sidekick_usages.core.models import Account, ClaudeLoginCredentials
@@ -28,6 +25,7 @@ from sidekick_usages.errors import AuthError
 from sidekick_usages.http.client import HttpClient
 from sidekick_usages.http.types import HttpOperation
 from sidekick_usages.maintenance import TokenMaintenanceService
+from sidekick_usages.persistence.accounts.store import AccountStore
 from sidekick_usages.persistence.credentials.refresh.artifacts import (
     CredentialRefreshState,
     CredentialRefreshStateKind,
@@ -35,94 +33,22 @@ from sidekick_usages.persistence.credentials.refresh.artifacts import (
 from sidekick_usages.persistence.credentials.refresh.service import (
     CredentialRefreshTransactions,
 )
-from sidekick_usages.persistence.errors import ReplaceFailedError
 from sidekick_usages.persistence.filesystem.service import (
     PersistenceFilesystem,
 )
-from sidekick_usages.persistence.models.artifact import (
-    ExpectedAuthority,
-    FileSnapshot,
-)
 from sidekick_usages.persistence.models.status import PersistenceStatus
+from sidekick_usages.persistence.private.credentials import (
+    PrivateCredentialTree,
+)
 from sidekick_usages.persistence.types.status import PersistenceState
-from sidekick_usages.providers.base import ProviderFailure, ProviderFailureKind
 from sidekick_usages.providers.claude.provider import ClaudeProvider
 from sidekick_usages.serialization.json import JsonObject
-from tests.test_credential_service import (
-    _PRIVATE_DIRECTORY_MODE,
-    _PRIVATE_FILE_MODE,
-    _account,
-    _dependencies,
-    _Provider,
-    _service,
-)
 from tests.test_support import (
     REFERENCE_TIME,
     FixedClock,
     make_application_paths,
     make_supervisor_health,
 )
-
-
-def test_export_protects_paths_and_publishes_auth_authority_last(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    account = _account("acct-new")
-    provider = _Provider(
-        ProviderId.CODEX,
-        ProviderFailure(
-            provider_id=ProviderId.CODEX,
-            kind=ProviderFailureKind.MISSING,
-            message="No local credentials.",
-        ),
-    )
-    service, _, private = _service(tmp_path, provider, (account,))
-    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "missing-active"))
-
-    protected = service.export_codex("team", private.root / "nested")
-
-    assert isinstance(protected, ProviderFailure)
-    assert protected.kind is ProviderFailureKind.UNSUPPORTED
-
-    target = tmp_path / "exported"
-    calls: list[str] = []
-    original = PersistenceFilesystem.commit_opaque_private
-
-    def fail_auth(
-        filesystem: PersistenceFilesystem,
-        payload: bytes,
-        *,
-        expected_source: ExpectedAuthority | None = None,
-    ) -> FileSnapshot:
-        calls.append(filesystem.authority_path.name)
-        if filesystem.authority_path.name == "auth.json":
-            raise ReplaceFailedError
-        return original(
-            filesystem,
-            payload,
-            expected_source=expected_source,
-        )
-
-    monkeypatch.setattr(
-        sidekick_usages.credentials.codex.coordinator.PersistenceFilesystem,
-        "commit_opaque_private",
-        fail_auth,
-    )
-    failed = service.export_codex("team", target)
-
-    assert isinstance(failed, ProviderFailure)
-    assert failed.kind is ProviderFailureKind.UNREADABLE
-    assert calls == ["config.toml", "auth.json"], failed
-    assert (target / "config.toml").is_file()
-    assert not (target / "auth.json").exists()
-    if os.name != "nt":
-        assert stat.S_IMODE(target.stat().st_mode) == _PRIVATE_DIRECTORY_MODE
-        assert (
-            stat.S_IMODE((target / "config.toml").stat().st_mode)
-            == _PRIVATE_FILE_MODE
-        )
-    PersistenceFilesystem(target / "config.toml").read_opaque_private()
 
 
 def test_provider_secret_never_crosses_persisted_or_doctor_error_channels(
@@ -142,7 +68,14 @@ def test_provider_secret_never_crosses_persisted_or_doctor_error_channels(
         ),
         plan="team",
     )
-    store, private = _dependencies(tmp_path, (account,))
+    paths = make_application_paths(tmp_path)
+    PersistenceFilesystem(paths.accounts).repair_parent_permissions()
+    private = PrivateCredentialTree(
+        paths.private_credentials,
+        account_path=paths.accounts,
+    )
+    store = AccountStore(paths.accounts, private).load()
+    store.persist(account)
     clock = FixedClock()
     provider = ClaudeProvider(clock)
     http = HttpClient(clock=clock)
@@ -161,7 +94,6 @@ def test_provider_secret_never_crosses_persisted_or_doctor_error_channels(
         store,
         http,
         {ProviderId.CLAUDE: provider},
-        private,
         clock=clock,
         refresh_coordinator=refresh,
     )

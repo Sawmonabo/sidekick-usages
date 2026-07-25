@@ -12,16 +12,11 @@ from sidekick_usages.clock import Clock
 from sidekick_usages.core.models import (
     Account,
     ClaudeSetupTokenCredentials,
-    CodexCredentials,
-    Credentials,
 )
 from sidekick_usages.core.types import AccountLabel, ProviderId
 from sidekick_usages.credentials.authorities import (
     AuthenticatedSavedAccount,
     CredentialResolver,
-)
-from sidekick_usages.credentials.codex.coordinator import (
-    CodexCredentialCoordinator,
 )
 from sidekick_usages.credentials.models import (
     CredentialRefreshResult,
@@ -35,9 +30,6 @@ from sidekick_usages.persistence.credentials.refresh.service import (
     CredentialRefreshTargetUnavailableError,
     CredentialRefreshUnstableError,
 )
-from sidekick_usages.persistence.private.bundles.writes import (
-    PreparedPrivateBundleWrite,
-)
 from sidekick_usages.providers.base import (
     CredentialStageReader,
     Provider,
@@ -47,7 +39,6 @@ from sidekick_usages.providers.base import (
     ProviderFailureCause,
     ProviderFailureKind,
     RefreshResult,
-    RefreshSuccess,
 )
 
 
@@ -97,7 +88,6 @@ class CredentialRefreshCoordinator:
         persistence: CredentialRefreshPersistence,
         *,
         clock: Clock,
-        codex: CodexCredentialCoordinator | None = None,
         resolver: CredentialResolver,
     ) -> None:
         """Bind refresh policy to provider and persistence capabilities."""
@@ -106,7 +96,6 @@ class CredentialRefreshCoordinator:
         self._providers = providers
         self._persistence = persistence
         self._clock = clock
-        self._codex = codex
         self._resolver = resolver
 
     def refresh(
@@ -184,16 +173,6 @@ class CredentialRefreshCoordinator:
                 kind=ProviderFailureKind.UNSUPPORTED,
                 message=f"Provider '{account.provider_id}' is not registered.",
             )
-        if (
-            account.provider_id is ProviderId.CODEX
-            and account.codex_home is not None
-            and self._codex is None
-        ):
-            return ProviderFailure(
-                provider_id=ProviderId.CODEX,
-                kind=ProviderFailureKind.UNSUPPORTED,
-                message="Codex private refresh coordination is unavailable.",
-            )
         return provider
 
     def _refresh_stable(
@@ -242,16 +221,11 @@ class CredentialRefreshCoordinator:
         completed_at = self._clock.now()
         if isinstance(refreshed, ProviderFailure):
             return self._finish_failure(lease, refreshed, completed_at)
-        prepared = self._prepare_commit(lease, refreshed, completed_at)
-        if isinstance(prepared, ProviderFailure):
-            return self._finish_failure(lease, prepared, completed_at)
-        credentials, plan, private_bundle = prepared
         committed = self._persistence.commit_success(
             lease,
-            credentials,
-            plan,
+            refreshed.credentials,
+            refreshed.plan,
             completed_at,
-            private_bundle=private_bundle,
         )
         if committed is None:
             return ProviderFailure(
@@ -297,45 +271,6 @@ class CredentialRefreshCoordinator:
         ):
             return CredentialRefreshSuccess(current.label)
         return failure
-
-    def _prepare_commit(
-        self,
-        lease: CredentialRefreshLease,
-        refreshed: RefreshSuccess,
-        completed_at: datetime,
-    ) -> (
-        tuple[
-            Credentials,
-            str | None,
-            PreparedPrivateBundleWrite | None,
-        ]
-        | ProviderFailure
-    ):
-        """Prepare any provider-owned durable companion state."""
-        credentials = refreshed.credentials
-        plan = refreshed.plan
-        if (
-            lease.account.provider_id is not ProviderId.CODEX
-            or lease.account.codex_home is None
-        ):
-            return credentials, plan, None
-        if not isinstance(credentials, CodexCredentials):
-            raise AssertionError("Codex refresh returned wrong credentials.")
-        if self._codex is None:
-            raise AssertionError("Codex refresh coordinator is missing.")
-        prepared = self._codex.prepare_refresh(
-            lease.account,
-            credentials,
-            plan,
-            reference_time=completed_at,
-        )
-        if isinstance(prepared, ProviderFailure):
-            return prepared
-        return (
-            prepared.credentials,
-            prepared.plan,
-            prepared.private_bundle,
-        )
 
 
 def _setup_token_failure() -> ProviderFailure:

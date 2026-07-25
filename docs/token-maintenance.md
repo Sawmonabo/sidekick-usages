@@ -7,14 +7,12 @@ resident supervisor is managed.
 
 ## Mental model
 
-`sidekick-usages` has two different token update paths:
+`sidekick-usages` has two different account-maintenance paths:
 
-1. `sidekick-usages refresh <label>` imports the current local provider login
-   into one explicit saved login label. For Claude, this is safe for
-   subscription-login labels only unless the operator separately authorizes an
-   authentication-method change.
-2. `sidekick-usages refresh --all` uses only refresh tokens already
-   saved in the sidekick config.
+1. `sidekick-usages refresh <label>` imports the current local Claude login or
+   starts official Codex login in that label's independent managed home.
+2. `sidekick-usages refresh --all` maintains Claude stored authorities and
+   every Codex managed home without reading either native global login.
 
 `sidekick-usages maintain --quiet` is the explicit foreground maintenance
 command. It runs the second path above, then optional heartbeat/window warming
@@ -35,8 +33,8 @@ current global Claude or Codex login into arbitrary labels.
 | --- | --- | --- |
 | Claude subscription-login credential | Yes, while login remains usable | On non-macOS systems with Claude Code installed, prefers the CLI in a private staged home. macOS or a missing executable uses bounded HTTPS refresh and immediately stages the result. Neither path changes the active Claude login. |
 | Claude setup-token credential | No | Setup tokens do not contain refresh credentials. Replace explicitly when rejected; their issue date cannot be recovered from the token. |
-| Codex ChatGPT login with `refresh_token` | Yes | Refreshes through the OpenAI OAuth token endpoint and transactionally updates Sidekick's private Codex credential bundle. |
-| Account with rejected or revoked refresh token | No | Requires logging into the matching provider account again, then running an explicit single-label refresh. |
+| Codex ChatGPT managed login | Yes | The official Codex process refreshes the exact account's independent managed home. Sidekick performs no private OAuth exchange. |
+| Account with rejected or revoked refresh authority | No | Requires logging into the matching provider account again, then running an explicit single-label refresh. |
 
 ## Commands
 
@@ -81,24 +79,21 @@ sidekick-usages refresh --all --quiet
 sidekick-usages refresh --all --force
 ```
 
-`refresh --all` is the token-only saved-refresh command. It:
+`refresh --all` is the provider-owned maintenance command. It:
 
 - refreshes accounts that are expired or near expiry
 - skips fresh accounts unless `--force` is supplied
 - persists each successful rotation immediately
 - records failed refresh attempts on the affected account
 - continues checking other accounts after one account fails
-- never calls provider local-login detection
+- never reads either provider's native global login
 - never replaces saved identity from global Claude or Codex state
 
-Every rotating refresh goes through one coordinator. Refreshes sharing one
-provider refresh credential are serialized by the
-credential-derived operation identity before provider traffic. The coordinator
-resamples durable state
-after acquiring the credential-derived lock, writes one private staged
-replacement, commits only the targeted credential over unrelated account
-changes, and cleans up after durability proof. A complete interrupted stage is
-recovered locally without a second provider request.
+Every refresh goes through its owning coordinator. Claude refreshes sharing one
+provider credential are serialized before provider traffic. Codex refreshes
+are serialized per stable account and run through the official process in that
+account's protected managed home. Each coordinator resamples durable state
+before commit and cannot overwrite an unrelated account.
 
 Known Claude login expiry is independent from access-token expiry. At or
 inside five days, maintenance emits the five-day login-renewal warning and one
@@ -110,8 +105,8 @@ produce this proximity warning.
 `--quiet` suppresses normal fresh/refreshed output and prints only
 accounts that need manual action.
 
-`--force` refreshes every account that has a saved refresh token,
-regardless of expiry. It still does not import global provider logins.
+`--force` requests maintenance for every refreshable account regardless of
+expiry. It still does not import global provider logins.
 
 ### Warm inactive usage windows
 
@@ -119,7 +114,7 @@ Heartbeat is optional usage-window warming. It is not token freshness
 and it is not free quota. A successful warm sends a real model request
 and consumes a small amount of provider quota.
 
-`maintain --quiet` refreshes saved credentials first, then processes
+`maintain --quiet` refreshes owned account authorities first, then processes
 heartbeat-enabled accounts. See
 [heartbeat behavior and guardrails](./heartbeat.md) for commands, supported
 account types, provider targets, model requests, and persisted diagnostics.
@@ -130,10 +125,10 @@ account types, provider targets, model requests, and persisted diagnostics.
 sidekick-usages maintain --quiet
 ```
 
-`maintain --quiet` refreshes saved tokens first, then heartbeats enabled
-accounts. If heartbeat is not enabled for any account, it behaves like token
-maintenance only. It is an explicit foreground command, not the installed
-service command.
+`maintain --quiet` maintains owned account authorities first, then heartbeats
+enabled accounts. If heartbeat is not enabled for any account, it behaves like
+token maintenance only. It is an explicit foreground command, not the
+installed service command.
 
 ### Repair one saved login
 
@@ -308,9 +303,10 @@ Heartbeat state and target defaults are documented in
 
 ### Doctor says auto-refresh is no
 
-The account probably has no saved refresh token. Claude `setup-token`
-accounts are the expected case. They can report usage, but they cannot
-rotate themselves.
+For Claude, the account probably has no refreshable authority. Claude
+`setup-token` accounts are the expected case: they can report usage but cannot
+rotate themselves. For Codex, inspect managed-authority and supervisor health,
+then use the official managed-login repair if action is required.
 
 ### Doctor says the refresh credential was rejected
 
@@ -375,10 +371,13 @@ platform lifecycle ownership separate:
 - `sidekick_usages.maintenance.TokenMaintenanceService` owns saved-token
   access-refresh policy, derived Claude login-renewal warnings, per-account
   outcomes, and diagnostic persistence.
-- `sidekick_usages.credentials.CredentialRefreshCoordinator` owns the single
-  provider-neutral saved-credential refresh entry point.
+- `sidekick_usages.credentials.CredentialRefreshCoordinator` owns stored
+  Claude credential refresh.
+- `sidekick_usages.credentials.codex.managed.service.`
+  `CodexManagedAuthorityCoordinator` owns exact-account Codex verification and
+  official managed-home refresh.
 - `sidekick_usages.persistence.credentials.refresh.service` and its focused schema,
-  stage, merge, artifact, and private-stage modules own credential-derived
+  stage, merge, artifact, and private-stage modules own stored-credential
   locking, private staging, targeted commit, assessment, and recovery.
 - `sidekick_usages.heartbeat.HeartbeatService` owns optional
   usage-window warming policy, opt-in checks, cached reset throttling,

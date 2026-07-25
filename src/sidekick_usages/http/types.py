@@ -9,7 +9,6 @@ class HttpOperation(StrEnum):
     SAFE_READ = "safe_read"
     CLAUDE_PROBE = "claude_probe"
     CLAUDE_REFRESH = "claude_refresh"
-    CODEX_REFRESH = "codex_refresh"
     CLAUDE_HEARTBEAT = "claude_heartbeat"
     CODEX_HEARTBEAT = "codex_heartbeat"
 

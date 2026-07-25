@@ -1,6 +1,5 @@
 """Strict Codex payload schemas and provider-native time conversion."""
 
-from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from functools import cache
 from typing import Annotated
@@ -137,13 +136,6 @@ class _AuthIdentityDocumentSchema(_ProviderModel):
     tokens: _AuthIdentityTokensSchema
 
 
-class _RefreshSchema(_ProviderModel):
-    access_token: _TokenString = Field(repr=False)
-    refresh_token: _TokenString | None = Field(default=None, repr=False)
-    id_token: _TokenString | None = Field(default=None, repr=False)
-    expires_in: int | None = Field(default=None, ge=0)
-
-
 class _UsageWindowSchema(_ProviderModel):
     used_percent: _Utilization
     resets_at: _MetadataString | None = None
@@ -209,11 +201,6 @@ def _auth_identity_adapter() -> TypeAdapter[_AuthIdentityDocumentSchema]:
 
 
 @cache
-def _refresh_adapter() -> TypeAdapter[_RefreshSchema]:
-    return TypeAdapter(_RefreshSchema)
-
-
-@cache
 def _usage_adapter() -> TypeAdapter[_UsageResponseSchema]:
     return TypeAdapter(_UsageResponseSchema)
 
@@ -221,16 +208,6 @@ def _usage_adapter() -> TypeAdapter[_UsageResponseSchema]:
 @cache
 def _token_usage_profile_adapter() -> TypeAdapter[_TokenUsageProfileSchema]:
     return TypeAdapter(_TokenUsageProfileSchema)
-
-
-@dataclass(frozen=True, slots=True)
-class RefreshPayload:
-    """Validated Codex OAuth refresh fields."""
-
-    access_token: str = field(repr=False)
-    refresh_token: str | None = field(repr=False)
-    id_token: str | None = field(repr=False)
-    expires_in: int | None
 
 
 def _failure(
@@ -468,55 +445,6 @@ def _consistent_account_id(
             )
         ) from None
     return declared_id or claims_id
-
-
-def validate_refresh_payload(value: JsonObject) -> RefreshPayload:
-    """Validate one Codex OAuth refresh response."""
-    response = _validate(
-        _refresh_adapter(),
-        value,
-        message="Codex returned an invalid token-refresh response.",
-    )
-    for field_name, field_value in (
-        ("refresh_token", response.refresh_token),
-        ("id_token", response.id_token),
-        ("expires_in", response.expires_in),
-    ):
-        if field_name in value and field_value is None:
-            raise ProviderBoundaryError(
-                _failure(
-                    ProviderFailureKind.MALFORMED,
-                    "Codex returned an invalid token-refresh response.",
-                    fields=(field_name,),
-                )
-            ) from None
-    return RefreshPayload(
-        access_token=response.access_token,
-        refresh_token=response.refresh_token,
-        id_token=response.id_token,
-        expires_in=response.expires_in,
-    )
-
-
-def refresh_expiry(
-    payload: RefreshPayload,
-    reference_time: datetime,
-) -> Expiry:
-    """Normalize refreshed Codex expiry at native second precision."""
-    if reference_time.tzinfo is None or reference_time.utcoffset() is None:
-        raise ValueError("Codex refresh time must be timezone-aware.")
-    if payload.expires_in is None:
-        return jwt_expiry(payload.access_token)
-    base = reference_time.astimezone(UTC).replace(microsecond=0)
-    try:
-        return KnownExpiry(base + timedelta(seconds=payload.expires_in))
-    except OverflowError:
-        raise ProviderBoundaryError(
-            _failure(
-                ProviderFailureKind.MALFORMED,
-                "Codex refresh expiry is outside the supported range.",
-            )
-        ) from None
 
 
 def parse_usage_response(value: JsonObject) -> UsageReport:

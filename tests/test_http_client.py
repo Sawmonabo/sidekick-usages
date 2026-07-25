@@ -18,7 +18,6 @@ from sidekick_usages.errors import (
 )
 from sidekick_usages.http.client import (
     DISCARD_BODY_LIMIT,
-    FORM_REQUEST_LIMIT,
     JSON_REQUEST_LIMIT,
     JSON_RESPONSE_LIMIT,
     HttpClient,
@@ -185,7 +184,7 @@ def test_local_server_connection_is_reused(
 def test_post_capabilities_encode_and_return_sidekick_values(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The three reviewed POST shapes preserve their concrete contracts."""
+    """The reviewed POST shapes preserve their concrete contracts."""
     header_response = _Response(
         HTTPStatus.OK,
         b"x" * (DISCARD_BODY_LIMIT + 1),
@@ -195,7 +194,6 @@ def test_post_capabilities_encode_and_return_sidekick_values(
         [
             header_response,
             _Response(HTTPStatus.OK, b'{"access_token":"claude-new"}'),
-            _Response(HTTPStatus.OK, b'{"access_token":"codex-new"}'),
         ]
     )
     client = HttpClient()
@@ -212,22 +210,13 @@ def test_post_capabilities_encode_and_return_sidekick_values(
         {"refresh_token": "claude old"},
         operation=HttpOperation.CLAUDE_REFRESH,
     )
-    codex = client.post_form(
-        "https://example.test/codex-refresh",
-        {"refresh_token": "codex old"},
-        operation=HttpOperation.CODEX_REFRESH,
-    )
-
     assert returned_headers == {"x-usage": "ready"}
     assert claude == {"access_token": "claude-new"}
-    assert codex == {"access_token": "codex-new"}
     assert manager.bodies == [
         b'{"prompt":"quota"}',
         b'{"refresh_token":"claude old"}',
-        b"refresh_token=codex+old",
     ]
     assert [call[0] for call in manager.calls] == [
-        HTTPMethod.POST,
         HTTPMethod.POST,
         HTTPMethod.POST,
     ]
@@ -240,7 +229,7 @@ def test_post_capabilities_encode_and_return_sidekick_values(
 def test_request_and_response_size_bounds_fail_before_unbounded_work(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """JSON and form writes plus JSON reads enforce their named bounds."""
+    """JSON writes and reads enforce their named bounds."""
     response = _Response(
         HTTPStatus.OK,
         b"x" * (JSON_RESPONSE_LIMIT + 1),
@@ -257,13 +246,6 @@ def test_request_and_response_size_bounds_fail_before_unbounded_work(
             {"value": "x" * JSON_REQUEST_LIMIT},
             operation=HttpOperation.CLAUDE_REFRESH,
         )
-    with pytest.raises(InvalidPayloadError):
-        client.post_form(
-            "https://example.test/oversized-form",
-            {"value": "x" * FORM_REQUEST_LIMIT},
-            operation=HttpOperation.CODEX_REFRESH,
-        )
-
     assert len(manager.calls) == 1
     assert response.close_calls == 1
 

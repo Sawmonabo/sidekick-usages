@@ -76,7 +76,7 @@ _ROUNDTRIP_AUDIT_TIME = datetime(2026, 6, 12, 13, tzinfo=UTC)
 
 
 def _codex_heartbeat() -> CodexHeartbeat:
-    return CodexHeartbeat(CodexProvider(FixedClock()))
+    return CodexHeartbeat(CodexProvider())
 
 
 def test_heartbeat_reset_models_require_aware_utc_datetimes() -> None:

@@ -115,9 +115,11 @@ accounts. Reset requires the resident supervisor to be absent and deletes the
 matching Sidekick-owned credential authorities. It does not log out Claude Code
 or Codex CLI.
 
-After reinstalling a clean-break release, recreate accounts with `add`,
-`claude setup-token`, or `codex login`. There is no automatic or hidden
-conversion from an earlier Sidekick layout.
+After reinstalling a clean-break release, recreate Claude accounts with `add`
+or `claude setup-token`. `codex login` authenticates or repairs an existing
+enrolled Codex label; it does not create one after reset. Clean Codex
+enrollment belongs to the in-progress interactive account rollout. There is no
+automatic or hidden conversion from an earlier Sidekick layout.
 
 ## Failure rules
 

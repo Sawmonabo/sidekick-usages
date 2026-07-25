@@ -37,8 +37,8 @@ checks accounts with heartbeat enabled and prints only accounts that
 need manual action.
 
 `sidekick-usages maintain --quiet` runs the same policy explicitly in the
-foreground: refresh saved tokens first, then heartbeat enabled accounts. The
-resident supervisor does not shell out to this command.
+foreground: maintain each account through its owned authority, then heartbeat
+enabled accounts. The resident supervisor does not shell out to this command.
 
 ## Supported providers
 
@@ -84,7 +84,7 @@ Heartbeat is default-off and per-account opt-in.
 
 Foreground maintenance and bounded resident workers apply the same policy:
 
-1. Refreshes due saved tokens using stored refresh tokens.
+1. Maintains each due account through its owned credential authority.
 2. Checks heartbeat-enabled accounts.
 3. Skips accounts with a cached future 5-hour reset.
 4. Sends a tiny warming request only when the account is supported and

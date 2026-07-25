@@ -1,7 +1,6 @@
 """Credential add and sole refresh command adapters."""
 
 import sys
-from pathlib import Path
 from typing import Annotated, NoReturn
 
 import typer
@@ -165,16 +164,6 @@ def add_cmd(
         str | None,
         typer.Option("--plan", help="Override the auto-detected plan tag."),
     ] = None,
-    codex_home: Annotated[
-        Path | None,
-        typer.Option(
-            "--codex-home",
-            help=(
-                "Read Codex credentials from this source CODEX_HOME, "
-                "then copy them into sidekick's private credential bundle."
-            ),
-        ),
-    ] = None,
     force: Annotated[
         bool,
         typer.Option("--force", help="Overwrite an existing label."),
@@ -192,20 +181,10 @@ def add_cmd(
     prompt_spec = app_context.credentials.prompt_spec(provider_id)
     if isinstance(prompt_spec, ProviderFailure):
         exit_credential_failure(ctx, prompt_spec)
-    if codex_home is not None and provider_id is not ProviderId.CODEX:
-        _usage_error(
-            ctx,
-            "--codex-home can only be used with the codex provider.",
-        )
     source = (
         TokenCredentialSource(provider_id=provider_id, token=token)
         if token is not None
-        else LocalCredentialSource(
-            provider_id=provider_id,
-            credential_home=(
-                codex_home.expanduser() if codex_home is not None else None
-            ),
-        )
+        else LocalCredentialSource(provider_id=provider_id)
     )
     target_label = validated_label(ctx, label) if label is not None else None
     result = app_context.credentials.save(

@@ -37,9 +37,6 @@ from sidekick_usages.credentials.authorities import (
     CredentialLease,
     credential_resolver_for,
 )
-from sidekick_usages.credentials.codex.coordinator import (
-    CodexCredentialCoordinator,
-)
 from sidekick_usages.credentials.codex.migration import (
     CodexAuthMigrationCoordinator,
 )
@@ -285,11 +282,6 @@ def make_app_context(
     )
     paths = make_application_paths(store.path.parent)
     resolver = credential_resolver_for(store, private_credentials)
-    codex_coordinator = CodexCredentialCoordinator(
-        store,
-        private_credentials,
-        clock=clock,
-    )
     refresh_coordinator = CredentialRefreshCoordinator(
         store,
         http,
@@ -299,17 +291,14 @@ def make_app_context(
             paths.credential_refresh,
         ),
         clock=clock,
-        codex=codex_coordinator,
         resolver=resolver,
     )
     credential_service = CredentialService(
         store,
         http,
         providers,
-        private_credentials,
         clock=clock,
         refresh_coordinator=refresh_coordinator,
-        codex_coordinator=codex_coordinator,
         codex_auth_migration=CodexAuthMigrationCoordinator(
             paths,
             store,
