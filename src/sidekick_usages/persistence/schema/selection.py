@@ -9,6 +9,7 @@ from sidekick_usages.core.accounts.types import (
 from sidekick_usages.core.selection.models import (
     ActivationRecord,
     DueOperation,
+    ProviderAuthObservation,
     SelectedAccountState,
 )
 from sidekick_usages.core.selection.types import (
@@ -17,6 +18,7 @@ from sidekick_usages.core.selection.types import (
     OperationKind,
     OperationPriority,
     OperationState,
+    ProviderAuthState,
     ProviderRuntimeState,
 )
 from sidekick_usages.core.types import ProviderId
@@ -48,6 +50,7 @@ from sidekick_usages.persistence.time_codec import (
 from sidekick_usages.serialization.json import JsonObject, JsonValue
 
 STATE_SCHEMA_VERSION = 1
+ACTIVATION_SCHEMA_VERSION = 2
 MAX_SELECTED_STATE_BYTES = 256 * 1024
 MAX_ACTIVATION_JOURNAL_BYTES = 512 * 1024
 MAX_OPERATION_QUEUE_BYTES = 8 * 1024 * 1024
@@ -65,17 +68,25 @@ _SELECTED_KEYS = frozenset(
 _ACTIVATION_KEYS = frozenset(
     {
         "expected_target_identity",
+        "expected_target_generation",
         "failure_code",
+        "native_auth_baseline",
         "operation_id",
         "outcome",
         "phase",
         "provider_id",
-        "source_account_id",
-        "source_generation",
-        "source_provider_identity",
+        "selected_baseline",
         "started_at",
         "target_account_id",
         "updated_at",
+    }
+)
+_PROVIDER_AUTH_KEYS = frozenset(
+    {
+        "generation",
+        "observed_at",
+        "provider_identity",
+        "state",
     }
 )
 _OPERATION_KEYS = frozenset(
@@ -132,7 +143,10 @@ def decode_activation_journal(
         root,
         {"active", "history", "provider_id", "schema_version"},
     )
-    require_schema_version(root["schema_version"], STATE_SCHEMA_VERSION)
+    require_schema_version(
+        root["schema_version"],
+        ACTIVATION_SCHEMA_VERSION,
+    )
     try:
         provider_id = ProviderId(require_string(root["provider_id"]))
         active_value = root["active"]
@@ -277,35 +291,32 @@ def _selected_payload(document: SelectedStateDocument) -> bytes:
 
 def _activation_record(record: JsonObject) -> ActivationRecord:
     require_exact_keys(record, _ACTIVATION_KEYS)
-    source_account = require_optional_string(record["source_account_id"])
-    source_identity = require_optional_string(
-        record["source_provider_identity"]
-    )
-    source_generation = require_optional_string(record["source_generation"])
+    provider_id = ProviderId(require_string(record["provider_id"]))
+    selected_value = record["selected_baseline"]
     outcome = require_optional_string(record["outcome"])
     return ActivationRecord(
-        provider_id=ProviderId(require_string(record["provider_id"])),
+        provider_id=provider_id,
         operation_id=OperationId(require_string(record["operation_id"])),
-        source_account_id=(
+        selected_baseline=(
             None
-            if source_account is None
-            else SidekickAccountId(source_account)
+            if selected_value is None
+            else _selected_state(
+                provider_id,
+                require_object(selected_value),
+            )
+        ),
+        native_auth_baseline=_provider_auth_observation(
+            provider_id,
+            require_object(record["native_auth_baseline"]),
         ),
         target_account_id=SidekickAccountId(
             require_string(record["target_account_id"])
         ),
-        source_provider_identity=(
-            None
-            if source_identity is None
-            else ProviderIdentity(source_identity)
-        ),
-        source_generation=(
-            None
-            if source_generation is None
-            else AuthorityGeneration(source_generation)
-        ),
         expected_target_identity=ProviderIdentity(
             require_string(record["expected_target_identity"])
+        ),
+        expected_target_generation=AuthorityGeneration(
+            require_string(record["expected_target_generation"])
         ),
         phase=ActivationPhase(require_string(record["phase"])),
         started_at=parse_canonical_timestamp(
@@ -321,30 +332,65 @@ def _activation_record(record: JsonObject) -> ActivationRecord:
 
 def _activation_object(record: ActivationRecord) -> JsonObject:
     return {
+        "expected_target_generation": str(record.expected_target_generation),
         "expected_target_identity": str(record.expected_target_identity),
         "failure_code": record.failure_code,
+        "native_auth_baseline": _provider_auth_object(
+            record.native_auth_baseline
+        ),
         "operation_id": str(record.operation_id),
         "outcome": (None if record.outcome is None else record.outcome.value),
         "phase": record.phase.value,
         "provider_id": record.provider_id.value,
-        "source_account_id": (
+        "selected_baseline": (
             None
-            if record.source_account_id is None
-            else str(record.source_account_id)
-        ),
-        "source_generation": (
-            None
-            if record.source_generation is None
-            else str(record.source_generation)
-        ),
-        "source_provider_identity": (
-            None
-            if record.source_provider_identity is None
-            else str(record.source_provider_identity)
+            if record.selected_baseline is None
+            else _selected_object(record.selected_baseline)
         ),
         "started_at": canonical_timestamp(record.started_at),
         "target_account_id": str(record.target_account_id),
         "updated_at": canonical_timestamp(record.updated_at),
+    }
+
+
+def _provider_auth_observation(
+    provider_id: ProviderId,
+    record: JsonObject,
+) -> ProviderAuthObservation:
+    require_exact_keys(record, _PROVIDER_AUTH_KEYS)
+    identity = require_optional_string(record["provider_identity"])
+    generation = require_optional_string(record["generation"])
+    return ProviderAuthObservation(
+        provider_id=provider_id,
+        state=ProviderAuthState(require_string(record["state"])),
+        provider_identity=(
+            None if identity is None else ProviderIdentity(identity)
+        ),
+        generation=(
+            None if generation is None else AuthorityGeneration(generation)
+        ),
+        observed_at=parse_canonical_timestamp(
+            require_string(record["observed_at"])
+        ),
+    )
+
+
+def _provider_auth_object(
+    observation: ProviderAuthObservation,
+) -> JsonObject:
+    return {
+        "generation": (
+            None
+            if observation.generation is None
+            else str(observation.generation)
+        ),
+        "observed_at": canonical_timestamp(observation.observed_at),
+        "provider_identity": (
+            None
+            if observation.provider_identity is None
+            else str(observation.provider_identity)
+        ),
+        "state": observation.state.value,
     }
 
 
@@ -361,7 +407,7 @@ def _activation_payload(document: ActivationJournalDocument) -> bytes:
             ),
             "history": history,
             "provider_id": document.provider_id.value,
-            "schema_version": STATE_SCHEMA_VERSION,
+            "schema_version": ACTIVATION_SCHEMA_VERSION,
         },
         MAX_ACTIVATION_JOURNAL_BYTES,
     )

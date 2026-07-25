@@ -16,6 +16,8 @@ from sidekick_usages.core.models import (
     CodexCredentials,
     DetectedCredentials,
 )
+from sidekick_usages.core.selection.models import ProviderAuthObservation
+from sidekick_usages.core.selection.types import ProviderAuthState
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.errors import InvalidPayloadError, UsageError
 from sidekick_usages.providers.base import (
@@ -38,7 +40,11 @@ from sidekick_usages.serialization.json import JsonObject, decode_json_object
 CODEX_AUTH_FILE = "auth.json"
 CODEX_CONFIG_FILE = "config.toml"
 CODEX_FILE_AUTH_CONFIG = 'cli_auth_credentials_store = "file"'
-_MAX_AUTH_BYTES = 1024 * 1024
+_MAX_CODEX_FILE_BYTES = 1024 * 1024
+_NATIVE_AUTH_FAILURE_STATES = {
+    ProviderFailureKind.MISSING: ProviderAuthState.LOGGED_OUT,
+    ProviderFailureKind.UNSUPPORTED: ProviderAuthState.UNSUPPORTED,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,8 +83,7 @@ def read_auth_blob(
     """Read auth.json or return one explicit safe source failure."""
     path = codex_auth_path(credential_home)
     try:
-        with path.open("rb") as stream:
-            payload = stream.read(_MAX_AUTH_BYTES + 1)
+        payload = _read_bounded(path)
     except FileNotFoundError:
         return _failure(
             ProviderFailureKind.MISSING,
@@ -89,7 +94,7 @@ def read_auth_blob(
             ProviderFailureKind.UNREADABLE,
             "Codex auth.json could not be read; check its permissions.",
         )
-    if len(payload) > _MAX_AUTH_BYTES:
+    if len(payload) > _MAX_CODEX_FILE_BYTES:
         return _failure(
             ProviderFailureKind.MALFORMED,
             "Codex auth.json exceeds the supported size; log in again.",
@@ -184,6 +189,75 @@ def detect_auth_credentials(
         return parse_auth_credentials(blob)
     except ProviderBoundaryError as error:
         return error.failure
+
+
+def observe_native_auth(
+    *,
+    credential_home: Path | None = None,
+    observed_at: datetime,
+) -> ProviderAuthObservation:
+    """Read native Codex authentication and immediately discard credentials."""
+    config_failure = _native_config_failure(credential_home)
+    if config_failure is not None:
+        return _native_auth_failure(config_failure, observed_at)
+    detected = detect_auth_credentials(credential_home)
+    if isinstance(detected, ProviderFailure):
+        return _native_auth_failure(detected, observed_at)
+    snapshot = managed_auth_snapshot(detected)
+    if isinstance(snapshot, ProviderFailure):
+        return _native_auth_failure(snapshot, observed_at)
+    return ProviderAuthObservation(
+        provider_id=ProviderId.CODEX,
+        state=ProviderAuthState.ACTIVE,
+        provider_identity=snapshot.provider_identity,
+        generation=snapshot.generation,
+        observed_at=observed_at,
+    )
+
+
+def _native_config_failure(
+    credential_home: Path | None,
+) -> ProviderFailure | None:
+    path = codex_auth_path(credential_home).with_name(CODEX_CONFIG_FILE)
+    try:
+        payload = _read_bounded(path)
+    except FileNotFoundError:
+        return _failure(
+            ProviderFailureKind.UNREADABLE,
+            "The native Codex credential store could not be resolved.",
+        )
+    except OSError:
+        return _failure(
+            ProviderFailureKind.UNREADABLE,
+            "The native Codex config could not be read.",
+        )
+    if len(payload) > _MAX_CODEX_FILE_BYTES:
+        return _failure(
+            ProviderFailureKind.UNREADABLE,
+            "The native Codex config exceeds the supported size.",
+        )
+    return _file_auth_config_failure(payload)
+
+
+def _native_auth_failure(
+    failure: ProviderFailure,
+    observed_at: datetime,
+) -> ProviderAuthObservation:
+    return ProviderAuthObservation(
+        provider_id=ProviderId.CODEX,
+        state=_NATIVE_AUTH_FAILURE_STATES.get(
+            failure.kind,
+            ProviderAuthState.UNREADABLE,
+        ),
+        provider_identity=None,
+        generation=None,
+        observed_at=observed_at,
+    )
+
+
+def _read_bounded(path: Path) -> bytes:
+    with path.open("rb") as stream:
+        return stream.read(_MAX_CODEX_FILE_BYTES + 1)
 
 
 def prepare_private_bundle(

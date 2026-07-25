@@ -2,7 +2,12 @@
 
 from pathlib import Path
 
-from sidekick_usages.core.selection.models import SelectedAccountState
+from sidekick_usages.core.accounts.types import SidekickAccountId
+from sidekick_usages.core.selection.models import (
+    ActivationRecord,
+    SelectedAccountState,
+)
+from sidekick_usages.core.selection.types import ProviderRuntimeState
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.persistence.errors import PersistenceError
 from sidekick_usages.persistence.locking import StoreLockedError
@@ -17,8 +22,8 @@ from sidekick_usages.persistence.supervisor.selection import SelectedStateStore
 _SELECTION_READ_LOCK_TIMEOUT_SECONDS = 0.0
 
 
-class SelectedRuntimeReader:
-    """Read one selection only while no activation journal is active."""
+class RuntimeStateReader:
+    """Read provider runtime state under one mutation-safe snapshot."""
 
     def __init__(
         self,
@@ -36,6 +41,31 @@ class SelectedRuntimeReader:
 
     def current(self) -> SelectedAccountState | None:
         """Return the current state when no transition owns the provider."""
+        selected, activation = self._snapshot()
+        return None if activation is not None else selected
+
+    def rollback_account_id(
+        self,
+        target_account_id: SidekickAccountId,
+    ) -> SidekickAccountId | None:
+        """Return the saved baseline account for one active transition."""
+        _selected, activation = self._snapshot()
+        if (
+            activation is None
+            or activation.target_account_id != target_account_id
+        ):
+            return None
+        baseline = activation.selected_baseline
+        if (
+            baseline is None
+            or baseline.runtime_state is not ProviderRuntimeState.SAVED_ACTIVE
+        ):
+            return None
+        return baseline.account_id
+
+    def _snapshot(
+        self,
+    ) -> tuple[SelectedAccountState | None, ActivationRecord | None]:
         try:
             with ProviderMutationLock(
                 self._operations_root,
@@ -43,9 +73,9 @@ class SelectedRuntimeReader:
                 (),
                 timeout_seconds=_SELECTION_READ_LOCK_TIMEOUT_SECONDS,
             ).hold():
-                if self._journals.load(self._provider_id).active is not None:
-                    return None
-                return self._selected.load(self._provider_id)
+                activation = self._journals.load(self._provider_id).active
+                selected = self._selected.load(self._provider_id)
+                return selected, activation
         except StoreLockedError:
             raise RuntimeError("Selected runtime is changing.") from None
         except PersistenceError:

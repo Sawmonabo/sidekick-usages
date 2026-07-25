@@ -57,18 +57,26 @@ class SelectedStateStore:
         self,
         state: SelectedAccountState,
         *,
-        expected: SelectedAccountState,
+        expected: SelectedAccountState | None,
     ) -> SelectedAccountState:
-        """Replace one provider only if its complete state is unchanged."""
-        if state.provider_id is not expected.provider_id:
+        """Replace one provider only if its exact state or absence remains."""
+        if (
+            expected is not None
+            and state.provider_id is not expected.provider_id
+        ):
             raise ValueError("Selected-state providers must match.")
-        return self._save(state, expected=expected)
+        return self._save(
+            state,
+            expected=expected,
+            compare=True,
+        )
 
     def _save(
         self,
         state: SelectedAccountState,
         *,
         expected: SelectedAccountState | None = None,
+        compare: bool = False,
     ) -> SelectedAccountState:
         with self._lock.hold() as transaction:
             recover_state_file(self._filesystem, transaction)
@@ -78,10 +86,7 @@ class SelectedStateStore:
                 if snapshot is None
                 else decode_selected_state(snapshot.data)
             )
-            if (
-                expected is not None
-                and document.get(state.provider_id) != expected
-            ):
+            if compare and document.get(state.provider_id) != expected:
                 raise ManagedStateConflictError(
                     ManagedStateConflictKind.CONCURRENT_CHANGE
                 )

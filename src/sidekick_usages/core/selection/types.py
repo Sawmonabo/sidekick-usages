@@ -13,13 +13,22 @@ class ProviderRuntimeState(StrEnum):
     UNSUPPORTED = "unsupported"
 
 
+class ProviderAuthState(StrEnum):
+    """Closed secret-free native provider authentication states."""
+
+    ACTIVE = "active"
+    LOGGED_OUT = "logged_out"
+    UNREADABLE = "unreadable"
+    UNSUPPORTED = "unsupported"
+
+
 class ActivationPhase(StrEnum):
     """Closed durable phases for one provider activation transaction."""
 
     PREPARED = "prepared"
     OUTGOING_RETAINED = "outgoing_retained"
     TARGET_ACTIVATED = "target_activated"
-    READ_BACK_VERIFIED = "read_back_verified"
+    PROVIDER_PROOF_VERIFIED = "provider_proof_verified"
     COMMITTED = "committed"
     ROLLED_BACK = "rolled_back"
     RECONCILIATION_REQUIRED = "reconciliation_required"
@@ -30,7 +39,6 @@ class ActivationPhase(StrEnum):
         return self in {
             ActivationPhase.COMMITTED,
             ActivationPhase.ROLLED_BACK,
-            ActivationPhase.RECONCILIATION_REQUIRED,
         }
 
 
@@ -43,17 +51,6 @@ class ActivationOutcome(StrEnum):
     LOGGED_OUT = "logged_out"
     RECONCILIATION_REQUIRED = "reconciliation_required"
     UNSUPPORTED = "unsupported"
-
-
-class ActivationRecoveryAction(StrEnum):
-    """Required recovery action selected from actual provider read-back."""
-
-    COMMIT_VERIFIED = "commit_verified"
-    ROLLBACK_VERIFIED = "rollback_verified"
-    RECONCILE_EXTERNAL = "reconcile_external"
-    REQUEST_OFFICIAL_ROLLBACK = "request_official_rollback"
-    RECONCILIATION_REQUIRED = "reconciliation_required"
-    CLOSE_FAILED = "close_failed"
 
 
 class OperationKind(StrEnum):

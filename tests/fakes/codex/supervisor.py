@@ -1,17 +1,19 @@
 """Real resident supervisor harness around synthetic Codex boundaries."""
 
 import time
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from threading import Event, Thread
 from types import TracebackType
 from typing import Self
 
 from sidekick_usages.clock import SystemClock
-from sidekick_usages.core.accounts.types import RequestId
 from sidekick_usages.core.types import ProviderId
+from sidekick_usages.daemon.control.dispatch import (
+    OperationEventHub,
+    SupervisorDispatcher,
+)
 from sidekick_usages.daemon.control.server import LocalControlServer
-from sidekick_usages.daemon.models.protocol import ControlEvent, ControlRequest
 from sidekick_usages.daemon.runtime.callbacks import DurableCallbackDispatcher
 from sidekick_usages.daemon.runtime.recovery import ActivationRecoveryScheduler
 from sidekick_usages.daemon.runtime.scheduler import DurableScheduler
@@ -20,7 +22,7 @@ from sidekick_usages.daemon.runtime.supervisor import (
     WakeupChannel,
 )
 from sidekick_usages.daemon.types.service import ServicePhase
-from sidekick_usages.daemon.worker.exchange import CallbackExchangeRegistry
+from sidekick_usages.daemon.worker.exchange import WorkerExchangeRegistry
 from sidekick_usages.daemon.worker.pool import (
     SubprocessWorkerLauncher,
     WorkerLaunchPlanner,
@@ -33,28 +35,17 @@ from sidekick_usages.persistence.supervisor.activation import (
 from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
 from sidekick_usages.persistence.supervisor.results import WorkerResultStore
 from sidekick_usages.persistence.supervisor.runtime import (
-    SelectedRuntimeReader,
+    RuntimeStateReader,
 )
 from sidekick_usages.persistence.supervisor.selection import SelectedStateStore
 from sidekick_usages.persistence.supervisor.service import ServiceStateStore
 from sidekick_usages.providers.codex.app_server.models import CodexExecutable
-from sidekick_usages.providers.codex.broker.responder import CodexRefreshBroker
+from sidekick_usages.providers.codex.broker.responder import CodexRuntimeBroker
 from sidekick_usages.providers.codex.broker.service import CodexSharedRuntime
 
 _READINESS_TIMEOUT_SECONDS = 10.0
 _SUPERVISOR_JOIN_SECONDS = 10.0
 _WAIT_INTERVAL_SECONDS = 0.01
-
-
-class _NoopControlDispatcher:
-    """Accept handshakes without adding dashboard behavior to broker tests."""
-
-    def dispatch(self, request: ControlRequest) -> Iterator[ControlEvent]:
-        del request
-        return iter(())
-
-    def cancel(self, request_id: RequestId) -> None:
-        del request_id
 
 
 class FakeCodexSupervisor:
@@ -84,22 +75,18 @@ class FakeCodexSupervisor:
             paths.durable_operations,
         )
         selected = SelectedStateStore(paths.selected_state)
-        callbacks = CallbackExchangeRegistry(time.monotonic)
+        recovery = ActivationRecoveryScheduler(journals, queue)
+        events = OperationEventHub()
+        exchanges = WorkerExchangeRegistry(time.monotonic)
         workers = WorkerPool(
             SubprocessWorkerLauncher(),
             WorkerLaunchPlanner(worker_executable, environment),
             self._wakeup.notify,
-            callbacks=callbacks,
+            exchanges=exchanges,
         )
-        scheduler = DurableScheduler(
-            queue,
-            results,
-            workers,
-            clock,
-        )
-        broker = CodexRefreshBroker(
+        broker = CodexRuntimeBroker(
             self._create_runtime,
-            SelectedRuntimeReader(
+            RuntimeStateReader(
                 ProviderId.CODEX,
                 selected,
                 journals,
@@ -107,12 +94,30 @@ class FakeCodexSupervisor:
             ),
             DurableCallbackDispatcher(
                 queue,
-                callbacks,
+                exchanges,
                 clock.now,
                 time.monotonic,
                 self._wakeup.notify,
             ),
+            exchanges,
             status_changed=self._wakeup.notify,
+        )
+        scheduler = DurableScheduler(
+            queue,
+            results,
+            workers,
+            clock,
+            events=events,
+            exchange_preparer=broker,
+        )
+        dispatcher = SupervisorDispatcher(
+            queue,
+            service_state,
+            recovery,
+            events,
+            clock,
+            self._wakeup.notify,
+            self._request_stop,
         )
         self._broker = broker
         self._service_state = service_state
@@ -120,10 +125,10 @@ class FakeCodexSupervisor:
             LocalControlServer(
                 paths.runtime_directory,
                 paths.supervisor_socket,
-                _NoopControlDispatcher(),
+                dispatcher,
             ),
             scheduler,
-            ActivationRecoveryScheduler(journals, queue),
+            recovery,
             service_state,
             clock,
             self._wakeup,
@@ -166,6 +171,14 @@ class FakeCodexSupervisor:
 
     def notify(self) -> None:
         """Wake the real selector after a test persists due work."""
+        self._wakeup.notify()
+
+    def request_stop(self) -> None:
+        """Request a non-blocking supervisor shutdown."""
+        self._request_stop()
+
+    def _request_stop(self) -> None:
+        self._stop.set()
         self._wakeup.notify()
 
     def close(self) -> None:

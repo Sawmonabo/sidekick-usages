@@ -5,9 +5,10 @@ from collections.abc import Callable
 from dataclasses import replace
 
 from sidekick_usages.clock import Clock
-from sidekick_usages.core.accounts.models import (
-    CodexAccountAuthority,
-    CodexManagedAuthority,
+from sidekick_usages.core.accounts.types import (
+    AuthorityGeneration,
+    ProviderIdentity,
+    SidekickAccountId,
 )
 from sidekick_usages.core.selection.models import (
     DueOperation,
@@ -20,42 +21,233 @@ from sidekick_usages.core.selection.types import (
     ProviderRuntimeState,
 )
 from sidekick_usages.core.types import ProviderId
+from sidekick_usages.credentials.codex.activation import (
+    CodexActivationError,
+    CodexActivationService,
+)
 from sidekick_usages.credentials.codex.managed.service import (
     CodexManagedAuthorityCoordinator,
 )
 from sidekick_usages.credentials.codex.models import (
     CodexManagedAuthorityResult,
+    require_managed_codex_authority,
 )
-from sidekick_usages.credentials.codex.types import CodexManagedOutcome
+from sidekick_usages.credentials.codex.types import (
+    CodexActivationFailure,
+    CodexManagedOutcome,
+)
 from sidekick_usages.daemon.models.worker import WorkerResult
 from sidekick_usages.daemon.types.worker import WorkerOutcome
 from sidekick_usages.daemon.worker.exchange import (
-    CALLBACK_COMPLETION_TAIL_SECONDS,
-    WorkerCallbackChannel,
+    WORKER_EXCHANGE_COMPLETION_TAIL_SECONDS,
+    WorkerExchangeChannel,
+    WorkerExchangeError,
 )
 from sidekick_usages.persistence.state.files import ManagedStateConflictError
-from sidekick_usages.persistence.supervisor.authority import OperationAuthority
+from sidekick_usages.persistence.supervisor.authority import (
+    OperationAuthority,
+    ProviderMutationAuthority,
+)
 from sidekick_usages.persistence.supervisor.selection import SelectedStateStore
+from sidekick_usages.providers.codex.broker.errors import CodexBrokerError
+from sidekick_usages.providers.codex.broker.external_auth.activation import (
+    decode_codex_activation_acknowledgement,
+    decode_codex_activation_instruction,
+    encode_codex_activation_reply,
+)
 from sidekick_usages.providers.codex.broker.external_auth.refresh import (
     decode_codex_callback_acknowledgement,
     decode_codex_callback_instruction,
     encode_codex_refresh_reply,
 )
 from sidekick_usages.providers.codex.broker.models import (
+    CodexActivationInstruction,
     CodexCallbackInstruction,
+    CodexExchangeDeadlines,
     CodexProjectionExpectation,
+    CodexProjectionReceipt,
 )
-from sidekick_usages.providers.codex.broker.types import CodexCallbackMode
+from sidekick_usages.providers.codex.broker.ports import CodexProjection
+from sidekick_usages.providers.codex.broker.types import (
+    CodexActivationMode,
+    CodexBrokerFailure,
+    CodexCallbackMode,
+)
 from sidekick_usages.serialization.framing import clear_mutable_buffer
 
-_ACTION_REQUIRED_OUTCOMES = frozenset(
-    {
-        CodexManagedOutcome.INCOMPATIBLE,
-        CodexManagedOutcome.LOGGED_OUT,
-        CodexManagedOutcome.MALFORMED,
-        CodexManagedOutcome.REJECTED,
-    }
-)
+
+class CodexActivationWorkerExecutor:
+    """Run one journaled activation through the resident runtime broker."""
+
+    def __init__(
+        self,
+        service: CodexActivationService,
+        exchange: WorkerExchangeChannel,
+        clock: Clock,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._service = service
+        self._exchange = exchange
+        self._clock = clock
+        self._monotonic = monotonic
+
+    def execute(
+        self,
+        operation: DueOperation,
+        authority: ProviderMutationAuthority,
+    ) -> WorkerResult:
+        """Execute one exact activation or journal recovery."""
+        authority.require(operation.provider_id)
+        if (
+            operation.provider_id is not ProviderId.CODEX
+            or operation.kind
+            not in {OperationKind.ACTIVATE, OperationKind.RECONCILE}
+            or operation.priority is not OperationPriority.INTERACTIVE
+        ):
+            raise ValueError("Worker operation is not a Codex activation.")
+        try:
+            instruction = self._receive_instruction(operation)
+            installer = _CodexActivationInstaller(
+                instruction,
+                self._exchange,
+            )
+            if instruction.mode is CodexActivationMode.ACTIVATE:
+                self._service.activate(
+                    operation.operation_id,
+                    operation.account_id,
+                    authority,
+                    installer,
+                )
+            else:
+                self._service.recover(
+                    operation.operation_id,
+                    operation.account_id,
+                    authority,
+                    installer,
+                )
+            return _worker_success(operation, self._clock)
+        except CodexActivationError as error:
+            return _worker_failure(
+                operation,
+                (
+                    WorkerOutcome.ACTION_REQUIRED
+                    if error.action_required
+                    else WorkerOutcome.TRANSIENT_FAILURE
+                ),
+                error.failure.value,
+                self._clock,
+            )
+        except CodexBrokerError, WorkerExchangeError:
+            return _worker_failure(
+                operation,
+                WorkerOutcome.TRANSIENT_FAILURE,
+                CodexActivationFailure.DAEMON_UNAVAILABLE.value,
+                self._clock,
+            )
+        except ManagedStateConflictError:
+            return _worker_failure(
+                operation,
+                WorkerOutcome.TRANSIENT_FAILURE,
+                CodexActivationFailure.STATE_CHANGED.value,
+                self._clock,
+            )
+        finally:
+            self._exchange.close()
+
+    def _receive_instruction(
+        self,
+        operation: DueOperation,
+    ) -> CodexActivationInstruction:
+        payload = self._exchange.receive_instruction()
+        try:
+            instruction = decode_codex_activation_instruction(payload)
+        finally:
+            clear_mutable_buffer(payload)
+        expected_mode = (
+            CodexActivationMode.ACTIVATE
+            if operation.kind is OperationKind.ACTIVATE
+            else CodexActivationMode.RECOVER
+        )
+        if (
+            instruction.operation_id != operation.operation_id
+            or instruction.account_id != operation.account_id
+            or instruction.mode is not expected_mode
+            or not _deadlines_current(
+                instruction.deadlines,
+                self._monotonic,
+            )
+        ):
+            raise ValueError("Codex activation instruction is stale.")
+        return instruction
+
+
+class _CodexActivationInstaller:
+    """Project one worker-held token through its inherited exchange."""
+
+    def __init__(
+        self,
+        instruction: CodexActivationInstruction,
+        exchange: WorkerExchangeChannel,
+    ) -> None:
+        self._instruction = instruction
+        self._exchange = exchange
+        self._expectation: CodexProjectionExpectation | None = None
+        self._submitted = False
+
+    def prepare(
+        self,
+        account_id: SidekickAccountId,
+        provider_identity: ProviderIdentity,
+        generation: AuthorityGeneration,
+    ) -> CodexProjectionReceipt | None:
+        """Bind the expected projection before credential access."""
+        if (
+            self._expectation is not None
+            or self._submitted
+            or not self._instruction.permits(account_id)
+        ):
+            raise CodexBrokerError(CodexBrokerFailure.IDENTITY_MISMATCH)
+        self._expectation = CodexProjectionExpectation(
+            account_id,
+            provider_identity,
+            generation,
+        )
+        return None
+
+    def install(
+        self,
+        projection: CodexProjection,
+    ) -> CodexProjectionReceipt:
+        """Send one projection and require its exact official receipt."""
+        expectation = self._expectation
+        if (
+            expectation is None
+            or self._submitted
+            or projection.account_id != expectation.account_id
+            or projection.provider_identity != expectation.provider_identity
+            or projection.generation != expectation.generation
+        ):
+            raise CodexBrokerError(CodexBrokerFailure.IDENTITY_MISMATCH)
+        self._submitted = True
+        response = encode_codex_activation_reply(
+            self._instruction,
+            projection,
+        )
+        submission = self._exchange.submit(
+            response,
+            self._instruction.deadlines.response_deadline_seconds,
+            self._instruction.deadlines.completion_deadline_seconds,
+        )
+        acknowledgement = submission.receive_acknowledgement()
+        try:
+            return decode_codex_activation_acknowledgement(
+                acknowledgement,
+                self._instruction,
+                projection.provider_identity,
+                projection.generation,
+            ).receipt
+        finally:
+            clear_mutable_buffer(acknowledgement)
 
 
 class CodexCallbackWorkerExecutor:
@@ -65,23 +257,24 @@ class CodexCallbackWorkerExecutor:
         self,
         coordinator: CodexManagedAuthorityCoordinator,
         selected: SelectedStateStore,
-        channel: WorkerCallbackChannel,
+        exchange: WorkerExchangeChannel,
         clock: Clock,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         self._coordinator = coordinator
         self._selected = selected
-        self._channel = channel
+        self._exchange = exchange
         self._clock = clock
         self._monotonic = monotonic
 
     def execute(
         self,
         operation: DueOperation,
-        authority: OperationAuthority,
+        authority: ProviderMutationAuthority,
     ) -> WorkerResult:
         """Execute one exact callback without persisting credential data."""
-        authority.require(operation.account_id)
+        authority.require(operation.provider_id)
+        account_authority = authority.account(operation.account_id)
         if (
             operation.provider_id is not ProviderId.CODEX
             or operation.kind is not OperationKind.CODEX_CALLBACK
@@ -96,22 +289,22 @@ class CodexCallbackWorkerExecutor:
                     operation,
                     instruction,
                     selected,
-                    authority,
+                    account_authority,
                 )
             return self._rehydrate(
                 operation,
                 instruction,
                 selected,
-                authority,
+                account_authority,
             )
         finally:
-            self._channel.close()
+            self._exchange.close()
 
     def _receive_instruction(
         self,
         operation: DueOperation,
     ) -> CodexCallbackInstruction:
-        payload = self._channel.receive_instruction()
+        payload = self._exchange.receive_instruction()
         try:
             instruction = decode_codex_callback_instruction(payload)
         finally:
@@ -119,10 +312,10 @@ class CodexCallbackWorkerExecutor:
         if (
             instruction.operation_id != operation.operation_id
             or instruction.account_id != operation.account_id
-            or instruction.response_deadline_seconds <= self._monotonic()
-            or instruction.completion_deadline_seconds
-            < instruction.response_deadline_seconds
-            + CALLBACK_COMPLETION_TAIL_SECONDS
+            or not _deadlines_current(
+                instruction.deadlines,
+                self._monotonic,
+            )
         ):
             raise ValueError("Codex callback instruction is stale.")
         return instruction
@@ -160,10 +353,10 @@ class CodexCallbackWorkerExecutor:
                 instruction,
                 projection,
             )
-            submission = self._channel.submit(
+            submission = self._exchange.submit(
                 response,
-                instruction.response_deadline_seconds,
-                instruction.completion_deadline_seconds,
+                instruction.deadlines.response_deadline_seconds,
+                instruction.deadlines.completion_deadline_seconds,
             )
         acknowledgement = submission.receive_acknowledgement()
         try:
@@ -175,12 +368,13 @@ class CodexCallbackWorkerExecutor:
         finally:
             clear_mutable_buffer(acknowledgement)
         if not self._commit_selected(selected, committed):
-            return self._failure(
+            return _worker_failure(
                 operation,
                 WorkerOutcome.TRANSIENT_FAILURE,
                 "selected_state_changed",
+                self._clock,
             )
-        return self._success(operation)
+        return _worker_success(operation, self._clock)
 
     def _rehydrate(
         self,
@@ -214,10 +408,10 @@ class CodexCallbackWorkerExecutor:
                 instruction,
                 projection,
             )
-            submission = self._channel.submit(
+            submission = self._exchange.submit(
                 response,
-                instruction.response_deadline_seconds,
-                instruction.completion_deadline_seconds,
+                instruction.deadlines.response_deadline_seconds,
+                instruction.deadlines.completion_deadline_seconds,
             )
         acknowledgement = submission.receive_acknowledgement()
         try:
@@ -229,12 +423,13 @@ class CodexCallbackWorkerExecutor:
         finally:
             clear_mutable_buffer(acknowledgement)
         if not self._commit_selected(selected, committed):
-            return self._failure(
+            return _worker_failure(
                 operation,
                 WorkerOutcome.TRANSIENT_FAILURE,
                 "selected_state_changed",
+                self._clock,
             )
-        return self._success(operation)
+        return _worker_success(operation, self._clock)
 
     def _require_selected(
         self,
@@ -259,11 +454,9 @@ class CodexCallbackWorkerExecutor:
         selected: SelectedAccountState,
         committed: CodexManagedAuthorityResult,
     ) -> bool:
-        authority = committed.account.authority
-        if not isinstance(authority, CodexAccountAuthority):
-            return False
-        managed = authority.subscription
-        if not isinstance(managed, CodexManagedAuthority):
+        try:
+            managed = require_managed_codex_authority(committed.account)
+        except ValueError:
             return False
         candidate = replace(
             selected,
@@ -286,38 +479,44 @@ class CodexCallbackWorkerExecutor:
     ) -> WorkerResult:
         outcome = (
             WorkerOutcome.ACTION_REQUIRED
-            if result.outcome in _ACTION_REQUIRED_OUTCOMES
+            if result.outcome.action_required
             else (
                 WorkerOutcome.TIMED_OUT
                 if result.outcome is CodexManagedOutcome.TIMED_OUT
                 else WorkerOutcome.TRANSIENT_FAILURE
             )
         )
-        return self._failure(
+        return _worker_failure(
             operation,
             outcome,
             f"codex_managed_{result.outcome.value}",
+            self._clock,
         )
 
-    def _success(self, operation: DueOperation) -> WorkerResult:
-        return WorkerResult(
-            operation_id=operation.operation_id,
-            outcome=WorkerOutcome.SUCCEEDED,
-            finished_at=self._clock.now(),
-        )
 
-    def _failure(
-        self,
-        operation: DueOperation,
-        outcome: WorkerOutcome,
-        code: str,
-    ) -> WorkerResult:
-        return WorkerResult(
-            operation_id=operation.operation_id,
-            outcome=outcome,
-            finished_at=self._clock.now(),
-            failure_code=code,
-        )
+def _worker_success(
+    operation: DueOperation,
+    clock: Clock,
+) -> WorkerResult:
+    return WorkerResult(
+        operation_id=operation.operation_id,
+        outcome=WorkerOutcome.SUCCEEDED,
+        finished_at=clock.now(),
+    )
+
+
+def _worker_failure(
+    operation: DueOperation,
+    outcome: WorkerOutcome,
+    code: str,
+    clock: Clock,
+) -> WorkerResult:
+    return WorkerResult(
+        operation_id=operation.operation_id,
+        outcome=outcome,
+        finished_at=clock.now(),
+        failure_code=code,
+    )
 
 
 def _expectation(
@@ -327,4 +526,16 @@ def _expectation(
         instruction.account_id,
         instruction.provider_identity,
         instruction.source_generation,
+    )
+
+
+def _deadlines_current(
+    deadlines: CodexExchangeDeadlines,
+    monotonic: Callable[[], float],
+) -> bool:
+    return (
+        deadlines.response_deadline_seconds > monotonic()
+        and deadlines.completion_deadline_seconds
+        >= deadlines.response_deadline_seconds
+        + WORKER_EXCHANGE_COMPLETION_TAIL_SECONDS
     )

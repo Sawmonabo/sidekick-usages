@@ -21,6 +21,7 @@ from websockets.sync.server import (
 
 from sidekick_usages.errors import InvalidPayloadError
 from sidekick_usages.serialization.json import JsonObject, decode_json_object
+from tests.fakes.codex.auth import managed_auth
 from tests.fakes.codex.models import FakeCodexRefreshResponse
 
 _CLIENT_TIMEOUT_SECONDS = 5.0
@@ -52,6 +53,7 @@ class FakeCodexDaemon:
         self._initialized: set[ServerConnection] = set()
         self._client_names: dict[ServerConnection, str] = {}
         self._installed_account_ids: list[str] = []
+        self._external_logins: list[tuple[str, str]] = []
         self._active_account_id: str | None = None
         self._originator: str | None = None
         self._ready_account_read_count = 0
@@ -59,6 +61,9 @@ class FakeCodexDaemon:
         self._refresh_event: Event | None = None
         self._refresh_request_id: int | None = None
         self._refresh_response: FakeCodexRefreshResponse | None = None
+        self._pause_install = False
+        self._install_paused = Event()
+        self._resume_install = Event()
         self._failures: list[BaseException] = []
 
     @property
@@ -79,6 +84,44 @@ class FakeCodexDaemon:
         """Return successful post-install account-read observations."""
         with self._lock:
             return self._ready_account_read_count
+
+    @property
+    def external_logins(self) -> tuple[tuple[str, str], ...]:
+        """Return deliberate native-login observations."""
+        with self._lock:
+            return tuple(self._external_logins)
+
+    def pause_next_install(self) -> None:
+        """Pause once after official mutation and before account read."""
+        with self._lock:
+            if self._pause_install:
+                raise AssertionError("Fake Codex install is already paused.")
+            self._pause_install = True
+            self._install_paused.clear()
+            self._resume_install.clear()
+
+    def wait_for_paused_install(self) -> None:
+        """Wait until the one-shot install boundary is reached."""
+        if not self._install_paused.wait(_CLIENT_TIMEOUT_SECONDS):
+            raise AssertionError("Fake Codex install did not pause.")
+
+    def resume_install(self) -> None:
+        """Release the one-shot install boundary."""
+        self._resume_install.set()
+
+    def perform_external_login(
+        self,
+        provider_identity: str,
+        generation: str,
+    ) -> None:
+        """Write native login state without mutating the running daemon."""
+        if not provider_identity or not generation:
+            raise ValueError("Fake Codex external login is invalid.")
+        auth_path = self._codex_home / "auth.json"
+        auth_path.write_bytes(managed_auth(provider_identity, generation))
+        os.chmod(auth_path, 0o600)
+        with self._lock:
+            self._external_logins.append((provider_identity, generation))
 
     def connect_tui(self) -> FakeCodexTuiObserver:
         """Connect one initialized official-shaped TUI observer."""
@@ -403,6 +446,13 @@ class FakeCodexDaemon:
                 },
             }
         )
+        with self._lock:
+            pause_install = self._pause_install
+            self._pause_install = False
+        if pause_install:
+            self._install_paused.set()
+            if not self._resume_install.wait(_CLIENT_TIMEOUT_SECONDS):
+                raise AssertionError("Fake Codex install was not resumed.")
 
     def _read_account(
         self,

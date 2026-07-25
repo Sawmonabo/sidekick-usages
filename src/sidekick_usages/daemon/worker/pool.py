@@ -30,9 +30,9 @@ from sidekick_usages.daemon.types.worker import (
     WorkerOutcome,
 )
 from sidekick_usages.daemon.worker.exchange import (
-    CallbackExchangeError,
-    CallbackExchangeRegistry,
-    SupervisorCallbackExchange,
+    SupervisorWorkerExchange,
+    WorkerExchangeError,
+    WorkerExchangeRegistry,
 )
 from sidekick_usages.platform.environment import (
     SAFE_WORKER_ENVIRONMENT_KEYS,
@@ -45,6 +45,19 @@ QUARANTINE_INITIAL_RETRY_SECONDS = 1.0
 QUARANTINE_MAX_RETRY_SECONDS = 30.0
 
 _WORKER_ENTRY_POINT = "sidekick-usages-worker"
+_EXCHANGE_REQUIRED_KINDS = frozenset(
+    {
+        OperationKind.CODEX_CALLBACK,
+        OperationKind.ACTIVATE,
+        OperationKind.RECONCILE,
+    }
+)
+_CODEX_TRANSITION_KINDS = frozenset(
+    {
+        OperationKind.ACTIVATE,
+        OperationKind.RECONCILE,
+    }
+)
 
 
 class WorkerLaunchError(RuntimeError):
@@ -78,14 +91,14 @@ class WorkerLaunchPlanner:
         self,
         operation_id: OperationId,
         *,
-        callback_descriptor: int | None = None,
+        exchange_descriptor: int | None = None,
     ) -> WorkerLaunchSpec:
         """Build one immutable operation-ID-only launch specification."""
         return WorkerLaunchSpec(
             operation_id=operation_id,
             argv=(str(self._executable), str(operation_id)),
             environment=self._environment,
-            callback_descriptor=callback_descriptor,
+            exchange_descriptor=exchange_descriptor,
         )
 
 
@@ -140,7 +153,7 @@ class SubprocessWorkerHandle:
 
 
 class SubprocessWorkerLauncher:
-    """Production launcher with one callback-only inherited descriptor."""
+    """Production launcher with one worker-exchange descriptor."""
 
     def launch(
         self,
@@ -207,7 +220,7 @@ class WorkerPool:
         planner: WorkerLaunchPlanner,
         notify_exit: ExitNotifier,
         *,
-        callbacks: CallbackExchangeRegistry | None = None,
+        exchanges: WorkerExchangeRegistry | None = None,
         general_limit: int = MAX_GENERAL_WORKERS,
         general_timeout_seconds: float = GENERAL_WORKER_TIMEOUT_SECONDS,
         termination_grace_seconds: float = (WORKER_TERMINATION_GRACE_SECONDS),
@@ -226,7 +239,7 @@ class WorkerPool:
         self._launcher = launcher
         self._planner = planner
         self._notify_exit = notify_exit
-        self._callbacks = callbacks
+        self._exchanges = exchanges
         self._general_limit = general_limit
         self._general_timeout = general_timeout_seconds
         self._termination_grace = termination_grace_seconds
@@ -242,23 +255,21 @@ class WorkerPool:
         """Return the bounded number of active workers."""
         return len(self._active) + len(self._quarantine)
 
-    def can_start(self, operation: DueOperation) -> bool:
-        """Return whether capacity and account authority are available."""
+    def has_capacity_for(self, operation: DueOperation) -> bool:
+        """Return whether worker and account capacity allow an operation."""
         owned = self._owned_operations()
         callback = operation.priority is OperationPriority.CODEX_CALLBACK
         if callback and (
-            self._callbacks is None
-            or not self._callbacks.available(operation.operation_id)
-            or any(
+            any(
                 current.provider_id is ProviderId.CODEX
-                and current.kind is OperationKind.ACTIVATE
+                and current.kind in _CODEX_TRANSITION_KINDS
                 for current in owned
             )
         ):
             return False
         if (
             operation.provider_id is ProviderId.CODEX
-            and operation.kind is OperationKind.ACTIVATE
+            and operation.kind in _CODEX_TRANSITION_KINDS
             and any(
                 current.priority is OperationPriority.CODEX_CALLBACK
                 for current in owned
@@ -280,6 +291,15 @@ class WorkerPool:
         )
         return general < self._general_limit
 
+    def can_start(self, operation: DueOperation) -> bool:
+        """Return whether capacity and required exchange are available."""
+        if not self.has_capacity_for(operation):
+            return False
+        return operation.kind not in _EXCHANGE_REQUIRED_KINDS or (
+            self._exchanges is not None
+            and self._exchanges.available(operation.operation_id)
+        )
+
     def start(
         self,
         operation: DueOperation,
@@ -293,10 +313,10 @@ class WorkerPool:
             raise WorkerLaunchError(
                 WorkerLaunchFailureCode.CAPACITY_UNAVAILABLE
             )
-        exchange = self._callback_exchange(operation)
+        exchange = self._operation_exchange(operation)
         spec = self._planner.plan(
             operation.operation_id,
-            callback_descriptor=(
+            exchange_descriptor=(
                 None if exchange is None else exchange.child_descriptor
             ),
         )
@@ -312,18 +332,16 @@ class WorkerPool:
             deadline,
         )
 
-    def _callback_exchange(
+    def _operation_exchange(
         self,
         operation: DueOperation,
-    ) -> SupervisorCallbackExchange | None:
-        if operation.priority is not OperationPriority.CODEX_CALLBACK:
-            return None
+    ) -> SupervisorWorkerExchange | None:
         exchange = (
             None
-            if self._callbacks is None
-            else self._callbacks.claim(operation.operation_id)
+            if self._exchanges is None
+            else self._exchanges.claim(operation.operation_id)
         )
-        if exchange is None:
+        if exchange is None and operation.kind in _EXCHANGE_REQUIRED_KINDS:
             raise WorkerLaunchError(
                 WorkerLaunchFailureCode.CAPACITY_UNAVAILABLE
             )
@@ -333,27 +351,27 @@ class WorkerPool:
         self,
         operation: DueOperation,
         spec: WorkerLaunchSpec,
-        exchange: SupervisorCallbackExchange | None,
+        exchange: SupervisorWorkerExchange | None,
     ) -> WorkerHandle:
         try:
             handle = self._launcher.launch(spec, self._notify_exit)
         except WorkerLaunchError:
-            self._abort_callback(operation.operation_id)
+            self._abort_exchange(operation.operation_id)
             raise
         except Exception:
-            self._abort_callback(operation.operation_id)
+            self._abort_exchange(operation.operation_id)
             raise WorkerLaunchError(
                 WorkerLaunchFailureCode.EXECUTABLE_UNSAFE
             ) from None
         try:
             if exchange is not None:
                 if (
-                    self._callbacks is None
-                    or not self._callbacks.finish_launch(
+                    self._exchanges is None
+                    or not self._exchanges.finish_launch(
                         operation.operation_id
                     )
                 ):
-                    raise CallbackExchangeError
+                    raise WorkerExchangeError
                 exchange.worker_started()
         except Exception:
             if not self._terminate_launched(handle):
@@ -362,7 +380,7 @@ class WorkerPool:
                     handle,
                     completion_pending=False,
                 )
-            self._abort_callback(operation.operation_id)
+            self._abort_exchange(operation.operation_id)
             raise WorkerLaunchError(
                 WorkerLaunchFailureCode.EXECUTABLE_UNSAFE
             ) from None
@@ -402,7 +420,7 @@ class WorkerPool:
             if (
                 quarantined.operation.priority
                 is OperationPriority.CODEX_CALLBACK
-                or quarantined.operation.kind is OperationKind.ACTIVATE
+                or quarantined.operation.kind in _CODEX_TRANSITION_KINDS
             ):
                 raise WorkerLaunchError(WorkerLaunchFailureCode.AUTHORITY_BUSY)
             cleaned, completed = self._cleanup_quarantined(
@@ -415,40 +433,40 @@ class WorkerPool:
             return completed
         if (
             owner.operation.priority is OperationPriority.CODEX_CALLBACK
-            or owner.operation.kind is OperationKind.ACTIVATE
+            or owner.operation.kind in _CODEX_TRANSITION_KINDS
         ):
             raise WorkerLaunchError(WorkerLaunchFailureCode.AUTHORITY_BUSY)
         return self._stop(owner, preempted=True, timed_out=False)
 
-    def codex_activation_active(self) -> bool:
-        """Return whether non-preemptible Codex activation is running."""
+    def codex_transition_active(self) -> bool:
+        """Return whether a non-preemptible Codex transition is running."""
         return any(
             operation.provider_id is ProviderId.CODEX
-            and operation.kind is OperationKind.ACTIVATE
+            and operation.kind in _CODEX_TRANSITION_KINDS
             for operation in self._owned_operations()
         )
 
-    def cancel_callback(self, operation_id: OperationId) -> None:
-        """Close one callback exchange that will never launch."""
-        if self._callbacks is not None:
-            self._callbacks.cancel(operation_id)
+    def cancel_exchange(self, operation_id: OperationId) -> None:
+        """Close one worker exchange that will never launch."""
+        if self._exchanges is not None:
+            self._exchanges.cancel(operation_id)
 
-    def complete_callback(
+    def complete_exchange(
         self,
         operation_id: OperationId,
         outcome: WorkerOutcome,
     ) -> None:
-        """Publish callback completion after durable scheduler cleanup."""
-        if self._callbacks is not None:
-            self._callbacks.complete(
+        """Publish exchange completion after durable scheduler cleanup."""
+        if self._exchanges is not None:
+            self._exchanges.complete(
                 operation_id,
                 outcome is WorkerOutcome.SUCCEEDED,
             )
 
-    def close_callback_exchanges(self) -> None:
-        """Cancel callback exchanges that cannot survive supervisor exit."""
-        if self._callbacks is not None:
-            self._callbacks.close()
+    def close_exchanges(self) -> None:
+        """Cancel exchanges that cannot survive supervisor exit."""
+        if self._exchanges is not None:
+            self._exchanges.close()
 
     def reap_completed(
         self,
@@ -572,9 +590,9 @@ class WorkerPool:
             return None
         return WorkerExit(active.operation, exit_code)
 
-    def _abort_callback(self, operation_id: OperationId) -> None:
-        if self._callbacks is not None:
-            self._callbacks.abort_launch(operation_id)
+    def _abort_exchange(self, operation_id: OperationId) -> None:
+        if self._exchanges is not None:
+            self._exchanges.abort_launch(operation_id)
 
     def _terminate_handle(self, handle: WorkerHandle) -> int | None:
         handle.terminate_group()

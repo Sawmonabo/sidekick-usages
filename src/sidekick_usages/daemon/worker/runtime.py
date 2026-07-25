@@ -1,11 +1,16 @@
 """Qualified execution inside an isolated worker process."""
 
+from collections.abc import Callable
+
 from sidekick_usages.clock import Clock
 from sidekick_usages.core.accounts.types import OperationId
 from sidekick_usages.core.selection.models import DueOperation
 from sidekick_usages.core.selection.types import OperationState
 from sidekick_usages.daemon.models.worker import WorkerResult
-from sidekick_usages.daemon.types.ports import WorkerExecutor
+from sidekick_usages.daemon.types.ports import (
+    ProviderWorkerExecutor,
+    WorkerExecutor,
+)
 from sidekick_usages.daemon.types.worker import WorkerOutcome
 from sidekick_usages.persistence.supervisor.authority import (
     OperationAuthority,
@@ -53,8 +58,7 @@ def run_isolated_worker(
         return _execute_worker(
             operation,
             results,
-            executor,
-            authority,
+            lambda: executor.execute(operation, authority),
             clock,
         )
 
@@ -64,7 +68,7 @@ def run_provider_worker(
     queue: OperationQueueStore,
     results: WorkerResultStore,
     authority_lock: ProviderMutationLock,
-    executor: WorkerExecutor,
+    executor: ProviderWorkerExecutor,
     clock: Clock,
 ) -> bool:
     """Execute one provider-mutating operation under provider-first locks."""
@@ -76,8 +80,7 @@ def run_provider_worker(
         return _execute_worker(
             operation,
             results,
-            executor,
-            provider_authority.account(operation.account_id),
+            lambda: executor.execute(operation, provider_authority),
             clock,
         )
 
@@ -85,12 +88,11 @@ def run_provider_worker(
 def _execute_worker(
     operation: DueOperation,
     results: WorkerResultStore,
-    executor: WorkerExecutor,
-    authority: OperationAuthority,
+    execute: Callable[[], WorkerResult],
     clock: Clock,
 ) -> bool:
     try:
-        result = executor.execute(operation, authority)
+        result = execute()
     except Exception:
         result = WorkerResult(
             operation_id=operation.operation_id,

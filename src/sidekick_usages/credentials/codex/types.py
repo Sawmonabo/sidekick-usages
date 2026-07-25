@@ -19,3 +19,24 @@ class CodexManagedOutcome(StrEnum):
     MALFORMED = "malformed"
     TIMED_OUT = "timed_out"
     TRANSIENT = "transient"
+
+    @property
+    def action_required(self) -> bool:
+        """Return whether the user must repair this credential authority."""
+        return self in {
+            CodexManagedOutcome.INCOMPATIBLE,
+            CodexManagedOutcome.LOGGED_OUT,
+            CodexManagedOutcome.MALFORMED,
+            CodexManagedOutcome.REJECTED,
+        }
+
+
+class CodexActivationFailure(StrEnum):
+    """Secret-safe failures from Codex activation and recovery."""
+
+    TARGET_UNAVAILABLE = "codex_activation_target_unavailable"
+    NATIVE_UNREADABLE = "codex_activation_native_unreadable"
+    NATIVE_CHANGED = "codex_activation_native_changed"
+    DAEMON_UNAVAILABLE = "codex_activation_daemon_unavailable"
+    RECEIPT_MISMATCH = "codex_activation_receipt_mismatch"
+    STATE_CHANGED = "codex_activation_state_changed"

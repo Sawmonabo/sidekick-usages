@@ -35,8 +35,15 @@ class CodexProjection(Protocol):
         """Return the credential only while the projection is active."""
 
 
-class CodexCallbackExchange(Protocol):
+class CodexWorkerExchange(Protocol):
     """One live isolated-worker response and acknowledgement channel."""
+
+    @property
+    def launched(self) -> bool:
+        """Return whether the isolated worker has started."""
+
+    def response_available(self) -> bool:
+        """Return whether worker response bytes or EOF are available."""
 
     def receive_response(self) -> bytearray:
         """Return one bounded worker response."""
@@ -58,15 +65,37 @@ class CodexCallbackDispatcher(Protocol):
         instruction: bytes,
         response_deadline: float,
         completion_deadline: float,
-    ) -> CodexCallbackExchange:
+    ) -> CodexWorkerExchange:
         """Persist and wake one callback operation."""
 
     def cancel(self, operation_id: OperationId) -> None:
         """Cancel one callback whose daemon recipient disappeared."""
 
 
-class CodexSelectionReader(Protocol):
-    """Read the currently verified Codex projection without credentials."""
+class CodexWorkerExchangeFactory(Protocol):
+    """Create bounded inherited exchanges for already-durable operations."""
+
+    def create(
+        self,
+        operation_id: OperationId,
+        instruction: bytes,
+        response_deadline: float,
+        completion_deadline: float,
+    ) -> CodexWorkerExchange:
+        """Create one exact operation-bound exchange."""
+
+    def cancel(self, operation_id: OperationId) -> None:
+        """Cancel and forget one exchange."""
+
+
+class CodexRuntimeStateReader(Protocol):
+    """Read credential-free Codex selection and recovery authority."""
 
     def current(self) -> SelectedAccountState | None:
         """Return the selected saved authority when callback-safe."""
+
+    def rollback_account_id(
+        self,
+        target_account_id: SidekickAccountId,
+    ) -> SidekickAccountId | None:
+        """Return the exact saved rollback account for active recovery."""

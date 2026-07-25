@@ -14,7 +14,10 @@ from sidekick_usages.core.selection.types import (
 )
 from sidekick_usages.daemon.models.scheduler import SchedulerCompletion
 from sidekick_usages.daemon.models.worker import WorkerExit, WorkerResult
-from sidekick_usages.daemon.types.ports import OperationEventSink
+from sidekick_usages.daemon.types.ports import (
+    OperationEventSink,
+    OperationExchangePreparer,
+)
 from sidekick_usages.daemon.types.worker import WorkerOutcome
 from sidekick_usages.daemon.worker.pool import (
     WorkerLaunchError,
@@ -53,6 +56,7 @@ class DurableScheduler:
         clock: Clock,
         *,
         events: OperationEventSink | None = None,
+        exchange_preparer: OperationExchangePreparer | None = None,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         self._queue = queue
@@ -60,6 +64,7 @@ class DurableScheduler:
         self._workers = workers
         self._clock = clock
         self._events = events or NullOperationEventSink()
+        self._exchange_preparer = exchange_preparer
         self._monotonic = monotonic
 
     @property
@@ -95,6 +100,20 @@ class DurableScheduler:
         now = self._clock.now()
         monotonic_now = self._monotonic()
         for operation in self._queue.due(now):
+            requires_exchange_preparation = operation.kind in {
+                OperationKind.ACTIVATE,
+                OperationKind.RECONCILE,
+            }
+            if (
+                requires_exchange_preparation
+                and not self._workers.has_capacity_for(operation)
+            ):
+                continue
+            if requires_exchange_preparation and (
+                self._exchange_preparer is None
+                or not self._exchange_preparer.prepare_operation(operation)
+            ):
+                continue
             if (
                 operation.priority is OperationPriority.CODEX_CALLBACK
                 and not self._prepare_callback(
@@ -104,6 +123,8 @@ class DurableScheduler:
             ):
                 continue
             if not self._workers.can_start(operation):
+                if requires_exchange_preparation:
+                    self._workers.cancel_exchange(operation.operation_id)
                 continue
             try:
                 running = self._queue.transition(
@@ -112,8 +133,7 @@ class DurableScheduler:
                     updated_at=now,
                 )
             except ManagedStateConflictError:
-                if operation.kind is OperationKind.CODEX_CALLBACK:
-                    self._workers.cancel_callback(operation.operation_id)
+                self._workers.cancel_exchange(operation.operation_id)
                 continue
             try:
                 self._workers.start(
@@ -127,7 +147,6 @@ class DurableScheduler:
                             running.operation_id,
                             expected_state=OperationState.RUNNING,
                         )
-                    self._workers.cancel_callback(running.operation_id)
                 else:
                     self._queue.transition(
                         running.operation_id,
@@ -136,6 +155,7 @@ class DurableScheduler:
                         due_at=now + _retry_delay(running.attempts),
                         failure_code="worker_launch_failed",
                     )
+                self._workers.cancel_exchange(running.operation_id)
                 self._events.failed(running, "worker_launch_failed")
                 continue
             self._events.started(running)
@@ -180,7 +200,7 @@ class DurableScheduler:
         try:
             exits = self._workers.shutdown()
         except Exception:
-            self._workers.close_callback_exchanges()
+            self._workers.close_exchanges()
             raise
         try:
             for worker_exit in exits:
@@ -188,7 +208,7 @@ class DurableScheduler:
                 if completion is not None:
                     completed.append(completion)
         finally:
-            self._workers.close_callback_exchanges()
+            self._workers.close_exchanges()
         return tuple(completed)
 
     def _prepare_callback(
@@ -196,7 +216,7 @@ class DurableScheduler:
         callback: DueOperation,
         monotonic_now: float,
     ) -> bool:
-        if self._workers.codex_activation_active():
+        if self._workers.codex_transition_active():
             self._reject_callback(callback, "callback_authority_busy")
             return False
         try:
@@ -230,7 +250,7 @@ class DurableScheduler:
         except ManagedStateConflictError:
             pass
         finally:
-            self._workers.cancel_callback(callback.operation_id)
+            self._workers.cancel_exchange(callback.operation_id)
         if removed:
             self._events.failed(callback, code)
 
@@ -272,7 +292,7 @@ class DurableScheduler:
         try:
             completion = self._complete_exit(worker_exit)
         except Exception:
-            self._workers.complete_callback(
+            self._workers.complete_exchange(
                 worker_exit.operation.operation_id,
                 WorkerOutcome.TRANSIENT_FAILURE,
             )
@@ -281,7 +301,7 @@ class DurableScheduler:
                 "scheduler_result_failed",
             )
             return None
-        self._workers.complete_callback(
+        self._workers.complete_exchange(
             worker_exit.operation.operation_id,
             completion.outcome,
         )

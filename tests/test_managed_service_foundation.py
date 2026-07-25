@@ -9,8 +9,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from threading import Event, Thread
 
-import pytest
-
 from sidekick_usages import __version__
 from sidekick_usages.core.accounts.identifiers import new_request_id
 from sidekick_usages.core.accounts.types import (
@@ -26,18 +24,11 @@ from sidekick_usages.core.models import (
     CodexCredentials,
 )
 from sidekick_usages.core.selection.models import (
-    ActivationRecord,
     DueOperation,
     SelectedAccountState,
 )
-from sidekick_usages.core.selection.policy import (
-    decide_activation_recovery,
-    transition_activation,
-)
 from sidekick_usages.core.selection.types import (
     ActivationOutcome,
-    ActivationPhase,
-    ActivationRecoveryAction,
     OperationKind,
     OperationPriority,
     OperationState,
@@ -264,31 +255,12 @@ def _foundation_state(tmp_path: Path) -> _FoundationState:
     )
 
 
-def _activation_record(
-    state: _FoundationState,
-    operation_id: str,
-) -> ActivationRecord:
-    source, target, _codex = tuple(state.accounts)
-    return ActivationRecord(
-        provider_id=ProviderId.CLAUDE,
-        operation_id=OperationId(operation_id),
-        source_account_id=source.account_id,
-        target_account_id=target.account_id,
-        source_provider_identity=ProviderIdentity("claude-source-id"),
-        source_generation=AuthorityGeneration("claude-source-generation"),
-        expected_target_identity=ProviderIdentity("claude-target-id"),
-        phase=ActivationPhase.PREPARED,
-        started_at=REFERENCE_TIME,
-        updated_at=REFERENCE_TIME,
-    )
-
-
-def test_selection_journal_and_queue_preserve_stable_independent_state(
+def test_selection_and_queue_preserve_stable_independent_state(
     tmp_path: Path,
 ) -> None:
-    """A legal switch changes one provider without label or queue coupling."""
+    """One provider selection changes without label or queue coupling."""
     state = _foundation_state(tmp_path)
-    source, target, _codex = tuple(state.accounts)
+    _source, target, _codex = tuple(state.accounts)
     duplicate = _operation(
         target.account_id,
         ProviderId.CLAUDE,
@@ -299,42 +271,18 @@ def test_selection_journal_and_queue_preserve_stable_independent_state(
         state.queue.enqueue(duplicate).operation_id
         == state.operations[1].operation_id
     )
-    record = _activation_record(
-        state,
-        "fbd44d2b-d774-4328-be10-00b5d3a8650b",
+    current = state.selected.load(ProviderId.CLAUDE)
+    assert current is not None
+    state.selected.compare_and_swap(
+        _selected(
+            ProviderId.CLAUDE,
+            target.account_id,
+            "claude-target-id",
+            "claude-target-generation",
+            verified_in=3,
+        ),
+        expected=current,
     )
-    with state.journals.hold(
-        ProviderId.CLAUDE,
-        (source.account_id, target.account_id),
-    ) as activation:
-        activation.begin(record)
-        activation.advance(
-            record.operation_id,
-            ActivationPhase.OUTGOING_RETAINED,
-            updated_at=REFERENCE_TIME + timedelta(seconds=1),
-        )
-        activation.advance(
-            record.operation_id,
-            ActivationPhase.TARGET_ACTIVATED,
-            updated_at=REFERENCE_TIME + timedelta(seconds=2),
-        )
-        activation.advance(
-            record.operation_id,
-            ActivationPhase.READ_BACK_VERIFIED,
-            updated_at=REFERENCE_TIME + timedelta(seconds=3),
-        )
-        activation.commit_verified(
-            record.operation_id,
-            _selected(
-                ProviderId.CLAUDE,
-                target.account_id,
-                "claude-target-id",
-                "claude-target-generation",
-                verified_in=3,
-            ),
-            state.selected,
-            updated_at=REFERENCE_TIME + timedelta(seconds=4),
-        )
 
     claude_selected = state.selected.load(ProviderId.CLAUDE)
     assert claude_selected is not None
@@ -354,91 +302,6 @@ def test_selection_journal_and_queue_preserve_stable_independent_state(
     assert claude_selected.account_id == target.account_id
     assert (
         state.queue.get(target.account_id, OperationKind.MAINTAIN) is not None
-    )
-    with pytest.raises(ValueError, match="Illegal activation"):
-        transition_activation(
-            record,
-            ActivationPhase.COMMITTED,
-            updated_at=REFERENCE_TIME,
-        )
-
-
-def test_interrupted_activation_recovers_from_provider_read_back(
-    tmp_path: Path,
-) -> None:
-    """Restart follows native truth and retains every account's due work."""
-    state = _foundation_state(tmp_path)
-    _source, target, codex = tuple(state.accounts)
-    record = _activation_record(
-        state,
-        "4a85762c-e517-4f68-85be-a2ee2e027a66",
-    )
-    state.journals.begin(record)
-    state.journals.advance(
-        ProviderId.CLAUDE,
-        record.operation_id,
-        ActivationPhase.TARGET_ACTIVATED,
-        updated_at=REFERENCE_TIME + timedelta(seconds=1),
-    )
-
-    restarted = ActivationJournalStore(
-        state.paths.activation_journals,
-        state.paths.durable_operations,
-    )
-    interrupted = restarted.load(ProviderId.CLAUDE).active
-    assert interrupted is not None
-    target_read_back = _selected(
-        ProviderId.CLAUDE,
-        target.account_id,
-        "claude-target-id",
-        "claude-target-generation",
-        verified_in=2,
-    )
-    assert (
-        decide_activation_recovery(interrupted, target_read_back)
-        is ActivationRecoveryAction.COMMIT_VERIFIED
-    )
-    logged_out = SelectedAccountState(
-        provider_id=ProviderId.CLAUDE,
-        runtime_state=ProviderRuntimeState.LOGGED_OUT,
-        account_id=None,
-        provider_identity=None,
-        runtime_generation=None,
-        verified_at=REFERENCE_TIME,
-        outcome=ActivationOutcome.LOGGED_OUT,
-    )
-    assert (
-        decide_activation_recovery(interrupted, logged_out)
-        is ActivationRecoveryAction.REQUEST_OFFICIAL_ROLLBACK
-    )
-    unreadable = SelectedAccountState(
-        provider_id=ProviderId.CLAUDE,
-        runtime_state=ProviderRuntimeState.UNREADABLE,
-        account_id=None,
-        provider_identity=None,
-        runtime_generation=None,
-        verified_at=REFERENCE_TIME,
-        outcome=ActivationOutcome.RECONCILIATION_REQUIRED,
-    )
-    assert (
-        decide_activation_recovery(interrupted, unreadable)
-        is ActivationRecoveryAction.RECONCILIATION_REQUIRED
-    )
-    assert (
-        restarted.recover_from_read_back(target_read_back, state.selected)
-        is ActivationRecoveryAction.COMMIT_VERIFIED
-    )
-
-    recovered = restarted.load(ProviderId.CLAUDE)
-    assert recovered.active is None
-    assert recovered.history[-1].phase is ActivationPhase.COMMITTED
-    assert state.selected.load(ProviderId.CLAUDE) == target_read_back
-    codex_selected = state.selected.load(ProviderId.CODEX)
-    assert codex_selected is not None
-    assert codex_selected.account_id == codex.account_id
-    assert (
-        OperationQueueStore(state.paths.durable_operations).load()
-        == state.queue.load()
     )
 
 
@@ -693,7 +556,7 @@ class _FakeWorkerHandle:
     events: list[str]
     initial_exit_code: int | None
     requires_kill: bool
-    callback_endpoint: socket.socket | None = None
+    exchange_endpoint: socket.socket | None = None
     terminated: bool = False
     killed: bool = False
 
@@ -703,19 +566,19 @@ class _FakeWorkerHandle:
 
     def poll(self) -> int | None:
         if self.initial_exit_code is not None:
-            self._close_callback()
+            self._close_exchange()
         return self.initial_exit_code
 
     def wait(self, timeout_seconds: float | None) -> int | None:
         del timeout_seconds
         if self.initial_exit_code is not None:
-            self._close_callback()
+            self._close_exchange()
             return self.initial_exit_code
         if self.killed:
-            self._close_callback()
+            self._close_exchange()
             return -9
         if self.terminated and not self.requires_kill:
-            self._close_callback()
+            self._close_exchange()
             return -15
         return None
 
@@ -734,9 +597,9 @@ class _FakeWorkerHandle:
         self.events.append(f"kill:{self.operation_id}")
         self.killed = True
 
-    def _close_callback(self) -> None:
-        endpoint = self.callback_endpoint
-        self.callback_endpoint = None
+    def _close_exchange(self) -> None:
+        endpoint = self.exchange_endpoint
+        self.exchange_endpoint = None
         if endpoint is not None:
             endpoint.close()
 
@@ -782,8 +645,8 @@ class _FakeWorkerLauncher:
             spec.operation_id in self._requires_kill,
             (
                 None
-                if spec.callback_descriptor is None
-                else socket.socket(fileno=os.dup(spec.callback_descriptor))
+                if spec.exchange_descriptor is None
+                else socket.socket(fileno=os.dup(spec.exchange_descriptor))
             ),
         )
         self.handles[spec.operation_id] = handle

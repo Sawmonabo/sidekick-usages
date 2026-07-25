@@ -7,6 +7,7 @@ from sidekick_usages.core.accounts.types import (
     ProviderIdentity,
     SidekickAccountId,
 )
+from sidekick_usages.core.selection.models import ProviderAuthObservation
 from sidekick_usages.providers.codex.broker.models import (
     CodexProjectionReceipt,
 )
@@ -29,3 +30,10 @@ class CodexProjectionInstaller(Protocol):
         projection: CodexProjection,
     ) -> CodexProjectionReceipt:
         """Install one active projection after successful preflight."""
+
+
+class CodexNativeAuthObserver(Protocol):
+    """Observe native Codex authentication without retaining credentials."""
+
+    def observe(self) -> ProviderAuthObservation:
+        """Return one strict secret-free native observation."""

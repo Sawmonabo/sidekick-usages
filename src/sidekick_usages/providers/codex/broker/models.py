@@ -17,6 +17,7 @@ from sidekick_usages.core.accounts.validation import (
 )
 from sidekick_usages.providers.codex.app_server.models import CodexExecutable
 from sidekick_usages.providers.codex.broker.types import (
+    CodexActivationMode,
     CodexCallbackMode,
     CodexDaemonStatus,
 )
@@ -108,6 +109,14 @@ class CodexProjectionReceipt:
         ):
             raise ValueError("Codex projection runtime identity is invalid.")
 
+    def matches(self, expectation: CodexProjectionExpectation) -> bool:
+        """Return whether this receipt proves one exact expectation."""
+        return (
+            self.account_id == expectation.account_id
+            and self.provider_identity == expectation.provider_identity
+            and self.generation == expectation.generation
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class CodexRefreshRequest:
@@ -118,14 +127,9 @@ class CodexRefreshRequest:
 
 
 @dataclass(frozen=True, slots=True)
-class CodexCallbackInstruction:
-    """Non-secret correlation sent to one isolated Codex worker."""
+class CodexExchangeDeadlines:
+    """Validated monotonic deadlines shared by one worker exchange."""
 
-    operation_id: OperationId
-    mode: CodexCallbackMode
-    account_id: SidekickAccountId
-    provider_identity: ProviderIdentity
-    source_generation: AuthorityGeneration
     response_deadline_nanoseconds: int
     completion_deadline_nanoseconds: int
 
@@ -138,17 +142,29 @@ class CodexCallbackInstruction:
             or self.completion_deadline_nanoseconds
             <= self.response_deadline_nanoseconds
         ):
-            raise ValueError("Codex callback deadlines are invalid.")
+            raise ValueError("Codex worker-exchange deadlines are invalid.")
 
     @property
     def response_deadline_seconds(self) -> float:
-        """Return the provider-response deadline in seconds."""
+        """Return the worker-response deadline in seconds."""
         return self.response_deadline_nanoseconds / 1_000_000_000
 
     @property
     def completion_deadline_seconds(self) -> float:
         """Return the post-response completion deadline in seconds."""
         return self.completion_deadline_nanoseconds / 1_000_000_000
+
+
+@dataclass(frozen=True, slots=True)
+class CodexCallbackInstruction:
+    """Non-secret correlation sent to one isolated Codex worker."""
+
+    operation_id: OperationId
+    mode: CodexCallbackMode
+    account_id: SidekickAccountId
+    provider_identity: ProviderIdentity
+    source_generation: AuthorityGeneration
+    deadlines: CodexExchangeDeadlines
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,37 +176,66 @@ class CodexCallbackAcknowledgement:
     generation: AuthorityGeneration
 
 
-class CodexRefreshReplyLease:
-    """Short-lived decoded worker response with redacted credential state."""
+@dataclass(frozen=True, slots=True)
+class CodexActivationInstruction:
+    """Non-secret correlation for one activation or recovery worker."""
+
+    operation_id: OperationId
+    mode: CodexActivationMode
+    account_id: SidekickAccountId
+    rollback_account_id: SidekickAccountId | None
+    deadlines: CodexExchangeDeadlines
+
+    def __post_init__(self) -> None:
+        """Limit rollback authority to one distinct recovery account."""
+        if (
+            self.mode is CodexActivationMode.ACTIVATE
+            and self.rollback_account_id is not None
+        ) or self.rollback_account_id == self.account_id:
+            raise ValueError("Codex activation account authority is invalid.")
+
+    def permits(self, account_id: SidekickAccountId) -> bool:
+        """Return whether the instruction authorizes this saved account."""
+        return account_id in (
+            self.account_id,
+            self.rollback_account_id,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CodexActivationAcknowledgement:
+    """Correlated secret-free proof of one official daemon installation."""
+
+    operation_id: OperationId
+    mode: CodexActivationMode
+    receipt: CodexProjectionReceipt
+
+
+class CodexProjectionReplyLease:
+    """Short-lived decoded projection with redacted credential state."""
 
     __slots__ = (
         "_access_token",
         "_active",
         "account_id",
         "generation",
-        "mode",
         "operation_id",
         "plan",
         "provider_identity",
-        "source_generation",
     )
 
     def __init__(
         self,
         operation_id: OperationId,
-        mode: CodexCallbackMode,
         account_id: SidekickAccountId,
         provider_identity: ProviderIdentity,
-        source_generation: AuthorityGeneration,
         generation: AuthorityGeneration,
         plan: str,
         access_token: str,
     ) -> None:
         self.operation_id = operation_id
-        self.mode = mode
         self.account_id = account_id
         self.provider_identity = provider_identity
-        self.source_generation = source_generation
         self.generation = generation
         self.plan = require_bounded_text(
             plan,
@@ -202,15 +247,15 @@ class CodexRefreshReplyLease:
 
     @property
     def access_token(self) -> str:
-        """Return the credential only while the reply lease is active."""
+        """Return the credential only while the projection reply is active."""
         if not self._active or self._access_token is None:
-            raise RuntimeError("Codex refresh reply lease is not active.")
+            raise RuntimeError("Codex projection reply lease is not active.")
         return self._access_token
 
     def __enter__(self) -> Self:
         """Open this decoded reply exactly once."""
         if self._active or self._access_token is None:
-            raise RuntimeError("Codex refresh reply lease is unavailable.")
+            raise RuntimeError("Codex projection reply lease is unavailable.")
         self._active = True
         return self
 
@@ -227,4 +272,4 @@ class CodexRefreshReplyLease:
 
     def __repr__(self) -> str:
         """Return a representation without credential material."""
-        return "<CodexRefreshReplyLease redacted>"
+        return "<CodexProjectionReplyLease redacted>"

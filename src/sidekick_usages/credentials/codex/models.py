@@ -23,6 +23,19 @@ from sidekick_usages.providers.codex.models import (
 )
 
 
+def require_managed_codex_authority(
+    account: SavedAccount,
+) -> CodexManagedAuthority:
+    """Return one validated managed Codex subscription authority."""
+    authority = account.authority
+    if not isinstance(authority, CodexAccountAuthority):
+        raise ValueError("Account is not managed by Codex.")
+    subscription = authority.subscription
+    if not isinstance(subscription, CodexManagedAuthority):
+        raise ValueError("Codex account is not a managed authority.")
+    return subscription
+
+
 class CodexProjectionLease:
     """Short-lived access token bound to one proven managed authority."""
 
@@ -145,7 +158,6 @@ class CodexVerifiedAuthorityExchange:
 
     def __post_init__(self) -> None:
         """Require one proven same-account advanced authority."""
-        authority = self.source.authority
         if (
             self.source.provider_id is not ProviderId.CODEX
             or not self.source.has_managed_authority
@@ -158,11 +170,6 @@ class CodexVerifiedAuthorityExchange:
             or self.observation.plan != self.after.plan
         ):
             raise ValueError("Managed Codex exchange is invalid.")
-        if not isinstance(authority, CodexAccountAuthority):
-            raise ValueError("Managed Codex exchange authority is invalid.")
-        subscription = authority.subscription
-        if (
-            not isinstance(subscription, CodexManagedAuthority)
-            or subscription.provider_identity != self.before.provider_identity
-        ):
+        subscription = require_managed_codex_authority(self.source)
+        if subscription.provider_identity != self.before.provider_identity:
             raise ValueError("Managed Codex exchange identity is invalid.")

@@ -16,8 +16,8 @@ from sidekick_usages.core.selection.types import (
 )
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.worker.exchange import (
-    CallbackExchangeRegistry,
-    SupervisorCallbackExchange,
+    SupervisorWorkerExchange,
+    WorkerExchangeRegistry,
 )
 from sidekick_usages.persistence.state.files import ManagedStateConflictError
 from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
@@ -33,7 +33,7 @@ class DurableCallbackDispatcher:
     def __init__(
         self,
         queue: OperationQueueStore,
-        exchanges: CallbackExchangeRegistry,
+        exchanges: WorkerExchangeRegistry,
         wall_time: Callable[[], datetime],
         monotonic: Callable[[], float],
         wakeup: Callable[[], None],
@@ -51,7 +51,7 @@ class DurableCallbackDispatcher:
         instruction: bytes,
         response_deadline: float,
         completion_deadline: float,
-    ) -> SupervisorCallbackExchange:
+    ) -> SupervisorWorkerExchange:
         """Persist and wake one exact Codex callback operation."""
         if response_deadline <= self._monotonic():
             raise CallbackDispatchError

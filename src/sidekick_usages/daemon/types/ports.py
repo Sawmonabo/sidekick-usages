@@ -15,7 +15,10 @@ from sidekick_usages.daemon.models.worker import (
     WorkerResult,
 )
 from sidekick_usages.daemon.types.worker import ExitNotifier
-from sidekick_usages.persistence.supervisor.authority import OperationAuthority
+from sidekick_usages.persistence.supervisor.authority import (
+    OperationAuthority,
+    ProviderMutationAuthority,
+)
 
 
 class ResidentService(Protocol):
@@ -92,6 +95,13 @@ class OperationEventSink(Protocol):
         """Observe a safe scheduler coordination failure."""
 
 
+class OperationExchangePreparer(Protocol):
+    """Grant one provider-preflighted durable operation exchange."""
+
+    def prepare_operation(self, operation: DueOperation) -> bool:
+        """Return whether provider preflight and exchange are both ready."""
+
+
 class WorkerExecutor(Protocol):
     """Execute one already-qualified durable operation."""
 
@@ -99,5 +109,16 @@ class WorkerExecutor(Protocol):
         self,
         operation: DueOperation,
         authority: OperationAuthority,
+    ) -> WorkerResult:
+        """Return one sanitized result for the exact operation."""
+
+
+class ProviderWorkerExecutor(Protocol):
+    """Execute one operation under provider-first mutation authority."""
+
+    def execute(
+        self,
+        operation: DueOperation,
+        authority: ProviderMutationAuthority,
     ) -> WorkerResult:
         """Return one sanitized result for the exact operation."""

@@ -28,7 +28,7 @@ from sidekick_usages.daemon.runtime.supervisor import (
     SupervisorRuntime,
     WakeupChannel,
 )
-from sidekick_usages.daemon.worker.exchange import CallbackExchangeRegistry
+from sidekick_usages.daemon.worker.exchange import WorkerExchangeRegistry
 from sidekick_usages.daemon.worker.pool import (
     SubprocessWorkerLauncher,
     WorkerLaunchPlanner,
@@ -42,7 +42,7 @@ from sidekick_usages.persistence.supervisor.activation import (
 from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
 from sidekick_usages.persistence.supervisor.results import WorkerResultStore
 from sidekick_usages.persistence.supervisor.runtime import (
-    SelectedRuntimeReader,
+    RuntimeStateReader,
 )
 from sidekick_usages.persistence.supervisor.selection import (
     SelectedStateStore,
@@ -51,7 +51,7 @@ from sidekick_usages.persistence.supervisor.service import ServiceStateStore
 from sidekick_usages.providers.codex.app_server.executable import (
     discover_codex_executable,
 )
-from sidekick_usages.providers.codex.broker.responder import CodexRefreshBroker
+from sidekick_usages.providers.codex.broker.responder import CodexRuntimeBroker
 from sidekick_usages.providers.codex.broker.service import CodexSharedRuntime
 from sidekick_usages.providers.codex.native import default_codex_home
 
@@ -103,7 +103,7 @@ def main() -> int:
     selected = SelectedStateStore(paths.selected_state)
     recovery = ActivationRecoveryScheduler(journals, queue)
     events = OperationEventHub()
-    callbacks = CallbackExchangeRegistry(time.monotonic)
+    exchanges = WorkerExchangeRegistry(time.monotonic)
     workers = WorkerPool(
         SubprocessWorkerLauncher(),
         WorkerLaunchPlanner(
@@ -111,7 +111,25 @@ def main() -> int:
             os.environ,
         ),
         wakeup.notify,
-        callbacks=callbacks,
+        exchanges=exchanges,
+    )
+    broker = CodexRuntimeBroker(
+        partial(_create_codex_runtime, default_codex_home()),
+        RuntimeStateReader(
+            ProviderId.CODEX,
+            selected,
+            journals,
+            paths.durable_operations,
+        ),
+        DurableCallbackDispatcher(
+            queue,
+            exchanges,
+            clock.now,
+            time.monotonic,
+            wakeup.notify,
+        ),
+        exchanges,
+        status_changed=wakeup.notify,
     )
     scheduler = DurableScheduler(
         queue,
@@ -126,6 +144,7 @@ def main() -> int:
                 time.monotonic,
             ),
         ),
+        exchange_preparer=broker,
     )
     request_stop = partial(_request_stop, stop_requested, wakeup)
     dispatcher = SupervisorDispatcher(
@@ -141,23 +160,6 @@ def main() -> int:
         paths.runtime_directory,
         paths.supervisor_socket,
         dispatcher,
-    )
-    broker = CodexRefreshBroker(
-        partial(_create_codex_runtime, default_codex_home()),
-        SelectedRuntimeReader(
-            ProviderId.CODEX,
-            selected,
-            journals,
-            paths.durable_operations,
-        ),
-        DurableCallbackDispatcher(
-            queue,
-            callbacks,
-            clock.now,
-            time.monotonic,
-            wakeup.notify,
-        ),
-        status_changed=wakeup.notify,
     )
     runtime = SupervisorRuntime(
         server,

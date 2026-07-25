@@ -37,7 +37,7 @@ from sidekick_usages.providers.codex.broker.models import (
     CodexDaemonAuthority,
     CodexProjectionExpectation,
     CodexProjectionReceipt,
-    CodexRefreshReplyLease,
+    CodexProjectionReplyLease,
 )
 from sidekick_usages.providers.codex.broker.ports import CodexProjection
 from sidekick_usages.providers.codex.broker.types import CodexBrokerFailure
@@ -87,16 +87,24 @@ class CodexSharedRuntime:
         )
 
     @property
+    def qualified(self) -> bool:
+        """Return whether the exact shared-daemon connection remains live."""
+        session = self._session
+        return (
+            session is not None
+            and self._authority is not None
+            and not session.closed
+        )
+
+    @property
     def ready(self) -> bool:
         """Return whether this live connection has a proven projection."""
-        session = self._session
         authority = self._authority
         receipt = self._receipt
         return (
-            session is not None
+            self.qualified
             and authority is not None
             and receipt is not None
-            and not session.closed
             and receipt.socket_device == authority.control_socket.device
             and receipt.socket_inode == authority.control_socket.inode
         )
@@ -105,6 +113,17 @@ class CodexSharedRuntime:
     def receipt(self) -> CodexProjectionReceipt | None:
         """Return the current secret-free projection receipt."""
         return self._receipt if self.ready else None
+
+    def qualify(self) -> None:
+        """Qualify the pinned daemon connection without changing auth."""
+        try:
+            self._qualify_session()
+        except CodexAppServerError as error:
+            self._drop_session()
+            raise codex_broker_error(error) from None
+        except CodexBrokerError:
+            self._drop_session()
+            raise
 
     def prepare(
         self,
@@ -118,28 +137,10 @@ class CodexSharedRuntime:
             provider_identity,
             generation,
         )
-        try:
-            authority = self._manager.ensure_running()
-            session = self._session
-            if (
-                session is None
-                or session.closed
-                or self._authority != authority
-            ):
-                self._drop_session()
-                session = CodexDaemonSession.open(self._manager, authority)
-                self._session = session
-                self._authority = authority
-                self._receipt = None
-            self._expected = expectation
-        except CodexAppServerError as error:
-            self._drop_session()
-            raise codex_broker_error(error) from None
-        except CodexBrokerError:
-            self._drop_session()
-            raise
+        self.qualify()
+        self._expected = expectation
         receipt = self._receipt
-        if receipt is not None and _receipt_matches(receipt, expectation):
+        if receipt is not None and receipt.matches(expectation):
             return receipt
         self._receipt = None
         return None
@@ -198,7 +199,8 @@ class CodexSharedRuntime:
     def respond_refresh(
         self,
         request_id: int,
-        reply: CodexRefreshReplyLease,
+        reply: CodexProjectionReplyLease,
+        source_generation: AuthorityGeneration,
         *,
         timeout_seconds: float,
     ) -> CodexProjectionReceipt:
@@ -213,7 +215,7 @@ class CodexSharedRuntime:
             or receipt is None
             or receipt.account_id != reply.account_id
             or receipt.provider_identity != reply.provider_identity
-            or receipt.generation != reply.source_generation
+            or receipt.generation != source_generation
         ):
             raise CodexBrokerError(CodexBrokerFailure.RUNTIME_CHANGED)
         result = codex_refresh_result(reply)
@@ -259,6 +261,19 @@ class CodexSharedRuntime:
         """Close the resident daemon connection and clear readiness."""
         self._drop_session()
 
+    def _qualify_session(self) -> None:
+        authority = self._manager.ensure_running()
+        session = self._session
+        if (
+            session is not None
+            and not session.closed
+            and self._authority == authority
+        ):
+            return
+        self._drop_session()
+        self._session = CodexDaemonSession.open(self._manager, authority)
+        self._authority = authority
+
     def _drop_session(self) -> None:
         session = self._session
         self._session = None
@@ -267,17 +282,6 @@ class CodexSharedRuntime:
         self._receipt = None
         if session is not None:
             session.close()
-
-
-def _receipt_matches(
-    receipt: CodexProjectionReceipt,
-    expectation: CodexProjectionExpectation,
-) -> bool:
-    return (
-        receipt.account_id == expectation.account_id
-        and receipt.provider_identity == expectation.provider_identity
-        and receipt.generation == expectation.generation
-    )
 
 
 def _generation_not_older(

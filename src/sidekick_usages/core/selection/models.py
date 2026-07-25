@@ -15,6 +15,7 @@ from sidekick_usages.core.selection.types import (
     OperationKind,
     OperationPriority,
     OperationState,
+    ProviderAuthState,
     ProviderRuntimeState,
 )
 from sidekick_usages.core.time import as_utc
@@ -49,6 +50,31 @@ def safe_outcome_code(value: str | None) -> str | None:
             "Safe outcome code must use bounded lowercase ASCII identifiers."
         )
     return value
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ProviderAuthObservation:
+    """One strict secret-free observation of native provider authentication."""
+
+    provider_id: ProviderId
+    state: ProviderAuthState
+    provider_identity: ProviderIdentity | None
+    generation: AuthorityGeneration | None
+    observed_at: datetime
+
+    def __post_init__(self) -> None:
+        """Require complete identity only for active authentication."""
+        object.__setattr__(self, "observed_at", as_utc(self.observed_at))
+        if self.state is ProviderAuthState.ACTIVE:
+            if self.provider_identity is None or self.generation is None:
+                raise ValueError(
+                    "Active provider authentication requires identity."
+                )
+            return
+        if self.provider_identity is not None or self.generation is not None:
+            raise ValueError(
+                "Inactive provider authentication cannot claim identity."
+            )
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -112,17 +138,30 @@ class SelectedAccountState:
             raise ValueError("Provider runtime state and outcome disagree.")
 
 
+def activation_account_ids(
+    selected_baseline: SelectedAccountState | None,
+    target_account_id: SidekickAccountId,
+) -> frozenset[SidekickAccountId]:
+    """Return the exact saved-account authority set for one activation."""
+    source = (
+        None if selected_baseline is None else selected_baseline.account_id
+    )
+    return frozenset(
+        {target_account_id} if source is None else {source, target_account_id}
+    )
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ActivationRecord:
     """One secret-free provider activation journal record."""
 
     provider_id: ProviderId
     operation_id: OperationId
-    source_account_id: SidekickAccountId | None
+    selected_baseline: SelectedAccountState | None
+    native_auth_baseline: ProviderAuthObservation
     target_account_id: SidekickAccountId
-    source_provider_identity: ProviderIdentity | None
-    source_generation: AuthorityGeneration | None
     expected_target_identity: ProviderIdentity
+    expected_target_generation: AuthorityGeneration
     phase: ActivationPhase
     started_at: datetime
     updated_at: datetime
@@ -136,13 +175,20 @@ class ActivationRecord:
         if updated_at < started_at:
             raise ValueError("Activation update cannot predate its start.")
         if (
-            self.source_generation is not None
-            and self.source_provider_identity is None
+            self.selected_baseline is not None
+            and self.selected_baseline.provider_id is not self.provider_id
         ):
             raise ValueError(
-                "Source generation requires a source provider identity."
+                "Selected baseline must match the activation provider."
             )
-        if self.source_account_id == self.target_account_id:
+        if self.native_auth_baseline.provider_id is not self.provider_id:
+            raise ValueError(
+                "Native authentication must match the activation provider."
+            )
+        if (
+            self.selected_baseline is not None
+            and self.selected_baseline.account_id == self.target_account_id
+        ):
             raise ValueError("Activation source and target must differ.")
         _validate_activation_outcome(self.phase, self.outcome)
         object.__setattr__(self, "started_at", started_at)
@@ -151,6 +197,14 @@ class ActivationRecord:
             self,
             "failure_code",
             safe_outcome_code(self.failure_code),
+        )
+
+    @property
+    def account_ids(self) -> frozenset[SidekickAccountId]:
+        """Return the complete account authority set for this activation."""
+        return activation_account_ids(
+            self.selected_baseline,
+            self.target_account_id,
         )
 
 
@@ -211,7 +265,7 @@ def _validate_activation_outcome(
     phase: ActivationPhase,
     outcome: ActivationOutcome | None,
 ) -> None:
-    """Require terminal phases to carry one truthful safe outcome."""
+    """Require each phase to carry only its truthful safe outcome."""
     allowed: frozenset[ActivationOutcome | None]
     if phase is ActivationPhase.COMMITTED:
         allowed = frozenset({ActivationOutcome.VERIFIED})

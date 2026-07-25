@@ -18,6 +18,13 @@ class CodexCallbackMode(StrEnum):
     REHYDRATE = "rehydrate"
 
 
+class CodexActivationMode(StrEnum):
+    """Closed shared-runtime selection operations."""
+
+    ACTIVATE = "activate"
+    RECOVER = "recover"
+
+
 class CodexBrokerFailure(StrEnum):
     """Secret-safe failures from the shared Codex runtime."""
 

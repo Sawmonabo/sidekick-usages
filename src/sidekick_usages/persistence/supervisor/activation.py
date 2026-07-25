@@ -2,7 +2,6 @@
 
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
-from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
@@ -14,14 +13,10 @@ from sidekick_usages.core.selection.models import (
     ActivationRecord,
     SelectedAccountState,
 )
-from sidekick_usages.core.selection.policy import (
-    decide_activation_recovery,
-    transition_activation,
-)
+from sidekick_usages.core.selection.policy import transition_activation
 from sidekick_usages.core.selection.types import (
     ActivationOutcome,
     ActivationPhase,
-    ActivationRecoveryAction,
     ProviderRuntimeState,
 )
 from sidekick_usages.core.types import ProviderId
@@ -49,6 +44,7 @@ from sidekick_usages.persistence.state.filesystem import (
 )
 from sidekick_usages.persistence.supervisor.authority import (
     OperationAuthorityLock,
+    ProviderMutationAuthority,
     ProviderMutationLock,
 )
 from sidekick_usages.persistence.supervisor.selection import SelectedStateStore
@@ -57,60 +53,53 @@ from sidekick_usages.persistence.types.artifact import AuthorityExpectation
 
 
 class ActivationJournalTransaction:
-    """Provider-and-account locked activation journal capability."""
+    """Activation journal capability backed by an existing provider lock."""
 
     def __init__(
         self,
         filesystem: PrivateFilesystem,
+        lock_factory: StateLockFactory,
         provider_id: ProviderId,
         account_ids: frozenset[SidekickAccountId],
+        provider_authority: ProviderMutationAuthority,
     ) -> None:
         self._filesystem = filesystem
+        self._lock_factory = lock_factory
+        self._provider_authority = provider_authority
         self.provider_id = provider_id
         self.account_ids = account_ids
+        self._require_authority()
 
     def load(self) -> ActivationJournalDocument:
-        """Load the locked journal state."""
-        snapshot = self._filesystem.read_opaque_private()
-        document = (
-            ActivationJournalDocument(provider_id=self.provider_id)
-            if snapshot is None
-            else decode_activation_journal(snapshot.data)
-        )
-        if document.provider_id is not self.provider_id:
-            raise ManagedStateConflictError(
-                ManagedStateConflictKind.CONCURRENT_CHANGE
-            )
-        return document
+        """Load the journal under a short-lived journal file lock."""
+        with self._hold_document() as (_snapshot, document):
+            self._require_active_accounts(document.active)
+            return document
 
     def begin(self, record: ActivationRecord) -> ActivationRecord:
-        """Persist one prepared activation under all required locks."""
+        """Persist one prepared activation under the existing authority."""
         if (
             record.provider_id is not self.provider_id
             or record.phase is not ActivationPhase.PREPARED
-            or not self._record_accounts(record) <= self.account_ids
+            or record.account_ids != self.account_ids
         ):
-            raise ValueError("Activation does not match its held locks.")
-        snapshot = self._filesystem.read_opaque_private()
-        document = (
-            ActivationJournalDocument(provider_id=self.provider_id)
-            if snapshot is None
-            else decode_activation_journal(snapshot.data)
-        )
-        if document.active == record:
-            return record
-        if document.active is not None:
-            raise ManagedStateConflictError(
-                ManagedStateConflictKind.ACTIVE_ACTIVATION
+            raise ValueError("Activation does not match its held authority.")
+        with self._hold_document() as (snapshot, document):
+            self._require_active_accounts(document.active)
+            if document.active == record:
+                return record
+            if document.active is not None:
+                raise ManagedStateConflictError(
+                    ManagedStateConflictKind.ACTIVE_ACTIVATION
+                )
+            self._commit(
+                ActivationJournalDocument(
+                    provider_id=self.provider_id,
+                    active=record,
+                    history=document.history,
+                ),
+                snapshot,
             )
-        self._commit(
-            ActivationJournalDocument(
-                provider_id=self.provider_id,
-                active=record,
-                history=document.history,
-            ),
-            snapshot,
-        )
         return record
 
     def advance(
@@ -122,42 +111,39 @@ class ActivationJournalTransaction:
         outcome: ActivationOutcome | None = None,
         failure_code: str | None = None,
     ) -> ActivationRecord:
-        """Advance the active journal through one legal phase."""
-        snapshot = self._filesystem.read_opaque_private()
-        document = (
-            ActivationJournalDocument(provider_id=self.provider_id)
-            if snapshot is None
-            else decode_activation_journal(snapshot.data)
-        )
-        active = document.active
-        if (
-            active is None
-            or active.operation_id != operation_id
-            or not self._record_accounts(active) <= self.account_ids
-        ):
-            raise ManagedStateConflictError(
-                ManagedStateConflictKind.CONCURRENT_CHANGE
+        """Advance the active journal under one short file lock."""
+        with self._hold_document() as (snapshot, document):
+            active = document.active
+            if (
+                active is None
+                or active.operation_id != operation_id
+                or active.account_ids != self.account_ids
+            ):
+                raise ManagedStateConflictError(
+                    ManagedStateConflictKind.CONCURRENT_CHANGE
+                )
+            candidate = transition_activation(
+                active,
+                phase,
+                updated_at=updated_at,
+                outcome=outcome,
+                failure_code=failure_code,
             )
-        candidate = transition_activation(
-            active,
-            phase,
-            updated_at=updated_at,
-            outcome=outcome,
-            failure_code=failure_code,
-        )
-        if candidate.phase.terminal:
-            history = (*document.history, candidate)[-MAX_ACTIVATION_HISTORY:]
-            updated = ActivationJournalDocument(
-                provider_id=self.provider_id,
-                history=history,
-            )
-        else:
-            updated = ActivationJournalDocument(
-                provider_id=self.provider_id,
-                active=candidate,
-                history=document.history,
-            )
-        self._commit(updated, snapshot)
+            if candidate.phase.terminal:
+                history = (*document.history, candidate)[
+                    -MAX_ACTIVATION_HISTORY:
+                ]
+                updated = ActivationJournalDocument(
+                    provider_id=self.provider_id,
+                    history=history,
+                )
+            else:
+                updated = ActivationJournalDocument(
+                    provider_id=self.provider_id,
+                    active=candidate,
+                    history=document.history,
+                )
+            self._commit(updated, snapshot)
         return candidate
 
     def commit_verified(
@@ -168,56 +154,108 @@ class ActivationJournalTransaction:
         *,
         updated_at: datetime,
     ) -> ActivationRecord:
-        """Commit verified selection, then close its recoverable journal."""
+        """CAS the exact baseline, then close a provider-proven activation."""
         document = self.load()
         active = document.active
         if (
             active is None
             or active.operation_id != operation_id
-            or active.phase is not ActivationPhase.READ_BACK_VERIFIED
+            or active.phase is not ActivationPhase.PROVIDER_PROOF_VERIFIED
             or state.provider_id is not self.provider_id
             or state.runtime_state is not ProviderRuntimeState.SAVED_ACTIVE
             or state.account_id != active.target_account_id
             or state.provider_identity != active.expected_target_identity
+            or state.runtime_generation != active.expected_target_generation
+            or state.outcome is not ActivationOutcome.VERIFIED
         ):
             raise ManagedStateConflictError(
                 ManagedStateConflictKind.CONCURRENT_CHANGE
             )
-        self._commit_selection(state, selected, active)
+        current = selected.load(self.provider_id)
+        expected = (
+            current
+            if current == state or _matches_activation_target(current, active)
+            else active.selected_baseline
+        )
+        selected.compare_and_swap(
+            state,
+            expected=expected,
+        )
         return self.advance(
             operation_id,
             ActivationPhase.COMMITTED,
             updated_at=updated_at,
         )
 
-    def _commit_selection(
+    def commit_reconciled(
         self,
+        operation_id: OperationId,
         state: SelectedAccountState,
         selected: SelectedStateStore,
-        active: ActivationRecord,
-    ) -> None:
-        current = selected.load(self.provider_id)
+        *,
+        updated_at: datetime,
+    ) -> ActivationRecord:
+        """CAS a proven saved rollback account, then close the journal."""
+        document = self.load()
+        active = document.active
+        baseline = None if active is None else active.selected_baseline
         if (
-            current is None
-            or current.account_id != active.source_account_id
-            or current.provider_identity != active.source_provider_identity
-            or current.runtime_generation != active.source_generation
+            active is None
+            or active.operation_id != operation_id
+            or baseline is None
+            or baseline.runtime_state is not ProviderRuntimeState.SAVED_ACTIVE
+            or state.provider_id is not self.provider_id
+            or state.runtime_state is not ProviderRuntimeState.SAVED_ACTIVE
+            or state.account_id != baseline.account_id
+            or state.provider_identity != baseline.provider_identity
+            or state.outcome is not ActivationOutcome.EXTERNAL_RECONCILED
         ):
             raise ManagedStateConflictError(
                 ManagedStateConflictKind.CONCURRENT_CHANGE
             )
-        selected.compare_and_swap(state, expected=current)
-
-    @staticmethod
-    def _record_accounts(
-        record: ActivationRecord,
-    ) -> frozenset[SidekickAccountId]:
-        source = record.source_account_id
-        return frozenset(
-            {record.target_account_id}
-            if source is None
-            else {source, record.target_account_id}
+        current = selected.load(self.provider_id)
+        if current == state:
+            expected = state
+        elif current == baseline:
+            expected = baseline
+        elif _matches_activation_target(current, active):
+            expected = current
+        else:
+            raise ManagedStateConflictError(
+                ManagedStateConflictKind.CONCURRENT_CHANGE
+            )
+        selected.compare_and_swap(state, expected=expected)
+        return self.advance(
+            operation_id,
+            ActivationPhase.ROLLED_BACK,
+            updated_at=updated_at,
+            outcome=ActivationOutcome.EXTERNAL_RECONCILED,
         )
+
+    @contextmanager
+    def _hold_document(
+        self,
+    ) -> Iterator[tuple[FileSnapshot | None, ActivationJournalDocument]]:
+        self._require_authority()
+        with self._lock_factory(self._filesystem).hold() as transaction:
+            recover_state_file(self._filesystem, transaction)
+            snapshot = self._filesystem.read_opaque_private()
+            document = _journal_document(self.provider_id, snapshot)
+            yield snapshot, document
+
+    def _require_authority(self) -> None:
+        self._provider_authority.require(self.provider_id)
+        for account_id in self.account_ids:
+            self._provider_authority.account(account_id)
+
+    def _require_active_accounts(
+        self,
+        record: ActivationRecord | None,
+    ) -> None:
+        if record is not None and record.account_ids != self.account_ids:
+            raise ManagedStateConflictError(
+                ManagedStateConflictKind.CONCURRENT_CHANGE
+            )
 
     def _commit(
         self,
@@ -254,170 +292,35 @@ class ActivationJournalStore:
         self._lock_factory = lock_factory
 
     def load(self, provider_id: ProviderId) -> ActivationJournalDocument:
-        """Load one provider journal without mutation."""
-        filesystem = self._provider_filesystem(provider_id)
-        snapshot = filesystem.read_opaque_private()
-        if snapshot is None:
-            return ActivationJournalDocument(provider_id=provider_id)
-        document = decode_activation_journal(snapshot.data)
-        if document.provider_id is not provider_id:
-            raise ManagedStateConflictError(
-                ManagedStateConflictKind.CONCURRENT_CHANGE
-            )
-        return document
+        """Load one provider journal under a short file lock."""
+        return self._load_locked(provider_id)
 
-    @contextmanager
-    def hold(
+    def transaction(
         self,
         provider_id: ProviderId,
         account_ids: tuple[SidekickAccountId, ...],
-    ) -> Iterator[ActivationJournalTransaction]:
-        """Acquire provider first, then stable-ID-sorted account locks."""
+        provider_authority: ProviderMutationAuthority,
+    ) -> ActivationJournalTransaction:
+        """Bind journal mutations to an already-held provider authority."""
         ordered_ids = tuple(sorted(set(account_ids)))
-        provider_filesystem = self._provider_filesystem(provider_id)
-        with ExitStack() as stack:
-            stack.enter_context(
-                ProviderMutationLock(
-                    self._operations_root,
-                    provider_id,
-                    ordered_ids,
-                    timeout_seconds=LOCK_TIMEOUT_SECONDS,
-                ).hold()
-            )
-            provider_transaction = stack.enter_context(
-                self._lock_factory(provider_filesystem).hold()
-            )
-            recover_state_file(provider_filesystem, provider_transaction)
-            yield ActivationJournalTransaction(
-                provider_filesystem,
-                provider_id,
-                frozenset(ordered_ids),
-            )
-
-    def begin(self, record: ActivationRecord) -> ActivationRecord:
-        """Persist one prepared activation under its complete lock set."""
-        account_ids = self._record_accounts(record)
-        with self.hold(record.provider_id, account_ids) as transaction:
-            return transaction.begin(record)
-
-    def advance(
-        self,
-        provider_id: ProviderId,
-        operation_id: OperationId,
-        phase: ActivationPhase,
-        *,
-        updated_at: datetime,
-        outcome: ActivationOutcome | None = None,
-        failure_code: str | None = None,
-    ) -> ActivationRecord:
-        """Advance an existing activation after locked identity recheck."""
-        active = self.load(provider_id).active
-        if active is None or active.operation_id != operation_id:
-            raise ManagedStateConflictError(
-                ManagedStateConflictKind.CONCURRENT_CHANGE
-            )
-        with self.hold(
+        provider_authority.require(provider_id)
+        for account_id in ordered_ids:
+            provider_authority.account(account_id)
+        return ActivationJournalTransaction(
+            self._provider_filesystem(provider_id),
+            self._lock_factory,
             provider_id,
-            self._record_accounts(active),
-        ) as transaction:
-            return transaction.advance(
-                operation_id,
-                phase,
-                updated_at=updated_at,
-                outcome=outcome,
-                failure_code=failure_code,
-            )
-
-    def recover_from_read_back(
-        self,
-        read_back: SelectedAccountState,
-        selected: SelectedStateStore,
-    ) -> ActivationRecoveryAction:
-        """Recover one interrupted activation from actual provider state."""
-        active = self.load(read_back.provider_id).active
-        if active is None:
-            raise ManagedStateConflictError(
-                ManagedStateConflictKind.CONCURRENT_CHANGE
-            )
-        account_ids = list(self._record_accounts(active))
-        if read_back.account_id is not None:
-            account_ids.append(read_back.account_id)
-        with self.hold(
-            read_back.provider_id,
-            tuple(account_ids),
-        ) as transaction:
-            current = transaction.load().active
-            if current is None or current.operation_id != active.operation_id:
-                raise ManagedStateConflictError(
-                    ManagedStateConflictKind.CONCURRENT_CHANGE
-                )
-            action = decide_activation_recovery(current, read_back)
-            if action is ActivationRecoveryAction.REQUEST_OFFICIAL_ROLLBACK:
-                return action
-            if action is ActivationRecoveryAction.COMMIT_VERIFIED:
-                current = self._advance_to_read_back(
-                    transaction,
-                    current,
-                    read_back.verified_at,
-                )
-                state = replace(
-                    read_back,
-                    runtime_state=ProviderRuntimeState.SAVED_ACTIVE,
-                    account_id=current.target_account_id,
-                    outcome=ActivationOutcome.VERIFIED,
-                )
-                transaction.commit_verified(
-                    current.operation_id,
-                    state,
-                    selected,
-                    updated_at=read_back.verified_at,
-                )
-                return action
-            state = read_back
-            if action is ActivationRecoveryAction.ROLLBACK_VERIFIED:
-                state = replace(
-                    read_back,
-                    outcome=ActivationOutcome.ROLLED_BACK,
-                )
-            elif action is ActivationRecoveryAction.RECONCILE_EXTERNAL:
-                state = replace(
-                    read_back,
-                    outcome=ActivationOutcome.EXTERNAL_RECONCILED,
-                )
-            transaction._commit_selection(state, selected, current)
-            if action is ActivationRecoveryAction.RECONCILIATION_REQUIRED:
-                transaction.advance(
-                    current.operation_id,
-                    ActivationPhase.RECONCILIATION_REQUIRED,
-                    updated_at=read_back.verified_at,
-                    failure_code="provider_state_untrusted",
-                )
-                return action
-            outcome = (
-                ActivationOutcome.EXTERNAL_RECONCILED
-                if action is ActivationRecoveryAction.RECONCILE_EXTERNAL
-                else (
-                    ActivationOutcome.LOGGED_OUT
-                    if action is ActivationRecoveryAction.CLOSE_FAILED
-                    else ActivationOutcome.ROLLED_BACK
-                )
-            )
-            transaction.advance(
-                current.operation_id,
-                ActivationPhase.ROLLED_BACK,
-                updated_at=read_back.verified_at,
-                outcome=outcome,
-            )
-            return action
+            frozenset(ordered_ids),
+            provider_authority,
+        )
 
     @contextmanager
     def account_removal_guard(
         self,
         account_id: SidekickAccountId,
     ) -> Iterator[None]:
-        """Hold provider locks while an owning command removes an account."""
+        """Hold provider authorities while the owner removes an account."""
         with ExitStack() as stack:
-            documents: list[ActivationJournalDocument] = []
             for provider_id in ProviderId:
                 stack.enter_context(
                     ProviderMutationLock(
@@ -433,26 +336,12 @@ class ActivationJournalStore:
                     account_id,
                 ).hold()
             )
-            for provider_id in ProviderId:
-                filesystem = self._provider_filesystem(provider_id)
-                transaction = stack.enter_context(
-                    self._lock_factory(filesystem).hold()
-                )
-                recover_state_file(filesystem, transaction)
-                snapshot = filesystem.read_opaque_private()
-                document = (
-                    ActivationJournalDocument(provider_id=provider_id)
-                    if snapshot is None
-                    else decode_activation_journal(snapshot.data)
-                )
-                if document.provider_id is not provider_id:
-                    raise ManagedStateConflictError(
-                        ManagedStateConflictKind.CONCURRENT_CHANGE
-                    )
-                documents.append(document)
+            documents = tuple(
+                self._load_locked(provider_id) for provider_id in ProviderId
+            )
             if any(
                 document.active is not None
-                and account_id in self._record_accounts(document.active)
+                and account_id in document.active.account_ids
                 for document in documents
             ):
                 raise ManagedStateConflictError(
@@ -463,59 +352,36 @@ class ActivationJournalStore:
     def recover(self) -> None:
         """Recover bounded interrupted journal candidates for all providers."""
         for provider_id in ProviderId:
-            filesystem = self._provider_filesystem(provider_id)
-            with ExitStack() as stack:
-                stack.enter_context(
-                    ProviderMutationLock(
-                        self._operations_root,
-                        provider_id,
-                        (),
-                        timeout_seconds=LOCK_TIMEOUT_SECONDS,
-                    ).hold()
-                )
-                transaction = stack.enter_context(
-                    self._lock_factory(filesystem).hold()
-                )
-                recover_state_file(filesystem, transaction)
-                self.load(provider_id)
+            with ProviderMutationLock(
+                self._operations_root,
+                provider_id,
+                (),
+                timeout_seconds=LOCK_TIMEOUT_SECONDS,
+            ).hold():
+                self._recover_locked(provider_id)
 
-    @staticmethod
-    def _advance_to_read_back(
-        transaction: ActivationJournalTransaction,
-        record: ActivationRecord,
-        updated_at: datetime,
-    ) -> ActivationRecord:
-        if record.phase in {
-            ActivationPhase.PREPARED,
-            ActivationPhase.OUTGOING_RETAINED,
-        }:
-            record = transaction.advance(
-                record.operation_id,
-                ActivationPhase.TARGET_ACTIVATED,
-                updated_at=updated_at,
+    def _load_locked(
+        self,
+        provider_id: ProviderId,
+    ) -> ActivationJournalDocument:
+        filesystem = self._provider_filesystem(provider_id)
+        with self._lock_factory(filesystem).hold():
+            return _journal_document(
+                provider_id,
+                filesystem.read_opaque_private(),
             )
-        if record.phase is ActivationPhase.TARGET_ACTIVATED:
-            record = transaction.advance(
-                record.operation_id,
-                ActivationPhase.READ_BACK_VERIFIED,
-                updated_at=updated_at,
-            )
-        if record.phase is not ActivationPhase.READ_BACK_VERIFIED:
-            raise ManagedStateConflictError(
-                ManagedStateConflictKind.CONCURRENT_CHANGE
-            )
-        return record
 
-    @staticmethod
-    def _record_accounts(
-        record: ActivationRecord,
-    ) -> tuple[SidekickAccountId, ...]:
-        source = record.source_account_id
-        return (
-            (record.target_account_id,)
-            if source is None
-            else (source, record.target_account_id)
-        )
+    def _recover_locked(
+        self,
+        provider_id: ProviderId,
+    ) -> ActivationJournalDocument:
+        filesystem = self._provider_filesystem(provider_id)
+        with self._lock_factory(filesystem).hold() as transaction:
+            recover_state_file(filesystem, transaction)
+            return _journal_document(
+                provider_id,
+                filesystem.read_opaque_private(),
+            )
 
     def _provider_filesystem(
         self,
@@ -525,3 +391,34 @@ class ActivationJournalStore:
             self.root / f"{provider_id.value}.json",
             decode_activation_journal,
         )
+
+
+def _journal_document(
+    provider_id: ProviderId,
+    snapshot: FileSnapshot | None,
+) -> ActivationJournalDocument:
+    document = (
+        ActivationJournalDocument(provider_id=provider_id)
+        if snapshot is None
+        else decode_activation_journal(snapshot.data)
+    )
+    if document.provider_id is not provider_id:
+        raise ManagedStateConflictError(
+            ManagedStateConflictKind.CONCURRENT_CHANGE
+        )
+    return document
+
+
+def _matches_activation_target(
+    state: SelectedAccountState | None,
+    activation: ActivationRecord,
+) -> bool:
+    return (
+        state is not None
+        and state.provider_id is activation.provider_id
+        and state.runtime_state is ProviderRuntimeState.SAVED_ACTIVE
+        and state.account_id == activation.target_account_id
+        and state.provider_identity == activation.expected_target_identity
+        and state.runtime_generation == activation.expected_target_generation
+        and state.outcome is ActivationOutcome.VERIFIED
+    )

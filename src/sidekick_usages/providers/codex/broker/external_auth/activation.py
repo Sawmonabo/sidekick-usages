@@ -1,16 +1,10 @@
-"""Strict shared-daemon refresh and private-worker exchange protocol."""
+"""Strict activation exchange between worker and resident broker."""
 
 from sidekick_usages.core.accounts.types import (
     AuthorityGeneration,
     OperationId,
     ProviderIdentity,
     SidekickAccountId,
-)
-from sidekick_usages.providers.codex.app_server.jsonrpc.codec import (
-    MAX_JSON_RPC_INTEGER,
-)
-from sidekick_usages.providers.codex.app_server.jsonrpc.models import (
-    JsonRpcServerRequest,
 )
 from sidekick_usages.providers.codex.broker.errors import CodexBrokerError
 from sidekick_usages.providers.codex.broker.external_auth.codec import (
@@ -20,31 +14,25 @@ from sidekick_usages.providers.codex.broker.external_auth.codec import (
     worker_message_text,
 )
 from sidekick_usages.providers.codex.broker.models import (
-    CodexCallbackAcknowledgement,
-    CodexCallbackInstruction,
+    CodexActivationAcknowledgement,
+    CodexActivationInstruction,
     CodexExchangeDeadlines,
+    CodexProjectionReceipt,
     CodexProjectionReplyLease,
-    CodexRefreshRequest,
 )
 from sidekick_usages.providers.codex.broker.ports import CodexProjection
 from sidekick_usages.providers.codex.broker.types import (
+    CodexActivationMode,
     CodexBrokerFailure,
-    CodexCallbackMode,
 )
-from sidekick_usages.providers.codex.generation import codex_generation_order
 from sidekick_usages.providers.codex.token import decode_codex_token_claims
 from sidekick_usages.serialization.json import (
     JsonEncodeError,
-    JsonObject,
     encode_compact_json_buffer,
 )
 
-CODEX_CALLBACK_PROTOCOL_VERSION = 1
-CODEX_REFRESH_METHOD = "account/chatgptAuthTokens/refresh"
-CODEX_REFRESH_REASON = "unauthorized"
-CODEX_REFRESH_ERROR_CODE = -32000
-CODEX_REFRESH_ERROR_MESSAGE = "external auth refresh unavailable"
-CODEX_CALLBACK_DISPATCHED = "dispatched"
+CODEX_ACTIVATION_PROTOCOL_VERSION = 1
+CODEX_ACTIVATION_INSTALLED = "installed"
 _INSTRUCTION_KEYS = frozenset(
     {
         "account_id",
@@ -52,9 +40,8 @@ _INSTRUCTION_KEYS = frozenset(
         "mode",
         "operation_id",
         "protocol_version",
-        "provider_identity",
         "response_deadline_nanoseconds",
-        "source_generation",
+        "rollback_account_id",
     }
 )
 _REPLY_KEYS = frozenset(
@@ -67,47 +54,28 @@ _REPLY_KEYS = frozenset(
         "plan",
         "protocol_version",
         "provider_identity",
-        "source_generation",
     }
 )
 _ACKNOWLEDGEMENT_KEYS = frozenset(
     {
+        "account_id",
         "generation",
         "mode",
         "operation_id",
         "outcome",
+        "plan",
         "protocol_version",
+        "provider_identity",
+        "socket_device",
+        "socket_inode",
     }
 )
 
 
-def decode_codex_refresh_request(
-    request: JsonRpcServerRequest,
-) -> CodexRefreshRequest:
-    """Decode the exact release-matched daemon refresh subset."""
-    previous = request.params.get("previousAccountId")
-    if (
-        isinstance(request.request_id, bool)
-        or not isinstance(request.request_id, int)
-        or request.request_id < 0
-        or request.request_id > MAX_JSON_RPC_INTEGER
-        or request.method != CODEX_REFRESH_METHOD
-        or set(request.params) != {"previousAccountId", "reason"}
-        or request.params.get("reason") != CODEX_REFRESH_REASON
-        or not isinstance(previous, str)
-    ):
-        raise CodexBrokerError(CodexBrokerFailure.PROTOCOL_FAILED)
-    try:
-        identity = ProviderIdentity(previous)
-    except TypeError, ValueError:
-        raise CodexBrokerError(CodexBrokerFailure.IDENTITY_MISMATCH) from None
-    return CodexRefreshRequest(request.request_id, identity)
-
-
-def encode_codex_callback_instruction(
-    instruction: CodexCallbackInstruction,
+def encode_codex_activation_instruction(
+    instruction: CodexActivationInstruction,
 ) -> bytes:
-    """Encode one non-secret worker instruction."""
+    """Encode one non-secret activation instruction."""
     return encode_worker_message(
         {
             "account_id": str(instruction.account_id),
@@ -116,39 +84,47 @@ def encode_codex_callback_instruction(
             ),
             "mode": instruction.mode.value,
             "operation_id": str(instruction.operation_id),
-            "protocol_version": CODEX_CALLBACK_PROTOCOL_VERSION,
-            "provider_identity": str(instruction.provider_identity),
+            "protocol_version": CODEX_ACTIVATION_PROTOCOL_VERSION,
             "response_deadline_nanoseconds": (
                 instruction.deadlines.response_deadline_nanoseconds
             ),
-            "source_generation": str(instruction.source_generation),
+            "rollback_account_id": (
+                None
+                if instruction.rollback_account_id is None
+                else str(instruction.rollback_account_id)
+            ),
         }
     )
 
 
-def decode_codex_callback_instruction(
+def decode_codex_activation_instruction(
     payload: bytes | bytearray,
-) -> CodexCallbackInstruction:
-    """Decode one exact non-secret worker instruction."""
+) -> CodexActivationInstruction:
+    """Decode one exact activation instruction."""
     root = decode_worker_message(
         payload,
         _INSTRUCTION_KEYS,
-        CODEX_CALLBACK_PROTOCOL_VERSION,
+        CODEX_ACTIVATION_PROTOCOL_VERSION,
     )
     try:
-        return CodexCallbackInstruction(
+        rollback_value = root.get("rollback_account_id")
+        if rollback_value is not None and not isinstance(
+            rollback_value,
+            str,
+        ):
+            raise TypeError
+        return CodexActivationInstruction(
             operation_id=OperationId(
                 worker_message_text(root, "operation_id")
             ),
-            mode=CodexCallbackMode(worker_message_text(root, "mode")),
+            mode=CodexActivationMode(worker_message_text(root, "mode")),
             account_id=SidekickAccountId(
                 worker_message_text(root, "account_id")
             ),
-            provider_identity=ProviderIdentity(
-                worker_message_text(root, "provider_identity")
-            ),
-            source_generation=AuthorityGeneration(
-                worker_message_text(root, "source_generation")
+            rollback_account_id=(
+                None
+                if rollback_value is None
+                else SidekickAccountId(rollback_value)
             ),
             deadlines=CodexExchangeDeadlines(
                 response_deadline_nanoseconds=worker_message_integer(
@@ -165,20 +141,12 @@ def decode_codex_callback_instruction(
         raise CodexBrokerError(CodexBrokerFailure.PROTOCOL_FAILED) from None
 
 
-def encode_codex_refresh_reply(
-    instruction: CodexCallbackInstruction,
+def encode_codex_activation_reply(
+    instruction: CodexActivationInstruction,
     projection: CodexProjection,
 ) -> bytearray:
-    """Encode one correlated credential response for the supervisor."""
-    if (
-        projection.account_id != instruction.account_id
-        or projection.provider_identity != instruction.provider_identity
-        or not _generation_matches(
-            instruction.mode,
-            instruction.source_generation,
-            projection.generation,
-        )
-    ):
+    """Encode one identity-bound projection for the resident broker."""
+    if not instruction.permits(projection.account_id):
         raise CodexBrokerError(CodexBrokerFailure.IDENTITY_MISMATCH)
     try:
         return encode_compact_json_buffer(
@@ -189,35 +157,31 @@ def encode_codex_refresh_reply(
                 "mode": instruction.mode.value,
                 "operation_id": str(instruction.operation_id),
                 "plan": projection.plan,
-                "protocol_version": CODEX_CALLBACK_PROTOCOL_VERSION,
+                "protocol_version": CODEX_ACTIVATION_PROTOCOL_VERSION,
                 "provider_identity": str(projection.provider_identity),
-                "source_generation": str(instruction.source_generation),
             }
         )
     except JsonEncodeError:
         raise CodexBrokerError(CodexBrokerFailure.PROTOCOL_FAILED) from None
 
 
-def decode_codex_refresh_reply(
+def decode_codex_activation_reply(
     payload: bytes | bytearray,
-    instruction: CodexCallbackInstruction,
+    instruction: CodexActivationInstruction,
 ) -> CodexProjectionReplyLease:
-    """Decode and corroborate one isolated-worker credential response."""
+    """Decode and corroborate one worker projection."""
     root = decode_worker_message(
         payload,
         _REPLY_KEYS,
-        CODEX_CALLBACK_PROTOCOL_VERSION,
+        CODEX_ACTIVATION_PROTOCOL_VERSION,
     )
     access_token = worker_message_text(root, "access_token")
     try:
         operation_id = OperationId(worker_message_text(root, "operation_id"))
-        mode = CodexCallbackMode(worker_message_text(root, "mode"))
+        mode = CodexActivationMode(worker_message_text(root, "mode"))
         account_id = SidekickAccountId(worker_message_text(root, "account_id"))
         provider_identity = ProviderIdentity(
             worker_message_text(root, "provider_identity")
-        )
-        source_generation = AuthorityGeneration(
-            worker_message_text(root, "source_generation")
         )
         generation = AuthorityGeneration(
             worker_message_text(root, "generation")
@@ -231,14 +195,7 @@ def decode_codex_refresh_reply(
     if (
         operation_id != instruction.operation_id
         or mode is not instruction.mode
-        or account_id != instruction.account_id
-        or provider_identity != instruction.provider_identity
-        or source_generation != instruction.source_generation
-        or not _generation_matches(
-            mode,
-            source_generation,
-            generation,
-        )
+        or not instruction.permits(account_id)
         or claimed_identity != provider_identity
     ):
         raise CodexBrokerError(CodexBrokerFailure.IDENTITY_MISMATCH)
@@ -252,73 +209,76 @@ def decode_codex_refresh_reply(
     )
 
 
-def encode_codex_callback_acknowledgement(
-    acknowledgement: CodexCallbackAcknowledgement,
+def encode_codex_activation_acknowledgement(
+    acknowledgement: CodexActivationAcknowledgement,
 ) -> bytes:
-    """Encode one secret-free supervisor dispatch acknowledgement."""
+    """Encode one correlated official-install receipt."""
+    receipt = acknowledgement.receipt
     return encode_worker_message(
         {
-            "generation": str(acknowledgement.generation),
+            "account_id": str(receipt.account_id),
+            "generation": str(receipt.generation),
             "mode": acknowledgement.mode.value,
             "operation_id": str(acknowledgement.operation_id),
-            "outcome": CODEX_CALLBACK_DISPATCHED,
-            "protocol_version": CODEX_CALLBACK_PROTOCOL_VERSION,
+            "outcome": CODEX_ACTIVATION_INSTALLED,
+            "plan": receipt.plan,
+            "protocol_version": CODEX_ACTIVATION_PROTOCOL_VERSION,
+            "provider_identity": str(receipt.provider_identity),
+            "socket_device": receipt.socket_device,
+            "socket_inode": receipt.socket_inode,
         }
     )
 
 
-def decode_codex_callback_acknowledgement(
+def decode_codex_activation_acknowledgement(
     payload: bytes | bytearray,
-    instruction: CodexCallbackInstruction,
+    instruction: CodexActivationInstruction,
+    provider_identity: ProviderIdentity,
     generation: AuthorityGeneration,
-) -> CodexCallbackAcknowledgement:
-    """Decode one exact acknowledgement for the originating worker."""
+) -> CodexActivationAcknowledgement:
+    """Decode the exact receipt for the originating projection."""
     root = decode_worker_message(
         payload,
         _ACKNOWLEDGEMENT_KEYS,
-        CODEX_CALLBACK_PROTOCOL_VERSION,
+        CODEX_ACTIVATION_PROTOCOL_VERSION,
     )
     try:
-        acknowledgement = CodexCallbackAcknowledgement(
+        acknowledgement = CodexActivationAcknowledgement(
             operation_id=OperationId(
                 worker_message_text(root, "operation_id")
             ),
-            mode=CodexCallbackMode(worker_message_text(root, "mode")),
-            generation=AuthorityGeneration(
-                worker_message_text(root, "generation")
+            mode=CodexActivationMode(worker_message_text(root, "mode")),
+            receipt=CodexProjectionReceipt(
+                account_id=SidekickAccountId(
+                    worker_message_text(root, "account_id")
+                ),
+                provider_identity=ProviderIdentity(
+                    worker_message_text(root, "provider_identity")
+                ),
+                generation=AuthorityGeneration(
+                    worker_message_text(root, "generation")
+                ),
+                plan=worker_message_text(root, "plan"),
+                socket_device=worker_message_integer(
+                    root,
+                    "socket_device",
+                ),
+                socket_inode=worker_message_integer(
+                    root,
+                    "socket_inode",
+                ),
             ),
         )
     except TypeError, ValueError:
         raise CodexBrokerError(CodexBrokerFailure.PROTOCOL_FAILED) from None
+    receipt = acknowledgement.receipt
     if (
-        root.get("outcome") != CODEX_CALLBACK_DISPATCHED
+        root.get("outcome") != CODEX_ACTIVATION_INSTALLED
         or acknowledgement.operation_id != instruction.operation_id
         or acknowledgement.mode is not instruction.mode
-        or acknowledgement.generation != generation
+        or not instruction.permits(receipt.account_id)
+        or receipt.provider_identity != provider_identity
+        or receipt.generation != generation
     ):
         raise CodexBrokerError(CodexBrokerFailure.IDENTITY_MISMATCH)
     return acknowledgement
-
-
-def codex_refresh_result(reply: CodexProjectionReplyLease) -> JsonObject:
-    """Build the exact official refresh result from one active lease."""
-    return {
-        "accessToken": reply.access_token,
-        "chatgptAccountId": str(reply.provider_identity),
-        "chatgptPlanType": reply.plan,
-    }
-
-
-def _generation_matches(
-    mode: CodexCallbackMode,
-    source: AuthorityGeneration,
-    candidate: AuthorityGeneration,
-) -> bool:
-    try:
-        source_order = codex_generation_order(str(source))
-        candidate_order = codex_generation_order(str(candidate))
-    except ValueError:
-        return False
-    if mode is CodexCallbackMode.REFRESH:
-        return candidate_order > source_order
-    return candidate_order >= source_order

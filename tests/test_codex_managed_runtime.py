@@ -1,11 +1,8 @@
 """Load-bearing tests for the versioned managed Codex runtime."""
 
-import json
 import os
 import sys
-import tempfile
 import time
-from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -23,6 +20,7 @@ from sidekick_usages.core.selection.models import (
 )
 from sidekick_usages.core.selection.types import (
     ActivationOutcome,
+    ActivationPhase,
     OperationKind,
     OperationPriority,
     OperationState,
@@ -36,6 +34,13 @@ from sidekick_usages.credentials.codex.models import (
     CodexManagedAuthorityResult,
 )
 from sidekick_usages.daemon.control.client import ControlClient
+from sidekick_usages.daemon.models.protocol import (
+    AcceptedPayload,
+    CompletedPayload,
+    FailedPayload,
+    ProgressPayload,
+)
+from sidekick_usages.daemon.types.protocol import EventKind
 from sidekick_usages.paths import (
     ApplicationPaths,
     discover_application_paths,
@@ -45,6 +50,9 @@ from sidekick_usages.persistence.accounts.store import AccountStore
 from sidekick_usages.persistence.private.credentials import (
     PrivateCredentialTree,
 )
+from sidekick_usages.persistence.supervisor.activation import (
+    ActivationJournalStore,
+)
 from sidekick_usages.persistence.supervisor.authority import (
     OperationAuthorityLock,
 )
@@ -53,23 +61,9 @@ from sidekick_usages.persistence.supervisor.selection import SelectedStateStore
 from sidekick_usages.providers.codex.app_server.capabilities import (
     probe_codex_capabilities,
 )
-from sidekick_usages.providers.codex.app_server.errors import (
-    CodexAppServerError,
-)
 from sidekick_usages.providers.codex.app_server.executable import (
     discover_codex_executable,
 )
-from sidekick_usages.providers.codex.app_server.jsonrpc.models import (
-    JsonRpcNotification,
-)
-from sidekick_usages.providers.codex.app_server.models import CodexExecutable
-from sidekick_usages.providers.codex.app_server.session import (
-    CodexAppServerSession,
-)
-from sidekick_usages.providers.codex.app_server.types import (
-    CodexAppServerFailure,
-)
-from sidekick_usages.providers.codex.broker.errors import CodexBrokerError
 from sidekick_usages.providers.codex.broker.external_auth.refresh import (
     CODEX_REFRESH_ERROR_CODE,
 )
@@ -77,13 +71,11 @@ from sidekick_usages.providers.codex.broker.models import (
     CodexProjectionExpectation,
 )
 from sidekick_usages.providers.codex.broker.service import CodexSharedRuntime
-from sidekick_usages.providers.codex.broker.types import CodexBrokerFailure
 from tests.fakes.codex.auth import NEXT_AUTH_FILE, managed_auth
 from tests.fakes.codex.daemon import FakeCodexDaemon
 from tests.fakes.codex.executable import (
     RAW_PROVIDER_SECRET,
     configure_codex_daemon_lifecycle,
-    write_fake_codex,
     write_fake_managed_codex,
     write_worker_router,
 )
@@ -103,19 +95,24 @@ pytestmark = pytest.mark.skipif(
     reason="Managed Codex runtimes require Linux, WSL, or macOS.",
 )
 
-SCHEMA_HASH_HEX_LENGTH = 64
 _ACCOUNT_A_ID = SidekickAccountId("11111111-1111-4111-8111-111111111111")
 _ACCOUNT_A_AUTHORITY_ID = AuthorityId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
 _ACCOUNT_A_PROVIDER_IDENTITY = "workspace-account-unselected"
 _MANAGED_ACCOUNT_ID = SidekickAccountId("33333333-3333-4333-8333-333333333333")
 _MANAGED_AUTHORITY_ID = AuthorityId("cccccccc-cccc-4ccc-8ccc-cccccccccccc")
 _PROVIDER_IDENTITY = "workspace-account-alpha"
+_CLAUDE_ACCOUNT_ID = SidekickAccountId("55555555-5555-4555-8555-555555555555")
 _GENERATION = "2026-07-24T10:00:00.000000000Z"
 _NEXT_GENERATION = "2026-07-24T10:01:00.000000000Z"
 _RECOVERY_GENERATION = "2026-07-24T10:02:00.000000000Z"
 _UNSELECTED_NEXT_GENERATION = "2026-07-24T10:03:00.000000000Z"
-_NATIVE_AUTH_SENTINEL = b'{"native":"must-remain-unchanged"}\n'
+_NATIVE_AUTH_SENTINEL = managed_auth(
+    _ACCOUNT_A_PROVIDER_IDENTITY,
+    _GENERATION,
+)
 _MAINTENANCE_OPERATION_ID = OperationId("77777777-7777-4777-8777-777777777777")
+_FIRST_ACTIVATION_ID = OperationId("88888888-8888-4888-8888-888888888888")
+_SECOND_ACTIVATION_ID = OperationId("99999999-9999-4999-8999-999999999999")
 _WAIT_TIMEOUT_SECONDS = 10.0
 _WAIT_INTERVAL_SECONDS = 0.01
 _IDLE_BROKER_OBSERVATION_SECONDS = 0.6
@@ -124,32 +121,6 @@ _INITIAL_LIFECYCLE_CALLS = 2
 _RECOVERED_LIFECYCLE_CALLS = 3
 _INITIAL_READY_READS = 1
 _REHYDRATED_READY_READS = 2
-
-
-@pytest.fixture
-def short_socket_root() -> Iterator[Path]:
-    """Provide a native home below the Unix socket path-length limit."""
-    with tempfile.TemporaryDirectory(prefix="sku-") as root:
-        yield Path(root)
-
-
-def _prepare_shared_runtime(
-    executable: CodexExecutable,
-    native_home: Path,
-    environment: dict[str, str],
-    expected_user_id: int | None,
-) -> None:
-    runtime = CodexSharedRuntime.create(
-        executable,
-        native_home,
-        environment=environment,
-        expected_user_id=expected_user_id,
-    )
-    runtime.prepare(
-        _MANAGED_ACCOUNT_ID,
-        ProviderIdentity(_PROVIDER_IDENTITY),
-        AuthorityGeneration(_GENERATION),
-    )
 
 
 def _isolated_runtime(
@@ -199,18 +170,22 @@ def _broker_fixture(
     provider_root = tmp_path / "provider"
     provider_root.mkdir()
     schema_root = provider_root / "schema"
-    native_home = short_socket_root / "native"
-    native_home.mkdir()
-    native_auth = native_home / "auth.json"
-    native_auth.write_bytes(_NATIVE_AUTH_SENTINEL)
-    os.chmod(native_auth, 0o600)
-    write_codex_schema(schema_root, external_auth=True)
-    write_fake_managed_codex(provider_root, schema_root, native_home)
     paths, environment = _isolated_runtime(
         short_socket_root / "state",
         provider_root,
         monkeypatch,
     )
+    native_home = Path(environment["HOME"]) / ".codex"
+    native_home.mkdir()
+    native_auth = native_home / "auth.json"
+    native_auth.write_bytes(_NATIVE_AUTH_SENTINEL)
+    os.chmod(native_auth, 0o600)
+    (native_home / "config.toml").write_text(
+        'cli_auth_credentials_store = "file"\n',
+        encoding="utf-8",
+    )
+    write_codex_schema(schema_root, external_auth=True)
+    write_fake_managed_codex(provider_root, schema_root, native_home)
     account_a = managed_saved_account(
         _ACCOUNT_A_ID,
         _ACCOUNT_A_AUTHORITY_ID,
@@ -372,88 +347,59 @@ def _stage_provider_ahead(
         raise AssertionError("Synthetic provider-ahead refresh failed.")
 
 
-def test_versioned_codex_app_server_boundary_is_complete(
-    tmp_path: Path,
+def _enqueue_activation(
+    paths: ApplicationPaths,
+    operation_id: OperationId,
+    account_id: SidekickAccountId,
 ) -> None:
-    schema_root = tmp_path / "schema"
-    write_codex_schema(schema_root, external_auth=True)
-    executable_path = write_fake_codex(tmp_path, schema_root)
-    codex_home = tmp_path / "private-codex-home"
-    codex_home.mkdir()
-    environment = {
-        "HOME": str(tmp_path),
-        "OPENAI_API_KEY": RAW_PROVIDER_SECRET,
-        "PATH": os.pathsep.join((str(tmp_path), os.environ["PATH"])),
-    }
-
-    executable = discover_codex_executable(environment)
-    capabilities = probe_codex_capabilities(executable, environment)
-    with CodexAppServerSession.open(
-        capabilities,
-        codex_home,
-        environment,
-    ) as session:
-        result = session.request(
-            "account/read",
-            {"refreshToken": False},
+    OperationQueueStore(paths.durable_operations).enqueue(
+        DueOperation(
+            operation_id=operation_id,
+            provider_id=ProviderId.CODEX,
+            account_id=account_id,
+            kind=OperationKind.ACTIVATE,
+            priority=OperationPriority.INTERACTIVE,
+            state=OperationState.SCHEDULED,
+            due_at=REFERENCE_TIME,
+            updated_at=REFERENCE_TIME,
         )
-        notification = session.receive()
-
-        assert executable.path == executable_path.resolve()
-        assert str(executable.version) == "0.145.0"
-        assert len(capabilities.schema_hash) == SCHEMA_HASH_HEX_LENGTH
-        assert result["requiresOpenaiAuth"] is True
-        assert isinstance(notification, JsonRpcNotification)
-        assert notification.method == "account/updated"
-    assert session.closed
-
-    events = [
-        json.loads(line)
-        for line in (tmp_path / "events.jsonl").read_text().splitlines()
-    ]
-    assert events[0]["argv"] == ["--version"]
-    assert events[1]["argv"][:4] == [
-        "app-server",
-        "generate-json-schema",
-        "--experimental",
-        "--out",
-    ]
-    assert Path(events[1]["argv"][4]).name == "schema"
-    assert not Path(events[1]["argv"][4]).exists()
-    assert events[2]["argv"] == ["app-server"]
-    assert all(event.get("openai_api_key") is None for event in events)
-    assert events[-1]["codex_home"] == str(codex_home)
+    )
 
 
-def test_codex_app_server_boundary_fails_closed_and_redacted(
-    tmp_path: Path,
+def _interrupt_activation_at_install(
+    supervisor: FakeCodexSupervisor,
+    daemon: FakeCodexDaemon,
+    paths: ApplicationPaths,
+    operation_id: OperationId,
+    account_id: SidekickAccountId,
 ) -> None:
-    schema_root = tmp_path / "schema"
-    write_codex_schema(schema_root, external_auth=True)
-    write_fake_codex(tmp_path, schema_root)
-    environment = {
-        "HOME": str(tmp_path),
-        "OPENAI_API_KEY": RAW_PROVIDER_SECRET,
-        "PATH": os.pathsep.join((str(tmp_path), os.environ["PATH"])),
-    }
-    executable = discover_codex_executable(environment)
-    capabilities = probe_codex_capabilities(executable, environment)
-    codex_home = tmp_path / "private-codex-home"
-    codex_home.mkdir()
-    (tmp_path / "mode").write_text("malformed", encoding="utf-8")
+    daemon.pause_next_install()
+    _enqueue_activation(paths, operation_id, account_id)
+    supervisor.notify()
+    daemon.wait_for_paused_install()
+    supervisor.request_stop()
+    _wait_for_operation_state(
+        OperationQueueStore(paths.durable_operations),
+        operation_id,
+        OperationState.RETRY_WAIT,
+    )
+    daemon.resume_install()
+    supervisor.close()
 
-    with pytest.raises(CodexAppServerError) as malformed:
-        CodexAppServerSession.open(
-            capabilities,
-            codex_home,
-            environment,
-        )
 
-    assert malformed.value.code is CodexAppServerFailure.PROTOCOL_MALFORMED
-    assert RAW_PROVIDER_SECRET not in repr(malformed.value)
-    process_id = int((tmp_path / "app-server.pid").read_text())
-    with pytest.raises(ProcessLookupError):
-        os.kill(process_id, 0)
+def _require_selected(
+    selected: SelectedStateStore,
+    account_id: SidekickAccountId,
+    provider_identity: str,
+    generation: str,
+) -> SelectedAccountState:
+    state = selected.load(ProviderId.CODEX)
+    assert state is not None
+    assert state.runtime_state is ProviderRuntimeState.SAVED_ACTIVE
+    assert state.account_id == account_id
+    assert state.provider_identity == ProviderIdentity(provider_identity)
+    assert state.runtime_generation == AuthorityGeneration(generation)
+    return state
 
 
 def test_shared_codex_runtime_is_idempotent_and_rehydrates(
@@ -642,8 +588,243 @@ def test_resident_broker_refreshes_and_recovers_provider_ahead_state(
 
         observer_a.close()
         observer_b.close()
+    assert fixture.native_auth.read_bytes() == _NATIVE_AUTH_SENTINEL
+
+
+def test_codex_activation_commits_only_correlated_target(
+    tmp_path: Path,
+    short_socket_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _broker_fixture(tmp_path, short_socket_root, monkeypatch)
+    selected = SelectedStateStore(fixture.paths.selected_state)
+    selected.save(
+        _selected_account(
+            _ACCOUNT_A_ID,
+            _ACCOUNT_A_PROVIDER_IDENTITY,
+            _GENERATION,
+        )
+    )
+    claude = SelectedAccountState(
+        provider_id=ProviderId.CLAUDE,
+        runtime_state=ProviderRuntimeState.SAVED_ACTIVE,
+        account_id=_CLAUDE_ACCOUNT_ID,
+        provider_identity=ProviderIdentity("claude-workspace"),
+        runtime_generation=AuthorityGeneration("claude-generation"),
+        verified_at=REFERENCE_TIME,
+        outcome=ActivationOutcome.VERIFIED,
+    )
+    selected.save(claude)
+
+    with FakeCodexDaemon(fixture.native_home) as daemon:
+        configure_codex_daemon_lifecycle(
+            fixture.provider_root,
+            fixture.native_home,
+            daemon.socket_path,
+        )
+        with FakeCodexSupervisor(
+            fixture.paths,
+            fixture.executable,
+            fixture.native_home,
+            fixture.environment,
+            _real_worker_executable(),
+        ) as supervisor:
+            supervisor.wait_until_ready()
+            mode = fixture.provider_root / "mode"
+            mode.write_text("malformed", encoding="utf-8")
+            client = ControlClient.connect(fixture.paths.supervisor_socket)
+            failed = tuple(
+                client.activate(ProviderId.CODEX, _MANAGED_ACCOUNT_ID)
+            )
+            client.close()
+
+            assert [event.kind for event in failed] == [
+                EventKind.ACCEPTED,
+                EventKind.PROGRESS,
+                EventKind.FAILED,
+            ]
+            assert isinstance(failed[-1].payload, FailedPayload)
+            assert _MANAGED_ACCOUNT_ID not in daemon.installed_account_ids
+            _require_selected(
+                selected,
+                _ACCOUNT_A_ID,
+                _ACCOUNT_A_PROVIDER_IDENTITY,
+                _GENERATION,
+            )
+            assert selected.load(ProviderId.CLAUDE) == claude
+
+            mode.write_text("normal", encoding="utf-8")
+            client = ControlClient.connect(fixture.paths.supervisor_socket)
+            completed = tuple(
+                client.activate(ProviderId.CODEX, _MANAGED_ACCOUNT_ID)
+            )
+            client.close()
+
+            assert [event.kind for event in completed] == [
+                EventKind.ACCEPTED,
+                EventKind.PROGRESS,
+                EventKind.COMPLETED,
+            ]
+            accepted, progress, terminal = (
+                event.payload for event in completed
+            )
+            assert isinstance(accepted, AcceptedPayload)
+            assert isinstance(progress, ProgressPayload)
+            assert isinstance(terminal, CompletedPayload)
+            assert (
+                accepted.operation_id
+                == progress.operation_id
+                == terminal.operation_id
+            )
+            assert _PROVIDER_IDENTITY not in repr(completed)
+            assert RAW_PROVIDER_SECRET not in repr(completed)
+            _require_selected(
+                selected,
+                _MANAGED_ACCOUNT_ID,
+                _PROVIDER_IDENTITY,
+                _NEXT_GENERATION,
+            )
+            journal = ActivationJournalStore(
+                fixture.paths.activation_journals,
+                fixture.paths.durable_operations,
+            ).load(ProviderId.CODEX)
+            assert journal.active is None
+            assert journal.history[-1].phase is ActivationPhase.COMMITTED
+            assert selected.load(ProviderId.CLAUDE) == claude
 
     assert fixture.native_auth.read_bytes() == _NATIVE_AUTH_SENTINEL
+
+
+def test_codex_activation_recovers_at_official_mutation_boundary(
+    tmp_path: Path,
+    short_socket_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _broker_fixture(tmp_path, short_socket_root, monkeypatch)
+    selected = SelectedStateStore(fixture.paths.selected_state)
+    selected.save(
+        _selected_account(
+            _ACCOUNT_A_ID,
+            _ACCOUNT_A_PROVIDER_IDENTITY,
+            _GENERATION,
+        )
+    )
+    journals = ActivationJournalStore(
+        fixture.paths.activation_journals,
+        fixture.paths.durable_operations,
+    )
+
+    with FakeCodexDaemon(fixture.native_home) as daemon:
+        configure_codex_daemon_lifecycle(
+            fixture.provider_root,
+            fixture.native_home,
+            daemon.socket_path,
+        )
+        supervisor = FakeCodexSupervisor(
+            fixture.paths,
+            fixture.executable,
+            fixture.native_home,
+            fixture.environment,
+            _real_worker_executable(),
+        )
+        supervisor.start()
+        supervisor.wait_until_ready()
+        _interrupt_activation_at_install(
+            supervisor,
+            daemon,
+            fixture.paths,
+            _FIRST_ACTIVATION_ID,
+            _MANAGED_ACCOUNT_ID,
+        )
+
+        assert daemon.installed_account_ids[-1] == _PROVIDER_IDENTITY
+        _require_selected(
+            selected,
+            _ACCOUNT_A_ID,
+            _ACCOUNT_A_PROVIDER_IDENTITY,
+            _GENERATION,
+        )
+        assert journals.load(ProviderId.CODEX).active is not None
+        installed_before_recovery = len(daemon.installed_account_ids)
+
+        daemon.pause_next_install()
+        with FakeCodexSupervisor(
+            fixture.paths,
+            fixture.executable,
+            fixture.native_home,
+            fixture.environment,
+            _real_worker_executable(),
+        ) as restarted:
+            daemon.wait_for_paused_install()
+            client = ControlClient.connect(fixture.paths.supervisor_socket)
+            retry = client.reconcile(ProviderId.CODEX)
+            accepted = next(retry)
+            assert accepted.kind is EventKind.ACCEPTED
+            daemon.resume_install()
+            assert tuple(retry)[-1].kind is EventKind.COMPLETED
+            client.close()
+            restarted.wait_until_ready()
+
+            assert (
+                len(daemon.installed_account_ids) > installed_before_recovery
+            )
+            _require_selected(
+                selected,
+                _MANAGED_ACCOUNT_ID,
+                _PROVIDER_IDENTITY,
+                _NEXT_GENERATION,
+            )
+            recovered = journals.load(ProviderId.CODEX)
+            assert recovered.active is None
+            assert len(recovered.history) == 1
+
+            _interrupt_activation_at_install(
+                restarted,
+                daemon,
+                fixture.paths,
+                _SECOND_ACTIVATION_ID,
+                _ACCOUNT_A_ID,
+            )
+            account_a_installs = daemon.installed_account_ids.count(
+                _ACCOUNT_A_PROVIDER_IDENTITY
+            )
+            account_b_installs = daemon.installed_account_ids.count(
+                _PROVIDER_IDENTITY
+            )
+
+        daemon.perform_external_login(
+            _PROVIDER_IDENTITY,
+            _NEXT_GENERATION,
+        )
+        with FakeCodexSupervisor(
+            fixture.paths,
+            fixture.executable,
+            fixture.native_home,
+            fixture.environment,
+            _real_worker_executable(),
+        ) as external_recovery:
+            external_recovery.wait_until_ready()
+
+        assert (
+            daemon.installed_account_ids.count(_ACCOUNT_A_PROVIDER_IDENTITY)
+            == account_a_installs
+        )
+        assert (
+            daemon.installed_account_ids.count(_PROVIDER_IDENTITY)
+            > account_b_installs
+        )
+        _require_selected(
+            selected,
+            _MANAGED_ACCOUNT_ID,
+            _PROVIDER_IDENTITY,
+            _NEXT_GENERATION,
+        )
+        reconciled = journals.load(ProviderId.CODEX)
+        assert reconciled.active is None
+        assert tuple(record.outcome for record in reconciled.history) == (
+            ActivationOutcome.VERIFIED,
+            ActivationOutcome.EXTERNAL_RECONCILED,
+        )
 
 
 def test_callback_preempts_stubborn_same_home_maintenance(
@@ -719,76 +900,3 @@ def test_callback_preempts_stubborn_same_home_maintenance(
 
         observer_a.close()
         observer_b.close()
-
-
-def test_shared_codex_runtime_rejects_each_preflight_authority(
-    tmp_path: Path,
-    short_socket_root: Path,
-) -> None:
-    cases = (
-        (
-            "version",
-            True,
-            "0.146.0",
-            None,
-            CodexBrokerFailure.VERSION_UNSUPPORTED,
-        ),
-        (
-            "schema",
-            False,
-            "0.145.0",
-            None,
-            CodexBrokerFailure.PROTOCOL_UNSUPPORTED,
-        ),
-        (
-            "owner",
-            True,
-            "0.145.0",
-            os.geteuid() + 1,
-            CodexBrokerFailure.RUNTIME_UNSAFE,
-        ),
-    )
-    for (
-        name,
-        external_auth,
-        daemon_version,
-        expected_user_id,
-        expected_failure,
-    ) in cases:
-        root = tmp_path / name
-        root.mkdir()
-        schema_root = root / "schema"
-        native_home = short_socket_root / name
-        native_home.mkdir()
-        native_auth = native_home / "auth.json"
-        native_auth.write_bytes(_NATIVE_AUTH_SENTINEL)
-        os.chmod(native_auth, 0o600)
-        write_codex_schema(schema_root, external_auth=external_auth)
-        write_fake_managed_codex(root, schema_root, native_home)
-        environment = {
-            "HOME": str(root),
-            "PATH": os.pathsep.join((str(root), os.environ["PATH"])),
-        }
-        executable = discover_codex_executable(environment)
-
-        with FakeCodexDaemon(
-            native_home,
-            app_server_version=daemon_version,
-        ) as daemon:
-            configure_codex_daemon_lifecycle(
-                root,
-                native_home,
-                daemon.socket_path,
-                app_server_version=daemon_version,
-            )
-            with pytest.raises(CodexBrokerError) as rejected:
-                _prepare_shared_runtime(
-                    executable,
-                    native_home,
-                    environment,
-                    expected_user_id,
-                )
-
-            assert rejected.value.code is expected_failure
-            assert daemon.installed_account_ids == ()
-            assert native_auth.read_bytes() == _NATIVE_AUTH_SENTINEL

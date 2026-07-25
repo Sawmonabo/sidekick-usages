@@ -11,15 +11,17 @@ from sidekick_usages.core.selection.models import (
 )
 from sidekick_usages.core.time import as_utc
 from sidekick_usages.daemon.types.worker import (
-    CallbackExchangePhase,
+    WorkerExchangePhase,
     WorkerOutcome,
 )
 from sidekick_usages.platform.environment import (
     SAFE_WORKER_ENVIRONMENT_KEYS,
 )
 
-CALLBACK_DESCRIPTOR_ENVIRONMENT_KEY = "SIDEKICK_CALLBACK_DESCRIPTOR"
-MINIMUM_CALLBACK_DESCRIPTOR = 3
+WORKER_EXCHANGE_DESCRIPTOR_ENVIRONMENT_KEY = (
+    "SIDEKICK_WORKER_EXCHANGE_DESCRIPTOR"
+)
+MINIMUM_WORKER_EXCHANGE_DESCRIPTOR = 3
 _MAX_ENVIRONMENT_VALUE_BYTES = 16 * 1024
 
 
@@ -50,7 +52,7 @@ class WorkerLaunchSpec:
     operation_id: OperationId
     argv: tuple[str, str]
     environment: tuple[tuple[str, str], ...] = field(repr=False)
-    callback_descriptor: int | None = field(default=None, repr=False)
+    exchange_descriptor: int | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         """Reject argument or environment expansion."""
@@ -77,28 +79,28 @@ class WorkerLaunchSpec:
                 ) from None
             if len(encoded) > _MAX_ENVIRONMENT_VALUE_BYTES or "\x00" in value:
                 raise ValueError("Worker environment value is unsafe.")
-        descriptor = self.callback_descriptor
+        descriptor = self.exchange_descriptor
         if descriptor is not None and (
             type(descriptor) is not int
-            or descriptor < MINIMUM_CALLBACK_DESCRIPTOR
+            or descriptor < MINIMUM_WORKER_EXCHANGE_DESCRIPTOR
         ):
-            raise ValueError("Callback descriptor is invalid.")
+            raise ValueError("Worker exchange descriptor is invalid.")
 
     def environment_map(self) -> dict[str, str]:
         """Return a fresh minimal subprocess environment."""
         environment = dict(self.environment)
-        if self.callback_descriptor is not None:
-            environment[CALLBACK_DESCRIPTOR_ENVIRONMENT_KEY] = str(
-                self.callback_descriptor
+        if self.exchange_descriptor is not None:
+            environment[WORKER_EXCHANGE_DESCRIPTOR_ENVIRONMENT_KEY] = str(
+                self.exchange_descriptor
             )
         return environment
 
     def inherited_descriptors(self) -> tuple[int, ...]:
-        """Return the sole callback descriptor when one is required."""
+        """Return the sole worker exchange descriptor when required."""
         return (
             ()
-            if self.callback_descriptor is None
-            else (self.callback_descriptor,)
+            if self.exchange_descriptor is None
+            else (self.exchange_descriptor,)
         )
 
 
@@ -140,9 +142,9 @@ class QuarantinedWorker[HandleT]:
 
 
 @dataclass(slots=True)
-class CallbackExchangeRegistration[ExchangeT]:
+class WorkerExchangeRegistration[ExchangeT]:
     """One registry-owned exchange during worker descriptor inheritance."""
 
     exchange: ExchangeT
-    phase: CallbackExchangePhase = CallbackExchangePhase.READY
+    phase: WorkerExchangePhase = WorkerExchangePhase.READY
     cancellation_requested: bool = False

@@ -6,15 +6,12 @@ from datetime import datetime
 from sidekick_usages.core.selection.models import (
     ActivationRecord,
     DueOperation,
-    SelectedAccountState,
 )
 from sidekick_usages.core.selection.types import (
     ActivationOutcome,
     ActivationPhase,
-    ActivationRecoveryAction,
     OperationPriority,
     OperationState,
-    ProviderRuntimeState,
 )
 from sidekick_usages.core.time import as_utc
 
@@ -39,12 +36,12 @@ _ACTIVATION_TRANSITIONS: dict[
     ),
     ActivationPhase.TARGET_ACTIVATED: frozenset(
         {
-            ActivationPhase.READ_BACK_VERIFIED,
+            ActivationPhase.PROVIDER_PROOF_VERIFIED,
             ActivationPhase.ROLLED_BACK,
             ActivationPhase.RECONCILIATION_REQUIRED,
         }
     ),
-    ActivationPhase.READ_BACK_VERIFIED: frozenset(
+    ActivationPhase.PROVIDER_PROOF_VERIFIED: frozenset(
         {
             ActivationPhase.COMMITTED,
             ActivationPhase.ROLLED_BACK,
@@ -53,7 +50,13 @@ _ACTIVATION_TRANSITIONS: dict[
     ),
     ActivationPhase.COMMITTED: frozenset(),
     ActivationPhase.ROLLED_BACK: frozenset(),
-    ActivationPhase.RECONCILIATION_REQUIRED: frozenset(),
+    ActivationPhase.RECONCILIATION_REQUIRED: frozenset(
+        {
+            ActivationPhase.TARGET_ACTIVATED,
+            ActivationPhase.PROVIDER_PROOF_VERIFIED,
+            ActivationPhase.ROLLED_BACK,
+        }
+    ),
 }
 _OPERATION_TRANSITIONS: dict[
     OperationState,
@@ -103,49 +106,6 @@ def transition_activation(
         outcome=effective_outcome,
         failure_code=failure_code,
     )
-
-
-def decide_activation_recovery(
-    record: ActivationRecord,
-    read_back: SelectedAccountState,
-) -> ActivationRecoveryAction:
-    """Choose recovery from actual provider state, never journal preference."""
-    if record.provider_id is not read_back.provider_id:
-        raise ValueError("Activation and provider read-back do not match.")
-    if read_back.runtime_state in {
-        ProviderRuntimeState.UNREADABLE,
-        ProviderRuntimeState.UNSUPPORTED,
-    }:
-        action = ActivationRecoveryAction.RECONCILIATION_REQUIRED
-    elif (
-        read_back.provider_identity == record.expected_target_identity
-        and read_back.runtime_state
-        in {
-            ProviderRuntimeState.SAVED_ACTIVE,
-            ProviderRuntimeState.EXTERNAL_ACTIVE,
-        }
-    ):
-        action = ActivationRecoveryAction.COMMIT_VERIFIED
-    elif (
-        record.source_provider_identity is not None
-        and read_back.provider_identity == record.source_provider_identity
-    ):
-        action = ActivationRecoveryAction.ROLLBACK_VERIFIED
-    elif read_back.runtime_state in {
-        ProviderRuntimeState.SAVED_ACTIVE,
-        ProviderRuntimeState.EXTERNAL_ACTIVE,
-    }:
-        action = ActivationRecoveryAction.RECONCILE_EXTERNAL
-    elif record.source_provider_identity is not None:
-        action = ActivationRecoveryAction.REQUEST_OFFICIAL_ROLLBACK
-    elif record.phase in {
-        ActivationPhase.PREPARED,
-        ActivationPhase.OUTGOING_RETAINED,
-    }:
-        action = ActivationRecoveryAction.CLOSE_FAILED
-    else:
-        action = ActivationRecoveryAction.RECONCILIATION_REQUIRED
-    return action
 
 
 def transition_operation(
@@ -202,6 +162,15 @@ def coalesce_due_operation(
         and incoming.priority is OperationPriority.SCHEDULED
     ):
         return current
+    if (
+        current.state
+        in {
+            OperationState.ACTION_REQUIRED,
+            OperationState.RETRY_WAIT,
+        }
+        and incoming.priority is OperationPriority.INTERACTIVE
+    ):
+        return incoming
     priority = (
         incoming.priority
         if incoming.priority.rank < current.priority.rank
