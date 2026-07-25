@@ -32,6 +32,8 @@ def _write_project(root: Path) -> Path:
     pyproject = root / "pyproject.toml"
     pyproject.write_text(
         '[project]\nname = "sample-package"\nversion = "1.2.3"\n\n'
+        "[project.scripts]\n"
+        'sample-cli = "sample_package:main"\n\n'
         "[tool.hatch.build.targets.wheel]\n"
         'packages = ["src/sample_package"]\n'
     )
@@ -144,6 +146,20 @@ def test_source_derived_artifact_contract(
         smoke_wheel.verify_wheel_members(wheel)
     with pytest.raises(smoke_wheel.WheelVerificationError):
         smoke_wheel.verify_sdist_members(sdist)
+
+    project_source = pyproject.read_text()
+    pyproject.write_text(
+        project_source.replace(
+            'sample-cli = "sample_package:main"\n',
+            'sample-cli = "sample_package:main"\n'
+            'CoDeX = "sample_package:main"\n',
+        )
+    )
+    with pytest.raises(
+        smoke_wheel.WheelVerificationError,
+        match="replace provider commands",
+    ):
+        smoke_wheel.project_scripts()
 
 
 def test_isolated_subprocess_preserves_unicode_output(

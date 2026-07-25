@@ -40,6 +40,9 @@ from sidekick_usages.providers.base import (
     ProviderFailureKind,
     RefreshResult,
 )
+from sidekick_usages.providers.claude.credentials import (
+    CLAUDE_SETUP_REJECTION_MESSAGE,
+)
 
 
 @runtime_checkable
@@ -278,7 +281,7 @@ def _setup_token_failure() -> ProviderFailure:
     return ProviderFailure(
         provider_id=ProviderId.CLAUDE,
         kind=ProviderFailureKind.MISSING,
-        message="Claude rejected the saved setup token.",
+        message=CLAUDE_SETUP_REJECTION_MESSAGE,
         cause=ProviderFailureCause.MISSING_REFRESH_CREDENTIAL,
     )
 

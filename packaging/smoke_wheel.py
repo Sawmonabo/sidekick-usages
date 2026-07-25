@@ -29,6 +29,7 @@ UNSUPPORTED_SELECTION_KEYS = frozenset(
     }
 )
 PUBLIC_CLI_TARGET = "sidekick_usages.cli.app:run"
+VENDOR_COMMAND_NAMES = frozenset({"claude", "codex"})
 SMOKE_ARGUMENTS: tuple[tuple[str, ...], ...] = (
     ("--version",),
     ("--help",),
@@ -40,7 +41,6 @@ SMOKE_ARGUMENTS: tuple[tuple[str, ...], ...] = (
     ("claude", "setup-token", "--help"),
     ("codex", "--help"),
     ("codex", "login", "--help"),
-    ("codex", "export", "--help"),
 )
 
 
@@ -99,6 +99,13 @@ def project_scripts() -> dict[str, str]:
     ):
         raise WheelVerificationError(
             "Project console scripts must be nonempty string mappings."
+        )
+    vendor_conflicts = sorted(
+        name for name in scripts if name.casefold() in VENDOR_COMMAND_NAMES
+    )
+    if vendor_conflicts:
+        raise WheelVerificationError(
+            f"Sidekick cannot replace provider commands: {vendor_conflicts!r}."
         )
     return {
         name: target

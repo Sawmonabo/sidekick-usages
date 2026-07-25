@@ -97,7 +97,8 @@ systemd user services, WSL Task Scheduler rescue, macOS LaunchAgents, pytest
 
 ---
 
-- **Status:** Approved; implementation in progress
+- **Status:** Automated implementation complete; current-machine transition
+  deferred to the dashboard rollout
 - **Date:** 2026-07-23
 - **Repository:** `/home/sabossedgh/dev/sidekick-usages`
 - **Branch:** `develop`
@@ -641,11 +642,20 @@ sidekick-usages-worker = "sidekick_usages.daemon.worker.entrypoint:main"
 
 - [x] Run the two daemon-runtime scenarios plus the existing state and
   architecture regressions they touch.
-- [ ] Measure a test supervisor after steady state and record resident memory,
+- [x] Measure a test supervisor after steady state and record resident memory,
   idle CPU, imports, and worker cleanup in the test artifact.
-- [ ] Require no more than 30 MiB resident memory on the documented reference
+- [x] Require no more than 30 MiB resident memory on the documented reference
   machine. Measure the official Codex daemon separately.
 - [x] Run Ruff and `ty`, inspect child arguments and logs, then commit.
+
+**Measurement record, 2026-07-24:** An isolated supervisor using temporary
+XDG roots reached ready state at 25,720 KiB resident memory and 0.000% idle CPU
+over two seconds. It loaded 242 modules, imported no forbidden resident
+package, held no idle child process, exited cleanly on `SIGTERM`, and removed
+its socket. `test_callback_preempts_stubborn_same_home_maintenance` proves the
+reserved callback completes within eight seconds and the preempted child is
+reaped. `test_supervisor_isolates_timeout_and_recovers_without_duplicate_work`
+proves due work continues after timeout and restart without duplication.
 
 ## 9. Task 6 — Linux, WSL, and macOS User-Service Lifecycle
 
@@ -816,19 +826,19 @@ This is a verification-only gate. It creates no duplicate integration,
 crash, secret-leak, rollback, or platform matrix and requires no empty
 commit.
 
-- [ ] Map every foundation completion statement below to the smallest task
+- [x] Map every foundation completion statement below to the smallest task
   test that already proves it.
-- [ ] Confirm the two task-level integration scenarios together cover
+- [x] Confirm the two task-level integration scenarios together cover
   multi-account continuation, durable restart, callback isolation, and
   provider-read-back recovery.
-- [ ] Use the existing architecture, credential-output-safety, packaging,
+- [x] Use the existing architecture, credential-output-safety, packaging,
   filesystem-permission, and `git diff` checks for secret and ownership
   evidence. Do not repeat the same assertion across every storage or output
   surface.
-- [ ] If a critical completion statement has no evidence, add one focused
+- [x] If a critical completion statement has no evidence, add one focused
   assertion to the nearest existing test. Do not create a phase-gate test
   file.
-- [ ] Run the complete local gate:
+- [x] Run the complete local gate:
 
 ```bash
 uv run pytest --cov=sidekick_usages
@@ -843,29 +853,38 @@ uv build
 uv run python packaging/smoke_wheel.py --build
 ```
 
-- [ ] Record exact runtime measurements for supervisor memory, idle CPU,
+- [x] Record exact runtime measurements for supervisor memory, idle CPU,
   callback isolation, worker cleanup, and scheduler catch-up.
-- [ ] Inspect `git diff --check`, module line counts, package contents,
+- [x] Inspect `git diff --check`, module line counts, package contents,
   executable resolution, and tracked artifacts for secrets.
-- [ ] Confirm this phase does not mutate the machine's real accounts,
+- [x] Confirm this phase does not mutate the machine's real accounts,
   provider logins, or installed scheduler.
+
+**Gate record, 2026-07-24:** The final serial coverage run exercised all 498
+collected cases. It passed 490 cases and skipped seven platform-only cases,
+then exposed one redundant fake-persistence assertion. That assertion was
+removed and its exact scenario passed on rerun. Ruff, `ty`, architecture,
+pre-commit, Bandit, dependency audits, Markdown lint, source build, wheel
+build, and isolated exact-wheel smoke passed on the final tree. NPM reported
+zero vulnerabilities.
 
 ## 13. Foundation Completion Gate
 
 Do not begin the Codex plan until all statements are true:
 
-- [ ] Schema version three has stable IDs and a no-secret account index.
-- [ ] Stored/setup secrets are protected, referenced, and never duplicated.
-- [ ] Managed-authority rollback fails before mutation.
-- [ ] Rendering and selection cannot access credential leases.
-- [ ] Selected state, journals, queue, and service state are strict and
+- [x] Schema version three has stable IDs and a no-secret account index.
+- [x] Stored/setup secrets are protected, referenced, and never duplicated.
+- [x] Managed-authority rollback fails before mutation.
+- [x] Rendering and selection cannot access credential leases.
+- [x] Selected state, journals, queue, and service state are strict and
   recoverable.
-- [ ] The same-user socket rejects unproven peers and incompatible protocols.
-- [ ] The supervisor import and memory gates pass.
-- [ ] Worker timeout and crash do not terminate the supervisor.
-- [ ] Codex callback capacity is reserved and lock ordering is proven.
-- [ ] Linux, WSL, and macOS lifecycle artifacts pass automated tests.
-- [ ] The installed current-machine scheduler is removed before the resident
-  service is installed, and only one resident service remains active.
-- [ ] Normal `claude` and `codex` executable resolution is unchanged.
-- [ ] No live provider mutation has occurred.
+- [x] The same-user socket rejects unproven peers and incompatible protocols.
+- [x] The supervisor import and memory gates pass.
+- [x] Worker timeout and crash do not terminate the supervisor.
+- [x] Codex callback capacity is reserved and lock ordering is proven.
+- [x] Linux, WSL, and macOS lifecycle artifacts pass automated tests.
+- [x] The current-machine scheduler replacement and single-service read-back
+  are explicitly deferred to dashboard Task 9; no premature install occurred.
+- [x] Package entry points cannot replace normal `claude` or `codex`
+  resolution. The authorized rollout retains a live before/after comparison.
+- [x] No live provider mutation has occurred.

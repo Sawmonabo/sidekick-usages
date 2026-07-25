@@ -12,7 +12,6 @@ from sidekick_usages.core.accounts.types import (
     AuthorityGeneration,
     AuthorityId,
     CredentialHealth,
-    OperationId,
     ProviderIdentity,
     SidekickAccountId,
 )
@@ -21,15 +20,10 @@ from sidekick_usages.core.models import (
     UsageReport,
     UsageWindow,
 )
-from sidekick_usages.core.selection.models import (
-    DueOperation,
-    SelectedAccountState,
-)
+from sidekick_usages.core.selection.models import SelectedAccountState
 from sidekick_usages.core.selection.types import (
     ActivationOutcome,
     OperationKind,
-    OperationPriority,
-    OperationState,
     ProviderRuntimeState,
 )
 from sidekick_usages.core.types import (
@@ -38,6 +32,7 @@ from sidekick_usages.core.types import (
     RefreshStatus,
 )
 from sidekick_usages.credentials.codex.types import CodexManagedOutcome
+from sidekick_usages.daemon.lifecycle.readiness import SupervisorReadiness
 from sidekick_usages.daemon.types.worker import WorkerOutcome
 from sidekick_usages.daemon.worker.account import (
     CodexManagedAccountService,
@@ -54,6 +49,7 @@ from sidekick_usages.persistence.snapshots.usage import UsageSnapshotStore
 from sidekick_usages.persistence.supervisor.authority import (
     OperationAuthorityLock,
 )
+from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
 from sidekick_usages.persistence.supervisor.selection import SelectedStateStore
 from sidekick_usages.providers.codex.activity import ACTIVITY_URL
 from sidekick_usages.providers.codex.usage import USAGE_URL
@@ -74,8 +70,6 @@ _MANAGED_AUTHORITY_A = AuthorityId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
 _MANAGED_AUTHORITY_B = AuthorityId("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
 _OLD_GENERATION = "2026-07-24T10:00:00.000000000Z"
 _NEW_GENERATION = "2026-07-24T10:01:00.000000000Z"
-_MAINTENANCE_A = OperationId("33333333-3333-4333-8333-333333333333")
-_MAINTENANCE_B = OperationId("44444444-4444-4444-8444-444444444444")
 _CURRENT_USAGE = 25.0
 
 
@@ -112,22 +106,6 @@ class _ManagedMetricsHttp(HttpClient):
                 }
             }
         raise AssertionError("Unexpected managed metrics route.")
-
-
-def _maintenance_operation(
-    operation_id: OperationId,
-    account_id: SidekickAccountId,
-) -> DueOperation:
-    return DueOperation(
-        operation_id=operation_id,
-        provider_id=ProviderId.CODEX,
-        account_id=account_id,
-        kind=OperationKind.MAINTAIN,
-        priority=OperationPriority.SCHEDULED,
-        state=OperationState.SCHEDULED,
-        due_at=REFERENCE_TIME,
-        updated_at=REFERENCE_TIME,
-    )
 
 
 def test_managed_codex_maintenance_continues_across_account_failure(
@@ -170,6 +148,19 @@ def test_managed_codex_maintenance_continues_across_account_failure(
         },
     )
     coordinator = managed_coordinator(tmp_path, paths, store, private)
+    clock = FixedClock()
+    SupervisorReadiness(paths, clock).enroll_accounts()
+    maintenance = tuple(
+        operation
+        for operation in OperationQueueStore(paths.durable_operations).due(
+            clock.now()
+        )
+        if operation.kind is OperationKind.MAINTAIN
+    )
+    assert tuple(
+        operation.required_account_id for operation in maintenance
+    ) == (_MANAGED_ACCOUNT_A, _MANAGED_ACCOUNT_B)
+    maintenance_a, maintenance_b = maintenance
     usage_snapshots = UsageSnapshotStore(paths.usage_snapshots)
     usage_snapshots.save(
         AccountUsageSnapshot(
@@ -202,7 +193,6 @@ def test_managed_codex_maintenance_continues_across_account_failure(
             outcome=ActivationOutcome.VERIFIED,
         )
     )
-    clock = FixedClock()
     executor = CodexManagedMaintenanceWorkerExecutor(
         coordinator,
         CodexManagedAccountService(
@@ -221,7 +211,7 @@ def test_managed_codex_maintenance_continues_across_account_failure(
         _MANAGED_ACCOUNT_A,
     ).hold() as authority:
         maintained_a = executor.execute(
-            _maintenance_operation(_MAINTENANCE_A, _MANAGED_ACCOUNT_A),
+            maintenance_a,
             authority,
         )
     with OperationAuthorityLock(
@@ -229,7 +219,7 @@ def test_managed_codex_maintenance_continues_across_account_failure(
         _MANAGED_ACCOUNT_B,
     ).hold() as authority:
         maintained_b = executor.execute(
-            _maintenance_operation(_MAINTENANCE_B, _MANAGED_ACCOUNT_B),
+            maintenance_b,
             authority,
         )
 

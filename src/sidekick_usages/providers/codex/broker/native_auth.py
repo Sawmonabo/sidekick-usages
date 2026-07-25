@@ -115,7 +115,16 @@ class CodexNativeAuthReconciler:
         baseline = self._runtime_state.native_auth_baseline()
         if baseline is None:
             baseline = self._operations.native_observation()
+        projection = self._operations.projection_observation()
         selected = self._runtime_state.current()
+        retained_projection = (
+            not force
+            and projection is not None
+            and same_provider_auth_authority(observation, projection)
+            and _selected_matches_projection(selected, projection)
+        )
+        if retained_projection:
+            return None
         changed = baseline is not None and not same_provider_auth_authority(
             observation, baseline
         )
@@ -158,3 +167,15 @@ def _selected_matches_observation(
         ProviderAuthState.UNSUPPORTED: ProviderRuntimeState.UNSUPPORTED,
     }[observation.state]
     return selected.runtime_state is expected
+
+
+def _selected_matches_projection(
+    selected: SelectedAccountState | None,
+    projection: ProviderAuthObservation,
+) -> bool:
+    return (
+        selected is not None
+        and selected.provider_id is projection.provider_id
+        and selected.runtime_state is ProviderRuntimeState.SAVED_ACTIVE
+        and selected.provider_identity == projection.provider_identity
+    )

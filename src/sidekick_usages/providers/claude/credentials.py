@@ -32,6 +32,10 @@ from sidekick_usages.providers.claude.schema.usage import (
 )
 from sidekick_usages.serialization.json import decode_json_object
 
+CLAUDE_SETUP_REJECTION_MESSAGE = "Claude rejected the saved setup token."
+CLAUDE_SUBSCRIPTION_LOGIN_REJECTED = (
+    "Claude rejected the saved subscription login."
+)
 _MAX_CREDENTIAL_BYTES = 1024 * 1024
 _KEYCHAIN_ITEM_NOT_FOUND_EXIT = (-25300) % 256
 

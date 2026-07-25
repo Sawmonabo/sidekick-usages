@@ -48,7 +48,6 @@ def _no_composition_context(calls: list[str]) -> InvocationContext:
         ["claude", "setup-token", "--help"],
         ["codex", "--help"],
         ["codex", "login", "--help"],
-        ["codex", "export", "--help"],
     ],
 )
 def test_help_is_branded_before_usage_without_loading_state(
@@ -203,7 +202,7 @@ def test_doctor_help_does_not_advertise_removed_auth_option() -> None:
             ["claude", "--help"],
             ("setup-token",),
         ),
-        (["codex", "--help"], ("login", "export")),
+        (["codex", "--help"], ("login",)),
     ],
 )
 def test_provider_help_lists_only_canonical_commands(

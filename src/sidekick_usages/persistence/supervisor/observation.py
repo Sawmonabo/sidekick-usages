@@ -16,22 +16,52 @@ from sidekick_usages.persistence.state.filesystem import (
 from sidekick_usages.persistence.types.artifact import AuthorityExpectation
 
 _OBSERVATION_DIRECTORY = "runtime-observations"
+_NATIVE_DIRECTORY = "native"
+_PROJECTION_DIRECTORY = "projection"
 
 
 class RuntimeAuthObservationStore:
-    """Persist the newest credential-free runtime observation per provider."""
+    """Persist credential-free native and Sidekick runtime observations."""
 
     def __init__(self, root: Path) -> None:
         if not root.is_absolute():
             raise ValueError("Runtime-observation root must be absolute.")
         self._root = root
 
-    def load(
+    def load_native(
         self,
         provider_id: ProviderId,
     ) -> ProviderAuthObservation | None:
-        """Return the latest provider observation without mutation."""
-        filesystem = self._filesystem(provider_id)
+        """Return the latest native provider observation."""
+        return self._load(provider_id, _NATIVE_DIRECTORY)
+
+    def save_native(
+        self,
+        observation: ProviderAuthObservation,
+    ) -> ProviderAuthObservation:
+        """Atomically replace one native provider observation."""
+        return self._save(observation, _NATIVE_DIRECTORY)
+
+    def load_projection(
+        self,
+        provider_id: ProviderId,
+    ) -> ProviderAuthObservation | None:
+        """Return the latest Sidekick projection observation."""
+        return self._load(provider_id, _PROJECTION_DIRECTORY)
+
+    def save_projection(
+        self,
+        observation: ProviderAuthObservation,
+    ) -> ProviderAuthObservation:
+        """Atomically replace one Sidekick projection observation."""
+        return self._save(observation, _PROJECTION_DIRECTORY)
+
+    def _load(
+        self,
+        provider_id: ProviderId,
+        directory: str,
+    ) -> ProviderAuthObservation | None:
+        filesystem = self._filesystem(provider_id, directory)
         with PersistenceLock(filesystem).hold():
             snapshot = filesystem.read_opaque_private()
             return (
@@ -40,12 +70,12 @@ class RuntimeAuthObservationStore:
                 else decode_runtime_auth_observation(snapshot.data)
             )
 
-    def save(
+    def _save(
         self,
         observation: ProviderAuthObservation,
+        directory: str,
     ) -> ProviderAuthObservation:
-        """Atomically replace one provider's runtime observation."""
-        filesystem = self._filesystem(observation.provider_id)
+        filesystem = self._filesystem(observation.provider_id, directory)
         payload = encode_runtime_auth_observation(observation)
         with PersistenceLock(filesystem).hold() as transaction:
             recover_state_file(filesystem, transaction)
@@ -65,8 +95,12 @@ class RuntimeAuthObservationStore:
     def _filesystem(
         self,
         provider_id: ProviderId,
+        directory: str,
     ) -> ManagedStateFilesystem:
         return ManagedStateFilesystem(
-            self._root / _OBSERVATION_DIRECTORY / f"{provider_id.value}.json",
+            self._root
+            / _OBSERVATION_DIRECTORY
+            / directory
+            / f"{provider_id.value}.json",
             decode_runtime_auth_observation,
         )

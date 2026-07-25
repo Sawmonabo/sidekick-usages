@@ -446,7 +446,7 @@ def test_cli_command_surface_is_registered_once_by_focused_owners() -> None:
     }
     assert nested == {
         "claude": {"setup-token"},
-        "codex": {"export", "login"},
+        "codex": {"login"},
         "daemon": {"install", "status", "uninstall"},
         "heartbeat": {"disable", "enable", "run-label", "status"},
         "permissions": {"repair"},

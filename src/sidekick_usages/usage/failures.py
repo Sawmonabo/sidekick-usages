@@ -17,6 +17,10 @@ from sidekick_usages.errors import (
 from sidekick_usages.persistence.errors import (
     PersistenceError,
 )
+from sidekick_usages.providers.claude.credentials import (
+    CLAUDE_SETUP_REJECTION_MESSAGE,
+    CLAUDE_SUBSCRIPTION_LOGIN_REJECTED,
+)
 from sidekick_usages.usage.models import (
     AuthenticationFailure,
     CredentialRecoveryKind,
@@ -106,9 +110,9 @@ def _authentication_cause(account: SavedAccount) -> str:
     """Return one secret-safe cause owned by the credential boundary."""
     kind = credential_recovery_kind(account)
     if kind is CredentialRecoveryKind.CLAUDE_SETUP_TOKEN:
-        return "Claude rejected the saved setup token."
+        return CLAUDE_SETUP_REJECTION_MESSAGE
     if kind is CredentialRecoveryKind.CLAUDE_SUBSCRIPTION_LOGIN:
-        return "Claude rejected the saved subscription login."
+        return CLAUDE_SUBSCRIPTION_LOGIN_REJECTED
     if kind is CredentialRecoveryKind.CODEX_LOGIN:
         return "Codex rejected the saved login."
     return assert_never(kind)

@@ -51,7 +51,7 @@ def _failure(kind: ProviderFailureKind, message: str) -> ProviderFailure:
     )
 
 
-def codex_auth_path(credential_home: Path | None = None) -> Path:
+def _codex_auth_path(credential_home: Path | None = None) -> Path:
     """Return the auth.json path for a Codex home or auth file path."""
     home = default_codex_home() if credential_home is None else credential_home
     home = home.expanduser()
@@ -60,11 +60,11 @@ def codex_auth_path(credential_home: Path | None = None) -> Path:
     return home / CODEX_AUTH_FILE
 
 
-def read_auth_blob(
+def _read_auth_blob(
     credential_home: Path | None = None,
 ) -> JsonObject | ProviderFailure:
     """Read auth.json or return one explicit safe source failure."""
-    path = codex_auth_path(credential_home)
+    path = _codex_auth_path(credential_home)
     try:
         payload = _read_bounded(path)
     except FileNotFoundError:
@@ -161,11 +161,11 @@ def managed_auth_snapshot(
         )
 
 
-def detect_auth_credentials(
+def _detect_auth_credentials(
     credential_home: Path | None = None,
 ) -> CredentialDetection:
     """Read and validate one Codex auth source."""
-    blob = read_auth_blob(credential_home)
+    blob = _read_auth_blob(credential_home)
     if isinstance(blob, ProviderFailure):
         return blob
     try:
@@ -183,7 +183,7 @@ def observe_native_auth(
     config_failure = _native_config_failure(credential_home)
     if config_failure is not None:
         return _native_auth_failure(config_failure, observed_at)
-    detected = detect_auth_credentials(credential_home)
+    detected = _detect_auth_credentials(credential_home)
     if isinstance(detected, ProviderFailure):
         return _native_auth_failure(detected, observed_at)
     snapshot = managed_auth_snapshot(detected)
@@ -210,7 +210,7 @@ def observe_native_auth(
 def _native_config_failure(
     credential_home: Path | None,
 ) -> ProviderFailure | None:
-    path = codex_auth_path(credential_home).with_name(CODEX_CONFIG_FILE)
+    path = _codex_auth_path(credential_home).with_name(CODEX_CONFIG_FILE)
     try:
         payload = _read_bounded(path)
     except FileNotFoundError:

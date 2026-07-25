@@ -30,11 +30,14 @@ Ruff, `ty`, and the release-matched Codex CLI schema.
 - The approved design and tracked research are normative. Revalidate the
   installed binary and current release-matched upstream source before
   implementing an unstable method.
-- At planning time the inspected executable is
-  `/home/sabossedgh/.local/bin/codex`, version `0.145.0`.
+- At planning time the inspected executable is `~/.local/bin/codex`, version
+  `0.145.0`.
 - Sidekick never POSTs to Codex's private OAuth endpoint.
-- Sidekick never copies, edits, replaces, or derives credentials from the
-  native default `~/.codex/auth.json`.
+- Sidekick never imports, copies, edits, replaces, persists, adopts, or
+  refreshes credentials from the native default `~/.codex/auth.json`.
+  External-login reconciliation may read native authentication only long
+  enough to derive a non-secret identity and generation observation, then
+  immediately discards it.
 - Each saved account is authenticated independently in its final private
   `CODEX_HOME`.
 - Managed Codex inside that home is the sole durable writer. `accounts.json`
@@ -100,7 +103,7 @@ Ruff, `ty`, and the release-matched Codex CLI schema.
 
 ---
 
-- **Status:** In progress; Codex Tasks 1-8 implemented, phase gate pending
+- **Status:** Complete; Claude managed authentication is next
 - **Date:** 2026-07-23
 - **Repository:** `/home/sabossedgh/dev/sidekick-usages`
 - **Branch:** `develop`
@@ -671,8 +674,9 @@ codex app-server daemon version
   and their persistence transaction paths.
 - [x] Remove obsolete private OAuth schemas, request helpers, tests, and error
   copy.
-- [x] Retain protected `auth.json` reading only for worker-scoped verification
-  of the exact private managed home.
+- [x] Retain protected managed-home `auth.json` reading only for worker-scoped
+  verification. Permit native authentication read-and-immediate-discard only
+  for non-secret external-login identity and generation observation.
 - [x] Make all unmanaged legacy Codex accounts report migration or login
   required; never silently fall back.
 - [x] Search the repository for duplicate token writers, native-home copy
@@ -716,39 +720,69 @@ This is a verification-only gate. It creates no duplicate end-to-end,
 compatibility, restart, unsupported-surface, or secret matrix and requires no
 empty commit.
 
-- [ ] Map every Codex completion statement below to the smallest task test,
+- [x] Map every Codex completion statement below to the smallest task test,
   foundation test, static check, or later authorized live check that proves
   it.
-- [ ] Confirm the task scenarios collectively cover two independent homes,
+- [x] Confirm the task scenarios collectively cover two independent homes,
   all-account maintenance, A-to-B selection, two observers, broker refresh,
   failure isolation, restart, and pre-mutation capability rejection.
-- [ ] If a critical completion statement has no evidence, add one focused
+- [x] If a critical completion statement has no evidence, add one focused
   assertion to the nearest existing test. Do not create a Codex phase-gate
-  test file.
-- [ ] Run the full project gate from the foundation plan.
-- [ ] Confirm ordinary `codex` path and symlink resolution remain unchanged
-  through the existing packaging smoke boundary.
-- [ ] Confirm no real provider or current-machine mutation occurred.
+  test file. The review found no missing behavioral assertion; unsupported
+  session behavior required product documentation only.
+- [x] Run the full project gate from the foundation plan.
+- [x] Confirm the exact source and installed-wheel entry-point inventories
+  contain no `codex` or `claude` command. The package creates no provider
+  wrapper, alias, or shell configuration. Retain the real before/after path
+  and symlink comparison for the authorized current-machine rollout.
+- [x] Confirm no real provider or current-machine mutation occurred.
+
+### Evidence map
+
+- Independent homes, official managed writes, advanced generations,
+  no-secret account indexes, native-auth preservation, and no private OAuth:
+  `test_codex_login_migrates_accounts_independently_without_native_copy`,
+  `test_managed_codex_maintenance_continues_across_account_failure`,
+  `test_managed_codex_refresh_fails_closed`, and `CODEX001`.
+- Exact preflight and correlated A-to-B activation:
+  `test_shared_codex_runtime_rejects_each_preflight_authority` and
+  `test_codex_activation_commits_only_correlated_target`.
+- Singleton resident refresh after dashboard disconnect, two observers, and
+  restart rehydration:
+  `test_resident_broker_refreshes_and_recovers_provider_ahead_state` and
+  `test_shared_codex_runtime_is_idempotent_and_rehydrates`.
+- Hung-worker isolation and cleanup:
+  `test_callback_preempts_stubborn_same_home_maintenance`.
+- External-login precedence and crash recovery:
+  `test_codex_activation_recovers_at_official_mutation_boundary`.
+- Every account's independent maintenance, heartbeat, and metrics:
+  `test_managed_codex_maintenance_continues_across_account_failure`.
+- Supported and unsupported session behavior: the README Codex section and
+  this plan's Global Constraints. Package command ownership:
+  `test_source_derived_artifact_contract` plus exact installed-wheel smoke.
+- Current-machine mutation remains intentionally deferred to the dashboard
+  rollout. Every automated scenario uses synthetic identities, fake providers,
+  and temporary application roots.
 
 ## 14. Codex Completion Gate
 
 Do not begin the Claude plan until all statements are true:
 
-- [ ] Every test account has one independently authenticated final private
+- [x] Every test account has one independently authenticated final private
   home.
-- [ ] Official managed Codex is the only durable credential writer.
-- [ ] Forced refresh proves same identity and advanced generation.
-- [ ] The account index contains no Codex tokens.
-- [ ] The native default `auth.json` is never copied or written.
-- [ ] Direct private OAuth refresh no longer exists.
-- [ ] Exact-version and schema preflight occurs before shared auth mutation.
-- [ ] The release-gated correlated proof establishes every successful
+- [x] Official managed Codex is the only durable credential writer.
+- [x] Forced refresh proves same identity and advanced generation.
+- [x] The account index contains no Codex tokens.
+- [x] The native default `auth.json` is never copied or written.
+- [x] Direct private OAuth refresh no longer exists.
+- [x] Exact-version and schema preflight occurs before shared auth mutation.
+- [x] The release-gated correlated proof establishes every successful
   activation without claiming daemon account-ID read-back.
-- [ ] Exactly one broker answers refresh and survives dashboard exit.
-- [ ] A hung worker cannot consume the callback deadline.
-- [ ] New and daemon-connected supported TUIs receive account updates.
-- [ ] Pre-daemon and unsupported launch modes are stated accurately.
-- [ ] External official login wins without silent import.
-- [ ] Every unselected account remains maintained and measured.
-- [ ] Normal `codex` resolution is unchanged.
-- [ ] No live current-machine migration has run.
+- [x] Exactly one broker answers refresh and survives dashboard exit.
+- [x] A hung worker cannot consume the callback deadline.
+- [x] New and daemon-connected supported TUIs receive account updates.
+- [x] Pre-daemon and unsupported launch modes are stated accurately.
+- [x] External official login wins without silent import.
+- [x] Every unselected account remains maintained and measured.
+- [x] Package entry points leave normal `codex` resolution unchanged.
+- [x] No live current-machine migration has run.

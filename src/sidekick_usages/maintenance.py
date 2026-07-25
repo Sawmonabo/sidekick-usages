@@ -246,7 +246,7 @@ class TokenMaintenanceService:
                 if result.kind is ProviderFailureKind.UNSUPPORTED
                 else ExitCode.MANUAL_ACTION
             )
-            return self._record_failed(
+            return _failed_outcome(
                 account,
                 result.message,
                 exit_code=exit_code,
@@ -324,16 +324,34 @@ class TokenMaintenanceService:
             last_refresh_error_code="provider_failure",
         )
         self.store.persist_state(candidate, expected=account)
-        return RefreshOutcome(
-            label=account.label,
-            provider_id=account.provider_id,
-            status=RefreshStatus.FAILED,
-            message=message,
+        return _failed_outcome(
+            account,
+            message,
             exit_code=exit_code,
-            action_required=exit_code == ExitCode.MANUAL_ACTION,
             provider_failure=provider_failure,
             operational_error=operational_error,
         )
+
+
+def _failed_outcome(
+    account: SavedAccount,
+    message: str,
+    *,
+    exit_code: ExitCode,
+    provider_failure: ProviderFailure | None = None,
+    operational_error: UsageError | None = None,
+) -> RefreshOutcome:
+    """Return one failed refresh outcome without changing durable state."""
+    return RefreshOutcome(
+        label=account.label,
+        provider_id=account.provider_id,
+        status=RefreshStatus.FAILED,
+        message=message,
+        exit_code=exit_code,
+        action_required=exit_code == ExitCode.MANUAL_ACTION,
+        provider_failure=provider_failure,
+        operational_error=operational_error,
+    )
 
 
 def refresh_margin(provider_id: ProviderId) -> timedelta:

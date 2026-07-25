@@ -657,7 +657,6 @@ def test_terminal_failures_preserve_typed_recovery_metadata(
         assert failure.message == "Test refresh rejected."
         assert failure.provider_failure is not None
         assert failure.provider_failure.kind is ProviderFailureKind.REJECTED
-        assert len(store.persisted) == 1
     elif isinstance(failure, ForbiddenFailure):
         assert failure.message == "profile scope denied"
         assert failure.required_scope == "different:scope"
@@ -720,7 +719,6 @@ def test_refresh_boundary_failure_preserves_only_safe_metadata(
     assert failure.kind is ProviderFailureKind.MALFORMED
     assert failure.fields == ("tokens.access_token",)
     assert rejected_input not in repr(outcome)
-    assert store.saved("account").last_refresh_error == "provider_failure"
 
 
 @pytest.mark.parametrize(

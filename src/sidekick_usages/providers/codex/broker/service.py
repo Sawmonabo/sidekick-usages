@@ -11,6 +11,8 @@ from sidekick_usages.core.accounts.types import (
     SidekickAccountId,
 )
 from sidekick_usages.core.selection.models import ProviderAuthObservation
+from sidekick_usages.core.selection.types import ProviderAuthState
+from sidekick_usages.core.types import ProviderId
 from sidekick_usages.platform.types import PeerVerifier
 from sidekick_usages.providers.codex.account.auth_status import (
     observe_codex_auth_status,
@@ -48,6 +50,9 @@ from sidekick_usages.providers.codex.broker.ports import CodexProjection
 from sidekick_usages.providers.codex.broker.types import CodexBrokerFailure
 from sidekick_usages.providers.codex.broker.wire import CodexDaemonSession
 from sidekick_usages.providers.codex.generation import codex_generation_order
+from sidekick_usages.providers.codex.token import (
+    codex_access_token_generation,
+)
 
 
 class CodexSharedRuntime:
@@ -59,6 +64,7 @@ class CodexSharedRuntime:
         self._authority: CodexDaemonAuthority | None = None
         self._expected: CodexProjectionExpectation | None = None
         self._receipt: CodexProjectionReceipt | None = None
+        self._projection_auth_generation: AuthorityGeneration | None = None
 
     @classmethod
     def create(
@@ -110,6 +116,7 @@ class CodexSharedRuntime:
             self.qualified
             and authority is not None
             and receipt is not None
+            and self._projection_auth_generation is not None
             and receipt.socket_device == authority.control_socket.device
             and receipt.socket_inode == authority.control_socket.inode
         )
@@ -153,6 +160,7 @@ class CodexSharedRuntime:
         if receipt is not None and receipt.matches(expectation):
             return receipt
         self._receipt = None
+        self._projection_auth_generation = None
         return None
 
     def observe_auth(
@@ -172,10 +180,28 @@ class CodexSharedRuntime:
             self._drop_session()
             raise codex_broker_error(error) from None
 
+    def projection_observation(
+        self,
+        observed_at: datetime,
+    ) -> ProviderAuthObservation:
+        """Return the current projection's credential-free identity proof."""
+        receipt = self.receipt
+        generation = self._projection_auth_generation
+        if receipt is None or generation is None:
+            raise CodexBrokerError(CodexBrokerFailure.RUNTIME_CHANGED)
+        return ProviderAuthObservation(
+            provider_id=ProviderId.CODEX,
+            state=ProviderAuthState.ACTIVE,
+            provider_identity=receipt.provider_identity,
+            generation=generation,
+            observed_at=observed_at,
+        )
+
     def invalidate_projection(self) -> None:
         """Discard local projection proof after an account-change signal."""
         self._expected = None
         self._receipt = None
+        self._projection_auth_generation = None
 
     def install(
         self,
@@ -197,6 +223,9 @@ class CodexSharedRuntime:
             )
         ):
             raise CodexBrokerError(CodexBrokerFailure.IDENTITY_MISMATCH)
+        projection_auth_generation = codex_access_token_generation(
+            projection.access_token
+        )
         try:
             receipt = install_codex_projection(
                 session,
@@ -208,6 +237,7 @@ class CodexSharedRuntime:
             raise codex_broker_error(error) from None
         except CodexBrokerError:
             self._receipt = None
+            self._projection_auth_generation = None
             raise
         self._expected = CodexProjectionExpectation(
             projection.account_id,
@@ -215,6 +245,7 @@ class CodexSharedRuntime:
             projection.generation,
         )
         self._receipt = receipt
+        self._projection_auth_generation = projection_auth_generation
         return receipt
 
     def receive(
@@ -250,6 +281,9 @@ class CodexSharedRuntime:
             or receipt.generation != source_generation
         ):
             raise CodexBrokerError(CodexBrokerFailure.RUNTIME_CHANGED)
+        projection_auth_generation = codex_access_token_generation(
+            reply.access_token
+        )
         result = codex_refresh_result(reply)
         try:
             session.respond(
@@ -270,6 +304,7 @@ class CodexSharedRuntime:
             reply.generation,
         )
         self._receipt = updated
+        self._projection_auth_generation = projection_auth_generation
         return updated
 
     def reject_refresh(
@@ -312,6 +347,7 @@ class CodexSharedRuntime:
         self._authority = None
         self._expected = None
         self._receipt = None
+        self._projection_auth_generation = None
         if session is not None:
             session.close()
 

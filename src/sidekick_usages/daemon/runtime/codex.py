@@ -23,6 +23,7 @@ from sidekick_usages.daemon.worker.exchange import (
     SupervisorWorkerExchange,
     WorkerExchangeRegistry,
 )
+from sidekick_usages.persistence.errors import PersistenceError
 from sidekick_usages.persistence.state.files import ManagedStateConflictError
 from sidekick_usages.persistence.supervisor.observation import (
     RuntimeAuthObservationStore,
@@ -30,7 +31,11 @@ from sidekick_usages.persistence.supervisor.observation import (
 from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
 
 
-class CallbackDispatchError(RuntimeError):
+class CodexOperationDispatchError(RuntimeError):
+    """Durable Codex operation dispatch is unavailable."""
+
+
+class CallbackDispatchError(CodexOperationDispatchError):
     """A one-shot callback could not be correlated safely."""
 
 
@@ -55,7 +60,10 @@ class DurableCodexOperationDispatcher:
 
     def native_observation(self) -> ProviderAuthObservation | None:
         """Return the last durable effective native observation."""
-        return self._observations.load(ProviderId.CODEX)
+        try:
+            return self._observations.load_native(ProviderId.CODEX)
+        except PersistenceError, ValueError:
+            raise CodexOperationDispatchError from None
 
     def record_native(
         self,
@@ -64,7 +72,29 @@ class DurableCodexOperationDispatcher:
         """Persist the newest effective native observation."""
         if observation.provider_id is not ProviderId.CODEX:
             raise ValueError("Runtime observation is not Codex.")
-        self._observations.save(observation)
+        try:
+            self._observations.save_native(observation)
+        except PersistenceError, ValueError:
+            raise CodexOperationDispatchError from None
+
+    def projection_observation(self) -> ProviderAuthObservation | None:
+        """Return the last correlated Sidekick projection."""
+        try:
+            return self._observations.load_projection(ProviderId.CODEX)
+        except PersistenceError, ValueError:
+            raise CodexOperationDispatchError from None
+
+    def record_projection(
+        self,
+        observation: ProviderAuthObservation,
+    ) -> None:
+        """Persist the newest correlated Sidekick projection."""
+        if observation.provider_id is not ProviderId.CODEX:
+            raise ValueError("Runtime observation is not Codex.")
+        try:
+            self._observations.save_projection(observation)
+        except PersistenceError, ValueError:
+            raise CodexOperationDispatchError from None
 
     def reconcile_native(
         self,

@@ -41,6 +41,7 @@ from sidekick_usages.providers.base import (
     runtime_account,
 )
 from sidekick_usages.providers.claude.credentials import (
+    CLAUDE_SUBSCRIPTION_LOGIN_REJECTED,
     detect_credentials,
     parse_detected_credentials,
     require_claude_credentials,
@@ -296,7 +297,7 @@ class ClaudeProvider(Provider):
         if completed.return_code != 0 and payload is None:
             return claude_failure(
                 ProviderFailureKind.REJECTED,
-                "Claude rejected the saved subscription login.",
+                CLAUDE_SUBSCRIPTION_LOGIN_REJECTED,
                 cause=ProviderFailureCause.PROVIDER_REJECTED_REFRESH,
             )
         detected = (
@@ -433,7 +434,7 @@ class ClaudeProvider(Provider):
         except AuthError:
             return claude_failure(
                 ProviderFailureKind.REJECTED,
-                "Claude rejected the saved subscription login.",
+                CLAUDE_SUBSCRIPTION_LOGIN_REJECTED,
                 cause=ProviderFailureCause.PROVIDER_REJECTED_REFRESH,
             )
         except TransientError:

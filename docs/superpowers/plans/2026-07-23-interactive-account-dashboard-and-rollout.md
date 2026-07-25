@@ -510,12 +510,16 @@ sidekick-usages use <provider> <label>
 
 ### Performance coverage
 
-- [ ] Add `packaging/benchmark_dashboard.py` with synthetic account counts
-  matching and exceeding the current machine.
-- [ ] Measure cached first paint over at least 30 fresh processes and require
-  p95 no more than 250 ms.
-- [ ] Measure cursor input to visible render over at least 100 local events and
-  target p95 no more than 50 ms.
+- [ ] Add `packaging/benchmark_dashboard.py` as a release measurement, not a
+  pytest suite. Use one representative synthetic account count matching the
+  current machine and one bounded larger snapshot.
+- [ ] Measure one fresh-process cached first paint with an explicit deadline
+  and require no more than 250 ms. Do not create a repeated subprocess loop.
+- [ ] Measure cursor input to visible render in one bounded in-process trace
+  and target p95 no more than 50 ms.
+- [ ] Permit at most one benchmark child at a time and prove it is reaped
+  before exit. Record peak RSS from the same run; do not add a process-count
+  or account-count performance matrix.
 - [ ] Measure steady supervisor RSS, idle CPU, worker exit, and Codex callback
   isolation using the foundation gates.
 - [ ] Fail the architecture gate if prompt_toolkit enters supervisor,

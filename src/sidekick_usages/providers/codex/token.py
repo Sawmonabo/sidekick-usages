@@ -21,7 +21,7 @@ MAX_CODEX_TOKEN_PLAN_BYTES = 256
 CODEX_REFRESH_MARGIN = timedelta(minutes=10)
 
 _AUTH_CLAIM = "https://api.openai.com/auth"
-_ACCESS_TOKEN_GENERATION_PREFIX = "access-token-sha256:"
+_GENERATION_PREFIX = "access-token-sha256:"
 
 
 def validated_codex_token(value: str) -> str:
@@ -37,7 +37,7 @@ def codex_access_token_generation(token: str) -> AuthorityGeneration:
     """Return a one-way stable generation for an effective access token."""
     validated = validated_codex_token(token)
     return AuthorityGeneration(
-        _ACCESS_TOKEN_GENERATION_PREFIX
+        _GENERATION_PREFIX
         + hashlib.sha256(validated.encode("utf-8")).hexdigest()
     )
 

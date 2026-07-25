@@ -58,8 +58,9 @@ Credential kind, not scope presence, selects the usage route. A missing
 inference capability can make a subscription login unsupported for warming;
 it never converts that login into a setup-token credential.
 
-Codex ChatGPT-login accounts are supported when the saved account has a
-usable access token and ChatGPT account id. Heartbeat reads
+Codex ChatGPT-login accounts are supported when their managed authority can
+produce a short-lived account-scoped projection containing a usable access
+token and ChatGPT account ID. Heartbeat reads
 `https://chatgpt.com/backend-api/codex/usage` first. Codex has two
 relevant window targets:
 
@@ -75,7 +76,7 @@ reads usage again after each model request and only reports `warmed` when the
 target window becomes active.
 
 Codex API-key mode is not heartbeat supported. The heartbeat implementation
-is for saved ChatGPT OAuth accounts whose usage is displayed by the Codex
+is for managed ChatGPT-login accounts whose usage is displayed by the Codex
 usage endpoint.
 
 ## Maintenance behavior

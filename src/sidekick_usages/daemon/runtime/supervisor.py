@@ -196,40 +196,38 @@ class SupervisorRuntime:
         self._scheduler.collect()
         self._recovery.enroll(self._clock.now())
         self._scheduler.dispatch_due()
-        reconciled = self._recovery.reconciled()
-        broker_ready = self._resident.ready
-        self._publish(
-            ServicePhase.READY
-            if reconciled and broker_ready
-            else ServicePhase.DEGRADED,
-            failure_code=(
-                None
-                if reconciled and broker_ready
-                else (
-                    "reconciliation_required"
-                    if not reconciled
-                    else "codex_broker_unavailable"
-                )
-            ),
-        )
+        self._publish()
 
     def _publish(
         self,
-        phase: ServicePhase,
-        *,
-        failure_code: str | None = None,
+        phase: ServicePhase | None = None,
     ) -> None:
+        """Publish one internally consistent resident-state observation."""
         current = self._service_state.load()
+        queue_recovered = self._queue_recovered
         journals_reconciled = self._recovery.reconciled()
+        broker_ready = self._resident.ready
+        failure_code: str | None = None
+        if phase is None:
+            recovered = (
+                queue_recovered and journals_reconciled and broker_ready
+            )
+            phase = ServicePhase.READY if recovered else ServicePhase.DEGRADED
+            if not recovered:
+                failure_code = (
+                    "reconciliation_required"
+                    if not journals_reconciled
+                    else "codex_broker_unavailable"
+                )
         candidate = ServiceState(
             protocol_version=PROTOCOL_VERSION,
             package_version=self._package_version,
             phase=phase,
             revision=1 if current is None else current.revision + 1,
             observed_at=self._clock.now(),
-            queue_recovered=self._queue_recovered,
+            queue_recovered=queue_recovered,
             journals_reconciled=journals_reconciled,
-            broker_ready=self._resident.ready,
+            broker_ready=broker_ready,
             active_workers=self._scheduler.active_count,
             failure_code=failure_code,
         )

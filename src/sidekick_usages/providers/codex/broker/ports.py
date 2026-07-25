@@ -72,6 +72,15 @@ class CodexOperationDispatcher(Protocol):
     ) -> None:
         """Persist the newest effective native observation."""
 
+    def projection_observation(self) -> ProviderAuthObservation | None:
+        """Return the last correlated Sidekick projection."""
+
+    def record_projection(
+        self,
+        observation: ProviderAuthObservation,
+    ) -> None:
+        """Persist the newest correlated Sidekick projection."""
+
     def reconcile_native(
         self,
         observation: ProviderAuthObservation,

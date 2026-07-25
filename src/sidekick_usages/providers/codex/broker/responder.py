@@ -102,6 +102,7 @@ class CodexRuntimeBroker:
         self._runtime_state = runtime_state
         self._operations = operations
         self._exchanges = exchanges
+        self._wall_time = wall_time
         self._monotonic = monotonic
         self._status_changed = status_changed
         self._stop = Event()
@@ -429,6 +430,7 @@ class CodexRuntimeBroker:
             ):
                 raise RuntimeError("Codex activation state is inconsistent.")
             completed = True
+            self._record_projection(runtime)
         finally:
             self._finish_activation(
                 instruction.operation_id,
@@ -564,6 +566,7 @@ class CodexRuntimeBroker:
             ):
                 raise RuntimeError("Codex rehydration state is inconsistent.")
             completed = True
+            self._record_projection(runtime)
             return receipt
         finally:
             self._finish_dispatch(instruction.operation_id, completed)
@@ -623,6 +626,7 @@ class CodexRuntimeBroker:
             ):
                 raise RuntimeError("Codex refresh state is inconsistent.")
             completed = True
+            self._record_projection(runtime)
         except (
             CodexAppServerError,
             CodexBrokerError,
@@ -688,6 +692,11 @@ class CodexRuntimeBroker:
             return decode_codex_refresh_reply(payload, instruction)
         finally:
             clear_mutable_buffer(payload)
+
+    def _record_projection(self, runtime: CodexSharedRuntime) -> None:
+        self._operations.record_projection(
+            runtime.projection_observation(self._wall_time())
+        )
 
     def _finish_dispatch(
         self,

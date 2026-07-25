@@ -89,15 +89,9 @@ class _ScriptedProvider(Provider):
         self,
         provider_id: ProviderId,
         steps: Mapping[str, FetchStep],
-        discovered_account_ids: Mapping[str, str] | None = None,
     ) -> None:
         self.id = provider_id
         self.steps = dict(steps)
-        self.discovered_account_ids = (
-            {}
-            if discovered_account_ids is None
-            else dict(discovered_account_ids)
-        )
 
     def detect_credentials(
         self,
@@ -117,14 +111,6 @@ class _ScriptedProvider(Provider):
     ) -> UsageReport:
         del http
         label = str(account.label)
-        if account_id := self.discovered_account_ids.get(label):
-            credentials = account.credentials
-            if not isinstance(credentials, CodexCredentials):
-                raise AssertionError("Discovered account id requires Codex.")
-            account.credentials = replace(
-                credentials,
-                account_id=account_id,
-            )
         step = self.steps[label]
         if isinstance(step, UsageError):
             raise step
@@ -341,16 +327,12 @@ def test_collection_preserves_scope_and_is_independent_of_usage_rows(
         ProviderId.CLAUDE,
         {"claude-one": _report(), "claude-two": _report()},
     )
-    codex_two = accounts[-1]
-    assert isinstance(codex_two.credentials, CodexCredentials)
-    codex_two.credentials = replace(codex_two.credentials, account_id=None)
     codex = _ScriptedProvider(
         ProviderId.CODEX,
         {
             "codex-one": _report(),
             "codex-two": TransientError("rate-limit endpoint failed"),
         },
-        discovered_account_ids={"codex-two": "acct_discovered"},
     )
     local = _LocalActivity(
         _summary(_CLAUDE_TOTAL, TokenActivityScope.LOCAL_INSTALLATION)
@@ -368,7 +350,7 @@ def test_collection_preserves_scope_and_is_independent_of_usage_rows(
         }
     )
 
-    service, store = _service(
+    service, _ = _service(
         tmp_path,
         http,
         accounts,
@@ -386,10 +368,7 @@ def test_collection_preserves_scope_and_is_independent_of_usage_rows(
     assert isinstance(result.failures[0], TransientFailure)
     assert local.calls == 1
     assert profiles.calls == ["codex-one", "codex-two"]
-    assert profiles.account_ids == ["acct_codex-one", "acct_discovered"]
-    saved = store.get("codex-two")
-    assert saved is not None
-    assert saved.provider_account_id == "acct_discovered"
+    assert profiles.account_ids == ["acct_codex-one", "acct_codex-two"]
     assert result.activities == (
         CompleteTokenActivity(
             provider_id=ProviderId.CLAUDE,

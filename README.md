@@ -57,10 +57,13 @@ require the provider's normal login flow.
 - `git` and [`uv`](https://docs.astral.sh/uv/) for the Git-tag installation
   path below.
 
-Codex API-key mode is not supported. Codex ChatGPT credentials are read only
-inside the exact protected managed home during worker-scoped operations.
-Claude supports Claude Code OAuth logins and Claude `setup-token` credentials,
-not Anthropic API keys.
+Codex API-key mode is not supported. Managed Codex credentials are read only
+inside the exact protected managed home during worker-scoped operations. To
+detect an external native login, the supervisor may read native authentication
+long enough to derive a non-secret identity and generation, then immediately
+discard it. Native authentication is never imported, copied, persisted,
+written, or used as managed credentials. Claude supports Claude Code OAuth
+logins and Claude `setup-token` credentials, not Anthropic API keys.
 
 ## Installation
 
@@ -278,6 +281,11 @@ generation before committing the managed authority. Protected authentication
 state is verified only inside that managed home. The native Codex home remains
 untouched.
 
+Ordinary Codex TUIs connected to the supported shared daemon receive later
+account updates. A TUI launched before daemon enrollment must be restarted
+once. `codex exec`, native Windows, and launch modes that bypass daemon reuse
+are not switchable; in-flight requests are never retargeted.
+
 Usage calls `https://chatgpt.com/backend-api/codex/usage` with a short-lived
 projection from the exact account's protected managed home. It reports the
 primary 5-hour window, secondary 7-day window, and provider-returned additional
@@ -410,10 +418,10 @@ exit-code, and recovery details.
   `0700`/`0600`; Windows protection uses the current user's filesystem ACLs.
 - `list` masks token values, and `doctor --json` excludes access tokens,
   refresh tokens, id tokens, and raw provider credentials.
-- Interactive token entry is hidden. Piped stdin is consumed only when local
-  credential auto-detection finds no login. Passing `--token` can expose a
-  secret in shell history or process listings, so prefer auto-detection, stdin,
-  or the hidden prompt.
+- Claude token entry is hidden. `sidekick-usages add claude` consumes piped
+  stdin only when Claude credential auto-detection finds no login. Its
+  `--token` option can expose a secret in shell history or process listings, so
+  prefer Claude auto-detection, stdin, or the hidden prompt.
 - Every built-in HTTP request rejects non-HTTPS URLs.
 - Requests use bounded pooled connections, verified TLS, closed operation
   classes, and retry behavior that distinguishes safe reads from mutations.
@@ -501,8 +509,9 @@ part of the in-progress interactive account rollout.
 
 ### HTTP 401 or failed refresh
 
-Saved login accounts rotate access credentials before known access expiry and
-retry once after HTTP 401. Recovery depends on the saved credential kind.
+Saved Claude subscription logins rotate access credentials before known access
+expiry and retry once after HTTP 401. Codex authentication failures recover
+through the managed authority, never through inline private OAuth.
 
 For a Claude subscription login, sign in as that exact account and update the
 login label explicitly:

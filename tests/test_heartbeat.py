@@ -738,7 +738,7 @@ def test_maintain_preserves_setup_token_failure_cause(tmp_path: Path) -> None:
     """A rejected setup token never receives login recovery wording."""
     account = _acct(heartbeat_enabled=True)
     account.last_refresh_status = RefreshStatus.FAILED
-    account.last_refresh_error = "Claude rejected the saved setup token."
+    account.last_refresh_error = "provider_failure"
     provider = _FakeHeartbeatProvider()
     harness, _, stdout, stderr = _install_ctx(
         tmp_path,

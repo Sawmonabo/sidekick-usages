@@ -379,7 +379,7 @@ class CodexNativeReconciliationWorkerExecutor:
             raise ValueError(
                 "Worker operation is not native Codex reconciliation."
             )
-        observation = self._observations.load(ProviderId.CODEX)
+        observation = self._observations.load_native(ProviderId.CODEX)
         if observation is None:
             return _worker_failure(
                 operation,
@@ -407,7 +407,7 @@ class CodexNativeReconciliationWorkerExecutor:
                 "native_state_changed",
                 self._clock,
             )
-        if self._observations.load(ProviderId.CODEX) != observation:
+        if self._observations.load_native(ProviderId.CODEX) != observation:
             return _worker_failure(
                 operation,
                 WorkerOutcome.TRANSIENT_FAILURE,
