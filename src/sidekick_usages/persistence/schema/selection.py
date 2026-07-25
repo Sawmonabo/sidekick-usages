@@ -49,11 +49,13 @@ from sidekick_usages.persistence.time_codec import (
 )
 from sidekick_usages.serialization.json import JsonObject, JsonValue
 
-STATE_SCHEMA_VERSION = 1
+STATE_SCHEMA_VERSION = 2
 ACTIVATION_SCHEMA_VERSION = 2
+RUNTIME_OBSERVATION_SCHEMA_VERSION = 1
 MAX_SELECTED_STATE_BYTES = 256 * 1024
 MAX_ACTIVATION_JOURNAL_BYTES = 512 * 1024
 MAX_OPERATION_QUEUE_BYTES = 8 * 1024 * 1024
+MAX_RUNTIME_OBSERVATION_BYTES = 256 * 1024
 
 _SELECTED_KEYS = frozenset(
     {
@@ -184,11 +186,17 @@ def encode_activation_journal(
 
 
 def operation_slot(
-    account_id: SidekickAccountId,
+    provider_id: ProviderId,
+    account_id: SidekickAccountId | None,
     kind: OperationKind,
 ) -> str:
-    """Return one canonical durable account-operation slot key."""
-    return f"{account_id}:{kind.value}"
+    """Return one canonical durable account or provider operation slot."""
+    owner = (
+        f"provider:{provider_id.value}"
+        if account_id is None
+        else f"account:{account_id}"
+    )
+    return f"{owner}:{kind.value}"
 
 
 def decode_operation_queue(payload: bytes) -> OperationQueueDocument:
@@ -204,6 +212,7 @@ def decode_operation_queue(payload: bytes) -> OperationQueueDocument:
         for slot, value in records.items():
             operation = _due_operation(require_object(value))
             if slot != operation_slot(
+                operation.provider_id,
                 operation.account_id,
                 operation.kind,
             ):
@@ -223,6 +232,46 @@ def encode_operation_queue(document: OperationQueueDocument) -> bytes:
     if decode_operation_queue(payload) != document:
         raise InvalidSchemaError
     return payload
+
+
+def decode_runtime_auth_observation(
+    payload: bytes,
+) -> ProviderAuthObservation:
+    """Decode one canonical provider runtime-auth observation."""
+    root = decode_state_object(payload, MAX_RUNTIME_OBSERVATION_BYTES)
+    require_exact_keys(
+        root,
+        {"observation", "provider_id", "schema_version"},
+    )
+    require_schema_version(
+        root["schema_version"],
+        RUNTIME_OBSERVATION_SCHEMA_VERSION,
+    )
+    provider_id = ProviderId(require_string(root["provider_id"]))
+    try:
+        observation = _provider_auth_observation(
+            provider_id,
+            require_object(root["observation"]),
+        )
+    except TypeError, ValueError:
+        raise InvalidSchemaError from None
+    if encode_runtime_auth_observation(observation) != payload:
+        raise InvalidSchemaError
+    return observation
+
+
+def encode_runtime_auth_observation(
+    observation: ProviderAuthObservation,
+) -> bytes:
+    """Encode one canonical provider runtime-auth observation."""
+    return encode_state_object(
+        {
+            "observation": _provider_auth_object(observation),
+            "provider_id": observation.provider_id.value,
+            "schema_version": RUNTIME_OBSERVATION_SCHEMA_VERSION,
+        },
+        MAX_RUNTIME_OBSERVATION_BYTES,
+    )
 
 
 def _selected_state(
@@ -418,7 +467,7 @@ def _due_operation(record: JsonObject) -> DueOperation:
     return DueOperation(
         operation_id=OperationId(require_string(record["operation_id"])),
         provider_id=ProviderId(require_string(record["provider_id"])),
-        account_id=SidekickAccountId(require_string(record["account_id"])),
+        account_id=_optional_account_id(record["account_id"]),
         kind=OperationKind(require_string(record["kind"])),
         priority=OperationPriority(require_string(record["priority"])),
         state=OperationState(require_string(record["state"])),
@@ -431,9 +480,16 @@ def _due_operation(record: JsonObject) -> DueOperation:
     )
 
 
+def _optional_account_id(value: JsonValue) -> SidekickAccountId | None:
+    account_id = require_optional_string(value)
+    return None if account_id is None else SidekickAccountId(account_id)
+
+
 def _operation_object(operation: DueOperation) -> JsonObject:
     return {
-        "account_id": str(operation.account_id),
+        "account_id": (
+            None if operation.account_id is None else str(operation.account_id)
+        ),
         "attempts": operation.attempts,
         "due_at": canonical_timestamp(operation.due_at),
         "failure_code": operation.failure_code,
@@ -448,9 +504,11 @@ def _operation_object(operation: DueOperation) -> JsonObject:
 
 def _operation_payload(document: OperationQueueDocument) -> bytes:
     operations: JsonObject = {
-        operation_slot(operation.account_id, operation.kind): (
-            _operation_object(operation)
-        )
+        operation_slot(
+            operation.provider_id,
+            operation.account_id,
+            operation.kind,
+        ): (_operation_object(operation))
         for operation in document.operations
     }
     return encode_state_object(

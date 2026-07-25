@@ -33,6 +33,8 @@ from sidekick_usages.serialization.json import (
 )
 
 SCHEMA_FILES = (
+    "GetAuthStatusParams.json",
+    "GetAuthStatusResponse.json",
     "v1/InitializeParams.json",
     "v1/InitializeResponse.json",
     "v2/GetAccountParams.json",
@@ -207,6 +209,8 @@ def _validate_required_capabilities(
     )
     _require_property(account_updated, "planType", "string")
 
+    _validate_auth_status_capabilities(schemas)
+
     refresh_params = schemas["ChatgptAuthTokensRefreshParams.json"]
     _require_names(refresh_params, "required", ("reason",))
     _require_property_enum(refresh_params, "reason", "unauthorized")
@@ -221,7 +225,12 @@ def _validate_required_capabilities(
     _require_property(refresh_response, "chatgptAccountId", "string")
     _require_property(refresh_response, "chatgptPlanType", "string")
 
-    for method in ("initialize", "account/login/start", "account/read"):
+    for method in (
+        "initialize",
+        "account/login/start",
+        "account/read",
+        "getAuthStatus",
+    ):
         _require_method(schemas["ClientRequest.json"], method)
     _require_method(schemas["ClientNotification.json"], "initialized")
     _require_method(
@@ -240,6 +249,22 @@ def _validate_required_capabilities(
         schemas["ServerNotification.json"],
         "emittedAtMs",
         "integer",
+    )
+
+
+def _validate_auth_status_capabilities(
+    schemas: dict[str, JsonObject],
+) -> None:
+    auth_status_params = schemas["GetAuthStatusParams.json"]
+    _require_property(auth_status_params, "includeToken", "boolean")
+    _require_property(auth_status_params, "refreshToken", "boolean")
+    auth_status_response = schemas["GetAuthStatusResponse.json"]
+    _require_property(auth_status_response, "authMethod", "string")
+    _require_property(auth_status_response, "authToken", "string")
+    _require_property(
+        auth_status_response,
+        "requiresOpenaiAuth",
+        "boolean",
     )
 
 

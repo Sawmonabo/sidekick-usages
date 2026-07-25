@@ -2,6 +2,7 @@
 
 from collections.abc import Callable, Mapping
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 
 from sidekick_usages.core.accounts.types import (
@@ -9,7 +10,11 @@ from sidekick_usages.core.accounts.types import (
     ProviderIdentity,
     SidekickAccountId,
 )
+from sidekick_usages.core.selection.models import ProviderAuthObservation
 from sidekick_usages.platform.types import PeerVerifier
+from sidekick_usages.providers.codex.account.auth_status import (
+    observe_codex_auth_status,
+)
 from sidekick_usages.providers.codex.app_server.capabilities import (
     probe_codex_capabilities,
 )
@@ -114,6 +119,11 @@ class CodexSharedRuntime:
         """Return the current secret-free projection receipt."""
         return self._receipt if self.ready else None
 
+    @property
+    def authority(self) -> CodexDaemonAuthority | None:
+        """Return the exact qualified daemon authority."""
+        return self._authority if self.qualified else None
+
     def qualify(self) -> None:
         """Qualify the pinned daemon connection without changing auth."""
         try:
@@ -144,6 +154,28 @@ class CodexSharedRuntime:
             return receipt
         self._receipt = None
         return None
+
+    def observe_auth(
+        self,
+        observed_at: datetime,
+    ) -> ProviderAuthObservation:
+        """Observe effective daemon auth without retaining a token."""
+        session = self._session
+        if session is None or session.closed or not self.qualified:
+            raise CodexBrokerError(CodexBrokerFailure.RUNTIME_CHANGED)
+        try:
+            return observe_codex_auth_status(
+                session,
+                observed_at=observed_at,
+            )
+        except CodexAppServerError as error:
+            self._drop_session()
+            raise codex_broker_error(error) from None
+
+    def invalidate_projection(self) -> None:
+        """Discard local projection proof after an account-change signal."""
+        self._expected = None
+        self._receipt = None
 
     def install(
         self,

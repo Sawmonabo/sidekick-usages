@@ -257,7 +257,7 @@ class CodexActivationService:
                 guarded,
             )
             if rollback_chosen:
-                return self._commit_reconciled_receipt(
+                return self._commit_external_receipt(
                     transaction,
                     current,
                     receipt,
@@ -317,7 +317,7 @@ class CodexActivationService:
         )
         return selected
 
-    def _commit_reconciled_receipt(
+    def _commit_external_receipt(
         self,
         transaction: ActivationJournalTransaction,
         record: ActivationRecord,
@@ -340,7 +340,7 @@ class CodexActivationService:
             verified_at=self._clock.now(),
             outcome=ActivationOutcome.EXTERNAL_RECONCILED,
         )
-        transaction.commit_reconciled(
+        transaction.commit_external(
             record.operation_id,
             selected,
             self._selected,

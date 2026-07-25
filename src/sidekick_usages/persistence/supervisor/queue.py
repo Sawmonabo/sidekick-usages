@@ -14,6 +14,7 @@ from sidekick_usages.core.selection.policy import (
 )
 from sidekick_usages.core.selection.types import OperationKind, OperationState
 from sidekick_usages.core.time import as_utc
+from sidekick_usages.core.types import ProviderId
 from sidekick_usages.persistence.locking import PersistenceLock
 from sidekick_usages.persistence.models.artifact import FileSnapshot
 from sidekick_usages.persistence.models.selection import (
@@ -57,15 +58,17 @@ class OperationQueueStore:
 
     def get(
         self,
-        account_id: SidekickAccountId,
+        provider_id: ProviderId,
+        account_id: SidekickAccountId | None,
         kind: OperationKind,
     ) -> DueOperation | None:
-        """Load one exact account-operation slot."""
+        """Load one exact provider and operation-owner slot."""
         return next(
             (
                 operation
                 for operation in self.load()
-                if operation.account_id == account_id
+                if operation.provider_id is provider_id
+                and operation.account_id == account_id
                 and operation.kind is kind
             ),
             None,
@@ -91,10 +94,18 @@ class OperationQueueStore:
             snapshot = self._filesystem.read_opaque_private()
             document = self._document(snapshot)
             slots = {
-                (current.account_id, current.kind): current
+                (
+                    current.provider_id,
+                    current.account_id,
+                    current.kind,
+                ): current
                 for current in document.operations
             }
-            key = (operation.account_id, operation.kind)
+            key = (
+                operation.provider_id,
+                operation.account_id,
+                operation.kind,
+            )
             current = slots.get(key)
             effective = (
                 operation
@@ -163,6 +174,7 @@ class OperationQueueStore:
                 key=lambda operation: (
                     operation.priority.rank,
                     operation.due_at,
+                    operation.provider_id.value,
                     str(operation.account_id),
                     operation.kind.value,
                 ),

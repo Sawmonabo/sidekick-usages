@@ -187,7 +187,7 @@ class ActivationJournalTransaction:
             updated_at=updated_at,
         )
 
-    def commit_reconciled(
+    def commit_external(
         self,
         operation_id: OperationId,
         state: SelectedAccountState,
@@ -195,20 +195,20 @@ class ActivationJournalTransaction:
         *,
         updated_at: datetime,
     ) -> ActivationRecord:
-        """CAS a proven saved rollback account, then close the journal."""
+        """Let one proven external choice win and close the journal."""
         document = self.load()
         active = document.active
         baseline = None if active is None else active.selected_baseline
         if (
             active is None
             or active.operation_id != operation_id
-            or baseline is None
-            or baseline.runtime_state is not ProviderRuntimeState.SAVED_ACTIVE
             or state.provider_id is not self.provider_id
-            or state.runtime_state is not ProviderRuntimeState.SAVED_ACTIVE
-            or state.account_id != baseline.account_id
-            or state.provider_identity != baseline.provider_identity
-            or state.outcome is not ActivationOutcome.EXTERNAL_RECONCILED
+            or state.outcome
+            not in {
+                ActivationOutcome.EXTERNAL_RECONCILED,
+                ActivationOutcome.LOGGED_OUT,
+                ActivationOutcome.UNSUPPORTED,
+            }
         ):
             raise ManagedStateConflictError(
                 ManagedStateConflictKind.CONCURRENT_CHANGE
@@ -229,7 +229,7 @@ class ActivationJournalTransaction:
             operation_id,
             ActivationPhase.ROLLED_BACK,
             updated_at=updated_at,
-            outcome=ActivationOutcome.EXTERNAL_RECONCILED,
+            outcome=state.outcome,
         )
 
     @contextmanager

@@ -65,6 +65,7 @@ class OperationKind(StrEnum):
     ACTIVATE = "activate"
     REPAIR = "repair"
     RECONCILE = "reconcile"
+    RECONCILE_NATIVE = "reconcile_native"
 
 
 class OperationPriority(StrEnum):

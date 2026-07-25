@@ -55,6 +55,7 @@ class FakeCodexDaemon:
         self._installed_account_ids: list[str] = []
         self._external_logins: list[tuple[str, str]] = []
         self._active_account_id: str | None = None
+        self._active_access_token: str | None = None
         self._originator: str | None = None
         self._ready_account_read_count = 0
         self._next_server_request_id = 0
@@ -123,6 +124,29 @@ class FakeCodexDaemon:
         with self._lock:
             self._external_logins.append((provider_identity, generation))
 
+    def perform_external_runtime_login(
+        self,
+        provider_identity: str,
+        generation: str,
+    ) -> None:
+        """Change effective daemon auth and emit its official update signal."""
+        self.perform_external_login(provider_identity, generation)
+        access_token = _auth_access_token(
+            managed_auth(provider_identity, generation)
+        )
+        with self._lock:
+            self._active_account_id = provider_identity
+            self._active_access_token = access_token
+        self._broadcast(
+            {
+                "method": "account/updated",
+                "params": {
+                    "authMode": "chatgpt",
+                    "planType": "pro",
+                },
+            }
+        )
+
     def connect_tui(self) -> FakeCodexTuiObserver:
         """Connect one initialized official-shaped TUI observer."""
         observer = FakeCodexTuiObserver(self.socket_path)
@@ -170,6 +194,7 @@ class FakeCodexDaemon:
         self._stop()
         with self._lock:
             self._active_account_id = None
+            self._active_access_token = None
         self._start()
 
     def __enter__(self) -> Self:
@@ -288,6 +313,9 @@ class FakeCodexDaemon:
         if method == "account/read":
             self._read_account(connection, request)
             return
+        if method == "getAuthStatus":
+            self._get_auth_status(connection, request)
+            return
         raise AssertionError("Codex fake received an unsupported method.")
 
     def _initialize(
@@ -354,8 +382,9 @@ class FakeCodexDaemon:
             result = response.get("result")
             error = response.get("error")
             if set(response) == {"id", "result"} and isinstance(result, dict):
-                account_id = self._refresh_account_id(result)
+                account_id, access_token = self._refresh_authority(result)
                 self._active_account_id = account_id
+                self._active_access_token = access_token
                 observed = FakeCodexRefreshResponse(
                     responder,
                     account_id,
@@ -383,7 +412,7 @@ class FakeCodexDaemon:
             event.set()
 
     @staticmethod
-    def _refresh_account_id(result: JsonObject) -> str:
+    def _refresh_authority(result: JsonObject) -> tuple[str, str]:
         access_token = result.get("accessToken")
         account_id = result.get("chatgptAccountId")
         if (
@@ -395,7 +424,7 @@ class FakeCodexDaemon:
             or _token_account_id(access_token) != account_id
         ):
             raise AssertionError("Fake Codex refresh result is inconsistent.")
-        return account_id
+        return account_id, access_token
 
     def _install(
         self,
@@ -416,9 +445,9 @@ class FakeCodexDaemon:
             or _token_account_id(access_token) != account_id
         ):
             raise AssertionError("Codex fake projection is inconsistent.")
-        del access_token
         with self._lock:
             self._active_account_id = account_id
+            self._active_access_token = access_token
             self._installed_account_ids.append(account_id)
         _send(
             connection,
@@ -481,6 +510,39 @@ class FakeCodexDaemon:
                 "id": _request_id(request),
                 "result": {
                     "account": account,
+                    "requiresOpenaiAuth": True,
+                },
+            },
+        )
+
+    def _get_auth_status(
+        self,
+        connection: ServerConnection,
+        request: JsonObject,
+    ) -> None:
+        if request.get("params") != {
+            "includeToken": True,
+            "refreshToken": False,
+        }:
+            raise AssertionError("Codex fake auth-status request is invalid.")
+        with self._lock:
+            access_token = self._active_access_token
+        if access_token is None:
+            auth_path = self._codex_home / "auth.json"
+            access_token = (
+                None
+                if not auth_path.is_file()
+                else _auth_access_token(auth_path.read_bytes())
+            )
+        _send(
+            connection,
+            {
+                "id": _request_id(request),
+                "result": {
+                    "authMethod": (
+                        None if access_token is None else "chatgpt"
+                    ),
+                    "authToken": access_token,
                     "requiresOpenaiAuth": True,
                 },
             },
@@ -587,6 +649,20 @@ def _request_id(request: JsonObject) -> int:
     ):
         raise AssertionError("Codex fake request ID is invalid.")
     return request_id
+
+
+def _auth_access_token(payload: bytes) -> str:
+    try:
+        auth = decode_json_object(payload)
+    except InvalidPayloadError:
+        raise AssertionError("Fake Codex auth payload is malformed.") from None
+    tokens = auth.get("tokens")
+    access_token = (
+        None if not isinstance(tokens, dict) else tokens.get("access_token")
+    )
+    if not isinstance(access_token, str):
+        raise AssertionError("Fake Codex access token is unavailable.")
+    return access_token
 
 
 def _token_account_id(token: str) -> str | None:

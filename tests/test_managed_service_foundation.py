@@ -301,7 +301,12 @@ def test_selection_and_queue_preserve_stable_independent_state(
     assert claude_selected is not None
     assert claude_selected.account_id == target.account_id
     assert (
-        state.queue.get(target.account_id, OperationKind.MAINTAIN) is not None
+        state.queue.get(
+            target.provider_id,
+            target.account_id,
+            OperationKind.MAINTAIN,
+        )
+        is not None
     )
 
 
@@ -726,7 +731,7 @@ def test_supervisor_isolates_timeout_and_recovers_without_duplicate_work(
     """A timed-out account cannot block completion or restart recovery."""
     state = _foundation_state(tmp_path)
     first, second, third = state.operations
-    assert state.queue.remove_account(third.account_id) == 1
+    assert state.queue.remove_account(third.required_account_id) == 1
     results = WorkerResultStore(state.paths.durable_operations)
     clock = _RuntimeClock()
     wakeup = WakeupChannel()

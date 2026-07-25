@@ -33,7 +33,7 @@ class UnsupportedWorkerExecutor:
         authority: OperationAuthority,
     ) -> WorkerResult:
         """Return a typed unsupported result without opening credentials."""
-        authority.require(operation.account_id)
+        authority.require(operation.required_account_id)
         return WorkerResult(
             operation_id=operation.operation_id,
             outcome=WorkerOutcome.UNSUPPORTED,

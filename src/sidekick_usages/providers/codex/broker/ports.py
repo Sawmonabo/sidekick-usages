@@ -8,7 +8,12 @@ from sidekick_usages.core.accounts.types import (
     ProviderIdentity,
     SidekickAccountId,
 )
-from sidekick_usages.core.selection.models import SelectedAccountState
+from sidekick_usages.core.selection.models import (
+    DueOperation,
+    ProviderAuthObservation,
+    SelectedAccountState,
+)
+from sidekick_usages.core.selection.types import OperationPriority
 
 
 class CodexProjection(Protocol):
@@ -55,8 +60,24 @@ class CodexWorkerExchange(Protocol):
         """Wait for successful durable callback completion."""
 
 
-class CodexCallbackDispatcher(Protocol):
-    """Dispatch one correlated Codex operation through the reserved lane."""
+class CodexOperationDispatcher(Protocol):
+    """Dispatch correlated callback and native-reconciliation work."""
+
+    def native_observation(self) -> ProviderAuthObservation | None:
+        """Return the last durable effective native observation."""
+
+    def record_native(
+        self,
+        observation: ProviderAuthObservation,
+    ) -> None:
+        """Persist the newest effective native observation."""
+
+    def reconcile_native(
+        self,
+        observation: ProviderAuthObservation,
+        priority: OperationPriority,
+    ) -> DueOperation:
+        """Persist an observation and make reconciliation due."""
 
     def dispatch(
         self,
@@ -93,6 +114,12 @@ class CodexRuntimeStateReader(Protocol):
 
     def current(self) -> SelectedAccountState | None:
         """Return the selected saved authority when callback-safe."""
+
+    def native_reconciliation_pending(self) -> bool:
+        """Return whether native-auth truth blocks selected rehydration."""
+
+    def native_auth_baseline(self) -> ProviderAuthObservation | None:
+        """Return the active transition's exact native baseline."""
 
     def rollback_account_id(
         self,

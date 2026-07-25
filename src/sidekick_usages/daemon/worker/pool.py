@@ -56,6 +56,7 @@ _CODEX_TRANSITION_KINDS = frozenset(
     {
         OperationKind.ACTIVATE,
         OperationKind.RECONCILE,
+        OperationKind.RECONCILE_NATIVE,
     }
 )
 
@@ -272,12 +273,15 @@ class WorkerPool:
             and operation.kind in _CODEX_TRANSITION_KINDS
             and any(
                 current.priority is OperationPriority.CODEX_CALLBACK
+                or current.kind in _CODEX_TRANSITION_KINDS
                 for current in owned
             )
         ):
             return False
         if any(
-            current.account_id == operation.account_id for current in owned
+            operation.account_id is not None
+            and current.account_id == operation.account_id
+            for current in owned
         ):
             return False
         if callback:

@@ -446,6 +446,26 @@ def write_fake_codex(tmp_path: Path, schema_root: Path) -> Path:
                         json.dumps({{"id": request_id, "result": result}}),
                         flush=True,
                     )
+                elif request["method"] == "getAuthStatus":
+                    home = Path(os.environ["CODEX_HOME"])
+                    auth_path = home / "auth.json"
+                    token = None
+                    if auth_path.exists():
+                        auth = json.loads(
+                            auth_path.read_text(encoding="utf-8")
+                        )
+                        token = auth["tokens"]["access_token"]
+                    result = {{
+                        "authMethod": (
+                            None if token is None else "chatgpt"
+                        ),
+                        "authToken": token,
+                        "requiresOpenaiAuth": True,
+                    }}
+                    print(
+                        json.dumps({{"id": request_id, "result": result}}),
+                        flush=True,
+                    )
             signal.signal(signal.SIGTERM, signal.SIG_IGN)
             while mode == "stubborn":
                 time.sleep(1)

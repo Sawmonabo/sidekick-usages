@@ -2,6 +2,7 @@
 
 import time
 from collections.abc import Callable
+from datetime import datetime
 from threading import Event, Lock, Thread
 
 from sidekick_usages.core.accounts.identifiers import new_operation_id
@@ -17,6 +18,7 @@ from sidekick_usages.providers.codex.app_server.errors import (
     CodexAppServerError,
 )
 from sidekick_usages.providers.codex.app_server.jsonrpc.models import (
+    JsonRpcNotification,
     JsonRpcServerRequest,
 )
 from sidekick_usages.providers.codex.app_server.types import (
@@ -27,6 +29,10 @@ from sidekick_usages.providers.codex.broker.external_auth.activation import (
     decode_codex_activation_reply,
     encode_codex_activation_acknowledgement,
     encode_codex_activation_instruction,
+)
+from sidekick_usages.providers.codex.broker.external_auth.installation import (
+    ACCOUNT_UPDATED_METHOD,
+    EXTERNAL_AUTH_TYPE,
 )
 from sidekick_usages.providers.codex.broker.external_auth.refresh import (
     CODEX_REFRESH_METHOD,
@@ -46,8 +52,11 @@ from sidekick_usages.providers.codex.broker.models import (
     CodexProjectionReplyLease,
     CodexRefreshRequest,
 )
+from sidekick_usages.providers.codex.broker.native_auth import (
+    CodexNativeAuthReconciler,
+)
 from sidekick_usages.providers.codex.broker.ports import (
-    CodexCallbackDispatcher,
+    CodexOperationDispatcher,
     CodexRuntimeStateReader,
     CodexWorkerExchange,
     CodexWorkerExchangeFactory,
@@ -82,15 +91,16 @@ class CodexRuntimeBroker:
             CodexSharedRuntime,
         ],
         runtime_state: CodexRuntimeStateReader,
-        callbacks: CodexCallbackDispatcher,
+        operations: CodexOperationDispatcher,
         exchanges: CodexWorkerExchangeFactory,
         *,
+        wall_time: Callable[[], datetime],
         monotonic: Callable[[], float] = time.monotonic,
         status_changed: Callable[[], None] | None = None,
     ) -> None:
         self._runtime_factory = runtime_factory
         self._runtime_state = runtime_state
-        self._callbacks = callbacks
+        self._operations = operations
         self._exchanges = exchanges
         self._monotonic = monotonic
         self._status_changed = status_changed
@@ -102,6 +112,12 @@ class CodexRuntimeBroker:
         self._active_operation: OperationId | None = None
         self._activation_instruction: CodexActivationInstruction | None = None
         self._activation_exchange: CodexWorkerExchange | None = None
+        self._native_auth = CodexNativeAuthReconciler(
+            runtime_state,
+            operations,
+            wall_time,
+            monotonic,
+        )
 
     @property
     def ready(self) -> bool:
@@ -115,6 +131,7 @@ class CodexRuntimeBroker:
             or operation.kind
             not in {OperationKind.ACTIVATE, OperationKind.RECONCILE}
             or operation.priority is not OperationPriority.INTERACTIVE
+            or self._runtime_state.native_reconciliation_pending()
         ):
             return False
         with self._lock:
@@ -139,7 +156,7 @@ class CodexRuntimeBroker:
                 None
                 if mode is CodexActivationMode.ACTIVATE
                 else self._runtime_state.rollback_account_id(
-                    operation.account_id
+                    operation.required_account_id
                 )
             )
         except RuntimeError:
@@ -153,7 +170,7 @@ class CodexRuntimeBroker:
         instruction = CodexActivationInstruction(
             operation.operation_id,
             mode,
-            operation.account_id,
+            operation.required_account_id,
             rollback_account_id,
             CodexExchangeDeadlines(
                 int(response_deadline * _NANOSECONDS_PER_SECOND),
@@ -196,7 +213,7 @@ class CodexRuntimeBroker:
         self._set_qualified(False)
         self._set_ready(False)
         if operation_id is not None:
-            self._callbacks.cancel(operation_id)
+            self._operations.cancel(operation_id)
         if activation is not None:
             self._exchanges.cancel(activation.operation_id)
 
@@ -236,6 +253,7 @@ class CodexRuntimeBroker:
                     self._set_qualified(False)
                     self._set_ready(False)
                     runtime = _drop_runtime(runtime)
+                    self._native_auth.reset()
                     self._stop.wait(reconnect_seconds)
                     reconnect_seconds = min(
                         reconnect_seconds * 2,
@@ -244,6 +262,7 @@ class CodexRuntimeBroker:
         finally:
             self._set_qualified(False)
             self._set_ready(False)
+            self._native_auth.reset()
             _drop_runtime(runtime)
 
     def _serve_once(
@@ -277,16 +296,24 @@ class CodexRuntimeBroker:
                         instruction,
                         exchange,
                     )
-                if exchange.launched:
-                    self._set_ready(False)
-                    self._stop.wait(_BROKER_RECEIVE_SECONDS)
-                    return runtime
+                self._set_ready(False)
+                self._stop.wait(_BROKER_RECEIVE_SECONDS)
+                return runtime
+        if self._native_auth.observe_when_due(
+            runtime,
+            projection_active=self._expectation() is not None,
+        ):
+            self._set_ready(False)
         return self._serve_current(runtime)
 
     def _serve_current(
         self,
         runtime: CodexSharedRuntime,
     ) -> CodexSharedRuntime:
+        if self._runtime_state.native_reconciliation_pending():
+            self._set_ready(False)
+            self._stop.wait(_BROKER_RECEIVE_SECONDS)
+            return runtime
         expectation = self._expectation()
         if expectation is None:
             self._set_ready(True)
@@ -434,6 +461,9 @@ class CodexRuntimeBroker:
         receipt: CodexProjectionReceipt,
     ) -> None:
         message = runtime.receive(timeout_seconds=_BROKER_RECEIVE_SECONDS)
+        if isinstance(message, JsonRpcNotification):
+            self._handle_notification(runtime, message)
+            return
         if not isinstance(message, JsonRpcServerRequest):
             return
         if message.method != CODEX_REFRESH_METHOD:
@@ -464,6 +494,28 @@ class CodexRuntimeBroker:
             official_deadline,
             completion_deadline,
         )
+
+    def _handle_notification(
+        self,
+        runtime: CodexSharedRuntime,
+        notification: JsonRpcNotification,
+    ) -> None:
+        if notification.method != ACCOUNT_UPDATED_METHOD:
+            return
+        params = notification.params
+        if set(params) != {"authMode", "planType"}:
+            raise CodexAppServerError(CodexAppServerFailure.PROTOCOL_MALFORMED)
+        auth_mode = params.get("authMode")
+        plan = params.get("planType")
+        if (auth_mode is not None and not isinstance(auth_mode, str)) or (
+            plan is not None and not isinstance(plan, str)
+        ):
+            raise CodexAppServerError(CodexAppServerFailure.PROTOCOL_MALFORMED)
+        if auth_mode == EXTERNAL_AUTH_TYPE:
+            return
+        runtime.invalidate_projection()
+        self._set_ready(False)
+        self._native_auth.observe_change(runtime)
 
     def _rehydrate(
         self,
@@ -614,7 +666,7 @@ class CodexRuntimeBroker:
                 raise RuntimeError("Codex callback is already active.")
             self._active_operation = operation_id
             try:
-                exchange = self._callbacks.dispatch(
+                exchange = self._operations.dispatch(
                     operation_id,
                     expectation.account_id,
                     encoded,
@@ -644,7 +696,7 @@ class CodexRuntimeBroker:
     ) -> None:
         try:
             if not completed:
-                self._callbacks.cancel(operation_id)
+                self._operations.cancel(operation_id)
         finally:
             self._clear_active(operation_id)
 

@@ -32,6 +32,10 @@ from sidekick_usages.credentials.codex.models import (
     CodexManagedAuthorityResult,
     require_managed_codex_authority,
 )
+from sidekick_usages.credentials.codex.reconciliation import (
+    CodexNativeReconciliationError,
+    CodexNativeReconciliationService,
+)
 from sidekick_usages.credentials.codex.types import (
     CodexActivationFailure,
     CodexManagedOutcome,
@@ -47,6 +51,9 @@ from sidekick_usages.persistence.state.files import ManagedStateConflictError
 from sidekick_usages.persistence.supervisor.authority import (
     OperationAuthority,
     ProviderMutationAuthority,
+)
+from sidekick_usages.persistence.supervisor.observation import (
+    RuntimeAuthObservationStore,
 )
 from sidekick_usages.persistence.supervisor.selection import SelectedStateStore
 from sidekick_usages.providers.codex.broker.errors import CodexBrokerError
@@ -114,14 +121,14 @@ class CodexActivationWorkerExecutor:
             if instruction.mode is CodexActivationMode.ACTIVATE:
                 self._service.activate(
                     operation.operation_id,
-                    operation.account_id,
+                    operation.required_account_id,
                     authority,
                     installer,
                 )
             else:
                 self._service.recover(
                     operation.operation_id,
-                    operation.account_id,
+                    operation.required_account_id,
                     authority,
                     installer,
                 )
@@ -170,7 +177,7 @@ class CodexActivationWorkerExecutor:
         )
         if (
             instruction.operation_id != operation.operation_id
-            or instruction.account_id != operation.account_id
+            or instruction.account_id != operation.required_account_id
             or instruction.mode is not expected_mode
             or not _deadlines_current(
                 instruction.deadlines,
@@ -250,6 +257,99 @@ class _CodexActivationInstaller:
             clear_mutable_buffer(acknowledgement)
 
 
+class CodexNativeReconciliationWorkerExecutor:
+    """Relate one effective Codex runtime observation without credentials."""
+
+    def __init__(
+        self,
+        service: CodexNativeReconciliationService,
+        observations: RuntimeAuthObservationStore,
+        clock: Clock,
+    ) -> None:
+        self._service = service
+        self._observations = observations
+        self._clock = clock
+
+    def execute(
+        self,
+        operation: DueOperation,
+        authority: ProviderMutationAuthority,
+    ) -> WorkerResult:
+        """Reconcile one exact provider-scoped observation."""
+        authority.require(operation.provider_id)
+        if (
+            operation.provider_id is not ProviderId.CODEX
+            or operation.kind is not OperationKind.RECONCILE_NATIVE
+            or operation.account_id is not None
+        ):
+            raise ValueError(
+                "Worker operation is not native Codex reconciliation."
+            )
+        observation = self._observations.load(ProviderId.CODEX)
+        if observation is None:
+            return _worker_failure(
+                operation,
+                WorkerOutcome.TRANSIENT_FAILURE,
+                "native_observation_missing",
+                self._clock,
+            )
+        try:
+            selected = self._service.reconcile(observation, authority)
+        except CodexNativeReconciliationError as error:
+            return _worker_failure(
+                operation,
+                (
+                    WorkerOutcome.ACTION_REQUIRED
+                    if error.action_required
+                    else WorkerOutcome.TRANSIENT_FAILURE
+                ),
+                error.code,
+                self._clock,
+            )
+        except ManagedStateConflictError:
+            return _worker_failure(
+                operation,
+                WorkerOutcome.TRANSIENT_FAILURE,
+                "native_state_changed",
+                self._clock,
+            )
+        if self._observations.load(ProviderId.CODEX) != observation:
+            return _worker_failure(
+                operation,
+                WorkerOutcome.TRANSIENT_FAILURE,
+                "native_observation_changed",
+                self._clock,
+            )
+        return self._selected_result(operation, selected)
+
+    def _selected_result(
+        self,
+        operation: DueOperation,
+        selected: SelectedAccountState | None,
+    ) -> WorkerResult:
+        if (
+            selected is not None
+            and selected.runtime_state is ProviderRuntimeState.UNREADABLE
+        ):
+            return _worker_failure(
+                operation,
+                WorkerOutcome.ACTION_REQUIRED,
+                "native_auth_unreadable",
+                self._clock,
+            )
+        if (
+            selected is not None
+            and selected.runtime_state is ProviderRuntimeState.UNSUPPORTED
+        ):
+            return _worker_failure(
+                operation,
+                WorkerOutcome.ACTION_REQUIRED,
+                "native_auth_unsupported",
+                self._clock,
+            )
+        return _worker_success(operation, self._clock)
+
+
 class CodexCallbackWorkerExecutor:
     """Refresh or rehydrate one selected managed Codex authority."""
 
@@ -274,7 +374,8 @@ class CodexCallbackWorkerExecutor:
     ) -> WorkerResult:
         """Execute one exact callback without persisting credential data."""
         authority.require(operation.provider_id)
-        account_authority = authority.account(operation.account_id)
+        account_id = operation.required_account_id
+        account_authority = authority.account(account_id)
         if (
             operation.provider_id is not ProviderId.CODEX
             or operation.kind is not OperationKind.CODEX_CALLBACK
@@ -311,7 +412,7 @@ class CodexCallbackWorkerExecutor:
             clear_mutable_buffer(payload)
         if (
             instruction.operation_id != operation.operation_id
-            or instruction.account_id != operation.account_id
+            or instruction.account_id != operation.required_account_id
             or not _deadlines_current(
                 instruction.deadlines,
                 self._monotonic,
@@ -329,7 +430,7 @@ class CodexCallbackWorkerExecutor:
     ) -> WorkerResult:
         expected = _expectation(instruction)
         staged = self._coordinator.stage_refresh_with_authority(
-            operation.account_id,
+            operation.required_account_id,
             authority,
             expected,
         )
@@ -384,7 +485,7 @@ class CodexCallbackWorkerExecutor:
         authority: OperationAuthority,
     ) -> WorkerResult:
         staged = self._coordinator.stage_rehydration_with_authority(
-            operation.account_id,
+            operation.required_account_id,
             authority,
             _expectation(instruction),
         )

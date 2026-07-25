@@ -106,6 +106,8 @@ _GENERATION = "2026-07-24T10:00:00.000000000Z"
 _NEXT_GENERATION = "2026-07-24T10:01:00.000000000Z"
 _RECOVERY_GENERATION = "2026-07-24T10:02:00.000000000Z"
 _UNSELECTED_NEXT_GENERATION = "2026-07-24T10:03:00.000000000Z"
+_UNKNOWN_GENERATION = "2026-07-24T10:04:00.000000000Z"
+_UNKNOWN_PROVIDER_IDENTITY = "workspace-account-external"
 _NATIVE_AUTH_SENTINEL = managed_auth(
     _ACCOUNT_A_PROVIDER_IDENTITY,
     _GENERATION,
@@ -268,6 +270,26 @@ def _wait_for_selected_generation(
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise AssertionError("Selected Codex generation did not advance.")
+        time.sleep(min(_WAIT_INTERVAL_SECONDS, remaining))
+
+
+def _wait_for_external_selection(
+    paths: ApplicationPaths,
+    provider_identity: str,
+) -> SelectedAccountState:
+    deadline = time.monotonic() + _WAIT_TIMEOUT_SECONDS
+    selected = SelectedStateStore(paths.selected_state)
+    while True:
+        state = selected.load(ProviderId.CODEX)
+        if (
+            state is not None
+            and state.runtime_state is ProviderRuntimeState.EXTERNAL_ACTIVE
+            and state.provider_identity == ProviderIdentity(provider_identity)
+        ):
+            return state
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise AssertionError("External Codex selection was not related.")
         time.sleep(min(_WAIT_INTERVAL_SECONDS, remaining))
 
 
@@ -792,7 +814,7 @@ def test_codex_activation_recovers_at_official_mutation_boundary(
                 _PROVIDER_IDENTITY
             )
 
-        daemon.perform_external_login(
+        daemon.perform_external_runtime_login(
             _PROVIDER_IDENTITY,
             _NEXT_GENERATION,
         )
@@ -804,27 +826,51 @@ def test_codex_activation_recovers_at_official_mutation_boundary(
             _real_worker_executable(),
         ) as external_recovery:
             external_recovery.wait_until_ready()
-
-        assert (
-            daemon.installed_account_ids.count(_ACCOUNT_A_PROVIDER_IDENTITY)
-            == account_a_installs
-        )
-        assert (
-            daemon.installed_account_ids.count(_PROVIDER_IDENTITY)
-            > account_b_installs
-        )
-        _require_selected(
-            selected,
-            _MANAGED_ACCOUNT_ID,
-            _PROVIDER_IDENTITY,
-            _NEXT_GENERATION,
-        )
-        reconciled = journals.load(ProviderId.CODEX)
-        assert reconciled.active is None
-        assert tuple(record.outcome for record in reconciled.history) == (
-            ActivationOutcome.VERIFIED,
-            ActivationOutcome.EXTERNAL_RECONCILED,
-        )
+            assert (
+                daemon.installed_account_ids.count(
+                    _ACCOUNT_A_PROVIDER_IDENTITY
+                )
+                == account_a_installs
+            )
+            assert (
+                daemon.installed_account_ids.count(_PROVIDER_IDENTITY)
+                > account_b_installs
+            )
+            _require_selected(
+                selected,
+                _MANAGED_ACCOUNT_ID,
+                _PROVIDER_IDENTITY,
+                _NEXT_GENERATION,
+            )
+            reconciled = journals.load(ProviderId.CODEX)
+            assert reconciled.active is None
+            assert tuple(record.outcome for record in reconciled.history) == (
+                ActivationOutcome.VERIFIED,
+                ActivationOutcome.EXTERNAL_RECONCILED,
+            )
+            saved_ids = tuple(
+                account.account_id
+                for account in _account_store(fixture.paths).saved_accounts()
+            )
+            daemon.perform_external_runtime_login(
+                _UNKNOWN_PROVIDER_IDENTITY,
+                _UNKNOWN_GENERATION,
+            )
+            external = _wait_for_external_selection(
+                fixture.paths,
+                _UNKNOWN_PROVIDER_IDENTITY,
+            )
+            assert external.account_id is None
+            assert (
+                tuple(
+                    account.account_id
+                    for account in _account_store(
+                        fixture.paths
+                    ).saved_accounts()
+                )
+                == saved_ids
+            )
+            external_recovery.wait_until_ready()
 
 
 def test_callback_preempts_stubborn_same_home_maintenance(

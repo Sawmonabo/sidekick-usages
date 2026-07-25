@@ -1,9 +1,13 @@
 """Lightweight validation of identity-bearing Codex token claims."""
 
 import binascii
+import hashlib
 from base64 import b64decode
 
-from sidekick_usages.core.accounts.types import ProviderIdentity
+from sidekick_usages.core.accounts.types import (
+    AuthorityGeneration,
+    ProviderIdentity,
+)
 from sidekick_usages.core.accounts.validation import require_bounded_text
 from sidekick_usages.errors import InvalidPayloadError
 from sidekick_usages.providers.codex.models import CodexTokenClaims
@@ -15,6 +19,7 @@ MAX_CODEX_TOKEN_METADATA_BYTES = 4_096
 MAX_CODEX_TOKEN_PLAN_BYTES = 256
 
 _AUTH_CLAIM = "https://api.openai.com/auth"
+_ACCESS_TOKEN_GENERATION_PREFIX = "access-token-sha256:"
 
 
 def validated_codex_token(value: str) -> str:
@@ -23,6 +28,15 @@ def validated_codex_token(value: str) -> str:
         value,
         name="Codex access token",
         maximum=MAX_CODEX_TOKEN_BYTES,
+    )
+
+
+def codex_access_token_generation(token: str) -> AuthorityGeneration:
+    """Return a one-way stable generation for an effective access token."""
+    validated = validated_codex_token(token)
+    return AuthorityGeneration(
+        _ACCESS_TOKEN_GENERATION_PREFIX
+        + hashlib.sha256(validated.encode("utf-8")).hexdigest()
     )
 
 

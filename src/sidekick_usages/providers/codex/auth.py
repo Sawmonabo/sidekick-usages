@@ -35,6 +35,9 @@ from sidekick_usages.providers.codex.schemas import (
     auth_blob_account_id,
     parse_auth_credentials,
 )
+from sidekick_usages.providers.codex.token import (
+    codex_access_token_generation,
+)
 from sidekick_usages.serialization.json import JsonObject, decode_json_object
 
 CODEX_AUTH_FILE = "auth.json"
@@ -206,11 +209,20 @@ def observe_native_auth(
     snapshot = managed_auth_snapshot(detected)
     if isinstance(snapshot, ProviderFailure):
         return _native_auth_failure(snapshot, observed_at)
+    credentials = detected.credentials
+    if not isinstance(credentials, CodexCredentials):
+        return _native_auth_failure(
+            _failure(
+                ProviderFailureKind.MALFORMED,
+                "The native Codex credentials are malformed.",
+            ),
+            observed_at,
+        )
     return ProviderAuthObservation(
         provider_id=ProviderId.CODEX,
         state=ProviderAuthState.ACTIVE,
         provider_identity=snapshot.provider_identity,
-        generation=snapshot.generation,
+        generation=codex_access_token_generation(credentials.access_token),
         observed_at=observed_at,
     )
 

@@ -14,7 +14,9 @@ from sidekick_usages.daemon.control.dispatch import (
     SupervisorDispatcher,
 )
 from sidekick_usages.daemon.control.server import LocalControlServer
-from sidekick_usages.daemon.runtime.callbacks import DurableCallbackDispatcher
+from sidekick_usages.daemon.runtime.codex import (
+    DurableCodexOperationDispatcher,
+)
 from sidekick_usages.daemon.runtime.recovery import ActivationRecoveryScheduler
 from sidekick_usages.daemon.runtime.scheduler import DurableScheduler
 from sidekick_usages.daemon.runtime.supervisor import (
@@ -31,6 +33,9 @@ from sidekick_usages.daemon.worker.pool import (
 from sidekick_usages.paths import ApplicationPaths
 from sidekick_usages.persistence.supervisor.activation import (
     ActivationJournalStore,
+)
+from sidekick_usages.persistence.supervisor.observation import (
+    RuntimeAuthObservationStore,
 )
 from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
 from sidekick_usages.persistence.supervisor.results import WorkerResultStore
@@ -90,16 +95,19 @@ class FakeCodexSupervisor:
                 ProviderId.CODEX,
                 selected,
                 journals,
-                paths.durable_operations,
-            ),
-            DurableCallbackDispatcher(
                 queue,
+                clock,
+            ),
+            DurableCodexOperationDispatcher(
+                queue,
+                RuntimeAuthObservationStore(paths.durable_operations),
                 exchanges,
                 clock.now,
                 time.monotonic,
                 self._wakeup.notify,
             ),
             exchanges,
+            wall_time=clock.now,
             status_changed=self._wakeup.notify,
         )
         scheduler = DurableScheduler(

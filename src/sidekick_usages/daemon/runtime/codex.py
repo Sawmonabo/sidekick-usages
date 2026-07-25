@@ -1,14 +1,18 @@
-"""Provider-neutral dispatch for one-shot isolated callbacks."""
+"""Durable Codex callback and runtime-observation dispatch."""
 
 from collections.abc import Callable
 from contextlib import suppress
 from datetime import datetime
 
+from sidekick_usages.core.accounts.identifiers import new_operation_id
 from sidekick_usages.core.accounts.types import (
     OperationId,
     SidekickAccountId,
 )
-from sidekick_usages.core.selection.models import DueOperation
+from sidekick_usages.core.selection.models import (
+    DueOperation,
+    ProviderAuthObservation,
+)
 from sidekick_usages.core.selection.types import (
     OperationKind,
     OperationPriority,
@@ -20,6 +24,9 @@ from sidekick_usages.daemon.worker.exchange import (
     WorkerExchangeRegistry,
 )
 from sidekick_usages.persistence.state.files import ManagedStateConflictError
+from sidekick_usages.persistence.supervisor.observation import (
+    RuntimeAuthObservationStore,
+)
 from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
 
 
@@ -27,22 +34,62 @@ class CallbackDispatchError(RuntimeError):
     """A one-shot callback could not be correlated safely."""
 
 
-class DurableCallbackDispatcher:
-    """Persist, wake, and cancel callback work without provider knowledge."""
+class DurableCodexOperationDispatcher:
+    """Persist and wake Codex callback and reconciliation work."""
 
     def __init__(
         self,
         queue: OperationQueueStore,
+        observations: RuntimeAuthObservationStore,
         exchanges: WorkerExchangeRegistry,
         wall_time: Callable[[], datetime],
         monotonic: Callable[[], float],
         wakeup: Callable[[], None],
     ) -> None:
         self._queue = queue
+        self._observations = observations
         self._exchanges = exchanges
         self._wall_time = wall_time
         self._monotonic = monotonic
         self._wakeup = wakeup
+
+    def native_observation(self) -> ProviderAuthObservation | None:
+        """Return the last durable effective native observation."""
+        return self._observations.load(ProviderId.CODEX)
+
+    def record_native(
+        self,
+        observation: ProviderAuthObservation,
+    ) -> None:
+        """Persist the newest effective native observation."""
+        if observation.provider_id is not ProviderId.CODEX:
+            raise ValueError("Runtime observation is not Codex.")
+        self._observations.save(observation)
+
+    def reconcile_native(
+        self,
+        observation: ProviderAuthObservation,
+        priority: OperationPriority,
+    ) -> DueOperation:
+        """Persist one runtime observation and make reconciliation due."""
+        if observation.provider_id is not ProviderId.CODEX:
+            raise ValueError("Runtime observation is not Codex.")
+        self.record_native(observation)
+        now = self._wall_time()
+        effective = self._queue.enqueue(
+            DueOperation(
+                operation_id=new_operation_id(),
+                provider_id=ProviderId.CODEX,
+                account_id=None,
+                kind=OperationKind.RECONCILE_NATIVE,
+                priority=priority,
+                state=OperationState.SCHEDULED,
+                due_at=now,
+                updated_at=now,
+            )
+        )
+        self._wakeup()
+        return effective
 
     def dispatch(
         self,

@@ -194,6 +194,7 @@ class SupervisorRuntime:
     def run_cycle(self) -> None:
         """Collect, dispatch, and publish one event-driven work cycle."""
         self._scheduler.collect()
+        self._recovery.enroll(self._clock.now())
         self._scheduler.dispatch_due()
         reconciled = self._recovery.reconciled()
         broker_ready = self._resident.ready

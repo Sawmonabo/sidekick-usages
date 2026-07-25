@@ -210,11 +210,11 @@ class ActivationRecord:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class DueOperation:
-    """One durable operation slot keyed by account and operation kind."""
+    """One durable account or provider operation slot."""
 
     operation_id: OperationId
     provider_id: ProviderId
-    account_id: SidekickAccountId
+    account_id: SidekickAccountId | None
     kind: OperationKind
     priority: OperationPriority
     state: OperationState
@@ -225,6 +225,9 @@ class DueOperation:
 
     def __post_init__(self) -> None:
         """Normalize wall time and validate retry state."""
+        provider_scoped = self.kind is OperationKind.RECONCILE_NATIVE
+        if provider_scoped != (self.account_id is None):
+            raise ValueError("Only native reconciliation is provider-scoped.")
         if (
             type(self.attempts) is not int
             or self.attempts < 0
@@ -260,6 +263,13 @@ class DueOperation:
         object.__setattr__(self, "updated_at", updated_at)
         object.__setattr__(self, "failure_code", failure_code)
 
+    @property
+    def required_account_id(self) -> SidekickAccountId:
+        """Return the account scope or reject a provider-wide operation."""
+        if self.account_id is None:
+            raise ValueError("Operation does not have an account scope.")
+        return self.account_id
+
 
 def _validate_activation_outcome(
     phase: ActivationPhase,
@@ -275,6 +285,7 @@ def _validate_activation_outcome(
                 ActivationOutcome.ROLLED_BACK,
                 ActivationOutcome.EXTERNAL_RECONCILED,
                 ActivationOutcome.LOGGED_OUT,
+                ActivationOutcome.UNSUPPORTED,
             }
         )
     elif phase is ActivationPhase.RECONCILIATION_REQUIRED:

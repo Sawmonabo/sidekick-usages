@@ -20,8 +20,14 @@ from sidekick_usages.core.types import ProviderId
 from sidekick_usages.credentials.codex.activation import (
     CodexActivationService,
 )
+from sidekick_usages.credentials.codex.managed.home import (
+    CodexManagedAuthReader,
+)
 from sidekick_usages.credentials.codex.managed.service import (
     CodexManagedAuthorityCoordinator,
+)
+from sidekick_usages.credentials.codex.reconciliation import (
+    CodexNativeReconciliationService,
 )
 from sidekick_usages.daemon.models.worker import (
     WORKER_EXCHANGE_DESCRIPTOR_ENVIRONMENT_KEY,
@@ -29,6 +35,7 @@ from sidekick_usages.daemon.models.worker import (
 from sidekick_usages.daemon.worker.codex import (
     CodexActivationWorkerExecutor,
     CodexCallbackWorkerExecutor,
+    CodexNativeReconciliationWorkerExecutor,
 )
 from sidekick_usages.daemon.worker.exchange import (
     WorkerExchangeChannel,
@@ -39,7 +46,8 @@ from sidekick_usages.daemon.worker.runtime import (
     run_isolated_worker,
     run_provider_worker,
 )
-from sidekick_usages.paths import discover_application_paths
+from sidekick_usages.paths import ApplicationPaths, discover_application_paths
+from sidekick_usages.persistence.accounts.store import AccountStore
 from sidekick_usages.persistence.errors import PersistenceError
 from sidekick_usages.persistence.service import PersistenceService
 from sidekick_usages.persistence.supervisor.activation import (
@@ -48,6 +56,9 @@ from sidekick_usages.persistence.supervisor.activation import (
 from sidekick_usages.persistence.supervisor.authority import (
     OperationAuthorityLock,
     ProviderMutationLock,
+)
+from sidekick_usages.persistence.supervisor.observation import (
+    RuntimeAuthObservationStore,
 )
 from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
 from sidekick_usages.persistence.supervisor.results import WorkerResultStore
@@ -78,6 +89,12 @@ _EXCHANGE_OPERATION_KINDS = frozenset(
         OperationKind.RECONCILE,
     }
 )
+_PROVIDER_OPERATION_KINDS = frozenset(
+    {
+        *_EXCHANGE_OPERATION_KINDS,
+        OperationKind.RECONCILE_NATIVE,
+    }
+)
 
 
 class _CodexNativeAuthObserver:
@@ -100,7 +117,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments = tuple(sys.argv[1:] if argv is None else argv)
     if len(arguments) != 1:
         return _EXIT_INVALID_INVOCATION
-    exchange: WorkerExchangeChannel | None = None
     try:
         operation_id = OperationId(arguments[0])
         paths = discover_application_paths()
@@ -109,70 +125,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         if operation is None:
             return _EXIT_STATE_UNAVAILABLE
         clock = SystemClock()
-        if operation.kind in _EXCHANGE_OPERATION_KINDS:
-            exchange = WorkerExchangeChannel.from_environment()
-            persistence = PersistenceService(
-                paths,
-                maintenance_quiescent=lambda: True,
-            )
-            selected = SelectedStateStore(paths.selected_state)
-            journals = ActivationJournalStore(
-                paths.activation_journals,
-                paths.durable_operations,
-            )
-            coordinator = CodexManagedAuthorityCoordinator(
-                paths,
-                persistence.open_store(),
-                persistence.managed_codex_profiles,
-                probe_codex_capabilities(
-                    discover_codex_executable(
-                        os.environ,
-                        process_group=CodexProcessGroupPolicy.INHERITED,
-                    ),
-                    os.environ,
-                    process_group=CodexProcessGroupPolicy.INHERITED,
-                ),
-                clock,
-                environment=os.environ,
-            )
-            executor = (
-                CodexCallbackWorkerExecutor(
-                    coordinator,
-                    selected,
-                    exchange,
-                    clock,
-                )
-                if operation.kind is OperationKind.CODEX_CALLBACK
-                else CodexActivationWorkerExecutor(
-                    CodexActivationService(
-                        coordinator,
-                        journals,
-                        selected,
-                        _CodexNativeAuthObserver(
-                            default_codex_home(),
-                            clock,
-                        ),
-                        clock,
-                    ),
-                    exchange,
-                    clock,
-                )
-            )
-            completed = run_provider_worker(
+        if operation.kind in _PROVIDER_OPERATION_KINDS:
+            completed = _run_provider_operation(
                 operation_id,
+                operation,
+                paths,
                 queue,
-                WorkerResultStore(paths.durable_operations),
-                ProviderMutationLock(
-                    paths.durable_operations,
-                    operation.provider_id,
-                    _provider_account_ids(
-                        operation,
-                        selected,
-                        journals,
-                    ),
-                    timeout_seconds=_PROVIDER_AUTHORITY_TIMEOUT_SECONDS,
-                ),
-                executor,
                 clock,
             )
         else:
@@ -185,7 +143,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 WorkerResultStore(paths.durable_operations),
                 OperationAuthorityLock(
                     paths.durable_operations,
-                    operation.account_id,
+                    operation.required_account_id,
                 ),
                 executor,
                 clock,
@@ -199,29 +157,175 @@ def main(argv: Sequence[str] | None = None) -> int:
         WorkerExchangeError,
     ):
         return _EXIT_STATE_UNAVAILABLE
+    return _EXIT_OK if completed else _EXIT_STATE_UNAVAILABLE
+
+
+def _run_provider_operation(
+    operation_id: OperationId,
+    operation: DueOperation,
+    paths: ApplicationPaths,
+    queue: OperationQueueStore,
+    clock: Clock,
+) -> bool:
+    exchange = (
+        WorkerExchangeChannel.from_environment()
+        if operation.kind in _EXCHANGE_OPERATION_KINDS
+        else None
+    )
+    if (
+        exchange is None
+        and WORKER_EXCHANGE_DESCRIPTOR_ENVIRONMENT_KEY in os.environ
+    ):
+        return False
+    try:
+        persistence = PersistenceService(
+            paths,
+            maintenance_quiescent=lambda: True,
+        )
+        store = persistence.open_store()
+        selected = SelectedStateStore(paths.selected_state)
+        journals = ActivationJournalStore(
+            paths.activation_journals,
+            paths.durable_operations,
+        )
+        if operation.kind is OperationKind.RECONCILE_NATIVE:
+            executor = CodexNativeReconciliationWorkerExecutor(
+                CodexNativeReconciliationService(
+                    store,
+                    CodexManagedAuthReader(
+                        paths,
+                        persistence.managed_codex_profiles,
+                    ),
+                    journals,
+                    selected,
+                    clock,
+                ),
+                RuntimeAuthObservationStore(paths.durable_operations),
+                clock,
+            )
+        else:
+            executor = _exchange_executor(
+                operation,
+                paths,
+                persistence,
+                store,
+                selected,
+                journals,
+                exchange,
+                clock,
+            )
+        return run_provider_worker(
+            operation_id,
+            queue,
+            WorkerResultStore(paths.durable_operations),
+            ProviderMutationLock(
+                paths.durable_operations,
+                operation.provider_id,
+                _provider_account_ids(
+                    operation,
+                    store,
+                    selected,
+                    journals,
+                ),
+                timeout_seconds=_PROVIDER_AUTHORITY_TIMEOUT_SECONDS,
+            ),
+            executor,
+            clock,
+        )
     finally:
         if exchange is not None:
             exchange.close()
-    return _EXIT_OK if completed else _EXIT_STATE_UNAVAILABLE
+
+
+def _exchange_executor(
+    operation: DueOperation,
+    paths: ApplicationPaths,
+    persistence: PersistenceService,
+    store: AccountStore,
+    selected: SelectedStateStore,
+    journals: ActivationJournalStore,
+    exchange: WorkerExchangeChannel | None,
+    clock: Clock,
+) -> CodexCallbackWorkerExecutor | CodexActivationWorkerExecutor:
+    if exchange is None:
+        raise ValueError("Codex exchange operation has no channel.")
+    coordinator = _codex_coordinator(
+        paths,
+        persistence,
+        store,
+        clock,
+    )
+    if operation.kind is OperationKind.CODEX_CALLBACK:
+        return CodexCallbackWorkerExecutor(
+            coordinator,
+            selected,
+            exchange,
+            clock,
+        )
+    return CodexActivationWorkerExecutor(
+        CodexActivationService(
+            coordinator,
+            journals,
+            selected,
+            _CodexNativeAuthObserver(
+                default_codex_home(),
+                clock,
+            ),
+            clock,
+        ),
+        exchange,
+        clock,
+    )
 
 
 def _provider_account_ids(
     operation: DueOperation,
+    store: AccountStore,
     selected: SelectedStateStore,
     journals: ActivationJournalStore,
 ) -> tuple[SidekickAccountId, ...]:
     """Resolve the exact provider-first account lock set before execution."""
     if operation.kind is OperationKind.CODEX_CALLBACK:
-        return (operation.account_id,)
+        return (operation.required_account_id,)
     if operation.provider_id is not ProviderId.CODEX:
         raise ValueError("Managed exchange operation is not Codex.")
+    if operation.kind is OperationKind.RECONCILE_NATIVE:
+        return tuple(
+            sorted(
+                account.account_id
+                for account in store.saved_accounts()
+                if account.provider_id is ProviderId.CODEX
+            )
+        )
+    account_id = operation.required_account_id
     if operation.kind is OperationKind.RECONCILE:
         active = journals.load(ProviderId.CODEX).active
-        if active is None or active.target_account_id != operation.account_id:
+        if active is None or active.target_account_id != account_id:
             raise ValueError("Codex reconciliation journal is unavailable.")
         baseline = active.selected_baseline
     else:
         baseline = selected.load(ProviderId.CODEX)
-    return tuple(
-        sorted(activation_account_ids(baseline, operation.account_id))
+    return tuple(sorted(activation_account_ids(baseline, account_id)))
+
+
+def _codex_coordinator(
+    paths: ApplicationPaths,
+    persistence: PersistenceService,
+    store: AccountStore,
+    clock: Clock,
+) -> CodexManagedAuthorityCoordinator:
+    return CodexManagedAuthorityCoordinator(
+        paths,
+        store,
+        persistence.managed_codex_profiles,
+        probe_codex_capabilities(
+            discover_codex_executable(
+                os.environ,
+                process_group=CodexProcessGroupPolicy.INHERITED,
+            ),
+            os.environ,
+            process_group=CodexProcessGroupPolicy.INHERITED,
+        ),
+        clock,
+        environment=os.environ,
     )

@@ -13,7 +13,9 @@ from sidekick_usages.persistence.errors import InvalidSchemaError
 from sidekick_usages.persistence.limits import MAX_ACCOUNTS
 
 MAX_ACTIVATION_HISTORY = 32
-MAX_OPERATION_RECORDS = MAX_ACCOUNTS * len(OperationKind)
+MAX_OPERATION_RECORDS = MAX_ACCOUNTS * (len(OperationKind) - 1) + len(
+    ProviderId
+)
 
 
 @dataclass(frozen=True, slots=True)

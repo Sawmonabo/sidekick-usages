@@ -6,6 +6,7 @@ from datetime import datetime
 from sidekick_usages.core.selection.models import (
     ActivationRecord,
     DueOperation,
+    ProviderAuthObservation,
 )
 from sidekick_usages.core.selection.types import (
     ActivationOutcome,
@@ -75,6 +76,19 @@ _OPERATION_TRANSITIONS: dict[
     ),
     OperationState.ACTION_REQUIRED: frozenset({OperationState.SCHEDULED}),
 }
+
+
+def same_provider_auth_authority(
+    first: ProviderAuthObservation,
+    second: ProviderAuthObservation,
+) -> bool:
+    """Return whether two observations prove the same provider authority."""
+    return (
+        first.provider_id is second.provider_id
+        and first.state is second.state
+        and first.provider_identity == second.provider_identity
+        and first.generation == second.generation
+    )
 
 
 def transition_activation(

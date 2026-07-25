@@ -59,6 +59,7 @@ STALE_SOURCE_FILES = frozenset(
         "src/sidekick_usages/daemon/peer.py",
         "src/sidekick_usages/daemon/protocol.py",
         "src/sidekick_usages/daemon/recovery.py",
+        "src/sidekick_usages/daemon/runtime/callbacks.py",
         "src/sidekick_usages/daemon/runtime/entrypoint.py",
         "src/sidekick_usages/daemon/scheduler.py",
         "src/sidekick_usages/daemon/supervisor.py",

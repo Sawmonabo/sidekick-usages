@@ -12,6 +12,7 @@ from sidekick_usages.core.selection.types import (
     OperationState,
 )
 from sidekick_usages.core.types import ProviderId
+from sidekick_usages.persistence.state.files import ManagedStateConflictError
 from sidekick_usages.persistence.supervisor.activation import (
     ActivationJournalStore,
 )
@@ -33,11 +34,40 @@ class ActivationRecoveryScheduler:
         self._operation_id_factory = operation_id_factory
 
     def enroll(self, now: datetime) -> tuple[DueOperation, ...]:
-        """Persist one immediate reconcile slot per unfinished provider."""
+        """Match durable recovery slots exactly to unfinished journals."""
+        active_by_provider = {
+            provider_id: self._journals.load(provider_id).active
+            for provider_id in ProviderId
+        }
+        for operation in self._queue.load():
+            if operation.kind is not OperationKind.RECONCILE:
+                continue
+            active = active_by_provider[operation.provider_id]
+            if (
+                active is not None
+                and active.target_account_id == operation.account_id
+            ):
+                continue
+            if operation.state is OperationState.RUNNING:
+                continue
+            try:
+                self._queue.remove(
+                    operation.operation_id,
+                    expected_state=operation.state,
+                )
+            except ManagedStateConflictError:
+                continue
         enrolled: list[DueOperation] = []
-        for provider_id in ProviderId:
-            active = self._journals.load(provider_id).active
+        for provider_id, active in active_by_provider.items():
             if active is None:
+                continue
+            existing = self._queue.get(
+                provider_id,
+                active.target_account_id,
+                OperationKind.RECONCILE,
+            )
+            if existing is not None:
+                enrolled.append(existing)
                 continue
             operation = DueOperation(
                 operation_id=self._operation_id_factory(),
