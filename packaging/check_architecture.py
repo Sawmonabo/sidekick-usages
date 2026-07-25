@@ -37,6 +37,7 @@ _CODEX_BROKER_WIRE_FILE = "src/sidekick_usages/providers/codex/broker/wire.py"
 _ISOLATED_WORKER_FILES = frozenset(
     {
         "src/sidekick_usages/daemon/worker/account.py",
+        "src/sidekick_usages/daemon/worker/claude/maintenance.py",
         "src/sidekick_usages/daemon/worker/codex.py",
         "src/sidekick_usages/daemon/worker/ports.py",
     }

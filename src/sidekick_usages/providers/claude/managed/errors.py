@@ -34,6 +34,15 @@ _MANAGED_FAILURE_MESSAGES = {
     ClaudeManagedFailure.REFRESH_PROVISIONING_UNPROVEN: (
         "The installed Claude CLI refresh-token login is not proven."
     ),
+    ClaudeManagedFailure.OFFICIAL_LOGIN_TIMED_OUT: (
+        "The official Claude login process timed out."
+    ),
+    ClaudeManagedFailure.OFFICIAL_LOGIN_UNAVAILABLE: (
+        "The official Claude login process is unavailable."
+    ),
+    ClaudeManagedFailure.OFFICIAL_LOGIN_UNVERIFIED: (
+        "The official Claude login did not yield a verified session."
+    ),
 }
 
 

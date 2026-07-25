@@ -18,6 +18,7 @@ from sidekick_usages.core.expiry import (
 from sidekick_usages.core.models import ClaudeLoginCredentials, Credentials
 
 CLAUDE_LOGIN_RENEWAL_WINDOW = timedelta(days=5)
+CLAUDE_REFRESH_MARGIN = timedelta(minutes=30)
 
 
 class ClaudeLoginRenewalState(StrEnum):

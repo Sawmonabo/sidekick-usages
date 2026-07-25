@@ -12,6 +12,13 @@ class ClaudeManagedPlatform(StrEnum):
     MACOS_X64_KEYCHAIN = "macos_x64_keychain"
 
 
+class ClaudeOfficialLoginResult(StrEnum):
+    """Secret-safe outcome from one official Claude login process."""
+
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+
+
 class ClaudeManagedFailure(StrEnum):
     """Safe reasons managed Claude authentication is unavailable."""
 
@@ -24,3 +31,6 @@ class ClaudeManagedFailure(StrEnum):
     STATUS_UNSUPPORTED = "status_unsupported"
     LOGIN_UNSUPPORTED = "login_unsupported"
     REFRESH_PROVISIONING_UNPROVEN = "refresh_provisioning_unproven"
+    OFFICIAL_LOGIN_TIMED_OUT = "official_login_timed_out"
+    OFFICIAL_LOGIN_UNAVAILABLE = "official_login_unavailable"
+    OFFICIAL_LOGIN_UNVERIFIED = "official_login_unverified"

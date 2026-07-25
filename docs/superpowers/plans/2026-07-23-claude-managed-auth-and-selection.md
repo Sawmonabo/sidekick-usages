@@ -261,50 +261,50 @@ uv run pytest \
 
 ### Tests first
 
-- [ ] Extend `tests/test_claude_refresh.py` with one two-account maintenance
+- [x] Extend `tests/test_claude_refresh.py` with one two-account maintenance
   scenario using official login in each final private profile. Assert minimal
   child environment, no token in argv, same-identity read-back, independent
   authorities, no native activation, and continuation after one failure.
-- [ ] Add one fail-closed official-login scenario for wrong identity or
+- [x] Add one fail-closed official-login scenario for wrong identity or
   unverified generation, proving redacted output and unchanged prior
   authority. Existing subprocess tests continue covering generic timeout and
   child-exit mechanics.
-- [ ] Do not duplicate the same workflow across Linux, WSL, arm64, and x64
+- [x] Do not duplicate the same workflow across Linux, WSL, arm64, and x64
   when the storage boundary tests already prove their distinct behavior.
 
 ### Implementation
 
-- [ ] Introduce an official-login adapter that runs the exact Claude
+- [x] Introduce an official-login adapter that runs the exact Claude
   executable with the target `CLAUDE_CONFIG_DIR`.
-- [ ] For an existing subscription authority, open its protected refresh
+- [x] For an existing subscription authority, open its protected refresh
   credential only inside the worker and launch official login with a minimal
   environment containing:
   - `CLAUDE_CONFIG_DIR`;
   - `CLAUDE_CODE_OAUTH_REFRESH_TOKEN`; and
   - `CLAUDE_CODE_OAUTH_SCOPES`, encoded as the validated scopes joined by one
     ASCII space.
-- [ ] Do not inherit `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`,
+- [x] Do not inherit `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`,
   `CLAUDE_CODE_OAUTH_TOKEN`, provider gateways, or cloud credentials into the
   child.
-- [ ] Read target status after official login and require expected identity,
+- [x] Read target status after official login and require expected identity,
   valid protected storage, supported scopes, and an acceptable new
   generation.
-- [ ] On macOS, require the expected Keychain item and reject a plaintext
+- [x] On macOS, require the expected Keychain item and reject a plaintext
   fallback.
-- [ ] Persist only sanitized managed-authority metadata.
-- [ ] Serialize maintenance with activation and broker work through the
+- [x] Persist only sanitized managed-authority metadata.
+- [x] Serialize maintenance with activation and broker work through the
   qualified authority lock.
-- [ ] Classify setup-token authority as fixed-lifetime/not-refreshable. Its
-  maintenance path performs health, usage, and lifetime checks only.
-- [ ] Remove macOS refresh exclusion once the official profile-specific CLI
-  path is proven by tests.
+- [x] Classify setup-token authority as fixed-lifetime/not-refreshable.
+- [ ] Complete setup-token health, usage, and lifetime collection in Task 8.
+- [ ] Remove the legacy macOS CLI-refresh exclusion with the duplicate
+  refresh path in Task 8. The managed profile-specific path has no exclusion.
 
 ### Verify and commit
 
-- [ ] Run the two official-maintenance scenarios plus existing queue and
+- [x] Run the two official-maintenance scenarios plus existing queue and
   credential-authority regressions they touch.
-- [ ] Run Ruff and `ty`.
-- [ ] Inspect child environments through synthetic fakes and confirm no
+- [x] Run Ruff and `ty`.
+- [x] Inspect child environments through synthetic fakes and confirm no
   parent credential variable leaks, then commit.
 
 ## 6. Task 4 — Setup-Token and Legacy Subscription Migration

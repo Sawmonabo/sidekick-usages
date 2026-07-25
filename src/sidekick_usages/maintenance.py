@@ -26,6 +26,7 @@ from sidekick_usages.core.types import (
     RefreshStatus,
 )
 from sidekick_usages.credentials.claude.lifetime import (
+    CLAUDE_REFRESH_MARGIN,
     ClaudeLoginRenewalState,
     classify_saved_claude_login_renewal,
 )
@@ -36,8 +37,6 @@ from sidekick_usages.persistence.accounts.store import AccountStore
 from sidekick_usages.persistence.errors import PersistenceError
 from sidekick_usages.providers.base import ProviderFailure, ProviderFailureKind
 from sidekick_usages.providers.codex.token import CODEX_REFRESH_MARGIN
-
-CLAUDE_REFRESH_MARGIN = timedelta(minutes=30)
 
 
 class CredentialRefresher(Protocol):

@@ -1,6 +1,7 @@
 """Protected managed-Claude credential authority composition."""
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from datetime import datetime
 
 from sidekick_usages.core.accounts.generation import (
@@ -19,6 +20,10 @@ from sidekick_usages.core.expiry import (
 from sidekick_usages.core.models import ClaudeLoginCredentials
 from sidekick_usages.errors import InvalidPayloadError
 from sidekick_usages.providers.base import ProviderBoundaryError
+from sidekick_usages.providers.claude.environment import (
+    encode_claude_refresh_scopes,
+)
+from sidekick_usages.providers.claude.errors import ClaudeProcessError
 from sidekick_usages.providers.claude.managed.models import ClaudeCapabilities
 from sidekick_usages.providers.claude.managed.storage.errors import (
     ClaudeProtectedStorageError,
@@ -29,6 +34,7 @@ from sidekick_usages.providers.claude.managed.storage.keychain import (
 )
 from sidekick_usages.providers.claude.managed.storage.models import (
     ClaudeAuthoritySnapshot,
+    ClaudeProtectedLogin,
 )
 from sidekick_usages.providers.claude.managed.storage.types import (
     ClaudeCredentialFileSource,
@@ -71,6 +77,48 @@ def read_protected_claude_authority(
     runner: ClaudeCommandRunner = run_bounded_claude_command,
 ) -> ClaudeAuthoritySnapshot:
     """Read and bind one exact managed Claude credential authority."""
+    with protected_claude_login(
+        capabilities,
+        files,
+        reference_time,
+        expected_identity=expected_identity,
+        environment=environment,
+        runner=runner,
+    ) as protected:
+        return protected.snapshot
+
+
+@contextmanager
+def protected_claude_login(
+    capabilities: ClaudeCapabilities,
+    files: ClaudeCredentialFileSource,
+    reference_time: datetime,
+    *,
+    expected_identity: ProviderIdentity | None = None,
+    environment: Mapping[str, str] | None = None,
+    runner: ClaudeCommandRunner = run_bounded_claude_command,
+) -> Iterator[ClaudeProtectedLogin]:
+    """Yield one short-lived refresh projection from protected storage."""
+    protected = _read_protected_claude_login(
+        capabilities,
+        files,
+        reference_time,
+        expected_identity,
+        environment,
+        runner,
+    )
+    with protected as active:
+        yield active
+
+
+def _read_protected_claude_login(
+    capabilities: ClaudeCapabilities,
+    files: ClaudeCredentialFileSource,
+    reference_time: datetime,
+    expected_identity: ProviderIdentity | None,
+    environment: Mapping[str, str] | None,
+    runner: ClaudeCommandRunner,
+) -> ClaudeProtectedLogin:
     if capabilities.platform in _FILE_PLATFORMS:
         payload = files.read(capabilities.profile)
         if payload is None:
@@ -88,7 +136,7 @@ def read_protected_claude_authority(
         raise ClaudeProtectedStorageError(
             ClaudeProtectedStorageFailure.NAMESPACE_UNPROVEN
         )
-    return _snapshot(
+    return _protected_login(
         capabilities,
         payload,
         reference_time,
@@ -119,12 +167,12 @@ def _read_macos_payload(
     return payload
 
 
-def _snapshot(
+def _protected_login(
     capabilities: ClaudeCapabilities,
     payload: bytes,
     reference_time: datetime,
     expected_identity: ProviderIdentity | None,
-) -> ClaudeAuthoritySnapshot:
+) -> ClaudeProtectedLogin:
     try:
         detected = parse_credentials_blob(decode_json_object(payload))
     except InvalidPayloadError, ProviderBoundaryError:
@@ -149,9 +197,15 @@ def _snapshot(
         raise ClaudeProtectedStorageError(
             ClaudeProtectedStorageFailure.IDENTITY_MISMATCH
         )
+    try:
+        encode_claude_refresh_scopes(credentials.scopes)
+    except ClaudeProcessError:
+        raise ClaudeProtectedStorageError(
+            ClaudeProtectedStorageFailure.MALFORMED
+        ) from None
     health, action = _health(credentials, reference_time)
     refresh_expiry = credentials.refresh_expiry
-    return ClaudeAuthoritySnapshot(
+    snapshot = ClaudeAuthoritySnapshot(
         profile=capabilities.profile,
         executable_version=str(capabilities.executable.version),
         provider_identity=provider_identity,
@@ -160,6 +214,7 @@ def _snapshot(
             prefix=_CLAUDE_GENERATION_PREFIX,
         ),
         plan=detected.plan,
+        scopes=credentials.scopes,
         access_expires_at=credentials.access_expiry.at,
         refresh_expires_at=(
             refresh_expiry.at
@@ -168,6 +223,11 @@ def _snapshot(
         ),
         health=health,
         action=action,
+    )
+    return ClaudeProtectedLogin(
+        snapshot=snapshot,
+        refresh_token=credentials.refresh_token,
+        scopes=credentials.scopes,
     )
 
 

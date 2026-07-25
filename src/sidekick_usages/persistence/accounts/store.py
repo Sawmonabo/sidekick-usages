@@ -42,10 +42,6 @@ from sidekick_usages.persistence.accounts.runtime_bridge import (
     runtime_account_from_saved,
     saved_account_from_runtime_state,
 )
-from sidekick_usages.persistence.credentials.codex import (
-    managed_codex_transition_matches,
-    stored_codex_transition_matches,
-)
 from sidekick_usages.persistence.credentials.refresh.merge import (
     CredentialRefreshMerge,
     CredentialRefreshSuccessMerge,
@@ -58,6 +54,13 @@ from sidekick_usages.persistence.credentials.repository import (
 from sidekick_usages.persistence.credentials.transactions.transaction import (
     CredentialSourceGuard,
     PrivateCredentialTransaction,
+)
+from sidekick_usages.persistence.credentials.transitions.claude import (
+    managed_claude_transition_matches,
+)
+from sidekick_usages.persistence.credentials.transitions.codex import (
+    managed_codex_transition_matches,
+    stored_codex_transition_matches,
 )
 from sidekick_usages.persistence.errors import (
     DurabilityUncertainError,
@@ -341,6 +344,7 @@ class AccountStore:
             current = self._index.get(account.account_id)
             authority_matches = current is not None and (
                 current.authority == account.authority
+                or managed_claude_transition_matches(current, account)
                 or managed_codex_transition_matches(current, account)
             )
             if (

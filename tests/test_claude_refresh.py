@@ -1,6 +1,5 @@
-"""Claude credential-boundary and refresh behavior tests."""
+"""Claude credential maintenance and legacy refresh behavior tests."""
 
-import json
 import os
 import sys
 from collections.abc import Mapping
@@ -10,23 +9,64 @@ from pathlib import Path
 import pytest
 
 import sidekick_usages.platform.executable
-import sidekick_usages.providers.claude.provider
+from sidekick_usages.core.accounts.models import (
+    ClaudeAccountAuthority,
+    SavedAccount,
+)
+from sidekick_usages.core.accounts.types import (
+    AuthorityId,
+    SidekickAccountId,
+)
 from sidekick_usages.core.expiry import KnownExpiry, UnknownExpiry
 from sidekick_usages.core.models import (
     Account,
     ClaudeLoginCredentials,
-    ClaudeLoginIdentity,
     ClaudeSetupTokenCredentials,
-    DetectedCredentials,
 )
-from sidekick_usages.core.types import AccountLabel
+from sidekick_usages.core.selection.types import OperationKind
+from sidekick_usages.core.types import (
+    AccountLabel,
+    ProviderId,
+    RefreshStatus,
+)
+from sidekick_usages.credentials.claude.managed.authority.service import (
+    CLAUDE_CREDENTIAL_FILE,
+    ClaudeManagedAuthorityReader,
+    managed_login_authority,
+)
+from sidekick_usages.credentials.claude.managed.maintenance.models import (
+    require_managed_claude_authority,
+)
+from sidekick_usages.credentials.claude.managed.maintenance.service import (
+    ClaudeManagedAuthorityCoordinator,
+)
+from sidekick_usages.credentials.claude.managed.maintenance.types import (
+    ClaudeManagedOutcome,
+)
+from sidekick_usages.daemon.lifecycle.readiness import SupervisorReadiness
+from sidekick_usages.daemon.types.worker import WorkerOutcome
+from sidekick_usages.daemon.worker.claude.maintenance import (
+    ClaudeManagedMaintenanceWorkerExecutor,
+)
 from sidekick_usages.errors import AuthError, TransientError
 from sidekick_usages.http.client import HttpClient
 from sidekick_usages.http.types import HttpOperation
-from sidekick_usages.platform.environment import (
-    SAFE_PROVIDER_ENVIRONMENT_KEYS,
+from sidekick_usages.paths import ApplicationPaths
+from sidekick_usages.persistence.accounts.store import AccountStore
+from sidekick_usages.persistence.filesystem.service import (
+    PersistenceFilesystem,
 )
-from sidekick_usages.platform.models import ExecutableProvenance
+from sidekick_usages.persistence.locking import PersistenceLock
+from sidekick_usages.persistence.models.account import VersionThreeDocument
+from sidekick_usages.persistence.private.credentials import (
+    PrivateCredentialTree,
+)
+from sidekick_usages.persistence.schema.account import encode_version_three
+from sidekick_usages.persistence.supervisor.authority import (
+    OperationAuthorityLock,
+)
+from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
+from sidekick_usages.persistence.types.artifact import AuthorityExpectation
 from sidekick_usages.platform.types import HostPlatform
 from sidekick_usages.providers.base import (
     ProviderBoundaryError,
@@ -35,26 +75,60 @@ from sidekick_usages.providers.base import (
     ProviderFailureKind,
     RefreshSuccess,
 )
-from sidekick_usages.providers.claude.errors import ClaudeProcessError
-from sidekick_usages.providers.claude.managed.executable import (
-    SUPPORTED_CLAUDE_VERSION,
+from sidekick_usages.providers.claude.managed.types import (
+    ClaudeManagedPlatform,
 )
-from sidekick_usages.providers.claude.models import (
-    ClaudeCommandResult,
-    ClaudeExecutable,
-)
+from sidekick_usages.providers.claude.models import ClaudeCommandResult
 from sidekick_usages.providers.claude.provider import ClaudeProvider
-from sidekick_usages.providers.claude.types import ClaudeProcessFailure
 from sidekick_usages.serialization.json import JsonObject
+from tests.fakes.claude.managed import (
+    ClaudeRunner,
+    credential_payload,
+    managed_capabilities,
+    managed_profile,
+    profile_tree,
+)
 from tests.test_support import (
     REFERENCE_TIME,
     FixedClock,
     authenticated_account,
+    make_application_paths,
 )
 
-CLI_REFRESH_TIMEOUT_SECONDS = 60
+_ACCOUNT_A = SidekickAccountId("11111111-1111-4111-8111-111111111111")
+_ACCOUNT_B = SidekickAccountId("22222222-2222-4222-8222-222222222222")
+_AUTHORITY_A = AuthorityId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+_AUTHORITY_B = AuthorityId("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+_INITIAL_EXPIRY = REFERENCE_TIME + timedelta(minutes=10)
 _FUTURE_EXPIRY = REFERENCE_TIME + timedelta(hours=1)
-_FUTURE_EXPIRY_MS = int(_FUTURE_EXPIRY.timestamp() * 1000)
+_LOGIN_HELP_OUTPUT = (
+    b"Usage: claude auth login "
+    b"[--claudeai] [--console] [--email <email>] [--sso]\n"
+)
+_MANAGED_LOGIN_ENVIRONMENT_KEYS = frozenset(
+    {
+        "APPDATA",
+        "CLAUDE_CODE_OAUTH_REFRESH_TOKEN",
+        "CLAUDE_CODE_OAUTH_SCOPES",
+        "CLAUDE_CONFIG_DIR",
+        "HOME",
+        "LANG",
+        "LOCALAPPDATA",
+        "PATH",
+        "USER",
+        "USERPROFILE",
+        "XDG_CONFIG_HOME",
+    }
+)
+_LOGGED_IN_STATUS = (
+    b'{"loggedIn":true,"authMethod":"claude.ai",'
+    b'"apiProvider":"firstParty"}\n'
+)
+_LOGGED_OUT_STATUS = (
+    b'{"loggedIn":false,"authMethod":"none","apiProvider":"firstParty"}\n'
+)
+_VERSION_OUTPUT = b"2.1.220 (Claude Code)\n"
+_PRIVATE_PROCESS_UMASK = 0o077 if os.name == "posix" else -1
 
 
 class _FakeHttp(HttpClient):
@@ -84,20 +158,6 @@ class _FakeHttp(HttpClient):
         if self.failure is not None:
             raise self.failure
         return self.response
-
-
-class _PathStageReader:
-    """Read one test-produced stage after the synthetic child exits."""
-
-    def __init__(self, path: Path) -> None:
-        self._path = path
-
-    def read(self) -> bytes | None:
-        """Return the staged test bytes when present."""
-        try:
-            return self._path.read_bytes()
-        except FileNotFoundError:
-            return None
 
 
 def _provider() -> ClaudeProvider:
@@ -132,12 +192,152 @@ def _credentials(result: RefreshSuccess) -> ClaudeLoginCredentials:
     return credentials
 
 
-def _claude_executable() -> ClaudeExecutable:
-    path = Path(sys.executable).resolve()
-    return ClaudeExecutable(
-        ExecutableProvenance.from_stat(path, path.stat()),
-        SUPPORTED_CLAUDE_VERSION,
+def _seed_managed_accounts(
+    root: Path,
+    entries: tuple[
+        tuple[SidekickAccountId, AuthorityId, AccountLabel, bytes],
+        ...,
+    ],
+) -> tuple[
+    ApplicationPaths,
+    AccountStore,
+    PrivateCredentialTree,
+    tuple[SavedAccount, ...],
+]:
+    paths = make_application_paths(root)
+    filesystem = PersistenceFilesystem(paths.accounts)
+    filesystem.repair_parent_permissions()
+    profiles = profile_tree(paths)
+    reader = ClaudeManagedAuthorityReader(paths, profiles)
+    accounts: list[SavedAccount] = []
+    for account_id, authority_id, label, payload in entries:
+        profile = managed_profile(paths, account_id)
+        profiles.ensure_owned_directory(profile.config_directory)
+        profiles.write_owned_file(
+            profile.config_directory,
+            CLAUDE_CREDENTIAL_FILE,
+            payload,
+        )
+        snapshot = reader.read(
+            managed_capabilities(
+                profile,
+                ClaudeManagedPlatform.LINUX_FILE,
+            ),
+            REFERENCE_TIME,
+        )
+        accounts.append(
+            SavedAccount(
+                account_id=account_id,
+                label=label,
+                provider_id=ProviderId.CLAUDE,
+                plan=snapshot.plan,
+                authority=ClaudeAccountAuthority(
+                    subscription=managed_login_authority(
+                        snapshot,
+                        authority_id,
+                        REFERENCE_TIME - timedelta(minutes=5),
+                    )
+                ),
+                credential_health=snapshot.health,
+            )
+        )
+    persisted = tuple(accounts)
+    with PersistenceLock(filesystem).hold() as transaction:
+        transaction.commit_authority(
+            encode_version_three(VersionThreeDocument(persisted)),
+            AuthorityExpectation.ABSENT,
+        )
+    credentials = PrivateCredentialTree(
+        paths.private_credentials,
+        account_path=paths.accounts,
     )
+    return (
+        paths,
+        AccountStore(paths.accounts, credentials).load(),
+        profiles,
+        persisted,
+    )
+
+
+def _execute_due_managed_maintenance(
+    paths: ApplicationPaths,
+    coordinator: ClaudeManagedAuthorityCoordinator,
+    clock: FixedClock,
+) -> tuple[WorkerOutcome, ...]:
+    SupervisorReadiness(paths, clock).enroll_accounts()
+    operations = tuple(
+        operation
+        for operation in OperationQueueStore(paths.durable_operations).due(
+            clock.now()
+        )
+        if operation.kind is OperationKind.MAINTAIN
+    )
+    executor = ClaudeManagedMaintenanceWorkerExecutor(coordinator, clock)
+    outcomes: list[WorkerOutcome] = []
+    for operation in operations:
+        with OperationAuthorityLock(
+            paths.durable_operations,
+            operation.required_account_id,
+        ).hold() as authority:
+            outcomes.append(executor.execute(operation, authority).outcome)
+    return tuple(outcomes)
+
+
+def _assert_managed_login_boundaries(
+    runner: ClaudeRunner,
+    profiles: tuple[Path, Path],
+    expected_tokens: tuple[str, str],
+    unsafe_parent: dict[str, str],
+) -> None:
+    records = tuple(
+        (path, environment, working_directory, timeout, limit, umask)
+        for (
+            (path, arguments),
+            environment,
+            working_directory,
+            timeout,
+            limit,
+            umask,
+        ) in zip(
+            runner.calls,
+            runner.environments,
+            runner.working_directories,
+            runner.timeouts,
+            runner.output_limits,
+            runner.umasks,
+            strict=True,
+        )
+        if arguments == ("auth", "login", "--claudeai")
+    )
+    assert tuple(record[0] for record in records) == (
+        Path(sys.executable).resolve(),
+        Path(sys.executable).resolve(),
+    )
+    assert tuple(
+        Path(record[1]["CLAUDE_CONFIG_DIR"])
+        for record in records
+        if record[1] is not None
+    ) == profiles
+    for record, expected_token in zip(
+        records,
+        expected_tokens,
+        strict=True,
+    ):
+        environment = record[1]
+        assert environment is not None
+        assert environment.keys() == _MANAGED_LOGIN_ENVIRONMENT_KEYS
+        assert environment["CLAUDE_CODE_OAUTH_REFRESH_TOKEN"] == expected_token
+        assert (
+            environment["CLAUDE_CODE_OAUTH_SCOPES"]
+            == "user:profile user:inference"
+        )
+        assert not set(unsafe_parent.values()) & set(environment.values())
+        assert record[2] == Path(environment["CLAUDE_CONFIG_DIR"])
+        assert record[3:] == (
+            60.0,
+            1024 * 1024,
+            _PRIVATE_PROCESS_UMASK,
+        )
 
 
 def test_refresh_missing_token_is_explicit_and_does_not_mutate() -> None:
@@ -155,162 +355,165 @@ def test_refresh_missing_token_is_explicit_and_does_not_mutate() -> None:
     assert account.credentials is original
 
 
-def test_cli_refresh_is_isolated_and_returns_complete_replacement(
+def test_managed_claude_maintenance_isolated_per_account_and_continues(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    account = _account(scopes=("user:profile", "saved:scope"))
-    original = account.credentials
-    active_home = tmp_path / "active"
-    active_home.mkdir()
-    sentinel = active_home / "credentials-must-not-change"
-    sentinel.write_text("active")
-    inherited = {
-        "LANG": "C.UTF-8",
-        "PATH": "/usr/bin",
-        "SYSTEMROOT": "C:\\Windows",
-        "TEMP": str(tmp_path / "temp"),
-    }
-    inherited_names = (
-        *SAFE_PROVIDER_ENVIRONMENT_KEYS,
-        "APPDATA",
-        "COMSPEC",
-        "LOCALAPPDATA",
-        "PATHEXT",
-        "SYSTEMROOT",
-        "TEMP",
-        "TMP",
-        "USERPROFILE",
-        "WINDIR",
+    payload_a = credential_payload(
+        "provider-account-a",
+        "provider-organization-a",
+        token_suffix="account-a-old",
+        access_expires_at=_INITIAL_EXPIRY,
     )
-    for name in inherited_names:
-        monkeypatch.delenv(name, raising=False)
-    for name, value in inherited.items():
-        monkeypatch.setenv(name, value)
-    conflicting = {
-        "ANTHROPIC_API_KEY": "test-only-anthropic-secret",
-        "ANTHROPIC_AUTH_TOKEN": "test-only-auth-secret",
-        "CLAUDE_CODE_OAUTH_TOKEN": "test-only-access-secret",
-        "CLAUDE_CODE_OAUTH_REFRESH_TOKEN": "test-only-refresh-secret",
-        "CLAUDE_CODE_OAUTH_SCOPES": "test-only:scope",
+    payload_b = credential_payload(
+        "provider-account-b",
+        "provider-organization-b",
+        token_suffix="account-b-old",
+        access_expires_at=_INITIAL_EXPIRY,
+    )
+    refreshed_b = credential_payload(
+        "provider-account-b",
+        "provider-organization-b",
+        token_suffix="account-b-new",
+        access_expires_at=_FUTURE_EXPIRY,
+    )
+    paths, store, profiles, original = _seed_managed_accounts(
+        tmp_path / "state",
+        (
+            (_ACCOUNT_A, _AUTHORITY_A, AccountLabel("claude-a"), payload_a),
+            (_ACCOUNT_B, _AUTHORITY_B, AccountLabel("claude-b"), payload_b),
+        ),
+    )
+    profile_a = managed_profile(paths, _ACCOUNT_A).config_directory
+    profile_b = managed_profile(paths, _ACCOUNT_B).config_directory
+    native_profile = tmp_path / "native"
+    native_profile.mkdir()
+    native_sentinel = native_profile / CLAUDE_CREDENTIAL_FILE
+    native_sentinel.write_bytes(b"native-login-must-remain")
+    unsafe_parent = {
+        "ANTHROPIC_API_KEY": "parent-api-secret",
+        "ANTHROPIC_AUTH_TOKEN": "parent-auth-secret",
+        "CLAUDE_CODE_OAUTH_TOKEN": "parent-oauth-secret",
+        "CLAUDE_CODE_OAUTH_REFRESH_TOKEN": "parent-refresh-secret",
+        "CLAUDE_CODE_OAUTH_SCOPES": "parent:scope",
         "CLAUDE_CODE_USE_BEDROCK": "1",
         "CLAUDE_CODE_USE_FOUNDRY": "1",
         "CLAUDE_CODE_USE_VERTEX": "1",
-        "SIDEKICK_UNRELATED_SECRET": "test-only-unrelated-secret",
+        "CLAUDE_CONFIG_DIR": str(native_profile),
+        "SIDEKICK_UNRELATED_SECRET": "unrelated-parent-secret",
     }
-    for name, value in conflicting.items():
-        monkeypatch.setenv(name, value)
-    for variable in (
-        "HOME",
-        "USERPROFILE",
-        "APPDATA",
-        "LOCALAPPDATA",
-        "XDG_CONFIG_HOME",
-        "CLAUDE_CONFIG_DIR",
-    ):
-        monkeypatch.setenv(variable, str(active_home))
+    source_environment = {
+        "LANG": "C.UTF-8",
+        "PATH": os.environ["PATH"],
+        "USER": "sidekick-test",
+        **unsafe_parent,
+    }
+    final_profiles = {profile_a, profile_b}
+
+    def script(
+        arguments: tuple[str, ...],
+        environment: dict[str, str] | None,
+        working_directory: Path | None,
+    ) -> ClaudeCommandResult:
+        del working_directory
+        if arguments == ("--version",):
+            return ClaudeCommandResult(0, _VERSION_OUTPUT)
+        if arguments == ("auth", "login", "--help"):
+            return ClaudeCommandResult(0, _LOGIN_HELP_OUTPUT)
+        if arguments == ("auth", "status"):
+            assert environment is not None
+            return (
+                ClaudeCommandResult(0, _LOGGED_IN_STATUS)
+                if Path(environment["CLAUDE_CONFIG_DIR"]) in final_profiles
+                else ClaudeCommandResult(1, _LOGGED_OUT_STATUS)
+            )
+        if arguments != ("auth", "login", "--claudeai"):
+            raise AssertionError(f"Unexpected Claude command: {arguments!r}")
+        assert environment is not None
+        config_directory = Path(environment["CLAUDE_CONFIG_DIR"])
+        if config_directory == profile_a:
+            return ClaudeCommandResult(
+                1,
+                b"failed child-output-secret-a",
+            )
+        assert config_directory == profile_b
+        profiles.write_owned_file(
+            profile_b,
+            CLAUDE_CREDENTIAL_FILE,
+            refreshed_b,
+        )
+        return ClaudeCommandResult(0, b"child-output-secret-b")
+
     monkeypatch.setattr(
         sidekick_usages.platform.executable.shutil,
         "which",
-        lambda name, path=None: sys.executable if name == "claude" else None,
+        lambda command, path=None: (
+            sys.executable if command == "claude" else None
+        ),
     )
-
-    def capture(
-        argv: tuple[str, ...],
-        *,
-        timeout_seconds: float,
-        maximum_output_bytes: int,
-        environment: Mapping[str, str] | None = None,
-        working_directory: Path | None = None,
-        umask: int = -1,
-    ) -> ClaudeCommandResult:
-        if argv[1:] == ("--version",):
-            return ClaudeCommandResult(0, b"2.1.220 (Claude Code)\n")
-        assert argv[1:] == ("auth", "login", "--claudeai")
-        assert environment is not None
-        env = environment
-        assert env["CLAUDE_CODE_OAUTH_REFRESH_TOKEN"] == "refresh-old"
-        config_dir = Path(env["CLAUDE_CONFIG_DIR"])
-        assert config_dir == Path(env["HOME"]) / ".claude"
-        assert working_directory == Path(env["HOME"])
-        assert env["USERPROFILE"] == env["HOME"]
-        assert working_directory is not None
-        assert all(
-            Path(env[name]).is_relative_to(working_directory)
-            for name in ("APPDATA", "LOCALAPPDATA", "XDG_CONFIG_HOME")
-        )
-        assert str(active_home) not in env.values()
-        assert timeout_seconds == CLI_REFRESH_TIMEOUT_SECONDS
-        assert maximum_output_bytes == 1024 * 1024
-        assert umask == (0o077 if os.name == "posix" else -1)
-        assert set(env) == {
-            *inherited,
-            "APPDATA",
-            "CLAUDE_CODE_OAUTH_REFRESH_TOKEN",
-            "CLAUDE_CODE_OAUTH_SCOPES",
-            "CLAUDE_CONFIG_DIR",
-            "HOME",
-            "LOCALAPPDATA",
-            "USERPROFILE",
-            "XDG_CONFIG_HOME",
-        }
-        assert (
-            not conflicting.keys()
-            - {
-                "CLAUDE_CODE_OAUTH_REFRESH_TOKEN",
-                "CLAUDE_CODE_OAUTH_SCOPES",
-            }
-            & env.keys()
-        )
-        path = config_dir / ".credentials.json"
-        path.parent.mkdir(parents=True)
-        oauth: JsonObject = {
-            "accessToken": "sk-ant-oat01-cli",
-            "refreshToken": "refresh-cli",
-            "expiresAt": _FUTURE_EXPIRY_MS,
-            "subscriptionType": "team",
-            "scopes": ["saved:scope", "user:profile"],
-        }
-        path.write_text(
-            json.dumps(
-                {
-                    "claudeAiOauth": oauth,
-                }
-            )
-        )
-        return ClaudeCommandResult(0, b"")
-
-    monkeypatch.setattr(
-        sidekick_usages.providers.claude.provider,
-        "run_bounded_claude_command",
-        capture,
+    runner = ClaudeRunner(script=script)
+    clock = FixedClock()
+    coordinator = ClaudeManagedAuthorityCoordinator(
+        paths,
+        store,
+        profiles,
+        clock,
+        environment=source_environment,
+        host=HostPlatform.LINUX,
+        runner=runner,
     )
+    outcomes = _execute_due_managed_maintenance(paths, coordinator, clock)
 
-    managed_stage = tmp_path / "managed-refresh-stage"
-    managed_stage.mkdir(mode=0o700)
-    result = _provider().refresh_credentials_in_stage(
-        authenticated_account(account),
-        _FakeHttp(),
-        managed_stage,
-        _PathStageReader(managed_stage / ".claude" / ".credentials.json"),
+    assert outcomes == (
+        WorkerOutcome.TRANSIENT_FAILURE,
+        WorkerOutcome.SUCCEEDED,
     )
-
-    assert isinstance(result, RefreshSuccess)
-    refreshed = _credentials(result)
+    _assert_managed_login_boundaries(
+        runner,
+        (profile_a, profile_b),
+        ("refresh-account-a-old", "refresh-account-b-old"),
+        unsafe_parent,
+    )
+    saved = {
+        account.account_id: account for account in store.saved_accounts()
+    }
+    protected_a = profiles.read_relative_authority_file(
+        str(_ACCOUNT_A),
+        CLAUDE_CREDENTIAL_FILE,
+    )
+    protected_b = profiles.read_relative_authority_file(
+        str(_ACCOUNT_B),
+        CLAUDE_CREDENTIAL_FILE,
+    )
+    assert protected_a is not None
+    assert protected_b is not None
+    assert protected_a.data == payload_a
+    assert protected_b.data == refreshed_b
+    assert saved[_ACCOUNT_A].authority == original[0].authority
     assert (
-        refreshed.access_token,
-        refreshed.refresh_token,
-        refreshed.access_expiry,
-        refreshed.scopes,
-    ) == (
-        "sk-ant-oat01-cli",
-        "refresh-cli",
-        KnownExpiry(_FUTURE_EXPIRY),
-        ("saved:scope", "user:profile"),
+        saved[_ACCOUNT_A].credential_health
+        is original[0].credential_health
     )
-    assert result.plan == "team"
-    assert account.credentials is original
-    assert sentinel.read_text() == "active"
+    assert saved[_ACCOUNT_A].last_refresh_status is RefreshStatus.FAILED
+    assert saved[_ACCOUNT_B].last_refresh_status is RefreshStatus.OK
+    assert (
+        require_managed_claude_authority(saved[_ACCOUNT_B]).provider_identity
+        == require_managed_claude_authority(original[1]).provider_identity
+    )
+    assert (
+        require_managed_claude_authority(saved[_ACCOUNT_B]).generation
+        != require_managed_claude_authority(original[1]).generation
+    )
+    assert native_sentinel.read_bytes() == b"native-login-must-remain"
+    persisted = paths.accounts.read_bytes()
+    for secret in (
+        b"account-a-old",
+        b"account-b-old",
+        b"account-b-new",
+        b"child-output-secret",
+        b"parent-secret",
+    ):
+        assert secret not in persisted
 
 
 @pytest.mark.parametrize(
@@ -355,46 +558,6 @@ def test_http_refresh_preserves_scope_state_and_returns_new_credentials(
     assert account.credentials is original
 
 
-def test_macos_refresh_uses_http_without_invoking_cli(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        sidekick_usages.providers.claude.provider,
-        "detect_host_platform",
-        lambda **_kwargs: HostPlatform.MACOS_ARM64,
-    )
-
-    def unexpected_discovery(*_args: object, **_kwargs: object) -> None:
-        pytest.fail("Unverified staged refresh must not invoke macOS Claude")
-
-    monkeypatch.setattr(
-        sidekick_usages.providers.claude.provider,
-        "discover_claude_executable",
-        unexpected_discovery,
-    )
-    http = _FakeHttp(
-        {
-            "access_token": "sk-ant-oat01-new",
-            "refresh_token": "refresh-new",
-            "expires_in": 60,
-        }
-    )
-    stage_home = tmp_path / "managed-refresh-stage"
-    stage_home.mkdir(mode=0o700)
-
-    result = _provider().refresh_credentials_in_stage(
-        authenticated_account(_account()),
-        http,
-        stage_home,
-        _PathStageReader(stage_home / ".claude" / ".credentials.json"),
-    )
-
-    assert isinstance(result, RefreshSuccess)
-    assert _credentials(result).access_token == "sk-ant-oat01-new"
-    assert http.body is not None
-
-
 def test_refresh_rejection_is_typed_and_secret_safe() -> None:
     account = _account()
     original = account.credentials
@@ -429,150 +592,85 @@ def test_transient_refresh_failure_is_a_cause_without_recovery_copy() -> None:
     assert "log in again" not in result.message.lower()
 
 
-def test_cli_rejection_is_authoritative_and_does_not_fallback(
+def test_managed_claude_maintenance_rejects_unverified_generation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    payload = credential_payload(
+        "provider-account-a",
+        "provider-organization-a",
+        token_suffix="unchanged-generation",
+        access_expires_at=_INITIAL_EXPIRY,
+    )
+    paths, store, profiles, original = _seed_managed_accounts(
+        tmp_path / "state",
+        (
+            (
+                _ACCOUNT_A,
+                _AUTHORITY_A,
+                AccountLabel("claude-a"),
+                payload,
+            ),
+        ),
+    )
+    profile = managed_profile(paths, _ACCOUNT_A).config_directory
+
+    def script(
+        arguments: tuple[str, ...],
+        environment: dict[str, str] | None,
+        working_directory: Path | None,
+    ) -> ClaudeCommandResult:
+        del working_directory
+        if arguments == ("--version",):
+            return ClaudeCommandResult(0, _VERSION_OUTPUT)
+        if arguments == ("auth", "login", "--help"):
+            return ClaudeCommandResult(0, _LOGIN_HELP_OUTPUT)
+        if arguments == ("auth", "status"):
+            assert environment is not None
+            return (
+                ClaudeCommandResult(0, _LOGGED_IN_STATUS)
+                if Path(environment["CLAUDE_CONFIG_DIR"]) == profile
+                else ClaudeCommandResult(1, _LOGGED_OUT_STATUS)
+            )
+        if arguments == ("auth", "login", "--claudeai"):
+            return ClaudeCommandResult(
+                0,
+                b"sk-ant-oat01-child-output-secret",
+            )
+        raise AssertionError(f"Unexpected Claude command: {arguments!r}")
+
     monkeypatch.setattr(
         sidekick_usages.platform.executable.shutil,
         "which",
-        lambda _name, path=None: sys.executable,
-    )
-
-    def capture(
-        argv: tuple[str, ...],
-        *,
-        timeout_seconds: float,
-        maximum_output_bytes: int,
-        environment: Mapping[str, str] | None = None,
-        working_directory: Path | None = None,
-        umask: int = -1,
-    ) -> ClaudeCommandResult:
-        del maximum_output_bytes, environment, working_directory, umask
-        if argv[1:] == ("--version",):
-            return ClaudeCommandResult(0, b"2.1.220 (Claude Code)\n")
-        assert argv[1:] == ("auth", "login", "--claudeai")
-        assert timeout_seconds == CLI_REFRESH_TIMEOUT_SECONDS
-        return ClaudeCommandResult(
-            1,
-            b"rejected sk-ant-oat01-raw-secret",
-        )
-
-    monkeypatch.setattr(
-        sidekick_usages.providers.claude.provider,
-        "run_bounded_claude_command",
-        capture,
-    )
-    account = _account()
-    original = account.credentials
-    http = _FakeHttp({"access_token": "sk-ant-oat01-http-unused"})
-
-    stage_home = tmp_path / "managed-refresh-stage"
-    stage_home.mkdir(mode=0o700)
-    result = _provider().refresh_credentials_in_stage(
-        authenticated_account(account),
-        http,
-        stage_home,
-        _PathStageReader(stage_home / ".claude" / ".credentials.json"),
-    )
-
-    assert isinstance(result, ProviderFailure)
-    assert result.kind is ProviderFailureKind.REJECTED
-    assert result.cause is ProviderFailureCause.PROVIDER_REJECTED_REFRESH
-    assert result.message == "Claude rejected the saved subscription login."
-    assert "log in again" not in result.message.lower()
-    assert "raw-secret" not in repr(result)
-    assert http.body is None
-    assert account.credentials is original
-
-
-@pytest.mark.parametrize(
-    ("process_failure", "expected_cause"),
-    [
-        (
-            ClaudeProcessFailure.TIMED_OUT,
-            ProviderFailureCause.REFRESH_TIMED_OUT,
-        ),
-        (
-            ClaudeProcessFailure.PROCESS_UNAVAILABLE,
-            ProviderFailureCause.REFRESH_PROCESS_UNAVAILABLE,
-        ),
-    ],
-)
-def test_cli_refresh_reuses_bounded_process_capture(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    process_failure: ClaudeProcessFailure,
-    expected_cause: ProviderFailureCause,
-) -> None:
-    def fail(
-        argv: tuple[str, ...],
-        *,
-        timeout_seconds: float,
-        maximum_output_bytes: int,
-        environment: Mapping[str, str] | None = None,
-        working_directory: Path | None = None,
-        umask: int = -1,
-    ) -> ClaudeCommandResult:
-        del (
-            argv,
-            timeout_seconds,
-            maximum_output_bytes,
-            environment,
-            working_directory,
-            umask,
-        )
-        raise ClaudeProcessError(process_failure)
-
-    monkeypatch.setattr(
-        sidekick_usages.providers.claude.provider,
-        "run_bounded_claude_command",
-        fail,
-    )
-
-    result = ClaudeProvider._run_cli_refresh(
-        _claude_executable(),
-        {},
-        tmp_path,
-    )
-
-    assert isinstance(result, ProviderFailure)
-    assert result.cause is expected_cause
-
-
-def test_cli_refresh_identity_mismatch_has_cause_only_state() -> None:
-    previous = ClaudeLoginCredentials(
-        access_token="sk-ant-oat01-old",
-        refresh_token="refresh-old",
-        access_expiry=KnownExpiry(_FUTURE_EXPIRY),
-        refresh_expiry=UnknownExpiry(),
-        scopes=("user:profile",),
-        identity=ClaudeLoginIdentity(
-            account_id="account-old",
-            organization_id="organization-old",
+        lambda command, path=None: (
+            sys.executable if command == "claude" else None
         ),
     )
-    detected = DetectedCredentials(
-        credentials=ClaudeLoginCredentials(
-            access_token="sk-ant-oat01-new",
-            refresh_token="refresh-new",
-            access_expiry=KnownExpiry(_FUTURE_EXPIRY),
-            refresh_expiry=UnknownExpiry(),
-            scopes=("user:profile",),
-            identity=ClaudeLoginIdentity(
-                account_id="account-new",
-                organization_id="organization-new",
-            ),
-        )
-    )
+    result = ClaudeManagedAuthorityCoordinator(
+        paths,
+        store,
+        profiles,
+        FixedClock(),
+        environment={"PATH": os.environ["PATH"], "USER": "sidekick-test"},
+        host=HostPlatform.LINUX,
+        runner=ClaudeRunner(script=script),
+    ).refresh(_ACCOUNT_A)
 
-    with pytest.raises(ProviderBoundaryError) as exc_info:
-        ClaudeProvider._cli_refresh_success(previous, detected)
-
-    assert exc_info.value.failure.cause is (
-        ProviderFailureCause.REFRESHED_IDENTITY_MISMATCH
+    saved = store.read_saved(_ACCOUNT_A)
+    assert saved is not None
+    assert result.outcome is ClaudeManagedOutcome.UNCHANGED
+    assert saved.authority == original[0].authority
+    assert saved.last_refresh_status is RefreshStatus.FAILED
+    protected = profiles.read_relative_authority_file(
+        str(_ACCOUNT_A),
+        CLAUDE_CREDENTIAL_FILE,
     )
-    assert "log in again" not in exc_info.value.failure.message.lower()
+    assert protected is not None
+    assert protected.data == payload
+    rendered = repr(result) + paths.accounts.read_text()
+    assert "child-output-secret" not in rendered
+    assert "unchanged-generation" not in rendered
+    assert "claude_managed_unchanged" in rendered
 
 
 @pytest.mark.parametrize(

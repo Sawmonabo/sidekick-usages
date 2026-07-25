@@ -52,9 +52,14 @@ from sidekick_usages.providers.claude.managed.errors import ClaudeManagedError
 from sidekick_usages.providers.claude.managed.executable import (
     discover_claude_executable,
 )
+from sidekick_usages.providers.claude.managed.login.service import (
+    run_official_claude_login,
+)
+from sidekick_usages.providers.claude.managed.types import (
+    ClaudeManagedFailure,
+    ClaudeOfficialLoginResult,
+)
 from sidekick_usages.providers.claude.models import (
-    ClaudeCommandResult,
-    ClaudeExecutable,
     SetupTokenMissing,
     SetupTokenRejected,
     SetupTokenSuccess,
@@ -80,8 +85,6 @@ OAUTH_REFRESH_ENDPOINT = "https://platform.claude.com/v1/oauth/token"
 OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 OAUTH_REFRESH_EXPIRES_IN_SECONDS = 31_536_000
 _MAX_SETUP_OUTPUT_BYTES = 1024 * 1024
-_PRIVATE_CHILD_UMASK = 0o077
-_REFRESH_COMMAND_TIMEOUT_SECONDS = 60
 _STAGED_KEYCHAIN_HOSTS = frozenset(
     {
         HostPlatform.MACOS_ARM64,
@@ -222,7 +225,8 @@ class ClaudeProvider(Provider):
         scopes = self._refresh_scopes(credentials)
         environment = claude_refresh_environment(
             os.environ,
-            isolated_home=isolated_home,
+            process_home=isolated_home,
+            config_directory=isolated_home / ".claude",
             refresh_token=credentials.refresh_token,
             scopes=scopes,
         )
@@ -234,21 +238,35 @@ class ClaudeProvider(Provider):
             )
         except ClaudeManagedError:
             return None
-        completed = self._run_cli_refresh(
-            executable,
-            environment,
-            isolated_home,
-        )
-        if isinstance(completed, ProviderFailure):
-            return completed
-
-        payload = stage_reader.read()
-        if completed.return_code != 0 and payload is None:
-            return claude_failure(
-                ProviderFailureKind.REJECTED,
-                CLAUDE_SUBSCRIPTION_LOGIN_REJECTED,
-                cause=ProviderFailureCause.PROVIDER_REJECTED_REFRESH,
+        try:
+            login_result = run_official_claude_login(
+                executable,
+                environment,
+                isolated_home,
             )
+        except ClaudeManagedError as error:
+            if error.code is ClaudeManagedFailure.OFFICIAL_LOGIN_TIMED_OUT:
+                message = "Claude credential refresh timed out."
+                cause = ProviderFailureCause.REFRESH_TIMED_OUT
+            else:
+                message = "Claude refresh process is unavailable."
+                cause = ProviderFailureCause.REFRESH_PROCESS_UNAVAILABLE
+            return claude_failure(
+                ProviderFailureKind.UNREADABLE,
+                message,
+                cause=cause,
+            )
+
+        if login_result is ClaudeOfficialLoginResult.FAILED:
+            return claude_failure(
+                ProviderFailureKind.UNREADABLE,
+                "Claude refresh is temporarily unavailable.",
+                cause=(
+                    ProviderFailureCause.REFRESH_TEMPORARILY_UNAVAILABLE
+                ),
+                action_required=False,
+            )
+        payload = stage_reader.read()
         detected = (
             claude_failure(
                 ProviderFailureKind.MISSING,
@@ -287,39 +305,6 @@ class ClaudeProvider(Provider):
                 )
             return detected
         return self._cli_refresh_success(credentials, detected)
-
-    @staticmethod
-    def _run_cli_refresh(
-        executable: ClaudeExecutable,
-        env: dict[str, str],
-        working_directory: Path,
-    ) -> ClaudeCommandResult | ProviderFailure:
-        try:
-            return run_bounded_claude_command(
-                (
-                    str(executable.provenance.path),
-                    "auth",
-                    "login",
-                    "--claudeai",
-                ),
-                timeout_seconds=_REFRESH_COMMAND_TIMEOUT_SECONDS,
-                maximum_output_bytes=_MAX_SETUP_OUTPUT_BYTES,
-                environment=env,
-                working_directory=working_directory,
-                umask=_PRIVATE_CHILD_UMASK if os.name == "posix" else -1,
-            )
-        except ClaudeProcessError as error:
-            if error.code is ClaudeProcessFailure.TIMED_OUT:
-                return claude_failure(
-                    ProviderFailureKind.UNREADABLE,
-                    "Claude credential refresh timed out.",
-                    cause=ProviderFailureCause.REFRESH_TIMED_OUT,
-                )
-            return claude_failure(
-                ProviderFailureKind.UNREADABLE,
-                "Claude refresh process is unavailable.",
-                cause=ProviderFailureCause.REFRESH_PROCESS_UNAVAILABLE,
-            )
 
     @staticmethod
     def _cli_refresh_success(

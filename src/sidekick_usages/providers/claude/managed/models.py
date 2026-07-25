@@ -18,3 +18,13 @@ class ClaudeCapabilities:
     executable: ClaudeExecutable
     profile: ClaudeManagedProfile
     platform: ClaudeManagedPlatform
+
+
+@dataclass(frozen=True, slots=True)
+class ClaudeAuthStatus:
+    """Bounded non-secret state from the official auth-status command."""
+
+    return_code: int
+    logged_in: bool
+    auth_method: str
+    api_provider: str

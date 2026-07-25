@@ -3,6 +3,7 @@
 import os
 import sys
 from collections.abc import Sequence
+from contextlib import ExitStack
 from pathlib import Path
 
 from sidekick_usages.clock import Clock, SystemClock
@@ -17,6 +18,9 @@ from sidekick_usages.core.selection.models import (
 )
 from sidekick_usages.core.selection.types import OperationKind
 from sidekick_usages.core.types import ProviderId
+from sidekick_usages.credentials.claude.managed.maintenance.service import (
+    ClaudeManagedAuthorityCoordinator,
+)
 from sidekick_usages.credentials.codex.activation import (
     CodexActivationService,
 )
@@ -34,6 +38,9 @@ from sidekick_usages.daemon.models.worker import (
 )
 from sidekick_usages.daemon.worker.account import (
     CodexManagedAccountService,
+)
+from sidekick_usages.daemon.worker.claude.maintenance import (
+    ClaudeManagedMaintenanceWorkerExecutor,
 )
 from sidekick_usages.daemon.worker.codex import (
     CodexActivationWorkerExecutor,
@@ -104,7 +111,7 @@ _PROVIDER_OPERATION_KINDS = frozenset(
         OperationKind.RECONCILE_NATIVE,
     }
 )
-_CODEX_ACCOUNT_OPERATION_KINDS = frozenset(
+_ACCOUNT_OPERATION_KINDS = frozenset(
     {
         OperationKind.MAINTAIN,
         OperationKind.REFRESH,
@@ -140,11 +147,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         if operation is None:
             return _EXIT_STATE_UNAVAILABLE
         clock = SystemClock()
-        if (
-            operation.provider_id is ProviderId.CODEX
-            and operation.kind in _CODEX_ACCOUNT_OPERATION_KINDS
-        ):
-            completed = _run_codex_account_operation(
+        if operation.kind in _ACCOUNT_OPERATION_KINDS:
+            completed = _run_account_operation(
                 operation_id,
                 operation,
                 paths,
@@ -186,7 +190,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     return _EXIT_OK if completed else _EXIT_STATE_UNAVAILABLE
 
 
-def _run_codex_account_operation(
+def _run_account_operation(
     operation_id: OperationId,
     operation: DueOperation,
     paths: ApplicationPaths,
@@ -200,25 +204,38 @@ def _run_codex_account_operation(
         maintenance_quiescent=lambda: True,
     )
     store = persistence.open_store()
-    coordinator = _codex_coordinator(
-        paths,
-        persistence,
-        store,
-        clock,
-    )
-    with HttpClient(clock=clock) as http:
-        executor = CodexManagedMaintenanceWorkerExecutor(
-            coordinator,
-            CodexManagedAccountService(
-                coordinator,
-                store,
-                http,
-                ActivitySnapshotStore(paths.activity_snapshots),
-                UsageSnapshotStore(paths.usage_snapshots),
+    with ExitStack() as resources:
+        if operation.provider_id is ProviderId.CLAUDE:
+            executor = ClaudeManagedMaintenanceWorkerExecutor(
+                ClaudeManagedAuthorityCoordinator(
+                    paths,
+                    store,
+                    persistence.managed_claude_profiles,
+                    clock,
+                    environment=os.environ,
+                ),
                 clock,
-            ),
-            clock,
-        )
+            )
+        else:
+            coordinator = _codex_coordinator(
+                paths,
+                persistence,
+                store,
+                clock,
+            )
+            http = resources.enter_context(HttpClient(clock=clock))
+            executor = CodexManagedMaintenanceWorkerExecutor(
+                coordinator,
+                CodexManagedAccountService(
+                    coordinator,
+                    store,
+                    http,
+                    ActivitySnapshotStore(paths.activity_snapshots),
+                    UsageSnapshotStore(paths.usage_snapshots),
+                    clock,
+                ),
+                clock,
+            )
         return run_isolated_worker(
             operation_id,
             queue,

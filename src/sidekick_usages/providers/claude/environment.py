@@ -56,7 +56,8 @@ def claude_probe_environment(
 def claude_refresh_environment(
     source_environment: Mapping[str, str] | None,
     *,
-    isolated_home: Path,
+    process_home: Path,
+    config_directory: Path,
     refresh_token: str,
     scopes: tuple[str, ...],
 ) -> dict[str, str]:
@@ -64,18 +65,41 @@ def claude_refresh_environment(
     environment = _safe_environment(source_environment)
     environment.update(
         {
-            "HOME": str(isolated_home),
-            "USERPROFILE": str(isolated_home),
-            "APPDATA": str(isolated_home / "AppData" / "Roaming"),
-            "LOCALAPPDATA": str(isolated_home / "AppData" / "Local"),
-            "XDG_CONFIG_HOME": str(isolated_home / ".config"),
-            CLAUDE_CONFIG_DIR_ENVIRONMENT_KEY: str(isolated_home / ".claude"),
+            "HOME": str(process_home),
+            "USERPROFILE": str(process_home),
+            "APPDATA": str(process_home / "AppData" / "Roaming"),
+            "LOCALAPPDATA": str(process_home / "AppData" / "Local"),
+            "XDG_CONFIG_HOME": str(process_home / ".config"),
+            CLAUDE_CONFIG_DIR_ENVIRONMENT_KEY: str(config_directory),
             CLAUDE_OAUTH_PROVISIONING_ENVIRONMENT_KEY: refresh_token,
-            CLAUDE_REFRESH_SCOPES_ENVIRONMENT_KEY: " ".join(scopes),
+            CLAUDE_REFRESH_SCOPES_ENVIRONMENT_KEY: (
+                encode_claude_refresh_scopes(scopes)
+            ),
         }
     )
     _validate_environment(environment)
     return environment
+
+
+def encode_claude_refresh_scopes(scopes: tuple[str, ...]) -> str:
+    """Validate and encode unambiguous Claude OAuth scope tokens."""
+    if (
+        not isinstance(scopes, tuple)
+        or not scopes
+        or len(scopes) != len(set(scopes))
+        or any(
+            not isinstance(scope, str)
+            or not scope
+            or any(character.isspace() for character in scope)
+            for scope in scopes
+        )
+    ):
+        raise ClaudeProcessError(ClaudeProcessFailure.PROCESS_UNSAFE)
+    encoded = " ".join(scopes)
+    _validate_environment(
+        {CLAUDE_REFRESH_SCOPES_ENVIRONMENT_KEY: encoded}
+    )
+    return encoded
 
 
 def claude_keychain_environment(

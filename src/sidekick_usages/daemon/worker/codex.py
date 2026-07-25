@@ -48,6 +48,11 @@ from sidekick_usages.daemon.worker.exchange import (
     WorkerExchangeError,
 )
 from sidekick_usages.daemon.worker.ports import ManagedAccountService
+from sidekick_usages.daemon.worker.runtime import (
+    managed_worker_result,
+    worker_failure,
+    worker_success,
+)
 from sidekick_usages.heartbeat.service import heartbeat_exit_code
 from sidekick_usages.persistence.state.files import ManagedStateConflictError
 from sidekick_usages.persistence.supervisor.authority import (
@@ -132,7 +137,7 @@ class CodexManagedMaintenanceWorkerExecutor:
             )
         )
         if result.outcome is not CodexManagedOutcome.HEALTHY:
-            return _managed_worker_result(operation, result, self._clock)
+            return _codex_managed_worker_result(operation, result, self._clock)
         heartbeat = (
             self._account_services.heartbeat(
                 operation.required_account_id,
@@ -147,34 +152,34 @@ class CodexManagedMaintenanceWorkerExecutor:
         )
         heartbeat_code = heartbeat_exit_code(list(heartbeat))
         if heartbeat_code is ExitCode.MANUAL_ACTION:
-            return _worker_failure(
+            return worker_failure(
                 operation,
                 WorkerOutcome.ACTION_REQUIRED,
                 "codex_heartbeat_action_required",
                 self._clock,
             )
         if metrics.failures:
-            return _worker_failure(
+            return worker_failure(
                 operation,
                 WorkerOutcome.TRANSIENT_FAILURE,
                 "codex_metrics_" + metrics.failures[0].kind.value,
                 self._clock,
             )
         if any(activity_has_failure(item) for item in metrics.activities):
-            return _worker_failure(
+            return worker_failure(
                 operation,
                 WorkerOutcome.TRANSIENT_FAILURE,
                 "codex_activity_unavailable",
                 self._clock,
             )
         if heartbeat_code is ExitCode.SYSTEM_ERROR:
-            return _worker_failure(
+            return worker_failure(
                 operation,
                 WorkerOutcome.TRANSIENT_FAILURE,
                 "codex_heartbeat_failed",
                 self._clock,
             )
-        return _worker_success(operation, self._clock)
+        return worker_success(operation, self._clock)
 
 
 class CodexActivationWorkerExecutor:
@@ -226,9 +231,9 @@ class CodexActivationWorkerExecutor:
                     authority,
                     installer,
                 )
-            return _worker_success(operation, self._clock)
+            return worker_success(operation, self._clock)
         except CodexActivationError as error:
-            return _worker_failure(
+            return worker_failure(
                 operation,
                 (
                     WorkerOutcome.ACTION_REQUIRED
@@ -239,14 +244,14 @@ class CodexActivationWorkerExecutor:
                 self._clock,
             )
         except CodexBrokerError, WorkerExchangeError:
-            return _worker_failure(
+            return worker_failure(
                 operation,
                 WorkerOutcome.TRANSIENT_FAILURE,
                 CodexActivationFailure.DAEMON_UNAVAILABLE.value,
                 self._clock,
             )
         except ManagedStateConflictError:
-            return _worker_failure(
+            return worker_failure(
                 operation,
                 WorkerOutcome.TRANSIENT_FAILURE,
                 CodexActivationFailure.STATE_CHANGED.value,
@@ -381,7 +386,7 @@ class CodexNativeReconciliationWorkerExecutor:
             )
         observation = self._observations.load_native(ProviderId.CODEX)
         if observation is None:
-            return _worker_failure(
+            return worker_failure(
                 operation,
                 WorkerOutcome.TRANSIENT_FAILURE,
                 "native_observation_missing",
@@ -390,7 +395,7 @@ class CodexNativeReconciliationWorkerExecutor:
         try:
             selected = self._service.reconcile(observation, authority)
         except CodexNativeReconciliationError as error:
-            return _worker_failure(
+            return worker_failure(
                 operation,
                 (
                     WorkerOutcome.ACTION_REQUIRED
@@ -401,14 +406,14 @@ class CodexNativeReconciliationWorkerExecutor:
                 self._clock,
             )
         except ManagedStateConflictError:
-            return _worker_failure(
+            return worker_failure(
                 operation,
                 WorkerOutcome.TRANSIENT_FAILURE,
                 "native_state_changed",
                 self._clock,
             )
         if self._observations.load_native(ProviderId.CODEX) != observation:
-            return _worker_failure(
+            return worker_failure(
                 operation,
                 WorkerOutcome.TRANSIENT_FAILURE,
                 "native_observation_changed",
@@ -425,7 +430,7 @@ class CodexNativeReconciliationWorkerExecutor:
             selected is not None
             and selected.runtime_state is ProviderRuntimeState.UNREADABLE
         ):
-            return _worker_failure(
+            return worker_failure(
                 operation,
                 WorkerOutcome.ACTION_REQUIRED,
                 "native_auth_unreadable",
@@ -435,13 +440,13 @@ class CodexNativeReconciliationWorkerExecutor:
             selected is not None
             and selected.runtime_state is ProviderRuntimeState.UNSUPPORTED
         ):
-            return _worker_failure(
+            return worker_failure(
                 operation,
                 WorkerOutcome.ACTION_REQUIRED,
                 "native_auth_unsupported",
                 self._clock,
             )
-        return _worker_success(operation, self._clock)
+        return worker_success(operation, self._clock)
 
 
 class CodexCallbackWorkerExecutor:
@@ -563,13 +568,13 @@ class CodexCallbackWorkerExecutor:
         finally:
             clear_mutable_buffer(acknowledgement)
         if not self._commit_selected(selected, committed):
-            return _worker_failure(
+            return worker_failure(
                 operation,
                 WorkerOutcome.TRANSIENT_FAILURE,
                 "selected_state_changed",
                 self._clock,
             )
-        return _worker_success(operation, self._clock)
+        return worker_success(operation, self._clock)
 
     def _rehydrate(
         self,
@@ -618,13 +623,13 @@ class CodexCallbackWorkerExecutor:
         finally:
             clear_mutable_buffer(acknowledgement)
         if not self._commit_selected(selected, committed):
-            return _worker_failure(
+            return worker_failure(
                 operation,
                 WorkerOutcome.TRANSIENT_FAILURE,
                 "selected_state_changed",
                 self._clock,
             )
-        return _worker_success(operation, self._clock)
+        return worker_success(operation, self._clock)
 
     def _require_selected(
         self,
@@ -672,55 +677,21 @@ class CodexCallbackWorkerExecutor:
         operation: DueOperation,
         result: CodexManagedAuthorityResult,
     ) -> WorkerResult:
-        return _managed_worker_result(operation, result, self._clock)
+        return _codex_managed_worker_result(operation, result, self._clock)
 
 
-def _managed_worker_result(
+def _codex_managed_worker_result(
     operation: DueOperation,
     result: CodexManagedAuthorityResult,
     clock: Clock,
 ) -> WorkerResult:
-    if result.outcome is CodexManagedOutcome.HEALTHY:
-        return _worker_success(operation, clock)
-    outcome = (
-        WorkerOutcome.ACTION_REQUIRED
-        if result.outcome.action_required
-        else (
-            WorkerOutcome.TIMED_OUT
-            if result.outcome is CodexManagedOutcome.TIMED_OUT
-            else WorkerOutcome.TRANSIENT_FAILURE
-        )
-    )
-    return _worker_failure(
+    return managed_worker_result(
         operation,
-        outcome,
-        f"codex_managed_{result.outcome.value}",
         clock,
-    )
-
-
-def _worker_success(
-    operation: DueOperation,
-    clock: Clock,
-) -> WorkerResult:
-    return WorkerResult(
-        operation_id=operation.operation_id,
-        outcome=WorkerOutcome.SUCCEEDED,
-        finished_at=clock.now(),
-    )
-
-
-def _worker_failure(
-    operation: DueOperation,
-    outcome: WorkerOutcome,
-    code: str,
-    clock: Clock,
-) -> WorkerResult:
-    return WorkerResult(
-        operation_id=operation.operation_id,
-        outcome=outcome,
-        finished_at=clock.now(),
-        failure_code=code,
+        succeeded=result.outcome is CodexManagedOutcome.HEALTHY,
+        action_required=result.outcome.action_required,
+        timed_out=result.outcome is CodexManagedOutcome.TIMED_OUT,
+        failure_code=f"codex_managed_{result.outcome.value}",
     )
 
 

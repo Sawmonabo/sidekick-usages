@@ -1,6 +1,7 @@
 """Qualified managed Claude authority read-back and projection."""
 
 from collections.abc import Mapping
+from contextlib import AbstractContextManager
 from datetime import datetime
 
 from sidekick_usages.core.accounts.models import ClaudeManagedLoginAuthority
@@ -24,8 +25,10 @@ from sidekick_usages.providers.claude.managed.storage.errors import (
 )
 from sidekick_usages.providers.claude.managed.storage.models import (
     ClaudeAuthoritySnapshot,
+    ClaudeProtectedLogin,
 )
 from sidekick_usages.providers.claude.managed.storage.service import (
+    protected_claude_login,
     read_protected_claude_authority,
 )
 from sidekick_usages.providers.claude.managed.storage.types import (
@@ -130,6 +133,25 @@ class ClaudeManagedAuthorityReader:
     ) -> ClaudeAuthoritySnapshot:
         """Read one profile and bind its provider identity."""
         return read_protected_claude_authority(
+            capabilities,
+            self._files,
+            reference_time,
+            expected_identity=expected_identity,
+            environment=environment,
+            runner=runner,
+        )
+
+    def open_login(
+        self,
+        capabilities: ClaudeCapabilities,
+        reference_time: datetime,
+        *,
+        expected_identity: ProviderIdentity,
+        environment: Mapping[str, str] | None = None,
+        runner: ClaudeCommandRunner = run_bounded_claude_command,
+    ) -> AbstractContextManager[ClaudeProtectedLogin]:
+        """Open one short-lived protected refresh credential lease."""
+        return protected_claude_login(
             capabilities,
             self._files,
             reference_time,

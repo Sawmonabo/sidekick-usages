@@ -42,6 +42,57 @@ class UnsupportedWorkerExecutor:
         )
 
 
+def managed_worker_result(
+    operation: DueOperation,
+    clock: Clock,
+    *,
+    succeeded: bool,
+    action_required: bool,
+    timed_out: bool,
+    failure_code: str,
+) -> WorkerResult:
+    """Map one provider-managed outcome to a sanitized worker result."""
+    if succeeded:
+        return worker_success(operation, clock)
+    outcome = (
+        WorkerOutcome.ACTION_REQUIRED
+        if action_required
+        else (
+            WorkerOutcome.TIMED_OUT
+            if timed_out
+            else WorkerOutcome.TRANSIENT_FAILURE
+        )
+    )
+    return worker_failure(operation, outcome, failure_code, clock)
+
+
+def worker_success(
+    operation: DueOperation,
+    clock: Clock,
+) -> WorkerResult:
+    """Return one sanitized successful worker result."""
+    return WorkerResult(
+        operation_id=operation.operation_id,
+        outcome=WorkerOutcome.SUCCEEDED,
+        finished_at=clock.now(),
+    )
+
+
+def worker_failure(
+    operation: DueOperation,
+    outcome: WorkerOutcome,
+    failure_code: str,
+    clock: Clock,
+) -> WorkerResult:
+    """Return one sanitized failed worker result."""
+    return WorkerResult(
+        operation_id=operation.operation_id,
+        outcome=outcome,
+        finished_at=clock.now(),
+        failure_code=failure_code,
+    )
+
+
 def run_isolated_worker(
     operation_id: OperationId,
     queue: OperationQueueStore,
