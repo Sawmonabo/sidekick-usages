@@ -41,14 +41,35 @@ class SelectedStateStore:
         provider_id: ProviderId,
     ) -> SelectedAccountState | None:
         """Load one provider's last verified state without mutation."""
-        return self._load_document().get(provider_id)
+        with self._lock.hold():
+            return self._load_document().get(provider_id)
 
     def load_all(self) -> tuple[SelectedAccountState, ...]:
         """Load every provider state in deterministic provider order."""
-        return self._load_document().states
+        with self._lock.hold():
+            return self._load_document().states
 
     def save(self, state: SelectedAccountState) -> SelectedAccountState:
         """Atomically replace one provider state without changing the other."""
+        return self._save(state)
+
+    def compare_and_swap(
+        self,
+        state: SelectedAccountState,
+        *,
+        expected: SelectedAccountState,
+    ) -> SelectedAccountState:
+        """Replace one provider only if its complete state is unchanged."""
+        if state.provider_id is not expected.provider_id:
+            raise ValueError("Selected-state providers must match.")
+        return self._save(state, expected=expected)
+
+    def _save(
+        self,
+        state: SelectedAccountState,
+        *,
+        expected: SelectedAccountState | None = None,
+    ) -> SelectedAccountState:
         with self._lock.hold() as transaction:
             recover_state_file(self._filesystem, transaction)
             snapshot = self._filesystem.read_opaque_private()
@@ -57,6 +78,13 @@ class SelectedStateStore:
                 if snapshot is None
                 else decode_selected_state(snapshot.data)
             )
+            if (
+                expected is not None
+                and document.get(state.provider_id) != expected
+            ):
+                raise ManagedStateConflictError(
+                    ManagedStateConflictKind.CONCURRENT_CHANGE
+                )
             states = {
                 current.provider_id: current for current in document.states
             }

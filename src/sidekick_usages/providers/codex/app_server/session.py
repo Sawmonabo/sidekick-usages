@@ -33,6 +33,7 @@ from sidekick_usages.providers.codex.app_server.process import (
 )
 from sidekick_usages.providers.codex.app_server.types import (
     CodexAppServerFailure,
+    CodexProcessGroupPolicy,
 )
 from sidekick_usages.serialization.json import JsonObject
 
@@ -56,6 +57,10 @@ class CodexAppServerSession:
         capabilities: CodexAppServerCapabilities,
         codex_home: Path,
         environment: Mapping[str, str] | None = None,
+        *,
+        process_group: CodexProcessGroupPolicy = (
+            CodexProcessGroupPolicy.ISOLATED
+        ),
     ) -> CodexAppServerSession:
         """Start, validate, and initialize one private app server."""
         verify_codex_executable(capabilities.executable)
@@ -74,6 +79,7 @@ class CodexAppServerSession:
                 codex_home=resolved_home,
             ),
             working_directory=resolved_home,
+            process_group=process_group,
         )
         connection = JsonRpcClient(transport)
         try:
@@ -136,6 +142,15 @@ class CodexAppServerSession:
     ) -> None:
         """Answer one validated server-initiated request."""
         self._connection.respond(request_id, result)
+
+    def respond_error(
+        self,
+        request_id: int | str,
+        code: int,
+        message: str,
+    ) -> None:
+        """Answer one server request with a bounded safe error."""
+        self._connection.respond_error(request_id, code, message)
 
     def close(self) -> None:
         """Close and reap the private app-server child."""

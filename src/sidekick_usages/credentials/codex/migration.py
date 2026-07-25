@@ -14,8 +14,10 @@ from sidekick_usages.core.accounts.types import (
     SidekickAccountId,
 )
 from sidekick_usages.core.types import AccountLabel, ProviderId
-from sidekick_usages.credentials.codex.authorities import (
+from sidekick_usages.credentials.codex.managed.home import (
     CodexPrivateHomeAuthority,
+)
+from sidekick_usages.credentials.codex.managed.service import (
     codex_app_server_failure,
     managed_codex_account,
 )
@@ -41,7 +43,13 @@ from sidekick_usages.providers.base import (
     ProviderFailure,
     ProviderFailureKind,
 )
-from sidekick_usages.providers.codex.account import read_codex_account
+from sidekick_usages.providers.codex.account.failures import (
+    codex_account_provider_failure,
+)
+from sidekick_usages.providers.codex.account.service import read_codex_account
+from sidekick_usages.providers.codex.account.types import (
+    CodexAccountReadFailure,
+)
 from sidekick_usages.providers.codex.app_server.capabilities import (
     probe_codex_capabilities,
 )
@@ -57,7 +65,7 @@ from sidekick_usages.providers.codex.app_server.session import (
 from sidekick_usages.providers.codex.app_server.types import (
     CodexAppServerFailure,
 )
-from sidekick_usages.providers.codex.auth import codex_generation_order
+from sidekick_usages.providers.codex.generation import codex_generation_order
 from sidekick_usages.providers.codex.login import (
     complete_codex_login,
     start_codex_login,
@@ -250,8 +258,8 @@ class CodexAuthMigrationCoordinator:
                 session,
                 refresh_token=False,
             )
-            if isinstance(observed, ProviderFailure):
-                return observed
+            if isinstance(observed, CodexAccountReadFailure):
+                return codex_account_provider_failure(observed)
             try:
                 return self._force_refresh(
                     session,
@@ -308,8 +316,8 @@ class CodexAuthMigrationCoordinator:
         if isinstance(before, ProviderFailure):
             return before
         refreshed = read_codex_account(session, refresh_token=True)
-        if isinstance(refreshed, ProviderFailure):
-            return refreshed
+        if isinstance(refreshed, CodexAccountReadFailure):
+            return codex_account_provider_failure(refreshed)
         after = _verified_snapshot(
             home,
             account_id,
@@ -414,9 +422,13 @@ def _expected_authority(
         raise AssertionError("Codex account has an invalid authority.")
     baseline: CodexAuthSnapshot | None = None
     if generation is not None:
-        order = codex_generation_order(str(generation))
-        if isinstance(order, ProviderFailure):
-            return order
+        try:
+            order = codex_generation_order(str(generation))
+        except ValueError:
+            return _failure(
+                ProviderFailureKind.MALFORMED,
+                "The managed Codex credential generation is malformed.",
+            )
         baseline = CodexAuthSnapshot(
             provider_identity=identity,
             generation=generation,

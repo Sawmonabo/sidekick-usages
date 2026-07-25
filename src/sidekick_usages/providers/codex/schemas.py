@@ -1,7 +1,5 @@
 """Strict Codex payload schemas and provider-native time conversion."""
 
-import binascii
-from base64 import b64decode
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from functools import cache
@@ -25,20 +23,18 @@ from sidekick_usages.core.models import (
     UsageWindow,
 )
 from sidekick_usages.core.types import ProviderId, TokenActivityScope
-from sidekick_usages.errors import InvalidPayloadError
 from sidekick_usages.providers.base import (
     ProviderBoundaryError,
     ProviderFailure,
     ProviderFailureKind,
 )
-from sidekick_usages.serialization.json import (
-    JsonObject,
-    decode_json_object,
+from sidekick_usages.providers.codex.models import CodexTokenClaims
+from sidekick_usages.providers.codex.token import (
+    decode_codex_token_claims,
+    validated_codex_token,
 )
+from sidekick_usages.serialization.json import JsonObject
 
-JWT_PARTS = 3
-
-_MAX_TOKEN_BYTES = 262_144
 _MAX_METADATA_BYTES = 4_096
 _MAX_PLAN_BYTES = 256
 _MAX_TIMESTAMP_BYTES = 4_096
@@ -78,7 +74,10 @@ _SAFE_PATH_SEGMENTS = frozenset(
 )
 
 
-type _TokenString = Annotated[str, AfterValidator(_token)]
+type _TokenString = Annotated[
+    str,
+    AfterValidator(validated_codex_token),
+]
 type _MetadataString = Annotated[str, AfterValidator(_metadata)]
 type _PlanString = Annotated[str, AfterValidator(_plan)]
 type _OpaqueTimestamp = Annotated[str, AfterValidator(_timestamp)]
@@ -99,10 +98,6 @@ def _bounded_utf8(value: str, maximum: int) -> str:
     return value
 
 
-def _token(value: str) -> str:
-    return _bounded_utf8(value, _MAX_TOKEN_BYTES)
-
-
 def _metadata(value: str) -> str:
     return _bounded_utf8(value, _MAX_METADATA_BYTES)
 
@@ -119,19 +114,6 @@ class _ProviderModel(BaseModel):
     """Strict provider model that intentionally tolerates new fields."""
 
     model_config = ConfigDict(strict=True, extra="ignore", frozen=True)
-
-
-class _AuthClaimsSchema(_ProviderModel):
-    chatgpt_account_id: _MetadataString | None = None
-    chatgpt_plan_type: _PlanString | None = None
-
-
-class _JwtSchema(_ProviderModel):
-    exp: int | None = Field(default=None, ge=0)
-    auth: _AuthClaimsSchema | None = Field(
-        default=None,
-        alias="https://api.openai.com/auth",
-    )
 
 
 class _AuthTokensSchema(_ProviderModel):
@@ -227,11 +209,6 @@ def _auth_identity_adapter() -> TypeAdapter[_AuthIdentityDocumentSchema]:
 
 
 @cache
-def _jwt_adapter() -> TypeAdapter[_JwtSchema]:
-    return TypeAdapter(_JwtSchema)
-
-
-@cache
 def _refresh_adapter() -> TypeAdapter[_RefreshSchema]:
     return TypeAdapter(_RefreshSchema)
 
@@ -244,14 +221,6 @@ def _usage_adapter() -> TypeAdapter[_UsageResponseSchema]:
 @cache
 def _token_usage_profile_adapter() -> TypeAdapter[_TokenUsageProfileSchema]:
     return TypeAdapter(_TokenUsageProfileSchema)
-
-
-@cache
-def _token_adapter() -> TypeAdapter[_TokenString]:
-    return TypeAdapter(
-        _TokenString,
-        config=ConfigDict(strict=True),
-    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -328,47 +297,27 @@ def _validate[T](
         ) from None
 
 
-def _decode_jwt(token: str) -> _JwtSchema:
-    """Decode and validate one JWT payload without trusting its signature."""
-    token = _validate(
-        _token_adapter(),
-        token,
-        message="Codex access-token metadata is malformed; log in again.",
-    )
-    parts = token.split(".")
-    if len(parts) != JWT_PARTS:
-        raise ProviderBoundaryError(
-            _failure(
-                ProviderFailureKind.MALFORMED,
-                "Codex access-token metadata is malformed; log in again.",
-            )
-        )
-    payload = parts[1] + "=" * (-len(parts[1]) % 4)
+def _token_claims(token: str) -> CodexTokenClaims:
     try:
-        value = decode_json_object(
-            b64decode(payload, altchars=b"-_", validate=True)
-        )
-    except binascii.Error, InvalidPayloadError, ValueError:
+        return decode_codex_token_claims(token)
+    except TypeError, ValueError:
         raise ProviderBoundaryError(
             _failure(
                 ProviderFailureKind.MALFORMED,
                 "Codex access-token metadata is malformed; log in again.",
             )
         ) from None
-    return _validate(
-        _jwt_adapter(),
-        value,
-        message="Codex access-token metadata is malformed; log in again.",
-    )
 
 
 def jwt_expiry(token: str) -> Expiry:
     """Normalize a Codex JWT expiry to an aware UTC value."""
-    claims = _decode_jwt(token)
-    if claims.exp is None:
+    claims = _token_claims(token)
+    if claims.expiry_seconds is None:
         return UnknownExpiry()
     try:
-        at = datetime(1970, 1, 1, tzinfo=UTC) + timedelta(seconds=claims.exp)
+        at = datetime(1970, 1, 1, tzinfo=UTC) + timedelta(
+            seconds=claims.expiry_seconds
+        )
     except OverflowError:
         raise ProviderBoundaryError(
             _failure(
@@ -381,14 +330,13 @@ def jwt_expiry(token: str) -> Expiry:
 
 def account_id_from_token(token: str) -> str | None:
     """Return the ChatGPT account id carried by a validated token."""
-    claims = _decode_jwt(token)
-    return claims.auth.chatgpt_account_id if claims.auth is not None else None
+    identity = _token_claims(token).provider_identity
+    return None if identity is None else str(identity)
 
 
 def plan_from_token(token: str) -> str | None:
     """Return the plan carried by a validated Codex token."""
-    claims = _decode_jwt(token)
-    return claims.auth.chatgpt_plan_type if claims.auth is not None else None
+    return _token_claims(token).plan
 
 
 def parse_auth_credentials(blob: JsonObject) -> DetectedCredentials:
@@ -413,9 +361,11 @@ def parse_auth_credentials(blob: JsonObject) -> DetectedCredentials:
                     fields=(f"tokens.{field_name}",),
                 )
             ) from None
-    claims = _decode_jwt(document.tokens.access_token)
+    claims = _token_claims(document.tokens.access_token)
     claims_id = (
-        claims.auth.chatgpt_account_id if claims.auth is not None else None
+        None
+        if claims.provider_identity is None
+        else str(claims.provider_identity)
     )
     account_id = _consistent_account_id(
         document.tokens.account_id,
@@ -429,7 +379,7 @@ def parse_auth_credentials(blob: JsonObject) -> DetectedCredentials:
                 fields=("tokens.account_id",),
             )
         )
-    plan = claims.auth.chatgpt_plan_type if claims.auth is not None else None
+    plan = claims.plan
     return DetectedCredentials(
         credentials=CodexCredentials(
             access_token=document.tokens.access_token,
@@ -445,9 +395,11 @@ def parse_auth_credentials(blob: JsonObject) -> DetectedCredentials:
 
 def credentials_from_access_token(token: str) -> DetectedCredentials:
     """Construct Codex credentials from one validated access token."""
-    claims = _decode_jwt(token)
+    claims = _token_claims(token)
     account_id = (
-        claims.auth.chatgpt_account_id if claims.auth is not None else None
+        None
+        if claims.provider_identity is None
+        else str(claims.provider_identity)
     )
     if account_id is None:
         raise ProviderBoundaryError(
@@ -457,7 +409,7 @@ def credentials_from_access_token(token: str) -> DetectedCredentials:
                 fields=("auth.chatgpt_account_id",),
             )
         )
-    plan = claims.auth.chatgpt_plan_type if claims.auth is not None else None
+    plan = claims.plan
     return DetectedCredentials(
         credentials=CodexCredentials(
             access_token=token,

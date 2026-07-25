@@ -188,9 +188,7 @@ class UnixWebSocketJsonRpcTransport:
                 CodexAppServerFailure.PROTOCOL_CLOSED
             ) from None
         if not isinstance(message, str):
-            raise CodexAppServerError(
-                CodexAppServerFailure.PROTOCOL_MALFORMED
-            )
+            raise CodexAppServerError(CodexAppServerFailure.PROTOCOL_MALFORMED)
         try:
             payload = message.encode("utf-8")
         except UnicodeEncodeError:
@@ -198,9 +196,7 @@ class UnixWebSocketJsonRpcTransport:
                 CodexAppServerFailure.PROTOCOL_MALFORMED
             ) from None
         if not payload or len(payload) > MAX_JSON_RPC_MESSAGE_BYTES:
-            raise CodexAppServerError(
-                CodexAppServerFailure.PROTOCOL_MALFORMED
-            )
+            raise CodexAppServerError(CodexAppServerFailure.PROTOCOL_MALFORMED)
         return payload
 
     def close(self) -> None:
@@ -291,6 +287,22 @@ class CodexDaemonSession:
         self._connection.respond(
             request_id,
             result,
+            timeout_seconds=timeout_seconds,
+        )
+
+    def respond_error(
+        self,
+        request_id: int | str,
+        code: int,
+        message: str,
+        *,
+        timeout_seconds: float = DEFAULT_JSON_RPC_TIMEOUT_SECONDS,
+    ) -> None:
+        """Answer one daemon request with a bounded safe error."""
+        self._connection.respond_error(
+            request_id,
+            code,
+            message,
             timeout_seconds=timeout_seconds,
         )
 

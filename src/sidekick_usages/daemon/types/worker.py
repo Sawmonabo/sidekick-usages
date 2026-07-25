@@ -26,3 +26,20 @@ class WorkerOutcome(StrEnum):
     CANCELLED = "cancelled"
     TIMED_OUT = "timed_out"
     UNSUPPORTED = "unsupported"
+
+
+class CallbackExchangeState(StrEnum):
+    """Closed lifecycle of one inherited callback exchange."""
+
+    AWAITING_RESPONSE = "awaiting_response"
+    AWAITING_COMPLETION = "awaiting_completion"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+
+
+class CallbackExchangePhase(StrEnum):
+    """Closed ownership phases around worker descriptor inheritance."""
+
+    READY = "ready"
+    CLAIMED = "claimed"
+    STARTED = "started"

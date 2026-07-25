@@ -3,6 +3,13 @@
 from enum import StrEnum
 
 
+class CodexProcessGroupPolicy(StrEnum):
+    """Whether a Codex child owns or inherits its process group."""
+
+    ISOLATED = "isolated"
+    INHERITED = "inherited"
+
+
 class CodexAppServerFailure(StrEnum):
     """Safe failure categories for the versioned app-server boundary."""
 

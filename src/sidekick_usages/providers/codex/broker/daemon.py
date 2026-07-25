@@ -4,7 +4,7 @@ import os
 import socket
 import stat
 import sys
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from sidekick_usages.errors import InvalidPayloadError
@@ -79,6 +79,7 @@ class CodexDaemonManager:
         environment: Mapping[str, str] | None = None,
         expected_user_id: int | None = None,
         peer_verifier: PeerVerifier | None = None,
+        cancelled: Callable[[], bool] | None = None,
     ) -> None:
         if (
             sys.platform == "win32"
@@ -94,9 +95,7 @@ class CodexDaemonManager:
                 CodexBrokerFailure.INSTALLATION_UNSUPPORTED
             ) from None
         if not resolved_home.is_dir():
-            raise CodexBrokerError(
-                CodexBrokerFailure.INSTALLATION_UNSUPPORTED
-            )
+            raise CodexBrokerError(CodexBrokerFailure.INSTALLATION_UNSUPPORTED)
         self._capabilities = capabilities
         self._native_home = resolved_home
         self._environment = None if environment is None else dict(environment)
@@ -110,6 +109,7 @@ class CodexDaemonManager:
             if peer_verifier is None
             else peer_verifier
         )
+        self._cancelled = cancelled
 
     @property
     def native_home(self) -> Path:
@@ -119,11 +119,7 @@ class CodexDaemonManager:
     @property
     def socket_path(self) -> Path:
         """Return the only accepted official daemon socket."""
-        return (
-            self._native_home
-            / CONTROL_DIRECTORY_NAME
-            / CONTROL_SOCKET_NAME
-        )
+        return self._native_home / CONTROL_DIRECTORY_NAME / CONTROL_SOCKET_NAME
 
     def ensure_running(self) -> CodexDaemonAuthority:
         """Idempotently start, inspect, and qualify the official daemon."""
@@ -136,17 +132,13 @@ class CodexDaemonManager:
             CodexDaemonStatus.STARTED,
             CodexDaemonStatus.ALREADY_RUNNING,
         }:
-            raise CodexBrokerError(
-                CodexBrokerFailure.LIFECYCLE_MALFORMED
-            )
+            raise CodexBrokerError(CodexBrokerFailure.LIFECYCLE_MALFORMED)
         running = self._run_lifecycle(
             "version",
             timeout_seconds=_DAEMON_VERSION_TIMEOUT_SECONDS,
         )
         if running.status is not CodexDaemonStatus.RUNNING:
-            raise CodexBrokerError(
-                CodexBrokerFailure.LIFECYCLE_MALFORMED
-            )
+            raise CodexBrokerError(CodexBrokerFailure.LIFECYCLE_MALFORMED)
         verify_codex_executable(self._capabilities.executable)
         control_directory, control_socket = self._qualify_socket()
         return CodexDaemonAuthority(
@@ -206,6 +198,7 @@ class CodexDaemonManager:
                 timeout_seconds=timeout_seconds,
                 maximum_output_bytes=_MAXIMUM_LIFECYCLE_OUTPUT_BYTES,
                 working_directory=self._native_home,
+                cancelled=self._cancelled,
             )
         except CodexAppServerError:
             raise CodexBrokerError(
@@ -219,9 +212,7 @@ class CodexDaemonManager:
             or b"\n" in output[:-1]
             or not output[:-1]
         ):
-            raise CodexBrokerError(
-                CodexBrokerFailure.LIFECYCLE_MALFORMED
-            )
+            raise CodexBrokerError(CodexBrokerFailure.LIFECYCLE_MALFORMED)
         try:
             payload = decode_json_object(output[:-1])
         except InvalidPayloadError:
@@ -234,17 +225,13 @@ class CodexDaemonManager:
         if actual_fields == expected_fields - {"backend"}:
             raise CodexBrokerError(CodexBrokerFailure.DAEMON_UNMANAGED)
         if actual_fields != expected_fields:
-            raise CodexBrokerError(
-                CodexBrokerFailure.LIFECYCLE_MALFORMED
-            )
+            raise CodexBrokerError(CodexBrokerFailure.LIFECYCLE_MALFORMED)
         if payload.get("backend") != "pid":
             raise CodexBrokerError(CodexBrokerFailure.DAEMON_UNMANAGED)
         if status is CodexDaemonStatus.STARTED and not _valid_process_id(
             payload.get("pid")
         ):
-            raise CodexBrokerError(
-                CodexBrokerFailure.LIFECYCLE_MALFORMED
-            )
+            raise CodexBrokerError(CodexBrokerFailure.LIFECYCLE_MALFORMED)
         managed_path = self._managed_path(payload)
         socket_path = self._reported_socket(payload)
         expected_version = str(self._capabilities.executable.version)
@@ -266,9 +253,7 @@ class CodexDaemonManager:
     def _status(self, payload: JsonObject) -> CodexDaemonStatus:
         value = payload.get("status")
         if not isinstance(value, str):
-            raise CodexBrokerError(
-                CodexBrokerFailure.LIFECYCLE_MALFORMED
-            )
+            raise CodexBrokerError(CodexBrokerFailure.LIFECYCLE_MALFORMED)
         try:
             return CodexDaemonStatus(value)
         except ValueError:
@@ -279,17 +264,11 @@ class CodexDaemonManager:
     def _managed_path(self, payload: JsonObject) -> Path:
         value = payload.get("managedCodexPath")
         if not isinstance(value, str):
-            raise CodexBrokerError(
-                CodexBrokerFailure.LIFECYCLE_MALFORMED
-            )
+            raise CodexBrokerError(CodexBrokerFailure.LIFECYCLE_MALFORMED)
         managed_path = Path(value)
-        expected_path = self._native_home.joinpath(
-            *MANAGED_CODEX_COMPONENTS
-        )
+        expected_path = self._native_home.joinpath(*MANAGED_CODEX_COMPONENTS)
         if managed_path != expected_path:
-            raise CodexBrokerError(
-                CodexBrokerFailure.INSTALLATION_UNSUPPORTED
-            )
+            raise CodexBrokerError(CodexBrokerFailure.INSTALLATION_UNSUPPORTED)
         try:
             resolved = managed_path.resolve(strict=True)
         except OSError, ValueError:
@@ -297,17 +276,13 @@ class CodexDaemonManager:
                 CodexBrokerFailure.INSTALLATION_UNSUPPORTED
             ) from None
         if resolved != self._capabilities.executable.path:
-            raise CodexBrokerError(
-                CodexBrokerFailure.INSTALLATION_UNSUPPORTED
-            )
+            raise CodexBrokerError(CodexBrokerFailure.INSTALLATION_UNSUPPORTED)
         return managed_path
 
     def _reported_socket(self, payload: JsonObject) -> Path:
         value = payload.get("socketPath")
         if not isinstance(value, str):
-            raise CodexBrokerError(
-                CodexBrokerFailure.LIFECYCLE_MALFORMED
-            )
+            raise CodexBrokerError(CodexBrokerFailure.LIFECYCLE_MALFORMED)
         socket_path = Path(value)
         if socket_path != self.socket_path:
             raise CodexBrokerError(CodexBrokerFailure.RUNTIME_UNSAFE)
@@ -321,9 +296,7 @@ class CodexDaemonManager:
             directory_status = control_directory_path.lstat()
             socket_status = self.socket_path.lstat()
         except OSError:
-            raise CodexBrokerError(
-                CodexBrokerFailure.RUNTIME_UNSAFE
-            ) from None
+            raise CodexBrokerError(CodexBrokerFailure.RUNTIME_UNSAFE) from None
         if (
             not stat.S_ISDIR(directory_status.st_mode)
             or stat.S_ISLNK(directory_status.st_mode)

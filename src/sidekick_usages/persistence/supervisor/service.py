@@ -35,6 +35,10 @@ class ServiceStateStore:
 
     def load(self) -> ServiceState | None:
         """Load the latest service observation when present."""
+        with self._lock.hold():
+            return self._load()
+
+    def _load(self) -> ServiceState | None:
         snapshot = self._filesystem.read_opaque_private()
         return (
             None if snapshot is None else decode_service_state(snapshot.data)
@@ -68,7 +72,7 @@ class ServiceStateStore:
         """Discard bounded interrupted writes and validate current state."""
         with self._lock.hold() as transaction:
             recover_state_file(self._filesystem, transaction)
-            self.load()
+            self._load()
 
     def clear(self) -> None:
         """Delete the exact service-state authority when present."""

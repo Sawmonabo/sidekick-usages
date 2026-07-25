@@ -81,7 +81,11 @@ class OperationEventHub(OperationEventSink):
         self.completed(
             SchedulerCompletion(
                 operation_id=operation.operation_id,
-                state=OperationState.RETRY_WAIT,
+                state=(
+                    None
+                    if operation.kind is OperationKind.CODEX_CALLBACK
+                    else OperationState.RETRY_WAIT
+                ),
                 outcome=WorkerOutcome.TRANSIENT_FAILURE,
                 failure_code=code,
             )

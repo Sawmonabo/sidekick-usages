@@ -19,6 +19,7 @@ from sidekick_usages.daemon.control.server import LocalControlServer
 from sidekick_usages.daemon.models.service import ServiceState
 from sidekick_usages.daemon.runtime.recovery import ActivationRecoveryScheduler
 from sidekick_usages.daemon.runtime.scheduler import DurableScheduler
+from sidekick_usages.daemon.types.ports import ResidentService
 from sidekick_usages.daemon.types.service import (
     PackageVersion,
     ServicePhase,
@@ -133,6 +134,7 @@ class SupervisorRuntime:
         clock: Clock,
         wakeup: WakeupChannel,
         stop_requested: Event,
+        resident: ResidentService,
         *,
         package_version: str = __version__,
     ) -> None:
@@ -143,6 +145,7 @@ class SupervisorRuntime:
         self._clock = clock
         self._wakeup = wakeup
         self._stop_requested = stop_requested
+        self._resident = resident
         self._package_version = PackageVersion(package_version)
         self._queue_recovered = False
 
@@ -156,6 +159,7 @@ class SupervisorRuntime:
         selector.register(self._wakeup, selectors.EVENT_READ, "wakeup")
         try:
             self.recover()
+            self._resident.start()
             self.run_cycle()
             while not self._stop_requested.is_set():
                 timeout = self._scheduler.next_wait_seconds()
@@ -167,11 +171,19 @@ class SupervisorRuntime:
                 self.run_cycle()
         finally:
             self._publish(ServicePhase.STOPPING)
-            connections.close()
-            self._scheduler.shutdown()
-            selector.close()
-            self._server.close()
-            self._wakeup.close()
+            try:
+                self._resident.request_stop()
+            finally:
+                try:
+                    self._scheduler.shutdown()
+                finally:
+                    try:
+                        self._resident.close()
+                    finally:
+                        connections.close()
+                        selector.close()
+                        self._server.close()
+                        self._wakeup.close()
 
     def recover(self) -> None:
         """Recover durable queue and journal work before readiness."""
@@ -183,14 +195,20 @@ class SupervisorRuntime:
         """Collect, dispatch, and publish one event-driven work cycle."""
         self._scheduler.collect()
         self._scheduler.dispatch_due()
+        reconciled = self._recovery.reconciled()
+        broker_ready = self._resident.ready
         self._publish(
             ServicePhase.READY
-            if self._recovery.reconciled()
+            if reconciled and broker_ready
             else ServicePhase.DEGRADED,
             failure_code=(
                 None
-                if self._recovery.reconciled()
-                else "reconciliation_required"
+                if reconciled and broker_ready
+                else (
+                    "reconciliation_required"
+                    if not reconciled
+                    else "codex_broker_unavailable"
+                )
             ),
         )
 
@@ -210,6 +228,7 @@ class SupervisorRuntime:
             observed_at=self._clock.now(),
             queue_recovered=self._queue_recovered,
             journals_reconciled=journals_reconciled,
+            broker_ready=self._resident.ready,
             active_workers=self._scheduler.active_count,
             failure_code=failure_code,
         )

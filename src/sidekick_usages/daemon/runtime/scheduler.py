@@ -2,11 +2,13 @@
 
 import time
 from collections.abc import Callable
+from contextlib import suppress
 from datetime import datetime, timedelta
 
 from sidekick_usages.clock import Clock
 from sidekick_usages.core.selection.models import DueOperation
 from sidekick_usages.core.selection.types import (
+    OperationKind,
     OperationPriority,
     OperationState,
 )
@@ -18,6 +20,7 @@ from sidekick_usages.daemon.worker.pool import (
     WorkerLaunchError,
     WorkerPool,
 )
+from sidekick_usages.persistence.state.files import ManagedStateConflictError
 from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
 from sidekick_usages.persistence.supervisor.results import WorkerResultStore
 
@@ -67,6 +70,8 @@ class DurableScheduler:
     def recover(self) -> tuple[SchedulerCompletion, ...]:
         """Recover committed results before retrying interrupted workers."""
         self._queue.recover()
+        for callback in self._queue.discard_callbacks():
+            self._results.delete(callback.operation_id)
         recovered: list[SchedulerCompletion] = []
         now = self._clock.now()
         for operation in self._queue.load():
@@ -92,29 +97,45 @@ class DurableScheduler:
         for operation in self._queue.due(now):
             if (
                 operation.priority is OperationPriority.CODEX_CALLBACK
-                and not self._prepare_callback(operation, now)
+                and not self._prepare_callback(
+                    operation,
+                    monotonic_now,
+                )
             ):
                 continue
             if not self._workers.can_start(operation):
                 continue
-            running = self._queue.transition(
-                operation.operation_id,
-                OperationState.RUNNING,
-                updated_at=now,
-            )
+            try:
+                running = self._queue.transition(
+                    operation.operation_id,
+                    OperationState.RUNNING,
+                    updated_at=now,
+                )
+            except ManagedStateConflictError:
+                if operation.kind is OperationKind.CODEX_CALLBACK:
+                    self._workers.cancel_callback(operation.operation_id)
+                continue
             try:
                 self._workers.start(
                     running,
                     monotonic_now=monotonic_now,
                 )
             except WorkerLaunchError:
-                self._queue.transition(
-                    running.operation_id,
-                    OperationState.RETRY_WAIT,
-                    updated_at=now,
-                    due_at=now + _retry_delay(running.attempts),
-                    failure_code="worker_launch_failed",
-                )
+                if running.kind is OperationKind.CODEX_CALLBACK:
+                    with suppress(ManagedStateConflictError):
+                        self._queue.remove(
+                            running.operation_id,
+                            expected_state=OperationState.RUNNING,
+                        )
+                    self._workers.cancel_callback(running.operation_id)
+                else:
+                    self._queue.transition(
+                        running.operation_id,
+                        OperationState.RETRY_WAIT,
+                        updated_at=now,
+                        due_at=now + _retry_delay(running.attempts),
+                        failure_code="worker_launch_failed",
+                    )
                 self._events.failed(running, "worker_launch_failed")
                 continue
             self._events.started(running)
@@ -123,22 +144,16 @@ class DurableScheduler:
 
     def collect(self) -> tuple[SchedulerCompletion, ...]:
         """Reap completions and hard timeouts without coupling accounts."""
+        monotonic_now = self._monotonic()
         exits = (
-            *self._workers.reap_completed(),
-            *self._workers.expire(self._monotonic()),
+            *self._workers.reap_completed(monotonic_now),
+            *self._workers.expire(monotonic_now),
         )
         completed: list[SchedulerCompletion] = []
         for worker_exit in exits:
-            try:
-                completion = self._complete_exit(worker_exit)
-            except Exception:
-                self._events.failed(
-                    worker_exit.operation,
-                    "scheduler_result_failed",
-                )
-                continue
-            completed.append(completion)
-            self._events.completed(completion)
+            completion = self._finalize_exit(worker_exit)
+            if completion is not None:
+                completed.append(completion)
         return tuple(completed)
 
     def next_wait_seconds(self) -> float | None:
@@ -161,34 +176,63 @@ class DurableScheduler:
 
     def shutdown(self) -> tuple[SchedulerCompletion, ...]:
         """Terminate workers and durably reschedule their operations."""
-        completed: list[SchedulerCompletion] = []
-        for worker_exit in self._workers.shutdown():
-            completion = self._complete_exit(worker_exit)
-            completed.append(completion)
-            self._events.completed(completion)
+        completed = list(self.collect())
+        try:
+            exits = self._workers.shutdown()
+        except Exception:
+            self._workers.close_callback_exchanges()
+            raise
+        try:
+            for worker_exit in exits:
+                completion = self._finalize_exit(worker_exit)
+                if completion is not None:
+                    completed.append(completion)
+        finally:
+            self._workers.close_callback_exchanges()
         return tuple(completed)
 
     def _prepare_callback(
         self,
         callback: DueOperation,
-        now: datetime,
+        monotonic_now: float,
     ) -> bool:
+        if self._workers.codex_activation_active():
+            self._reject_callback(callback, "callback_authority_busy")
+            return False
         try:
-            preempted = self._workers.preempt_for_callback(callback)
+            preempted = self._workers.preempt_for_callback(
+                callback,
+                monotonic_now=monotonic_now,
+            )
         except WorkerLaunchError:
-            self._events.failed(callback, "callback_authority_busy")
+            self._reject_callback(callback, "callback_authority_busy")
             return False
         if preempted is None:
             return True
-        result = WorkerResult(
-            operation_id=preempted.operation.operation_id,
-            outcome=WorkerOutcome.CANCELLED,
-            finished_at=now,
-            failure_code="worker_preempted",
-        )
-        completion = self._apply_result(preempted.operation, result, now)
-        self._events.completed(completion)
-        return True
+        completion = self._finalize_exit(preempted)
+        if completion is not None:
+            return True
+        self._reject_callback(callback, "callback_authority_busy")
+        return False
+
+    def _reject_callback(
+        self,
+        callback: DueOperation,
+        code: str,
+    ) -> None:
+        removed = False
+        try:
+            self._queue.remove(
+                callback.operation_id,
+                expected_state=OperationState.SCHEDULED,
+            )
+            removed = True
+        except ManagedStateConflictError:
+            pass
+        finally:
+            self._workers.cancel_callback(callback.operation_id)
+        if removed:
+            self._events.failed(callback, code)
 
     def _complete_exit(
         self,
@@ -221,6 +265,29 @@ class DurableScheduler:
                 )
         return self._apply_result(operation, result, now)
 
+    def _finalize_exit(
+        self,
+        worker_exit: WorkerExit,
+    ) -> SchedulerCompletion | None:
+        try:
+            completion = self._complete_exit(worker_exit)
+        except Exception:
+            self._workers.complete_callback(
+                worker_exit.operation.operation_id,
+                WorkerOutcome.TRANSIENT_FAILURE,
+            )
+            self._events.failed(
+                worker_exit.operation,
+                "scheduler_result_failed",
+            )
+            return None
+        self._workers.complete_callback(
+            worker_exit.operation.operation_id,
+            completion.outcome,
+        )
+        self._events.completed(completion)
+        return completion
+
     def _safe_result(
         self,
         operation: DueOperation,
@@ -242,7 +309,13 @@ class DurableScheduler:
         result: WorkerResult,
         now: datetime,
     ) -> SchedulerCompletion:
-        if result.outcome is WorkerOutcome.SUCCEEDED:
+        if operation.kind is OperationKind.CODEX_CALLBACK:
+            self._queue.remove(
+                operation.operation_id,
+                expected_state=OperationState.RUNNING,
+            )
+            state: OperationState | None = None
+        elif result.outcome is WorkerOutcome.SUCCEEDED:
             if operation.priority is OperationPriority.SCHEDULED:
                 updated = self._queue.transition(
                     operation.operation_id,
@@ -250,7 +323,7 @@ class DurableScheduler:
                     updated_at=now,
                     due_at=now + _SCHEDULE_INTERVAL,
                 )
-                state: OperationState | None = updated.state
+                state = updated.state
             else:
                 self._queue.remove(
                     operation.operation_id,

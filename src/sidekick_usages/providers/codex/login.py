@@ -11,7 +11,13 @@ from sidekick_usages.providers.base import (
     ProviderFailure,
     ProviderFailureKind,
 )
-from sidekick_usages.providers.codex.account import read_codex_account
+from sidekick_usages.providers.codex.account.failures import (
+    codex_account_provider_failure,
+)
+from sidekick_usages.providers.codex.account.service import read_codex_account
+from sidekick_usages.providers.codex.account.types import (
+    CodexAccountReadFailure,
+)
 from sidekick_usages.providers.codex.app_server.errors import (
     CodexAppServerError,
 )
@@ -96,7 +102,12 @@ def complete_codex_login(
         updated = _authenticated_update(message.params)
         if isinstance(updated, ProviderFailure):
             return updated
-        return read_codex_account(session, refresh_token=False)
+        observed = read_codex_account(session, refresh_token=False)
+        return (
+            codex_account_provider_failure(observed)
+            if isinstance(observed, CodexAccountReadFailure)
+            else observed
+        )
     raise CodexAppServerError(CodexAppServerFailure.PROTOCOL_MALFORMED)
 
 

@@ -52,7 +52,8 @@ class OperationQueueStore:
 
     def load(self) -> tuple[DueOperation, ...]:
         """Load every durable operation in deterministic slot order."""
-        return self._load_document().operations
+        with self._lock.hold():
+            return self._load_document().operations
 
     def get(
         self,
@@ -192,6 +193,27 @@ class OperationQueueStore:
             )
             self._commit(recovered, snapshot)
             return recovered
+
+    def discard_callbacks(self) -> tuple[DueOperation, ...]:
+        """Remove callback work whose in-memory daemon request is gone."""
+        with self._lock.hold() as transaction:
+            recover_state_file(self._filesystem, transaction)
+            snapshot = self._filesystem.read_opaque_private()
+            document = self._document(snapshot)
+            discarded = tuple(
+                operation
+                for operation in document.operations
+                if operation.kind is OperationKind.CODEX_CALLBACK
+            )
+            if not discarded:
+                return ()
+            retained = tuple(
+                operation
+                for operation in document.operations
+                if operation.kind is not OperationKind.CODEX_CALLBACK
+            )
+            self._commit(retained, snapshot)
+            return discarded
 
     def remove_account(self, account_id: SidekickAccountId) -> int:
         """Remove idle due state or reject a running account operation."""

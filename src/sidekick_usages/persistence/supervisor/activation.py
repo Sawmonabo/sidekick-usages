@@ -25,7 +25,10 @@ from sidekick_usages.core.selection.types import (
     ProviderRuntimeState,
 )
 from sidekick_usages.core.types import ProviderId
-from sidekick_usages.persistence.locking import PersistenceLock
+from sidekick_usages.persistence.locking import (
+    LOCK_TIMEOUT_SECONDS,
+    PersistenceLock,
+)
 from sidekick_usages.persistence.models.artifact import FileSnapshot
 from sidekick_usages.persistence.models.selection import (
     MAX_ACTIVATION_HISTORY,
@@ -44,16 +47,13 @@ from sidekick_usages.persistence.state.files import (
 from sidekick_usages.persistence.state.filesystem import (
     ManagedStateFilesystem,
 )
+from sidekick_usages.persistence.supervisor.authority import (
+    OperationAuthorityLock,
+    ProviderMutationLock,
+)
 from sidekick_usages.persistence.supervisor.selection import SelectedStateStore
 from sidekick_usages.persistence.types.activation import StateLockFactory
 from sidekick_usages.persistence.types.artifact import AuthorityExpectation
-
-_ACCOUNT_LOCK_DIRECTORY = "account-locks"
-
-
-def _account_id_key(account_id: SidekickAccountId) -> str:
-    """Return the canonical ordering key for account lock acquisition."""
-    return str(account_id)
 
 
 class ActivationJournalTransaction:
@@ -183,12 +183,30 @@ class ActivationJournalTransaction:
             raise ManagedStateConflictError(
                 ManagedStateConflictKind.CONCURRENT_CHANGE
             )
-        selected.save(state)
+        self._commit_selection(state, selected, active)
         return self.advance(
             operation_id,
             ActivationPhase.COMMITTED,
             updated_at=updated_at,
         )
+
+    def _commit_selection(
+        self,
+        state: SelectedAccountState,
+        selected: SelectedStateStore,
+        active: ActivationRecord,
+    ) -> None:
+        current = selected.load(self.provider_id)
+        if (
+            current is None
+            or current.account_id != active.source_account_id
+            or current.provider_identity != active.source_provider_identity
+            or current.runtime_generation != active.source_generation
+        ):
+            raise ManagedStateConflictError(
+                ManagedStateConflictKind.CONCURRENT_CHANGE
+            )
+        selected.compare_and_swap(state, expected=current)
 
     @staticmethod
     def _record_accounts(
@@ -225,12 +243,14 @@ class ActivationJournalStore:
     def __init__(
         self,
         root: Path,
+        operations_root: Path,
         *,
         lock_factory: StateLockFactory = PersistenceLock,
     ) -> None:
-        if not root.is_absolute():
-            raise ValueError("Activation-journal root must be absolute.")
+        if not root.is_absolute() or not operations_root.is_absolute():
+            raise ValueError("Activation paths must be absolute.")
         self.root = root
+        self._operations_root = operations_root
         self._lock_factory = lock_factory
 
     def load(self, provider_id: ProviderId) -> ActivationJournalDocument:
@@ -253,24 +273,21 @@ class ActivationJournalStore:
         account_ids: tuple[SidekickAccountId, ...],
     ) -> Iterator[ActivationJournalTransaction]:
         """Acquire provider first, then stable-ID-sorted account locks."""
-        ordered_ids = tuple(
-            sorted(
-                set(account_ids),
-                key=_account_id_key,
-            )
-        )
+        ordered_ids = tuple(sorted(set(account_ids)))
         provider_filesystem = self._provider_filesystem(provider_id)
         with ExitStack() as stack:
+            stack.enter_context(
+                ProviderMutationLock(
+                    self._operations_root,
+                    provider_id,
+                    ordered_ids,
+                    timeout_seconds=LOCK_TIMEOUT_SECONDS,
+                ).hold()
+            )
             provider_transaction = stack.enter_context(
                 self._lock_factory(provider_filesystem).hold()
             )
             recover_state_file(provider_filesystem, provider_transaction)
-            for account_id in ordered_ids:
-                stack.enter_context(
-                    self._lock_factory(
-                        self._account_lock_filesystem(account_id)
-                    ).hold()
-                )
             yield ActivationJournalTransaction(
                 provider_filesystem,
                 provider_id,
@@ -367,7 +384,7 @@ class ActivationJournalStore:
                     read_back,
                     outcome=ActivationOutcome.EXTERNAL_RECONCILED,
                 )
-            selected.save(state)
+            transaction._commit_selection(state, selected, current)
             if action is ActivationRecoveryAction.RECONCILIATION_REQUIRED:
                 transaction.advance(
                     current.operation_id,
@@ -402,6 +419,21 @@ class ActivationJournalStore:
         with ExitStack() as stack:
             documents: list[ActivationJournalDocument] = []
             for provider_id in ProviderId:
+                stack.enter_context(
+                    ProviderMutationLock(
+                        self._operations_root,
+                        provider_id,
+                        (),
+                        timeout_seconds=LOCK_TIMEOUT_SECONDS,
+                    ).hold()
+                )
+            stack.enter_context(
+                OperationAuthorityLock(
+                    self._operations_root,
+                    account_id,
+                ).hold()
+            )
+            for provider_id in ProviderId:
                 filesystem = self._provider_filesystem(provider_id)
                 transaction = stack.enter_context(
                     self._lock_factory(filesystem).hold()
@@ -418,11 +450,6 @@ class ActivationJournalStore:
                         ManagedStateConflictKind.CONCURRENT_CHANGE
                     )
                 documents.append(document)
-            stack.enter_context(
-                self._lock_factory(
-                    self._account_lock_filesystem(account_id)
-                ).hold()
-            )
             if any(
                 document.active is not None
                 and account_id in self._record_accounts(document.active)
@@ -437,7 +464,18 @@ class ActivationJournalStore:
         """Recover bounded interrupted journal candidates for all providers."""
         for provider_id in ProviderId:
             filesystem = self._provider_filesystem(provider_id)
-            with self._lock_factory(filesystem).hold() as transaction:
+            with ExitStack() as stack:
+                stack.enter_context(
+                    ProviderMutationLock(
+                        self._operations_root,
+                        provider_id,
+                        (),
+                        timeout_seconds=LOCK_TIMEOUT_SECONDS,
+                    ).hold()
+                )
+                transaction = stack.enter_context(
+                    self._lock_factory(filesystem).hold()
+                )
                 recover_state_file(filesystem, transaction)
                 self.load(provider_id)
 
@@ -486,12 +524,4 @@ class ActivationJournalStore:
         return ManagedStateFilesystem(
             self.root / f"{provider_id.value}.json",
             decode_activation_journal,
-        )
-
-    def _account_lock_filesystem(
-        self,
-        account_id: SidekickAccountId,
-    ) -> PrivateFilesystem:
-        return PrivateFilesystem(
-            self.root / _ACCOUNT_LOCK_DIRECTORY / str(account_id)
         )

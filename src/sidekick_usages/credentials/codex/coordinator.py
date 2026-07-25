@@ -40,13 +40,13 @@ from sidekick_usages.providers.codex.auth import (
     CODEX_AUTH_FILE,
     CODEX_CONFIG_FILE,
     codex_auth_path,
-    default_codex_home,
     prepare_export_bundle,
     prepare_private_bundle,
     prepare_private_bundle_from_auth_bytes,
     validate_auth_bundle_matches_account,
     validate_auth_bundle_owner,
 )
+from sidekick_usages.providers.codex.native import default_codex_home
 
 _BUNDLE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 _BUNDLE_DIGEST_HEX_LENGTH = 32

@@ -41,9 +41,7 @@ def write_codex_schema(root: Path, *, external_auth: bool) -> None:
         "account/login/completed",
         "account/updated",
     )
-    server_notifications["properties"] = {
-        "emittedAtMs": {"type": "integer"}
-    }
+    server_notifications["properties"] = {"emittedAtMs": {"type": "integer"}}
     schemas_by_path: dict[str, JsonObject] = {
         "v1/InitializeParams.json": _object_schema(
             {"clientInfo": {"type": "object"}},
@@ -104,9 +102,7 @@ def write_codex_schema(root: Path, *, external_auth: bool) -> None:
         ),
         "ChatgptAuthTokensRefreshParams.json": _object_schema(
             {
-                "previousAccountId": {
-                    "type": _json_values("string", "null")
-                },
+                "previousAccountId": {"type": _json_values("string", "null")},
                 "reason": {
                     "type": "string",
                     "enum": _json_values("unauthorized"),
@@ -118,9 +114,7 @@ def write_codex_schema(root: Path, *, external_auth: bool) -> None:
             {
                 "accessToken": {"type": "string"},
                 "chatgptAccountId": {"type": "string"},
-                "chatgptPlanType": {
-                    "type": _json_values("string", "null")
-                },
+                "chatgptPlanType": {"type": _json_values("string", "null")},
             },
             required=("accessToken", "chatgptAccountId"),
         ),

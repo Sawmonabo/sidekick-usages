@@ -1,6 +1,5 @@
 """Bounded secret-free supervisor control protocol."""
 
-import struct
 from collections import deque
 
 from sidekick_usages.core.accounts.types import (
@@ -35,6 +34,13 @@ from sidekick_usages.daemon.types.protocol import (
     RequestKind,
     ServiceStopReason,
 )
+from sidekick_usages.serialization.framing import (
+    BoundedFrameDecoder,
+    EmptyFrameError,
+    IncompleteFrameError,
+    OversizedFrameError,
+    encode_bounded_frame,
+)
 from sidekick_usages.serialization.json import (
     JsonDecodeError,
     JsonEncodeError,
@@ -49,8 +55,6 @@ MAX_FRAME_BYTES = 65_536
 MAX_REQUESTS_PER_CONNECTION = 128
 READ_CHUNK_BYTES = 16_384
 UNATTRIBUTED_REQUEST_ID = RequestId("00000000-0000-0000-0000-000000000000")
-
-_FRAME_PREFIX = struct.Struct(">I")
 
 
 class ProtocolFailureError(ValueError):
@@ -83,41 +87,23 @@ class FrameDecoder:
     """Incrementally decode length-prefixed frames with a bounded buffer."""
 
     def __init__(self) -> None:
-        self._buffer = bytearray()
-        self._expected: int | None = None
+        self._decoder = BoundedFrameDecoder(MAX_FRAME_BYTES)
 
     def feed(self, chunk: bytes) -> tuple[bytes, ...]:
         """Consume one fragment and return every newly complete payload."""
-        if not isinstance(chunk, bytes):
-            raise TypeError("Protocol chunks must be bytes.")
-        self._buffer.extend(chunk)
-        frames: list[bytes] = []
-        while True:
-            if self._expected is None:
-                if len(self._buffer) < _FRAME_PREFIX.size:
-                    break
-                (declared,) = _FRAME_PREFIX.unpack(
-                    self._buffer[: _FRAME_PREFIX.size]
-                )
-                del self._buffer[: _FRAME_PREFIX.size]
-                if declared == 0:
-                    raise MalformedFrameError
-                if declared > MAX_FRAME_BYTES:
-                    raise FrameTooLargeError
-                self._expected = declared
-            if len(self._buffer) < self._expected:
-                break
-            frames.append(bytes(self._buffer[: self._expected]))
-            del self._buffer[: self._expected]
-            self._expected = None
-        if len(self._buffer) > MAX_FRAME_BYTES:
-            raise FrameTooLargeError
-        return tuple(frames)
+        try:
+            return tuple(bytes(frame) for frame in self._decoder.feed(chunk))
+        except OversizedFrameError:
+            raise FrameTooLargeError from None
+        except EmptyFrameError:
+            raise MalformedFrameError from None
 
     def finish(self) -> None:
         """Reject an incomplete prefix or payload at end of stream."""
-        if self._buffer or self._expected is not None:
-            raise MalformedFrameError
+        try:
+            self._decoder.finish()
+        except IncompleteFrameError:
+            raise MalformedFrameError from None
 
 
 class FramedTransport:
@@ -166,11 +152,12 @@ class FramedTransport:
 
 def encode_frame(payload: bytes) -> bytes:
     """Prefix one nonempty bounded payload with its big-endian length."""
-    if not payload:
-        raise MalformedFrameError
-    if len(payload) > MAX_FRAME_BYTES:
-        raise FrameTooLargeError
-    return _FRAME_PREFIX.pack(len(payload)) + payload
+    try:
+        return bytes(encode_bounded_frame(payload, MAX_FRAME_BYTES))
+    except EmptyFrameError:
+        raise MalformedFrameError from None
+    except OversizedFrameError:
+        raise FrameTooLargeError from None
 
 
 def encode_request(request: ControlRequest) -> bytes:

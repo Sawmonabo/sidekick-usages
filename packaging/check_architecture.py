@@ -32,6 +32,16 @@ REVIEW_MODULE_LINES = 800
 MAX_CLI_APP_LINES = 200
 _CODEX_JSONRPC_ROOT = "src/sidekick_usages/providers/codex/app_server/jsonrpc/"
 _CODEX_BROKER_WIRE_FILE = "src/sidekick_usages/providers/codex/broker/wire.py"
+_CODEX_WORKER_FILE = "src/sidekick_usages/daemon/worker/codex.py"
+_SUPERVISOR_ENTRYPOINT_FILE = "src/sidekick_usages/entrypoints/supervisor.py"
+_SUPERVISOR_PROVIDER_IMPORTS = frozenset(
+    {
+        "sidekick_usages.providers.codex.app_server.executable",
+        "sidekick_usages.providers.codex.broker.responder",
+        "sidekick_usages.providers.codex.broker.service",
+        "sidekick_usages.providers.codex.native",
+    }
+)
 
 _SERVICE_FILES = frozenset(
     {
@@ -67,20 +77,6 @@ _DAEMON_CONTROL_FILES = frozenset(
     {
         "src/sidekick_usages/daemon/control/protocol.py",
         "src/sidekick_usages/platform/peer.py",
-    }
-)
-_RESIDENT_DAEMON_MODULES = frozenset(
-    {
-        "control/dispatch.py",
-        "control/protocol.py",
-        "control/server.py",
-        "runtime/diagnostics.py",
-        "runtime/entrypoint.py",
-        "runtime/recovery.py",
-        "runtime/scheduler.py",
-        "runtime/supervisor.py",
-        "worker/entrypoint.py",
-        "worker/pool.py",
     }
 )
 _PYDANTIC_OWNERS = frozenset(
@@ -305,6 +301,39 @@ def _check_import(
         ),
         (
             "DEP006",
+            not path.startswith("src/sidekick_usages/entrypoints/"),
+            matches(module, "sidekick_usages.entrypoints"),
+            "composition entrypoints cannot be imported as application code",
+        ),
+        (
+            "DEP006",
+            path == _SUPERVISOR_ENTRYPOINT_FILE,
+            (
+                matches_any(
+                    module,
+                    (
+                        "click",
+                        "prompt_toolkit",
+                        "rich",
+                        "typer",
+                        "sidekick_usages.cli",
+                        "sidekick_usages.credentials",
+                        "sidekick_usages.http",
+                        "sidekick_usages.usage",
+                    ),
+                )
+                or (
+                    matches(module, "sidekick_usages.providers")
+                    and not any(
+                        matches(module, allowed)
+                        for allowed in _SUPERVISOR_PROVIDER_IMPORTS
+                    )
+                )
+            ),
+            "supervisor entrypoint imports only its lean Codex boundary",
+        ),
+        (
+            "DEP006",
             path in _DAEMON_CONTROL_FILES,
             matches(module, "sidekick_usages.persistence"),
             "daemon control primitives cannot import persistence",
@@ -334,6 +363,7 @@ def _check_import(
                 "urllib3",
                 "sidekick_usages.cli",
                 "sidekick_usages.credentials",
+                "sidekick_usages.daemon",
                 "sidekick_usages.heartbeat.service",
                 "sidekick_usages.usage",
             ),
@@ -356,14 +386,7 @@ def _check_import(
 
 def _is_resident_daemon(path: str) -> bool:
     prefix = "src/sidekick_usages/daemon/"
-    if not path.startswith(prefix):
-        return False
-    relative = path.removeprefix(prefix)
-    return (
-        relative in _RESIDENT_DAEMON_MODULES
-        or relative.startswith("models/")
-        or relative.startswith("types/")
-    )
+    return path.startswith(prefix) and path != _CODEX_WORKER_FILE
 
 
 def _is_pydantic_owner(path: str) -> bool:

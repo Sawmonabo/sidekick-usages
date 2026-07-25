@@ -25,6 +25,7 @@ class ServiceState:
     observed_at: datetime
     queue_recovered: bool
     journals_reconciled: bool
+    broker_ready: bool
     active_workers: int
     failure_code: str | None = None
 
@@ -51,7 +52,10 @@ class ServiceState:
         if self.phase is ServicePhase.READY and (
             not self.queue_recovered
             or not self.journals_reconciled
+            or not self.broker_ready
             or code is not None
         ):
-            raise ValueError("Ready service state requires recovered stores.")
+            raise ValueError(
+                "Ready service state requires recovered resident state."
+            )
         object.__setattr__(self, "failure_code", code)

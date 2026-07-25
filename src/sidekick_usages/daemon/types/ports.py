@@ -18,6 +18,23 @@ from sidekick_usages.daemon.types.worker import ExitNotifier
 from sidekick_usages.persistence.supervisor.authority import OperationAuthority
 
 
+class ResidentService(Protocol):
+    """One supervisor-owned service independent of dashboard connections."""
+
+    @property
+    def ready(self) -> bool:
+        """Return whether the resident service can serve current state."""
+
+    def start(self) -> None:
+        """Start after singleton control ownership is established."""
+
+    def request_stop(self) -> None:
+        """Stop accepting work without waiting for active work to finish."""
+
+    def close(self) -> None:
+        """Join active work and release resident resources."""
+
+
 class ControlDispatcher(Protocol):
     """Dispatch already-authenticated closed control requests."""
 
@@ -40,6 +57,9 @@ class WorkerHandle(Protocol):
 
     def wait(self, timeout_seconds: float | None) -> int | None:
         """Wait up to a bound and return ``None`` on timeout."""
+
+    def group_alive(self) -> bool:
+        """Return whether any process remains in the worker group."""
 
     def terminate_group(self) -> None:
         """Request termination of the worker process group."""

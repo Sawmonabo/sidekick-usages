@@ -4,7 +4,7 @@ import os
 import re
 import shutil
 import stat
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from sidekick_usages.providers.codex.app_server.errors import (
@@ -20,6 +20,7 @@ from sidekick_usages.providers.codex.app_server.process import (
 )
 from sidekick_usages.providers.codex.app_server.types import (
     CodexAppServerFailure,
+    CodexProcessGroupPolicy,
 )
 
 SUPPORTED_CODEX_VERSION = CodexVersion(0, 145, 0)
@@ -33,6 +34,11 @@ _VERSION_PATTERN = re.compile(
 
 def discover_codex_executable(
     environment: Mapping[str, str] | None = None,
+    *,
+    process_group: CodexProcessGroupPolicy = (
+        CodexProcessGroupPolicy.ISOLATED
+    ),
+    cancelled: Callable[[], bool] | None = None,
 ) -> CodexExecutable:
     """Resolve, version, and freeze one exact Codex executable."""
     source = os.environ if environment is None else environment
@@ -59,6 +65,8 @@ def discover_codex_executable(
         minimal_codex_environment(source),
         timeout_seconds=_VERSION_TIMEOUT_SECONDS,
         maximum_output_bytes=_VERSION_OUTPUT_BYTES,
+        process_group=process_group,
+        cancelled=cancelled,
     )
     version = _parse_version(output)
     if version != SUPPORTED_CODEX_VERSION:

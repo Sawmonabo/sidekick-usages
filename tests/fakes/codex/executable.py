@@ -7,13 +7,15 @@ import textwrap
 from collections.abc import Mapping
 from pathlib import Path
 
+from sidekick_usages.core.accounts.types import OperationId
 from tests.fakes.codex.auth import NEXT_AUTH_FILE, managed_auth
-from tests.fakes.codex.models import FakeCodexLogin
+from tests.fakes.codex.models import FakeCodexLogin, FakeWorkerRoute
 
 RAW_PROVIDER_SECRET = "raw-provider-secret"
 LOGIN_CONFIG_FILE = "login-config.json"
 DAEMON_CONFIG_FILE = "daemon-config.json"
 DAEMON_EVENTS_FILE = "daemon-events.jsonl"
+HUNG_WORKER_MARKER_FILE = "hung-worker.started"
 
 
 class FakeCodexDaemonLifecycle:
@@ -34,9 +36,7 @@ class FakeCodexDaemonLifecycle:
     @property
     def version_count(self) -> int:
         """Return the number of official version inspections."""
-        return sum(
-            event["operation"] == "version" for event in self._events()
-        )
+        return sum(event["operation"] == "version" for event in self._events())
 
     def _events(self) -> tuple[dict[str, str], ...]:
         path = self._root / DAEMON_EVENTS_FILE
@@ -96,6 +96,42 @@ def write_fake_managed_codex(
     )
     managed.parent.mkdir(parents=True, exist_ok=True)
     managed.symlink_to(executable)
+
+
+def write_worker_router(
+    root: Path,
+    hung_operation_id: OperationId,
+    worker_executable: Path,
+) -> FakeWorkerRoute:
+    """Route one operation to a stubborn process and all others to Sidekick."""
+    executable = root / "sidekick-usages-worker"
+    started = root / HUNG_WORKER_MARKER_FILE
+    executable.write_text(
+        textwrap.dedent(
+            f"""\
+            #!{sys.executable}
+            import os
+            import signal
+            import sys
+            import time
+            from pathlib import Path
+
+            HUNG_OPERATION_ID = {json.dumps(str(hung_operation_id))}
+            REAL_WORKER = {json.dumps(str(worker_executable))}
+            STARTED = Path({json.dumps(str(started))})
+
+            if sys.argv[1:] == [HUNG_OPERATION_ID]:
+                signal.signal(signal.SIGTERM, signal.SIG_IGN)
+                STARTED.write_text(str(os.getpid()), encoding="utf-8")
+                while True:
+                    time.sleep(1)
+            os.execv(REAL_WORKER, [REAL_WORKER, *sys.argv[1:]])
+            """
+        ),
+        encoding="utf-8",
+    )
+    executable.chmod(0o700)
+    return FakeWorkerRoute(executable, started)
 
 
 def configure_codex_daemon_lifecycle(

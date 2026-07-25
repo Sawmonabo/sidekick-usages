@@ -1,5 +1,6 @@
 """Load-bearing durable state and recovery scenarios for the supervisor."""
 
+import os
 import socket
 from collections.abc import Iterator
 from contextlib import suppress
@@ -253,7 +254,10 @@ def _foundation_state(tmp_path: Path) -> _FoundationState:
         paths=paths,
         accounts=accounts,
         selected=selected,
-        journals=ActivationJournalStore(paths.activation_journals),
+        journals=ActivationJournalStore(
+            paths.activation_journals,
+            paths.durable_operations,
+        ),
         queue=queue,
         operations=operations,
         codex_state=codex_state,
@@ -377,7 +381,10 @@ def test_interrupted_activation_recovers_from_provider_read_back(
         updated_at=REFERENCE_TIME + timedelta(seconds=1),
     )
 
-    restarted = ActivationJournalStore(state.paths.activation_journals)
+    restarted = ActivationJournalStore(
+        state.paths.activation_journals,
+        state.paths.durable_operations,
+    )
     interrupted = restarted.load(ProviderId.CLAUDE).active
     assert interrupted is not None
     target_read_back = _selected(
@@ -686,6 +693,7 @@ class _FakeWorkerHandle:
     events: list[str]
     initial_exit_code: int | None
     requires_kill: bool
+    callback_endpoint: socket.socket | None = None
     terminated: bool = False
     killed: bool = False
 
@@ -694,17 +702,29 @@ class _FakeWorkerHandle:
         return 4242
 
     def poll(self) -> int | None:
+        if self.initial_exit_code is not None:
+            self._close_callback()
         return self.initial_exit_code
 
     def wait(self, timeout_seconds: float | None) -> int | None:
         del timeout_seconds
         if self.initial_exit_code is not None:
+            self._close_callback()
             return self.initial_exit_code
         if self.killed:
+            self._close_callback()
             return -9
         if self.terminated and not self.requires_kill:
+            self._close_callback()
             return -15
         return None
+
+    def group_alive(self) -> bool:
+        return (
+            self.initial_exit_code is None
+            and not self.killed
+            and not (self.terminated and not self.requires_kill)
+        )
 
     def terminate_group(self) -> None:
         self.events.append(f"terminate:{self.operation_id}")
@@ -713,6 +733,12 @@ class _FakeWorkerHandle:
     def kill_group(self) -> None:
         self.events.append(f"kill:{self.operation_id}")
         self.killed = True
+
+    def _close_callback(self) -> None:
+        endpoint = self.callback_endpoint
+        self.callback_endpoint = None
+        if endpoint is not None:
+            endpoint.close()
 
 
 class _FakeWorkerLauncher:
@@ -754,6 +780,11 @@ class _FakeWorkerLauncher:
             self.events,
             0 if succeeded else None,
             spec.operation_id in self._requires_kill,
+            (
+                None
+                if spec.callback_descriptor is None
+                else socket.socket(fileno=os.dup(spec.callback_descriptor))
+            ),
         )
         self.handles[spec.operation_id] = handle
         if succeeded:
@@ -770,6 +801,24 @@ class _NoopControlDispatcher:
 
     def cancel(self, request_id: RequestId) -> None:
         del request_id
+
+
+class _NoopResidentService:
+    """Inactive resident boundary for direct scheduler-cycle tests."""
+
+    @property
+    def ready(self) -> bool:
+        """Return readiness for direct runtime-cycle testing."""
+        return True
+
+    def start(self) -> None:
+        pass
+
+    def request_stop(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
 
 
 def _worker_planner() -> WorkerLaunchPlanner:
@@ -804,6 +853,7 @@ def _runtime_for(
         clock,
         wakeup,
         Event(),
+        _NoopResidentService(),
     )
 
 
@@ -889,73 +939,3 @@ def test_supervisor_isolates_timeout_and_recovers_without_duplicate_work(
         durable
     )
     wakeup.close()
-
-
-def test_codex_callback_preempts_and_reaps_same_authority_worker(
-    tmp_path: Path,
-) -> None:
-    """The reserved callback lane reaps a hung lower-priority owner."""
-    paths = make_application_paths(tmp_path)
-    PersistenceFilesystem(paths.service_state).repair_parent_permissions()
-    clock = _RuntimeClock()
-    queue = OperationQueueStore(paths.durable_operations)
-    results = WorkerResultStore(paths.durable_operations)
-    account_id = SidekickAccountId("cd87ea15-3087-42b9-93b8-43d6ee429a5c")
-    maintenance = _operation(
-        account_id,
-        ProviderId.CODEX,
-        "b6b3c584-7ca9-49fa-845b-57b74c81980e",
-    )
-    callback = DueOperation(
-        operation_id=OperationId("5fac56f4-95d5-4ced-8b72-13c756bebc47"),
-        provider_id=ProviderId.CODEX,
-        account_id=account_id,
-        kind=OperationKind.REFRESH,
-        priority=OperationPriority.CODEX_CALLBACK,
-        state=OperationState.SCHEDULED,
-        due_at=clock.now(),
-        updated_at=clock.now(),
-    )
-    queue.enqueue(maintenance)
-    launcher = _FakeWorkerLauncher(
-        results,
-        clock,
-        frozenset({callback.operation_id}),
-        frozenset({maintenance.operation_id}),
-    )
-    workers = WorkerPool(
-        launcher,
-        _worker_planner(),
-        lambda: None,
-        general_limit=1,
-        callback_timeout_seconds=8,
-        termination_grace_seconds=0.01,
-    )
-    scheduler = DurableScheduler(
-        queue,
-        results,
-        workers,
-        clock,
-        monotonic=clock.monotonic,
-    )
-    scheduler.recover()
-    assert scheduler.dispatch_due()[0].operation_id == (
-        maintenance.operation_id
-    )
-    queue.enqueue(callback)
-    assert scheduler.dispatch_due()[0].operation_id == callback.operation_id
-    scheduler.collect()
-
-    assert launcher.events == [
-        f"launch:{maintenance.operation_id}",
-        f"terminate:{maintenance.operation_id}",
-        f"kill:{maintenance.operation_id}",
-        f"launch:{callback.operation_id}",
-    ]
-    retained = queue.find(maintenance.operation_id)
-    assert retained is not None
-    assert retained.state is OperationState.RETRY_WAIT
-    assert retained.failure_code == "worker_preempted"
-    assert queue.find(callback.operation_id) is None
-    assert workers.active_count == 0
-    assert clock.monotonic_time == _MONOTONIC_START

@@ -8,8 +8,10 @@ from sidekick_usages.providers.codex.app_server.errors import (
     CodexAppServerError,
 )
 from sidekick_usages.providers.codex.app_server.jsonrpc.codec import (
+    MAX_JSON_RPC_INTEGER,
     decode_json_rpc_message,
     encode_json_rpc_message,
+    validated_json_rpc_error,
     validated_json_rpc_method,
     validated_server_request_id,
 )
@@ -31,7 +33,6 @@ from sidekick_usages.providers.codex.app_server.types import (
 from sidekick_usages.serialization.json import JsonObject
 
 _MAX_PENDING_MESSAGES = 16
-_MAX_REQUEST_ID = (1 << 63) - 1
 
 
 class JsonRpcClient:
@@ -67,7 +68,7 @@ class JsonRpcClient:
         """Send one request and return its correlated object result."""
         deadline = self._deadline(timeout_seconds)
         request_id = self._next_request_id
-        if request_id > _MAX_REQUEST_ID:
+        if request_id > MAX_JSON_RPC_INTEGER:
             raise CodexAppServerError(CodexAppServerFailure.PROTOCOL_MALFORMED)
         self._next_request_id += 1
         try:
@@ -135,6 +136,28 @@ class JsonRpcClient:
             self.close()
             raise
 
+    def respond_error(
+        self,
+        request_id: int | str,
+        code: int,
+        message: str,
+        *,
+        timeout_seconds: float = DEFAULT_JSON_RPC_TIMEOUT_SECONDS,
+    ) -> None:
+        """Answer one server request with a fixed safe error."""
+        try:
+            validated_server_request_id(request_id)
+            self._send(
+                {
+                    "id": request_id,
+                    "error": validated_json_rpc_error(code, message),
+                },
+                self._deadline(timeout_seconds),
+            )
+        except CodexAppServerError:
+            self.close()
+            raise
+
     def receive(
         self,
         *,
@@ -145,8 +168,9 @@ class JsonRpcClient:
             return self._pending.popleft()
         try:
             return self._receive(self._deadline(timeout_seconds))
-        except CodexAppServerError:
-            self.close()
+        except CodexAppServerError as error:
+            if error.code is not CodexAppServerFailure.PROTOCOL_TIMEOUT:
+                self.close()
             raise
 
     def close(self) -> None:

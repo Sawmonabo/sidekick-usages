@@ -121,7 +121,10 @@ class SupervisorReadiness:
         }
         if any(account.account_id not in enrolled for account in accounts):
             raise ServiceLifecycleError(ServiceFailureCode.QUEUE_INCOMPLETE)
-        if any(_requires_codex_broker(account) for account in accounts):
+        if (
+            any(_requires_codex_broker(account) for account in accounts)
+            and not state.broker_ready
+        ):
             raise ServiceLifecycleError(
                 ServiceFailureCode.CODEX_BROKER_UNAVAILABLE
             )
@@ -164,7 +167,12 @@ class SupervisorReadiness:
         except PersistenceError, ValueError:
             accounts = ()
             accounts_readable = False
-        broker = _broker_health(accounts, accounts_readable)
+        broker = _broker_health(
+            accounts,
+            accounts_readable,
+            None,
+            False,
+        )
         unavailable = (
             ServiceComponentState.FEATURE_DISABLED
             if process is ServiceComponentState.FEATURE_DISABLED
@@ -194,6 +202,12 @@ class SupervisorReadiness:
         except PersistenceError, ValueError:
             state = None
             state_readable = False
+        broker = _broker_health(
+            accounts,
+            accounts_readable,
+            state,
+            state_readable,
+        )
         return SupervisorHealth(
             backend=status.backend,
             cli_version=PackageVersion(__version__),
@@ -273,7 +287,10 @@ class SupervisorReadiness:
             return ServiceComponentState.UNAVAILABLE
         if not state.journals_reconciled:
             return ServiceComponentState.UNHEALTHY
-        journals = ActivationJournalStore(self._paths.activation_journals)
+        journals = ActivationJournalStore(
+            self._paths.activation_journals,
+            self._paths.durable_operations,
+        )
         try:
             unfinished = any(
                 journals.load(provider_id).active is not None
@@ -387,12 +404,22 @@ def _backend_health(
 def _broker_health(
     accounts: tuple[SavedAccount, ...],
     accounts_readable: bool,
+    state: ServiceState | None,
+    state_readable: bool,
 ) -> ServiceComponentState:
     if not accounts_readable:
         return ServiceComponentState.UNAVAILABLE
-    if any(_requires_codex_broker(account) for account in accounts):
+    if not any(_requires_codex_broker(account) for account in accounts):
+        return ServiceComponentState.NOT_REQUIRED
+    if not state_readable:
+        return ServiceComponentState.UNHEALTHY
+    if state is None:
         return ServiceComponentState.UNAVAILABLE
-    return ServiceComponentState.NOT_REQUIRED
+    return (
+        ServiceComponentState.HEALTHY
+        if state.broker_ready
+        else ServiceComponentState.UNHEALTHY
+    )
 
 
 def _maintenance_settled(

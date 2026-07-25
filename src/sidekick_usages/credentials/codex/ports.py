@@ -10,7 +10,7 @@ from sidekick_usages.core.accounts.types import (
 from sidekick_usages.providers.codex.broker.models import (
     CodexProjectionReceipt,
 )
-from sidekick_usages.providers.codex.broker.types import CodexProjection
+from sidekick_usages.providers.codex.broker.ports import CodexProjection
 
 
 class CodexProjectionInstaller(Protocol):

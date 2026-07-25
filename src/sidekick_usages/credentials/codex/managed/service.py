@@ -1,4 +1,4 @@
-"""Managed private-home coordination for Codex authorities."""
+"""Managed Codex authority coordination."""
 
 from collections.abc import Mapping
 from dataclasses import replace
@@ -15,17 +15,19 @@ from sidekick_usages.core.accounts.types import (
     CredentialHealth,
     SidekickAccountId,
 )
-from sidekick_usages.core.models import CodexCredentials
 from sidekick_usages.core.types import ProviderId, RefreshStatus
+from sidekick_usages.credentials.codex.managed.home import (
+    CodexPrivateHomeAuthority,
+)
 from sidekick_usages.credentials.codex.models import (
     CodexManagedAuthorityResult,
     CodexProjectionLease,
+    CodexVerifiedAuthorityExchange,
 )
 from sidekick_usages.credentials.codex.ports import CodexProjectionInstaller
 from sidekick_usages.credentials.codex.types import CodexManagedOutcome
-from sidekick_usages.paths import ApplicationPaths, managed_codex_home
+from sidekick_usages.paths import ApplicationPaths
 from sidekick_usages.persistence.accounts.store import AccountStore
-from sidekick_usages.persistence.errors import PersistenceFilesystemError
 from sidekick_usages.persistence.private.credentials import (
     PrivateCredentialTree,
 )
@@ -33,36 +35,32 @@ from sidekick_usages.persistence.supervisor.authority import (
     OperationAuthority,
     OperationAuthorityLock,
 )
-from sidekick_usages.persistence.types.error import PersistenceCode
 from sidekick_usages.providers.base import (
     ProviderFailure,
     ProviderFailureKind,
 )
-from sidekick_usages.providers.codex.account import read_codex_account
+from sidekick_usages.providers.codex.account.failures import (
+    codex_account_provider_failure,
+)
+from sidekick_usages.providers.codex.account.service import read_codex_account
+from sidekick_usages.providers.codex.account.types import (
+    CodexAccountReadFailure,
+)
 from sidekick_usages.providers.codex.app_server.errors import (
     CodexAppServerError,
 )
 from sidekick_usages.providers.codex.app_server.models import (
     CodexAppServerCapabilities,
 )
-from sidekick_usages.providers.codex.app_server.session import (
-    CodexAppServerSession,
-)
 from sidekick_usages.providers.codex.app_server.types import (
     CodexAppServerFailure,
-)
-from sidekick_usages.providers.codex.auth import (
-    CODEX_AUTH_FILE,
-    CODEX_CONFIG_FILE,
-    codex_generation_order,
-    managed_auth_snapshot,
-    parse_managed_auth_credentials,
-    parse_managed_auth_snapshot,
-    prepare_file_auth_config,
+    CodexProcessGroupPolicy,
 )
 from sidekick_usages.providers.codex.broker.models import (
+    CodexProjectionExpectation,
     CodexProjectionReceipt,
 )
+from sidekick_usages.providers.codex.generation import codex_generation_order
 from sidekick_usages.providers.codex.models import (
     CodexAccountObservation,
     CodexAuthSnapshot,
@@ -111,161 +109,6 @@ _OUTCOME_HEALTH = {
     CodexManagedOutcome.TIMED_OUT: CredentialHealth.REFRESH_DUE,
     CodexManagedOutcome.TRANSIENT: CredentialHealth.REFRESH_DUE,
 }
-_PERSISTENCE_FAILURE_KINDS = {
-    PersistenceCode.UNSUPPORTED_FILESYSTEM: ProviderFailureKind.UNSUPPORTED,
-    PersistenceCode.UNSAFE_PERMISSIONS: ProviderFailureKind.MALFORMED,
-    PersistenceCode.UNREADABLE: ProviderFailureKind.UNREADABLE,
-    PersistenceCode.INVALID_SCHEMA: ProviderFailureKind.MALFORMED,
-}
-
-
-class CodexPrivateHomeAuthority:
-    """Qualified private-home access shared by Codex credential workflows."""
-
-    def __init__(
-        self,
-        paths: ApplicationPaths,
-        private: PrivateCredentialTree,
-        capabilities: CodexAppServerCapabilities,
-        *,
-        environment: Mapping[str, str] | None = None,
-    ) -> None:
-        if private.root != paths.private_codex_profiles:
-            raise ValueError("Managed Codex tree does not match app paths.")
-        self._paths = paths
-        self._private = private
-        self._capabilities = capabilities
-        self._environment = None if environment is None else dict(environment)
-
-    @property
-    def executable_version(self) -> str:
-        """Return the exact capability-proven Codex version."""
-        return str(self._capabilities.executable.version)
-
-    def configure(
-        self,
-        account_id: SidekickAccountId,
-    ) -> ProviderFailure | None:
-        """Create or verify one final home with file-backed auth storage."""
-        relative = str(account_id)
-        home = managed_codex_home(self._paths, account_id)
-        try:
-            present = self._private.relative_bundle_present(relative)
-            current = self._private.read_relative_bundle_file(
-                relative,
-                CODEX_CONFIG_FILE,
-            )
-            prepared = prepare_file_auth_config(
-                None if current is None else current.data
-            )
-            if isinstance(prepared, ProviderFailure):
-                return prepared
-            if current is not None and current.data == prepared:
-                return None
-            self._private.write_bundle(
-                home,
-                {CODEX_CONFIG_FILE: prepared},
-                expected_bundle_present=present,
-                expected_files={
-                    CODEX_CONFIG_FILE: (
-                        None if current is None else current.data
-                    )
-                },
-            )
-        except PersistenceFilesystemError as error:
-            return _private_failure(
-                error,
-                "The managed Codex home cannot be prepared safely.",
-            )
-        return None
-
-    def snapshot(
-        self,
-        account_id: SidekickAccountId,
-    ) -> CodexAuthSnapshot | ProviderFailure:
-        """Read protected identity and generation through qualified paths."""
-        files = self._read_authority(account_id)
-        if isinstance(files, ProviderFailure):
-            return files
-        auth_payload, config_payload = files
-        return parse_managed_auth_snapshot(auth_payload, config_payload)
-
-    def projection(
-        self,
-        account_id: SidekickAccountId,
-        expected: CodexAuthSnapshot,
-    ) -> CodexProjectionLease | ProviderFailure:
-        """Open one locally identity-bound access-token projection."""
-        files = self._read_authority(account_id)
-        if isinstance(files, ProviderFailure):
-            return files
-        auth_payload, config_payload = files
-        detected = parse_managed_auth_credentials(
-            auth_payload,
-            config_payload,
-        )
-        if isinstance(detected, ProviderFailure):
-            return detected
-        snapshot = managed_auth_snapshot(detected)
-        if isinstance(snapshot, ProviderFailure):
-            return snapshot
-        credentials = detected.credentials
-        if (
-            not isinstance(credentials, CodexCredentials)
-            or credentials.account_id is None
-            or snapshot.provider_identity != expected.provider_identity
-            or snapshot.generation != expected.generation
-            or credentials.account_id != str(expected.provider_identity)
-        ):
-            return ProviderFailure(
-                provider_id=ProviderId.CODEX,
-                kind=ProviderFailureKind.IDENTITY_MISMATCH,
-                message=(
-                    "The managed Codex projection identity is inconsistent."
-                ),
-            )
-        return CodexProjectionLease(
-            account_id,
-            snapshot.provider_identity,
-            snapshot.generation,
-            snapshot.plan,
-            credentials.access_token,
-        )
-
-    def _read_authority(
-        self,
-        account_id: SidekickAccountId,
-    ) -> tuple[bytes | None, bytes | None] | ProviderFailure:
-        relative = str(account_id)
-        try:
-            auth = self._private.read_relative_bundle_file(
-                relative,
-                CODEX_AUTH_FILE,
-            )
-            config = self._private.read_relative_bundle_file(
-                relative,
-                CODEX_CONFIG_FILE,
-            )
-        except PersistenceFilesystemError as error:
-            return _private_failure(
-                error,
-                "The managed Codex home cannot be read safely.",
-            )
-        return (
-            None if auth is None else auth.data,
-            None if config is None else config.data,
-        )
-
-    def open_session(
-        self,
-        account_id: SidekickAccountId,
-    ) -> CodexAppServerSession:
-        """Open one bounded app server against the exact final home."""
-        return CodexAppServerSession.open(
-            self._capabilities,
-            managed_codex_home(self._paths, account_id),
-            self._environment,
-        )
 
 
 class CodexManagedAuthorityCoordinator:
@@ -322,10 +165,15 @@ class CodexManagedAuthorityCoordinator:
         authority: OperationAuthority,
     ) -> CodexManagedAuthorityResult:
         """Read while an isolated worker owns this account authority."""
-        return self._operate_with_authority(
+        exchange = self._prepare_with_authority(
             account_id,
             authority,
             refresh_token=False,
+        )
+        return (
+            exchange
+            if isinstance(exchange, CodexManagedAuthorityResult)
+            else self._persist_exchange(exchange)
         )
 
     def refresh_with_authority(
@@ -334,10 +182,137 @@ class CodexManagedAuthorityCoordinator:
         authority: OperationAuthority,
     ) -> CodexManagedAuthorityResult:
         """Refresh while an isolated worker owns this account authority."""
-        return self._operate_with_authority(
+        exchange = self._prepare_with_authority(
             account_id,
             authority,
             refresh_token=True,
+        )
+        return (
+            exchange
+            if isinstance(exchange, CodexManagedAuthorityResult)
+            else self._persist_exchange(exchange)
+        )
+
+    def stage_refresh_with_authority(
+        self,
+        account_id: SidekickAccountId,
+        authority: OperationAuthority,
+        expected: CodexProjectionExpectation,
+    ) -> CodexVerifiedAuthorityExchange | CodexManagedAuthorityResult:
+        """Stage a proven callback refresh without committing success."""
+        return self._prepare_expected_projection(
+            account_id,
+            authority,
+            expected,
+            refresh_token=True,
+        )
+
+    def open_staged_projection_with_authority(
+        self,
+        exchange: CodexVerifiedAuthorityExchange,
+        authority: OperationAuthority,
+    ) -> CodexProjectionLease | CodexManagedAuthorityResult:
+        """Open the exact staged projection while authority remains held."""
+        account_id = exchange.source.account_id
+        authority.require(account_id)
+        if self._saved_account(account_id) != exchange.source:
+            raise ValueError("Managed Codex account changed during refresh.")
+        current = self._snapshot(account_id)
+        if isinstance(current, ProviderFailure):
+            return self._persist_provider_failure(
+                exchange.source,
+                current,
+            )
+        if current != exchange.after:
+            return self._persist_failure(
+                exchange.source,
+                CodexManagedOutcome.REJECTED,
+                health=CredentialHealth.RECONCILIATION_REQUIRED,
+            )
+        projection = self._home.projection(account_id, exchange.after)
+        if isinstance(projection, ProviderFailure):
+            return self._persist_provider_failure(
+                exchange.source,
+                projection,
+            )
+        return projection
+
+    def commit_staged_authority_with_authority(
+        self,
+        exchange: CodexVerifiedAuthorityExchange,
+        authority: OperationAuthority,
+    ) -> CodexManagedAuthorityResult:
+        """Commit one proven private generation under account authority."""
+        authority.require(exchange.source.account_id)
+        current = self._snapshot(exchange.source.account_id)
+        if isinstance(current, ProviderFailure):
+            return self._persist_provider_failure(
+                exchange.source,
+                current,
+            )
+        if current != exchange.after:
+            return self._persist_failure(
+                exchange.source,
+                CodexManagedOutcome.REJECTED,
+                health=CredentialHealth.RECONCILIATION_REQUIRED,
+            )
+        if exchange.after == exchange.before:
+            return CodexManagedAuthorityResult(
+                CodexManagedOutcome.HEALTHY,
+                exchange.source,
+            )
+        return self._persist_exchange(exchange)
+
+    def stage_rehydration_with_authority(
+        self,
+        account_id: SidekickAccountId,
+        authority: OperationAuthority,
+        expected: CodexProjectionExpectation,
+    ) -> CodexVerifiedAuthorityExchange | CodexManagedAuthorityResult:
+        """Stage current provider state, including crash-forward recovery."""
+        authority.require(account_id)
+        account = self._saved_account(account_id)
+        saved = self._expected_snapshot(account)
+        if isinstance(saved, ProviderFailure):
+            return self._persist_provider_failure(account, saved)
+        try:
+            selected = CodexAuthSnapshot(
+                provider_identity=expected.provider_identity,
+                generation=expected.generation,
+                generation_order=codex_generation_order(
+                    str(expected.generation)
+                ),
+                plan=saved.plan,
+            )
+        except TypeError, ValueError:
+            return self._persist_failure(
+                account,
+                CodexManagedOutcome.REJECTED,
+                health=CredentialHealth.RECONCILIATION_REQUIRED,
+            )
+        if expected.account_id != account_id or not saved.not_older_than(
+            selected
+        ):
+            return self._persist_failure(
+                account,
+                CodexManagedOutcome.REJECTED,
+                health=CredentialHealth.RECONCILIATION_REQUIRED,
+            )
+        current = self._snapshot(account_id)
+        if isinstance(current, ProviderFailure):
+            return self._persist_provider_failure(account, current)
+        if not current.not_older_than(saved):
+            return self._persist_failure(
+                account,
+                CodexManagedOutcome.REJECTED,
+                health=CredentialHealth.RECONCILIATION_REQUIRED,
+            )
+        return self._verified_exchange(
+            account,
+            saved,
+            current,
+            CodexAccountObservation(current.plan),
+            refreshed=current.advanced_from(saved),
         )
 
     def install_current_projection(
@@ -414,19 +389,64 @@ class CodexManagedAuthorityCoordinator:
             installer,
         )
 
-    def _operate_with_authority(
+    def _prepare_with_authority(
         self,
         account_id: SidekickAccountId,
         authority: OperationAuthority,
         *,
         refresh_token: bool,
-    ) -> CodexManagedAuthorityResult:
+        process_group: CodexProcessGroupPolicy = (
+            CodexProcessGroupPolicy.ISOLATED
+        ),
+    ) -> CodexVerifiedAuthorityExchange | CodexManagedAuthorityResult:
         authority.require(account_id)
         account = self._saved_account(account_id)
+        return self._prepare_account(
+            account,
+            refresh_token=refresh_token,
+            process_group=process_group,
+        )
+
+    def _prepare_expected_projection(
+        self,
+        account_id: SidekickAccountId,
+        authority: OperationAuthority,
+        expected: CodexProjectionExpectation,
+        *,
+        refresh_token: bool,
+    ) -> CodexVerifiedAuthorityExchange | CodexManagedAuthorityResult:
+        authority.require(account_id)
+        account = self._saved_account(account_id)
+        saved = self._expected_snapshot(account)
+        if isinstance(saved, ProviderFailure):
+            return self._persist_provider_failure(account, saved)
+        if (
+            expected.account_id != account_id
+            or expected.provider_identity != saved.provider_identity
+            or expected.generation != saved.generation
+        ):
+            return self._persist_failure(
+                account,
+                CodexManagedOutcome.REJECTED,
+                health=CredentialHealth.RECONCILIATION_REQUIRED,
+            )
+        return self._prepare_account(
+            account,
+            refresh_token=refresh_token,
+            process_group=CodexProcessGroupPolicy.INHERITED,
+        )
+
+    def _prepare_account(
+        self,
+        account: SavedAccount,
+        *,
+        refresh_token: bool,
+        process_group: CodexProcessGroupPolicy,
+    ) -> CodexVerifiedAuthorityExchange | CodexManagedAuthorityResult:
         expected = self._expected_snapshot(account)
         if isinstance(expected, ProviderFailure):
             return self._persist_provider_failure(account, expected)
-        before = self._snapshot(account_id)
+        before = self._snapshot(account.account_id)
         if isinstance(before, ProviderFailure):
             return self._persist_provider_failure(account, before)
         if (
@@ -442,6 +462,7 @@ class CodexManagedAuthorityCoordinator:
             account,
             before,
             refresh_token=refresh_token,
+            process_group=process_group,
         )
 
     def _install_projection(
@@ -481,9 +502,13 @@ class CodexManagedAuthorityCoordinator:
         before: CodexAuthSnapshot,
         *,
         refresh_token: bool,
-    ) -> CodexManagedAuthorityResult:
+        process_group: CodexProcessGroupPolicy,
+    ) -> CodexVerifiedAuthorityExchange | CodexManagedAuthorityResult:
         try:
-            session = self._home.open_session(account.account_id)
+            session = self._home.open_session(
+                account.account_id,
+                process_group=process_group,
+            )
         except CodexAppServerError as error:
             return self._persist_failure(
                 account,
@@ -493,9 +518,14 @@ class CodexManagedAuthorityCoordinator:
         app_error: CodexAppServerError | None = None
         try:
             with session:
-                observed = read_codex_account(
+                account_read = read_codex_account(
                     session,
                     refresh_token=refresh_token,
+                )
+                observed = (
+                    codex_account_provider_failure(account_read)
+                    if isinstance(account_read, CodexAccountReadFailure)
+                    else account_read
                 )
         except CodexAppServerError as error:
             app_error = error
@@ -530,7 +560,7 @@ class CodexManagedAuthorityCoordinator:
         observed: CodexAccountObservation,
         *,
         refresh_token: bool,
-    ) -> CodexManagedAuthorityResult:
+    ) -> CodexVerifiedAuthorityExchange | CodexManagedAuthorityResult:
         if (
             after.provider_identity != before.provider_identity
             or after.provider_identity
@@ -552,8 +582,9 @@ class CodexManagedAuthorityCoordinator:
                 CodexManagedOutcome.REJECTED,
                 health=CredentialHealth.RECONCILIATION_REQUIRED,
             )
-        return self._persist_success(
+        return self._verified_exchange(
             account,
+            before,
             after,
             observed,
             refreshed=refresh_token,
@@ -570,9 +601,16 @@ class CodexManagedAuthorityCoordinator:
         account: SavedAccount,
     ) -> CodexAuthSnapshot | ProviderFailure:
         authority = self._managed_authority(account)
-        order = codex_generation_order(str(authority.generation))
-        if isinstance(order, ProviderFailure):
-            return order
+        try:
+            order = codex_generation_order(str(authority.generation))
+        except ValueError:
+            return ProviderFailure(
+                provider_id=ProviderId.CODEX,
+                kind=ProviderFailureKind.MALFORMED,
+                message=(
+                    "The managed Codex credential generation is malformed."
+                ),
+            )
         return CodexAuthSnapshot(
             provider_identity=authority.provider_identity,
             generation=authority.generation,
@@ -626,26 +664,42 @@ class CodexManagedAuthorityCoordinator:
         self._store.persist_state(candidate, expected=account)
         return CodexManagedAuthorityResult(outcome, candidate)
 
-    def _persist_success(
+    def _verified_exchange(
         self,
         account: SavedAccount,
-        snapshot: CodexAuthSnapshot,
+        before: CodexAuthSnapshot,
+        after: CodexAuthSnapshot,
         observed: CodexAccountObservation,
         *,
         refreshed: bool,
+    ) -> CodexVerifiedAuthorityExchange:
+        return CodexVerifiedAuthorityExchange(
+            account,
+            before,
+            after,
+            observed,
+            refreshed,
+        )
+
+    def _persist_exchange(
+        self,
+        exchange: CodexVerifiedAuthorityExchange,
     ) -> CodexManagedAuthorityResult:
-        previous = self._managed_authority(account)
+        previous = self._managed_authority(exchange.source)
         verified_at = self._clock.now()
         candidate = managed_codex_account(
-            account,
+            exchange.source,
             previous.authority_id,
-            snapshot,
-            plan=observed.plan,
+            exchange.after,
+            plan=exchange.observation.plan,
             executable_version=str(self._capabilities.executable.version),
             verified_at=verified_at,
-            refreshed=refreshed,
+            refreshed=exchange.refreshed,
         )
-        self._store.persist_state(candidate, expected=account)
+        self._store.persist_state(
+            candidate,
+            expected=exchange.source,
+        )
         return CodexManagedAuthorityResult(
             CodexManagedOutcome.HEALTHY,
             candidate,
@@ -702,19 +756,4 @@ def managed_codex_account(
         last_refresh_error_code=(
             None if refreshed else account.last_refresh_error_code
         ),
-    )
-
-
-def _private_failure(
-    error: PersistenceFilesystemError,
-    message: str,
-) -> ProviderFailure:
-    kind = _PERSISTENCE_FAILURE_KINDS.get(
-        error.code,
-        ProviderFailureKind.MALFORMED,
-    )
-    return ProviderFailure(
-        provider_id=ProviderId.CODEX,
-        kind=kind,
-        message=message,
     )

@@ -25,8 +25,10 @@ from sidekick_usages.serialization.json import (
     encode_compact_json,
 )
 
+MAX_JSON_RPC_INTEGER = (1 << 63) - 1
 MAX_JSON_RPC_MESSAGE_BYTES = 1024 * 1024
 _MAX_METHOD_BYTES = 256
+_MAX_ERROR_MESSAGE_BYTES = 1024
 _MAX_SERVER_REQUEST_ID_BYTES = 256
 _UNICODE_CONTROL_LIMIT = 0x20
 _MAX_UNIX_TIMESTAMP_MILLISECONDS = (1 << 63) - 1
@@ -83,26 +85,53 @@ def validated_json_rpc_method(method: str) -> str:
 
 def validated_server_request_id(request_id: object) -> int | str:
     """Return one bounded integer or text server request identifier."""
-    if isinstance(request_id, bool):
-        return _malformed()
     if isinstance(request_id, int):
-        return request_id
-    if isinstance(request_id, str):
-        try:
-            encoded = request_id.encode("utf-8")
-        except UnicodeEncodeError:
-            return _malformed()
         if (
-            not request_id
-            or len(encoded) > _MAX_SERVER_REQUEST_ID_BYTES
-            or any(
-                ord(character) < _UNICODE_CONTROL_LIMIT
-                for character in request_id
-            )
+            isinstance(request_id, bool)
+            or request_id < -MAX_JSON_RPC_INTEGER
+            or request_id > MAX_JSON_RPC_INTEGER
         ):
             return _malformed()
         return request_id
-    return _malformed()
+    if not isinstance(request_id, str):
+        return _malformed()
+    try:
+        encoded = request_id.encode("utf-8")
+    except UnicodeEncodeError:
+        return _malformed()
+    if (
+        not request_id
+        or len(encoded) > _MAX_SERVER_REQUEST_ID_BYTES
+        or any(
+            ord(character) < _UNICODE_CONTROL_LIMIT for character in request_id
+        )
+    ):
+        return _malformed()
+    return request_id
+
+
+def validated_json_rpc_error(code: int, message: str) -> JsonObject:
+    """Build one bounded JSON-RPC error without provider data."""
+    if (
+        isinstance(code, bool)
+        or not isinstance(code, int)
+        or code < -MAX_JSON_RPC_INTEGER
+        or code > MAX_JSON_RPC_INTEGER
+    ):
+        return _malformed()
+    try:
+        encoded = message.encode("utf-8")
+    except UnicodeEncodeError:
+        return _malformed()
+    if (
+        not encoded
+        or len(encoded) > _MAX_ERROR_MESSAGE_BYTES
+        or any(
+            ord(character) < _UNICODE_CONTROL_LIMIT for character in message
+        )
+    ):
+        return _malformed()
+    return {"code": code, "message": message}
 
 
 def _decode_server_call(
@@ -139,6 +168,7 @@ def _decode_response(payload: JsonObject) -> JsonRpcMessage:
         isinstance(request_id, bool)
         or not isinstance(request_id, int)
         or request_id < 1
+        or request_id > MAX_JSON_RPC_INTEGER
     ):
         _malformed()
     if set(payload) == {"id", "result"}:

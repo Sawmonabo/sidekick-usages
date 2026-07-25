@@ -20,6 +20,7 @@ from sidekick_usages.providers.codex.app_server.process import (
 )
 from sidekick_usages.providers.codex.app_server.types import (
     CodexAppServerFailure,
+    CodexProcessGroupPolicy,
 )
 
 _READ_CHUNK_BYTES = 64 * 1024
@@ -31,14 +32,16 @@ class JsonLinesTransport:
     def __init__(
         self,
         process: subprocess.Popen[bytes],
+        process_group: CodexProcessGroupPolicy,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         stdout = process.stdout
         stdin = process.stdin
         if stdout is None or stdin is None:
-            terminate_and_reap_codex_process(process)
+            terminate_and_reap_codex_process(process, process_group)
             raise CodexAppServerError(CodexAppServerFailure.PROCESS_FAILED)
         self._process = process
+        self._process_group = process_group
         self._monotonic = monotonic
         self._stdout = stdout
         self._stdin = stdin
@@ -51,7 +54,7 @@ class JsonLinesTransport:
             self._selector.register(stdout, selectors.EVENT_READ)
         except OSError:
             self._selector.close()
-            terminate_and_reap_codex_process(process)
+            terminate_and_reap_codex_process(process, process_group)
             raise CodexAppServerError(
                 CodexAppServerFailure.PROCESS_FAILED
             ) from None
@@ -63,6 +66,7 @@ class JsonLinesTransport:
         environment: Mapping[str, str],
         *,
         working_directory: Path,
+        process_group: CodexProcessGroupPolicy,
     ) -> JsonLinesTransport:
         """Start one exact JSON-lines subprocess transport."""
         return cls(
@@ -70,7 +74,9 @@ class JsonLinesTransport:
                 argv,
                 environment,
                 working_directory=working_directory,
-            )
+                process_group=process_group,
+            ),
+            process_group,
         )
 
     @property
@@ -166,9 +172,21 @@ class JsonLinesTransport:
         try:
             self._stdin.close()
         except OSError:
-            terminate_and_reap_codex_process(self._process)
+            terminate_and_reap_codex_process(
+                self._process,
+                self._process_group,
+            )
             return
         try:
             self._process.wait(timeout=CODEX_PROCESS_GRACE_SECONDS)
         except subprocess.TimeoutExpired:
-            terminate_and_reap_codex_process(self._process)
+            terminate_and_reap_codex_process(
+                self._process,
+                self._process_group,
+            )
+            return
+        if self._process_group is CodexProcessGroupPolicy.ISOLATED:
+            terminate_and_reap_codex_process(
+                self._process,
+                self._process_group,
+            )

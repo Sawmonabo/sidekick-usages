@@ -3,7 +3,7 @@
 import hashlib
 import stat
 import tempfile
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import NoReturn
 
@@ -24,6 +24,7 @@ from sidekick_usages.providers.codex.app_server.process import (
 )
 from sidekick_usages.providers.codex.app_server.types import (
     CodexAppServerFailure,
+    CodexProcessGroupPolicy,
 )
 from sidekick_usages.serialization.json import (
     JsonObject,
@@ -55,6 +56,11 @@ _SCHEMA_COMMAND_TIMEOUT_SECONDS = 20.0
 def probe_codex_capabilities(
     executable: CodexExecutable,
     environment: Mapping[str, str] | None = None,
+    *,
+    process_group: CodexProcessGroupPolicy = (
+        CodexProcessGroupPolicy.ISOLATED
+    ),
+    cancelled: Callable[[], bool] | None = None,
 ) -> CodexAppServerCapabilities:
     """Generate and prove the exact required app-server schema surface."""
     verify_codex_executable(executable)
@@ -81,6 +87,8 @@ def probe_codex_capabilities(
             ),
             timeout_seconds=_SCHEMA_COMMAND_TIMEOUT_SECONDS,
             working_directory=codex_home,
+            process_group=process_group,
+            cancelled=cancelled,
         )
         raw_schemas, schemas = _read_required_schemas(schema_directory)
         _validate_required_capabilities(schemas)

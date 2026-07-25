@@ -28,11 +28,7 @@ UNSUPPORTED_SELECTION_KEYS = frozenset(
         "sources",
     }
 )
-CONSOLE_SCRIPT_NAMES: tuple[str, ...] = (
-    "sidekick-usages",
-    "sidekick-usages-supervisor",
-    "sidekick-usages-worker",
-)
+PUBLIC_CLI_TARGET = "sidekick_usages.cli.app:run"
 SMOKE_ARGUMENTS: tuple[tuple[str, ...], ...] = (
     ("--version",),
     ("--help",),
@@ -69,11 +65,13 @@ def _required_mapping(
 ) -> dict[str, object]:
     """Return one required nested project table."""
     value = owner.get(name)
-    if not isinstance(value, dict):
+    if not isinstance(value, dict) or any(
+        not isinstance(key, str) for key in value
+    ):
         raise WheelVerificationError(
             f"Project configuration table {name!r} is missing."
         )
-    return value
+    return {key: child for key, child in value.items() if isinstance(key, str)}
 
 
 def project_identity() -> tuple[str, str]:
@@ -86,6 +84,41 @@ def project_identity() -> tuple[str, str]:
             "Project name and version must be static strings."
         )
     return name.replace("-", "_").replace(".", "_"), version
+
+
+def project_scripts() -> dict[str, str]:
+    """Return the exact declared console-script target mapping."""
+    project = _required_mapping(_project_configuration(), "project")
+    scripts = _required_mapping(project, "scripts")
+    if not scripts or any(
+        not isinstance(name, str)
+        or not name
+        or not isinstance(target, str)
+        or not target
+        for name, target in scripts.items()
+    ):
+        raise WheelVerificationError(
+            "Project console scripts must be nonempty string mappings."
+        )
+    return {
+        name: target
+        for name, target in sorted(scripts.items())
+        if isinstance(target, str)
+    }
+
+
+def public_cli_script() -> str:
+    """Return the sole script declared for the public CLI target."""
+    matches = [
+        name
+        for name, target in project_scripts().items()
+        if target == PUBLIC_CLI_TARGET
+    ]
+    if len(matches) != 1:
+        raise WheelVerificationError(
+            "The public CLI target must have exactly one console script."
+        )
+    return matches[0]
 
 
 def package_source_root() -> Path:
@@ -340,18 +373,19 @@ def _uv_executable() -> str:
     return uv
 
 
-def _venv_commands(venv: Path) -> tuple[Path, tuple[Path, ...]]:
+def _venv_commands(venv: Path) -> tuple[Path, dict[str, Path]]:
     """Return the platform-specific Python and installed console scripts."""
+    script_names = project_scripts()
     if os.name == "nt":
         scripts = venv / "Scripts"
         return (
             scripts / "python.exe",
-            tuple(scripts / f"{name}.exe" for name in CONSOLE_SCRIPT_NAMES),
+            {name: scripts / f"{name}.exe" for name in script_names},
         )
     scripts = venv / "bin"
     return (
         scripts / "python",
-        tuple(scripts / name for name in CONSOLE_SCRIPT_NAMES),
+        {name: scripts / name for name in script_names},
     )
 
 
@@ -397,12 +431,6 @@ import sys
 
 import platformdirs
 import sidekick_usages
-import sidekick_usages.cli.app
-import sidekick_usages.cli.context
-import sidekick_usages.persistence.filesystem.service
-import sidekick_usages.persistence.locking
-import sidekick_usages.persistence.private.credentials
-import sidekick_usages.persistence.filesystem.transaction
 
 origin = pathlib.Path(sidekick_usages.__file__).resolve()
 prefix = pathlib.Path(sys.prefix).resolve()
@@ -413,36 +441,39 @@ assert importlib.metadata.version("platformdirs") == "4.10.0"
 """
 
 
-def _internal_entry_point_check() -> str:
-    """Return the isolated internal-entry-point import check."""
+def _entry_point_inventory_check() -> str:
+    """Return the exact installed entry-point mapping check."""
     return """
 import importlib.metadata
 import sys
 
 distribution = importlib.metadata.distribution("sidekick-usages")
 points = {
-    point.name: point
+    point.name: point.value
     for point in distribution.entry_points
     if point.group == "console_scripts"
 }
-expected = set(sys.argv[1:])
-assert set(points) == expected, set(points)
-internal = set(sys.argv[2:])
-loaded = tuple(points[name].load() for name in sorted(internal))
-assert all(callable(point) for point in loaded)
-forbidden = tuple(
-    name
-    for name in sys.modules
-    if name.startswith(
-        (
-            "sidekick_usages.credentials",
-            "sidekick_usages.http",
-            "sidekick_usages.providers",
-            "sidekick_usages.usage",
-        )
-    )
-)
-assert not forbidden, forbidden
+expected = dict(argument.split("=", 1) for argument in sys.argv[1:])
+assert points == expected, points
+"""
+
+
+def _entry_point_load_check() -> str:
+    """Return one fresh-process callable entry-point check."""
+    return """
+import importlib.metadata
+import sys
+
+name, target = sys.argv[1:]
+distribution = importlib.metadata.distribution("sidekick-usages")
+matches = [
+    point
+    for point in distribution.entry_points
+    if point.group == "console_scripts" and point.name == name
+]
+assert len(matches) == 1, matches
+assert matches[0].value == target, matches[0].value
+assert callable(matches[0].load())
 """
 
 
@@ -476,31 +507,48 @@ def verify_installed_wheel(wheel: Path) -> None:
             env=install_env,
         )
         missing_scripts = [
-            script.name for script in scripts if not script.is_file()
+            name for name, script in scripts.items() if not script.is_file()
         ]
         if missing_scripts:
             raise WheelVerificationError(
                 f"Installed console scripts are missing: {missing_scripts!r}."
             )
 
+        declared_scripts = project_scripts()
         _run(
             [
                 str(python),
                 "-c",
-                _internal_entry_point_check(),
-                *CONSOLE_SCRIPT_NAMES,
+                _entry_point_inventory_check(),
+                *(
+                    f"{name}={target}"
+                    for name, target in declared_scripts.items()
+                ),
             ],
             cwd=run_dir,
             env=env,
         )
+        for name, target in declared_scripts.items():
+            _run(
+                [
+                    str(python),
+                    "-c",
+                    _entry_point_load_check(),
+                    name,
+                    target,
+                ],
+                cwd=run_dir,
+                env=env,
+            )
         _run(
             [str(python), "-c", _installed_origin_check()],
             cwd=run_dir,
             env=env,
         )
 
+        public_script = scripts[public_cli_script()]
         entry_points = (
-            (str(scripts[0]),),
+            (str(public_script),),
             (str(python), "-m", "sidekick_usages"),
         )
         for entry_point in entry_points:

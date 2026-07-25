@@ -4,7 +4,11 @@ from dataclasses import dataclass
 from types import TracebackType
 from typing import Self
 
-from sidekick_usages.core.accounts.models import SavedAccount
+from sidekick_usages.core.accounts.models import (
+    CodexAccountAuthority,
+    CodexManagedAuthority,
+    SavedAccount,
+)
 from sidekick_usages.core.accounts.types import (
     AuthorityGeneration,
     AuthorityId,
@@ -13,7 +17,10 @@ from sidekick_usages.core.accounts.types import (
 )
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.credentials.codex.types import CodexManagedOutcome
-from sidekick_usages.providers.codex.models import CodexAuthSnapshot
+from sidekick_usages.providers.codex.models import (
+    CodexAccountObservation,
+    CodexAuthSnapshot,
+)
 
 
 class CodexProjectionLease:
@@ -124,3 +131,38 @@ class CodexManagedAuthorityResult:
             or not self.account.has_managed_authority
         ):
             raise ValueError("Managed Codex result account is invalid.")
+
+
+@dataclass(frozen=True, slots=True)
+class CodexVerifiedAuthorityExchange:
+    """Secret-free managed Codex candidate awaiting its commit boundary."""
+
+    source: SavedAccount
+    before: CodexAuthSnapshot
+    after: CodexAuthSnapshot
+    observation: CodexAccountObservation
+    refreshed: bool
+
+    def __post_init__(self) -> None:
+        """Require one proven same-account advanced authority."""
+        authority = self.source.authority
+        if (
+            self.source.provider_id is not ProviderId.CODEX
+            or not self.source.has_managed_authority
+            or self.before.provider_identity != self.after.provider_identity
+            or (self.refreshed and not self.after.advanced_from(self.before))
+            or (
+                not self.refreshed
+                and not self.after.not_older_than(self.before)
+            )
+            or self.observation.plan != self.after.plan
+        ):
+            raise ValueError("Managed Codex exchange is invalid.")
+        if not isinstance(authority, CodexAccountAuthority):
+            raise ValueError("Managed Codex exchange authority is invalid.")
+        subscription = authority.subscription
+        if (
+            not isinstance(subscription, CodexManagedAuthority)
+            or subscription.provider_identity != self.before.provider_identity
+        ):
+            raise ValueError("Managed Codex exchange identity is invalid.")

@@ -194,12 +194,13 @@ class DueOperation:
             and failure_code is not None
         ):
             raise ValueError("Healthy operation state cannot carry failure.")
-        if self.priority is OperationPriority.CODEX_CALLBACK and (
-            self.provider_id is not ProviderId.CODEX
-            or self.kind is not OperationKind.REFRESH
+        callback_kind = self.kind is OperationKind.CODEX_CALLBACK
+        callback_priority = self.priority is OperationPriority.CODEX_CALLBACK
+        if callback_kind != callback_priority or (
+            callback_kind and self.provider_id is not ProviderId.CODEX
         ):
             raise ValueError(
-                "Codex callback priority is reserved for Codex refresh."
+                "Codex callback kind and priority must be used together."
             )
         object.__setattr__(self, "due_at", due_at)
         object.__setattr__(self, "updated_at", updated_at)

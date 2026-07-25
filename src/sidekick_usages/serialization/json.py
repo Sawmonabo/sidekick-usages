@@ -115,7 +115,11 @@ def _validated_json_value(
     raise _InvalidJsonValueError
 
 
-def _decode_json_value(payload: bytes, *, integers_only: bool) -> JsonValue:
+def _decode_json_value(
+    payload: bytes | bytearray,
+    *,
+    integers_only: bool,
+) -> JsonValue:
     parse_float = (
         _reject_json_number if integers_only else _parse_finite_number
     )
@@ -130,7 +134,11 @@ def _decode_json_value(payload: bytes, *, integers_only: bool) -> JsonValue:
     return _validated_json_value(decoded, integers_only=integers_only)
 
 
-def _strict_decode(payload: bytes, *, integers_only: bool) -> JsonValue:
+def _strict_decode(
+    payload: bytes | bytearray,
+    *,
+    integers_only: bool,
+) -> JsonValue:
     try:
         decoded = _decode_json_value(payload, integers_only=integers_only)
     except _RepeatedJsonMemberError:
@@ -150,7 +158,7 @@ def _strict_decode(payload: bytes, *, integers_only: bool) -> JsonValue:
     raise error
 
 
-def decode_json_value(payload: bytes) -> JsonValue:
+def decode_json_value(payload: bytes | bytearray) -> JsonValue:
     """Decode strict UTF-8 JSON with finite standard numbers.
 
     :param payload: Complete bytes already bounded by the caller.
@@ -160,7 +168,7 @@ def decode_json_value(payload: bytes) -> JsonValue:
     return _strict_decode(payload, integers_only=False)
 
 
-def decode_integer_json_value(payload: bytes) -> JsonValue:
+def decode_integer_json_value(payload: bytes | bytearray) -> JsonValue:
     """Decode strict UTF-8 JSON containing only signed 63-bit integers.
 
     :param payload: Complete bytes already bounded by the caller.
@@ -170,7 +178,7 @@ def decode_integer_json_value(payload: bytes) -> JsonValue:
     return _strict_decode(payload, integers_only=True)
 
 
-def decode_json_object(payload: bytes) -> JsonObject:
+def decode_json_object(payload: bytes | bytearray) -> JsonObject:
     """Decode an untrusted UTF-8 payload as a strict JSON object.
 
     :param payload: Complete bounded response body.
@@ -196,7 +204,7 @@ def validate_integer_json_value(value: JsonValue) -> None:
         raise JsonEncodeError from None
 
 
-def _encode_json(value: JsonValue, *, canonical: bool) -> bytes:
+def _encode_json_text(value: JsonValue, *, canonical: bool) -> str:
     try:
         validated = _validated_json_value(value, integers_only=False)
         text = json.dumps(
@@ -209,7 +217,7 @@ def _encode_json(value: JsonValue, *, canonical: bool) -> bytes:
         )
         if canonical:
             text += "\n"
-        return text.encode("utf-8")
+        return text
     except (
         _InvalidJsonValueError,
         RecursionError,
@@ -217,6 +225,13 @@ def _encode_json(value: JsonValue, *, canonical: bool) -> bytes:
         ValueError,
         UnicodeEncodeError,
     ):
+        raise JsonEncodeError from None
+
+
+def _encode_json(value: JsonValue, *, canonical: bool) -> bytes:
+    try:
+        return _encode_json_text(value, canonical=canonical).encode("utf-8")
+    except UnicodeEncodeError:
         raise JsonEncodeError from None
 
 
@@ -228,3 +243,14 @@ def encode_canonical_json(value: JsonValue) -> bytes:
 def encode_compact_json(value: JsonValue) -> bytes:
     """Encode one sorted JSON value without insignificant whitespace."""
     return _encode_json(value, canonical=False)
+
+
+def encode_compact_json_buffer(value: JsonValue) -> bytearray:
+    """Encode compact JSON into a mutable best-effort transport buffer."""
+    try:
+        return bytearray(
+            _encode_json_text(value, canonical=False),
+            encoding="utf-8",
+        )
+    except UnicodeEncodeError:
+        raise JsonEncodeError from None

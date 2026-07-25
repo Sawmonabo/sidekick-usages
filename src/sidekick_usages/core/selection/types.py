@@ -61,6 +61,7 @@ class OperationKind(StrEnum):
 
     MAINTAIN = "maintain"
     REFRESH = "refresh"
+    CODEX_CALLBACK = "codex_callback"
     USAGE = "usage"
     ACTIVITY = "activity"
     LOGIN = "login"

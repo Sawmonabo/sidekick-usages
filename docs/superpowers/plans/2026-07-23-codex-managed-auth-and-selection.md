@@ -513,51 +513,54 @@ codex app-server daemon version
 
 ### Tests first
 
-- [ ] Extend `tests/test_codex_managed_runtime.py` with one broker lifecycle
+- [x] Extend `tests/test_codex_managed_runtime.py` with one broker lifecycle
   scenario: exactly one responder routes the selected identity, forces an
   advanced-generation refresh, survives dashboard exit and supervisor
   restart, and rejects an unknown prior identity. Assert credential material
   appears only in the dedicated official-daemon response.
-- [ ] Add one contention scenario in which same-home maintenance hangs and is
+- [x] Add one contention scenario in which same-home maintenance hangs and is
   preempted and reaped before the internal callback deadline while observers
   never answer the server request.
-- [ ] Do not enumerate request malformations, maintenance timing variants, or
+- [x] Do not enumerate request malformations, maintenance timing variants, or
   disconnect permutations already covered by the protocol and worker tests.
 
 ### Implementation
 
-- [ ] Keep one long-lived official daemon connection in the lean supervisor.
+- [x] Keep one long-lived official daemon connection in the lean supervisor.
   Decode only the small external-refresh request subset through the audited
   `providers/codex/broker/wire.py` leaf. That leaf must not import auth,
   credential, HTTP, maintenance, persistence, or usage modules.
-- [ ] Validate request ID, previous account ID, selected account ID, daemon
+- [x] Validate request ID, previous account ID, selected account ID, daemon
   generation, and current activation state before dispatch.
-- [ ] Dispatch the foundation's reserved callback worker. It opens only the
+- [x] Dispatch the foundation's reserved callback worker. It opens only the
   matching managed private home, invokes forced official refresh, proves the
   post-state, and returns one bounded non-persisted auth response.
-- [ ] Hold the returned token in a redacted dedicated response value only
+- [x] Hold the returned token in a redacted dedicated response value only
   until it is serialized to the official daemon. Drop all references
   immediately afterward.
-- [ ] Never send that response over the Sidekick dashboard socket or worker
+- [x] Never send that response over the Sidekick dashboard socket or worker
   result persistence. The worker-to-supervisor reply uses a dedicated
   owner-only inherited pipe with a one-response limit.
-- [ ] If a lower-priority operation holds the same home, use the foundation's
+- [x] If a lower-priority operation holds the same home, use the foundation's
   cancellation and reap policy. Never wait behind an unrelated operation.
-- [ ] Return a typed external-auth error within the internal eight-second
+- [x] Return a typed external-auth error within the internal eight-second
   budget when refresh cannot be proven.
-- [ ] Update managed authority generation and health transactionally after the
-  daemon response is accepted.
-- [ ] Reconnect, capability-probe, reinstall the last provider-verified
+- [x] Commit the verified managed authority before dispatching the daemon
+  response. Update selected runtime state only after dispatch and
+  scheduler-confirmed worker completion.
+- [x] Reconnect, capability-probe, reinstall the last provider-verified
   selection, and re-register exactly one responder after daemon or supervisor
   restart.
 
 ### Verify and commit
 
-- [ ] Run the two broker scenarios plus the existing foundation protocol and
+- [x] Run the two broker scenarios plus the existing foundation protocol and
   worker regressions they depend on.
-- [ ] Measure callback p95 under a hung general worker and record it separately
+- [x] Measure callback p95 under a hung general worker and record it separately
   from official daemon latency.
-- [ ] Run Ruff, `ty`, and architecture checks, then commit.
+  The 20-sample internal callback result was 1.779 seconds p95, with a
+  1.883-second maximum. This does not measure official daemon latency.
+- [x] Run Ruff, `ty`, and architecture checks, then commit.
 
 ## 10. Task 6 — Codex Activation and Crash Recovery
 

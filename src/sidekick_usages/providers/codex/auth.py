@@ -1,7 +1,6 @@
 """Codex auth discovery, identity, login, and pure bundle preparation."""
 
 import json
-import os
 import re
 import tomllib
 from dataclasses import dataclass, field, replace
@@ -25,7 +24,9 @@ from sidekick_usages.providers.base import (
     ProviderFailure,
     ProviderFailureKind,
 )
+from sidekick_usages.providers.codex.generation import codex_generation_order
 from sidekick_usages.providers.codex.models import CodexAuthSnapshot
+from sidekick_usages.providers.codex.native import default_codex_home
 from sidekick_usages.providers.codex.schemas import (
     account_id_from_token,
     auth_blob_access_token,
@@ -34,18 +35,10 @@ from sidekick_usages.providers.codex.schemas import (
 )
 from sidekick_usages.serialization.json import JsonObject, decode_json_object
 
-CODEX_HOME_ENV = "CODEX_HOME"
 CODEX_AUTH_FILE = "auth.json"
 CODEX_CONFIG_FILE = "config.toml"
 CODEX_FILE_AUTH_CONFIG = 'cli_auth_credentials_store = "file"'
 _MAX_AUTH_BYTES = 1024 * 1024
-_CODEX_GENERATION_PATTERN = re.compile(
-    r"(?P<year>[0-9]{4})-(?P<month>[0-9]{2})-"
-    r"(?P<day>[0-9]{2})T(?P<hour>[0-9]{2}):"
-    r"(?P<minute>[0-9]{2}):(?P<second>[0-9]{2})"
-    r"(?:\.(?P<fraction>[0-9]{1,9}))?Z\Z",
-    re.ASCII,
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,14 +60,6 @@ def _failure(kind: ProviderFailureKind, message: str) -> ProviderFailure:
         kind=kind,
         message=message,
     )
-
-
-def default_codex_home() -> Path:
-    """Return the Codex home used by default credential detection."""
-    configured = os.environ.get(CODEX_HOME_ENV)
-    if configured:
-        return Path(configured).expanduser()
-    return Path.home() / ".codex"
 
 
 def codex_auth_path(credential_home: Path | None = None) -> Path:
@@ -167,9 +152,13 @@ def managed_auth_snapshot(
             ProviderFailureKind.MALFORMED,
             "The managed Codex auth state is incomplete.",
         )
-    order = codex_generation_order(credentials.auth_last_refresh)
-    if isinstance(order, ProviderFailure):
-        return order
+    try:
+        order = codex_generation_order(credentials.auth_last_refresh)
+    except ValueError:
+        return _failure(
+            ProviderFailureKind.MALFORMED,
+            "The managed Codex credential generation is malformed.",
+        )
     try:
         return CodexAuthSnapshot(
             provider_identity=ProviderIdentity(credentials.account_id),
@@ -182,47 +171,6 @@ def managed_auth_snapshot(
             ProviderFailureKind.MALFORMED,
             "The managed Codex auth metadata is malformed.",
         )
-
-
-def codex_generation_order(
-    value: str,
-) -> tuple[int, int, int, int, int, int, int] | ProviderFailure:
-    """Return the exact provider timestamp order without losing nanos."""
-    match = _CODEX_GENERATION_PATTERN.fullmatch(value)
-    if match is None:
-        return _failure(
-            ProviderFailureKind.MALFORMED,
-            "The managed Codex credential generation is malformed.",
-        )
-    values = tuple(
-        int(match.group(name))
-        for name in (
-            "year",
-            "month",
-            "day",
-            "hour",
-            "minute",
-            "second",
-        )
-    )
-    try:
-        datetime(*values, tzinfo=UTC)
-    except ValueError:
-        return _failure(
-            ProviderFailureKind.MALFORMED,
-            "The managed Codex credential generation is malformed.",
-        )
-    fraction = match.group("fraction") or ""
-    nanoseconds = int(fraction.ljust(9, "0"))
-    return (
-        values[0],
-        values[1],
-        values[2],
-        values[3],
-        values[4],
-        values[5],
-        nanoseconds,
-    )
 
 
 def detect_auth_credentials(

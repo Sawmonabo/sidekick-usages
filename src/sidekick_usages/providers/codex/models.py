@@ -12,6 +12,7 @@ from sidekick_usages.core.accounts.validation import (
     MAX_OPAQUE_BYTES,
     require_bounded_text,
 )
+from sidekick_usages.providers.codex.generation import CodexGenerationOrder
 
 _DEFAULT_HTTPS_PORT = 443
 _OFFICIAL_LOGIN_HOSTS = frozenset({"auth.openai.com"})
@@ -23,9 +24,7 @@ class CodexAuthSnapshot:
 
     provider_identity: ProviderIdentity
     generation: AuthorityGeneration
-    generation_order: tuple[int, int, int, int, int, int, int] = field(
-        repr=False
-    )
+    generation_order: CodexGenerationOrder = field(repr=False)
     plan: str
 
     def __post_init__(self) -> None:
@@ -66,6 +65,15 @@ class CodexAccountObservation:
             name="Codex plan",
             maximum=MAX_METADATA_BYTES,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class CodexTokenClaims:
+    """Validated identity-bearing claims from one Codex access token."""
+
+    expiry_seconds: int | None
+    provider_identity: ProviderIdentity | None
+    plan: str | None
 
 
 @dataclass(frozen=True, slots=True)

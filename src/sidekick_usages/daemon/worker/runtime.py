@@ -10,6 +10,7 @@ from sidekick_usages.daemon.types.worker import WorkerOutcome
 from sidekick_usages.persistence.supervisor.authority import (
     OperationAuthority,
     OperationAuthorityLock,
+    ProviderMutationLock,
 )
 from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
 from sidekick_usages.persistence.supervisor.results import WorkerResultStore
@@ -49,21 +50,60 @@ def run_isolated_worker(
     if operation is None or operation.state is not OperationState.RUNNING:
         return False
     with authority_lock.hold() as authority:
-        try:
-            result = executor.execute(operation, authority)
-        except Exception:
-            result = WorkerResult(
-                operation_id=operation_id,
-                outcome=WorkerOutcome.TRANSIENT_FAILURE,
-                finished_at=clock.now(),
-                failure_code="worker_failed",
-            )
-        if result.operation_id != operation_id:
-            result = WorkerResult(
-                operation_id=operation_id,
-                outcome=WorkerOutcome.TRANSIENT_FAILURE,
-                finished_at=clock.now(),
-                failure_code="worker_result_mismatch",
-            )
-        results.save(result)
+        return _execute_worker(
+            operation,
+            results,
+            executor,
+            authority,
+            clock,
+        )
+
+
+def run_provider_worker(
+    operation_id: OperationId,
+    queue: OperationQueueStore,
+    results: WorkerResultStore,
+    authority_lock: ProviderMutationLock,
+    executor: WorkerExecutor,
+    clock: Clock,
+) -> bool:
+    """Execute one provider-mutating operation under provider-first locks."""
+    operation = queue.find(operation_id)
+    if operation is None or operation.state is not OperationState.RUNNING:
+        return False
+    with authority_lock.hold() as provider_authority:
+        provider_authority.require(operation.provider_id)
+        return _execute_worker(
+            operation,
+            results,
+            executor,
+            provider_authority.account(operation.account_id),
+            clock,
+        )
+
+
+def _execute_worker(
+    operation: DueOperation,
+    results: WorkerResultStore,
+    executor: WorkerExecutor,
+    authority: OperationAuthority,
+    clock: Clock,
+) -> bool:
+    try:
+        result = executor.execute(operation, authority)
+    except Exception:
+        result = WorkerResult(
+            operation_id=operation.operation_id,
+            outcome=WorkerOutcome.TRANSIENT_FAILURE,
+            finished_at=clock.now(),
+            failure_code="worker_failed",
+        )
+    if result.operation_id != operation.operation_id:
+        result = WorkerResult(
+            operation_id=operation.operation_id,
+            outcome=WorkerOutcome.TRANSIENT_FAILURE,
+            finished_at=clock.now(),
+            failure_code="worker_result_mismatch",
+        )
+    results.save(result)
     return True

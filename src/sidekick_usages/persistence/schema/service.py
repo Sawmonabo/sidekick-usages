@@ -24,12 +24,13 @@ from sidekick_usages.persistence.time_codec import (
 )
 from sidekick_usages.serialization.json import JsonObject
 
-SERVICE_STATE_SCHEMA_VERSION = 1
+SERVICE_STATE_SCHEMA_VERSION = 2
 MAX_SERVICE_STATE_BYTES = 32 * 1024
 
 _SERVICE_STATE_KEYS = frozenset(
     {
         "active_workers",
+        "broker_ready",
         "failure_code",
         "journals_reconciled",
         "observed_at",
@@ -46,6 +47,7 @@ _SERVICE_STATE_KEYS = frozenset(
 def _state_object(state: ServiceState) -> JsonObject:
     return {
         "active_workers": state.active_workers,
+        "broker_ready": state.broker_ready,
         "failure_code": state.failure_code,
         "journals_reconciled": state.journals_reconciled,
         "observed_at": canonical_timestamp(state.observed_at),
@@ -86,6 +88,7 @@ def decode_service_state(payload: bytes) -> ServiceState:
             ),
             queue_recovered=require_boolean(root["queue_recovered"]),
             journals_reconciled=require_boolean(root["journals_reconciled"]),
+            broker_ready=require_boolean(root["broker_ready"]),
             active_workers=require_integer(root["active_workers"]),
             failure_code=require_optional_string(root["failure_code"]),
         )

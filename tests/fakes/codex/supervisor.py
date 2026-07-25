@@ -1,0 +1,218 @@
+"""Real resident supervisor harness around synthetic Codex boundaries."""
+
+import time
+from collections.abc import Callable, Iterator, Mapping
+from pathlib import Path
+from threading import Event, Thread
+from types import TracebackType
+from typing import Self
+
+from sidekick_usages.clock import SystemClock
+from sidekick_usages.core.accounts.types import RequestId
+from sidekick_usages.core.types import ProviderId
+from sidekick_usages.daemon.control.server import LocalControlServer
+from sidekick_usages.daemon.models.protocol import ControlEvent, ControlRequest
+from sidekick_usages.daemon.runtime.callbacks import DurableCallbackDispatcher
+from sidekick_usages.daemon.runtime.recovery import ActivationRecoveryScheduler
+from sidekick_usages.daemon.runtime.scheduler import DurableScheduler
+from sidekick_usages.daemon.runtime.supervisor import (
+    SupervisorRuntime,
+    WakeupChannel,
+)
+from sidekick_usages.daemon.types.service import ServicePhase
+from sidekick_usages.daemon.worker.exchange import CallbackExchangeRegistry
+from sidekick_usages.daemon.worker.pool import (
+    SubprocessWorkerLauncher,
+    WorkerLaunchPlanner,
+    WorkerPool,
+)
+from sidekick_usages.paths import ApplicationPaths
+from sidekick_usages.persistence.supervisor.activation import (
+    ActivationJournalStore,
+)
+from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
+from sidekick_usages.persistence.supervisor.results import WorkerResultStore
+from sidekick_usages.persistence.supervisor.runtime import (
+    SelectedRuntimeReader,
+)
+from sidekick_usages.persistence.supervisor.selection import SelectedStateStore
+from sidekick_usages.persistence.supervisor.service import ServiceStateStore
+from sidekick_usages.providers.codex.app_server.models import CodexExecutable
+from sidekick_usages.providers.codex.broker.responder import CodexRefreshBroker
+from sidekick_usages.providers.codex.broker.service import CodexSharedRuntime
+
+_READINESS_TIMEOUT_SECONDS = 10.0
+_SUPERVISOR_JOIN_SECONDS = 10.0
+_WAIT_INTERVAL_SECONDS = 0.01
+
+
+class _NoopControlDispatcher:
+    """Accept handshakes without adding dashboard behavior to broker tests."""
+
+    def dispatch(self, request: ControlRequest) -> Iterator[ControlEvent]:
+        del request
+        return iter(())
+
+    def cancel(self, request_id: RequestId) -> None:
+        del request_id
+
+
+class FakeCodexSupervisor:
+    """Run the production supervisor, scheduler, broker, and worker process."""
+
+    def __init__(
+        self,
+        paths: ApplicationPaths,
+        executable: CodexExecutable,
+        native_home: Path,
+        environment: Mapping[str, str],
+        worker_executable: Path,
+    ) -> None:
+        self._executable = executable
+        self._native_home = native_home
+        self._environment = dict(environment)
+        self._stop = Event()
+        self._wakeup = WakeupChannel()
+        self._failures: list[BaseException] = []
+        self._thread: Thread | None = None
+        clock = SystemClock()
+        queue = OperationQueueStore(paths.durable_operations)
+        results = WorkerResultStore(paths.durable_operations)
+        service_state = ServiceStateStore(paths.service_state)
+        journals = ActivationJournalStore(
+            paths.activation_journals,
+            paths.durable_operations,
+        )
+        selected = SelectedStateStore(paths.selected_state)
+        callbacks = CallbackExchangeRegistry(time.monotonic)
+        workers = WorkerPool(
+            SubprocessWorkerLauncher(),
+            WorkerLaunchPlanner(worker_executable, environment),
+            self._wakeup.notify,
+            callbacks=callbacks,
+        )
+        scheduler = DurableScheduler(
+            queue,
+            results,
+            workers,
+            clock,
+        )
+        broker = CodexRefreshBroker(
+            self._create_runtime,
+            SelectedRuntimeReader(
+                ProviderId.CODEX,
+                selected,
+                journals,
+                paths.durable_operations,
+            ),
+            DurableCallbackDispatcher(
+                queue,
+                callbacks,
+                clock.now,
+                time.monotonic,
+                self._wakeup.notify,
+            ),
+            status_changed=self._wakeup.notify,
+        )
+        self._broker = broker
+        self._service_state = service_state
+        self._runtime = SupervisorRuntime(
+            LocalControlServer(
+                paths.runtime_directory,
+                paths.supervisor_socket,
+                _NoopControlDispatcher(),
+            ),
+            scheduler,
+            ActivationRecoveryScheduler(journals, queue),
+            service_state,
+            clock,
+            self._wakeup,
+            self._stop,
+            broker,
+        )
+
+    @property
+    def ready(self) -> bool:
+        """Return the published broker and supervisor readiness state."""
+        state = self._service_state.load()
+        return (
+            state is not None
+            and state.phase is ServicePhase.READY
+            and state.broker_ready
+            and self._broker.ready
+        )
+
+    def start(self) -> None:
+        """Start the production runtime in one owned background thread."""
+        if self._thread is not None:
+            raise RuntimeError("Fake supervisor already started.")
+        thread = Thread(
+            target=self._run,
+            daemon=True,
+            name="test-sidekick-supervisor",
+        )
+        self._thread = thread
+        thread.start()
+
+    def wait_until_ready(self) -> None:
+        """Wait for one published ready state or surface runtime failure."""
+        deadline = time.monotonic() + _READINESS_TIMEOUT_SECONDS
+        while not self.ready:
+            self._raise_failure()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise AssertionError("Fake supervisor did not become ready.")
+            self._stop.wait(min(_WAIT_INTERVAL_SECONDS, remaining))
+
+    def notify(self) -> None:
+        """Wake the real selector after a test persists due work."""
+        self._wakeup.notify()
+
+    def close(self) -> None:
+        """Stop, join, and surface any production runtime failure."""
+        self._stop.set()
+        self._wakeup.notify()
+        thread = self._thread
+        if thread is not None:
+            thread.join(timeout=_SUPERVISOR_JOIN_SECONDS)
+            if thread.is_alive():
+                raise AssertionError("Fake supervisor did not stop.")
+        self._raise_failure()
+
+    def __enter__(self) -> Self:
+        """Start and return this harness."""
+        self.start()
+        return self
+
+    def __exit__(
+        self,
+        exception_type: type[BaseException] | None,
+        exception: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        """Stop the harness."""
+        del exception_type, exception, traceback
+        self.close()
+
+    def _create_runtime(
+        self,
+        cancelled: Callable[[], bool],
+    ) -> CodexSharedRuntime:
+        return CodexSharedRuntime.create(
+            self._executable,
+            self._native_home,
+            environment=self._environment,
+            cancelled=cancelled,
+        )
+
+    def _run(self) -> None:
+        try:
+            self._runtime.run()
+        except BaseException as error:
+            self._failures.append(error)
+
+    def _raise_failure(self) -> None:
+        if self._failures:
+            raise AssertionError(
+                "Production supervisor failed in its test harness."
+            ) from self._failures[0]

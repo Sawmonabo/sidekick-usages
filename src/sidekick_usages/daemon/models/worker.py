@@ -10,22 +10,16 @@ from sidekick_usages.core.selection.models import (
     safe_outcome_code,
 )
 from sidekick_usages.core.time import as_utc
-from sidekick_usages.daemon.types.worker import WorkerOutcome
-
-ALLOWED_WORKER_ENVIRONMENT_KEYS = frozenset(
-    {
-        "HOME",
-        "LANG",
-        "LC_ALL",
-        "LOGNAME",
-        "PATH",
-        "TMPDIR",
-        "USER",
-        "XDG_CONFIG_HOME",
-        "XDG_DATA_HOME",
-        "XDG_RUNTIME_DIR",
-    }
+from sidekick_usages.daemon.types.worker import (
+    CallbackExchangePhase,
+    WorkerOutcome,
 )
+from sidekick_usages.platform.environment import (
+    SAFE_WORKER_ENVIRONMENT_KEYS,
+)
+
+CALLBACK_DESCRIPTOR_ENVIRONMENT_KEY = "SIDEKICK_CALLBACK_DESCRIPTOR"
+MINIMUM_CALLBACK_DESCRIPTOR = 3
 _MAX_ENVIRONMENT_VALUE_BYTES = 16 * 1024
 
 
@@ -56,6 +50,7 @@ class WorkerLaunchSpec:
     operation_id: OperationId
     argv: tuple[str, str]
     environment: tuple[tuple[str, str], ...] = field(repr=False)
+    callback_descriptor: int | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         """Reject argument or environment expansion."""
@@ -70,7 +65,7 @@ class WorkerLaunchSpec:
         if (
             len(keys) != len(set(keys))
             or tuple(sorted(keys)) != keys
-            or not set(keys) <= ALLOWED_WORKER_ENVIRONMENT_KEYS
+            or not set(keys) <= SAFE_WORKER_ENVIRONMENT_KEYS
         ):
             raise ValueError("Worker environment is not a minimal allowlist.")
         for _key, value in self.environment:
@@ -82,10 +77,29 @@ class WorkerLaunchSpec:
                 ) from None
             if len(encoded) > _MAX_ENVIRONMENT_VALUE_BYTES or "\x00" in value:
                 raise ValueError("Worker environment value is unsafe.")
+        descriptor = self.callback_descriptor
+        if descriptor is not None and (
+            type(descriptor) is not int
+            or descriptor < MINIMUM_CALLBACK_DESCRIPTOR
+        ):
+            raise ValueError("Callback descriptor is invalid.")
 
     def environment_map(self) -> dict[str, str]:
         """Return a fresh minimal subprocess environment."""
-        return dict(self.environment)
+        environment = dict(self.environment)
+        if self.callback_descriptor is not None:
+            environment[CALLBACK_DESCRIPTOR_ENVIRONMENT_KEY] = str(
+                self.callback_descriptor
+            )
+        return environment
+
+    def inherited_descriptors(self) -> tuple[int, ...]:
+        """Return the sole callback descriptor when one is required."""
+        return (
+            ()
+            if self.callback_descriptor is None
+            else (self.callback_descriptor,)
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,3 +119,30 @@ class ActiveWorker[HandleT]:
     operation: DueOperation
     handle: HandleT
     deadline: float
+
+
+@dataclass(slots=True)
+class QuarantinedWorker[HandleT]:
+    """One residual worker group awaiting bounded cleanup."""
+
+    operation: DueOperation
+    handle: HandleT
+    attempts: int
+    retry_at: float
+    completion_pending: bool
+    timed_out: bool = False
+    preempted: bool = False
+
+    def __post_init__(self) -> None:
+        """Require explicit positive cleanup scheduling state."""
+        if self.attempts < 1 or self.retry_at < 0:
+            raise ValueError("Worker quarantine state is invalid.")
+
+
+@dataclass(slots=True)
+class CallbackExchangeRegistration[ExchangeT]:
+    """One registry-owned exchange during worker descriptor inheritance."""
+
+    exchange: ExchangeT
+    phase: CallbackExchangePhase = CallbackExchangePhase.READY
+    cancellation_requested: bool = False

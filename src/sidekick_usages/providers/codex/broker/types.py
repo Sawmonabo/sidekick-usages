@@ -1,13 +1,6 @@
 """Closed shared Codex daemon types and ports."""
 
 from enum import StrEnum
-from typing import Protocol
-
-from sidekick_usages.core.accounts.types import (
-    AuthorityGeneration,
-    ProviderIdentity,
-    SidekickAccountId,
-)
 
 
 class CodexDaemonStatus(StrEnum):
@@ -16,6 +9,13 @@ class CodexDaemonStatus(StrEnum):
     STARTED = "started"
     ALREADY_RUNNING = "alreadyRunning"
     RUNNING = "running"
+
+
+class CodexCallbackMode(StrEnum):
+    """Closed private-worker projection operations."""
+
+    REFRESH = "refresh"
+    REHYDRATE = "rehydrate"
 
 
 class CodexBrokerFailure(StrEnum):
@@ -34,27 +34,3 @@ class CodexBrokerFailure(StrEnum):
     PROTOCOL_FAILED = "protocol_failed"
     PROJECTION_REJECTED = "projection_rejected"
     IDENTITY_MISMATCH = "identity_mismatch"
-
-
-class CodexProjection(Protocol):
-    """Expose one short-lived locally proven account projection."""
-
-    @property
-    def account_id(self) -> SidekickAccountId:
-        """Return the stable Sidekick account identifier."""
-
-    @property
-    def provider_identity(self) -> ProviderIdentity:
-        """Return the locally proven ChatGPT account identifier."""
-
-    @property
-    def generation(self) -> AuthorityGeneration:
-        """Return the protected managed-home generation."""
-
-    @property
-    def plan(self) -> str:
-        """Return the validated plan supplied by managed Codex."""
-
-    @property
-    def access_token(self) -> str:
-        """Return the credential only while the projection is active."""

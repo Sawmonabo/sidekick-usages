@@ -19,7 +19,7 @@ from sidekick_usages.core.accounts.types import (
     SidekickAccountId,
 )
 from sidekick_usages.core.types import AccountLabel, ProviderId
-from sidekick_usages.credentials.codex.authorities import (
+from sidekick_usages.credentials.codex.managed.service import (
     CodexManagedAuthorityCoordinator,
 )
 from sidekick_usages.paths import ApplicationPaths, managed_codex_home

@@ -7,7 +7,7 @@ import os
 import sys
 from contextlib import suppress
 from pathlib import Path
-from threading import RLock, Thread
+from threading import Event, RLock, Thread
 from types import TracebackType
 from typing import Self
 
@@ -21,8 +21,12 @@ from websockets.sync.server import (
 
 from sidekick_usages.errors import InvalidPayloadError
 from sidekick_usages.serialization.json import JsonObject, decode_json_object
+from tests.fakes.codex.models import FakeCodexRefreshResponse
 
 _CLIENT_TIMEOUT_SECONDS = 5.0
+_EXTERNAL_REFRESH_ERROR_CODE = -32000
+_EXTERNAL_REFRESH_ERROR_MESSAGE = "external auth refresh unavailable"
+_EXTERNAL_REFRESH_METHOD = "account/chatgptAuthTokens/refresh"
 _JWT_PARTS = 3
 _CONTROL_DIRECTORY_NAME = "app-server-control"
 _CONTROL_SOCKET_NAME = "app-server-control.sock"
@@ -46,19 +50,22 @@ class FakeCodexDaemon:
         self._thread: Thread | None = None
         self._connections: set[ServerConnection] = set()
         self._initialized: set[ServerConnection] = set()
+        self._client_names: dict[ServerConnection, str] = {}
         self._installed_account_ids: list[str] = []
         self._active_account_id: str | None = None
         self._originator: str | None = None
         self._ready_account_read_count = 0
+        self._next_server_request_id = 0
+        self._refresh_event: Event | None = None
+        self._refresh_request_id: int | None = None
+        self._refresh_response: FakeCodexRefreshResponse | None = None
         self._failures: list[BaseException] = []
 
     @property
     def socket_path(self) -> Path:
         """Return the official default control socket path."""
         return (
-            self._codex_home
-            / _CONTROL_DIRECTORY_NAME
-            / _CONTROL_SOCKET_NAME
+            self._codex_home / _CONTROL_DIRECTORY_NAME / _CONTROL_SOCKET_NAME
         )
 
     @property
@@ -78,6 +85,42 @@ class FakeCodexDaemon:
         observer = FakeCodexTuiObserver(self.socket_path)
         observer.open()
         return observer
+
+    def request_refresh(
+        self,
+        previous_account_id: str,
+    ) -> FakeCodexRefreshResponse:
+        """Broadcast an official-shaped refresh and return its first answer."""
+        event = Event()
+        with self._lock:
+            if self._refresh_event is not None:
+                raise AssertionError("Fake Codex refresh is already active.")
+            request_id = self._next_server_request_id
+            self._next_server_request_id += 1
+            self._refresh_event = event
+            self._refresh_request_id = request_id
+            self._refresh_response = None
+            recipients = tuple(self._initialized)
+        message: JsonObject = {
+            "id": request_id,
+            "method": _EXTERNAL_REFRESH_METHOD,
+            "params": {
+                "previousAccountId": previous_account_id,
+                "reason": "unauthorized",
+            },
+        }
+        for recipient in recipients:
+            _send(recipient, message)
+        if not event.wait(_CLIENT_TIMEOUT_SECONDS):
+            raise AssertionError("Fake Codex refresh received no response.")
+        with self._lock:
+            response = self._refresh_response
+            self._refresh_event = None
+            self._refresh_request_id = None
+            self._refresh_response = None
+        if response is None:
+            raise AssertionError("Fake Codex refresh response disappeared.")
+        return response
 
     def replace(self) -> None:
         """Replace the daemon and discard process-local external auth."""
@@ -147,6 +190,7 @@ class FakeCodexDaemon:
         with self._lock:
             self._connections.clear()
             self._initialized.clear()
+            self._client_names.clear()
         with suppress(FileNotFoundError):
             self.socket_path.unlink()
 
@@ -169,6 +213,7 @@ class FakeCodexDaemon:
             with self._lock:
                 self._connections.discard(connection)
                 self._initialized.discard(connection)
+                self._client_names.pop(connection, None)
 
     def _dispatch(
         self,
@@ -184,6 +229,9 @@ class FakeCodexDaemon:
                 "Codex fake received a non-object message."
             ) from None
         method = request.get("method")
+        if method is None:
+            self._accept_refresh_response(connection, request)
+            return
         if method == "initialize":
             self._initialize(connection, request)
             return
@@ -216,8 +264,7 @@ class FakeCodexDaemon:
         )
         if (
             not isinstance(params, dict)
-            or params.get("capabilities")
-            != {"experimentalApi": True}
+            or params.get("capabilities") != {"experimentalApi": True}
             or not isinstance(name, str)
             or not name
         ):
@@ -226,6 +273,7 @@ class FakeCodexDaemon:
             if self._originator is None:
                 self._originator = name
             originator = self._originator
+            self._client_names[connection] = name
         _send(
             connection,
             {
@@ -242,6 +290,69 @@ class FakeCodexDaemon:
                 },
             },
         )
+
+    def _accept_refresh_response(
+        self,
+        connection: ServerConnection,
+        response: JsonObject,
+    ) -> None:
+        with self._lock:
+            event = self._refresh_event
+            request_id = self._refresh_request_id
+            responder = self._client_names.get(connection)
+            if (
+                event is None
+                or request_id is None
+                or event.is_set()
+                or response.get("id") != request_id
+                or responder is None
+            ):
+                return
+            result = response.get("result")
+            error = response.get("error")
+            if set(response) == {"id", "result"} and isinstance(result, dict):
+                account_id = self._refresh_account_id(result)
+                self._active_account_id = account_id
+                observed = FakeCodexRefreshResponse(
+                    responder,
+                    account_id,
+                    None,
+                )
+            elif (
+                set(response) == {"id", "error"}
+                and isinstance(error, dict)
+                and error
+                == {
+                    "code": _EXTERNAL_REFRESH_ERROR_CODE,
+                    "message": _EXTERNAL_REFRESH_ERROR_MESSAGE,
+                }
+            ):
+                observed = FakeCodexRefreshResponse(
+                    responder,
+                    None,
+                    _EXTERNAL_REFRESH_ERROR_CODE,
+                )
+            else:
+                raise AssertionError(
+                    "Fake Codex refresh response is malformed."
+                )
+            self._refresh_response = observed
+            event.set()
+
+    @staticmethod
+    def _refresh_account_id(result: JsonObject) -> str:
+        access_token = result.get("accessToken")
+        account_id = result.get("chatgptAccountId")
+        if (
+            set(result)
+            != {"accessToken", "chatgptAccountId", "chatgptPlanType"}
+            or not isinstance(access_token, str)
+            or not isinstance(account_id, str)
+            or result.get("chatgptPlanType") != "pro"
+            or _token_account_id(access_token) != account_id
+        ):
+            raise AssertionError("Fake Codex refresh result is inconsistent.")
+        return account_id
 
     def _install(
         self,
@@ -381,14 +492,12 @@ class FakeCodexTuiObserver:
             raise AssertionError("Fake Codex observer is not open.")
         for _message_index in range(4):
             message = _receive(connection)
-            if (
-                message.get("method") == "account/updated"
-                and message.get("params")
-                == {
-                    "authMode": "chatgptAuthTokens",
-                    "planType": "pro",
-                }
-            ):
+            if message.get("method") == "account/updated" and message.get(
+                "params"
+            ) == {
+                "authMode": "chatgptAuthTokens",
+                "planType": "pro",
+            }:
                 return
         raise AssertionError("Fake Codex observer saw no account update.")
 
