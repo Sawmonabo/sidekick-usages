@@ -223,6 +223,12 @@ _MUTATIONS = (
         "",
         'TOKEN_ENDPOINT = "https://auth.openai.com/oauth/token"\n',
     ),
+    architecture.models.SourceMutation(
+        "CLAUDE001",
+        "src/sidekick_usages/providers/claude/retired_auth_fixture.py",
+        "",
+        'CLAUDE_CONFIG_DIR = "CLAUDE_CONFIG_DIR"\n',
+    ),
 )
 
 

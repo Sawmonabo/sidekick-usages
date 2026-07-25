@@ -77,7 +77,7 @@ from sidekick_usages.providers.base import (
     Provider,
     ProviderAuthenticatedAccount,
 )
-from sidekick_usages.providers.claude.provider import (
+from sidekick_usages.providers.claude.types import (
     ClaudeSetupToken,
     SetupTokenCapture,
 )

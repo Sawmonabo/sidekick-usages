@@ -73,7 +73,10 @@ class CodexAppServerSession:
         if not codex_home.is_absolute() or not resolved_home.is_dir():
             raise CodexAppServerError(CodexAppServerFailure.PROCESS_FAILED)
         transport = JsonLinesTransport.open(
-            (str(capabilities.executable.path), "app-server"),
+            (
+                str(capabilities.executable.provenance.path),
+                "app-server",
+            ),
             minimal_codex_environment(
                 environment,
                 codex_home=resolved_home,

@@ -76,7 +76,7 @@ def probe_codex_capabilities(
         schema_directory.mkdir(mode=0o700)
         run_quiet_codex_command(
             (
-                str(executable.path),
+                str(executable.provenance.path),
                 "app-server",
                 "generate-json-schema",
                 "--experimental",

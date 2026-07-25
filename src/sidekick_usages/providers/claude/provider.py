@@ -1,14 +1,8 @@
 """Claude provider facade and typed refresh workflow."""
 
 import os
-import platform
-import shutil
-import subprocess
-from contextlib import suppress
-from dataclasses import dataclass, field, replace
+from dataclasses import replace
 from pathlib import Path
-from threading import Event, Thread
-from typing import IO, Protocol
 
 from sidekick_usages.clock import Clock
 from sidekick_usages.core.expiry import (
@@ -27,6 +21,8 @@ from sidekick_usages.core.types import ProviderId
 from sidekick_usages.errors import AuthError, TransientError
 from sidekick_usages.http.client import HttpClient
 from sidekick_usages.http.types import HttpOperation
+from sidekick_usages.platform.host import detect_host_platform
+from sidekick_usages.platform.types import HostPlatform
 from sidekick_usages.providers.base import (
     CredentialDetection,
     CredentialStageReader,
@@ -46,119 +42,50 @@ from sidekick_usages.providers.claude.credentials import (
     parse_detected_credentials,
     require_claude_credentials,
 )
+from sidekick_usages.providers.claude.environment import (
+    claude_refresh_environment,
+)
+from sidekick_usages.providers.claude.errors import ClaudeProcessError
+from sidekick_usages.providers.claude.managed.errors import ClaudeManagedError
+from sidekick_usages.providers.claude.managed.executable import (
+    discover_claude_executable,
+)
+from sidekick_usages.providers.claude.models import (
+    ClaudeCommandResult,
+    ClaudeExecutable,
+    SetupTokenMissing,
+    SetupTokenRejected,
+    SetupTokenSuccess,
+    SetupTokenTimedOut,
+    SetupTokenUnreadable,
+)
+from sidekick_usages.providers.claude.process import (
+    run_bounded_claude_command,
+)
 from sidekick_usages.providers.claude.schema.credentials import (
     CLAUDE_TOKEN_PATTERN,
     parse_refresh_credentials,
     validate_setup_token,
 )
 from sidekick_usages.providers.claude.schema.usage import claude_failure
+from sidekick_usages.providers.claude.types import (
+    ClaudeProcessFailure,
+    SetupTokenCapture,
+)
 from sidekick_usages.providers.claude.usage import fetch_usage
 
 OAUTH_REFRESH_ENDPOINT = "https://platform.claude.com/v1/oauth/token"
 OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 OAUTH_REFRESH_EXPIRES_IN_SECONDS = 31_536_000
 _MAX_SETUP_OUTPUT_BYTES = 1024 * 1024
-_SETUP_READ_CHUNK_BYTES = 8192
 _PRIVATE_CHILD_UMASK = 0o077
-_INHERITED_REFRESH_ENVIRONMENT = (
-    "COMSPEC",
-    "LANG",
-    "LC_ALL",
-    "LC_CTYPE",
-    "PATH",
-    "PATHEXT",
-    "SYSTEMROOT",
-    "TEMP",
-    "TMP",
-    "TMPDIR",
-    "WINDIR",
-)
-
-type SetupTokenCapture = (
-    SetupTokenSuccess
-    | SetupTokenMissing
-    | SetupTokenRejected
-    | SetupTokenTimedOut
-    | SetupTokenUnreadable
-)
-type _SetupProcessResult = (
-    _CapturedSetupOutput | SetupTokenTimedOut | SetupTokenUnreadable
-)
-
-
-@dataclass(frozen=True, slots=True)
-class SetupTokenSuccess:
-    """A Claude setup-token process yielded one validated token."""
-
-    token: str = field(repr=False)
-
-
-@dataclass(frozen=True, slots=True)
-class SetupTokenMissing:
-    """Claude setup-token completed without a recognizable token."""
-
-
-@dataclass(frozen=True, slots=True)
-class SetupTokenRejected:
-    """Claude setup-token exited unsuccessfully."""
-
-    return_code: int
-
-
-@dataclass(frozen=True, slots=True)
-class SetupTokenTimedOut:
-    """Claude setup-token exceeded its bounded execution time."""
-
-
-@dataclass(frozen=True, slots=True)
-class SetupTokenUnreadable:
-    """Claude setup-token could not produce bounded safe output."""
-
-
-@dataclass(frozen=True, slots=True)
-class _CapturedSetupOutput:
-    """One bounded private process result awaiting token extraction."""
-
-    return_code: int
-    output: bytes = field(repr=False)
-
-
-def _closed_refresh_environment(
-    isolated_home: Path,
-    refresh_token: str,
-    scopes: tuple[str, ...],
-) -> dict[str, str]:
-    """Build the closed child environment required on supported systems.
-
-    Only process lookup, Windows process startup, locale, and temporary-file
-    variables are inherited. Claude and Anthropic configuration or credential
-    inputs can therefore enter only through the managed values below.
-    """
-    environment = {
-        name: value
-        for name in _INHERITED_REFRESH_ENVIRONMENT
-        if (value := os.environ.get(name)) is not None
+_REFRESH_COMMAND_TIMEOUT_SECONDS = 60
+_STAGED_KEYCHAIN_HOSTS = frozenset(
+    {
+        HostPlatform.MACOS_ARM64,
+        HostPlatform.MACOS_X64,
     }
-    environment.update(
-        {
-            "HOME": str(isolated_home),
-            "USERPROFILE": str(isolated_home),
-            "APPDATA": str(isolated_home / "AppData" / "Roaming"),
-            "LOCALAPPDATA": str(isolated_home / "AppData" / "Local"),
-            "XDG_CONFIG_HOME": str(isolated_home / ".config"),
-            "CLAUDE_CONFIG_DIR": str(isolated_home / ".claude"),
-            "CLAUDE_CODE_OAUTH_REFRESH_TOKEN": refresh_token,
-            "CLAUDE_CODE_OAUTH_SCOPES": " ".join(scopes),
-        }
-    )
-    return environment
-
-
-class ClaudeSetupToken(Protocol):
-    """Narrow structural capability for Claude setup-token capture."""
-
-    def capture_setup_token(self, timeout: int = 600) -> SetupTokenCapture:
-        """Capture one typed Claude setup-token outcome."""
+)
 
 
 class ClaudeProvider(Provider):
@@ -259,11 +186,16 @@ class ClaudeProvider(Provider):
                 "The saved Claude login credential has expired.",
                 cause=ProviderFailureCause.LOGIN_CREDENTIAL_EXPIRED,
             )
-        cli_result = self._refresh_via_cli(
-            credentials,
-            stage_home,
-            stage_reader,
-        )
+        cli_result: RefreshResult | None = None
+        if (
+            detect_host_platform(environment=os.environ)
+            not in _STAGED_KEYCHAIN_HOSTS
+        ):
+            cli_result = self._refresh_via_cli(
+                credentials,
+                stage_home,
+                stage_reader,
+            )
         if cli_result is not None:
             return cli_result
         return self._refresh_via_http(http, credentials)
@@ -274,20 +206,24 @@ class ClaudeProvider(Provider):
         isolated_home: Path,
         stage_reader: CredentialStageReader,
     ) -> RefreshResult | None:
-        claude_bin = (
-            None if platform.system() == "Darwin" else shutil.which("claude")
-        )
-        if claude_bin is None:
-            return None
         scopes = self._refresh_scopes(credentials)
-        env = _closed_refresh_environment(
-            isolated_home,
-            credentials.refresh_token,
-            scopes,
+        environment = claude_refresh_environment(
+            os.environ,
+            isolated_home=isolated_home,
+            refresh_token=credentials.refresh_token,
+            scopes=scopes,
         )
+        try:
+            executable = discover_claude_executable(
+                environment,
+                working_directory=isolated_home,
+                runner=run_bounded_claude_command,
+            )
+        except ClaudeManagedError:
+            return None
         completed = self._run_cli_refresh(
-            claude_bin,
-            env,
+            executable,
+            environment,
             isolated_home,
         )
         if isinstance(completed, ProviderFailure):
@@ -341,30 +277,36 @@ class ClaudeProvider(Provider):
 
     @staticmethod
     def _run_cli_refresh(
-        claude_bin: str,
+        executable: ClaudeExecutable,
         env: dict[str, str],
         working_directory: Path,
-    ) -> _CapturedSetupOutput | ProviderFailure:
-        captured = ClaudeProvider._capture_setup_output(
-            [claude_bin, "auth", "login", "--claudeai"],
-            60,
-            env=env,
-            cwd=working_directory,
-            umask=_PRIVATE_CHILD_UMASK if os.name == "posix" else -1,
-        )
-        if isinstance(captured, SetupTokenTimedOut):
-            return claude_failure(
-                ProviderFailureKind.UNREADABLE,
-                "Claude credential refresh timed out.",
-                cause=ProviderFailureCause.REFRESH_TIMED_OUT,
+    ) -> ClaudeCommandResult | ProviderFailure:
+        try:
+            return run_bounded_claude_command(
+                (
+                    str(executable.provenance.path),
+                    "auth",
+                    "login",
+                    "--claudeai",
+                ),
+                timeout_seconds=_REFRESH_COMMAND_TIMEOUT_SECONDS,
+                maximum_output_bytes=_MAX_SETUP_OUTPUT_BYTES,
+                environment=env,
+                working_directory=working_directory,
+                umask=_PRIVATE_CHILD_UMASK if os.name == "posix" else -1,
             )
-        if isinstance(captured, SetupTokenUnreadable):
+        except ClaudeProcessError as error:
+            if error.code is ClaudeProcessFailure.TIMED_OUT:
+                return claude_failure(
+                    ProviderFailureKind.UNREADABLE,
+                    "Claude credential refresh timed out.",
+                    cause=ProviderFailureCause.REFRESH_TIMED_OUT,
+                )
             return claude_failure(
                 ProviderFailureKind.UNREADABLE,
                 "Claude refresh process is unavailable.",
                 cause=ProviderFailureCause.REFRESH_PROCESS_UNAVAILABLE,
             )
-        return captured
 
     @staticmethod
     def _cli_refresh_success(
@@ -477,134 +419,41 @@ class ClaudeProvider(Provider):
 
     def capture_setup_token(self, timeout: int = 600) -> SetupTokenCapture:
         """Run Claude's token generator and return only structured state."""
-        resolved = shutil.which("claude")
-        if resolved is None:
-            completed: _SetupProcessResult = SetupTokenUnreadable()
-        else:
-            completed = self._capture_setup_output(
-                [resolved, "setup-token"],
-                timeout,
-            )
-        if not isinstance(completed, _CapturedSetupOutput):
-            return completed
-        if completed.return_code != 0:
-            return SetupTokenRejected(completed.return_code)
         try:
-            output = completed.output.decode("utf-8")
+            executable = discover_claude_executable(
+                os.environ,
+                runner=run_bounded_claude_command,
+            )
+            completed = run_bounded_claude_command(
+                (str(executable.provenance.path), "setup-token"),
+                timeout_seconds=timeout,
+                maximum_output_bytes=_MAX_SETUP_OUTPUT_BYTES,
+            )
+        except ClaudeManagedError:
+            return SetupTokenUnreadable()
+        except ClaudeProcessError as error:
+            return (
+                SetupTokenTimedOut()
+                if error.code is ClaudeProcessFailure.TIMED_OUT
+                else SetupTokenUnreadable()
+            )
+        result: SetupTokenCapture
+        if completed.return_code != 0:
+            result = SetupTokenRejected(completed.return_code)
+        else:
+            result = self._setup_token_result(completed.output)
+        return result
+
+    def _setup_token_result(self, output_bytes: bytes) -> SetupTokenCapture:
+        try:
+            output = output_bytes.decode("utf-8")
         except UnicodeDecodeError:
             return SetupTokenUnreadable()
-        if (match := self.token_pattern.search(output)) is None:
+        match = self.token_pattern.search(output)
+        if match is None:
             return SetupTokenMissing()
         try:
             token = validate_setup_token(match.group(0))
         except ProviderBoundaryError:
             return SetupTokenUnreadable()
         return SetupTokenSuccess(token)
-
-    @staticmethod
-    def _capture_setup_output(
-        command: list[str],
-        timeout: int,
-        *,
-        env: dict[str, str] | None = None,
-        cwd: Path | None = None,
-        umask: int = -1,
-    ) -> _SetupProcessResult:
-        """Capture at most the bounded token-search input."""
-        try:
-            process = subprocess.Popen(
-                command,
-                env=env,
-                cwd=cwd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                umask=umask,
-            )
-        except OSError, subprocess.SubprocessError:
-            return SetupTokenUnreadable()
-        output = bytearray()
-        overflow = Event()
-        read_failed = Event()
-        stdout = process.stdout
-        if stdout is None:
-            _terminate_process(process)
-            return SetupTokenUnreadable()
-
-        reader = _start_output_reader(
-            stdout,
-            process,
-            output,
-            overflow,
-            read_failed,
-        )
-        if reader is None:
-            _terminate_process(process)
-            stdout.close()
-            return SetupTokenUnreadable()
-        failure: SetupTokenTimedOut | SetupTokenUnreadable | None = None
-        return_code: int | None = None
-        try:
-            return_code = process.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            _terminate_process(process)
-            failure = SetupTokenTimedOut()
-        except OSError, subprocess.SubprocessError:
-            _terminate_process(process)
-            failure = SetupTokenUnreadable()
-        reader.join()
-        stdout.close()
-        if failure is not None:
-            return failure
-        if return_code is None or overflow.is_set() or read_failed.is_set():
-            return SetupTokenUnreadable()
-        return _CapturedSetupOutput(return_code, bytes(output))
-
-
-def _kill_process(process: subprocess.Popen[bytes]) -> None:
-    with suppress(OSError):
-        process.kill()
-
-
-def _drain_bounded_output(
-    stdout: IO[bytes],
-    process: subprocess.Popen[bytes],
-    output: bytearray,
-    overflow: Event,
-    read_failed: Event,
-) -> None:
-    try:
-        while chunk := stdout.read(_SETUP_READ_CHUNK_BYTES):
-            remaining = _MAX_SETUP_OUTPUT_BYTES - len(output)
-            output.extend(chunk[:remaining])
-            if len(chunk) > remaining:
-                overflow.set()
-                _kill_process(process)
-                return
-    except OSError:
-        read_failed.set()
-        _kill_process(process)
-
-
-def _start_output_reader(
-    stdout: IO[bytes],
-    process: subprocess.Popen[bytes],
-    output: bytearray,
-    overflow: Event,
-    read_failed: Event,
-) -> Thread | None:
-    reader = Thread(
-        target=_drain_bounded_output,
-        args=(stdout, process, output, overflow, read_failed),
-        daemon=True,
-    )
-    try:
-        reader.start()
-    except RuntimeError:
-        return None
-    return reader
-
-
-def _terminate_process(process: subprocess.Popen[bytes]) -> None:
-    _kill_process(process)
-    with suppress(OSError, subprocess.SubprocessError):
-        process.wait()

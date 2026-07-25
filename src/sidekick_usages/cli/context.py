@@ -55,10 +55,8 @@ from sidekick_usages.providers.claude.activity import (
     ClaudeActivity,
     discover_claude_config_dir,
 )
-from sidekick_usages.providers.claude.provider import (
-    ClaudeProvider,
-    ClaudeSetupToken,
-)
+from sidekick_usages.providers.claude.provider import ClaudeProvider
+from sidekick_usages.providers.claude.types import ClaudeSetupToken
 from sidekick_usages.providers.codex.activity import CodexActivity
 from sidekick_usages.providers.registry import (
     build_heartbeat_registry,

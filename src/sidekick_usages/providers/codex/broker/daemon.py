@@ -186,7 +186,7 @@ class CodexDaemonManager:
         try:
             output = run_bounded_codex_command(
                 (
-                    str(self._capabilities.executable.path),
+                    str(self._capabilities.executable.provenance.path),
                     "app-server",
                     "daemon",
                     operation,
@@ -275,7 +275,7 @@ class CodexDaemonManager:
             raise CodexBrokerError(
                 CodexBrokerFailure.INSTALLATION_UNSUPPORTED
             ) from None
-        if resolved != self._capabilities.executable.path:
+        if resolved != self._capabilities.executable.provenance.path:
             raise CodexBrokerError(CodexBrokerFailure.INSTALLATION_UNSUPPORTED)
         return managed_path
 

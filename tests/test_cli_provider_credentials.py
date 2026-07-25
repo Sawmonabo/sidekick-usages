@@ -2,10 +2,13 @@
 
 import json
 import os
+import sys
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
 
+import sidekick_usages.platform.executable
 import sidekick_usages.providers.claude.provider
 from sidekick_usages.core.accounts.models import CodexStoredAuthority
 from sidekick_usages.core.models import UsageReport
@@ -18,6 +21,7 @@ from sidekick_usages.core.types import (
 from sidekick_usages.persistence.credentials.repository import (
     authority_bundle_name,
 )
+from sidekick_usages.providers.claude.models import ClaudeCommandResult
 from sidekick_usages.providers.claude.provider import ClaudeProvider
 from tests.fakes.codex.auth import managed_auth
 from tests.fakes.codex.executable import (
@@ -331,26 +335,34 @@ def test_setup_token_delegates_only_to_claude_capability(
     raw_secret = "oauth-code=must-not-reach-terminal"
     provider = ClaudeProvider(FixedClock())
     monkeypatch.setattr(
-        sidekick_usages.providers.claude.provider.shutil,
+        sidekick_usages.platform.executable.shutil,
         "which",
-        lambda name: "/usr/bin/claude" if name == "claude" else None,
+        lambda name, path=None: sys.executable if name == "claude" else None,
     )
 
     def capture(
-        command: list[str],
-        timeout: int,
-    ) -> sidekick_usages.providers.claude.provider._CapturedSetupOutput:
-        assert command == ["/usr/bin/claude", "setup-token"]
-        assert timeout > 0
-        return sidekick_usages.providers.claude.provider._CapturedSetupOutput(
+        argv: tuple[str, ...],
+        *,
+        timeout_seconds: float,
+        maximum_output_bytes: int,
+        environment: Mapping[str, str] | None = None,
+        working_directory: Path | None = None,
+        umask: int = -1,
+    ) -> ClaudeCommandResult:
+        del maximum_output_bytes, environment, working_directory, umask
+        if argv[1:] == ("--version",):
+            return ClaudeCommandResult(0, b"2.1.220 (Claude Code)\n")
+        assert argv[1:] == ("setup-token",)
+        assert timeout_seconds > 0
+        return ClaudeCommandResult(
             0,
             f"{raw_secret}\nToken: {token}\n".encode(),
         )
 
     monkeypatch.setattr(
-        ClaudeProvider,
-        "_capture_setup_output",
-        staticmethod(capture),
+        sidekick_usages.providers.claude.provider,
+        "run_bounded_claude_command",
+        capture,
     )
     monkeypatch.setattr(
         provider,

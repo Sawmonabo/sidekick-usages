@@ -14,6 +14,24 @@ class PeerFailureCode(StrEnum):
     PROOF_UNAVAILABLE = "proof_unavailable"
 
 
+class ExecutableFailure(StrEnum):
+    """Safe reasons exact executable qualification failed."""
+
+    MISSING = "missing"
+    UNSAFE = "unsafe"
+
+
+class HostPlatform(StrEnum):
+    """Closed host platforms relevant to Sidekick integrations."""
+
+    LINUX = "linux"
+    WSL = "wsl"
+    MACOS_ARM64 = "macos_arm64"
+    MACOS_X64 = "macos_x64"
+    WINDOWS = "windows"
+    UNSUPPORTED = "unsupported"
+
+
 class PeerSocket(Protocol):
     """Socket operations required for operating-system peer proof."""
 

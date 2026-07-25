@@ -5,7 +5,6 @@ from datetime import timedelta
 
 import pytest
 
-import sidekick_usages.providers.claude.provider
 from sidekick_usages.core.expiry import KnownExpiry, UnknownExpiry
 from sidekick_usages.core.models import (
     Account,
@@ -228,15 +227,8 @@ def test_login_scope_order_and_missing_identity_keep_oauth_route() -> None:
     assert http.calls == [("GET", USAGE_URL)]
 
 
-def test_http_refresh_updates_both_expiry_lifetimes(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_http_refresh_updates_both_expiry_lifetimes() -> None:
     """Refresh duration fields update their corresponding lifetimes."""
-    monkeypatch.setattr(
-        sidekick_usages.providers.claude.provider.shutil,
-        "which",
-        lambda _name: None,
-    )
     account = _account(_login_credentials(with_identity=True), "refresh")
     http = _RouteHttp()
     http.refresh_response = {
@@ -262,15 +254,8 @@ def test_http_refresh_updates_both_expiry_lifetimes(
     )
 
 
-def test_http_refresh_preserves_proven_refresh_expiry_when_omitted(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_http_refresh_preserves_proven_refresh_expiry_when_omitted() -> None:
     """An omitted replacement lifetime cannot erase proven metadata."""
-    monkeypatch.setattr(
-        sidekick_usages.providers.claude.provider.shutil,
-        "which",
-        lambda _name: None,
-    )
     account = _account(_login_credentials(), "preserve-expiry")
     http = _RouteHttp()
     http.refresh_response = {
@@ -289,15 +274,8 @@ def test_http_refresh_preserves_proven_refresh_expiry_when_omitted(
     assert credentials.refresh_expiry == KnownExpiry(_REFRESH_EXPIRY)
 
 
-def test_expired_refresh_credential_fails_before_provider_io(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_expired_refresh_credential_fails_before_provider_io() -> None:
     """An expired login credential cannot trigger another provider call."""
-    monkeypatch.setattr(
-        sidekick_usages.providers.claude.provider.shutil,
-        "which",
-        lambda _name: None,
-    )
     credentials = ClaudeLoginCredentials(
         access_token="sk-ant-oat01-expired-refresh",
         refresh_token="refresh-expired",

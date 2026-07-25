@@ -102,7 +102,7 @@ def test_versioned_codex_app_server_boundary_is_complete(
         )
         notification = session.receive()
 
-        assert executable.path == executable_path.resolve()
+        assert executable.provenance.path == executable_path.resolve()
         assert str(executable.version) == "0.145.0"
         assert len(capabilities.schema_hash) == SCHEMA_HASH_HEX_LENGTH
         assert result["requiresOpenaiAuth"] is True

@@ -12,8 +12,76 @@ changes the provider's shared native runtime: Claude's native credential
 authority and Codex's native shared app-server. Do not create a command
 wrapper, alias, shell function, or replacement vendor executable.
 
+## Claude 2.1.220 Implementation Revalidation
+
+The Claude implementation baseline was revalidated on 2026-07-24 before code
+was changed. This section supersedes the report's earlier Claude 2.1.218
+implementation assumptions; those passages remain as dated investigation
+history.
+
+The installed executable resolves to
+`~/.local/share/claude/versions/2.1.220`. It is 275,012,592 bytes and has
+SHA-256
+`674f61f20ff306f3100cf9200e4c36c4b70278b5bef2884549819b942a89c863`.
+That digest matches Anthropic's official Linux x64 2.1.220 artifact. The
+installed binary reports `2.1.220 (Claude Code)` and contains build ID
+`788318c9115981678ca1a25f40cdb3b39df71403`. The public release tag resolves
+to commit `7ef6eec9d9ba84ea6f233f26c45f1df5c5991843`.
+[Claude Code v2.1.220 release](https://github.com/anthropics/claude-code/releases/tag/v2.1.220),
+[official checksums](https://github.com/anthropics/claude-code/releases/download/v2.1.220/SHASUMS256.txt),
+[tag commit](https://github.com/anthropics/claude-code/commit/7ef6eec9d9ba84ea6f233f26c45f1df5c5991843).
+
+The supported read-only capability probes are:
+
+```bash
+claude --version
+claude auth status
+claude auth login --help
+```
+
+Anthropic documents that `claude auth status` returns JSON by default and
+offers `--text`; `--json` is accepted by the inspected artifact but is not a
+documented contract, so Sidekick does not use it. An isolated empty-profile
+probe returned exit code 1 with the exact logged-out object
+`{"loggedIn":false,"authMethod":"none","apiProvider":"firstParty"}`.
+That proves profile isolation and response compatibility, not live provider
+validity. The probe must therefore run with disposable `HOME` and
+`CLAUDE_CONFIG_DIR` values and never against the user's native profile.
+[Claude CLI commands](https://code.claude.com/docs/en/cli-usage#cli-commands).
+
+The official multi-account boundary remains `CLAUDE_CONFIG_DIR`. Linux and WSL
+use the profile's protected `.credentials.json`; WSL uses the Linux credential
+backend. macOS keeps credentials in Keychain. Inspection of both exact 2.1.220
+macOS artifacts reconfirmed the compatibility-sensitive namespace rule:
+the default service is `Claude Code-credentials`, while a non-default
+normalized config path uses `Claude Code-credentials-` plus the first eight
+lowercase hexadecimal characters of its SHA-256 digest. Sidekick must
+version-gate that binary-only observation and fail closed if Claude falls back
+to plaintext storage.
+[Claude environment variables](https://code.claude.com/docs/en/env-vars#environment-variables),
+[Claude credential management](https://code.claude.com/docs/en/authentication#credential-management),
+[Claude WSL installation](https://code.claude.com/docs/en/installation#set-up-on-windows).
+
+Anthropic's supported refresh-token handoff is
+`CLAUDE_CODE_OAUTH_REFRESH_TOKEN` together with the account's exact
+space-separated `CLAUDE_CODE_OAUTH_SCOPES`. It is an official login
+provisioning input, not permission for Sidekick to implement OAuth rotation.
+The value may exist only in the closed child environment for the target
+profile; it must never enter argv, persistence, logs, errors, or the broker.
+
+The existing-session contract is also narrower than the original product
+aspiration. New bare `claude` launches read the newly selected native
+authority. Existing unrelated foreground sessions can adopt provider-owned
+credential changes when they next resolve auth, refresh, or recover from a
+401, but the public contract does not guarantee immediate cross-process
+retargeting. Sidekick must not claim instant mid-request switching. A user can
+switch a specific foreground session immediately with Claude's own `/login`.
+Same-supervisor workers may receive Claude's provider-owned token update, but
+that observation is not generalized to every running terminal.
+
 ## Table of Contents
 
+- [Claude 2.1.220 Implementation Revalidation](#claude-21220-implementation-revalidation)
 - [Executive Summary](#executive-summary)
 - [Saved-Account Freshness and Metrics Gate](#saved-account-freshness-and-metrics-gate)
 - [Required Operating Model: Private Authorities and Shared Runtimes](#required-operating-model-private-authorities-and-shared-runtimes)

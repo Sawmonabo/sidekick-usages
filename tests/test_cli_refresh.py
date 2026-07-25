@@ -38,10 +38,10 @@ from sidekick_usages.providers.base import (
     RefreshResult,
     RefreshSuccess,
 )
-from sidekick_usages.providers.claude.provider import (
+from sidekick_usages.providers.claude.models import SetupTokenSuccess
+from sidekick_usages.providers.claude.types import (
     ClaudeSetupToken,
     SetupTokenCapture,
-    SetupTokenSuccess,
 )
 from tests.test_support import (
     REFERENCE_TIME,

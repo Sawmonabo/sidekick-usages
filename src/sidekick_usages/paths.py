@@ -71,10 +71,49 @@ def managed_codex_home(
     account_id: SidekickAccountId,
 ) -> Path:
     """Derive one private Codex home from its stable account ID."""
-    root = paths.private_codex_profiles
+    return _managed_profile_path(
+        paths.private_codex_profiles,
+        account_id,
+        provider_name="Codex",
+    )
+
+
+def managed_claude_config_dir(
+    paths: ApplicationPaths,
+    account_id: SidekickAccountId,
+) -> Path:
+    """Derive a private Claude config directory from its stable account ID."""
+    return _managed_profile_path(
+        paths.private_claude_profiles,
+        account_id,
+        provider_name="Claude",
+    )
+
+
+def _managed_profile_path(
+    root: Path,
+    account_id: SidekickAccountId,
+    *,
+    provider_name: str,
+) -> Path:
     if not root.is_absolute():
-        raise ValueError("Private Codex profile root must be absolute.")
-    return root / str(account_id)
+        raise ValueError(
+            f"Private {provider_name} profile root must be absolute."
+        )
+    try:
+        normalized = root.resolve(strict=False)
+    except OSError, RuntimeError:
+        raise ValueError(
+            f"Private {provider_name} profile root is unsafe."
+        ) from None
+    if normalized != root:
+        raise ValueError(f"Private {provider_name} profile root is unsafe.")
+    profile = root / str(account_id)
+    if profile.parent != root:
+        raise ValueError(
+            f"Private {provider_name} profile path escaped its root."
+        )
+    return profile
 
 
 def discover_application_paths() -> ApplicationPaths:

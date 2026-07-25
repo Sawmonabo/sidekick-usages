@@ -8,7 +8,6 @@ from pathlib import Path
 import pytest
 from rich.console import Console
 
-import sidekick_usages.providers.claude.provider
 from sidekick_usages.core.expiry import KnownExpiry, UnknownExpiry
 from sidekick_usages.core.models import Account, ClaudeLoginCredentials
 from sidekick_usages.core.types import AccountLabel, ProviderId
@@ -96,11 +95,6 @@ def test_provider_secret_never_crosses_persisted_or_doctor_error_channels(
         {ProviderId.CLAUDE: provider},
         clock=clock,
         refresh_coordinator=refresh,
-    )
-    monkeypatch.setattr(
-        sidekick_usages.providers.claude.provider.shutil,
-        "which",
-        lambda _name: None,
     )
 
     def reject_refresh(

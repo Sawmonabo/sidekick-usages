@@ -5,11 +5,7 @@ import os
 import platform
 import shutil
 import stat
-import sys
 from pathlib import Path
-
-if sys.platform != "win32":
-    import pwd
 
 from sidekick_usages.daemon.lifecycle.constants import (
     SUPERVISOR_ENTRY_POINT,
@@ -24,9 +20,9 @@ from sidekick_usages.daemon.types.lifecycle import (
     ServiceFailureCode,
     ServiceLifecycleState,
 )
+from sidekick_usages.platform.host import is_wsl
 
 _SYSTEMD_RUNTIME = Path("/run/systemd/system")
-_WSL_OS_RELEASE = Path("/proc/sys/kernel/osrelease")
 
 
 class FeatureDisabledBackend:
@@ -55,14 +51,19 @@ def detect_platform_info() -> PlatformInfo:
     """Resolve exact current-user facts without changing system state."""
     system = platform.system()
     uid = _effective_user_id()
-    is_wsl = system == "Linux" and _detect_wsl()
+    is_wsl_host = system == "Linux" and is_wsl(
+        platform.release(),
+        os.environ,
+    )
     return PlatformInfo(
         system=system,
         home=Path.home().resolve(strict=True),
         uid=uid,
-        user_name=_user_name(uid),
-        is_wsl=is_wsl,
-        wsl_distro=(os.environ.get("WSL_DISTRO_NAME") if is_wsl else None),
+        user_name=_user_name(system, uid),
+        is_wsl=is_wsl_host,
+        wsl_distro=(
+            os.environ.get("WSL_DISTRO_NAME") if is_wsl_host else None
+        ),
         has_user_systemd=(
             system == "Linux"
             and shutil.which("systemctl") is not None
@@ -101,20 +102,15 @@ def _effective_user_id() -> int:
     return os.geteuid() if hasattr(os, "geteuid") else 0
 
 
-def _user_name(uid: int) -> str:
-    if sys.platform != "win32":
-        return pwd.getpwuid(uid).pw_name
+def _user_name(system: str, uid: int) -> str:
+    if system == "Linux":
+        process_path = Path("/proc/self")
+        try:
+            if process_path.stat().st_uid != uid:
+                raise ServiceLifecycleError(ServiceFailureCode.ARTIFACT_UNSAFE)
+            return process_path.owner()
+        except OSError, KeyError:
+            raise ServiceLifecycleError(
+                ServiceFailureCode.ARTIFACT_UNSAFE
+            ) from None
     return getpass.getuser()
-
-
-def _detect_wsl() -> bool:
-    if os.environ.get("WSL_INTEROP") or os.environ.get("WSL_DISTRO_NAME"):
-        return True
-    try:
-        release = _WSL_OS_RELEASE.read_text(
-            encoding="utf-8",
-            errors="strict",
-        )
-    except OSError, UnicodeError:
-        return False
-    return "microsoft" in release.casefold()

@@ -1,0 +1,55 @@
+"""Closed Claude CLI and setup-token types."""
+
+from collections.abc import Mapping
+from enum import StrEnum
+from pathlib import Path
+from typing import Protocol
+
+from sidekick_usages.providers.claude.models import (
+    ClaudeCommandResult,
+    SetupTokenMissing,
+    SetupTokenRejected,
+    SetupTokenSuccess,
+    SetupTokenTimedOut,
+    SetupTokenUnreadable,
+)
+
+type SetupTokenCapture = (
+    SetupTokenSuccess
+    | SetupTokenMissing
+    | SetupTokenRejected
+    | SetupTokenTimedOut
+    | SetupTokenUnreadable
+)
+
+
+class ClaudeProcessFailure(StrEnum):
+    """Safe reasons a bounded Claude command failed."""
+
+    PROCESS_UNAVAILABLE = "process_unavailable"
+    PROCESS_UNSAFE = "process_unsafe"
+    OUTPUT_UNREADABLE = "output_unreadable"
+    TIMED_OUT = "timed_out"
+
+
+class ClaudeCommandRunner(Protocol):
+    """Run one bounded Claude command without exposing raw output."""
+
+    def __call__(
+        self,
+        argv: tuple[str, ...],
+        *,
+        timeout_seconds: float,
+        maximum_output_bytes: int,
+        environment: Mapping[str, str] | None = None,
+        working_directory: Path | None = None,
+        umask: int = -1,
+    ) -> ClaudeCommandResult:
+        """Return one bounded process result or raise a typed failure."""
+
+
+class ClaudeSetupToken(Protocol):
+    """Narrow structural capability for Claude setup-token capture."""
+
+    def capture_setup_token(self, timeout: int = 600) -> SetupTokenCapture:
+        """Capture one typed Claude setup-token outcome."""

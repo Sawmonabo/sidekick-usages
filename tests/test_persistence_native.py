@@ -66,6 +66,7 @@ PRIVATE_FILE_MODE = 0o600
 def test_linux_and_wsl_filesystem_allowlists_are_explicit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.delenv("WSL_DISTRO_NAME", raising=False)
     monkeypatch.delenv("WSL_INTEROP", raising=False)
     monkeypatch.setattr(mounts.platform, "release", lambda: "6.8.0-linux")
     assert {

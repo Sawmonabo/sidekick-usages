@@ -10,6 +10,7 @@ from sidekick_usages.persistence.platform.types import (
     FilesystemFamily,
     NativeFailureKind,
 )
+from sidekick_usages.platform.host import is_wsl
 
 _MOUNTINFO_PATH = Path("/proc/self/mountinfo")
 _MOUNTINFO_LIMIT = 1024 * 1024
@@ -41,11 +42,9 @@ def _decode_mount_path(value: str) -> Path:
 
 def _classify_linux_filesystem(name: str) -> FilesystemFamily:
     normalized = name.casefold()
-    is_wsl = (
-        "microsoft" in platform.release().casefold()
-        or "WSL_INTEROP" in os.environ
-    )
-    if is_wsl and normalized != FilesystemFamily.EXT4:
+    if is_wsl(platform.release(), os.environ) and (
+        normalized != FilesystemFamily.EXT4
+    ):
         raise _unsupported()
     try:
         return _ALLOWED_LINUX_FILESYSTEMS[normalized]

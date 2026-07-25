@@ -10,7 +10,9 @@ from collections.abc import Callable, Mapping
 from contextlib import suppress
 from pathlib import Path
 
-from sidekick_usages.platform.environment import SAFE_CODEX_ENVIRONMENT_KEYS
+from sidekick_usages.platform.environment import (
+    SAFE_PROVIDER_ENVIRONMENT_KEYS,
+)
 from sidekick_usages.providers.codex.app_server.errors import (
     CodexAppServerError,
 )
@@ -39,7 +41,7 @@ def minimal_codex_environment(
     environment = {
         key: value
         for key, value in source.items()
-        if key in SAFE_CODEX_ENVIRONMENT_KEYS
+        if key in SAFE_PROVIDER_ENVIRONMENT_KEYS
     }
     environment.setdefault("PATH", os.defpath)
     if codex_home is not None:

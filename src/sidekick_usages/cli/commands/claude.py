@@ -11,14 +11,14 @@ from sidekick_usages.cli.help import BrandedTyperGroup, branded_command
 from sidekick_usages.core.types import ExitCode, ProviderId
 from sidekick_usages.credentials.models import TokenCredentialSource
 from sidekick_usages.providers.base import ProviderFailure
-from sidekick_usages.providers.claude.provider import (
-    SetupTokenCapture,
+from sidekick_usages.providers.claude.models import (
     SetupTokenMissing,
     SetupTokenRejected,
     SetupTokenSuccess,
     SetupTokenTimedOut,
     SetupTokenUnreadable,
 )
+from sidekick_usages.providers.claude.types import SetupTokenCapture
 
 
 def _capture_token(

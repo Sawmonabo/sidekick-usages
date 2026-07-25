@@ -1,7 +1,8 @@
 """Immutable Codex app-server models."""
 
 from dataclasses import dataclass
-from pathlib import Path
+
+from sidekick_usages.platform.models import ExecutableProvenance
 
 _SHA256_HEX_LENGTH = 64
 
@@ -28,27 +29,8 @@ class CodexVersion:
 class CodexExecutable:
     """One exact executable and its immutable operation provenance."""
 
-    path: Path
+    provenance: ExecutableProvenance
     version: CodexVersion
-    device: int
-    inode: int
-    size: int
-    modified_nanoseconds: int
-
-    def __post_init__(self) -> None:
-        """Require an absolute provenance path and valid file identity."""
-        if not self.path.is_absolute():
-            raise ValueError("Codex executable provenance must be absolute.")
-        if (
-            min(
-                self.device,
-                self.inode,
-                self.size,
-                self.modified_nanoseconds,
-            )
-            < 0
-        ):
-            raise ValueError("Codex executable provenance is invalid.")
 
 
 @dataclass(frozen=True, slots=True)

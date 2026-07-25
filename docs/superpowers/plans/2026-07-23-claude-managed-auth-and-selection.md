@@ -29,7 +29,9 @@ macOS Keychain through `/usr/bin/security`, Pydantic 2.13.4, Portalocker
 - The approved design and tracked research are normative. Revalidate the
   installed Claude binary before implementation and before each live platform
   rollout.
-- At planning time the inspected Claude executable is version `2.1.218`.
+- The implementation baseline is the exact official Claude Code `2.1.220`
+  executable. Revalidate the executable version and immutable file provenance
+  before every managed operation.
 - Normal `claude` remains Anthropic's installed executable. Sidekick creates
   no wrapper, alias, shell function, PATH shim, symlink replacement, or shell
   startup edit.
@@ -78,17 +80,17 @@ macOS Keychain through `/usr/bin/security`, Pydantic 2.13.4, Portalocker
 - The Claude phase may add only
   `tests/test_claude_managed_runtime.py`; all other assertions extend
   existing Claude owner tests. This is a ceiling, not a target.
-- Commit after each numbered task with the listed Conventional Commit
-  message. Do not push until explicitly authorized.
+- Commit and push after each numbered task with the listed Conventional
+  Commit message, as explicitly authorized for this implementation.
 
 ---
 
-- **Status:** Approved; blocked on foundation and Codex implementation
+- **Status:** In progress; Claude Task 1 complete
 - **Date:** 2026-07-23
 - **Repository:** `/home/sabossedgh/dev/sidekick-usages`
 - **Branch:** `develop`
 - **Planning baseline:** `dfde7d8c3b1855e2307ed2fc24fb8a72497ed39d`
-- **Installed Claude baseline:** `2.1.218`
+- **Installed Claude baseline:** `2.1.220`
 - **Required platforms:** Linux, WSL, macOS arm64, macOS x64
 - **Previous phase:** `2026-07-23-codex-managed-auth-and-selection.md`
 - **Next phase:** `2026-07-23-interactive-account-dashboard-and-rollout.md`
@@ -126,29 +128,30 @@ The provider adapter exposes these typed operations:
 - classify Remote Control disruption; and
 - report setup-token fixed-lifetime health.
 
-## 2. Target File Map
+## 2. Target Ownership Map
 
-Create focused modules rather than extending the current 621-line
-`providers/claude/provider.py`, 287-line credentials reader, or 790-line
-credential service:
+Create cohesive owner packages rather than flat filename families or further
+growth in `providers/claude/provider.py`:
 
-- `providers/claude/executable.py`: exact binary and version discovery;
-- `providers/claude/capabilities.py`: platform and auth capability gate;
-- `providers/claude/profiles.py`: stable private and native profile identity;
-- `providers/claude/keychain.py`: macOS namespace and read-only adapter;
-- `providers/claude/auth_status.py`: strict JSON status plus envelope proof;
-- `providers/claude/login.py`: official login subprocess boundary;
-- `providers/claude/environment.py`: higher-priority credential detection and
-  minimal child environment;
-- `providers/claude/remote_control.py`: disruption observation;
-- `credentials/claude_authorities.py`: private/native maintenance policy;
-- `credentials/claude_migration.py`: setup-token and legacy migration;
-- `credentials/claude_activation.py`: provider activation transaction;
-- `credentials/claude_reconciliation.py`: official external-login policy; and
-- `persistence/claude_authorities.py`: no-secret managed metadata transaction.
+- `platform/` owns reusable exact-executable provenance and host
+  classification;
+- `providers/claude/{models,types,errors,process,environment}.py` owns the
+  shared Claude subprocess boundary and provider-wide contracts;
+- `providers/claude/managed/` owns exact-version capability qualification,
+  protected authority read-back, official login, and provider runtime
+  observations;
+- `providers/claude/schema/` remains the strict untrusted-data boundary;
+- `credentials/claude/managed/` owns private-profile preparation,
+  maintenance, migration, activation, reconciliation, and session policy;
+  and
+- cohesive Claude persistence schemas and transactions live under the
+  existing `persistence/schema/` and `persistence/transactions/` owner
+  packages, not as flat `claude_*` modules.
 
 Refactor `providers/claude/credentials.py` into a narrow protected-envelope
 reader. Remove platform and transition responsibilities after callers move.
+Do not add re-export shims or backward-compatibility modules during the
+one-machine migration.
 
 ## 3. Task 1 — Exact Binary, Stable Profiles, and Capability Gate
 
@@ -156,44 +159,46 @@ reader. Remove platform and transition responsibilities after callers move.
 
 ### Tests first
 
-- [ ] Extend `tests/test_claude_provider_boundaries.py` with one supported
+- [x] Extend `tests/test_claude_provider_boundaries.py` with one supported
   scenario covering exact executable provenance, stable ID-derived and
   contained private profiles, rename stability, distinct accounts, and the
   required official auth capabilities.
-- [ ] Add one fail-closed table whose cases are only genuinely different
+- [x] Add one fail-closed table whose cases are only genuinely different
   gates: path escape, missing official login capability, and
   feature-disabled native Windows. Prove no login child or native mutation
   starts.
-- [ ] Do not create separate executable, profile, and capability permutation
+- [x] Do not create separate executable, profile, and capability permutation
   suites.
 
 ### Implementation
 
-- [ ] Resolve Claude once through `shutil.which`, require an absolute regular
+- [x] Resolve Claude once through `shutil.which`, require an absolute regular
   executable, capture `claude --version`, and retain immutable provenance for
   the operation.
-- [ ] Probe only documented command surfaces:
+- [x] Probe only documented command surfaces:
 
 ```bash
-claude auth status --json
+claude auth status
 claude auth login --help
 ```
 
-- [ ] Combine command probes with version-pinned installed-binary observations
+- [x] Parse the documented default JSON from `claude auth status`; do not
+  depend on the artifact-accepted but undocumented `--json` option.
+- [x] Combine command probes with version-pinned installed-binary observations
   required for config-specific storage. Keep the latter explicitly marked
   compatibility-sensitive.
-- [ ] Derive private profiles only in `paths.py` from stable Sidekick account
+- [x] Derive private profiles only in `paths.py` from stable Sidekick account
   IDs. A label or provider email never appears in the path.
-- [ ] Create profile directories with owner-only traversal permissions and
+- [x] Create profile directories with owner-only traversal permissions and
   validate every component before use.
-- [ ] Return a closed capability result identifying file-backed Linux/WSL,
+- [x] Return a closed capability result identifying file-backed Linux/WSL,
   Keychain-backed macOS, and unsupported native Windows.
-- [ ] Disable switching before mutation when required auth, storage, identity,
+- [x] Disable switching before mutation when required auth, storage, identity,
   or official refresh-token provisioning capability is absent.
 
 ### Verify and commit
 
-- [ ] Run:
+- [x] Run:
 
 ```bash
 uv run pytest \
@@ -202,7 +207,7 @@ uv run pytest \
   tests/test_architecture.py
 ```
 
-- [ ] Run Ruff and `ty`, inspect path derivation and subprocess argv, then
+- [x] Run Ruff and `ty`, inspect path derivation and subprocess argv, then
   commit.
 
 ## 4. Task 2 — Linux, WSL, and macOS Protected Storage Read-Back

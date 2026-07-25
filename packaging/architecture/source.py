@@ -39,6 +39,7 @@ VIOLATION_RULE_IDS = frozenset(
         "PKG003",
         "SCHEMA001",
         "ACT001",
+        "CLAUDE001",
         "CODEX001",
     }
 )

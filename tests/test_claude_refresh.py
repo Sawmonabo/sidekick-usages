@@ -3,12 +3,14 @@
 import json
 import os
 import subprocess
+import sys
 from collections.abc import Mapping
 from datetime import timedelta
 from pathlib import Path
 
 import pytest
 
+import sidekick_usages.platform.executable
 import sidekick_usages.providers.claude.credentials
 import sidekick_usages.providers.claude.provider
 from sidekick_usages.core.expiry import KnownExpiry, UnknownExpiry
@@ -23,6 +25,11 @@ from sidekick_usages.core.types import AccountLabel
 from sidekick_usages.errors import AuthError, TransientError
 from sidekick_usages.http.client import HttpClient
 from sidekick_usages.http.types import HttpOperation
+from sidekick_usages.platform.environment import (
+    SAFE_PROVIDER_ENVIRONMENT_KEYS,
+)
+from sidekick_usages.platform.models import ExecutableProvenance
+from sidekick_usages.platform.types import HostPlatform
 from sidekick_usages.providers.base import (
     ProviderBoundaryError,
     ProviderFailure,
@@ -30,11 +37,16 @@ from sidekick_usages.providers.base import (
     ProviderFailureKind,
     RefreshSuccess,
 )
-from sidekick_usages.providers.claude.provider import (
-    ClaudeProvider,
-    SetupTokenTimedOut,
-    SetupTokenUnreadable,
+from sidekick_usages.providers.claude.errors import ClaudeProcessError
+from sidekick_usages.providers.claude.managed.executable import (
+    SUPPORTED_CLAUDE_VERSION,
 )
+from sidekick_usages.providers.claude.models import (
+    ClaudeCommandResult,
+    ClaudeExecutable,
+)
+from sidekick_usages.providers.claude.provider import ClaudeProvider
+from sidekick_usages.providers.claude.types import ClaudeProcessFailure
 from sidekick_usages.serialization.json import JsonObject
 from tests.test_support import (
     REFERENCE_TIME,
@@ -116,18 +128,18 @@ def _account(
     )
 
 
-def _disable_cli_refresh(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        sidekick_usages.providers.claude.provider.shutil,
-        "which",
-        lambda _name: None,
-    )
-
-
 def _credentials(result: RefreshSuccess) -> ClaudeLoginCredentials:
     credentials = result.credentials
     assert isinstance(credentials, ClaudeLoginCredentials)
     return credentials
+
+
+def _claude_executable() -> ClaudeExecutable:
+    path = Path(sys.executable).resolve()
+    return ClaudeExecutable(
+        ExecutableProvenance.from_stat(path, path.stat()),
+        SUPPORTED_CLAUDE_VERSION,
+    )
 
 
 def test_refresh_missing_token_is_explicit_and_does_not_mutate() -> None:
@@ -155,11 +167,6 @@ def test_cli_refresh_is_isolated_and_returns_complete_replacement(
     active_home.mkdir()
     sentinel = active_home / "credentials-must-not-change"
     sentinel.write_text("active")
-    monkeypatch.setattr(
-        sidekick_usages.providers.claude.provider.platform,
-        "system",
-        lambda: "Linux",
-    )
     inherited = {
         "LANG": "C.UTF-8",
         "PATH": "/usr/bin",
@@ -167,16 +174,15 @@ def test_cli_refresh_is_isolated_and_returns_complete_replacement(
         "TEMP": str(tmp_path / "temp"),
     }
     inherited_names = (
+        *SAFE_PROVIDER_ENVIRONMENT_KEYS,
+        "APPDATA",
         "COMSPEC",
-        "LANG",
-        "LC_ALL",
-        "LC_CTYPE",
-        "PATH",
+        "LOCALAPPDATA",
         "PATHEXT",
         "SYSTEMROOT",
         "TEMP",
         "TMP",
-        "TMPDIR",
+        "USERPROFILE",
         "WINDIR",
     )
     for name in inherited_names:
@@ -206,30 +212,38 @@ def test_cli_refresh_is_isolated_and_returns_complete_replacement(
     ):
         monkeypatch.setenv(variable, str(active_home))
     monkeypatch.setattr(
-        sidekick_usages.providers.claude.provider.shutil,
+        sidekick_usages.platform.executable.shutil,
         "which",
-        lambda name: "/usr/bin/claude" if name == "claude" else None,
+        lambda name, path=None: sys.executable if name == "claude" else None,
     )
 
     def capture(
-        command: list[str],
-        timeout: int,
+        argv: tuple[str, ...],
         *,
-        env: dict[str, str],
-        cwd: Path,
-        umask: int,
-    ) -> sidekick_usages.providers.claude.provider._CapturedSetupOutput:
-        assert command == ["/usr/bin/claude", "auth", "login", "--claudeai"]
+        timeout_seconds: float,
+        maximum_output_bytes: int,
+        environment: Mapping[str, str] | None = None,
+        working_directory: Path | None = None,
+        umask: int = -1,
+    ) -> ClaudeCommandResult:
+        if argv[1:] == ("--version",):
+            return ClaudeCommandResult(0, b"2.1.220 (Claude Code)\n")
+        assert argv[1:] == ("auth", "login", "--claudeai")
+        assert environment is not None
+        env = environment
         assert env["CLAUDE_CODE_OAUTH_REFRESH_TOKEN"] == "refresh-old"
         config_dir = Path(env["CLAUDE_CONFIG_DIR"])
         assert config_dir == Path(env["HOME"]) / ".claude"
-        assert cwd == Path(env["HOME"])
+        assert working_directory == Path(env["HOME"])
         assert env["USERPROFILE"] == env["HOME"]
-        assert Path(env["APPDATA"]).is_relative_to(cwd)
-        assert Path(env["LOCALAPPDATA"]).is_relative_to(cwd)
-        assert Path(env["XDG_CONFIG_HOME"]).is_relative_to(cwd)
+        assert working_directory is not None
+        assert all(
+            Path(env[name]).is_relative_to(working_directory)
+            for name in ("APPDATA", "LOCALAPPDATA", "XDG_CONFIG_HOME")
+        )
         assert str(active_home) not in env.values()
-        assert timeout == CLI_REFRESH_TIMEOUT_SECONDS
+        assert timeout_seconds == CLI_REFRESH_TIMEOUT_SECONDS
+        assert maximum_output_bytes == 1024 * 1024
         assert umask == (0o077 if os.name == "posix" else -1)
         assert set(env) == {
             *inherited,
@@ -266,14 +280,12 @@ def test_cli_refresh_is_isolated_and_returns_complete_replacement(
                 }
             )
         )
-        return sidekick_usages.providers.claude.provider._CapturedSetupOutput(
-            0, b""
-        )
+        return ClaudeCommandResult(0, b"")
 
     monkeypatch.setattr(
-        ClaudeProvider,
-        "_capture_setup_output",
-        staticmethod(capture),
+        sidekick_usages.providers.claude.provider,
+        "run_bounded_claude_command",
+        capture,
     )
 
     managed_stage = tmp_path / "managed-refresh-stage"
@@ -287,49 +299,20 @@ def test_cli_refresh_is_isolated_and_returns_complete_replacement(
 
     assert isinstance(result, RefreshSuccess)
     refreshed = _credentials(result)
-    assert refreshed.access_token == "sk-ant-oat01-cli"
-    assert refreshed.refresh_token == "refresh-cli"
-    assert refreshed.access_expiry == KnownExpiry(_FUTURE_EXPIRY)
-    assert refreshed.scopes == ("saved:scope", "user:profile")
+    assert (
+        refreshed.access_token,
+        refreshed.refresh_token,
+        refreshed.access_expiry,
+        refreshed.scopes,
+    ) == (
+        "sk-ant-oat01-cli",
+        "refresh-cli",
+        KnownExpiry(_FUTURE_EXPIRY),
+        ("saved:scope", "user:profile"),
+    )
     assert result.plan == "team"
     assert account.credentials is original
     assert sentinel.read_text() == "active"
-    assert not (tmp_path / "sidekick-claude-refresh-unmanaged").exists()
-
-
-def test_macos_refresh_uses_http_without_invoking_cli(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        sidekick_usages.providers.claude.provider.platform,
-        "system",
-        lambda: "Darwin",
-    )
-
-    def unexpected_cli_lookup(_name: str) -> str | None:
-        pytest.fail("macOS saved-account refresh must not invoke Claude CLI")
-
-    monkeypatch.setattr(
-        sidekick_usages.providers.claude.provider.shutil,
-        "which",
-        unexpected_cli_lookup,
-    )
-    http = _FakeHttp(
-        {
-            "access_token": "sk-ant-oat01-new",
-            "refresh_token": "refresh-new",
-            "expires_in": 60,
-        }
-    )
-
-    result = _provider().refresh_credentials(
-        authenticated_account(_account()),
-        http,
-    )
-
-    assert isinstance(result, RefreshSuccess)
-    assert _credentials(result).access_token == "sk-ant-oat01-new"
-    assert http.body is not None
 
 
 @pytest.mark.parametrize(
@@ -343,11 +326,9 @@ def test_macos_refresh_uses_http_without_invoking_cli(
     ],
 )
 def test_http_refresh_preserves_scope_state_and_returns_new_credentials(
-    monkeypatch: pytest.MonkeyPatch,
     scopes: tuple[str, ...],
     expected_scope: str,
 ) -> None:
-    _disable_cli_refresh(monkeypatch)
     account = _account(scopes=scopes)
     original = account.credentials
     http = _FakeHttp(
@@ -376,10 +357,47 @@ def test_http_refresh_preserves_scope_state_and_returns_new_credentials(
     assert account.credentials is original
 
 
-def test_refresh_rejection_is_typed_and_secret_safe(
+def test_macos_refresh_uses_http_without_invoking_cli(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _disable_cli_refresh(monkeypatch)
+    monkeypatch.setattr(
+        sidekick_usages.providers.claude.provider,
+        "detect_host_platform",
+        lambda **_kwargs: HostPlatform.MACOS_ARM64,
+    )
+
+    def unexpected_discovery(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("Unverified staged refresh must not invoke macOS Claude")
+
+    monkeypatch.setattr(
+        sidekick_usages.providers.claude.provider,
+        "discover_claude_executable",
+        unexpected_discovery,
+    )
+    http = _FakeHttp(
+        {
+            "access_token": "sk-ant-oat01-new",
+            "refresh_token": "refresh-new",
+            "expires_in": 60,
+        }
+    )
+    stage_home = tmp_path / "managed-refresh-stage"
+    stage_home.mkdir(mode=0o700)
+
+    result = _provider().refresh_credentials_in_stage(
+        authenticated_account(_account()),
+        http,
+        stage_home,
+        _PathStageReader(stage_home / ".claude" / ".credentials.json"),
+    )
+
+    assert isinstance(result, RefreshSuccess)
+    assert _credentials(result).access_token == "sk-ant-oat01-new"
+    assert http.body is not None
+
+
+def test_refresh_rejection_is_typed_and_secret_safe() -> None:
     account = _account()
     original = account.credentials
     raw_secret = "sk-ant-oat01-rejected-secret"
@@ -398,11 +416,7 @@ def test_refresh_rejection_is_typed_and_secret_safe(
     assert account.credentials is original
 
 
-def test_transient_refresh_failure_is_a_cause_without_recovery_copy(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _disable_cli_refresh(monkeypatch)
-
+def test_transient_refresh_failure_is_a_cause_without_recovery_copy() -> None:
     result = _provider().refresh_credentials(
         authenticated_account(_account()),
         _FakeHttp(failure=TransientError("raw provider detail")),
@@ -422,31 +436,34 @@ def test_cli_rejection_is_authoritative_and_does_not_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        sidekick_usages.providers.claude.provider.platform,
-        "system",
-        lambda: "Linux",
-    )
-    monkeypatch.setattr(
-        sidekick_usages.providers.claude.provider.shutil,
+        sidekick_usages.platform.executable.shutil,
         "which",
-        lambda _name: "/usr/bin/claude",
+        lambda _name, path=None: sys.executable,
     )
 
     def capture(
-        command: list[str],
-        timeout: int,
-        **_kwargs: object,
-    ) -> sidekick_usages.providers.claude.provider._CapturedSetupOutput:
-        assert timeout == CLI_REFRESH_TIMEOUT_SECONDS
-        return sidekick_usages.providers.claude.provider._CapturedSetupOutput(
+        argv: tuple[str, ...],
+        *,
+        timeout_seconds: float,
+        maximum_output_bytes: int,
+        environment: Mapping[str, str] | None = None,
+        working_directory: Path | None = None,
+        umask: int = -1,
+    ) -> ClaudeCommandResult:
+        del maximum_output_bytes, environment, working_directory, umask
+        if argv[1:] == ("--version",):
+            return ClaudeCommandResult(0, b"2.1.220 (Claude Code)\n")
+        assert argv[1:] == ("auth", "login", "--claudeai")
+        assert timeout_seconds == CLI_REFRESH_TIMEOUT_SECONDS
+        return ClaudeCommandResult(
             1,
             b"rejected sk-ant-oat01-raw-secret",
         )
 
     monkeypatch.setattr(
-        ClaudeProvider,
-        "_capture_setup_output",
-        staticmethod(capture),
+        sidekick_usages.providers.claude.provider,
+        "run_bounded_claude_command",
+        capture,
     )
     account = _account()
     original = account.credentials
@@ -472,14 +489,14 @@ def test_cli_rejection_is_authoritative_and_does_not_fallback(
 
 
 @pytest.mark.parametrize(
-    ("capture", "expected_cause"),
+    ("process_failure", "expected_cause"),
     [
         (
-            SetupTokenTimedOut(),
+            ClaudeProcessFailure.TIMED_OUT,
             ProviderFailureCause.REFRESH_TIMED_OUT,
         ),
         (
-            SetupTokenUnreadable(),
+            ClaudeProcessFailure.PROCESS_UNAVAILABLE,
             ProviderFailureCause.REFRESH_PROCESS_UNAVAILABLE,
         ),
     ],
@@ -487,17 +504,36 @@ def test_cli_rejection_is_authoritative_and_does_not_fallback(
 def test_cli_refresh_reuses_bounded_process_capture(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    capture: SetupTokenTimedOut | SetupTokenUnreadable,
+    process_failure: ClaudeProcessFailure,
     expected_cause: ProviderFailureCause,
 ) -> None:
+    def fail(
+        argv: tuple[str, ...],
+        *,
+        timeout_seconds: float,
+        maximum_output_bytes: int,
+        environment: Mapping[str, str] | None = None,
+        working_directory: Path | None = None,
+        umask: int = -1,
+    ) -> ClaudeCommandResult:
+        del (
+            argv,
+            timeout_seconds,
+            maximum_output_bytes,
+            environment,
+            working_directory,
+            umask,
+        )
+        raise ClaudeProcessError(process_failure)
+
     monkeypatch.setattr(
-        ClaudeProvider,
-        "_capture_setup_output",
-        staticmethod(lambda *_args, **_kwargs: capture),
+        sidekick_usages.providers.claude.provider,
+        "run_bounded_claude_command",
+        fail,
     )
 
     result = ClaudeProvider._run_cli_refresh(
-        "/usr/bin/claude",
+        _claude_executable(),
         {},
         tmp_path,
     )
@@ -563,11 +599,9 @@ def test_cli_refresh_identity_mismatch_has_cause_only_state() -> None:
     ],
 )
 def test_malformed_refresh_is_atomic_and_safe(
-    monkeypatch: pytest.MonkeyPatch,
     response: JsonObject,
     kind: ProviderFailureKind,
 ) -> None:
-    _disable_cli_refresh(monkeypatch)
     account = _account()
     original = account.credentials
     raw_identity = "long.account.name@example.test"
