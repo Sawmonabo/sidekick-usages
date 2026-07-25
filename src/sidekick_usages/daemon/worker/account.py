@@ -1,4 +1,4 @@
-"""Exact-account metrics collection for isolated managed workers."""
+"""Exact-account services for isolated managed Codex workers."""
 
 from sidekick_usages.clock import Clock
 from sidekick_usages.core.accounts.types import SidekickAccountId
@@ -9,6 +9,8 @@ from sidekick_usages.credentials.codex.managed.resolver import (
 from sidekick_usages.credentials.codex.managed.service import (
     CodexManagedAuthorityCoordinator,
 )
+from sidekick_usages.heartbeat.models import HeartbeatOutcome
+from sidekick_usages.heartbeat.service import HeartbeatService
 from sidekick_usages.http.client import HttpClient
 from sidekick_usages.persistence.accounts.store import AccountStore
 from sidekick_usages.persistence.snapshots.activity import (
@@ -19,14 +21,15 @@ from sidekick_usages.persistence.supervisor.authority import (
     OperationAuthority,
 )
 from sidekick_usages.providers.codex.activity import CodexActivity
+from sidekick_usages.providers.codex.heartbeat import CodexHeartbeat
 from sidekick_usages.providers.codex.provider import CodexProvider
 from sidekick_usages.usage.models import UsageCheckResult
 from sidekick_usages.usage.ports import UsagePersistence
 from sidekick_usages.usage.service import UsageCheckService
 
 
-class CodexManagedMetricsCollector:
-    """Collect one managed Codex account under its existing authority."""
+class CodexManagedAccountService:
+    """Run account-scoped Codex services under an existing authority."""
 
     def __init__(
         self,
@@ -44,7 +47,7 @@ class CodexManagedMetricsCollector:
         self._usage_snapshots = usage_snapshots
         self._clock = clock
 
-    def collect(
+    def collect_metrics(
         self,
         account_id: SidekickAccountId,
         authority: OperationAuthority,
@@ -70,3 +73,23 @@ class CodexManagedMetricsCollector:
             resolver=resolver,
         )
         return service.check_account(account_id)
+
+    def heartbeat(
+        self,
+        account_id: SidekickAccountId,
+        authority: OperationAuthority,
+    ) -> tuple[HeartbeatOutcome, ...]:
+        """Heartbeat enabled targets for one exact managed account."""
+        resolver = CodexManagedCredentialResolver(
+            self._coordinator,
+            authority,
+        )
+        provider = CodexProvider(self._clock)
+        service = HeartbeatService(
+            self._store,
+            self._http,
+            {ProviderId.CODEX: CodexHeartbeat(provider)},
+            clock=self._clock,
+            resolver=resolver,
+        )
+        return service.heartbeat_saved_account(account_id)

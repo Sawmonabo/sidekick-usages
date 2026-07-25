@@ -20,7 +20,7 @@ from sidekick_usages.core.selection.types import (
     OperationPriority,
     ProviderRuntimeState,
 )
-from sidekick_usages.core.types import ProviderId
+from sidekick_usages.core.types import ExitCode, ProviderId
 from sidekick_usages.credentials.codex.activation import (
     CodexActivationError,
     CodexActivationService,
@@ -47,7 +47,8 @@ from sidekick_usages.daemon.worker.exchange import (
     WorkerExchangeChannel,
     WorkerExchangeError,
 )
-from sidekick_usages.daemon.worker.ports import AccountMetricsCollector
+from sidekick_usages.daemon.worker.ports import ManagedAccountService
+from sidekick_usages.heartbeat.service import heartbeat_exit_code
 from sidekick_usages.persistence.state.files import ManagedStateConflictError
 from sidekick_usages.persistence.supervisor.authority import (
     OperationAuthority,
@@ -91,11 +92,11 @@ class CodexManagedMaintenanceWorkerExecutor:
     def __init__(
         self,
         coordinator: CodexManagedAuthorityCoordinator,
-        metrics: AccountMetricsCollector,
+        account_services: ManagedAccountService,
         clock: Clock,
     ) -> None:
         self._coordinator = coordinator
-        self._metrics = metrics
+        self._account_services = account_services
         self._clock = clock
 
     def execute(
@@ -132,10 +133,26 @@ class CodexManagedMaintenanceWorkerExecutor:
         )
         if result.outcome is not CodexManagedOutcome.HEALTHY:
             return _managed_worker_result(operation, result, self._clock)
-        metrics = self._metrics.collect(
+        heartbeat = (
+            self._account_services.heartbeat(
+                operation.required_account_id,
+                authority,
+            )
+            if scheduled
+            else ()
+        )
+        metrics = self._account_services.collect_metrics(
             operation.required_account_id,
             authority,
         )
+        heartbeat_code = heartbeat_exit_code(list(heartbeat))
+        if heartbeat_code is ExitCode.MANUAL_ACTION:
+            return _worker_failure(
+                operation,
+                WorkerOutcome.ACTION_REQUIRED,
+                "codex_heartbeat_action_required",
+                self._clock,
+            )
         if metrics.failures:
             return _worker_failure(
                 operation,
@@ -148,6 +165,13 @@ class CodexManagedMaintenanceWorkerExecutor:
                 operation,
                 WorkerOutcome.TRANSIENT_FAILURE,
                 "codex_activity_unavailable",
+                self._clock,
+            )
+        if heartbeat_code is ExitCode.SYSTEM_ERROR:
+            return _worker_failure(
+                operation,
+                WorkerOutcome.TRANSIENT_FAILURE,
+                "codex_heartbeat_failed",
                 self._clock,
             )
         return _worker_success(operation, self._clock)

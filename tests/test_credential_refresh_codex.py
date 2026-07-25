@@ -4,7 +4,7 @@ import json
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import replace
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Never
 
@@ -39,6 +39,7 @@ from sidekick_usages.core.selection.types import (
 )
 from sidekick_usages.core.types import (
     AccountLabel,
+    HeartbeatStatus,
     ProviderId,
     RefreshStatus,
 )
@@ -53,11 +54,11 @@ from sidekick_usages.credentials.refresh import (
     CredentialRefreshReason,
 )
 from sidekick_usages.daemon.types.worker import WorkerOutcome
+from sidekick_usages.daemon.worker.account import (
+    CodexManagedAccountService,
+)
 from sidekick_usages.daemon.worker.codex import (
     CodexManagedMaintenanceWorkerExecutor,
-)
-from sidekick_usages.daemon.worker.metrics import (
-    CodexManagedMetricsCollector,
 )
 from sidekick_usages.http.client import HttpClient
 from sidekick_usages.paths import managed_codex_home
@@ -181,7 +182,6 @@ def _maintenance_operation(
     operation_id: OperationId,
     account_id: SidekickAccountId,
 ) -> DueOperation:
-    """Build one exact scheduled maintenance operation."""
     return DueOperation(
         operation_id=operation_id,
         provider_id=ProviderId.CODEX,
@@ -233,17 +233,14 @@ class _InjectedLock:
 
     @contextmanager
     def hold(self) -> Iterator[_AuthorityFailure | _AuthorityCrash]:
-        """Yield the injected held-lock transaction."""
         yield self._transaction
 
 
 def _jwt(generation: str) -> str:
-    """Build one legacy refresh fixture for its fixed account."""
     return codex_jwt(_ACCOUNT_ID, generation)
 
 
 def _account(home: Path, generation: str = "old") -> Account:
-    """Build one refreshable saved Codex account."""
     return Account(
         label=_LABEL,
         credentials=CodexCredentials(
@@ -266,7 +263,6 @@ def _account(home: Path, generation: str = "old") -> Account:
 
 
 def _auth(generation: str) -> bytes:
-    """Encode a strict private Codex auth bundle fixture."""
     return json.dumps(
         {
             "auth_mode": "chatgpt",
@@ -287,8 +283,6 @@ def _auth(generation: str) -> bytes:
 
 
 class _CodexRefreshProvider(Provider):
-    """Return one validated synthetic Codex rotation."""
-
     id = ProviderId.CODEX
     display_name = "Synthetic Codex"
 
@@ -594,6 +588,7 @@ def test_managed_codex_maintenance_continues_across_account_failure(
             _OLD_GENERATION,
         ),
         credential_health=CredentialHealth.REFRESH_DUE,
+        heartbeat_enabled=True,
     )
     paths, store, private = seed_managed_accounts(
         tmp_path,
@@ -645,7 +640,7 @@ def test_managed_codex_maintenance_continues_across_account_failure(
     clock = FixedClock()
     executor = CodexManagedMaintenanceWorkerExecutor(
         coordinator,
-        CodexManagedMetricsCollector(
+        CodexManagedAccountService(
             coordinator,
             store,
             _ManagedMetricsHttp(),
@@ -694,6 +689,14 @@ def test_managed_codex_maintenance_continues_across_account_failure(
     )
     assert advanced.last_refresh_at == REFERENCE_TIME
     assert advanced.last_refresh_status is RefreshStatus.OK
+    assert advanced.last_heartbeat_at == REFERENCE_TIME
+    assert advanced.last_heartbeat_status is HeartbeatStatus.ACTIVE
+    assert advanced.heartbeat_window_resets == (
+        (
+            "standard",
+            datetime.fromtimestamp(1_800_000_000, UTC),
+        ),
+    )
     assert managed_generation(private, _MANAGED_ACCOUNT_B) == _NEW_GENERATION
     assert managed_codex_home(paths, _MANAGED_ACCOUNT_A).name == str(
         _MANAGED_ACCOUNT_A
@@ -716,6 +719,7 @@ def test_managed_codex_maintenance_continues_across_account_failure(
             for line in (tmp_path / "events.jsonl").read_text().splitlines()
         )
         if event.get("method") == "account/read"
+        and event["params"]["refreshToken"]
     ]
     assert [
         (Path(event["codex_home"]).name, event["params"]["refreshToken"])

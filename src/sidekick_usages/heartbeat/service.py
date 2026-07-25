@@ -1,11 +1,12 @@
 """Policy and persistence for optional usage-window heartbeat."""
 
 from collections.abc import Iterable
-from contextlib import AbstractContextManager
+from dataclasses import replace
 from datetime import datetime
 
 from sidekick_usages.clock import Clock
 from sidekick_usages.core.accounts.models import SavedAccount
+from sidekick_usages.core.accounts.types import SidekickAccountId
 from sidekick_usages.core.expiry import (
     ExpiredExpiry,
     InvalidExpiry,
@@ -29,6 +30,7 @@ from sidekick_usages.heartbeat.models import (
 )
 from sidekick_usages.heartbeat.ports import HeartbeatProvider
 from sidekick_usages.http.client import HttpClient
+from sidekick_usages.persistence.accounts.index import safe_error_code
 from sidekick_usages.persistence.accounts.runtime_bridge import (
     saved_account_from_runtime_state,
 )
@@ -82,15 +84,35 @@ class HeartbeatService:
             accounts = [a for a in accounts if a.provider_id == provider_id]
         outcomes: list[HeartbeatOutcome] = []
         for account in accounts:
-            for selected in self._selected_target_ids(account, target_id):
-                outcomes.append(
-                    self.heartbeat_account(
-                        account,
-                        require_enabled=True,
-                        target_id=selected,
-                    )
+            saved = self._saved_account(account)
+            if saved is None:
+                outcomes.append(_missing_account())
+                continue
+            outcomes.extend(
+                self._heartbeat_saved_account(
+                    saved,
+                    require_enabled=True,
+                    target_id=target_id,
                 )
+            )
         return outcomes
+
+    def heartbeat_saved_account(
+        self,
+        account_id: SidekickAccountId,
+        *,
+        require_enabled: bool = True,
+        target_id: str | None = None,
+    ) -> tuple[HeartbeatOutcome, ...]:
+        """Heartbeat one exact saved account through its authority resolver."""
+        saved = self.store.read_saved(account_id)
+        if saved is None:
+            return (_missing_account(),)
+        return self._heartbeat_saved_account(
+            saved,
+            require_enabled=require_enabled,
+            target_id=target_id,
+        )
 
     def heartbeat_account(
         self,
@@ -100,25 +122,123 @@ class HeartbeatService:
         target_id: str | None = None,
     ) -> HeartbeatOutcome:
         """Run one heartbeat, respecting opt-in unless explicitly bypassed."""
-        early = self._early_account_outcome(account, require_enabled)
-        if early is not None:
-            return early
-        assert account is not None
+        if account is None:
+            return _missing_account()
+        saved = self._saved_account(account)
+        if saved is None:
+            return HeartbeatOutcome(
+                label=account.label,
+                provider_id=account.provider_id,
+                status=HeartbeatStatus.FAILED,
+                message="The heartbeat account changed.",
+                action_required=True,
+                exit_code=ExitCode.MANUAL_ACTION,
+            )
+        return self._heartbeat_saved_account(
+            saved,
+            require_enabled=require_enabled,
+            target_id=target_id,
+        )[0]
+
+    def _persist_state(
+        self,
+        account: Account,
+        *,
+        expected: SavedAccount | None = None,
+    ) -> None:
+        """Persist status without carrying credentials into the v3 index."""
+        saved = expected or self._saved_account(account)
+        if saved is None:
+            raise SourceChangedError
+        self.store.persist_state(
+            saved_account_from_runtime_state(saved, account),
+            expected=saved,
+        )
+
+    def _heartbeat_saved_account(
+        self,
+        saved: SavedAccount,
+        *,
+        require_enabled: bool,
+        target_id: str | None,
+    ) -> tuple[HeartbeatOutcome, ...]:
+        """Run all selected targets through one exact credential lease."""
+        if require_enabled and not saved.heartbeat_enabled:
+            return (
+                HeartbeatOutcome(
+                    label=saved.label,
+                    provider_id=saved.provider_id,
+                    status=HeartbeatStatus.DISABLED,
+                    message="heartbeat disabled",
+                ),
+            )
         reference_time = self.clock.now()
+        try:
+            with self._resolver.open(saved) as authenticated:
+                account = authenticated.lease.account
+                ready = self._ready_provider(account, reference_time)
+                if isinstance(ready, HeartbeatOutcome):
+                    self._persist_state(account, expected=saved)
+                    return (ready,)
+                try:
+                    selected_targets = self._selected_target_ids(
+                        account,
+                        target_id,
+                    )
+                except ValueError as error:
+                    outcome = self._failed_outcome(
+                        account,
+                        str(error),
+                        exit_code=ExitCode.SYSTEM_ERROR,
+                        reference_time=reference_time,
+                    )
+                    self._persist_state(account, expected=saved)
+                    return (outcome,)
 
-        ready = self._ready_provider(account, reference_time)
-        if isinstance(ready, HeartbeatOutcome):
-            return ready
-        provider = ready
+                outcomes: list[HeartbeatOutcome] = []
+                changed = False
+                for selected in selected_targets:
+                    outcome, target_changed = self._heartbeat_target(
+                        account,
+                        authenticated,
+                        ready,
+                        selected,
+                        reference_time,
+                    )
+                    outcomes.append(outcome)
+                    changed = changed or target_changed
+                if changed:
+                    self._persist_state(account, expected=saved)
+                return tuple(outcomes)
+        except UsageError as error:
+            return (
+                self._saved_failure(
+                    saved,
+                    str(error),
+                    reference_time=self.clock.now(),
+                ),
+            )
 
+    def _heartbeat_target(
+        self,
+        account: Account,
+        authenticated: AuthenticatedSavedAccount,
+        provider: HeartbeatProvider,
+        target_id: str | None,
+        reference_time: datetime,
+    ) -> tuple[HeartbeatOutcome, bool]:
+        """Run one resolved target without persisting intermediate state."""
         try:
             target = provider.resolve_target(account, target_id)
-        except ValueError as e:
-            return self._record_failed(
-                account,
-                str(e),
-                exit_code=ExitCode.SYSTEM_ERROR,
-                reference_time=reference_time,
+        except ValueError as error:
+            return (
+                self._failed_outcome(
+                    account,
+                    str(error),
+                    exit_code=ExitCode.SYSTEM_ERROR,
+                    reference_time=reference_time,
+                ),
+                True,
             )
 
         cached = _future_reset(
@@ -126,28 +246,35 @@ class HeartbeatService:
             reference_time,
         )
         if cached is not None:
-            return HeartbeatOutcome(
-                label=account.label,
-                provider_id=account.provider_id,
-                status=HeartbeatStatus.ACTIVE,
-                message=f"{target.label} active until {cached.isoformat()}",
-                target_id=target.id,
-                target_label=target.label,
+            return (
+                HeartbeatOutcome(
+                    label=account.label,
+                    provider_id=account.provider_id,
+                    status=HeartbeatStatus.ACTIVE,
+                    message=(
+                        f"{target.label} active until {cached.isoformat()}"
+                    ),
+                    target_id=target.id,
+                    target_label=target.label,
+                ),
+                False,
             )
 
         try:
-            with self._open_account(account) as authenticated:
-                result = provider.run(
-                    authenticated,
-                    self.http,
-                    target_id=target.id,
-                )
-        except UsageError as e:
-            return self._record_failed(
-                account,
-                str(e),
-                exit_code=ExitCode.MANUAL_ACTION,
-                reference_time=self.clock.now(),
+            result = provider.run(
+                authenticated,
+                self.http,
+                target_id=target.id,
+            )
+        except UsageError as error:
+            return (
+                self._failed_outcome(
+                    account,
+                    str(error),
+                    exit_code=ExitCode.MANUAL_ACTION,
+                    reference_time=self.clock.now(),
+                ),
+                True,
             )
 
         account.last_heartbeat_at = self.clock.now()
@@ -157,49 +284,54 @@ class HeartbeatService:
         )
         if result.reset_at:
             _set_target_reset(account, target.id, result.reset_at)
-        self._persist_state(account)
-        if result.status is HeartbeatStatus.FAILED:
-            exit_code = (
-                ExitCode.MANUAL_ACTION
-                if result.action_required
-                else ExitCode.SYSTEM_ERROR
-            )
-        else:
-            exit_code = (
-                ExitCode.MANUAL_ACTION
-                if result.action_required
+        exit_code = (
+            ExitCode.MANUAL_ACTION
+            if result.action_required
+            else (
+                ExitCode.SYSTEM_ERROR
+                if result.status is HeartbeatStatus.FAILED
                 else ExitCode.SUCCESS
             )
-        return HeartbeatOutcome(
-            label=account.label,
-            provider_id=account.provider_id,
-            status=result.status,
-            message=result.message,
-            warmed=result.warmed,
-            action_required=result.action_required,
-            exit_code=exit_code,
-            target_id=result.target_id,
-            target_label=result.target_label,
+        )
+        return (
+            HeartbeatOutcome(
+                label=account.label,
+                provider_id=account.provider_id,
+                status=result.status,
+                message=result.message,
+                warmed=result.warmed,
+                action_required=result.action_required,
+                exit_code=exit_code,
+                target_id=result.target_id,
+                target_label=result.target_label,
+            ),
+            True,
         )
 
-    def _open_account(
+    def _saved_failure(
         self,
-        account: Account,
-    ) -> AbstractContextManager[AuthenticatedSavedAccount]:
-        """Open one heartbeat credential lease at the provider boundary."""
-        saved = self._saved_account(account)
-        if saved is None:
-            raise UsageError("The heartbeat account changed.")
-        return self._resolver.open(saved)
-
-    def _persist_state(self, account: Account) -> None:
-        """Persist status without carrying credentials into the v3 index."""
-        saved = self._saved_account(account)
-        if saved is None:
-            raise SourceChangedError
+        saved: SavedAccount,
+        message: str,
+        *,
+        reference_time: datetime,
+    ) -> HeartbeatOutcome:
+        """Persist a resolver failure without constructing credentials."""
         self.store.persist_state(
-            saved_account_from_runtime_state(saved, account),
+            replace(
+                saved,
+                last_heartbeat_at=reference_time,
+                last_heartbeat_status=HeartbeatStatus.FAILED,
+                last_heartbeat_error_code=safe_error_code(message),
+            ),
             expected=saved,
+        )
+        return HeartbeatOutcome(
+            label=saved.label,
+            provider_id=saved.provider_id,
+            status=HeartbeatStatus.FAILED,
+            message=message,
+            action_required=True,
+            exit_code=ExitCode.MANUAL_ACTION,
         )
 
     def _saved_account(self, account: Account) -> SavedAccount | None:
@@ -214,23 +346,6 @@ class HeartbeatService:
             None,
         )
 
-    def _early_account_outcome(
-        self,
-        account: Account | None,
-        require_enabled: bool,
-    ) -> HeartbeatOutcome | None:
-        """Return an account-level skip/failure before provider lookup."""
-        if account is None:
-            return _missing_account()
-        if require_enabled and not account.heartbeat_enabled:
-            return HeartbeatOutcome(
-                label=account.label,
-                provider_id=account.provider_id,
-                status=HeartbeatStatus.DISABLED,
-                message="heartbeat disabled",
-            )
-        return None
-
     def _ready_provider(
         self,
         account: Account,
@@ -239,7 +354,7 @@ class HeartbeatService:
         """Return a supported provider or the failure outcome to persist."""
         provider = self._providers.get(account.provider_id)
         if provider is None:
-            return self._record_failed(
+            return self._failed_outcome(
                 account,
                 f"Unknown provider '{account.provider_id}'.",
                 exit_code=ExitCode.SYSTEM_ERROR,
@@ -247,7 +362,7 @@ class HeartbeatService:
             )
         blocked = self._auth_blocker(account, reference_time)
         if blocked is not None:
-            return self._record_failed(
+            return self._failed_outcome(
                 account,
                 blocked,
                 exit_code=ExitCode.MANUAL_ACTION,
@@ -255,7 +370,11 @@ class HeartbeatService:
             )
         if provider.supports(account):
             return provider
-        return self._record_unsupported(account, provider, reference_time)
+        outcome = self._unsupported_outcome(account, provider)
+        account.last_heartbeat_at = reference_time
+        account.last_heartbeat_status = HeartbeatStatus.UNSUPPORTED
+        account.last_heartbeat_error = outcome.message
+        return outcome
 
     def enable(
         self,
@@ -387,19 +506,6 @@ class HeartbeatService:
             )
         return None
 
-    def _record_unsupported(
-        self,
-        account: Account,
-        provider: HeartbeatProvider,
-        reference_time: datetime,
-    ) -> HeartbeatOutcome:
-        outcome = self._unsupported_outcome(account, provider)
-        account.last_heartbeat_at = reference_time
-        account.last_heartbeat_status = HeartbeatStatus.UNSUPPORTED
-        account.last_heartbeat_error = outcome.message
-        self._persist_state(account)
-        return outcome
-
     def _unsupported_outcome(
         self,
         account: Account,
@@ -414,7 +520,7 @@ class HeartbeatService:
             exit_code=ExitCode.MANUAL_ACTION,
         )
 
-    def _record_failed(
+    def _failed_outcome(
         self,
         account: Account,
         message: str,
@@ -425,7 +531,6 @@ class HeartbeatService:
         account.last_heartbeat_at = reference_time
         account.last_heartbeat_status = HeartbeatStatus.FAILED
         account.last_heartbeat_error = message
-        self._persist_state(account)
         return HeartbeatOutcome(
             label=account.label,
             provider_id=account.provider_id,

@@ -32,6 +32,9 @@ from sidekick_usages.credentials.codex.reconciliation import (
 from sidekick_usages.daemon.models.worker import (
     WORKER_EXCHANGE_DESCRIPTOR_ENVIRONMENT_KEY,
 )
+from sidekick_usages.daemon.worker.account import (
+    CodexManagedAccountService,
+)
 from sidekick_usages.daemon.worker.codex import (
     CodexActivationWorkerExecutor,
     CodexCallbackWorkerExecutor,
@@ -41,9 +44,6 @@ from sidekick_usages.daemon.worker.codex import (
 from sidekick_usages.daemon.worker.exchange import (
     WorkerExchangeChannel,
     WorkerExchangeError,
-)
-from sidekick_usages.daemon.worker.metrics import (
-    CodexManagedMetricsCollector,
 )
 from sidekick_usages.daemon.worker.runtime import (
     UnsupportedWorkerExecutor,
@@ -209,7 +209,7 @@ def _run_codex_account_operation(
     with HttpClient(clock=clock) as http:
         executor = CodexManagedMaintenanceWorkerExecutor(
             coordinator,
-            CodexManagedMetricsCollector(
+            CodexManagedAccountService(
                 coordinator,
                 store,
                 http,
