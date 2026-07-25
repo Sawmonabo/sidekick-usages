@@ -15,6 +15,7 @@ from sidekick_usages.core.accounts.validation import (
     MAX_METADATA_BYTES,
     require_bounded_text,
 )
+from sidekick_usages.core.expiry import Expiry, KnownExpiry, UnknownExpiry
 from sidekick_usages.core.time import as_utc
 from sidekick_usages.core.types import (
     AccountLabel,
@@ -282,6 +283,67 @@ class SavedAccount:
             subscription,
             ClaudeManagedLoginAuthority | CodexManagedAuthority,
         )
+
+    @property
+    def provider_identity(self) -> ProviderIdentity | None:
+        """Return the non-renderable provider identity when established."""
+        authority = self.authority
+        if isinstance(authority, ClaudeAccountAuthority):
+            subscription = authority.subscription
+            return (
+                subscription.provider_identity
+                if isinstance(
+                    subscription,
+                    ClaudeStoredLoginAuthority | ClaudeManagedLoginAuthority,
+                )
+                else None
+            )
+        return authority.subscription.provider_identity
+
+    @property
+    def access_expiry(self) -> Expiry:
+        """Return secret-free access-expiry metadata for maintenance."""
+        authority = self.authority
+        if isinstance(authority, ClaudeAccountAuthority):
+            subscription = authority.subscription
+            if isinstance(subscription, ClaudeStoredLoginAuthority):
+                return (
+                    KnownExpiry(subscription.access_expires_at)
+                    if subscription.access_expires_at is not None
+                    else UnknownExpiry()
+                )
+            if isinstance(subscription, ClaudeManagedLoginAuthority):
+                return UnknownExpiry()
+            setup = authority.setup_token
+            return (
+                KnownExpiry(setup.expires_at)
+                if setup is not None and setup.expires_at is not None
+                else UnknownExpiry()
+            )
+        subscription = authority.subscription
+        if isinstance(subscription, CodexStoredAuthority):
+            return (
+                KnownExpiry(subscription.expires_at)
+                if subscription.expires_at is not None
+                else UnknownExpiry()
+            )
+        return UnknownExpiry()
+
+    @property
+    def refresh_expiry(self) -> Expiry:
+        """Return secret-free refresh-authority lifetime metadata."""
+        authority = self.authority
+        if isinstance(authority, ClaudeAccountAuthority) and isinstance(
+            authority.subscription,
+            ClaudeStoredLoginAuthority,
+        ):
+            expires_at = authority.subscription.refresh_expires_at
+            return (
+                KnownExpiry(expires_at)
+                if expires_at is not None
+                else UnknownExpiry()
+            )
+        return UnknownExpiry()
 
 
 @dataclass(frozen=True, slots=True)

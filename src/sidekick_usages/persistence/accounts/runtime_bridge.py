@@ -70,20 +70,37 @@ def copy_runtime_account(
     )
 
 
-def active_stored_reference(account: SavedAccount) -> AuthorityId:
-    """Return the protected authority used by runtime services."""
+def active_authority_reference(account: SavedAccount) -> AuthorityId:
+    """Return the authority selected for account operations."""
     authority = account.authority
     if isinstance(authority, ClaudeAccountAuthority):
         if isinstance(authority.subscription, ClaudeStoredLoginAuthority):
             return authority.subscription.authority_id
         if isinstance(authority.subscription, ClaudeManagedLoginAuthority):
-            raise CredentialAuthorityUnavailableError
+            return authority.subscription.authority_id
         if authority.setup_token is not None:
             return authority.setup_token.authority_id
         raise InvalidSchemaError
-    if isinstance(authority.subscription, CodexManagedAuthority):
-        raise CredentialAuthorityUnavailableError
     return authority.subscription.authority_id
+
+
+def active_stored_reference(account: SavedAccount) -> AuthorityId:
+    """Return the protected stored authority used by runtime services."""
+    authority = account.authority
+    if isinstance(
+        authority,
+        ClaudeAccountAuthority,
+    ) and isinstance(
+        authority.subscription,
+        ClaudeManagedLoginAuthority,
+    ):
+        raise CredentialAuthorityUnavailableError
+    if isinstance(
+        authority,
+        CodexAccountAuthority,
+    ) and isinstance(authority.subscription, CodexManagedAuthority):
+        raise CredentialAuthorityUnavailableError
+    return active_authority_reference(account)
 
 
 def runtime_account_from_saved(

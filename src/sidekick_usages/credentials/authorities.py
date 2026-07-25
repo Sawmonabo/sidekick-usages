@@ -1,6 +1,6 @@
 """Operation-scoped access to protected account credentials."""
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import AbstractContextManager, contextmanager
 from enum import StrEnum
 from types import TracebackType
@@ -14,11 +14,12 @@ from sidekick_usages.core.accounts.types import (
     AuthorityId,
     SidekickAccountId,
 )
-from sidekick_usages.core.models import Account
+from sidekick_usages.core.models import Account, Credentials
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.errors import UsageError
 from sidekick_usages.persistence.accounts.runtime_bridge import (
     CredentialAuthorityUnavailableError,
+    active_authority_reference,
     active_stored_reference,
     require_active_authority_kind,
     runtime_account_from_saved,
@@ -200,9 +201,9 @@ class CredentialLease:
 
     __slots__ = (
         "_account_id",
-        "_authority",
         "_authority_id",
         "_closed",
+        "_credentials",
         "_provider_id",
         "_runtime",
         "_saved",
@@ -211,25 +212,25 @@ class CredentialLease:
     def __init__(
         self,
         account: SavedAccount,
-        authority: StoredCredentialAuthority,
+        authority_account_id: SidekickAccountId,
+        authority_id: AuthorityId,
+        credentials: Credentials,
     ) -> None:
         """Bind one protected authority to its exact saved account."""
         try:
-            expected_authority_id = active_stored_reference(account)
-        except CredentialAuthorityUnavailableError:
-            raise ManagedCredentialAuthorityError from None
+            expected_authority_id = active_authority_reference(account)
         except InvalidSchemaError:
             raise MalformedCredentialAuthorityError from None
         if (
-            authority.account_id != account.account_id
-            or authority.provider_id is not account.provider_id
-            or authority.authority_id != expected_authority_id
+            credentials.provider_id is not account.provider_id
+            or authority_account_id != account.account_id
+            or authority_id != expected_authority_id
         ):
             raise MismatchedCredentialAuthorityError
         self._account_id = account.account_id
-        self._authority_id = authority.authority_id
+        self._authority_id = authority_id
         self._provider_id = account.provider_id
-        self._authority: StoredCredentialAuthority | None = authority
+        self._credentials: Credentials | None = credentials
         self._saved: SavedAccount | None = account
         self._runtime: Account | None = None
         self._closed = False
@@ -260,21 +261,21 @@ class CredentialLease:
         """Open this lease exactly once."""
         if self._closed or self._runtime is not None:
             raise ClosedCredentialLeaseError
-        authority = self._authority
-        if authority is None:
+        credentials = self._credentials
+        if credentials is None:
             raise ClosedCredentialLeaseError
         try:
             runtime = runtime_account_from_saved(
                 self._saved_account(),
-                authority.credentials,
+                credentials,
             )
         except BaseException:
-            self._authority = None
+            self._credentials = None
             self._saved = None
             self._closed = True
             raise
         self._runtime = runtime
-        self._authority = None
+        self._credentials = None
         self._saved = None
         return self
 
@@ -287,7 +288,7 @@ class CredentialLease:
         """Close the lease and release its credential references."""
         del exc_type, exc_value, traceback
         self._runtime = None
-        self._authority = None
+        self._credentials = None
         self._saved = None
         self._closed = True
 
@@ -306,14 +307,28 @@ class CredentialLease:
 class AuthenticatedAccountResolver:
     """Open one credential lease for one saved-account operation."""
 
-    def __init__(self, reader: CredentialAuthorityReader) -> None:
+    def __init__(
+        self,
+        reader: CredentialAuthorityReader,
+        managed_factories: Mapping[
+            ProviderId,
+            CredentialLeaseFactory,
+        ]
+        | None = None,
+    ) -> None:
         self._reader = reader
+        self._managed_factories = dict(managed_factories or {})
 
     def open(
         self,
         account: SavedAccount,
     ) -> AbstractContextManager[AuthenticatedSavedAccount]:
         """Return an unopened context for one exact saved account."""
+        if account.has_managed_authority:
+            factory = self._managed_factories.get(account.provider_id)
+            if factory is None:
+                raise ManagedCredentialAuthorityError
+            return factory(account)
         return self._open(account)
 
     @contextmanager
@@ -322,7 +337,12 @@ class AuthenticatedAccountResolver:
         account: SavedAccount,
     ) -> Iterator[AuthenticatedSavedAccount]:
         authority = self._reader.read(account)
-        lease = CredentialLease(account, authority)
+        lease = CredentialLease(
+            account,
+            authority.account_id,
+            authority.authority_id,
+            authority.credentials,
+        )
         with lease:
             yield AuthenticatedAccount(account=account, lease=lease)
 
@@ -330,9 +350,18 @@ class AuthenticatedAccountResolver:
 def credential_resolver_for(
     source: SavedAccountSource,
     tree: PrivateCredentialTree,
+    *,
+    managed_factories: Mapping[
+        ProviderId,
+        CredentialLeaseFactory,
+    ]
+    | None = None,
 ) -> CredentialResolver:
     """Compose protected leases for the current stable account source."""
     source.saved_accounts()
     return AuthenticatedAccountResolver(
-        ProtectedCredentialAuthorityReader(CredentialAuthorityRepository(tree))
+        ProtectedCredentialAuthorityReader(
+            CredentialAuthorityRepository(tree)
+        ),
+        managed_factories,
     )

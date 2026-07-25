@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from sidekick_usages.core.accounts.models import SavedAccount
 from sidekick_usages.core.expiry import Expiry, KnownExpiry, UnknownExpiry
 from sidekick_usages.core.models import (
     Account,
@@ -198,10 +199,13 @@ class _ActivitySnapshots(AccountTokenActivitySnapshots):
         self.loads: list[AccountLabel] = []
         self.saves: list[AccountTokenActivitySnapshot] = []
 
-    def load(self, account: Account) -> AccountTokenActivitySnapshot | None:
+    def load(
+        self,
+        account: SavedAccount,
+    ) -> AccountTokenActivitySnapshot | None:
         self.loads.append(account.label)
-        account_id = account.provider_account_id
-        return None if account_id is None else self.snapshots.get(account_id)
+        identity = account.provider_identity
+        return None if identity is None else self.snapshots.get(str(identity))
 
     def save(
         self,
@@ -447,7 +451,7 @@ def test_account_activity_reports_known_coverage_and_attempt_failures(
     outcome = result.activities[0]
     assert isinstance(outcome, PartialTokenActivity)
     assert outcome.summary.total_tokens == _CODEX_TOTAL
-    assert (outcome.covered_accounts, outcome.selected_accounts) == (1, 3)
+    assert (outcome.covered_accounts, outcome.saved_accounts) == (1, 3)
     assert len(outcome.issues) == 1
     assert outcome.issues[0].label == "profile-failed"
     assert outcome.issues[0].kind is TokenActivityFailureKind.TRANSIENT

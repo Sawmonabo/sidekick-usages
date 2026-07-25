@@ -3,8 +3,8 @@
 from dataclasses import replace
 from pathlib import Path
 
+from sidekick_usages.core.accounts.models import SavedAccount
 from sidekick_usages.core.models import (
-    Account,
     AccountTokenActivitySnapshot,
 )
 from sidekick_usages.core.types import ProviderId
@@ -86,12 +86,16 @@ class ActivitySnapshotStore:
         self._lock = PersistenceLock(self._filesystem)
 
     @staticmethod
-    def _account_id(account: Account) -> str | None:
+    def _account_id(account: SavedAccount) -> str | None:
         if account.provider_id is not ProviderId.CODEX:
             return None
-        return account.provider_account_id
+        identity = account.provider_identity
+        return None if identity is None else str(identity)
 
-    def load(self, account: Account) -> AccountTokenActivitySnapshot | None:
+    def load(
+        self,
+        account: SavedAccount,
+    ) -> AccountTokenActivitySnapshot | None:
         """Load one exact account snapshot without mutation."""
         if (account_id := self._account_id(account)) is None:
             return None

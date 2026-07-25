@@ -109,7 +109,12 @@ def test_credential_lease_is_bound_scoped_redacted_and_fail_closed(
         account_id=SidekickAccountId("a4e18d2e-8f88-4dc8-9516-d47e9de27c83"),
     )
     with pytest.raises(MismatchedCredentialAuthorityError) as mismatch:
-        CredentialLease(mismatched, authority)
+        CredentialLease(
+            mismatched,
+            authority.account_id,
+            authority.authority_id,
+            authority.credentials,
+        )
     assert secret not in repr(mismatch.value)
 
     malformed = AuthenticatedAccountResolver(

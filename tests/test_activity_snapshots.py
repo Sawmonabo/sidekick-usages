@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from sidekick_usages.core.accounts.models import SavedAccount
 from sidekick_usages.core.expiry import UnknownExpiry
 from sidekick_usages.core.models import (
     Account,
@@ -29,33 +30,36 @@ from sidekick_usages.persistence.filesystem.service import (
 from sidekick_usages.persistence.types.error import (
     ActivitySnapshotFailureKind,
 )
+from tests.test_support import saved_account
 
 _FETCHED_AT = datetime(2026, 7, 11, 4, 30, tzinfo=UTC)
 _ACCOUNT_COUNT = 2
 _SHA256_HEX_LENGTH = 64
 
 
-def _account(label: str, account_id: str) -> Account:
-    return Account(
-        label=AccountLabel(label),
-        credentials=CodexCredentials(
-            access_token=f"test-only-{label}-access",
-            expiry=UnknownExpiry(),
-            account_id=account_id,
-        ),
+def _account(label: str, account_id: str) -> SavedAccount:
+    return saved_account(
+        Account(
+            label=AccountLabel(label),
+            credentials=CodexCredentials(
+                access_token=f"test-only-{label}-access",
+                expiry=UnknownExpiry(),
+                account_id=account_id,
+            ),
+        )
     )
 
 
 def _snapshot(
-    account: Account,
+    account: SavedAccount,
     total: int,
     since: date | None,
     fetched_at: datetime = _FETCHED_AT,
 ) -> AccountTokenActivitySnapshot:
-    assert account.provider_account_id is not None
+    assert account.provider_identity is not None
     return AccountTokenActivitySnapshot(
         provider_id=ProviderId.CODEX,
-        provider_account_id=account.provider_account_id,
+        provider_account_id=str(account.provider_identity),
         summary=TokenActivitySummary(
             total_tokens=total,
             scope=TokenActivityScope.ACCOUNT,

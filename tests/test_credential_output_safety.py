@@ -187,7 +187,7 @@ def test_provider_secret_never_crosses_persisted_or_doctor_error_channels(
         store,
         service,
         clock=clock,
-    ).refresh_account(account, force=True)
+    ).refresh_account(store.saved_accounts()[0], force=True)
     saved = store.get("team")
     assert saved is not None
     diagnostics = DoctorService(

@@ -9,9 +9,9 @@ from pathlib import Path
 import pytest
 
 from sidekick_usages.core.accounts.models import SavedAccount
+from sidekick_usages.core.accounts.types import SidekickAccountId
 from sidekick_usages.core.expiry import (
     Expiry,
-    InvalidExpiry,
     KnownExpiry,
     UnknownExpiry,
 )
@@ -69,7 +69,6 @@ from sidekick_usages.usage.models import (
     AccountUsage,
     FetchFailureKind,
     ForbiddenFailure,
-    InvalidExpiryFailure,
     PersistenceFailure,
     ProviderPayloadFailure,
     RateLimitFailure,
@@ -153,11 +152,49 @@ class InMemoryAccountStore(AccountStore):
         self._saved[str(saved.label)] = saved
         self.persisted.append(_copy_account(saved))
 
-    def saved_accounts(self) -> tuple[SavedAccount, ...]:
+    def saved_accounts(
+        self,
+        provider_id: ProviderId | None = None,
+    ) -> tuple[SavedAccount, ...]:
         """Return stable synthetic metadata for resolver-bound scenarios."""
+        if provider_id is not None:
+            self.filters.append(provider_id)
         return tuple(
-            saved_account(account) for account in self._saved.values()
+            saved_account(account)
+            for account in self._saved.values()
+            if provider_id is None or account.provider_id is provider_id
         )
+
+    def read_saved(
+        self,
+        account_id: SidekickAccountId,
+    ) -> SavedAccount | None:
+        """Return one stable account by exact synthetic ID."""
+        return next(
+            (
+                account
+                for account in self.saved_accounts()
+                if account.account_id == account_id
+            ),
+            None,
+        )
+
+    def persist_state(
+        self,
+        account: SavedAccount,
+        *,
+        expected: SavedAccount | None = None,
+    ) -> None:
+        """Persist only non-secret state against the expected snapshot."""
+        current = self.read_saved(account.account_id)
+        if expected is not None and current != expected:
+            raise AssertionError("Synthetic account state changed.")
+        runtime = self._saved[str(account.label)]
+        runtime.plan = account.plan
+        runtime.last_refresh_at = account.last_refresh_at
+        runtime.last_refresh_status = account.last_refresh_status
+        runtime.last_refresh_error = account.last_refresh_error_code
+        self.persisted.append(_copy_account(runtime))
 
     def saved(self, label: str) -> Account:
         """Return one independent durable account for assertions."""
@@ -496,21 +533,19 @@ def test_usage_expiry_policy_refreshes_before_the_first_fetch(
     ]
 
 
-def test_invalid_expiry_and_missing_adapter_fail_without_provider_traffic(
+def test_missing_adapter_fails_without_provider_traffic(
     http: HttpClient,
 ) -> None:
-    invalid = _account("invalid", ProviderId.CODEX, expiry=InvalidExpiry())
     missing = _account("missing", ProviderId.CLAUDE)
-    store = InMemoryAccountStore((invalid, missing))
+    store = InMemoryAccountStore((missing,))
     codex = ScriptedProvider(
         ProviderId.CODEX,
-        {"invalid": [_report()]},
+        {},
     )
 
     result = _service(store, http, codex).check()
 
-    assert isinstance(result.failures[0], InvalidExpiryFailure)
-    assert isinstance(result.failures[1], UnknownProviderFailure)
+    assert isinstance(result.failures[0], UnknownProviderFailure)
     assert result.usages == ()
     assert codex.events == []
     assert store.persisted == []
@@ -673,7 +708,7 @@ def test_refresh_boundary_failure_preserves_only_safe_metadata(
         store,
         ScriptedCredentialCoordinator(store, (safe,)),
         clock=FixedClock(),
-    ).refresh_account(account, force=True)
+    ).refresh_account(saved_account(account), force=True)
 
     failure = outcome.provider_failure
     assert failure is not None
@@ -681,7 +716,7 @@ def test_refresh_boundary_failure_preserves_only_safe_metadata(
     assert failure.kind is ProviderFailureKind.MALFORMED
     assert failure.fields == ("tokens.access_token",)
     assert rejected_input not in repr(outcome)
-    assert store.saved("account").last_refresh_error == safe.message
+    assert store.saved("account").last_refresh_error == "provider_failure"
 
 
 @pytest.mark.parametrize(
@@ -697,7 +732,7 @@ def test_operational_refresh_failures_never_become_auth_rejection(
         store,
         ScriptedCredentialCoordinator(store, (error,)),
         clock=FixedClock(),
-    ).refresh_account(account, force=True)
+    ).refresh_account(saved_account(account), force=True)
 
     assert outcome.status is RefreshStatus.FAILED
     assert outcome.exit_code is ExitCode.SYSTEM_ERROR

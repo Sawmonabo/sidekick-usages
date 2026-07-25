@@ -235,6 +235,31 @@ class CodexManagedAuthorityCoordinator:
             current.generation,
         )
 
+    def open_projection_with_authority(
+        self,
+        account_id: SidekickAccountId,
+        authority: OperationAuthority,
+    ) -> CodexProjectionLease | CodexManagedAuthorityResult:
+        """Open the current projection under exact account authority."""
+        authority.require(account_id)
+        account = self._saved_account(account_id)
+        expected = self._expected_snapshot(account)
+        if isinstance(expected, ProviderFailure):
+            return self._persist_provider_failure(account, expected)
+        current = self._snapshot(account_id)
+        if isinstance(current, ProviderFailure):
+            return self._persist_provider_failure(account, current)
+        if current != expected:
+            return self._persist_failure(
+                account,
+                CodexManagedOutcome.REJECTED,
+                health=CredentialHealth.RECONCILIATION_REQUIRED,
+            )
+        projection = self._home.projection(account_id, current)
+        if isinstance(projection, ProviderFailure):
+            return self._persist_provider_failure(account, projection)
+        return projection
+
     def stage_refresh_with_authority(
         self,
         account_id: SidekickAccountId,

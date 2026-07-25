@@ -6,8 +6,8 @@ from datetime import date, datetime
 from typing import Protocol
 
 from sidekick_usages.core.accounts.models import SavedAccount
+from sidekick_usages.core.accounts.types import SidekickAccountId
 from sidekick_usages.core.models import (
-    Account,
     AccountTokenActivitySnapshot,
     TokenActivityReading,
     TokenActivitySummary,
@@ -76,7 +76,10 @@ class AccountTokenActivitySource(Protocol):
 class AccountTokenActivitySnapshots(Protocol):
     """Persist authoritative activity by stable account identity."""
 
-    def load(self, account: Account) -> AccountTokenActivitySnapshot | None:
+    def load(
+        self,
+        account: SavedAccount,
+    ) -> AccountTokenActivitySnapshot | None:
         """Load the account's last successful activity snapshot."""
 
     def save(
@@ -120,12 +123,11 @@ class TokenActivityCollector:
 
     def collect(
         self,
-        accounts: tuple[Account, ...],
-        eligible_accounts: tuple[Account, ...],
+        accounts: tuple[SavedAccount, ...],
+        eligible_account_ids: frozenset[SidekickAccountId],
         reference_time: datetime,
-        saved_accounts: tuple[SavedAccount, ...] = (),
     ) -> tuple[ProviderTokenActivity, ...]:
-        """Collect activity once from the selected provider population."""
+        """Collect activity once from the saved provider population."""
         provider_order = tuple(dict.fromkeys(a.provider_id for a in accounts))
         outcomes: list[ProviderTokenActivity] = []
         for provider_id in provider_order:
@@ -136,8 +138,8 @@ class TokenActivityCollector:
             )
             eligible = tuple(
                 account
-                for account in eligible_accounts
-                if account.provider_id is provider_id
+                for account in selected
+                if account.account_id in eligible_account_ids
             )
             local_source = self._local_sources.get(provider_id)
             account_source = self._account_sources.get(provider_id)
@@ -157,7 +159,6 @@ class TokenActivityCollector:
                         selected,
                         eligible,
                         reference_time,
-                        saved_accounts,
                     )
                 )
         return tuple(outcomes)
@@ -196,25 +197,22 @@ class TokenActivityCollector:
         self,
         provider_id: ProviderId,
         source: AccountTokenActivitySource,
-        selected: tuple[Account, ...],
-        eligible: tuple[Account, ...],
+        selected: tuple[SavedAccount, ...],
+        eligible: tuple[SavedAccount, ...],
         reference_time: datetime,
-        saved_accounts: tuple[SavedAccount, ...],
     ) -> ProviderTokenActivity:
         total = 0
         since_dates: list[date] = []
         has_unknown_since = False
         covered = 0
         issues: list[TokenActivityIssue] = []
-        eligible_by_label = {account.label: account for account in eligible}
+        eligible_ids = {account.account_id for account in eligible}
         for selected_account in selected:
-            account = eligible_by_label.get(selected_account.label)
             summary, account_issues = self._account_summary(
                 source,
-                selected_account if account is None else account,
+                selected_account,
                 reference_time,
-                saved_accounts,
-                fetch=account is not None,
+                fetch=selected_account.account_id in eligible_ids,
             )
             issues.extend(account_issues)
             if summary is None:
@@ -269,28 +267,23 @@ class TokenActivityCollector:
             provider_id=provider_id,
             summary=summary,
             covered_accounts=covered,
-            selected_accounts=len(selected),
+            saved_accounts=len(selected),
             issues=tuple(issues),
         )
 
     def _account_summary(
         self,
         source: AccountTokenActivitySource,
-        account: Account,
+        account: SavedAccount,
         reference_time: datetime,
-        saved_accounts: tuple[SavedAccount, ...],
         *,
         fetch: bool,
     ) -> tuple[TokenActivitySummary | None, tuple[TokenActivityIssue, ...]]:
         issues: list[TokenActivityIssue] = []
         if fetch:
             try:
-                with self._open_account(
-                    account,
-                    saved_accounts,
-                ) as authenticated:
+                with self._open_account(account) as authenticated:
                     reading = source.read(authenticated, self._http)
-                    runtime = authenticated.lease.account
                     if reading.scope is not TokenActivityScope.ACCOUNT:
                         issues.append(
                             TokenActivityIssue(
@@ -304,7 +297,7 @@ class TokenActivityCollector:
                         )
                     elif isinstance(reading, TokenActivitySummary):
                         summary, snapshot_issue = self._save_snapshot(
-                            runtime,
+                            account,
                             reading,
                             reference_time,
                         )
@@ -323,7 +316,7 @@ class TokenActivityCollector:
 
     def _load_snapshot(
         self,
-        account: Account,
+        account: SavedAccount,
     ) -> tuple[
         AccountTokenActivitySnapshot | None,
         TokenActivityIssue | None,
@@ -337,16 +330,16 @@ class TokenActivityCollector:
 
     def _save_snapshot(
         self,
-        account: Account,
+        account: SavedAccount,
         summary: TokenActivitySummary,
         reference_time: datetime,
     ) -> tuple[TokenActivitySummary, TokenActivityIssue | None]:
-        account_id = account.provider_account_id
-        if self._snapshots is None or account_id is None:
+        provider_identity = account.provider_identity
+        if self._snapshots is None or provider_identity is None:
             return summary, None
         snapshot = AccountTokenActivitySnapshot(
             provider_id=account.provider_id,
-            provider_account_id=account_id,
+            provider_account_id=str(provider_identity),
             summary=summary,
             fetched_at=reference_time,
         )
@@ -358,26 +351,14 @@ class TokenActivityCollector:
 
     def _open_account(
         self,
-        account: Account,
-        saved_accounts: tuple[SavedAccount, ...],
+        account: SavedAccount,
     ) -> AbstractContextManager[AuthenticatedSavedAccount]:
         """Open one activity credential lease at its provider boundary."""
         if self._resolver is None:
             raise UsageError(
                 "The activity credential resolver is unavailable."
             )
-        saved = next(
-            (
-                candidate
-                for candidate in saved_accounts
-                if candidate.provider_id is account.provider_id
-                and candidate.label == account.label
-            ),
-            None,
-        )
-        if saved is None:
-            raise UsageError("The activity account changed.")
-        return self._resolver.open(saved)
+        return self._resolver.open(account)
 
     @staticmethod
     def _invalid_scope(

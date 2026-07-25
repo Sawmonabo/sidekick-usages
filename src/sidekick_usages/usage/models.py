@@ -188,7 +188,7 @@ class PartialTokenActivity:
     provider_id: ProviderId
     summary: TokenActivitySummary
     covered_accounts: int
-    selected_accounts: int
+    saved_accounts: int
     issues: tuple[TokenActivityIssue, ...] = ()
 
     def __post_init__(self) -> None:
@@ -199,9 +199,9 @@ class PartialTokenActivity:
             isinstance(self.covered_accounts, bool)
             or not isinstance(self.covered_accounts, int)
             or self.covered_accounts <= 0
-            or isinstance(self.selected_accounts, bool)
-            or not isinstance(self.selected_accounts, int)
-            or self.selected_accounts <= self.covered_accounts
+            or isinstance(self.saved_accounts, bool)
+            or not isinstance(self.saved_accounts, int)
+            or self.saved_accounts <= self.covered_accounts
         ):
             raise ValueError(
                 "Partial token activity requires incomplete positive coverage."

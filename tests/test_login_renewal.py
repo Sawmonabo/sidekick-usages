@@ -65,7 +65,7 @@ def test_maintenance_warns_at_or_inside_login_renewal_window(
         store,
         refresher,
         clock=FixedClock(),
-    ).refresh_account(account)
+    ).refresh_account(store.saved_accounts()[0])
 
     assert outcome.status is RefreshStatus.SKIPPED
     assert outcome.exit_code is ExitCode.MANUAL_ACTION
@@ -90,7 +90,7 @@ def test_maintenance_does_not_warn_outside_login_renewal_window() -> None:
         store,
         refresher,
         clock=FixedClock(),
-    ).refresh_account(account)
+    ).refresh_account(store.saved_accounts()[0])
 
     assert outcome.status is RefreshStatus.SKIPPED
     assert outcome.exit_code is ExitCode.SUCCESS
@@ -112,7 +112,7 @@ def test_maintenance_expired_login_fails_closed_without_refresh() -> None:
         store,
         refresher,
         clock=FixedClock(),
-    ).refresh_account(account, force=True)
+    ).refresh_account(store.saved_accounts()[0], force=True)
 
     assert outcome.status is RefreshStatus.SKIPPED
     assert outcome.exit_code is ExitCode.MANUAL_ACTION
@@ -138,8 +138,7 @@ def test_unknown_and_setup_credentials_have_no_login_renewal_warning() -> None:
     service = TokenMaintenanceService(store, refresher, clock=FixedClock())
 
     outcomes = [
-        service.refresh_account(unknown),
-        service.refresh_account(setup),
+        service.refresh_account(account) for account in store.saved_accounts()
     ]
 
     assert [outcome.exit_code for outcome in outcomes] == [
@@ -169,7 +168,7 @@ def test_due_access_refresh_preserves_login_renewal_warning() -> None:
         store,
         refresher,
         clock=FixedClock(),
-    ).refresh_account(account)
+    ).refresh_account(store.saved_accounts()[0])
 
     assert outcome.status is RefreshStatus.OK
     assert outcome.refreshed is True
@@ -205,7 +204,7 @@ def test_failed_access_refresh_preserves_login_renewal_state() -> None:
         store,
         refresher,
         clock=FixedClock(),
-    ).refresh_account(account)
+    ).refresh_account(store.saved_accounts()[0])
 
     assert outcome.status is RefreshStatus.FAILED
     assert outcome.login_renewal_state is (ClaudeLoginRenewalState.RENEWAL_DUE)
@@ -213,5 +212,5 @@ def test_failed_access_refresh_preserves_login_renewal_state() -> None:
     assert outcome.message == "Test refresh rejected."
     saved = store.saved("team")
     assert saved.last_refresh_status is RefreshStatus.FAILED
-    assert saved.last_refresh_error == "Test refresh rejected."
+    assert saved.last_refresh_error == "provider_failure"
     assert "five days" not in saved.last_refresh_error

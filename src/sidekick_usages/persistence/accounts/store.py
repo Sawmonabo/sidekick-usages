@@ -196,10 +196,17 @@ class AccountStore:
         self._require_loaded()
         return any(account.label == label for account in self._index)
 
-    def saved_accounts(self) -> tuple[SavedAccount, ...]:
-        """Return immutable secret-free accounts in insertion order."""
+    def saved_accounts(
+        self,
+        provider_id: ProviderId | None = None,
+    ) -> tuple[SavedAccount, ...]:
+        """Return secret-free accounts in insertion order."""
         self._require_loaded()
-        return tuple(self._index)
+        return tuple(
+            account
+            for account in self._index
+            if provider_id is None or account.provider_id is provider_id
+        )
 
     def read_saved(
         self,

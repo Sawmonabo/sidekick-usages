@@ -11,16 +11,14 @@ from datetime import datetime, timedelta
 from typing import Protocol, assert_never
 
 from sidekick_usages.clock import Clock
+from sidekick_usages.core.accounts.models import SavedAccount
 from sidekick_usages.core.expiry import (
     ClassifiedExpiry,
-    ExpiredExpiry,
-    InvalidExpiry,
     UnknownExpiry,
     ValidExpiry,
     classify_expiry,
     refresh_due,
 )
-from sidekick_usages.core.models import Account, ClaudeSetupTokenCredentials
 from sidekick_usages.core.types import (
     AccountLabel,
     ExitCode,
@@ -29,7 +27,7 @@ from sidekick_usages.core.types import (
 )
 from sidekick_usages.credentials.claude.lifetime import (
     ClaudeLoginRenewalState,
-    classify_claude_login_renewal,
+    classify_saved_claude_login_renewal,
 )
 from sidekick_usages.credentials.models import CredentialRefreshResult
 from sidekick_usages.credentials.refresh import CredentialRefreshReason
@@ -110,16 +108,14 @@ class TokenMaintenanceService:
         :param force: Refresh every account with a saved refresh token.
         :return: Per-account outcomes in store order.
         """
-        accounts = list(self.store)
-        if provider_id is not None:
-            accounts = [a for a in accounts if a.provider_id == provider_id]
+        accounts = self.store.saved_accounts(provider_id)
         return [
             self.refresh_account(account, force=force) for account in accounts
         ]
 
     def refresh_account(
         self,
-        account: Account,
+        account: SavedAccount,
         *,
         force: bool = False,
         reason: CredentialRefreshReason | None = None,
@@ -136,8 +132,8 @@ class TokenMaintenanceService:
             else CredentialRefreshReason.SCHEDULED_DUE
         )
         reference_time = self.clock.now()
-        login_renewal_state = classify_claude_login_renewal(
-            account.credentials,
+        login_renewal_state = classify_saved_claude_login_renewal(
+            account,
             reference_time=reference_time,
         )
         if login_renewal_state in (
@@ -164,27 +160,15 @@ class TokenMaintenanceService:
                 login_renewal_state=login_renewal_state,
             )
 
-        if not account.refresh_token and not isinstance(
-            account.credentials,
-            ClaudeSetupTokenCredentials,
-        ):
-            return replace(
-                self._record_failed(
-                    account,
-                    "No refresh token saved; log in manually.",
-                    exit_code=ExitCode.MANUAL_ACTION,
-                ),
-                login_renewal_state=login_renewal_state,
-            )
         outcome = replace(
             self._refresh_due_account(account, selected_reason),
             login_renewal_state=login_renewal_state,
         )
         if outcome.status is not RefreshStatus.OK:
             return outcome
-        saved = self.store.get(str(account.label))
-        refreshed_state = classify_claude_login_renewal(
-            (saved or account).credentials,
+        saved = self.store.read_saved(account.account_id)
+        refreshed_state = classify_saved_claude_login_renewal(
+            saved or account,
             reference_time=reference_time,
         )
         if refreshed_state is ClaudeLoginRenewalState.RENEWAL_DUE:
@@ -209,7 +193,7 @@ class TokenMaintenanceService:
 
     def _refresh_due_account(
         self,
-        account: Account,
+        account: SavedAccount,
         reason: CredentialRefreshReason,
     ) -> RefreshOutcome:
         """Refresh one policy-approved account through its configured path."""
@@ -271,7 +255,7 @@ class TokenMaintenanceService:
         return self._success_outcome(account)
 
     @staticmethod
-    def _success_outcome(account: Account) -> RefreshOutcome:
+    def _success_outcome(account: SavedAccount) -> RefreshOutcome:
         """Return one scheduler-facing successful refresh outcome."""
         return RefreshOutcome(
             label=account.label,
@@ -281,7 +265,12 @@ class TokenMaintenanceService:
             refreshed=True,
         )
 
-    def should_refresh(self, account: Account, *, force: bool = False) -> bool:
+    def should_refresh(
+        self,
+        account: SavedAccount,
+        *,
+        force: bool = False,
+    ) -> bool:
         """Return whether maintenance should refresh this account."""
         should_refresh, _ = self._refresh_decision(
             account,
@@ -292,7 +281,7 @@ class TokenMaintenanceService:
 
     def _refresh_decision(
         self,
-        account: Account,
+        account: SavedAccount,
         *,
         force: bool,
         reference_time: datetime,
@@ -301,10 +290,6 @@ class TokenMaintenanceService:
         if force:
             return (True, None)
         expiry = self.expiry(account, reference_time)
-        if not account.refresh_token:
-            return (isinstance(expiry, InvalidExpiry), expiry)
-        if isinstance(expiry, ExpiredExpiry | InvalidExpiry):
-            return (True, expiry)
         return (
             refresh_due(
                 expiry,
@@ -316,15 +301,15 @@ class TokenMaintenanceService:
 
     def expiry(
         self,
-        account: Account,
+        account: SavedAccount,
         reference_time: datetime,
     ) -> ClassifiedExpiry:
         """Classify account expiry against one explicit reference time."""
-        return classify_expiry(account.expiry, now=reference_time)
+        return classify_expiry(account.access_expiry, now=reference_time)
 
     def _record_failed(
         self,
-        account: Account,
+        account: SavedAccount,
         message: str,
         *,
         exit_code: ExitCode,
@@ -332,8 +317,13 @@ class TokenMaintenanceService:
         operational_error: UsageError | None = None,
     ) -> RefreshOutcome:
         """Persist a failed refresh diagnostic and return its outcome."""
-        record_refresh_failure(account, message, self.clock.now())
-        self.store.persist(account)
+        candidate = replace(
+            account,
+            last_refresh_at=self.clock.now(),
+            last_refresh_status=RefreshStatus.FAILED,
+            last_refresh_error_code="provider_failure",
+        )
+        self.store.persist_state(candidate, expected=account)
         return RefreshOutcome(
             label=account.label,
             provider_id=account.provider_id,
@@ -356,7 +346,7 @@ def refresh_margin(provider_id: ProviderId) -> timedelta:
 
 
 def _login_renewal_outcome(
-    account: Account,
+    account: SavedAccount,
     state: ClaudeLoginRenewalState,
     *,
     refreshed: bool,
@@ -393,7 +383,7 @@ def _login_renewal_message(
 
 
 def _skipped_outcome(
-    account: Account,
+    account: SavedAccount,
     *,
     expiry: ClassifiedExpiry | None,
     login_renewal_state: ClaudeLoginRenewalState,
@@ -412,17 +402,6 @@ def _skipped_outcome(
         message=_skipped_message(expiry),
         login_renewal_state=login_renewal_state,
     )
-
-
-def record_refresh_failure(
-    account: Account,
-    message: str,
-    reference_time: datetime,
-) -> None:
-    """Mark an account's latest refresh as failed."""
-    account.last_refresh_at = reference_time
-    account.last_refresh_status = RefreshStatus.FAILED
-    account.last_refresh_error = message
 
 
 def refresh_exit_code(outcomes: list[RefreshOutcome]) -> ExitCode:

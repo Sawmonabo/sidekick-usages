@@ -172,7 +172,12 @@ class RuntimeCredentialResolver:
             account_id=account.account_id,
             authority_id=active_stored_reference(account),
         )
-        lease = CredentialLease(account, authority)
+        lease = CredentialLease(
+            account,
+            authority.account_id,
+            authority.authority_id,
+            authority.credentials,
+        )
         with lease:
             yield AuthenticatedAccount(account=account, lease=lease)
         self.events.append(f"close:{account.label}")

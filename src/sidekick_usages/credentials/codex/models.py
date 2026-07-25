@@ -15,6 +15,7 @@ from sidekick_usages.core.accounts.types import (
     ProviderIdentity,
     SidekickAccountId,
 )
+from sidekick_usages.core.expiry import Expiry
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.credentials.codex.types import CodexManagedOutcome
 from sidekick_usages.providers.codex.models import (
@@ -43,6 +44,7 @@ class CodexProjectionLease:
         "_access_token",
         "_account_id",
         "_active",
+        "_expiry",
         "_generation",
         "_plan",
         "_provider_identity",
@@ -55,11 +57,13 @@ class CodexProjectionLease:
         generation: AuthorityGeneration,
         plan: str,
         access_token: str,
+        expiry: Expiry,
     ) -> None:
         self._account_id = account_id
         self._provider_identity = provider_identity
         self._generation = generation
         self._plan = plan
+        self._expiry = expiry
         self._access_token: str | None = access_token
         self._active = False
 
@@ -82,6 +86,11 @@ class CodexProjectionLease:
     def plan(self) -> str:
         """Return the validated provider plan."""
         return self._plan
+
+    @property
+    def expiry(self) -> Expiry:
+        """Return the validated non-secret access-token expiry."""
+        return self._expiry
 
     @property
     def access_token(self) -> str:

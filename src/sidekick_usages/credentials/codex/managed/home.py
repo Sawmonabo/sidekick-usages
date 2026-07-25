@@ -124,6 +124,7 @@ class CodexManagedAuthReader:
             snapshot.generation,
             snapshot.plan,
             credentials.access_token,
+            credentials.expiry,
         )
 
     def matches_observation(

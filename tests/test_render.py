@@ -644,7 +644,7 @@ def test_partial_activity_keeps_usage_and_actionable_warning(
                 since=date(2026, 4, 7),
             ),
             covered_accounts=1,
-            selected_accounts=2,
+            saved_accounts=2,
             issues=(
                 TokenActivityIssue(
                     kind=TokenActivityFailureKind.AUTHENTICATION,

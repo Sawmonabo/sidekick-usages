@@ -3,8 +3,13 @@
 from datetime import datetime, timedelta
 from enum import StrEnum, auto
 
+from sidekick_usages.core.accounts.models import (
+    ClaudeAccountAuthority,
+    SavedAccount,
+)
 from sidekick_usages.core.expiry import (
     ExpiredExpiry,
+    Expiry,
     InvalidExpiry,
     UnknownExpiry,
     ValidExpiry,
@@ -34,10 +39,35 @@ def classify_claude_login_renewal(
     """Classify the independent Claude login-renewal lifetime."""
     if not isinstance(credentials, ClaudeLoginCredentials):
         return ClaudeLoginRenewalState.NOT_APPLICABLE
-    expiry = classify_expiry(
+    return _classify_refresh_expiry(
         credentials.refresh_expiry,
-        now=reference_time,
+        reference_time,
     )
+
+
+def classify_saved_claude_login_renewal(
+    account: SavedAccount,
+    *,
+    reference_time: datetime,
+) -> ClaudeLoginRenewalState:
+    """Classify renewal from one secret-free saved authority."""
+    authority = account.authority
+    if (
+        not isinstance(authority, ClaudeAccountAuthority)
+        or authority.subscription is None
+    ):
+        return ClaudeLoginRenewalState.NOT_APPLICABLE
+    return _classify_refresh_expiry(
+        account.refresh_expiry,
+        reference_time,
+    )
+
+
+def _classify_refresh_expiry(
+    refresh_expiry: Expiry,
+    reference_time: datetime,
+) -> ClaudeLoginRenewalState:
+    expiry = classify_expiry(refresh_expiry, now=reference_time)
     if isinstance(expiry, UnknownExpiry):
         return ClaudeLoginRenewalState.UNKNOWN
     if isinstance(expiry, InvalidExpiry):
