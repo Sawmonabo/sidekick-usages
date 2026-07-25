@@ -42,15 +42,23 @@ from sidekick_usages.daemon.worker.exchange import (
     WorkerExchangeChannel,
     WorkerExchangeError,
 )
+from sidekick_usages.daemon.worker.metrics import (
+    CodexManagedMetricsCollector,
+)
 from sidekick_usages.daemon.worker.runtime import (
     UnsupportedWorkerExecutor,
     run_isolated_worker,
     run_provider_worker,
 )
+from sidekick_usages.http.client import HttpClient
 from sidekick_usages.paths import ApplicationPaths, discover_application_paths
 from sidekick_usages.persistence.accounts.store import AccountStore
 from sidekick_usages.persistence.errors import PersistenceError
 from sidekick_usages.persistence.service import PersistenceService
+from sidekick_usages.persistence.snapshots.activity import (
+    ActivitySnapshotStore,
+)
+from sidekick_usages.persistence.snapshots.usage import UsageSnapshotStore
 from sidekick_usages.persistence.supervisor.activation import (
     ActivationJournalStore,
 )
@@ -192,26 +200,36 @@ def _run_codex_account_operation(
         maintenance_quiescent=lambda: True,
     )
     store = persistence.open_store()
-    executor = CodexManagedMaintenanceWorkerExecutor(
-        _codex_coordinator(
-            paths,
-            persistence,
-            store,
+    coordinator = _codex_coordinator(
+        paths,
+        persistence,
+        store,
+        clock,
+    )
+    with HttpClient(clock=clock) as http:
+        executor = CodexManagedMaintenanceWorkerExecutor(
+            coordinator,
+            CodexManagedMetricsCollector(
+                coordinator,
+                store,
+                http,
+                ActivitySnapshotStore(paths.activity_snapshots),
+                UsageSnapshotStore(paths.usage_snapshots),
+                clock,
+            ),
             clock,
-        ),
-        clock,
-    )
-    return run_isolated_worker(
-        operation_id,
-        queue,
-        WorkerResultStore(paths.durable_operations),
-        OperationAuthorityLock(
-            paths.durable_operations,
-            operation.required_account_id,
-        ),
-        executor,
-        clock,
-    )
+        )
+        return run_isolated_worker(
+            operation_id,
+            queue,
+            WorkerResultStore(paths.durable_operations),
+            OperationAuthorityLock(
+                paths.durable_operations,
+                operation.required_account_id,
+            ),
+            executor,
+            clock,
+        )
 
 
 def _run_provider_operation(

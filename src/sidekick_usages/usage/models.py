@@ -5,6 +5,7 @@ from datetime import datetime
 from enum import StrEnum, auto
 from typing import ClassVar
 
+from sidekick_usages.core.accounts.types import SidekickAccountId
 from sidekick_usages.core.models import TokenActivitySummary, UsageReport
 from sidekick_usages.core.time import as_utc
 from sidekick_usages.core.types import (
@@ -45,6 +46,13 @@ class CredentialRecoveryKind(StrEnum):
     CODEX_LOGIN = auto()
 
 
+class MetricsFreshness(StrEnum):
+    """Whether usage came from this fetch or a retained observation."""
+
+    CURRENT = auto()
+    STALE = auto()
+
+
 class TokenActivityFailureKind(StrEnum):
     """Closed failures from an attempted token-activity read."""
 
@@ -62,10 +70,17 @@ class TokenActivityFailureKind(StrEnum):
 class AccountUsage:
     """One immutable account identity paired with normalized usage."""
 
+    account_id: SidekickAccountId
     label: AccountLabel
     provider_id: ProviderId
     plan: str
     report: UsageReport
+    fetched_at: datetime
+    freshness: MetricsFreshness
+
+    def __post_init__(self) -> None:
+        """Normalize the exact metrics observation time to aware UTC."""
+        object.__setattr__(self, "fetched_at", as_utc(self.fetched_at))
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

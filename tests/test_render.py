@@ -1,10 +1,12 @@
 import io
 from collections.abc import Sequence
+from dataclasses import replace
 from datetime import date, datetime, timedelta
 
 import pytest
 from rich.console import Console
 
+from sidekick_usages.core.accounts.types import SidekickAccountId
 from sidekick_usages.core.models import (
     TokenActivitySummary,
     UsageReport,
@@ -23,6 +25,7 @@ from sidekick_usages.usage.models import (
     CredentialRecoveryKind,
     FailedTokenActivity,
     FetchFailure,
+    MetricsFreshness,
     PartialTokenActivity,
     PersistenceFailure,
     TokenActivityFailureKind,
@@ -150,10 +153,13 @@ def _usage(
     plan: str = "max",
 ) -> AccountUsage:
     return AccountUsage(
+        account_id=SidekickAccountId("56b5f5b7-2156-42db-9505-00e6d4cc76a0"),
         label=AccountLabel(label),
         provider_id=ProviderId(provider),
         plan=plan,
         report=report,
+        fetched_at=REFERENCE_TIME,
+        freshness=MetricsFreshness.CURRENT,
     )
 
 
@@ -452,22 +458,27 @@ def test_subtitle_not_truncated_when_wider_than_content() -> None:
     assert "999,000,000 tokens" in out
 
 
-def test_failure_renders_in_provider_panel() -> None:
+def test_stale_usage_and_failure_render_as_one_timestamped_account() -> None:
     iso = _time_after(hours=3)
     usages = [
-        _usage(
-            "acct-ok",
-            _report(("5h", 8, iso), ("7d", 45, iso)),
-            "codex",
-            "pro",
+        replace(
+            _usage(
+                "acct-stale",
+                _report(("5h", 8, iso), ("7d", 45, iso)),
+                "codex",
+                "pro",
+            ),
+            fetched_at=REFERENCE_TIME - timedelta(hours=1),
+            freshness=MetricsFreshness.STALE,
         )
     ]
-    failures = [_auth_failure()]
+    failures = [_auth_failure("acct-stale")]
     out = _render_at(200, usages, failures=failures)
+    assert "last known · 2026-06-12T11:34:56.789000+00:00" in out
     assert "⚠ token expired" in out
     assert "Log in to Codex CLI again, then run:" in out
-    assert "sidekick-usages refresh long.account.name@example.test" in out
-    assert "╭─ CODEX · 2 accounts ─" in out
+    assert "sidekick-usages refresh acct-stale" in out
+    assert "╭─ CODEX · 1 account ─" in out
     assert "needs attention" not in out
     first = next(line for line in out.splitlines() if line.strip())
     assert first.strip() == "o"

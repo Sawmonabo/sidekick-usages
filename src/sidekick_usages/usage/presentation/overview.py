@@ -1,11 +1,4 @@
-"""Rich overview for per-account usage reports.
-
-Returns :class:`rich.console.RenderableType` values so callers can
-nest them in panels, tables, or print them directly. The braille
-progress-bar aesthetic from cc-usage.py is preserved as a custom
-renderable — Rich's stock :class:`rich.progress.BarColumn` uses
-rectangular blocks which look bulky for this multi-line layout.
-"""
+"""Rich overview for per-account usage reports."""
 
 import re
 import shlex
@@ -33,6 +26,7 @@ from sidekick_usages.usage.models import (
     FetchFailure,
     ForbiddenFailure,
     InvalidExpiryFailure,
+    MetricsFreshness,
     PartialTokenActivity,
     PersistenceFailure,
     ProviderTokenActivity,
@@ -63,14 +57,11 @@ _HEAT_BANDS: list[tuple[int, str, str]] = [
     (1, "#dfffe9", "#1d5e35"),
 ]
 
-#: Foreground for a zero-utilization (idle) cell — no fill.
 _IDLE_FG = "grey39"
 
-#: Foreground/background for a present-but-zero (0%) utilization cell.
 _ZERO_FG = "#cdd3d8"
 _ZERO_BG = "#353a40"
 
-#: Fixed width of one window tile.
 _TILE_WIDTH = 6
 
 #: Color of the ``│`` rule separating primary from a named-group column.
@@ -358,6 +349,7 @@ def _provider_panel(
             table.add_row(*util_row)
             table.add_row(*reset_row)
         blocks.append(table)
+        blocks.extend(_stale_usage_lines(usages))
     if failures:
         if blocks:
             blocks.append(Text(""))  # gap between successes and failures
@@ -371,7 +363,10 @@ def _provider_panel(
         )
     content: RenderableType = blocks[0] if len(blocks) == 1 else Group(*blocks)
     color = PROVIDER_COLORS.get(provider_id, "white")
-    account_count = len(usages) + len(failures)
+    account_count = len(
+        {usage.label for usage in usages}
+        | {failure.label for failure in failures}
+    )
     account_noun = "account" if account_count == 1 else "accounts"
     title = Text()
     title.append(provider_id.upper(), style=f"bold {color}")
@@ -389,6 +384,18 @@ def _provider_panel(
         border_style=color,
         padding=(1, 2),
         expand=False,
+    )
+
+
+def _stale_usage_lines(usages: Sequence[AccountUsage]) -> tuple[Text, ...]:
+    """Return visible timestamped warnings for retained usage rows."""
+    return tuple(
+        Text(
+            f"⚠ {usage.label}: last known · {usage.fetched_at.isoformat()}",
+            style="yellow",
+        )
+        for usage in usages
+        if usage.freshness is MetricsFreshness.STALE
     )
 
 

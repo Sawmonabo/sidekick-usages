@@ -47,6 +47,7 @@ from sidekick_usages.usage.models import (
     TokenActivityIssue,
     UnavailableTokenActivity,
 )
+from sidekick_usages.usage.ports import AccountTokenActivitySnapshots
 
 _MAX_TOKEN_COUNT = 9_223_372_036_854_775_807
 
@@ -71,22 +72,6 @@ class AccountTokenActivitySource(Protocol):
         http: HttpClient,
     ) -> TokenActivityReading:
         """Return one account-scoped activity reading."""
-
-
-class AccountTokenActivitySnapshots(Protocol):
-    """Persist authoritative activity by stable account identity."""
-
-    def load(
-        self,
-        account: SavedAccount,
-    ) -> AccountTokenActivitySnapshot | None:
-        """Load the account's last successful activity snapshot."""
-
-    def save(
-        self,
-        snapshot: AccountTokenActivitySnapshot,
-    ) -> AccountTokenActivitySnapshot:
-        """Durably merge one successful account activity snapshot."""
 
 
 class TokenActivityCollector:

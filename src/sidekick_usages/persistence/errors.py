@@ -5,6 +5,7 @@ from sidekick_usages.errors import UsageError
 from sidekick_usages.persistence.types.error import (
     ActivitySnapshotFailureKind,
     PersistenceCode,
+    UsageSnapshotFailureKind,
 )
 
 
@@ -34,6 +35,36 @@ class PersistenceError(UsageError):
     """Base for safe account-persistence failures."""
 
     code: PersistenceCode
+
+
+class UsageSnapshotError(PersistenceError):
+    """An account-usage snapshot could not be trusted or persisted."""
+
+    def __init__(self, kind: UsageSnapshotFailureKind) -> None:
+        self.kind = kind
+        self.code = {
+            UsageSnapshotFailureKind.READ: PersistenceCode.UNREADABLE,
+            UsageSnapshotFailureKind.MALFORMED: (
+                PersistenceCode.INVALID_SCHEMA
+            ),
+            UsageSnapshotFailureKind.WRITE: PersistenceCode.REPLACE_FAILED,
+            UsageSnapshotFailureKind.CONFLICT: PersistenceCode.SOURCE_CHANGED,
+        }[kind]
+        message = {
+            UsageSnapshotFailureKind.READ: (
+                "Saved account usage cannot be read safely."
+            ),
+            UsageSnapshotFailureKind.MALFORMED: (
+                "Saved account usage is malformed."
+            ),
+            UsageSnapshotFailureKind.WRITE: (
+                "Fresh account usage could not be saved durably."
+            ),
+            UsageSnapshotFailureKind.CONFLICT: (
+                "Saved account usage changed concurrently."
+            ),
+        }[kind]
+        super().__init__(message)
 
 
 class SupervisorActiveError(PersistenceError):

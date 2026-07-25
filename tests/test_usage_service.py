@@ -69,6 +69,7 @@ from sidekick_usages.usage.models import (
     AccountUsage,
     FetchFailureKind,
     ForbiddenFailure,
+    MetricsFreshness,
     PersistenceFailure,
     ProviderPayloadFailure,
     RateLimitFailure,
@@ -477,10 +478,13 @@ def test_partial_success_keeps_usage_and_typed_failure(
 
     assert result.usages == (
         AccountUsage(
+            account_id=saved_account(claude_account).account_id,
             label=AccountLabel("claude"),
             provider_id=ProviderId.CLAUDE,
             plan="team",
             report=_report(),
+            fetched_at=REFERENCE_TIME,
+            freshness=MetricsFreshness.CURRENT,
         ),
     )
     assert len(result.failures) == 1

@@ -4,14 +4,10 @@ from collections.abc import Mapping
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
-from typing import Protocol, assert_never
+from typing import Protocol
 
 from sidekick_usages.clock import Clock
-from sidekick_usages.core.accounts.models import (
-    ClaudeAccountAuthority,
-    ClaudeSetupTokenAuthority,
-    SavedAccount,
-)
+from sidekick_usages.core.accounts.models import SavedAccount
 from sidekick_usages.core.accounts.types import SidekickAccountId
 from sidekick_usages.core.expiry import (
     ExpiredExpiry,
@@ -21,6 +17,7 @@ from sidekick_usages.core.expiry import (
 )
 from sidekick_usages.core.models import (
     Account,
+    AccountUsageSnapshot,
     Credentials,
     UsageReport,
 )
@@ -35,13 +32,12 @@ from sidekick_usages.errors import (
     AuthError,
     ForbiddenError,
     ProviderIdentityError,
-    RateLimitError,
-    TransientError,
     UsageError,
 )
 from sidekick_usages.http.client import HttpClient
 from sidekick_usages.maintenance import (
     CredentialRefresher,
+    RefreshOutcome,
     TokenMaintenanceService,
 )
 from sidekick_usages.persistence.accounts.store import AccountStore
@@ -56,26 +52,28 @@ from sidekick_usages.providers.base import (
     ProviderFailureKind,
 )
 from sidekick_usages.usage.activity import (
-    AccountTokenActivitySnapshots,
     AccountTokenActivitySource,
     LocalTokenActivitySource,
     TokenActivityCollector,
 )
+from sidekick_usages.usage.failures import (
+    credential_recovery_kind,
+    failure_from_error,
+    persistence_failure,
+)
 from sidekick_usages.usage.models import (
     AccountUsage,
     AuthenticationFailure,
-    CredentialRecoveryKind,
     FetchFailure,
-    ForbiddenFailure,
     InvalidExpiryFailure,
+    MetricsFreshness,
     PersistenceFailure,
     ProviderPayloadFailure,
-    RateLimitFailure,
     RefreshRejectedFailure,
-    TransientFailure,
     UnknownProviderFailure,
     UsageCheckResult,
 )
+from sidekick_usages.usage.ports import UsagePersistence
 
 _CODEX_USAGE_REFRESH_MARGIN = timedelta(seconds=60)
 
@@ -115,7 +113,7 @@ class UsageCheckService:
         store: AccountStore,
         http: HttpClient,
         providers: dict[ProviderId, Provider],
-        credentials: CredentialCoordinator,
+        credentials: CredentialCoordinator | None,
         *,
         clock: Clock,
         local_activity_sources: Mapping[
@@ -128,7 +126,7 @@ class UsageCheckService:
             AccountTokenActivitySource,
         ]
         | None = None,
-        activity_snapshots: AccountTokenActivitySnapshots | None = None,
+        persistence: UsagePersistence | None = None,
         resolver: CredentialResolver,
     ) -> None:
         """Bind usage checking to its invocation-scoped dependencies.
@@ -136,11 +134,11 @@ class UsageCheckService:
         :param store: Loaded transactional account store.
         :param http: Shared provider HTTP facade.
         :param providers: Closed provider adapter registry.
-        :param credentials: Canonical credential coordinator.
+        :param credentials: Coordinator for stored credential authorities.
         :param clock: Aware application wall clock.
         :param local_activity_sources: Local-installation activity readers.
         :param account_activity_sources: Per-account activity readers.
-        :param activity_snapshots: Durable last-successful account activity.
+        :param persistence: Optional durable activity and usage observations.
         :param resolver: Qualified schema-v3 credential resolver.
         """
         self._store = store
@@ -149,6 +147,9 @@ class UsageCheckService:
         self._credentials = credentials
         self._clock = clock
         self._resolver = resolver
+        self._usage_snapshots = (
+            None if persistence is None else persistence.usage
+        )
         self._activity = TokenActivityCollector(
             http,
             ({} if local_activity_sources is None else local_activity_sources),
@@ -157,13 +158,17 @@ class UsageCheckService:
                 if account_activity_sources is None
                 else account_activity_sources
             ),
-            activity_snapshots,
+            None if persistence is None else persistence.activity,
             resolver,
         )
-        self._maintenance = TokenMaintenanceService(
-            store,
-            credentials,
-            clock=clock,
+        self._maintenance = (
+            None
+            if credentials is None
+            else TokenMaintenanceService(
+                store,
+                credentials,
+                clock=clock,
+            )
         )
 
     def check(
@@ -175,13 +180,29 @@ class UsageCheckService:
         :param provider_id: Optional provider filter.
         :returns: Immutable successes and terminal failures in store order.
         """
-        accounts = self._store.saved_accounts(provider_id)
+        return self._check(self._store.saved_accounts(provider_id))
+
+    def check_account(
+        self,
+        account_id: SidekickAccountId,
+    ) -> UsageCheckResult:
+        """Check one exact stable account for an isolated worker."""
+        account = self._store.read_saved(account_id)
+        if account is None:
+            raise SourceChangedError
+        return self._check((account,))
+
+    def _check(
+        self,
+        accounts: tuple[SavedAccount, ...],
+    ) -> UsageCheckResult:
+        """Check one stable account population in its supplied order."""
         reference_time = self._clock.now()
         usages: list[AccountUsage] = []
         failures: list[FetchFailure] = []
         eligible_account_ids: set[SidekickAccountId] = set()
         for account in accounts:
-            checked = self._check_account(account, reference_time)
+            checked = self._check_saved_account(account, reference_time)
             if isinstance(checked, _ActivityEligibleAccount):
                 eligible_account_ids.add(checked.account_id)
             outcome = checked.outcome
@@ -189,6 +210,9 @@ class UsageCheckService:
                 usages.append(outcome)
             else:
                 failures.append(outcome)
+                stale = self._stale_usage(account)
+                if stale is not None:
+                    usages.append(stale)
         return UsageCheckResult(
             tuple(usages),
             tuple(failures),
@@ -200,7 +224,7 @@ class UsageCheckService:
             ),
         )
 
-    def _check_account(
+    def _check_saved_account(
         self,
         account: SavedAccount,
         reference_time: datetime,
@@ -243,12 +267,18 @@ class UsageCheckService:
             if isinstance(refreshed, FetchFailure):
                 return _ActivityIneligibleAccount(refreshed)
             account = refreshed
-        return self._fetch(account, provider, allow_auth_refresh=True)
+        return self._fetch(
+            account,
+            provider,
+            reference_time,
+            allow_auth_refresh=True,
+        )
 
     def _fetch(
         self,
         account: SavedAccount,
         provider: Provider,
+        reference_time: datetime,
         *,
         allow_auth_refresh: bool,
     ) -> _CheckedAccount:
@@ -257,23 +287,26 @@ class UsageCheckService:
                 return self._fetch_authenticated(
                     authenticated,
                     provider,
+                    reference_time,
                 )
         except AuthError as error:
             return self._handle_authentication(
                 account,
                 provider,
                 error,
+                reference_time,
                 allow_refresh=allow_auth_refresh,
             )
         except UsageError as error:
             return _ActivityIneligibleAccount(
-                self._failure_from_error(account, error)
+                failure_from_error(account, error)
             )
 
     def _fetch_authenticated(
         self,
         authenticated: AuthenticatedSavedAccount,
         provider: Provider,
+        reference_time: datetime,
     ) -> _CheckedAccount:
         """Fetch and persist provider state while one lease is active."""
         saved = authenticated.account
@@ -309,12 +342,12 @@ class UsageCheckService:
         except UsageError as error:
             if isinstance(error, ProviderIdentityError):
                 return _ActivityIneligibleAccount(
-                    self._failure_from_error(saved, error)
+                    failure_from_error(saved, error)
                 )
             return self._complete_failure(
                 saved,
                 runtime,
-                self._failure_from_error(saved, error),
+                failure_from_error(saved, error),
                 before_credentials,
                 before_plan,
             )
@@ -323,6 +356,7 @@ class UsageCheckService:
             saved,
             runtime,
             report,
+            reference_time,
             before_credentials,
             before_plan,
         )
@@ -378,6 +412,7 @@ class UsageCheckService:
         account: SavedAccount,
         runtime: Account,
         report: UsageReport,
+        reference_time: datetime,
         before_credentials: Credentials,
         before_plan: str,
     ) -> AccountUsage | FetchFailure:
@@ -397,11 +432,23 @@ class UsageCheckService:
             )
         ) is not None:
             return failure
-        return AccountUsage(
-            label=account.label,
+        snapshot = AccountUsageSnapshot(
+            account_id=account.account_id,
             provider_id=account.provider_id,
+            provider_identity=account.provider_identity,
             plan=runtime.plan,
             report=report,
+            fetched_at=reference_time,
+        )
+        if self._usage_snapshots is not None:
+            try:
+                snapshot = self._usage_snapshots.save(snapshot)
+            except PersistenceError as error:
+                return persistence_failure(account, error)
+        return self._account_usage(
+            account,
+            snapshot,
+            MetricsFreshness.CURRENT,
         )
 
     def _handle_authentication(
@@ -409,12 +456,13 @@ class UsageCheckService:
         account: SavedAccount,
         provider: Provider,
         error: AuthError,
+        reference_time: datetime,
         *,
         allow_refresh: bool,
     ) -> _CheckedAccount:
-        if not allow_refresh:
+        if not allow_refresh or account.has_managed_authority:
             return _ActivityIneligibleAccount(
-                self._failure_from_error(account, error)
+                failure_from_error(account, error)
             )
         refreshed = self._refresh(
             account,
@@ -425,6 +473,7 @@ class UsageCheckService:
         return self._fetch(
             refreshed,
             provider,
+            reference_time,
             allow_auth_refresh=False,
         )
 
@@ -439,7 +488,7 @@ class UsageCheckService:
         return self._complete_failure(
             account,
             runtime,
-            self._failure_from_error(account, error),
+            failure_from_error(account, error),
             before_credentials,
             before_plan,
         )
@@ -449,29 +498,46 @@ class UsageCheckService:
         account: SavedAccount,
         reason: CredentialRefreshReason,
     ) -> SavedAccount | FetchFailure:
+        maintenance = self._maintenance
+        if maintenance is None:
+            return RefreshRejectedFailure(
+                label=account.label,
+                provider_id=account.provider_id,
+                plan=account.plan,
+                message="Credential refresh requires its managed authority.",
+                credential_kind=credential_recovery_kind(account),
+            )
         try:
-            outcome = self._maintenance.refresh_account(
+            outcome = maintenance.refresh_account(
                 account,
                 force=True,
                 reason=reason,
             )
         except PersistenceError as error:
-            return self._persistence_failure(account, error)
+            return persistence_failure(account, error)
+        return self._refresh_outcome(account, outcome)
+
+    def _refresh_outcome(
+        self,
+        account: SavedAccount,
+        outcome: RefreshOutcome,
+    ) -> SavedAccount | FetchFailure:
+        """Translate one completed refresh into current stable metadata."""
         if outcome.refreshed:
             refreshed = self._store.read_saved(account.account_id)
             if refreshed is None:
-                return self._persistence_failure(
+                return persistence_failure(
                     account,
                     SourceChangedError(),
                 )
             return refreshed
         if outcome.persistence_error is not None:
-            return self._persistence_failure(
+            return persistence_failure(
                 account,
                 outcome.persistence_error,
             )
         if outcome.operational_error is not None:
-            return self._failure_from_error(
+            return failure_from_error(
                 account,
                 outcome.operational_error,
             )
@@ -480,7 +546,7 @@ class UsageCheckService:
             provider_id=account.provider_id,
             plan=account.plan,
             message=outcome.message,
-            credential_kind=_credential_recovery_kind(account),
+            credential_kind=credential_recovery_kind(account),
             provider_failure=outcome.provider_failure,
         )
 
@@ -494,41 +560,33 @@ class UsageCheckService:
     ) -> FetchFailure | None:
         """Delegate provider-discovered mutation to credential authority."""
         if account.has_managed_authority:
-            if runtime.credentials != expected_credentials:
-                return ProviderPayloadFailure(
-                    label=account.label,
+            return self._persist_managed_provider_update(
+                account,
+                runtime,
+                expected_credentials=expected_credentials,
+                expected_plan=expected_plan,
+            )
+        credentials = self._credentials
+        if credentials is None:
+            return ProviderPayloadFailure(
+                label=account.label,
+                provider_id=account.provider_id,
+                plan=account.plan,
+                message="Stored credential coordination is unavailable.",
+                provider_failure=ProviderFailure(
                     provider_id=account.provider_id,
-                    plan=account.plan,
-                    message=(
-                        "Managed provider credentials changed outside their "
-                        "authority."
-                    ),
-                    provider_failure=ProviderFailure(
-                        provider_id=account.provider_id,
-                        kind=ProviderFailureKind.IDENTITY_MISMATCH,
-                        message=(
-                            "Managed provider credentials changed outside "
-                            "their authority."
-                        ),
-                    ),
-                )
-            if runtime.plan != expected_plan:
-                try:
-                    self._store.persist_state(
-                        replace(account, plan=runtime.plan),
-                        expected=account,
-                    )
-                except PersistenceError as error:
-                    return self._persistence_failure(account, error)
-            return None
+                    kind=ProviderFailureKind.UNSUPPORTED,
+                    message="Stored credential coordination is unavailable.",
+                ),
+            )
         try:
-            result = self._credentials.persist_provider_update(
+            result = credentials.persist_provider_update(
                 runtime,
                 expected_credentials=expected_credentials,
                 expected_plan=expected_plan,
             )
         except PersistenceError as error:
-            return self._persistence_failure(account, error)
+            return persistence_failure(account, error)
         if isinstance(result, ProviderFailure):
             return ProviderPayloadFailure(
                 label=account.label,
@@ -539,92 +597,70 @@ class UsageCheckService:
             )
         return None
 
-    @staticmethod
-    def _persistence_failure(
+    def _persist_managed_provider_update(
+        self,
         account: SavedAccount,
-        error: PersistenceError,
-    ) -> PersistenceFailure:
-        return PersistenceFailure(
-            label=account.label,
-            provider_id=account.provider_id,
-            plan=account.plan,
-            message=str(error),
-            persistence_code=error.code,
+        runtime: Account,
+        *,
+        expected_credentials: Credentials,
+        expected_plan: str,
+    ) -> FetchFailure | None:
+        """Persist only provider-owned non-secret managed account changes."""
+        if runtime.credentials != expected_credentials:
+            message = (
+                "Managed provider credentials changed outside their authority."
+            )
+            return ProviderPayloadFailure(
+                label=account.label,
+                provider_id=account.provider_id,
+                plan=account.plan,
+                message=message,
+                provider_failure=ProviderFailure(
+                    provider_id=account.provider_id,
+                    kind=ProviderFailureKind.IDENTITY_MISMATCH,
+                    message=message,
+                ),
+            )
+        if runtime.plan == expected_plan:
+            return None
+        try:
+            self._store.persist_state(
+                replace(account, plan=runtime.plan),
+                expected=account,
+            )
+        except PersistenceError as error:
+            return persistence_failure(account, error)
+        return None
+
+    def _stale_usage(self, account: SavedAccount) -> AccountUsage | None:
+        """Return the exact retained usage snapshot after a failed fetch."""
+        if self._usage_snapshots is None:
+            return None
+        try:
+            snapshot = self._usage_snapshots.load(account)
+        except PersistenceError:
+            return None
+        if snapshot is None:
+            return None
+        return self._account_usage(
+            account,
+            snapshot,
+            MetricsFreshness.STALE,
         )
 
     @staticmethod
-    def _failure_from_error(
+    def _account_usage(
         account: SavedAccount,
-        error: UsageError,
-    ) -> FetchFailure:
-        if isinstance(error, PersistenceError):
-            return PersistenceFailure(
-                label=account.label,
-                provider_id=account.provider_id,
-                plan=account.plan,
-                message=str(error),
-                persistence_code=error.code,
-            )
-        if isinstance(error, AuthError):
-            return AuthenticationFailure(
-                label=account.label,
-                provider_id=account.provider_id,
-                plan=account.plan,
-                message=_authentication_cause(account),
-                credential_kind=_credential_recovery_kind(account),
-            )
-        if isinstance(error, ForbiddenError):
-            return ForbiddenFailure(
-                label=account.label,
-                provider_id=account.provider_id,
-                plan=account.plan,
-                message=error.api_message or str(error),
-                required_scope=error.required_scope,
-            )
-        if isinstance(error, RateLimitError):
-            return RateLimitFailure(
-                label=account.label,
-                provider_id=account.provider_id,
-                plan=account.plan,
-                message=str(error),
-                retry_after_seconds=error.retry_after,
-            )
-        if isinstance(error, TransientError):
-            return TransientFailure(
-                label=account.label,
-                provider_id=account.provider_id,
-                plan=account.plan,
-                message=str(error),
-            )
-        return FetchFailure(
+        snapshot: AccountUsageSnapshot,
+        freshness: MetricsFreshness,
+    ) -> AccountUsage:
+        """Project one stable snapshot through current account metadata."""
+        return AccountUsage(
+            account_id=account.account_id,
             label=account.label,
             provider_id=account.provider_id,
-            plan=account.plan,
-            message=str(error),
+            plan=snapshot.plan,
+            report=snapshot.report,
+            fetched_at=snapshot.fetched_at,
+            freshness=freshness,
         )
-
-
-def _credential_recovery_kind(
-    account: SavedAccount,
-) -> CredentialRecoveryKind:
-    """Classify credentials for presentation without exposing material."""
-    authority = account.authority
-    if isinstance(authority, ClaudeAccountAuthority):
-        if authority.subscription is not None:
-            return CredentialRecoveryKind.CLAUDE_SUBSCRIPTION_LOGIN
-        if isinstance(authority.setup_token, ClaudeSetupTokenAuthority):
-            return CredentialRecoveryKind.CLAUDE_SETUP_TOKEN
-        raise ValueError("Claude account has no credential authority.")
-    return CredentialRecoveryKind.CODEX_LOGIN
-
-
-def _authentication_cause(account: SavedAccount) -> str:
-    """Return one secret-safe cause owned by the credential boundary."""
-    kind = _credential_recovery_kind(account)
-    if kind is CredentialRecoveryKind.CLAUDE_SETUP_TOKEN:
-        return "Claude rejected the saved setup token."
-    if kind is CredentialRecoveryKind.CLAUDE_SUBSCRIPTION_LOGIN:
-        return "Claude rejected the saved subscription login."
-    if kind is CredentialRecoveryKind.CODEX_LOGIN:
-        return "Codex rejected the saved login."
-    return assert_never(kind)

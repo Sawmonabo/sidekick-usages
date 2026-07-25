@@ -6,6 +6,10 @@ from datetime import date, datetime
 from types import MappingProxyType
 from typing import ClassVar, assert_never
 
+from sidekick_usages.core.accounts.types import (
+    ProviderIdentity,
+    SidekickAccountId,
+)
 from sidekick_usages.core.expiry import Expiry, KnownExpiry, UnknownExpiry
 from sidekick_usages.core.time import as_utc
 from sidekick_usages.core.types import (
@@ -415,3 +419,19 @@ class UsageReport:
     def active_windows(self) -> tuple[UsageWindow, ...]:
         """Return only windows carrying meaningful usage state."""
         return tuple(window for window in self.windows if window.is_active)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class AccountUsageSnapshot:
+    """Last successful authenticated usage fetch for one stable account."""
+
+    account_id: SidekickAccountId
+    provider_id: ProviderId
+    provider_identity: ProviderIdentity | None
+    plan: str
+    report: UsageReport
+    fetched_at: datetime
+
+    def __post_init__(self) -> None:
+        """Normalize the exact observation time to aware UTC."""
+        object.__setattr__(self, "fetched_at", as_utc(self.fetched_at))

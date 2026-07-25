@@ -1,7 +1,7 @@
 """Atomic Codex account-authority and private-bundle refresh tests."""
 
 import json
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import timedelta
@@ -14,14 +14,28 @@ from sidekick_usages.core.accounts.types import (
     AuthorityGeneration,
     AuthorityId,
     CredentialHealth,
+    OperationId,
     ProviderIdentity,
     SidekickAccountId,
 )
 from sidekick_usages.core.expiry import KnownExpiry
 from sidekick_usages.core.models import (
     Account,
+    AccountUsageSnapshot,
     CodexCredentials,
     UsageReport,
+    UsageWindow,
+)
+from sidekick_usages.core.selection.models import (
+    DueOperation,
+    SelectedAccountState,
+)
+from sidekick_usages.core.selection.types import (
+    ActivationOutcome,
+    OperationKind,
+    OperationPriority,
+    OperationState,
+    ProviderRuntimeState,
 )
 from sidekick_usages.core.types import (
     AccountLabel,
@@ -37,6 +51,13 @@ from sidekick_usages.credentials.codex.types import CodexManagedOutcome
 from sidekick_usages.credentials.refresh import (
     CredentialRefreshCoordinator,
     CredentialRefreshReason,
+)
+from sidekick_usages.daemon.types.worker import WorkerOutcome
+from sidekick_usages.daemon.worker.codex import (
+    CodexManagedMaintenanceWorkerExecutor,
+)
+from sidekick_usages.daemon.worker.metrics import (
+    CodexManagedMetricsCollector,
 )
 from sidekick_usages.http.client import HttpClient
 from sidekick_usages.paths import managed_codex_home
@@ -61,21 +82,29 @@ from sidekick_usages.persistence.private.bundles.writes import (
 from sidekick_usages.persistence.private.credentials import (
     PrivateCredentialTree,
 )
+from sidekick_usages.persistence.snapshots.activity import (
+    ActivitySnapshotStore,
+)
+from sidekick_usages.persistence.snapshots.usage import UsageSnapshotStore
 from sidekick_usages.persistence.supervisor.authority import (
     OperationAuthorityLock,
 )
+from sidekick_usages.persistence.supervisor.selection import SelectedStateStore
 from sidekick_usages.providers.base import (
     CredentialDetection,
     Provider,
     RefreshResult,
     RefreshSuccess,
 )
+from sidekick_usages.providers.codex.activity import ACTIVITY_URL
 from sidekick_usages.providers.codex.auth import (
     CODEX_AUTH_FILE,
     CODEX_CONFIG_FILE,
     CODEX_FILE_AUTH_CONFIG,
     validate_auth_bundle_matches_account,
 )
+from sidekick_usages.providers.codex.usage import USAGE_URL
+from sidekick_usages.serialization.json import JsonObject
 from tests.fakes.codex.auth import codex_jwt, managed_auth
 from tests.fakes.codex.managed import (
     managed_coordinator,
@@ -103,6 +132,66 @@ _MANAGED_AUTHORITY_A = AuthorityId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
 _MANAGED_AUTHORITY_B = AuthorityId("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
 _OLD_GENERATION = "2026-07-24T10:00:00.000000000Z"
 _NEW_GENERATION = "2026-07-24T10:01:00.000000000Z"
+_MAINTENANCE_A = OperationId("33333333-3333-4333-8333-333333333333")
+_MAINTENANCE_B = OperationId("44444444-4444-4444-8444-444444444444")
+_CURRENT_USAGE = 25.0
+
+
+class _ManagedMetricsHttp(HttpClient):
+    """Return exact synthetic usage and activity for managed account B."""
+
+    def __init__(self) -> None:
+        self.account_ids: list[str] = []
+
+    def get_json(
+        self,
+        url: str,
+        headers: Mapping[str, str],
+    ) -> JsonObject:
+        account_id = headers["ChatGPT-Account-Id"]
+        if account_id != "acct-managed-b":
+            raise AssertionError("Metrics crossed the managed account.")
+        self.account_ids.append(account_id)
+        if url == USAGE_URL:
+            return {
+                "plan_type": "pro",
+                "rate_limit": {
+                    "primary_window": {
+                        "used_percent": _CURRENT_USAGE,
+                        "reset_at": 1_800_000_000,
+                    }
+                },
+            }
+        if url == ACTIVITY_URL:
+            return {
+                "stats": {
+                    "lifetime_tokens": 9_617_297_075,
+                    "daily_usage_buckets": [
+                        {
+                            "start_date": "2026-04-07",
+                            "tokens": 9_617_297_075,
+                        }
+                    ],
+                }
+            }
+        raise AssertionError("Unexpected managed metrics route.")
+
+
+def _maintenance_operation(
+    operation_id: OperationId,
+    account_id: SidekickAccountId,
+) -> DueOperation:
+    """Build one exact scheduled maintenance operation."""
+    return DueOperation(
+        operation_id=operation_id,
+        provider_id=ProviderId.CODEX,
+        account_id=account_id,
+        kind=OperationKind.MAINTAIN,
+        priority=OperationPriority.SCHEDULED,
+        state=OperationState.SCHEDULED,
+        due_at=REFERENCE_TIME,
+        updated_at=REFERENCE_TIME,
+    )
 
 
 class _AuthorityFailure:
@@ -521,26 +610,72 @@ def test_managed_codex_maintenance_continues_across_account_failure(
         },
     )
     coordinator = managed_coordinator(tmp_path, paths, store, private)
+    usage_snapshots = UsageSnapshotStore(paths.usage_snapshots)
+    usage_snapshots.save(
+        AccountUsageSnapshot(
+            account_id=_MANAGED_ACCOUNT_A,
+            provider_id=ProviderId.CODEX,
+            provider_identity=ProviderIdentity("acct-managed-a"),
+            plan="pro",
+            report=UsageReport(
+                windows=(
+                    UsageWindow(
+                        "5h",
+                        51,
+                        REFERENCE_TIME + timedelta(hours=2),
+                    ),
+                ),
+                plan="pro",
+            ),
+            fetched_at=REFERENCE_TIME - timedelta(hours=1),
+        )
+    )
+    selected = SelectedStateStore(paths.selected_state)
+    selected_before = selected.save(
+        SelectedAccountState(
+            provider_id=ProviderId.CODEX,
+            runtime_state=ProviderRuntimeState.SAVED_ACTIVE,
+            account_id=_MANAGED_ACCOUNT_A,
+            provider_identity=ProviderIdentity("acct-managed-a"),
+            runtime_generation=AuthorityGeneration(_OLD_GENERATION),
+            verified_at=REFERENCE_TIME,
+            outcome=ActivationOutcome.VERIFIED,
+        )
+    )
+    clock = FixedClock()
+    executor = CodexManagedMaintenanceWorkerExecutor(
+        coordinator,
+        CodexManagedMetricsCollector(
+            coordinator,
+            store,
+            _ManagedMetricsHttp(),
+            ActivitySnapshotStore(paths.activity_snapshots),
+            usage_snapshots,
+            clock,
+        ),
+        clock,
+    )
 
     with OperationAuthorityLock(
         paths.durable_operations,
         _MANAGED_ACCOUNT_A,
     ).hold() as authority:
-        maintained_a = coordinator.maintain_with_authority(
-            _MANAGED_ACCOUNT_A,
+        maintained_a = executor.execute(
+            _maintenance_operation(_MAINTENANCE_A, _MANAGED_ACCOUNT_A),
             authority,
         )
     with OperationAuthorityLock(
         paths.durable_operations,
         _MANAGED_ACCOUNT_B,
     ).hold() as authority:
-        maintained_b = coordinator.maintain_with_authority(
-            _MANAGED_ACCOUNT_B,
+        maintained_b = executor.execute(
+            _maintenance_operation(_MAINTENANCE_B, _MANAGED_ACCOUNT_B),
             authority,
         )
 
-    assert maintained_a.outcome is CodexManagedOutcome.REJECTED
-    assert maintained_b.outcome is CodexManagedOutcome.HEALTHY
+    assert maintained_a.outcome is WorkerOutcome.ACTION_REQUIRED
+    assert maintained_b.outcome is WorkerOutcome.SUCCEEDED
+    assert selected.load(ProviderId.CODEX) == selected_before
     saved = {account.account_id: account for account in store.saved_accounts()}
     failed = saved[_MANAGED_ACCOUNT_A]
     failed_authority = managed_subscription(failed)
@@ -566,6 +701,13 @@ def test_managed_codex_maintenance_continues_across_account_failure(
     assert managed_codex_home(paths, _MANAGED_ACCOUNT_B).name == str(
         _MANAGED_ACCOUNT_B
     )
+    stale = usage_snapshots.load(failed)
+    current = usage_snapshots.load(advanced)
+    assert stale is not None
+    assert stale.fetched_at == REFERENCE_TIME - timedelta(hours=1)
+    assert current is not None
+    assert current.fetched_at == REFERENCE_TIME
+    assert current.report.windows[0].utilization == _CURRENT_USAGE
 
     requests = [
         event

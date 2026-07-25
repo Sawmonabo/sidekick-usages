@@ -48,7 +48,6 @@ from sidekick_usages.providers.base import (
     RefreshResult,
 )
 from sidekick_usages.usage.activity import (
-    AccountTokenActivitySnapshots,
     AccountTokenActivitySource,
     LocalTokenActivitySource,
 )
@@ -60,6 +59,10 @@ from sidekick_usages.usage.models import (
     TransientFailure,
     UnavailableTokenActivity,
     activity_has_failure,
+)
+from sidekick_usages.usage.ports import (
+    AccountTokenActivitySnapshots,
+    UsagePersistence,
 )
 from sidekick_usages.usage.service import UsageCheckService
 from tests.test_support import (
@@ -318,7 +321,7 @@ def _service(
                 if account_activity is None
                 else {ProviderId.CODEX: account_activity}
             ),
-            activity_snapshots=activity_snapshots,
+            persistence=UsagePersistence(activity=activity_snapshots),
             resolver=RuntimeCredentialResolver(store),
         ),
         store,

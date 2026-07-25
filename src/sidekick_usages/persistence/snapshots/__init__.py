@@ -1,0 +1,1 @@
+"""Durable provider observation snapshots."""

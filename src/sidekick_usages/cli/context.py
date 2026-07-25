@@ -33,9 +33,6 @@ from sidekick_usages.http.client import HttpClient
 from sidekick_usages.maintenance import TokenMaintenanceService
 from sidekick_usages.paths import ApplicationPaths, discover_application_paths
 from sidekick_usages.persistence.accounts.store import AccountStore
-from sidekick_usages.persistence.activity_snapshots import (
-    ActivitySnapshotStore,
-)
 from sidekick_usages.persistence.credentials.refresh.artifacts import (
     CredentialRefreshState,
 )
@@ -52,6 +49,10 @@ from sidekick_usages.persistence.models.status import (
     PersistenceStatus,
 )
 from sidekick_usages.persistence.service import PersistenceService
+from sidekick_usages.persistence.snapshots.activity import (
+    ActivitySnapshotStore,
+)
+from sidekick_usages.persistence.snapshots.usage import UsageSnapshotStore
 from sidekick_usages.providers.base import Provider
 from sidekick_usages.providers.claude.activity import (
     ClaudeActivity,
@@ -71,6 +72,7 @@ from sidekick_usages.usage.activity import (
     AccountTokenActivitySource,
     LocalTokenActivitySource,
 )
+from sidekick_usages.usage.ports import UsagePersistence
 from sidekick_usages.usage.service import UsageCheckService
 
 type DoctorState = DoctorReady | DoctorFailed
@@ -327,8 +329,11 @@ def compose_app_context(
             clock=resolved_clock,
             local_activity_sources=local_activity_map,
             account_activity_sources=account_activity_map,
-            activity_snapshots=ActivitySnapshotStore(
-                resolved_paths.activity_snapshots
+            persistence=UsagePersistence(
+                activity=ActivitySnapshotStore(
+                    resolved_paths.activity_snapshots
+                ),
+                usage=UsageSnapshotStore(resolved_paths.usage_snapshots),
             ),
             resolver=resolver,
         )

@@ -47,6 +47,7 @@ from sidekick_usages.daemon.worker.exchange import (
     WorkerExchangeChannel,
     WorkerExchangeError,
 )
+from sidekick_usages.daemon.worker.ports import AccountMetricsCollector
 from sidekick_usages.persistence.state.files import ManagedStateConflictError
 from sidekick_usages.persistence.supervisor.authority import (
     OperationAuthority,
@@ -81,6 +82,7 @@ from sidekick_usages.providers.codex.broker.types import (
     CodexCallbackMode,
 )
 from sidekick_usages.serialization.framing import clear_mutable_buffer
+from sidekick_usages.usage.models import activity_has_failure
 
 
 class CodexManagedMaintenanceWorkerExecutor:
@@ -89,9 +91,11 @@ class CodexManagedMaintenanceWorkerExecutor:
     def __init__(
         self,
         coordinator: CodexManagedAuthorityCoordinator,
+        metrics: AccountMetricsCollector,
         clock: Clock,
     ) -> None:
         self._coordinator = coordinator
+        self._metrics = metrics
         self._clock = clock
 
     def execute(
@@ -126,7 +130,27 @@ class CodexManagedMaintenanceWorkerExecutor:
                 authority,
             )
         )
-        return _managed_worker_result(operation, result, self._clock)
+        if result.outcome is not CodexManagedOutcome.HEALTHY:
+            return _managed_worker_result(operation, result, self._clock)
+        metrics = self._metrics.collect(
+            operation.required_account_id,
+            authority,
+        )
+        if metrics.failures:
+            return _worker_failure(
+                operation,
+                WorkerOutcome.TRANSIENT_FAILURE,
+                "codex_metrics_" + metrics.failures[0].kind.value,
+                self._clock,
+            )
+        if any(activity_has_failure(item) for item in metrics.activities):
+            return _worker_failure(
+                operation,
+                WorkerOutcome.TRANSIENT_FAILURE,
+                "codex_activity_unavailable",
+                self._clock,
+            )
+        return _worker_success(operation, self._clock)
 
 
 class CodexActivationWorkerExecutor:

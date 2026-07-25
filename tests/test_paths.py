@@ -77,6 +77,7 @@ def test_discovery_maps_platform_roots_to_one_current_layout(
     assert paths.private_codex_profiles == root / "credentials" / "codex"
     assert paths.private_claude_profiles == root / "credentials" / "claude"
     assert paths.activity_snapshots == root / "token-activity.json"
+    assert paths.usage_snapshots == root / "usage-metrics.json"
     assert paths.credential_refresh == root / "credential-refresh"
     assert paths.selected_state == root / "selected-accounts.json"
     assert paths.activation_journals == root / "activation-journals"

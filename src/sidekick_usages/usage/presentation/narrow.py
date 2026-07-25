@@ -8,7 +8,7 @@ from rich.text import Text
 
 from sidekick_usages.branding import PROVIDER_COLORS
 from sidekick_usages.core.types import ProviderId
-from sidekick_usages.usage.models import AccountUsage
+from sidekick_usages.usage.models import AccountUsage, MetricsFreshness
 from sidekick_usages.usage.presentation.reset import reset_text
 
 BAR_WIDTH = 18
@@ -74,11 +74,24 @@ def usage_report(
     reference_time: datetime,
 ) -> RenderableType:
     """Render one complete narrow-terminal account usage block."""
+    freshness = (
+        Text(
+            "  Last known · " + usage.fetched_at.isoformat(),
+            style="yellow",
+        )
+        if usage.freshness is MetricsFreshness.STALE
+        else None
+    )
     windows = usage.report.active_windows()
     if not windows:
-        return Group(
+        lines: list[RenderableType] = [
             account_header(usage.label, usage.provider_id, usage.plan),
-            Text("  No active usage windows reported.", style="dim"),
+        ]
+        if freshness is not None:
+            lines.append(freshness)
+        lines.append(Text("  No active usage windows reported.", style="dim"))
+        return Group(
+            *lines,
         )
 
     table = Table(
@@ -103,7 +116,10 @@ def usage_report(
             ),
             reset_text(window.resets_at, reference_time),
         )
-    return Group(
+    blocks: list[RenderableType] = [
         account_header(usage.label, usage.provider_id, usage.plan),
-        table,
-    )
+    ]
+    if freshness is not None:
+        blocks.append(freshness)
+    blocks.append(table)
+    return Group(*blocks)

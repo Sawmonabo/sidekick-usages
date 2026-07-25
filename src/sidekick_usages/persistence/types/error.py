@@ -12,6 +12,15 @@ class ActivitySnapshotFailureKind(StrEnum):
     CONFLICT = "conflict"
 
 
+class UsageSnapshotFailureKind(StrEnum):
+    """Closed failures from the account-usage snapshot boundary."""
+
+    READ = "read"
+    MALFORMED = "malformed"
+    WRITE = "write"
+    CONFLICT = "conflict"
+
+
 class PersistenceCode(StrEnum):
     """Current passive and operation-time persistence failures."""
 

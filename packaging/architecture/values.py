@@ -27,6 +27,7 @@ def check_value_contracts(
             ("private_credentials", "Path"),
             ("private_codex_profiles", "Path"),
             ("activity_snapshots", "Path"),
+            ("usage_snapshots", "Path"),
             ("credential_refresh", "Path"),
             ("private_claude_profiles", "Path"),
             ("selected_state", "Path"),

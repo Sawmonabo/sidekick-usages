@@ -192,6 +192,7 @@ def make_application_paths(root: Path) -> ApplicationPaths:
         private_credentials=private_root,
         private_codex_profiles=private_root / "codex",
         activity_snapshots=root / "token-activity.json",
+        usage_snapshots=root / "usage-metrics.json",
         credential_refresh=root / "credential-refresh",
         private_claude_profiles=private_root / "claude",
         selected_state=root / "selected-accounts.json",

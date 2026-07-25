@@ -32,7 +32,13 @@ REVIEW_MODULE_LINES = 800
 MAX_CLI_APP_LINES = 200
 _CODEX_JSONRPC_ROOT = "src/sidekick_usages/providers/codex/app_server/jsonrpc/"
 _CODEX_BROKER_WIRE_FILE = "src/sidekick_usages/providers/codex/broker/wire.py"
-_CODEX_WORKER_FILE = "src/sidekick_usages/daemon/worker/codex.py"
+_ISOLATED_WORKER_FILES = frozenset(
+    {
+        "src/sidekick_usages/daemon/worker/codex.py",
+        "src/sidekick_usages/daemon/worker/metrics.py",
+        "src/sidekick_usages/daemon/worker/ports.py",
+    }
+)
 _SUPERVISOR_ENTRYPOINT_FILE = "src/sidekick_usages/entrypoints/supervisor.py"
 _SUPERVISOR_PROVIDER_IMPORTS = frozenset(
     {
@@ -387,7 +393,7 @@ def _check_import(
 
 def _is_resident_daemon(path: str) -> bool:
     prefix = "src/sidekick_usages/daemon/"
-    return path.startswith(prefix) and path != _CODEX_WORKER_FILE
+    return path.startswith(prefix) and path not in _ISOLATED_WORKER_FILES
 
 
 def _is_pydantic_owner(path: str) -> bool:
@@ -537,7 +543,7 @@ def _check_activity_contract(
 ) -> None:
     """Enforce provider-owned activity and prohibit the old fallback."""
     required = {
-        "src/sidekick_usages/persistence/activity_snapshots.py",
+        "src/sidekick_usages/persistence/snapshots/activity.py",
         "src/sidekick_usages/providers/claude/activity.py",
         "src/sidekick_usages/providers/codex/activity.py",
     }
