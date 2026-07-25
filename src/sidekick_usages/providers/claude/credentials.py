@@ -2,7 +2,7 @@
 
 import os
 import platform
-import subprocess
+from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
 
@@ -24,12 +24,30 @@ from sidekick_usages.providers.base import (
     ProviderFailureCause,
     ProviderFailureKind,
 )
+from sidekick_usages.providers.claude.environment import (
+    CLAUDE_CONFIG_DIR_ENVIRONMENT_KEY,
+)
+from sidekick_usages.providers.claude.managed.storage.errors import (
+    ClaudeProtectedStorageError,
+)
+from sidekick_usages.providers.claude.managed.storage.keychain import (
+    native_keychain_target,
+    read_keychain_payload,
+)
+from sidekick_usages.providers.claude.managed.storage.types import (
+    ClaudeProtectedStorageFailure,
+)
+from sidekick_usages.providers.claude.models import ClaudeNativeProfile
+from sidekick_usages.providers.claude.process import (
+    run_bounded_claude_command,
+)
 from sidekick_usages.providers.claude.schema.credentials import (
     parse_credentials_blob,
 )
 from sidekick_usages.providers.claude.schema.usage import (
     claude_failure,
 )
+from sidekick_usages.providers.claude.types import ClaudeCommandRunner
 from sidekick_usages.serialization.json import decode_json_object
 
 CLAUDE_SETUP_REJECTION_MESSAGE = "Claude rejected the saved setup token."
@@ -37,23 +55,59 @@ CLAUDE_SUBSCRIPTION_LOGIN_REJECTED = (
     "Claude rejected the saved subscription login."
 )
 _MAX_CREDENTIAL_BYTES = 1024 * 1024
-_KEYCHAIN_ITEM_NOT_FOUND_EXIT = (-25300) % 256
+
+
+def native_claude_profile(
+    credential_home: Path | None = None,
+    *,
+    environment: Mapping[str, str] | None = None,
+) -> ClaudeNativeProfile:
+    """Resolve one explicit native Claude configuration profile."""
+    source = os.environ if environment is None else environment
+    configured = source.get(CLAUDE_CONFIG_DIR_ENVIRONMENT_KEY)
+    if configured == "":
+        raise ValueError("Claude native profile path is unavailable.")
+    try:
+        directory = (
+            credential_home
+            if credential_home is not None
+            else (
+                Path(configured).expanduser()
+                if configured is not None
+                else Path.home() / ".claude"
+            )
+        )
+        return ClaudeNativeProfile(directory.resolve(strict=False))
+    except OSError, RuntimeError:
+        raise ValueError(
+            "Claude native profile path is unavailable."
+        ) from None
 
 
 def detect_credentials(
     reference_time: datetime,
-    credential_home: Path | None = None,
+    profile: ClaudeNativeProfile,
+    *,
+    environment: Mapping[str, str] | None = None,
+    runner: ClaudeCommandRunner = run_bounded_claude_command,
 ) -> CredentialDetection:
-    """Read and classify credentials from the platform Claude install."""
-    del credential_home
+    """Read credentials from one explicit native Claude profile."""
     system = platform.system()
     if system == "Darwin":
-        return _from_macos_keychain(reference_time)
-    if system == "Linux":
-        return _from_linux_files(reference_time)
-    if system == "Windows":
-        return _from_windows(reference_time)
-    return _missing_credentials()
+        return _from_macos_keychain(
+            reference_time,
+            environment,
+            runner,
+        )
+    if system in {"Linux", "Windows"}:
+        return read_credentials_path(
+            profile.config_directory / ".credentials.json",
+            reference_time,
+        )
+    return claude_failure(
+        ProviderFailureKind.UNSUPPORTED,
+        "Claude credential discovery is unsupported on this platform.",
+    )
 
 
 def require_claude_credentials(account: Account) -> ClaudeCredentials:
@@ -72,133 +126,27 @@ def require_claude_credentials(account: Account) -> ClaudeCredentials:
     ) from None
 
 
-def _from_macos_keychain(reference_time: datetime) -> CredentialDetection:
+def _from_macos_keychain(
+    reference_time: datetime,
+    environment: Mapping[str, str] | None,
+    runner: ClaudeCommandRunner,
+) -> CredentialDetection:
     try:
-        result = subprocess.run(
-            [
-                "/usr/bin/security",
-                "find-generic-password",
-                "-s",
-                "Claude Code-credentials",
-                "-w",
-            ],
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=10,
+        payload = read_keychain_payload(
+            native_keychain_target(environment),
+            environment,
+            runner=runner,
         )
-    except subprocess.CalledProcessError as error:
-        if error.returncode == _KEYCHAIN_ITEM_NOT_FOUND_EXIT:
+    except ClaudeProtectedStorageError as error:
+        if error.code is ClaudeProtectedStorageFailure.MISSING:
             return _missing_credentials()
-        return _unreadable_credentials()
-    except (
-        FileNotFoundError,
-        OSError,
-        subprocess.SubprocessError,
-        subprocess.TimeoutExpired,
-    ):
-        return _unreadable_credentials()
-    try:
-        payload = result.stdout.strip().encode("utf-8")
-    except UnicodeEncodeError:
-        return claude_failure(
-            ProviderFailureKind.MALFORMED,
-            "Claude credential data is not valid UTF-8.",
-        )
+        if error.code is ClaudeProtectedStorageFailure.MALFORMED:
+            return claude_failure(
+                ProviderFailureKind.MALFORMED,
+                "Claude credential data is malformed.",
+            )
+        return unreadable_credentials()
     return parse_detected_credentials(payload, reference_time)
-
-
-def _from_linux_files(reference_time: datetime) -> CredentialDetection:
-    try:
-        home = Path.home()
-    except OSError, RuntimeError:
-        return _unreadable_credentials()
-    return _from_files(
-        (
-            home / ".claude" / ".credentials.json",
-            home / ".config" / "claude" / ".credentials.json",
-        ),
-        reference_time,
-    )
-
-
-def _from_windows(reference_time: datetime) -> CredentialDetection:
-    try:
-        home = Path.home()
-    except OSError, RuntimeError:
-        return _unreadable_credentials()
-    paths = [home / ".claude" / ".credentials.json"]
-    if appdata := os.environ.get("APPDATA"):
-        paths.append(Path(appdata) / "Claude" / ".credentials.json")
-    file_result = _from_files(
-        tuple(paths),
-        reference_time,
-    )
-    if not (
-        isinstance(file_result, ProviderFailure)
-        and file_result.kind is ProviderFailureKind.MISSING
-    ):
-        return file_result
-    return _from_windows_credential_manager(reference_time)
-
-
-def _from_windows_credential_manager(
-    reference_time: datetime,
-) -> CredentialDetection:
-    try:
-        ps_script = (
-            "$c = Get-StoredCredential "
-            "-Target 'Claude Code-credentials' "
-            "-ErrorAction SilentlyContinue; "
-            "if ($c) { $c.GetNetworkCredential().Password }"
-        )
-        system_root = os.environ.get("SYSTEMROOT", r"C:\Windows")
-        powershell_bin = (
-            rf"{system_root}\System32"
-            r"\WindowsPowerShell\v1.0\powershell.exe"
-        )
-        result = subprocess.run(
-            [powershell_bin, "-NoProfile", "-Command", ps_script],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-    except (
-        FileNotFoundError,
-        OSError,
-        subprocess.SubprocessError,
-        subprocess.TimeoutExpired,
-    ):
-        return _unreadable_credentials()
-    if result.returncode != 0:
-        return _unreadable_credentials()
-    output = result.stdout.strip()
-    if not output:
-        return _missing_credentials()
-    try:
-        payload = output.encode("utf-8")
-    except UnicodeEncodeError:
-        return claude_failure(
-            ProviderFailureKind.MALFORMED,
-            "Claude credential data is not valid UTF-8.",
-        )
-    return parse_detected_credentials(payload, reference_time)
-
-
-def _from_files(
-    paths: tuple[Path, ...],
-    reference_time: datetime,
-) -> CredentialDetection:
-    for path in paths:
-        candidate = read_credentials_path(path, reference_time)
-        if (
-            isinstance(candidate, ProviderFailure)
-            and candidate.kind is ProviderFailureKind.MISSING
-        ):
-            continue
-        return candidate
-    return _missing_credentials()
 
 
 def read_credentials_path(
@@ -211,11 +159,11 @@ def read_credentials_path(
     except FileNotFoundError:
         return _missing_credentials()
     except OSError:
-        return _unreadable_credentials()
+        return unreadable_credentials()
     try:
         payload = _read_bounded(path)
     except OSError:
-        return _unreadable_credentials()
+        return unreadable_credentials()
     except ValueError:
         return claude_failure(
             ProviderFailureKind.MALFORMED,
@@ -284,7 +232,7 @@ def _missing_credentials() -> ProviderFailure:
     )
 
 
-def _unreadable_credentials() -> ProviderFailure:
+def unreadable_credentials() -> ProviderFailure:
     return claude_failure(
         ProviderFailureKind.UNREADABLE,
         "Claude credentials could not be read. Check access and retry.",

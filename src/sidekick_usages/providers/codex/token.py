@@ -1,10 +1,12 @@
 """Lightweight validation of identity-bearing Codex token claims."""
 
 import binascii
-import hashlib
 from base64 import b64decode
 from datetime import timedelta
 
+from sidekick_usages.core.accounts.generation import (
+    hashed_authority_generation,
+)
 from sidekick_usages.core.accounts.types import (
     AuthorityGeneration,
     ProviderIdentity,
@@ -36,9 +38,9 @@ def validated_codex_token(value: str) -> str:
 def codex_access_token_generation(token: str) -> AuthorityGeneration:
     """Return a one-way stable generation for an effective access token."""
     validated = validated_codex_token(token)
-    return AuthorityGeneration(
-        _GENERATION_PREFIX
-        + hashlib.sha256(validated.encode("utf-8")).hexdigest()
+    return hashed_authority_generation(
+        validated,
+        prefix=_GENERATION_PREFIX,
     )
 
 

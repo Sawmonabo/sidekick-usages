@@ -389,6 +389,32 @@ class PosixPrivateBundlePlatform:
         self._qualifier.ensure_parent(root)
         self._qualifier.qualify(root)
 
+    def relative_entry_present(
+        self,
+        root: Path,
+        relative: _RelativePath,
+        basename: str,
+    ) -> bool:
+        """Report one exact child entry without opening its contents."""
+        self._qualifier.qualify(root)
+        with _open_tree(root) as opened:
+            if opened is None:
+                return False
+            with _open_component_chain(
+                opened,
+                relative,
+                create=False,
+            ) as chain:
+                if chain is None:
+                    return False
+                _require_chain_identity(opened, chain)
+                parent = chain.descriptors[-1]
+                identity = namespace.require_exact_entry(parent, basename)
+                _require_chain_identity(opened, chain)
+                if namespace.require_exact_entry(parent, basename) != identity:
+                    raise _native_error(NativeFailureKind.CHANGED)
+                return identity is not None
+
     def ensure_relative_directory(
         self,
         root: Path,

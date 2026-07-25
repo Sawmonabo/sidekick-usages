@@ -1,5 +1,7 @@
 """Claude schema validation and setup-token process boundary tests."""
 
+import hashlib
+import json
 import os
 import stat
 import sys
@@ -10,13 +12,29 @@ from pathlib import Path
 import pytest
 
 import sidekick_usages.platform.executable
+import sidekick_usages.providers.claude.managed.storage.keychain
 import sidekick_usages.providers.claude.provider
-from sidekick_usages.core.accounts.types import SidekickAccountId
-from sidekick_usages.core.models import DetectedCredentials
+from sidekick_usages.core.accounts.types import (
+    AuthorityId,
+    CredentialAction,
+    SidekickAccountId,
+)
+from sidekick_usages.core.models import (
+    ClaudeLoginIdentity,
+    DetectedCredentials,
+)
+from sidekick_usages.credentials.claude.managed.authority.service import (
+    CLAUDE_CREDENTIAL_FILE,
+    ClaudeManagedAuthorityReader,
+    managed_login_authority,
+)
 from sidekick_usages.credentials.claude.managed.profile import (
     prepare_claude_managed_profile,
 )
-from sidekick_usages.paths import managed_claude_config_dir
+from sidekick_usages.paths import (
+    ApplicationPaths,
+    managed_claude_config_dir,
+)
 from sidekick_usages.persistence.private.credentials import (
     PrivateCredentialTree,
 )
@@ -32,12 +50,27 @@ from sidekick_usages.providers.claude.managed.errors import ClaudeManagedError
 from sidekick_usages.providers.claude.managed.executable import (
     SUPPORTED_CLAUDE_VERSION,
 )
+from sidekick_usages.providers.claude.managed.models import ClaudeCapabilities
+from sidekick_usages.providers.claude.managed.storage.errors import (
+    ClaudeProtectedStorageError,
+)
+from sidekick_usages.providers.claude.managed.storage.keychain import (
+    KEYCHAIN_CREDENTIAL_BYTES,
+    KEYCHAIN_READ_TIMEOUT_SECONDS,
+    native_keychain_target,
+    read_keychain_payload,
+)
+from sidekick_usages.providers.claude.managed.storage.types import (
+    ClaudeProtectedStorageFailure,
+)
 from sidekick_usages.providers.claude.managed.types import (
     ClaudeManagedFailure,
     ClaudeManagedPlatform,
 )
 from sidekick_usages.providers.claude.models import (
     ClaudeCommandResult,
+    ClaudeExecutable,
+    ClaudeManagedProfile,
     SetupTokenSuccess,
 )
 from sidekick_usages.providers.claude.process import (
@@ -53,7 +86,7 @@ from sidekick_usages.providers.claude.types import (
 )
 from sidekick_usages.serialization.json import JsonObject
 from tests.test_claude_refresh import _FUTURE_EXPIRY_MS, _provider
-from tests.test_support import make_application_paths
+from tests.test_support import REFERENCE_TIME, make_application_paths
 
 SETUP_TOKEN_TIMEOUT_SECONDS = 600
 _ACCOUNT_A = SidekickAccountId("11111111-1111-4111-8111-111111111111")
@@ -69,6 +102,16 @@ _STATUS_OUTPUT = (
 )
 _PROCESS_OUTPUT_LIMIT = 1024 * 1024
 _PROCESS_TIMEOUT_SECONDS = 0.01
+_AUTHORITY_ID = AuthorityId("33333333-3333-4333-8333-333333333333")
+_KEYCHAIN_EXECUTABLE = Path("/usr/bin/security")
+_KEYCHAIN_LOCKED_EXIT = (-25308) % 256
+_KEYCHAIN_PROVENANCE = ExecutableProvenance(
+    _KEYCHAIN_EXECUTABLE,
+    0,
+    0,
+    1,
+    0,
+)
 
 
 class _ClaudeRunner:
@@ -82,6 +125,8 @@ class _ClaudeRunner:
         self.calls: list[tuple[Path, tuple[str, ...]]] = []
         self.environments: list[dict[str, str] | None] = []
         self.working_directories: list[Path | None] = []
+        self.timeouts: list[float] = []
+        self.output_limits: list[int] = []
 
     def __call__(
         self,
@@ -93,23 +138,95 @@ class _ClaudeRunner:
         working_directory: Path | None = None,
         umask: int = -1,
     ) -> ClaudeCommandResult:
-        del (
-            timeout_seconds,
-            maximum_output_bytes,
-            umask,
-        )
+        del umask
         arguments = argv[1:]
         self.calls.append((Path(argv[0]), arguments))
         self.environments.append(
             None if environment is None else dict(environment)
         )
         self.working_directories.append(working_directory)
+        self.timeouts.append(timeout_seconds)
+        self.output_limits.append(maximum_output_bytes)
         try:
             return self._responses[arguments]
         except KeyError:
             raise AssertionError(
                 f"Unexpected Claude command: {arguments!r}"
             ) from None
+
+
+def _credential_payload(
+    account_id: str,
+    organization_id: str,
+    *,
+    token_suffix: str,
+) -> bytes:
+    return json.dumps(
+        {
+            "claudeAiOauth": {
+                "accessToken": f"sk-ant-oat01-{token_suffix}",
+                "refreshToken": f"refresh-{token_suffix}",
+                "expiresAt": _FUTURE_EXPIRY_MS,
+                "subscriptionType": "pro",
+                "scopes": ["user:profile", "user:inference"],
+                "tokenAccount": {
+                    "accountUuid": account_id,
+                    "organizationUuid": organization_id,
+                },
+            }
+        }
+    ).encode()
+
+
+def _managed_capabilities(
+    profile: ClaudeManagedProfile,
+    platform: ClaudeManagedPlatform,
+) -> ClaudeCapabilities:
+    executable_path = Path(sys.executable).resolve()
+    return ClaudeCapabilities(
+        ClaudeExecutable(
+            ExecutableProvenance.from_stat(
+                executable_path,
+                executable_path.stat(),
+            ),
+            SUPPORTED_CLAUDE_VERSION,
+        ),
+        profile,
+        platform,
+    )
+
+
+def _profile_tree(paths: ApplicationPaths) -> PrivateCredentialTree:
+    return PrivateCredentialTree(
+        paths.private_claude_profiles,
+        account_path=paths.accounts,
+    )
+
+
+def _managed_profile(
+    paths: ApplicationPaths,
+    account_id: SidekickAccountId,
+) -> ClaudeManagedProfile:
+    return ClaudeManagedProfile(
+        account_id,
+        managed_claude_config_dir(paths, account_id),
+    )
+
+
+def _keychain_service(profile: ClaudeManagedProfile) -> str:
+    digest = hashlib.sha256(str(profile.config_directory).encode()).hexdigest()
+    return "Claude Code-credentials-" + digest[:8]
+
+
+def _keychain_arguments(service: str) -> tuple[str, ...]:
+    return (
+        "find-generic-password",
+        "-a",
+        "sidekick-test",
+        "-w",
+        "-s",
+        service,
+    )
 
 
 def _probe_runner(
@@ -269,7 +386,7 @@ def test_setup_token_process_output_is_bounded() -> None:
             maximum_output_bytes=_PROCESS_OUTPUT_LIMIT,
         )
 
-    assert failure.value.code is ClaudeProcessFailure.OUTPUT_UNREADABLE
+    assert failure.value.code is ClaudeProcessFailure.OUTPUT_TOO_LARGE
 
 
 @pytest.mark.skipif(
@@ -438,3 +555,235 @@ def test_claude_boundary_rejects_distinct_preflight_gates(
     assert actual_arguments == expected_arguments
     assert which_calls == (["claude"] if expected_arguments else [])
     assert not paths.private_claude_profiles.exists()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Protected Claude profiles use the POSIX file boundary.",
+)
+def test_file_profile_readback_is_exact_identity_bound_and_fail_closed(
+    tmp_path: Path,
+) -> None:
+    paths = make_application_paths(tmp_path / "state")
+    profiles = _profile_tree(paths)
+    profile_a = _managed_profile(paths, _ACCOUNT_A)
+    profile_b = _managed_profile(paths, _ACCOUNT_B)
+    profiles.ensure_owned_directory(profile_a.config_directory)
+    profiles.ensure_owned_directory(profile_b.config_directory)
+    payload_a = _credential_payload(
+        "provider-account-a",
+        "provider-organization-a",
+        token_suffix="profile-a",
+    )
+    payload_b = _credential_payload(
+        "provider-account-b",
+        "provider-organization-b",
+        token_suffix="profile-b",
+    )
+    profiles.write_owned_file(
+        profile_a.config_directory,
+        CLAUDE_CREDENTIAL_FILE,
+        payload_a,
+    )
+    profiles.write_owned_file(
+        profile_b.config_directory,
+        CLAUDE_CREDENTIAL_FILE,
+        payload_b,
+    )
+    expected_identity = ClaudeLoginIdentity(
+        account_id="provider-account-a",
+        organization_id="provider-organization-a",
+    ).provider_identity
+    other_identity = ClaudeLoginIdentity(
+        account_id="provider-account-b",
+        organization_id="provider-organization-b",
+    ).provider_identity
+    reader = ClaudeManagedAuthorityReader(paths, profiles)
+
+    snapshots = tuple(
+        reader.read(
+            _managed_capabilities(profile_a, platform),
+            REFERENCE_TIME,
+            expected_identity=expected_identity,
+        )
+        for platform in (
+            ClaudeManagedPlatform.LINUX_FILE,
+            ClaudeManagedPlatform.WSL_FILE,
+        )
+    )
+
+    assert all(
+        snapshot.profile == profile_a
+        and snapshot.provider_identity == expected_identity
+        and snapshot.action is CredentialAction.NONE
+        for snapshot in snapshots
+    )
+    metadata = managed_login_authority(
+        snapshots[0],
+        _AUTHORITY_ID,
+        REFERENCE_TIME,
+    )
+    assert metadata.provider_identity == expected_identity
+    assert metadata.access_expires_at == snapshots[0].access_expires_at
+    assert "profile-a" not in repr(metadata)
+    assert "profile-a" not in repr(snapshots[0])
+
+    with pytest.raises(ClaudeProtectedStorageError) as mismatch:
+        reader.read(
+            _managed_capabilities(
+                profile_a,
+                ClaudeManagedPlatform.LINUX_FILE,
+            ),
+            REFERENCE_TIME,
+            expected_identity=other_identity,
+        )
+    assert (
+        mismatch.value.code is ClaudeProtectedStorageFailure.IDENTITY_MISMATCH
+    )
+
+    credential_path = profile_a.config_directory / CLAUDE_CREDENTIAL_FILE
+    credential_path.chmod(0o644)
+    with pytest.raises(ClaudeProtectedStorageError) as unsafe:
+        reader.read(
+            _managed_capabilities(
+                profile_a,
+                ClaudeManagedPlatform.WSL_FILE,
+            ),
+            REFERENCE_TIME,
+            expected_identity=expected_identity,
+        )
+    assert unsafe.value.code is ClaudeProtectedStorageFailure.UNSAFE
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="The fake Keychain scenario needs the POSIX private tree.",
+)
+def test_keychain_readback_is_namespaced_bounded_and_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = make_application_paths(tmp_path / "state")
+    profiles = _profile_tree(paths)
+    profile_a = _managed_profile(paths, _ACCOUNT_A)
+    profile_b = _managed_profile(paths, _ACCOUNT_B)
+    profiles.ensure_owned_directory(profile_a.config_directory)
+    profiles.ensure_owned_directory(profile_b.config_directory)
+    capabilities_a = _managed_capabilities(
+        profile_a,
+        ClaudeManagedPlatform.MACOS_ARM64_KEYCHAIN,
+    )
+    capabilities_b = _managed_capabilities(
+        profile_b,
+        ClaudeManagedPlatform.MACOS_X64_KEYCHAIN,
+    )
+    payload_a = _credential_payload(
+        "provider-account-a",
+        "provider-organization-a",
+        token_suffix="keychain-a-secret",
+    )
+    payload_b = _credential_payload(
+        "provider-account-b",
+        "provider-organization-b",
+        token_suffix="keychain-b-secret",
+    )
+    environment = {"USER": "sidekick-test"}
+    service_a = _keychain_service(profile_a)
+    service_b = _keychain_service(profile_b)
+    native_arguments = _keychain_arguments("Claude Code-credentials")
+    profile_a_arguments = _keychain_arguments(service_a)
+    profile_b_arguments = _keychain_arguments(service_b)
+    runner = _ClaudeRunner(
+        {
+            native_arguments: ClaudeCommandResult(0, payload_a + b"\n"),
+            profile_a_arguments: ClaudeCommandResult(0, payload_a + b"\r\n"),
+            profile_b_arguments: ClaudeCommandResult(0, payload_b + b"\n"),
+        }
+    )
+    monkeypatch.setattr(
+        sidekick_usages.providers.claude.managed.storage.keychain,
+        "qualify_executable",
+        lambda path: _KEYCHAIN_PROVENANCE,
+    )
+    monkeypatch.setattr(
+        sidekick_usages.providers.claude.managed.storage.keychain,
+        "verify_executable",
+        lambda provenance: None,
+    )
+    reader = ClaudeManagedAuthorityReader(paths, profiles)
+
+    native_payload = read_keychain_payload(
+        native_keychain_target(environment),
+        environment,
+        runner=runner,
+    )
+    snapshot_a = reader.read(
+        capabilities_a,
+        REFERENCE_TIME,
+        environment=environment,
+        runner=runner,
+    )
+    snapshot_b = reader.read(
+        capabilities_b,
+        REFERENCE_TIME,
+        environment=environment,
+        runner=runner,
+    )
+
+    assert native_payload == payload_a
+    assert snapshot_a.profile == profile_a
+    assert snapshot_b.profile == profile_b
+    assert service_a != service_b
+    assert runner.calls == [
+        (_KEYCHAIN_EXECUTABLE, native_arguments),
+        (_KEYCHAIN_EXECUTABLE, profile_a_arguments),
+        (_KEYCHAIN_EXECUTABLE, profile_b_arguments),
+    ]
+    assert runner.timeouts == [KEYCHAIN_READ_TIMEOUT_SECONDS] * 3
+    assert runner.output_limits == [KEYCHAIN_CREDENTIAL_BYTES + 2] * 3
+    assert (
+        runner.environments
+        == [{"PATH": os.defpath, "USER": "sidekick-test"}] * 3
+    )
+    assert "keychain-a-secret" not in repr(snapshot_a)
+    assert "keychain-b-secret" not in repr(snapshot_b)
+
+    locked_runner = _ClaudeRunner(
+        {
+            profile_a_arguments: ClaudeCommandResult(
+                _KEYCHAIN_LOCKED_EXIT,
+                b"keychain-failure-secret",
+            )
+        }
+    )
+    with pytest.raises(ClaudeProtectedStorageError) as locked:
+        reader.read(
+            capabilities_a,
+            REFERENCE_TIME,
+            environment=environment,
+            runner=locked_runner,
+        )
+    assert locked.value.code is ClaudeProtectedStorageFailure.KEYCHAIN_LOCKED
+    assert "keychain-failure-secret" not in repr(locked.value)
+
+    profiles.write_owned_file(
+        profile_a.config_directory,
+        CLAUDE_CREDENTIAL_FILE,
+        payload_a,
+    )
+    fallback_runner = _ClaudeRunner(
+        {
+            profile_a_arguments: ClaudeCommandResult(0, payload_a),
+        }
+    )
+    with pytest.raises(ClaudeProtectedStorageError) as fallback:
+        reader.read(
+            capabilities_a,
+            REFERENCE_TIME,
+            environment=environment,
+            runner=fallback_runner,
+        )
+    assert (
+        fallback.value.code is ClaudeProtectedStorageFailure.PLAINTEXT_FALLBACK
+    )
+    assert fallback_runner.calls == []

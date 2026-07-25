@@ -64,6 +64,14 @@ class PrivateCredentialNative(Protocol):
 class PrivateBundleNative(Protocol):
     """Native component-qualified private-bundle operations."""
 
+    def relative_entry_present(
+        self,
+        root: Path,
+        relative: tuple[str, ...],
+        basename: str,
+    ) -> bool:
+        """Report one exact child entry without reading its contents."""
+
     def ensure_relative_directory(
         self,
         root: Path,

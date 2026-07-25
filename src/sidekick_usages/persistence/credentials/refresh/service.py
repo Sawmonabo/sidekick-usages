@@ -24,7 +24,6 @@ from sidekick_usages.persistence.credentials.refresh.merge import (
 from sidekick_usages.persistence.errors import (
     DurabilityUncertainError,
     PersistenceError,
-    UnsafeManagedFileError,
 )
 from sidekick_usages.persistence.filesystem.service import (
     PersistenceFilesystem,
@@ -403,12 +402,10 @@ class CredentialRefreshTransactions:
         """Read exact Claude output through the qualified private tree."""
         self._tree.harden_provider_stage(lease._directory)
         relative = f"{lease._directory.name}/provider-home/.claude"
-        snapshot = self._tree.read_relative_bundle_file(
+        snapshot = self._tree.read_relative_authority_file(
             relative,
             ".credentials.json",
         )
-        if snapshot is not None and snapshot.link_count != 1:
-            raise UnsafeManagedFileError(".credentials.json")
         return None if snapshot is None else snapshot.data
 
     def finish_without_exchange(

@@ -2,6 +2,7 @@
 
 import os
 import sys
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -108,6 +109,10 @@ def _managed_profile_path(
         ) from None
     if normalized != root:
         raise ValueError(f"Private {provider_name} profile root is unsafe.")
+    if unicodedata.normalize("NFC", str(root)) != str(root):
+        raise ValueError(
+            f"Private {provider_name} profile root is not normalized."
+        )
     profile = root / str(account_id)
     if profile.parent != root:
         raise ValueError(

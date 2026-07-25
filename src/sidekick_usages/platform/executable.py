@@ -22,17 +22,24 @@ def resolve_executable(
     )
     if candidate is None:
         raise ExecutableQualificationError(ExecutableFailure.MISSING)
-    unresolved = Path(candidate)
-    if not unresolved.is_absolute():
+    return qualify_executable(Path(candidate))
+
+
+def qualify_executable(path: Path) -> ExecutableProvenance:
+    """Freeze one explicitly located absolute regular executable."""
+    if not path.is_absolute():
         raise ExecutableQualificationError(ExecutableFailure.UNSAFE)
     try:
-        path = unresolved.resolve(strict=True)
-        file_status = path.stat()
+        resolved = path.resolve(strict=True)
+        file_status = resolved.stat()
     except OSError, RuntimeError:
         raise ExecutableQualificationError(ExecutableFailure.UNSAFE) from None
-    if not stat.S_ISREG(file_status.st_mode) or not os.access(path, os.X_OK):
+    if not stat.S_ISREG(file_status.st_mode) or not os.access(
+        resolved,
+        os.X_OK,
+    ):
         raise ExecutableQualificationError(ExecutableFailure.UNSAFE)
-    return ExecutableProvenance.from_stat(path, file_status)
+    return ExecutableProvenance.from_stat(resolved, file_status)
 
 
 def verify_executable(provenance: ExecutableProvenance) -> None:

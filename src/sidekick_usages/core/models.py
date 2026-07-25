@@ -97,6 +97,14 @@ class ClaudeLoginIdentity:
         _require_bounded_claude_identity(self.account_id)
         _require_bounded_claude_identity(self.organization_id)
 
+    @property
+    def provider_identity(self) -> ProviderIdentity:
+        """Return the canonical collision-safe provider identity."""
+        account_bytes = self.account_id.encode("utf-8")
+        return ProviderIdentity(
+            f"{len(account_bytes)}:{self.account_id}{self.organization_id}"
+        )
+
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ClaudeLoginCredentials:

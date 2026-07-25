@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from sidekick_usages.platform.environment import (
+    SAFE_PROCESS_ENVIRONMENT_KEYS,
     SAFE_PROVIDER_ENVIRONMENT_KEYS,
 )
 from sidekick_usages.providers.claude.errors import ClaudeProcessError
@@ -77,17 +78,36 @@ def claude_refresh_environment(
     return environment
 
 
+def claude_keychain_environment(
+    source_environment: Mapping[str, str] | None,
+) -> dict[str, str]:
+    """Build a credential-free environment for macOS Keychain reads."""
+    environment = _selected_environment(
+        source_environment,
+        SAFE_PROCESS_ENVIRONMENT_KEYS,
+    )
+    environment.setdefault("PATH", os.defpath)
+    _validate_environment(environment)
+    return environment
+
+
 def _safe_environment(
     source_environment: Mapping[str, str] | None,
 ) -> dict[str, str]:
-    source = os.environ if source_environment is None else source_environment
-    environment = {
-        key: value
-        for key, value in source.items()
-        if key in _CLAUDE_SAFE_ENVIRONMENT_KEYS
-    }
+    environment = _selected_environment(
+        source_environment,
+        _CLAUDE_SAFE_ENVIRONMENT_KEYS,
+    )
     environment.setdefault("PATH", os.defpath)
     return environment
+
+
+def _selected_environment(
+    source_environment: Mapping[str, str] | None,
+    allowed_keys: frozenset[str],
+) -> dict[str, str]:
+    source = os.environ if source_environment is None else source_environment
+    return {key: value for key, value in source.items() if key in allowed_keys}
 
 
 def _validate_environment(environment: Mapping[str, str]) -> None:

@@ -13,13 +13,15 @@ from sidekick_usages.providers.claude.managed.executable import (
 )
 from sidekick_usages.providers.claude.managed.models import (
     ClaudeCapabilities,
-    ClaudeProfile,
 )
 from sidekick_usages.providers.claude.managed.types import (
     ClaudeManagedFailure,
     ClaudeManagedPlatform,
 )
-from sidekick_usages.providers.claude.models import ClaudeExecutable
+from sidekick_usages.providers.claude.models import (
+    ClaudeExecutable,
+    ClaudeManagedProfile,
+)
 from sidekick_usages.providers.claude.process import (
     run_bounded_claude_command,
 )
@@ -61,7 +63,7 @@ def managed_claude_platform(
 
 def probe_claude_capabilities(
     executable: ClaudeExecutable,
-    profile: ClaudeProfile,
+    profile: ClaudeManagedProfile,
     platform: ClaudeManagedPlatform,
     environment: Mapping[str, str],
     working_directory: Path,

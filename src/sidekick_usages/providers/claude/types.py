@@ -7,6 +7,8 @@ from typing import Protocol
 
 from sidekick_usages.providers.claude.models import (
     ClaudeCommandResult,
+    ClaudeManagedProfile,
+    ClaudeNativeProfile,
     SetupTokenMissing,
     SetupTokenRejected,
     SetupTokenSuccess,
@@ -14,6 +16,7 @@ from sidekick_usages.providers.claude.models import (
     SetupTokenUnreadable,
 )
 
+type ClaudeProfile = ClaudeNativeProfile | ClaudeManagedProfile
 type SetupTokenCapture = (
     SetupTokenSuccess
     | SetupTokenMissing
@@ -28,6 +31,7 @@ class ClaudeProcessFailure(StrEnum):
 
     PROCESS_UNAVAILABLE = "process_unavailable"
     PROCESS_UNSAFE = "process_unsafe"
+    OUTPUT_TOO_LARGE = "output_too_large"
     OUTPUT_UNREADABLE = "output_unreadable"
     TIMED_OUT = "timed_out"
 

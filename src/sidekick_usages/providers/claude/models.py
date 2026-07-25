@@ -1,7 +1,9 @@
 """Immutable Claude CLI and setup-token models."""
 
 from dataclasses import dataclass, field
+from pathlib import Path
 
+from sidekick_usages.core.accounts.types import SidekickAccountId
 from sidekick_usages.platform.models import ExecutableProvenance
 
 
@@ -29,6 +31,34 @@ class ClaudeExecutable:
 
     provenance: ExecutableProvenance
     version: ClaudeVersion
+
+
+@dataclass(frozen=True, slots=True)
+class ClaudeNativeProfile:
+    """One explicit native Claude configuration profile."""
+
+    config_directory: Path
+
+    def __post_init__(self) -> None:
+        """Require one explicit absolute configuration directory."""
+        if not self.config_directory.is_absolute():
+            raise ValueError("Claude native profile path must be absolute.")
+
+
+@dataclass(frozen=True, slots=True)
+class ClaudeManagedProfile:
+    """One stable Sidekick-owned Claude configuration profile."""
+
+    account_id: SidekickAccountId
+    config_directory: Path
+
+    def __post_init__(self) -> None:
+        """Require one absolute account-ID-derived directory."""
+        if (
+            not self.config_directory.is_absolute()
+            or self.config_directory.name != str(self.account_id)
+        ):
+            raise ValueError("Claude managed profile path is invalid.")
 
 
 @dataclass(frozen=True, slots=True)

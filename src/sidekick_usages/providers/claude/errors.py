@@ -8,6 +8,9 @@ _PROCESS_FAILURE_MESSAGES = {
         "The Claude process is unavailable."
     ),
     ClaudeProcessFailure.PROCESS_UNSAFE: "The Claude command is unsafe.",
+    ClaudeProcessFailure.OUTPUT_TOO_LARGE: (
+        "The Claude process output exceeded its safe limit."
+    ),
     ClaudeProcessFailure.OUTPUT_UNREADABLE: (
         "The Claude process output could not be read safely."
     ),

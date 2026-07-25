@@ -39,8 +39,10 @@ from sidekick_usages.providers.base import (
 from sidekick_usages.providers.claude.credentials import (
     CLAUDE_SUBSCRIPTION_LOGIN_REJECTED,
     detect_credentials,
+    native_claude_profile,
     parse_detected_credentials,
     require_claude_credentials,
+    unreadable_credentials,
 )
 from sidekick_usages.providers.claude.environment import (
     claude_refresh_environment,
@@ -104,7 +106,18 @@ class ClaudeProvider(Provider):
         credential_home: Path | None = None,
     ) -> CredentialDetection:
         """Read credentials from the local Claude Code install."""
-        return detect_credentials(self.clock.now(), credential_home)
+        try:
+            profile = native_claude_profile(
+                credential_home,
+                environment=os.environ,
+            )
+        except ValueError:
+            return unreadable_credentials()
+        return detect_credentials(
+            self.clock.now(),
+            profile,
+            environment=os.environ,
+        )
 
     def credentials_from_token(self, token: str) -> CredentialDetection:
         """Validate one manually supplied Claude OAuth token."""

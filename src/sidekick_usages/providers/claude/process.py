@@ -106,9 +106,20 @@ def run_bounded_claude_command(
         _terminate_group(process)
         reader.join(PROCESS_KILL_SECONDS)
     stdout.close()
-    if reader.is_alive() or overflow.is_set() or read_failed.is_set():
-        raise ClaudeProcessError(ClaudeProcessFailure.OUTPUT_UNREADABLE)
+    _require_reader_finished(reader, overflow, read_failed)
     return ClaudeCommandResult(return_code, bytes(output))
+
+
+def _require_reader_finished(
+    reader: Thread,
+    overflow: Event,
+    read_failed: Event,
+) -> None:
+    """Reject an incomplete, oversized, or unreadable output stream."""
+    if overflow.is_set():
+        raise ClaudeProcessError(ClaudeProcessFailure.OUTPUT_TOO_LARGE)
+    if reader.is_alive() or read_failed.is_set():
+        raise ClaudeProcessError(ClaudeProcessFailure.OUTPUT_UNREADABLE)
 
 
 def _drain_bounded_output(

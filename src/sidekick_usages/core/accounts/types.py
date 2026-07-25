@@ -110,6 +110,14 @@ class CredentialHealth(StrEnum):
     UNKNOWN = "unknown"
 
 
+class CredentialAction(StrEnum):
+    """Safe next action for one credential authority."""
+
+    NONE = "none"
+    REFRESH = "refresh"
+    LOGIN = "login"
+
+
 class MetricsFreshness(StrEnum):
     """Closed account metrics freshness states."""
 

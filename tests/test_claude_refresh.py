@@ -2,7 +2,6 @@
 
 import json
 import os
-import subprocess
 import sys
 from collections.abc import Mapping
 from datetime import timedelta
@@ -11,7 +10,6 @@ from pathlib import Path
 import pytest
 
 import sidekick_usages.platform.executable
-import sidekick_usages.providers.claude.credentials
 import sidekick_usages.providers.claude.provider
 from sidekick_usages.core.expiry import KnownExpiry, UnknownExpiry
 from sidekick_usages.core.models import (
@@ -625,80 +623,6 @@ def test_malformed_refresh_is_atomic_and_safe(
     assert account.credentials is original
 
 
-@pytest.mark.parametrize(
-    ("payload", "expected_kind"),
-    [
-        (None, ProviderFailureKind.MISSING),
-        (b"{", ProviderFailureKind.MALFORMED),
-        (
-            b'{"claudeAiOauth":{"refreshToken":"refresh-only"}}',
-            ProviderFailureKind.INCOMPLETE,
-        ),
-        (
-            json.dumps(
-                {
-                    "claudeAiOauth": {
-                        "accessToken": "sk-ant-oat01-expired",
-                        "refreshToken": "refresh-expired",
-                        "expiresAt": int(
-                            (REFERENCE_TIME - timedelta(seconds=1)).timestamp()
-                            * 1000
-                        ),
-                        "scopes": ["user:profile"],
-                    }
-                }
-            ).encode(),
-            ProviderFailureKind.EXPIRED,
-        ),
-        (
-            json.dumps(
-                {
-                    "claudeAiOauth": {
-                        "accessToken": "sk-ant-oat01-detected",
-                        "refreshToken": "refresh-detected",
-                        "expiresAt": _FUTURE_EXPIRY_MS,
-                        "scopes": ["user:inference", "user:profile"],
-                    }
-                }
-            ).encode(),
-            None,
-        ),
-    ],
-)
-def test_detection_distinguishes_credential_source_states(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    payload: bytes | None,
-    expected_kind: ProviderFailureKind | None,
-) -> None:
-    monkeypatch.setattr(
-        sidekick_usages.providers.claude.credentials.platform,
-        "system",
-        lambda: "Linux",
-    )
-    monkeypatch.setattr(
-        sidekick_usages.providers.claude.credentials.Path,
-        "home",
-        lambda: tmp_path,
-    )
-    path = tmp_path / ".claude" / ".credentials.json"
-    if payload is not None:
-        path.parent.mkdir(parents=True)
-        path.write_bytes(payload)
-
-    result = _provider().detect_credentials()
-
-    if expected_kind is None:
-        assert isinstance(result, DetectedCredentials)
-        assert result.access_token == "sk-ant-oat01-detected"
-        assert result.scopes == ("user:inference", "user:profile")
-        return
-    assert isinstance(result, ProviderFailure)
-    assert result.kind is expected_kind
-    if expected_kind is ProviderFailureKind.EXPIRED:
-        assert result.cause is (ProviderFailureCause.ACCESS_CREDENTIAL_EXPIRED)
-
-
 def test_expired_login_credential_fails_before_provider_contact() -> None:
     account = Account(
         label=AccountLabel("expired-login"),
@@ -721,148 +645,3 @@ def test_expired_login_credential_fails_before_provider_contact() -> None:
     assert result.cause is ProviderFailureCause.LOGIN_CREDENTIAL_EXPIRED
     assert result.message == "The saved Claude login credential has expired."
     assert http.body is None
-
-
-def test_detection_reports_unreadable_credentials(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        sidekick_usages.providers.claude.credentials.platform,
-        "system",
-        lambda: "Linux",
-    )
-    monkeypatch.setattr(
-        sidekick_usages.providers.claude.credentials.Path,
-        "home",
-        lambda: tmp_path,
-    )
-    path = tmp_path / ".claude" / ".credentials.json"
-    path.parent.mkdir(parents=True)
-    path.write_text("{}")
-
-    def unreadable(_path: Path) -> bytes:
-        raise PermissionError
-
-    monkeypatch.setattr(
-        sidekick_usages.providers.claude.credentials,
-        "_read_bounded",
-        unreadable,
-    )
-
-    result = _provider().detect_credentials()
-
-    assert isinstance(result, ProviderFailure)
-    assert result.kind is ProviderFailureKind.UNREADABLE
-
-
-@pytest.mark.parametrize(
-    ("primary_state", "expected_kind"),
-    [
-        ("malformed", ProviderFailureKind.MALFORMED),
-        ("unreadable", ProviderFailureKind.UNREADABLE),
-        ("expired", ProviderFailureKind.EXPIRED),
-    ],
-)
-def test_detection_never_bypasses_a_nonmissing_primary_source(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    primary_state: str,
-    expected_kind: ProviderFailureKind,
-) -> None:
-    monkeypatch.setattr(
-        sidekick_usages.providers.claude.credentials.platform,
-        "system",
-        lambda: "Linux",
-    )
-    monkeypatch.setattr(
-        sidekick_usages.providers.claude.credentials.Path,
-        "home",
-        lambda: tmp_path,
-    )
-    primary = tmp_path / ".claude" / ".credentials.json"
-    fallback = tmp_path / ".config" / "claude" / ".credentials.json"
-    primary.parent.mkdir(parents=True)
-    if primary_state == "malformed":
-        primary.write_text("{")
-    else:
-        primary.write_text(
-            json.dumps(
-                {
-                    "claudeAiOauth": {
-                        "accessToken": "sk-ant-oat01-primary",
-                        "refreshToken": "refresh-primary",
-                        "expiresAt": (
-                            _FUTURE_EXPIRY_MS
-                            if primary_state == "unreadable"
-                            else 1
-                        ),
-                        "scopes": ["user:profile"],
-                    }
-                }
-            )
-        )
-    fallback.parent.mkdir(parents=True)
-    fallback.write_text(
-        json.dumps(
-            {
-                "claudeAiOauth": {
-                    "accessToken": "sk-ant-oat01-fallback",
-                    "refreshToken": "refresh-fallback",
-                    "expiresAt": _FUTURE_EXPIRY_MS,
-                    "scopes": ["user:profile"],
-                }
-            }
-        )
-    )
-    if primary_state == "unreadable":
-        read_bounded = (
-            sidekick_usages.providers.claude.credentials._read_bounded
-        )
-
-        def read_with_primary_failure(path: Path) -> bytes:
-            if path == primary:
-                raise PermissionError
-            return read_bounded(path)
-
-        monkeypatch.setattr(
-            sidekick_usages.providers.claude.credentials,
-            "_read_bounded",
-            read_with_primary_failure,
-        )
-
-    result = _provider().detect_credentials()
-
-    assert isinstance(result, ProviderFailure)
-    assert result.kind is expected_kind
-
-
-@pytest.mark.parametrize(
-    ("return_code", "expected"),
-    [
-        ((-25300) % 256, ProviderFailureKind.MISSING),
-        (1, ProviderFailureKind.UNREADABLE),
-    ],
-)
-def test_macos_keychain_distinguishes_absence_from_access_failure(
-    monkeypatch: pytest.MonkeyPatch,
-    return_code: int,
-    expected: ProviderFailureKind,
-) -> None:
-    monkeypatch.setattr(
-        sidekick_usages.providers.claude.credentials.platform,
-        "system",
-        lambda: "Darwin",
-    )
-
-    def fail(*_args: object, **_kwargs: object) -> None:
-        raise subprocess.CalledProcessError(return_code, ["security"])
-
-    monkeypatch.setattr(
-        sidekick_usages.providers.claude.credentials.subprocess, "run", fail
-    )
-
-    result = _provider().detect_credentials()
-
-    assert isinstance(result, ProviderFailure)
-    assert result.kind is expected

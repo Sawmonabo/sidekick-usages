@@ -29,11 +29,11 @@ from sidekick_usages.providers.claude.managed.executable import (
 )
 from sidekick_usages.providers.claude.managed.models import (
     ClaudeCapabilities,
-    ClaudeProfile,
 )
 from sidekick_usages.providers.claude.managed.types import (
     ClaudeManagedFailure,
 )
+from sidekick_usages.providers.claude.models import ClaudeManagedProfile
 from sidekick_usages.providers.claude.process import (
     run_bounded_claude_command,
 )
@@ -61,7 +61,7 @@ def prepare_claude_managed_profile(
         raise ClaudeManagedError(ClaudeManagedFailure.PROFILE_UNSAFE)
     try:
         config_directory = managed_claude_config_dir(paths, account_id)
-        profile = ClaudeProfile(account_id, config_directory)
+        profile = ClaudeManagedProfile(account_id, config_directory)
     except ValueError:
         raise ClaudeManagedError(ClaudeManagedFailure.PROFILE_UNSAFE) from None
     with tempfile.TemporaryDirectory(

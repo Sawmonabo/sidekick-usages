@@ -52,7 +52,7 @@ _MANAGED_AUTH_READER = "src/sidekick_usages/credentials/codex/managed/home.py"
 _AUTH_REFERENCE_OWNERS = frozenset({_AUTH_OWNER, _MANAGED_AUTH_READER})
 _AUTH_BASENAME = "auth.json"
 _AUTH_NAME = "CODEX_AUTH_FILE"
-_MANAGED_AUTH_READ_CALL = "read_relative_bundle_file"
+_MANAGED_AUTH_READ_CALL = "read_relative_authority_file"
 _AUTH_MUTATION_CALLS = frozenset(
     {
         "copy",

@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 from sidekick_usages.persistence.artifacts import (
+    portable_basename_key,
     require_portable_unique_basenames,
 )
 from sidekick_usages.persistence.platform.errors import NativeFilesystemError
@@ -169,6 +170,39 @@ if sys.platform == "win32":
             self._qualifier.qualify(root)
             self._qualifier.ensure_parent(root)
             self._qualifier.qualify(root)
+
+        def relative_entry_present(
+            self,
+            root: Path,
+            relative: _RelativePath,
+            basename: str,
+        ) -> bool:
+            """Report one exact child entry without reading its contents."""
+            self._qualifier.qualify(root)
+            with open_tree(root) as opened:
+                if opened is None:
+                    return False
+                with open_component_chain(
+                    opened,
+                    relative,
+                    create=False,
+                ) as chain:
+                    if chain is None:
+                        return False
+                    require_chain_identity(opened, chain)
+                    names = list_names(chain.paths[-1])
+                    try:
+                        require_portable_unique_basenames(names)
+                    except ValueError:
+                        raise _native_error(NativeFailureKind.UNSAFE) from None
+                    target = portable_basename_key(basename)
+                    present = any(
+                        portable_basename_key(name) == target for name in names
+                    )
+                    require_chain_identity(opened, chain)
+                    if list_names(chain.paths[-1]) != names:
+                        raise _native_error(NativeFailureKind.CHANGED)
+                    return present
 
         def ensure_relative_directory(
             self,

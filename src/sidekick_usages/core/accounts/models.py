@@ -7,6 +7,7 @@ from typing import ClassVar
 from sidekick_usages.core.accounts.types import (
     AuthorityGeneration,
     AuthorityId,
+    CredentialAction,
     CredentialHealth,
     ProviderIdentity,
     SidekickAccountId,
@@ -104,13 +105,26 @@ class ClaudeManagedLoginAuthority:
     authority_id: AuthorityId
     provider_identity: ProviderIdentity
     generation: AuthorityGeneration
+    access_expires_at: datetime
+    refresh_expires_at: datetime | None
     verified_at: datetime
     executable_version: str
     health: CredentialHealth
+    action: CredentialAction
     kind: ClassVar[str] = "managed"
 
     def __post_init__(self) -> None:
         """Normalize verification time and bound executable metadata."""
+        object.__setattr__(
+            self,
+            "access_expires_at",
+            as_utc(self.access_expires_at),
+        )
+        object.__setattr__(
+            self,
+            "refresh_expires_at",
+            _optional_utc(self.refresh_expires_at),
+        )
         object.__setattr__(self, "verified_at", as_utc(self.verified_at))
         require_bounded_text(
             self.executable_version,
@@ -313,7 +327,7 @@ class SavedAccount:
                     else UnknownExpiry()
                 )
             if isinstance(subscription, ClaudeManagedLoginAuthority):
-                return UnknownExpiry()
+                return KnownExpiry(subscription.access_expires_at)
             setup = authority.setup_token
             return (
                 KnownExpiry(setup.expires_at)
@@ -333,11 +347,14 @@ class SavedAccount:
     def refresh_expiry(self) -> Expiry:
         """Return secret-free refresh-authority lifetime metadata."""
         authority = self.authority
-        if isinstance(authority, ClaudeAccountAuthority) and isinstance(
-            authority.subscription,
-            ClaudeStoredLoginAuthority,
-        ):
-            expires_at = authority.subscription.refresh_expires_at
+        if isinstance(authority, ClaudeAccountAuthority):
+            subscription = authority.subscription
+            if not isinstance(
+                subscription,
+                ClaudeStoredLoginAuthority | ClaudeManagedLoginAuthority,
+            ):
+                return UnknownExpiry()
+            expires_at = subscription.refresh_expires_at
             return (
                 KnownExpiry(expires_at)
                 if expires_at is not None

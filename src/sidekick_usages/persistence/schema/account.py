@@ -26,6 +26,7 @@ from sidekick_usages.core.accounts.models import (
 from sidekick_usages.core.accounts.types import (
     AuthorityGeneration,
     AuthorityId,
+    CredentialAction,
     CredentialHealth,
     ProviderIdentity,
     SidekickAccountId,
@@ -81,6 +82,7 @@ type _Health = Literal[
     "reconciliation_required",
     "unknown",
 ]
+type _CredentialAction = Literal["none", "refresh", "login"]
 type _ClaudeSubscriptionModel = Annotated[
     _ClaudeStoredModel | _ClaudeManagedModel,
     Field(discriminator="kind"),
@@ -152,9 +154,12 @@ class _ClaudeManagedModel(BaseModel):
     authority_id: _Uuid
     provider_identity: _BoundedText
     generation: _BoundedText
+    access_expires_at: _Timestamp
+    refresh_expires_at: _Timestamp | None
     verified_at: _Timestamp
     executable_version: _BoundedText
     health: _Health
+    action: _CredentialAction
 
 
 class _ClaudeAuthorityModel(BaseModel):
@@ -310,9 +315,14 @@ def _claude_authority(model: _ClaudeAuthorityModel) -> AccountAuthority:
             authority_id=AuthorityId(subscription.authority_id),
             provider_identity=ProviderIdentity(subscription.provider_identity),
             generation=AuthorityGeneration(subscription.generation),
+            access_expires_at=parse_canonical_timestamp(
+                subscription.access_expires_at
+            ),
+            refresh_expires_at=_time(subscription.refresh_expires_at),
             verified_at=parse_canonical_timestamp(subscription.verified_at),
             executable_version=subscription.executable_version,
             health=CredentialHealth(subscription.health),
+            action=CredentialAction(subscription.action),
         )
     else:
         subscription_authority = None
@@ -474,6 +484,21 @@ def _subscription_object(
             ),
             "health": authority.health.value,
             "observed_at": _timestamp(authority.observed_at),
+        }
+    if isinstance(authority, ClaudeManagedLoginAuthority):
+        return {
+            "kind": "managed",
+            "authority_id": str(authority.authority_id),
+            "provider_identity": str(authority.provider_identity),
+            "generation": str(authority.generation),
+            "access_expires_at": canonical_timestamp(
+                authority.access_expires_at
+            ),
+            "refresh_expires_at": _timestamp(authority.refresh_expires_at),
+            "verified_at": canonical_timestamp(authority.verified_at),
+            "executable_version": authority.executable_version,
+            "health": authority.health.value,
+            "action": authority.action.value,
         }
     return {
         "kind": "managed",

@@ -41,6 +41,7 @@ from sidekick_usages.persistence.artifacts import require_safe_basename
 from sidekick_usages.persistence.errors import (
     CandidateWriteError,
     DurabilityUncertainError,
+    InvalidManagedArtifactError,
     ManagedFileReadError,
     PersistenceFilesystemError,
     PrivateCredentialArtifactError,
@@ -116,6 +117,8 @@ def _passive_error(
         return UnsupportedFilesystemError(basename)
     if error.kind in {NativeFailureKind.UNSAFE, NativeFailureKind.CHANGED}:
         return UnsafeManagedFileError(basename)
+    if error.kind is NativeFailureKind.TOO_LARGE:
+        return InvalidManagedArtifactError(basename)
     return ManagedFileReadError(basename)
 
 
@@ -259,6 +262,34 @@ class PrivateCredentialTree:
         except NativeFilesystemError as error:
             raise _passive_error(error, basename) from None
         return None if native is None else self._snapshot(native)
+
+    def read_relative_authority_file(
+        self,
+        relative: str,
+        basename: str,
+    ) -> FileSnapshot | None:
+        """Read one exact authority file and reject additional links."""
+        snapshot = self.read_relative_bundle_file(relative, basename)
+        if snapshot is not None and snapshot.link_count != 1:
+            raise UnsafeManagedFileError(basename)
+        return snapshot
+
+    def relative_entry_present(
+        self,
+        relative: str,
+        basename: str,
+    ) -> bool:
+        """Report one exact nested entry without reading its contents."""
+        components = private_bundle_relative_components(relative)
+        require_safe_basename(basename)
+        try:
+            return self._bundle_native.relative_entry_present(
+                self.root,
+                components,
+                basename,
+            )
+        except NativeFilesystemError as error:
+            raise _passive_error(error, basename) from None
 
     def read_relative_bundle(
         self,

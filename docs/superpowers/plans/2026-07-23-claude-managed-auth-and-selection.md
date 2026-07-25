@@ -85,7 +85,7 @@ macOS Keychain through `/usr/bin/security`, Pydantic 2.13.4, Portalocker
 
 ---
 
-- **Status:** In progress; Claude Task 1 complete
+- **Status:** In progress; Claude Tasks 1-2 complete
 - **Date:** 2026-07-23
 - **Repository:** `/home/sabossedgh/dev/sidekick-usages`
 - **Branch:** `develop`
@@ -216,43 +216,43 @@ uv run pytest \
 
 ### Tests first
 
-- [ ] Extend the provider-boundary suite with one Linux/WSL protected-profile
+- [x] Extend the provider-boundary suite with one Linux/WSL protected-profile
   scenario proving the exact `CLAUDE_CONFIG_DIR`, owner-only regular-file
   read-back, identity binding, and fail-closed rejection of an unsafe file.
-- [ ] Add one macOS Keychain scenario proving native and two config-derived
+- [x] Add one macOS Keychain scenario proving native and two config-derived
   service names, read-only bounded invocation on arm64 and x64, secret-safe
   output, and fail-closed behavior for a locked Keychain or plaintext
   fallback.
-- [ ] Do not add one test per Keychain status, file error, architecture, or
+- [x] Do not add one test per Keychain status, file error, architecture, or
   namespace component.
 
 ### Implementation
 
-- [ ] Make credential discovery require an explicit `ClaudeProfile` value.
+- [x] Make credential discovery require an explicit `ClaudeProfile` value.
   Remove the current ignored `credential_home` behavior.
-- [ ] On Linux and WSL, read only the protected credential path inside the
+- [x] On Linux and WSL, read only the protected credential path inside the
   exact profile. Do not search fallback home directories for a managed
   account.
-- [ ] On macOS, derive the service name using the exact release-matched path
+- [x] On macOS, derive the service name using the exact release-matched path
   rule: SHA-256 of the absolute config-directory string encoded as UTF-8,
   first eight lowercase hexadecimal characters, appended to
   `Claude Code-credentials-`. Use
   `/usr/bin/security find-generic-password` read-only inside a worker.
-- [ ] Keep Keychain output bounded, non-represented, and parsed by the strict
+- [x] Keep Keychain output bounded, non-represented, and parsed by the strict
   Claude envelope schema.
-- [ ] Distinguish missing, malformed, unreadable, locked, access denied,
+- [x] Distinguish missing, malformed, unreadable, locked, access denied,
   plaintext fallback, expired access, expired login, and identity mismatch.
-- [ ] Record only provider identity, generation, expiry metadata, health, and
+- [x] Record only provider identity, generation, expiry metadata, health, and
   sanitized action in the account index.
-- [ ] Add a compatibility revalidation trigger for any Claude version whose
+- [x] Add a compatibility revalidation trigger for any Claude version whose
   profile namespace differs from the pinned observation.
 
 ### Verify and commit
 
-- [ ] Run the two protected-storage scenarios plus existing output-safety,
+- [x] Run the two protected-storage scenarios plus existing output-safety,
   filesystem, and architecture regressions they touch.
-- [ ] Run Ruff and `ty`.
-- [ ] Search production code for Keychain mutation commands. Only read-only
+- [x] Run Ruff and `ty`.
+- [x] Search production code for Keychain mutation commands. Only read-only
   lookup is allowed, then commit.
 
 ## 5. Task 3 — Official Private-Profile Maintenance

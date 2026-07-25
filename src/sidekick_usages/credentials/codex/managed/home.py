@@ -178,11 +178,11 @@ class CodexManagedAuthReader:
     ) -> tuple[bytes | None, bytes | None] | ProviderFailure:
         relative = str(account_id)
         try:
-            auth = self._private.read_relative_bundle_file(
+            auth = self._private.read_relative_authority_file(
                 relative,
                 CODEX_AUTH_FILE,
             )
-            config = self._private.read_relative_bundle_file(
+            config = self._private.read_relative_authority_file(
                 relative,
                 CODEX_CONFIG_FILE,
             )

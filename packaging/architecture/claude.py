@@ -13,15 +13,42 @@ _CLAUDE_CONFIG_OWNER_PATHS = frozenset(
     }
 )
 _CLAUDE_CONFIG_VARIABLE = "CLAUDE_CONFIG_DIR"
+_CREDENTIAL_FILE = ".credentials.json"
+_CREDENTIAL_FILE_OWNERS = frozenset(
+    {
+        "src/sidekick_usages/credentials/claude/managed/authority/service.py",
+        "src/sidekick_usages/persistence/credentials/refresh/service.py",
+        "src/sidekick_usages/providers/claude/credentials.py",
+    }
+)
 _EXECUTABLE_OWNER = "src/sidekick_usages/platform/executable.py"
+_KEYCHAIN_MUTATIONS = frozenset(
+    {
+        "add-generic-password",
+        "delete-generic-password",
+    }
+)
+_KEYCHAIN_OWNER = (
+    "src/sidekick_usages/providers/claude/managed/storage/keychain.py"
+)
+_KEYCHAIN_READ_CONSTANTS = frozenset(
+    {
+        "/usr/bin/security",
+        "Claude Code-credentials",
+        "Claude Code-credentials-",
+        "find-generic-password",
+    }
+)
 _PROHIBITED_FLAT_MODULES = frozenset(
     {
+        "src/sidekick_usages/credentials/claude/managed/authority.py",
         "src/sidekick_usages/credentials/claude_activation.py",
         "src/sidekick_usages/credentials/claude_authorities.py",
         "src/sidekick_usages/credentials/claude_migration.py",
         "src/sidekick_usages/credentials/claude_reconciliation.py",
         "src/sidekick_usages/persistence/claude_authorities.py",
         "src/sidekick_usages/providers/claude/auth_status.py",
+        "src/sidekick_usages/providers/claude/authority.py",
         "src/sidekick_usages/providers/claude/capabilities.py",
         "src/sidekick_usages/providers/claude/executable.py",
         "src/sidekick_usages/providers/claude/keychain.py",
@@ -56,6 +83,8 @@ def _claude_violation(unit: SourceUnit) -> ast.AST | None:
     if path in _PROHIBITED_FLAT_MODULES:
         return unit.tree
     for node in ast.walk(unit.tree):
+        if _forbidden_storage_constant(path, node):
+            return node
         if (
             path not in _CLAUDE_CONFIG_OWNER_PATHS
             and isinstance(node, ast.Constant)
@@ -74,3 +103,16 @@ def _claude_violation(unit: SourceUnit) -> ast.AST | None:
         ):
             return node
     return None
+
+
+def _forbidden_storage_constant(path: str, node: ast.AST) -> bool:
+    if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+        return False
+    return (
+        node.value in _KEYCHAIN_MUTATIONS
+        or (path != _KEYCHAIN_OWNER and node.value in _KEYCHAIN_READ_CONSTANTS)
+        or (
+            path not in _CREDENTIAL_FILE_OWNERS
+            and node.value == _CREDENTIAL_FILE
+        )
+    )

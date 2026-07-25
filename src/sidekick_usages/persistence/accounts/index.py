@@ -42,13 +42,7 @@ def _provider_identity(account: Account) -> ProviderIdentity | None:
     credentials = account.credentials
     if isinstance(credentials, ClaudeLoginCredentials):
         identity = credentials.identity
-        if identity is None:
-            return None
-        encoded = (
-            f"{len(identity.account_id.encode('utf-8'))}:"
-            f"{identity.account_id}{identity.organization_id}"
-        )
-        return ProviderIdentity(encoded)
+        return None if identity is None else identity.provider_identity
     if isinstance(credentials, CodexCredentials):
         return (
             ProviderIdentity(credentials.account_id)
