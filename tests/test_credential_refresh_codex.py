@@ -61,6 +61,9 @@ from sidekick_usages.persistence.private.bundles.writes import (
 from sidekick_usages.persistence.private.credentials import (
     PrivateCredentialTree,
 )
+from sidekick_usages.persistence.supervisor.authority import (
+    OperationAuthorityLock,
+)
 from sidekick_usages.providers.base import (
     CredentialDetection,
     Provider,
@@ -479,30 +482,36 @@ def test_malformed_codex_combined_stage_is_blocked_without_publication(
     _assert_generation(store, private, bundle, "old")
 
 
-def test_managed_codex_homes_read_and_refresh_independently(
+def test_managed_codex_maintenance_continues_across_account_failure(
     tmp_path: Path,
 ) -> None:
-    """Two official homes advance independently without persisting tokens."""
-    account_a = managed_saved_account(
-        _MANAGED_ACCOUNT_A,
-        _MANAGED_AUTHORITY_A,
-        "codex-a",
-        "acct-managed-a",
-        _OLD_GENERATION,
+    """A failed selected home cannot block another managed Codex account."""
+    account_a = replace(
+        managed_saved_account(
+            _MANAGED_ACCOUNT_A,
+            _MANAGED_AUTHORITY_A,
+            "codex-a",
+            "acct-managed-a",
+            _OLD_GENERATION,
+        ),
+        credential_health=CredentialHealth.REFRESH_DUE,
     )
-    account_b = managed_saved_account(
-        _MANAGED_ACCOUNT_B,
-        _MANAGED_AUTHORITY_B,
-        "codex-b",
-        "acct-managed-b",
-        _OLD_GENERATION,
+    account_b = replace(
+        managed_saved_account(
+            _MANAGED_ACCOUNT_B,
+            _MANAGED_AUTHORITY_B,
+            "codex-b",
+            "acct-managed-b",
+            _OLD_GENERATION,
+        ),
+        credential_health=CredentialHealth.REFRESH_DUE,
     )
     paths, store, private = seed_managed_accounts(
         tmp_path,
         (account_a, account_b),
         {
             _MANAGED_ACCOUNT_A: managed_auth(
-                "acct-managed-a",
+                "acct-managed-wrong",
                 _NEW_GENERATION,
             ),
             _MANAGED_ACCOUNT_B: managed_auth(
@@ -513,28 +522,50 @@ def test_managed_codex_homes_read_and_refresh_independently(
     )
     coordinator = managed_coordinator(tmp_path, paths, store, private)
 
-    read_a = coordinator.read(_MANAGED_ACCOUNT_A)
-    read_b = coordinator.read(_MANAGED_ACCOUNT_B)
-    refreshed_a = coordinator.refresh(_MANAGED_ACCOUNT_A)
+    with OperationAuthorityLock(
+        paths.durable_operations,
+        _MANAGED_ACCOUNT_A,
+    ).hold() as authority:
+        maintained_a = coordinator.maintain_with_authority(
+            _MANAGED_ACCOUNT_A,
+            authority,
+        )
+    with OperationAuthorityLock(
+        paths.durable_operations,
+        _MANAGED_ACCOUNT_B,
+    ).hold() as authority:
+        maintained_b = coordinator.maintain_with_authority(
+            _MANAGED_ACCOUNT_B,
+            authority,
+        )
 
-    assert read_a.outcome is CodexManagedOutcome.HEALTHY
-    assert read_b.outcome is CodexManagedOutcome.HEALTHY
-    assert refreshed_a.outcome is CodexManagedOutcome.HEALTHY
-    assert managed_generation(private, _MANAGED_ACCOUNT_B) == _OLD_GENERATION
-
-    refreshed_b = coordinator.refresh(_MANAGED_ACCOUNT_B)
-
-    assert refreshed_b.outcome is CodexManagedOutcome.HEALTHY
+    assert maintained_a.outcome is CodexManagedOutcome.REJECTED
+    assert maintained_b.outcome is CodexManagedOutcome.HEALTHY
     saved = {account.account_id: account for account in store.saved_accounts()}
-    for account_id, identity in (
-        (_MANAGED_ACCOUNT_A, "acct-managed-a"),
-        (_MANAGED_ACCOUNT_B, "acct-managed-b"),
-    ):
-        authority = managed_subscription(saved[account_id])
-        assert authority.provider_identity == ProviderIdentity(identity)
-        assert authority.generation == AuthorityGeneration(_NEW_GENERATION)
-        assert managed_generation(private, account_id) == _NEW_GENERATION
-        assert managed_codex_home(paths, account_id).name == str(account_id)
+    failed = saved[_MANAGED_ACCOUNT_A]
+    failed_authority = managed_subscription(failed)
+    assert failed_authority == managed_subscription(account_a)
+    assert failed.credential_health is CredentialHealth.RECONCILIATION_REQUIRED
+    assert failed.last_refresh_at == REFERENCE_TIME
+    assert failed.last_refresh_status is RefreshStatus.FAILED
+
+    advanced = saved[_MANAGED_ACCOUNT_B]
+    advanced_authority = managed_subscription(advanced)
+    assert advanced_authority.provider_identity == ProviderIdentity(
+        "acct-managed-b"
+    )
+    assert advanced_authority.generation == AuthorityGeneration(
+        _NEW_GENERATION
+    )
+    assert advanced.last_refresh_at == REFERENCE_TIME
+    assert advanced.last_refresh_status is RefreshStatus.OK
+    assert managed_generation(private, _MANAGED_ACCOUNT_B) == _NEW_GENERATION
+    assert managed_codex_home(paths, _MANAGED_ACCOUNT_A).name == str(
+        _MANAGED_ACCOUNT_A
+    )
+    assert managed_codex_home(paths, _MANAGED_ACCOUNT_B).name == str(
+        _MANAGED_ACCOUNT_B
+    )
 
     requests = [
         event
@@ -548,8 +579,6 @@ def test_managed_codex_homes_read_and_refresh_independently(
         (Path(event["codex_home"]).name, event["params"]["refreshToken"])
         for event in requests
     ] == [
-        (str(_MANAGED_ACCOUNT_A), False),
-        (str(_MANAGED_ACCOUNT_B), False),
         (str(_MANAGED_ACCOUNT_A), True),
         (str(_MANAGED_ACCOUNT_B), True),
     ]
@@ -557,18 +586,11 @@ def test_managed_codex_homes_read_and_refresh_independently(
     assert b'"tokens"' not in persisted
     assert b"managed-refresh-" not in persisted
     assert b"managed-id-" not in persisted
-    assert "managed-refresh-" not in repr((read_a, read_b))
-    assert "managed-refresh-" not in repr((refreshed_a, refreshed_b))
 
 
 @pytest.mark.parametrize(
     ("case", "expected_outcome", "expected_health"),
     [
-        (
-            "wrong_identity",
-            CodexManagedOutcome.REJECTED,
-            CredentialHealth.RECONCILIATION_REQUIRED,
-        ),
         (
             "unchanged",
             CodexManagedOutcome.UNCHANGED,
@@ -596,10 +618,6 @@ def test_managed_codex_refresh_fails_closed(
         _OLD_GENERATION,
     )
     next_authority = {
-        "wrong_identity": managed_auth(
-            "acct-managed-wrong",
-            _NEW_GENERATION,
-        ),
         "unchanged": managed_auth(
             "acct-managed-a",
             _OLD_GENERATION,

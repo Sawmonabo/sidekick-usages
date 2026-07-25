@@ -1,7 +1,7 @@
 """Provider-neutral access-token expiry values and classification."""
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import ClassVar, assert_never
 
 from sidekick_usages.core.time import as_utc
@@ -78,4 +78,23 @@ def classify_expiry(
         return ValidExpiry(expiry.at)
     if isinstance(expiry, UnknownExpiry | InvalidExpiry):
         return expiry
+    assert_never(expiry)
+
+
+def refresh_due(
+    expiry: ClassifiedExpiry,
+    *,
+    now: datetime,
+    margin: timedelta,
+) -> bool:
+    """Return whether classified credentials require proactive refresh."""
+    reference_time = as_utc(now)
+    if margin < timedelta():
+        raise ValueError("Refresh margin cannot be negative.")
+    if isinstance(expiry, ExpiredExpiry | InvalidExpiry):
+        return True
+    if isinstance(expiry, ValidExpiry):
+        return expiry.at <= reference_time + margin
+    if isinstance(expiry, UnknownExpiry):
+        return False
     assert_never(expiry)

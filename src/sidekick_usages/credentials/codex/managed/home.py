@@ -3,6 +3,7 @@
 from collections.abc import Mapping
 
 from sidekick_usages.core.accounts.types import SidekickAccountId
+from sidekick_usages.core.expiry import Expiry
 from sidekick_usages.core.models import CodexCredentials, DetectedCredentials
 from sidekick_usages.core.selection.models import ProviderAuthObservation
 from sidekick_usages.core.selection.types import ProviderAuthState
@@ -72,6 +73,23 @@ class CodexManagedAuthReader:
             return files
         auth_payload, config_payload = files
         return parse_managed_auth_snapshot(auth_payload, config_payload)
+
+    def expiry(
+        self,
+        account_id: SidekickAccountId,
+    ) -> Expiry | ProviderFailure:
+        """Read only the access-token expiry from qualified private state."""
+        detected = self._detected_credentials(account_id)
+        if isinstance(detected, ProviderFailure):
+            return detected
+        credentials = detected.credentials
+        if not isinstance(credentials, CodexCredentials):
+            return ProviderFailure(
+                provider_id=ProviderId.CODEX,
+                kind=ProviderFailureKind.MALFORMED,
+                message="The managed Codex credentials are malformed.",
+            )
+        return credentials.expiry
 
     def projection(
         self,
@@ -243,6 +261,13 @@ class CodexPrivateHomeAuthority:
     ) -> CodexAuthSnapshot | ProviderFailure:
         """Read protected identity and generation through qualified paths."""
         return self._auth.snapshot(account_id)
+
+    def expiry(
+        self,
+        account_id: SidekickAccountId,
+    ) -> Expiry | ProviderFailure:
+        """Read protected access-token expiry without exposing credentials."""
+        return self._auth.expiry(account_id)
 
     def projection(
         self,

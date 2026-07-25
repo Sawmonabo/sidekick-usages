@@ -18,6 +18,7 @@ from sidekick_usages.core.expiry import (
     UnknownExpiry,
     ValidExpiry,
     classify_expiry,
+    refresh_due,
 )
 from sidekick_usages.core.models import Account, ClaudeSetupTokenCredentials
 from sidekick_usages.core.types import (
@@ -36,9 +37,9 @@ from sidekick_usages.errors import RateLimitError, TransientError, UsageError
 from sidekick_usages.persistence.accounts.store import AccountStore
 from sidekick_usages.persistence.errors import PersistenceError
 from sidekick_usages.providers.base import ProviderFailure, ProviderFailureKind
+from sidekick_usages.providers.codex.token import CODEX_REFRESH_MARGIN
 
-CLAUDE_REFRESH_MARGIN_SECONDS = 30 * 60
-CODEX_REFRESH_MARGIN_SECONDS = 10 * 60
+CLAUDE_REFRESH_MARGIN = timedelta(minutes=30)
 
 
 class CredentialRefresher(Protocol):
@@ -304,12 +305,14 @@ class TokenMaintenanceService:
             return (isinstance(expiry, InvalidExpiry), expiry)
         if isinstance(expiry, ExpiredExpiry | InvalidExpiry):
             return (True, expiry)
-        if isinstance(expiry, ValidExpiry):
-            margin = timedelta(
-                seconds=refresh_margin_seconds(account.provider_id)
-            )
-            return (expiry.at <= reference_time + margin, expiry)
-        return (False, expiry)
+        return (
+            refresh_due(
+                expiry,
+                now=reference_time,
+                margin=refresh_margin(account.provider_id),
+            ),
+            expiry,
+        )
 
     def expiry(
         self,
@@ -343,12 +346,12 @@ class TokenMaintenanceService:
         )
 
 
-def refresh_margin_seconds(provider_id: ProviderId) -> int:
+def refresh_margin(provider_id: ProviderId) -> timedelta:
     """Return the provider-specific proactive refresh margin."""
     if provider_id == ProviderId.CLAUDE:
-        return CLAUDE_REFRESH_MARGIN_SECONDS
+        return CLAUDE_REFRESH_MARGIN
     if provider_id == ProviderId.CODEX:
-        return CODEX_REFRESH_MARGIN_SECONDS
+        return CODEX_REFRESH_MARGIN
     assert_never(provider_id)
 
 

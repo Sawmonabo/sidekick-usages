@@ -3,6 +3,7 @@
 import binascii
 import hashlib
 from base64 import b64decode
+from datetime import timedelta
 
 from sidekick_usages.core.accounts.types import (
     AuthorityGeneration,
@@ -17,6 +18,7 @@ JWT_PART_COUNT = 3
 MAX_CODEX_TOKEN_BYTES = 262_144
 MAX_CODEX_TOKEN_METADATA_BYTES = 4_096
 MAX_CODEX_TOKEN_PLAN_BYTES = 256
+CODEX_REFRESH_MARGIN = timedelta(minutes=10)
 
 _AUTH_CLAIM = "https://api.openai.com/auth"
 _ACCESS_TOKEN_GENERATION_PREFIX = "access-token-sha256:"

@@ -14,12 +14,14 @@ from sidekick_usages.core.accounts.types import (
     SidekickAccountId,
 )
 from sidekick_usages.core.types import AccountLabel, ProviderId
+from sidekick_usages.credentials.codex.managed.account import (
+    managed_codex_account,
+)
+from sidekick_usages.credentials.codex.managed.failures import (
+    codex_app_server_failure,
+)
 from sidekick_usages.credentials.codex.managed.home import (
     CodexPrivateHomeAuthority,
-)
-from sidekick_usages.credentials.codex.managed.service import (
-    codex_app_server_failure,
-    managed_codex_account,
 )
 from sidekick_usages.credentials.codex.models import (
     CodexAuthorityExpectation,

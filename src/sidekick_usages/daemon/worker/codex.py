@@ -83,6 +83,52 @@ from sidekick_usages.providers.codex.broker.types import (
 from sidekick_usages.serialization.framing import clear_mutable_buffer
 
 
+class CodexManagedMaintenanceWorkerExecutor:
+    """Maintain one managed Codex authority under its account lock."""
+
+    def __init__(
+        self,
+        coordinator: CodexManagedAuthorityCoordinator,
+        clock: Clock,
+    ) -> None:
+        self._coordinator = coordinator
+        self._clock = clock
+
+    def execute(
+        self,
+        operation: DueOperation,
+        authority: OperationAuthority,
+    ) -> WorkerResult:
+        """Run one scheduled maintenance or explicit forced refresh."""
+        authority.require(operation.required_account_id)
+        scheduled = (
+            operation.kind is OperationKind.MAINTAIN
+            and operation.priority is OperationPriority.SCHEDULED
+        )
+        forced = (
+            operation.kind is OperationKind.REFRESH
+            and operation.priority is OperationPriority.INTERACTIVE
+        )
+        if operation.provider_id is not ProviderId.CODEX or not (
+            scheduled or forced
+        ):
+            raise ValueError(
+                "Worker operation is not managed Codex maintenance."
+            )
+        result = (
+            self._coordinator.refresh_with_authority(
+                operation.required_account_id,
+                authority,
+            )
+            if forced
+            else self._coordinator.maintain_with_authority(
+                operation.required_account_id,
+                authority,
+            )
+        )
+        return _managed_worker_result(operation, result, self._clock)
+
+
 class CodexActivationWorkerExecutor:
     """Run one journaled activation through the resident runtime broker."""
 
@@ -578,21 +624,31 @@ class CodexCallbackWorkerExecutor:
         operation: DueOperation,
         result: CodexManagedAuthorityResult,
     ) -> WorkerResult:
-        outcome = (
-            WorkerOutcome.ACTION_REQUIRED
-            if result.outcome.action_required
-            else (
-                WorkerOutcome.TIMED_OUT
-                if result.outcome is CodexManagedOutcome.TIMED_OUT
-                else WorkerOutcome.TRANSIENT_FAILURE
-            )
+        return _managed_worker_result(operation, result, self._clock)
+
+
+def _managed_worker_result(
+    operation: DueOperation,
+    result: CodexManagedAuthorityResult,
+    clock: Clock,
+) -> WorkerResult:
+    if result.outcome is CodexManagedOutcome.HEALTHY:
+        return _worker_success(operation, clock)
+    outcome = (
+        WorkerOutcome.ACTION_REQUIRED
+        if result.outcome.action_required
+        else (
+            WorkerOutcome.TIMED_OUT
+            if result.outcome is CodexManagedOutcome.TIMED_OUT
+            else WorkerOutcome.TRANSIENT_FAILURE
         )
-        return _worker_failure(
-            operation,
-            outcome,
-            f"codex_managed_{result.outcome.value}",
-            self._clock,
-        )
+    )
+    return _worker_failure(
+        operation,
+        outcome,
+        f"codex_managed_{result.outcome.value}",
+        clock,
+    )
 
 
 def _worker_success(

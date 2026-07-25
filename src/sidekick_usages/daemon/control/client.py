@@ -138,7 +138,7 @@ class ControlClient:
         )
 
     def refresh_all(self) -> Generator[ControlEvent]:
-        """Refresh all due accounts without changing selection."""
+        """Make every account maintenance slot due without selecting it."""
         return self.request(RequestKind.REFRESH_ALL, EmptyPayload())
 
     def snapshot(self) -> Generator[ControlEvent]:

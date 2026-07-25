@@ -35,6 +35,7 @@ from sidekick_usages.daemon.models.worker import (
 from sidekick_usages.daemon.worker.codex import (
     CodexActivationWorkerExecutor,
     CodexCallbackWorkerExecutor,
+    CodexManagedMaintenanceWorkerExecutor,
     CodexNativeReconciliationWorkerExecutor,
 )
 from sidekick_usages.daemon.worker.exchange import (
@@ -95,6 +96,12 @@ _PROVIDER_OPERATION_KINDS = frozenset(
         OperationKind.RECONCILE_NATIVE,
     }
 )
+_CODEX_ACCOUNT_OPERATION_KINDS = frozenset(
+    {
+        OperationKind.MAINTAIN,
+        OperationKind.REFRESH,
+    }
+)
 
 
 class _CodexNativeAuthObserver:
@@ -125,7 +132,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         if operation is None:
             return _EXIT_STATE_UNAVAILABLE
         clock = SystemClock()
-        if operation.kind in _PROVIDER_OPERATION_KINDS:
+        if (
+            operation.provider_id is ProviderId.CODEX
+            and operation.kind in _CODEX_ACCOUNT_OPERATION_KINDS
+        ):
+            completed = _run_codex_account_operation(
+                operation_id,
+                operation,
+                paths,
+                queue,
+                clock,
+            )
+        elif operation.kind in _PROVIDER_OPERATION_KINDS:
             completed = _run_provider_operation(
                 operation_id,
                 operation,
@@ -158,6 +176,42 @@ def main(argv: Sequence[str] | None = None) -> int:
     ):
         return _EXIT_STATE_UNAVAILABLE
     return _EXIT_OK if completed else _EXIT_STATE_UNAVAILABLE
+
+
+def _run_codex_account_operation(
+    operation_id: OperationId,
+    operation: DueOperation,
+    paths: ApplicationPaths,
+    queue: OperationQueueStore,
+    clock: Clock,
+) -> bool:
+    if WORKER_EXCHANGE_DESCRIPTOR_ENVIRONMENT_KEY in os.environ:
+        return False
+    persistence = PersistenceService(
+        paths,
+        maintenance_quiescent=lambda: True,
+    )
+    store = persistence.open_store()
+    executor = CodexManagedMaintenanceWorkerExecutor(
+        _codex_coordinator(
+            paths,
+            persistence,
+            store,
+            clock,
+        ),
+        clock,
+    )
+    return run_isolated_worker(
+        operation_id,
+        queue,
+        WorkerResultStore(paths.durable_operations),
+        OperationAuthorityLock(
+            paths.durable_operations,
+            operation.required_account_id,
+        ),
+        executor,
+        clock,
+    )
 
 
 def _run_provider_operation(

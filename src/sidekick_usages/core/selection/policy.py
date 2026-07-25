@@ -11,6 +11,7 @@ from sidekick_usages.core.selection.models import (
 from sidekick_usages.core.selection.types import (
     ActivationOutcome,
     ActivationPhase,
+    OperationKind,
     OperationPriority,
     OperationState,
 )
@@ -166,6 +167,16 @@ def coalesce_due_operation(
         raise ValueError("Incoming due work must be scheduled.")
     if current.state is OperationState.RUNNING:
         return current
+    if (
+        current.kind is OperationKind.MAINTAIN
+        and current.state
+        in {
+            OperationState.ACTION_REQUIRED,
+            OperationState.RETRY_WAIT,
+        }
+        and incoming.priority is OperationPriority.SCHEDULED
+    ):
+        return incoming
     if (
         current.state is OperationState.ACTION_REQUIRED
         and incoming.priority is OperationPriority.SCHEDULED

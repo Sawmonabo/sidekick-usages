@@ -288,6 +288,27 @@ def test_selection_and_queue_preserve_stable_independent_state(
     assert claude_selected is not None
     assert claude_selected.account_id == target.account_id
     assert state.selected.load(ProviderId.CODEX) == state.codex_state
+    codex_operation = state.operations[2]
+    running = state.queue.transition(
+        codex_operation.operation_id,
+        OperationState.RUNNING,
+        updated_at=REFERENCE_TIME,
+    )
+    state.queue.transition(
+        running.operation_id,
+        OperationState.ACTION_REQUIRED,
+        updated_at=REFERENCE_TIME,
+        failure_code="login_required",
+    )
+    redue = state.queue.enqueue(
+        _operation(
+            codex_operation.required_account_id,
+            ProviderId.CODEX,
+            "d101095e-7bda-43ad-b55d-b8ecb5a7ec66",
+        )
+    )
+    assert redue.state is OperationState.SCHEDULED
+    assert redue.due_at == REFERENCE_TIME
     assert len(state.queue.load()) == len(state.operations)
     assert state.accounts.rename(
         ProviderId.CLAUDE,

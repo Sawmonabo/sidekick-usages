@@ -234,17 +234,7 @@ class SupervisorDispatcher:
                 yield self._update_event(request, update)
             return
         if request.kind is RequestKind.REFRESH_ALL:
-            self._wake()
-            yield self._event(
-                request,
-                EventKind.ACCEPTED,
-                AcceptedPayload(operation_id=None),
-            )
-            yield self._event(
-                request,
-                EventKind.COMPLETED,
-                CompletedPayload(None, CompletionOutcome.NO_CHANGE),
-            )
+            yield from self._dispatch_refresh_all(request)
             return
         if request.kind is RequestKind.RECONCILE:
             yield from self._dispatch_reconcile(request)
@@ -313,6 +303,48 @@ class SupervisorDispatcher:
             effective.operation_id,
         ):
             yield self._update_event(request, update)
+
+    def _dispatch_refresh_all(
+        self,
+        request: ControlRequest,
+    ) -> Iterator[ControlEvent]:
+        now = self._clock.now()
+        maintenance = tuple(
+            operation
+            for operation in self._queue.load()
+            if operation.kind is OperationKind.MAINTAIN
+        )
+        for operation in maintenance:
+            self._queue.enqueue(
+                DueOperation(
+                    operation_id=self._operation_id_factory(),
+                    provider_id=operation.provider_id,
+                    account_id=operation.required_account_id,
+                    kind=OperationKind.MAINTAIN,
+                    priority=OperationPriority.SCHEDULED,
+                    state=OperationState.SCHEDULED,
+                    due_at=now,
+                    updated_at=now,
+                )
+            )
+        self._wake()
+        yield self._event(
+            request,
+            EventKind.ACCEPTED,
+            AcceptedPayload(operation_id=None),
+        )
+        yield self._event(
+            request,
+            EventKind.COMPLETED,
+            CompletedPayload(
+                None,
+                (
+                    CompletionOutcome.SUCCEEDED
+                    if maintenance
+                    else CompletionOutcome.NO_CHANGE
+                ),
+            ),
+        )
 
     def _dispatch_reconcile(
         self,
