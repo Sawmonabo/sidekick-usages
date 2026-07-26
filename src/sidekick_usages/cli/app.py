@@ -34,10 +34,12 @@ from sidekick_usages.persistence.errors import (
     exit_code_for_persistence_code,
 )
 
+PROGRAM_NAME = "sidekick-usages"
+
 
 def _version_callback(value: bool) -> None:
     if value:
-        typer.echo(f"sidekick-usages {__version__}")
+        typer.echo(f"{PROGRAM_NAME} {__version__}")
         raise typer.Exit()
 
 
@@ -81,7 +83,7 @@ def _main(
 def create_app() -> typer.Typer:
     """Register the complete CLI without composing runtime services."""
     application = typer.Typer(
-        name="sidekick-usages",
+        name=PROGRAM_NAME,
         cls=BrandedTyperGroup,
         rich_markup_mode="rich",
         no_args_is_help=False,
@@ -109,7 +111,11 @@ def create_app() -> typer.Typer:
 def run(argv: list[str] | None = None) -> int:
     """Run the CLI and translate typed boundary failures to process codes."""
     try:
-        result: object = create_app()(args=argv, standalone_mode=False)
+        result: object = create_app()(
+            args=argv,
+            prog_name=PROGRAM_NAME,
+            standalone_mode=False,
+        )
         return result if isinstance(result, int) else 0
     except typer.Exit as error:
         exit_code = (
