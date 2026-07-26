@@ -52,6 +52,11 @@ from tests.support.pty import PtySession
 
 ANSI_CONTROL_PATTERN = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|[()][0-2A-Z])")
 CURSOR_UP_PATTERN = re.compile(r"\x1b\[(\d+)A")
+REDRAW_PATTERN = re.compile(
+    r"\x1b\[\?7l(.*?)\x1b\[\?7h",
+    re.DOTALL,
+)
+REDRAW_COMPLETION_SEQUENCE = "\x1b[?7h"
 CHILD_MODE_ENVIRONMENT_KEY = "SIDEKICK_PTY_CHILD"
 LOOKUP_EXECUTABLE_ENVIRONMENT_KEY = "SIDEKICK_PTY_LOOKUP_EXECUTABLE"
 SETUP_ACKNOWLEDGEMENT_ENVIRONMENT_KEY = "SIDEKICK_PTY_SETUP_ACKNOWLEDGEMENT"
@@ -412,9 +417,17 @@ def _plain_terminal_output(output: str) -> str:
 
 
 def _redraw_reuses_terminal_region(output: str) -> bool:
-    plain = _plain_terminal_output(output)
-    upward_rows = sum(int(rows) for rows in CURSOR_UP_PATTERN.findall(output))
-    return plain.count(KEY_FOOTER_TEXT) == 1 and upward_rows == output.count(
+    redraws = tuple(
+        redraw
+        for redraw in REDRAW_PATTERN.findall(output)
+        if KEY_FOOTER_TEXT in _plain_terminal_output(redraw)
+    )
+    if len(redraws) != 1:
+        return False
+    redraw = redraws[0]
+    plain = _plain_terminal_output(redraw)
+    upward_rows = sum(int(rows) for rows in CURSOR_UP_PATTERN.findall(redraw))
+    return plain.count(KEY_FOOTER_TEXT) == 1 and upward_rows == redraw.count(
         "\n"
     )
 
@@ -429,10 +442,19 @@ def _trace_lines(path: Path) -> tuple[str, ...]:
     return tuple(path.read_text(encoding="utf-8").splitlines())
 
 
+def _read_completed_redraw(session: PtySession, expected: str) -> str:
+    output = session.read_until(expected)
+    expected_end = output.rfind(expected) + len(expected)
+    if REDRAW_COMPLETION_SEQUENCE in output[expected_end:]:
+        return output
+    session.clear_output()
+    return output + session.read_until(REDRAW_COMPLETION_SEQUENCE)
+
+
 def _resize_and_read(session: PtySession, columns: int) -> str:
     session.clear_output()
     session.resize(columns, TERMINAL_ROWS)
-    return session.read_until(KEY_FOOTER_TEXT)
+    return _read_completed_redraw(session, KEY_FOOTER_TEXT)
 
 
 def _send_resize_and_read(
@@ -447,7 +469,7 @@ def _send_resize_and_read(
 def _send_key(session: PtySession, key: bytes) -> None:
     session.clear_output()
     session.send(key)
-    session.read_until(CURSOR_GLYPH)
+    _read_completed_redraw(session, CURSOR_GLYPH)
 
 
 def test_dashboard_pty_completes_the_interactive_account_journey(
@@ -458,7 +480,7 @@ def test_dashboard_pty_completes_the_interactive_account_journey(
         lookup_process_id_path,
         trace_path,
     ):
-        initial = session.read_until(STARTUP_FAILURE_TEXT)
+        initial = _read_completed_redraw(session, STARTUP_FAILURE_TEXT)
         lookup_process_id = _read_process_id(lookup_process_id_path)
         plain_initial = _plain_terminal_output(initial)
         assert (
@@ -497,11 +519,11 @@ def test_dashboard_pty_completes_the_interactive_account_journey(
         session.read_until(SETUP_CONFIRMATION_TEXT)
         session.clear_output()
         session.send(APPROVE_KEY)
-        session.read_until(KEY_FOOTER_TEXT)
+        _read_completed_redraw(session, KEY_FOOTER_TEXT)
 
         session.clear_output()
         session.send(REFRESH_KEY)
-        session.read_until(KEY_FOOTER_TEXT)
+        _read_completed_redraw(session, KEY_FOOTER_TEXT)
 
         codex = _send_resize_and_read(
             session,
@@ -560,7 +582,7 @@ def test_dashboard_pty_interrupt_restores_terminal_and_reaps_lookup(
         lookup_process_id_path,
         trace_path,
     ):
-        session.read_until(STARTUP_FAILURE_TEXT)
+        _read_completed_redraw(session, STARTUP_FAILURE_TEXT)
         lookup_process_id = _read_process_id(lookup_process_id_path)
         _send_key(session, DOWN_KEY)
         session.send(ENTER_KEY)
