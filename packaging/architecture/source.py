@@ -92,6 +92,7 @@ STALE_SOURCE_FILES = frozenset(
         "src/sidekick_usages/persistence/_platform/windows_private_bundles.py",
         "src/sidekick_usages/persistence/_platform/windows_private_tree.py",
         "src/sidekick_usages/persistence/_platform/windows_security.py",
+        "src/sidekick_usages/persistence/_recovery.py",
         "src/sidekick_usages/persistence/account_index.py",
         "src/sidekick_usages/persistence/account_runtime_bridge.py",
         "src/sidekick_usages/persistence/account_store.py",

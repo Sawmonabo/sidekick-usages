@@ -4,7 +4,6 @@ import sys
 from pathlib import Path
 from typing import IO
 
-from sidekick_usages.persistence._recovery import RecoveryOperations
 from sidekick_usages.persistence.platform.errors import NativeFilesystemError
 from sidekick_usages.persistence.platform.models import (
     FilesystemQualification,
@@ -12,6 +11,7 @@ from sidekick_usages.persistence.platform.models import (
 )
 from sidekick_usages.persistence.platform.ports import NativePlatform
 from sidekick_usages.persistence.platform.types import NativeFailureKind
+from sidekick_usages.persistence.recovery import RecoveryOperations
 
 if sys.platform == "darwin":
     from sidekick_usages.persistence.platform.macos.adapter import (
