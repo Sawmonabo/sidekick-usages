@@ -917,6 +917,18 @@ source-build path before release. Reopen the choice with cattrs as the leading
 alternative if that required gate cannot be made deterministic and
 supportable. This decision does not approve `pydantic-settings`.
 
+**Cached-first amendment, 2026-07-26:** The saved-account index, retained usage
+snapshots, and retained token-activity snapshots use persistence-owned strict
+standard-library codecs. Exact-wheel evidence showed that constructing their
+Pydantic schemas in the cold dashboard process violated the fixed first-paint
+gate. The amendment fulfills the existing `<250 ms` first-paint and `96 MiB`
+per-process RSS release gates while preserving canonical encoding, exact
+primitive and key validation, immutable records, and typed fail-closed errors.
+Pydantic remains the operator-approved default for provider, credential, and
+other diagnostic-rich boundaries. This release-measured implementation
+amendment is not a second operator disposition and does not authorize a general
+validation framework.
+
 **Commit:** `docs(research): decide schema validation dependency`
 
 ### 8.9 CS-08 — Decide HTTP transport and retry ownership

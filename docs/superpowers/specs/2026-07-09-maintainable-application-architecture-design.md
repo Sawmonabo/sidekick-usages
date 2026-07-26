@@ -4568,6 +4568,15 @@ The baseline decisions below were approved on 2026-07-09. The Pydantic,
 urllib3/retry, platformdirs, and persistence-contract selections were approved
 on 2026-07-10:
 
+> **Release-measured implementation amendment (2026-07-26):** Pydantic remains
+> the operator-approved boundary default. Exactly the saved-account index,
+> retained usage snapshots, and retained token-activity snapshots use
+> persistence-owned strict standard-library codecs to fulfill the existing
+> `<250 ms` first-paint and `96 MiB` per-process RSS gates. This preserves
+> canonical encoding, exact primitive and key validation, immutable records,
+> and typed fail-closed errors. It is not a second operator disposition or
+> permission for a general validation framework.
+
 1. Use `core/`, not `domain/`, for shared product models, types, and pure
    cross-feature policy.
 2. Keep `core/` deliberately narrow and independent of external configuration
@@ -4579,8 +4588,9 @@ on 2026-07-10:
 7. Give Claude and Codex concrete command modules.
 8. Adopt the provider command hierarchy with a defined compatibility policy.
 9. Keep schemas boundary-local.
-10. Use Pydantic 2.13.4 `TypeAdapter` at boundary-local schemas subject to the
-    required Homebrew and platform release gates.
+10. Use Pydantic 2.13.4 `TypeAdapter` by default at boundary-local schemas,
+    subject to the required Homebrew and platform release gates and the narrow
+    cached-first implementation amendment above.
 11. Preserve the installed entry point and machine-readable behavior.
 12. Use the phased migration and load-bearing test strategy above.
 13. Keep shared HTTP infrastructure outside `core/` in a dedicated `http/`

@@ -5,9 +5,11 @@
 **Repository branch:** `develop`
 **Evidence commit:** `c5b588ad474fd95c597cfd0b64339223e3da1843`
 **Python target:** CPython 3.14
-**Decision state:** **GO — OPERATOR APPROVED 2026-07-10**
+**Decision state:** **GO — OPERATOR APPROVED 2026-07-10; CACHED-FIRST
+EXCEPTION RECORDED 2026-07-26**
 **Approved selection:** **Pydantic 2.13.4 `TypeAdapter` at boundary-local
-untrusted-data schemas**
+untrusted-data schemas by default; strict standard-library codecs for the
+three cached-first retained-state artifacts**
 
 This document is the self-contained, tracked CS-07 research record. It records
 the decision question, live repository evidence, exact candidate versions,
@@ -86,6 +88,10 @@ closure and `pydantic-core` is built with Rust and maturin. The current
 Sidekick Homebrew generator prefers source distributions but does not declare
 those build tools. A clean supported-platform Homebrew build is a mandatory
 release gate, not follow-up polish.
+
+The 2026-07-26 addendum narrows that selection for three retained artifacts on
+the measured cached-first dashboard path. It does not reverse the Pydantic
+choice for provider, credential, or other diagnostic-rich boundaries.
 
 ## Live repository evidence
 
@@ -298,6 +304,55 @@ microsecond ranking. Later implementation must measure `--help`, `--version`,
 the default dashboard, and `doctor`; help and version must not initialize
 operational resources.
 
+### 2026-07-26 cached-first release addendum
+
+The real-CLI-startup reversal condition was met by the exact-wheel dashboard
+gate. At commit `64699f0`, Linux reported `250.763 ms` after its readiness
+event barely met the fixed `250 ms` deadline, and macOS Intel missed the
+deadline. The same WSL checkout also missed the first direct run; a later
+filesystem-warm process measured `196.751 ms`.
+
+This is a release-measured implementation amendment under the existing
+`<250 ms` first-paint and `96 MiB` per-process RSS gates, not a second operator
+disposition.
+
+The scoped decision is to use the existing strict standard-library state-codec
+helpers for exactly these cached-first artifacts:
+
+- schema-version-three saved-account metadata;
+- retained usage snapshots; and
+- retained token-activity snapshots.
+
+These boundaries need fail-closed validation and canonical persistence, but do
+not expose repair diagnostics. All three reuse
+`persistence/state/fields.py` and the strict decoder in
+`serialization/json.py`; usage and activity also reuse its compact encoder.
+The account index retains its own bounded, no-secret, duplicate-key, and
+canonical pretty-encoding boundary. Core closed types and frozen schema records
+avoid both a second dependency and Pydantic's fresh-process
+schema-construction cost. Pydantic remains approved for provider, credential,
+and other boundaries where structured diagnostic paths justify that cost.
+
+The first direct process after the change painted in `121.662 ms`; the final
+exact installed wheel painted in `131.142 ms`. Reference/expanded cursor p95
+was `4.637/14.551 ms`, trace/worker RSS was `46.203/46.004 MiB`, and the fixed
+release ceilings were unchanged. A scratch-only differential probe ran 3,676
+comparisons across systematic valid and malformed payload mutations and
+explicit utilization boundary cases in the old and new account, usage, and
+activity codecs. The cases included huge integers, non-finite floats, booleans,
+both valid utilization boundaries, and account `schema_version` encoded as
+`3.0`.
+
+The 3,675 parity cases had zero acceptance or normalization differences, and
+both implementations reproduced each valid seeded payload byte-for-byte. One
+deliberate stricter result remains: the old Pydantic literal accepted floating
+JSON `3.0` as schema version three, while the state codec requires the exact
+integer `3`. Sidekick's schema contract and every writer use the integer form;
+accepting a floating representation was unintended noncanonical input, not a
+supported generation requiring migration. The schema records are frozen and
+slotted, window collections are tuples, and document mappings are read-only
+copies.
+
 ## Packaging and platforms
 
 Pydantic itself publishes a universal Python wheel, while pydantic-core
@@ -390,6 +445,8 @@ The approved implementation must obey these rules.
 
 ### Strict configuration
 
+At Pydantic-owned boundaries:
+
 - Cache each `TypeAdapter` at module scope.
 - Use `@with_config(ConfigDict(...))` for boundary `TypedDict` or standard
   dataclass schemas.
@@ -400,6 +457,18 @@ The approved implementation must obey these rules.
 - Do not globally forbid provider additions without deciding that provider's
   forward-compatibility contract.
 - Do not use coercive defaults to turn corruption into apparently valid state.
+
+### Cached-first exception
+
+- The saved-account index, retained usage snapshots, and retained activity
+  snapshots may use persistence-owned strict standard-library codecs.
+- The exception requires exact primitive and key validation, canonical
+  round-trip encoding, bounded collections, immutable schema records, and the
+  existing typed failure vocabulary.
+- Domain validation has one owner per record; JSON factories only narrow
+  primitive types before constructing those records.
+- The exception does not authorize another validation framework or duplicate
+  provider, credential, or business policy.
 
 ### Error contract
 
@@ -438,14 +507,16 @@ callers.
 
 | Candidate | Research disposition | Reason |
 |---|---|---|
-| Pydantic 2.13.4 `TypeAdapter` | **GO — operator approved** | Best structured diagnostics and strict boundary fit; release packaging gate remains |
+| Pydantic 2.13.4 `TypeAdapter` | **GO — operator approved default** | Best structured diagnostics and strict boundary fit; release packaging gate remains |
 | cattrs 26.1.0 | Leading alternative, not approved | Smaller pure-Python closure, but strict hooks and weaker optional diagnostics add owned policy |
 | msgspec 0.21.1 | NO-GO for this use case | Speed is unnecessary; mapping-key path and first-error behavior reduce repairability |
-| Focused standard-library framework | NO-GO unless all mature options fail | Reimplements nested validation, aggregation, paths, unions, and errors |
+| Focused standard-library codecs | **Release-measured exception for three cached-first artifacts** | Existing persistence primitives preserve strict canonical state without cold Pydantic schema construction; still NO-GO as a general validation framework |
 
-The approved selection is Pydantic because actionable repair and safe typed
-failures are more valuable than microsecond decode speed. Release remains
-blocked until the Homebrew gate succeeds.
+The approved default remains Pydantic because actionable repair and safe typed
+failures are more valuable than microsecond decode speed. The measured
+cached-first exception above is part of that decision, not a general
+standard-library replacement. Release remains blocked until the Homebrew gate
+succeeds.
 
 If the Pydantic gate fails, this record does not automatically authorize
 cattrs. Reopen CS-07 with cattrs as the first alternative, refresh its evidence,
@@ -559,20 +630,22 @@ is bounded.
 | Field | Value |
 |---|---|
 | Change set | CS-07 |
-| Research recommendation | GO for Pydantic 2.13.4 `TypeAdapter` |
-| Current state | **GO — OPERATOR APPROVED** |
+| Research recommendation | GO for Pydantic 2.13.4 `TypeAdapter` by default |
+| Current state | **GO — PYDANTIC DEFAULT OPERATOR APPROVED; CACHED-FIRST IMPLEMENTATION EXCEPTION RECORDED** |
 | Production addition | Authorized for the later implementation change after its gates |
-| Selected option | Boundary-local Pydantic 2.13.4 `TypeAdapter` |
+| Operator-approved selection | Boundary-local Pydantic 2.13.4 `TypeAdapter` |
+| Implementation amendment | Strict standard-library codecs for three cached-first artifacts, recorded 2026-07-26 |
 | Operator decision | GO |
-| Approval date | 2026-07-10 |
+| Operator approval date | 2026-07-10 |
 | Homebrew release gate | Rust and maturin source-build proof required |
 | Design commit containing approval | Pending tracked design update |
 | Approved design SHA-256 | Pending tracked design update |
 
 The operator approved Pydantic with the Rust/maturin Homebrew proof retained as
-a mandatory release gate. The design authority and plan ledger must record the
-approval commit and approved-content SHA-256 before a dependent implementation
-change relies on them.
+a mandatory release gate. The measured cached-first exception is limited to
+the three retained-state codecs named above. The design authority and plan
+ledger must record the approval commit and approved-content SHA-256 before a
+dependent implementation change relies on them.
 
 ## Primary sources
 

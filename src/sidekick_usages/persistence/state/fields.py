@@ -50,6 +50,13 @@ def require_integer(value: JsonValue) -> int:
     return value
 
 
+def require_number(value: JsonValue) -> int | float:
+    """Require one JSON number, excluding booleans."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise InvalidSchemaError
+    return value
+
+
 def require_boolean(value: JsonValue) -> bool:
     """Require one JSON boolean."""
     if not isinstance(value, bool):

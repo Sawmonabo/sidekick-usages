@@ -2,14 +2,6 @@
 
 import json
 from datetime import datetime
-from typing import Annotated, Literal
-
-from pydantic import (
-    AfterValidator,
-    BaseModel,
-    Field,
-    ValidationError,
-)
 
 from sidekick_usages.core.accounts.models import (
     AccountAuthority,
@@ -45,16 +37,24 @@ from sidekick_usages.persistence.limits import (
     MAX_DOCUMENT_BYTES,
 )
 from sidekick_usages.persistence.models.account import VersionThreeDocument
-from sidekick_usages.persistence.schema.config import STRICT_SCHEMA_CONFIG
 from sidekick_usages.persistence.schema.validation import (
+    bounded_text,
     canonical_account_id_text,
+)
+from sidekick_usages.persistence.state.fields import (
+    require_boolean,
+    require_exact_keys,
+    require_list,
+    require_object,
+    require_optional_string,
+    require_schema_version,
+    require_string,
 )
 from sidekick_usages.persistence.state.validation import (
     validate_non_secret_state,
 )
 from sidekick_usages.persistence.time_codec import (
     canonical_timestamp,
-    canonical_timestamp_text,
     parse_canonical_timestamp,
 )
 from sidekick_usages.serialization.json import (
@@ -68,184 +68,284 @@ from sidekick_usages.serialization.json import (
 SCHEMA_VERSION = 3
 _MAX_METADATA_BYTES = 4_096
 
-type _Uuid = Annotated[str, AfterValidator(canonical_account_id_text)]
-type _Timestamp = Annotated[str, AfterValidator(canonical_timestamp_text)]
-type _BoundedText = Annotated[str, AfterValidator(_bounded_text)]
-type _Health = Literal[
-    "healthy",
-    "refresh_due",
-    "login_required",
-    "unreadable",
-    "malformed",
-    "unsupported",
-    "reconciliation_required",
-    "unknown",
-]
-type _CredentialAction = Literal["none", "refresh", "login"]
-type _ClaudeSubscriptionModel = Annotated[
-    _ClaudeStoredModel | _ClaudeManagedModel,
-    Field(discriminator="kind"),
-]
-type _CodexSubscriptionModel = Annotated[
-    _CodexStoredModel | _CodexManagedModel,
-    Field(discriminator="kind"),
-]
-type _AccountModel = Annotated[
-    _ClaudeAccountModel | _CodexAccountModel,
-    Field(discriminator="provider_id"),
-]
+_ACCOUNT_KEYS = frozenset(
+    {
+        "authority",
+        "credential_health",
+        "heartbeat_enabled",
+        "heartbeat_targets",
+        "heartbeat_window_resets",
+        "label",
+        "last_heartbeat_at",
+        "last_heartbeat_error_code",
+        "last_heartbeat_status",
+        "last_refresh_at",
+        "last_refresh_error_code",
+        "last_refresh_status",
+        "plan",
+        "provider_id",
+    }
+)
+_CLAUDE_AUTHORITY_KEYS = frozenset(
+    {
+        "provider_id",
+        "setup_token",
+        "subscription",
+    }
+)
+_CLAUDE_MANAGED_KEYS = frozenset(
+    {
+        "access_expires_at",
+        "action",
+        "authority_id",
+        "executable_version",
+        "generation",
+        "health",
+        "kind",
+        "provider_identity",
+        "refresh_expires_at",
+        "verified_at",
+    }
+)
+_CLAUDE_STORED_KEYS = frozenset(
+    {
+        "access_expires_at",
+        "authority_id",
+        "health",
+        "kind",
+        "observed_at",
+        "provider_identity",
+        "refresh_expires_at",
+    }
+)
+_CODEX_AUTHORITY_KEYS = frozenset({"provider_id", "subscription"})
+_CODEX_MANAGED_KEYS = frozenset(
+    {
+        "authority_id",
+        "executable_version",
+        "generation",
+        "health",
+        "kind",
+        "provider_identity",
+        "verified_at",
+    }
+)
+_CODEX_STORED_KEYS = frozenset(
+    {
+        "authority_id",
+        "expires_at",
+        "generation",
+        "health",
+        "kind",
+        "observed_at",
+        "provider_identity",
+    }
+)
+_ENVELOPE_KEYS = frozenset({"accounts", "schema_version"})
+_SETUP_TOKEN_KEYS = frozenset(
+    {
+        "authority_id",
+        "expires_at",
+        "health",
+        "observed_at",
+    }
+)
 
 
-def _bounded_text(value: str) -> str:
-    """Require one bounded nonempty UTF-8 metadata value."""
-    try:
-        encoded = value.encode("utf-8")
-    except UnicodeEncodeError:
-        raise ValueError("Metadata must be valid UTF-8.") from None
-    if not encoded or len(encoded) > _MAX_METADATA_BYTES:
-        raise ValueError("Metadata must be nonempty and bounded.")
-    return value
+def _required_bounded_text(value: JsonValue) -> str:
+    return bounded_text(require_string(value), _MAX_METADATA_BYTES)
 
 
-class _ClaudeSetupTokenModel(BaseModel):
-    """Validated setup-token reference metadata."""
-
-    model_config = STRICT_SCHEMA_CONFIG
-
-    authority_id: _Uuid
-    expires_at: _Timestamp | None
-    health: _Health
-    observed_at: _Timestamp | None
+def _optional_bounded_text(value: JsonValue) -> str | None:
+    text = require_optional_string(value)
+    return None if text is None else bounded_text(text, _MAX_METADATA_BYTES)
 
 
-class _ClaudeStoredModel(BaseModel):
-    """Validated Sidekick-stored Claude subscription metadata."""
-
-    model_config = STRICT_SCHEMA_CONFIG
-
-    kind: Literal["stored"]
-    authority_id: _Uuid
-    provider_identity: _BoundedText | None
-    access_expires_at: _Timestamp | None
-    refresh_expires_at: _Timestamp | None
-    health: _Health
-    observed_at: _Timestamp | None
+def _authority_id(value: JsonValue) -> AuthorityId:
+    return AuthorityId(canonical_account_id_text(require_string(value)))
 
 
-class _ClaudeManagedModel(BaseModel):
-    """Validated managed Claude subscription metadata."""
-
-    model_config = STRICT_SCHEMA_CONFIG
-
-    kind: Literal["managed"]
-    authority_id: _Uuid
-    provider_identity: _BoundedText
-    generation: _BoundedText
-    access_expires_at: _Timestamp
-    refresh_expires_at: _Timestamp | None
-    verified_at: _Timestamp
-    executable_version: _BoundedText
-    health: _Health
-    action: _CredentialAction
+def _time(value: str | None) -> datetime | None:
+    """Decode one optional canonical timestamp."""
+    return None if value is None else parse_canonical_timestamp(value)
 
 
-class _ClaudeAuthorityModel(BaseModel):
-    """Validated Claude authority envelope."""
-
-    model_config = STRICT_SCHEMA_CONFIG
-
-    provider_id: Literal["claude"]
-    setup_token: _ClaudeSetupTokenModel | None
-    subscription: _ClaudeSubscriptionModel | None
+def _identity(value: str | None) -> ProviderIdentity | None:
+    """Decode one optional provider identity."""
+    return None if value is None else ProviderIdentity(value)
 
 
-class _CodexStoredModel(BaseModel):
-    """Validated Sidekick-stored Codex subscription metadata."""
-
-    model_config = STRICT_SCHEMA_CONFIG
-
-    kind: Literal["stored"]
-    authority_id: _Uuid
-    provider_identity: _BoundedText | None
-    expires_at: _Timestamp | None
-    generation: _BoundedText | None
-    health: _Health
-    observed_at: _Timestamp | None
-
-
-class _CodexManagedModel(BaseModel):
-    """Validated managed Codex subscription metadata."""
-
-    model_config = STRICT_SCHEMA_CONFIG
-
-    kind: Literal["managed"]
-    authority_id: _Uuid
-    provider_identity: _BoundedText
-    generation: _BoundedText
-    verified_at: _Timestamp
-    executable_version: _BoundedText
-    health: _Health
-
-
-class _CodexAuthorityModel(BaseModel):
-    """Validated Codex authority envelope."""
-
-    model_config = STRICT_SCHEMA_CONFIG
-
-    provider_id: Literal["codex"]
-    subscription: _CodexSubscriptionModel
-
-
-class _AccountStateModel(BaseModel):
-    """Strict provider-neutral saved-account state."""
-
-    model_config = STRICT_SCHEMA_CONFIG
-
-    label: _BoundedText
-    plan: _BoundedText
-    credential_health: _Health
-    last_refresh_at: _Timestamp | None
-    last_refresh_status: Literal["ok", "skipped", "failed"] | None
-    last_refresh_error_code: _BoundedText | None
-    heartbeat_enabled: bool
-    heartbeat_window_resets: dict[_BoundedText, _Timestamp] | None
-    heartbeat_targets: list[_BoundedText] | None
-    last_heartbeat_at: _Timestamp | None
-    last_heartbeat_status: (
-        Literal[
-            "warmed",
-            "active",
-            "disabled",
-            "unsupported",
-            "failed",
-            "enabled",
-        ]
-        | None
+def _setup_authority(value: JsonValue) -> ClaudeSetupTokenAuthority | None:
+    if value is None:
+        return None
+    record = require_object(value)
+    require_exact_keys(record, _SETUP_TOKEN_KEYS)
+    return ClaudeSetupTokenAuthority(
+        authority_id=_authority_id(record["authority_id"]),
+        expires_at=_time(require_optional_string(record["expires_at"])),
+        health=CredentialHealth(require_string(record["health"])),
+        observed_at=_time(require_optional_string(record["observed_at"])),
     )
-    last_heartbeat_error_code: _BoundedText | None
 
 
-class _ClaudeAccountModel(_AccountStateModel):
-    """Strict Claude saved-account record."""
+def _claude_stored_authority(
+    record: JsonObject,
+) -> ClaudeStoredLoginAuthority:
+    require_exact_keys(record, _CLAUDE_STORED_KEYS)
+    if require_string(record["kind"]) != "stored":
+        raise InvalidSchemaError
+    return ClaudeStoredLoginAuthority(
+        authority_id=_authority_id(record["authority_id"]),
+        provider_identity=_identity(
+            _optional_bounded_text(record["provider_identity"])
+        ),
+        access_expires_at=_time(
+            require_optional_string(record["access_expires_at"])
+        ),
+        refresh_expires_at=_time(
+            require_optional_string(record["refresh_expires_at"])
+        ),
+        health=CredentialHealth(require_string(record["health"])),
+        observed_at=_time(require_optional_string(record["observed_at"])),
+    )
 
-    provider_id: Literal["claude"]
-    authority: _ClaudeAuthorityModel
+
+def _claude_managed_authority(
+    record: JsonObject,
+) -> ClaudeManagedLoginAuthority:
+    require_exact_keys(record, _CLAUDE_MANAGED_KEYS)
+    if require_string(record["kind"]) != "managed":
+        raise InvalidSchemaError
+    return ClaudeManagedLoginAuthority(
+        authority_id=_authority_id(record["authority_id"]),
+        provider_identity=ProviderIdentity(
+            _required_bounded_text(record["provider_identity"])
+        ),
+        generation=AuthorityGeneration(
+            _required_bounded_text(record["generation"])
+        ),
+        access_expires_at=parse_canonical_timestamp(
+            require_string(record["access_expires_at"])
+        ),
+        refresh_expires_at=_time(
+            require_optional_string(record["refresh_expires_at"])
+        ),
+        verified_at=parse_canonical_timestamp(
+            require_string(record["verified_at"])
+        ),
+        executable_version=_required_bounded_text(
+            record["executable_version"]
+        ),
+        health=CredentialHealth(require_string(record["health"])),
+        action=CredentialAction(require_string(record["action"])),
+    )
 
 
-class _CodexAccountModel(_AccountStateModel):
-    """Strict Codex saved-account record."""
+def _claude_subscription(
+    value: JsonValue,
+) -> ClaudeStoredLoginAuthority | ClaudeManagedLoginAuthority | None:
+    if value is None:
+        return None
+    record = require_object(value)
+    kind = require_string(record.get("kind"))
+    if kind == "stored":
+        return _claude_stored_authority(record)
+    if kind == "managed":
+        return _claude_managed_authority(record)
+    raise InvalidSchemaError
 
-    provider_id: Literal["codex"]
-    authority: _CodexAuthorityModel
+
+def _claude_authority(value: JsonValue) -> AccountAuthority:
+    """Convert strict Claude authority metadata to core types."""
+    record = require_object(value)
+    require_exact_keys(record, _CLAUDE_AUTHORITY_KEYS)
+    if require_string(record["provider_id"]) != ProviderId.CLAUDE.value:
+        raise InvalidSchemaError
+    return ClaudeAccountAuthority(
+        setup_token=_setup_authority(record["setup_token"]),
+        subscription=_claude_subscription(record["subscription"]),
+    )
 
 
-class _EnvelopeModel(BaseModel):
-    """Strict schema-version-three document envelope."""
+def _codex_stored_authority(record: JsonObject) -> CodexStoredAuthority:
+    require_exact_keys(record, _CODEX_STORED_KEYS)
+    if require_string(record["kind"]) != "stored":
+        raise InvalidSchemaError
+    generation = _optional_bounded_text(record["generation"])
+    return CodexStoredAuthority(
+        authority_id=_authority_id(record["authority_id"]),
+        provider_identity=_identity(
+            _optional_bounded_text(record["provider_identity"])
+        ),
+        expires_at=_time(require_optional_string(record["expires_at"])),
+        generation=(
+            None if generation is None else AuthorityGeneration(generation)
+        ),
+        health=CredentialHealth(require_string(record["health"])),
+        observed_at=_time(require_optional_string(record["observed_at"])),
+    )
 
-    model_config = STRICT_SCHEMA_CONFIG
 
-    schema_version: Literal[3]
-    accounts: dict[_Uuid, _AccountModel]
+def _codex_managed_authority(record: JsonObject) -> CodexManagedAuthority:
+    require_exact_keys(record, _CODEX_MANAGED_KEYS)
+    if require_string(record["kind"]) != "managed":
+        raise InvalidSchemaError
+    return CodexManagedAuthority(
+        authority_id=_authority_id(record["authority_id"]),
+        provider_identity=ProviderIdentity(
+            _required_bounded_text(record["provider_identity"])
+        ),
+        generation=AuthorityGeneration(
+            _required_bounded_text(record["generation"])
+        ),
+        verified_at=parse_canonical_timestamp(
+            require_string(record["verified_at"])
+        ),
+        executable_version=_required_bounded_text(
+            record["executable_version"]
+        ),
+        health=CredentialHealth(require_string(record["health"])),
+    )
+
+
+def _codex_authority(value: JsonValue) -> AccountAuthority:
+    """Convert strict Codex authority metadata to core types."""
+    record = require_object(value)
+    require_exact_keys(record, _CODEX_AUTHORITY_KEYS)
+    if require_string(record["provider_id"]) != ProviderId.CODEX.value:
+        raise InvalidSchemaError
+    subscription = require_object(record["subscription"])
+    kind = require_string(subscription.get("kind"))
+    if kind == "stored":
+        authority = _codex_stored_authority(subscription)
+    elif kind == "managed":
+        authority = _codex_managed_authority(subscription)
+    else:
+        raise InvalidSchemaError
+    return CodexAccountAuthority(subscription=authority)
+
+
+def _heartbeat_resets(
+    value: JsonValue,
+) -> tuple[tuple[str, datetime], ...] | None:
+    if value is None:
+        return None
+    resets = require_object(value)
+    return tuple(
+        (
+            bounded_text(target, _MAX_METADATA_BYTES),
+            parse_canonical_timestamp(require_string(reset_at)),
+        )
+        for target, reset_at in resets.items()
+    )
+
+
+def _heartbeat_targets(value: JsonValue) -> tuple[str, ...] | None:
+    if value is None:
+        return None
+    return tuple(
+        _required_bounded_text(target) for target in require_list(value)
+    )
 
 
 def _decode_root(payload: bytes) -> JsonObject:
@@ -264,150 +364,69 @@ def _decode_root(payload: bytes) -> JsonObject:
     return decoded
 
 
-def _time(value: str | None) -> datetime | None:
-    """Decode one optional canonical timestamp."""
-    return None if value is None else parse_canonical_timestamp(value)
-
-
-def _identity(value: str | None) -> ProviderIdentity | None:
-    """Decode one optional provider identity."""
-    return None if value is None else ProviderIdentity(value)
-
-
-def _claude_authority(model: _ClaudeAuthorityModel) -> AccountAuthority:
-    """Convert validated Claude authority metadata to core types."""
-    setup = model.setup_token
-    setup_authority = (
-        None
-        if setup is None
-        else ClaudeSetupTokenAuthority(
-            authority_id=AuthorityId(setup.authority_id),
-            expires_at=_time(setup.expires_at),
-            health=CredentialHealth(setup.health),
-            observed_at=_time(setup.observed_at),
-        )
-    )
-    subscription = model.subscription
-    if isinstance(subscription, _ClaudeStoredModel):
-        subscription_authority = ClaudeStoredLoginAuthority(
-            authority_id=AuthorityId(subscription.authority_id),
-            provider_identity=_identity(subscription.provider_identity),
-            access_expires_at=_time(subscription.access_expires_at),
-            refresh_expires_at=_time(subscription.refresh_expires_at),
-            health=CredentialHealth(subscription.health),
-            observed_at=_time(subscription.observed_at),
-        )
-    elif isinstance(subscription, _ClaudeManagedModel):
-        subscription_authority = ClaudeManagedLoginAuthority(
-            authority_id=AuthorityId(subscription.authority_id),
-            provider_identity=ProviderIdentity(subscription.provider_identity),
-            generation=AuthorityGeneration(subscription.generation),
-            access_expires_at=parse_canonical_timestamp(
-                subscription.access_expires_at
-            ),
-            refresh_expires_at=_time(subscription.refresh_expires_at),
-            verified_at=parse_canonical_timestamp(subscription.verified_at),
-            executable_version=subscription.executable_version,
-            health=CredentialHealth(subscription.health),
-            action=CredentialAction(subscription.action),
-        )
-    else:
-        subscription_authority = None
-    return ClaudeAccountAuthority(
-        setup_token=setup_authority,
-        subscription=subscription_authority,
-    )
-
-
-def _codex_authority(model: _CodexAuthorityModel) -> AccountAuthority:
-    """Convert validated Codex authority metadata to core types."""
-    subscription = model.subscription
-    if isinstance(subscription, _CodexStoredModel):
-        authority = CodexStoredAuthority(
-            authority_id=AuthorityId(subscription.authority_id),
-            provider_identity=_identity(subscription.provider_identity),
-            expires_at=_time(subscription.expires_at),
-            generation=(
-                AuthorityGeneration(subscription.generation)
-                if subscription.generation is not None
-                else None
-            ),
-            health=CredentialHealth(subscription.health),
-            observed_at=_time(subscription.observed_at),
-        )
-    else:
-        authority = CodexManagedAuthority(
-            authority_id=AuthorityId(subscription.authority_id),
-            provider_identity=ProviderIdentity(subscription.provider_identity),
-            generation=AuthorityGeneration(subscription.generation),
-            verified_at=parse_canonical_timestamp(subscription.verified_at),
-            executable_version=subscription.executable_version,
-            health=CredentialHealth(subscription.health),
-        )
-    return CodexAccountAuthority(subscription=authority)
-
-
-def _account(
-    account_id: str,
-    model: _ClaudeAccountModel | _CodexAccountModel,
-) -> SavedAccount:
-    """Convert one validated saved-account model."""
+def _account(account_id: str, value: JsonValue) -> SavedAccount:
+    """Convert one strict saved-account record."""
+    record = require_object(value)
+    require_exact_keys(record, _ACCOUNT_KEYS)
+    provider_id = ProviderId(require_string(record["provider_id"]))
     authority = (
-        _claude_authority(model.authority)
-        if isinstance(model, _ClaudeAccountModel)
-        else _codex_authority(model.authority)
+        _claude_authority(record["authority"])
+        if provider_id is ProviderId.CLAUDE
+        else _codex_authority(record["authority"])
     )
-    resets = model.heartbeat_window_resets
+    refresh_status = require_optional_string(record["last_refresh_status"])
+    heartbeat_status = require_optional_string(record["last_heartbeat_status"])
     return SavedAccount(
         account_id=SidekickAccountId(account_id),
-        label=AccountLabel(model.label),
-        provider_id=ProviderId(model.provider_id),
-        plan=model.plan,
+        label=AccountLabel(_required_bounded_text(record["label"])),
+        provider_id=provider_id,
+        plan=_required_bounded_text(record["plan"]),
         authority=authority,
-        credential_health=CredentialHealth(model.credential_health),
-        last_refresh_at=_time(model.last_refresh_at),
+        credential_health=CredentialHealth(
+            require_string(record["credential_health"])
+        ),
+        last_refresh_at=_time(
+            require_optional_string(record["last_refresh_at"])
+        ),
         last_refresh_status=(
-            RefreshStatus(model.last_refresh_status)
-            if model.last_refresh_status is not None
-            else None
+            None if refresh_status is None else RefreshStatus(refresh_status)
         ),
-        last_refresh_error_code=model.last_refresh_error_code,
-        heartbeat_enabled=model.heartbeat_enabled,
-        heartbeat_window_resets=(
-            tuple(
-                (target, parse_canonical_timestamp(reset_at))
-                for target, reset_at in resets.items()
-            )
-            if resets is not None
-            else None
+        last_refresh_error_code=_optional_bounded_text(
+            record["last_refresh_error_code"]
         ),
-        heartbeat_targets=(
-            tuple(model.heartbeat_targets)
-            if model.heartbeat_targets is not None
-            else None
+        heartbeat_enabled=require_boolean(record["heartbeat_enabled"]),
+        heartbeat_window_resets=_heartbeat_resets(
+            record["heartbeat_window_resets"]
         ),
-        last_heartbeat_at=_time(model.last_heartbeat_at),
+        heartbeat_targets=_heartbeat_targets(record["heartbeat_targets"]),
+        last_heartbeat_at=_time(
+            require_optional_string(record["last_heartbeat_at"])
+        ),
         last_heartbeat_status=(
-            HeartbeatStatus(model.last_heartbeat_status)
-            if model.last_heartbeat_status is not None
-            else None
+            None
+            if heartbeat_status is None
+            else HeartbeatStatus(heartbeat_status)
         ),
-        last_heartbeat_error_code=model.last_heartbeat_error_code,
+        last_heartbeat_error_code=_optional_bounded_text(
+            record["last_heartbeat_error_code"]
+        ),
     )
 
 
 def decode_version_three(payload: bytes) -> VersionThreeDocument:
     """Decode one strict no-secret schema-version-three account index."""
     root = _decode_root(payload)
+    require_exact_keys(root, _ENVELOPE_KEYS)
+    require_schema_version(root["schema_version"], SCHEMA_VERSION)
+    accounts = require_object(root["accounts"])
     try:
-        envelope = _EnvelopeModel.model_validate(root, strict=True)
         document = VersionThreeDocument(
             tuple(
-                _account(account_id, account)
-                for account_id, account in envelope.accounts.items()
+                _account(canonical_account_id_text(account_id), account)
+                for account_id, account in accounts.items()
             )
         )
-    except ValidationError, TypeError, ValueError:
+    except TypeError, ValueError:
         raise InvalidSchemaError from None
     return document
 

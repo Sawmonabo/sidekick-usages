@@ -22,6 +22,12 @@
 > four-digit year and deliberate two-line narrow presentation. This document
 > remains authoritative for snapshot and provider-accounting behavior.
 
+**Cached-first codec amendment (2026-07-26):** The snapshot keeps this
+document's strict, canonical, fail-closed contract but uses the
+persistence-owned standard-library codec. This narrow exception removes
+Pydantic schema construction from the measured first-paint path; Pydantic
+remains the default for diagnostic-rich provider and credential boundaries.
+
 ## 1. Outcome
 
 Both provider panels use one stable token-activity footer contract:
@@ -195,7 +201,7 @@ provider fields to the shared model.
 Add `persistence/activity_snapshots.py` as the sole Sidekick snapshot owner.
 It owns:
 
-- the strict versioned Pydantic document schema;
+- the strict versioned cached-first document schema;
 - deterministic canonical JSON encoding;
 - duplicate-key and malformed-JSON rejection;
 - stable account-identity key derivation;
@@ -351,7 +357,8 @@ Do not add a dependency.
 
 The repository already depends on and uses:
 
-- Pydantic for strict external and persisted schema validation;
+- Pydantic for strict provider and diagnostic-rich persisted validation;
+- persistence-owned field and JSON codecs for cached-first snapshots;
 - the strict duplicate-rejecting JSON decoder;
 - `PersistenceFilesystem` for bounded, permission-qualified, atomic,
   durability-proven private files;
