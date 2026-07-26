@@ -95,6 +95,26 @@ class ServiceArtifact:
 
 
 @dataclass(frozen=True, slots=True)
+class ServiceLaunchCommand:
+    """One exact qualified supervisor command."""
+
+    program: Path
+    arguments: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        """Reject ambiguous programs and unsafe native arguments."""
+        values = (str(self.program), *self.arguments)
+        if not self.program.is_absolute() or any(
+            not value
+            or "\0" in value
+            or "\n" in value
+            or "\r" in value
+            for value in values
+        ):
+            raise ValueError("Service launch command is invalid.")
+
+
+@dataclass(frozen=True, slots=True)
 class ServiceBackendStatus:
     """Read-only aggregate and independent platform component state."""
 

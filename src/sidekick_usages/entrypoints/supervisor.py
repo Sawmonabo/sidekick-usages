@@ -2,8 +2,9 @@
 
 import os
 import signal
+import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from functools import partial
 from pathlib import Path
 from threading import Event
@@ -16,6 +17,7 @@ from sidekick_usages.daemon.control.dispatch import (
     SupervisorDispatcher,
 )
 from sidekick_usages.daemon.control.server import LocalControlServer
+from sidekick_usages.daemon.lifecycle.constants import CODEX_EXECUTABLE_OPTION
 from sidekick_usages.daemon.runtime.codex import (
     DurableCodexOperationDispatcher,
 )
@@ -54,13 +56,15 @@ from sidekick_usages.persistence.supervisor.selection import (
 )
 from sidekick_usages.persistence.supervisor.service import ServiceStateStore
 from sidekick_usages.providers.codex.app_server.executable import (
-    discover_codex_executable,
+    discover_pinned_codex_executable,
 )
 from sidekick_usages.providers.codex.auth.home import default_codex_home
 from sidekick_usages.providers.codex.broker.responder import CodexRuntimeBroker
 from sidekick_usages.providers.codex.broker.service import CodexSharedRuntime
 
 _EXIT_OK = 0
+_INVALID_INVOCATION_EXIT_CODE = 2
+_SUPERVISOR_ARGUMENT_COUNT = 2
 
 
 def _request_stop(stop: Event, wakeup: WakeupChannel) -> None:
@@ -78,9 +82,11 @@ def _signal_stop(
 
 def _create_codex_runtime(
     native_home: Path,
+    executable_path: Path | None,
     cancelled: Callable[[], bool],
 ) -> CodexSharedRuntime:
-    executable = discover_codex_executable(
+    executable = discover_pinned_codex_executable(
+        executable_path,
         os.environ,
         cancelled=cancelled,
     )
@@ -92,8 +98,13 @@ def _create_codex_runtime(
     )
 
 
-def main() -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     """Compose and run one lean per-user resident supervisor."""
+    arguments = tuple(sys.argv[1:] if argv is None else argv)
+    try:
+        codex_executable = _parse_codex_executable(arguments)
+    except ValueError:
+        return _INVALID_INVOCATION_EXIT_CODE
     paths = discover_application_paths()
     clock = SystemClock()
     wakeup = WakeupChannel()
@@ -119,7 +130,11 @@ def main() -> int:
         exchanges=exchanges,
     )
     broker = CodexRuntimeBroker(
-        partial(_create_codex_runtime, default_codex_home()),
+        partial(
+            _create_codex_runtime,
+            default_codex_home(),
+            codex_executable,
+        ),
         RuntimeStateReader(
             ProviderId.CODEX,
             selected,
@@ -183,3 +198,19 @@ def main() -> int:
     signal.signal(signal.SIGINT, partial(_signal_stop, request_stop))
     runtime.run()
     return _EXIT_OK
+
+
+def _parse_codex_executable(arguments: Sequence[str]) -> Path | None:
+    """Parse the exact optional provider executable service argument."""
+    if not arguments:
+        return None
+    if (
+        len(arguments) != _SUPERVISOR_ARGUMENT_COUNT
+        or arguments[0] != CODEX_EXECUTABLE_OPTION
+        or not arguments[1]
+    ):
+        raise ValueError("Invalid supervisor invocation.")
+    executable = Path(arguments[1])
+    if not executable.is_absolute():
+        raise ValueError("Codex executable path must be absolute.")
+    return executable

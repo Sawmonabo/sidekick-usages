@@ -3,12 +3,15 @@
 import os
 import re
 from collections.abc import Callable, Mapping
+from pathlib import Path
 
 from sidekick_usages.platform.errors import ExecutableQualificationError
 from sidekick_usages.platform.executable import (
+    qualify_executable,
     resolve_executable,
     verify_executable,
 )
+from sidekick_usages.platform.models import ExecutableProvenance
 from sidekick_usages.platform.types import ExecutableFailure
 from sidekick_usages.providers.codex.app_server.errors import (
     CodexAppServerError,
@@ -38,6 +41,7 @@ _VERSION_PATTERN = re.compile(
 def discover_codex_executable(
     environment: Mapping[str, str] | None = None,
     *,
+    executable_path: Path | None = None,
     process_group: CodexProcessGroupPolicy = (
         CodexProcessGroupPolicy.ISOLATED
     ),
@@ -46,7 +50,11 @@ def discover_codex_executable(
     """Resolve, version, and freeze one exact Codex executable."""
     source = os.environ if environment is None else environment
     try:
-        provenance = resolve_executable(_CODEX_COMMAND, source)
+        provenance = (
+            resolve_codex_executable(source)
+            if executable_path is None
+            else qualify_executable(executable_path)
+        )
     except ExecutableQualificationError as error:
         failure = (
             CodexAppServerFailure.EXECUTABLE_MISSING
@@ -75,6 +83,30 @@ def discover_codex_executable(
         provenance=provenance,
         version=version,
     )
+
+
+def discover_pinned_codex_executable(
+    executable_path: Path | None,
+    environment: Mapping[str, str] | None = None,
+    *,
+    cancelled: Callable[[], bool] | None = None,
+) -> CodexExecutable:
+    """Discover only the service-pinned Codex executable."""
+    if executable_path is None:
+        raise CodexAppServerError(CodexAppServerFailure.EXECUTABLE_MISSING)
+    return discover_codex_executable(
+        environment,
+        executable_path=executable_path,
+        cancelled=cancelled,
+    )
+
+
+def resolve_codex_executable(
+    environment: Mapping[str, str] | None = None,
+) -> ExecutableProvenance:
+    """Resolve one qualified Codex executable without running it."""
+    source = os.environ if environment is None else environment
+    return resolve_executable(_CODEX_COMMAND, source)
 
 
 def verify_codex_executable(executable: CodexExecutable) -> None:

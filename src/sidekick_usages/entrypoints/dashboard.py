@@ -3,6 +3,7 @@
 import os
 import sys
 from collections.abc import Sequence
+from functools import partial
 from pathlib import Path
 
 from sidekick_usages.cli.contexts.dashboard.snapshot import (
@@ -26,6 +27,9 @@ from sidekick_usages.daemon.lifecycle.manager import build_daemon_manager
 from sidekick_usages.paths import discover_application_paths
 from sidekick_usages.persistence.setup.store import (
     ServiceSetupAcknowledgementStore,
+)
+from sidekick_usages.providers.codex.app_server.executable import (
+    resolve_codex_executable,
 )
 from sidekick_usages.usage.lookup.worker.client import (
     UsageLookupModuleLaunchPlanner,
@@ -69,6 +73,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         socket_path=paths.supervisor_socket,
         setup=GuidedServiceSetup(
             build_daemon_manager(
+                codex_executable=partial(
+                    resolve_codex_executable,
+                    os.environ,
+                ),
                 paths=paths,
                 clock=clock,
                 provider_readiness=capabilities,

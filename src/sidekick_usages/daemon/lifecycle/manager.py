@@ -1,6 +1,7 @@
 """Cross-platform per-user supervisor lifecycle orchestration."""
 
 from collections.abc import Callable
+from functools import partial
 from pathlib import Path
 from typing import assert_never
 
@@ -8,6 +9,7 @@ from sidekick_usages.clock import Clock, SystemClock
 from sidekick_usages.core.types import ExitCode
 from sidekick_usages.daemon.lifecycle.artifacts import ServiceArtifactStore
 from sidekick_usages.daemon.lifecycle.commands import SystemCommandRunner
+from sidekick_usages.daemon.lifecycle.constants import CODEX_EXECUTABLE_OPTION
 from sidekick_usages.daemon.lifecycle.errors import ServiceLifecycleError
 from sidekick_usages.daemon.lifecycle.platform.launchd import LaunchdBackend
 from sidekick_usages.daemon.lifecycle.platform.selection import (
@@ -34,6 +36,7 @@ from sidekick_usages.daemon.models.lifecycle import (
     DaemonOperationResult,
     PlatformInfo,
     ServiceBackendStatus,
+    ServiceLaunchCommand,
     SupervisorHealth,
 )
 from sidekick_usages.daemon.types.lifecycle import (
@@ -45,6 +48,9 @@ from sidekick_usages.daemon.types.lifecycle import (
 )
 from sidekick_usages.errors import UsageError
 from sidekick_usages.paths import ApplicationPaths, discover_application_paths
+from sidekick_usages.platform.errors import ExecutableQualificationError
+from sidekick_usages.platform.models import ExecutableProvenance
+from sidekick_usages.platform.types import ExecutableFailure
 
 _FEATURE_DISABLED_MESSAGE = (
     "Resident account supervision is disabled on native Windows."
@@ -260,7 +266,7 @@ class DaemonManager:
 
 def build_service_backend(
     platform_info: PlatformInfo,
-    supervisor_executable: Callable[[], Path],
+    launch_command: Callable[[], ServiceLaunchCommand],
     paths: ApplicationPaths,
     runner: SystemCommandRunner,
     artifacts: ServiceArtifactStore,
@@ -268,13 +274,10 @@ def build_service_backend(
     """Build the one supported backend for explicit platform facts."""
     if platform_info.system == "Windows":
         return FeatureDisabledBackend()
-    qualified_executable = qualify_supervisor_executable(
-        supervisor_executable()
-    )
     if platform_info.system == "Darwin":
         return LaunchdBackend(
             paths.launch_agent,
-            qualified_executable,
+            launch_command,
             paths.service_logs,
             platform_info.uid,
             runner,
@@ -284,7 +287,7 @@ def build_service_backend(
         return FeatureDisabledBackend()
     systemd = SystemdBackend(
         paths.systemd_user_service,
-        qualified_executable,
+        launch_command,
         runner,
         artifacts,
     )
@@ -295,6 +298,7 @@ def build_service_backend(
 
 def build_daemon_manager(
     *,
+    codex_executable: Callable[[], ExecutableProvenance],
     paths: ApplicationPaths | None = None,
     clock: Clock | None = None,
     provider_readiness: ProviderCapabilityReadiness | None = None,
@@ -311,7 +315,11 @@ def build_daemon_manager(
     )
     backend = build_service_backend(
         platform_info,
-        resolve_supervisor_executable,
+        partial(
+            _service_launch_command,
+            resolve_supervisor_executable,
+            codex_executable,
+        ),
         resolved_paths,
         runner,
         ServiceArtifactStore(platform_info.home, platform_info.uid),
@@ -320,4 +328,24 @@ def build_daemon_manager(
         backend,
         readiness,
         RuntimeCleanup(resolved_paths),
+    )
+
+
+def _service_launch_command(
+    supervisor_executable: Callable[[], Path],
+    codex_executable: Callable[[], ExecutableProvenance],
+) -> ServiceLaunchCommand:
+    """Resolve the exact secret-free command for one service publication."""
+    supervisor = qualify_supervisor_executable(supervisor_executable())
+    try:
+        codex = codex_executable().path
+    except ExecutableQualificationError as error:
+        if error.code is ExecutableFailure.MISSING:
+            return ServiceLaunchCommand(supervisor, ())
+        raise ServiceLifecycleError(
+            ServiceFailureCode.EXECUTABLE_UNAVAILABLE
+        ) from None
+    return ServiceLaunchCommand(
+        supervisor,
+        (CODEX_EXECUTABLE_OPTION, str(codex)),
     )

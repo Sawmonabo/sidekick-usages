@@ -1,6 +1,7 @@
 """macOS per-user LaunchAgent integration."""
 
 import html
+from collections.abc import Callable
 from pathlib import Path
 
 from sidekick_usages.daemon.lifecycle.artifacts import ServiceArtifactStore
@@ -14,6 +15,7 @@ from sidekick_usages.daemon.lifecycle.ports import ServiceLifecycleObserver
 from sidekick_usages.daemon.models.lifecycle import (
     ServiceArtifact,
     ServiceBackendStatus,
+    ServiceLaunchCommand,
     ServiceLifecycleObservation,
 )
 from sidekick_usages.daemon.types.lifecycle import (
@@ -32,14 +34,14 @@ class LaunchdBackend:
     def __init__(
         self,
         artifact_path: Path,
-        executable: Path,
+        launch_command: Callable[[], ServiceLaunchCommand],
         log_root: Path,
         uid: int,
         runner: SystemCommandRunner,
         artifacts: ServiceArtifactStore,
     ) -> None:
         self._artifact_path = artifact_path
-        self._executable = executable
+        self._launch_command = launch_command
         self._log_root = log_root
         self._uid = uid
         self._runner = runner
@@ -60,13 +62,7 @@ class LaunchdBackend:
     def install(self, progress: ServiceLifecycleObserver) -> None:
         """Publish and start one exact per-user LaunchAgent."""
         progress(ServiceLifecycleObservation(ServiceLifecyclePhase.INSTALLING))
-        self._artifacts.ensure_directory(self._log_root)
-        self._artifacts.write(
-            ServiceArtifact(
-                self._artifact_path,
-                _plist_payload(self._executable, self._log_root),
-            )
-        )
+        self._publish()
         self._runner.run(("launchctl", "bootout", self._target))
         self._require_success(("launchctl", "enable", self._target))
         progress(ServiceLifecycleObservation(ServiceLifecyclePhase.STARTING))
@@ -81,9 +77,28 @@ class LaunchdBackend:
         self._kickstart()
 
     def restart(self, progress: ServiceLifecycleObserver) -> None:
-        """Restart the exact installed LaunchAgent."""
+        """Republish and restart the current LaunchAgent."""
         progress(ServiceLifecycleObservation(ServiceLifecyclePhase.RESTARTING))
+        self._publish()
+        self._runner.run(("launchctl", "bootout", self._target))
+        self._require_success(
+            (
+                "launchctl",
+                "bootstrap",
+                self._domain,
+                str(self._artifact_path),
+            )
+        )
         self._kickstart()
+
+    def _publish(self) -> None:
+        self._artifacts.ensure_directory(self._log_root)
+        self._artifacts.write(
+            ServiceArtifact(
+                self._artifact_path,
+                _plist_payload(self._launch_command(), self._log_root),
+            )
+        )
 
     def _kickstart(self) -> None:
         self._require_success(("launchctl", "kickstart", "-k", self._target))
@@ -126,8 +141,13 @@ class LaunchdBackend:
             raise ServiceLifecycleError(ServiceFailureCode.COMMAND_FAILED)
 
 
-def _plist_payload(executable: Path, log_root: Path) -> bytes:
-    program = html.escape(str(executable), quote=True)
+def _plist_payload(command: ServiceLaunchCommand, log_root: Path) -> bytes:
+    arguments = "".join(
+        "    <string>"
+        f"{html.escape(value, quote=True)}"
+        "</string>\n"
+        for value in (str(command.program), *command.arguments)
+    )
     stdout = html.escape(str(log_root / "supervisor.out.log"), quote=True)
     stderr = html.escape(str(log_root / "supervisor.err.log"), quote=True)
     return (
@@ -141,7 +161,7 @@ def _plist_payload(executable: Path, log_root: Path) -> bytes:
         f"  <string>{LAUNCH_AGENT_LABEL}</string>\n"
         "  <key>ProgramArguments</key>\n"
         "  <array>\n"
-        f"    <string>{program}</string>\n"
+        f"{arguments}"
         "  </array>\n"
         "  <key>RunAtLoad</key>\n"
         "  <true/>\n"

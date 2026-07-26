@@ -3,6 +3,7 @@
 import os
 from collections.abc import Callable, Mapping
 from contextlib import ExitStack
+from functools import partial
 from pathlib import Path
 
 from sidekick_usages.cli.contexts.dashboard.snapshot import (
@@ -54,6 +55,7 @@ from sidekick_usages.daemon.lifecycle.manager import (
     DaemonManager,
     build_daemon_manager,
 )
+from sidekick_usages.daemon.lifecycle.ports import ProviderCapabilityReadiness
 from sidekick_usages.doctor.accounts.service import DoctorService
 from sidekick_usages.doctor.runtime.service import DoctorRuntimeService
 from sidekick_usages.heartbeat.ports import HeartbeatProvider
@@ -97,6 +99,9 @@ from sidekick_usages.providers.claude.activity import (
 from sidekick_usages.providers.claude.provider import ClaudeProvider
 from sidekick_usages.providers.claude.types import ClaudeSetupToken
 from sidekick_usages.providers.codex.activity import CodexActivity
+from sidekick_usages.providers.codex.app_server.executable import (
+    resolve_codex_executable,
+)
 from sidekick_usages.providers.registry import (
     build_heartbeat_registry,
     build_provider_registry,
@@ -144,6 +149,21 @@ def _resolved_clock(clock: Clock | None) -> Clock:
     return SystemClock() if clock is None else clock
 
 
+def _build_daemon_manager(
+    paths: ApplicationPaths,
+    *,
+    clock: Clock | None = None,
+    provider_readiness: ProviderCapabilityReadiness | None = None,
+) -> DaemonManager:
+    """Compose lifecycle management with lazy Codex path qualification."""
+    return build_daemon_manager(
+        codex_executable=partial(resolve_codex_executable, os.environ),
+        paths=paths,
+        clock=clock,
+        provider_readiness=provider_readiness,
+    )
+
+
 def _provider_maps(
     clock: Clock,
     providers: Mapping[ProviderId, Provider] | None,
@@ -169,7 +189,7 @@ def _persistence(
     paths: ApplicationPaths,
     daemon: DaemonManager | None = None,
 ) -> PersistenceService:
-    manager = build_daemon_manager(paths=paths) if daemon is None else daemon
+    manager = _build_daemon_manager(paths) if daemon is None else daemon
     return PersistenceService(
         paths,
         maintenance_quiescent=manager.quiescent,
@@ -393,8 +413,8 @@ def compose_doctor_context(
             heartbeat_providers,
         )
         capability_service = build_provider_capability_service(resolved_paths)
-        daemon = build_daemon_manager(
-            paths=resolved_paths,
+        daemon = _build_daemon_manager(
+            resolved_paths,
             clock=resolved_clock,
             provider_readiness=capability_service,
         )
@@ -471,7 +491,7 @@ def compose_daemon_context(
     """Compose resident-service lifecycle management only."""
     return _compose(
         lambda _resources: DaemonContext(
-            build_daemon_manager(paths=_resolved_paths(paths))
+            _build_daemon_manager(_resolved_paths(paths))
         )
     )
 
@@ -486,8 +506,8 @@ def compose_migration_context(
     def build(_resources: ExitStack) -> MigrationContext:
         resolved_paths = _resolved_paths(paths)
         resolved_clock = _resolved_clock(clock)
-        daemon = build_daemon_manager(
-            paths=resolved_paths,
+        daemon = _build_daemon_manager(
+            resolved_paths,
             clock=resolved_clock,
         )
         try:

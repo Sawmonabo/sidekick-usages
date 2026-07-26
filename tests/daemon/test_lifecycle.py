@@ -16,6 +16,7 @@ from sidekick_usages.daemon.control.client import ControlClient
 from sidekick_usages.daemon.lifecycle.artifacts import ServiceArtifactStore
 from sidekick_usages.daemon.lifecycle.commands import SystemCommandRunner
 from sidekick_usages.daemon.lifecycle.constants import (
+    CODEX_EXECUTABLE_OPTION,
     WSL_RESCUE_ABSENT,
     WSL_RESCUE_INSTALLED,
     WSL_RESCUE_TASK_NAME,
@@ -37,6 +38,7 @@ from sidekick_usages.daemon.models.lifecycle import (
     CommandResult,
     PlatformInfo,
     ServiceBackendStatus,
+    ServiceLaunchCommand,
     ServiceLifecycleObservation,
     SupervisorHealth,
 )
@@ -257,6 +259,14 @@ def _supervisor_executable(tmp_path: Path) -> Path:
     return executable
 
 
+def _codex_executable(tmp_path: Path) -> Path:
+    executable = tmp_path / "bin" / "codex"
+    executable.parent.mkdir(parents=True)
+    executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    executable.chmod(0o755)
+    return executable.resolve()
+
+
 def _state_tree_snapshot(
     root: Path,
 ) -> tuple[tuple[str, bytes | None, int], ...]:
@@ -369,10 +379,11 @@ def _exercise_real_lifecycle_progress(
         provider_readiness=provider_capabilities,
     )
     cleanup = RuntimeCleanup(paths)
+    supervisor = _supervisor_executable(root)
     manager = DaemonManager(
         build_service_backend(
             platform_info,
-            lambda: _supervisor_executable(root),
+            lambda: ServiceLaunchCommand(supervisor, ()),
             paths,
             RecordingRunner(),
             ServiceArtifactStore(platform_info.home, platform_info.uid),
@@ -432,6 +443,67 @@ def _exercise_real_lifecycle_progress(
     )
 
 
+def _exercise_service_executable_republish(
+    tmp_path: Path,
+    manager: DaemonManager,
+    platform_info: PlatformInfo,
+    backend_id: ServiceBackendId,
+    runner: RecordingRunner,
+    supervisor_executable: Path,
+    codex_executables: list[Path],
+) -> None:
+    """Prove exact provider argv and platform-native artifact reload."""
+    artifact = _service_artifact(platform_info, backend_id)
+    initial = artifact.read_text(encoding="utf-8")
+    assert str(supervisor_executable) in initial
+    assert "sidekick-usages-supervisor" in initial
+    assert "maintain" not in initial
+    assert "refresh" not in initial
+    assert "token" not in initial.lower()
+    assert str(codex_executables[0]) in initial
+    assert "CODEX_HOME" not in initial
+    assert "OPENAI_API_KEY" not in initial
+    assert "Environment=" not in initial
+    assert "<key>EnvironmentVariables</key>" not in initial
+    if backend_id in {ServiceBackendId.SYSTEMD, ServiceBackendId.WSL}:
+        assert (
+            f'"{CODEX_EXECUTABLE_OPTION}" '
+            f'"{codex_executables[0]}"'
+        ) in initial
+    if backend_id is ServiceBackendId.LAUNCHD:
+        assert (
+            f"<string>{CODEX_EXECUTABLE_OPTION}</string>\n"
+            f"    <string>{codex_executables[0]}</string>"
+        ) in initial
+
+    previous_codex = codex_executables[0]
+    codex_executables[0] = _codex_executable(tmp_path / "codex-v2")
+    call_offset = len(runner.calls)
+    restarted = manager.restart()
+    republished = artifact.read_text(encoding="utf-8")
+    restart_calls = runner.calls[call_offset:]
+
+    assert restarted.state is ServiceLifecycleState.READY
+    assert str(codex_executables[0]) in republished
+    assert str(previous_codex) not in republished
+    if backend_id in {ServiceBackendId.SYSTEMD, ServiceBackendId.WSL}:
+        assert restart_calls[:2] == [
+            ("systemctl", "--user", "daemon-reload"),
+            (
+                "systemctl",
+                "--user",
+                "restart",
+                "sidekick-usages.service",
+            ),
+        ]
+    if backend_id is ServiceBackendId.LAUNCHD:
+        assert tuple(call[:2] for call in restart_calls[:3]) == (
+            ("launchctl", "bootout"),
+            ("launchctl", "bootstrap"),
+            ("launchctl", "kickstart"),
+        )
+
+
 @pytest.mark.parametrize(
     ("system", "is_wsl", "backend_id"),
     [
@@ -474,10 +546,21 @@ def test_service_artifacts_are_user_scoped_resident_and_secret_free(
         is_wsl=is_wsl,
     )
     runner = RecordingRunner()
-    executable = _supervisor_executable(tmp_path)
+    executable = _supervisor_executable(tmp_path).resolve()
+    codex_executables = [_codex_executable(tmp_path / "codex-v1")]
+
+    def launch_command() -> ServiceLaunchCommand:
+        return ServiceLaunchCommand(
+            executable,
+            (
+                CODEX_EXECUTABLE_OPTION,
+                str(codex_executables[0]),
+            ),
+        )
+
     backend = build_service_backend(
         platform_info,
-        lambda: executable,
+        launch_command,
         paths,
         runner,
         ServiceArtifactStore(platform_info.home, platform_info.uid),
@@ -513,11 +596,6 @@ def test_service_artifacts_are_user_scoped_resident_and_secret_free(
     artifact_text = _service_artifact(platform_info, backend_id).read_text(
         encoding="utf-8"
     )
-    assert str(executable) in artifact_text
-    assert "sidekick-usages-supervisor" in artifact_text
-    assert "maintain" not in artifact_text
-    assert "refresh" not in artifact_text
-    assert "token" not in artifact_text.lower()
     assert (
         stat.S_IMODE(
             _service_artifact(platform_info, backend_id).stat().st_mode
@@ -656,6 +734,17 @@ def test_service_artifacts_are_user_scoped_resident_and_secret_free(
             )
         )
         _exercise_wsl_health_failures(backend, manager, runner, paths)
+        runner.rescue_output = WSL_RESCUE_INSTALLED
+
+    _exercise_service_executable_republish(
+        tmp_path,
+        manager,
+        platform_info,
+        backend_id,
+        runner,
+        executable,
+        codex_executables,
+    )
 
 
 @REQUIRES_MANAGED_RUNTIME

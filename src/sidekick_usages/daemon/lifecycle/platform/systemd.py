@@ -1,5 +1,6 @@
 """Linux and WSL systemd user-service integration."""
 
+from collections.abc import Callable
 from pathlib import Path
 
 from sidekick_usages.daemon.lifecycle.artifacts import ServiceArtifactStore
@@ -13,6 +14,7 @@ from sidekick_usages.daemon.lifecycle.ports import ServiceLifecycleObserver
 from sidekick_usages.daemon.models.lifecycle import (
     ServiceArtifact,
     ServiceBackendStatus,
+    ServiceLaunchCommand,
     ServiceLifecycleObservation,
 )
 from sidekick_usages.daemon.types.lifecycle import (
@@ -39,12 +41,12 @@ class SystemdBackend:
     def __init__(
         self,
         artifact_path: Path,
-        executable: Path,
+        launch_command: Callable[[], ServiceLaunchCommand],
         runner: SystemCommandRunner,
         artifacts: ServiceArtifactStore,
     ) -> None:
         self._artifact_path = artifact_path
-        self._executable = executable
+        self._launch_command = launch_command
         self._runner = runner
         self._artifacts = artifacts
 
@@ -55,21 +57,25 @@ class SystemdBackend:
     def install(self, progress: ServiceLifecycleObserver) -> None:
         """Publish, reload, and enable the resident user service."""
         progress(ServiceLifecycleObservation(ServiceLifecyclePhase.INSTALLING))
-        self._artifacts.write(
-            ServiceArtifact(
-                self._artifact_path,
-                _service_payload(self._executable),
-            )
-        )
-        self._require_success((*_SYSTEMCTL, "daemon-reload"))
+        self._publish()
         self._require_success((*_SYSTEMCTL, "enable", SYSTEMD_SERVICE_NAME))
         progress(ServiceLifecycleObservation(ServiceLifecyclePhase.STARTING))
         self._restart()
 
     def restart(self, progress: ServiceLifecycleObserver) -> None:
-        """Restart the exact installed resident user service."""
+        """Republish and restart the current resident user service."""
         progress(ServiceLifecycleObservation(ServiceLifecyclePhase.RESTARTING))
+        self._publish()
         self._restart()
+
+    def _publish(self) -> None:
+        self._artifacts.write(
+            ServiceArtifact(
+                self._artifact_path,
+                _service_payload(self._launch_command()),
+            )
+        )
+        self._require_success((*_SYSTEMCTL, "daemon-reload"))
 
     def _restart(self) -> None:
         self._require_success((*_SYSTEMCTL, "restart", SYSTEMD_SERVICE_NAME))
@@ -137,15 +143,18 @@ class SystemdBackend:
             raise ServiceLifecycleError(ServiceFailureCode.COMMAND_FAILED)
 
 
-def _service_payload(executable: Path) -> bytes:
-    executable_value = _systemd_value(str(executable))
+def _service_payload(command: ServiceLaunchCommand) -> bytes:
+    arguments = " ".join(
+        f'"{_systemd_value(value)}"'
+        for value in (str(command.program), *command.arguments)
+    )
     return (
         f"# sidekick-service-version={SERVICE_ARTIFACT_VERSION}\n"
         "[Unit]\n"
         "Description=Sidekick Usages account supervisor\n\n"
         "[Service]\n"
         "Type=simple\n"
-        f'ExecStart="{executable_value}"\n'
+        f"ExecStart={arguments}\n"
         "Restart=on-failure\n"
         "RestartSec=5s\n"
         "TimeoutStopSec=15s\n"
