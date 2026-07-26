@@ -19,9 +19,17 @@ PUBLIC_BOOTSTRAP_IMPORTS = (
     "collections.abc",
     "os",
     "pathlib",
+    "rich.console",
     "subprocess",
     "sys",
+    "sidekick_usages.cli.contexts.dashboard.snapshot",
+    "sidekick_usages.cli.dashboard",
     "sidekick_usages.cli.runtime.routing",
+    "sidekick_usages.clock",
+    "sidekick_usages.core.types",
+    "sidekick_usages.errors",
+    "sidekick_usages.paths",
+    "sidekick_usages.persistence.errors",
     "sidekick_usages.platform.errors",
     "sidekick_usages.platform.executable",
 )
@@ -111,7 +119,7 @@ def _check_public_bootstrap(
                     bootstrap,
                     node,
                     "CLI001",
-                    "public bootstrap imported outside its lean boundaries",
+                    "public runtime imported outside cached-first boundaries",
                 )
             )
     replacements = [

@@ -65,9 +65,19 @@ def _assert_execve_process_boundary(
         replacements.append((executable, arguments, environment))
         raise OSError("Synthetic no-shell replacement failure.")
 
+    def run_cached_dashboard(only: ProviderId | None) -> int:
+        return bootstrap.execute_interactive_dashboard(
+            dashboard_arguments(only)
+        )
+
     with monkeypatch.context() as replacement_boundary:
         replacement_boundary.setattr(bootstrap.sys, "platform", "linux")
         replacement_boundary.setattr(bootstrap.os, "execve", record_execve)
+        replacement_boundary.setattr(
+            bootstrap,
+            "_run_cached_dashboard",
+            run_cached_dashboard,
+        )
         replacement_boundary.setattr(
             bootstrap,
             "qualify_executable",
@@ -94,9 +104,9 @@ def _assert_execve_process_boundary(
     executable = Path(sys.executable)
     assert qualifications == [executable] * 6
     assert [arguments[2:] for _, arguments, _ in replacements] == [
-        (bootstrap.CACHED_DASHBOARD_MODULE,),
-        (bootstrap.CACHED_DASHBOARD_MODULE, "--only", "codex"),
-        (bootstrap.CACHED_DASHBOARD_MODULE, "--only=claude"),
+        (bootstrap.INTERACTIVE_DASHBOARD_MODULE,),
+        (bootstrap.INTERACTIVE_DASHBOARD_MODULE, "--only", "codex"),
+        (bootstrap.INTERACTIVE_DASHBOARD_MODULE, "--only", "claude"),
         (bootstrap.APPLICATION_MODULE, "--only", "unsupported"),
         (bootstrap.APPLICATION_MODULE, "--help"),
         (bootstrap.APPLICATION_MODULE,),

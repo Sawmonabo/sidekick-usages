@@ -12,6 +12,7 @@ _STALE_SOURCE_FILES = frozenset(
     {
         "src/sidekick_usages/cli.py",
         "src/sidekick_usages/cli_help.py",
+        "src/sidekick_usages/cli/runtime/dashboard.py",
         "src/sidekick_usages/credentials/claude_lifetime.py",
         "src/sidekick_usages/credentials/claude_setup_save.py",
         "src/sidekick_usages/credentials/claude_transitions.py",
