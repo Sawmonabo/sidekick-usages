@@ -12,10 +12,13 @@ cross-account verification.
 
 **Architecture:** Join cached usage and metrics with provider-verified
 selection state by stable account ID, render the existing Rich wide/narrow
-dashboard with one focus cursor, and lazily run a `prompt_toolkit` input
-application only for TTY defaults. Dashboard actions use the authenticated
-local supervisor protocol. Scripted `use` remains non-interactive. Live
-rollout uses only the completed Sidekick CLI and official provider processes.
+dashboard with one focus cursor, then replace the cached-first CLI process
+image with a dedicated interactive entry point whose `prompt_toolkit` imports
+are static and top-level. One short-lived lookup worker submits every account
+before awaiting results and uses bounded threads rather than one process per
+account. Dashboard actions use the authenticated local supervisor protocol.
+Scripted `use` remains non-interactive. Live rollout uses only the completed
+Sidekick CLI and official provider processes.
 
 **Tech Stack:** Python 3.14, Rich, prompt_toolkit 3.0.52, Typer, the
 foundation supervisor client, provider activation services, pytest 9,
@@ -54,14 +57,17 @@ WSL, macOS arm64, and macOS x64.
   readiness, and resumes the original action.
 - Normal `claude` and `codex` paths and symlink targets must be unchanged
   before and after setup and migration.
-- `prompt_toolkit` is imported only after TTY checks and first paint. The
-  supervisor, workers, help, and non-interactive paths must not import it.
+- After TTY checks and first paint, `os.execve` replaces the launcher with a
+  dedicated interactive process image. Only that entry point reaches static,
+  top-level `prompt_toolkit` imports. The supervisor, workers, help, and
+  non-interactive paths must not reach them.
 - No provider or credential operation runs in the input/render loop.
-- After cached first paint, start every saved-account lookup together as one
-  concurrent background wave. Never serialize first-load work by provider or
-  account. Do not implement this as one operating-system process per account;
-  use one memory-bounded multiplexing owner, while mutations remain in the
-  existing isolated worker boundary.
+- After cached first paint, submit every saved-account lookup before awaiting
+  any result. Use one short-lived global worker with a measured, bounded thread
+  wave whose cap covers the current saved-account population. Never serialize
+  first-load work by provider or account and never create one operating-system
+  process per account. Mutations remain in the existing isolated worker
+  boundary.
 - Cached first paint must complete within 250 ms and local input-to-feedback
   p95 must target 50 ms on the documented reference machine.
 - Measure peak memory and first complete refresh for the real saved-account
@@ -89,12 +95,12 @@ WSL, macOS arm64, and macOS x64.
   credential file or Keychain edits.
 - Codex will perform the migration. The user is needed only for unavoidable
   provider browser, MFA, password, or consent.
-- Commit after each numbered task with the listed Conventional Commit
-  message. Do not push until explicitly authorized.
+- Commit and push after each numbered task with the listed Conventional Commit
+  message, as already authorized for this implementation.
 
 ---
 
-- **Status:** Approved; blocked on phases 1-3
+- **Status:** Approved; blocked on completion of the Claude phase
 - **Date:** 2026-07-23
 - **Repository:** `/home/sabossedgh/dev/sidekick-usages`
 - **Branch:** `develop`
@@ -154,24 +160,28 @@ active.
 
 ## 2. Target File Map
 
-Create:
+Create cohesive owner packages:
 
-- `usage/dashboard_models.py`: no-secret joined dashboard snapshot;
-- `usage/dashboard_service.py`: cached metrics plus local account metadata;
-- `usage/selection_render.py`: cursor, external row, and actionable row copy;
-- `usage/footer_render.py`: keys, progress, confirmation, help, and errors;
-- `usage/dashboard_render.py`: wide/narrow composition facade;
-- `cli/dashboard_controller.py`: immutable cursor and preview transitions;
-- `cli/interactive_input.py`: lazy prompt_toolkit application and keys;
-- `cli/interactive_dashboard.py`: event loop joining input, service events,
-  and Rich renders;
-- `cli/service_setup.py`: one-time guided service installation;
+- `usage/dashboard/{models,service}.py`: no-secret cached dashboard state;
+- `usage/lookup/{models,service,wave}.py`: one account lookup and the bounded
+  submit-all wave;
+- `usage/presentation/dashboard/{overview,selection,footer}.py`: shared
+  wide/narrow panels, cursor, actionable copy, keys, progress, and errors;
+- `cli/dashboard/{launch,controller,input,application,setup}.py`: lean
+  `execve` planning, immutable transitions, static prompt input, interactive
+  orchestration, and guided service setup;
+- `cli/contexts/dashboard.py`: passive cached composition with no provider,
+  credential, HTTP, or maintenance graph;
+- `entrypoints/dashboard.py`: dedicated interactive process image;
+- `entrypoints/usage_lookup.py`: provider-heavy global lookup wave;
 - `cli/commands/use.py`: scriptable activation command; and
-- `cli/commands/managed_migration.py`: resumable operator migration command.
+- `cli/commands/migration.py`: resumable operator migration command.
 
-Refactor rather than expand the current 792-line `usage/render.py` and
-807-line `cli/context.py`. Keep `usage_overview` as the stable one-shot
-facade, delegating shared panel construction to focused modules.
+Refactor rather than expand large presentation or context modules. Keep
+`usage_overview` as the stable one-shot facade, delegating shared panel
+construction to focused owners. Add a passive account-index reader that
+decodes only secret-free metadata; cached composition must not open credential
+bundles.
 
 The no-secret dashboard view contains:
 
@@ -213,10 +223,25 @@ The no-secret dashboard view contains:
   `service_unavailable`.
 - [ ] Join account index, selected state, service state, and persisted metrics
   by stable account ID.
-- [ ] Render cached state first, then enter one lookup per saved account into
-  the same concurrent wave before awaiting any result. Publish results
-  independently as each account completes; preserve deterministic provider
-  and account display order.
+- [ ] Read cached state through a passive, secret-free account index and one
+  bulk decode of each usage and activity snapshot. Do not compose providers,
+  HTTP, credential authorities, or maintenance before first paint.
+- [ ] Render cached state first, then start one short-lived global lookup
+  worker. Inside that worker, submit every saved account across both providers
+  to one bounded thread wave before awaiting any result. The measured worker
+  cap must cover the current six-account population without creating one
+  process, pool, or provider queue per account.
+- [ ] Give each account task one operation-scoped credential lease. Fetch
+  Codex usage and activity through that same lease, and submit Claude local
+  activity as part of the same global wave.
+- [ ] Make pooled HTTP initialization and shutdown safe for concurrent account
+  tasks. Do not share unsynchronized lazy transport state or allocate a full
+  transport stack per account.
+- [ ] Publish immutable, secret-free results independently as each account
+  completes. Preserve deterministic provider and account display order with a
+  fixed ordinal, and isolate one account failure from every other result.
+- [ ] Let the worker owner serialize or batch snapshot updates. Lookup threads
+  must not mutate shared account or snapshot documents.
 - [ ] Use provider read-back relation as the only active-account signal.
 - [ ] Insert a temporary external row only when actual provider identity is
   unknown to Sidekick. Give it no saved metrics or implicit label.
@@ -232,9 +257,10 @@ The no-secret dashboard view contains:
 - [ ] Run the two dashboard-state scenarios plus existing usage, activity,
   selected-state, and architecture regressions they touch.
 - [ ] Record one timing trace proving all saved accounts begin in the same
-  bounded wave, a slow account does not delay completed rows, and peak memory
-  stays within the supervisor gate. Extend the joined-snapshot scenario; do
-  not add a performance test matrix.
+  bounded wave before any result is awaited, a slow account does not delay
+  completed rows, the single child is reaped, and peak memory stays within the
+  supervisor gate. Extend the joined-snapshot scenario; do not add a separate
+  concurrency test or performance matrix.
 - [ ] Run Ruff and `ty`, inspect representations and fixtures for secrets,
   then commit.
 
@@ -281,7 +307,7 @@ The no-secret dashboard view contains:
   alignment manually.
 - [ ] Run Ruff and `ty`, confirm module line limits, then commit.
 
-## 5. Task 3 — Lazy prompt_toolkit Input Controller
+## 5. Task 3 — Process-Isolated prompt_toolkit Input Controller
 
 **Commit:** `feat(cli): add portable dashboard key input`
 
@@ -303,10 +329,8 @@ The no-secret dashboard view contains:
   Esc restoration, Enter dispatch, refresh actions, help, and
   post-activation cursor state. Do not test key aliases separately when they
   map to the same action.
-- [ ] Add one lazy-composition test in the same file that samples help,
-  redirected invocation, supervisor startup, and a real TTY first paint.
-  Prove `prompt_toolkit` is imported only for the last path and no provider
-  work runs inside the key handler.
+- [ ] Fold process routing into Task 4's single CLI scenario. Do not add a
+  second import-routing test.
 - [ ] Leave real key decoding and terminal restoration to the two PTY
   scenarios in Task 7; do not duplicate them with fake-input cases.
 
@@ -320,9 +344,17 @@ uv add "prompt-toolkit==3.0.52"
 ```
 
 - [ ] Keep controller transitions infrastructure-free and deterministic.
-- [ ] After TTY checks and initial Rich render, lazily import
-  `prompt_toolkit.application.Application`,
-  `prompt_toolkit.formatted_text.ANSI`, and the key-binding APIs.
+- [ ] Keep `prompt_toolkit` imports static in the initial top-level import
+  block of the dedicated interactive process graph. Do not add a function
+  import, dynamic loader, forwarding module, or architecture exception.
+- [ ] After TTY checks and initial Rich render, call `os.execve` with the same
+  absolute `sys.executable` to replace the launcher with the dedicated
+  interactive entry point. Pass only safe routing options in argv; the new
+  process re-reads persisted secret-free dashboard state.
+- [ ] Prove help, version, supervisor, worker, redirected output, explicit
+  `check`, and `--no-interactive` cannot reach the interactive import graph.
+  If `execve` fails, restore the cursor below the cached frame before
+  displaying the error.
 - [ ] Render Rich to an ANSI string in memory and present it through one
   prompt_toolkit application. Invalidation redraws the current region rather
   than appending complete dashboards.
@@ -341,10 +373,11 @@ uv add "prompt-toolkit==3.0.52"
 
 ### Verify and commit
 
-- [ ] Run the two controller/composition scenarios plus existing render,
-  help, and smoke regressions they touch.
+- [ ] Run the controller journey and Task 4's CLI routing scenario plus
+  existing render, help, and smoke regressions they touch.
 - [ ] Run `uv run python -X importtime -m sidekick_usages --help` and inspect
-  that prompt_toolkit is absent.
+  that prompt_toolkit is absent. Inspect the import graph to prove only the
+  dedicated interactive entry point reaches it.
 - [ ] Run packaging, Ruff, `ty`, and architecture checks, then commit.
 
 ## 6. Task 4 — Interactive Default Invocation and Scriptable `use`
@@ -354,9 +387,10 @@ uv add "prompt-toolkit==3.0.52"
 ### Tests first
 
 - [ ] Extend `tests/test_dashboard.py` with one CLI routing test proving TTY
-  default composes the dashboard, `--only` constrains focus, and redirected
-  input/output, `check`, and `--no-interactive` retain the existing one-shot
-  path and exit calculation.
+  default paints cached state before `execve`, `--only` constrains focus, and
+  redirected input/output, `check`, `--no-interactive`, help, and supervisor
+  startup never cross the interactive entry point and retain their intended
+  one-shot behavior and exit calculation.
 - [ ] Add one scriptable command test in the same file for the exact syntax:
 
 ```text
@@ -379,7 +413,8 @@ sidekick-usages use <provider> <label>
     interactive controller;
   - otherwise: current one-shot usage workflow.
 - [ ] Keep explicit `check` permanently one-shot.
-- [ ] Register `use` through a cohesive command module and typed lazy context.
+- [ ] Register `use` through a cohesive command module and a statically
+  imported typed context boundary.
 - [ ] Resolve provider plus exact label locally to a stable account ID, then
   send only provider and ID to the supervisor.
 - [ ] Map service and provider events to footer states. Update selected
@@ -517,9 +552,13 @@ sidekick-usages use <provider> <label>
   and require no more than 250 ms. Do not create a repeated subprocess loop.
 - [ ] Measure cursor input to visible render in one bounded in-process trace
   and target p95 no more than 50 ms.
-- [ ] Permit at most one benchmark child at a time and prove it is reaped
-  before exit. Record peak RSS from the same run; do not add a process-count
-  or account-count performance matrix.
+- [ ] Permit exactly one short-lived global lookup-worker child per refresh,
+  prove it is reaped before exit, and never fork per account. Record peak RSS
+  from the same run; do not add a process-count or account-count performance
+  matrix.
+- [ ] In that trace, prove the current six saved accounts are all submitted
+  before awaiting a result, a fast completion is visible before a blocked
+  account, and the final rows retain deterministic order.
 - [ ] Measure steady supervisor RSS, idle CPU, worker exit, and Codex callback
   isolation using the foundation gates.
 - [ ] Fail the architecture gate if prompt_toolkit enters supervisor,
