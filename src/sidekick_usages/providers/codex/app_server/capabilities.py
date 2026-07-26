@@ -18,10 +18,10 @@ from sidekick_usages.providers.codex.app_server.executable import (
     verify_codex_executable,
 )
 from sidekick_usages.providers.codex.app_server.methods import (
+    ACCOUNT_CHATGPT_AUTH_REFRESH_METHOD,
     ACCOUNT_LOGIN_COMPLETED_METHOD,
     ACCOUNT_LOGIN_START_METHOD,
     ACCOUNT_READ_METHOD,
-    ACCOUNT_TOKEN_REFRESH_METHOD,
     ACCOUNT_UPDATED_METHOD,
     INITIALIZE_METHOD,
     INITIALIZED_METHOD,
@@ -264,7 +264,7 @@ def _validate_required_capabilities(
     )
     _require_method(
         schemas["ServerRequest.json"],
-        ACCOUNT_TOKEN_REFRESH_METHOD,
+        ACCOUNT_CHATGPT_AUTH_REFRESH_METHOD,
     )
     _require_method(
         schemas["ServerNotification.json"],

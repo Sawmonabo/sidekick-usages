@@ -22,7 +22,7 @@ from sidekick_usages.providers.codex.app_server.jsonrpc.models import (
     JsonRpcServerRequest,
 )
 from sidekick_usages.providers.codex.app_server.methods import (
-    ACCOUNT_TOKEN_REFRESH_METHOD,
+    ACCOUNT_CHATGPT_AUTH_REFRESH_METHOD,
     ACCOUNT_UPDATED_METHOD,
 )
 from sidekick_usages.providers.codex.app_server.types import (
@@ -491,7 +491,7 @@ class CodexRuntimeBroker:
             return
         if not isinstance(message, JsonRpcServerRequest):
             return
-        if message.method != ACCOUNT_TOKEN_REFRESH_METHOD:
+        if message.method != ACCOUNT_CHATGPT_AUTH_REFRESH_METHOD:
             return
         started_at = self._monotonic()
         official_deadline = started_at + CODEX_CALLBACK_RESPONSE_SECONDS

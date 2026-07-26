@@ -13,7 +13,7 @@ from sidekick_usages.providers.codex.app_server.jsonrpc.models import (
     JsonRpcServerRequest,
 )
 from sidekick_usages.providers.codex.app_server.methods import (
-    ACCOUNT_TOKEN_REFRESH_METHOD,
+    ACCOUNT_CHATGPT_AUTH_REFRESH_METHOD,
 )
 from sidekick_usages.providers.codex.auth.generation import (
     codex_generation_order,
@@ -97,7 +97,7 @@ def decode_codex_refresh_request(
         or not isinstance(request.request_id, int)
         or request.request_id < 0
         or request.request_id > MAX_JSON_RPC_INTEGER
-        or request.method != ACCOUNT_TOKEN_REFRESH_METHOD
+        or request.method != ACCOUNT_CHATGPT_AUTH_REFRESH_METHOD
         or set(request.params) != {"previousAccountId", "reason"}
         or request.params.get("reason") != CODEX_REFRESH_REASON
         or not isinstance(previous, str)

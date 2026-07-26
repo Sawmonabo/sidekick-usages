@@ -14,9 +14,9 @@ from sidekick_usages.providers.codex.app_server.jsonrpc.models import (
     JsonRpcServerRequest,
 )
 from sidekick_usages.providers.codex.app_server.methods import (
+    ACCOUNT_CHATGPT_AUTH_REFRESH_METHOD,
     ACCOUNT_LOGIN_COMPLETED_METHOD,
     ACCOUNT_LOGIN_START_METHOD,
-    ACCOUNT_TOKEN_REFRESH_METHOD,
     ACCOUNT_UPDATED_METHOD,
 )
 from sidekick_usages.providers.codex.app_server.types import (
@@ -117,7 +117,7 @@ def _require_external_auth_update(
         remaining = _remaining(deadline)
         message = session.receive(timeout_seconds=remaining)
         if isinstance(message, JsonRpcServerRequest):
-            if message.method == ACCOUNT_TOKEN_REFRESH_METHOD:
+            if message.method == ACCOUNT_CHATGPT_AUTH_REFRESH_METHOD:
                 session.respond_error(
                     message.request_id,
                     CODEX_REFRESH_ERROR_CODE,
