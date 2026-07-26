@@ -77,6 +77,7 @@ _CREDENTIAL_LEASE_CONSUMERS = frozenset(
         "src/sidekick_usages/credentials/codex/managed/resolver.py",
         "src/sidekick_usages/credentials/refresh.py",
         "src/sidekick_usages/daemon/worker/account.py",
+        "src/sidekick_usages/entrypoints/usage_lookup.py",
         "src/sidekick_usages/heartbeat/service.py",
         "src/sidekick_usages/usage/activity.py",
         "src/sidekick_usages/usage/lookup/service.py",

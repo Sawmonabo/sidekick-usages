@@ -19,6 +19,7 @@ from sidekick_usages.persistence.supervisor.authority import (
     OperationAuthority,
     ProviderMutationAuthority,
 )
+from sidekick_usages.platform.types import ProcessGroup
 
 
 class ResidentService(Protocol):
@@ -48,27 +49,8 @@ class ControlDispatcher(Protocol):
         """Cancel work whose event stream disconnected."""
 
 
-class WorkerHandle(Protocol):
-    """One killable isolated process."""
-
-    @property
-    def process_id(self) -> int:
-        """Return the native process identifier."""
-
-    def poll(self) -> int | None:
-        """Return its exit status when reaped."""
-
-    def wait(self, timeout_seconds: float | None) -> int | None:
-        """Wait up to a bound and return ``None`` on timeout."""
-
-    def group_alive(self) -> bool:
-        """Return whether any process remains in the worker group."""
-
-    def terminate_group(self) -> None:
-        """Request termination of the worker process group."""
-
-    def kill_group(self) -> None:
-        """Force termination of the worker process group."""
+class WorkerHandle(ProcessGroup, Protocol):
+    """One killable isolated worker process."""
 
 
 class WorkerLauncher(Protocol):

@@ -65,10 +65,14 @@ expected = dict(argument.split("=", 1) for argument in sys.argv[1:])
 assert points == expected, points
 """
 INTERNAL_ENTRY_POINT_CHECK = """
+import sidekick_usages.entrypoints.dashboard
 import sidekick_usages.entrypoints.supervisor
+import sidekick_usages.entrypoints.usage_lookup
 import sidekick_usages.entrypoints.worker
 
+assert callable(sidekick_usages.entrypoints.dashboard.main)
 assert callable(sidekick_usages.entrypoints.supervisor.main)
+assert callable(sidekick_usages.entrypoints.usage_lookup.main)
 assert callable(sidekick_usages.entrypoints.worker.main)
 """
 

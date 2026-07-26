@@ -15,14 +15,13 @@ from sidekick_usages.daemon.types.worker import (
     WorkerOutcome,
 )
 from sidekick_usages.platform.environment import (
-    SAFE_WORKER_ENVIRONMENT_KEYS,
+    require_worker_environment,
 )
 
 WORKER_EXCHANGE_DESCRIPTOR_ENVIRONMENT_KEY = (
     "SIDEKICK_WORKER_EXCHANGE_DESCRIPTOR"
 )
 MINIMUM_WORKER_EXCHANGE_DESCRIPTOR = 3
-_MAX_ENVIRONMENT_VALUE_BYTES = 16 * 1024
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -63,22 +62,7 @@ class WorkerLaunchSpec:
             raise ValueError(
                 "Worker arguments must contain only operation ID."
             )
-        keys = tuple(key for key, _value in self.environment)
-        if (
-            len(keys) != len(set(keys))
-            or tuple(sorted(keys)) != keys
-            or not set(keys) <= SAFE_WORKER_ENVIRONMENT_KEYS
-        ):
-            raise ValueError("Worker environment is not a minimal allowlist.")
-        for _key, value in self.environment:
-            try:
-                encoded = value.encode("utf-8")
-            except UnicodeEncodeError:
-                raise ValueError(
-                    "Worker environment must be valid UTF-8."
-                ) from None
-            if len(encoded) > _MAX_ENVIRONMENT_VALUE_BYTES or "\x00" in value:
-                raise ValueError("Worker environment value is unsafe.")
+        require_worker_environment(self.environment)
         descriptor = self.exchange_descriptor
         if descriptor is not None and (
             type(descriptor) is not int

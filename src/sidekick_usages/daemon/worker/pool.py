@@ -1,7 +1,6 @@
 """Isolated account-worker launch and pool lifecycle."""
 
 import os
-import signal
 import subprocess
 import sys
 import time
@@ -36,7 +35,12 @@ from sidekick_usages.daemon.worker.exchange import (
     operation_requires_worker_exchange,
 )
 from sidekick_usages.platform.environment import (
-    SAFE_WORKER_ENVIRONMENT_KEYS,
+    minimal_worker_environment,
+)
+from sidekick_usages.platform.process import (
+    SubprocessProcessGroup,
+    clear_process_group,
+    terminate_process_group,
 )
 
 GENERAL_WORKER_TIMEOUT_SECONDS = 120.0
@@ -74,13 +78,7 @@ class WorkerLaunchPlanner:
         if not executable.is_absolute():
             raise ValueError("Worker executable must be absolute.")
         self._executable = executable
-        self._environment = tuple(
-            sorted(
-                (key, value)
-                for key, value in source_environment.items()
-                if key in SAFE_WORKER_ENVIRONMENT_KEYS
-            )
-        )
+        self._environment = minimal_worker_environment(source_environment)
 
     def plan(
         self,
@@ -94,56 +92,6 @@ class WorkerLaunchPlanner:
             argv=(str(self._executable), str(operation_id)),
             environment=self._environment,
             exchange_descriptor=exchange_descriptor,
-        )
-
-
-class SubprocessWorkerHandle:
-    """Killable process-group wrapper around ``subprocess.Popen``."""
-
-    def __init__(self, process: subprocess.Popen[bytes]) -> None:
-        self._process = process
-        self._process_group_id = process.pid
-
-    @property
-    def process_id(self) -> int:
-        """Return the worker process identifier."""
-        return self._process.pid
-
-    def poll(self) -> int | None:
-        """Return its exit status when available."""
-        return self._process.poll()
-
-    def wait(self, timeout_seconds: float | None) -> int | None:
-        """Wait for exit and return ``None`` when the bound expires."""
-        try:
-            return self._process.wait(timeout=timeout_seconds)
-        except subprocess.TimeoutExpired:
-            return None
-
-    def group_alive(self) -> bool:
-        """Return whether any process remains in the isolated group."""
-        try:
-            os.killpg(self._process_group_id, 0)
-        except ProcessLookupError:
-            return False
-        except PermissionError:
-            return True
-        return True
-
-    def terminate_group(self) -> None:
-        """Request termination of the isolated process group."""
-        _signal_process_group(
-            self._process_group_id,
-            self._process,
-            signal.SIGTERM,
-        )
-
-    def kill_group(self) -> None:
-        """Force termination of the isolated process group."""
-        _signal_process_group(
-            self._process_group_id,
-            self._process,
-            signal.SIGKILL,
         )
 
 
@@ -174,7 +122,7 @@ class SubprocessWorkerLauncher:
             raise WorkerLaunchError(
                 WorkerLaunchFailureCode.EXECUTABLE_UNSAFE
             ) from None
-        handle = SubprocessWorkerHandle(process)
+        handle = SubprocessProcessGroup(process)
         Thread(
             target=_wait_and_notify,
             args=(handle, notify_exit),
@@ -597,26 +545,10 @@ class WorkerPool:
             self._exchanges.abort_launch(operation_id)
 
     def _terminate_handle(self, handle: WorkerHandle) -> int | None:
-        handle.terminate_group()
-        exit_code = handle.wait(self._termination_grace)
-        if exit_code is None or handle.group_alive():
-            handle.kill_group()
-            if exit_code is None:
-                exit_code = handle.wait(self._termination_grace)
-        if exit_code is None or not _wait_for_group_exit(
-            handle, self._termination_grace
-        ):
-            return None
-        return exit_code
+        return terminate_process_group(handle, self._termination_grace)
 
     def _clear_residual_group(self, handle: WorkerHandle) -> bool:
-        if not handle.group_alive():
-            return True
-        handle.terminate_group()
-        if _wait_for_group_exit(handle, self._termination_grace):
-            return True
-        handle.kill_group()
-        return _wait_for_group_exit(handle, self._termination_grace)
+        return clear_process_group(handle, self._termination_grace)
 
     def _owned_operations(self) -> tuple[DueOperation, ...]:
         return (
@@ -697,36 +629,6 @@ def _wait_and_notify(
 ) -> None:
     handle.wait(None)
     notify_exit()
-
-
-def _signal_process_group(
-    process_group_id: int,
-    process: subprocess.Popen[bytes],
-    requested_signal: signal.Signals,
-) -> None:
-    try:
-        os.killpg(process_group_id, requested_signal)
-    except ProcessLookupError:
-        return
-    except OSError:
-        if process.poll() is not None:
-            return
-        if requested_signal is signal.SIGTERM:
-            process.terminate()
-        else:
-            process.kill()
-
-
-def _wait_for_group_exit(
-    handle: WorkerHandle,
-    timeout_seconds: float,
-) -> bool:
-    deadline = time.monotonic() + timeout_seconds
-    while handle.group_alive():
-        if time.monotonic() >= deadline:
-            return False
-        time.sleep(min(0.01, max(0.0, deadline - time.monotonic())))
-    return True
 
 
 def _quarantine_retry_seconds(attempts: int) -> float:

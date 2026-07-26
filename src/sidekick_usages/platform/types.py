@@ -5,6 +5,8 @@ from typing import Protocol
 
 from sidekick_usages.platform.models import PeerIdentity
 
+type WorkerEnvironment = tuple[tuple[str, str], ...]
+
 
 class PeerFailureCode(StrEnum):
     """Safe reasons an operating system could not prove a local peer."""
@@ -53,3 +55,26 @@ class PeerVerifier(Protocol):
 
     def verify(self, connection: PeerSocket) -> PeerIdentity:
         """Return a verified identity or fail closed."""
+
+
+class ProcessGroup(Protocol):
+    """One isolated subprocess group that can be reaped safely."""
+
+    @property
+    def process_id(self) -> int:
+        """Return the native process identifier."""
+
+    def poll(self) -> int | None:
+        """Return its exit status when reaped."""
+
+    def wait(self, timeout_seconds: float | None) -> int | None:
+        """Wait up to a bound and return ``None`` on timeout."""
+
+    def group_alive(self) -> bool:
+        """Return whether any process remains in the isolated group."""
+
+    def terminate_group(self) -> None:
+        """Request termination of the isolated process group."""
+
+    def kill_group(self) -> None:
+        """Force termination of the isolated process group."""

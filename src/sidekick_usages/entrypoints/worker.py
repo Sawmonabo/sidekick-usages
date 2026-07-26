@@ -36,11 +36,11 @@ from sidekick_usages.credentials.claude.managed.maintenance.service import (
 from sidekick_usages.credentials.codex.activation import (
     CodexActivationService,
 )
+from sidekick_usages.credentials.codex.managed.composition import (
+    compose_codex_managed_authority,
+)
 from sidekick_usages.credentials.codex.managed.home import (
     CodexManagedAuthReader,
-)
-from sidekick_usages.credentials.codex.managed.service import (
-    CodexManagedAuthorityCoordinator,
 )
 from sidekick_usages.credentials.codex.reconciliation import (
     CodexNativeReconciliationService,
@@ -95,17 +95,8 @@ from sidekick_usages.persistence.supervisor.observation import (
 from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
 from sidekick_usages.persistence.supervisor.results import WorkerResultStore
 from sidekick_usages.persistence.supervisor.selection import SelectedStateStore
-from sidekick_usages.providers.codex.app_server.capabilities import (
-    probe_codex_capabilities,
-)
 from sidekick_usages.providers.codex.app_server.errors import (
     CodexAppServerError,
-)
-from sidekick_usages.providers.codex.app_server.executable import (
-    discover_codex_executable,
-)
-from sidekick_usages.providers.codex.app_server.types import (
-    CodexProcessGroupPolicy,
 )
 from sidekick_usages.providers.codex.auth import observe_native_auth
 from sidekick_usages.providers.codex.native import default_codex_home
@@ -228,11 +219,12 @@ def _run_account_operation(
                 clock,
             )
         else:
-            coordinator = _codex_coordinator(
+            coordinator = compose_codex_managed_authority(
                 paths,
-                persistence,
                 store,
+                persistence.managed_codex_profiles,
                 clock,
+                os.environ,
             )
             http = resources.enter_context(HttpClient(clock=clock))
             executor = CodexManagedMaintenanceWorkerExecutor(
@@ -364,11 +356,12 @@ def _codex_exchange_executor(
 ) -> CodexCallbackWorkerExecutor | CodexActivationWorkerExecutor:
     if exchange is None:
         raise ValueError("Codex exchange operation has no channel.")
-    coordinator = _codex_coordinator(
+    coordinator = compose_codex_managed_authority(
         paths,
-        persistence,
         store,
+        persistence.managed_codex_profiles,
         clock,
+        os.environ,
     )
     if operation.kind is OperationKind.CODEX_CALLBACK:
         return CodexCallbackWorkerExecutor(
@@ -473,26 +466,3 @@ def _provider_account_ids(
     else:
         baseline = selected.load(operation.provider_id)
     return tuple(sorted(activation_account_ids(baseline, account_id)))
-
-
-def _codex_coordinator(
-    paths: ApplicationPaths,
-    persistence: PersistenceService,
-    store: AccountStore,
-    clock: Clock,
-) -> CodexManagedAuthorityCoordinator:
-    return CodexManagedAuthorityCoordinator(
-        paths,
-        store,
-        persistence.managed_codex_profiles,
-        probe_codex_capabilities(
-            discover_codex_executable(
-                os.environ,
-                process_group=CodexProcessGroupPolicy.INHERITED,
-            ),
-            os.environ,
-            process_group=CodexProcessGroupPolicy.INHERITED,
-        ),
-        clock,
-        environment=os.environ,
-    )

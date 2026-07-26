@@ -4,6 +4,7 @@ import io
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Never
 
 import pytest
 from rich.console import Console
@@ -43,6 +44,9 @@ from sidekick_usages.persistence.filesystem.service import (
     PersistenceFilesystem,
 )
 from sidekick_usages.persistence.models.artifact import FileSnapshot
+from sidekick_usages.platform.errors import ExecutableQualificationError
+from sidekick_usages.platform.executable import qualify_executable
+from sidekick_usages.platform.types import ExecutableFailure
 from sidekick_usages.usage.dashboard.models import (
     DashboardAccount,
     DashboardActionState,
@@ -316,6 +320,48 @@ def test_cli_routes_one_cached_frame_before_isolated_interaction(
     assert events == ["load:codex", "replace:codex"]
     assert "CODEX" in process.frame_at_replace
     assert "CLAUDE" not in process.frame_at_replace
+
+    def reject_executable(_path: Path) -> Never:
+        raise ExecutableQualificationError(ExecutableFailure.UNSAFE)
+
+    monkeypatch.setattr(launch, "qualify_executable", reject_executable)
+    qualification_output = io.StringIO()
+    qualification_events: list[str] = []
+    qualification = runner.invoke(
+        application,
+        [],
+        obj=InvocationContext(
+            console=Console(
+                file=qualification_output,
+                width=100,
+                force_terminal=True,
+            ),
+            dashboard_composer=lambda: DashboardRuntime(
+                RoutingSnapshotSource(
+                    qualification_events,
+                    REFERENCE_TIME,
+                ),
+                launch.ExecveDashboardProcess(),
+            ),
+        ),
+    )
+    qualification_frame = qualification_output.getvalue()
+
+    assert qualification.exit_code == 1
+    assert isinstance(
+        qualification.exception,
+        launch.InteractiveDashboardLaunchError,
+    )
+    assert isinstance(
+        qualification.exception.__cause__,
+        ExecutableQualificationError,
+    )
+    assert qualification_events == ["load:None"]
+    assert qualification_frame.endswith(
+        f"\x1b[{qualification_frame.count('\n')}B\r"
+    )
+
+    monkeypatch.setattr(launch, "qualify_executable", qualify_executable)
 
     one_shot = OneShotRecorder()
     monkeypatch.setattr(usage, "run", one_shot)

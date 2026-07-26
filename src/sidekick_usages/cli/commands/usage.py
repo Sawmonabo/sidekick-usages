@@ -47,13 +47,15 @@ def run_default(ctx: typer.Context, *, interactive: bool) -> None:
     line_count = launch.present_dashboard_frame(invocation.console, frame)
     try:
         runtime.process.replace(invocation.only)
-    except OSError as error:
+    except (launch.InteractiveDashboardLaunchError, OSError) as error:
         launch.restore_after_failed_replace(
             invocation.console,
             line_count,
         )
+        if isinstance(error, launch.InteractiveDashboardLaunchError):
+            raise
         raise launch.InteractiveDashboardLaunchError(
-            "The interactive dashboard could not be started."
+            launch.DASHBOARD_LAUNCH_FAILURE_MESSAGE
         ) from error
 
 

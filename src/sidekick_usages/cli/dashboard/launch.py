@@ -8,8 +8,13 @@ from rich.console import Console, RenderableType
 
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.errors import UsageError
+from sidekick_usages.platform.errors import ExecutableQualificationError
+from sidekick_usages.platform.executable import qualify_executable
 
 DASHBOARD_ENTRYPOINT_MODULE = "sidekick_usages.entrypoints.dashboard"
+DASHBOARD_LAUNCH_FAILURE_MESSAGE = (
+    "The interactive dashboard could not be started."
+)
 CURSOR_COLUMN_START = "\r"
 
 
@@ -22,15 +27,21 @@ class ExecveDashboardProcess:
 
     def replace(self, only: ProviderId | None) -> None:
         """Execute the dedicated dashboard module with safe routing state."""
-        executable = Path(sys.executable).resolve(strict=True)
-        arguments = [
-            str(executable),
-            "-m",
-            DASHBOARD_ENTRYPOINT_MODULE,
-        ]
-        if only is not None:
-            arguments.extend(("--only", only.value))
-        os.execve(executable, arguments, os.environ.copy())
+        executable = Path(sys.executable)
+        try:
+            qualify_executable(executable)
+            arguments = [
+                str(executable),
+                "-m",
+                DASHBOARD_ENTRYPOINT_MODULE,
+            ]
+            if only is not None:
+                arguments.extend(("--only", only.value))
+            os.execve(executable, arguments, os.environ.copy())
+        except (ExecutableQualificationError, OSError) as error:
+            raise InteractiveDashboardLaunchError(
+                DASHBOARD_LAUNCH_FAILURE_MESSAGE
+            ) from error
 
 
 def interactive_dashboard_supported() -> bool:
