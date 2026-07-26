@@ -723,7 +723,7 @@ def test_lifecycle_is_idempotent_cancellable_and_preserves_user_state(
             ServiceLifecyclePhase.DURABLE_RECOVERY,
             ServiceLifecyclePhase.CODEX_BROKER,
             ServiceLifecyclePhase.PROVIDER_CAPABILITY,
-            ServiceLifecyclePhase.MAINTENANCE_PASS,
+            ServiceLifecyclePhase.MAINTENANCE_COMPLETED,
             ServiceLifecyclePhase.RESTARTING,
             ServiceLifecyclePhase.CONTROL_SOCKET,
             ServiceLifecyclePhase.DURABLE_RECOVERY,

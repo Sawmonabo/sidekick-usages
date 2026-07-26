@@ -54,7 +54,7 @@ class ServiceLifecyclePhase(StrEnum):
     DURABLE_RECOVERY = "durable_recovery"
     CODEX_BROKER = "codex_broker"
     PROVIDER_CAPABILITY = "provider_capability"
-    MAINTENANCE_PASS = "maintenance_pass"
+    MAINTENANCE_COMPLETED = "maintenance_completed"
     RESTARTING = "restarting"
 
 

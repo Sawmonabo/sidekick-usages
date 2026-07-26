@@ -390,7 +390,7 @@ def _service_setup_progress_message(
             message = (
                 f"Verifying {provider_id.value.title()} CLI capabilities."
             )
-        case ServiceLifecyclePhase.MAINTENANCE_PASS:
+        case ServiceLifecyclePhase.MAINTENANCE_COMPLETED:
             message = "Verifying the initial account-maintenance pass."
         case ServiceLifecyclePhase.RESTARTING:
             message = "Restarting the Sidekick user service."

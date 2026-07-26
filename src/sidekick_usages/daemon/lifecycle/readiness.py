@@ -232,7 +232,9 @@ class SupervisorReadiness:
     ) -> None:
         """Wake maintenance and wait for each enrolled slot to settle."""
         progress(
-            ServiceLifecycleObservation(ServiceLifecyclePhase.MAINTENANCE_PASS)
+            ServiceLifecycleObservation(
+                ServiceLifecyclePhase.MAINTENANCE_COMPLETED
+            )
         )
         self._request_maintenance()
         deadline = self._monotonic() + _READINESS_TIMEOUT_SECONDS

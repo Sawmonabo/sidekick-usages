@@ -155,7 +155,9 @@ class SetupDaemon(DaemonManager):
         if result.state is not ServiceLifecycleState.READY:
             return result
         progress(
-            ServiceLifecycleObservation(ServiceLifecyclePhase.MAINTENANCE_PASS)
+            ServiceLifecycleObservation(
+                ServiceLifecyclePhase.MAINTENANCE_COMPLETED
+            )
         )
         progress(ServiceLifecycleObservation(ServiceLifecyclePhase.RESTARTING))
         _publish_readiness(provider_ids, progress)
