@@ -31,7 +31,7 @@ from sidekick_usages.usage.presentation.dashboard.render.text import (
 )
 from sidekick_usages.usage.presentation.dashboard.selection import (
     CURSOR_GLYPH,
-    row_details,
+    row_detail,
     row_is_selected,
     row_label,
     row_plan,
@@ -174,7 +174,8 @@ def _provider_content_lines(
                 reference_time,
             )
         )
-        for detail in row_details(row, reference_time):
+        detail = row_detail(row, cursor, reference_time)
+        if detail is not None:
             lines.extend(
                 _account_warning_lines(
                     detail,

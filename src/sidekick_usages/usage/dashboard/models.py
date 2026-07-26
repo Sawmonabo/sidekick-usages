@@ -19,9 +19,9 @@ from sidekick_usages.core.types import (
 )
 from sidekick_usages.daemon.types.service import ServicePhase
 
-type DashboardRow = DashboardAccount | DashboardExternalRow
+MAX_DASHBOARD_STATUS_MESSAGE_CHARACTERS = 512
 
-MAX_DASHBOARD_FOOTER_MESSAGE_CHARACTERS = 512
+type DashboardRow = DashboardAccount | DashboardExternalRow
 
 
 class DashboardActionState(StrEnum):
@@ -32,18 +32,22 @@ class DashboardActionState(StrEnum):
     SWITCH_SETUP_REQUIRED = "switch_setup_required"
     REPAIR_REQUIRED = "repair_required"
     SETUP_REGENERATION_REQUIRED = "setup_regeneration_required"
-    METRICS_STALE = "metrics_stale"
     EXTERNAL_ACTIVE = "external_active"
     RECONCILIATION_REQUIRED = "reconciliation_required"
     PROVIDER_UNSUPPORTED = "provider_unsupported"
     SERVICE_UNAVAILABLE = "service_unavailable"
 
 
-class DashboardFooterKind(StrEnum):
-    """Closed footer presentations for the interactive dashboard."""
+class DashboardNavigationKind(StrEnum):
+    """Closed keyboard navigation presentations."""
 
     KEYS = "keys"
     HELP = "help"
+
+
+class DashboardStatusKind(StrEnum):
+    """Closed transient dashboard status presentations."""
+
     PROGRESS = "progress"
     CONFIRMATION = "confirmation"
     ERROR = "error"
@@ -68,32 +72,27 @@ class DashboardCursor:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class DashboardFooter:
-    """One bounded transient or keyboard-help footer."""
+class DashboardStatus:
+    """One bounded transient dashboard status."""
 
-    kind: DashboardFooterKind = DashboardFooterKind.KEYS
-    message: str | None = None
+    kind: DashboardStatusKind
+    message: str
 
     def __post_init__(self) -> None:
-        """Require bounded copy only for transient dashboard notices."""
-        if self.kind in {
-            DashboardFooterKind.PROGRESS,
-            DashboardFooterKind.CONFIRMATION,
-            DashboardFooterKind.ERROR,
-        }:
-            valid = self.message is not None and bool(self.message.strip())
-        else:
-            valid = self.message is None
-        if self.message is not None:
-            valid = (
-                valid
-                and len(self.message)
-                <= MAX_DASHBOARD_FOOTER_MESSAGE_CHARACTERS
-            )
-        if not valid:
-            raise ValueError(
-                "Transient dashboard footers require a bounded message."
-            )
+        """Require non-empty bounded status copy."""
+        if (
+            not self.message.strip()
+            or len(self.message) > MAX_DASHBOARD_STATUS_MESSAGE_CHARACTERS
+        ):
+            raise ValueError("Dashboard status requires a bounded message.")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class DashboardFooter:
+    """Independent navigation and optional transient dashboard status."""
+
+    navigation: DashboardNavigationKind = DashboardNavigationKind.KEYS
+    status: DashboardStatus | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

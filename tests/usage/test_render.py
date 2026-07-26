@@ -30,7 +30,9 @@ from sidekick_usages.usage.dashboard.models import (
     DashboardAccount,
     DashboardActionState,
     DashboardFooter,
-    DashboardFooterKind,
+    DashboardNavigationKind,
+    DashboardStatus,
+    DashboardStatusKind,
 )
 from sidekick_usages.usage.models import (
     AccountUsage,
@@ -92,6 +94,15 @@ _PANEL_FLOOR = 85
 _NARROW_TEST_WIDTH = 40
 _INTERACTIVE_WIDE_WIDTH = 200
 _INTERACTIVE_NARROW_WIDTH = 70
+_KEY_FOOTER_TEXT = "↑/↓ or j/k move"
+_LOGIN_DETAIL = (
+    "Complete the official Claude Code login before using this account."
+)
+_SETUP_DETAIL = "Enter to connect this account for Claude switching."
+_STALE_DETAIL = "Live metrics refresh failed; showing data from 2h 14m ago."
+_UNAVAILABLE_DETAIL = (
+    "Live metrics refresh failed; no saved metrics available."
+)
 _EXPECTED_THEME_COLORS = {
     UsageTextRole.HEAT_ZERO: ("#cdd3d8", "#353a40"),
     UsageTextRole.HEAT_GREEN: ("#dfffe9", "#1d5e35"),
@@ -267,14 +278,52 @@ def _result(
     )
 
 
-def _render_interactive(width: int) -> str:
+def _render_interactive(width: int) -> tuple[str, str, str]:
     snapshot, cursor, footer = interactive_dashboard_state(REFERENCE_TIME)
-    return render_dashboard(
+    provider = snapshot.providers[0]
+    warning_account = provider.rows[1]
+    assert isinstance(warning_account, DashboardAccount)
+    priority_snapshot = replace(
         snapshot,
-        width=width,
-        cursor=cursor,
-        footer=footer,
-        color=False,
+        providers=(
+            replace(
+                provider,
+                rows=(
+                    provider.rows[0],
+                    replace(
+                        warning_account,
+                        states=(DashboardActionState.SWITCH_SETUP_REQUIRED,),
+                    ),
+                ),
+            ),
+            *snapshot.providers[1:],
+        ),
+    )
+    return (
+        render_dashboard(
+            snapshot,
+            width=width,
+            cursor=cursor,
+            footer=footer,
+            color=False,
+        ),
+        render_dashboard(
+            priority_snapshot,
+            width=width,
+            cursor=cursor,
+            footer=DashboardFooter(),
+            color=False,
+        ),
+        render_dashboard(
+            priority_snapshot,
+            width=width,
+            cursor=replace(
+                cursor,
+                account_id=warning_account.account_id,
+            ),
+            footer=DashboardFooter(),
+            color=False,
+        ),
     )
 
 
@@ -327,7 +376,7 @@ def test_panels_share_one_width() -> None:
 
 
 def test_interactive_wide_render_preserves_dashboard_contract() -> None:
-    out = _render_interactive(_INTERACTIVE_WIDE_WIDTH)
+    out, unavailable, setup = _render_interactive(_INTERACTIVE_WIDE_WIDTH)
     cursor = "\N{SINGLE RIGHT-POINTING ANGLE QUOTATION MARK}"
 
     assert "      o" in out
@@ -338,12 +387,22 @@ def test_interactive_wide_render_preserves_dashboard_contract() -> None:
     assert "work@example.test" in out
     assert "⚠ codex@example.test" not in out
     assert (
-        "Complete the official Claude Code login before using this account."
-        in out
-    )
-    assert "Metrics last updated 2h 14m ago; retry scheduled." in out
+        out.count(_LOGIN_DETAIL),
+        out.count(_STALE_DETAIL),
+        out.count(_UNAVAILABLE_DETAIL),
+    ) == (1, 1, 0)
     assert "This external login is not saved in Sidekick." in out
-    assert PROGRESS_COPY in out
+    assert (
+        out.count(PROGRESS_COPY),
+        out.count(_KEY_FOOTER_TEXT),
+        out.index(PROGRESS_COPY) < out.index(_KEY_FOOTER_TEXT),
+    ) == (1, 1, True)
+    assert (
+        unavailable.count(_UNAVAILABLE_DETAIL),
+        unavailable.count(_SETUP_DETAIL),
+        setup.count(_SETUP_DETAIL),
+        setup.count(_UNAVAILABLE_DETAIL),
+    ) == (1, 0, 1, 0)
     assert "903,464,085 tokens" in out
     assert "7,449,473,297 tokens" in out
     assert "since Dec 28, 2025" in out
@@ -359,7 +418,7 @@ def test_interactive_wide_render_preserves_dashboard_contract() -> None:
     work_warning = next(
         position
         for position, rendered in enumerate(lines)
-        if "Metrics last updated" in rendered
+        if _STALE_DETAIL in rendered
     )
     personal_row = next(
         position
@@ -369,7 +428,7 @@ def test_interactive_wide_render_preserves_dashboard_contract() -> None:
     personal_warning = next(
         position
         for position, rendered in enumerate(lines)
-        if "Complete the official Claude Code login" in rendered
+        if _LOGIN_DETAIL in rendered
     )
     assert work_row < work_warning < personal_row < personal_warning
     assert max(len(line) for line in out.splitlines()) <= (
@@ -409,8 +468,11 @@ def test_interactive_wide_render_preserves_dashboard_contract() -> None:
         ),
     )
     unsafe_footer = DashboardFooter(
-        kind=DashboardFooterKind.PROGRESS,
-        message="working 99%",
+        navigation=DashboardNavigationKind.KEYS,
+        status=DashboardStatus(
+            kind=DashboardStatusKind.PROGRESS,
+            message="working 99%",
+        ),
     )
     plain = render_dashboard(
         unsafe_snapshot,
@@ -526,7 +588,7 @@ def test_provider_title_uses_singular_account_count() -> None:
 
 
 def test_interactive_narrow_render_preserves_dashboard_contract() -> None:
-    out = _render_interactive(_INTERACTIVE_NARROW_WIDTH)
+    out, unavailable, setup = _render_interactive(_INTERACTIVE_NARROW_WIDTH)
     cursor = "\N{SINGLE RIGHT-POINTING ANGLE QUOTATION MARK}"
 
     assert "╭─ CLAUDE" not in out
@@ -536,11 +598,24 @@ def test_interactive_narrow_render_preserves_dashboard_contract() -> None:
     assert "[codex · pro]" in out
     assert out.count(cursor) == 1
     assert f"{cursor} ● work@example.test" in out
-    assert "Complete the official Claude Code login" in out
-    assert "Metrics last updated 2h 14m ago" in out
+    assert (
+        out.count("Complete the official Claude Code login"),
+        out.count(_STALE_DETAIL),
+        out.count(_UNAVAILABLE_DETAIL),
+    ) == (1, 1, 0)
     assert "External Codex CLI login" in out
     assert "This external login is not saved in Sidekick." in out
-    assert PROGRESS_COPY in out
+    assert (
+        out.count(PROGRESS_COPY),
+        out.count(_KEY_FOOTER_TEXT),
+        out.index(PROGRESS_COPY) < out.index(_KEY_FOOTER_TEXT),
+    ) == (1, 1, True)
+    assert (
+        unavailable.count(_UNAVAILABLE_DETAIL),
+        unavailable.count(_SETUP_DETAIL),
+        setup.count(_SETUP_DETAIL),
+        setup.count(_UNAVAILABLE_DETAIL),
+    ) == (1, 0, 1, 0)
     assert "903.46M tokens" in out
     assert "7.449B tokens" in out
     assert "since Dec 28, 2025" in out

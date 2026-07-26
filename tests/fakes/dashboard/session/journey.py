@@ -7,13 +7,18 @@ import pytest
 
 from sidekick_usages.cli.dashboard.models.controller import DashboardMove
 from sidekick_usages.cli.dashboard.session import InteractiveDashboardSession
-from sidekick_usages.core.accounts.types import SidekickAccountId
+from sidekick_usages.core.accounts.types import (
+    MetricsFreshness,
+    SidekickAccountId,
+)
 from sidekick_usages.daemon.control.client import ControlClient
 from sidekick_usages.daemon.types.lifecycle import ServiceLifecycleState
 from sidekick_usages.entrypoints.dashboard import _connect_dashboard_control
 from sidekick_usages.usage.dashboard.models import (
-    DashboardFooterKind,
+    DashboardAccount,
+    DashboardFooter,
     DashboardSnapshot,
+    DashboardStatusKind,
 )
 from tests.fakes.dashboard.runtime import (
     EXPECTED_SERVICE_SETUP_PROGRESS,
@@ -86,8 +91,7 @@ def _confirmation_proof(
     view = session.view
     return (
         (None if view.confirmation is None else view.confirmation.kind),
-        view.footer.kind,
-        view.footer.message,
+        view.footer,
     )
 
 
@@ -113,10 +117,11 @@ def _refuse_setup(
     session.confirm(False)
     invalidation.wait_for(lambda: not session.view.action_in_flight)
     view = session.view
+    status = view.footer.status
     return (
         activation_locked,
         view.controller.account_id == active_account_id,
-        view.footer.message,
+        None if status is None else status.message,
         confirmation,
     )
 
@@ -129,7 +134,7 @@ def _approve_setup(
     DashboardConfirmationProof,
     tuple[str, ...],
     SidekickAccountId | None,
-    DashboardFooterKind,
+    DashboardFooter,
 ]:
     """Approve setup and the exact Claude Remote Control retry."""
     session.move(DashboardMove.UP)
@@ -145,7 +150,7 @@ def _approve_setup(
         remote_confirmation,
         tuple(daemon.events),
         view.controller.account_id,
-        view.footer.kind,
+        view.footer,
     )
 
 
@@ -155,7 +160,7 @@ def _reject_contradictory_completion(
     connector: SessionControlConnector,
     daemon: SetupDaemon,
     setup_events: tuple[str, ...],
-) -> tuple[bool, SidekickAccountId | None, DashboardFooterKind]:
+) -> tuple[bool, SidekickAccountId | None, DashboardFooter]:
     """Reject terminal success that provider read-back contradicts."""
     connector.skip_readback_next = True
     session.move(DashboardMove.DOWN)
@@ -166,7 +171,7 @@ def _reject_contradictory_completion(
         daemon.events.count("install:claude")
         == setup_events.count("install:claude"),
         view.controller.account_id,
-        view.footer.kind,
+        view.footer,
     )
 
 
@@ -182,9 +187,11 @@ def _reject_codex_remote_control_code(
     session.activate()
     invalidation.wait_for(lambda: not session.view.action_in_flight)
     view = session.view
+    status = view.footer.status
     return (
         view.confirmation is None
-        and view.footer.kind is DashboardFooterKind.ERROR
+        and status is not None
+        and status.kind is DashboardStatusKind.ERROR
     )
 
 
@@ -201,7 +208,7 @@ def exercise_dashboard_session(
     (
         startup_reconciliations,
         startup_account_id,
-        startup_footer_kind,
+        startup_footer,
     ) = startup
 
     unavailable = unavailable_session_snapshot(snapshot)
@@ -245,11 +252,21 @@ def exercise_dashboard_session(
     session.start()
     try:
         lookup.wait_until_finished()
-        invalidation.wait_for(
-            lambda: session.view.footer.kind is DashboardFooterKind.ERROR
+        failed_account = next(
+            row
+            for provider in session.view.snapshot.providers
+            for row in provider.rows
+            if isinstance(row, DashboardAccount)
+            and row.account_id == active_account_id
         )
-        lookup_failure_reported = (
-            session.view.footer.kind is DashboardFooterKind.ERROR
+        failed_freshness = failed_account.metrics_freshness
+        assert failed_freshness is MetricsFreshness.UNAVAILABLE
+        lookup_failure = (
+            failed_freshness,
+            not {
+                "Refreshing account metrics.",
+                "Updated account metrics.",
+            }.intersection(invalidation.progress_messages),
         )
         (
             activation_locked,
@@ -266,13 +283,13 @@ def exercise_dashboard_session(
             remote_confirmation,
             setup_events,
             verified_account_id,
-            success_footer_kind,
+            success_footer,
         ) = _approve_setup(
             session,
             invalidation,
             daemon,
         )
-        setup_not_repeated, restored_account_id, failure_footer_kind = (
+        setup_not_repeated, restored_account_id, failure_footer = (
             _reject_contradictory_completion(
                 session,
                 invalidation,
@@ -301,7 +318,7 @@ def exercise_dashboard_session(
         partial_start_reaped=partial_start_reaped,
         startup_reconciliations=startup_reconciliations,
         startup_account_id=startup_account_id,
-        startup_footer_kind=startup_footer_kind,
+        startup_footer=startup_footer,
         activation_locked=activation_locked,
         confirmations=(service_confirmation, remote_confirmation),
         activations=tuple(connector.activations),
@@ -312,12 +329,12 @@ def exercise_dashboard_session(
         setup_refusal_restored=setup_refusal_restored,
         setup_refusal_message=setup_refusal_message,
         verified_account_id=verified_account_id,
-        success_footer_kind=success_footer_kind,
+        success_footer=success_footer,
         setup_not_repeated=setup_not_repeated,
         restored_account_id=restored_account_id,
-        failure_footer_kind=failure_footer_kind,
+        failure_footer=failure_footer,
         remote_control_scoped_to_claude=remote_control_scoped_to_claude,
-        lookup_failure_reported=lookup_failure_reported,
+        lookup_failure=lookup_failure,
         lookup_cancelled=lookup.cancelled,
         daemon_cancelled=daemon.cancelled,
         stream_released=connector.stream_released.is_set(),

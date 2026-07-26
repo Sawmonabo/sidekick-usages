@@ -38,7 +38,10 @@ from sidekick_usages.usage.dashboard.models import (
     DashboardAccount,
     DashboardActionState,
     DashboardExternalRow,
-    DashboardFooterKind,
+    DashboardFooter,
+    DashboardNavigationKind,
+    DashboardStatus,
+    DashboardStatusKind,
 )
 from sidekick_usages.usage.dashboard.service import CachedDashboardService
 from tests.fakes.dashboard.session.journey import exercise_dashboard_session
@@ -64,6 +67,10 @@ from tests.support.platform import REQUIRES_MANAGED_RUNTIME
 
 REFERENCE_TIME = datetime(2026, 7, 25, 14, tzinfo=UTC)
 OBSERVED_AT = REFERENCE_TIME - timedelta(hours=2)
+LOOKUP_FAILED_MESSAGE = (
+    "Live metrics refresh did not complete; existing dashboard data was "
+    "preserved."
+)
 
 
 def test_cached_dashboard_joins_stable_ids_without_credentials(
@@ -442,21 +449,42 @@ def test_dashboard_controller_journey_preserves_verified_truth(
             ProviderId.CLAUDE,
         ),
         startup_account_id=CLAUDE_PREVIEW_ACCOUNT_ID,
-        startup_footer_kind=DashboardFooterKind.KEYS,
+        startup_footer=DashboardFooter(
+            navigation=DashboardNavigationKind.KEYS,
+            status=DashboardStatus(
+                kind=DashboardStatusKind.ERROR,
+                message=LOOKUP_FAILED_MESSAGE,
+            ),
+        ),
         activation_locked=True,
         confirmations=(
             (
                 DashboardConfirmationKind.SERVICE_SETUP,
-                DashboardFooterKind.CONFIRMATION,
-                "Sidekick needs one per-user service to maintain accounts "
-                "and update supported sessions. It installs without "
-                "administrator access. y yes / n no",
+                DashboardFooter(
+                    navigation=DashboardNavigationKind.KEYS,
+                    status=DashboardStatus(
+                        kind=DashboardStatusKind.CONFIRMATION,
+                        message=(
+                            "Sidekick needs one per-user service to maintain "
+                            "accounts and update supported sessions. It "
+                            "installs without administrator access. "
+                            "y yes / n no"
+                        ),
+                    ),
+                ),
             ),
             (
                 DashboardConfirmationKind.REMOTE_CONTROL,
-                DashboardFooterKind.CONFIRMATION,
-                "Claude Remote Control may disconnect during this switch. "
-                "Continue? y yes / n no",
+                DashboardFooter(
+                    navigation=DashboardNavigationKind.KEYS,
+                    status=DashboardStatus(
+                        kind=DashboardStatusKind.CONFIRMATION,
+                        message=(
+                            "Claude Remote Control may disconnect during "
+                            "this switch. Continue? y yes / n no"
+                        ),
+                    ),
+                ),
             ),
         ),
         activations=(
@@ -480,12 +508,23 @@ def test_dashboard_controller_journey_preserves_verified_truth(
             "Run sidekick-usages in a terminal and approve service setup."
         ),
         verified_account_id=CLAUDE_PREVIEW_ACCOUNT_ID,
-        success_footer_kind=DashboardFooterKind.KEYS,
+        success_footer=DashboardFooter(
+            navigation=DashboardNavigationKind.KEYS
+        ),
         setup_not_repeated=True,
         restored_account_id=CLAUDE_PREVIEW_ACCOUNT_ID,
-        failure_footer_kind=DashboardFooterKind.ERROR,
+        failure_footer=DashboardFooter(
+            navigation=DashboardNavigationKind.KEYS,
+            status=DashboardStatus(
+                kind=DashboardStatusKind.ERROR,
+                message=(
+                    "Account action failed. Run sidekick-usages doctor "
+                    "--provider claude"
+                ),
+            ),
+        ),
         remote_control_scoped_to_claude=True,
-        lookup_failure_reported=True,
+        lookup_failure=(MetricsFreshness.UNAVAILABLE, True),
         lookup_cancelled=True,
         daemon_cancelled=True,
         stream_released=True,

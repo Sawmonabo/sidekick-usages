@@ -33,6 +33,10 @@ from sidekick_usages.cli.dashboard.ports import (
     DashboardSnapshotSource,
 )
 from sidekick_usages.cli.dashboard.setup import GuidedServiceSetup
+from sidekick_usages.core.accounts.types import (
+    MetricsFreshness,
+    SidekickAccountId,
+)
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.models.protocol import (
     CompletedPayload,
@@ -47,13 +51,18 @@ from sidekick_usages.providers.claude.activation.service import (
     claude_environment_conflict_keys,
 )
 from sidekick_usages.usage.dashboard.models import (
+    DashboardAccount,
     DashboardCursor,
     DashboardFooter,
-    DashboardFooterKind,
+    DashboardNavigationKind,
+    DashboardRow,
     DashboardService,
     DashboardSnapshot,
+    DashboardStatus,
+    DashboardStatusKind,
 )
 from sidekick_usages.usage.lookup.worker.models import (
+    UsageLookupEventKind,
     UsageLookupWorkerEvent,
 )
 
@@ -62,9 +71,10 @@ DECISION_QUEUE_CAPACITY = 1
 ACTIVATION_QUEUED_MESSAGE = "Account change queued."
 REFRESH_QUEUED_MESSAGE = "Account refresh queued."
 REFRESH_ALL_QUEUED_MESSAGE = "Due-account refresh queued."
-LOOKUP_STARTED_MESSAGE = "Refreshing account metrics."
-LOOKUP_PROGRESS_MESSAGE = "Updated account metrics."
-LOOKUP_FAILED_MESSAGE = "Live metrics refresh failed; cached metrics remain."
+LOOKUP_FAILED_MESSAGE = (
+    "Live metrics refresh did not complete; existing dashboard data was "
+    "preserved."
+)
 CACHE_RELOAD_ERROR_MESSAGE = (
     "The action completed, but cached state could not be reloaded."
 )
@@ -121,8 +131,10 @@ class InteractiveDashboardSession:
         self._lookup_thread: Thread | None = None
         self._action_thread: Thread | None = None
         self._startup_reconciliation_failures: set[ProviderId] = set()
-        self._startup_footer_message: str | None = None
-        self._deferred_lookup_footer: DashboardFooter | None = None
+        self._startup_status: DashboardStatus | None = None
+        self._outcomes: dict[SidekickAccountId, UsageLookupEventKind] = {}
+        self._lookup_terminal_succeeded = False
+        self._deferred_lookup_status: DashboardStatus | None = None
         self._started = False
         self._closed = False
         self._action_executor = DashboardActionExecutor(
@@ -211,38 +223,18 @@ class InteractiveDashboardSession:
 
     def move(self, direction: DashboardMove) -> None:
         """Move the preview cursor without changing verified state."""
-        with self._view_lock:
-            controller = self._controller().move(direction)
-            self._set_controller(
-                controller,
-                self._navigation_footer(controller),
-            )
-            invalidate = self._invalidate
-        invalidate()
+        self._navigate(lambda controller: controller.move(direction))
 
     def focus_next_provider(self) -> None:
         """Focus the next displayed provider at its verified anchor."""
-        with self._view_lock:
-            controller = self._controller().focus_next_provider()
-            self._set_controller(
-                controller,
-                self._navigation_footer(controller),
-            )
-            invalidate = self._invalidate
-        invalidate()
+        self._navigate(DashboardController.focus_next_provider)
 
     def restore(self) -> None:
         """Restore verified focus unless activation is in flight."""
-        with self._view_lock:
-            if self._view.activation_in_flight:
-                return
-            controller = self._controller().restore()
-            self._set_controller(
-                controller,
-                self._navigation_footer(controller),
-            )
-            invalidate = self._invalidate
-        invalidate()
+        self._navigate(
+            DashboardController.restore,
+            blocked_by_activation=True,
+        )
 
     def activate(self) -> None:
         """Queue one account activation without blocking input."""
@@ -255,10 +247,7 @@ class InteractiveDashboardSession:
             if self._environment_conflict(intent):
                 invalidate = self._invalidate
             else:
-                invalidate = self._submit(
-                    intent,
-                    ACTIVATION_QUEUED_MESSAGE,
-                )
+                invalidate = self._submit(intent, ACTIVATION_QUEUED_MESSAGE)
         invalidate()
 
     def refresh_account(self) -> None:
@@ -285,11 +274,23 @@ class InteractiveDashboardSession:
 
     def toggle_help(self) -> None:
         """Toggle bounded keyboard guidance."""
+        self._navigate(DashboardController.toggle_help)
+
+    def _navigate(
+        self,
+        transition: Callable[[DashboardController], DashboardController],
+        *,
+        blocked_by_activation: bool = False,
+    ) -> None:
         with self._view_lock:
-            controller = self._controller().toggle_help()
-            self._set_controller(
-                controller,
-                self._navigation_footer(controller),
+            if blocked_by_activation and self._view.activation_in_flight:
+                return
+            controller = transition(self._controller())
+            self._view = replace(
+                self._view,
+                snapshot=controller.snapshot,
+                controller=controller.state,
+                footer=self._navigation_footer(controller),
             )
             invalidate = self._invalidate
         invalidate()
@@ -311,10 +312,11 @@ class InteractiveDashboardSession:
             self._view = replace(
                 self._view,
                 confirmation=None,
-                footer=self._progress_footer(
+                footer=self._status_footer(
+                    DashboardStatusKind.PROGRESS,
                     "Continuing account action."
                     if approved
-                    else "Cancelling account action."
+                    else "Cancelling account action.",
                 ),
             )
             invalidate = self._invalidate
@@ -324,35 +326,6 @@ class InteractiveDashboardSession:
         return DashboardController(
             snapshot=self._view.snapshot,
             state=self._view.controller,
-        )
-
-    def _set_controller(
-        self,
-        controller: DashboardController,
-        footer: DashboardFooter,
-        *,
-        action_in_flight: bool | None = None,
-        activation_in_flight: bool | None = None,
-        clear_confirmation: bool = False,
-    ) -> None:
-        current = self._view
-        self._view = DashboardSessionView(
-            snapshot=controller.snapshot,
-            controller=controller.state,
-            footer=footer,
-            action_in_flight=(
-                current.action_in_flight
-                if action_in_flight is None
-                else action_in_flight
-            ),
-            activation_in_flight=(
-                current.activation_in_flight
-                if activation_in_flight is None
-                else activation_in_flight
-            ),
-            confirmation=(
-                None if clear_confirmation else current.confirmation
-            ),
         )
 
     def _submit(
@@ -365,10 +338,12 @@ class InteractiveDashboardSession:
             self._actions.put_nowait(request)
         except Full:
             return _discard_invalidation
-        self._deferred_lookup_footer = None
         self._view = replace(
             self._view,
-            footer=self._progress_footer(message),
+            footer=self._status_footer(
+                DashboardStatusKind.PROGRESS,
+                message,
+            ),
             action_in_flight=True,
             activation_in_flight=isinstance(
                 intent,
@@ -377,122 +352,142 @@ class InteractiveDashboardSession:
         )
         return self._invalidate
 
-    def _environment_conflict(
-        self,
-        intent: ActivateOrRepairIntent,
-    ) -> bool:
+    def _environment_conflict(self, intent: ActivateOrRepairIntent) -> bool:
         if intent.provider_id is not ProviderId.CLAUDE:
             return False
         conflict = self._claude_environment_conflict
         if conflict is None:
             return False
+        self._deferred_lookup_status = None
         keys = " ".join(claude_environment_conflict_keys(conflict))
         self._view = replace(
             self._view,
-            footer=self._error_footer(
+            footer=self._status_footer(
+                DashboardStatusKind.ERROR,
                 "This shell overrides Claude account selection. "
-                f"Run: unset {keys}"
+                f"Run: unset {keys}",
             ),
         )
         return True
 
     def _run_lookup(self) -> None:
-        self._lookup_notice(LOOKUP_STARTED_MESSAGE)
         try:
             result = self._lookup.run(self._observe_lookup)
         except OSError:
-            if self._stopping.is_set():
-                return
-            self._publish_lookup_snapshot(
-                LOOKUP_FAILED_MESSAGE,
-                failed=True,
-                terminal=True,
-            )
-            return
+            result = None
         if self._stopping.is_set():
             return
-        self._publish_lookup_snapshot(
-            (
-                LOOKUP_PROGRESS_MESSAGE
-                if result.succeeded
-                else LOOKUP_FAILED_MESSAGE
-            ),
-            failed=not result.succeeded,
-            terminal=True,
-        )
+        if result is None or not result.succeeded:
+            self._publish_lookup_failure()
+        else:
+            self._publish_successful_lookup()
 
     def _observe_lookup(self, event: UsageLookupWorkerEvent) -> None:
         if self._stopping.is_set() or not event.kind.is_account_completion:
             return
-        self._publish_lookup_snapshot(LOOKUP_PROGRESS_MESSAGE)
-
-    def _lookup_notice(self, message: str, *, failed: bool = False) -> None:
         with self._view_lock:
-            if self._closed or not self._lookup_may_replace_footer():
+            if self._closed or event.account_id is None:
                 return
+            self._outcomes[event.account_id] = event.kind
+            if event.kind is UsageLookupEventKind.ACCOUNT_SUCCEEDED:
+                return
+            snapshot = self._outcome_view(self._view.snapshot)
+            controller = self._controller().rebase(snapshot)
             self._view = replace(
                 self._view,
-                footer=(
-                    self._error_footer(message)
-                    if failed
-                    else self._progress_footer(message)
-                ),
+                snapshot=controller.snapshot,
+                controller=controller.state,
             )
             invalidate = self._invalidate
         invalidate()
 
-    def _publish_lookup_snapshot(
-        self,
-        message: str,
-        failed: bool = False,
-        *,
-        terminal: bool = False,
-    ) -> None:
+    def _publish_successful_lookup(self) -> None:
         with (
             self._serialized_snapshot() as snapshot,
             self._view_lock,
         ):
             if self._closed:
                 return
-            controller = self._controller()
-            if snapshot is not None:
-                controller = controller.rebase(snapshot)
-            footer = self._view.footer
-            lookup_footer = (
-                self._error_footer(message)
-                if failed or snapshot is None
-                else self._progress_footer(message)
-            )
-            if self._lookup_may_replace_footer():
-                footer = lookup_footer
-                if terminal:
-                    self._deferred_lookup_footer = None
-            elif terminal and self._startup_owns_footer():
-                self._deferred_lookup_footer = lookup_footer
-            self._set_controller(
-                controller,
-                footer,
-            )
+            if snapshot is None:
+                self._publish_lookup_failure_locked()
+            else:
+                self._lookup_terminal_succeeded = True
+                outcome_snapshot = self._outcome_view(snapshot)
+                controller = self._controller().rebase(outcome_snapshot)
+                self._view = replace(
+                    self._view,
+                    snapshot=controller.snapshot,
+                    controller=controller.state,
+                )
             invalidate = self._invalidate
         invalidate()
 
-    def _lookup_may_replace_footer(self) -> bool:
-        """Return whether lookup owns the current informational footer."""
-        return (
-            not self._view.action_in_flight and not self._startup_owns_footer()
+    def _publish_lookup_failure(self) -> None:
+        with self._view_lock:
+            if self._closed:
+                return
+            self._publish_lookup_failure_locked()
+            invalidate = self._invalidate
+        invalidate()
+
+    def _publish_lookup_failure_locked(self) -> None:
+        status = DashboardStatus(
+            kind=DashboardStatusKind.ERROR,
+            message=LOOKUP_FAILED_MESSAGE,
+        )
+        self._deferred_lookup_status = status
+        owner_active = self._view.action_in_flight or self._startup_owns()
+        if not owner_active and self._view.footer.status is None:
+            self._view = replace(
+                self._view,
+                footer=replace(self._view.footer, status=status),
+            )
+
+    def _outcome_view(self, snapshot: DashboardSnapshot) -> DashboardSnapshot:
+        if not self._outcomes:
+            return snapshot
+        return replace(
+            snapshot,
+            providers=tuple(
+                replace(
+                    provider,
+                    rows=tuple(
+                        self._overlay_lookup_row(row) for row in provider.rows
+                    ),
+                )
+                for provider in snapshot.providers
+            ),
         )
 
-    def _startup_owns_footer(self) -> bool:
-        """Return whether startup verification owns the visible footer."""
+    def _overlay_lookup_row(self, row: DashboardRow) -> DashboardRow:
+        if not isinstance(row, DashboardAccount):
+            return row
+        outcome = self._outcomes.get(row.account_id)
+        has_observation = row.usage is not None or row.activity is not None
+        if outcome is UsageLookupEventKind.ACCOUNT_FAILED:
+            freshness = (
+                MetricsFreshness.STALE
+                if has_observation
+                else MetricsFreshness.UNAVAILABLE
+            )
+        elif (
+            outcome is not UsageLookupEventKind.ACCOUNT_SUCCEEDED
+            or not self._lookup_terminal_succeeded
+            or not has_observation
+        ):
+            return row
+        else:
+            freshness = MetricsFreshness.FRESH
+        return replace(row, metrics_freshness=freshness)
+
+    def _startup_owns(self) -> bool:
         return (
             bool(self._startup_reconciliation_failures)
-            and self._view.footer.message == self._startup_footer_message
+            and self._view.footer.status == self._startup_status
         )
 
     @contextmanager
-    def _serialized_snapshot(
-        self,
-    ) -> Iterator[DashboardSnapshot | None]:
+    def _serialized_snapshot(self) -> Iterator[DashboardSnapshot | None]:
         """Serialize cache read and publication without blocking input."""
         with self._snapshot_lock:
             yield self._load_snapshot()
@@ -500,7 +495,7 @@ class InteractiveDashboardSession:
     def _load_snapshot(self) -> DashboardSnapshot | None:
         try:
             return self._snapshots.load(self._only)
-        except PersistenceError:
+        except OSError, PersistenceError:
             return None
 
     def _run_actions(self) -> None:
@@ -526,7 +521,7 @@ class InteractiveDashboardSession:
                 return
             controller = self._controller()
             if snapshot is not None:
-                controller = controller.rebase(snapshot)
+                controller = controller.rebase(self._outcome_view(snapshot))
             footer = self._view.footer
             if result.state is DashboardStartupReconciliationState.VERIFIED:
                 self._startup_reconciliation_failures.discard(
@@ -534,14 +529,14 @@ class InteractiveDashboardSession:
                 )
                 if (
                     not self._startup_reconciliation_failures
-                    and footer.message == self._startup_footer_message
+                    and footer.status == self._startup_status
                 ):
-                    footer = self._deferred_lookup_footer or self._idle_footer(
-                        controller
+                    footer = self._navigation_footer(
+                        controller,
+                        reveal_lookup=True,
                     )
                 if not self._startup_reconciliation_failures:
-                    self._deferred_lookup_footer = None
-                    self._startup_footer_message = None
+                    self._startup_status = None
             else:
                 self._startup_reconciliation_failures.add(result.provider_id)
                 message_template = (
@@ -553,16 +548,21 @@ class InteractiveDashboardSession:
                 message = message_template.format(
                     provider=result.provider_id.value.title()
                 )
-                self._startup_footer_message = message
-                footer = (
-                    self._error_footer(message)
-                    if result.state
-                    is DashboardStartupReconciliationState.UNAVAILABLE
-                    else self._progress_footer(message)
+                self._startup_status = DashboardStatus(
+                    kind=(
+                        DashboardStatusKind.ERROR
+                        if result.state
+                        is DashboardStartupReconciliationState.UNAVAILABLE
+                        else DashboardStatusKind.PROGRESS
+                    ),
+                    message=message,
                 )
-            self._set_controller(
-                controller,
-                footer,
+                footer = replace(footer, status=self._startup_status)
+            self._view = replace(
+                self._view,
+                snapshot=controller.snapshot,
+                controller=controller.state,
+                footer=footer,
             )
             invalidate = self._invalidate
         invalidate()
@@ -592,7 +592,8 @@ class InteractiveDashboardSession:
                 with self._view_lock:
                     if self._closed:
                         return
-                    controller = self._controller().rebase(snapshot)
+                    outcome_snapshot = self._outcome_view(snapshot)
+                    controller = self._controller().rebase(outcome_snapshot)
                     if isinstance(intent, ActivateOrRepairIntent):
                         try:
                             controller = controller.activation_succeeded(
@@ -603,37 +604,39 @@ class InteractiveDashboardSession:
                             )
                         except ValueError:
                             controller = self._controller().rebase(
-                                snapshot,
+                                outcome_snapshot,
                                 restore_provider=intent.provider_id,
                             )
                             failed = True
+                    if failed:
+                        self._deferred_lookup_status = None
                     footer = (
-                        self._error_footer(
-                            self._action_failure_message(intent)
+                        self._status_footer(
+                            DashboardStatusKind.ERROR,
+                            self._action_failure_message(intent),
                         )
                         if failed
-                        else self._idle_footer(controller)
+                        else self._navigation_footer(
+                            controller,
+                            reveal_lookup=True,
+                        )
                     )
-                    self._set_controller(
-                        controller,
-                        footer,
+                    self._view = replace(
+                        self._view,
+                        snapshot=controller.snapshot,
+                        controller=controller.state,
+                        footer=footer,
                         action_in_flight=False,
                         activation_in_flight=False,
-                        clear_confirmation=True,
+                        confirmation=None,
                     )
                     invalidate = self._invalidate
         invalidate()
 
     def action_failed(self, intent: DashboardIntent) -> None:
-        if self._stopping.is_set():
-            return
         self.action_error(intent, self._action_failure_message(intent))
 
-    def action_error(
-        self,
-        intent: DashboardIntent,
-        message: str,
-    ) -> None:
+    def action_error(self, intent: DashboardIntent, message: str) -> None:
         if self._stopping.is_set():
             return
         with self._serialized_snapshot() as snapshot:
@@ -646,22 +649,10 @@ class InteractiveDashboardSession:
 
     @staticmethod
     def _action_failure_message(intent: DashboardIntent) -> str:
-        provider_id = (
-            intent.provider_id
-            if isinstance(
-                intent,
-                ActivateOrRepairIntent | RefreshAccountIntent,
-            )
-            else None
-        )
-        return (
-            "Account action failed. Run sidekick-usages doctor"
-            if provider_id is None
-            else (
-                "Account action failed. Run sidekick-usages doctor "
-                f"--provider {provider_id.value}"
-            )
-        )
+        message = "Account action failed. Run sidekick-usages doctor"
+        if isinstance(intent, ActivateOrRepairIntent | RefreshAccountIntent):
+            return f"{message} --provider {intent.provider_id.value}"
+        return message
 
     def _action_error_transition(
         self,
@@ -672,21 +663,33 @@ class InteractiveDashboardSession:
         with self._view_lock:
             if self._closed:
                 return _discard_invalidation
+            self._deferred_lookup_status = None
             controller = self._controller()
-            controller = controller.rebase(
-                controller.snapshot if snapshot is None else snapshot,
-                restore_provider=(
-                    intent.provider_id
-                    if isinstance(intent, ActivateOrRepairIntent)
-                    else None
-                ),
+            source = (
+                controller.snapshot
+                if snapshot is None
+                else self._outcome_view(snapshot)
             )
-            self._set_controller(
-                controller,
-                self._error_footer(message),
+            restore_provider = (
+                intent.provider_id
+                if isinstance(intent, ActivateOrRepairIntent)
+                else None
+            )
+            controller = controller.rebase(
+                source,
+                restore_provider=restore_provider,
+            )
+            self._view = replace(
+                self._view,
+                snapshot=controller.snapshot,
+                controller=controller.state,
+                footer=self._status_footer(
+                    DashboardStatusKind.ERROR,
+                    message,
+                ),
                 action_in_flight=False,
                 activation_in_flight=False,
-                clear_confirmation=True,
+                confirmation=None,
             )
             return self._invalidate
 
@@ -700,9 +703,9 @@ class InteractiveDashboardSession:
                 return ServiceSetupDecision.REFUSED
             self._view = replace(
                 self._view,
-                footer=DashboardFooter(
-                    kind=DashboardFooterKind.CONFIRMATION,
-                    message=message,
+                footer=self._status_footer(
+                    DashboardStatusKind.CONFIRMATION,
+                    message,
                 ),
                 confirmation=DashboardConfirmation(kind=kind),
             )
@@ -716,7 +719,10 @@ class InteractiveDashboardSession:
                 return
             self._view = replace(
                 self._view,
-                footer=self._progress_footer(message),
+                footer=self._status_footer(
+                    DashboardStatusKind.PROGRESS,
+                    message,
+                ),
             )
             invalidate = self._invalidate
         invalidate()
@@ -724,36 +730,29 @@ class InteractiveDashboardSession:
     def _navigation_footer(
         self,
         controller: DashboardController,
+        *,
+        reveal_lookup: bool = False,
     ) -> DashboardFooter:
-        if self._view.action_in_flight:
-            return self._view.footer
-        return self._idle_footer(controller)
+        if reveal_lookup:
+            status = self._deferred_lookup_status
+            self._deferred_lookup_status = None
+        elif self._view.action_in_flight or self._startup_owns():
+            status = self._view.footer.status
+        else:
+            status = None
+            self._deferred_lookup_status = None
+        navigation = DashboardNavigationKind.KEYS
+        if controller.state.help_visible:
+            navigation = DashboardNavigationKind.HELP
+        return DashboardFooter(navigation=navigation, status=status)
 
-    @staticmethod
-    def _idle_footer(
-        controller: DashboardController,
+    def _status_footer(
+        self,
+        kind: DashboardStatusKind,
+        message: str,
     ) -> DashboardFooter:
-        return DashboardFooter(
-            kind=(
-                DashboardFooterKind.HELP
-                if controller.state.help_visible
-                else DashboardFooterKind.KEYS
-            )
-        )
-
-    @staticmethod
-    def _progress_footer(message: str) -> DashboardFooter:
-        return DashboardFooter(
-            kind=DashboardFooterKind.PROGRESS,
-            message=message,
-        )
-
-    @staticmethod
-    def _error_footer(message: str) -> DashboardFooter:
-        return DashboardFooter(
-            kind=DashboardFooterKind.ERROR,
-            message=message,
-        )
+        status = DashboardStatus(kind=kind, message=message)
+        return replace(self._view.footer, status=status)
 
 
 def dashboard_cursor(view: DashboardSessionView) -> DashboardCursor:

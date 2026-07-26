@@ -1,8 +1,8 @@
 """Cursor, row decoration, and actionable detail projection."""
 
 from datetime import datetime
-from typing import assert_never
 
+from sidekick_usages.core.accounts.types import MetricsFreshness
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.usage.dashboard.models import (
     DashboardAccount,
@@ -23,12 +23,9 @@ PROVIDER_NAMES = {
 }
 MINUTES_PER_HOUR = 60
 HOURS_PER_DAY = 24
-STATIC_STATE_DETAILS = {
+FAILURE_STATE_DETAILS = {
     DashboardActionState.SETUP_REGENERATION_REQUIRED: (
         "Generate a new Claude setup token before using this account."
-    ),
-    DashboardActionState.EXTERNAL_ACTIVE: (
-        "This external login is not saved in Sidekick."
     ),
     DashboardActionState.RECONCILIATION_REQUIRED: (
         "Provider login needs reconciliation before account switching."
@@ -40,6 +37,8 @@ STATIC_STATE_DETAILS = {
         "Account actions are unavailable until Sidekick is ready."
     ),
 }
+EXTERNAL_LOGIN_DETAIL = "This external login is not saved in Sidekick."
+SWITCH_SETUP_DETAIL = "Enter to connect this account for Claude switching."
 
 
 def row_is_selected(
@@ -66,36 +65,28 @@ def row_plan(row: DashboardRow) -> str:
     return row.plan if isinstance(row, DashboardAccount) else "unknown"
 
 
-def row_details(
+def row_detail(
     row: DashboardRow,
-    reference_time: datetime,
-) -> tuple[str, ...]:
-    """Render only actionable or degraded state for one account row."""
-    details: list[str] = []
-    for state in row.states:
-        detail = _state_detail(row, state, reference_time)
-        if detail is not None and detail not in details:
-            details.append(detail)
-    return tuple(details)
-
-
-def _state_detail(
-    row: DashboardRow,
-    state: DashboardActionState,
+    cursor: DashboardCursor,
     reference_time: datetime,
 ) -> str | None:
-    if state is DashboardActionState.HEALTHY:
-        return None
-    if state in {
-        DashboardActionState.LOGIN_REQUIRED,
-        DashboardActionState.REPAIR_REQUIRED,
-    }:
-        return _credential_detail(row.provider_id, state)
-    if state is DashboardActionState.METRICS_STALE:
-        return _metrics_detail(row, reference_time)
-    if state in STATIC_STATE_DETAILS:
-        return STATIC_STATE_DETAILS[state]
-    assert_never(state)
+    """Return the highest-priority actionable or degraded row detail."""
+    for state in row.states:
+        if state in {
+            DashboardActionState.LOGIN_REQUIRED,
+            DashboardActionState.REPAIR_REQUIRED,
+        }:
+            return _credential_detail(row.provider_id, state)
+        if state in FAILURE_STATE_DETAILS:
+            return FAILURE_STATE_DETAILS[state]
+    if (
+        DashboardActionState.SWITCH_SETUP_REQUIRED in row.states
+        and row_is_selected(row, cursor)
+    ):
+        return SWITCH_SETUP_DETAIL
+    if DashboardActionState.EXTERNAL_ACTIVE in row.states:
+        return EXTERNAL_LOGIN_DETAIL
+    return _metrics_detail(row, reference_time)
 
 
 def _credential_detail(
@@ -117,15 +108,19 @@ def _credential_detail(
 def _metrics_detail(
     row: DashboardRow,
     reference_time: datetime,
-) -> str:
+) -> str | None:
     if not isinstance(row, DashboardAccount):
-        raise ValueError("External rows cannot own saved metrics.")
+        return None
+    if row.metrics_freshness is MetricsFreshness.UNAVAILABLE:
+        return "Live metrics refresh failed; no saved metrics available."
+    if row.metrics_freshness is not MetricsFreshness.STALE:
+        return None
     observed_at = _metrics_observed_at(row)
     if observed_at is None:
-        return "Saved metrics are stale; retry scheduled."
+        raise ValueError("Stale dashboard metrics require an observation.")
     return (
-        f"Metrics last updated {_age(observed_at, reference_time)} ago; "
-        "retry scheduled."
+        "Live metrics refresh failed; showing data from "
+        f"{_age(observed_at, reference_time)} ago."
     )
 
 

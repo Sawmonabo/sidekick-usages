@@ -7,6 +7,7 @@ from sidekick_usages.cli.dashboard.models.session import (
     DashboardConfirmationKind,
 )
 from sidekick_usages.core.accounts.types import (
+    MetricsFreshness,
     OperationId,
     RequestId,
     SidekickAccountId,
@@ -15,7 +16,9 @@ from sidekick_usages.core.types import ProviderId
 from sidekick_usages.providers.claude.activation.types import (
     ClaudeActivationGuardFailure,
 )
-from sidekick_usages.usage.dashboard.models import DashboardFooterKind
+from sidekick_usages.usage.dashboard.models import (
+    DashboardFooter,
+)
 
 SESSION_WAIT_SECONDS = 2.0
 DEFAULT_TEST_CONTROL_TIMEOUT_SECONDS = 5.0
@@ -28,13 +31,16 @@ REMOTE_CONTROL_REQUIRED_CODE = (
 
 type DashboardConfirmationProof = tuple[
     DashboardConfirmationKind | None,
-    DashboardFooterKind,
-    str | None,
+    DashboardFooter,
 ]
 type DashboardStartupProof = tuple[
     tuple[ProviderId, ...],
     SidekickAccountId | None,
-    DashboardFooterKind,
+    DashboardFooter,
+]
+type DashboardLookupFailureProof = tuple[
+    MetricsFreshness,
+    bool,
 ]
 
 
@@ -46,7 +52,7 @@ class DashboardSessionProof:
     partial_start_reaped: bool
     startup_reconciliations: tuple[ProviderId, ...]
     startup_account_id: SidekickAccountId | None
-    startup_footer_kind: DashboardFooterKind
+    startup_footer: DashboardFooter
     activation_locked: bool
     confirmations: tuple[DashboardConfirmationProof, ...]
     activations: tuple[tuple[ProviderId, SidekickAccountId, bool], ...]
@@ -55,12 +61,12 @@ class DashboardSessionProof:
     setup_refusal_restored: bool
     setup_refusal_message: str | None
     verified_account_id: SidekickAccountId | None
-    success_footer_kind: DashboardFooterKind
+    success_footer: DashboardFooter
     setup_not_repeated: bool
     restored_account_id: SidekickAccountId | None
-    failure_footer_kind: DashboardFooterKind
+    failure_footer: DashboardFooter
     remote_control_scoped_to_claude: bool
-    lookup_failure_reported: bool
+    lookup_failure: DashboardLookupFailureProof
     lookup_cancelled: bool
     daemon_cancelled: bool
     stream_released: bool

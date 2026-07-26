@@ -90,6 +90,7 @@ WIDE_PANEL_TEXT = "CLAUDE · 2 accounts"
 NARROW_ACCOUNT_TEXT = "[claude · max]"
 SETUP_CONFIRMATION_TEXT = "Sidekick needs one per-user service"
 KEY_FOOTER_TEXT = "↑/↓ or j/k move"
+IDLE_FOOTER_TEXT = f"\n\n {KEY_FOOTER_TEXT}"
 HELP_FOOTER_TEXT = "? close help"
 STARTUP_FAILURE_TEXT = "cached selection remains"
 ACTIVE_LABEL = "work@example.test"
@@ -500,11 +501,15 @@ def test_dashboard_pty_completes_the_interactive_account_journey(
         lookup_process_id = _read_process_id(lookup_process_id_path)
         plain_initial = _plain_terminal_output(initial)
         assert (
+            plain_initial.count(STARTUP_FAILURE_TEXT),
+            plain_initial.count(KEY_FOOTER_TEXT),
+            plain_initial.index(STARTUP_FAILURE_TEXT)
+            < plain_initial.index(KEY_FOOTER_TEXT),
             WIDE_PANEL_TEXT in plain_initial,
             ACTIVE_LABEL in plain_initial,
             PREVIEW_LABEL in plain_initial,
             _selected(initial, ACTIVE_LABEL),
-        ) == (True, True, True, True)
+        ) == (1, 1, True, True, True, True, True)
 
         moved_down = _send_resize_and_read(
             session,
@@ -538,11 +543,11 @@ def test_dashboard_pty_completes_the_interactive_account_journey(
         session.read_until(SETUP_CONFIRMATION_TEXT)
         session.clear_output()
         session.send(APPROVE_KEY)
-        _read_completed_redraw(session, KEY_FOOTER_TEXT)
+        _read_completed_redraw(session, IDLE_FOOTER_TEXT)
 
         session.clear_output()
         session.send(REFRESH_KEY)
-        _read_completed_redraw(session, KEY_FOOTER_TEXT)
+        _read_completed_redraw(session, IDLE_FOOTER_TEXT)
 
         codex = _send_resize_and_read(
             session,

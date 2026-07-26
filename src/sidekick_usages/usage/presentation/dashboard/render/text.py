@@ -9,7 +9,8 @@ from sidekick_usages.branding.models import BrandTextRole
 from sidekick_usages.core.models import TokenActivitySummary
 from sidekick_usages.usage.dashboard.models import (
     DashboardFooter,
-    DashboardFooterKind,
+    DashboardNavigationKind,
+    DashboardStatusKind,
 )
 from sidekick_usages.usage.presentation.dashboard.render.models import (
     DashboardLine,
@@ -196,32 +197,32 @@ def footer_lines(
     footer: DashboardFooter,
     width: int,
 ) -> list[DashboardLine]:
-    """Render and wrap one typed dashboard footer."""
-    style = _footer_style(footer.kind)
-    match footer.kind:
-        case DashboardFooterKind.KEYS:
+    """Render optional status above one unconditional navigation footer."""
+    lines: list[DashboardLine] = []
+    if footer.status is not None:
+        lines.extend(
+            wrap_text(
+                footer.status.message,
+                width,
+                _status_style(footer.status.kind),
+                initial_prefix=" ",
+            )
+        )
+    match footer.navigation:
+        case DashboardNavigationKind.KEYS:
             value = KEY_FOOTER
-            prefix = ""
-        case DashboardFooterKind.HELP:
+        case DashboardNavigationKind.HELP:
             value = HELP_FOOTER
-            prefix = ""
-        case (
-            DashboardFooterKind.PROGRESS
-            | DashboardFooterKind.CONFIRMATION
-            | DashboardFooterKind.ERROR
-        ):
-            if footer.message is None:
-                raise ValueError("Transient footer requires a message.")
-            value = footer.message
-            prefix = " "
         case _ as unreachable:
             assert_never(unreachable)
-    return wrap_text(
-        value,
-        width,
-        style,
-        initial_prefix=prefix,
+    lines.extend(
+        wrap_text(
+            value,
+            width,
+            _navigation_style(footer.navigation),
+        )
     )
+    return lines
 
 
 def visible_plan(plan: str) -> str:
@@ -243,17 +244,23 @@ def brand_lines(width: int) -> list[DashboardLine]:
     ]
 
 
-def _footer_style(kind: DashboardFooterKind) -> UsageTextRole:
+def _navigation_style(kind: DashboardNavigationKind) -> UsageTextRole:
     match kind:
-        case DashboardFooterKind.KEYS:
+        case DashboardNavigationKind.KEYS:
             return UsageTextRole.FOOTER_KEYS
-        case DashboardFooterKind.HELP:
+        case DashboardNavigationKind.HELP:
             return UsageTextRole.FOOTER_HELP
-        case DashboardFooterKind.PROGRESS:
+        case _ as unreachable:
+            assert_never(unreachable)
+
+
+def _status_style(kind: DashboardStatusKind) -> UsageTextRole:
+    match kind:
+        case DashboardStatusKind.PROGRESS:
             return UsageTextRole.FOOTER_PROGRESS
-        case DashboardFooterKind.CONFIRMATION:
+        case DashboardStatusKind.CONFIRMATION:
             return UsageTextRole.FOOTER_CONFIRMATION
-        case DashboardFooterKind.ERROR:
+        case DashboardStatusKind.ERROR:
             return UsageTextRole.FOOTER_ERROR
         case _ as unreachable:
             assert_never(unreachable)

@@ -4,6 +4,7 @@ from datetime import date, datetime, timedelta
 
 from sidekick_usages.core.accounts.types import (
     CredentialHealth,
+    MetricsFreshness,
     SidekickAccountId,
 )
 from sidekick_usages.core.models import (
@@ -25,10 +26,12 @@ from sidekick_usages.usage.dashboard.models import (
     DashboardCursor,
     DashboardExternalRow,
     DashboardFooter,
-    DashboardFooterKind,
+    DashboardNavigationKind,
     DashboardProvider,
     DashboardService,
     DashboardSnapshot,
+    DashboardStatus,
+    DashboardStatusKind,
     DashboardUsage,
 )
 
@@ -66,10 +69,8 @@ def interactive_dashboard_state(
                 plan="max",
                 credential_health=CredentialHealth.HEALTHY,
                 active=True,
-                states=(
-                    DashboardActionState.HEALTHY,
-                    DashboardActionState.METRICS_STALE,
-                ),
+                states=(DashboardActionState.HEALTHY,),
+                metrics_freshness=MetricsFreshness.STALE,
                 usage=DashboardUsage(
                     plan="max",
                     report=_report(reset_at, 0, 51, plan="max"),
@@ -84,6 +85,7 @@ def interactive_dashboard_state(
                 credential_health=CredentialHealth.LOGIN_REQUIRED,
                 active=False,
                 states=(DashboardActionState.LOGIN_REQUIRED,),
+                metrics_freshness=MetricsFreshness.UNAVAILABLE,
             ),
         ),
         activity=DashboardActivity(
@@ -148,8 +150,11 @@ def interactive_dashboard_state(
             account_id=CLAUDE_ACTIVE_ID,
         ),
         DashboardFooter(
-            kind=DashboardFooterKind.PROGRESS,
-            message=PROGRESS_COPY,
+            navigation=DashboardNavigationKind.KEYS,
+            status=DashboardStatus(
+                kind=DashboardStatusKind.PROGRESS,
+                message=PROGRESS_COPY,
+            ),
         ),
     )
 

@@ -25,7 +25,7 @@ from sidekick_usages.usage.presentation.dashboard.render.text import (
 )
 from sidekick_usages.usage.presentation.dashboard.selection import (
     CURSOR_GLYPH,
-    row_details,
+    row_detail,
     row_is_selected,
     row_label,
     row_plan,
@@ -71,7 +71,8 @@ def render_narrow(
                         snapshot.reference_time,
                     )
                 )
-            for detail in row_details(row, snapshot.reference_time):
+            detail = row_detail(row, cursor, snapshot.reference_time)
+            if detail is not None:
                 lines.extend(_warning_lines(detail, width))
             has_block = True
         activity = activities.get(provider.provider_id)

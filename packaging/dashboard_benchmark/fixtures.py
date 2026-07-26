@@ -239,10 +239,7 @@ def _dashboard_account(
         plan=account.plan,
         credential_health=account.credential_health,
         active=active,
-        states=(
-            DashboardActionState.HEALTHY,
-            DashboardActionState.METRICS_STALE,
-        ),
+        states=(DashboardActionState.HEALTHY,),
         usage=DashboardUsage(
             plan=account.plan,
             report=_usage_report(account, ordinal),

@@ -12,9 +12,9 @@ from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.types.service import ServicePhase
 from sidekick_usages.usage.dashboard.models import (
     DashboardAccount,
-    DashboardFooterKind,
     DashboardService,
     DashboardSnapshot,
+    DashboardStatusKind,
 )
 from sidekick_usages.usage.lookup.worker.models import (
     UsageLookupEventKind,
@@ -109,7 +109,11 @@ class SessionLookupWorker:
             if observe is not None:
                 observe(
                     UsageLookupWorkerEvent(
-                        UsageLookupEventKind.ACCOUNT_SUCCEEDED,
+                        (
+                            UsageLookupEventKind.ACCOUNT_FAILED
+                            if self._fail
+                            else UsageLookupEventKind.ACCOUNT_SUCCEEDED
+                        ),
                         account_id=self._account_id,
                     )
                 )
@@ -151,12 +155,12 @@ class SessionInvalidationProbe:
         """Record one thread-safe redraw request."""
         self.count += 1
         if self._session is not None:
-            footer = self._session.view.footer
+            status = self._session.view.footer.status
             if (
-                footer.kind is DashboardFooterKind.PROGRESS
-                and footer.message is not None
+                status is not None
+                and status.kind is DashboardStatusKind.PROGRESS
             ):
-                self.progress_messages.append(footer.message)
+                self.progress_messages.append(status.message)
         self._event.set()
 
     def wait_for(self, condition: Callable[[], bool]) -> None:
