@@ -5,6 +5,9 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+if sys.platform == "win32":
+    import subprocess
+
 from rich.console import Console
 
 from sidekick_usages.cli.contexts.dashboard.snapshot import (
@@ -99,6 +102,11 @@ def _execute_module(module: str, arguments: Sequence[str]) -> int:
     environment = os.environ.copy()
     if sys.platform == "win32":
         environment[PYTHON_IO_ENCODING_ENVIRONMENT_KEY] = UTF8_IO_ENCODING
+        return subprocess.run(
+            command,
+            check=False,
+            env=environment,
+        ).returncode
     return os.execve(executable, command, environment)
 
 

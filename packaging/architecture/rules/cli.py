@@ -20,6 +20,7 @@ PUBLIC_BOOTSTRAP_IMPORTS = (
     "os",
     "pathlib",
     "rich.console",
+    "subprocess",
     "sys",
     "sidekick_usages.cli.contexts.dashboard.snapshot",
     "sidekick_usages.cli.dashboard",
@@ -53,6 +54,7 @@ B606_NO_SHELL_CALLS = frozenset(
         "os.startfile",
     }
 )
+WINDOWS_CHILD_CALL = "subprocess.run"
 
 
 def check_cli_contract(
@@ -141,6 +143,21 @@ def _check_public_bootstrap(
                 node,
                 "CLI001",
                 "one qualified bootstrap execve must be the only B606 call",
+            )
+        )
+    windows_children = [
+        node
+        for node in ast.walk(bootstrap.tree)
+        if isinstance(node, ast.Call)
+        and dotted_name(node.func) == WINDOWS_CHILD_CALL
+    ]
+    if len(windows_children) != 1:
+        violations.append(
+            finding(
+                bootstrap,
+                windows_children[0] if windows_children else None,
+                "CLI001",
+                "bootstrap must own one supported Windows child process",
             )
         )
     qualifications = [

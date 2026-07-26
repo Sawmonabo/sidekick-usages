@@ -2,6 +2,7 @@
 
 import io
 import os
+import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -45,6 +46,7 @@ from tests.support.platform import MANAGED_RUNTIME_SUPPORTED
 
 REFERENCE_TIME = datetime(2026, 7, 25, 14, tzinfo=UTC)
 ONE_SHOT_ROUTE_COUNT = 3
+WINDOWS_CHILD_EXIT_CODE = 7
 
 
 def _assert_execve_process_boundary(
@@ -120,23 +122,30 @@ def _assert_execve_process_boundary(
         environment is not os.environ for *_, environment in replacements
     )
 
-    windows_calls: list[tuple[Path, tuple[str, ...], dict[str, str]]] = []
+    windows_calls: list[tuple[tuple[str, ...], bool, dict[str, str]]] = []
 
-    def record_windows_execve(
-        executable: Path,
-        arguments: tuple[str, ...],
-        environment: dict[str, str],
-    ) -> Never:
-        windows_calls.append((executable, arguments, environment))
-        raise OSError("Synthetic Windows replacement failure.")
+    def run_windows(
+        command: tuple[str, ...],
+        *,
+        check: bool,
+        env: dict[str, str],
+    ) -> subprocess.CompletedProcess[bytes]:
+        windows_calls.append((command, check, env))
+        return subprocess.CompletedProcess(command, WINDOWS_CHILD_EXIT_CODE)
 
     expected_environment: dict[str, str]
     with monkeypatch.context() as windows_boundary:
         windows_boundary.setattr(bootstrap.sys, "platform", "win32")
         windows_boundary.setattr(
-            bootstrap.os,
-            "execve",
-            record_windows_execve,
+            bootstrap,
+            "subprocess",
+            subprocess,
+            raising=False,
+        )
+        windows_boundary.setattr(
+            subprocess,
+            "run",
+            run_windows,
         )
         windows_boundary.setenv(
             bootstrap.PYTHON_IO_ENCODING_ENVIRONMENT_KEY,
@@ -146,16 +155,16 @@ def _assert_execve_process_boundary(
         expected_environment[bootstrap.PYTHON_IO_ENCODING_ENVIRONMENT_KEY] = (
             bootstrap.UTF8_IO_ENCODING
         )
-        assert bootstrap.main(()) == bootstrap.PROCESS_LAUNCH_FAILURE_EXIT_CODE
+        assert bootstrap.main(()) == WINDOWS_CHILD_EXIT_CODE
 
     assert len(windows_calls) == 1
-    executable, command, environment = windows_calls[0]
-    assert executable == Path(sys.executable)
+    command, check, environment = windows_calls[0]
     assert command == (
         sys.executable,
         "-m",
         bootstrap.APPLICATION_MODULE,
     )
+    assert check is False
     assert environment == expected_environment
     assert environment is not os.environ
 
