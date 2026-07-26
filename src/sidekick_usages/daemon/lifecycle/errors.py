@@ -7,6 +7,9 @@ _MESSAGES = {
     ServiceFailureCode.ARTIFACT_UNSAFE: (
         "The Sidekick user-service definition cannot be written safely."
     ),
+    ServiceFailureCode.CANCELLED: (
+        "The Sidekick user-service operation was cancelled."
+    ),
     ServiceFailureCode.COMMAND_FAILED: (
         "The operating-system user-service command failed."
     ),

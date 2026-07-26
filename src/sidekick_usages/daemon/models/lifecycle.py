@@ -12,10 +12,10 @@ from sidekick_usages.daemon.types.lifecycle import (
 from sidekick_usages.daemon.types.service import PackageVersion
 
 _MAX_ARTIFACT_BYTES = 256 * 1024
-_MAX_COMMAND_OUTPUT_BYTES = 256 * 1024
 _MAX_IDENTITY_BYTES = 256
 _MAX_MESSAGE_BYTES = 1024
 _SERVICE_ARTIFACT_MODE = 0o600
+MAX_COMMAND_OUTPUT_BYTES = 256 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,13 +33,13 @@ class CommandResult:
         _require_text_bound(
             self.stdout,
             "Command standard output",
-            _MAX_COMMAND_OUTPUT_BYTES,
+            MAX_COMMAND_OUTPUT_BYTES,
             allow_empty=True,
         )
         _require_text_bound(
             self.stderr,
             "Command standard error",
-            _MAX_COMMAND_OUTPUT_BYTES,
+            MAX_COMMAND_OUTPUT_BYTES,
             allow_empty=True,
         )
 

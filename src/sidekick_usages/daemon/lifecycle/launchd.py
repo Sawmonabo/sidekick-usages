@@ -42,6 +42,10 @@ class LaunchdBackend:
         self._runner = runner
         self._artifacts = artifacts
 
+    def cancel(self) -> None:
+        """Interrupt one active launchd user command."""
+        self._runner.cancel()
+
     @property
     def _domain(self) -> str:
         return f"gui/{self._uid}"

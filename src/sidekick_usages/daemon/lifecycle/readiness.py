@@ -3,6 +3,7 @@
 import time
 from collections.abc import Callable
 from datetime import datetime
+from threading import Event, Lock
 from typing import assert_never
 
 from sidekick_usages import __version__
@@ -65,17 +66,27 @@ class SupervisorReadiness:
         clock: Clock,
         *,
         monotonic: Callable[[], float] = time.monotonic,
-        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self._paths = paths
         self._clock = clock
         self._monotonic = monotonic
-        self._sleep = sleep
         self._queue = OperationQueueStore(paths.durable_operations)
         self._state = ServiceStateStore(paths.service_state)
+        self._cancelled = Event()
+        self._client_lock = Lock()
+        self._active_client: ControlClient | None = None
+
+    def cancel(self) -> None:
+        """Interrupt active local-control observation."""
+        self._cancelled.set()
+        with self._client_lock:
+            client = self._active_client
+        if client is not None:
+            client.close()
 
     def enroll_accounts(self) -> None:
         """Persist one immediately due maintenance slot per saved account."""
+        self._raise_if_cancelled()
         now = self._clock.now()
         try:
             for account in self._accounts():
@@ -98,6 +109,7 @@ class SupervisorReadiness:
 
     def verify_ready(self) -> None:
         """Verify handshake, current service state, queue, and Codex phase."""
+        self._raise_if_cancelled()
         self._verify_handshake()
         try:
             state = self._state.load()
@@ -134,6 +146,7 @@ class SupervisorReadiness:
         self._request_maintenance()
         deadline = self._monotonic() + _READINESS_TIMEOUT_SECONDS
         while True:
+            self._raise_if_cancelled()
             now = self._clock.now()
             try:
                 accounts = self._accounts()
@@ -156,7 +169,7 @@ class SupervisorReadiness:
                 raise ServiceLifecycleError(
                     ServiceFailureCode.MAINTENANCE_TIMEOUT
                 )
-            self._sleep(min(_READINESS_WAIT_SECONDS, remaining))
+            self._cancelled.wait(min(_READINESS_WAIT_SECONDS, remaining))
 
     def health(self, status: ServiceBackendStatus) -> SupervisorHealth:
         """Inspect components independently without installing or repairing."""
@@ -315,29 +328,51 @@ class SupervisorReadiness:
 
     def _verify_handshake(self) -> None:
         try:
-            client = ControlClient.connect(self._paths.supervisor_socket)
+            client = self._connect_client()
             try:
                 client.handshake()
             finally:
-                client.close()
+                self._release_client(client)
         except OSError, ValueError:
+            self._raise_if_cancelled()
             raise ServiceLifecycleError(
                 ServiceFailureCode.HANDSHAKE_FAILED
             ) from None
 
     def _request_maintenance(self) -> None:
         try:
-            client = ControlClient.connect(self._paths.supervisor_socket)
+            client = self._connect_client()
             try:
                 events = tuple(client.refresh_all())
             finally:
-                client.close()
+                self._release_client(client)
         except OSError, ValueError:
+            self._raise_if_cancelled()
             raise ServiceLifecycleError(
                 ServiceFailureCode.HANDSHAKE_FAILED
             ) from None
         if not events or events[-1].kind is not EventKind.COMPLETED:
             raise ServiceLifecycleError(ServiceFailureCode.SERVICE_UNHEALTHY)
+
+    def _connect_client(self) -> ControlClient:
+        self._raise_if_cancelled()
+        client = ControlClient.connect(self._paths.supervisor_socket)
+        with self._client_lock:
+            if self._cancelled.is_set():
+                client.close()
+                raise ServiceLifecycleError(ServiceFailureCode.CANCELLED)
+            self._active_client = client
+        return client
+
+    def _release_client(self, client: ControlClient) -> None:
+        client.close()
+        with self._client_lock:
+            if self._active_client is client:
+                self._active_client = None
+
+    def _raise_if_cancelled(self) -> None:
+        if self._cancelled.is_set():
+            raise ServiceLifecycleError(ServiceFailureCode.CANCELLED)
 
 
 class RuntimeCleanup:

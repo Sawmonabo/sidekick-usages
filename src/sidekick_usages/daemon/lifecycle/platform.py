@@ -30,6 +30,9 @@ class FeatureDisabledBackend:
 
     id = ServiceBackendId.FEATURE_DISABLED
 
+    def cancel(self) -> None:
+        """Leave unsupported native service state unchanged."""
+
     def install(self) -> None:
         """Leave unsupported native service state unchanged."""
 

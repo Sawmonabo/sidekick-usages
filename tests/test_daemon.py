@@ -24,9 +24,14 @@ from sidekick_usages.daemon.models.lifecycle import (
 from sidekick_usages.daemon.types.lifecycle import (
     ServiceBackendId,
     ServiceComponentState,
+    ServiceFailureCode,
     ServiceLifecycleState,
 )
 from sidekick_usages.paths import ApplicationPaths
+from tests.fakes.daemon.lifecycle import (
+    LifecycleCancellationProof,
+    exercise_lifecycle_command_cancellation,
+)
 from tests.test_support import (
     make_application_paths,
     make_supervisor_health,
@@ -67,6 +72,10 @@ class ReadyLifecycle:
     def __init__(self, events: list[str]) -> None:
         self.events = events
 
+    def cancel(self) -> None:
+        """Record readiness cancellation."""
+        self.events.append("cancel-readiness")
+
     def enroll_accounts(self) -> None:
         self.events.append("enroll")
 
@@ -91,6 +100,10 @@ class RecordingBackend:
 
     def __init__(self, events: list[str]) -> None:
         self.events = events
+
+    def cancel(self) -> None:
+        """Record backend command cancellation."""
+        self.events.append("cancel-backend")
 
     def install(self) -> None:
         self.events.append("install")
@@ -247,14 +260,16 @@ def test_service_artifacts_are_user_scoped_resident_and_secret_free(
         assert "token" not in rescue.lower()
 
 
-def test_lifecycle_is_idempotent_and_uninstall_preserves_user_state(
+def test_lifecycle_is_idempotent_cancellable_and_preserves_user_state(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Install, restart, status, and cleanup touch only service ownership."""
+    """Lifecycle work is idempotent, bounded, and ownership-safe."""
     paths = make_application_paths(tmp_path / "state")
     _write_user_state_sentinels(paths, tmp_path)
     _write_service_state_sentinels(paths)
     events: list[str] = []
+    runner = SystemCommandRunner()
     manager = DaemonManager(
         RecordingBackend(events),
         ReadyLifecycle(events),
@@ -306,6 +321,19 @@ def test_lifecycle_is_idempotent_and_uninstall_preserves_user_state(
     assert (tmp_path / "native-provider-login").read_text(
         encoding="utf-8"
     ) == "provider"
+    if os.name == "posix":
+        assert exercise_lifecycle_command_cancellation(
+            runner,
+            monkeypatch,
+        ) == LifecycleCancellationProof(
+            owner_joined=True,
+            failures=(ServiceFailureCode.CANCELLED,),
+            launch_options=((False, True),),
+            process_count=1,
+            process_group_reaped=True,
+        )
+    manager.cancel()
+    assert events[-2:] == ["cancel-backend", "cancel-readiness"]
 
 
 def _service_artifact(

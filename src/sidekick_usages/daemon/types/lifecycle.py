@@ -45,6 +45,7 @@ class ServiceFailureCode(StrEnum):
     """Safe resident-service lifecycle failures."""
 
     ARTIFACT_UNSAFE = "artifact_unsafe"
+    CANCELLED = "cancelled"
     COMMAND_FAILED = "command_failed"
     EXECUTABLE_UNAVAILABLE = "executable_unavailable"
     HANDSHAKE_FAILED = "handshake_failed"

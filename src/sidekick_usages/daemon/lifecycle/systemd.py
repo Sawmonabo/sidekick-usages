@@ -45,6 +45,10 @@ class SystemdBackend:
         self._runner = runner
         self._artifacts = artifacts
 
+    def cancel(self) -> None:
+        """Interrupt one active systemd user command."""
+        self._runner.cancel()
+
     def install(self) -> None:
         """Publish, reload, and enable the resident user service."""
         self._artifacts.write(

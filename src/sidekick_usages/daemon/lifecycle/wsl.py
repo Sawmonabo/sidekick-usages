@@ -48,6 +48,10 @@ class WslBackend:
         self._platform = platform_info
         self._runner = runner
 
+    def cancel(self) -> None:
+        """Interrupt one active WSL or systemd user command."""
+        self._runner.cancel()
+
     def install(self) -> None:
         """Install the Linux service and current-user logon rescue."""
         self._systemd.install()

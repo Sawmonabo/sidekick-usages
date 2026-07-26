@@ -14,6 +14,9 @@ class ServiceBackend(Protocol):
 
     id: ServiceBackendId
 
+    def cancel(self) -> None:
+        """Interrupt one active native lifecycle command."""
+
     def install(self) -> None:
         """Install and start the resident service."""
 
@@ -29,6 +32,9 @@ class ServiceBackend(Protocol):
 
 class ServiceReadiness(Protocol):
     """Prepare and verify supervisor readiness."""
+
+    def cancel(self) -> None:
+        """Interrupt active readiness observation."""
 
     def enroll_accounts(self) -> None:
         """Persist one scheduled maintenance slot per saved account."""

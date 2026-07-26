@@ -63,6 +63,11 @@ class DaemonManager:
         self._readiness = readiness
         self._cleanup = cleanup
 
+    def cancel(self) -> None:
+        """Interrupt lifecycle observation without provider mutation."""
+        self._backend.cancel()
+        self._readiness.cancel()
+
     def run(self, operation: DaemonOperation | str) -> DaemonOperationResult:
         """Run one supported lifecycle operation."""
         try:
@@ -258,6 +263,7 @@ def build_daemon_manager(
     resolved_clock = SystemClock() if clock is None else clock
     platform_info = detect_platform_info()
     runner = SystemCommandRunner()
+    readiness = SupervisorReadiness(resolved_paths, resolved_clock)
     backend = build_service_backend(
         platform_info,
         resolve_supervisor_executable,
@@ -267,6 +273,6 @@ def build_daemon_manager(
     )
     return DaemonManager(
         backend,
-        SupervisorReadiness(resolved_paths, resolved_clock),
+        readiness,
         RuntimeCleanup(resolved_paths),
     )
