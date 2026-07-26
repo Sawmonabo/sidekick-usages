@@ -37,7 +37,7 @@ from sidekick_usages.usage.presentation.dashboard.overview import (
     dashboard_overview,
 )
 from sidekick_usages.usage.presentation.reset import compact_reset_text
-from tests.fakes.dashboard import (
+from tests.fakes.dashboard.render import (
     FORBIDDEN_SELECTION_LABELS,
     PROGRESS_COPY,
     interactive_dashboard_state,

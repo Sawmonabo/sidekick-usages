@@ -7,11 +7,14 @@ import typer
 from rich.console import Console
 from rich.text import Text
 
-from sidekick_usages.cli.commands.accounts import validated_label
 from sidekick_usages.cli.commands.maintenance import run_refresh_all
 from sidekick_usages.cli.context import AppContext, invocation_context
 from sidekick_usages.cli.help import branded_command
 from sidekick_usages.cli.token_input import TokenInput
+from sidekick_usages.cli.validation import (
+    validated_label,
+    validated_provider,
+)
 from sidekick_usages.core.types import AccountLabel, ExitCode, ProviderId
 from sidekick_usages.credentials.models import (
     LocalCredentialSource,
@@ -55,17 +58,6 @@ def _usage_error(ctx: typer.Context, message: str) -> NoReturn:
     """Render a credential-command usage failure and stop."""
     invocation_context(ctx).err_console.print(f"[red]{message}[/red]")
     raise typer.Exit(code=ExitCode.SYSTEM_ERROR)
-
-
-def _provider_id(ctx: typer.Context, value: str) -> ProviderId:
-    try:
-        return ProviderId(value)
-    except ValueError:
-        known = ", ".join(provider.value for provider in ProviderId)
-        invocation_context(ctx).err_console.print(
-            f"[red]Unknown provider {value!r}. Known: {known}.[/red]"
-        )
-        raise typer.Exit(code=ExitCode.MANUAL_ACTION) from None
 
 
 def _prompt_for_token(
@@ -168,7 +160,7 @@ def add_cmd(
     """
     invocation = invocation_context(ctx)
     app_context = invocation.require_app(ctx)
-    provider_id = _provider_id(ctx, provider)
+    provider_id = validated_provider(ctx, provider)
     prompt_spec = app_context.credentials.prompt_spec(provider_id)
     if isinstance(prompt_spec, ProviderFailure):
         exit_credential_failure(ctx, prompt_spec)

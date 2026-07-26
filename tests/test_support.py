@@ -21,6 +21,7 @@ from sidekick_usages.cli.context import (
     PersistenceContext,
     UpdateContext,
 )
+from sidekick_usages.cli.contexts.use import UseContext
 from sidekick_usages.clock import Clock
 from sidekick_usages.core.accounts.models import (
     AuthenticatedAccount,
@@ -425,6 +426,7 @@ class CliHarness:
     doctor: DoctorContext | None = None
     daemon: DaemonContext | None = None
     update: UpdateContext | None = None
+    use: UseContext | None = None
 
     def invoke(
         self,
@@ -465,5 +467,14 @@ class CliHarness:
                     if self.update is None
                     else _fixed_composer(self.update)
                 ),
+                use_composer=self._compose_use,
             ),
         )
+
+    def _compose_use(self) -> UseContext:
+        use = self.use
+        if use is None:
+            raise AssertionError(
+                "Command crossed an unconfigured composition path."
+            )
+        return use

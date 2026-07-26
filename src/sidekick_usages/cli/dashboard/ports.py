@@ -7,8 +7,23 @@ from sidekick_usages.cli.dashboard.models.controller import (
     RefreshAccountIntent,
     RefreshDueAccountsIntent,
 )
+from sidekick_usages.cli.dashboard.models.use import UseActivationResult
+from sidekick_usages.core.accounts.types import SidekickAccountId
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.usage.dashboard.models import DashboardSnapshot
+
+
+class AccountActivation(Protocol):
+    """Activate one exact saved account through the local supervisor."""
+
+    def __call__(
+        self,
+        provider_id: ProviderId,
+        account_id: SidekickAccountId,
+        allow_remote_control_disconnect: bool,
+    ) -> UseActivationResult:
+        """Return the supervisor's sanitized activation outcome."""
+        ...
 
 
 class DashboardSnapshotSource(Protocol):

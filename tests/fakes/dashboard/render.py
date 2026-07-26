@@ -1,4 +1,4 @@
-"""Reusable secret-free interactive dashboard state."""
+"""Reusable secret-free interactive dashboard render state."""
 
 from datetime import date, datetime, timedelta
 

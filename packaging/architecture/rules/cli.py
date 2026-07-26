@@ -37,6 +37,7 @@ def check_cli_contract(
         "permissions.py": {"require_persistence"},
         "updates.py": {"require_update"},
         "usage.py": {"require_app", "require_dashboard"},
+        "use.py": {"require_use"},
     }
     for filename, expected in accessors.items():
         command = by_path.get(f"src/sidekick_usages/cli/commands/{filename}")

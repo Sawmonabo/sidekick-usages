@@ -18,13 +18,15 @@ from sidekick_usages.cli.commands import (
     permissions,
     updates,
     usage,
+    use,
 )
 from sidekick_usages.cli.context import (
     InvocationContext,
     initialize_invocation,
 )
 from sidekick_usages.cli.help import BrandedTyperGroup
-from sidekick_usages.core.types import ExitCode, ProviderId
+from sidekick_usages.cli.validation import validated_provider
+from sidekick_usages.core.types import ExitCode
 from sidekick_usages.errors import UsageError
 from sidekick_usages.persistence.errors import (
     PersistenceError,
@@ -68,15 +70,9 @@ def _main(
     """Default invocation runs ``check`` if no subcommand is given."""
     del version
     invocation = initialize_invocation(ctx)
-    try:
-        invocation.only = ProviderId(only) if only is not None else None
-    except ValueError:
-        invocation.err_console.print(
-            f"[red]Unknown provider {only!r}. Known: "
-            + ", ".join(provider.value for provider in ProviderId)
-            + ".[/red]"
-        )
-        raise typer.Exit(code=ExitCode.MANUAL_ACTION) from None
+    invocation.only = (
+        validated_provider(ctx, only) if only is not None else None
+    )
     if ctx.invoked_subcommand is None:
         usage.run_default(ctx, interactive=not no_interactive)
 
@@ -104,6 +100,7 @@ def create_app() -> typer.Typer:
     updates.register(application)
     claude.register(application)
     codex.register(application)
+    use.register(application)
     return application
 
 

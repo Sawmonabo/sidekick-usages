@@ -151,13 +151,12 @@ see [How provider access works](#how-provider-access-works).
 ### Check and manage accounts
 
 ```bash
-# All accounts, or one provider
+# Cached account dashboard, for all accounts or one provider
 sidekick-usages
 sidekick-usages --only claude
 
-# Health and saved-account inventory
+# Detailed health diagnostics
 sidekick-usages doctor
-sidekick-usages list
 
 # Account management
 sidekick-usages rename <old-label> <new-label>
@@ -306,11 +305,10 @@ rollout total is used as a fallback.
 
 | Command | Purpose |
 | --- | --- |
-| `sidekick-usages` | Run `check` for every saved account. |
+| `sidekick-usages` | Open the secret-free cached account dashboard. |
 | `sidekick-usages check` | Explicit form of the default usage check. |
-| `sidekick-usages --only <provider>` | Check only `claude` or `codex` accounts. |
+| `sidekick-usages --only <provider>` | Show only `claude` or `codex` accounts. |
 | `sidekick-usages add claude` | Save auto-detected, piped, prompted, or `--token` Claude credentials; supports `--label`, `--plan`, and `--force`. |
-| `sidekick-usages list` | List labels, providers, plans, and heartbeat state without opening credentials. |
 | `sidekick-usages remove <label>` | Delete one saved account. |
 | `sidekick-usages rename <old> <new>` | Rename one saved account. |
 | `sidekick-usages set-plan <label> <plan>` | Correct a display plan that the provider cannot introspect. |

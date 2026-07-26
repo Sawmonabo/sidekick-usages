@@ -10,8 +10,9 @@ from rich.console import Console
 from typer.testing import CliRunner
 
 from sidekick_usages.cli.app import create_app
-from sidekick_usages.cli.commands import usage
+from sidekick_usages.cli.commands import usage, use
 from sidekick_usages.cli.context import InvocationContext
+from sidekick_usages.cli.contexts.use import UseContext
 from sidekick_usages.cli.dashboard import launch
 from sidekick_usages.cli.dashboard.controller import DashboardController
 from sidekick_usages.cli.dashboard.models.controller import (
@@ -29,367 +30,52 @@ from sidekick_usages.cli.dashboard.models.setup import (
     ServiceSetupProgress,
 )
 from sidekick_usages.cli.dashboard.setup import GuidedServiceSetup
-from sidekick_usages.core.accounts.models import (
-    CodexAccountAuthority,
-    CodexManagedAuthority,
-    SavedAccount,
-)
 from sidekick_usages.core.accounts.types import (
-    AuthorityGeneration,
-    AuthorityId,
     CredentialHealth,
     MetricsFreshness,
-    ProviderIdentity,
-    SidekickAccountId,
 )
-from sidekick_usages.core.models import (
-    AccountTokenActivitySnapshot,
-    AccountUsageSnapshot,
-    TokenActivitySummary,
-    UsageReport,
-    UsageWindow,
-)
-from sidekick_usages.core.selection.models import SelectedAccountState
-from sidekick_usages.core.selection.types import (
-    ActivationOutcome,
-    ProviderRuntimeState,
-)
-from sidekick_usages.core.types import (
-    AccountLabel,
-    ProviderId,
-    TokenActivityScope,
-)
-from sidekick_usages.daemon.lifecycle.manager import DaemonManager
-from sidekick_usages.daemon.models.lifecycle import DaemonOperationResult
-from sidekick_usages.daemon.models.service import ServiceState
-from sidekick_usages.daemon.types.lifecycle import (
-    ServiceBackendId,
-    ServiceLifecycleState,
-)
-from sidekick_usages.daemon.types.service import PackageVersion, ServicePhase
-from sidekick_usages.paths import ApplicationPaths
+from sidekick_usages.core.selection.types import ProviderRuntimeState
+from sidekick_usages.core.types import ProviderId
+from sidekick_usages.daemon.types.lifecycle import ServiceLifecycleState
+from sidekick_usages.daemon.types.service import ServicePhase
+from sidekick_usages.persistence.accounts.index import AccountIndex
 from sidekick_usages.persistence.filesystem.service import (
     PersistenceFilesystem,
 )
-from sidekick_usages.persistence.models.account import VersionThreeDocument
 from sidekick_usages.persistence.models.artifact import FileSnapshot
-from sidekick_usages.persistence.schema.account import encode_version_three
-from sidekick_usages.persistence.snapshots.activity import (
-    ActivitySnapshotStore,
-)
-from sidekick_usages.persistence.snapshots.usage import UsageSnapshotStore
-from sidekick_usages.persistence.supervisor.selection import (
-    SelectedStateStore,
-)
-from sidekick_usages.persistence.supervisor.service import ServiceStateStore
 from sidekick_usages.usage.dashboard.models import (
     DashboardAccount,
     DashboardActionState,
     DashboardExternalRow,
-    DashboardProvider,
     DashboardService,
-    DashboardSnapshot,
 )
 from sidekick_usages.usage.dashboard.service import CachedDashboardService
-from tests.test_support import make_application_paths
+from tests.fakes.dashboard.runtime import (
+    OneShotRecorder,
+    RoutingDashboardProcess,
+    RoutingSnapshotSource,
+    SetupDaemon,
+    interactive_terminal,
+    redirected_terminal,
+)
+from tests.fakes.dashboard.state import (
+    CLAUDE_ACTIVE_ACCOUNT_ID,
+    CLAUDE_PREVIEW_ACCOUNT_ID,
+    CODEX_SAVED_ACCOUNT_ID,
+    EXTERNAL_PROVIDER_IDENTITY,
+    VALID_PROVIDER_IDENTITY,
+    controller_snapshot,
+    seed_cached_dashboard,
+)
+from tests.fakes.dashboard.use import (
+    RecordingUseActivation,
+    scriptable_use_accounts,
+)
+from tests.test_support import CliHarness, make_application_paths
 
 REFERENCE_TIME = datetime(2026, 7, 25, 14, tzinfo=UTC)
 OBSERVED_AT = REFERENCE_TIME - timedelta(hours=2)
-CLAUDE_PREVIEW_ACCOUNT_ID = SidekickAccountId(
-    "33333333-3333-4333-8333-333333333333"
-)
-CLAUDE_ACTIVE_ACCOUNT_ID = SidekickAccountId(
-    "44444444-4444-4444-8444-444444444444"
-)
-CODEX_SAVED_ACCOUNT_ID = SidekickAccountId(
-    "55555555-5555-4555-8555-555555555555"
-)
-VALID_ACCOUNT_ID = SidekickAccountId("11111111-1111-4111-8111-111111111111")
-CONFLICT_ACCOUNT_ID = SidekickAccountId("22222222-2222-4222-8222-222222222222")
-VALID_AUTHORITY_ID = AuthorityId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
-CONFLICT_AUTHORITY_ID = AuthorityId("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
-VALID_IDENTITY = "synthetic-codex-valid"
-CONFLICT_IDENTITY = "synthetic-codex-conflict"
-EXTERNAL_IDENTITY = "synthetic-claude-external"
 ONE_SHOT_ROUTE_COUNT = 3
-
-
-class RoutingSnapshotSource:
-    """Record one provider-scoped cached read."""
-
-    def __init__(self, events: list[str]) -> None:
-        self._events = events
-
-    def load(self, only: ProviderId | None) -> DashboardSnapshot:
-        """Return the synthetic dashboard with the requested scope."""
-        self._events.append(f"load:{only}")
-        snapshot = _controller_snapshot()
-        if only is None:
-            return snapshot
-        return replace(
-            snapshot,
-            providers=(
-                replace(snapshot.providers[0], rows=()),
-                snapshot.providers[1],
-            ),
-        )
-
-
-class RoutingDashboardProcess:
-    """Record replacement only after observing the cached frame."""
-
-    def __init__(self, events: list[str], output: io.StringIO) -> None:
-        self._events = events
-        self._output = output
-        self.frame_at_replace = ""
-
-    def replace(self, only: ProviderId | None) -> None:
-        """Capture the exact output visible at the replacement boundary."""
-        self.frame_at_replace = self._output.getvalue()
-        self._events.append(f"replace:{only}")
-
-
-class OneShotRecorder:
-    """Record stable one-shot routing without composing providers."""
-
-    def __init__(self) -> None:
-        self.calls = 0
-
-    def __call__(self, _ctx: object) -> None:
-        """Record one existing workflow dispatch."""
-        self.calls += 1
-
-
-def _interactive_terminal() -> bool:
-    return True
-
-
-def _redirected_terminal() -> bool:
-    return False
-
-
-class SetupDaemon(DaemonManager):
-    """Record guided setup without opening platform boundaries."""
-
-    def __init__(self, state: ServiceLifecycleState) -> None:
-        self.state = state
-        self.events: list[str] = []
-
-    def status(self) -> DaemonOperationResult:
-        """Record one current service check."""
-        self.events.append("status")
-        return self._result(self.state)
-
-    def restart(self) -> DaemonOperationResult:
-        """Record one bounded restart."""
-        self.events.append("restart")
-        self.state = ServiceLifecycleState.READY
-        return self._result(self.state)
-
-    def install(self) -> DaemonOperationResult:
-        """Record one approved user-level installation."""
-        self.events.append("install")
-        self.state = ServiceLifecycleState.READY
-        return self._result(self.state)
-
-    @staticmethod
-    def _result(state: ServiceLifecycleState) -> DaemonOperationResult:
-        return DaemonOperationResult(
-            ServiceBackendId.SYSTEMD,
-            state,
-            "Synthetic user-service result.",
-        )
-
-
-def _account(
-    account_id: SidekickAccountId,
-    authority_id: AuthorityId,
-    label: str,
-    identity: str,
-) -> SavedAccount:
-    return SavedAccount(
-        account_id=account_id,
-        label=AccountLabel(label),
-        provider_id=ProviderId.CODEX,
-        plan="pro",
-        authority=CodexAccountAuthority(
-            subscription=CodexManagedAuthority(
-                authority_id=authority_id,
-                provider_identity=ProviderIdentity(identity),
-                generation=AuthorityGeneration("generation-private"),
-                verified_at=OBSERVED_AT,
-                executable_version="0.145.0",
-                health=CredentialHealth.HEALTHY,
-            )
-        ),
-        credential_health=CredentialHealth.HEALTHY,
-    )
-
-
-def _usage(
-    account: SavedAccount,
-    identity: str,
-    utilization: float,
-) -> AccountUsageSnapshot:
-    return AccountUsageSnapshot(
-        account_id=account.account_id,
-        provider_id=account.provider_id,
-        provider_identity=ProviderIdentity(identity),
-        plan=account.plan,
-        report=UsageReport(
-            windows=(
-                UsageWindow(
-                    "5h",
-                    utilization,
-                    REFERENCE_TIME + timedelta(hours=3),
-                ),
-            ),
-            plan=account.plan,
-        ),
-        fetched_at=OBSERVED_AT,
-    )
-
-
-def _seed_dashboard(
-    paths: ApplicationPaths,
-) -> tuple[SavedAccount, SavedAccount]:
-    filesystem = PersistenceFilesystem(paths.accounts)
-    filesystem.repair_parent_permissions()
-    original = _account(
-        VALID_ACCOUNT_ID,
-        VALID_AUTHORITY_ID,
-        "before-rename",
-        VALID_IDENTITY,
-    )
-    renamed = replace(original, label=AccountLabel("after-rename"))
-    conflicted = _account(
-        CONFLICT_ACCOUNT_ID,
-        CONFLICT_AUTHORITY_ID,
-        "conflicted",
-        CONFLICT_IDENTITY,
-    )
-    filesystem.commit_opaque_private(
-        encode_version_three(VersionThreeDocument((renamed, conflicted)))
-    )
-    usage = UsageSnapshotStore(paths.usage_snapshots)
-    usage.save(_usage(original, VALID_IDENTITY, 51))
-    usage.save(_usage(conflicted, "unrelated-identity", 96))
-    ActivitySnapshotStore(paths.activity_snapshots).save(
-        AccountTokenActivitySnapshot(
-            provider_id=ProviderId.CODEX,
-            provider_account_id=VALID_IDENTITY,
-            summary=TokenActivitySummary(
-                total_tokens=9_617_297_075,
-                scope=TokenActivityScope.ACCOUNT,
-            ),
-            fetched_at=OBSERVED_AT,
-        )
-    )
-    selected = SelectedStateStore(paths.selected_state)
-    selected.save(
-        SelectedAccountState(
-            provider_id=ProviderId.CLAUDE,
-            runtime_state=ProviderRuntimeState.EXTERNAL_ACTIVE,
-            account_id=None,
-            provider_identity=ProviderIdentity(EXTERNAL_IDENTITY),
-            runtime_generation=AuthorityGeneration("external-generation"),
-            verified_at=OBSERVED_AT,
-            outcome=ActivationOutcome.EXTERNAL_RECONCILED,
-        )
-    )
-    selected.save(
-        SelectedAccountState(
-            provider_id=ProviderId.CODEX,
-            runtime_state=ProviderRuntimeState.SAVED_ACTIVE,
-            account_id=renamed.account_id,
-            provider_identity=ProviderIdentity(VALID_IDENTITY),
-            runtime_generation=AuthorityGeneration("active-generation"),
-            verified_at=OBSERVED_AT,
-            outcome=ActivationOutcome.VERIFIED,
-        )
-    )
-    ServiceStateStore(paths.service_state).save(
-        ServiceState(
-            protocol_version=1,
-            package_version=PackageVersion("0.6.0"),
-            phase=ServicePhase.READY,
-            revision=1,
-            observed_at=OBSERVED_AT,
-            queue_recovered=True,
-            journals_reconciled=True,
-            broker_ready=True,
-            active_workers=0,
-            failure_code=None,
-        )
-    )
-    return renamed, conflicted
-
-
-def _controller_snapshot() -> DashboardSnapshot:
-    claude_rows = (
-        DashboardAccount(
-            account_id=CLAUDE_PREVIEW_ACCOUNT_ID,
-            label=AccountLabel("claude-preview"),
-            provider_id=ProviderId.CLAUDE,
-            plan="max",
-            credential_health=CredentialHealth.REFRESH_DUE,
-            active=False,
-            states=(DashboardActionState.REPAIR_REQUIRED,),
-        ),
-        DashboardAccount(
-            account_id=CLAUDE_ACTIVE_ACCOUNT_ID,
-            label=AccountLabel("claude-active"),
-            provider_id=ProviderId.CLAUDE,
-            plan="max",
-            credential_health=CredentialHealth.HEALTHY,
-            active=True,
-            states=(DashboardActionState.HEALTHY,),
-        ),
-    )
-    codex_rows = (
-        DashboardAccount(
-            account_id=CODEX_SAVED_ACCOUNT_ID,
-            label=AccountLabel("codex-saved"),
-            provider_id=ProviderId.CODEX,
-            plan="pro",
-            credential_health=CredentialHealth.HEALTHY,
-            active=False,
-            states=(DashboardActionState.HEALTHY,),
-        ),
-        DashboardExternalRow(
-            provider_id=ProviderId.CODEX,
-            observed_at=OBSERVED_AT,
-            states=(DashboardActionState.EXTERNAL_ACTIVE,),
-        ),
-    )
-    return DashboardSnapshot(
-        providers=(
-            DashboardProvider(
-                provider_id=ProviderId.CLAUDE,
-                runtime_state=ProviderRuntimeState.SAVED_ACTIVE,
-                active_account_id=CLAUDE_ACTIVE_ACCOUNT_ID,
-                verified_at=OBSERVED_AT,
-                actions_enabled=True,
-                rows=claude_rows,
-            ),
-            DashboardProvider(
-                provider_id=ProviderId.CODEX,
-                runtime_state=ProviderRuntimeState.EXTERNAL_ACTIVE,
-                active_account_id=None,
-                verified_at=OBSERVED_AT,
-                actions_enabled=True,
-                rows=codex_rows,
-            ),
-        ),
-        service=DashboardService(
-            ready=True,
-            compatible=True,
-            phase=ServicePhase.READY,
-            observed_at=OBSERVED_AT,
-            failure_code=None,
-        ),
-        reference_time=REFERENCE_TIME,
-    )
 
 
 def test_cached_dashboard_joins_stable_ids_without_credentials(
@@ -398,7 +84,7 @@ def test_cached_dashboard_joins_stable_ids_without_credentials(
 ) -> None:
     """First paint preserves cached truth and isolates one stale mismatch."""
     paths = make_application_paths(tmp_path)
-    renamed, conflicted = _seed_dashboard(paths)
+    renamed, conflicted = seed_cached_dashboard(paths, REFERENCE_TIME)
 
     reads: dict[Path, int] = {}
     read_opaque_private = PersistenceFilesystem.read_opaque_private
@@ -470,13 +156,13 @@ def test_cached_dashboard_joins_stable_ids_without_credentials(
         DashboardActionState.SERVICE_UNAVAILABLE,
     )
     rendered = repr(dashboard)
-    assert EXTERNAL_IDENTITY not in rendered
-    assert VALID_IDENTITY not in rendered
+    assert EXTERNAL_PROVIDER_IDENTITY not in rendered
+    assert VALID_PROVIDER_IDENTITY not in rendered
 
 
 def test_dashboard_controller_journey_preserves_verified_truth() -> None:
     """One pure journey proves cursor, intent, and activation semantics."""
-    snapshot = _controller_snapshot()
+    snapshot = controller_snapshot(REFERENCE_TIME)
     controller = DashboardController.start(snapshot)
 
     assert (
@@ -605,13 +291,16 @@ def test_cli_routes_one_cached_frame_before_isolated_interaction(
     output = io.StringIO()
     events: list[str] = []
     process = RoutingDashboardProcess(events, output)
-    runtime = DashboardRuntime(RoutingSnapshotSource(events), process)
+    runtime = DashboardRuntime(
+        RoutingSnapshotSource(events, REFERENCE_TIME),
+        process,
+    )
     application = create_app()
     runner = CliRunner()
     monkeypatch.setattr(
         launch,
         "interactive_dashboard_supported",
-        _interactive_terminal,
+        interactive_terminal,
     )
 
     interactive = runner.invoke(
@@ -633,14 +322,14 @@ def test_cli_routes_one_cached_frame_before_isolated_interaction(
     monkeypatch.setattr(
         launch,
         "interactive_dashboard_supported",
-        _redirected_terminal,
+        redirected_terminal,
     )
     redirected = runner.invoke(application, [], obj=InvocationContext())
     check = runner.invoke(application, ["check"], obj=InvocationContext())
     monkeypatch.setattr(
         launch,
         "interactive_dashboard_supported",
-        _interactive_terminal,
+        interactive_terminal,
     )
     disabled = runner.invoke(
         application,
@@ -758,3 +447,77 @@ def test_guided_setup_resumes_once_and_preserves_blocked_actions() -> None:
         noninteractive.corrective_action is ServiceSetupAction.OPEN_DASHBOARD
     )
     assert blocked_daemon.events == ["status", "status"]
+
+
+def test_scriptable_use_dispatches_only_stable_selection_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One command journey proves exact lookup, preparation, and approval."""
+    environment: dict[str, str] = {}
+    monkeypatch.setattr(use.os, "environ", environment)
+    activation = RecordingUseActivation()
+    codex, claude, needs_login = scriptable_use_accounts(
+        REFERENCE_TIME
+    )
+    output = io.StringIO()
+    errors = io.StringIO()
+    harness = CliHarness(
+        Console(file=output, width=100),
+        Console(file=errors, width=100),
+        use=UseContext(
+            AccountIndex((codex, claude, needs_login)),
+            activation,
+        ),
+    )
+
+    codex_result = harness.invoke(["use", "codex", "shared"])
+    claude_result = harness.invoke(
+        [
+            "use",
+            "claude",
+            "shared",
+            "--allow-remote-control-disconnect",
+        ]
+    )
+    invalid_override = harness.invoke(
+        [
+            "use",
+            "codex",
+            "shared",
+            "--allow-remote-control-disconnect",
+        ]
+    )
+    missing = harness.invoke(["use", "claude", "missing"])
+    preparation = harness.invoke(["use", "codex", "needs-login"])
+    environment["ANTHROPIC_API_KEY"] = "synthetic-parent-secret"
+    blocked = harness.invoke(["use", "claude", "shared"])
+
+    assert codex_result.exit_code == claude_result.exit_code == 0
+    assert (
+        invalid_override.exit_code
+        == missing.exit_code
+        == preparation.exit_code
+        == blocked.exit_code
+        == 1
+    )
+    assert activation.calls == [
+        (ProviderId.CODEX, CODEX_SAVED_ACCOUNT_ID, False),
+        (ProviderId.CLAUDE, CLAUDE_ACTIVE_ACCOUNT_ID, True),
+    ]
+    assert environment == {
+        "ANTHROPIC_API_KEY": "synthetic-parent-secret"
+    }
+    rendered = output.getvalue() + errors.getvalue()
+    assert "No saved claude account labeled 'missing'." in rendered
+    assert "Next: sidekick-usages\n" in rendered
+    assert "Account 'needs-login' needs interactive preparation." in rendered
+    assert "Next: sidekick-usages codex login needs-login" in rendered
+    assert (
+        "Remote Control disconnect approval applies only to Claude."
+        in rendered
+    )
+    assert "This shell overrides Claude account selection." in rendered
+    assert "Next: unset ANTHROPIC_API_KEY" in rendered
+    assert "synthetic-parent-secret" not in rendered
+    assert "Continue?" not in rendered
+    assert "daemon install" not in rendered

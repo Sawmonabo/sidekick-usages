@@ -11,6 +11,7 @@ import typer
 from rich.console import Console
 
 from sidekick_usages.cli.contexts.dashboard import compose_dashboard_runtime
+from sidekick_usages.cli.contexts.use import UseContext, compose_use_context
 from sidekick_usages.cli.dashboard.models.runtime import DashboardRuntime
 from sidekick_usages.clock import Clock, SystemClock
 from sidekick_usages.core.types import ProviderId
@@ -545,6 +546,7 @@ class InvocationContext:
             [],
             DashboardRuntime,
         ] = compose_dashboard_runtime,
+        use_composer: Callable[[], UseContext] = compose_use_context,
     ) -> None:
         self.console = console if console is not None else Console()
         self.err_console = (
@@ -558,6 +560,8 @@ class InvocationContext:
         self._update = _LazyComposition(update_composer)
         self._dashboard_composer = dashboard_composer
         self._dashboard: DashboardRuntime | None = None
+        self._use_composer = use_composer
+        self._use: UseContext | None = None
 
     def require_app(self, ctx: click.Context) -> AppContext:
         """Return the one normal application context."""
@@ -604,6 +608,14 @@ class InvocationContext:
             dashboard = self._dashboard_composer()
             self._dashboard = dashboard
         return dashboard
+
+    def require_use(self) -> UseContext:
+        """Compose the secret-free selection boundary at most once."""
+        use = self._use
+        if use is None:
+            use = self._use_composer()
+            self._use = use
+        return use
 
     def _exit_failure(self, failure: PersistenceFailure) -> Never:
         self.err_console.print(f"[red]{failure.message}[/red]")

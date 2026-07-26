@@ -30,26 +30,20 @@ _LINUX_MANAGED_SETTINGS = Path("/etc/claude-code/managed-settings.json")
 _MACOS_MANAGED_SETTINGS = Path(
     "/Library/Application Support/ClaudeCode/managed-settings.json"
 )
-_CLOUD_PROVIDER_KEYS = frozenset(
-    {
-        "CLAUDE_CODE_USE_BEDROCK",
-        "CLAUDE_CODE_USE_FOUNDRY",
-        "CLAUDE_CODE_USE_VERTEX",
-    }
+_CLOUD_PROVIDER_KEYS = (
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_FOUNDRY",
+    "CLAUDE_CODE_USE_VERTEX",
 )
-_GATEWAY_KEYS = frozenset(
-    {
-        "ANTHROPIC_BASE_URL",
-        "ANTHROPIC_BEDROCK_BASE_URL",
-        "ANTHROPIC_FOUNDRY_BASE_URL",
-        "ANTHROPIC_VERTEX_BASE_URL",
-    }
+_GATEWAY_KEYS = (
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_BEDROCK_BASE_URL",
+    "ANTHROPIC_FOUNDRY_BASE_URL",
+    "ANTHROPIC_VERTEX_BASE_URL",
 )
-_PROFILE_OVERRIDE_KEYS = frozenset(
-    {
-        CLAUDE_CONFIG_DIR_ENVIRONMENT_KEY,
-        CLAUDE_SECURE_STORAGE_CONFIG_DIR_ENVIRONMENT_KEY,
-    }
+_PROFILE_OVERRIDE_KEYS = (
+    CLAUDE_CONFIG_DIR_ENVIRONMENT_KEY,
+    CLAUDE_SECURE_STORAGE_CONFIG_DIR_ENVIRONMENT_KEY,
 )
 _DIRECT_ENVIRONMENT_FAILURES = (
     (
@@ -87,6 +81,22 @@ def claude_environment_conflict(
     if any(environment.get(key) for key in _GATEWAY_KEYS):
         return ClaudeActivationGuardFailure.GATEWAY
     return None
+
+
+def claude_environment_conflict_keys(
+    failure: ClaudeActivationGuardFailure,
+) -> tuple[str, ...]:
+    """Return the environment names associated with one detected conflict."""
+    if failure is ClaudeActivationGuardFailure.ALTERNATE_PROFILE:
+        return _PROFILE_OVERRIDE_KEYS
+    if failure is ClaudeActivationGuardFailure.CLOUD_PROVIDER:
+        return _CLOUD_PROVIDER_KEYS
+    for key, candidate in _DIRECT_ENVIRONMENT_FAILURES:
+        if failure is candidate:
+            return (key,)
+    if failure is ClaudeActivationGuardFailure.GATEWAY:
+        return _GATEWAY_KEYS
+    raise ValueError("The activation failure is not environment-based.")
 
 
 def claude_native_switch_conflict(

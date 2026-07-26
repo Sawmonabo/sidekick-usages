@@ -9,9 +9,9 @@ login implicitly.
 Run:
 
 ```bash
+sidekick-usages
 sidekick-usages doctor --provider claude
 sidekick-usages doctor --provider claude --json
-sidekick-usages list
 ```
 
 `doctor` distinguishes the saved credential kind, usage route,

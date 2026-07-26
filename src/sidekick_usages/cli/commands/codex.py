@@ -5,13 +5,13 @@ from typing import Annotated
 import typer
 from rich.text import Text
 
-from sidekick_usages.cli.commands.accounts import validated_label
 from sidekick_usages.cli.commands.credentials import (
     exit_credential_failure,
     render_codex_login_event,
 )
 from sidekick_usages.cli.context import invocation_context
 from sidekick_usages.cli.help import BrandedTyperGroup, branded_command
+from sidekick_usages.cli.validation import validated_label
 from sidekick_usages.providers.base import ProviderFailure
 
 

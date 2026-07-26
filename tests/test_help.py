@@ -34,6 +34,7 @@ def _no_composition_context(calls: list[str]) -> InvocationContext:
         doctor_composer=_sentinel("doctor", calls),
         daemon_composer=_sentinel("daemon", calls),
         update_composer=_sentinel("update", calls),
+        use_composer=_sentinel("use", calls),
     )
 
 
@@ -224,7 +225,7 @@ def test_root_help_has_only_canonical_provider_groups() -> None:
 
     assert result.exit_code == 0
     output = click.unstyle(result.stdout)
-    assert all(command in output for command in ("claude", "codex"))
+    assert all(command in output for command in ("claude", "codex", "use"))
     assert "codex-login" not in output
     assert "codex-export" not in output
     assert "(deprecated)" not in output

@@ -13,10 +13,13 @@ from sidekick_usages.branding import PROVIDER_COLORS, brand_header
 from sidekick_usages.cli.context import invocation_context
 from sidekick_usages.cli.help import branded_command
 from sidekick_usages.cli.persistence import exit_persistence_failure
+from sidekick_usages.cli.validation import (
+    validated_label,
+    validated_provider,
+)
 from sidekick_usages.core.accounts.models import SavedAccount
 from sidekick_usages.core.accounts.types import SidekickAccountId
 from sidekick_usages.core.types import (
-    AccountLabel,
     ExitCode,
     HeartbeatStatus,
     ProviderId,
@@ -31,15 +34,6 @@ from sidekick_usages.credentials.accounts.lifecycle.models import (
 )
 from sidekick_usages.persistence.accounts.store import AccountStore
 from sidekick_usages.persistence.errors import PersistenceError
-
-
-def validated_label(ctx: typer.Context, value: str) -> AccountLabel:
-    """Validate one label and translate failure to CLI output."""
-    try:
-        return AccountLabel(value)
-    except ValueError as error:
-        invocation_context(ctx).err_console.print(f"[red]{error}[/red]")
-        raise typer.Exit(code=ExitCode.MANUAL_ACTION) from error
 
 
 def _saved_account(
@@ -411,13 +405,7 @@ def reset_cmd(
     app_context = invocation.require_app(ctx)
     provider_id: ProviderId | None = None
     if provider is not None:
-        try:
-            provider_id = ProviderId(provider)
-        except ValueError:
-            invocation.err_console.print(
-                f"[red]Unknown provider {provider!r}.[/red]"
-            )
-            raise typer.Exit(code=ExitCode.MANUAL_ACTION) from None
+        provider_id = validated_provider(ctx, provider)
         targets = app_context.accounts.saved_accounts(provider_id)
         count = len(targets)
         scope = f"{count} {provider} account(s)"
