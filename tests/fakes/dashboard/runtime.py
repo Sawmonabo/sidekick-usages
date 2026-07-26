@@ -72,6 +72,11 @@ class SetupDaemon(DaemonManager):
     def __init__(self, state: ServiceLifecycleState) -> None:
         self.state = state
         self.events: list[str] = []
+        self.cancelled = False
+
+    def cancel(self) -> None:
+        """Record dashboard lifecycle cancellation."""
+        self.cancelled = True
 
     def status(self) -> DaemonOperationResult:
         """Record one current service check."""

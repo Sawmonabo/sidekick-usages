@@ -2,12 +2,15 @@
 
 import socket
 import sys
-from collections.abc import Generator
+from collections.abc import Callable, Generator, Iterator
 from pathlib import Path
 
 from sidekick_usages import __version__
 from sidekick_usages.core.accounts.identifiers import new_request_id
-from sidekick_usages.core.accounts.types import SidekickAccountId
+from sidekick_usages.core.accounts.types import (
+    OperationId,
+    SidekickAccountId,
+)
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.control.protocol import (
     PROTOCOL_VERSION,
@@ -17,16 +20,23 @@ from sidekick_usages.daemon.models.protocol import (
     AcceptedPayload,
     AccountPayload,
     ActivationPayload,
+    CompletedPayload,
+    ControlActionTerminalPayload,
     ControlEvent,
     ControlRequest,
     EmptyPayload,
+    FailedPayload,
     IncompatiblePayload,
+    ProgressPayload,
     ProviderPayload,
     RequestPayload,
+    ServiceStoppingPayload,
 )
 from sidekick_usages.daemon.types.protocol import (
     ConnectedSocket,
+    ControlOperationIdentity,
     EventKind,
+    ProgressPhase,
     ProtocolErrorCode,
     RequestKind,
 )
@@ -40,9 +50,9 @@ _LONG_ACTION_REQUEST_KINDS = frozenset(
         RequestKind.REFRESH_ACCOUNT,
     }
 )
-_EXTENDED_STREAM_REQUEST_KINDS = (
-    _LONG_ACTION_REQUEST_KINDS | {RequestKind.SUBSCRIBE}
-)
+_EXTENDED_STREAM_REQUEST_KINDS = _LONG_ACTION_REQUEST_KINDS | {
+    RequestKind.SUBSCRIBE
+}
 
 
 class ServiceCompatibilityError(ConnectionError):
@@ -55,6 +65,89 @@ class ServiceCompatibilityError(ConnectionError):
 
 class UnexpectedServiceEventError(ConnectionError):
     """The service broke request correlation or event ordering."""
+
+
+def consume_control_action(
+    events: Iterator[ControlEvent],
+    *,
+    identity: ControlOperationIdentity,
+    progress: Callable[[ProgressPhase], None] | None = None,
+) -> ControlActionTerminalPayload:
+    """Validate one accepted, correlated control-action stream."""
+    accepted = False
+    operation_id: OperationId | None = None
+    for event in events:
+        if event.kind is EventKind.ACCEPTED:
+            operation_id = _accepted_operation(event, accepted, identity)
+            accepted = True
+            continue
+        if not accepted:
+            raise UnexpectedServiceEventError(
+                "The service returned progress before acceptance."
+            )
+        if event.kind is EventKind.PROGRESS:
+            phase = _progress_phase(event, operation_id)
+            if progress is not None:
+                progress(phase)
+            continue
+        return _terminal_payload(event, operation_id)
+    raise UnexpectedServiceEventError(
+        "The service returned no terminal action event."
+    )
+
+
+def _accepted_operation(
+    event: ControlEvent,
+    accepted: bool,
+    identity: ControlOperationIdentity,
+) -> OperationId | None:
+    payload = event.payload
+    if accepted or not isinstance(payload, AcceptedPayload):
+        raise UnexpectedServiceEventError(
+            "The service returned an invalid acceptance."
+        )
+    operation_id = payload.operation_id
+    account_operation = identity is ControlOperationIdentity.ACCOUNT
+    if account_operation != (operation_id is not None):
+        raise UnexpectedServiceEventError(
+            "The service returned an invalid operation identity."
+        )
+    return operation_id
+
+
+def _progress_phase(
+    event: ControlEvent,
+    operation_id: OperationId | None,
+) -> ProgressPhase:
+    payload = event.payload
+    if (
+        not isinstance(payload, ProgressPayload)
+        or payload.operation_id != operation_id
+    ):
+        raise UnexpectedServiceEventError(
+            "The service returned unrelated progress."
+        )
+    return payload.phase
+
+
+def _terminal_payload(
+    event: ControlEvent,
+    operation_id: OperationId | None,
+) -> ControlActionTerminalPayload:
+    payload = event.payload
+    correlated = (
+        isinstance(payload, CompletedPayload | FailedPayload)
+        and payload.operation_id == operation_id
+    )
+    uncorrelated = isinstance(
+        payload,
+        IncompatiblePayload | ServiceStoppingPayload,
+    )
+    if correlated or uncorrelated:
+        return payload
+    raise UnexpectedServiceEventError(
+        "The service returned an invalid terminal event."
+    )
 
 
 class ControlClient:
@@ -71,8 +164,7 @@ class ControlClient:
         ),
     ) -> None:
         if response_timeout_seconds <= 0 or (
-            action_timeout_seconds is not None
-            and action_timeout_seconds <= 0
+            action_timeout_seconds is not None and action_timeout_seconds <= 0
         ):
             raise ValueError("Control timeouts must be positive.")
         connection.settimeout(response_timeout_seconds)

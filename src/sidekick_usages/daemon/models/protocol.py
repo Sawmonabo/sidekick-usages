@@ -25,6 +25,12 @@ _MAX_PROTOCOL_VERSION = 65_535
 type RequestPayload = (
     EmptyPayload | ActivationPayload | AccountPayload | ProviderPayload
 )
+type ControlActionTerminalPayload = (
+    CompletedPayload
+    | FailedPayload
+    | IncompatiblePayload
+    | ServiceStoppingPayload
+)
 type EventPayload = (
     AcceptedPayload
     | SnapshotPayload

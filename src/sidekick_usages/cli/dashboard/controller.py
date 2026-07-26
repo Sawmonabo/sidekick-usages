@@ -42,18 +42,13 @@ class DashboardController:
             (
                 provider
                 for provider in snapshot.providers
-                if provider.provider_id is ProviderId.CLAUDE
-                and provider.rows
+                if provider.provider_id is ProviderId.CLAUDE and provider.rows
             ),
             None,
         )
         if initial_provider is None:
             initial_provider = next(
-                (
-                    provider
-                    for provider in snapshot.providers
-                    if provider.rows
-                ),
+                (provider for provider in snapshot.providers if provider.rows),
                 None,
             )
         if initial_provider is None:
@@ -208,6 +203,55 @@ class DashboardController:
             )
         )
 
+    def rebase(
+        self,
+        snapshot: DashboardSnapshot,
+        *,
+        restore_provider: ProviderId | None = None,
+    ) -> DashboardController:
+        """Adopt fresh cached truth while preserving one valid preview."""
+        verified = DashboardController.start(snapshot)
+        anchors = verified.state.anchors
+        if restore_provider is not None:
+            anchor = next(
+                (
+                    candidate
+                    for candidate in anchors
+                    if candidate.provider_id is restore_provider
+                ),
+                None,
+            )
+            if anchor is not None:
+                return DashboardController(
+                    snapshot=snapshot,
+                    state=_state_at_anchor(
+                        anchors,
+                        anchor,
+                        help_visible=self.state.help_visible,
+                    ),
+                )
+        focused = _matching_row(snapshot, self.state)
+        if focused is not None:
+            state = DashboardControllerState(
+                focused_provider=focused.provider_id,
+                account_id=(
+                    focused.account_id
+                    if isinstance(focused, DashboardAccount)
+                    else None
+                ),
+                external=isinstance(focused, DashboardExternalRow),
+                anchors=anchors,
+                help_visible=self.state.help_visible,
+            )
+            return DashboardController(snapshot=snapshot, state=state)
+        return DashboardController(
+            snapshot=snapshot,
+            state=replace(
+                verified.state,
+                help_visible=self.state.help_visible,
+            ),
+        )
+
     def _focus(self, row: DashboardRow) -> DashboardController:
         provider_id = row.provider_id
         return self._with_state(
@@ -260,7 +304,16 @@ class DashboardController:
         )
 
     def _mutations_enabled(self, provider: DashboardProvider) -> bool:
-        return self.snapshot.service.ready and provider.actions_enabled
+        if provider.actions_enabled:
+            return True
+        return (
+            not self.snapshot.service.ready
+            and provider.runtime_state
+            not in {
+                ProviderRuntimeState.UNREADABLE,
+                ProviderRuntimeState.UNSUPPORTED,
+            }
+        )
 
     def _with_state(
         self,
@@ -296,6 +349,37 @@ def _provider_anchor(
         if external is not None:
             return _row_anchor(external)
     return _row_anchor(provider.rows[0])
+
+
+def _matching_row(
+    snapshot: DashboardSnapshot,
+    state: DashboardControllerState,
+) -> DashboardRow | None:
+    if state.focused_provider is None:
+        return None
+    provider = next(
+        (
+            candidate
+            for candidate in snapshot.providers
+            if candidate.provider_id is state.focused_provider
+        ),
+        None,
+    )
+    if provider is None:
+        return None
+    return next(
+        (
+            row
+            for row in provider.rows
+            if (isinstance(row, DashboardExternalRow) and state.external)
+            or (
+                isinstance(row, DashboardAccount)
+                and not state.external
+                and row.account_id == state.account_id
+            )
+        ),
+        None,
+    )
 
 
 def _row_anchor(row: DashboardRow) -> DashboardProviderAnchor:

@@ -1,6 +1,7 @@
 """Guided per-user service readiness for pending dashboard actions."""
 
 from collections.abc import Callable
+from threading import Event
 
 from sidekick_usages.cli.dashboard.models.setup import (
     ServiceSetupDecision,
@@ -12,8 +13,6 @@ from sidekick_usages.daemon.lifecycle.manager import DaemonManager
 from sidekick_usages.daemon.types.lifecycle import ServiceLifecycleState
 from sidekick_usages.usage.dashboard.models import DashboardService
 
-type ServiceSetupProgressSink = Callable[[ServiceSetupProgress], None]
-
 
 def _discard_progress(_progress: ServiceSetupProgress) -> None:
     """Discard optional setup progress."""
@@ -24,6 +23,12 @@ class GuidedServiceSetup:
 
     def __init__(self, daemon: DaemonManager) -> None:
         self._daemon = daemon
+        self._closed = Event()
+
+    def close(self) -> None:
+        """Interrupt only dashboard-owned lifecycle observation."""
+        self._closed.set()
+        self._daemon.cancel()
 
     def prepare[IntentT](
         self,
@@ -32,11 +37,13 @@ class GuidedServiceSetup:
         intent: IntentT,
         interactive: bool,
         decision: ServiceSetupDecision,
-        progress: ServiceSetupProgressSink = _discard_progress,
+        progress: Callable[[ServiceSetupProgress], None] = _discard_progress,
     ) -> ServiceSetupResult[IntentT]:
         """Return the original intent only after bounded service readiness."""
         progress(ServiceSetupProgress.CHECKING)
         status = self._daemon.status()
+        if self._closed.is_set():
+            return self._failed(intent)
         if status.state is ServiceLifecycleState.FEATURE_DISABLED:
             return ServiceSetupResult(
                 intent=intent,
@@ -49,6 +56,8 @@ class GuidedServiceSetup:
         if service.compatible:
             progress(ServiceSetupProgress.RESTARTING)
             restarted = self._daemon.restart()
+            if self._closed.is_set():
+                return self._failed(intent)
             if restarted.state is ServiceLifecycleState.READY:
                 progress(ServiceSetupProgress.READY)
                 return self._resume(intent)
@@ -65,7 +74,7 @@ class GuidedServiceSetup:
         intent: IntentT,
         interactive: bool,
         decision: ServiceSetupDecision,
-        progress: ServiceSetupProgressSink,
+        progress: Callable[[ServiceSetupProgress], None],
     ) -> ServiceSetupResult[IntentT]:
         if not interactive:
             return ServiceSetupResult(
@@ -85,9 +94,18 @@ class GuidedServiceSetup:
 
         progress(ServiceSetupProgress.INSTALLING)
         installed = self._daemon.install()
+        if self._closed.is_set():
+            return self._failed(intent)
         if installed.state is ServiceLifecycleState.READY:
             progress(ServiceSetupProgress.READY)
             return self._resume(intent)
+        return ServiceSetupResult(
+            intent=intent,
+            outcome=ServiceSetupOutcome.FAILED,
+        )
+
+    @staticmethod
+    def _failed[IntentT](intent: IntentT) -> ServiceSetupResult[IntentT]:
         return ServiceSetupResult(
             intent=intent,
             outcome=ServiceSetupOutcome.FAILED,

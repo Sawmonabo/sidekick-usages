@@ -47,6 +47,13 @@ class CompletionOutcome(StrEnum):
     CANCELLED = "cancelled"
 
 
+class ControlOperationIdentity(StrEnum):
+    """Expected operation identity for one control action stream."""
+
+    ACCOUNT = "account"
+    GLOBAL = "global"
+
+
 class ProtocolErrorCode(StrEnum):
     """Safe protocol failures that never include rejected input."""
 

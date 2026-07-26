@@ -17,6 +17,8 @@ from sidekick_usages.daemon.types.service import ServicePhase
 
 type DashboardRow = DashboardAccount | DashboardExternalRow
 
+MAX_DASHBOARD_FOOTER_MESSAGE_CHARACTERS = 512
+
 
 class DashboardActionState(StrEnum):
     """Closed account states that can affect dashboard interaction."""
@@ -24,7 +26,7 @@ class DashboardActionState(StrEnum):
     HEALTHY = "healthy"
     LOGIN_REQUIRED = "login_required"
     REPAIR_REQUIRED = "repair_required"
-    SETUP_TOKEN_REGENERATION = "setup_token_regeneration"
+    SETUP_CREDENTIAL_REGENERATION = "setup_token_regeneration"
     METRICS_STALE = "metrics_stale"
     EXTERNAL_ACTIVE = "external_active"
     RECONCILIATION_REQUIRED = "reconciliation_required"
@@ -38,6 +40,8 @@ class DashboardFooterKind(StrEnum):
     KEYS = "keys"
     HELP = "help"
     PROGRESS = "progress"
+    CONFIRMATION = "confirmation"
+    ERROR = "error"
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -66,13 +70,25 @@ class DashboardFooter:
     message: str | None = None
 
     def __post_init__(self) -> None:
-        """Require progress copy only for transient progress."""
-        if self.kind is DashboardFooterKind.PROGRESS:
+        """Require bounded copy only for transient dashboard notices."""
+        if self.kind in {
+            DashboardFooterKind.PROGRESS,
+            DashboardFooterKind.CONFIRMATION,
+            DashboardFooterKind.ERROR,
+        }:
             valid = self.message is not None and bool(self.message.strip())
         else:
             valid = self.message is None
+        if self.message is not None:
+            valid = (
+                valid
+                and len(self.message)
+                <= MAX_DASHBOARD_FOOTER_MESSAGE_CHARACTERS
+            )
         if not valid:
-            raise ValueError("Only progress footers require a message.")
+            raise ValueError(
+                "Transient dashboard footers require a bounded message."
+            )
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

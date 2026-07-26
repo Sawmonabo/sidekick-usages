@@ -1,6 +1,8 @@
 """Load-bearing cached dashboard-state behavior."""
 
 import io
+import os
+import sys
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -27,6 +29,9 @@ from sidekick_usages.cli.dashboard.models.controller import (
     RefreshDueAccountsIntent,
 )
 from sidekick_usages.cli.dashboard.models.runtime import DashboardRuntime
+from sidekick_usages.cli.dashboard.models.session import (
+    DashboardConfirmationKind,
+)
 from sidekick_usages.cli.dashboard.models.setup import (
     ServiceSetupAction,
     ServiceSetupDecision,
@@ -54,6 +59,7 @@ from sidekick_usages.usage.dashboard.models import (
     DashboardAccount,
     DashboardActionState,
     DashboardExternalRow,
+    DashboardFooterKind,
     DashboardService,
 )
 from sidekick_usages.usage.dashboard.service import CachedDashboardService
@@ -72,6 +78,11 @@ from tests.fakes.dashboard.runtime import (
     SetupDaemon,
     interactive_terminal,
     redirected_terminal,
+)
+from tests.fakes.dashboard.session import (
+    SESSION_SOCKET,
+    DashboardSessionProof,
+    exercise_dashboard_session,
 )
 from tests.fakes.dashboard.state import (
     CLAUDE_ACTIVE_ACCOUNT_ID,
@@ -95,6 +106,45 @@ from tests.test_support import CliHarness, FixedClock, make_application_paths
 REFERENCE_TIME = datetime(2026, 7, 25, 14, tzinfo=UTC)
 OBSERVED_AT = REFERENCE_TIME - timedelta(hours=2)
 ONE_SHOT_ROUTE_COUNT = 3
+
+
+def _assert_execve_process_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Prove the isolated handoff uses one qualified no-shell replacement."""
+    replacements: list[tuple[Path, list[str], dict[str, str]]] = []
+
+    def record_execve(
+        executable: Path,
+        arguments: list[str],
+        environment: dict[str, str],
+    ) -> Never:
+        replacements.append((executable, arguments, environment))
+        raise OSError("Synthetic no-shell replacement failure.")
+
+    with monkeypatch.context() as replacement_boundary:
+        replacement_boundary.setattr(launch.os, "execve", record_execve)
+        with pytest.raises(
+            launch.InteractiveDashboardLaunchError,
+        ) as replacement_failure:
+            launch.ExecveDashboardProcess().replace(ProviderId.CODEX)
+
+    executable = Path(sys.executable)
+    assert isinstance(replacement_failure.value.__cause__, OSError)
+    assert replacements == [
+        (
+            executable,
+            [
+                sys.executable,
+                "-m",
+                launch.DASHBOARD_ENTRYPOINT_MODULE,
+                "--only",
+                ProviderId.CODEX.value,
+            ],
+            os.environ.copy(),
+        )
+    ]
+    assert replacements[0][2] is not os.environ
 
 
 def test_cached_dashboard_joins_stable_ids_without_credentials(
@@ -179,8 +229,10 @@ def test_cached_dashboard_joins_stable_ids_without_credentials(
     assert VALID_PROVIDER_IDENTITY not in rendered
 
 
-def test_dashboard_controller_journey_preserves_verified_truth() -> None:
-    """One pure journey proves cursor, intent, and activation semantics."""
+def test_dashboard_controller_journey_preserves_verified_truth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One journey proves pure transitions and serialized live activation."""
     snapshot = controller_snapshot(REFERENCE_TIME)
     controller = DashboardController.start(snapshot)
 
@@ -264,7 +316,7 @@ def test_dashboard_controller_journey_preserves_verified_truth() -> None:
     )
     assert all_healthy.refresh_due_accounts() is None
 
-    disabled = DashboardController.start(
+    preparable = DashboardController.start(
         replace(
             snapshot,
             providers=tuple(
@@ -274,9 +326,28 @@ def test_dashboard_controller_journey_preserves_verified_truth() -> None:
             service=replace(snapshot.service, ready=False),
         )
     ).move(DashboardMove.UP)
-    assert disabled.activate_or_repair() is None
-    assert disabled.refresh_account() is None
-    assert disabled.refresh_due_accounts() is None
+    assert preparable.activate_or_repair() == ActivateOrRepairIntent(
+        provider_id=ProviderId.CLAUDE,
+        account_id=CLAUDE_PREVIEW_ACCOUNT_ID,
+    )
+
+    disabled = DashboardController.start(
+        replace(
+            preparable.snapshot,
+            providers=tuple(
+                replace(
+                    provider,
+                    runtime_state=ProviderRuntimeState.UNSUPPORTED,
+                )
+                for provider in preparable.snapshot.providers
+            ),
+        )
+    ).move(DashboardMove.UP)
+    assert (
+        disabled.activate_or_repair(),
+        disabled.refresh_account(),
+        disabled.refresh_due_accounts(),
+    ) == (None, None, None)
 
     codex_saved = codex.rows[0]
     fallback = DashboardController.start(
@@ -301,6 +372,45 @@ def test_dashboard_controller_journey_preserves_verified_truth() -> None:
     assert fallback.state.focused_provider is ProviderId.CODEX
     assert fallback.state.account_id == CODEX_SAVED_ACCOUNT_ID
     assert not fallback.state.external
+    assert exercise_dashboard_session(
+        snapshot,
+        active_account_id=CLAUDE_ACTIVE_ACCOUNT_ID,
+        preview_account_id=CLAUDE_PREVIEW_ACCOUNT_ID,
+        monkeypatch=monkeypatch,
+    ) == DashboardSessionProof(
+        control_connect_calls=((SESSION_SOCKET, None),),
+        activation_locked=True,
+        confirmations=(
+            (
+                DashboardConfirmationKind.SERVICE_SETUP,
+                DashboardFooterKind.CONFIRMATION,
+                "Sidekick needs its per-user service. Install it without "
+                "administrator access? y yes / n no",
+            ),
+            (
+                DashboardConfirmationKind.REMOTE_CONTROL,
+                DashboardFooterKind.CONFIRMATION,
+                "Claude Remote Control may disconnect during this switch. "
+                "Continue? y yes / n no",
+            ),
+        ),
+        activations=(
+            (ProviderId.CLAUDE, CLAUDE_PREVIEW_ACCOUNT_ID, False),
+            (ProviderId.CLAUDE, CLAUDE_PREVIEW_ACCOUNT_ID, True),
+            (ProviderId.CLAUDE, CLAUDE_ACTIVE_ACCOUNT_ID, False),
+            (ProviderId.CLAUDE, CLAUDE_ACTIVE_ACCOUNT_ID, False),
+        ),
+        setup_events=("status", "status", "install"),
+        verified_account_id=CLAUDE_PREVIEW_ACCOUNT_ID,
+        setup_not_repeated=True,
+        restored_account_id=CLAUDE_PREVIEW_ACCOUNT_ID,
+        failure_footer_kind=DashboardFooterKind.ERROR,
+        lookup_cancelled=True,
+        daemon_cancelled=True,
+        stream_released=True,
+        closed_clients=4,
+        post_close_invalidations=0,
+    )
 
 
 def test_cli_routes_one_cached_frame_before_isolated_interaction(
@@ -335,6 +445,8 @@ def test_cli_routes_one_cached_frame_before_isolated_interaction(
     assert events == ["load:codex", "replace:codex"]
     assert "CODEX" in process.frame_at_replace
     assert "CLAUDE" not in process.frame_at_replace
+
+    _assert_execve_process_boundary(monkeypatch)
 
     def reject_executable(_path: Path) -> Never:
         raise ExecutableQualificationError(ExecutableFailure.UNSAFE)

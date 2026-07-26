@@ -12,16 +12,18 @@ from sidekick_usages.cli.dashboard.ports import AccountActivation
 from sidekick_usages.core.accounts.types import SidekickAccountId
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.control.client import (
+    CONTROL_ACTION_TIMEOUT_SECONDS,
     ControlClient,
-    UnexpectedServiceEventError,
+    consume_control_action,
 )
 from sidekick_usages.daemon.models.protocol import (
     CompletedPayload,
     FailedPayload,
+    IncompatiblePayload,
 )
 from sidekick_usages.daemon.types.protocol import (
     CompletionOutcome,
-    EventKind,
+    ControlOperationIdentity,
 )
 from sidekick_usages.paths import ApplicationPaths, discover_application_paths
 from sidekick_usages.persistence.accounts.index import (
@@ -50,38 +52,30 @@ class _SupervisorAccountActivation:
         account_id: SidekickAccountId,
         allow_remote_control_disconnect: bool,
     ) -> UseActivationResult:
-        client = ControlClient.connect(self._socket_path)
+        client = ControlClient.connect(
+            self._socket_path,
+            action_timeout_seconds=CONTROL_ACTION_TIMEOUT_SECONDS,
+        )
         try:
-            for event in client.activate(
-                provider_id,
-                account_id,
-                allow_remote_control_disconnect=(
-                    allow_remote_control_disconnect
+            terminal = consume_control_action(
+                client.activate(
+                    provider_id,
+                    account_id,
+                    allow_remote_control_disconnect=(
+                        allow_remote_control_disconnect
+                    ),
                 ),
-            ):
-                if event.kind is EventKind.COMPLETED:
-                    payload = event.payload
-                    if not isinstance(payload, CompletedPayload):
-                        raise UnexpectedServiceEventError(
-                            "The service returned an invalid completion."
-                        )
-                    if payload.outcome is CompletionOutcome.CANCELLED:
-                        return UseActivationFailure("activation_cancelled")
-                    return UseActivationSuccess()
-                if event.kind is EventKind.FAILED:
-                    payload = event.payload
-                    if not isinstance(payload, FailedPayload):
-                        raise UnexpectedServiceEventError(
-                            "The service returned an invalid failure."
-                        )
-                    return UseActivationFailure(payload.code)
-                if event.kind is EventKind.INCOMPATIBLE:
-                    return UseActivationFailure("service_incompatible")
-                if event.kind is EventKind.SERVICE_STOPPING:
-                    return UseActivationFailure("service_stopping")
-            raise UnexpectedServiceEventError(
-                "The service returned no activation result."
+                identity=ControlOperationIdentity.ACCOUNT,
             )
+            if isinstance(terminal, CompletedPayload):
+                if terminal.outcome is CompletionOutcome.CANCELLED:
+                    return UseActivationFailure("activation_cancelled")
+                return UseActivationSuccess()
+            if isinstance(terminal, FailedPayload):
+                return UseActivationFailure(terminal.code)
+            if isinstance(terminal, IncompatiblePayload):
+                return UseActivationFailure("service_incompatible")
+            return UseActivationFailure("service_stopping")
         finally:
             client.close()
 
@@ -92,9 +86,7 @@ def compose_use_context(
     activation: AccountActivation | None = None,
 ) -> UseContext:
     """Compose only secret-free account lookup and local control access."""
-    resolved_paths = (
-        discover_application_paths() if paths is None else paths
-    )
+    resolved_paths = discover_application_paths() if paths is None else paths
     resolved_activation = (
         _SupervisorAccountActivation(resolved_paths.supervisor_socket)
         if activation is None

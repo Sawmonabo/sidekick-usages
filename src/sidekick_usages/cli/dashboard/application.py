@@ -9,13 +9,9 @@ from prompt_toolkit.layout import Layout, Window
 from prompt_toolkit.layout.controls import FormattedTextControl
 from rich.console import Console
 
-from sidekick_usages.cli.dashboard.controller import DashboardController
 from sidekick_usages.cli.dashboard.input import DashboardInputController
-from sidekick_usages.cli.dashboard.ports import (
-    DashboardLookupPort,
-    DashboardSupervisorPort,
-)
-from sidekick_usages.usage.dashboard.models import DashboardSnapshot
+from sidekick_usages.cli.dashboard.ports import DashboardSessionPort
+from sidekick_usages.cli.dashboard.session import dashboard_cursor
 from sidekick_usages.usage.presentation.dashboard.overview import (
     dashboard_overview,
 )
@@ -29,17 +25,10 @@ class InteractiveDashboardApplication:
 
     def __init__(
         self,
-        snapshot: DashboardSnapshot,
-        *,
-        lookup: DashboardLookupPort | None = None,
-        supervisor: DashboardSupervisorPort | None = None,
+        session: DashboardSessionPort,
     ) -> None:
-        self._snapshot = snapshot
-        self._input = DashboardInputController(
-            DashboardController.start(snapshot),
-            lookup=lookup,
-            supervisor=supervisor,
-        )
+        self._session = session
+        self._input = DashboardInputController(session)
         control = FormattedTextControl(
             text=self._render,
             focusable=True,
@@ -57,15 +46,20 @@ class InteractiveDashboardApplication:
             full_screen=False,
             erase_when_done=False,
         )
+        self._session.bind_invalidator(self._application.invalidate)
 
     def run(self) -> int:
         """Run with one terminal-restoring prompt-toolkit lifecycle."""
         try:
-            return self._application.run()
+            try:
+                return self._application.run(pre_run=self._session.start)
+            finally:
+                self._session.close()
         except KeyboardInterrupt:
             return INTERRUPTED_EXIT_CODE
 
     def _render(self) -> ANSI:
+        view = self._session.view
         width = shutil.get_terminal_size(TERMINAL_FALLBACK).columns
         output = StringIO()
         console = Console(
@@ -76,10 +70,10 @@ class InteractiveDashboardApplication:
         )
         console.print(
             dashboard_overview(
-                self._snapshot,
+                view.snapshot,
                 width=width,
-                cursor=self._input.cursor,
-                footer=self._input.footer,
+                cursor=dashboard_cursor(view),
+                footer=view.footer,
             )
         )
         return ANSI(output.getvalue())
