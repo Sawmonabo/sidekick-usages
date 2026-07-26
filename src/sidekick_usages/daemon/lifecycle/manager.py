@@ -131,6 +131,26 @@ class DaemonManager:
             _READY_MESSAGE,
         )
 
+    def restart(self) -> DaemonOperationResult:
+        """Restart and prove readiness of one installed user service."""
+        if self._feature_disabled:
+            return self._feature_disabled_result()
+        try:
+            self._backend.restart()
+            self._readiness.verify_ready()
+            status = self._backend.status()
+            if status.state is not ServiceLifecycleState.READY:
+                raise ServiceLifecycleError(
+                    ServiceFailureCode.SERVICE_UNHEALTHY
+                )
+        except ServiceLifecycleError as error:
+            return self._failure(error)
+        return DaemonOperationResult(
+            self._backend.id,
+            ServiceLifecycleState.READY,
+            _READY_MESSAGE,
+        )
+
     def uninstall(self) -> DaemonOperationResult:
         """Remove only the platform service and its transient state."""
         if self._feature_disabled:

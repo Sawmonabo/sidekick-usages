@@ -14,6 +14,13 @@ from sidekick_usages.cli.dashboard.models.controller import (
     RefreshAccountIntent,
     RefreshDueAccountsIntent,
 )
+from sidekick_usages.cli.dashboard.models.setup import (
+    ServiceSetupAction,
+    ServiceSetupDecision,
+    ServiceSetupOutcome,
+    ServiceSetupProgress,
+)
+from sidekick_usages.cli.dashboard.setup import GuidedServiceSetup
 from sidekick_usages.core.accounts.models import (
     CodexAccountAuthority,
     CodexManagedAuthority,
@@ -44,7 +51,13 @@ from sidekick_usages.core.types import (
     ProviderId,
     TokenActivityScope,
 )
+from sidekick_usages.daemon.lifecycle.manager import DaemonManager
+from sidekick_usages.daemon.models.lifecycle import DaemonOperationResult
 from sidekick_usages.daemon.models.service import ServiceState
+from sidekick_usages.daemon.types.lifecycle import (
+    ServiceBackendId,
+    ServiceLifecycleState,
+)
 from sidekick_usages.daemon.types.service import PackageVersion, ServicePhase
 from sidekick_usages.paths import ApplicationPaths
 from sidekick_usages.persistence.filesystem.service import (
@@ -90,6 +103,39 @@ CONFLICT_AUTHORITY_ID = AuthorityId("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
 VALID_IDENTITY = "synthetic-codex-valid"
 CONFLICT_IDENTITY = "synthetic-codex-conflict"
 EXTERNAL_IDENTITY = "synthetic-claude-external"
+
+
+class SetupDaemon(DaemonManager):
+    """Record guided setup without opening platform boundaries."""
+
+    def __init__(self, state: ServiceLifecycleState) -> None:
+        self.state = state
+        self.events: list[str] = []
+
+    def status(self) -> DaemonOperationResult:
+        """Record one current service check."""
+        self.events.append("status")
+        return self._result(self.state)
+
+    def restart(self) -> DaemonOperationResult:
+        """Record one bounded restart."""
+        self.events.append("restart")
+        self.state = ServiceLifecycleState.READY
+        return self._result(self.state)
+
+    def install(self) -> DaemonOperationResult:
+        """Record one approved user-level installation."""
+        self.events.append("install")
+        self.state = ServiceLifecycleState.READY
+        return self._result(self.state)
+
+    @staticmethod
+    def _result(state: ServiceLifecycleState) -> DaemonOperationResult:
+        return DaemonOperationResult(
+            ServiceBackendId.SYSTEMD,
+            state,
+            "Synthetic user-service result.",
+        )
 
 
 def _account(
@@ -487,3 +533,94 @@ def test_dashboard_controller_journey_preserves_verified_truth() -> None:
     assert fallback.state.focused_provider is ProviderId.CODEX
     assert fallback.state.account_id == CODEX_SAVED_ACCOUNT_ID
     assert not fallback.state.external
+
+
+def test_guided_setup_resumes_once_and_preserves_blocked_actions() -> None:
+    """One setup journey installs, reuses, refuses, and stays script-safe."""
+    unavailable = DashboardService(
+        ready=False,
+        compatible=False,
+        phase=None,
+        observed_at=None,
+        failure_code=None,
+    )
+    compatible = replace(
+        unavailable,
+        compatible=True,
+        phase=ServicePhase.DEGRADED,
+    )
+    intent = object()
+    daemon = SetupDaemon(ServiceLifecycleState.ABSENT)
+    setup = GuidedServiceSetup(daemon)
+    progress: list[ServiceSetupProgress] = []
+
+    confirmation = setup.prepare(
+        service=unavailable,
+        intent=intent,
+        interactive=True,
+        decision=ServiceSetupDecision.NOT_REQUESTED,
+        progress=progress.append,
+    )
+    approved = setup.prepare(
+        service=unavailable,
+        intent=intent,
+        interactive=True,
+        decision=ServiceSetupDecision.APPROVED,
+        progress=progress.append,
+    )
+
+    assert confirmation.outcome is ServiceSetupOutcome.CONFIRMATION_REQUIRED
+    assert approved.outcome is ServiceSetupOutcome.RESUME
+    assert confirmation.intent is approved.intent is intent
+    assert daemon.events == ["status", "status", "install"]
+    assert progress == [
+        ServiceSetupProgress.CHECKING,
+        ServiceSetupProgress.CHECKING,
+        ServiceSetupProgress.INSTALLING,
+        ServiceSetupProgress.READY,
+    ]
+
+    daemon.state = ServiceLifecycleState.UNHEALTHY
+    progress.clear()
+    reused = setup.prepare(
+        service=compatible,
+        intent=intent,
+        interactive=True,
+        decision=ServiceSetupDecision.NOT_REQUESTED,
+        progress=progress.append,
+    )
+
+    assert reused.outcome is ServiceSetupOutcome.RESUME
+    assert reused.intent is intent
+    assert daemon.events[-2:] == ["status", "restart"]
+    assert daemon.events.count("install") == 1
+    assert progress == [
+        ServiceSetupProgress.CHECKING,
+        ServiceSetupProgress.RESTARTING,
+        ServiceSetupProgress.READY,
+    ]
+
+    blocked_daemon = SetupDaemon(ServiceLifecycleState.ABSENT)
+    blocked_setup = GuidedServiceSetup(blocked_daemon)
+    refused = blocked_setup.prepare(
+        service=unavailable,
+        intent=intent,
+        interactive=True,
+        decision=ServiceSetupDecision.REFUSED,
+    )
+    noninteractive = blocked_setup.prepare(
+        service=unavailable,
+        intent=intent,
+        interactive=False,
+        decision=ServiceSetupDecision.APPROVED,
+    )
+    assert (refused.outcome, noninteractive.outcome) == (
+        ServiceSetupOutcome.REFUSED,
+        ServiceSetupOutcome.NONINTERACTIVE,
+    )
+    assert refused.intent is noninteractive.intent is intent
+    assert refused.corrective_action is ServiceSetupAction.OPEN_DASHBOARD
+    assert (
+        noninteractive.corrective_action is ServiceSetupAction.OPEN_DASHBOARD
+    )
+    assert blocked_daemon.events == ["status", "status"]

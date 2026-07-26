@@ -263,6 +263,7 @@ def test_lifecycle_is_idempotent_and_uninstall_preserves_user_state(
 
     first = manager.install()
     second = manager.install()
+    restarted = manager.restart()
     status = manager.status()
     health = manager.health()
     removed = manager.uninstall()
@@ -279,6 +280,9 @@ def test_lifecycle_is_idempotent_and_uninstall_preserves_user_state(
     assert events == [
         *install_sequence,
         *install_sequence,
+        "restart",
+        "ready",
+        "status",
         "status",
         "ready",
         "status",
@@ -287,6 +291,7 @@ def test_lifecycle_is_idempotent_and_uninstall_preserves_user_state(
     ]
     assert first.state is ServiceLifecycleState.READY
     assert second.state is ServiceLifecycleState.READY
+    assert restarted.state is ServiceLifecycleState.READY
     assert status.state is ServiceLifecycleState.READY
     assert health.process is ServiceComponentState.HEALTHY
     assert removed.state is ServiceLifecycleState.ABSENT
