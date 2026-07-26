@@ -310,6 +310,164 @@ Disposition: **Automated pass; live pending.** Task 9 must use the still
 installed old release to remove only its observed scheduler before clean
 installation.
 
+## Synthetic before-and-after captures
+
+These captures were generated from the current renderers at 120 and 52
+columns with synthetic account models. `Before` is the preserved one-shot
+`check` presentation; `after` is the interactive default presentation. It is
+a product-path comparison, not a claim that the one-shot command was removed.
+
+### Wide before: one-shot check
+
+```text
+      o
+     .-.
+  .--┴-┴--.    sidekick usages
+  | O   O |   >> A multi-account usage dashboard for Claude Code and Codex CLI.
+  | ||||| |   >> Limits + resets + account status, one terminal.
+  '--___--'
+───────────────────────────────────────────────────────────────────────────────────
+
+╭─ CLAUDE · 2 accounts ───────────────────────────────────────────────────────────╮
+│                                                                                 │
+│                                    5h      7d                                   │
+│  ●  work@example.test      max      0%     51%                                  │
+│                                  3h 50m  3h 50m                                 │
+│  ⚠ work@example.test: last known · 2026-06-12T10:20:56.789000+00:00             │
+│                                                                                 │
+│  ●  personal@example.test  max   ⚠ authentication failed                        │
+│                                  Claude rejected the saved subscription login.  │
+│                                  Sign in to that Claude account, then run:      │
+│                                  sidekick-usages refresh personal@example.test  │
+│                                                                                 │
+╰───────────────────────────────────── 903,464,085 tokens  ·  since Dec 28, 2025 ─╯
+
+╭─ CODEX · 1 account ─────────────────────────────────────────────────────────────╮
+│                                                                                 │
+│                                    5h      7d                                   │
+│  ●  codex@example.test     pro      8%     45%                                  │
+│                                  3h 50m  3h 50m                                 │
+│                                                                                 │
+╰──────────────────────────────────── 7,449,473,297 tokens  ·  since Apr 7, 2026 ─╯
+
+ <40    40-69    70-89    ≥90      dim = resets in
+```
+
+### Wide after: interactive default
+
+```text
+      o
+     .-.
+  .--┴-┴--.    sidekick usages
+  | O   O |   >> A multi-account usage dashboard for Claude Code and Codex CLI.
+  | ||||| |   >> Limits + resets + account status, one terminal.
+  '--___--'
+─────────────────────────────────────────────────────────────────────────────────────────────────
+
+╭─ CLAUDE · 2 accounts ─────────────────────────────────────────────────────────────────────────╮
+│                                                                                               │
+│                                         5h      7d                                            │
+│  › ●  work@example.test         max      0%     51%                                           │
+│                                       3h 50m  3h 50m                                          │
+│                                                                                               │
+│    ●  personal@example.test     max                                                           │
+│  ⚠ work@example.test: Metrics last updated 2h 14m ago; retry scheduled.                       │
+│  ⚠ personal@example.test: Complete the official Claude Code login before using this account.  │
+│                                                                                               │
+╰─────────────────────────────────────────────────── 903,464,085 tokens  ·  since Dec 28, 2025 ─╯
+
+╭─ CODEX · 2 accounts ──────────────────────────────────────────────────────────────────────────╮
+│                                                                                               │
+│                                         5h      7d                                            │
+│    ●  codex@example.test        pro      8%     45%                                           │
+│                                       3h 50m  3h 50m                                          │
+│                                                                                               │
+│    ●  External Codex CLI login                                                                │
+│  ⚠ External Codex CLI login: This external login is not saved in Sidekick.                    │
+│                                                                                               │
+╰────────────────────────────────────────────────── 7,449,473,297 tokens  ·  since Apr 7, 2026 ─╯
+
+ <40    40-69    70-89    ≥90      dim = resets in
+
+ Switching to personal@example.test… verifying with Claude Code
+```
+
+### Narrow before: one-shot check
+
+```text
+      o
+     .-.
+  .--┴-┴--.  sidekick usages
+  | O   O |
+  | ||||| |
+  '--___--'
+────────────────────────────────────────────────────
+
+work@example.test  [claude · max]
+  Last known · 2026-06-12T10:20:56.789000+00:00
+  ⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀…    ↻ Fri Jun 12, 12:24 PM (in 3h …
+  ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣀⣀⣀⣀⣀…    ↻ Fri Jun 12, 12:24 PM (in 3h …
+
+codex@example.test  [codex · pro]
+  ⣿⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀…    ↻ Fri Jun 12, 12:24 PM (in 3h …
+  ⣿⣿⣿⣿⣿⣿⣿⣿⣀⣀⣀⣀⣀⣀…    ↻ Fri Jun 12, 12:24 PM (in 3h …
+
+personal@example.test  [claude · max]
+  ⚠ authentication failed
+  Claude rejected the saved subscription login.
+  Sign in to that Claude account, then run:
+  sidekick-usages refresh personal@example.test
+
+CLAUDE · 903.46M tokens
+         since Dec 28, 2025
+
+CODEX · 7.449B tokens
+        since Apr 7, 2026
+```
+
+### Narrow after: interactive default
+
+```text
+      o
+     .-.
+  .--┴-┴--.  sidekick usages
+  | O   O |
+  | ||||| |
+  '--___--'
+────────────────────────────────────────────────────
+
+› ● work@example.test  [claude · max]
+  ⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀…    ↻ Fri Jun 12, 12:24 PM (in 3h …
+  ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣀⣀⣀⣀⣀…    ↻ Fri Jun 12, 12:24 PM (in 3h …
+    ⚠ Metrics last updated 2h 14m ago; retry
+    scheduled.
+
+  ● personal@example.test  [claude · max]
+    ⚠ Complete the official Claude Code login before
+    using this account.
+
+CLAUDE · 903.46M tokens
+         since Dec 28, 2025
+
+  ● codex@example.test  [codex · pro]
+  ⣿⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀…    ↻ Fri Jun 12, 12:24 PM (in 3h …
+  ⣿⣿⣿⣿⣿⣿⣿⣿⣀⣀⣀⣀⣀⣀…    ↻ Fri Jun 12, 12:24 PM (in 3h …
+
+  ● External Codex CLI login  [codex]
+    ⚠ This external login is not saved in Sidekick.
+
+CODEX · 7.449B tokens
+        since Apr 7, 2026
+
+ Switching to personal@example.test… verifying with
+Claude Code
+```
+
+Manual inspection confirms that both widths retain the recognizable robot,
+provider grouping, metric meaning, reset timing, and account-specific
+warnings. The interactive path adds one cursor and one bounded action footer;
+it adds no healthy-row active-state label.
+
 ## Synthetic dashboard contract
 
 The wide and narrow automated render scenarios use only labels such as
@@ -323,8 +481,8 @@ prove:
 - the key or progress footer is bounded; and
 - wide and narrow output preserve activity totals and reset meaning.
 
-These are sanitized test contracts, not captures of the current machine. The
-final before/after terminal captures remain open for Task 9.
+These are sanitized test contracts, not captures of the current machine.
+Task 9 retains only the sanitized current-machine before/after capture.
 
 ## Remaining release evidence
 

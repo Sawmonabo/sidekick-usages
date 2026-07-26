@@ -311,7 +311,7 @@ The no-secret dashboard view contains:
 
 - [x] Run the two render scenarios plus existing unchanged branding, reset,
   and activity render regressions.
-- [ ] Generate synthetic before/after wide and narrow captures and inspect
+- [x] Generate synthetic before/after wide and narrow captures and inspect
   alignment manually.
 - [x] Run Ruff and `ty`, confirm module line limits, then commit.
 
@@ -586,7 +586,7 @@ sidekick-usages use <provider> <label>
   tests while native Windows proves feature-disabled behavior.
 - [x] Update README command examples, keys, service setup, session coverage,
   unsupported modes, and uninstall behavior.
-- [ ] Add synthetic before/after terminal captures to the completion record.
+- [x] Add synthetic before/after terminal captures to the completion record.
 
 ### Verify and commit
 
@@ -608,7 +608,7 @@ uv run python packaging/smoke_wheel.py --build
 - [x] Inspect the wheel for all three entry points, prompt_toolkit, `wcwidth`,
   service templates, and absence of caches or credentials.
 - [x] Record benchmark environment and exact results in the completion record.
-- [ ] Commit the gate and documentation changes.
+- [x] Commit the gate and documentation changes.
 
 ## 10. Task 8 — Release Acceptance Evidence Review
 
