@@ -87,7 +87,8 @@ macOS Keychain through `/usr/bin/security`, Pydantic 2.13.4, Portalocker
 
 ---
 
-- **Status:** In progress; Claude Tasks 1-4 complete
+- **Status:** Automated implementation and local gate complete; phase mapping
+  and live release evidence pending
 - **Date:** 2026-07-23
 - **Repository:** `/home/sabossedgh/dev/sidekick-usages`
 - **Branch:** `develop`
@@ -298,8 +299,8 @@ uv run pytest \
 - [x] Serialize maintenance with activation and broker work through the
   qualified authority lock.
 - [x] Classify setup-token authority as fixed-lifetime/not-refreshable.
-- [ ] Complete setup-token health, usage, and lifetime collection in Task 8.
-- [ ] Remove the legacy macOS CLI-refresh exclusion with the duplicate
+- [x] Complete setup-token health, usage, and lifetime collection in Task 8.
+- [x] Remove the legacy macOS CLI-refresh exclusion with the duplicate
   refresh path in Task 8. The managed profile-specific path has no exclusion.
 
 ### Verify and commit
@@ -394,39 +395,39 @@ without a maintainable private authority.
 
 ### Tests first
 
-- [ ] Extend `tests/test_claude_managed_runtime.py` with one healthy
+- [x] Extend `tests/test_claude_managed_runtime.py` with one healthy
   activation scenario that retains outgoing A, officially provisions B,
   verifies native identity, commits from read-back, requires one request when
   no foreground session is present, and leaves Codex state untouched.
-- [ ] Keep the externally meaningful interruption and recovery in Task 6's
+- [x] Keep the externally meaningful interruption and recovery in Task 6's
   single recovery scenario. Do not duplicate it in activation coverage.
-- [ ] Do not force death after every internal write or enumerate equivalent
+- [x] Do not force death after every internal write or enumerate equivalent
   preflight failures already covered by capability and storage tests.
 
 ### Implementation
 
-- [ ] Add `ClaudeActivationService` under `credentials/` and compose only
+- [x] Add `ClaudeActivationService` under `credentials/` and compose only
   provider ports plus foundation persistence transactions.
-- [ ] Read actual native state before journaling. Never trust selected state
+- [x] Read actual native state before journaling. Never trust selected state
   as current proof.
-- [ ] Retain outgoing credentials only by running official Claude against the
+- [x] Retain outgoing credentials only by running official Claude against the
   outgoing stable private profile with a closed refresh-token environment.
-- [ ] Activate the target only by running official Claude against the native
+- [x] Activate the target only by running official Claude against the native
   default profile with a closed refresh-token environment from target
   authority.
-- [ ] Prove source private, target native, and target private states using
+- [x] Prove source private, target native, and target private states using
   strict protected read-back.
-- [ ] Publish only sanitized progress events. Credential values never leave
+- [x] Publish only sanitized progress events. Credential values never leave
   the worker or enter the activation journal.
-- [ ] Commit selected state only after target native identity is proven.
-- [ ] Keep metrics and maintenance state independent of activation outcome.
+- [x] Commit selected state only after target native identity is proven.
+- [x] Keep metrics and maintenance state independent of activation outcome.
 
 ### Verify and commit
 
-- [ ] Run the healthy activation scenario plus existing journal, provider-lock,
+- [x] Run the healthy activation scenario plus existing journal, provider-lock,
   Keychain, and output-safety regressions they touch.
-- [ ] Run Ruff and `ty`.
-- [ ] Review every native write path and confirm it launches official Claude,
+- [x] Run Ruff and `ty`.
+- [x] Review every native write path and confirm it launches official Claude,
   then commit.
 
 ## 8. Task 6 — Official Rollback and Reconciliation
@@ -435,40 +436,40 @@ without a maintainable private authority.
 
 ### Tests first
 
-- [ ] Extend the activation test boundary with one interruption and recovery
+- [x] Extend the activation test boundary with one interruption and recovery
   scenario at the externally meaningful boundary after native mutation.
   Serialize a concurrent retry, prove official rollback once, and prove a
   failed rollback becomes reconciliation-required. Assert both private
   authorities remain usable and no captured credential bytes are written.
-- [ ] Add one external-login race scenario to
+- [x] Add one external-login race scenario to
   `tests/test_claude_managed_runtime.py` where the official provider state
   wins; a known account is related, an unknown account remains external, and
   neither is silently imported.
-- [ ] Do not add separate cases for every possible prior native identity or
+- [x] Do not add separate cases for every possible prior native identity or
   logout spelling.
 
 ### Implementation
 
-- [ ] On startup, read actual native provider state before interpreting an
+- [x] On startup, read actual native provider state before interpreting an
   incomplete journal.
-- [ ] Complete the target commit when target identity is already proven.
-- [ ] Record rollback when source identity is proven.
-- [ ] Let another deliberate saved or unknown external identity win and
+- [x] Complete the target commit when target identity is already proven.
+- [x] Record rollback when source identity is proven.
+- [x] Let another deliberate saved or unknown external identity win and
   reconcile selected state accordingly.
-- [ ] When an incomplete Sidekick mutation produced an unverified identity,
+- [x] When an incomplete Sidekick mutation produced an unverified identity,
   attempt rollback by officially provisioning the source managed authority
   into native Claude.
-- [ ] If rollback cannot be proven, set
+- [x] If rollback cannot be proven, set
   `reconciliation_required`, block further Claude switching, retain truthful
   metrics, and show a repair action.
-- [ ] Never restore stale credential bytes or overwrite an external official
+- [x] Never restore stale credential bytes or overwrite an external official
   login merely to match the journal.
 
 ### Verify and commit
 
-- [ ] Run the two recovery/reconciliation scenarios plus existing activation
+- [x] Run the two recovery/reconciliation scenarios plus existing activation
   and persistence regressions they touch.
-- [ ] Run Ruff, `ty`, and architecture checks, then commit.
+- [x] Run Ruff, `ty`, and architecture checks, then commit.
 
 ## 9. Task 7 — Higher-Priority Credentials, Remote Control, and Sessions
 
@@ -476,7 +477,7 @@ without a maintainable private authority.
 
 ### Tests first
 
-- [ ] Add one guard scenario covering a representative higher-priority
+- [x] Add one guard scenario covering a representative higher-priority
   credential and one same-user foreground whose Remote Control state cannot
   be ruled out. Prove Sidekick changes no parent environment, requires the
   exact disruption approval, and refuses non-interactive activation without
@@ -485,33 +486,33 @@ without a maintainable private authority.
   statically, and verify next-request adoption, in-flight stability, and
   explicitly environment-authenticated exclusions against the exact installed
   Claude binary during release acceptance.
-- [ ] Do not enumerate equivalent environment combinations, confirmation
+- [x] Do not enumerate equivalent environment combinations, confirmation
   outcomes, or unsupported session labels.
 
 ### Implementation
 
-- [ ] Detect cloud-provider mode, `ANTHROPIC_AUTH_TOKEN`,
+- [x] Detect cloud-provider mode, `ANTHROPIC_AUTH_TOKEN`,
   `ANTHROPIC_API_KEY`, `apiKeyHelper`, `CLAUDE_CODE_OAUTH_TOKEN`, gateway,
   and other documented higher-priority modes before native activation.
-- [ ] Do not unset, override, or persist any parent-shell value. Return a
+- [x] Do not unset, override, or persist any parent-shell value. Return a
   typed conflict with precise scope.
-- [ ] Discover same-user Claude foregrounds without signaling, injecting
+- [x] Discover same-user Claude foregrounds without signaling, injecting
   input, or treating argv absence as proof. An explicit Remote Control argv
   flag proves risk; `/remote-control` and automatic enablement mean its absence
   cannot disprove risk after launch.
-- [ ] Require explicit confirmation when a foreground means Remote Control
+- [x] Require explicit confirmation when a foreground means Remote Control
   disruption cannot be ruled out. A non-interactive `use` command fails unless
   the caller supplied `--allow-remote-control-disconnect`; it never prompts.
-- [ ] Keep ordinary shared-profile subscription sessions on exact
+- [x] Keep ordinary shared-profile subscription sessions on exact
   next-API-attempt semantics and never claim idle or mid-request retargeting.
-- [ ] Add support classification to doctor and sanitized dashboard state.
+- [x] Add support classification to doctor and sanitized dashboard state.
 
 ### Verify and commit
 
-- [ ] Run the guard scenario plus existing CLI and output-safety regressions
+- [x] Run the guard scenario plus existing CLI and output-safety regressions
   it touches.
-- [ ] Run Ruff and `ty`.
-- [ ] Verify no test or production code edits the calling process environment,
+- [x] Run Ruff and `ty`.
+- [x] Verify no test or production code edits the calling process environment,
   then commit.
 
 ## 10. Task 8 — Maintenance, Metrics, and Direct OAuth Removal
@@ -540,7 +541,7 @@ without a maintainable private authority.
 - [x] Route all subscription maintenance through official private/native
   authority workflows.
 - [x] Observe and retain the active native generation before switching away.
-- [ ] Collect usage and activity once per logical account. Choose the
+- [x] Collect usage and activity once per logical account. Choose the
   appropriate healthy credential mode without adding their totals.
 - [x] Provide one authority-aware credential resolver that opens verified
   native state for the selected account and private state for inactive
@@ -570,25 +571,36 @@ overwrite the other, so the private source remains valid for the next switch.
 
 ### Verify and commit
 
-- [ ] Run:
+- [x] Run:
 
 ```bash
 rg -n \
   "platform\\.claude\\.com/v1/oauth/token|OAUTH_REFRESH_ENDPOINT" \
   src tests
 uv run pytest \
-  tests/test_claude_*.py \
-  tests/test_heartbeat.py \
-  tests/test_usage_service.py \
-  tests/test_usage_activity.py
+  tests/credentials/claude \
+  tests/providers/claude \
+  tests/heartbeat \
+  tests/usage
 uv run python packaging/check_architecture.py
-uv run ruff check src/ tests/
-uv run ty check src/ tests/
+uv run ruff check src/ tests/ packaging/
+uv run ty check src/ tests/ packaging/
 ```
 
-- [ ] The search may match explicit negative architecture-test strings only.
+- [x] The search may match explicit negative architecture-test strings only.
   It must match no production refresh call.
-- [ ] Commit after the complete Claude suite is green.
+- [x] Commit after the complete Claude suite is green.
+
+**Automated evidence reconciliation, 2026-07-26:** Native activation is
+committed in `45624a2`, interruption and external-login recovery in
+`121b78f`, session and higher-priority credential guards in `9ed1e8e`, and
+authority-aware maintenance in `0ca4bdf`. The load-bearing current tests are
+`tests/credentials/claude/test_activation.py`,
+`tests/credentials/claude/test_activation_recovery.py`, and
+`tests/credentials/claude/test_maintenance.py`. Unchecked Task 8 items still
+require one decisive composed evidence mapping; the serialized local gate is
+green at `d669799`. Task 9's evidence mapping and the completion gate remain
+intentionally open.
 
 ## 11. Task 9 — Claude Phase Gate
 
@@ -606,7 +618,7 @@ commit.
 - [ ] If a critical completion statement has no evidence, add one focused
   assertion to the nearest existing test. Do not create a Claude phase-gate
   test file.
-- [ ] Run the full project gate from the foundation plan.
+- [x] Run the full project gate from the foundation plan.
 - [ ] Confirm ordinary `claude` path and symlink resolution remain unchanged
   through the existing packaging smoke boundary.
 - [ ] Confirm no real provider or current-machine mutation occurred.

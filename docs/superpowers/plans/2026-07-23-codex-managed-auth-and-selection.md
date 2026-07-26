@@ -249,17 +249,22 @@ codex app-server generate-json-schema \
 
 ### Verify and commit
 
-- [ ] Run:
+- [x] Run:
 
 ```bash
 uv run pytest \
-  tests/test_codex_provider.py \
-  tests/test_codex_managed_runtime.py \
+  tests/providers/codex/test_provider.py \
+  tests/providers/codex/test_app_server.py \
   tests/test_architecture.py
 ```
 
 - [x] Run Ruff and `ty`, inspect every subprocess call for absolute argv and
   bounded output, then commit.
+
+**Evidence reconciliation, 2026-07-26:** Task 1 was committed in `3f59132`.
+Its current focused owners are `tests/providers/codex/test_provider.py` and
+`tests/providers/codex/test_app_server.py`; the complete Codex phase gate was
+closed in `c8b4780`.
 
 ## 4. Task 1A — Repository Namespace Cohesion
 

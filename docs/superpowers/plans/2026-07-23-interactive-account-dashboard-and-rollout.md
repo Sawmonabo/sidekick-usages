@@ -106,7 +106,8 @@ WSL, macOS arm64, and macOS x64.
 
 ---
 
-- **Status:** Approved; blocked on completion of the Claude phase
+- **Status:** Automated implementation and local gate complete;
+  cross-platform fixes and current-machine rollout pending
 - **Date:** 2026-07-23
 - **Repository:** `/home/sabossedgh/dev/sidekick-usages`
 - **Branch:** `develop`
@@ -208,67 +209,67 @@ The no-secret dashboard view contains:
 
 ### Tests first
 
-- [ ] In `tests/test_dashboard.py`, add one joined-snapshot test with
+- [x] In `tests/test_dashboard.py`, add one joined-snapshot test with
   independent Claude and Codex read-back, stable-ID usage, one stale metric,
   one actionable warning, and one unknown external row. Rename one saved
   account in the same scenario to prove labels are not identity.
-- [ ] In the same file, add one degraded-cache scenario for unavailable
+- [x] In the same file, add one degraded-cache scenario for unavailable
   supervisor and partial account failure. Prove cached metrics remain
   truthful, actions disable, and the read model cannot obtain credential
   authority.
-- [ ] Extend the existing architecture rule without adding another test
+- [x] Extend the existing architecture rule without adding another test
   function. Do not create separate model and service permutation suites.
-- [ ] Run the tests and confirm failure because the joined read model does not
+- [x] Run the tests and confirm failure because the joined read model does not
   exist.
 
 ### Implementation
 
-- [ ] Add immutable dashboard types and closed actionable states:
+- [x] Add immutable dashboard types and closed actionable states:
   `healthy`, `login_required`, `repair_required`,
   `setup_regeneration_required`, `metrics_stale`, `external_active`,
   `reconciliation_required`, `provider_unsupported`, and
   `service_unavailable`.
-- [ ] Join account index, selected state, service state, and persisted metrics
+- [x] Join account index, selected state, service state, and persisted metrics
   by stable account ID.
-- [ ] Read cached state through a passive, secret-free account index and one
+- [x] Read cached state through a passive, secret-free account index and one
   bulk decode of each usage and activity snapshot. Do not compose providers,
   HTTP, credential authorities, or maintenance before first paint.
-- [ ] Render cached state first, then start one short-lived global lookup
+- [x] Render cached state first, then start one short-lived global lookup
   worker. Inside that worker, submit every saved account across both providers
   to one bounded thread wave before awaiting any result. The measured worker
   cap must cover the current six-account population without creating one
   process, pool, or provider queue per account.
-- [ ] Give each account task one operation-scoped credential lease. Fetch
+- [x] Give each account task one operation-scoped credential lease. Fetch
   Codex usage and activity through that same lease, and submit Claude local
   activity as part of the same global wave.
-- [ ] Make pooled HTTP initialization and shutdown safe for concurrent account
+- [x] Make pooled HTTP initialization and shutdown safe for concurrent account
   tasks. Do not share unsynchronized lazy transport state or allocate a full
   transport stack per account.
-- [ ] Publish immutable, secret-free results independently as each account
+- [x] Publish immutable, secret-free results independently as each account
   completes. Preserve deterministic provider and account display order with a
   fixed ordinal, and isolate one account failure from every other result.
-- [ ] Let the worker owner serialize or batch snapshot updates. Lookup threads
+- [x] Let the worker owner serialize or batch snapshot updates. Lookup threads
   must not mutate shared account or snapshot documents.
-- [ ] Use provider read-back relation as the only active-account signal.
-- [ ] Insert a temporary external row only when actual provider identity is
+- [x] Use provider read-back relation as the only active-account signal.
+- [x] Insert a temporary external row only when actual provider identity is
   unknown to Sidekick. Give it no saved metrics or implicit label.
-- [ ] Preserve current exact usage and activity aggregation. A logical Claude
+- [x] Preserve current exact usage and activity aggregation. A logical Claude
   account with two authorities contributes once.
-- [ ] Keep stale last-known metrics visible with exact observation time and
+- [x] Keep stale last-known metrics visible with exact observation time and
   never silently promote them to current.
-- [ ] Return a safe cached snapshot when the supervisor is unavailable.
+- [x] Return a safe cached snapshot when the supervisor is unavailable.
   Actions remain disabled until readiness is restored.
 
 ### Verify and commit
 
-- [ ] Run the two dashboard-state scenarios plus existing usage, activity,
+- [x] Run the two dashboard-state scenarios plus existing usage, activity,
   selected-state, and architecture regressions they touch.
-- [ ] Record one timing trace proving all saved accounts begin in the same
+- [x] Record one timing trace proving all saved accounts begin in the same
   bounded wave before any result is awaited, a slow account does not delay
   completed rows, the single child is reaped, and peak memory stays within the
   supervisor gate. Extend the joined-snapshot scenario; do not add a separate
   concurrency test or performance matrix.
-- [ ] Run Ruff and `ty`, inspect representations and fixtures for secrets,
+- [x] Run Ruff and `ty`, inspect representations and fixtures for secrets,
   then commit.
 
 ## 4. Task 2 — Cursor-Aware Rich Wide and Narrow Rendering
@@ -277,42 +278,42 @@ The no-secret dashboard view contains:
 
 ### Tests first
 
-- [ ] Extend `tests/test_render.py` with one representative wide render that
+- [x] Extend `tests/test_render.py` with one representative wide render that
   contains both providers, exactly one cursor, one healthy row, one
   actionable warning, stale metrics, an external row, and footer progress.
-- [ ] Add one representative narrow render of the same state. Assert both
+- [x] Add one representative narrow render of the same state. Assert both
   preserve the existing masthead, panels, totals, and reset meaning while
   containing none of:
   `IN USE`, `ACTIVATING`, `MIGRATION REQUIRED`, `CURRENT`, or a second
   cursor.
-- [ ] Do not add a snapshot for every warning, provider focus, width
+- [x] Do not add a snapshot for every warning, provider focus, width
   boundary, or resize step. Existing rendering tests continue covering
   unchanged masthead and no-account behavior.
 
 ### Implementation
 
-- [ ] Split shared panel construction out of the near-800-line renderer before
+- [x] Split shared panel construction out of the near-800-line renderer before
   adding cursor behavior.
-- [ ] Reserve exactly two display cells for cursor or blank prefix before the
+- [x] Reserve exactly two display cells for cursor or blank prefix before the
   existing bullet in interactive renders.
-- [ ] Render cursor only in the focused provider.
-- [ ] Render row details only for actionable or degraded state. Never render a
+- [x] Render cursor only in the focused provider.
+- [x] Render row details only for actionable or degraded state. Never render a
   normal active badge.
-- [ ] Render switching, refresh, service setup, login wait, rollback, and
+- [x] Render switching, refresh, service setup, login wait, rollback, and
   completion progress only in the footer.
-- [ ] Render the concise key footer by default and a bounded help footer when
+- [x] Render the concise key footer by default and a bounded help footer when
   requested.
-- [ ] Preserve one-shot rendering with no cursor and its current exit status.
-- [ ] Keep display labels local to the CLI/render process. Do not add them to
+- [x] Preserve one-shot rendering with no cursor and its current exit status.
+- [x] Keep display labels local to the CLI/render process. Do not add them to
   supervisor messages or logs.
 
 ### Verify and commit
 
-- [ ] Run the two render scenarios plus existing unchanged branding, reset,
+- [x] Run the two render scenarios plus existing unchanged branding, reset,
   and activity render regressions.
 - [ ] Generate synthetic before/after wide and narrow captures and inspect
   alignment manually.
-- [ ] Run Ruff and `ty`, confirm module line limits, then commit.
+- [x] Run Ruff and `ty`, confirm module line limits, then commit.
 
 ## 5. Task 3 — Process-Isolated prompt_toolkit Input Controller
 
@@ -320,72 +321,72 @@ The no-secret dashboard view contains:
 
 ### Dependency gate
 
-- [ ] Refresh the primary-source dependency evidence immediately before
+- [x] Refresh the primary-source dependency evidence immediately before
   adoption. Record version, Python 3.14 import/runtime result, BSD license,
   wheel provenance, transitive `wcwidth`, release cadence, Linux/macOS
   behavior, and owned-code alternative in the approved design's dependency
   record.
-- [ ] Pin `prompt-toolkit==3.0.52` only if the refreshed evidence and local
+- [x] Pin `prompt-toolkit==3.0.52` only if the refreshed evidence and local
   Python 3.14 tests remain green. A changed current release requires an
   explicit design evidence update, not an unreviewed version substitution.
 
 ### Tests first
 
-- [ ] Extend `tests/test_dashboard.py` with one infrastructure-free controller
+- [x] Extend `tests/test_dashboard.py` with one infrastructure-free controller
   journey covering clamped movement, provider focus, preview-only movement,
   Esc restoration, Enter dispatch, refresh actions, help, and
   post-activation cursor state. Do not test key aliases separately when they
   map to the same action.
-- [ ] Fold process routing into Task 4's single CLI scenario. Do not add a
+- [x] Fold process routing into Task 4's single CLI scenario. Do not add a
   second import-routing test.
-- [ ] Leave real key decoding and terminal restoration to the two PTY
+- [x] Leave real key decoding and terminal restoration to the two PTY
   scenarios in Task 7; do not duplicate them with fake-input cases.
 
 ### Implementation
 
-- [ ] Add the direct dependency and regenerate `uv.lock` through the owning
+- [x] Add the direct dependency and regenerate `uv.lock` through the owning
   tool:
 
 ```bash
 uv add "prompt-toolkit==3.0.52"
 ```
 
-- [ ] Keep controller transitions infrastructure-free and deterministic.
-- [ ] Keep `prompt_toolkit` imports static in the initial top-level import
+- [x] Keep controller transitions infrastructure-free and deterministic.
+- [x] Keep `prompt_toolkit` imports static in the initial top-level import
   block of the dedicated interactive process graph. Do not add a function
   import, dynamic loader, forwarding module, or architecture exception.
-- [ ] After TTY checks and initial Rich render, call `os.execve` with the same
+- [x] After TTY checks and initial Rich render, call `os.execve` with the same
   absolute `sys.executable` to replace the launcher with the dedicated
   interactive entry point. Pass only safe routing options in argv; the new
   process re-reads persisted secret-free dashboard state.
-- [ ] Prove help, version, supervisor, worker, redirected output, explicit
+- [x] Prove help, version, supervisor, worker, redirected output, explicit
   `check`, and `--no-interactive` cannot reach the interactive import graph.
   If `execve` fails, restore the cursor below the cached frame before
   displaying the error.
-- [ ] Render Rich to an ANSI string in memory and present it through one
+- [x] Render Rich to an ANSI string in memory and present it through one
   prompt_toolkit application. Invalidation redraws the current region rather
   than appending complete dashboards.
-- [ ] Keep alternate-screen behavior off so the current dashboard remains in
+- [x] Keep alternate-screen behavior off so the current dashboard remains in
   normal terminal scrollback after exit.
-- [ ] Let prompt_toolkit own raw mode, key decoding, resize notification,
+- [x] Let prompt_toolkit own raw mode, key decoding, resize notification,
   signal-safe cleanup, and terminal restoration.
-- [ ] Never execute provider work inside a key binding. Enqueue one typed
+- [x] Never execute provider work inside a key binding. Enqueue one typed
   action and update the footer immediately.
-- [ ] Ignore Enter and Esc while one activation is in flight. `q` exits
+- [x] Ignore Enter and Esc while one activation is in flight. `q` exits
   normally and Ctrl-C exits with code 130; neither kills a post-journal
   provider operation. The supervisor completes or recovers it, and the next
   dashboard launch reads the resulting provider state.
-- [ ] Restore terminal state in one outer `finally` path before translating
+- [x] Restore terminal state in one outer `finally` path before translating
   any error to a process exit.
 
 ### Verify and commit
 
-- [ ] Run the controller journey and Task 4's CLI routing scenario plus
+- [x] Run the controller journey and Task 4's CLI routing scenario plus
   existing render, help, and smoke regressions they touch.
-- [ ] Run `uv run python -X importtime -m sidekick_usages --help` and inspect
+- [x] Run `uv run python -X importtime -m sidekick_usages --help` and inspect
   that prompt_toolkit is absent. Inspect the import graph to prove only the
   dedicated interactive entry point reaches it.
-- [ ] Run packaging, Ruff, `ty`, and architecture checks, then commit.
+- [x] Run packaging, Ruff, `ty`, and architecture checks, then commit.
 
 ## 6. Task 4 — Interactive Default Invocation and Scriptable `use`
 
@@ -393,50 +394,50 @@ uv add "prompt-toolkit==3.0.52"
 
 ### Tests first
 
-- [ ] Extend `tests/test_dashboard.py` with one CLI routing test proving TTY
+- [x] Extend `tests/test_dashboard.py` with one CLI routing test proving TTY
   default paints cached state before `execve`, `--only` constrains focus, and
   redirected input/output, `check`, `--no-interactive`, help, and supervisor
   startup never cross the interactive entry point and retain their intended
   one-shot behavior and exit calculation.
-- [ ] Add one scriptable command test in the same file for the exact syntax:
+- [x] Add one scriptable command test in the same file for the exact syntax:
 
 ```text
 sidekick-usages use <provider> <label>
 ```
 
-- [ ] In that command test, prove `use` never prompts, returns one actionable
+- [x] In that command test, prove `use` never prompts, returns one actionable
   failure when preparation is required, and accepts
   `sidekick-usages use claude <label> --allow-remote-control-disconnect`
   only for a proven Remote Control disruption.
-- [ ] Do not build account-count, service-error, provider-error, or exit-code
+- [x] Do not build account-count, service-error, provider-error, or exit-code
   matrices already covered by the controller and provider boundaries.
 
 ### Implementation
 
-- [ ] Add root `--no-interactive` without moving behavior into the
+- [x] Add root `--no-interactive` without moving behavior into the
   registration-only Typer root.
-- [ ] Make default dispatch exact:
+- [x] Make default dispatch exact:
   - both stdin and stdout TTY and interactive enabled: cached first paint then
     interactive controller;
   - otherwise: current one-shot usage workflow.
-- [ ] Keep explicit `check` permanently one-shot.
-- [ ] Register `use` through a cohesive command module and a statically
+- [x] Keep explicit `check` permanently one-shot.
+- [x] Register `use` through a cohesive command module and a statically
   imported typed context boundary.
-- [ ] Resolve provider plus exact label locally to a stable account ID, then
+- [x] Resolve provider plus exact label locally to a stable account ID, then
   send only provider and ID to the supervisor.
-- [ ] Map service and provider events to footer states. Update selected
+- [x] Map service and provider events to footer states. Update selected
   state only from the completed provider-verified event.
-- [ ] After successful activation, keep the cursor on the newly active row.
-- [ ] On failure, restore cursor to actual provider read-back and preserve the
+- [x] After successful activation, keep the cursor on the newly active row.
+- [x] On failure, restore cursor to actual provider read-back and preserve the
   other provider's state.
-- [ ] Return exact actionable commands from non-interactive failures.
+- [x] Return exact actionable commands from non-interactive failures.
 
 ### Verify and commit
 
-- [ ] Run the two CLI scenarios plus existing usage, help, architecture,
+- [x] Run the two CLI scenarios plus existing usage, help, architecture,
   smoke, and render regressions they touch.
-- [ ] Run Ruff and `ty`.
-- [ ] Inspect command help ordering and one-shot output compatibility, then
+- [x] Run Ruff and `ty`.
+- [x] Inspect command help ordering and one-shot output compatibility, then
   commit.
 
 ## 7. Task 5 — Guided Automatic Service Setup
@@ -445,46 +446,46 @@ sidekick-usages use <provider> <label>
 
 ### Tests first
 
-- [ ] Extend `tests/test_dashboard.py` with one guided-setup journey: render
+- [x] Extend `tests/test_dashboard.py` with one guided-setup journey: render
   first, ask once, install the user-level service, verify readiness, resume
   the original activation, and skip repeat confirmation. Assert no
   administrator command, password prompt, shell edit, or vendor executable
   mutation occurs.
-- [ ] Add one refusal/failure journey in the same file proving decline or
+- [x] Add one refusal/failure journey in the same file proving decline or
   bounded setup failure leaves the dashboard usable, preserves state, and
   gives one corrective action; non-interactive `use` never installs or
   prompts.
-- [ ] Reuse foundation platform-backend tests. Do not repeat Linux, WSL,
+- [x] Reuse foundation platform-backend tests. Do not repeat Linux, WSL,
   macOS, native Windows, stale-version, and timeout permutations here.
 
 ### Implementation
 
-- [ ] On the first action requiring an absent supervisor, keep the dashboard
+- [x] On the first action requiring an absent supervisor, keep the dashboard
   visible and explain that one small per-user service maintains accounts and
   updates supported sessions.
-- [ ] Ask once using the interactive controller.
-- [ ] On approval, call the existing `DaemonManager` directly through a typed
+- [x] Ask once using the interactive controller.
+- [x] On approval, call the existing `DaemonManager` directly through a typed
   CLI service; do not shell out to the public Sidekick command.
-- [ ] If a compatible service is already installed but unavailable, attempt a
+- [x] If a compatible service is already installed but unavailable, attempt a
   bounded user-level restart and readiness check before offering reinstall.
   Preserve cached metrics and the dashboard throughout.
-- [ ] Stream sanitized installation, start, socket, provider, Codex broker,
+- [x] Stream sanitized installation, start, socket, provider, Codex broker,
   maintenance, and restart progress to the footer.
-- [ ] Do not detect, read, or retire an earlier Sidekick schedule here.
+- [x] Do not detect, read, or retire an earlier Sidekick schedule here.
   Live guided setup on this machine runs only after Task 9 has completed the
   clean-break preinstall transition.
-- [ ] Continue the original activation automatically after readiness. Do not
+- [x] Continue the original activation automatically after readiness. Do not
   require another Enter.
-- [ ] On failure, preserve the dashboard and show one exact corrective action.
-- [ ] Persist only successful setup acknowledgement tied to the installed
+- [x] On failure, preserve the dashboard and show one exact corrective action.
+- [x] Persist only successful setup acknowledgement tied to the installed
   service protocol generation. Re-prompt after a real incompatible reinstall,
   not every launch.
 
 ### Verify and commit
 
-- [ ] Run the two guided-setup scenarios plus existing daemon lifecycle,
+- [x] Run the two guided-setup scenarios plus existing daemon lifecycle,
   interactive CLI, and output-safety regressions they touch.
-- [ ] Run Ruff, `ty`, and architecture checks, then commit.
+- [x] Run Ruff, `ty`, and architecture checks, then commit.
 
 ## 8. Task 6 — Managed Migration Command, Warnings, and Doctor
 
@@ -492,21 +493,21 @@ sidekick-usages use <provider> <label>
 
 ### Tests first
 
-- [ ] Extend `tests/test_dashboard.py` with one migration command journey for
+- [x] Extend `tests/test_dashboard.py` with one migration command journey for
   `sidekick-usages migrate managed-auth`: secret-safe preview, resumable
   provider ordering, one-account failure continuation, setup-token
   preservation, independent Codex login, and final all-account proof.
-- [ ] Extend one existing doctor/render scenario with representative
+- [x] Extend one existing doctor/render scenario with representative
   login-required and reconciliation warnings plus separate service,
   authority, native relation, metrics, queue, and journal health. Assert
   warnings are account-specific and not persistent selection badges.
-- [ ] Do not snapshot every warning sentence or create separate browser,
+- [x] Do not snapshot every warning sentence or create separate browser,
   cancellation, provider, and doctor-state matrices; provider plans already
   prove those transitions.
 
 ### Implementation
 
-- [ ] Add a resumable managed-auth migration coordinator that:
+- [x] Add a resumable managed-auth migration coordinator that:
   1. validates the schema-version-three account index;
   2. ensures the service is installed and ready;
   3. migrates each Codex account independently;
@@ -514,24 +515,24 @@ sidekick-usages use <provider> <label>
   5. preserves account-specific manual action without stopping later work;
   6. verifies all authorities and due state; and
   7. reports remaining actions without secrets.
-- [ ] Reject an earlier Sidekick layout rather than reading or converting it.
+- [x] Reject an earlier Sidekick layout rather than reading or converting it.
   Managed-auth migration changes only accounts recreated in the current
   clean-break schema.
-- [ ] Keep this command interactive when provider login is required. It may
+- [x] Keep this command interactive when provider login is required. It may
   accept already-authorized continuation but never accepts tokens as command
   arguments.
-- [ ] Replace current generic token-expired copy with authority-specific
+- [x] Replace current generic token-expired copy with authority-specific
   actions. Do not display a persistent migration badge.
-- [ ] Ensure warnings do not displace cursor meaning and do not imply stale
+- [x] Ensure warnings do not displace cursor meaning and do not imply stale
   metrics are current.
-- [ ] Expand doctor through focused diagnostic modules rather than extending
+- [x] Expand doctor through focused diagnostic modules rather than extending
   the current 756-line `doctor.py`.
 
 ### Verify and commit
 
-- [ ] Run the two migration/diagnostic scenarios plus existing provider and
+- [x] Run the two migration/diagnostic scenarios plus existing provider and
   persistence migration and help regressions they touch.
-- [ ] Run Ruff and `ty`, inspect output for real identities and secrets, then
+- [x] Run Ruff and `ty`, inspect output for real identities and secrets, then
   commit.
 
 ## 9. Task 7 — Pseudoterminal, Performance, Packaging, and Platform Gates
@@ -540,61 +541,61 @@ sidekick-usages use <provider> <label>
 
 ### Pseudoterminal coverage
 
-- [ ] Add `tests/pty_support.py` using standard-library `pty`, selectors, and
+- [x] Add `tests/pty_support.py` using standard-library `pty`, selectors, and
   subprocess on Unix. Do not add `pexpect`.
-- [ ] In `tests/test_dashboard_pty.py`, add one main PTY journey covering
+- [x] In `tests/test_dashboard_pty.py`, add one main PTY journey covering
   first paint, representative movement, Tab, Enter, Esc, refresh, help,
   resize to narrow and back, and normal exit without duplicate full-dashboard
   output.
-- [ ] In the same file, add one forced-cleanup PTY journey that interrupts
+- [x] In the same file, add one forced-cleanup PTY journey that interrupts
   during a service event and proves Ctrl-C exit plus restored echo and
   canonical mode after a child or supervisor failure.
-- [ ] Do not add separate PTY tests for key aliases, no-color, every resize,
+- [x] Do not add separate PTY tests for key aliases, no-color, every resize,
   every failure source, or behavior already proven in the pure controller.
 - [ ] Run PTY integration on Linux and both macOS architectures in CI.
-- [ ] Test WSL service and rescue generation automatically; retain real WSL
+- [x] Test WSL service and rescue generation automatically; retain real WSL
   stop/start for Task 9.
 
 ### Performance coverage
 
-- [ ] Add `packaging/benchmark_dashboard.py` as a release measurement, not a
+- [x] Add `packaging/benchmark_dashboard.py` as a release measurement, not a
   pytest suite. Use one representative synthetic account count matching the
   current machine and one bounded larger snapshot.
-- [ ] Measure one fresh-process cached first paint with an explicit deadline
+- [x] Measure one fresh-process cached first paint with an explicit deadline
   and require no more than 250 ms. Do not create a repeated subprocess loop.
-- [ ] Measure cursor input to visible render in one bounded in-process trace
+- [x] Measure cursor input to visible render in one bounded in-process trace
   and target p95 no more than 50 ms.
-- [ ] Permit exactly one short-lived global lookup-worker child per refresh,
+- [x] Permit exactly one short-lived global lookup-worker child per refresh,
   prove it is reaped before exit, and never fork per account. Record peak RSS
   from the same run; do not add a process-count or account-count performance
   matrix.
-- [ ] In that trace, prove the current six saved accounts are all submitted
+- [x] In that trace, prove the current six saved accounts are all submitted
   before awaiting a result, a fast completion is visible before a blocked
   account, and the final rows retain deterministic order.
-- [ ] Measure steady supervisor RSS, idle CPU, worker exit, and Codex callback
+- [x] Measure steady supervisor RSS, idle CPU, worker exit, and Codex callback
   isolation using the foundation gates.
-- [ ] Fail the architecture gate if prompt_toolkit enters supervisor,
+- [x] Fail the architecture gate if prompt_toolkit enters supervisor,
   non-interactive, or help imports.
 
 ### Packaging and documentation
 
-- [ ] Update `pyproject.toml`, `uv.lock`, wheel smoke, exact distribution
+- [x] Update `pyproject.toml`, `uv.lock`, wheel smoke, exact distribution
   inspection, and generated Homebrew dependency resources for
   prompt_toolkit 3.0.52 and `wcwidth`.
 - [ ] Update Linux, macOS, and Windows CI so required Unix platforms run PTY
   tests while native Windows proves feature-disabled behavior.
-- [ ] Update README command examples, keys, service setup, session coverage,
+- [x] Update README command examples, keys, service setup, session coverage,
   unsupported modes, and uninstall behavior.
 - [ ] Add synthetic before/after terminal captures to the completion record.
 
 ### Verify and commit
 
-- [ ] Run:
+- [x] Run:
 
 ```bash
 uv run pytest --cov=sidekick_usages
-uv run ruff check src/ tests/
-uv run ty check src/ tests/
+uv run ruff check src/ tests/ packaging/
+uv run ty check src/ tests/ packaging/
 uv run python packaging/check_architecture.py
 uv run pre-commit run --all-files
 npm ci
@@ -604,9 +605,9 @@ uv build
 uv run python packaging/smoke_wheel.py --build
 ```
 
-- [ ] Inspect the wheel for all three entry points, prompt_toolkit, `wcwidth`,
+- [x] Inspect the wheel for all three entry points, prompt_toolkit, `wcwidth`,
   service templates, and absence of caches or credentials.
-- [ ] Record benchmark environment and exact results in the completion record.
+- [x] Record benchmark environment and exact results in the completion record.
 - [ ] Commit the gate and documentation changes.
 
 ## 10. Task 8 — Release Acceptance Evidence Review
@@ -615,17 +616,28 @@ This is a verification-only gate. It creates no
 `test_global_account_selection_acceptance.py`, repeats no full suite merely
 for test count, and requires no empty commit.
 
-- [ ] Map all 24 design acceptance gates to the smallest existing focused
+- [x] Map all 24 design acceptance gates to the smallest existing focused
   test, static check, benchmark, packaging check, or authorized live rollout
   step.
-- [ ] Confirm security and recovery invariants have automated evidence while
+- [x] Confirm security and recovery invariants have automated evidence while
   real provider-session and current-machine behaviors remain in Task 9.
-- [ ] Confirm no wrapper, alias, shell function, PATH shim, symlink
+- [x] Confirm no wrapper, alias, shell function, PATH shim, symlink
   replacement, or shell edit can be produced by the implementation.
-- [ ] If a critical gate has no evidence, add one focused assertion to the
+- [x] If a critical gate has no evidence, add one focused assertion to the
   nearest existing task test. Do not add a parallel acceptance layer.
-- [ ] Run the complete local gate once from clean test state. Rerun only a
+- [x] Run the complete local gate once from clean test state. Rerun only a
   failed or nondeterministic focused check, not the entire suite by default.
+
+**Automated evidence reconciliation, 2026-07-26:** Tasks 1-6 and the focused
+Task 7 artifact, PTY, performance, packaging, and architecture behavior are
+implemented. The serialized local gate is green at `d669799`: 433 tests
+passed, seven platform cases skipped, static and security checks passed, and
+the exact wheel passed. The
+[completion evidence](../completion/2026-07-23-interactive-global-account-selection.md)
+maps all 24 gates without claiming cross-platform CI, provider-session checks,
+current-machine migration, or live Claude selection. The macOS Arm PTY failure
+and expected Windows portability issue keep the platform and final release
+gates open.
 
 ## 11. Task 9 — Current-Machine Migration and Live Verification
 
