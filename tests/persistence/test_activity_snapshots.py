@@ -13,6 +13,7 @@ from sidekick_usages.core.models import (
     Account,
     AccountTokenActivitySnapshot,
     CodexCredentials,
+    ProviderTokenActivitySnapshot,
     TokenActivitySummary,
 )
 from sidekick_usages.core.types import (
@@ -78,21 +79,41 @@ def _store(tmp_path: Path) -> ActivitySnapshotStore:
 def test_snapshots_round_trip_by_hashed_identity_without_account_metadata(
     tmp_path: Path,
 ) -> None:
-    """Distinct account snapshots persist without labels or raw identities."""
+    """Account and provider scopes round-trip without private identity."""
     store = _store(tmp_path)
     first = _account("first-label", "acct_private_first")
     second = _account("second-label", "acct_private_second")
     first_snapshot = _snapshot(first, 7_449_473_297, date(2026, 4, 7))
     second_snapshot = _snapshot(second, 900_000_000, date(2026, 3, 30))
-
-    assert store.save(first_snapshot) == first_snapshot
-    assert store.save(second_snapshot) == second_snapshot
+    provider_snapshot = ProviderTokenActivitySnapshot(
+        provider_id=ProviderId.CLAUDE,
+        summary=TokenActivitySummary(
+            total_tokens=903_464_085,
+            scope=TokenActivityScope.LOCAL_INSTALLATION,
+            since=date(2025, 12, 28),
+        ),
+        fetched_at=_FETCHED_AT,
+    )
+    assert store.save_many(
+        (first_snapshot, second_snapshot),
+        (provider_snapshot,),
+    ) == (
+        (first_snapshot, second_snapshot),
+        (provider_snapshot,),
+    )
     assert store.load(first) == first_snapshot
     assert store.load(second) == second_snapshot
+    account_snapshots, provider_snapshots = store.load_all((first, second))
+    assert dict(account_snapshots) == {
+        first.account_id: first_snapshot,
+        second.account_id: second_snapshot,
+    }
+    assert provider_snapshots == (provider_snapshot,)
 
     persisted = store.path.read_text(encoding="utf-8")
     document = json.loads(persisted)
     assert len(document["accounts"]) == _ACCOUNT_COUNT
+    assert tuple(document["providers"]) == (ProviderId.CLAUDE.value,)
     assert all(len(key) == _SHA256_HEX_LENGTH for key in document["accounts"])
     for private_value in (
         "first-label",

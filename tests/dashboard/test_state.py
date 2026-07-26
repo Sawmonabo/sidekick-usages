@@ -46,6 +46,7 @@ from tests.fakes.dashboard.session.models import (
 from tests.fakes.dashboard.startup import exercise_startup_reconciliation
 from tests.fakes.dashboard.state import (
     CLAUDE_ACTIVE_ACCOUNT_ID,
+    CLAUDE_ACTIVITY_TOTAL,
     CLAUDE_PREVIEW_ACCOUNT_ID,
     CODEX_SAVED_ACCOUNT_ID,
     EXTERNAL_PROVIDER_IDENTITY,
@@ -108,6 +109,9 @@ def test_cached_dashboard_joins_stable_ids_without_credentials(
         DashboardActionState.EXTERNAL_ACTIVE,
         DashboardActionState.SERVICE_UNAVAILABLE,
     )
+    assert claude.activity is not None
+    assert claude.activity.summary.total_tokens == CLAUDE_ACTIVITY_TOTAL
+    assert claude.activity.observed_at == OBSERVED_AT
 
     assert not dashboard.service.ready
     assert not dashboard.service.compatible

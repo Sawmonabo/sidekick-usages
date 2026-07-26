@@ -75,14 +75,6 @@ def interactive_dashboard_state(
                     report=_report(reset_at, 0, 51, plan="max"),
                     observed_at=observed_at,
                 ),
-                activity=DashboardActivity(
-                    summary=TokenActivitySummary(
-                        total_tokens=903_464_085,
-                        scope=TokenActivityScope.LOCAL_INSTALLATION,
-                        since=date(2025, 12, 28),
-                    ),
-                    observed_at=observed_at,
-                ),
             ),
             DashboardAccount(
                 account_id=CLAUDE_WARNING_ID,
@@ -93,6 +85,14 @@ def interactive_dashboard_state(
                 active=False,
                 states=(DashboardActionState.LOGIN_REQUIRED,),
             ),
+        ),
+        activity=DashboardActivity(
+            summary=TokenActivitySummary(
+                total_tokens=903_464_085,
+                scope=TokenActivityScope.LOCAL_INSTALLATION,
+                since=date(2025, 12, 28),
+            ),
+            observed_at=observed_at,
         ),
     )
     codex = DashboardProvider(

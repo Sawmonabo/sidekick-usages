@@ -323,6 +323,28 @@ def test_interactive_wide_render_preserves_dashboard_contract() -> None:
     assert "since Apr 7, 2026" in out
     assert "3h 50m" in out
     assert not any(label in out for label in FORBIDDEN_SELECTION_LABELS)
+    lines = out.splitlines()
+    work_row = next(
+        position
+        for position, rendered in enumerate(lines)
+        if "work@example.test" in rendered
+    )
+    work_warning = next(
+        position
+        for position, rendered in enumerate(lines)
+        if "Metrics last updated" in rendered
+    )
+    personal_row = next(
+        position
+        for position, rendered in enumerate(lines)
+        if "personal@example.test" in rendered
+    )
+    personal_warning = next(
+        position
+        for position, rendered in enumerate(lines)
+        if "Complete the official Claude Code login" in rendered
+    )
+    assert work_row < work_warning < personal_row < personal_warning
     assert max(len(line) for line in out.splitlines()) <= (
         _INTERACTIVE_WIDE_WIDTH
     )
@@ -380,7 +402,7 @@ def test_interactive_wide_render_preserves_dashboard_contract() -> None:
     assert fragment_list_to_text(to_formatted_text(ANSI(colored))) == plain
     assert "\x1b[31m" not in plain
     assert "\N{REPLACEMENT CHARACTER}" in plain
-    assert f"{ANSI_HEAT_CYAN}51%{ANSI_RESET}" in colored
+    assert f"{ANSI_HEAT_CYAN} 51%  {ANSI_RESET}" in colored
     assert f"{ANSI_HEAT_RED}99%{ANSI_RESET}" not in colored
     assert f"{ANSI_RESET_TEXT}3h 50m{ANSI_RESET}" in colored
     assert dashboard_color_enabled({}, terminal=True)

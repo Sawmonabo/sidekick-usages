@@ -122,6 +122,8 @@ def _finish(
 def _dashboard_activity(
     provider: DashboardProvider,
 ) -> TokenActivitySummary | None:
+    if provider.activity is not None:
+        return provider.activity.summary
     observations = tuple(
         row.activity
         for row in provider.rows
@@ -133,11 +135,8 @@ def _dashboard_activity(
     if len(scopes) != 1:
         raise ValueError("Dashboard provider activity scopes must agree.")
     scope = next(iter(scopes))
-    if scope is TokenActivityScope.LOCAL_INSTALLATION:
-        return max(
-            observations,
-            key=lambda observation: observation.observed_at,
-        ).summary
+    if scope is not TokenActivityScope.ACCOUNT:
+        raise ValueError("Dashboard account activity scope is invalid.")
     since_values = tuple(
         observation.summary.since for observation in observations
     )

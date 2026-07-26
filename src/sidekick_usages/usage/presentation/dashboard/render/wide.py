@@ -169,12 +169,10 @@ def _provider_content_lines(
                 reference_time,
             )
         )
-    for row in provider.rows:
-        safe_label = sanitize_terminal_text(row_label(row))
         lines.extend(
-            plain_line(
-                f"⚠ {safe_label}: {sanitize_terminal_text(detail)}",
-                DashboardTextStyle.WARNING,
+            _account_warning_line(
+                detail,
+                widths,
             )
             for detail in row_details(row, reference_time)
         )
@@ -338,6 +336,20 @@ def _reset_row(
     return _join_cells(cells, widths, alignments)
 
 
+def _account_warning_line(
+    detail: str,
+    widths: list[int],
+) -> DashboardLine:
+    prefix_width = widths[0] + len(TABLE_CELL_GAP)
+    return concat_lines(
+        plain_line(" " * prefix_width),
+        plain_line(
+            f"⚠ {sanitize_terminal_text(detail)}",
+            DashboardTextStyle.WARNING,
+        ),
+    )
+
+
 def _table_layout(
     name_width: int,
     primary: list[str],
@@ -375,22 +387,14 @@ def _join_cells(
 
 
 def _rstrip_line(rendered: DashboardLine) -> DashboardLine:
-    trailing = len(rendered.plain) - len(rendered.plain.rstrip())
-    if trailing == 0:
-        return rendered
-    return _slice_line(rendered, len(rendered.plain) - trailing)
-
-
-def _slice_line(rendered: DashboardLine, end: int) -> DashboardLine:
-    remaining = end
-    parts = []
-    for item in rendered.segments:
-        if remaining <= 0:
-            break
-        value = item.value[:remaining]
+    parts = list(rendered.segments)
+    while parts and parts[-1].style is DashboardTextStyle.PLAIN:
+        item = parts[-1]
+        value = item.value.rstrip()
         if value:
-            parts.append(segment(value, item.style))
-        remaining -= len(value)
+            parts[-1] = segment(value)
+            break
+        parts.pop()
     return DashboardLine(tuple(parts))
 
 
@@ -407,7 +411,8 @@ def _utilization_tile(window: UsageWindow | None) -> DashboardLine:
     if window is None:
         return DashboardLine()
     percent = round(window.utilization)
-    return plain_line(f"{percent}%", heat_style(percent))
+    value = f"{percent}%".center(PANEL_TILE_WIDTH)
+    return plain_line(value, heat_style(percent))
 
 
 def _reset_tile(
@@ -466,13 +471,11 @@ def _panel_required_width(
     primary, grouped = panel_columns(reports)
     widths, _alignments = _table_layout(name_width, primary, grouped)
     table_width = sum(widths) + len(TABLE_CELL_GAP) * (len(widths) - 1)
+    warning_prefix_width = widths[0] + len(TABLE_CELL_GAP)
     warning_width = max(
         (
-            cell_width(
-                "⚠ "
-                f"{sanitize_terminal_text(row_label(row))}: "
-                f"{sanitize_terminal_text(detail)}"
-            )
+            warning_prefix_width
+            + cell_width(f"⚠ {sanitize_terminal_text(detail)}")
             for row in provider.rows
             for detail in row_details(row, reference_time)
         ),

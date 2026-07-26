@@ -189,13 +189,14 @@ class UsageCheckService:
             readings,
             reference_time,
         )
-        contributions = self._activity.complete_accounts(
+        contributions, local_readings = self._activity.complete(
             accounts,
             {
                 account_id: reading.activity
                 for account_id, reading in readings.items()
             },
             activity_allowed,
+            local_readings,
             reference_time,
         )
         ordered = tuple(

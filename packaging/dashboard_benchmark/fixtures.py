@@ -93,7 +93,8 @@ def seed_cached_dashboard(
             for ordinal, account in enumerate(accounts)
             if account.provider_id is ProviderId.CODEX
             and account.provider_identity is not None
-        )
+        ),
+        (),
     )
 
 

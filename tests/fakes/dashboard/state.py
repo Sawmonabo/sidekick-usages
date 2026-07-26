@@ -1,7 +1,7 @@
 """Reusable cached and controller dashboard state."""
 
 from dataclasses import replace
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from sidekick_usages import __version__
 from sidekick_usages.core.accounts.models import (
@@ -19,6 +19,7 @@ from sidekick_usages.core.accounts.types import (
 from sidekick_usages.core.models import (
     AccountTokenActivitySnapshot,
     AccountUsageSnapshot,
+    ProviderTokenActivitySnapshot,
     TokenActivitySummary,
     UsageReport,
     UsageWindow,
@@ -68,6 +69,7 @@ CLAUDE_PREVIEW_ACCOUNT_ID = SidekickAccountId(
 CLAUDE_ACTIVE_ACCOUNT_ID = SidekickAccountId(
     "44444444-4444-4444-8444-444444444444"
 )
+CLAUDE_ACTIVITY_TOTAL = 1_076_418_075
 CODEX_SAVED_ACCOUNT_ID = SidekickAccountId(
     "55555555-5555-4555-8555-555555555555"
 )
@@ -127,16 +129,29 @@ def seed_cached_dashboard(
             observed_at,
         )
     )
-    ActivitySnapshotStore(paths.activity_snapshots).save(
-        AccountTokenActivitySnapshot(
-            provider_id=ProviderId.CODEX,
-            provider_account_id=VALID_PROVIDER_IDENTITY,
-            summary=TokenActivitySummary(
-                total_tokens=9_617_297_075,
-                scope=TokenActivityScope.ACCOUNT,
+    ActivitySnapshotStore(paths.activity_snapshots).save_many(
+        (
+            AccountTokenActivitySnapshot(
+                provider_id=ProviderId.CODEX,
+                provider_account_id=VALID_PROVIDER_IDENTITY,
+                summary=TokenActivitySummary(
+                    total_tokens=9_617_297_075,
+                    scope=TokenActivityScope.ACCOUNT,
+                ),
+                fetched_at=observed_at,
             ),
-            fetched_at=observed_at,
-        )
+        ),
+        (
+            ProviderTokenActivitySnapshot(
+                provider_id=ProviderId.CLAUDE,
+                summary=TokenActivitySummary(
+                    total_tokens=CLAUDE_ACTIVITY_TOTAL,
+                    scope=TokenActivityScope.LOCAL_INSTALLATION,
+                    since=date(2025, 12, 28),
+                ),
+                fetched_at=observed_at,
+            ),
+        ),
     )
     selected = SelectedStateStore(paths.selected_state)
     selected.save(

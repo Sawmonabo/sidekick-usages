@@ -1,6 +1,7 @@
 """Application policy for scoped provider token activity."""
 
 from collections.abc import Mapping
+from dataclasses import replace
 from datetime import date, datetime
 from typing import Protocol
 
@@ -11,6 +12,7 @@ from sidekick_usages.core.accounts.models import (
 from sidekick_usages.core.accounts.types import SidekickAccountId
 from sidekick_usages.core.models import (
     AccountTokenActivitySnapshot,
+    ProviderTokenActivitySnapshot,
     TokenActivityReading,
     TokenActivitySummary,
     TokenActivityUnavailable,
@@ -49,7 +51,7 @@ from sidekick_usages.usage.models import (
     TokenActivityIssue,
     UnavailableTokenActivity,
 )
-from sidekick_usages.usage.ports import AccountTokenActivitySnapshots
+from sidekick_usages.usage.ports import TokenActivitySnapshots
 
 _MAX_TOKEN_COUNT = 9_223_372_036_854_775_807
 
@@ -84,7 +86,7 @@ class TokenActivityCollector:
         http: HttpClient,
         local_sources: Mapping[ProviderId, LocalTokenActivitySource],
         account_sources: Mapping[ProviderId, AccountTokenActivitySource],
-        snapshots: AccountTokenActivitySnapshots | None = None,
+        snapshots: TokenActivitySnapshots | None = None,
     ) -> None:
         """Bind collection to validated provider source mappings."""
         self._http = http
@@ -160,7 +162,7 @@ class TokenActivityCollector:
             return self._scope_issue(account.account.label)
         return reading
 
-    def complete_accounts(
+    def complete(
         self,
         accounts: tuple[SavedAccount, ...],
         observations: Mapping[
@@ -168,9 +170,13 @@ class TokenActivityCollector:
             ActivityObservation | None,
         ],
         fetch_allowed: Mapping[SidekickAccountId, bool],
+        local_readings: Mapping[ProviderId, LocalActivityReading],
         reference_time: datetime,
-    ) -> dict[SidekickAccountId, AccountActivityContribution]:
-        """Finalize account observations through one snapshot batch."""
+    ) -> tuple[
+        dict[SidekickAccountId, AccountActivityContribution],
+        dict[ProviderId, LocalActivityReading],
+    ]:
+        """Finalize account and provider observations in one batch."""
         selected = tuple(
             account
             for account in accounts
@@ -192,28 +198,47 @@ class TokenActivityCollector:
                 issues[account_id].append(observation)
             elif isinstance(observation, TokenActivitySummary):
                 summaries[account_id] = observation
-                snapshot = self._activity_snapshot(
+                snapshot = self._account_snapshot(
                     account,
                     observation,
                     reference_time,
                 )
                 if snapshot is not None:
                     pending[account_id] = snapshot
-        self._save_current(pending, summaries, issues, labels)
+        provider_pending = {
+            provider_id: ProviderTokenActivitySnapshot(
+                provider_id=provider_id,
+                summary=reading.observation,
+                fetched_at=reference_time,
+            )
+            for provider_id, reading in local_readings.items()
+            if isinstance(reading.observation, TokenActivitySummary)
+        }
+        durable_local = self._save_current(
+            pending,
+            provider_pending,
+            summaries,
+            issues,
+            labels,
+            local_readings,
+        )
         missing = tuple(
             account
             for account in selected
             if account.account_id not in summaries
         )
         self._load_retained(missing, summaries, issues)
-        return {
-            account.account_id: AccountActivityContribution(
-                account_id=account.account_id,
-                summary=summaries.get(account.account_id),
-                issues=tuple(issues[account.account_id]),
-            )
-            for account in selected
-        }
+        return (
+            {
+                account.account_id: AccountActivityContribution(
+                    account_id=account.account_id,
+                    summary=summaries.get(account.account_id),
+                    issues=tuple(issues[account.account_id]),
+                )
+                for account in selected
+            },
+            durable_local,
+        )
 
     def aggregate(
         self,
@@ -269,6 +294,7 @@ class TokenActivityCollector:
         return CompleteTokenActivity(
             provider_id=reading.provider_id,
             summary=observation,
+            issues=reading.issues,
         )
 
     @classmethod
@@ -367,29 +393,62 @@ class TokenActivityCollector:
 
     def _save_current(
         self,
-        pending: Mapping[
+        account_pending: Mapping[
             SidekickAccountId,
             AccountTokenActivitySnapshot,
+        ],
+        provider_pending: Mapping[
+            ProviderId,
+            ProviderTokenActivitySnapshot,
         ],
         summaries: dict[SidekickAccountId, TokenActivitySummary],
         issues: dict[SidekickAccountId, list[TokenActivityIssue]],
         labels: Mapping[SidekickAccountId, AccountLabel],
-    ) -> None:
-        if self._snapshots is None or not pending:
-            return
-        account_ids = tuple(pending)
+        local_readings: Mapping[ProviderId, LocalActivityReading],
+    ) -> dict[ProviderId, LocalActivityReading]:
+        durable_local = dict(local_readings)
+        if self._snapshots is None or (
+            not account_pending and not provider_pending
+        ):
+            return durable_local
+        account_ids = tuple(account_pending)
+        provider_ids = tuple(provider_pending)
         try:
-            durable = self._snapshots.save_many(tuple(pending.values()))
+            durable_accounts, durable_providers = self._snapshots.save_many(
+                tuple(account_pending.values()),
+                tuple(provider_pending.values()),
+            )
         except ActivitySnapshotError as error:
             for account_id in account_ids:
                 issues[account_id].append(
                     self._issue(error, labels[account_id])
                 )
-            return
-        for account_id, snapshot in zip(account_ids, durable, strict=True):
+            persistence_issue = self._issue(error)
+            for provider_id in provider_ids:
+                reading = durable_local[provider_id]
+                durable_local[provider_id] = replace(
+                    reading,
+                    issues=(*reading.issues, persistence_issue),
+                )
+            return durable_local
+        for account_id, snapshot in zip(
+            account_ids,
+            durable_accounts,
+            strict=True,
+        ):
             summaries[account_id] = snapshot.summary
+        for provider_id, snapshot in zip(
+            provider_ids,
+            durable_providers,
+            strict=True,
+        ):
+            durable_local[provider_id] = replace(
+                durable_local[provider_id],
+                observation=snapshot.summary,
+            )
+        return durable_local
 
-    def _activity_snapshot(
+    def _account_snapshot(
         self,
         account: SavedAccount,
         summary: TokenActivitySummary,

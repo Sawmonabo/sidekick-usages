@@ -16,6 +16,7 @@ from sidekick_usages.core.models import (
     AccountTokenActivitySnapshot,
     ClaudeSetupTokenCredentials,
     CodexCredentials,
+    ProviderTokenActivitySnapshot,
     TokenActivityReading,
     TokenActivitySummary,
     UsageReport,
@@ -63,7 +64,7 @@ from sidekick_usages.usage.models import (
     activity_has_failure,
 )
 from sidekick_usages.usage.ports import (
-    AccountTokenActivitySnapshots,
+    TokenActivitySnapshots,
     UsagePersistence,
 )
 from sidekick_usages.usage.service import UsageCheckService
@@ -172,7 +173,7 @@ class _AccountActivity(AccountTokenActivitySource):
         return step
 
 
-class _ActivitySnapshots(AccountTokenActivitySnapshots):
+class _ActivitySnapshots(TokenActivitySnapshots):
     """Retain scripted snapshots without crossing the filesystem boundary."""
 
     def __init__(
@@ -187,6 +188,7 @@ class _ActivitySnapshots(AccountTokenActivitySnapshots):
         self.save_error = save_error
         self.loads: list[AccountLabel] = []
         self.saves: list[AccountTokenActivitySnapshot] = []
+        self.provider_saves: list[ProviderTokenActivitySnapshot] = []
         self.load_batches = 0
         self.save_batches = 0
 
@@ -214,26 +216,24 @@ class _ActivitySnapshots(AccountTokenActivitySnapshots):
                 loaded[account.account_id] = snapshot
         return loaded
 
-    def save(
-        self,
-        snapshot: AccountTokenActivitySnapshot,
-    ) -> AccountTokenActivitySnapshot:
-        self.saves.append(snapshot)
-        if self.save_error is not None:
-            raise self.save_error
-        self.snapshots[snapshot.provider_account_id] = snapshot
-        return snapshot
-
     def save_many(
         self,
-        snapshots: tuple[AccountTokenActivitySnapshot, ...],
-    ) -> tuple[AccountTokenActivitySnapshot, ...]:
+        accounts: tuple[AccountTokenActivitySnapshot, ...],
+        providers: tuple[ProviderTokenActivitySnapshot, ...],
+    ) -> tuple[
+        tuple[AccountTokenActivitySnapshot, ...],
+        tuple[ProviderTokenActivitySnapshot, ...],
+    ]:
         """Persist synthetic snapshots in one logical write."""
         self.save_batches += 1
+        self.saves.extend(accounts)
+        self.provider_saves.extend(providers)
         if self.save_error is not None:
-            self.saves.extend(snapshots)
             raise self.save_error
-        return tuple(self.save(snapshot) for snapshot in snapshots)
+        self.snapshots.update(
+            {snapshot.provider_account_id: snapshot for snapshot in accounts}
+        )
+        return accounts, providers
 
 
 @pytest.fixture
@@ -306,7 +306,7 @@ def _service(
     *,
     local_activity: LocalTokenActivitySource | None = None,
     account_activity: AccountTokenActivitySource | None = None,
-    activity_snapshots: AccountTokenActivitySnapshots | None = None,
+    activity_snapshots: TokenActivitySnapshots | None = None,
 ) -> tuple[UsageCheckService, AccountStore, RuntimeCredentialResolver]:
     store, _private = make_account_store_with_private(tmp_path, accounts)
     resolver = RuntimeCredentialResolver(store)
@@ -410,6 +410,16 @@ def test_collection_preserves_scope_and_is_independent_of_usage_rows(
     assert snapshots.save_batches == 1
     assert snapshots.load_batches == 0
     assert len(snapshots.saves) == len(profiles.calls)
+    assert snapshots.provider_saves == [
+        ProviderTokenActivitySnapshot(
+            provider_id=ProviderId.CLAUDE,
+            summary=_summary(
+                _CLAUDE_TOTAL,
+                TokenActivityScope.LOCAL_INSTALLATION,
+            ),
+            fetched_at=REFERENCE_TIME,
+        )
+    ]
     assert resolver.events.count("open:codex-one") == 1
     assert resolver.events.count("open:codex-two") == 1
     assert result.activities == (

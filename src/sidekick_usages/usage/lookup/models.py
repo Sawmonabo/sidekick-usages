@@ -136,6 +136,12 @@ class LocalActivityReading:
 
     provider_id: ProviderId
     observation: ActivityObservation
+    issues: tuple[TokenActivityIssue, ...] = ()
+
+    def __post_init__(self) -> None:
+        """Keep provider-level persistence issues account-neutral."""
+        if any(issue.label is not None for issue in self.issues):
+            raise ValueError("Local activity issues cannot name an account.")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

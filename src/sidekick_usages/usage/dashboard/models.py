@@ -12,7 +12,11 @@ from sidekick_usages.core.accounts.types import (
 from sidekick_usages.core.models import TokenActivitySummary, UsageReport
 from sidekick_usages.core.selection.types import ProviderRuntimeState
 from sidekick_usages.core.time import as_utc
-from sidekick_usages.core.types import AccountLabel, ProviderId
+from sidekick_usages.core.types import (
+    AccountLabel,
+    ProviderId,
+    TokenActivityScope,
+)
 from sidekick_usages.daemon.types.service import ServicePhase
 
 type DashboardRow = DashboardAccount | DashboardExternalRow
@@ -137,9 +141,16 @@ class DashboardAccount:
     activity: DashboardActivity | None = None
 
     def __post_init__(self) -> None:
-        """Reject duplicate account states."""
+        """Reject duplicate states and provider-scoped account activity."""
         if len(self.states) != len(set(self.states)):
             raise ValueError("Dashboard account states must be unique.")
+        if (
+            self.activity is not None
+            and self.activity.summary.scope is not TokenActivityScope.ACCOUNT
+        ):
+            raise ValueError(
+                "Dashboard account activity must be account-scoped."
+            )
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -171,6 +182,7 @@ class DashboardProvider:
     verified_at: datetime | None
     actions_enabled: bool
     rows: tuple[DashboardRow, ...]
+    activity: DashboardActivity | None = None
 
     def __post_init__(self) -> None:
         """Validate row ownership and normalize provider observation time."""
@@ -194,6 +206,21 @@ class DashboardProvider:
         )
         if external_count > 1:
             raise ValueError("Dashboard provider has multiple external rows.")
+        if (
+            self.activity is not None
+            and self.activity.summary.scope
+            is not TokenActivityScope.LOCAL_INSTALLATION
+        ):
+            raise ValueError(
+                "Dashboard provider activity must be installation-scoped."
+            )
+        if self.activity is not None and any(
+            isinstance(row, DashboardAccount) and row.activity is not None
+            for row in self.rows
+        ):
+            raise ValueError(
+                "Dashboard provider and account activity cannot coexist."
+            )
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

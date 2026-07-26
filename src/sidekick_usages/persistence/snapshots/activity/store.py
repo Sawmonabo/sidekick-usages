@@ -1,8 +1,11 @@
-"""Mutable storage for authoritative account token activity."""
+"""Mutable storage for account and provider token activity."""
 
 from pathlib import Path
 
-from sidekick_usages.core.models import AccountTokenActivitySnapshot
+from sidekick_usages.core.models import (
+    AccountTokenActivitySnapshot,
+    ProviderTokenActivitySnapshot,
+)
 from sidekick_usages.persistence.errors import (
     ActivitySnapshotError,
     PersistenceError,
@@ -17,6 +20,7 @@ from sidekick_usages.persistence.schema.activity import (
 from sidekick_usages.persistence.snapshots.activity.codec import (
     decode_activity_document,
     merge_activity_snapshot,
+    merge_provider_activity_snapshot,
 )
 from sidekick_usages.persistence.snapshots.activity.reader import (
     ActivitySnapshotReader,
@@ -28,7 +32,7 @@ from sidekick_usages.persistence.types.error import (
 
 
 class ActivitySnapshotStore(ActivitySnapshotReader):
-    """Persist last successful account activity under stable identity."""
+    """Persist account and provider activity in one document."""
 
     _filesystem: PrivateFilesystem
 
@@ -44,15 +48,20 @@ class ActivitySnapshotStore(ActivitySnapshotReader):
         snapshot: AccountTokenActivitySnapshot,
     ) -> AccountTokenActivitySnapshot:
         """Merge and durably commit one authoritative account snapshot."""
-        return self.save_many((snapshot,))[0]
+        accounts, _providers = self.save_many((snapshot,), ())
+        return accounts[0]
 
     def save_many(
         self,
-        snapshots: tuple[AccountTokenActivitySnapshot, ...],
-    ) -> tuple[AccountTokenActivitySnapshot, ...]:
+        account_snapshots: tuple[AccountTokenActivitySnapshot, ...],
+        provider_snapshots: tuple[ProviderTokenActivitySnapshot, ...],
+    ) -> tuple[
+        tuple[AccountTokenActivitySnapshot, ...],
+        tuple[ProviderTokenActivitySnapshot, ...],
+    ]:
         """Merge observations through one decode and at most one commit."""
-        if not snapshots:
-            return ()
+        if not account_snapshots and not provider_snapshots:
+            return (), ()
         try:
             with self._lock.hold():
                 observed = self._filesystem.read_opaque_private()
@@ -60,30 +69,37 @@ class ActivitySnapshotStore(ActivitySnapshotReader):
                     document = ActivitySnapshotDocument(
                         schema_version=ACTIVITY_SCHEMA_VERSION,
                         accounts={},
+                        providers={},
                     )
                     expected = AuthorityExpectation.ABSENT
                 else:
                     document = decode_activity_document(observed.data)
                     expected = observed.fingerprint
                 accounts = dict(document.accounts)
-                effective: list[AccountTokenActivitySnapshot] = []
-                for snapshot in snapshots:
-                    effective.append(
-                        merge_activity_snapshot(accounts, snapshot)
-                    )
+                providers = dict(document.providers)
+                effective_accounts = tuple(
+                    merge_activity_snapshot(accounts, snapshot)
+                    for snapshot in account_snapshots
+                )
+                effective_providers = tuple(
+                    merge_provider_activity_snapshot(providers, snapshot)
+                    for snapshot in provider_snapshots
+                )
                 payload = encode_activity_snapshot_document(
                     ActivitySnapshotDocument(
                         schema_version=ACTIVITY_SCHEMA_VERSION,
                         accounts=accounts,
+                        providers=providers,
                     )
                 )
+                effective = (effective_accounts, effective_providers)
                 if observed is not None and observed.data == payload:
-                    return tuple(effective)
+                    return effective
                 self._filesystem.commit_opaque_private(
                     payload,
                     expected_source=expected,
                 )
-                return tuple(effective)
+                return effective
         except ActivitySnapshotError:
             raise
         except PersistenceError:

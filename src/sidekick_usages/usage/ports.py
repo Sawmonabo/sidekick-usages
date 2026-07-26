@@ -8,23 +8,12 @@ from sidekick_usages.core.accounts.types import SidekickAccountId
 from sidekick_usages.core.models import (
     AccountTokenActivitySnapshot,
     AccountUsageSnapshot,
+    ProviderTokenActivitySnapshot,
 )
 
 
-class AccountTokenActivitySnapshots(Protocol):
-    """Persist authoritative activity by stable account identity."""
-
-    def load(
-        self,
-        account: SavedAccount,
-    ) -> AccountTokenActivitySnapshot | None:
-        """Load the account's last successful activity snapshot."""
-
-    def save(
-        self,
-        snapshot: AccountTokenActivitySnapshot,
-    ) -> AccountTokenActivitySnapshot:
-        """Durably merge one successful account activity snapshot."""
+class TokenActivitySnapshots(Protocol):
+    """Persist account and provider activity in one document."""
 
     def load_many(
         self,
@@ -34,9 +23,13 @@ class AccountTokenActivitySnapshots(Protocol):
 
     def save_many(
         self,
-        snapshots: tuple[AccountTokenActivitySnapshot, ...],
-    ) -> tuple[AccountTokenActivitySnapshot, ...]:
-        """Durably merge observations through one document commit."""
+        accounts: tuple[AccountTokenActivitySnapshot, ...],
+        providers: tuple[ProviderTokenActivitySnapshot, ...],
+    ) -> tuple[
+        tuple[AccountTokenActivitySnapshot, ...],
+        tuple[ProviderTokenActivitySnapshot, ...],
+    ]:
+        """Durably merge one activity batch through one document commit."""
 
 
 class AccountUsageSnapshots(Protocol):
@@ -68,5 +61,5 @@ class AccountUsageSnapshots(Protocol):
 class UsagePersistence:
     """Optional durable observations used by one usage service."""
 
-    activity: AccountTokenActivitySnapshots | None = None
+    activity: TokenActivitySnapshots | None = None
     usage: AccountUsageSnapshots | None = None

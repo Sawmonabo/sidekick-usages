@@ -15,6 +15,7 @@ from sidekick_usages.core.accounts.types import (
 from sidekick_usages.core.models import (
     AccountTokenActivitySnapshot,
     AccountUsageSnapshot,
+    ProviderTokenActivitySnapshot,
 )
 from sidekick_usages.core.selection.models import SelectedAccountState
 from sidekick_usages.core.selection.types import ProviderRuntimeState
@@ -68,14 +69,17 @@ class CachedDashboardService:
         """Read each cached artifact once and join it by stable account ID."""
         accounts = self._accounts.load()
         usage, usage_conflicts = self._usage.load_all(accounts)
-        activity = self._activity.load_all(accounts)
+        account_activity, provider_activity = self._activity.load_all(accounts)
         selected = {
             state.provider_id: state for state in self._selected.observe_all()
         }
         service_state = self._service.observe()
         service = self._dashboard_service(service_state)
         usage_by_id = {snapshot.account_id: snapshot for snapshot in usage}
-        activity_by_id = dict(activity)
+        account_activity_by_id = dict(account_activity)
+        provider_activity_by_id = {
+            snapshot.provider_id: snapshot for snapshot in provider_activity
+        }
         conflict_ids = frozenset(usage_conflicts)
         return DashboardSnapshot(
             providers=tuple(
@@ -90,7 +94,8 @@ class CachedDashboardService:
                         compatible=service.compatible,
                     ),
                     usage_by_id,
-                    activity_by_id,
+                    account_activity_by_id,
+                    provider_activity_by_id.get(provider_id),
                     conflict_ids,
                 )
                 for provider_id in ProviderId
@@ -136,10 +141,11 @@ class CachedDashboardService:
         selected: SelectedAccountState | None,
         service_ready: bool,
         usage: dict[SidekickAccountId, AccountUsageSnapshot],
-        activity: dict[
+        account_activity: dict[
             SidekickAccountId,
             AccountTokenActivitySnapshot,
         ],
+        provider_activity: ProviderTokenActivitySnapshot | None,
         usage_conflicts: frozenset[SidekickAccountId],
     ) -> DashboardProvider:
         provider_accounts = tuple(
@@ -153,7 +159,7 @@ class CachedDashboardService:
                 selected,
                 service_ready,
                 usage.get(account.account_id),
-                activity.get(account.account_id),
+                account_activity.get(account.account_id),
                 usage_conflicted=account.account_id in usage_conflicts,
             )
             for account in provider_accounts
@@ -191,6 +197,14 @@ class CachedDashboardService:
             verified_at=None if selected is None else selected.verified_at,
             actions_enabled=service_ready and provider_available,
             rows=tuple(rows),
+            activity=(
+                None
+                if provider_activity is None
+                else DashboardActivity(
+                    summary=provider_activity.summary,
+                    observed_at=provider_activity.fetched_at,
+                )
+            ),
         )
 
     def _account(

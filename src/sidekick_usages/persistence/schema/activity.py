@@ -1,12 +1,13 @@
-"""Strict codec for authoritative account token-activity snapshots."""
+"""Strict codec for account and provider token-activity snapshots."""
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from types import MappingProxyType
 
 from sidekick_usages.core.models import (
     AccountTokenActivitySnapshot,
+    ProviderTokenActivitySnapshot,
     TokenActivitySummary,
 )
 from sidekick_usages.core.types import ProviderId, TokenActivityScope
@@ -34,11 +35,11 @@ from sidekick_usages.serialization.json import (
     encode_compact_json,
 )
 
-ACTIVITY_SCHEMA_VERSION = 1
+ACTIVITY_SCHEMA_VERSION = 2
 MAX_ACTIVITY_RECORDS = 4_096
 MAX_TOKEN_COUNT = 9_223_372_036_854_775_807
 
-_DOCUMENT_KEYS = frozenset({"accounts", "schema_version"})
+_DOCUMENT_KEYS = frozenset({"accounts", "providers", "schema_version"})
 _RECORD_KEYS = frozenset(
     {
         "fetched_at",
@@ -73,9 +74,11 @@ class ActivitySnapshotRecord:
     fetched_at: str
 
     def __post_init__(self) -> None:
-        """Validate one exact Codex activity record."""
-        if self.provider_id != ProviderId.CODEX.value:
-            raise ValueError
+        """Validate one exact provider activity record."""
+        try:
+            ProviderId(self.provider_id)
+        except ValueError:
+            raise ValueError from None
         if (
             type(self.total_tokens) is not int
             or self.total_tokens < 0
@@ -93,6 +96,7 @@ class ActivitySnapshotDocument:
 
     schema_version: int
     accounts: Mapping[str, ActivitySnapshotRecord]
+    providers: Mapping[str, ActivitySnapshotRecord]
 
     def __post_init__(self) -> None:
         """Validate bounded canonical record identities."""
@@ -100,19 +104,41 @@ class ActivitySnapshotDocument:
             self.schema_version != ACTIVITY_SCHEMA_VERSION
         ):
             raise ValueError
-        if not isinstance(self.accounts, Mapping):
+        if not isinstance(self.accounts, Mapping) or not isinstance(
+            self.providers,
+            Mapping,
+        ):
             raise TypeError
         accounts = dict(self.accounts)
-        if len(accounts) > MAX_ACTIVITY_RECORDS:
+        providers = dict(self.providers)
+        if len(accounts) + len(providers) > MAX_ACTIVITY_RECORDS:
             raise ValueError
         for digest, record in accounts.items():
             sha256_text(digest)
-            if not isinstance(record, ActivitySnapshotRecord):
+            if (
+                not isinstance(record, ActivitySnapshotRecord)
+                or record.provider_id != ProviderId.CODEX.value
+            ):
+                raise TypeError
+        for provider, record in providers.items():
+            try:
+                provider_id = ProviderId(provider)
+            except ValueError:
+                raise ValueError from None
+            if (
+                not isinstance(record, ActivitySnapshotRecord)
+                or record.provider_id != provider_id.value
+            ):
                 raise TypeError
         object.__setattr__(
             self,
             "accounts",
             MappingProxyType(accounts),
+        )
+        object.__setattr__(
+            self,
+            "providers",
+            MappingProxyType(providers),
         )
 
 
@@ -144,8 +170,13 @@ def encode_activity_snapshot_document(
         digest: _record_object(record)
         for digest, record in document.accounts.items()
     }
+    providers: JsonObject = {
+        provider: _record_object(record)
+        for provider, record in document.providers.items()
+    }
     root: JsonObject = {
         "accounts": accounts,
+        "providers": providers,
         "schema_version": document.schema_version,
     }
     return encode_compact_json(root) + b"\n"
@@ -162,14 +193,19 @@ def decode_activity_snapshot_document(
             root["schema_version"],
             ACTIVITY_SCHEMA_VERSION,
         )
-        records = require_object(root["accounts"])
-        if len(records) > MAX_ACTIVITY_RECORDS:
+        account_records = require_object(root["accounts"])
+        provider_records = require_object(root["providers"])
+        if len(account_records) + len(provider_records) > MAX_ACTIVITY_RECORDS:
             raise InvalidSchemaError
         document = ActivitySnapshotDocument(
             schema_version=ACTIVITY_SCHEMA_VERSION,
             accounts={
                 sha256_text(digest): _record(value)
-                for digest, value in records.items()
+                for digest, value in account_records.items()
+            },
+            providers={
+                ProviderId(provider).value: _record(value)
+                for provider, value in provider_records.items()
             },
         )
         if encode_activity_snapshot_document(document) != payload:
@@ -192,15 +228,47 @@ def activity_record(
     """Convert one core snapshot to its strict persisted record."""
     if snapshot.provider_id is not ProviderId.CODEX:
         raise ValueError("Only Codex exposes account activity snapshots.")
+    return _activity_record(
+        snapshot.provider_id,
+        snapshot.summary,
+        snapshot.fetched_at,
+    )
+
+
+def provider_activity_record(
+    snapshot: ProviderTokenActivitySnapshot,
+) -> ActivitySnapshotRecord:
+    """Convert one provider-local snapshot to its persisted record."""
+    return _activity_record(
+        snapshot.provider_id,
+        snapshot.summary,
+        snapshot.fetched_at,
+    )
+
+
+def _activity_record(
+    provider_id: ProviderId,
+    summary: TokenActivitySummary,
+    fetched_at: datetime,
+) -> ActivitySnapshotRecord:
     return ActivitySnapshotRecord(
-        provider_id=ProviderId.CODEX.value,
-        total_tokens=snapshot.summary.total_tokens,
+        provider_id=provider_id.value,
+        total_tokens=summary.total_tokens,
+        since=None if summary.since is None else summary.since.isoformat(),
+        fetched_at=canonical_timestamp(fetched_at),
+    )
+
+
+def _activity_summary(
+    record: ActivitySnapshotRecord,
+    scope: TokenActivityScope,
+) -> TokenActivitySummary:
+    return TokenActivitySummary(
+        total_tokens=record.total_tokens,
+        scope=scope,
         since=(
-            None
-            if snapshot.summary.since is None
-            else snapshot.summary.since.isoformat()
+            None if record.since is None else date.fromisoformat(record.since)
         ),
-        fetched_at=canonical_timestamp(snapshot.fetched_at),
     )
 
 
@@ -212,14 +280,23 @@ def account_activity_snapshot(
     return AccountTokenActivitySnapshot(
         provider_id=ProviderId(record.provider_id),
         provider_account_id=provider_account_id,
-        summary=TokenActivitySummary(
-            total_tokens=record.total_tokens,
-            scope=TokenActivityScope.ACCOUNT,
-            since=(
-                None
-                if record.since is None
-                else date.fromisoformat(record.since)
-            ),
+        summary=_activity_summary(
+            record,
+            TokenActivityScope.ACCOUNT,
+        ),
+        fetched_at=parse_canonical_timestamp(record.fetched_at),
+    )
+
+
+def provider_activity_snapshot(
+    record: ActivitySnapshotRecord,
+) -> ProviderTokenActivitySnapshot:
+    """Convert one strict record to a provider-local snapshot."""
+    return ProviderTokenActivitySnapshot(
+        provider_id=ProviderId(record.provider_id),
+        summary=_activity_summary(
+            record,
+            TokenActivityScope.LOCAL_INSTALLATION,
         ),
         fetched_at=parse_canonical_timestamp(record.fetched_at),
     )

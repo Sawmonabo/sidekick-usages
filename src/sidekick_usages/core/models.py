@@ -249,6 +249,25 @@ class AccountTokenActivitySnapshot:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class ProviderTokenActivitySnapshot:
+    """One durable provider-local activity observation."""
+
+    provider_id: ProviderId
+    summary: TokenActivitySummary
+    fetched_at: datetime
+
+    def __post_init__(self) -> None:
+        """Require provider scope and aware UTC time."""
+        if not isinstance(self.provider_id, ProviderId):
+            raise TypeError("Activity snapshots require a provider.")
+        if self.summary.scope is not TokenActivityScope.LOCAL_INSTALLATION:
+            raise ValueError(
+                "Provider activity snapshots must be installation-scoped."
+            )
+        object.__setattr__(self, "fetched_at", as_utc(self.fetched_at))
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class TokenActivityUnavailable:
     """The provider has no authoritative activity reading."""
 

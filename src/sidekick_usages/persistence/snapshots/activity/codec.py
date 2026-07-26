@@ -3,7 +3,10 @@
 from dataclasses import replace
 
 from sidekick_usages.core.accounts.models import SavedAccount
-from sidekick_usages.core.models import AccountTokenActivitySnapshot
+from sidekick_usages.core.models import (
+    AccountTokenActivitySnapshot,
+    ProviderTokenActivitySnapshot,
+)
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.persistence.errors import ActivitySnapshotError
 from sidekick_usages.persistence.schema.activity import (
@@ -13,6 +16,8 @@ from sidekick_usages.persistence.schema.activity import (
     account_activity_snapshot,
     activity_record,
     decode_activity_snapshot_document,
+    provider_activity_record,
+    provider_activity_snapshot,
 )
 from sidekick_usages.persistence.types.artifact import (
     Sha256Digest,
@@ -88,10 +93,38 @@ def merge_activity_snapshot(
     return effective
 
 
-def _merge_activity(
-    current: AccountTokenActivitySnapshot | None,
-    incoming: AccountTokenActivitySnapshot,
-) -> AccountTokenActivitySnapshot:
+def activity_snapshot_for_provider(
+    document: ActivitySnapshotDocument,
+    provider_id: ProviderId,
+) -> ProviderTokenActivitySnapshot | None:
+    """Read one provider snapshot from an already-decoded document."""
+    record = document.providers.get(provider_id.value)
+    return None if record is None else provider_activity_snapshot(record)
+
+
+def merge_provider_activity_snapshot(
+    providers: dict[str, ActivitySnapshotRecord],
+    snapshot: ProviderTokenActivitySnapshot,
+) -> ProviderTokenActivitySnapshot:
+    """Merge one provider observation into an activity document."""
+    key = snapshot.provider_id.value
+    current_record = providers.get(key)
+    current = (
+        None
+        if current_record is None
+        else provider_activity_snapshot(current_record)
+    )
+    effective = _merge_activity(current, snapshot)
+    providers[key] = provider_activity_record(effective)
+    return effective
+
+
+def _merge_activity[
+    Snapshot: AccountTokenActivitySnapshot | ProviderTokenActivitySnapshot
+](
+    current: Snapshot | None,
+    incoming: Snapshot,
+) -> Snapshot:
     if current is None:
         return incoming
     if incoming.fetched_at < current.fetched_at:

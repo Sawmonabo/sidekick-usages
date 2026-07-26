@@ -2,7 +2,10 @@
 
 from sidekick_usages.core.accounts.models import SavedAccount
 from sidekick_usages.core.accounts.types import SidekickAccountId
-from sidekick_usages.core.models import AccountTokenActivitySnapshot
+from sidekick_usages.core.models import (
+    AccountTokenActivitySnapshot,
+    ProviderTokenActivitySnapshot,
+)
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.persistence.errors import (
     ActivitySnapshotError,
@@ -14,6 +17,7 @@ from sidekick_usages.persistence.schema.activity import (
 )
 from sidekick_usages.persistence.snapshots.activity.codec import (
     activity_snapshot_for_account,
+    activity_snapshot_for_provider,
     decode_activity_document,
 )
 from sidekick_usages.persistence.types.error import (
@@ -24,7 +28,7 @@ ACTIVITY_SNAPSHOT_PATH_ERROR = "Activity snapshot path must be absolute."
 
 
 class ActivitySnapshotReader(PrivateDocumentReader):
-    """Read authoritative account activity without mutable coordination."""
+    """Read cached activity without mutable coordination."""
 
     absolute_path_error = ACTIVITY_SNAPSHOT_PATH_ERROR
 
@@ -47,15 +51,18 @@ class ActivitySnapshotReader(PrivateDocumentReader):
         accounts: tuple[SavedAccount, ...],
     ) -> tuple[
         tuple[
-            SidekickAccountId,
-            AccountTokenActivitySnapshot,
+            tuple[
+                SidekickAccountId,
+                AccountTokenActivitySnapshot,
+            ],
+            ...,
         ],
-        ...,
+        tuple[ProviderTokenActivitySnapshot, ...],
     ]:
-        """Bulk-read account activity and bind it to stable account IDs."""
+        """Bulk-read account and provider activity through one decode."""
         document = self._load_document()
         if document is None:
-            return ()
+            return (), ()
         snapshots: list[
             tuple[
                 SidekickAccountId,
@@ -75,14 +82,26 @@ class ActivitySnapshotReader(PrivateDocumentReader):
             )
             if snapshot is not None:
                 snapshots.append((account.account_id, snapshot))
-        return tuple(snapshots)
+        providers = tuple(
+            snapshot
+            for provider_id in ProviderId
+            if (
+                snapshot := activity_snapshot_for_provider(
+                    document,
+                    provider_id,
+                )
+            )
+            is not None
+        )
+        return tuple(snapshots), providers
 
     def load_many(
         self,
         accounts: tuple[SavedAccount, ...],
     ) -> dict[SidekickAccountId, AccountTokenActivitySnapshot]:
         """Load exact account snapshots through one document decode."""
-        return dict(self.load_all(accounts))
+        snapshots, _providers = self.load_all(accounts)
+        return dict(snapshots)
 
     def _load_document(self) -> ActivitySnapshotDocument | None:
         try:
