@@ -38,6 +38,7 @@ from sidekick_usages.cli.dashboard.models.setup import (
     ServiceSetupOutcome,
     ServiceSetupProgress,
 )
+from sidekick_usages.cli.dashboard.models.use import UseActivationFailure
 from sidekick_usages.cli.dashboard.setup import GuidedServiceSetup
 from sidekick_usages.core.accounts.types import (
     CredentialHealth,
@@ -55,6 +56,9 @@ from sidekick_usages.persistence.models.artifact import FileSnapshot
 from sidekick_usages.platform.errors import ExecutableQualificationError
 from sidekick_usages.platform.executable import qualify_executable
 from sidekick_usages.platform.types import ExecutableFailure
+from sidekick_usages.providers.claude.activation.types import (
+    ClaudeActivationGuardFailure,
+)
 from sidekick_usages.usage.dashboard.models import (
     DashboardAccount,
     DashboardActionState,
@@ -277,17 +281,14 @@ def test_dashboard_controller_journey_preserves_verified_truth(
     controller = controller.move(DashboardMove.UP)
     assert controller.state.account_id == CODEX_SAVED_ACCOUNT_ID
     assert not controller.state.external
-    controller = controller.activation_succeeded(
-        DashboardActivationProof(
-            provider_id=ProviderId.CODEX,
-            account_id=CODEX_SAVED_ACCOUNT_ID,
+    with pytest.raises(ValueError, match="contradicts provider read-back"):
+        controller.activation_succeeded(
+            DashboardActivationProof(
+                provider_id=ProviderId.CODEX,
+                account_id=CODEX_SAVED_ACCOUNT_ID,
+            )
         )
-    )
-    assert controller.state.focused_provider is ProviderId.CODEX
-    assert controller.state.account_id == CODEX_SAVED_ACCOUNT_ID
-    controller = controller.move(DashboardMove.DOWN).restore()
-    assert controller.state.account_id == CODEX_SAVED_ACCOUNT_ID
-    assert not controller.state.external
+    assert controller.restore().state.external
 
     controller = controller.toggle_help()
     assert controller.state.help_visible
@@ -379,13 +380,15 @@ def test_dashboard_controller_journey_preserves_verified_truth(
         monkeypatch=monkeypatch,
     ) == DashboardSessionProof(
         control_connect_calls=((SESSION_SOCKET, None),),
+        partial_start_reaped=True,
         activation_locked=True,
         confirmations=(
             (
                 DashboardConfirmationKind.SERVICE_SETUP,
                 DashboardFooterKind.CONFIRMATION,
-                "Sidekick needs its per-user service. Install it without "
-                "administrator access? y yes / n no",
+                "Sidekick needs one per-user service to maintain accounts "
+                "and update supported sessions. It installs without "
+                "administrator access. y yes / n no",
             ),
             (
                 DashboardConfirmationKind.REMOTE_CONTROL,
@@ -398,17 +401,25 @@ def test_dashboard_controller_journey_preserves_verified_truth(
             (ProviderId.CLAUDE, CLAUDE_PREVIEW_ACCOUNT_ID, False),
             (ProviderId.CLAUDE, CLAUDE_PREVIEW_ACCOUNT_ID, True),
             (ProviderId.CLAUDE, CLAUDE_ACTIVE_ACCOUNT_ID, False),
+            (ProviderId.CODEX, CODEX_SAVED_ACCOUNT_ID, False),
             (ProviderId.CLAUDE, CLAUDE_ACTIVE_ACCOUNT_ID, False),
         ),
-        setup_events=("status", "status", "install"),
+        setup_events=("status", "status", "status", "status", "install"),
+        setup_refusal_restored=True,
+        setup_refusal_message=(
+            "The Sidekick user service was not installed. "
+            "Run sidekick-usages in a terminal and approve service setup."
+        ),
         verified_account_id=CLAUDE_PREVIEW_ACCOUNT_ID,
+        success_footer_kind=DashboardFooterKind.KEYS,
         setup_not_repeated=True,
         restored_account_id=CLAUDE_PREVIEW_ACCOUNT_ID,
         failure_footer_kind=DashboardFooterKind.ERROR,
+        remote_control_scoped_to_claude=True,
         lookup_cancelled=True,
         daemon_cancelled=True,
         stream_released=True,
-        closed_clients=4,
+        closed_clients=5,
         post_close_invalidations=0,
     )
 
@@ -737,6 +748,11 @@ def test_scriptable_use_dispatches_only_stable_selection_contract(
     preparation = harness.invoke(["use", "codex", "needs-login"])
     environment["ANTHROPIC_API_KEY"] = "synthetic-parent-secret"
     blocked = harness.invoke(["use", "claude", "shared"])
+    environment.clear()
+    activation.result = UseActivationFailure(
+        ClaudeActivationGuardFailure.REMOTE_CONTROL_DISCONNECT_REQUIRED.failure_code
+    )
+    remote_required = harness.invoke(["use", "claude", "shared"])
 
     assert codex_result.exit_code == claude_result.exit_code == 0
     assert (
@@ -744,13 +760,15 @@ def test_scriptable_use_dispatches_only_stable_selection_contract(
         == missing.exit_code
         == preparation.exit_code
         == blocked.exit_code
+        == remote_required.exit_code
         == 1
     )
     assert activation.calls == [
         (ProviderId.CODEX, CODEX_SAVED_ACCOUNT_ID, False),
         (ProviderId.CLAUDE, CLAUDE_ACTIVE_ACCOUNT_ID, True),
+        (ProviderId.CLAUDE, CLAUDE_ACTIVE_ACCOUNT_ID, False),
     ]
-    assert environment == {"ANTHROPIC_API_KEY": "synthetic-parent-secret"}
+    assert environment == {}
     rendered = output.getvalue() + errors.getvalue()
     assert "No saved claude account labeled 'missing'." in rendered
     assert "Next: sidekick-usages\n" in rendered
@@ -762,6 +780,10 @@ def test_scriptable_use_dispatches_only_stable_selection_contract(
     )
     assert "This shell overrides Claude account selection." in rendered
     assert "Next: unset ANTHROPIC_API_KEY" in rendered
+    assert (
+        "Next: sidekick-usages use claude shared "
+        "--allow-remote-control-disconnect"
+    ) in rendered
     assert "synthetic-parent-secret" not in rendered
     assert "Continue?" not in rendered
     assert "daemon install" not in rendered

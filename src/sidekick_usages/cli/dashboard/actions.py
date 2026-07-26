@@ -26,6 +26,7 @@ from sidekick_usages.cli.dashboard.ports import (
     DashboardControlConnector,
 )
 from sidekick_usages.cli.dashboard.setup import GuidedServiceSetup
+from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.control.client import (
     UnexpectedServiceEventError,
     consume_control_action,
@@ -45,17 +46,12 @@ from sidekick_usages.providers.claude.activation.types import (
     ClaudeActivationGuardFailure,
 )
 
-SERVICE_RETRY_ACTION = (
-    "Retry the action; run sidekick-usages daemon status if it fails again."
-)
-SERVICE_CONFIRMATION_MESSAGE = (
-    "Sidekick needs its per-user service. Install it without administrator "
-    "access? y yes / n no"
-)
+CONFIRMATION_RESPONSE_HINT = "y yes / n no"
 REMOTE_CONTROL_CONFIRMATION_MESSAGE = (
     "Claude Remote Control may disconnect during this switch. "
     "Continue? y yes / n no"
 )
+REMOTE_CONTROL_REFUSED_MESSAGE = "Claude Remote Control approval was refused."
 REMOTE_CONTROL_FAILURE_CODE = (
     ClaudeActivationGuardFailure.REMOTE_CONTROL_DISCONNECT_REQUIRED
 ).failure_code
@@ -103,11 +99,20 @@ class DashboardActionExecutor:
                 decision is not ServiceSetupDecision.APPROVED
                 or self._sink.stopping
             ):
-                self._sink.action_failed(request.intent)
+                if not self._sink.stopping:
+                    self._sink.action_error(
+                        request.intent,
+                        REMOTE_CONTROL_REFUSED_MESSAGE,
+                    )
                 return
             client = self._connect_ready()
             if client is None:
-                self._sink.action_failed(request.intent)
+                self._setup_failed(
+                    ServiceSetupResult(
+                        intent=request.intent,
+                        outcome=ServiceSetupOutcome.FAILED,
+                    )
+                )
                 return
             approved = replace(
                 request,
@@ -144,7 +149,7 @@ class DashboardActionExecutor:
         if result.outcome is ServiceSetupOutcome.CONFIRMATION_REQUIRED:
             decision = self._sink.request_confirmation(
                 DashboardConfirmationKind.SERVICE_SETUP,
-                SERVICE_CONFIRMATION_MESSAGE,
+                f"{result.message} {CONFIRMATION_RESPONSE_HINT}",
             )
             if self._sink.stopping:
                 return None
@@ -160,7 +165,12 @@ class DashboardActionExecutor:
             return None
         client = self._connect_ready()
         if client is None:
-            self._sink.action_error(SERVICE_RETRY_ACTION)
+            self._setup_failed(
+                ServiceSetupResult(
+                    intent=result.intent,
+                    outcome=ServiceSetupOutcome.FAILED,
+                )
+            )
         return client
 
     def _connect_ready(self) -> DashboardControlClient | None:
@@ -252,6 +262,7 @@ class DashboardActionExecutor:
     ) -> bool:
         return (
             isinstance(request.intent, ActivateOrRepairIntent)
+            and request.intent.provider_id is ProviderId.CLAUDE
             and not request.allow_remote_control_disconnect
             and isinstance(terminal, FailedPayload)
             and terminal.code == REMOTE_CONTROL_FAILURE_CODE
@@ -267,7 +278,7 @@ class DashboardActionExecutor:
         message = str(result.message)
         if result.corrective_action is not None:
             message = f"{message} {result.corrective_action}"
-        self._sink.action_error(message)
+        self._sink.action_error(result.intent, message)
 
     def _retain_client(self, client: DashboardControlClient) -> None:
         with self._client_lock:

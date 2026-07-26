@@ -3,7 +3,7 @@
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, replace
 from pathlib import Path
-from threading import Event
+from threading import Event, Thread
 from time import monotonic
 
 import pytest
@@ -69,27 +69,31 @@ REMOTE_CONTROL_REQUIRED_CODE = (
     ClaudeActivationGuardFailure.REMOTE_CONTROL_DISCONNECT_REQUIRED
 ).failure_code
 
+type DashboardConfirmationProof = tuple[
+    DashboardConfirmationKind | None,
+    DashboardFooterKind,
+    str | None,
+]
+
 
 @dataclass(frozen=True, slots=True)
 class DashboardSessionProof:
     """Load-bearing states captured from one serialized session journey."""
 
     control_connect_calls: tuple[tuple[Path, float | None], ...]
+    partial_start_reaped: bool
     activation_locked: bool
-    confirmations: tuple[
-        tuple[
-            DashboardConfirmationKind | None,
-            DashboardFooterKind,
-            str | None,
-        ],
-        ...,
-    ]
+    confirmations: tuple[DashboardConfirmationProof, ...]
     activations: tuple[tuple[ProviderId, SidekickAccountId, bool], ...]
     setup_events: tuple[str, ...]
+    setup_refusal_restored: bool
+    setup_refusal_message: str | None
     verified_account_id: SidekickAccountId | None
+    success_footer_kind: DashboardFooterKind
     setup_not_repeated: bool
     restored_account_id: SidekickAccountId | None
     failure_footer_kind: DashboardFooterKind
+    remote_control_scoped_to_claude: bool
     lookup_cancelled: bool
     daemon_cancelled: bool
     stream_released: bool
@@ -118,7 +122,7 @@ class SessionSnapshotSource:
         """Publish one provider-verified active account."""
         providers = tuple(
             (
-                provider
+                replace(provider, actions_enabled=True)
                 if provider.provider_id is not provider_id
                 else replace(
                     provider,
@@ -156,8 +160,16 @@ class SessionSnapshotSource:
 class SessionLookupWorker:
     """Complete one stable lookup wave and record cancellation."""
 
-    def __init__(self, account_id: SidekickAccountId) -> None:
+    def __init__(
+        self,
+        account_id: SidekickAccountId,
+        *,
+        block: bool = False,
+    ) -> None:
         self._account_id = account_id
+        self._block = block
+        self._release = Event()
+        self.finished = Event()
         self.cancelled = False
 
     def run(
@@ -165,18 +177,29 @@ class SessionLookupWorker:
         observe: UsageLookupEventObserver | None = None,
     ) -> UsageLookupWorkerResult:
         """Publish one stable-ID completion without provider work."""
-        if observe is not None:
-            observe(
-                UsageLookupWorkerEvent(
-                    UsageLookupEventKind.ACCOUNT_COMPLETED,
-                    account_id=self._account_id,
+        try:
+            if self._block and not self._release.wait(SESSION_WAIT_SECONDS):
+                raise AssertionError("Synthetic lookup was not released.")
+            if observe is not None:
+                observe(
+                    UsageLookupWorkerEvent(
+                        UsageLookupEventKind.ACCOUNT_COMPLETED,
+                        account_id=self._account_id,
+                    )
                 )
-            )
-        return UsageLookupWorkerResult((self._account_id,))
+            return UsageLookupWorkerResult((self._account_id,))
+        finally:
+            self.finished.set()
 
     def cancel(self) -> None:
         """Record one idempotent session cleanup request."""
         self.cancelled = True
+        self._release.set()
+
+    def wait_until_finished(self) -> None:
+        """Wait for one bounded owner completion."""
+        if not self.finished.wait(SESSION_WAIT_SECONDS):
+            raise AssertionError("Synthetic lookup owner did not finish.")
 
 
 class SessionControlConnector:
@@ -191,7 +214,7 @@ class SessionControlConnector:
         self.snapshots = snapshots
         self.activations: list[tuple[ProviderId, SidekickAccountId, bool]] = []
         self.closed_clients = 0
-        self.fail_next = False
+        self.skip_readback_next = False
         self.require_remote_control_next = False
         self.pause_next = False
         self.stream_started = Event()
@@ -274,17 +297,10 @@ class SessionControlClient:
                 ),
             )
             return
-        if self._owner.fail_next:
-            self._owner.fail_next = False
-            yield _event(
-                EventKind.FAILED,
-                FailedPayload(
-                    SESSION_OPERATION_ID,
-                    "synthetic_activation_failure",
-                ),
-            )
-            return
-        self._owner.snapshots.activate(provider_id, account_id)
+        if self._owner.skip_readback_next:
+            self._owner.skip_readback_next = False
+        else:
+            self._owner.snapshots.activate(provider_id, account_id)
         yield _event(
             EventKind.COMPLETED,
             CompletedPayload(
@@ -401,6 +417,153 @@ def unavailable_session_snapshot(
     )
 
 
+def _partial_start_reaped(
+    snapshot: DashboardSnapshot,
+    account_id: SidekickAccountId,
+    monkeypatch: pytest.MonkeyPatch,
+) -> bool:
+    """Interrupt the second owner start and prove the first owner exits."""
+    snapshots = SessionSnapshotSource(snapshot)
+    daemon = SetupDaemon(ServiceLifecycleState.READY)
+    lookup = SessionLookupWorker(account_id, block=True)
+    session = InteractiveDashboardSession(
+        snapshot,
+        snapshots=snapshots,
+        only=None,
+        lookup=lookup,
+        connector=SessionControlConnector(daemon, snapshots),
+        socket_path=SESSION_SOCKET,
+        setup=GuidedServiceSetup(daemon),
+        environment={},
+    )
+    start_thread = Thread.start
+
+    def interrupt_action_start(thread: Thread) -> None:
+        if thread.name == "sidekick-dashboard-actions":
+            raise KeyboardInterrupt
+        start_thread(thread)
+
+    with monkeypatch.context() as start_boundary:
+        start_boundary.setattr(Thread, "start", interrupt_action_start)
+        with pytest.raises(KeyboardInterrupt):
+            session.start()
+    session.close()
+    return (
+        session.stopping
+        and lookup.cancelled
+        and lookup.finished.is_set()
+        and daemon.cancelled
+    )
+
+
+def _confirmation_proof(
+    session: InteractiveDashboardSession,
+) -> DashboardConfirmationProof:
+    """Capture one atomic confirmation view."""
+    view = session.view
+    return (
+        (None if view.confirmation is None else view.confirmation.kind),
+        view.footer.kind,
+        view.footer.message,
+    )
+
+
+def _refuse_setup(
+    session: InteractiveDashboardSession,
+    invalidation: SessionInvalidationProbe,
+    *,
+    active_account_id: SidekickAccountId,
+    preview_account_id: SidekickAccountId,
+) -> tuple[bool, bool, str | None, DashboardConfirmationProof]:
+    """Refuse setup and return provider-read-back restoration proof."""
+    session.move(DashboardMove.UP)
+    session.activate()
+    session.activate()
+    session.restore()
+    view = session.view
+    activation_locked = (
+        view.activation_in_flight
+        and view.controller.account_id == preview_account_id
+    )
+    invalidation.wait_for(lambda: session.view.confirmation is not None)
+    confirmation = _confirmation_proof(session)
+    session.confirm(False)
+    invalidation.wait_for(lambda: not session.view.action_in_flight)
+    view = session.view
+    return (
+        activation_locked,
+        view.controller.account_id == active_account_id,
+        view.footer.message,
+        confirmation,
+    )
+
+
+def _approve_setup(
+    session: InteractiveDashboardSession,
+    invalidation: SessionInvalidationProbe,
+    daemon: SetupDaemon,
+) -> tuple[
+    DashboardConfirmationProof,
+    tuple[str, ...],
+    SidekickAccountId | None,
+    DashboardFooterKind,
+]:
+    """Approve setup and the exact Claude Remote Control retry."""
+    session.move(DashboardMove.UP)
+    session.activate()
+    invalidation.wait_for(lambda: session.view.confirmation is not None)
+    session.confirm(True)
+    invalidation.wait_for(lambda: session.view.confirmation is not None)
+    remote_confirmation = _confirmation_proof(session)
+    session.confirm(True)
+    invalidation.wait_for(lambda: not session.view.action_in_flight)
+    view = session.view
+    return (
+        remote_confirmation,
+        tuple(daemon.events),
+        view.controller.account_id,
+        view.footer.kind,
+    )
+
+
+def _reject_contradictory_completion(
+    session: InteractiveDashboardSession,
+    invalidation: SessionInvalidationProbe,
+    connector: SessionControlConnector,
+    daemon: SetupDaemon,
+    setup_events: tuple[str, ...],
+) -> tuple[bool, SidekickAccountId | None, DashboardFooterKind]:
+    """Reject terminal success that provider read-back contradicts."""
+    connector.skip_readback_next = True
+    session.move(DashboardMove.DOWN)
+    session.activate()
+    invalidation.wait_for(lambda: not session.view.action_in_flight)
+    view = session.view
+    return (
+        tuple(daemon.events) == setup_events,
+        view.controller.account_id,
+        view.footer.kind,
+    )
+
+
+def _reject_codex_remote_control_code(
+    session: InteractiveDashboardSession,
+    invalidation: SessionInvalidationProbe,
+    connector: SessionControlConnector,
+) -> bool:
+    """Treat a malformed Codex Remote Control code as ordinary failure."""
+    connector.require_remote_control_next = True
+    session.focus_next_provider()
+    session.move(DashboardMove.UP)
+    session.activate()
+    invalidation.wait_for(lambda: not session.view.action_in_flight)
+    view = session.view
+    return (
+        view.confirmation is None
+        and view.footer.kind is DashboardFooterKind.ERROR
+    )
+
+
 def exercise_dashboard_session(
     snapshot: DashboardSnapshot,
     *,
@@ -410,6 +573,11 @@ def exercise_dashboard_session(
 ) -> DashboardSessionProof:
     """Exercise setup, serialized activation, failure, and bounded close."""
     unavailable = unavailable_session_snapshot(snapshot)
+    partial_start_reaped = _partial_start_reaped(
+        unavailable,
+        active_account_id,
+        monkeypatch,
+    )
     snapshots = SessionSnapshotSource(unavailable)
     option_connector = SessionControlConnector(
         SetupDaemon(ServiceLifecycleState.READY),
@@ -444,47 +612,45 @@ def exercise_dashboard_session(
     session.bind_invalidator(invalidation)
     session.start()
     try:
-        session.move(DashboardMove.UP)
-        session.activate()
-        session.activate()
-        session.restore()
-        activation_locked = (
-            session.view.activation_in_flight
-            and session.view.controller.account_id == preview_account_id
+        lookup.wait_until_finished()
+        (
+            activation_locked,
+            setup_refusal_restored,
+            setup_refusal_message,
+            service_confirmation,
+        ) = _refuse_setup(
+            session,
+            invalidation,
+            active_account_id=active_account_id,
+            preview_account_id=preview_account_id,
         )
-        invalidation.wait_for(lambda: session.view.confirmation is not None)
-        confirmation = session.view.confirmation
-        service_confirmation = (
-            None if confirmation is None else confirmation.kind,
-            session.view.footer.kind,
-            session.view.footer.message,
+        (
+            remote_confirmation,
+            setup_events,
+            verified_account_id,
+            success_footer_kind,
+        ) = _approve_setup(
+            session,
+            invalidation,
+            daemon,
         )
-        session.confirm(True)
-        invalidation.wait_for(lambda: session.view.confirmation is not None)
-        confirmation = session.view.confirmation
-        remote_confirmation = (
-            None if confirmation is None else confirmation.kind,
-            session.view.footer.kind,
-            session.view.footer.message,
-        )
-        session.confirm(True)
-        invalidation.wait_for(lambda: not session.view.action_in_flight)
-        setup_events, verified_account_id = (
-            tuple(daemon.events),
-            session.view.controller.account_id,
-        )
-
-        connector.fail_next = True
-        session.move(DashboardMove.DOWN)
-        session.activate()
-        invalidation.wait_for(lambda: not session.view.action_in_flight)
         setup_not_repeated, restored_account_id, failure_footer_kind = (
-            tuple(daemon.events) == setup_events,
-            session.view.controller.account_id,
-            session.view.footer.kind,
+            _reject_contradictory_completion(
+                session,
+                invalidation,
+                connector,
+                daemon,
+                setup_events,
+            )
+        )
+        remote_control_scoped_to_claude = _reject_codex_remote_control_code(
+            session,
+            invalidation,
+            connector,
         )
 
         connector.pause_next = True
+        session.focus_next_provider()
         session.move(DashboardMove.DOWN)
         session.activate()
         connector.wait_for_stream()
@@ -494,14 +660,19 @@ def exercise_dashboard_session(
         session.close()
     return DashboardSessionProof(
         control_connect_calls=tuple(connect.calls),
+        partial_start_reaped=partial_start_reaped,
         activation_locked=activation_locked,
         confirmations=(service_confirmation, remote_confirmation),
         activations=tuple(connector.activations),
         setup_events=setup_events,
+        setup_refusal_restored=setup_refusal_restored,
+        setup_refusal_message=setup_refusal_message,
         verified_account_id=verified_account_id,
+        success_footer_kind=success_footer_kind,
         setup_not_repeated=setup_not_repeated,
         restored_account_id=restored_account_id,
         failure_footer_kind=failure_footer_kind,
+        remote_control_scoped_to_claude=remote_control_scoped_to_claude,
         lookup_cancelled=lookup.cancelled,
         daemon_cancelled=daemon.cancelled,
         stream_released=connector.stream_released.is_set(),

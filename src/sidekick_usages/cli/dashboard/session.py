@@ -1,7 +1,7 @@
 """Two-owner orchestration for one interactive dashboard process."""
 
-from collections.abc import Callable, Mapping
-from contextlib import suppress
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager, suppress
 from dataclasses import replace
 from pathlib import Path
 from queue import Full, Queue
@@ -64,6 +64,9 @@ REFRESH_ALL_QUEUED_MESSAGE = "Due-account refresh queued."
 LOOKUP_STARTED_MESSAGE = "Refreshing account metrics."
 LOOKUP_PROGRESS_MESSAGE = "Updated account metrics."
 LOOKUP_FAILED_MESSAGE = "Live metrics refresh failed; cached metrics remain."
+CACHE_RELOAD_ERROR_MESSAGE = (
+    "The action completed, but cached state could not be reloaded."
+)
 
 
 def _discard_invalidation() -> None:
@@ -98,6 +101,7 @@ class InteractiveDashboardSession:
             dict(environment)
         )
         self._view_lock = Lock()
+        self._snapshot_lock = Lock()
         self._actions: Queue[DashboardActionRequest | None] = Queue(
             ACTION_QUEUE_CAPACITY
         )
@@ -108,8 +112,6 @@ class InteractiveDashboardSession:
         self._invalidate = _discard_invalidation
         self._lookup_thread: Thread | None = None
         self._action_thread: Thread | None = None
-        self._lookup_stopped = Event()
-        self._action_stopped = Event()
         self._started = False
         self._closed = False
         self._action_executor = DashboardActionExecutor(
@@ -151,19 +153,21 @@ class InteractiveDashboardSession:
                 return
             self._started = True
             self._lookup_thread = Thread(
-                target=self._run_owner,
-                args=(self._run_lookup, self._lookup_stopped),
+                target=self._run_lookup,
                 name="sidekick-dashboard-lookup",
             )
             self._action_thread = Thread(
-                target=self._run_owner,
-                args=(self._run_actions, self._action_stopped),
+                target=self._run_actions,
                 name="sidekick-dashboard-actions",
             )
             lookup_thread = self._lookup_thread
             action_thread = self._action_thread
-        lookup_thread.start()
-        action_thread.start()
+        try:
+            lookup_thread.start()
+            action_thread.start()
+        except BaseException:
+            self.close()
+            raise
 
     def close(self) -> None:
         """Cancel lookup work, stop observation, and join both owners."""
@@ -180,25 +184,19 @@ class InteractiveDashboardSession:
             self._decisions.put_nowait(ServiceSetupDecision.REFUSED)
         with suppress(Full):
             self._actions.put_nowait(None)
-        self._join_owner(lookup_thread, self._lookup_stopped)
-        self._join_owner(action_thread, self._action_stopped)
+        self._join_owner(lookup_thread)
+        self._join_owner(action_thread)
 
     @staticmethod
-    def _run_owner(
-        operation: Callable[[], None],
-        stopped: Event,
-    ) -> None:
-        try:
-            operation()
-        finally:
-            stopped.set()
-
-    @staticmethod
-    def _join_owner(thread: Thread | None, stopped: Event) -> None:
+    def _join_owner(thread: Thread | None) -> None:
+        """Join a launched owner and ignore only a never-started thread."""
         if thread is None:
             return
-        stopped.wait()
-        thread.join()
+        try:
+            thread.join()
+        except RuntimeError:
+            if thread.ident is not None:
+                raise
 
     def move(self, direction: DashboardMove) -> None:
         """Move the preview cursor without changing verified state."""
@@ -428,8 +426,10 @@ class InteractiveDashboardSession:
         message: str,
         failed: bool = False,
     ) -> None:
-        snapshot = self._load_snapshot()
-        with self._view_lock:
+        with (
+            self._serialized_snapshot() as snapshot,
+            self._view_lock,
+        ):
             if self._closed:
                 return
             controller = self._controller()
@@ -448,6 +448,14 @@ class InteractiveDashboardSession:
             )
             invalidate = self._invalidate
         invalidate()
+
+    @contextmanager
+    def _serialized_snapshot(
+        self,
+    ) -> Iterator[DashboardSnapshot | None]:
+        """Serialize cache read and publication without blocking input."""
+        with self._snapshot_lock:
+            yield self._load_snapshot()
 
     def _load_snapshot(self) -> DashboardSnapshot | None:
         try:
@@ -475,58 +483,72 @@ class InteractiveDashboardSession:
         ):
             self.action_failed(intent)
             return
-        snapshot = self._load_snapshot()
-        if snapshot is None:
-            self.action_error(
-                "The action completed, but cached state could not be reloaded."
-            )
-            return
-        failed = False
-        with self._view_lock:
-            if self._closed:
-                return
-            controller = self._controller().rebase(snapshot)
-            if isinstance(intent, ActivateOrRepairIntent):
-                try:
-                    controller = controller.activation_succeeded(
-                        DashboardActivationProof(
-                            provider_id=intent.provider_id,
-                            account_id=intent.account_id,
-                        )
-                    )
-                except ValueError:
-                    controller = self._controller().rebase(
-                        snapshot,
-                        restore_provider=intent.provider_id,
-                    )
-                    failed = True
-                message = (
-                    "Account action failed. Run sidekick-usages doctor "
-                    f"--provider {intent.provider_id.value}"
-                    if failed
-                    else "Account selection verified."
+        with self._serialized_snapshot() as snapshot:
+            if snapshot is None:
+                invalidate = self._action_error_transition(
+                    intent,
+                    CACHE_RELOAD_ERROR_MESSAGE,
+                    None,
                 )
-            elif isinstance(intent, RefreshAccountIntent):
-                message = "Account refresh completed."
             else:
-                message = "Due-account refresh scheduled."
-            self._set_controller(
-                controller,
-                (
-                    self._error_footer(message)
-                    if failed
-                    else self._progress_footer(message)
-                ),
-                action_in_flight=False,
-                activation_in_flight=False,
-                clear_confirmation=True,
-            )
-            invalidate = self._invalidate
+                failed = False
+                with self._view_lock:
+                    if self._closed:
+                        return
+                    controller = self._controller().rebase(snapshot)
+                    if isinstance(intent, ActivateOrRepairIntent):
+                        try:
+                            controller = controller.activation_succeeded(
+                                DashboardActivationProof(
+                                    provider_id=intent.provider_id,
+                                    account_id=intent.account_id,
+                                )
+                            )
+                        except ValueError:
+                            controller = self._controller().rebase(
+                                snapshot,
+                                restore_provider=intent.provider_id,
+                            )
+                            failed = True
+                    footer = (
+                        self._error_footer(
+                            self._action_failure_message(intent)
+                        )
+                        if failed
+                        else self._idle_footer(controller)
+                    )
+                    self._set_controller(
+                        controller,
+                        footer,
+                        action_in_flight=False,
+                        activation_in_flight=False,
+                        clear_confirmation=True,
+                    )
+                    invalidate = self._invalidate
         invalidate()
 
     def action_failed(self, intent: DashboardIntent) -> None:
         if self._stopping.is_set():
             return
+        self.action_error(intent, self._action_failure_message(intent))
+
+    def action_error(
+        self,
+        intent: DashboardIntent,
+        message: str,
+    ) -> None:
+        if self._stopping.is_set():
+            return
+        with self._serialized_snapshot() as snapshot:
+            invalidate = self._action_error_transition(
+                intent,
+                message,
+                snapshot,
+            )
+        invalidate()
+
+    @staticmethod
+    def _action_failure_message(intent: DashboardIntent) -> str:
         provider_id = (
             intent.provider_id
             if isinstance(
@@ -535,7 +557,7 @@ class InteractiveDashboardSession:
             )
             else None
         )
-        message = (
+        return (
             "Account action failed. Run sidekick-usages doctor"
             if provider_id is None
             else (
@@ -543,17 +565,21 @@ class InteractiveDashboardSession:
                 f"--provider {provider_id.value}"
             )
         )
-        snapshot = self._load_snapshot()
-        if snapshot is None:
-            self.action_error(message)
-            return
+
+    def _action_error_transition(
+        self,
+        intent: DashboardIntent,
+        message: str,
+        snapshot: DashboardSnapshot | None,
+    ) -> Callable[[], None]:
         with self._view_lock:
             if self._closed:
-                return
-            controller = self._controller().rebase(
-                snapshot,
+                return _discard_invalidation
+            controller = self._controller()
+            controller = controller.rebase(
+                controller.snapshot if snapshot is None else snapshot,
                 restore_provider=(
-                    provider_id
+                    intent.provider_id
                     if isinstance(intent, ActivateOrRepairIntent)
                     else None
                 ),
@@ -565,23 +591,7 @@ class InteractiveDashboardSession:
                 activation_in_flight=False,
                 clear_confirmation=True,
             )
-            invalidate = self._invalidate
-        invalidate()
-
-    def action_error(self, message: str) -> None:
-        with self._view_lock:
-            if self._closed:
-                return
-            controller = self._controller()
-            self._set_controller(
-                controller,
-                self._error_footer(message),
-                action_in_flight=False,
-                activation_in_flight=False,
-                clear_confirmation=True,
-            )
-            invalidate = self._invalidate
-        invalidate()
+            return self._invalidate
 
     def request_confirmation(
         self,
@@ -620,6 +630,12 @@ class InteractiveDashboardSession:
     ) -> DashboardFooter:
         if self._view.action_in_flight:
             return self._view.footer
+        return self._idle_footer(controller)
+
+    @staticmethod
+    def _idle_footer(
+        controller: DashboardController,
+    ) -> DashboardFooter:
         return DashboardFooter(
             kind=(
                 DashboardFooterKind.HELP

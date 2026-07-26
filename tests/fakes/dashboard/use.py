@@ -3,7 +3,10 @@
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-from sidekick_usages.cli.dashboard.models.use import UseActivationSuccess
+from sidekick_usages.cli.dashboard.models.use import (
+    UseActivationResult,
+    UseActivationSuccess,
+)
 from sidekick_usages.core.accounts.models import (
     ClaudeAccountAuthority,
     ClaudeManagedLoginAuthority,
@@ -24,18 +27,14 @@ from tests.fakes.dashboard.state import (
     saved_codex_account,
 )
 
-_CODEX_AUTHORITY_ID = AuthorityId(
-    "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
-)
+_CODEX_AUTHORITY_ID = AuthorityId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
 _CODEX_LOGIN_REQUIRED_ACCOUNT_ID = SidekickAccountId(
     "22222222-2222-4222-8222-222222222222"
 )
 _CODEX_LOGIN_REQUIRED_AUTHORITY_ID = AuthorityId(
     "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 )
-_CLAUDE_AUTHORITY_ID = AuthorityId(
-    "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
-)
+_CLAUDE_AUTHORITY_ID = AuthorityId("cccccccc-cccc-4ccc-8ccc-cccccccccccc")
 
 
 @dataclass(slots=True)
@@ -45,13 +44,14 @@ class RecordingUseActivation:
     calls: list[tuple[ProviderId, SidekickAccountId, bool]] = field(
         default_factory=list
     )
+    result: UseActivationResult = field(default_factory=UseActivationSuccess)
 
     def __call__(
         self,
         provider_id: ProviderId,
         account_id: SidekickAccountId,
         allow_remote_control_disconnect: bool,
-    ) -> UseActivationSuccess:
+    ) -> UseActivationResult:
         self.calls.append(
             (
                 provider_id,
@@ -59,7 +59,7 @@ class RecordingUseActivation:
                 allow_remote_control_disconnect,
             )
         )
-        return UseActivationSuccess()
+        return self.result
 
 
 def scriptable_use_accounts(
@@ -82,9 +82,7 @@ def scriptable_use_accounts(
         authority=ClaudeAccountAuthority(
             subscription=ClaudeManagedLoginAuthority(
                 authority_id=_CLAUDE_AUTHORITY_ID,
-                provider_identity=ProviderIdentity(
-                    "synthetic-claude-managed"
-                ),
+                provider_identity=ProviderIdentity("synthetic-claude-managed"),
                 generation=AuthorityGeneration("claude-generation"),
                 access_expires_at=reference_time + timedelta(hours=5),
                 refresh_expires_at=reference_time + timedelta(days=90),

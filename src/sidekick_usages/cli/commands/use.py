@@ -22,10 +22,16 @@ from sidekick_usages.providers.claude.activation.service import (
     claude_environment_conflict,
     claude_environment_conflict_keys,
 )
+from sidekick_usages.providers.claude.activation.types import (
+    ClaudeActivationGuardFailure,
+)
 
 _SERVICE_PREPARATION_FAILURE_CODES = frozenset(
     {"service_incompatible", "service_stopping"}
 )
+_REMOTE_CONTROL_REQUIRED_FAILURE_CODE = (
+    ClaudeActivationGuardFailure.REMOTE_CONTROL_DISCONNECT_REQUIRED
+).failure_code
 
 
 def _command(*arguments: str) -> str:
@@ -133,9 +139,7 @@ def use_cmd(
                 "This shell overrides Claude account selection.",
                 _command(
                     "unset",
-                    *claude_environment_conflict_keys(
-                        environment_conflict
-                    ),
+                    *claude_environment_conflict_keys(environment_conflict),
                 ),
             )
     try:
@@ -151,16 +155,24 @@ def use_cmd(
             _command("sidekick-usages", "daemon", "install"),
         )
     if isinstance(result, UseActivationFailure):
-        action = (
-            _command("sidekick-usages", "daemon", "install")
-            if result.code in _SERVICE_PREPARATION_FAILURE_CODES
-            else _command(
+        if (
+            provider_id is ProviderId.CLAUDE
+            and result.code == _REMOTE_CONTROL_REQUIRED_FAILURE_CODE
+        ):
+            action = _use_command(
+                provider_id,
+                str(account.label),
+                allow_remote_control_disconnect=True,
+            )
+        elif result.code in _SERVICE_PREPARATION_FAILURE_CODES:
+            action = _command("sidekick-usages", "daemon", "install")
+        else:
+            action = _command(
                 "sidekick-usages",
                 "doctor",
                 "--provider",
                 provider_id.value,
             )
-        )
         _fail(
             ctx,
             f"Sidekick could not verify the {provider_id.value} activation.",

@@ -153,8 +153,12 @@ class DashboardActionSink(Protocol):
         """Restore provider-proven state after one action failure."""
         ...
 
-    def action_error(self, message: str) -> None:
-        """Keep the dashboard usable with one fixed corrective action."""
+    def action_error(
+        self,
+        intent: DashboardIntent,
+        message: str,
+    ) -> None:
+        """Restore cached truth and show one fixed corrective action."""
         ...
 
 

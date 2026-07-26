@@ -52,7 +52,7 @@ PLAN_COLORS: dict[str, str] = {
     "business": "yellow",
 }
 STATIC_STATE_DETAILS = {
-    DashboardActionState.SETUP_CREDENTIAL_REGENERATION: (
+    DashboardActionState.SETUP_TOKEN_REGENERATION: (
         "Generate a new Claude setup token before using this account."
     ),
     DashboardActionState.EXTERNAL_ACTIVE: (

@@ -182,6 +182,13 @@ class DashboardController:
         )
         if account is None:
             raise ValueError("Activation proof account is not displayed.")
+        if (
+            provider.active_account_id != proof.account_id
+            or not account.active
+        ):
+            raise ValueError(
+                "Activation proof contradicts provider read-back."
+            )
         proven_anchor = DashboardProviderAnchor(
             provider_id=proof.provider_id,
             account_id=proof.account_id,
