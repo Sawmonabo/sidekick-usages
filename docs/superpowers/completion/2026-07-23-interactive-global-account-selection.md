@@ -3,7 +3,7 @@
 ## Status and scope
 
 This record captures the automated implementation and the authorized
-current-machine rollout through `a2041cf`. Focused traceability remains
+current-machine rollout through `4b39d2d`. Focused traceability remains
 **24/24 mapped**. The implementation, clean v3 storage transition, exact-wheel
 installation, resident WSL service, live read-only dashboard, and native
 command-isolation checks are complete.
@@ -16,9 +16,10 @@ Final provider-auth rollout is intentionally incomplete:
 - no Claude association or selection will run while an active Claude session
   must remain untouched without separate approval naming the exact target.
 
-The current dashboard therefore presents the correct migration/login actions
-and keeps account switching disabled. It does not claim that the six legacy
-authorities are already managed or fresh.
+The current dashboard therefore presents the correct provider-owned
+migration/login action for all six accounts without the false service or
+provider-update warnings. It does not claim that the legacy authorities are
+already managed or fresh.
 
 This tracked record uses synthetic labels and secret-free measurements only.
 It contains no provider IDs, credential paths, token hashes, raw provider
@@ -29,13 +30,13 @@ output, or account exports.
 | Boundary | Verified result |
 | --- | --- |
 | Storage | Six stable accounts migrated to strict v3: four Claude and two Codex |
-| Final verified artifact | `sidekick_usages-0.7.0-py3-none-any.whl`, SHA-256 `5526f21d56106071e8871112a830385e89664049b282e99b17643fb9938f75b8` |
+| Final verified artifact | `sidekick_usages-0.7.0-py3-none-any.whl`, SHA-256 `166885bc5072e530456bebdd09f8c9772c5aa872f4bafbd81f6c4b12f6f8d40b` |
 | Native CLIs | Claude Code `2.1.220`; Codex CLI `0.145.0` |
 | Resident service | WSL user service active and enabled; peer, socket, protocol, process, platform, and rescue checks healthy |
 | Scheduling | Legacy periodic task absent; one user supervisor plus one logon-only WSL rescue task |
 | Maintenance | Four setup-token Claude rows scheduled independently; two legacy Codex rows parked once as `managed_auth_migration_required` |
 | Live usage | Four Claude rows returned current metrics in one bounded lookup wave; both Codex rows returned exact managed-login actions |
-| Interactive contract | One cursor started on the observed active Claude row; no healthy-row active badge; quit without an account action |
+| Interactive contract | One cursor started on the observed active Claude row; six account-specific official-login warnings rendered; no false service/update warning or active badge; quit without an account action |
 | Native isolation | Claude and Codex executables, ordinary commands, user wrapper, shell files, and native Codex login remained unchanged |
 | Live Claude session | Existing session remained running and was not signaled, restarted, attached to, or retargeted |
 | Remaining authority work | Two official Codex logins and four approved Claude associations |
@@ -55,8 +56,8 @@ process remained running.
 The exercised public command surfaces were:
 
 ```bash
-uv run python packaging/smoke_wheel.py --build
-uv tool install --force <verified-wheel>
+uv run python packaging/smoke_wheel.py --build --output-dir <fresh-output>
+uv tool install --force --reinstall <verified-wheel>
 sidekick-usages daemon uninstall
 sidekick-usages daemon status
 sidekick-usages daemon install
@@ -85,35 +86,46 @@ The final cached-first launcher and installed-artifact proof are anchored by:
 - `1234807` — measures the exact installed `sidekick-usages` console script on
   a Unix PTY inside isolated application and provider paths;
 - `d1d6ac2` — aligns the installed runtime dependency and benchmark contract;
-  and
 - `d669799` — applies the formatter-only dashboard startup cleanup after the
   complete serialized local gate;
 - `fb8869a` — gives the private Windows Python child UTF-8 streams without
-  changing the parent environment or public vendor commands; and
+  changing the parent environment or public vendor commands;
 - `20d859e` — makes the existing PTY journeys wait for and validate one
   complete prompt-toolkit redraw under fragmented Unix PTY delivery;
 - `b0b81c6` — parks legacy stored authorities once with an exact managed-auth
   migration action while preserving setup-token-only Claude maintenance;
 - `3ef3108` — makes broker-owned WebSocket reads and writes cooperatively
   cancellable so Linux and macOS shutdown cannot wait on the activation
-  deadline; and
+  deadline;
 - `c7f3cd5` — keeps the `250 ms` release gate on the exact installed public
   command while leaving the packaging-only first-paint trace as a measured
-  diagnostic; and
+  diagnostic;
 - `b9cdb39` — measures the bounded in-process cursor-render benchmark as CPU
   cost, excluding hosted-runner descheduling without adding a retry, platform
-  exception, or threshold increase; and
+  exception, or threshold increase;
 - `7d46332` — separates the fake Codex daemon's outer deadlock watchdog from
   the unchanged production recovery deadline so CI scheduling cannot mask the
-  load-bearing failure; and
+  load-bearing failure;
 - `a2041cf` — binds the native macOS filesystem operation once, removes the
   unused Linux mount classifier from the macOS cold path, and makes any
-  unchanged `250 ms` first-paint failure report its observed duration.
+  unchanged `250 ms` first-paint failure report its observed duration;
+- `014f1cf` — replaces Rich on the startup and interactive render path with
+  one bounded, Unicode-aware renderer while retaining Rich for one-shot
+  presentation;
+- `cb437dd` — scopes resident-service readiness by provider and makes
+  unmanaged accounts display the official login requirement without hiding
+  managed Codex broker recovery;
+- `d7d88be` — gives the managed-Codex broker requirement one lightweight
+  policy owner shared by lifecycle health and the cached dashboard; and
+- `4b39d2d` — replaces a timing poll in the synthetic Codex interruption
+  proof with the supervisor-shutdown completion barrier that owns the durable
+  retry transition.
 
 Supporting focused boundaries include:
 
 - `tests/dashboard/test_state.py` for secret-free cached joins, stable IDs,
-  provider read-back, external state, and stale metrics;
+  provider read-back, external state, stale metrics, and the managed versus
+  unmanaged Codex broker boundary;
 - `tests/dashboard/test_routing.py` for cached-first TTY routing and one-shot
   isolation;
 - `tests/dashboard/test_actions.py` for guided setup, resumable migration, and
@@ -140,11 +152,11 @@ PTY, and denied access to real provider commands and application paths.
 
 | Measurement | Result | Required bound |
 | --- | ---: | ---: |
-| Installed-wheel cached first paint | 89.283 ms | 250 ms |
-| Synthetic cached trace first paint | 93.750 ms | diagnostic |
-| Six-account cursor-render CPU p95 | 4.790 ms | 50 ms |
-| Expanded cursor-render CPU p95 | 14.315 ms | 50 ms |
-| Reaped trace-process peak RSS | 46.629 MiB | 96 MiB |
+| Installed-wheel cached first paint | 83.551 ms | 250 ms |
+| Synthetic cached trace first paint | 80.556 ms | diagnostic |
+| Six-account cursor-render CPU p95 | 2.043 ms | 50 ms |
+| Expanded cursor-render CPU p95 | 7.949 ms | 50 ms |
+| Reaped trace-process peak RSS | 46.117 MiB | 96 MiB |
 | Reaped lookup-worker peak RSS | 46.117 MiB | 96 MiB |
 
 The same trace proved:
@@ -161,7 +173,7 @@ These numbers prove the final Linux WSL2 exact-artifact gate. The installed
 public command remains a wall-clock `250 ms` product boundary. The synthetic
 first-paint trace remains diagnostic, while the pure in-process cursor render
 retains its unchanged `50 ms` CPU-cost gate without charging hosted-runner
-descheduling to Rich rendering.
+descheduling to dashboard rendering.
 
 ## Serialized local gate
 
@@ -177,8 +189,12 @@ The serialized local gate completed at `d669799` with:
 - `uv build` plus the exact-wheel smoke green.
 
 This local result does not replace the required platform matrix. Focused
-Linux proof passes for both corrections, but cross-platform and final release
-gates remain open until the final matrix validates them.
+Linux proof at `d7d88be` added 35 passing dashboard, lifecycle, routing, and
+render cases plus green Ruff, Ty, architecture, Bandit, and pre-commit gates.
+At `4b39d2d`, the one affected synthetic Codex interruption journey, Ruff, Ty,
+architecture, and pre-commit gates also passed. The exact installed artifact
+then passed the isolated startup, concurrent lookup, memory,
+deterministic-order, and process-reaping benchmark above.
 
 ## Approved 24-gate evidence map
 
@@ -331,11 +347,24 @@ Evidence: platform-specific lifecycle artifacts, native Windows
 feature-disabled behavior, WSL rescue generation, and CI matrix definitions
 exist for Linux, macOS Arm, macOS Intel, and Windows.
 
-Disposition: **Final matrix pending.** The shutdown regression is green on
-Linux, macOS Arm, and macOS Intel; Windows behavior remains feature-disabled
-as designed. The final `a2041cf` workflow run must finish before this gate can
-close. Installed WSL service and logon-rescue health passed; destructive WSL
-termination remains deferred.
+Disposition: **Automated pass; destructive WSL recovery deferred.**
+[CI run 30215717164](https://github.com/Sawmonabo/sidekick-usages/actions/runs/30215717164)
+completed green at `4b39d2d`:
+
+- Linux: 433 passed, seven skipped, `126.299 ms` installed first paint,
+  `46.281 MiB` peak RSS;
+- macOS Arm: 432 passed, eight skipped, `88.446 ms` installed first paint,
+  `46.906 MiB` peak RSS;
+- macOS Intel: 432 passed, eight skipped, `236.508 ms` installed first paint,
+  `42.648 MiB` peak RSS;
+- Windows: 387 passed, 51 skipped, with native account switching truthfully
+  feature-disabled; and
+- both Homebrew source builds, pre-commit, and the exact wheel and source
+  distribution build passed.
+
+Installed WSL service and logon-rescue health also passed. Destructive WSL
+termination remains deferred while the active Claude session must remain
+alive.
 
 ### 20. Pre-mutation capability failure
 
@@ -561,12 +590,11 @@ cursor-only layout and was closed with `q` before any account action.
 The implementation and authorized machine transition are complete. Final
 release closure still requires:
 
-1. a green terminal result for the final `a2041cf` cross-platform workflow;
-2. independent official login for both saved Codex accounts;
-3. official association of each Claude setup-token account, with separate
+1. independent official login for both saved Codex accounts;
+2. official association of each Claude setup-token account, with separate
    target-specific approval before any step that can alter the live Claude
    selection;
-4. post-login verification of new and supported ongoing provider sessions,
+3. post-login verification of new and supported ongoing provider sessions,
    in-flight stability, and cross-provider independence; and
-5. the deferred destructive WSL terminate/recovery journey, which cannot run
+4. the deferred destructive WSL terminate/recovery journey, which cannot run
    while the active Claude session must remain alive.
