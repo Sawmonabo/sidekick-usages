@@ -3,23 +3,26 @@
 ## Status and scope
 
 This record captures the automated implementation and the authorized
-current-machine rollout through `4b39d2d`. Focused traceability remains
+current-machine rollout through `902621e`. Focused traceability remains
 **24/24 mapped**. The implementation, clean v3 storage transition, exact-wheel
 installation, resident WSL service, live read-only dashboard, and native
-command-isolation checks are complete.
+command-isolation checks are complete. Both saved Codex accounts now have
+independent managed authority, selection works through the installed CLI, and
+the resident service starts and recovers the official shared Codex runtime
+without manual intervention.
 
-Final provider-auth rollout is intentionally incomplete:
+Final Claude provider-auth rollout is intentionally deferred:
 
-- two Codex accounts still require independent official managed-home login;
 - four Claude setup-token accounts still require official managed-profile
   association; and
 - no Claude association or selection will run while an active Claude session
   must remain untouched without separate approval naming the exact target.
 
-The current dashboard therefore presents the correct provider-owned
-migration/login action for all six accounts without the false service or
-provider-update warnings. It does not claim that the legacy authorities are
-already managed or fresh.
+The current dashboard presents live Claude and Codex metrics, padded usage
+tiles, account-local warnings, cursor-only selection, and both provider token
+totals. Claude setup-token rows truthfully retain their official-login action;
+Codex rows are managed, maintained, and free of false service or update
+warnings.
 
 This tracked record uses synthetic labels and secret-free measurements only.
 It contains no provider IDs, credential paths, token hashes, raw provider
@@ -30,16 +33,16 @@ output, or account exports.
 | Boundary | Verified result |
 | --- | --- |
 | Storage | Six stable accounts migrated to strict v3: four Claude and two Codex |
-| Final verified artifact | `sidekick_usages-0.7.0-py3-none-any.whl`, SHA-256 `166885bc5072e530456bebdd09f8c9772c5aa872f4bafbd81f6c4b12f6f8d40b` |
+| Final verified artifact | `sidekick_usages-0.7.0-py3-none-any.whl`, SHA-256 `0d14f8c04b232b6f9c16d4e5da10c384be5312632288c12b4738ecd998f451ad` |
 | Native CLIs | Claude Code `2.1.220`; Codex CLI `0.145.0` |
 | Resident service | WSL user service active and enabled; peer, socket, protocol, process, platform, and rescue checks healthy |
 | Scheduling | Legacy periodic task absent; one user supervisor plus one logon-only WSL rescue task |
-| Maintenance | Four setup-token Claude rows scheduled independently; two legacy Codex rows parked once as `managed_auth_migration_required` |
-| Live usage | Four Claude rows returned current metrics in one bounded lookup wave; both Codex rows returned exact managed-login actions |
-| Interactive contract | One cursor started on the observed active Claude row; six account-specific official-login warnings rendered; no false service/update warning or active badge; quit without an account action |
-| Native isolation | Claude and Codex executables, ordinary commands, user wrapper, shell files, and native Codex login remained unchanged |
+| Maintenance | Four setup-token Claude rows scheduled independently; both managed Codex authorities healthy and independently scheduled with zero failed attempts |
+| Live usage | All six rows returned current metrics in one bounded lookup wave; Claude and Codex token totals rendered |
+| Interactive contract | One cursor identified the selected row; padded usage tiles and account-local warnings rendered; no active badge; quit without an unintended account action |
+| Native isolation | Vendor executables, ordinary commands, user wrapper, shell files, and the active Claude login remained untouched; Sidekick projected only the selected Codex authority |
 | Live Claude session | Existing session remained running and was not signaled, restarted, attached to, or retargeted |
-| Remaining authority work | Two official Codex logins and four approved Claude associations |
+| Remaining authority work | Four approved Claude associations, intentionally deferred |
 
 The clean-break v2-to-v3 transition used the reviewed, local-only disposable
 CLI at `86000b9`. It preserved stable account IDs and native provider files,
@@ -64,8 +67,10 @@ sidekick-usages daemon install
 sidekick-usages doctor --json
 sidekick-usages --no-interactive
 sidekick-usages
+sidekick-usages use codex <saved-account>
 claude --version
 codex --version
+codex login status
 ```
 
 The native Claude login changed once before final installation while the
@@ -119,7 +124,28 @@ The final cached-first launcher and installed-artifact proof are anchored by:
   policy owner shared by lifecycle health and the cached dashboard; and
 - `4b39d2d` — replaces a timing poll in the synthetic Codex interruption
   proof with the supervisor-shutdown completion barrier that owns the durable
-  retry transition.
+  retry transition;
+- `30f3044` — resolves managed credentials through one shared composition
+  owner in both one-shot and concurrent dashboard lookups;
+- `7c9122e` — pins the qualified Codex executable in Linux, WSL, and macOS
+  user-service artifacts without changing terminal command resolution;
+- `455a800` — restores padded usage tiles, account-local warnings, Claude
+  activity totals, and the strict provider-scoped activity contract;
+- `c48d61e` — exposes typed broker failures and rejects unavailable Codex
+  activation before queue insertion;
+- `8d7a991` — aligns the exact-wheel synthetic activity fixture with the
+  strict activity schema;
+- `703afb2` — attaches Sidekick to the official shared Codex runtime;
+- `8cd0205` — isolates provider operation slots so unrelated account work
+  remains concurrent;
+- `90a738a` — waits for recovered broker readiness after a resident-service
+  restart;
+- `cc14120` — propagates the service-qualified Codex executable into isolated
+  workers and persists exact worker preparation failures;
+- `d0d541d` — honors the official native Codex file-store default while
+  retaining strict managed-profile configuration; and
+- `902621e` — recognizes the official projected ChatGPT-token auth mode during
+  post-activation reconciliation.
 
 Supporting focused boundaries include:
 
@@ -152,12 +178,12 @@ PTY, and denied access to real provider commands and application paths.
 
 | Measurement | Result | Required bound |
 | --- | ---: | ---: |
-| Installed-wheel cached first paint | 83.551 ms | 250 ms |
-| Synthetic cached trace first paint | 80.556 ms | diagnostic |
-| Six-account cursor-render CPU p95 | 2.043 ms | 50 ms |
-| Expanded cursor-render CPU p95 | 7.949 ms | 50 ms |
-| Reaped trace-process peak RSS | 46.117 MiB | 96 MiB |
-| Reaped lookup-worker peak RSS | 46.117 MiB | 96 MiB |
+| Installed-wheel cached first paint | 81.740 ms | 250 ms |
+| Synthetic cached trace first paint | 91.385 ms | diagnostic |
+| Six-account cursor-render CPU p95 | 2.082 ms | 50 ms |
+| Expanded cursor-render CPU p95 | 5.753 ms | 50 ms |
+| Reaped trace-process peak RSS | 46.398 MiB | 96 MiB |
+| Reaped lookup-worker peak RSS | 46.398 MiB | 96 MiB |
 
 The same trace proved:
 
@@ -195,6 +221,12 @@ At `4b39d2d`, the one affected synthetic Codex interruption journey, Ruff, Ty,
 architecture, and pre-commit gates also passed. The exact installed artifact
 then passed the isolated startup, concurrent lookup, memory,
 deterministic-order, and process-reaping benchmark above.
+
+The final Codex worker and reconciliation repairs were verified through only
+the two existing load-bearing activation and durable-worker boundaries. No
+new test file or broad suite was added or rerun. Focused Ruff, Ty,
+architecture, wheel-smoke, and live installed-CLI checks passed; architecture
+reported only its existing non-failing cohesion warnings.
 
 ## Approved 24-gate evidence map
 
@@ -250,24 +282,28 @@ Disposition: **Automated pass.**
 Evidence: the controller and provider activation tests prove one action,
 provider read-back, outgoing-authority retention, and verified commit.
 
-Disposition: **Automated pass; live pending.** A live Claude switch requires
-separate approval naming the exact target.
+Disposition: **Automated pass; Codex live pass.** Installed Codex selection
+completed with provider read-back. A live Claude switch remains intentionally
+deferred.
 
 ### 8. Independent provider selection
 
 Evidence: selected-state, controller, Claude activation, and Codex activation
 tests prove that changing one provider leaves the other provider unchanged.
 
-Disposition: **Automated pass; provider login and live selection pending.**
+Disposition: **Automated and Codex live pass.** Selecting the saved Codex
+authority left Claude state and the active Claude process untouched. Claude
+selection remains intentionally deferred.
 
 ### 9. New ordinary terminals
 
 Evidence: packaging proves that normal vendor commands remain vendor-owned,
 and provider activation tests prove the selected native projection.
 
-Disposition: **Vendor ownership passed live; selected-account projection
-pending.** Bare vendor commands still resolve normally. Account identity
-cannot be verified until managed login and an authorized selection complete.
+Disposition: **Codex live pass; Claude selection deferred.** Bare vendor
+commands still resolve normally, and a new ordinary Codex invocation reads
+the selected native projection without a wrapper, alias, or global
+environment change.
 
 ### 10. Supported ongoing sessions
 
@@ -275,16 +311,18 @@ Evidence: the Codex broker tests prove daemon-connected update and
 rehydration behavior; Claude's documented boundary remains next-request
 adoption.
 
-Disposition: **Automated pass; live pending.** Exact installed-session
-behavior remains a Task 9 observation.
+Disposition: **Automated and Codex live pass.** The resident Codex runtime
+accepted the selected-authority update without terminating the current Codex
+session. Claude next-request adoption remains intentionally deferred.
 
 ### 11. In-flight stability
 
 Evidence: activation, broker, queue, and interruption tests separate committed
 selection from already-running operations.
 
-Disposition: **Automated pass; live pending.** Task 9 must observe an installed
-provider request without retargeting it.
+Disposition: **Automated and Codex live pass.** Same-account Codex projection
+completed without interrupting the active Codex session. The active Claude
+session was not signaled or retargeted.
 
 ### 12. Unselected maintenance and metrics
 
@@ -292,24 +330,28 @@ Evidence: the Claude and Codex maintenance tests, global lookup wave, and
 activity snapshot tests prove selection-independent work and failure
 isolation.
 
-Disposition: **Automated pass; managed-authority live proof pending.** All
-four setup-token Claude accounts returned fresh usage independently. Both
-legacy Codex accounts were isolated and returned the correct managed-login
-action instead of a false refresh-token diagnosis.
+Disposition: **Automated and Codex live pass.** All four setup-token Claude
+accounts returned fresh usage independently. Both Codex authorities are
+managed and independently scheduled with healthy refresh state; selection of
+one does not suspend maintenance or metrics for the other.
 
 ### 13. Fixed setup-token tracking
 
 Evidence: Claude migration, maintenance, lifetime, usage, and heartbeat tests
 preserve setup-token authority and never treat it as refreshable.
 
-Disposition: **Automated pass.**
+Disposition: **Automated and live pass.** All four fixed setup-token
+authorities remain distinct, preserved, independently scheduled, and usable
+for metrics without being misrepresented as refreshable subscriptions.
 
 ### 14. Independent Codex repair
 
 Evidence: managed Codex login and refresh tests use one final private home per
 account and continue after an account-scoped failure.
 
-Disposition: **Automated pass.**
+Disposition: **Automated and live pass.** Both managed Codex authorities are
+healthy and independently scheduled; a same-account projection completed
+without overwriting the other authority.
 
 ### 15. Per-account failure isolation
 
@@ -324,7 +366,9 @@ Disposition: **Automated pass.**
 Evidence: the Claude recovery and Codex activation tests let known and unknown
 official external state win without silent import.
 
-Disposition: **Automated pass; live pending.**
+Disposition: **Automated and Codex live pass.** Reconciliation recognized the
+official projected ChatGPT-token auth mode and retained the verified selected
+authority. Claude reconciliation remains intentionally deferred.
 
 ### 17. Interrupt recovery
 
@@ -396,10 +440,10 @@ without changing accounts or native provider state.
 
 Evidence owner: interactive rollout Task 9.
 
-Disposition: **Storage and installation passed live; managed authentication
-pending.** Six accounts were migrated through the disposable CLI into strict
-v3 state and the exact wheel was installed. Two Codex logins and four Claude
-associations remain.
+Disposition: **Storage, installation, and Codex authentication passed live.**
+Six accounts are in strict v3 state, the exact wheel is installed, and both
+Codex authorities are managed and maintained. Four Claude official
+associations remain intentionally deferred.
 
 ### 24. Earlier-layout rejection
 
@@ -587,14 +631,13 @@ cursor-only layout and was closed with `q` before any account action.
 
 ## Remaining release evidence
 
-The implementation and authorized machine transition are complete. Final
-release closure still requires:
+The implementation and authorized machine transition are complete through
+Codex. Final release closure still requires:
 
-1. independent official login for both saved Codex accounts;
-2. official association of each Claude setup-token account, with separate
+1. official association of each Claude setup-token account, with separate
    target-specific approval before any step that can alter the live Claude
    selection;
-3. post-login verification of new and supported ongoing provider sessions,
-   in-flight stability, and cross-provider independence; and
-4. the deferred destructive WSL terminate/recovery journey, which cannot run
+2. post-association verification of new and supported ongoing Claude
+   sessions; and
+3. the deferred destructive WSL terminate/recovery journey, which cannot run
    while the active Claude session must remain alive.
