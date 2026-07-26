@@ -7,6 +7,7 @@ from contextlib import ExitStack
 from pathlib import Path
 
 from sidekick_usages.clock import Clock, SystemClock
+from sidekick_usages.core.accounts.models import ClaudeAccountAuthority
 from sidekick_usages.core.accounts.types import (
     OperationId,
     SidekickAccountId,
@@ -16,7 +17,10 @@ from sidekick_usages.core.selection.models import (
     ProviderAuthObservation,
     activation_account_ids,
 )
-from sidekick_usages.core.selection.types import OperationKind
+from sidekick_usages.core.selection.types import (
+    OperationKind,
+    OperationPriority,
+)
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.credentials.claude.activation.authority import (
     ClaudeActivationAuthorityCoordinator,
@@ -53,7 +57,9 @@ from sidekick_usages.credentials.codex.reconciliation import (
 )
 from sidekick_usages.daemon.models.worker import (
     WORKER_EXCHANGE_DESCRIPTOR_ENVIRONMENT_KEY,
+    WorkerResult,
 )
+from sidekick_usages.daemon.types.worker import WorkerOutcome
 from sidekick_usages.daemon.worker.account import (
     CodexManagedAccountService,
 )
@@ -84,6 +90,8 @@ from sidekick_usages.daemon.worker.runtime import (
     UnsupportedWorkerExecutor,
     run_isolated_worker,
     run_provider_worker,
+    worker_failure,
+    worker_success,
 )
 from sidekick_usages.http.client import HttpClient
 from sidekick_usages.paths import ApplicationPaths, discover_application_paths
@@ -100,6 +108,7 @@ from sidekick_usages.persistence.supervisor.activation import (
     ActivationJournalStore,
 )
 from sidekick_usages.persistence.supervisor.authority import (
+    OperationAuthority,
     OperationAuthorityLock,
     ProviderMutationLock,
 )
@@ -119,6 +128,7 @@ _EXIT_OK = 0
 _EXIT_INVALID_INVOCATION = 2
 _EXIT_STATE_UNAVAILABLE = 3
 _PROVIDER_AUTHORITY_TIMEOUT_SECONDS = 0.25
+_MANAGED_AUTH_MIGRATION_REQUIRED_CODE = "managed_auth_migration_required"
 _PROVIDER_OPERATION_KINDS = frozenset(
     {
         OperationKind.CODEX_CALLBACK,
@@ -148,6 +158,104 @@ class _CodexNativeAuthObserver:
             credential_home=self._native_home,
             observed_at=self._clock.now(),
         )
+
+
+class _AccountMaintenanceExecutor:
+    """Compose one qualified account operation inside its failure boundary."""
+
+    def __init__(
+        self,
+        paths: ApplicationPaths,
+        clock: Clock,
+    ) -> None:
+        self._paths = paths
+        self._clock = clock
+
+    def execute(
+        self,
+        operation: DueOperation,
+        authority: OperationAuthority,
+    ) -> WorkerResult:
+        """Run managed maintenance or require its one-time migration."""
+        authority.require(operation.required_account_id)
+        persistence = PersistenceService(
+            self._paths,
+            maintenance_quiescent=lambda: True,
+        )
+        store = persistence.open_store()
+        account = store.read_saved(operation.required_account_id)
+        if account is None or account.provider_id is not operation.provider_id:
+            raise ValueError("Worker account authority is unavailable.")
+        if not account.has_managed_authority:
+            account_authority = account.authority
+            if (
+                isinstance(account_authority, ClaudeAccountAuthority)
+                and account_authority.subscription is None
+                and operation.kind is OperationKind.MAINTAIN
+                and operation.priority is OperationPriority.SCHEDULED
+            ):
+                return worker_success(operation, self._clock)
+            return worker_failure(
+                operation,
+                WorkerOutcome.ACTION_REQUIRED,
+                _MANAGED_AUTH_MIGRATION_REQUIRED_CODE,
+                self._clock,
+            )
+        with ExitStack() as resources:
+            if operation.provider_id is ProviderId.CLAUDE:
+                profiles = persistence.managed_claude_profiles
+                selected = SelectedStateStore(self._paths.selected_state)
+                runtime = ClaudeActivationRuntime(environment=os.environ)
+                capabilities = ClaudeProfileCapabilityFactory(
+                    self._paths,
+                    profiles,
+                    environment=os.environ,
+                )
+                authorities = ClaudeActivationAuthorityCoordinator(
+                    self._paths,
+                    store,
+                    profiles,
+                    self._clock,
+                    capabilities=capabilities,
+                    runtime=runtime,
+                )
+                executor = ClaudeManagedMaintenanceWorkerExecutor(
+                    ClaudeManagedAuthorityCoordinator(
+                        self._paths,
+                        store,
+                        profiles,
+                        selected,
+                        authorities,
+                        capabilities,
+                        self._clock,
+                        environment=os.environ,
+                    ),
+                    self._clock,
+                )
+            elif operation.provider_id is ProviderId.CODEX:
+                coordinator = compose_codex_managed_authority(
+                    self._paths,
+                    store,
+                    persistence.managed_codex_profiles,
+                    self._clock,
+                    os.environ,
+                )
+                http = resources.enter_context(HttpClient(clock=self._clock))
+                executor = CodexManagedMaintenanceWorkerExecutor(
+                    coordinator,
+                    CodexManagedAccountService(
+                        coordinator,
+                        store,
+                        http,
+                        ActivitySnapshotStore(self._paths.activity_snapshots),
+                        UsageSnapshotStore(self._paths.usage_snapshots),
+                        self._clock,
+                    ),
+                    self._clock,
+                )
+            else:
+                raise ValueError("Account worker provider is unsupported.")
+            return executor.execute(operation, authority)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -215,74 +323,17 @@ def _run_account_operation(
 ) -> bool:
     if WORKER_EXCHANGE_DESCRIPTOR_ENVIRONMENT_KEY in os.environ:
         return False
-    persistence = PersistenceService(
-        paths,
-        maintenance_quiescent=lambda: True,
+    return run_isolated_worker(
+        operation_id,
+        queue,
+        WorkerResultStore(paths.durable_operations),
+        OperationAuthorityLock(
+            paths.durable_operations,
+            operation.required_account_id,
+        ),
+        _AccountMaintenanceExecutor(paths, clock),
+        clock,
     )
-    store = persistence.open_store()
-    with ExitStack() as resources:
-        if operation.provider_id is ProviderId.CLAUDE:
-            profiles = persistence.managed_claude_profiles
-            selected = SelectedStateStore(paths.selected_state)
-            runtime = ClaudeActivationRuntime(environment=os.environ)
-            capabilities = ClaudeProfileCapabilityFactory(
-                paths,
-                profiles,
-                environment=os.environ,
-            )
-            authorities = ClaudeActivationAuthorityCoordinator(
-                paths,
-                store,
-                profiles,
-                clock,
-                capabilities=capabilities,
-                runtime=runtime,
-            )
-            executor = ClaudeManagedMaintenanceWorkerExecutor(
-                ClaudeManagedAuthorityCoordinator(
-                    paths,
-                    store,
-                    profiles,
-                    selected,
-                    authorities,
-                    capabilities,
-                    clock,
-                    environment=os.environ,
-                ),
-                clock,
-            )
-        else:
-            coordinator = compose_codex_managed_authority(
-                paths,
-                store,
-                persistence.managed_codex_profiles,
-                clock,
-                os.environ,
-            )
-            http = resources.enter_context(HttpClient(clock=clock))
-            executor = CodexManagedMaintenanceWorkerExecutor(
-                coordinator,
-                CodexManagedAccountService(
-                    coordinator,
-                    store,
-                    http,
-                    ActivitySnapshotStore(paths.activity_snapshots),
-                    UsageSnapshotStore(paths.usage_snapshots),
-                    clock,
-                ),
-                clock,
-            )
-        return run_isolated_worker(
-            operation_id,
-            queue,
-            WorkerResultStore(paths.durable_operations),
-            OperationAuthorityLock(
-                paths.durable_operations,
-                operation.required_account_id,
-            ),
-            executor,
-            clock,
-        )
 
 
 def _run_provider_operation(

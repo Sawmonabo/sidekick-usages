@@ -3,15 +3,25 @@
 from dataclasses import replace
 from pathlib import Path
 
-from sidekick_usages.core.accounts.identifiers import new_request_id
+import pytest
+
+from sidekick_usages.core.accounts.identifiers import (
+    new_operation_id,
+    new_request_id,
+)
 from sidekick_usages.core.accounts.types import OperationId
+from sidekick_usages.core.models import (
+    Account,
+    ClaudeSetupTokenCredentials,
+    CodexCredentials,
+)
 from sidekick_usages.core.selection.models import DueOperation
 from sidekick_usages.core.selection.types import (
     OperationKind,
     OperationPriority,
     OperationState,
 )
-from sidekick_usages.core.types import ProviderId
+from sidekick_usages.core.types import AccountLabel, ProviderId
 from sidekick_usages.daemon.control.dispatch import OperationEventHub
 from sidekick_usages.daemon.models.worker import WorkerResult
 from sidekick_usages.daemon.runtime.recovery import (
@@ -22,13 +32,16 @@ from sidekick_usages.daemon.runtime.supervisor import WakeupChannel
 from sidekick_usages.daemon.types.service import ServicePhase
 from sidekick_usages.daemon.types.worker import WorkerOutcome
 from sidekick_usages.daemon.worker.pool import WorkerPool
+from sidekick_usages.entrypoints import worker
 from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
 from sidekick_usages.persistence.supervisor.results import WorkerResultStore
 from sidekick_usages.persistence.supervisor.service import ServiceStateStore
+from tests.fakes.credentials.refresh import login_account
 from tests.fakes.daemon.foundation import (
     CLAUDE_NATIVE_OPERATION_ID,
     FoundationState,
     foundation_state,
+    operation,
     selected,
 )
 from tests.fakes.daemon.runtime import (
@@ -38,12 +51,17 @@ from tests.fakes.daemon.runtime import (
     foundation_runtime,
     worker_planner,
 )
+from tests.support.persistence import (
+    make_account_store,
+    make_application_paths,
+)
 
 EXPECTED_WORKER_COUNT = 2
 CLAUDE_RECOVERY_OPERATION_ID = OperationId(
     "cc413f38-2b11-418a-a4a7-b0e45666067e"
 )
 NATIVE_SUPERSEDED_CODE = "superseded_by_native_login"
+MANAGED_AUTH_MIGRATION_REQUIRED_CODE = "managed_auth_migration_required"
 
 
 def _assert_native_login_cancels_stale_activation(
@@ -106,10 +124,99 @@ def _assert_native_login_cancels_stale_activation(
     assert update.completion.failure_code == NATIVE_SUPERSEDED_CODE
 
 
-def test_supervisor_isolates_timeout_and_recovers_without_duplicate_work(
-    tmp_path: Path,
+def _assert_unmanaged_workers_require_migration(
+    root: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A timed-out account cannot block completion or restart recovery."""
+    """Prove legacy authorities stop before any provider composition."""
+    store = make_account_store(
+        root,
+        (
+            Account(
+                label=AccountLabel("claude-setup"),
+                credentials=ClaudeSetupTokenCredentials(
+                    access_token="test-only-claude-setup-secret"
+                ),
+            ),
+            login_account("claude-legacy"),
+            Account(
+                label=AccountLabel("codex-legacy"),
+                credentials=CodexCredentials(
+                    access_token="test-only-codex-secret",
+                    account_id="test-only-codex-account",
+                ),
+            ),
+        ),
+    )
+    paths = make_application_paths(root)
+    queue = OperationQueueStore(paths.durable_operations)
+    operations = tuple(
+        operation(
+            account.account_id,
+            account.provider_id,
+            str(new_operation_id()),
+        )
+        for account in store.saved_accounts()
+    )
+    for due_operation in operations:
+        queue.enqueue(due_operation)
+        queue.transition(
+            due_operation.operation_id,
+            OperationState.RUNNING,
+            updated_at=due_operation.updated_at,
+        )
+
+    def reject_provider_composition(
+        *arguments: object,
+        **keywords: object,
+    ) -> None:
+        del arguments, keywords
+        raise AssertionError(
+            "Providers must not be composed before migration."
+        )
+
+    monkeypatch.setattr(
+        worker,
+        "discover_application_paths",
+        lambda: paths,
+    )
+    monkeypatch.setattr(
+        worker,
+        "ClaudeProfileCapabilityFactory",
+        reject_provider_composition,
+    )
+    monkeypatch.setattr(
+        worker,
+        "compose_codex_managed_authority",
+        reject_provider_composition,
+    )
+
+    results = WorkerResultStore(paths.durable_operations)
+    outcomes: list[tuple[WorkerOutcome, str | None]] = []
+    for due_operation in operations:
+        assert worker.main((str(due_operation.operation_id),)) == 0
+        result = results.load(due_operation.operation_id)
+        assert result is not None
+        outcomes.append((result.outcome, result.failure_code))
+
+    migration_required = (
+        WorkerOutcome.ACTION_REQUIRED,
+        MANAGED_AUTH_MIGRATION_REQUIRED_CODE,
+    )
+    assert outcomes == [
+        (WorkerOutcome.SUCCEEDED, None),
+        migration_required,
+        migration_required,
+    ]
+    assert not paths.private_claude_profiles.exists()
+    assert not paths.private_codex_profiles.exists()
+
+
+def test_supervisor_and_workers_isolate_failures_and_recover_durably(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Worker failures remain isolated, truthful, and restart-safe."""
     state = foundation_state(tmp_path)
     first, second, third = state.operations
     assert state.queue.remove_account(first.required_account_id) == 1
@@ -224,3 +331,7 @@ def test_supervisor_isolates_timeout_and_recovers_without_duplicate_work(
         durable
     )
     wakeup.close()
+    _assert_unmanaged_workers_require_migration(
+        tmp_path / "unmanaged-workers",
+        monkeypatch,
+    )
