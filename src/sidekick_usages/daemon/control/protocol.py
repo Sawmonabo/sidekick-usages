@@ -12,6 +12,7 @@ from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.models.protocol import (
     AcceptedPayload,
     AccountPayload,
+    ActivationPayload,
     CompletedPayload,
     ControlEvent,
     ControlRequest,
@@ -50,7 +51,7 @@ from sidekick_usages.serialization.json import (
     encode_compact_json,
 )
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 MAX_FRAME_BYTES = 65_536
 MAX_REQUESTS_PER_CONNECTION = 128
 READ_CHUNK_BYTES = 16_384
@@ -239,6 +240,14 @@ def decode_event(payload: bytes) -> ControlEvent:
 def _request_payload_to_json(payload: RequestPayload) -> JsonValue:
     if isinstance(payload, EmptyPayload):
         return {}
+    if isinstance(payload, ActivationPayload):
+        return {
+            "account_id": str(payload.account_id),
+            "allow_remote_control_disconnect": (
+                payload.allow_remote_control_disconnect
+            ),
+            "provider": payload.provider_id.value,
+        }
     if isinstance(payload, AccountPayload):
         return {
             "account_id": str(payload.account_id),
@@ -280,7 +289,23 @@ def _decode_request_payload(
     value: JsonValue,
 ) -> RequestPayload:
     root = _require_object(value)
-    if kind in {RequestKind.ACTIVATE, RequestKind.REFRESH_ACCOUNT}:
+    if kind is RequestKind.ACTIVATE:
+        _require_exact_keys(
+            root,
+            {
+                "account_id",
+                "allow_remote_control_disconnect",
+                "provider",
+            },
+        )
+        return ActivationPayload(
+            provider_id=ProviderId(_require_string(root["provider"])),
+            account_id=SidekickAccountId(_require_string(root["account_id"])),
+            allow_remote_control_disconnect=_require_boolean(
+                root["allow_remote_control_disconnect"]
+            ),
+        )
+    if kind is RequestKind.REFRESH_ACCOUNT:
         _require_exact_keys(root, {"account_id", "provider"})
         return AccountPayload(
             provider_id=ProviderId(_require_string(root["provider"])),

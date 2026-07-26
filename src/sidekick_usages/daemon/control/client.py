@@ -16,6 +16,7 @@ from sidekick_usages.daemon.control.protocol import (
 from sidekick_usages.daemon.models.protocol import (
     AcceptedPayload,
     AccountPayload,
+    ActivationPayload,
     ControlEvent,
     ControlRequest,
     EmptyPayload,
@@ -119,11 +120,17 @@ class ControlClient:
         self,
         provider_id: ProviderId,
         account_id: SidekickAccountId,
+        *,
+        allow_remote_control_disconnect: bool = False,
     ) -> Generator[ControlEvent]:
         """Activate one stable saved account after compatibility proof."""
         return self.request(
             RequestKind.ACTIVATE,
-            AccountPayload(provider_id, account_id),
+            ActivationPayload(
+                provider_id,
+                account_id,
+                allow_remote_control_disconnect,
+            ),
         )
 
     def refresh_account(

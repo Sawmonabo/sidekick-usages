@@ -22,7 +22,9 @@ from sidekick_usages.daemon.types.service import PackageVersion
 _MAX_INTEGER = (1 << 63) - 1
 _MAX_PROTOCOL_VERSION = 65_535
 
-type RequestPayload = EmptyPayload | AccountPayload | ProviderPayload
+type RequestPayload = (
+    EmptyPayload | ActivationPayload | AccountPayload | ProviderPayload
+)
 type EventPayload = (
     AcceptedPayload
     | SnapshotPayload
@@ -37,6 +39,27 @@ type EventPayload = (
 @dataclass(frozen=True, slots=True)
 class EmptyPayload:
     """Payload for requests that accept no arguments."""
+
+
+@dataclass(frozen=True, slots=True)
+class ActivationPayload:
+    """One stable account target and its explicit activation approval."""
+
+    provider_id: ProviderId
+    account_id: SidekickAccountId
+    allow_remote_control_disconnect: bool = False
+
+    def __post_init__(self) -> None:
+        """Restrict Remote Control approval to Claude activation."""
+        if type(self.allow_remote_control_disconnect) is not bool:
+            raise ValueError("Remote Control approval must be boolean.")
+        if (
+            self.allow_remote_control_disconnect
+            and self.provider_id is not ProviderId.CLAUDE
+        ):
+            raise ValueError(
+                "Remote Control approval is only valid for Claude activation."
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,18 +204,15 @@ def _require_request_payload(
     kind: RequestKind,
     payload: RequestPayload,
 ) -> None:
-    account_kinds = {
-        RequestKind.ACTIVATE,
-        RequestKind.REFRESH_ACCOUNT,
-    }
-    provider_kinds = {RequestKind.RECONCILE}
-    if kind in account_kinds and isinstance(payload, AccountPayload):
-        return
-    if kind in provider_kinds and isinstance(payload, ProviderPayload):
-        return
-    if kind not in account_kinds | provider_kinds and isinstance(
-        payload, EmptyPayload
-    ):
+    if kind is RequestKind.ACTIVATE:
+        valid = isinstance(payload, ActivationPayload)
+    elif kind is RequestKind.REFRESH_ACCOUNT:
+        valid = isinstance(payload, AccountPayload)
+    elif kind is RequestKind.RECONCILE:
+        valid = isinstance(payload, ProviderPayload)
+    else:
+        valid = isinstance(payload, EmptyPayload)
+    if valid:
         return
     raise ValueError("Request kind and payload do not match.")
 

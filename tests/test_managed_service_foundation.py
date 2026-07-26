@@ -38,6 +38,10 @@ from sidekick_usages.core.selection.types import (
 )
 from sidekick_usages.core.types import AccountLabel, ProviderId
 from sidekick_usages.daemon.control.client import ControlClient
+from sidekick_usages.daemon.control.dispatch import (
+    OperationEventHub,
+    SupervisorDispatcher,
+)
 from sidekick_usages.daemon.control.protocol import (
     PROTOCOL_VERSION,
     FrameDecoder,
@@ -52,7 +56,7 @@ from sidekick_usages.daemon.control.server import (
 )
 from sidekick_usages.daemon.models.protocol import (
     AcceptedPayload,
-    AccountPayload,
+    ActivationPayload,
     CompletedPayload,
     ControlEvent,
     ControlRequest,
@@ -498,14 +502,18 @@ def _rejected_protocol_response(
     return bytes(response)
 
 
-def test_authenticated_control_stream_frames_completes_and_cancels() -> None:
+def test_authenticated_control_stream_frames_completes_and_cancels(
+    tmp_path: Path,
+) -> None:
     """One peer-proven stream frames, completes, and cancels safely."""
     account_id = SidekickAccountId("69b33871-dcd9-4e47-8ef8-f77d9944a956")
+    default_payload = ActivationPayload(ProviderId.CLAUDE, account_id)
+    assert not default_payload.allow_remote_control_disconnect
     fragmented_request = ControlRequest(
         protocol_version=PROTOCOL_VERSION,
         request_id=new_request_id(),
         kind=RequestKind.ACTIVATE,
-        payload=AccountPayload(ProviderId.CLAUDE, account_id),
+        payload=default_payload,
         package_version=__version__,
     )
     frame = encode_request(fragmented_request)
@@ -527,7 +535,13 @@ def test_authenticated_control_stream_frames_completes_and_cancels() -> None:
     fragmented_client: ConnectedSocket = _FragmentingSocket(client_socket)
     client = ControlClient(fragmented_client)
 
-    activation = tuple(client.activate(ProviderId.CLAUDE, account_id))
+    activation = tuple(
+        client.activate(
+            ProviderId.CLAUDE,
+            account_id,
+            allow_remote_control_disconnect=True,
+        )
+    )
     assert tuple(event.kind for event in activation) == (
         EventKind.ACCEPTED,
         EventKind.PROGRESS,
@@ -545,7 +559,35 @@ def test_authenticated_control_stream_frames_completes_and_cancels() -> None:
         RequestKind.ACTIVATE,
         RequestKind.SUBSCRIBE,
     )
+    recorded_payload = dispatcher.requests[0].payload
+    assert isinstance(recorded_payload, ActivationPayload)
+    assert recorded_payload.allow_remote_control_disconnect
     assert dispatcher.cancellations == [accepted.request_id]
+
+    state = _foundation_state(tmp_path)
+    durable_dispatcher = SupervisorDispatcher(
+        state.queue,
+        ServiceStateStore(state.paths.service_state),
+        ActivationRecoveryScheduler(state.journals, state.queue),
+        OperationEventHub(),
+        _RuntimeClock(),
+        Event().set,
+        Event().set,
+    )
+    approved_request = replace(
+        fragmented_request,
+        request_id=new_request_id(),
+        payload=recorded_payload,
+    )
+    next(durable_dispatcher.dispatch(approved_request))
+    restarted_queue = OperationQueueStore(state.paths.durable_operations)
+    persisted = restarted_queue.get(
+        ProviderId.CLAUDE,
+        account_id,
+        OperationKind.ACTIVATE,
+    )
+    assert persisted is not None
+    assert persisted.allow_remote_control_disconnect
 
 
 def test_control_protocol_fails_closed_at_each_trust_boundary() -> None:

@@ -21,6 +21,7 @@ from sidekick_usages.daemon.control.protocol import PROTOCOL_VERSION
 from sidekick_usages.daemon.models.protocol import (
     AcceptedPayload,
     AccountPayload,
+    ActivationPayload,
     CompletedPayload,
     ControlEvent,
     ControlRequest,
@@ -267,18 +268,21 @@ class SupervisorDispatcher:
         request: ControlRequest,
     ) -> Iterator[ControlEvent]:
         payload = request.payload
-        if not isinstance(payload, AccountPayload):
+        if isinstance(payload, ActivationPayload):
+            kind = OperationKind.ACTIVATE
+            allow_remote_control_disconnect = (
+                payload.allow_remote_control_disconnect
+            )
+        elif isinstance(payload, AccountPayload):
+            kind = OperationKind.REFRESH
+            allow_remote_control_disconnect = False
+        else:
             yield self._event(
                 request,
                 EventKind.FAILED,
                 FailedPayload(None, "dispatch_failed"),
             )
             return
-        kind = (
-            OperationKind.ACTIVATE
-            if request.kind is RequestKind.ACTIVATE
-            else OperationKind.REFRESH
-        )
         now = self._clock.now()
         effective = self._queue.enqueue(
             DueOperation(
@@ -290,6 +294,9 @@ class SupervisorDispatcher:
                 state=OperationState.SCHEDULED,
                 due_at=now,
                 updated_at=now,
+                allow_remote_control_disconnect=(
+                    allow_remote_control_disconnect
+                ),
             )
         )
         self._wake()
