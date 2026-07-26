@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum, auto
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from sidekick_usages.core.accounts.types import SidekickAccountId
 from sidekick_usages.core.models import TokenActivitySummary, UsageReport
@@ -14,7 +14,9 @@ from sidekick_usages.core.types import (
     TokenActivityScope,
 )
 from sidekick_usages.persistence.types.error import PersistenceCode
-from sidekick_usages.providers.base import ProviderFailure
+
+if TYPE_CHECKING:
+    from sidekick_usages.providers.base import ProviderFailure
 
 type ProviderTokenActivity = (
     CompleteTokenActivity
