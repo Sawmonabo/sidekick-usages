@@ -398,10 +398,8 @@ without a maintainable private authority.
   activation scenario that retains outgoing A, officially provisions B,
   verifies native identity, commits from read-back, requires one request when
   no foreground session is present, and leaves Codex state untouched.
-- [ ] Add one interruption scenario at the externally meaningful boundary
-  after native mutation and before commit. Recovery must serialize a
-  concurrent retry and produce verified commit, official rollback, or
-  reconciliation while keeping both private authorities usable.
+- [ ] Keep the externally meaningful interruption and recovery in Task 6's
+  single recovery scenario. Do not duplicate it in activation coverage.
 - [ ] Do not force death after every internal write or enumerate equivalent
   preflight failures already covered by capability and storage tests.
 
@@ -425,7 +423,7 @@ without a maintainable private authority.
 
 ### Verify and commit
 
-- [ ] Run the two activation scenarios plus existing journal, provider-lock,
+- [ ] Run the healthy activation scenario plus existing journal, provider-lock,
   Keychain, and output-safety regressions they touch.
 - [ ] Run Ruff and `ty`.
 - [ ] Review every native write path and confirm it launches official Claude,
@@ -437,10 +435,11 @@ without a maintainable private authority.
 
 ### Tests first
 
-- [ ] Extend the activation test boundary with one recovery scenario where
-  provider read-back differs from the journal: official rollback succeeds
-  once, and a failed rollback becomes reconciliation-required. Assert no
-  captured credential bytes are written.
+- [ ] Extend the activation test boundary with one interruption and recovery
+  scenario at the externally meaningful boundary after native mutation.
+  Serialize a concurrent retry, prove official rollback once, and prove a
+  failed rollback becomes reconciliation-required. Assert both private
+  authorities remain usable and no captured credential bytes are written.
 - [ ] Add one external-login race scenario to
   `tests/test_claude_managed_runtime.py` where the official provider state
   wins; a known account is related, an unknown account remains external, and
@@ -482,10 +481,10 @@ without a maintainable private authority.
   be ruled out. Prove Sidekick changes no parent environment, requires the
   exact disruption approval, and refuses non-interactive activation without
   it.
-- [ ] Add one session-boundary scenario proving bare `claude` still resolves
-  to the vendor executable, a supported existing subscription session adopts
-  the verified account only on its next safe request, and in-flight or
-  explicitly environment-authenticated work is not retargeted.
+- [ ] Do not add a simulated session-boundary test. Prove vendor resolution
+  statically, and verify next-request adoption, in-flight stability, and
+  explicitly environment-authenticated exclusions against the exact installed
+  Claude binary during release acceptance.
 - [ ] Do not enumerate equivalent environment combinations, confirmation
   outcomes, or unsupported session labels.
 
@@ -509,8 +508,8 @@ without a maintainable private authority.
 
 ### Verify and commit
 
-- [ ] Run the two guard/session scenarios plus existing CLI and output-safety
-  regressions they touch.
+- [ ] Run the guard scenario plus existing CLI and output-safety regressions
+  it touches.
 - [ ] Run Ruff and `ty`.
 - [ ] Verify no test or production code edits the calling process environment,
   then commit.
