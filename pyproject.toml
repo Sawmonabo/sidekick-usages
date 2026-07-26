@@ -46,6 +46,7 @@ dependencies = [
   "rich>=13.9",
   "typer>=0.15",
   "urllib3==2.7.0",
+  "wcwidth==0.7.0",
   "websockets==16.1.1"
 ]
 

@@ -78,6 +78,7 @@ def test_runtime_dependencies_and_lock_match_reviewed_versions() -> None:
         for dependency in dependencies
     )
     assert "urllib3==2.7.0" in dependencies
+    assert "wcwidth==0.7.0" in dependencies
     assert set(pyproject["dependency-groups"]["dev"]) == {
         "ty>=0.0.35",
         "types-pywin32==312.0.0.20260609; sys_platform == 'win32'",
@@ -89,6 +90,7 @@ def test_runtime_dependencies_and_lock_match_reviewed_versions() -> None:
     assert locked["prompt-toolkit"] == "3.0.52"
     assert locked["pywin32"] == "312"
     assert locked["urllib3"] == "2.7.0"
+    assert locked["wcwidth"] == "0.7.0"
     assert "B310" not in pyproject["tool"]["bandit"]["skips"]
 
 

@@ -23,8 +23,8 @@ from dashboard_benchmark.fixtures import (
     saved_accounts,
 )
 from sidekick_usages.branding import BRAND_TITLE
-from sidekick_usages.cli.dashboard.launch import (
-    DASHBOARD_LAUNCH_FAILURE_MESSAGE,
+from sidekick_usages.cli.runtime.bootstrap import (
+    PROCESS_LAUNCH_FAILURE_MESSAGE,
 )
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.paths import ApplicationPaths
@@ -46,7 +46,7 @@ FORBIDDEN_FRAME_FRAGMENTS = (
     b"error",
     b"failed",
     b"traceback",
-    DASHBOARD_LAUNCH_FAILURE_MESSAGE.casefold().encode(),
+    PROCESS_LAUNCH_FAILURE_MESSAGE.casefold().encode(),
 )
 
 

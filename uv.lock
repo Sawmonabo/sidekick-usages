@@ -466,6 +466,7 @@ dependencies = [
     { name = "rich" },
     { name = "typer" },
     { name = "urllib3" },
+    { name = "wcwidth" },
     { name = "websockets" },
 ]
 
@@ -497,6 +498,7 @@ requires-dist = [
     { name = "rich", specifier = ">=13.9" },
     { name = "typer", specifier = ">=0.15" },
     { name = "urllib3", specifier = "==2.7.0" },
+    { name = "wcwidth", specifier = "==0.7.0" },
     { name = "websockets", specifier = "==16.1.1" },
 ]
 
