@@ -162,7 +162,21 @@ def test_workflows_use_the_cross_platform_exact_wheel_verifier() -> None:
         "uv run python packaging/smoke_wheel.py\n"
         "        --build --output-dir verified-dist" in ci
     )
-    assert "os: [ubuntu-latest, macos-latest, windows-latest]" in ci
+    for operating_system, platform in (
+        ("ubuntu-latest", "linux-x64"),
+        ("macos-15", "macos-arm64"),
+        ("macos-15-intel", "macos-x64"),
+        ("windows-latest", "windows-x64"),
+    ):
+        assert (
+            f"- os: {operating_system}\n"
+            f"          platform: {platform}"
+        ) in ci
+    assert "pytest with Unix pseudoterminal coverage" in ci
+    assert "if: runner.os != 'Windows'" in ci
+    assert "pytest with interactive mode disabled" in ci
+    assert "if: runner.os == 'Windows'" in ci
+    assert "--ignore=tests/test_dashboard_pty.py" in ci
     assert "os: [ubuntu-latest, macos-latest]" in ci
     assert (
         "Homebrew/actions/setup-homebrew@"
