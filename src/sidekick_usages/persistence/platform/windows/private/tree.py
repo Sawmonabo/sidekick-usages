@@ -5,11 +5,19 @@ import stat
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
 from pathlib import Path
 
 from sidekick_usages.persistence.platform.errors import NativeFilesystemError
-from sidekick_usages.persistence.platform.types import NativeFailureKind
+from sidekick_usages.persistence.platform.models import TreeEntry
+from sidekick_usages.persistence.platform.types import (
+    NativeFailureKind,
+    NativeIdentity,
+    RelativePath,
+)
+from sidekick_usages.persistence.platform.windows.private.models import (
+    OpenedChain,
+    OpenedTree,
+)
 
 if sys.platform == "win32":
     import msvcrt
@@ -43,41 +51,6 @@ if sys.platform == "win32":
         private_security_attributes,
         validate_security,
     )
-
-type Identity = tuple[int, int]
-type RelativePath = tuple[str, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class TreeEntry:
-    """One identity-qualified private-tree descendant."""
-
-    relative: RelativePath
-    identity: Identity
-    directory: bool
-
-
-@dataclass(frozen=True, slots=True)
-class OpenedTree:
-    """Held descriptors and identity for one private-tree root."""
-
-    root_path: Path
-    parent_descriptor: int
-    root_descriptor: int
-    root_identity: Identity
-    root_device: int
-    root_basename: str
-
-
-@dataclass(slots=True)
-class OpenedChain:
-    """Held descriptors and identities for one root-relative chain."""
-
-    paths: tuple[Path, ...]
-    descriptors: list[int]
-    identities: tuple[Identity, ...]
-    components: RelativePath
-
 
 if sys.platform == "win32":
 
@@ -334,7 +307,7 @@ if sys.platform == "win32":
     def open_relative_directory(
         opened: OpenedTree,
         relative: RelativePath,
-        identities: dict[RelativePath, Identity],
+        identities: dict[RelativePath, NativeIdentity],
     ) -> tuple[Path, int]:
         """Reopen a private-tree directory chain by exact identity."""
         try:
@@ -380,10 +353,12 @@ if sys.platform == "win32":
 
     def scan_tree(
         opened: OpenedTree,
-    ) -> tuple[tuple[TreeEntry, ...], dict[RelativePath, Identity]]:
+    ) -> tuple[tuple[TreeEntry, ...], dict[RelativePath, NativeIdentity]]:
         """Validate and inventory every private-tree descendant."""
         require_root_identity(opened)
-        identities: dict[RelativePath, Identity] = {(): opened.root_identity}
+        identities: dict[RelativePath, NativeIdentity] = {
+            (): opened.root_identity
+        }
         pending: list[RelativePath] = [()]
         entries: list[TreeEntry] = []
         while pending:
@@ -569,7 +544,7 @@ if sys.platform == "win32":
     def delete_entry(
         opened: OpenedTree,
         entry: TreeEntry,
-        identities: dict[RelativePath, Identity],
+        identities: dict[RelativePath, NativeIdentity],
     ) -> None:
         """Delete one exact prevalidated entry through its held identity."""
         require_root_identity(opened)

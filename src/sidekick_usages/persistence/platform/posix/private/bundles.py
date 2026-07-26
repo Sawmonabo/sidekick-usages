@@ -3,14 +3,13 @@
 import os
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
 from pathlib import Path
 
 from sidekick_usages.persistence.artifacts import (
     require_portable_unique_basenames,
 )
 from sidekick_usages.persistence.platform.errors import NativeFilesystemError
-from sidekick_usages.persistence.platform.models import NativeFile
+from sidekick_usages.persistence.platform.models import NativeFile, TreeEntry
 from sidekick_usages.persistence.platform.ports import NativePlatform
 from sidekick_usages.persistence.platform.posix import files, namespace
 from sidekick_usages.persistence.platform.posix.adapter import (
@@ -19,30 +18,26 @@ from sidekick_usages.persistence.platform.posix.adapter import (
 from sidekick_usages.persistence.platform.posix.namespace import (
     PRIVATE_DIRECTORY_MODE,
 )
+from sidekick_usages.persistence.platform.posix.private.models import (
+    OpenedChain,
+    OpenedTree,
+)
 from sidekick_usages.persistence.platform.posix.private.tree import (
     _delete_directory,
     _delete_entry,
     _metadata,
     _open_tree,
-    _OpenedTree,
     _require_root_identity,
     _scan_tree,
-    _TreeEntry,
 )
-from sidekick_usages.persistence.platform.types import NativeFailureKind
+from sidekick_usages.persistence.platform.types import (
+    NativeFailureKind,
+    NativeIdentity,
+    RelativePath,
+)
 from sidekick_usages.persistence.private.bundles.paths import (
     private_bundle_relative_components,
 )
-
-type _Identity = tuple[int, int]
-type _RelativePath = tuple[str, ...]
-
-
-@dataclass(slots=True)
-class _OpenedChain:
-    descriptors: list[int]
-    identities: tuple[_Identity, ...]
-    components: _RelativePath
 
 
 def _native_error(kind: NativeFailureKind) -> NativeFilesystemError:
@@ -50,8 +45,8 @@ def _native_error(kind: NativeFailureKind) -> NativeFilesystemError:
 
 
 def _require_chain_identity(
-    opened: _OpenedTree,
-    chain: _OpenedChain,
+    opened: OpenedTree,
+    chain: OpenedChain,
     *,
     final_may_be_absent: bool = False,
 ) -> None:
@@ -80,12 +75,12 @@ def _require_chain_identity(
 
 
 def _open_chain_child(
-    opened: _OpenedTree,
+    opened: OpenedTree,
     parent: int,
     component: str,
     *,
     create: bool,
-) -> tuple[int, _Identity] | None:
+) -> tuple[int, NativeIdentity] | None:
     identity = namespace.require_exact_entry(parent, component)
     if identity is None:
         if not create:
@@ -119,12 +114,12 @@ def _open_chain_child(
 
 @contextmanager
 def _open_component_chain(
-    opened: _OpenedTree,
-    relative: _RelativePath,
+    opened: OpenedTree,
+    relative: RelativePath,
     *,
     create: bool,
     final_may_be_absent: bool = False,
-) -> Iterator[_OpenedChain | None]:
+) -> Iterator[OpenedChain | None]:
     try:
         root_descriptor = os.dup(opened.root_descriptor)
     except OSError:
@@ -150,7 +145,7 @@ def _open_component_chain(
         if missing:
             yield None
         else:
-            chain = _OpenedChain(
+            chain = OpenedChain(
                 descriptors,
                 tuple(identities),
                 relative,
@@ -168,8 +163,8 @@ def _open_component_chain(
 
 
 def _read_relative_file(
-    opened: _OpenedTree,
-    chain: _OpenedChain,
+    opened: OpenedTree,
+    chain: OpenedChain,
     basename: str,
     limit: int,
 ) -> NativeFile | None:
@@ -199,10 +194,10 @@ def _read_relative_file(
 
 
 def _install_staged_file(
-    opened: _OpenedTree,
-    transaction: _OpenedChain,
+    opened: OpenedTree,
+    transaction: OpenedChain,
     stage_basename: str,
-    target: _OpenedChain,
+    target: OpenedChain,
     target_basename: str,
     expected: NativeFile | None,
     limit: int,
@@ -279,8 +274,8 @@ def _install_staged_file(
 
 
 def _delete_relative_file(
-    opened: _OpenedTree,
-    chain: _OpenedChain,
+    opened: OpenedTree,
+    chain: OpenedChain,
     basename: str,
     expected: NativeFile,
     limit: int,
@@ -304,7 +299,7 @@ def _delete_relative_file(
 
 
 def _bundle_names(
-    chain: _OpenedChain,
+    chain: OpenedChain,
     max_files: int,
 ) -> tuple[str, ...]:
     try:
@@ -322,8 +317,8 @@ def _bundle_names(
 
 
 def _read_bundle_pass(
-    opened: _OpenedTree,
-    chain: _OpenedChain,
+    opened: OpenedTree,
+    chain: OpenedChain,
     names: tuple[str, ...],
     file_limit: int,
     total_limit: int,
@@ -347,8 +342,8 @@ def _read_bundle_pass(
 
 
 def _read_bundle_files(
-    opened: _OpenedTree,
-    chain: _OpenedChain,
+    opened: OpenedTree,
+    chain: OpenedChain,
     max_files: int,
     file_limit: int,
     total_limit: int,
@@ -392,7 +387,7 @@ class PosixPrivateBundlePlatform:
     def relative_entry_present(
         self,
         root: Path,
-        relative: _RelativePath,
+        relative: RelativePath,
         basename: str,
     ) -> bool:
         """Report one exact child entry without opening its contents."""
@@ -418,7 +413,7 @@ class PosixPrivateBundlePlatform:
     def ensure_relative_directory(
         self,
         root: Path,
-        relative: _RelativePath,
+        relative: RelativePath,
     ) -> None:
         """Create one descriptor-relative private directory chain."""
         self._ensure_root(root)
@@ -436,7 +431,7 @@ class PosixPrivateBundlePlatform:
     def read_relative_file(
         self,
         root: Path,
-        relative: _RelativePath,
+        relative: RelativePath,
         basename: str,
         limit: int,
     ) -> NativeFile | None:
@@ -462,7 +457,7 @@ class PosixPrivateBundlePlatform:
     def read_relative_bundle(
         self,
         root: Path,
-        relative: _RelativePath,
+        relative: RelativePath,
         max_files: int,
         file_limit: int,
         total_limit: int,
@@ -490,9 +485,9 @@ class PosixPrivateBundlePlatform:
     def install_staged_file(
         self,
         root: Path,
-        transaction_relative: _RelativePath,
+        transaction_relative: RelativePath,
         stage_basename: str,
-        target_relative: _RelativePath,
+        target_relative: RelativePath,
         target_basename: str,
         expected: NativeFile | None,
         limit: int,
@@ -529,7 +524,7 @@ class PosixPrivateBundlePlatform:
     def delete_relative_file(
         self,
         root: Path,
-        relative: _RelativePath,
+        relative: RelativePath,
         basename: str,
         expected: NativeFile,
         limit: int,
@@ -557,7 +552,7 @@ class PosixPrivateBundlePlatform:
     def contains_relative_artifacts(
         self,
         root: Path,
-        relative: _RelativePath,
+        relative: RelativePath,
     ) -> bool:
         """Validate and report descendants of one relative bundle."""
         self._qualifier.qualify(root)
@@ -571,7 +566,7 @@ class PosixPrivateBundlePlatform:
             ) as chain:
                 if chain is None:
                     return False
-                nested = _OpenedTree(
+                nested = OpenedTree(
                     chain.descriptors[-2],
                     chain.descriptors[-1],
                     chain.identities[-1],
@@ -584,7 +579,7 @@ class PosixPrivateBundlePlatform:
     def destroy_relative_tree(
         self,
         root: Path,
-        relative: _RelativePath,
+        relative: RelativePath,
     ) -> None:
         """Delete one exact relative tree through retained descriptors."""
         self._qualifier.qualify(root)
@@ -599,7 +594,7 @@ class PosixPrivateBundlePlatform:
             ) as chain:
                 if chain is None:
                     return
-                nested = _OpenedTree(
+                nested = OpenedTree(
                     chain.descriptors[-2],
                     chain.descriptors[-1],
                     chain.identities[-1],
@@ -622,7 +617,7 @@ class PosixPrivateBundlePlatform:
                 _delete_directory(
                     nested,
                     nested.parent_descriptor,
-                    _TreeEntry(
+                    TreeEntry(
                         (nested.root_basename,),
                         nested.root_identity,
                         True,

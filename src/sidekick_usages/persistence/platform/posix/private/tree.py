@@ -4,40 +4,22 @@ import os
 import stat
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
 from pathlib import Path
 
 from sidekick_usages.persistence.platform.errors import NativeFilesystemError
+from sidekick_usages.persistence.platform.models import TreeEntry
 from sidekick_usages.persistence.platform.posix import files, namespace
-from sidekick_usages.persistence.platform.types import NativeFailureKind
-
-type _Identity = tuple[int, int]
-type _RelativePath = tuple[str, ...]
+from sidekick_usages.persistence.platform.posix.private.models import (
+    OpenedTree,
+    RepairDirectory,
+)
+from sidekick_usages.persistence.platform.types import (
+    NativeFailureKind,
+    NativeIdentity,
+    RelativePath,
+)
 
 _PRIVATE_DIRECTORY_MODE = 0o700
-
-
-@dataclass(frozen=True, slots=True)
-class _TreeEntry:
-    relative: _RelativePath
-    identity: _Identity
-    directory: bool
-
-
-@dataclass(frozen=True, slots=True)
-class _OpenedTree:
-    parent_descriptor: int
-    root_descriptor: int
-    root_identity: _Identity
-    root_device: int
-    root_basename: str
-
-
-@dataclass(frozen=True, slots=True)
-class _RepairDirectory:
-    relative: _RelativePath
-    identity: _Identity
-    mode: int
 
 
 def _native_error(kind: NativeFailureKind) -> NativeFilesystemError:
@@ -103,7 +85,7 @@ def _open_repair_child_directory(
 
 
 @contextmanager
-def _open_tree(root: Path) -> Iterator[_OpenedTree | None]:
+def _open_tree(root: Path) -> Iterator[OpenedTree | None]:
     parent_metadata = namespace.path_metadata(root.parent)
     if parent_metadata is None:
         yield None
@@ -132,7 +114,7 @@ def _open_tree(root: Path) -> Iterator[_OpenedTree | None]:
             )
             if identity != (metadata.st_dev, metadata.st_ino):
                 raise _native_error(NativeFailureKind.CHANGED)
-            yield _OpenedTree(
+            yield OpenedTree(
                 parent_descriptor,
                 root_descriptor,
                 identity,
@@ -142,7 +124,7 @@ def _open_tree(root: Path) -> Iterator[_OpenedTree | None]:
 
 
 @contextmanager
-def _open_repair_tree(root: Path) -> Iterator[_OpenedTree | None]:
+def _open_repair_tree(root: Path) -> Iterator[OpenedTree | None]:
     """Open a tree whose directories may have the released broad mode."""
     parent_metadata = namespace.path_metadata(root.parent)
     if parent_metadata is None:
@@ -171,7 +153,7 @@ def _open_repair_tree(root: Path) -> Iterator[_OpenedTree | None]:
             )
             if identity != (metadata.st_dev, metadata.st_ino):
                 raise _native_error(NativeFailureKind.CHANGED)
-            yield _OpenedTree(
+            yield OpenedTree(
                 parent_descriptor,
                 root_descriptor,
                 identity,
@@ -180,7 +162,7 @@ def _open_repair_tree(root: Path) -> Iterator[_OpenedTree | None]:
             )
 
 
-def _require_root_identity(opened: _OpenedTree) -> None:
+def _require_root_identity(opened: OpenedTree) -> None:
     if (
         namespace.require_exact_entry(
             opened.parent_descriptor,
@@ -198,16 +180,16 @@ def _require_root_identity(opened: _OpenedTree) -> None:
 
 
 def _open_relative_directory(
-    opened: _OpenedTree,
-    relative: _RelativePath,
-    identities: dict[_RelativePath, _Identity],
+    opened: OpenedTree,
+    relative: RelativePath,
+    identities: dict[RelativePath, NativeIdentity],
 ) -> int:
     try:
         current = os.dup(opened.root_descriptor)
     except OSError:
         raise _native_error(NativeFailureKind.UNREADABLE) from None
     descriptors = [current]
-    traversed: _RelativePath = ()
+    traversed: RelativePath = ()
     try:
         for component in relative:
             traversed = (*traversed, component)
@@ -232,9 +214,9 @@ def _open_relative_directory(
 
 
 def _open_repair_relative_directory(
-    opened: _OpenedTree,
-    relative: _RelativePath,
-    identities: dict[_RelativePath, _Identity],
+    opened: OpenedTree,
+    relative: RelativePath,
+    identities: dict[RelativePath, NativeIdentity],
 ) -> int:
     """Reopen an owner-owned directory chain by preflight identity."""
     try:
@@ -242,7 +224,7 @@ def _open_repair_relative_directory(
     except OSError:
         raise _native_error(NativeFailureKind.UNREADABLE) from None
     descriptors = [current]
-    traversed: _RelativePath = ()
+    traversed: RelativePath = ()
     try:
         for component in relative:
             traversed = (*traversed, component)
@@ -268,10 +250,10 @@ def _list_names(descriptor: int) -> tuple[str, ...]:
 
 def _namespace_snapshot(
     descriptor: int,
-) -> tuple[tuple[str, _Identity], ...]:
+) -> tuple[tuple[str, NativeIdentity], ...]:
     """Capture an exact stable child-name and identity set."""
     names = _list_names(descriptor)
-    entries: list[tuple[str, _Identity]] = []
+    entries: list[tuple[str, NativeIdentity]] = []
     for name in names:
         identity = namespace.require_exact_entry(descriptor, name)
         if identity is None:
@@ -285,7 +267,7 @@ def _namespace_snapshot(
 def _entry_metadata(
     descriptor: int,
     basename: str,
-) -> tuple[_Identity, os.stat_result]:
+) -> tuple[NativeIdentity, os.stat_result]:
     """Return stable no-follow metadata for one exact child name."""
     identity = namespace.require_exact_entry(descriptor, basename)
     if identity is None:
@@ -309,7 +291,7 @@ def _open_regular(
     parent_descriptor: int,
     basename: str,
     root_device: int,
-    expected: _Identity,
+    expected: NativeIdentity,
 ) -> int:
     flags = (
         os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK | namespace.no_follow_flag()
@@ -343,10 +325,10 @@ def _open_regular(
     return descriptor
 
 
-def _scan_direct_tree(opened: _OpenedTree) -> tuple[_TreeEntry, ...]:
+def _scan_direct_tree(opened: OpenedTree) -> tuple[TreeEntry, ...]:
     """Validate the root namespace without traversing child directories."""
     _require_root_identity(opened)
-    entries: list[_TreeEntry] = []
+    entries: list[TreeEntry] = []
     descriptor = _open_relative_directory(
         opened,
         (),
@@ -375,7 +357,7 @@ def _scan_direct_tree(opened: _OpenedTree) -> tuple[_TreeEntry, ...]:
                         child_metadata.st_ino,
                     ) != identity:
                         raise _native_error(NativeFailureKind.CHANGED)
-                entries.append(_TreeEntry((basename,), identity, True))
+                entries.append(TreeEntry((basename,), identity, True))
                 continue
             if not stat.S_ISREG(metadata.st_mode):
                 raise _native_error(NativeFailureKind.UNSAFE)
@@ -390,18 +372,18 @@ def _scan_direct_tree(opened: _OpenedTree) -> tuple[_TreeEntry, ...]:
                 NativeFailureKind.UNREADABLE,
             ):
                 pass
-            entries.append(_TreeEntry((basename,), identity, False))
+            entries.append(TreeEntry((basename,), identity, False))
     _require_root_identity(opened)
     return tuple(entries)
 
 
 def _scan_tree(
-    opened: _OpenedTree,
-) -> tuple[tuple[_TreeEntry, ...], dict[_RelativePath, _Identity]]:
+    opened: OpenedTree,
+) -> tuple[tuple[TreeEntry, ...], dict[RelativePath, NativeIdentity]]:
     _require_root_identity(opened)
-    identities: dict[_RelativePath, _Identity] = {(): opened.root_identity}
-    pending: list[_RelativePath] = [()]
-    entries: list[_TreeEntry] = []
+    identities: dict[RelativePath, NativeIdentity] = {(): opened.root_identity}
+    pending: list[RelativePath] = [()]
+    entries: list[TreeEntry] = []
     while pending:
         relative = pending.pop()
         descriptor = _open_relative_directory(opened, relative, identities)
@@ -434,7 +416,7 @@ def _scan_tree(
                             raise _native_error(NativeFailureKind.CHANGED)
                     identities[child_relative] = identity
                     pending.append(child_relative)
-                    entries.append(_TreeEntry(child_relative, identity, True))
+                    entries.append(TreeEntry(child_relative, identity, True))
                     continue
                 if not stat.S_ISREG(metadata.st_mode):
                     raise _native_error(NativeFailureKind.UNSAFE)
@@ -449,16 +431,16 @@ def _scan_tree(
                     NativeFailureKind.UNREADABLE,
                 ):
                     pass
-                entries.append(_TreeEntry(child_relative, identity, False))
+                entries.append(TreeEntry(child_relative, identity, False))
     _require_root_identity(opened)
     return tuple(entries), identities
 
 
 def _scan_repair_tree(
-    opened: _OpenedTree,
+    opened: OpenedTree,
 ) -> tuple[
-    tuple[_RepairDirectory, ...],
-    dict[_RelativePath, _Identity],
+    tuple[RepairDirectory, ...],
+    dict[RelativePath, NativeIdentity],
 ]:
     """Preflight every object before any security metadata changes."""
     _require_root_identity(opened)
@@ -471,15 +453,15 @@ def _scan_repair_tree(
         or root_metadata.st_dev != opened.root_device
     ):
         raise _native_error(NativeFailureKind.UNSAFE)
-    identities: dict[_RelativePath, _Identity] = {(): opened.root_identity}
+    identities: dict[RelativePath, NativeIdentity] = {(): opened.root_identity}
     directories = [
-        _RepairDirectory(
+        RepairDirectory(
             (),
             opened.root_identity,
             stat.S_IMODE(root_metadata.st_mode),
         )
     ]
-    pending: list[_RelativePath] = [()]
+    pending: list[RelativePath] = [()]
     while pending:
         relative = pending.pop()
         descriptor = _open_repair_relative_directory(
@@ -515,7 +497,7 @@ def _scan_repair_tree(
                         mode = stat.S_IMODE(child_metadata.st_mode)
                     identities[child_relative] = identity
                     directories.append(
-                        _RepairDirectory(child_relative, identity, mode)
+                        RepairDirectory(child_relative, identity, mode)
                     )
                     pending.append(child_relative)
                     continue
@@ -537,9 +519,9 @@ def _scan_repair_tree(
 
 
 def _require_repair_directory_identity(
-    opened: _OpenedTree,
-    directory: _RepairDirectory,
-    identities: dict[_RelativePath, _Identity],
+    opened: OpenedTree,
+    directory: RepairDirectory,
+    identities: dict[RelativePath, NativeIdentity],
 ) -> None:
     """Require a repaired descriptor to remain at its preflight name."""
     if not directory.relative:
@@ -559,9 +541,9 @@ def _require_repair_directory_identity(
 
 
 def _repair_directory_permissions(
-    opened: _OpenedTree,
-    directory: _RepairDirectory,
-    identities: dict[_RelativePath, _Identity],
+    opened: OpenedTree,
+    directory: RepairDirectory,
+    identities: dict[RelativePath, NativeIdentity],
 ) -> bool:
     """Set one proven directory to the exact owner-only mode."""
     descriptor = _open_repair_relative_directory(
@@ -605,9 +587,9 @@ def _synchronize_namespace(descriptor: int) -> None:
 
 
 def _delete_file(
-    opened: _OpenedTree,
+    opened: OpenedTree,
     parent_descriptor: int,
-    entry: _TreeEntry,
+    entry: TreeEntry,
 ) -> None:
     basename = entry.relative[-1]
     descriptor = _open_regular(
@@ -629,9 +611,9 @@ def _delete_file(
 
 
 def _delete_directory(
-    opened: _OpenedTree,
+    opened: OpenedTree,
     parent_descriptor: int,
-    entry: _TreeEntry,
+    entry: TreeEntry,
 ) -> None:
     basename = entry.relative[-1]
     descriptor = namespace.open_child_directory(
@@ -667,9 +649,9 @@ def _delete_directory(
 
 
 def _delete_entry(
-    opened: _OpenedTree,
-    entry: _TreeEntry,
-    identities: dict[_RelativePath, _Identity],
+    opened: OpenedTree,
+    entry: TreeEntry,
+    identities: dict[RelativePath, NativeIdentity],
 ) -> None:
     _require_root_identity(opened)
     parent_relative = entry.relative[:-1]

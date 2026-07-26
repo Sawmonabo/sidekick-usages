@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from sidekick_usages.persistence.platform.models import TreeEntry
 from sidekick_usages.persistence.platform.ports import NativePlatform
 from sidekick_usages.persistence.platform.posix.private import tree
 from sidekick_usages.persistence.platform.posix.provider_stage import (
@@ -144,7 +145,7 @@ class PosixPrivateCredentialPlatform:
             if remaining:
                 raise tree._native_error(NativeFailureKind.CHANGED)
             tree._require_root_identity(opened)
-            root_entry = tree._TreeEntry(
+            root_entry = TreeEntry(
                 (opened.root_basename,),
                 opened.root_identity,
                 True,

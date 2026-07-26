@@ -3,7 +3,11 @@
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from sidekick_usages.persistence.platform.types import FilesystemFamily
+from sidekick_usages.persistence.platform.types import (
+    FilesystemFamily,
+    NativeIdentity,
+    RelativePath,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,3 +26,12 @@ class NativeFile:
     inode: int
     link_count: int
     data: bytes = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class TreeEntry:
+    """One identity-qualified private-tree descendant."""
+
+    relative: RelativePath
+    identity: NativeIdentity
+    directory: bool

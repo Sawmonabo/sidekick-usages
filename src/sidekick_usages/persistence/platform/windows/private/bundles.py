@@ -9,7 +9,14 @@ from sidekick_usages.persistence.artifacts import (
 )
 from sidekick_usages.persistence.platform.errors import NativeFilesystemError
 from sidekick_usages.persistence.platform.models import NativeFile
-from sidekick_usages.persistence.platform.types import NativeFailureKind
+from sidekick_usages.persistence.platform.types import (
+    NativeFailureKind,
+    RelativePath,
+)
+from sidekick_usages.persistence.platform.windows.private.models import (
+    OpenedChain,
+    OpenedTree,
+)
 from sidekick_usages.persistence.private.bundles.paths import (
     private_bundle_relative_components,
 )
@@ -36,8 +43,6 @@ if sys.platform == "win32":
         validate_membership,
     )
     from sidekick_usages.persistence.platform.windows.private.tree import (
-        OpenedChain,
-        OpenedTree,
         delete_empty_tree,
         delete_entry,
         list_names,
@@ -46,8 +51,6 @@ if sys.platform == "win32":
         require_chain_identity,
         scan_tree,
     )
-
-type _RelativePath = tuple[str, ...]
 
 
 if sys.platform == "win32":
@@ -174,7 +177,7 @@ if sys.platform == "win32":
         def relative_entry_present(
             self,
             root: Path,
-            relative: _RelativePath,
+            relative: RelativePath,
             basename: str,
         ) -> bool:
             """Report one exact child entry without reading its contents."""
@@ -207,7 +210,7 @@ if sys.platform == "win32":
         def ensure_relative_directory(
             self,
             root: Path,
-            relative: _RelativePath,
+            relative: RelativePath,
         ) -> None:
             """Create one handle-qualified private directory chain."""
             self._ensure_root(root)
@@ -225,7 +228,7 @@ if sys.platform == "win32":
         def read_relative_file(
             self,
             root: Path,
-            relative: _RelativePath,
+            relative: RelativePath,
             basename: str,
             limit: int,
         ) -> NativeFile | None:
@@ -249,7 +252,7 @@ if sys.platform == "win32":
         def read_relative_bundle(
             self,
             root: Path,
-            relative: _RelativePath,
+            relative: RelativePath,
             max_files: int,
             file_limit: int,
             total_limit: int,
@@ -277,9 +280,9 @@ if sys.platform == "win32":
         def install_staged_file(
             self,
             root: Path,
-            transaction_relative: _RelativePath,
+            transaction_relative: RelativePath,
             stage_basename: str,
-            target_relative: _RelativePath,
+            target_relative: RelativePath,
             target_basename: str,
             expected: NativeFile | None,
             limit: int,
@@ -316,7 +319,7 @@ if sys.platform == "win32":
         def delete_relative_file(
             self,
             root: Path,
-            relative: _RelativePath,
+            relative: RelativePath,
             basename: str,
             expected: NativeFile,
             limit: int,
@@ -347,7 +350,7 @@ if sys.platform == "win32":
         def contains_relative_artifacts(
             self,
             root: Path,
-            relative: _RelativePath,
+            relative: RelativePath,
         ) -> bool:
             """Validate and report one relative bundle's descendants."""
             self._qualifier.qualify(root)
@@ -375,7 +378,7 @@ if sys.platform == "win32":
         def destroy_relative_tree(
             self,
             root: Path,
-            relative: _RelativePath,
+            relative: RelativePath,
         ) -> None:
             """Delete one exact relative tree through held components."""
             self._qualifier.qualify(root)

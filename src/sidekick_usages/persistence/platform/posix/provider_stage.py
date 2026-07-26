@@ -3,41 +3,39 @@
 import os
 import stat
 import sys
-from dataclasses import dataclass
 from pathlib import Path
 
 from sidekick_usages.persistence.platform.macos.acl import has_extended_acl
 from sidekick_usages.persistence.platform.ports import NativePlatform
 from sidekick_usages.persistence.platform.posix import namespace
+from sidekick_usages.persistence.platform.posix.models import (
+    ProviderStageEntry,
+)
+from sidekick_usages.persistence.platform.posix.private.models import (
+    OpenedTree,
+    RepairDirectory,
+)
 from sidekick_usages.persistence.platform.posix.private.tree import (
     _entry_metadata,
-    _Identity,
     _list_names,
     _metadata,
     _native_error,
     _open_repair_child_directory,
     _open_repair_relative_directory,
     _open_repair_tree,
-    _OpenedTree,
-    _RelativePath,
     _repair_directory_permissions,
-    _RepairDirectory,
     _require_root_identity,
     _scan_tree,
     _synchronize_namespace,
 )
-from sidekick_usages.persistence.platform.types import NativeFailureKind
+from sidekick_usages.persistence.platform.types import (
+    NativeFailureKind,
+    NativeIdentity,
+    RelativePath,
+)
 
 _PRIVATE_DIRECTORY_MODE = 0o700
 _PRIVATE_FILE_MODE = 0o600
-
-
-@dataclass(frozen=True, slots=True)
-class _StageEntry:
-    relative: _RelativePath
-    identity: _Identity
-    directory: bool
-    mode: int
 
 
 def _validate_stage_mode(mode: int, private_mode: int) -> None:
@@ -61,7 +59,7 @@ def _open_stage_regular(
     parent_descriptor: int,
     basename: str,
     root_device: int,
-    expected: _Identity,
+    expected: NativeIdentity,
 ) -> int:
     """Open one stable provider file whose mode may be read-broad."""
     flags = (
@@ -102,8 +100,8 @@ def _open_stage_regular(
 
 
 def _scan_stage_tree(
-    opened: _OpenedTree,
-) -> tuple[tuple[_StageEntry, ...], dict[_RelativePath, _Identity]]:
+    opened: OpenedTree,
+) -> tuple[tuple[ProviderStageEntry, ...], dict[RelativePath, NativeIdentity]]:
     """Preflight one isolated provider tree before changing any mode."""
     _require_root_identity(opened)
     root_metadata = _metadata(
@@ -118,9 +116,9 @@ def _scan_stage_tree(
         raise _native_error(NativeFailureKind.UNSAFE)
     _require_no_macos_acl(opened.root_descriptor)
     _validate_stage_mode(root_mode, _PRIVATE_DIRECTORY_MODE)
-    identities: dict[_RelativePath, _Identity] = {(): opened.root_identity}
-    entries = [_StageEntry((), opened.root_identity, True, root_mode)]
-    pending: list[_RelativePath] = [()]
+    identities: dict[RelativePath, NativeIdentity] = {(): opened.root_identity}
+    entries = [ProviderStageEntry((), opened.root_identity, True, root_mode)]
+    pending: list[RelativePath] = [()]
     while pending:
         relative = pending.pop()
         descriptor = _open_repair_relative_directory(
@@ -158,7 +156,12 @@ def _scan_stage_tree(
                         _validate_stage_mode(mode, _PRIVATE_DIRECTORY_MODE)
                     identities[child_relative] = identity
                     entries.append(
-                        _StageEntry(child_relative, identity, True, mode)
+                        ProviderStageEntry(
+                            child_relative,
+                            identity,
+                            True,
+                            mode,
+                        )
                     )
                     pending.append(child_relative)
                     continue
@@ -181,16 +184,16 @@ def _scan_stage_tree(
                         ).st_mode
                     )
                 entries.append(
-                    _StageEntry(child_relative, identity, False, mode)
+                    ProviderStageEntry(child_relative, identity, False, mode)
                 )
     _require_root_identity(opened)
     return tuple(entries), identities
 
 
 def _repair_stage_file(
-    opened: _OpenedTree,
-    entry: _StageEntry,
-    identities: dict[_RelativePath, _Identity],
+    opened: OpenedTree,
+    entry: ProviderStageEntry,
+    identities: dict[RelativePath, NativeIdentity],
 ) -> bool:
     """Set one preflight-proven provider file to owner-only access."""
     parent = _open_repair_relative_directory(
@@ -254,7 +257,7 @@ def harden_provider_stage(
             if entry.directory:
                 repaired_directories += _repair_directory_permissions(
                     opened,
-                    _RepairDirectory(
+                    RepairDirectory(
                         entry.relative,
                         entry.identity,
                         entry.mode,

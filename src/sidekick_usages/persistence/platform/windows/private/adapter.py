@@ -5,15 +5,17 @@ import stat
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
 from pathlib import Path
 
 from sidekick_usages.persistence.platform.errors import NativeFilesystemError
-from sidekick_usages.persistence.platform.types import NativeFailureKind
-from sidekick_usages.persistence.platform.windows.private.tree import (
-    Identity,
-    OpenedTree,
+from sidekick_usages.persistence.platform.types import (
+    NativeFailureKind,
+    NativeIdentity,
     RelativePath,
+)
+from sidekick_usages.persistence.platform.windows.private.models import (
+    OpenedTree,
+    RepairEntry,
 )
 
 if sys.platform == "win32":
@@ -33,14 +35,6 @@ if sys.platform == "win32":
         WindowsPlatform,
     )
     from sidekick_usages.persistence.platform.windows.private import tree
-
-
-@dataclass(frozen=True, slots=True)
-class _RepairEntry:
-    relative: RelativePath
-    identity: Identity
-    directory: bool
-    security_valid: bool
 
 
 if sys.platform == "win32":
@@ -173,7 +167,7 @@ if sys.platform == "win32":
     def _open_repair_relative_directory(
         opened: OpenedTree,
         relative: RelativePath,
-        identities: dict[RelativePath, Identity],
+        identities: dict[RelativePath, NativeIdentity],
     ) -> tuple[Path, int]:
         """Reopen an owner-owned directory chain by exact identity."""
         try:
@@ -220,12 +214,14 @@ if sys.platform == "win32":
     def _scan_repair_tree(
         opened: OpenedTree,
     ) -> tuple[
-        tuple[_RepairEntry, ...],
-        dict[RelativePath, Identity],
+        tuple[RepairEntry, ...],
+        dict[RelativePath, NativeIdentity],
     ]:
         """Preflight every owner-owned object before changing any DACL."""
         tree.require_root_identity(opened)
-        identities: dict[RelativePath, Identity] = {(): opened.root_identity}
+        identities: dict[RelativePath, NativeIdentity] = {
+            (): opened.root_identity
+        }
         root_security_valid = _security_is_valid(
             opened.root_descriptor,
             directory=True,
@@ -238,7 +234,7 @@ if sys.platform == "win32":
                 )
             )
         entries = [
-            _RepairEntry(
+            RepairEntry(
                 (),
                 opened.root_identity,
                 True,
@@ -302,7 +298,7 @@ if sys.platform == "win32":
                                 )
                     child_relative = (*relative, basename)
                     entries.append(
-                        _RepairEntry(
+                        RepairEntry(
                             child_relative,
                             identity,
                             directory,
@@ -317,8 +313,8 @@ if sys.platform == "win32":
 
     def _repair_entry_permissions(
         opened: OpenedTree,
-        entry: _RepairEntry,
-        identities: dict[RelativePath, Identity],
+        entry: RepairEntry,
+        identities: dict[RelativePath, NativeIdentity],
     ) -> bool:
         """Install one exact DACL while its preflight identity is held."""
         parent_to_close: int | None = None

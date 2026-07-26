@@ -2,6 +2,9 @@
 
 from enum import StrEnum
 
+type NativeIdentity = tuple[int, int]
+type RelativePath = tuple[str, ...]
+
 
 class FilesystemFamily(StrEnum):
     """Qualified local filesystems supported by persistence."""
