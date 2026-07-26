@@ -1,12 +1,15 @@
 """Synthetic managed Claude profiles and process behavior."""
 
 import json
+import os
 import sys
 from collections.abc import Callable, Mapping
 from datetime import datetime
 from pathlib import Path
 
-from sidekick_usages.core.accounts.types import SidekickAccountId
+from sidekick_usages.core.accounts.types import (
+    SidekickAccountId,
+)
 from sidekick_usages.paths import (
     ApplicationPaths,
     managed_claude_config_dir,
@@ -54,6 +57,7 @@ CLAUDE_LOGGED_OUT_STATUS = (
 )
 CLAUDE_VERSION_OUTPUT = b"2.1.220 (Claude Code)\n"
 _PRIVATE_DIRECTORY_MODE = 0o700
+_PRIVATE_FILE_MODE = 0o600
 
 
 class ClaudeRunner:
@@ -162,11 +166,7 @@ class ClaudeManagedLoginScript:
         self.login_profiles.append(config_directory)
         if payload is None:
             return ClaudeCommandResult(1, b"synthetic login rejected")
-        self._profiles.write_owned_file(
-            config_directory,
-            CLAUDE_CREDENTIAL_FILE,
-            payload,
-        )
+        self._write_credentials(config_directory, payload)
         return ClaudeCommandResult(0, b"synthetic official login complete")
 
     def interactive(
@@ -191,13 +191,25 @@ class ClaudeManagedLoginScript:
             raise AssertionError(
                 "Interactive login targeted an unexpected profile."
             ) from None
-        self._profiles.write_owned_file(
-            config_directory,
-            CLAUDE_CREDENTIAL_FILE,
-            payload,
-        )
+        self._write_credentials(config_directory, payload)
         self.interactive_profiles.append(config_directory)
         return 0
+
+    def _write_credentials(
+        self,
+        config_directory: Path,
+        payload: bytes,
+    ) -> None:
+        if config_directory.is_relative_to(self._profiles.root):
+            self._profiles.write_owned_file(
+                config_directory,
+                CLAUDE_CREDENTIAL_FILE,
+                payload,
+            )
+            return
+        credential_file = config_directory / CLAUDE_CREDENTIAL_FILE
+        credential_file.write_bytes(payload)
+        os.chmod(credential_file, _PRIVATE_FILE_MODE)
 
     @staticmethod
     def _config_directory(
@@ -205,7 +217,10 @@ class ClaudeManagedLoginScript:
     ) -> Path:
         if environment is None:
             raise AssertionError("Claude process environment was omitted.")
-        return Path(environment["CLAUDE_CONFIG_DIR"])
+        configured = environment.get("CLAUDE_CONFIG_DIR")
+        if configured is not None:
+            return Path(configured)
+        return Path(environment["HOME"]) / ".claude"
 
 
 def credential_payload(

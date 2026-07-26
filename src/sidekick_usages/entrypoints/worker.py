@@ -18,6 +18,12 @@ from sidekick_usages.core.selection.models import (
 )
 from sidekick_usages.core.selection.types import OperationKind
 from sidekick_usages.core.types import ProviderId
+from sidekick_usages.credentials.claude.activation.models import (
+    ClaudeActivationRuntime,
+)
+from sidekick_usages.credentials.claude.activation.service import (
+    ClaudeActivationService,
+)
 from sidekick_usages.credentials.claude.managed.maintenance.service import (
     ClaudeManagedAuthorityCoordinator,
 )
@@ -41,6 +47,9 @@ from sidekick_usages.daemon.worker.account import (
 )
 from sidekick_usages.daemon.worker.claude.maintenance import (
     ClaudeManagedMaintenanceWorkerExecutor,
+)
+from sidekick_usages.daemon.worker.claude.selection import (
+    ClaudeActivationWorkerExecutor,
 )
 from sidekick_usages.daemon.worker.codex import (
     CodexActivationWorkerExecutor,
@@ -303,7 +312,15 @@ def _run_provider_operation(
                 clock,
             )
         elif operation.provider_id is ProviderId.CLAUDE:
-            raise ValueError("Claude selection executor is not composed.")
+            executor = _claude_activation_executor(
+                operation,
+                paths,
+                persistence,
+                store,
+                selected,
+                journals,
+                clock,
+            )
         else:
             raise ValueError("Provider worker operation is unsupported.")
         return run_provider_worker(
@@ -366,6 +383,31 @@ def _codex_exchange_executor(
             clock,
         ),
         exchange,
+        clock,
+    )
+
+
+def _claude_activation_executor(
+    operation: DueOperation,
+    paths: ApplicationPaths,
+    persistence: PersistenceService,
+    store: AccountStore,
+    selected: SelectedStateStore,
+    journals: ActivationJournalStore,
+    clock: Clock,
+) -> ClaudeActivationWorkerExecutor:
+    if operation.kind is not OperationKind.ACTIVATE:
+        raise ValueError("Claude selection operation is unsupported.")
+    return ClaudeActivationWorkerExecutor(
+        ClaudeActivationService(
+            paths,
+            store,
+            persistence.managed_claude_profiles,
+            journals,
+            selected,
+            clock,
+            runtime=ClaudeActivationRuntime(environment=os.environ),
+        ),
         clock,
     )
 

@@ -41,6 +41,7 @@ _ISOLATED_WORKER_FILES = frozenset(
     {
         "src/sidekick_usages/daemon/worker/account.py",
         "src/sidekick_usages/daemon/worker/claude/maintenance.py",
+        "src/sidekick_usages/daemon/worker/claude/selection.py",
         "src/sidekick_usages/daemon/worker/codex.py",
         "src/sidekick_usages/daemon/worker/ports.py",
     }
