@@ -21,6 +21,7 @@ from sidekick_usages.core.accounts.types import (
 from sidekick_usages.core.models import (
     AccountTokenActivitySnapshot,
     AccountUsageSnapshot,
+    ProviderTokenActivitySnapshot,
     TokenActivitySummary,
     UsageReport,
     UsageWindow,
@@ -60,6 +61,7 @@ RESET_TIME = REFERENCE_TIME + timedelta(hours=3, minutes=30)
 MINIMUM_ACCOUNT_COUNT = 2
 REFERENCE_ACCOUNT_COUNT = 6
 EXPANDED_ACCOUNT_COUNT = 24
+REFERENCE_CLAUDE_TOKEN_TOTAL = 4_000_000
 
 
 def seed_cached_dashboard(
@@ -87,14 +89,20 @@ def seed_cached_dashboard(
             AccountTokenActivitySnapshot(
                 provider_id=account.provider_id,
                 provider_account_id=str(account.provider_identity),
-                summary=_activity_summary(account, ordinal),
+                summary=_account_activity_summary(ordinal),
                 fetched_at=REFERENCE_TIME,
             )
             for ordinal, account in enumerate(accounts)
             if account.provider_id is ProviderId.CODEX
             and account.provider_identity is not None
         ),
-        (),
+        (
+            ProviderTokenActivitySnapshot(
+                provider_id=ProviderId.CLAUDE,
+                summary=_claude_activity_summary(),
+                fetched_at=REFERENCE_TIME,
+            ),
+        ),
     )
 
 
@@ -207,6 +215,14 @@ def _dashboard_provider(
             )
             for ordinal, account in enumerate(provider_accounts)
         ),
+        activity=(
+            DashboardActivity(
+                summary=_claude_activity_summary(),
+                observed_at=REFERENCE_TIME,
+            )
+            if provider_id is ProviderId.CLAUDE
+            else None
+        ),
     )
 
 
@@ -232,9 +248,13 @@ def _dashboard_account(
             report=_usage_report(account, ordinal),
             observed_at=REFERENCE_TIME,
         ),
-        activity=DashboardActivity(
-            summary=_activity_summary(account, ordinal),
-            observed_at=REFERENCE_TIME,
+        activity=(
+            DashboardActivity(
+                summary=_account_activity_summary(ordinal),
+                observed_at=REFERENCE_TIME,
+            )
+            if account.provider_id is ProviderId.CODEX
+            else None
         ),
     )
 
@@ -252,16 +272,19 @@ def _usage_report(
     )
 
 
-def _activity_summary(
-    account: SavedAccount,
+def _account_activity_summary(
     ordinal: int,
 ) -> TokenActivitySummary:
     return TokenActivitySummary(
         total_tokens=1_000_000 + ordinal,
-        scope=(
-            TokenActivityScope.LOCAL_INSTALLATION
-            if account.provider_id is ProviderId.CLAUDE
-            else TokenActivityScope.ACCOUNT
-        ),
+        scope=TokenActivityScope.ACCOUNT,
+        since=date(2026, 1, 1),
+    )
+
+
+def _claude_activity_summary() -> TokenActivitySummary:
+    return TokenActivitySummary(
+        total_tokens=REFERENCE_CLAUDE_TOKEN_TOTAL,
+        scope=TokenActivityScope.LOCAL_INSTALLATION,
         since=date(2026, 1, 1),
     )
