@@ -69,7 +69,8 @@ class CachedDashboardService:
         selected = {
             state.provider_id: state for state in self._selected.observe_all()
         }
-        service = self._dashboard_service(self._service.observe())
+        service_state = self._service.observe()
+        service = self._dashboard_service(service_state)
         usage_by_id = {snapshot.account_id: snapshot for snapshot in usage}
         activity_by_id = dict(activity)
         conflict_ids = frozenset(usage_conflicts)
@@ -79,7 +80,12 @@ class CachedDashboardService:
                     provider_id,
                     accounts,
                     selected.get(provider_id),
-                    service,
+                    self._provider_service_ready(
+                        provider_id,
+                        accounts,
+                        service_state,
+                        compatible=service.compatible,
+                    ),
                     usage_by_id,
                     activity_by_id,
                     conflict_ids,
@@ -105,12 +111,29 @@ class CachedDashboardService:
             failure_code=None if state is None else state.failure_code,
         )
 
+    @staticmethod
+    def _provider_service_ready(
+        provider_id: ProviderId,
+        accounts: tuple[SavedAccount, ...],
+        state: ServiceState | None,
+        *,
+        compatible: bool,
+    ) -> bool:
+        if state is None or not compatible:
+            return False
+        broker_required = provider_id is ProviderId.CODEX and any(
+            account.provider_id is ProviderId.CODEX
+            and account.has_managed_authority
+            for account in accounts
+        )
+        return state.ready_for(broker_required=broker_required)
+
     def _provider(
         self,
         provider_id: ProviderId,
         accounts: tuple[SavedAccount, ...],
         selected: SelectedAccountState | None,
-        service: DashboardService,
+        service_ready: bool,
         usage: dict[SidekickAccountId, AccountUsageSnapshot],
         activity: dict[
             SidekickAccountId,
@@ -127,7 +150,7 @@ class CachedDashboardService:
             self._account(
                 account,
                 selected,
-                service,
+                service_ready,
                 usage.get(account.account_id),
                 activity.get(account.account_id),
                 usage_conflicted=account.account_id in usage_conflicts,
@@ -139,7 +162,7 @@ class CachedDashboardService:
             and selected.runtime_state is ProviderRuntimeState.EXTERNAL_ACTIVE
         ):
             external_states = [DashboardActionState.EXTERNAL_ACTIVE]
-            if not service.ready:
+            if not service_ready:
                 external_states.append(
                     DashboardActionState.SERVICE_UNAVAILABLE
                 )
@@ -165,7 +188,7 @@ class CachedDashboardService:
                 else None
             ),
             verified_at=None if selected is None else selected.verified_at,
-            actions_enabled=service.ready and provider_available,
+            actions_enabled=service_ready and provider_available,
             rows=tuple(rows),
         )
 
@@ -173,7 +196,7 @@ class CachedDashboardService:
         self,
         account: SavedAccount,
         selected: SelectedAccountState | None,
-        service: DashboardService,
+        service_ready: bool,
         usage: AccountUsageSnapshot | None,
         activity: AccountTokenActivitySnapshot | None,
         *,
@@ -187,9 +210,12 @@ class CachedDashboardService:
         if selected is not None:
             if selected.runtime_state is ProviderRuntimeState.UNREADABLE:
                 states.append(DashboardActionState.RECONCILIATION_REQUIRED)
-            elif selected.runtime_state is ProviderRuntimeState.UNSUPPORTED:
+            elif (
+                selected.runtime_state is ProviderRuntimeState.UNSUPPORTED
+                and account.has_managed_authority
+            ):
                 states.append(DashboardActionState.PROVIDER_UNSUPPORTED)
-        if not service.ready:
+        if not service_ready:
             states.append(DashboardActionState.SERVICE_UNAVAILABLE)
         return DashboardAccount(
             account_id=account.account_id,
@@ -231,7 +257,12 @@ class CachedDashboardService:
             isinstance(account.authority, ClaudeAccountAuthority)
             and account.authority.subscription is None
         )
-        if health is CredentialHealth.HEALTHY:
+        if not account.has_managed_authority and health in {
+            CredentialHealth.HEALTHY,
+            CredentialHealth.UNKNOWN,
+        }:
+            state = DashboardActionState.LOGIN_REQUIRED
+        elif health is CredentialHealth.HEALTHY:
             state = DashboardActionState.HEALTHY
         elif health is CredentialHealth.REFRESH_DUE:
             state = (

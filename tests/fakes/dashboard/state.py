@@ -3,6 +3,7 @@
 from dataclasses import replace
 from datetime import datetime, timedelta
 
+from sidekick_usages import __version__
 from sidekick_usages.core.accounts.models import (
     CodexAccountAuthority,
     CodexManagedAuthority,
@@ -33,6 +34,8 @@ from sidekick_usages.core.types import (
     TokenActivityScope,
 )
 from sidekick_usages.daemon.models.service import ServiceState
+from sidekick_usages.daemon.types.lifecycle import ServiceFailureCode
+from sidekick_usages.daemon.types.protocol import PROTOCOL_VERSION
 from sidekick_usages.daemon.types.service import PackageVersion, ServicePhase
 from sidekick_usages.paths import ApplicationPaths
 from sidekick_usages.persistence.filesystem.service import (
@@ -173,6 +176,27 @@ def seed_cached_dashboard(
         )
     )
     return renamed, conflicted
+
+
+def seed_broker_degraded_dashboard(
+    paths: ApplicationPaths,
+    reference_time: datetime,
+) -> None:
+    """Persist current broker-only service degradation."""
+    ServiceStateStore(paths.service_state).save(
+        ServiceState(
+            protocol_version=PROTOCOL_VERSION,
+            package_version=PackageVersion(__version__),
+            phase=ServicePhase.DEGRADED,
+            revision=2,
+            observed_at=reference_time,
+            queue_recovered=True,
+            journals_reconciled=True,
+            broker_ready=False,
+            active_workers=0,
+            failure_code=(ServiceFailureCode.CODEX_BROKER_UNAVAILABLE.value),
+        )
+    )
 
 
 def controller_snapshot(reference_time: datetime) -> DashboardSnapshot:

@@ -17,6 +17,7 @@ from sidekick_usages.cli.dashboard.models.controller import (
 from sidekick_usages.cli.dashboard.models.session import (
     DashboardConfirmationKind,
 )
+from sidekick_usages.core.accounts.models import SavedAccount
 from sidekick_usages.core.accounts.types import (
     CredentialHealth,
     MetricsFreshness,
@@ -27,6 +28,7 @@ from sidekick_usages.daemon.control.client import (
     CONTROL_ACTION_TIMEOUT_SECONDS,
 )
 from sidekick_usages.daemon.types.service import ServicePhase
+from sidekick_usages.persistence.accounts.reader import AccountIndexReader
 from sidekick_usages.persistence.filesystem.reader import PrivateFileReader
 from sidekick_usages.persistence.models.artifact import FileSnapshot
 from sidekick_usages.usage.dashboard.models import (
@@ -49,8 +51,10 @@ from tests.fakes.dashboard.state import (
     EXTERNAL_PROVIDER_IDENTITY,
     VALID_PROVIDER_IDENTITY,
     controller_snapshot,
+    seed_broker_degraded_dashboard,
     seed_cached_dashboard,
 )
+from tests.fakes.migration.managed_auth import managed_auth_scenario
 from tests.support.persistence import make_application_paths
 from tests.support.platform import REQUIRES_MANAGED_RUNTIME
 
@@ -140,6 +144,71 @@ def test_cached_dashboard_joins_stable_ids_without_credentials(
     rendered = repr(dashboard)
     assert EXTERNAL_PROVIDER_IDENTITY not in rendered
     assert VALID_PROVIDER_IDENTITY not in rendered
+
+
+def test_cached_dashboard_scopes_codex_broker_degradation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Broker failure blocks managed Codex but not migration or Claude."""
+    paths = make_application_paths(tmp_path)
+    managed_accounts = seed_cached_dashboard(paths, REFERENCE_TIME)
+    seed_broker_degraded_dashboard(
+        paths,
+        REFERENCE_TIME,
+    )
+
+    managed = CachedDashboardService(paths).load(REFERENCE_TIME)
+    managed_claude, managed_codex = managed.providers
+    assert (
+        managed.service.ready,
+        managed.service.compatible,
+        managed_claude.actions_enabled,
+        managed_codex.actions_enabled,
+    ) == (False, True, True, False)
+    assert isinstance(managed_claude.rows[0], DashboardExternalRow)
+    assert managed_claude.rows[0].states == (
+        DashboardActionState.EXTERNAL_ACTIVE,
+    )
+    assert all(
+        isinstance(row, DashboardAccount)
+        and DashboardActionState.SERVICE_UNAVAILABLE in row.states
+        for row in managed_codex.rows
+    )
+    repair = DashboardController.start(managed).focus_next_provider()
+    assert repair.activate_or_repair() == ActivateOrRepairIntent(
+        provider_id=ProviderId.CODEX,
+        account_id=managed_accounts[0].account_id,
+    )
+
+    unmanaged_accounts = tuple(
+        replace(account, credential_health=CredentialHealth.UNKNOWN)
+        for account in managed_auth_scenario().accounts.saved_accounts(
+            ProviderId.CODEX
+        )
+    )
+
+    def load_unmanaged(
+        _reader: AccountIndexReader,
+    ) -> tuple[SavedAccount, ...]:
+        return unmanaged_accounts
+
+    monkeypatch.setattr(AccountIndexReader, "load", load_unmanaged)
+    unmanaged = CachedDashboardService(paths).load(REFERENCE_TIME)
+    unmanaged_claude, unmanaged_codex = unmanaged.providers
+    assert (
+        unmanaged.service.ready,
+        unmanaged.service.compatible,
+        unmanaged_claude.actions_enabled,
+        unmanaged_codex.actions_enabled,
+    ) == (False, True, True, True)
+    assert len(unmanaged_codex.rows) == len(unmanaged_accounts)
+    assert all(
+        isinstance(row, DashboardAccount)
+        and row.states[0] is DashboardActionState.LOGIN_REQUIRED
+        and DashboardActionState.SERVICE_UNAVAILABLE not in row.states
+        for row in unmanaged_codex.rows
+    )
 
 
 @REQUIRES_MANAGED_RUNTIME
