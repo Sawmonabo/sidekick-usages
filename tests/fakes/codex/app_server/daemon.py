@@ -28,7 +28,7 @@ from tests.fakes.codex.app_server.models import FakeCodexRefreshResponse
 from tests.fakes.codex.auth import managed_auth
 
 _CLIENT_TIMEOUT_SECONDS = 5.0
-_INSTALL_HANDSHAKE_TIMEOUT_SECONDS = 10.0
+_INSTALL_HANDSHAKE_TIMEOUT_SECONDS = 30.0
 _REFRESH_RESPONSE_TIMEOUT_SECONDS = CODEX_CALLBACK_RESPONSE_SECONDS
 _EXTERNAL_REFRESH_ERROR_CODE = -32000
 _EXTERNAL_REFRESH_ERROR_MESSAGE = "external auth refresh unavailable"

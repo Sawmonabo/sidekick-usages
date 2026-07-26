@@ -351,10 +351,12 @@ def interrupt_activation_at_install(
     supervisor.notify()
     daemon.wait_for_paused_install()
     supervisor.request_stop()
-    wait_for_operation_state(
-        OperationQueueStore(paths.durable_operations),
-        operation_id,
-        OperationState.RETRY_WAIT,
-    )
-    daemon.resume_install()
+    try:
+        wait_for_operation_state(
+            OperationQueueStore(paths.durable_operations),
+            operation_id,
+            OperationState.RETRY_WAIT,
+        )
+    finally:
+        daemon.resume_install()
     supervisor.close()
