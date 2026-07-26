@@ -352,11 +352,13 @@ def interrupt_activation_at_install(
     daemon.wait_for_paused_install()
     supervisor.request_stop()
     try:
-        wait_for_operation_state(
-            OperationQueueStore(paths.durable_operations),
-            operation_id,
-            OperationState.RETRY_WAIT,
-        )
+        supervisor.close()
     finally:
         daemon.resume_install()
-    supervisor.close()
+    operation = OperationQueueStore(paths.durable_operations).find(
+        operation_id
+    )
+    if operation is None or operation.state is not OperationState.RETRY_WAIT:
+        raise AssertionError(
+            "Interrupted durable operation was not rescheduled."
+        )
