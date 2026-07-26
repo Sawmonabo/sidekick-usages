@@ -36,7 +36,7 @@ from sidekick_usages.paths import ApplicationPaths
 from sidekick_usages.persistence.supervisor.results import WorkerResultStore
 from sidekick_usages.persistence.supervisor.service import ServiceStateStore
 from tests.fakes.daemon.control import VerifiedPeer
-from tests.test_support import REFERENCE_TIME
+from tests.support.time import REFERENCE_TIME
 
 _MONOTONIC_START = 100.0
 

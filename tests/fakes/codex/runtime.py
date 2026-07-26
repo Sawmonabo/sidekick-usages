@@ -66,7 +66,7 @@ from tests.fakes.codex.managed import (
 from tests.fakes.codex.models import FakeCodexBrokerFixture
 from tests.fakes.codex.schema import write_codex_schema
 from tests.fakes.codex.supervisor import FakeCodexSupervisor
-from tests.test_support import REFERENCE_TIME, FixedClock
+from tests.support.time import REFERENCE_TIME, FixedClock
 
 ACCOUNT_A_ID = SidekickAccountId("11111111-1111-4111-8111-111111111111")
 ACCOUNT_A_AUTHORITY_ID = AuthorityId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")

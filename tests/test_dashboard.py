@@ -113,7 +113,9 @@ from tests.fakes.migration.managed_auth import (
     MIGRATION_IDENTITIES,
     managed_auth_scenario,
 )
-from tests.test_support import CliHarness, FixedClock, make_application_paths
+from tests.support.cli import CliHarness
+from tests.support.persistence import make_application_paths
+from tests.support.time import FixedClock
 
 REFERENCE_TIME = datetime(2026, 7, 25, 14, tzinfo=UTC)
 OBSERVED_AT = REFERENCE_TIME - timedelta(hours=2)

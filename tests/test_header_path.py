@@ -37,7 +37,8 @@ from sidekick_usages.providers.claude.usage import (
     USAGE_URL,
 )
 from sidekick_usages.serialization.json import JsonObject
-from tests.test_support import FixedClock, authenticated_account
+from tests.support.accounts import authenticated_account
+from tests.support.time import FixedClock
 
 #: Reference utilization values quoted verbatim from the unified
 #: rate-limit headers in ``anthropics/claude-code`` issue #12829.

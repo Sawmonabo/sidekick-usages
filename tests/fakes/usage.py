@@ -31,7 +31,8 @@ from sidekick_usages.persistence.supervisor.authority import (
     OperationAuthority,
 )
 from sidekick_usages.providers.base import ProviderFailure
-from tests.test_support import REFERENCE_TIME, saved_account
+from tests.support.accounts import saved_account
+from tests.support.time import REFERENCE_TIME
 
 
 def _copy_account(account: Account) -> Account:

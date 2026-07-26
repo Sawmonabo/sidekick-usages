@@ -75,12 +75,8 @@ from tests.fakes.usage import (
     InMemoryOperationLocks,
     ScriptedCredentialCoordinator,
 )
-from tests.test_support import (
-    REFERENCE_TIME,
-    FixedClock,
-    RuntimeCredentialResolver,
-    saved_account,
-)
+from tests.support.accounts import RuntimeCredentialResolver, saved_account
+from tests.support.time import REFERENCE_TIME, FixedClock
 
 type FetchStep = UsageReport | UsageError
 type FetchGate = Callable[[Account], None]

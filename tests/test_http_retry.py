@@ -15,7 +15,7 @@ from sidekick_usages.http.retry import (
     parse_retry_after,
 )
 from sidekick_usages.http.types import HttpOperation
-from tests.test_support import REFERENCE_TIME, FixedClock
+from tests.support.time import REFERENCE_TIME, FixedClock
 
 RETRY_AFTER_SECONDS = 7
 

@@ -40,12 +40,9 @@ from tests.fakes.daemon.capabilities import (
     StaticProviderCapabilityService,
     make_provider_capability_report,
 )
-from tests.test_support import (
-    REFERENCE_TIME,
-    FixedClock,
-    make_application_paths,
-    make_supervisor_health,
-)
+from tests.support.daemon import make_supervisor_health
+from tests.support.persistence import make_application_paths
+from tests.support.time import REFERENCE_TIME, FixedClock
 
 
 def test_provider_secret_never_crosses_persisted_or_doctor_error_channels(

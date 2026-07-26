@@ -108,12 +108,9 @@ from tests.fakes.daemon.runtime import (
     foundation_runtime,
     worker_planner,
 )
-from tests.test_support import (
-    REFERENCE_TIME,
-    FixedClock,
-    make_application_paths,
-    saved_account,
-)
+from tests.support.accounts import saved_account
+from tests.support.persistence import make_application_paths
+from tests.support.time import REFERENCE_TIME, FixedClock
 
 _EXPECTED_WORKER_COUNT = 2
 _CLAUDE_RECOVERY_OPERATION_ID = OperationId(

@@ -48,11 +48,8 @@ from sidekick_usages.providers.codex.auth.storage import (
 from tests.fakes.codex.auth import NEXT_AUTH_FILE, managed_auth
 from tests.fakes.codex.executable import write_fake_codex
 from tests.fakes.codex.schema import write_codex_schema
-from tests.test_support import (
-    REFERENCE_TIME,
-    FixedClock,
-    make_application_paths,
-)
+from tests.support.persistence import make_application_paths
+from tests.support.time import REFERENCE_TIME, FixedClock
 
 MANAGED_FILE_CONFIG = f"{CODEX_FILE_AUTH_CONFIG}\n".encode()
 

@@ -21,7 +21,7 @@ from tests.fakes.usage import (
     InMemoryAccountStore,
     ScriptedCredentialCoordinator,
 )
-from tests.test_support import REFERENCE_TIME, FixedClock
+from tests.support.time import REFERENCE_TIME, FixedClock
 
 
 def _login_account(*, refresh_expiry: KnownExpiry | UnknownExpiry) -> Account:

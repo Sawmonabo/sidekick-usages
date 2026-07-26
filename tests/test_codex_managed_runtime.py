@@ -96,7 +96,7 @@ from tests.fakes.codex.runtime import (
 )
 from tests.fakes.codex.schema import write_codex_schema
 from tests.fakes.codex.supervisor import FakeCodexSupervisor
-from tests.test_support import REFERENCE_TIME, FixedClock
+from tests.support.time import REFERENCE_TIME, FixedClock
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32",

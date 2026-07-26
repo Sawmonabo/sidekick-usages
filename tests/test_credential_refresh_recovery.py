@@ -31,14 +31,13 @@ from tests.fakes.credential_refresh import (
     SimulatedCrashError,
     login_account,
 )
-from tests.test_support import (
-    REFERENCE_TIME,
-    FixedClock,
-    RuntimeCredentialResolver,
+from tests.support.accounts import RuntimeCredentialResolver
+from tests.support.persistence import (
     make_account_store,
     make_application_paths,
     remove_saved_account,
 )
+from tests.support.time import REFERENCE_TIME, FixedClock
 
 
 @pytest.mark.parametrize(

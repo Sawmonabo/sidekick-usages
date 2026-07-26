@@ -4,6 +4,7 @@ from pathlib import Path
 
 from sidekick_usages.core.types import HeartbeatStatus, ProviderId
 from sidekick_usages.providers.codex.heartbeat import SPARK_HEARTBEAT_MODEL
+from tests.support.accounts import authenticated_account
 from tests.test_heartbeat import (
     _SPARK_RESET,
     _STANDARD_RESET,
@@ -13,7 +14,6 @@ from tests.test_heartbeat import (
     _FakeCodexHttp,
     _install_ctx,
 )
-from tests.test_support import authenticated_account
 
 
 def test_heartbeat_enable_accepts_codex_with_saved_account_id(

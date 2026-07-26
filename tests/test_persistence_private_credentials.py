@@ -16,7 +16,7 @@ from sidekick_usages.persistence.types.credential import (
     PrivateCredentialOwnership,
     PrivateCredentialState,
 )
-from tests.test_support import make_application_paths
+from tests.support.persistence import make_application_paths
 
 PRIVATE_DIRECTORY_MODE = 0o700
 PRIVATE_FILE_MODE = 0o600

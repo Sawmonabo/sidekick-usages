@@ -34,11 +34,8 @@ from sidekick_usages.providers.base import (
     RefreshSuccess,
     runtime_account,
 )
-from tests.test_support import (
-    REFERENCE_TIME,
-    FixedClock,
-    RuntimeCredentialResolver,
-)
+from tests.support.accounts import RuntimeCredentialResolver
+from tests.support.time import REFERENCE_TIME, FixedClock
 
 ACCESS_EXPIRY = REFERENCE_TIME + timedelta(hours=1)
 

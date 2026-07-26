@@ -9,13 +9,13 @@ from sidekick_usages.core.models import Account, ClaudeSetupTokenCredentials
 from sidekick_usages.core.types import AccountLabel
 from sidekick_usages.http.client import HttpClient
 from sidekick_usages.persistence.accounts.store import AccountStore
-from tests.test_support import (
-    CliHarness,
-    FixedClock,
+from tests.support.application import make_app_context
+from tests.support.cli import CliHarness
+from tests.support.persistence import (
     make_account_store,
     make_account_store_with_private,
-    make_app_context,
 )
+from tests.support.time import FixedClock
 
 
 def _ctx(tmp_path: Path, account: Account) -> tuple[AccountStore, CliHarness]:

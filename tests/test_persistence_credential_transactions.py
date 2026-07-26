@@ -27,7 +27,7 @@ from sidekick_usages.persistence.private.credentials import (
 )
 from sidekick_usages.persistence.schema.account import encode_version_three
 from sidekick_usages.persistence.types.artifact import AuthorityExpectation
-from tests.test_support import make_application_paths
+from tests.support.persistence import make_application_paths
 
 AUTHORITY_PAYLOAD = encode_version_three(VersionThreeDocument(()))
 PRIVATE_PAYLOAD = b"test-only-private-auth"

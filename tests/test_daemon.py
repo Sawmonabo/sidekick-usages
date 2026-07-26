@@ -62,13 +62,12 @@ from tests.fakes.daemon.lifecycle import (
     LifecycleCancellationProof,
     exercise_lifecycle_command_cancellation,
 )
-from tests.test_support import (
-    REFERENCE_TIME,
-    FixedClock,
+from tests.support.daemon import make_supervisor_health
+from tests.support.persistence import (
     make_account_store,
     make_application_paths,
-    make_supervisor_health,
 )
+from tests.support.time import REFERENCE_TIME, FixedClock
 
 _OWNER_FILE_MODE = 0o600
 _READINESS_REQUEST_ID = RequestId("88888888-8888-4888-8888-888888888888")

@@ -62,7 +62,7 @@ from tests.fakes.codex.managed import (
     managed_subscription,
     seed_managed_accounts,
 )
-from tests.test_support import REFERENCE_TIME, FixedClock
+from tests.support.time import REFERENCE_TIME, FixedClock
 
 _MANAGED_ACCOUNT_A = SidekickAccountId("11111111-1111-4111-8111-111111111111")
 _MANAGED_ACCOUNT_B = SidekickAccountId("22222222-2222-4222-8222-222222222222")

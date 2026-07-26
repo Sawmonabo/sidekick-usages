@@ -22,11 +22,9 @@ from tests.fakes.credential_refresh import (
     RefreshProvider,
     login_account,
 )
-from tests.test_support import (
-    FixedClock,
-    RuntimeCredentialResolver,
-    make_account_store,
-)
+from tests.support.accounts import RuntimeCredentialResolver
+from tests.support.persistence import make_account_store
+from tests.support.time import FixedClock
 
 
 def test_fresh_rotating_authority_replaces_cached_setup_token(

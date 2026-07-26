@@ -18,12 +18,10 @@ from sidekick_usages.daemon.types.lifecycle import (
 )
 from sidekick_usages.http.client import HttpClient
 from sidekick_usages.providers.registry import build_provider_registry
-from tests.test_support import (
-    CliHarness,
-    FixedClock,
-    make_account_store_with_private,
-    make_app_context,
-)
+from tests.support.application import make_app_context
+from tests.support.cli import CliHarness
+from tests.support.persistence import make_account_store_with_private
+from tests.support.time import FixedClock
 
 
 def _install_context(

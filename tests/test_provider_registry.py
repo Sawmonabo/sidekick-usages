@@ -9,7 +9,7 @@ from sidekick_usages.providers.registry import (
     build_heartbeat_registry,
     build_provider_registry,
 )
-from tests.test_support import FixedClock
+from tests.support.time import FixedClock
 
 
 def test_registry_composes_exactly_two_provider_owned_integrations() -> None:

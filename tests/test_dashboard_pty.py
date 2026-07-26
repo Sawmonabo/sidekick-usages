@@ -45,7 +45,7 @@ from tests.fakes.dashboard.session import (
     SessionSnapshotSource,
     unavailable_session_snapshot,
 )
-from tests.pty_support import PtySession
+from tests.support.pty import PtySession
 
 ANSI_CONTROL_PATTERN = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|[()][0-2A-Z])")
 CHILD_MODE_ENVIRONMENT_KEY = "SIDEKICK_PTY_CHILD"

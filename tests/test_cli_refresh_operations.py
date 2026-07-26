@@ -25,7 +25,7 @@ from tests.fakes.credentials import (
     detected_setup_token,
     install_cli_context,
 )
-from tests.test_support import REFERENCE_TIME, FixedClock
+from tests.support.time import REFERENCE_TIME, FixedClock
 
 _MAINTENANCE_REFRESH_CLOCK_CALLS = 3
 

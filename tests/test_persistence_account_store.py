@@ -41,7 +41,7 @@ from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
 from sidekick_usages.persistence.supervisor.selection import (
     SelectedStateStore,
 )
-from tests.test_support import (
+from tests.support.persistence import (
     make_account_store_with_private,
     make_application_paths,
 )

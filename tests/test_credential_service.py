@@ -38,10 +38,8 @@ from sidekick_usages.providers.base import (
     ProviderFailureKind,
     RefreshResult,
 )
-from tests.test_support import (
-    FixedClock,
-    make_application_paths,
-)
+from tests.support.persistence import make_application_paths
+from tests.support.time import FixedClock
 
 
 class _Provider(Provider):

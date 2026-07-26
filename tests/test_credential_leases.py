@@ -30,9 +30,7 @@ from sidekick_usages.persistence.errors import InvalidSchemaError
 from sidekick_usages.persistence.models.credential import (
     StoredCredentialAuthority,
 )
-from tests.test_support import (
-    make_account_store_with_private,
-)
+from tests.support.persistence import make_account_store_with_private
 
 
 class _MalformedRepository(CredentialAuthorityRepository):

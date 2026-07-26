@@ -28,7 +28,7 @@ from sidekick_usages.providers.claude.schema.credentials import (
 )
 from sidekick_usages.providers.codex.schema.auth import jwt_expiry
 from sidekick_usages.serialization.json import JsonValue, decode_json_object
-from tests.test_support import make_account_store
+from tests.support.persistence import make_account_store
 
 
 def test_claude_parser_preserves_known_scope_order() -> None:

@@ -29,11 +29,8 @@ from sidekick_usages.providers.claude.schema.credentials import (
 )
 from sidekick_usages.providers.claude.usage import USAGE_URL
 from sidekick_usages.serialization.json import JsonObject
-from tests.test_support import (
-    REFERENCE_TIME,
-    FixedClock,
-    authenticated_account,
-)
+from tests.support.accounts import authenticated_account
+from tests.support.time import REFERENCE_TIME, FixedClock
 
 _ACCESS_EXPIRY = REFERENCE_TIME + timedelta(hours=1)
 _REFRESH_EXPIRY = REFERENCE_TIME + timedelta(days=30)

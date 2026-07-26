@@ -91,12 +91,11 @@ from tests.fakes.claude.managed import (
     managed_profile,
     profile_tree,
 )
-from tests.test_support import (
-    REFERENCE_TIME,
-    FixedClock,
+from tests.support.persistence import (
     make_account_store_with_private,
     make_application_paths,
 )
+from tests.support.time import REFERENCE_TIME, FixedClock
 
 _OLD_ACCESS_EXPIRY = REFERENCE_TIME + timedelta(minutes=30)
 _INTERACTIVE_ACCESS_EXPIRY = REFERENCE_TIME + timedelta(hours=1)

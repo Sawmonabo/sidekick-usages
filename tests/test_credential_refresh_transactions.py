@@ -48,13 +48,9 @@ from tests.fakes.credential_refresh import (
     login_account,
     refresh_coordinator,
 )
-from tests.test_support import (
-    REFERENCE_TIME,
-    FixedClock,
-    RuntimeCredentialResolver,
-    make_account_store,
-    remove_saved_account,
-)
+from tests.support.accounts import RuntimeCredentialResolver
+from tests.support.persistence import make_account_store, remove_saved_account
+from tests.support.time import REFERENCE_TIME, FixedClock
 
 _TWO_CALLERS = 2
 _PRIVATE_DIRECTORY_MODE = 0o700

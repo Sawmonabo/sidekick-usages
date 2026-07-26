@@ -20,7 +20,7 @@ from sidekick_usages.update import (
     is_newer,
     parse_version,
 )
-from tests.test_support import CliHarness
+from tests.support.cli import CliHarness
 
 EXPECTED_RELEASES_URL = (
     "https://api.github.com/repos/Sawmonabo/sidekick-usages/releases/latest"

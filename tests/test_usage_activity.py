@@ -68,12 +68,9 @@ from sidekick_usages.usage.ports import (
 )
 from sidekick_usages.usage.service import UsageCheckService
 from tests.fakes.usage import InMemoryOperationLocks
-from tests.test_support import (
-    REFERENCE_TIME,
-    FixedClock,
-    RuntimeCredentialResolver,
-    make_account_store_with_private,
-)
+from tests.support.accounts import RuntimeCredentialResolver
+from tests.support.persistence import make_account_store_with_private
+from tests.support.time import REFERENCE_TIME, FixedClock
 
 type FetchStep = UsageReport | UsageError
 type ActivityStep = TokenActivityReading | UsageError

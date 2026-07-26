@@ -29,7 +29,7 @@ from sidekick_usages.providers.codex.schema.activity import (
     parse_activity_response,
 )
 from sidekick_usages.serialization.json import JsonObject
-from tests.test_support import authenticated_account
+from tests.support.accounts import authenticated_account
 
 
 class CapturingHttp(HttpClient):

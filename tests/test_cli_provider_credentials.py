@@ -49,11 +49,8 @@ from tests.fakes.codex.managed import managed_subscription
 from tests.fakes.codex.models import FakeCodexLogin
 from tests.fakes.codex.schema import write_codex_schema
 from tests.fakes.credentials import install_cli_context
-from tests.test_support import (
-    REFERENCE_TIME,
-    FixedClock,
-    make_application_paths,
-)
+from tests.support.persistence import make_application_paths
+from tests.support.time import REFERENCE_TIME, FixedClock
 
 
 class _CodexProvider(Provider):

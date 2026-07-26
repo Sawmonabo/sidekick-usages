@@ -52,12 +52,12 @@ from tests.fakes.daemon.capabilities import (
     StaticProviderCapabilityService,
     make_provider_capability_report,
 )
-from tests.test_support import (
-    REFERENCE_TIME,
+from tests.support.persistence import (
     make_account_store,
     make_account_store_with_private,
     make_application_paths,
 )
+from tests.support.time import REFERENCE_TIME
 
 
 class _RecordingHttpClient(HttpClient):

@@ -42,7 +42,7 @@ from tests.fakes.dashboard.render import (
     PROGRESS_COPY,
     interactive_dashboard_state,
 )
-from tests.test_support import REFERENCE_TIME
+from tests.support.time import REFERENCE_TIME
 
 _ACTIVITIES = (
     CompleteTokenActivity(

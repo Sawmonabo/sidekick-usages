@@ -88,13 +88,10 @@ from tests.fakes.daemon.capabilities import (
     make_provider_capability_report,
 )
 from tests.fakes.dashboard.render import interactive_dashboard_state
-from tests.test_support import (
-    REFERENCE_TIME,
-    CliHarness,
-    FixedClock,
-    make_account_store,
-    make_supervisor_health,
-)
+from tests.support.cli import CliHarness
+from tests.support.daemon import make_supervisor_health
+from tests.support.persistence import make_account_store
+from tests.support.time import REFERENCE_TIME, FixedClock
 
 _SUPERVISOR_HEALTH = make_supervisor_health(
     queue=ServiceComponentState.UNHEALTHY,

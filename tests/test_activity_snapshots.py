@@ -30,7 +30,7 @@ from sidekick_usages.persistence.snapshots.activity import (
 from sidekick_usages.persistence.types.error import (
     ActivitySnapshotFailureKind,
 )
-from tests.test_support import saved_account
+from tests.support.accounts import saved_account
 
 _FETCHED_AT = datetime(2026, 7, 11, 4, 30, tzinfo=UTC)
 _ACCOUNT_COUNT = 2
