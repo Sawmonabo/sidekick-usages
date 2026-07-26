@@ -125,6 +125,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         WorkerLaunchPlanner(
             resolve_worker_executable(),
             os.environ,
+            codex_executable,
         ),
         wakeup.notify,
         exchanges=exchanges,

@@ -1,5 +1,6 @@
 """Real resident supervisor harness around synthetic Codex boundaries."""
 
+import os
 import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -83,9 +84,15 @@ class FakeCodexSupervisor:
         recovery = ActivationRecoveryScheduler(journals, queue)
         events = OperationEventHub()
         exchanges = WorkerExchangeRegistry(time.monotonic)
+        worker_environment = dict(environment)
+        worker_environment["PATH"] = os.defpath
         workers = WorkerPool(
             SubprocessWorkerLauncher(),
-            WorkerLaunchPlanner(worker_executable, environment),
+            WorkerLaunchPlanner(
+                worker_executable,
+                worker_environment,
+                executable.provenance.path,
+            ),
             self._wakeup.notify,
             exchanges=exchanges,
         )

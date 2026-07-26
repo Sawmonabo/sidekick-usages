@@ -42,6 +42,7 @@ from tests.support.time import REFERENCE_TIME
 SYNTHETIC_WORKER_EXECUTABLE = (
     Path(sys.executable).resolve().parent / "sidekick-usages-worker"
 )
+SYNTHETIC_CODEX_EXECUTABLE = Path("/synthetic/bin/codex")
 _MONOTONIC_START = 100.0
 
 
@@ -218,6 +219,7 @@ def worker_planner() -> WorkerLaunchPlanner:
             "HOME": "/synthetic/home",
             "PATH": "/usr/bin",
         },
+        SYNTHETIC_CODEX_EXECUTABLE,
     )
 
 

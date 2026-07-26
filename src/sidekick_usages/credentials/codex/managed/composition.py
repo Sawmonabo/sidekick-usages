@@ -1,6 +1,7 @@
 """Provider-owned production composition for managed Codex authority."""
 
 from collections.abc import Mapping
+from pathlib import Path
 
 from sidekick_usages.clock import Clock
 from sidekick_usages.credentials.codex.managed.service import (
@@ -28,11 +29,14 @@ def compose_codex_managed_authority(
     profiles: PrivateCredentialTree,
     clock: Clock,
     environment: Mapping[str, str],
+    *,
+    executable_path: Path | None,
 ) -> CodexManagedAuthorityCoordinator:
     """Build one capability-proven managed Codex authority coordinator."""
     capabilities = probe_codex_capabilities(
         discover_codex_executable(
             environment,
+            executable_path=executable_path,
             process_group=CodexProcessGroupPolicy.INHERITED,
         ),
         environment,

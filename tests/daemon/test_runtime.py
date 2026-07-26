@@ -23,7 +23,10 @@ from sidekick_usages.core.selection.types import (
 )
 from sidekick_usages.core.types import AccountLabel, ProviderId
 from sidekick_usages.daemon.control.dispatch import OperationEventHub
-from sidekick_usages.daemon.models.worker import WorkerResult
+from sidekick_usages.daemon.models.worker import (
+    WORKER_CODEX_EXECUTABLE_ENVIRONMENT_KEY,
+    WorkerResult,
+)
 from sidekick_usages.daemon.runtime.recovery import (
     ActivationRecoveryScheduler,
 )
@@ -45,6 +48,7 @@ from tests.fakes.daemon.foundation import (
     selected,
 )
 from tests.fakes.daemon.runtime import (
+    SYNTHETIC_CODEX_EXECUTABLE,
     SYNTHETIC_WORKER_EXECUTABLE,
     FakeWorkerLauncher,
     RuntimeClock,
@@ -233,9 +237,9 @@ def test_provider_operations_use_independent_durable_slots(
                 updated_at=timestamp,
             )
         )
-    assert tuple(
-        operation.provider_id for operation in queue.load()
-    ) == tuple(ProviderId)
+    assert tuple(operation.provider_id for operation in queue.load()) == tuple(
+        ProviderId
+    )
 
 
 def test_supervisor_and_workers_isolate_failures_and_recover_durably(
@@ -327,6 +331,9 @@ def test_supervisor_and_workers_isolate_failures_and_recover_durably(
         assert spec.environment_map() == {
             "HOME": "/synthetic/home",
             "PATH": "/usr/bin",
+            WORKER_CODEX_EXECUTABLE_ENVIRONMENT_KEY: str(
+                SYNTHETIC_CODEX_EXECUTABLE
+            ),
         }
     restarted_workers = WorkerPool(
         FakeWorkerLauncher(results, clock, frozenset()),

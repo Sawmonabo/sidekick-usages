@@ -56,6 +56,7 @@ from sidekick_usages.credentials.codex.reconciliation import (
     CodexNativeReconciliationService,
 )
 from sidekick_usages.daemon.models.worker import (
+    WORKER_CODEX_EXECUTABLE_ENVIRONMENT_KEY,
     WORKER_EXCHANGE_DESCRIPTOR_ENVIRONMENT_KEY,
     WorkerResult,
 )
@@ -110,6 +111,7 @@ from sidekick_usages.persistence.supervisor.activation import (
 from sidekick_usages.persistence.supervisor.authority import (
     OperationAuthority,
     OperationAuthorityLock,
+    ProviderMutationAuthority,
     ProviderMutationLock,
 )
 from sidekick_usages.persistence.supervisor.observation import (
@@ -145,6 +147,34 @@ _ACCOUNT_OPERATION_KINDS = frozenset(
 )
 
 
+def _worker_codex_executable() -> Path | None:
+    """Consume the supervisor-qualified Codex executable path."""
+    raw_path = os.environ.pop(
+        WORKER_CODEX_EXECUTABLE_ENVIRONMENT_KEY,
+        None,
+    )
+    if raw_path is None:
+        return None
+    executable = Path(raw_path)
+    if not executable.is_absolute():
+        raise ValueError("Worker Codex executable must be absolute.")
+    return executable
+
+
+def _codex_app_server_failure(
+    operation: DueOperation,
+    error: CodexAppServerError,
+    clock: Clock,
+) -> WorkerResult:
+    """Return one durable result for a qualified Codex boundary failure."""
+    return worker_failure(
+        operation,
+        WorkerOutcome.TRANSIENT_FAILURE,
+        error.code.value,
+        clock,
+    )
+
+
 class _CodexNativeAuthObserver:
     """Worker-local secret-free native authentication observer."""
 
@@ -167,9 +197,11 @@ class _AccountMaintenanceExecutor:
         self,
         paths: ApplicationPaths,
         clock: Clock,
+        codex_executable: Path | None,
     ) -> None:
         self._paths = paths
         self._clock = clock
+        self._codex_executable = codex_executable
 
     def execute(
         self,
@@ -233,13 +265,21 @@ class _AccountMaintenanceExecutor:
                     self._clock,
                 )
             elif operation.provider_id is ProviderId.CODEX:
-                coordinator = compose_codex_managed_authority(
-                    self._paths,
-                    store,
-                    persistence.managed_codex_profiles,
-                    self._clock,
-                    os.environ,
-                )
+                try:
+                    coordinator = compose_codex_managed_authority(
+                        self._paths,
+                        store,
+                        persistence.managed_codex_profiles,
+                        self._clock,
+                        os.environ,
+                        executable_path=self._codex_executable,
+                    )
+                except CodexAppServerError as error:
+                    return _codex_app_server_failure(
+                        operation,
+                        error,
+                        self._clock,
+                    )
                 http = resources.enter_context(HttpClient(clock=self._clock))
                 executor = CodexManagedMaintenanceWorkerExecutor(
                     coordinator,
@@ -258,6 +298,88 @@ class _AccountMaintenanceExecutor:
             return executor.execute(operation, authority)
 
 
+class _ProviderOperationExecutor:
+    """Compose provider selection work inside the durable result boundary."""
+
+    def __init__(
+        self,
+        paths: ApplicationPaths,
+        persistence: PersistenceService,
+        store: AccountStore,
+        selected: SelectedStateStore,
+        journals: ActivationJournalStore,
+        exchange: WorkerExchangeChannel | None,
+        clock: Clock,
+        codex_executable: Path | None,
+    ) -> None:
+        self._paths = paths
+        self._persistence = persistence
+        self._store = store
+        self._selected = selected
+        self._journals = journals
+        self._exchange = exchange
+        self._clock = clock
+        self._codex_executable = codex_executable
+
+    def execute(
+        self,
+        operation: DueOperation,
+        authority: ProviderMutationAuthority,
+    ) -> WorkerResult:
+        """Compose and execute one provider operation under its held lock."""
+        if (
+            operation.kind is OperationKind.RECONCILE_NATIVE
+            and operation.provider_id is ProviderId.CODEX
+        ):
+            executor = CodexNativeReconciliationWorkerExecutor(
+                CodexNativeReconciliationService(
+                    self._store,
+                    CodexManagedAuthReader(
+                        self._paths,
+                        self._persistence.managed_codex_profiles,
+                    ),
+                    self._journals,
+                    self._selected,
+                    self._clock,
+                ),
+                RuntimeAuthObservationStore(self._paths.durable_operations),
+                self._clock,
+            )
+            return executor.execute(operation, authority)
+        if operation.provider_id is ProviderId.CODEX:
+            try:
+                executor = _codex_exchange_executor(
+                    operation,
+                    self._paths,
+                    self._persistence,
+                    self._store,
+                    self._selected,
+                    self._journals,
+                    self._exchange,
+                    self._clock,
+                    self._codex_executable,
+                )
+            except CodexAppServerError as error:
+                return _codex_app_server_failure(
+                    operation,
+                    error,
+                    self._clock,
+                )
+            return executor.execute(operation, authority)
+        if operation.provider_id is ProviderId.CLAUDE:
+            executor = _claude_selection_executor(
+                operation,
+                self._paths,
+                self._persistence,
+                self._store,
+                self._selected,
+                self._journals,
+                self._clock,
+            )
+            return executor.execute(operation, authority)
+        raise ValueError("Provider worker operation is unsupported.")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run exactly one operation identified by its sole argument."""
     arguments = tuple(sys.argv[1:] if argv is None else argv)
@@ -271,6 +393,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if operation is None:
             return _EXIT_STATE_UNAVAILABLE
         clock = SystemClock()
+        codex_executable = _worker_codex_executable()
         if operation.kind in _ACCOUNT_OPERATION_KINDS:
             completed = _run_account_operation(
                 operation_id,
@@ -278,6 +401,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 paths,
                 queue,
                 clock,
+                codex_executable,
             )
         elif operation.kind in _PROVIDER_OPERATION_KINDS:
             completed = _run_provider_operation(
@@ -286,6 +410,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 paths,
                 queue,
                 clock,
+                codex_executable,
             )
         else:
             if WORKER_EXCHANGE_DESCRIPTOR_ENVIRONMENT_KEY in os.environ:
@@ -320,6 +445,7 @@ def _run_account_operation(
     paths: ApplicationPaths,
     queue: OperationQueueStore,
     clock: Clock,
+    codex_executable: Path | None,
 ) -> bool:
     if WORKER_EXCHANGE_DESCRIPTOR_ENVIRONMENT_KEY in os.environ:
         return False
@@ -331,7 +457,7 @@ def _run_account_operation(
             paths.durable_operations,
             operation.required_account_id,
         ),
-        _AccountMaintenanceExecutor(paths, clock),
+        _AccountMaintenanceExecutor(paths, clock, codex_executable),
         clock,
     )
 
@@ -342,6 +468,7 @@ def _run_provider_operation(
     paths: ApplicationPaths,
     queue: OperationQueueStore,
     clock: Clock,
+    codex_executable: Path | None,
 ) -> bool:
     exchange = (
         WorkerExchangeChannel.from_environment()
@@ -364,47 +491,6 @@ def _run_provider_operation(
             paths.activation_journals,
             paths.durable_operations,
         )
-        if (
-            operation.kind is OperationKind.RECONCILE_NATIVE
-            and operation.provider_id is ProviderId.CODEX
-        ):
-            executor = CodexNativeReconciliationWorkerExecutor(
-                CodexNativeReconciliationService(
-                    store,
-                    CodexManagedAuthReader(
-                        paths,
-                        persistence.managed_codex_profiles,
-                    ),
-                    journals,
-                    selected,
-                    clock,
-                ),
-                RuntimeAuthObservationStore(paths.durable_operations),
-                clock,
-            )
-        elif operation.provider_id is ProviderId.CODEX:
-            executor = _codex_exchange_executor(
-                operation,
-                paths,
-                persistence,
-                store,
-                selected,
-                journals,
-                exchange,
-                clock,
-            )
-        elif operation.provider_id is ProviderId.CLAUDE:
-            executor = _claude_selection_executor(
-                operation,
-                paths,
-                persistence,
-                store,
-                selected,
-                journals,
-                clock,
-            )
-        else:
-            raise ValueError("Provider worker operation is unsupported.")
         return run_provider_worker(
             operation_id,
             queue,
@@ -420,7 +506,16 @@ def _run_provider_operation(
                 ),
                 timeout_seconds=_PROVIDER_AUTHORITY_TIMEOUT_SECONDS,
             ),
-            executor,
+            _ProviderOperationExecutor(
+                paths,
+                persistence,
+                store,
+                selected,
+                journals,
+                exchange,
+                clock,
+                codex_executable,
+            ),
             clock,
         )
     finally:
@@ -437,6 +532,7 @@ def _codex_exchange_executor(
     journals: ActivationJournalStore,
     exchange: WorkerExchangeChannel | None,
     clock: Clock,
+    codex_executable: Path | None,
 ) -> CodexCallbackWorkerExecutor | CodexActivationWorkerExecutor:
     if exchange is None:
         raise ValueError("Codex exchange operation has no channel.")
@@ -446,6 +542,7 @@ def _codex_exchange_executor(
         persistence.managed_codex_profiles,
         clock,
         os.environ,
+        executable_path=codex_executable,
     )
     if operation.kind is OperationKind.CODEX_CALLBACK:
         return CodexCallbackWorkerExecutor(

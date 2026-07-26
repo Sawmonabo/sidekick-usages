@@ -118,6 +118,7 @@ def compose_managed_credential_factories(
             persistence.managed_codex_profiles,
             clock,
             environment,
+            executable_path=None,
         )
     except CodexAppServerError:
         return factories

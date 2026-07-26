@@ -21,6 +21,7 @@ from sidekick_usages.platform.environment import (
 WORKER_EXCHANGE_DESCRIPTOR_ENVIRONMENT_KEY = (
     "SIDEKICK_WORKER_EXCHANGE_DESCRIPTOR"
 )
+WORKER_CODEX_EXECUTABLE_ENVIRONMENT_KEY = "SIDEKICK_WORKER_CODEX_EXECUTABLE"
 MINIMUM_WORKER_EXCHANGE_DESCRIPTOR = 3
 
 
@@ -55,6 +56,7 @@ class WorkerLaunchSpec:
     operation_id: OperationId
     argv: tuple[str, str]
     environment: tuple[tuple[str, str], ...] = field(repr=False)
+    codex_executable: Path | None = field(repr=False)
     exchange_descriptor: int | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
@@ -67,6 +69,11 @@ class WorkerLaunchSpec:
                 "Worker arguments must contain only operation ID."
             )
         require_worker_environment(self.environment)
+        if (
+            self.codex_executable is not None
+            and not self.codex_executable.is_absolute()
+        ):
+            raise ValueError("Worker Codex executable must be absolute.")
         descriptor = self.exchange_descriptor
         if descriptor is not None and (
             type(descriptor) is not int
@@ -80,6 +87,10 @@ class WorkerLaunchSpec:
         if self.exchange_descriptor is not None:
             environment[WORKER_EXCHANGE_DESCRIPTOR_ENVIRONMENT_KEY] = str(
                 self.exchange_descriptor
+            )
+        if self.codex_executable is not None:
+            environment[WORKER_CODEX_EXECUTABLE_ENVIRONMENT_KEY] = str(
+                self.codex_executable
             )
         return environment
 
