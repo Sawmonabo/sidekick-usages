@@ -187,10 +187,11 @@ class DaemonManager:
         """Inspect independent supervisor components without mutation."""
         try:
             status = self._backend.status()
-        except ServiceLifecycleError:
-            status = ServiceBackendStatus.single(
+        except ServiceLifecycleError as error:
+            if error.code is ServiceFailureCode.CANCELLED:
+                raise
+            status = ServiceBackendStatus.observation_failed(
                 self._backend.id,
-                ServiceLifecycleState.UNHEALTHY,
             )
         return self._readiness.health(status)
 

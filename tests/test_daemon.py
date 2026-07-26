@@ -22,6 +22,7 @@ from sidekick_usages.daemon.lifecycle.manager import (
     DaemonManager,
     build_service_backend,
 )
+from sidekick_usages.daemon.lifecycle.ports import ServiceBackend
 from sidekick_usages.daemon.lifecycle.readiness import (
     RuntimeCleanup,
     SupervisorReadiness,
@@ -63,14 +64,14 @@ class RecordingRunner(SystemCommandRunner):
     def __init__(self) -> None:
         self.calls: list[tuple[str, ...]] = []
         self.rescue_output = WSL_RESCUE_INSTALLED
-        self.rescue_status_fails = False
-        self.systemd_status_fails = False
+        self.rescue_status_failure: ServiceFailureCode | None = None
+        self.systemd_status_failure: ServiceFailureCode | None = None
 
     def run(self, argv: tuple[str, ...]) -> CommandResult:
         self.calls.append(argv)
         if argv[:3] == ("systemctl", "--user", "show"):
-            if self.systemd_status_fails:
-                raise ServiceLifecycleError(ServiceFailureCode.COMMAND_FAILED)
+            if self.systemd_status_failure is not None:
+                raise ServiceLifecycleError(self.systemd_status_failure)
             return CommandResult(
                 0,
                 (
@@ -84,8 +85,8 @@ class RecordingRunner(SystemCommandRunner):
         if argv[:2] == ("launchctl", "print"):
             return CommandResult(0, "state = running\n", "")
         if argv[0] == "powershell.exe" and "Get-ScheduledTask" in argv[-1]:
-            if self.rescue_status_fails:
-                raise ServiceLifecycleError(ServiceFailureCode.COMMAND_FAILED)
+            if self.rescue_status_failure is not None:
+                raise ServiceLifecycleError(self.rescue_status_failure)
             return CommandResult(0, self.rescue_output + "\n", "")
         return CommandResult(0, "", "")
 
@@ -120,6 +121,8 @@ class ReadyLifecycle:
         return replace(
             make_supervisor_health(),
             backend=status.backend,
+            process=status.process,
+            rescue=status.rescue,
         )
 
 
@@ -128,8 +131,16 @@ class RecordingBackend:
 
     id = ServiceBackendId.SYSTEMD
 
-    def __init__(self, events: list[str]) -> None:
+    def __init__(
+        self,
+        events: list[str],
+        *,
+        backend_id: ServiceBackendId = ServiceBackendId.SYSTEMD,
+        status_failure: ServiceFailureCode | None = None,
+    ) -> None:
         self.events = events
+        self.id = backend_id
+        self.status_failure = status_failure
 
     def cancel(self) -> None:
         """Record backend command cancellation."""
@@ -143,6 +154,8 @@ class RecordingBackend:
 
     def status(self) -> ServiceBackendStatus:
         self.events.append("status")
+        if self.status_failure is not None:
+            raise ServiceLifecycleError(self.status_failure)
         return ServiceBackendStatus.single(
             self.id,
             ServiceLifecycleState.READY,
@@ -188,6 +201,48 @@ def _state_tree_snapshot(
             path.stat().st_mtime_ns,
         )
         for path in (root, *sorted(root.rglob("*")))
+    )
+
+
+def _exercise_wsl_health_failures(
+    backend: ServiceBackend,
+    manager: DaemonManager,
+    runner: RecordingRunner,
+    paths: ApplicationPaths,
+) -> None:
+    """Prove truthful WSL components and cancellation propagation."""
+    failed_health = DaemonManager(
+        RecordingBackend(
+            [],
+            backend_id=ServiceBackendId.WSL,
+            status_failure=ServiceFailureCode.COMMAND_FAILED,
+        ),
+        ReadyLifecycle([]),
+        RuntimeCleanup(paths),
+    ).health()
+    with pytest.raises(ValueError, match="explicit rescue state"):
+        ServiceBackendStatus.single(
+            ServiceBackendId.WSL,
+            ServiceLifecycleState.UNHEALTHY,
+        )
+    runner.systemd_status_failure = ServiceFailureCode.CANCELLED
+    with pytest.raises(ServiceLifecycleError) as systemd_cancelled:
+        manager.health()
+    runner.systemd_status_failure = None
+    runner.rescue_status_failure = ServiceFailureCode.CANCELLED
+    with pytest.raises(ServiceLifecycleError) as rescue_cancelled:
+        backend.status()
+    runner.rescue_status_failure = None
+    assert (
+        failed_health.process,
+        failed_health.rescue,
+        systemd_cancelled.value.code,
+        rescue_cancelled.value.code,
+    ) == (
+        ServiceComponentState.UNHEALTHY,
+        ServiceComponentState.UNHEALTHY,
+        ServiceFailureCode.CANCELLED,
+        ServiceFailureCode.CANCELLED,
     )
 
 
@@ -296,12 +351,12 @@ def test_service_artifacts_are_user_scoped_resident_and_secret_free(
         assert "<false/>" in artifact_text
         assert "StartInterval" not in artifact_text
     if backend_id is ServiceBackendId.WSL:
-        runner.systemd_status_fails = True
+        runner.systemd_status_failure = ServiceFailureCode.COMMAND_FAILED
         systemd_degraded = backend.status()
-        runner.systemd_status_fails = False
-        runner.rescue_status_fails = True
+        runner.systemd_status_failure = None
+        runner.rescue_status_failure = ServiceFailureCode.COMMAND_FAILED
         rescue_degraded = backend.status()
-        runner.rescue_status_fails = False
+        runner.rescue_status_failure = None
         runner.rescue_output = WSL_RESCUE_ABSENT
         degraded = backend.status()
         assert (
@@ -328,16 +383,19 @@ def test_service_artifacts_are_user_scoped_resident_and_secret_free(
                 ServiceComponentState.ABSENT,
             ),
         )
-        rescue = next(
-            argv[-1]
-            for argv in runner.calls
-            if argv[0] == "powershell.exe"
-            and "Register-ScheduledTask" in argv[-1]
-        )
-        rescue_status = next(
-            argv[-1]
-            for argv in runner.calls
-            if argv[0] == "powershell.exe" and "Get-ScheduledTask" in argv[-1]
+        rescue, rescue_status = (
+            next(
+                argv[-1]
+                for argv in runner.calls
+                if argv[0] == "powershell.exe"
+                and "Register-ScheduledTask" in argv[-1]
+            ),
+            next(
+                argv[-1]
+                for argv in runner.calls
+                if argv[0] == "powershell.exe"
+                and "Get-ScheduledTask" in argv[-1]
+            ),
         )
         assert all(
             contract in rescue
@@ -381,6 +439,7 @@ def test_service_artifacts_are_user_scoped_resident_and_secret_free(
                 "$settings[0].ExecutionTimeLimit -ceq 'PT2M'",
             )
         )
+        _exercise_wsl_health_failures(backend, manager, runner, paths)
 
 
 def test_lifecycle_is_idempotent_cancellable_and_preserves_user_state(

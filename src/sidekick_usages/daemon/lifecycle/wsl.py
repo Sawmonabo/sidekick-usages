@@ -71,7 +71,9 @@ class WslBackend:
         """Require both the Linux service and Windows rescue."""
         try:
             service = self._systemd.status()
-        except ServiceLifecycleError:
+        except ServiceLifecycleError as error:
+            if error.code is ServiceFailureCode.CANCELLED:
+                raise
             service = ServiceBackendStatus.single(
                 ServiceBackendId.SYSTEMD,
                 ServiceLifecycleState.UNHEALTHY,
@@ -112,7 +114,9 @@ class WslBackend:
     def _rescue_status(self) -> ServiceLifecycleState:
         try:
             result = self._runner.run((*_POWERSHELL, self._status_script()))
-        except ServiceLifecycleError:
+        except ServiceLifecycleError as error:
+            if error.code is ServiceFailureCode.CANCELLED:
+                raise
             return ServiceLifecycleState.UNHEALTHY
         if result.returncode != 0:
             return ServiceLifecycleState.UNHEALTHY

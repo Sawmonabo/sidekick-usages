@@ -113,6 +113,11 @@ class ServiceBackendStatus:
         rescue_valid = isinstance(self.rescue, ServiceComponentState)
         if not process_valid or not rescue_valid:
             raise ValueError("Service component status values are invalid.")
+        if (
+            self.backend is ServiceBackendId.WSL
+            and self.rescue is ServiceComponentState.NOT_REQUIRED
+        ):
+            raise ValueError("WSL status requires explicit rescue state.")
 
     @classmethod
     def single(
@@ -126,6 +131,24 @@ class ServiceBackendStatus:
             state,
             process_component_state(state),
             ServiceComponentState.NOT_REQUIRED,
+        )
+
+    @classmethod
+    def observation_failed(
+        cls,
+        backend: ServiceBackendId,
+    ) -> ServiceBackendStatus:
+        """Build truthful component health after backend observation fails."""
+        rescue = (
+            ServiceComponentState.UNHEALTHY
+            if backend is ServiceBackendId.WSL
+            else ServiceComponentState.NOT_REQUIRED
+        )
+        return cls(
+            backend,
+            ServiceLifecycleState.UNHEALTHY,
+            ServiceComponentState.UNHEALTHY,
+            rescue,
         )
 
 
