@@ -45,9 +45,9 @@ from sidekick_usages.providers.codex.auth.storage import (
     CODEX_CONFIG_FILE,
     CODEX_FILE_AUTH_CONFIG,
 )
+from tests.fakes.codex.app_server.executable import write_fake_codex
+from tests.fakes.codex.app_server.schema import write_codex_schema
 from tests.fakes.codex.auth import NEXT_AUTH_FILE, managed_auth
-from tests.fakes.codex.executable import write_fake_codex
-from tests.fakes.codex.schema import write_codex_schema
 from tests.support.persistence import make_application_paths
 from tests.support.time import REFERENCE_TIME, FixedClock
 

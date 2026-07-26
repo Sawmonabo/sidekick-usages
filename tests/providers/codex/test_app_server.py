@@ -36,15 +36,15 @@ from sidekick_usages.providers.codex.app_server.types import (
 from sidekick_usages.providers.codex.broker.errors import CodexBrokerError
 from sidekick_usages.providers.codex.broker.service import CodexSharedRuntime
 from sidekick_usages.providers.codex.broker.types import CodexBrokerFailure
-from tests.fakes.codex.auth import managed_auth
-from tests.fakes.codex.daemon import FakeCodexDaemon
-from tests.fakes.codex.executable import (
+from tests.fakes.codex.app_server.daemon import FakeCodexDaemon
+from tests.fakes.codex.app_server.executable import (
     RAW_PROVIDER_SECRET,
     configure_codex_daemon_lifecycle,
     write_fake_codex,
     write_fake_managed_codex,
 )
-from tests.fakes.codex.schema import write_codex_schema
+from tests.fakes.codex.app_server.schema import write_codex_schema
+from tests.fakes.codex.auth import managed_auth
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32",

@@ -40,14 +40,14 @@ from sidekick_usages.providers.base import (
 from sidekick_usages.providers.claude.models import ClaudeCommandResult
 from sidekick_usages.providers.claude.provider import ClaudeProvider
 from tests.fakes.claude.managed import CLAUDE_VERSION_OUTPUT
-from tests.fakes.codex.auth import managed_auth
-from tests.fakes.codex.executable import (
+from tests.fakes.codex.app_server.executable import (
     configure_codex_logins,
     write_fake_codex,
 )
+from tests.fakes.codex.app_server.models import FakeCodexLogin
+from tests.fakes.codex.app_server.schema import write_codex_schema
+from tests.fakes.codex.auth import managed_auth
 from tests.fakes.codex.managed import managed_subscription
-from tests.fakes.codex.models import FakeCodexLogin
-from tests.fakes.codex.schema import write_codex_schema
 from tests.fakes.credentials.provider import install_cli_context
 from tests.support.persistence import make_application_paths
 from tests.support.time import REFERENCE_TIME, FixedClock

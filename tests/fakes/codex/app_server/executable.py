@@ -8,8 +8,9 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from sidekick_usages.core.accounts.types import OperationId
+from tests.fakes.codex.app_server.models import FakeCodexLogin
 from tests.fakes.codex.auth import NEXT_AUTH_FILE, managed_auth
-from tests.fakes.codex.models import FakeCodexLogin, FakeWorkerRoute
+from tests.fakes.codex.broker.models import FakeWorkerRoute
 
 RAW_PROVIDER_SECRET = "raw-provider-secret"
 LOGIN_CONFIG_FILE = "login-config.json"

@@ -24,8 +24,8 @@ from sidekick_usages.providers.codex.broker.responder import (
     CODEX_CALLBACK_RESPONSE_SECONDS,
 )
 from sidekick_usages.serialization.json import JsonObject, decode_json_object
+from tests.fakes.codex.app_server.models import FakeCodexRefreshResponse
 from tests.fakes.codex.auth import managed_auth
-from tests.fakes.codex.models import FakeCodexRefreshResponse
 
 _CLIENT_TIMEOUT_SECONDS = 5.0
 _REFRESH_RESPONSE_TIMEOUT_SECONDS = CODEX_CALLBACK_RESPONSE_SECONDS
