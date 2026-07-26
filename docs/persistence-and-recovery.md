@@ -116,6 +116,12 @@ accounts. Reset requires the resident supervisor to be absent. It verifies
 official logout before retiring a managed Claude profile and deletes managed
 Codex homes. Native Claude and Codex logins remain untouched.
 
+Before replacing a release that owns a periodic Sidekick schedule, use that
+still-installed release to run `sidekick-usages daemon uninstall` and verify
+the old schedule is absent. Only then uninstall the old tool and install the
+clean-break wheel. The current release does not inspect or retire scheduler
+artifacts created by an earlier layout.
+
 After reinstalling a clean-break release, recreate Claude accounts with `add`
 or `claude setup-token`. `codex login` authenticates or repairs an existing
 enrolled Codex label; it does not create one after reset. Clean Codex

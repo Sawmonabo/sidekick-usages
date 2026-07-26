@@ -370,7 +370,7 @@ The scheduler:
 - permits independent accounts to continue;
 - reserves the Codex callback lane;
 - catches up missed work once after restart; and
-- never runs duplicate legacy and supervisor schedules.
+- is installed only after an earlier Sidekick schedule is proven absent.
 
 ### 5.4 Metrics
 
@@ -550,8 +550,9 @@ The service:
 - runs the exact installed Sidekick version; and
 - requires no administrator access.
 
-The prior periodic timer is removed only after the new supervisor is ready and
-its durable schedule has adopted all due work.
+An earlier release removes its own periodic timer before the clean-break
+service is installed. The current runtime does not know earlier scheduler
+names or retirement behavior.
 
 ### 7.3 WSL
 
@@ -722,26 +723,22 @@ Recovery acquires the strongest provider-specific proof before taking action.
 
 Recovery never restores stale provider credential bytes.
 
-### 8.6 Backward compatibility
+### 8.6 Clean-break boundary
 
-The current schema-version-two account store remains readable as an explicit
-migration source.
+The current runtime accepts only its schema-version-three account store.
+Earlier Sidekick layouts are not migration sources and are never read,
+converted, or rewritten.
 
-After a Claude or Codex subscription account is converted to a managed
-private authority, the old v0.6.0 flattened credential shape is no longer
-representable without extracting and duplicating provider tokens. Therefore:
+The release contains no compatibility reader, old-schedule detector,
+retirement adapter, rollback writer, or deprecated command facade. During the
+one-machine rollout, the still-installed old release removes its own schedule
+before it is uninstalled. The clean-break release then recreates each account
+through supported Sidekick and official provider-login commands without
+copying credential files.
 
-- rollback preparation must detect any managed authority;
-- it must fail before writing, removing, or changing any artifact;
-- it must explain that the installed older release cannot own managed
-  authorities;
-- it must not reconstruct the old schema from a private home or Keychain; and
-- uninstalling the supervisor must leave the current account store and
-  provider logins intact rather than downgrading them.
-
-Legacy and setup-token-only records may retain their existing compatibility
-behavior until they are migrated. Release verification must test both the
-remaining compatible path and the managed-authority rejection path.
+Uninstalling the current supervisor leaves the current account store,
+provider logins, and metrics intact. It does not downgrade them for an older
+release.
 
 ## 9. Claude Activation
 
@@ -1170,9 +1167,8 @@ sidekick-usages daemon status
 sidekick-usages daemon uninstall
 ```
 
-Its implementation evolves from periodic one-shot maintenance to the
-supervisor design while preserving supported compatibility and migration
-behavior.
+The clean-break implementation owns only the current resident supervisor. It
+does not inspect or remove a schedule created by an earlier release.
 
 Uninstall:
 
@@ -1195,6 +1191,11 @@ Codex will perform the manual migration on this machine during implementation
 rollout. The user is required only for an unavoidable provider-controlled
 browser confirmation, MFA, password, or consent screen.
 
+Live Claude selection is a separate safety gate. Each action that can change
+the selected Claude account requires just-in-time user approval naming the
+action and target. Approval of this design or the overall rollout does not
+authorize that change.
+
 No migration occurs while this design or its implementation plan is being
 written.
 
@@ -1216,18 +1217,35 @@ Credential files and Keychain records are never manually copied or edited.
 
 ### 14.3 Service transition
 
-The current one-shot scheduler remains installed until:
+Artifact proof and live-machine proof are separate gates. Before any live
+service mutation, the exact clean-break wheel must pass its smoke, platform
+lifecycle, and release gates. The old installation and its supported
+scheduler-removal command remain intact until that artifact proof succeeds.
 
-1. the new supervisor is installed;
-2. its user service is ready;
-3. the queue contains every saved account;
-4. the Codex daemon and broker are ready when supported;
-5. one bounded maintenance pass succeeds or records truthful account errors;
-   and
-6. the new service proves restart recovery.
+The operator then performs one non-overlapping handoff:
 
-Only then is the legacy periodic schedule removed. Two maintenance schedulers
-must never remain active.
+1. inspect every applicable old scheduler backend and require one idle,
+   assessable owner with no in-flight maintenance;
+2. use the still-installed old Sidekick CLI to uninstall that exact backend;
+3. prove every old Sidekick maintenance schedule is absent;
+4. stop if removal or absence proof fails, without installing the new service;
+5. uninstall the old Sidekick tool and install the already-proven exact wheel;
+6. recreate accounts through supported Sidekick and official provider-login
+   commands, without reading the earlier layout;
+7. install the current supervisor;
+8. require service, socket, queue, provider, and Codex broker readiness;
+9. require one truthful bounded maintenance pass and restart recovery; and
+10. prove one resident scheduler remains.
+
+On WSL, the one Windows rescue task is not a maintenance scheduler; it only
+starts the Linux service. If current-service installation fails after the old
+schedule is removed, the obsolete schedule remains absent and provider
+selection remains unchanged while the clean-break install is repaired.
+
+Live-proofing the new scheduler before retiring the old one would require
+either overlapping maintenance schedulers or compatibility runtime behavior.
+Both are forbidden. Exact-wheel artifact proof therefore precedes retirement;
+live readiness proof immediately follows the non-overlapping handoff.
 
 ### 14.4 Claude accounts
 
@@ -1242,8 +1260,10 @@ time:
 6. record the refreshable subscription authority;
 7. preserve the setup token and its fixed expiry;
 8. collect a current account-scoped result;
-9. switch into and away from the account through official transitions; and
-10. prove inactive maintenance continues.
+9. switch only when the user separately approves that exact live Claude
+   target; and
+10. otherwise leave native Claude unchanged while proving private inactive
+    maintenance continues.
 
 A canceled or mismatched login leaves the original saved account and active
 native login unchanged.
@@ -1272,7 +1292,9 @@ After every private authority is ready:
 1. identify and preserve the deliberate current native selections;
 2. enroll the official Codex daemon;
 3. restart only Codex sessions that predate daemon enrollment;
-4. select every Claude account and verify a new bare `claude`;
+4. select only a separately approved Claude target and verify a new bare
+   `claude`; do not cycle accounts while the active session must remain on its
+   current account;
 5. select every Codex account and verify a new bare `codex`;
 6. verify supported ongoing sessions on their next request;
 7. verify in-flight requests are not retargeted;
@@ -1328,7 +1350,8 @@ Tests must prove:
 - worker timeout or termination leaves the supervisor healthy;
 - due work survives restart and runs once;
 - account failures do not stop later accounts;
-- no duplicate legacy schedule remains after transition;
+- platform lifecycle tests prove one current service, while the authorized
+  rollout proves old schedules absent before current-service installation;
 - every activation phase recovers from forced process death;
 - provider-specific proof, not the journal alone, decides recovery;
 - wrong-account, malformed, and partial provider state fails closed;
@@ -1447,8 +1470,8 @@ The feature is releasable only when all of these statements are proven:
     rights and leave provider logins untouched.
 23. The current-machine migration and cross-account live verification are
     completed.
-24. Rollback to a token-owning older schema fails before mutation once a
-    managed authority exists.
+24. The current runtime rejects an earlier Sidekick layout before mutation
+    and provides no downgrade writer.
 
 ## 17. Repository Ownership
 
@@ -1512,8 +1535,8 @@ Owns:
 - daemon account-update handling; and
 - provider-specific sanitized failures.
 
-The current direct private OAuth refresh path is removed after migration and
-compatibility closure; it is not a fallback.
+The current direct private OAuth refresh path is removed after managed
+authority conversion; it is not a fallback.
 
 ### 17.6 `credentials/`
 
@@ -1537,8 +1560,8 @@ Owns:
 - owner-only permissions;
 - atomic writes and recovery;
 - cross-process locking;
-- account rename, reset, removal, and migration transactions;
-- sanitized credential-index migration; and
+- account rename, reset, removal, and current-authority transactions;
+- sanitized current-schema authority transitions; and
 - no-secret validation.
 
 ### 17.8 `daemon.py`, `maintenance.py`, and `heartbeat/`

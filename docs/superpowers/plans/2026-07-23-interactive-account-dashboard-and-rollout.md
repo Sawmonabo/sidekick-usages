@@ -93,8 +93,14 @@ WSL, macOS arm64, and macOS x64.
 - The current-machine migration occurs only in Task 9, after all automated
   gates pass. It uses the CLI and official provider processes, never manual
   credential file or Keychain edits.
+- Earlier Sidekick layouts and scheduler names are not runtime inputs. Task 5
+  installs only the clean-break service. Task 9 uses the still-installed old
+  Sidekick CLI to remove its own schedule before the clean-break install.
 - Codex will perform the migration. The user is needed only for unavoidable
   provider browser, MFA, password, or consent.
+- No live action may change the selected Claude account without a separate,
+  just-in-time approval naming that action and target. General approval of
+  this plan or Task 9 does not satisfy that gate.
 - Commit and push after each numbered task with the listed Conventional Commit
   message, as already authorized for this implementation.
 
@@ -462,8 +468,10 @@ sidekick-usages use <provider> <label>
   bounded user-level restart and readiness check before offering reinstall.
   Preserve cached metrics and the dashboard throughout.
 - [ ] Stream sanitized installation, start, socket, provider, Codex broker,
-  maintenance, restart, and legacy-schedule transition progress to the
-  footer.
+  maintenance, and restart progress to the footer.
+- [ ] Do not detect, read, or retire an earlier Sidekick schedule here.
+  Live guided setup on this machine runs only after Task 9 has completed the
+  clean-break preinstall transition.
 - [ ] Continue the original activation automatically after readiness. Do not
   require another Enter.
 - [ ] On failure, preserve the dashboard and show one exact corrective action.
@@ -498,13 +506,16 @@ sidekick-usages use <provider> <label>
 ### Implementation
 
 - [ ] Add a resumable managed-auth migration coordinator that:
-  1. validates and migrates the account index;
+  1. validates the schema-version-three account index;
   2. ensures the service is installed and ready;
   3. migrates each Codex account independently;
   4. migrates each Claude account independently;
   5. preserves account-specific manual action without stopping later work;
   6. verifies all authorities and due state; and
   7. reports remaining actions without secrets.
+- [ ] Reject an earlier Sidekick layout rather than reading or converting it.
+  Managed-auth migration changes only accounts recreated in the current
+  clean-break schema.
 - [ ] Keep this command interactive when provider login is required. It may
   accept already-authorized continuation but never accepts tokens as command
   arguments.
@@ -623,6 +634,13 @@ This is the only task authorized to mutate the current machine's Sidekick or
 provider state. Execute it only after Tasks 1-8 and all three earlier plans are
 green.
 
+**Read-only baseline, 2026-07-26:** This WSL installation has one idle root
+Task Scheduler job named `sidekick-usages-refresh`; its last result is `1`.
+The old Linux timer, service, marked cron block, current resident service, and
+WSL rescue task are absent. Installed Sidekick 0.7.0 still owns
+`daemon uninstall --backend task-scheduler`. Re-read every fact before
+mutation; this baseline is evidence, not authorization.
+
 ### Read-only preflight
 
 - [ ] Confirm the worktree and built artifact are clean and exact.
@@ -641,14 +659,36 @@ green.
 
 ### Install the exact implementation
 
-- [ ] Build and smoke-test the wheel.
-- [ ] Install the exact local project through the existing `uv tool`
-  installation path:
+- [ ] Build and smoke-test one exact wheel before changing the installed
+  Sidekick tool or scheduler.
+- [ ] Record the wheel path and digest. Treat the successful exact-wheel
+  smoke, platform lifecycle tests, and release gates as the replacement
+  artifact proof. Keep the old installation and its scheduler-removal command
+  intact until that proof passes.
+- [ ] Re-read every legacy scheduler backend. Require the owned legacy job to
+  be idle, with no in-flight maintenance process. If any backend is
+  unassessable or more than one is installed, stop.
+- [ ] Use the still-installed old release to remove its exact observed
+  backend. On this WSL machine the expected command is:
 
 ```bash
-uv tool install --force --reinstall .
+sidekick-usages daemon uninstall --backend task-scheduler
 ```
 
+- [ ] Prove the legacy task, timer, service, LaunchAgent, and marked cron block
+  are absent before installing the new service. If removal or read-back fails,
+  stop with the old installation intact; do not start the new supervisor.
+- [ ] Uninstall the old Sidekick tool, then install the already-proven exact
+  wheel through the normal `uv tool` path:
+
+```bash
+uv tool uninstall sidekick-usages
+uv tool install <absolute-verified-wheel>
+```
+
+- [ ] Do not install an old-layout reader, scheduler-retirement adapter,
+  rollback writer, or other compatibility runtime. Recreate each account
+  through supported Sidekick commands and official provider login.
 - [ ] Verify `command -v sidekick-usages`, `claude`, and `codex` plus vendor
   symlink targets are unchanged except for the expected Sidekick package
   version.
@@ -662,8 +702,13 @@ uv tool install --force --reinstall .
 - [ ] Verify user-service readiness, socket peer proof, queue enrollment for
   every saved account, provider capability, Codex daemon/broker readiness, one
   truthful maintenance pass, and restart recovery.
-- [ ] Remove the old periodic schedule only through the verified transition.
-- [ ] Prove exactly one scheduler and one broker remain.
+- [ ] Prove the old periodic schedule is still absent and exactly one resident
+  scheduler remains. On WSL, the one Windows rescue task may also remain; it
+  starts systemd and performs no maintenance.
+- [ ] If current-service installation or proof fails, leave the obsolete
+  schedule absent, make no provider selection change, and repair the
+  clean-break installation. Never restore the old scheduler beside the new
+  one.
 - [ ] On WSL, test Windows logon rescue, WSL stop/start, systemd recovery, and
   no duplicate maintenance.
 
@@ -677,12 +722,15 @@ sidekick-usages migrate managed-auth
 
 - [ ] For each Codex account, allocate the final private home, perform
   independent official login, verify identity and managed refresh, convert to
-  sanitized metadata, retire the legacy credential only after success, and
-  preserve metrics history.
+  sanitized metadata, retire any recreated current-schema stored authority
+  only after success, and preserve current-schema metrics history.
 - [ ] For each Claude account, allocate the final private profile, perform
   official subscription login, verify identity and protected storage,
   preserve any setup token, collect current metrics, and prove inactive
   maintenance.
+- [ ] Obtain separate, just-in-time approval before any step that can change
+  the live selected Claude account. Name the exact target; do not treat a
+  rollout, migration, or provider-login approval as selection approval.
 - [ ] Continue after account-scoped failures and return later. Ask the user
   only when the provider requires browser, MFA, password, or consent.
 - [ ] Never manually copy or edit an account, credential file, private auth
@@ -692,8 +740,10 @@ sidekick-usages migrate managed-auth
 
 - [ ] Preserve the deliberate current native selections before testing.
 - [ ] Restart only Codex TUIs that predate official daemon enrollment.
-- [ ] Select every Claude account from the dashboard and verify a new bare
-  `claude` uses it.
+- [ ] With separate target-specific approval before each live Claude change,
+  select the approved Claude account from the dashboard and verify a new bare
+  `claude` uses it. Do not cycle Claude accounts while an active session must
+  remain on its current account.
 - [ ] Select every Codex account from the dashboard and verify a new bare
   `codex` uses it.
 - [ ] Verify supported existing sessions update on the next safe request.
@@ -781,4 +831,4 @@ The four-plan suite covers every release gate from design Section 16:
 | 21. Secret boundaries | Focused phase checks; Dashboard Task 8 |
 | 22. Guided install and clean uninstall | Foundation Tasks 6-7; Dashboard Task 5 |
 | 23. Current-machine migration | Dashboard Task 9 |
-| 24. Unsafe rollback refusal | Foundation Tasks 1 and 8 |
+| 24. Earlier-layout rejection | Foundation Tasks 1 and 8 |
