@@ -22,6 +22,7 @@ from sidekick_usages.core.selection.types import (
 )
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.control.client import ControlClient
+from sidekick_usages.daemon.control.endpoint import control_endpoint_state
 from sidekick_usages.daemon.control.protocol import PROTOCOL_VERSION
 from sidekick_usages.daemon.control.server import cleanup_control_endpoint
 from sidekick_usages.daemon.lifecycle.errors import ServiceLifecycleError
@@ -201,7 +202,12 @@ class SupervisorReadiness:
 
     def health(self, status: ServiceBackendStatus) -> SupervisorHealth:
         """Inspect components independently without installing or repairing."""
-        platform, process = _backend_health(status.state)
+        platform = _platform_health(status.state)
+        process = status.process
+        socket = control_endpoint_state(
+            self._paths.runtime_directory,
+            self._paths.supervisor_socket,
+        )
         accounts_readable = True
         try:
             accounts = self._accounts()
@@ -231,6 +237,13 @@ class SupervisorReadiness:
                 supervisor_version=None,
                 platform=platform,
                 process=process,
+                rescue=status.rescue,
+                socket=(
+                    ServiceComponentState.FEATURE_DISABLED
+                    if process is ServiceComponentState.FEATURE_DISABLED
+                    else socket
+                ),
+                peer=unavailable,
                 protocol=unavailable,
                 queue=unavailable,
                 journal=unavailable,
@@ -249,6 +262,7 @@ class SupervisorReadiness:
             state,
             state_readable,
         )
+        peer, handshake = self._control_health(socket)
         return SupervisorHealth(
             backend=status.backend,
             cli_version=PackageVersion(__version__),
@@ -257,7 +271,14 @@ class SupervisorReadiness:
             ),
             platform=platform,
             process=process,
-            protocol=self._protocol_health(state, state_readable),
+            rescue=status.rescue,
+            socket=socket,
+            peer=peer,
+            protocol=self._protocol_health(
+                handshake,
+                state,
+                state_readable,
+            ),
             queue=self._queue_health(
                 state,
                 state_readable,
@@ -270,14 +291,13 @@ class SupervisorReadiness:
 
     def _protocol_health(
         self,
+        handshake: ServiceComponentState,
         state: ServiceState | None,
         state_readable: bool,
     ) -> ServiceComponentState:
         """Inspect socket negotiation and persisted version agreement."""
-        try:
-            self._verify_handshake()
-        except ServiceLifecycleError:
-            return ServiceComponentState.UNHEALTHY
+        if handshake is not ServiceComponentState.HEALTHY:
+            return handshake
         if not state_readable:
             return ServiceComponentState.UNHEALTHY
         if state is None:
@@ -288,6 +308,37 @@ class SupervisorReadiness:
         ):
             return ServiceComponentState.UNHEALTHY
         return ServiceComponentState.HEALTHY
+
+    def _control_health(
+        self,
+        socket: ServiceComponentState,
+    ) -> tuple[ServiceComponentState, ServiceComponentState]:
+        """Observe peer proof and protocol handshake as separate phases."""
+        if socket is not ServiceComponentState.HEALTHY:
+            return (
+                ServiceComponentState.UNAVAILABLE,
+                ServiceComponentState.UNAVAILABLE,
+            )
+        try:
+            client = self._connect_client()
+        except OSError, ValueError:
+            return (
+                ServiceComponentState.UNHEALTHY,
+                ServiceComponentState.UNAVAILABLE,
+            )
+        try:
+            client.handshake()
+        except OSError, ValueError:
+            return (
+                ServiceComponentState.HEALTHY,
+                ServiceComponentState.UNHEALTHY,
+            )
+        finally:
+            self._release_client(client)
+        return (
+            ServiceComponentState.HEALTHY,
+            ServiceComponentState.HEALTHY,
+        )
 
     def _queue_health(
         self,
@@ -432,35 +483,18 @@ def _requires_codex_broker(account: SavedAccount) -> bool:
     ) and isinstance(authority.subscription, CodexManagedAuthority)
 
 
-def _backend_health(
+def _platform_health(
     state: ServiceLifecycleState,
-) -> tuple[ServiceComponentState, ServiceComponentState]:
+) -> ServiceComponentState:
     match state:
         case ServiceLifecycleState.ABSENT:
-            return (
-                ServiceComponentState.HEALTHY,
-                ServiceComponentState.ABSENT,
-            )
-        case ServiceLifecycleState.READY:
-            return (
-                ServiceComponentState.HEALTHY,
-                ServiceComponentState.HEALTHY,
-            )
-        case ServiceLifecycleState.INSTALLED:
-            return (
-                ServiceComponentState.HEALTHY,
-                ServiceComponentState.UNHEALTHY,
-            )
+            return ServiceComponentState.HEALTHY
+        case ServiceLifecycleState.READY | ServiceLifecycleState.INSTALLED:
+            return ServiceComponentState.HEALTHY
         case ServiceLifecycleState.UNHEALTHY:
-            return (
-                ServiceComponentState.UNHEALTHY,
-                ServiceComponentState.UNHEALTHY,
-            )
+            return ServiceComponentState.UNHEALTHY
         case ServiceLifecycleState.FEATURE_DISABLED:
-            return (
-                ServiceComponentState.FEATURE_DISABLED,
-                ServiceComponentState.FEATURE_DISABLED,
-            )
+            return ServiceComponentState.FEATURE_DISABLED
     return assert_never(state)
 
 

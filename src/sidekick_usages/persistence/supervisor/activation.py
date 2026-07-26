@@ -356,6 +356,19 @@ class ActivationJournalStore:
         """Load one provider journal under a short file lock."""
         return self._load_locked(provider_id)
 
+    def observe_all(self) -> tuple[ActivationRecord, ...]:
+        """Passively read unfinished activations in provider order."""
+        active: list[ActivationRecord] = []
+        for provider_id in ProviderId:
+            filesystem = self._provider_filesystem(provider_id)
+            document = _journal_document(
+                provider_id,
+                filesystem.read_opaque_private(),
+            )
+            if document.active is not None:
+                active.append(document.active)
+        return tuple(active)
+
     def transaction(
         self,
         provider_id: ProviderId,

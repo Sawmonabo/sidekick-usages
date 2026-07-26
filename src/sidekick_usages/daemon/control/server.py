@@ -10,6 +10,12 @@ from pathlib import Path
 
 from sidekick_usages import __version__
 from sidekick_usages.core.accounts.types import RequestId
+from sidekick_usages.daemon.control.endpoint import (
+    RUNTIME_DIRECTORY_MODE,
+    SOCKET_MODE,
+    runtime_directory_owned,
+    socket_owned,
+)
 from sidekick_usages.daemon.control.protocol import (
     MAX_REQUESTS_PER_CONNECTION,
     PROTOCOL_VERSION,
@@ -42,8 +48,6 @@ from sidekick_usages.platform.peer import (
 )
 from sidekick_usages.platform.types import PeerVerifier
 
-_RUNTIME_DIRECTORY_MODE = 0o700
-_SOCKET_MODE = 0o600
 _LISTEN_BACKLOG = 16
 
 
@@ -330,17 +334,13 @@ class LocalControlServer:
         bound_identity: SocketIdentity | None = None
         try:
             listener.bind(str(self._socket_path))
-            os.chmod(self._socket_path, _SOCKET_MODE)
+            os.chmod(self._socket_path, SOCKET_MODE)
             metadata = self._socket_path.lstat()
             bound_identity = SocketIdentity(
                 metadata.st_dev,
                 metadata.st_ino,
             )
-            if (
-                metadata.st_uid != os.geteuid()
-                or stat.S_IMODE(metadata.st_mode) != _SOCKET_MODE
-                or not stat.S_ISSOCK(metadata.st_mode)
-            ):
+            if not socket_owned(metadata):
                 raise EndpointError(EndpointFailureCode.UNSAFE_SOCKET_PATH)
             listener.listen(_LISTEN_BACKLOG)
         except OSError as error:
@@ -410,7 +410,7 @@ class LocalControlServer:
 
     def _prepare_runtime_directory(self) -> None:
         self._runtime_directory.mkdir(
-            mode=_RUNTIME_DIRECTORY_MODE,
+            mode=RUNTIME_DIRECTORY_MODE,
             parents=True,
             exist_ok=True,
         )
@@ -426,13 +426,10 @@ class LocalControlServer:
             or metadata.st_uid != os.geteuid()
         ):
             raise EndpointError(EndpointFailureCode.UNSAFE_RUNTIME_DIRECTORY)
-        if stat.S_IMODE(metadata.st_mode) != _RUNTIME_DIRECTORY_MODE:
-            os.chmod(self._runtime_directory, _RUNTIME_DIRECTORY_MODE)
+        if stat.S_IMODE(metadata.st_mode) != RUNTIME_DIRECTORY_MODE:
+            os.chmod(self._runtime_directory, RUNTIME_DIRECTORY_MODE)
             hardened = self._runtime_directory.lstat()
-            if (
-                stat.S_IMODE(hardened.st_mode) != _RUNTIME_DIRECTORY_MODE
-                or hardened.st_uid != os.geteuid()
-            ):
+            if not runtime_directory_owned(hardened):
                 raise EndpointError(
                     EndpointFailureCode.UNSAFE_RUNTIME_DIRECTORY
                 )

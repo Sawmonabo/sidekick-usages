@@ -14,28 +14,43 @@ from sidekick_usages.cli.context import (
     DoctorReady,
 )
 from sidekick_usages.core.accounts.models import (
-    ClaudeAccountAuthority,
-    ClaudeSetupTokenAuthority,
+    CodexAccountAuthority,
+    CodexManagedAuthority,
     SavedAccount,
 )
 from sidekick_usages.core.accounts.types import (
-    AuthorityId,
+    AuthorityGeneration,
     CredentialHealth,
+    OperationId,
+    ProviderIdentity,
 )
 from sidekick_usages.core.expiry import KnownExpiry
 from sidekick_usages.core.models import (
     Account,
     ClaudeLoginCredentials,
-    ClaudeLoginIdentity,
     ClaudeSetupTokenCredentials,
     CodexCredentials,
-    UsageReport,
-    UsageWindow,
 )
-from sidekick_usages.core.selection.types import ProviderRuntimeState
+from sidekick_usages.core.selection.models import (
+    ActivationRecord,
+    DueOperation,
+    ProviderAuthObservation,
+    SelectedAccountState,
+)
+from sidekick_usages.core.selection.types import (
+    ActivationOutcome,
+    ActivationPhase,
+    OperationKind,
+    OperationPriority,
+    OperationState,
+    ProviderAuthState,
+    ProviderRuntimeState,
+)
 from sidekick_usages.core.types import AccountLabel, ExitCode, ProviderId
+from sidekick_usages.credentials.capabilities.models import (
+    ProviderCapabilityReport,
+)
 from sidekick_usages.daemon.types.lifecycle import ServiceComponentState
-from sidekick_usages.daemon.types.service import ServicePhase
 from sidekick_usages.doctor.accounts.service import DoctorService
 from sidekick_usages.doctor.runtime.service import DoctorRuntimeService
 from sidekick_usages.persistence.credentials.refresh.artifacts import (
@@ -52,14 +67,7 @@ from sidekick_usages.providers.registry import (
     build_heartbeat_registry,
     build_provider_registry,
 )
-from sidekick_usages.usage.dashboard.models import (
-    DashboardAccount,
-    DashboardActionState,
-    DashboardProvider,
-    DashboardService,
-    DashboardSnapshot,
-    DashboardUsage,
-)
+from tests.fakes.daemon.capabilities import make_provider_capability_report
 from tests.test_support import (
     REFERENCE_TIME,
     CliHarness,
@@ -71,26 +79,40 @@ from tests.test_support import (
 _SUPERVISOR_HEALTH = make_supervisor_health(
     queue=ServiceComponentState.UNHEALTHY,
 )
-_SETUP_AUTHORITY_ID = AuthorityId("00000000-0000-4000-8000-000000000001")
+_RETRY_ATTEMPTS = 2
 
 
 def _harness(
     tmp_path: Path,
     accounts: tuple[SavedAccount, ...],
-    dashboard: DashboardSnapshot | None = None,
+    selected_states: tuple[SelectedAccountState, ...] = (),
+    operations: tuple[DueOperation, ...] = (),
+    activations: tuple[ActivationRecord, ...] = (),
+    capabilities: ProviderCapabilityReport | None = None,
 ) -> tuple[CliHarness, io.StringIO, FixedClock]:
     output = io.StringIO()
     clock = FixedClock()
     providers = build_provider_registry(clock)
     heartbeat_providers = build_heartbeat_registry(providers)
+    capability_report = (
+        make_provider_capability_report()
+        if capabilities is None
+        else capabilities
+    )
     context = DoctorContext(
         DoctorReady(
             DoctorService(
                 accounts,
-                providers.keys(),
+                capability_report.ready_provider_ids,
                 heartbeat_providers.keys(),
                 clock,
-                DoctorRuntimeService(accounts, dashboard),
+                DoctorRuntimeService(
+                    accounts,
+                    None,
+                    selected_states,
+                    operations,
+                    activations,
+                ),
             ),
             PersistenceStatus(
                 PersistenceState.CURRENT,
@@ -100,6 +122,7 @@ def _harness(
             CredentialRefreshState(CredentialRefreshStateKind.CLEAN),
         ),
         _SUPERVISOR_HEALTH,
+        capability_report,
     )
     return (
         CliHarness(
@@ -118,173 +141,153 @@ def _harness(
 def test_json_reports_current_auth_state_without_secrets(
     tmp_path: Path,
 ) -> None:
-    login = Account(
-        label=AccountLabel("team"),
-        credentials=ClaudeLoginCredentials(
-            access_token="test-only-secret-access",
-            refresh_token="test-only-secret-refresh",
-            access_expiry=KnownExpiry(REFERENCE_TIME + timedelta(hours=1)),
-            refresh_expiry=KnownExpiry(REFERENCE_TIME + timedelta(days=90)),
-            scopes=("user:profile", "user:inference"),
-            identity=ClaudeLoginIdentity(
-                account_id="test-only-secret-account",
-                organization_id="test-only-secret-org",
-            ),
-        ),
-        plan="team",
-    )
-    codex = Account(
+    account = Account(
         label=AccountLabel("codex-reconcile"),
         credentials=CodexCredentials(
-            access_token="test-only-codex-access",
-            refresh_token="test-only-codex-refresh",
-            account_id="test-only-codex-identity",
+            access_token="test-only-secret-access",
+            refresh_token="test-only-secret-refresh",
+            account_id="test-only-secret-account",
         ),
         plan="pro",
     )
-    store = make_account_store(tmp_path, (login, codex))
-    saved_by_label = {
-        account.label: account for account in store.saved_accounts()
-    }
-    saved = saved_by_label[AccountLabel("team")]
+    saved = make_account_store(tmp_path, (account,)).saved_accounts()[0]
     authority = saved.authority
-    assert isinstance(authority, ClaudeAccountAuthority)
+    assert isinstance(authority, CodexAccountAuthority)
+    provider_identity = ProviderIdentity("test-only-secret-provider")
+    saved_generation = AuthorityGeneration("2026-07-25T12:00:00Z")
+    selected_generation = AuthorityGeneration("2026-07-25T11:00:00Z")
     saved = replace(
         saved,
-        authority=ClaudeAccountAuthority(
-            setup_token=ClaudeSetupTokenAuthority(
-                authority_id=_SETUP_AUTHORITY_ID,
-                expires_at=REFERENCE_TIME + timedelta(days=365),
+        authority=CodexAccountAuthority(
+            subscription=CodexManagedAuthority(
+                authority_id=authority.subscription.authority_id,
+                provider_identity=provider_identity,
+                generation=saved_generation,
+                verified_at=REFERENCE_TIME,
+                executable_version="0.145.0",
                 health=CredentialHealth.HEALTHY,
-                observed_at=REFERENCE_TIME,
-            ),
-            subscription=authority.subscription,
+            )
         ),
-        credential_health=CredentialHealth.LOGIN_REQUIRED,
+        credential_health=CredentialHealth.RECONCILIATION_REQUIRED,
     )
-    codex_saved = saved_by_label[AccountLabel("codex-reconcile")]
-    metrics_time = REFERENCE_TIME - timedelta(minutes=30)
-    dashboard = DashboardSnapshot(
-        providers=(
-            DashboardProvider(
-                provider_id=ProviderId.CLAUDE,
-                runtime_state=ProviderRuntimeState.SAVED_ACTIVE,
-                active_account_id=saved.account_id,
-                verified_at=REFERENCE_TIME,
-                actions_enabled=True,
-                rows=(
-                    DashboardAccount(
-                        account_id=saved.account_id,
-                        label=saved.label,
-                        provider_id=ProviderId.CLAUDE,
-                        plan=saved.plan,
-                        credential_health=saved.credential_health,
-                        active=True,
-                        states=(DashboardActionState.LOGIN_REQUIRED,),
-                        usage=DashboardUsage(
-                            plan=saved.plan,
-                            report=UsageReport(
-                                windows=(UsageWindow("5h", 20, None),),
-                                plan=saved.plan,
-                            ),
-                            observed_at=metrics_time,
-                        ),
-                    ),
-                ),
-            ),
-            DashboardProvider(
-                provider_id=ProviderId.CODEX,
-                runtime_state=ProviderRuntimeState.UNREADABLE,
-                active_account_id=None,
-                verified_at=REFERENCE_TIME,
-                actions_enabled=False,
-                rows=(
-                    DashboardAccount(
-                        account_id=codex_saved.account_id,
-                        label=codex_saved.label,
-                        provider_id=ProviderId.CODEX,
-                        plan=codex_saved.plan,
-                        credential_health=codex_saved.credential_health,
-                        active=False,
-                        states=(DashboardActionState.RECONCILIATION_REQUIRED,),
-                    ),
-                ),
-            ),
+    selected = SelectedAccountState(
+        provider_id=ProviderId.CODEX,
+        runtime_state=ProviderRuntimeState.SAVED_ACTIVE,
+        account_id=saved.account_id,
+        provider_identity=provider_identity,
+        runtime_generation=selected_generation,
+        verified_at=REFERENCE_TIME,
+        outcome=ActivationOutcome.VERIFIED,
+    )
+    operation = DueOperation(
+        operation_id=OperationId("ee805413-ef89-4380-920c-31ba5a4c948b"),
+        provider_id=ProviderId.CODEX,
+        account_id=saved.account_id,
+        kind=OperationKind.MAINTAIN,
+        priority=OperationPriority.SCHEDULED,
+        state=OperationState.RETRY_WAIT,
+        due_at=REFERENCE_TIME + timedelta(minutes=5),
+        updated_at=REFERENCE_TIME,
+        attempts=_RETRY_ATTEMPTS,
+        failure_code="network_unavailable",
+    )
+    activation = ActivationRecord(
+        provider_id=ProviderId.CODEX,
+        operation_id=OperationId(
+            "30af0d90-90e5-4387-bef8-25d5b53b7d22"
         ),
-        service=DashboardService(
-            ready=True,
-            compatible=True,
-            phase=ServicePhase.READY,
+        selected_baseline=None,
+        native_auth_baseline=ProviderAuthObservation(
+            provider_id=ProviderId.CODEX,
+            state=ProviderAuthState.ACTIVE,
+            provider_identity=provider_identity,
+            generation=selected_generation,
             observed_at=REFERENCE_TIME,
-            failure_code=None,
         ),
-        reference_time=REFERENCE_TIME,
+        target_account_id=saved.account_id,
+        expected_target_identity=provider_identity,
+        target_authority_generation=saved_generation,
+        phase=ActivationPhase.TARGET_ACTIVATED,
+        started_at=REFERENCE_TIME - timedelta(minutes=2),
+        updated_at=REFERENCE_TIME - timedelta(minutes=1),
+        failure_code="worker_interrupted",
     )
     harness, output, clock = _harness(
         tmp_path,
-        (saved, codex_saved),
-        dashboard,
+        (saved,),
+        selected_states=(selected,),
+        operations=(operation,),
+        activations=(activation,),
+        capabilities=make_provider_capability_report(codex_ready=False),
     )
 
     result = harness.invoke(["doctor", "--json"])
 
     payload = json.loads(output.getvalue())
-    accounts = {account["label"]: account for account in payload["accounts"]}
-    authorities = accounts["team"]["authorities"]
+    diagnostic = payload["accounts"][0]
     assert result.exit_code == ExitCode.MANUAL_ACTION
-    assert set(accounts) == {"team", "codex-reconcile"}
-    assert accounts["team"]["identity_state"] == "known"
-    assert accounts["team"]["provider_available"] is True
-    assert accounts["team"]["native_relation"] == "active"
-    assert accounts["team"]["metrics_freshness"] == "stale"
-    assert accounts["team"]["metrics_observed_at"] is not None
-    assert accounts["team"]["warning"] == "login_required"
     assert (
-        accounts["codex-reconcile"]["native_relation"]
-        == "reconciliation_required"
+        diagnostic["label"],
+        diagnostic["provider_available"],
+        diagnostic["native_relation"],
+        diagnostic["selected_generation_relation"],
+        diagnostic["metrics_freshness"],
+        diagnostic["warning"],
+    ) == (
+        "codex-reconcile",
+        False,
+        "active",
+        "older",
+        "unavailable",
+        "reconciliation_required",
     )
-    assert accounts["codex-reconcile"]["warning"] == "reconciliation_required"
-    setup_authority = authorities["setup_token"]
-    subscription_authority = authorities["subscription"]
-    assert setup_authority["kind"] == "setup_token"
-    assert setup_authority["management"] == "sidekick_stored"
-    assert setup_authority["can_auto_refresh"] is False
-    assert subscription_authority["kind"] == "subscription_login"
-    assert subscription_authority["management"] == "sidekick_stored"
-    assert subscription_authority["can_auto_refresh"] is True
-    assert payload["persistence"] == {
-        "state": "current",
-        "path": str(tmp_path / "accounts.json"),
-        "account_count": 2,
-        "credential_refresh": "clean",
+    assert diagnostic["manual_action"] == [
+        "sidekick-usages",
+        "use",
+        "codex",
+        "codex-reconcile",
+    ]
+    service = payload["service"]
+    assert (
+        service["wsl_rescue_configuration"],
+        service["socket_ownership"],
+        service["peer_verification"],
+    ) == ("not_required", "healthy", "healthy")
+    capabilities = {
+        result["provider"]: result
+        for result in payload["provider_capabilities"]
     }
-    assert payload["service"] == {
-        "backend": "systemd",
-        "cli_version": "0.7.0",
-        "supervisor_version": "0.7.0",
-        "platform": "healthy",
-        "process": "healthy",
-        "protocol": "healthy",
-        "broker": "not_required",
-    }
-    assert payload["operations"] == {
-        "queue": "unhealthy",
-        "journal": "healthy",
-    }
-    assert all(
-        "migration_badge" not in account for account in accounts.values()
+    assert (
+        capabilities["claude"]["ready"],
+        capabilities["claude"]["executable"]["path"].endswith("/claude"),
+        capabilities["codex"]["ready"],
+        capabilities["codex"]["failure_code"],
+        capabilities["codex"]["executable"]["version"],
+    ) == (
+        True,
+        True,
+        False,
+        "capability_unsupported",
+        "0.145.0",
     )
-    rendered = output.getvalue()
-    for secret in (
-        "test-only-secret-access",
-        "test-only-secret-refresh",
-        "test-only-secret-account",
-        "test-only-secret-org",
-        "test-only-codex-access",
-        "test-only-codex-refresh",
-        "test-only-codex-identity",
-    ):
-        assert secret not in rendered
+    scheduled = payload["operations"]["scheduled"]
+    assert len(scheduled) == 1
+    assert (
+        scheduled[0]["state"],
+        scheduled[0]["attempts"],
+        scheduled[0]["failure_code"],
+    ) == (
+        "retry_wait",
+        _RETRY_ATTEMPTS,
+        "network_unavailable",
+    )
+    unfinished = payload["operations"]["unfinished_activations"]
+    assert len(unfinished) == 1
+    assert (
+        unfinished[0]["phase"],
+        unfinished[0]["failure_code"],
+    ) == ("target_activated", "worker_interrupted")
+    assert "test-only-secret" not in output.getvalue()
     assert clock.calls == 1
 
 
@@ -326,7 +329,11 @@ def test_json_represents_current_store_failure(tmp_path: Path) -> None:
     harness = CliHarness(
         console=Console(file=output, force_terminal=False),
         err_console=Console(file=io.StringIO(), force_terminal=False),
-        doctor=DoctorContext(DoctorFailed(failure), _SUPERVISOR_HEALTH),
+        doctor=DoctorContext(
+            DoctorFailed(failure),
+            _SUPERVISOR_HEALTH,
+            make_provider_capability_report(),
+        ),
     )
 
     result = harness.invoke(["doctor", "--json"])

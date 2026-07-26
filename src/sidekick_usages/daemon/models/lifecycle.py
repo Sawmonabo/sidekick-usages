@@ -95,10 +95,12 @@ class ServiceArtifact:
 
 @dataclass(frozen=True, slots=True)
 class ServiceBackendStatus:
-    """Read-only state for one complete platform integration."""
+    """Read-only aggregate and independent platform component state."""
 
     backend: ServiceBackendId
     state: ServiceLifecycleState
+    process: ServiceComponentState
+    rescue: ServiceComponentState
 
     def __post_init__(self) -> None:
         """Require closed backend and lifecycle values."""
@@ -107,6 +109,24 @@ class ServiceBackendStatus:
             ServiceLifecycleState,
         ):
             raise ValueError("Service status values are invalid.")
+        process_valid = isinstance(self.process, ServiceComponentState)
+        rescue_valid = isinstance(self.rescue, ServiceComponentState)
+        if not process_valid or not rescue_valid:
+            raise ValueError("Service component status values are invalid.")
+
+    @classmethod
+    def single(
+        cls,
+        backend: ServiceBackendId,
+        state: ServiceLifecycleState,
+    ) -> ServiceBackendStatus:
+        """Build a backend without an independent rescue component."""
+        return cls(
+            backend,
+            state,
+            process_component_state(state),
+            ServiceComponentState.NOT_REQUIRED,
+        )
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -118,6 +138,9 @@ class SupervisorHealth:
     supervisor_version: PackageVersion | None
     platform: ServiceComponentState
     process: ServiceComponentState
+    rescue: ServiceComponentState
+    socket: ServiceComponentState
+    peer: ServiceComponentState
     protocol: ServiceComponentState
     queue: ServiceComponentState
     journal: ServiceComponentState
@@ -137,6 +160,9 @@ class SupervisorHealth:
         components = (
             self.platform,
             self.process,
+            self.rescue,
+            self.socket,
+            self.peer,
             self.protocol,
             self.queue,
             self.journal,
@@ -196,6 +222,19 @@ def _require_identity(value: str, name: str) -> None:
     _require_text_bound(value, name, _MAX_IDENTITY_BYTES)
     if "\0" in value or "\n" in value or "\r" in value:
         raise ValueError(f"{name} is invalid.")
+
+
+def process_component_state(
+    state: ServiceLifecycleState,
+) -> ServiceComponentState:
+    """Map native lifecycle state to resident-process health."""
+    if state is ServiceLifecycleState.READY:
+        return ServiceComponentState.HEALTHY
+    if state is ServiceLifecycleState.ABSENT:
+        return ServiceComponentState.ABSENT
+    if state is ServiceLifecycleState.FEATURE_DISABLED:
+        return ServiceComponentState.FEATURE_DISABLED
+    return ServiceComponentState.UNHEALTHY
 
 
 def _require_text_bound(

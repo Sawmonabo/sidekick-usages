@@ -77,18 +77,18 @@ class SystemdBackend:
             )
         )
         if result.returncode != 0:
-            return ServiceBackendStatus(
+            return ServiceBackendStatus.single(
                 self.id,
                 ServiceLifecycleState.UNHEALTHY,
             )
         properties = _properties(result.stdout)
         if properties is None:
-            return ServiceBackendStatus(
+            return ServiceBackendStatus.single(
                 self.id,
                 ServiceLifecycleState.UNHEALTHY,
             )
         if not artifact_exists and properties["LoadState"] == "not-found":
-            return ServiceBackendStatus(
+            return ServiceBackendStatus.single(
                 self.id,
                 ServiceLifecycleState.ABSENT,
             )
@@ -99,7 +99,7 @@ class SystemdBackend:
             and properties["SubState"] == "running"
             and properties["UnitFileState"] == "enabled"
         )
-        return ServiceBackendStatus(
+        return ServiceBackendStatus.single(
             self.id,
             (
                 ServiceLifecycleState.READY

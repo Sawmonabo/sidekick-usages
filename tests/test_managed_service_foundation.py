@@ -1,6 +1,7 @@
 """Load-bearing durable state and recovery scenarios for the supervisor."""
 
 import socket
+import sys
 from dataclasses import dataclass, replace
 from datetime import timedelta
 from pathlib import Path
@@ -38,6 +39,10 @@ from sidekick_usages.daemon.control.dispatch import (
     OperationEventHub,
     SupervisorDispatcher,
 )
+from sidekick_usages.daemon.control.endpoint import (
+    SOCKET_MODE,
+    control_endpoint_state,
+)
 from sidekick_usages.daemon.control.protocol import (
     PROTOCOL_VERSION,
     FrameDecoder,
@@ -46,6 +51,7 @@ from sidekick_usages.daemon.control.protocol import (
     encode_frame,
     encode_request,
 )
+from sidekick_usages.daemon.control.server import LocalControlServer
 from sidekick_usages.daemon.models.protocol import (
     ActivationPayload,
     ControlRequest,
@@ -54,6 +60,7 @@ from sidekick_usages.daemon.models.protocol import (
 from sidekick_usages.daemon.runtime.recovery import ActivationRecoveryScheduler
 from sidekick_usages.daemon.runtime.scheduler import DurableScheduler
 from sidekick_usages.daemon.runtime.supervisor import WakeupChannel
+from sidekick_usages.daemon.types.lifecycle import ServiceComponentState
 from sidekick_usages.daemon.types.protocol import (
     ConnectedSocket,
     EventKind,
@@ -437,7 +444,9 @@ def test_authenticated_control_stream_frames_completes_and_cancels(
     assert persisted.allow_remote_control_disconnect
 
 
-def test_control_protocol_fails_closed_at_each_trust_boundary() -> None:
+def test_control_protocol_fails_closed_at_each_trust_boundary(
+    tmp_path: Path,
+) -> None:
     """Unproved peers, malformed input, and mismatches never dispatch."""
     malformed = encode_frame(
         b'{"credential":"test-only-secret","kind":"activate"}'
@@ -473,6 +482,42 @@ def test_control_protocol_fails_closed_at_each_trust_boundary() -> None:
         decoder.finish()
         assert len(frames) == 1
         assert decode_event(frames[0]).kind is expected_kind
+
+    runtime_directory = tmp_path / "runtime"
+    socket_path = runtime_directory / "supervisor.sock"
+    if sys.platform == "win32":
+        with pytest.raises(ConnectionError):
+            ControlClient.connect(socket_path)
+        return
+    dispatcher = RecordingDispatcher([], [], Event())
+    server = LocalControlServer(
+        runtime_directory,
+        socket_path,
+        dispatcher,
+    )
+    server.open()
+    assert (
+        control_endpoint_state(runtime_directory, socket_path)
+        is ServiceComponentState.HEALTHY
+    )
+    server_thread = Thread(target=server.serve_once)
+    server_thread.start()
+    client = ControlClient.connect(socket_path)
+    client.handshake()
+    client.close()
+    server_thread.join(timeout=2)
+    assert not server_thread.is_alive()
+    server.close()
+
+    server.open()
+    socket_path.chmod(SOCKET_MODE | 0o066)
+    assert (
+        control_endpoint_state(runtime_directory, socket_path)
+        is ServiceComponentState.UNHEALTHY
+    )
+    with pytest.raises(PermissionError, match="unsafe_control_endpoint"):
+        ControlClient.connect(socket_path)
+    server.close()
 
 
 def test_supervisor_isolates_timeout_and_recovers_without_duplicate_work(

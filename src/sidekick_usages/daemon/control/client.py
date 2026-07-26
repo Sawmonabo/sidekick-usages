@@ -12,6 +12,7 @@ from sidekick_usages.core.accounts.types import (
     SidekickAccountId,
 )
 from sidekick_usages.core.types import ProviderId
+from sidekick_usages.daemon.control.endpoint import control_endpoint_state
 from sidekick_usages.daemon.control.protocol import (
     PROTOCOL_VERSION,
     FramedTransport,
@@ -32,6 +33,7 @@ from sidekick_usages.daemon.models.protocol import (
     RequestPayload,
     ServiceStoppingPayload,
 )
+from sidekick_usages.daemon.types.lifecycle import ServiceComponentState
 from sidekick_usages.daemon.types.protocol import (
     ConnectedSocket,
     ControlOperationIdentity,
@@ -40,6 +42,7 @@ from sidekick_usages.daemon.types.protocol import (
     ProtocolErrorCode,
     RequestKind,
 )
+from sidekick_usages.platform.peer import OperatingSystemPeerVerifier
 
 CONTROL_ACTION_TIMEOUT_SECONDS = 125.0
 _LOCAL_RESPONSE_TIMEOUT_SECONDS = 5.0
@@ -197,8 +200,14 @@ class ControlClient:
             raise ServiceCompatibilityError(ProtocolErrorCode.FEATURE_DISABLED)
         connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
+            if (
+                control_endpoint_state(socket_path.parent, socket_path)
+                is not ServiceComponentState.HEALTHY
+            ):
+                raise PermissionError("unsafe_control_endpoint")
             connection.settimeout(connect_timeout_seconds)
             connection.connect(str(socket_path))
+            OperatingSystemPeerVerifier().verify(connection)
             return cls(
                 connection,
                 package_version=package_version,

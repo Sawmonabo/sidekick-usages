@@ -22,6 +22,15 @@ class ProviderAuthState(StrEnum):
     UNSUPPORTED = "unsupported"
 
 
+class AuthorityGenerationRelation(StrEnum):
+    """Selected runtime generation relative to saved authority truth."""
+
+    CURRENT = "current"
+    OLDER = "older"
+    NEWER = "newer"
+    NOT_SAFELY_COMPARABLE = "not_safely_comparable"
+
+
 class ActivationPhase(StrEnum):
     """Closed durable phases for one provider activation transaction."""
 

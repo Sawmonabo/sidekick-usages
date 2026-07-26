@@ -41,7 +41,7 @@ class FeatureDisabledBackend:
 
     def status(self) -> ServiceBackendStatus:
         """Return the explicit feature-disabled state."""
-        return ServiceBackendStatus(
+        return ServiceBackendStatus.single(
             self.id,
             ServiceLifecycleState.FEATURE_DISABLED,
         )

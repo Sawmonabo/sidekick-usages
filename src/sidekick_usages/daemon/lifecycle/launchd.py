@@ -84,7 +84,7 @@ class LaunchdBackend:
         artifact_exists = self._artifacts.exists(self._artifact_path)
         result = self._runner.run(("launchctl", "print", self._target))
         if result.returncode != 0:
-            return ServiceBackendStatus(
+            return ServiceBackendStatus.single(
                 self.id,
                 (
                     ServiceLifecycleState.INSTALLED
@@ -93,7 +93,7 @@ class LaunchdBackend:
                 ),
             )
         ready = artifact_exists and "state = running" in result.stdout
-        return ServiceBackendStatus(
+        return ServiceBackendStatus.single(
             self.id,
             (
                 ServiceLifecycleState.READY

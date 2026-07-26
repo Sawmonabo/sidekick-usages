@@ -26,7 +26,14 @@ from sidekick_usages.http.client import HttpClient
 from sidekick_usages.persistence.accounts.store import AccountStore
 from sidekick_usages.persistence.errors import ManagedFileReadError
 from sidekick_usages.update import UpdateService
-from tests.test_support import make_account_store, make_application_paths
+from tests.fakes.daemon.capabilities import (
+    StaticProviderCapabilityService,
+    make_provider_capability_report,
+)
+from tests.test_support import (
+    make_account_store,
+    make_application_paths,
+)
 
 
 class _RecordingHttpClient(HttpClient):
@@ -106,6 +113,7 @@ def test_lazy_composition_caches_and_closes_once() -> None:
 
 
 def test_composition_honors_empty_provider_maps_and_current_store(
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     account = Account(
@@ -117,6 +125,14 @@ def test_composition_honors_empty_provider_maps_and_current_store(
     )
     make_account_store(tmp_path, (account,))
     paths = make_application_paths(tmp_path)
+    capability_service = StaticProviderCapabilityService(
+        make_provider_capability_report()
+    )
+    monkeypatch.setattr(
+        context,
+        "build_provider_capability_service",
+        lambda _paths: capability_service,
+    )
     application = compose_app_context(
         paths=paths,
         providers={},
@@ -152,6 +168,14 @@ def test_doctor_translates_current_store_failure(
 ) -> None:
     paths = make_application_paths(tmp_path)
     failure = ManagedFileReadError(paths.accounts.name)
+    capability_service = StaticProviderCapabilityService(
+        make_provider_capability_report()
+    )
+    monkeypatch.setattr(
+        context,
+        "build_provider_capability_service",
+        lambda _paths: capability_service,
+    )
 
     def fail_load(_store: AccountStore) -> None:
         raise failure

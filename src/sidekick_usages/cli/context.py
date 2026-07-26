@@ -26,6 +26,12 @@ from sidekick_usages.credentials.accounts.lifecycle.service import (
     AccountLifecycleCoordinator,
 )
 from sidekick_usages.credentials.authorities import credential_resolver_for
+from sidekick_usages.credentials.capabilities.models import (
+    ProviderCapabilityReport,
+)
+from sidekick_usages.credentials.capabilities.service import (
+    build_provider_capability_service,
+)
 from sidekick_usages.credentials.claude.managed.migration.service import (
     ClaudeManagedMigrationCoordinator,
 )
@@ -83,6 +89,7 @@ from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
 from sidekick_usages.persistence.supervisor.selection import (
     SelectedStateStore,
 )
+from sidekick_usages.persistence.types.error import PersistenceCode
 from sidekick_usages.providers.base import Provider
 from sidekick_usages.providers.claude.activity import (
     ClaudeActivity,
@@ -165,6 +172,7 @@ class DoctorContext:
 
     state: DoctorState
     supervisor: SupervisorHealth
+    capabilities: ProviderCapabilityReport
 
 
 @dataclass(frozen=True, slots=True)
@@ -462,22 +470,35 @@ def compose_doctor_context(
     def build(_resources: ExitStack) -> DoctorContext:
         resolved_paths = _resolved_paths(paths)
         resolved_clock = _resolved_clock(clock)
-        provider_map, heartbeat_map = _provider_maps(
+        _provider_map, heartbeat_map = _provider_maps(
             resolved_clock,
             providers,
             heartbeat_providers,
         )
+        capability_service = build_provider_capability_service(resolved_paths)
         daemon = build_daemon_manager(
             paths=resolved_paths,
             clock=resolved_clock,
+            provider_readiness=capability_service,
         )
         supervisor = daemon.health()
+        capabilities = capability_service.report()
         persistence = _persistence(resolved_paths, daemon)
         try:
             accounts = persistence.open_store()
             status = persistence.status(accounts)
             refresh_status = persistence.refresh_status()
             saved_accounts = accounts.saved_accounts()
+            selected_states = SelectedStateStore(
+                resolved_paths.selected_state
+            ).observe_all()
+            operations = OperationQueueStore(
+                resolved_paths.durable_operations
+            ).observe()
+            activations = ActivationJournalStore(
+                resolved_paths.activation_journals,
+                resolved_paths.durable_operations,
+            ).observe_all()
             dashboard = CachedDashboardSnapshotSource(
                 resolved_paths,
                 resolved_clock,
@@ -488,20 +509,42 @@ def compose_doctor_context(
                     _persistence_failure(error, resolved_paths.accounts)
                 ),
                 supervisor,
+                capabilities,
+            )
+        try:
+            runtime = DoctorRuntimeService(
+                saved_accounts,
+                dashboard,
+                selected_states,
+                operations,
+                activations,
+            )
+        except ValueError:
+            failure = PersistenceFailure(
+                PersistenceCode.INVALID_SCHEMA,
+                resolved_paths.durable_operations,
+                "Supervisor state does not match the saved accounts.",
+                None,
+            )
+            return DoctorContext(
+                DoctorFailed(failure),
+                supervisor,
+                capabilities,
             )
         return DoctorContext(
             DoctorReady(
                 DoctorService(
                     saved_accounts,
-                    provider_map.keys(),
+                    capabilities.ready_provider_ids,
                     heartbeat_map.keys(),
                     resolved_clock,
-                    DoctorRuntimeService(saved_accounts, dashboard),
+                    runtime,
                 ),
                 status,
                 refresh_status,
             ),
             supervisor,
+            capabilities,
         )
 
     return _compose(build)

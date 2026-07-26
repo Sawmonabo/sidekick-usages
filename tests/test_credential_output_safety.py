@@ -14,10 +14,8 @@ from sidekick_usages.credentials.refresh import CredentialRefreshCoordinator
 from sidekick_usages.credentials.service import CredentialService
 from sidekick_usages.doctor.accounts.models import DoctorReadyResult
 from sidekick_usages.doctor.accounts.service import DoctorService
-from sidekick_usages.doctor.presentation.service import (
-    doctor_json,
-    render_doctor,
-)
+from sidekick_usages.doctor.presentation.json import doctor_json
+from sidekick_usages.doctor.presentation.service import render_doctor
 from sidekick_usages.doctor.runtime.service import DoctorRuntimeService
 from sidekick_usages.http.client import HttpClient
 from sidekick_usages.maintenance import TokenMaintenanceService
@@ -38,6 +36,7 @@ from sidekick_usages.persistence.private.credentials import (
 )
 from sidekick_usages.persistence.types.status import PersistenceState
 from sidekick_usages.providers.claude.provider import ClaudeProvider
+from tests.fakes.daemon.capabilities import make_provider_capability_report
 from tests.test_support import (
     REFERENCE_TIME,
     FixedClock,
@@ -103,17 +102,22 @@ def test_provider_secret_never_crosses_persisted_or_doctor_error_channels(
         {ProviderId.CLAUDE},
         set(),
         clock,
-        DoctorRuntimeService(store.saved_accounts(), None),
+        DoctorRuntimeService(store.saved_accounts(), None, (), (), ()),
     ).diagnostics()
     completed = DoctorReadyResult(
-        tuple(diagnostics),
-        PersistenceStatus(
+        diagnostics=tuple(diagnostics),
+        scheduled_operations=(),
+        unfinished_activations=(),
+        persistence=PersistenceStatus(
             PersistenceState.CURRENT,
             store.path,
             1,
         ),
-        CredentialRefreshState(CredentialRefreshStateKind.CLEAN),
-        make_supervisor_health(),
+        refresh_state=CredentialRefreshState(
+            CredentialRefreshStateKind.CLEAN
+        ),
+        supervisor=make_supervisor_health(),
+        capabilities=make_provider_capability_report(),
     )
     human_output = io.StringIO()
     Console(file=human_output, force_terminal=False).print(

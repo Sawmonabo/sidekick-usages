@@ -188,7 +188,7 @@ class DaemonManager:
         try:
             status = self._backend.status()
         except ServiceLifecycleError:
-            status = ServiceBackendStatus(
+            status = ServiceBackendStatus.single(
                 self._backend.id,
                 ServiceLifecycleState.UNHEALTHY,
             )

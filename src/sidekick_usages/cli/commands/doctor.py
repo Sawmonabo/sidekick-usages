@@ -19,10 +19,8 @@ from sidekick_usages.doctor.accounts.models import (
     DoctorResult,
 )
 from sidekick_usages.doctor.accounts.service import doctor_exit_code
-from sidekick_usages.doctor.presentation.service import (
-    doctor_json,
-    render_doctor,
-)
+from sidekick_usages.doctor.presentation.json import doctor_json
+from sidekick_usages.doctor.presentation.service import render_doctor
 from sidekick_usages.persistence.errors import (
     exit_code_for_persistence_code,
 )
@@ -95,7 +93,11 @@ def doctor_cmd(
     if isinstance(state, DoctorFailed):
         _write_result(
             invocation,
-            DoctorFailedResult(state.failure, doctor.supervisor),
+            DoctorFailedResult(
+                failure=state.failure,
+                supervisor=doctor.supervisor,
+                capabilities=doctor.capabilities,
+            ),
             json_output=json_output,
         )
         code = exit_code_for_persistence_code(state.failure.code)
@@ -112,10 +114,13 @@ def doctor_cmd(
                 _write_result(
                     invocation,
                     DoctorReadyResult(
-                        (),
-                        state.persistence,
-                        state.refresh_state,
-                        doctor.supervisor,
+                        diagnostics=(),
+                        scheduled_operations=(),
+                        unfinished_activations=(),
+                        persistence=state.persistence,
+                        refresh_state=state.refresh_state,
+                        supervisor=doctor.supervisor,
+                        capabilities=doctor.capabilities,
                     ),
                     json_output=json_output,
                 )
@@ -127,10 +132,21 @@ def doctor_cmd(
         _write_result(
             invocation,
             DoctorReadyResult(
-                tuple(diagnostics),
-                state.persistence,
-                state.refresh_state,
-                doctor.supervisor,
+                diagnostics=tuple(diagnostics),
+                scheduled_operations=state.service.scheduled_operations(
+                    provider_id=provider_filter,
+                    label=label,
+                ),
+                unfinished_activations=(
+                    state.service.unfinished_activations(
+                        provider_id=provider_filter,
+                        label=label,
+                    )
+                ),
+                persistence=state.persistence,
+                refresh_state=state.refresh_state,
+                supervisor=doctor.supervisor,
+                capabilities=doctor.capabilities,
             ),
             json_output=json_output,
         )

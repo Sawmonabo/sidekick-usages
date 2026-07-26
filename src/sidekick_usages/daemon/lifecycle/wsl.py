@@ -19,6 +19,7 @@ from sidekick_usages.daemon.models.lifecycle import (
 )
 from sidekick_usages.daemon.types.lifecycle import (
     ServiceBackendId,
+    ServiceComponentState,
     ServiceFailureCode,
     ServiceLifecycleState,
 )
@@ -81,7 +82,12 @@ class WslBackend:
             state = ServiceLifecycleState.READY
         else:
             state = ServiceLifecycleState.UNHEALTHY
-        return ServiceBackendStatus(self.id, state)
+        return ServiceBackendStatus(
+            self.id,
+            state,
+            service.process,
+            _rescue_configuration_state(rescue),
+        )
 
     def uninstall(self) -> None:
         """Remove the rescue task, then the Linux user service."""
@@ -187,6 +193,17 @@ class WslBackend:
             f"-TaskName {_powershell_literal(WSL_RESCUE_TASK_NAME)} "
             "-Confirm:$false -ErrorAction SilentlyContinue"
         )
+
+
+def _rescue_configuration_state(
+    state: ServiceLifecycleState,
+) -> ServiceComponentState:
+    """Map the installed Windows task to configuration health."""
+    if state is ServiceLifecycleState.INSTALLED:
+        return ServiceComponentState.HEALTHY
+    if state is ServiceLifecycleState.ABSENT:
+        return ServiceComponentState.ABSENT
+    return ServiceComponentState.UNHEALTHY
 
 
 def _powershell_literal(value: str) -> str:

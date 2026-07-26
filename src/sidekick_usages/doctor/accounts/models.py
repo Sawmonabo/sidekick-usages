@@ -9,6 +9,9 @@ from sidekick_usages.core.accounts.types import (
     CredentialHealth,
     MetricsFreshness,
 )
+from sidekick_usages.core.selection.types import (
+    AuthorityGenerationRelation,
+)
 from sidekick_usages.core.types import (
     AccountLabel,
     ExpiryState,
@@ -16,10 +19,17 @@ from sidekick_usages.core.types import (
     ProviderId,
     RefreshStatus,
 )
+from sidekick_usages.credentials.capabilities.models import (
+    ProviderCapabilityReport,
+)
 from sidekick_usages.credentials.claude.lifetime import (
     ClaudeLoginRenewalState,
 )
 from sidekick_usages.daemon.models.lifecycle import SupervisorHealth
+from sidekick_usages.doctor.runtime.models import (
+    ScheduledOperationDiagnostic,
+    UnfinishedActivationDiagnostic,
+)
 from sidekick_usages.doctor.runtime.types import (
     DoctorAccountWarning,
     NativeAccountRelation,
@@ -110,25 +120,30 @@ class AccountDiagnostic:
     last_heartbeat_status: HeartbeatStatus | None
     last_heartbeat_error: str | None
     native_relation: NativeAccountRelation
+    selected_generation_relation: AuthorityGenerationRelation
     metrics_freshness: MetricsFreshness
     metrics_observed_at: datetime | None
     warning: DoctorAccountWarning | None
-    manual_action_required: bool
+    manual_action: tuple[str, ...] | None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class DoctorReadyResult:
     """Completed diagnostics for the current persistence store."""
 
     diagnostics: tuple[AccountDiagnostic, ...]
+    scheduled_operations: tuple[ScheduledOperationDiagnostic, ...]
+    unfinished_activations: tuple[UnfinishedActivationDiagnostic, ...]
     persistence: PersistenceStatus
     refresh_state: CredentialRefreshState
     supervisor: SupervisorHealth
+    capabilities: ProviderCapabilityReport
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class DoctorFailedResult:
     """Completed bounded failure from doctor composition."""
 
     failure: PersistenceFailure
     supervisor: SupervisorHealth
+    capabilities: ProviderCapabilityReport

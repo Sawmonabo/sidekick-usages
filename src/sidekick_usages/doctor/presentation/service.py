@@ -1,6 +1,6 @@
 """Human and JSON presentation for doctor diagnostics."""
 
-from datetime import UTC, datetime
+import shlex
 from typing import assert_never
 
 from rich.console import Group, RenderableType
@@ -8,6 +8,9 @@ from rich.text import Text
 
 from sidekick_usages.branding import brand_header
 from sidekick_usages.core.accounts.types import CredentialAction
+from sidekick_usages.credentials.capabilities.models import (
+    ProviderCapabilityReport,
+)
 from sidekick_usages.credentials.claude.lifetime import (
     ClaudeLoginRenewalState,
 )
@@ -22,12 +25,22 @@ from sidekick_usages.doctor.accounts.models import (
     DoctorResult,
     IdentityState,
 )
+from sidekick_usages.doctor.runtime.models import (
+    ScheduledOperationDiagnostic,
+    UnfinishedActivationDiagnostic,
+)
 from sidekick_usages.doctor.runtime.types import DoctorAccountWarning
 from sidekick_usages.persistence.models.status import (
     PersistenceFailure,
     PersistenceStatus,
 )
-from sidekick_usages.serialization.json import JsonObject, JsonValue
+from sidekick_usages.persistence.time_codec import canonical_timestamp
+from sidekick_usages.providers.claude.managed.models import (
+    ClaudeRuntimeCapabilities,
+)
+from sidekick_usages.providers.codex.app_server.models import (
+    CodexAppServerCapabilities,
+)
 
 
 def render_doctor(
@@ -41,7 +54,14 @@ def render_doctor(
     ]
     if isinstance(result, DoctorReadyResult):
         parts.extend(_service_lines(result.supervisor))
-        parts.extend(_operation_lines(result.supervisor))
+        parts.extend(_capability_lines(result.capabilities))
+        parts.extend(
+            _operation_lines(
+                result.supervisor,
+                result.scheduled_operations,
+                result.unfinished_activations,
+            )
+        )
         parts.extend(_persistence_lines(result.persistence))
         parts.append(
             Text("  credential refresh: " + result.refresh_state.kind.value)
@@ -49,7 +69,8 @@ def render_doctor(
         diagnostics = result.diagnostics
     elif isinstance(result, DoctorFailedResult):
         parts.extend(_service_lines(result.supervisor))
-        parts.extend(_operation_lines(result.supervisor))
+        parts.extend(_capability_lines(result.capabilities))
+        parts.extend(_operation_lines(result.supervisor, (), ()))
         parts.extend(_persistence_failure_lines(result.failure))
         diagnostics = ()
     else:
@@ -68,37 +89,13 @@ def render_doctor(
         parts.extend(_auth_lines(diagnostic))
         parts.extend(_runtime_lines(diagnostic))
         parts.extend(_heartbeat_lines(diagnostic))
-        parts.append(
-            Text(
-                "  manual action: "
-                + ("yes" if diagnostic.manual_action_required else "no")
-            )
+        action = (
+            "none"
+            if diagnostic.manual_action is None
+            else shlex.join(diagnostic.manual_action)
         )
+        parts.append(Text("  manual action: " + action))
     return Group(*parts)
-
-
-def doctor_json(result: DoctorResult) -> JsonObject:
-    """Build recursively typed doctor JSON from one completed result."""
-    diagnostics: tuple[AccountDiagnostic, ...]
-    persistence: JsonObject
-    if isinstance(result, DoctorReadyResult):
-        diagnostics = result.diagnostics
-        persistence = _persistence_dict(result.persistence)
-        persistence["credential_refresh"] = result.refresh_state.kind.value
-    elif isinstance(result, DoctorFailedResult):
-        diagnostics = ()
-        persistence = _persistence_failure_dict(result.failure)
-    else:
-        assert_never(result)
-    accounts: list[JsonValue] = [
-        _diagnostic_dict(diagnostic) for diagnostic in diagnostics
-    ]
-    return {
-        "accounts": accounts,
-        "service": _service_dict(result.supervisor),
-        "operations": _operation_dict(result.supervisor),
-        "persistence": persistence,
-    }
 
 
 def _service_lines(health: SupervisorHealth) -> tuple[Text, ...]:
@@ -115,43 +112,106 @@ def _service_lines(health: SupervisorHealth) -> tuple[Text, ...]:
         Text(f"  supervisor version: {supervisor_version}"),
         Text(f"  platform: {health.platform}"),
         Text(f"  process: {health.process}"),
+        Text(f"  WSL rescue configuration: {health.rescue}"),
+        Text(f"  socket ownership: {health.socket}"),
+        Text(f"  peer verification: {health.peer}"),
         Text(f"  protocol: {health.protocol}"),
         Text(f"  broker: {health.broker}"),
     )
 
 
-def _operation_lines(health: SupervisorHealth) -> tuple[Text, ...]:
+def _operation_lines(
+    health: SupervisorHealth,
+    scheduled: tuple[ScheduledOperationDiagnostic, ...],
+    activations: tuple[UnfinishedActivationDiagnostic, ...],
+) -> tuple[Text, ...]:
     """Build independent durable queue and journal health."""
-    return (
+    lines = [
         Text("operations"),
         Text(f"  queue: {health.queue}"),
         Text(f"  journal: {health.journal}"),
-    )
+    ]
+    if not scheduled:
+        lines.append(Text("  due and retry: none"))
+    else:
+        lines.extend(_scheduled_operation_lines(scheduled))
+    if not activations:
+        lines.append(Text("  unfinished activation: none"))
+    else:
+        lines.extend(_unfinished_activation_lines(activations))
+    return tuple(lines)
 
 
-def _service_dict(health: SupervisorHealth) -> JsonObject:
-    """Build machine-readable resident-service health."""
-    return {
-        "backend": health.backend.value,
-        "cli_version": str(health.cli_version),
-        "supervisor_version": (
-            None
-            if health.supervisor_version is None
-            else str(health.supervisor_version)
-        ),
-        "platform": health.platform.value,
-        "process": health.process.value,
-        "protocol": health.protocol.value,
-        "broker": health.broker.value,
-    }
+def _capability_lines(
+    report: ProviderCapabilityReport,
+) -> tuple[Text, ...]:
+    """Build exact executable and provider-capability evidence."""
+    lines = [Text("provider capabilities")]
+    for result in report.results:
+        state = "ready" if result.ready else "unavailable"
+        lines.append(Text(f"  {result.provider_id}: {state}"))
+        provenance = result.provenance
+        if provenance is not None:
+            lines.extend(
+                (
+                    Text(f"    executable: {provenance.path}"),
+                    Text(f"    version: {result.version}"),
+                    Text(
+                        "    file identity: "
+                        f"{provenance.device}:{provenance.inode} · "
+                        f"{provenance.size} bytes · "
+                        f"mtime {provenance.modified_nanoseconds}ns"
+                    ),
+                )
+            )
+        if result.failure_code is not None:
+            lines.append(Text(f"    failure: {result.failure_code}"))
+        capabilities = result.capabilities
+        if isinstance(capabilities, ClaudeRuntimeCapabilities):
+            lines.append(Text(f"    platform: {capabilities.platform}"))
+        elif isinstance(capabilities, CodexAppServerCapabilities):
+            lines.append(Text(f"    schema: {capabilities.schema_hash}"))
+    return tuple(lines)
 
 
-def _operation_dict(health: SupervisorHealth) -> JsonObject:
-    """Build machine-readable queue and journal health."""
-    return {
-        "queue": health.queue.value,
-        "journal": health.journal.value,
-    }
+def _scheduled_operation_lines(
+    scheduled: tuple[ScheduledOperationDiagnostic, ...],
+) -> tuple[Text, ...]:
+    lines: list[Text] = []
+    for operation in scheduled:
+        owner = (
+            "provider"
+            if operation.account_label is None
+            else str(operation.account_label)
+        )
+        lines.append(
+            Text(
+                f"  {operation.provider_id}/{owner} "
+                f"{operation.kind}: {operation.state} · "
+                f"due {canonical_timestamp(operation.due_at)} · "
+                f"attempts {operation.attempts}"
+            )
+        )
+        if operation.failure_code is not None:
+            lines.append(Text(f"    failure: {operation.failure_code}"))
+    return tuple(lines)
+
+
+def _unfinished_activation_lines(
+    activations: tuple[UnfinishedActivationDiagnostic, ...],
+) -> tuple[Text, ...]:
+    lines: list[Text] = []
+    for activation in activations:
+        lines.append(
+            Text(
+                f"  unfinished activation: {activation.provider_id}/"
+                f"{activation.target_label} · {activation.phase} · "
+                f"updated {canonical_timestamp(activation.updated_at)}"
+            )
+        )
+        if activation.failure_code is not None:
+            lines.append(Text(f"    failure: {activation.failure_code}"))
+    return tuple(lines)
 
 
 def _persistence_lines(status: PersistenceStatus) -> tuple[Text, ...]:
@@ -162,15 +222,6 @@ def _persistence_lines(status: PersistenceStatus) -> tuple[Text, ...]:
         Text(f"  path: {status.path}"),
         Text(f"  validated accounts: {status.account_count}"),
     )
-
-
-def _persistence_dict(status: PersistenceStatus) -> JsonObject:
-    """Build machine-readable current persistence status."""
-    return {
-        "state": status.state.value,
-        "path": str(status.path),
-        "account_count": status.account_count,
-    }
 
 
 def _persistence_failure_lines(
@@ -186,19 +237,6 @@ def _persistence_failure_lines(
     if failure.artifact_basename is not None:
         lines.append(Text(f"  artifact: {failure.artifact_basename}"))
     return tuple(lines)
-
-
-def _persistence_failure_dict(
-    failure: PersistenceFailure,
-) -> JsonObject:
-    """Build one secret-free machine-readable composition failure."""
-    return {
-        "state": failure.code.value,
-        "account_count": None,
-        "path": str(failure.path),
-        "artifact_basename": failure.artifact_basename,
-        "message": failure.message,
-    }
 
 
 def _auth_lines(diagnostic: AccountDiagnostic) -> tuple[Text, ...]:
@@ -306,7 +344,7 @@ def _heartbeat_lines(diagnostic: AccountDiagnostic) -> tuple[Text, ...]:
     if diagnostic.heartbeat_window_resets:
         lines.extend(
             Text(
-                f"  cached {target_id} reset: {_format_machine_time(reset_at)}"
+                f"  cached {target_id} reset: {canonical_timestamp(reset_at)}"
             )
             for target_id, reset_at in diagnostic.heartbeat_window_resets
         )
@@ -332,6 +370,9 @@ def _runtime_lines(diagnostic: AccountDiagnostic) -> tuple[Text, ...]:
     """Build native relation, cached metrics, and account warning lines."""
     lines = [
         Text(f"  native relation: {diagnostic.native_relation}"),
+        Text(
+            f"  selected generation: {diagnostic.selected_generation_relation}"
+        ),
     ]
     if diagnostic.metrics_observed_at is None:
         lines.append(Text("  metrics: unavailable"))
@@ -339,7 +380,7 @@ def _runtime_lines(diagnostic: AccountDiagnostic) -> tuple[Text, ...]:
         lines.append(
             Text(
                 f"  metrics: {diagnostic.metrics_freshness} · "
-                f"{_format_machine_time(diagnostic.metrics_observed_at)}"
+                f"{canonical_timestamp(diagnostic.metrics_observed_at)}"
             )
         )
     if diagnostic.warning is DoctorAccountWarning.LOGIN_REQUIRED:
@@ -373,104 +414,3 @@ def _management_label(management: DoctorAuthorityManagement) -> str:
     if management is DoctorAuthorityManagement.PROVIDER_MANAGED:
         return "provider managed"
     return "Sidekick stored"
-
-
-def _format_machine_time(value: datetime) -> str:
-    """Encode one doctor JSON timestamp as canonical UTC text."""
-    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
-
-
-def _optional_machine_time(value: datetime | None) -> str | None:
-    """Encode an optional doctor JSON timestamp."""
-    return _format_machine_time(value) if value is not None else None
-
-
-def _diagnostic_dict(diagnostic: AccountDiagnostic) -> JsonObject:
-    """Build one secret-free JSON-ready logical account record."""
-    resets = diagnostic.heartbeat_window_resets
-    window_resets: JsonValue = None
-    if resets is not None:
-        encoded_resets: JsonObject = {}
-        for target_id, reset_at in resets:
-            encoded_resets[target_id] = _format_machine_time(reset_at)
-        window_resets = encoded_resets
-    targets: JsonValue = None
-    if diagnostic.heartbeat_targets is not None:
-        encoded_targets: list[JsonValue] = []
-        encoded_targets.extend(diagnostic.heartbeat_targets)
-        targets = encoded_targets
-    authorities: JsonObject = {
-        "setup_token": _optional_authority_dict(diagnostic.setup_token),
-        "subscription": _optional_authority_dict(diagnostic.subscription),
-    }
-    return {
-        "label": str(diagnostic.label),
-        "provider": diagnostic.provider.value,
-        "provider_available": diagnostic.provider_available,
-        "plan": diagnostic.plan,
-        "credential_health": diagnostic.credential_health.value,
-        "identity_state": diagnostic.identity_state.value,
-        "authorities": authorities,
-        "last_refresh_at": _optional_machine_time(diagnostic.last_refresh_at),
-        "last_refresh_status": (
-            diagnostic.last_refresh_status.value
-            if diagnostic.last_refresh_status is not None
-            else None
-        ),
-        "last_refresh_error": diagnostic.last_refresh_error,
-        "heartbeat_support": diagnostic.heartbeat_support.value,
-        "heartbeat_enabled": diagnostic.heartbeat_enabled,
-        "heartbeat": diagnostic.heartbeat,
-        "heartbeat_window_resets": window_resets,
-        "heartbeat_targets": targets,
-        "last_heartbeat_at": _optional_machine_time(
-            diagnostic.last_heartbeat_at
-        ),
-        "last_heartbeat_status": (
-            diagnostic.last_heartbeat_status.value
-            if diagnostic.last_heartbeat_status is not None
-            else None
-        ),
-        "last_heartbeat_error": diagnostic.last_heartbeat_error,
-        "native_relation": diagnostic.native_relation.value,
-        "metrics_freshness": diagnostic.metrics_freshness.value,
-        "metrics_observed_at": _optional_machine_time(
-            diagnostic.metrics_observed_at
-        ),
-        "warning": (
-            diagnostic.warning.value
-            if diagnostic.warning is not None
-            else None
-        ),
-        "manual_action_required": diagnostic.manual_action_required,
-    }
-
-
-def _optional_authority_dict(
-    diagnostic: AuthorityDiagnostic | None,
-) -> JsonObject | None:
-    """Build one optional authority object."""
-    if diagnostic is None:
-        return None
-    return {
-        "kind": diagnostic.kind.value,
-        "management": diagnostic.management.value,
-        "health": diagnostic.health.value,
-        "usage_route": diagnostic.usage_route,
-        "access_expires_at": _optional_machine_time(
-            diagnostic.access_expires_at
-        ),
-        "access_expiry_state": diagnostic.access_expiry_state.value,
-        "refresh_expires_at": _optional_machine_time(
-            diagnostic.refresh_expires_at
-        ),
-        "refresh_expiry_state": diagnostic.refresh_expiry_state.value,
-        "login_renewal_state": diagnostic.login_renewal_state.value,
-        "provider_action": (
-            diagnostic.provider_action.value
-            if diagnostic.provider_action is not None
-            else None
-        ),
-        "can_auto_refresh": diagnostic.can_auto_refresh,
-        "manual_action_required": diagnostic.manual_action_required,
-    }

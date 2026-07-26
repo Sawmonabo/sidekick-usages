@@ -56,6 +56,10 @@ class OperationQueueStore:
         with self._lock.hold():
             return self._load_document().operations
 
+    def observe(self) -> tuple[DueOperation, ...]:
+        """Passively read durable operations without lock-sidecar writes."""
+        return self._load_document().operations
+
     def get(
         self,
         provider_id: ProviderId,

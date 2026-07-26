@@ -3,6 +3,11 @@
 import re
 from datetime import UTC, datetime
 
+from sidekick_usages.core.accounts.types import AuthorityGeneration
+from sidekick_usages.core.selection.types import (
+    AuthorityGenerationRelation,
+)
+
 type CodexGenerationOrder = tuple[int, int, int, int, int, int, int]
 
 _CODEX_GENERATION_PATTERN = re.compile(
@@ -45,3 +50,17 @@ def codex_generation_order(value: str) -> CodexGenerationOrder:
         values[5],
         nanoseconds,
     )
+
+
+def codex_generation_relation(
+    saved: AuthorityGeneration,
+    selected: AuthorityGeneration,
+) -> AuthorityGenerationRelation:
+    """Compare selected Codex time generation with saved authority truth."""
+    saved_order = codex_generation_order(str(saved))
+    selected_order = codex_generation_order(str(selected))
+    if selected_order == saved_order:
+        return AuthorityGenerationRelation.CURRENT
+    if selected_order < saved_order:
+        return AuthorityGenerationRelation.OLDER
+    return AuthorityGenerationRelation.NEWER

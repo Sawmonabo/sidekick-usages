@@ -12,6 +12,10 @@ from sidekick_usages.core.types import ExitCode, ProviderId
 from sidekick_usages.daemon.control.protocol import PROTOCOL_VERSION
 from sidekick_usages.daemon.lifecycle.artifacts import ServiceArtifactStore
 from sidekick_usages.daemon.lifecycle.commands import SystemCommandRunner
+from sidekick_usages.daemon.lifecycle.constants import (
+    WSL_RESCUE_ABSENT,
+    WSL_RESCUE_INSTALLED,
+)
 from sidekick_usages.daemon.lifecycle.manager import (
     DaemonManager,
     build_service_backend,
@@ -51,6 +55,7 @@ class RecordingRunner(SystemCommandRunner):
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, ...]] = []
+        self.rescue_output = WSL_RESCUE_INSTALLED
 
     def run(self, argv: tuple[str, ...]) -> CommandResult:
         self.calls.append(argv)
@@ -68,7 +73,7 @@ class RecordingRunner(SystemCommandRunner):
         if argv[:2] == ("launchctl", "print"):
             return CommandResult(0, "state = running\n", "")
         if argv[0] == "powershell.exe" and "Get-ScheduledTask" in argv[-1]:
-            return CommandResult(0, "sidekick-rescue-installed\n", "")
+            return CommandResult(0, self.rescue_output + "\n", "")
         return CommandResult(0, "", "")
 
 
@@ -125,7 +130,7 @@ class RecordingBackend:
 
     def status(self) -> ServiceBackendStatus:
         self.events.append("status")
-        return ServiceBackendStatus(
+        return ServiceBackendStatus.single(
             self.id,
             ServiceLifecycleState.READY,
         )
@@ -219,8 +224,12 @@ def test_service_artifacts_are_user_scoped_resident_and_secret_free(
         assert runner.calls == []
         return
 
-    assert result.state is ServiceLifecycleState.READY
-    assert result.exit_code is ExitCode.SUCCESS
+    assert (result.state, result.exit_code) == (
+        ServiceLifecycleState.READY,
+        ExitCode.SUCCESS,
+    )
+    status = backend.status()
+    assert status.process is ServiceComponentState.HEALTHY
     artifact_text = _service_artifact(platform_info, backend_id).read_text(
         encoding="utf-8"
     )
@@ -253,6 +262,18 @@ def test_service_artifacts_are_user_scoped_resident_and_secret_free(
         assert "<false/>" in artifact_text
         assert "StartInterval" not in artifact_text
     if backend_id is ServiceBackendId.WSL:
+        assert status.rescue is ServiceComponentState.HEALTHY
+        runner.rescue_output = WSL_RESCUE_ABSENT
+        degraded = backend.status()
+        assert (
+            degraded.state,
+            degraded.process,
+            degraded.rescue,
+        ) == (
+            ServiceLifecycleState.UNHEALTHY,
+            ServiceComponentState.HEALTHY,
+            ServiceComponentState.ABSENT,
+        )
         rescue = next(
             argv[-1]
             for argv in runner.calls
@@ -270,6 +291,8 @@ def test_service_artifacts_are_user_scoped_resident_and_secret_free(
         assert "maintain" not in rescue
         assert "refresh" not in rescue
         assert "token" not in rescue.lower()
+    else:
+        assert status.rescue is ServiceComponentState.NOT_REQUIRED
 
 
 def test_lifecycle_is_idempotent_cancellable_and_preserves_user_state(
@@ -277,6 +300,13 @@ def test_lifecycle_is_idempotent_cancellable_and_preserves_user_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Lifecycle work is idempotent, bounded, and ownership-safe."""
+    assert (
+        ServiceBackendStatus.single(
+            ServiceBackendId.SYSTEMD,
+            ServiceLifecycleState.INSTALLED,
+        ).process
+        is ServiceComponentState.UNHEALTHY
+    )
     paths = make_application_paths(tmp_path / "state")
     _write_user_state_sentinels(paths, tmp_path)
     _write_service_state_sentinels(paths)

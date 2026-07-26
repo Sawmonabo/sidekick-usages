@@ -28,6 +28,9 @@ from sidekick_usages.core.expiry import (
     ValidExpiry,
     classify_expiry,
 )
+from sidekick_usages.core.selection.types import (
+    AuthorityGenerationRelation,
+)
 from sidekick_usages.core.types import (
     ExitCode,
     HeartbeatStatus,
@@ -45,6 +48,10 @@ from sidekick_usages.doctor.accounts.models import (
     DoctorCredentialKind,
     HeartbeatSupport,
     IdentityState,
+)
+from sidekick_usages.doctor.runtime.models import (
+    ScheduledOperationDiagnostic,
+    UnfinishedActivationDiagnostic,
 )
 from sidekick_usages.doctor.runtime.service import DoctorRuntimeService
 from sidekick_usages.doctor.runtime.types import (
@@ -113,6 +120,46 @@ class DoctorService:
             and (label is None or account.label == label)
         ]
 
+    def scheduled_operations(
+        self,
+        *,
+        provider_id: ProviderId | None = None,
+        label: str | None = None,
+    ) -> tuple[ScheduledOperationDiagnostic, ...]:
+        """Return durable work matching optional account filters."""
+        return tuple(
+            operation
+            for operation in self._runtime.operations
+            if (
+                provider_id is None
+                or operation.provider_id is provider_id
+            )
+            and (
+                label is None
+                or (
+                    operation.account_label is not None
+                    and operation.account_label == label
+                )
+            )
+        )
+
+    def unfinished_activations(
+        self,
+        *,
+        provider_id: ProviderId | None = None,
+        label: str | None = None,
+    ) -> tuple[UnfinishedActivationDiagnostic, ...]:
+        """Return unfinished activations matching optional filters."""
+        return tuple(
+            activation
+            for activation in self._runtime.unfinished_activations
+            if (
+                provider_id is None
+                or activation.provider_id is provider_id
+            )
+            and (label is None or activation.target_label == label)
+        )
+
     def _diagnostic(
         self,
         account: SavedAccount,
@@ -132,15 +179,14 @@ class DoctorService:
         )
         runtime = self._runtime.diagnostic(account.account_id)
         warning = _account_warning(account, runtime.native_relation)
-        authority_action = any(
-            diagnostic is not None and diagnostic.manual_action_required
-            for diagnostic in (setup_token, subscription)
-        )
-        manual_action_required = (
-            identity_state is IdentityState.ASSOCIATION_REQUIRED
-            or account.last_refresh_status is RefreshStatus.FAILED
-            or authority_action
-            or warning is not None
+        manual_action = _manual_action(
+            account,
+            identity_state,
+            setup_token,
+            subscription,
+            runtime.native_relation,
+            runtime.selected_generation_relation,
+            warning,
         )
         return AccountDiagnostic(
             label=account.label,
@@ -163,10 +209,13 @@ class DoctorService:
             last_heartbeat_status=account.last_heartbeat_status,
             last_heartbeat_error=account.last_heartbeat_error_code,
             native_relation=runtime.native_relation,
+            selected_generation_relation=(
+                runtime.selected_generation_relation
+            ),
             metrics_freshness=runtime.metrics_freshness,
             metrics_observed_at=runtime.metrics_observed_at,
             warning=warning,
-            manual_action_required=manual_action_required,
+            manual_action=manual_action,
         )
 
 
@@ -174,9 +223,70 @@ def doctor_exit_code(
     diagnostics: Sequence[AccountDiagnostic],
 ) -> ExitCode:
     """Return manual-action status when any account requires intervention."""
-    if any(diagnostic.manual_action_required for diagnostic in diagnostics):
+    if any(diagnostic.manual_action is not None for diagnostic in diagnostics):
         return ExitCode.MANUAL_ACTION
     return ExitCode.SUCCESS
+
+
+def _manual_action(
+    account: SavedAccount,
+    identity_state: IdentityState,
+    setup_token: AuthorityDiagnostic | None,
+    subscription: AuthorityDiagnostic | None,
+    native_relation: NativeAccountRelation,
+    generation_relation: AuthorityGenerationRelation,
+    warning: DoctorAccountWarning | None,
+) -> tuple[str, ...] | None:
+    """Return one exact command for the highest-priority account repair."""
+    label = str(account.label)
+    if identity_state is IdentityState.ASSOCIATION_REQUIRED:
+        return (
+            "sidekick-usages",
+            "refresh",
+            label,
+            "--replace-identity",
+        )
+    if setup_token is not None and setup_token.manual_action_required:
+        return (
+            "sidekick-usages",
+            "claude",
+            "setup-token",
+            "--label",
+            label,
+            "--force",
+        )
+    if (
+        (subscription is not None and subscription.manual_action_required)
+        or account.last_refresh_status is RefreshStatus.FAILED
+        or (warning is DoctorAccountWarning.LOGIN_REQUIRED)
+    ):
+        return _login_action(account)
+    if warning is DoctorAccountWarning.RECONCILIATION_REQUIRED or (
+        account.provider_id is ProviderId.CODEX
+        and native_relation is NativeAccountRelation.ACTIVE
+        and generation_relation is AuthorityGenerationRelation.OLDER
+    ):
+        return (
+            "sidekick-usages",
+            "use",
+            account.provider_id.value,
+            label,
+        )
+    if (
+        account.provider_id is ProviderId.CODEX
+        and native_relation is NativeAccountRelation.ACTIVE
+        and generation_relation is AuthorityGenerationRelation.NEWER
+    ):
+        return _login_action(account)
+    return None
+
+
+def _login_action(account: SavedAccount) -> tuple[str, ...]:
+    """Return the provider-owned official login command for one account."""
+    label = str(account.label)
+    if account.provider_id is ProviderId.CODEX:
+        return ("sidekick-usages", "codex", "login", label)
+    return ("sidekick-usages", "refresh", label)
 
 
 def _account_warning(
@@ -212,7 +322,6 @@ def _authority_diagnostics(
             _setup_token_diagnostic(
                 authority.setup_token,
                 reference_time,
-                provider_available=provider_available,
             )
             if authority.setup_token is not None
             else None
@@ -243,15 +352,12 @@ def _authority_diagnostics(
 def _setup_token_diagnostic(
     authority: ClaudeSetupTokenAuthority,
     reference_time: datetime,
-    *,
-    provider_available: bool,
 ) -> AuthorityDiagnostic:
     """Classify one fixed-lifetime setup-token authority."""
     access_expiry = _classify_time(authority.expires_at, reference_time)
     refresh_expiry = UnknownExpiry()
     manual_action_required = (
-        not provider_available
-        or authority.health in _ACTION_REQUIRED_HEALTH
+        authority.health in _ACTION_REQUIRED_HEALTH
         or authority.health is CredentialHealth.REFRESH_DUE
         or isinstance(access_expiry, ExpiredExpiry | InvalidExpiry)
     )
@@ -330,7 +436,6 @@ def _claude_subscription_diagnostic(
         provider_action=provider_action,
         can_auto_refresh=can_auto_refresh,
         manual_action_required=_login_action_required(
-            provider_available=provider_available,
             health=authority.health,
             provider_action=provider_action,
             access_expiry=access_expiry,
@@ -384,7 +489,6 @@ def _codex_subscription_diagnostic(
         provider_action=None,
         can_auto_refresh=can_auto_refresh,
         manual_action_required=_login_action_required(
-            provider_available=provider_available,
             health=authority.health,
             provider_action=None,
             access_expiry=access_expiry,
@@ -484,7 +588,6 @@ def _can_auto_refresh(
 
 def _login_action_required(
     *,
-    provider_available: bool,
     health: CredentialHealth,
     provider_action: CredentialAction | None,
     access_expiry: ClassifiedExpiry,
@@ -499,8 +602,7 @@ def _login_action_required(
         ClaudeLoginRenewalState.INVALID,
     }
     return (
-        not provider_available
-        or health in _ACTION_REQUIRED_HEALTH
+        health in _ACTION_REQUIRED_HEALTH
         or provider_action is CredentialAction.LOGIN
         or isinstance(access_expiry, InvalidExpiry)
         or isinstance(refresh_expiry, ExpiredExpiry | InvalidExpiry)
