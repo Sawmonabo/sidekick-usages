@@ -224,7 +224,7 @@ The no-secret dashboard view contains:
 
 - [ ] Add immutable dashboard types and closed actionable states:
   `healthy`, `login_required`, `repair_required`,
-  `setup_token_regeneration`, `metrics_stale`, `external_active`,
+  `setup_regeneration_required`, `metrics_stale`, `external_active`,
   `reconciliation_required`, `provider_unsupported`, and
   `service_unavailable`.
 - [ ] Join account index, selected state, service state, and persisted metrics

@@ -231,13 +231,13 @@ class CachedDashboardService:
             state = DashboardActionState.HEALTHY
         elif health is CredentialHealth.REFRESH_DUE:
             state = (
-                DashboardActionState.SETUP_TOKEN_REGENERATION
+                DashboardActionState.SETUP_REGENERATION_REQUIRED
                 if setup_only
                 else DashboardActionState.REPAIR_REQUIRED
             )
         elif health is CredentialHealth.LOGIN_REQUIRED:
             state = (
-                DashboardActionState.SETUP_TOKEN_REGENERATION
+                DashboardActionState.SETUP_REGENERATION_REQUIRED
                 if setup_only
                 else DashboardActionState.LOGIN_REQUIRED
             )

@@ -26,7 +26,7 @@ class DashboardActionState(StrEnum):
     HEALTHY = "healthy"
     LOGIN_REQUIRED = "login_required"
     REPAIR_REQUIRED = "repair_required"
-    SETUP_TOKEN_REGENERATION = "setup_token_regeneration"
+    SETUP_REGENERATION_REQUIRED = "setup_regeneration_required"
     METRICS_STALE = "metrics_stale"
     EXTERNAL_ACTIVE = "external_active"
     RECONCILIATION_REQUIRED = "reconciliation_required"
