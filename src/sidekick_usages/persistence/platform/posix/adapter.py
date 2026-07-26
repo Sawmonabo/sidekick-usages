@@ -3,19 +3,22 @@
 import errno
 import os
 import stat
+import sys
 from pathlib import Path
 from typing import IO, Never
 
 from sidekick_usages.persistence.platform.errors import NativeFilesystemError
 from sidekick_usages.persistence.platform.models import NativeFile
 from sidekick_usages.persistence.platform.posix import files, namespace
-from sidekick_usages.persistence.platform.posix.mounts import (
-    filesystem_for_descriptor,
-)
 from sidekick_usages.persistence.platform.types import (
     FilesystemFamily,
     NativeFailureKind,
 )
+
+if sys.platform.startswith("linux"):
+    from sidekick_usages.persistence.platform.posix import mounts
+else:
+    mounts = None
 
 
 def _open_lock_descriptor(
@@ -173,13 +176,15 @@ class PosixPlatform:
 
     def qualify(self, parent: Path) -> FilesystemFamily:
         """Require an allowlisted mount containing the actual directory."""
+        if mounts is None:
+            raise NativeFilesystemError(NativeFailureKind.UNSUPPORTED)
         ancestor = namespace.existing_ancestor(parent)
         descriptor = namespace.open_directory(ancestor, private=False)
         with namespace.owned_descriptor(
             descriptor,
             NativeFailureKind.UNSUPPORTED,
         ):
-            return filesystem_for_descriptor(descriptor)
+            return mounts.filesystem_for_descriptor(descriptor)
 
     def ensure_parent(self, parent: Path) -> None:
         """Create only the Sidekick-owned leaf with owner-only access."""

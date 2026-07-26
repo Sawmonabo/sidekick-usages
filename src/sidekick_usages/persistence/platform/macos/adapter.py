@@ -15,6 +15,15 @@ from sidekick_usages.persistence.platform.types import (
 
 _FILESYSTEM_TYPE_NAME_BYTES = 16
 _MOUNT_PATH_BYTES = 1024
+try:
+    _SYSTEM_LIBRARY = ctypes.CDLL(None, use_errno=True)
+    _FSTATFS64 = _SYSTEM_LIBRARY.fstatfs64
+except AttributeError, OSError:
+    _SYSTEM_LIBRARY = None
+    _FSTATFS64 = None
+else:
+    _FSTATFS64.argtypes = [ctypes.c_int, ctypes.c_void_p]
+    _FSTATFS64.restype = ctypes.c_int
 
 
 class _DarwinFilesystemReport(ctypes.Structure):
@@ -42,18 +51,11 @@ class _DarwinFilesystemReport(ctypes.Structure):
 
 def _filesystem_name(descriptor: int) -> str:
     """Return the native filesystem name for one held descriptor."""
-    try:
-        system = ctypes.CDLL(None, use_errno=True)
-        operation = system.fstatfs64
-        operation.argtypes = [
-            ctypes.c_int,
-            ctypes.POINTER(_DarwinFilesystemReport),
-        ]
-        operation.restype = ctypes.c_int
-        report = _DarwinFilesystemReport()
-        status = operation(descriptor, ctypes.byref(report))
-    except AttributeError, OSError:
+    operation = _FSTATFS64
+    if operation is None:
         raise NativeFilesystemError(NativeFailureKind.UNSUPPORTED) from None
+    report = _DarwinFilesystemReport()
+    status = operation(descriptor, ctypes.byref(report))
     if status != 0:
         raise NativeFilesystemError(NativeFailureKind.UNSUPPORTED)
     try:

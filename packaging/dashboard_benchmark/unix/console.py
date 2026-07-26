@@ -35,8 +35,16 @@ from sidekick_usages.platform.process import (
 from sidekick_usages.usage.presentation.dashboard.footer import KEY_FOOTER
 
 COMPLETED_FRAME_REWIND = re.compile(rb"\x1b\[\d+A\r")
-FIRST_PAINT_DEADLINE_SECONDS = 0.250
 MAXIMUM_FRAME_BYTES = 1_048_576
+MILLISECONDS_PER_SECOND = 1_000
+FIRST_PAINT_DEADLINE_MILLISECONDS = 250
+FIRST_PAINT_DIAGNOSTIC_TIMEOUT_MILLISECONDS = 1_000
+FIRST_PAINT_DEADLINE_SECONDS = (
+    FIRST_PAINT_DEADLINE_MILLISECONDS / MILLISECONDS_PER_SECOND
+)
+FIRST_PAINT_DIAGNOSTIC_TIMEOUT_SECONDS = (
+    FIRST_PAINT_DIAGNOSTIC_TIMEOUT_MILLISECONDS / MILLISECONDS_PER_SECOND
+)
 PROCESS_GROUP_CLEANUP_SECONDS = 1.0
 PTY_COLUMNS = 120
 PTY_ROWS = 48
@@ -219,14 +227,25 @@ def _completed_frame(
     selector.register(master_descriptor, selectors.EVENT_READ)
     try:
         while match is None:
-            remaining = FIRST_PAINT_DEADLINE_SECONDS - (
-                time.perf_counter() - started_at
+            elapsed = time.perf_counter() - started_at
+            diagnostic_remaining = (
+                FIRST_PAINT_DIAGNOSTIC_TIMEOUT_SECONDS - elapsed
             )
-            if remaining <= 0 or not selector.select(remaining):
+            if diagnostic_remaining <= 0:
                 raise DashboardBenchmarkError(
                     "Installed-console cached first paint exceeded the "
-                    "250 ms deadline."
+                    f"{FIRST_PAINT_DEADLINE_MILLISECONDS} ms deadline; no "
+                    "completed frame arrived within "
+                    f"{FIRST_PAINT_DIAGNOSTIC_TIMEOUT_MILLISECONDS} ms."
                 )
+            remaining = min(
+                diagnostic_remaining,
+                max(0.0, FIRST_PAINT_DEADLINE_SECONDS - elapsed),
+            )
+            if remaining == 0:
+                remaining = diagnostic_remaining
+            if not selector.select(remaining):
+                continue
             chunk = _read_frame_chunk(process, master_descriptor)
             if chunk is None:
                 continue
@@ -248,10 +267,11 @@ def _completed_frame(
     elapsed = completed_at - started_at
     if elapsed > FIRST_PAINT_DEADLINE_SECONDS:
         raise DashboardBenchmarkError(
-            "Installed-console cached first paint exceeded the 250 ms "
-            "deadline."
+            "Installed-console cached first paint exceeded the "
+            f"{FIRST_PAINT_DEADLINE_MILLISECONDS} ms deadline: observed "
+            f"{elapsed * MILLISECONDS_PER_SECOND:.3f} ms."
         )
-    return elapsed * 1_000
+    return elapsed * MILLISECONDS_PER_SECOND
 
 
 def measure_installed_console_first_paint(
