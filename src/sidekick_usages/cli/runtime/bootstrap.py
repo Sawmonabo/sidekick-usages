@@ -8,12 +8,11 @@ from pathlib import Path
 if sys.platform == "win32":
     import subprocess
 
-from rich.console import Console
-
 from sidekick_usages.cli.contexts.dashboard.snapshot import (
     CachedDashboardSnapshotSource,
 )
 from sidekick_usages.cli.dashboard import launch
+from sidekick_usages.cli.dashboard.terminal import terminal_width
 from sidekick_usages.cli.runtime.routing import (
     dashboard_arguments,
     parse_dashboard_arguments,
@@ -28,6 +27,9 @@ from sidekick_usages.persistence.errors import (
 )
 from sidekick_usages.platform.errors import ExecutableQualificationError
 from sidekick_usages.platform.executable import qualify_executable
+from sidekick_usages.usage.presentation.dashboard.render.style import (
+    dashboard_color_enabled,
+)
 
 APPLICATION_MODULE = "sidekick_usages.cli.runtime.application"
 INTERACTIVE_DASHBOARD_MODULE = "sidekick_usages.entrypoints.dashboard"
@@ -64,23 +66,30 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _run_cached_dashboard(only: ProviderId | None) -> int:
-    console = Console()
     try:
         snapshot = CachedDashboardSnapshotSource(
             discover_application_paths(),
             SystemClock(),
         ).load(only)
-        line_count = launch.present_cached_dashboard(console, snapshot)
+        line_count = launch.present_cached_dashboard(
+            sys.stdout,
+            snapshot,
+            width=terminal_width(sys.stdout),
+            color=dashboard_color_enabled(
+                os.environ,
+                terminal=sys.stdout.isatty(),
+            ),
+        )
         try:
             return execute_interactive_dashboard(dashboard_arguments(only))
         except ExecutableQualificationError, OSError, ValueError:
-            launch.restore_after_failed_replace(console, line_count)
+            launch.restore_after_failed_replace(sys.stdout, line_count)
             raise UsageError(PROCESS_LAUNCH_FAILURE_MESSAGE) from None
     except PersistenceError as error:
-        Console(stderr=True).print(f"[red]{error}[/red]")
+        sys.stderr.write(f"{error}\n")
         return int(exit_code_for_persistence_code(error.code))
     except UsageError as error:
-        Console(stderr=True).print(f"[red]{error}[/red]")
+        sys.stderr.write(f"{error}\n")
         return int(ExitCode.MANUAL_ACTION)
 
 

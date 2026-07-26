@@ -9,7 +9,7 @@ from rich.prompt import Confirm
 from rich.table import Table
 from rich.text import Text
 
-from sidekick_usages.branding import PROVIDER_COLORS, brand_header
+from sidekick_usages.branding.rich import PROVIDER_COLORS, brand_header
 from sidekick_usages.cli.context import invocation_context
 from sidekick_usages.cli.help import branded_command
 from sidekick_usages.cli.persistence import exit_persistence_failure

@@ -19,7 +19,6 @@ PUBLIC_BOOTSTRAP_IMPORTS = (
     "collections.abc",
     "os",
     "pathlib",
-    "rich.console",
     "subprocess",
     "sys",
     "sidekick_usages.cli.contexts.dashboard.snapshot",
@@ -32,7 +31,9 @@ PUBLIC_BOOTSTRAP_IMPORTS = (
     "sidekick_usages.persistence.errors",
     "sidekick_usages.platform.errors",
     "sidekick_usages.platform.executable",
+    "sidekick_usages.usage.presentation.dashboard.render.style",
 )
+RICH_IMPORT_ROOT = "rich"
 B606_NO_SHELL_CALLS = frozenset(
     {
         "os.execl",
@@ -123,6 +124,7 @@ def _check_public_bootstrap(
                     "public runtime imported outside cached-first boundaries",
                 )
             )
+    _check_rich_free_startup(bootstrap, units, violations)
     replacements = [
         (unit, node, dotted_name(node.func))
         for unit in units
@@ -175,6 +177,70 @@ def _check_public_bootstrap(
                 "public bootstrap must use the canonical qualifier once",
             )
         )
+
+
+def _check_rich_free_startup(
+    bootstrap: SourceUnit,
+    units: Sequence[SourceUnit],
+    violations: list[ArchitectureFinding],
+) -> None:
+    """Reject Rich anywhere in the cached first-paint import closure."""
+    for unit in _startup_dependency_closure(bootstrap, units):
+        for node, module in scan_imports(unit):
+            if matches(module, RICH_IMPORT_ROOT):
+                violations.append(
+                    finding(
+                        unit,
+                        node,
+                        "CLI001",
+                        "cached-first startup dependency cannot import Rich",
+                    )
+                )
+
+
+def _startup_dependency_closure(
+    bootstrap: SourceUnit,
+    units: Sequence[SourceUnit],
+) -> tuple[SourceUnit, ...]:
+    """Resolve installed modules reachable from the public bootstrap."""
+    modules = {_source_module(unit): unit for unit in units if unit.production}
+    pending = [bootstrap]
+    visited: set[str] = set()
+    reachable: list[SourceUnit] = []
+    while pending:
+        unit = pending.pop()
+        module = _source_module(unit)
+        if module in visited:
+            continue
+        visited.add(module)
+        reachable.append(unit)
+        for _node, imported in scan_imports(unit):
+            owner = _import_owner(imported, modules)
+            if owner is not None:
+                pending.append(owner)
+    return tuple(reachable)
+
+
+def _source_module(unit: SourceUnit) -> str:
+    """Return the installed module name owned by one production source."""
+    parts = unit.path.with_suffix("").parts[1:]
+    if parts[-1] == "__init__":
+        parts = parts[:-1]
+    return ".".join(parts)
+
+
+def _import_owner(
+    imported: str,
+    modules: dict[str, SourceUnit],
+) -> SourceUnit | None:
+    """Resolve an imported symbol to its nearest installed module owner."""
+    candidate = imported
+    while candidate:
+        owner = modules.get(candidate)
+        if owner is not None:
+            return owner
+        candidate = candidate.rpartition(".")[0]
+    return None
 
 
 def _check_create_app(

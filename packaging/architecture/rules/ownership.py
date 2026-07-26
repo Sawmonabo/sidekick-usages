@@ -185,6 +185,7 @@ def _check_brand(
     units: Sequence[SourceUnit],
     violations: list[ArchitectureFinding],
 ) -> None:
+    content_path = "src/sidekick_usages/branding/content.py"
     owners = {
         str(unit.path)
         for unit in units
@@ -193,21 +194,17 @@ def _check_brand(
         and "ROBOT_LINES" in assigned_names(node)
     }
     branding = next(
-        (
-            unit
-            for unit in units
-            if str(unit.path) == "src/sidekick_usages/branding.py"
-        ),
+        (unit for unit in units if str(unit.path) == content_path),
         None,
     )
-    valid = owners == {"src/sidekick_usages/branding.py"} and (
+    valid = owners == {content_path} and (
         branding is not None
         and assignment_literal(branding.tree, "ROBOT_LINES") == _ROBOT_ART
     )
     if not valid:
         violations.append(
             ArchitectureFinding(
-                PurePosixPath("src/sidekick_usages/branding.py"),
+                PurePosixPath(content_path),
                 1,
                 "BRAND001",
                 "robot art must have one exact canonical source",

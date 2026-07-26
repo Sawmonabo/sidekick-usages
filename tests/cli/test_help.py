@@ -9,7 +9,7 @@ from rich.cells import cell_len
 from typer.testing import CliRunner
 
 from sidekick_usages import __version__
-from sidekick_usages.branding import BRAND_DESCRIPTION, ROBOT_LINES
+from sidekick_usages.branding.content import BRAND_DESCRIPTION, ROBOT_LINES
 from sidekick_usages.cli.app import create_app
 from sidekick_usages.cli.context import InvocationContext
 from sidekick_usages.cli.contexts.models import InvocationComposers

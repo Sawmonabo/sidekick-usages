@@ -57,7 +57,8 @@ _SERVICE_FILES = frozenset(
 )
 _STANDALONE_RENDERER_FILES = frozenset(
     {
-        "src/sidekick_usages/branding.py",
+        "src/sidekick_usages/branding/content.py",
+        "src/sidekick_usages/branding/rich.py",
         "src/sidekick_usages/heartbeat/render.py",
     }
 )

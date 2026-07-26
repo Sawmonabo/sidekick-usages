@@ -5,7 +5,7 @@ from typing import Annotated
 import typer
 
 from sidekick_usages import __version__
-from sidekick_usages.branding import update_status_line
+from sidekick_usages.branding.rich import update_status_line
 from sidekick_usages.cli.context import invocation_context
 from sidekick_usages.cli.help import branded_command
 from sidekick_usages.core.types import ExitCode

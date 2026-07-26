@@ -6,7 +6,7 @@ from typing import assert_never
 from rich.console import Group, RenderableType
 from rich.text import Text
 
-from sidekick_usages.branding import brand_header
+from sidekick_usages.branding.rich import brand_header
 from sidekick_usages.core.accounts.types import CredentialAction
 from sidekick_usages.credentials.capabilities.models import (
     ProviderCapabilityReport,

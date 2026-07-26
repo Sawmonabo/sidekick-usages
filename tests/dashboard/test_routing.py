@@ -9,13 +9,12 @@ from pathlib import Path
 from typing import Never
 
 import pytest
-from rich.console import Console
 from typer.testing import CliRunner
 
 from sidekick_usages.cli.app import create_app
 from sidekick_usages.cli.commands import usage
 from sidekick_usages.cli.context import InvocationContext
-from sidekick_usages.cli.dashboard import launch
+from sidekick_usages.cli.dashboard import application, launch, terminal
 from sidekick_usages.cli.runtime import bootstrap
 from sidekick_usages.cli.runtime.routing import (
     dashboard_arguments,
@@ -47,6 +46,7 @@ from tests.support.platform import MANAGED_RUNTIME_SUPPORTED
 REFERENCE_TIME = datetime(2026, 7, 25, 14, tzinfo=UTC)
 ONE_SHOT_ROUTE_COUNT = 3
 WINDOWS_CHILD_EXIT_CODE = 7
+ACTUAL_TEST_TERMINAL_WIDTH = 37
 
 
 def _assert_execve_process_boundary(
@@ -173,18 +173,25 @@ def test_cli_routes_one_cached_frame_before_isolated_interaction(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """One routing journey preserves TTY and one-shot process boundaries."""
+    monkeypatch.setenv("COLUMNS", "999")
+    monkeypatch.setattr(
+        terminal.os,
+        "get_terminal_size",
+        lambda _descriptor: os.terminal_size((ACTUAL_TEST_TERMINAL_WIDTH, 24)),
+    )
+    assert bootstrap.terminal_width is terminal.terminal_width
+    assert application.terminal_width is terminal.terminal_width
+    assert terminal.terminal_width(sys.stdout) == ACTUAL_TEST_TERMINAL_WIDTH
+
     output = io.StringIO()
     snapshot = controller_snapshot(REFERENCE_TIME)
     line_count = launch.present_cached_dashboard(
-        Console(
-            file=output,
-            width=100,
-            color_system=None,
-            force_terminal=False,
-        ),
+        output,
         snapshot,
+        width=100,
+        color=False,
     )
-    application = create_app()
+    cli = create_app()
     runner = CliRunner()
     frame = output.getvalue()
     cursor_lines = [
@@ -231,20 +238,20 @@ def test_cli_routes_one_cached_frame_before_isolated_interaction(
 
     one_shot = OneShotRecorder()
     monkeypatch.setattr(usage, "run", one_shot)
-    redirected = runner.invoke(application, [], obj=InvocationContext())
-    check = runner.invoke(application, ["check"], obj=InvocationContext())
+    redirected = runner.invoke(cli, [], obj=InvocationContext())
+    check = runner.invoke(cli, ["check"], obj=InvocationContext())
     disabled = runner.invoke(
-        application,
+        cli,
         ["--no-interactive"],
         obj=InvocationContext(),
     )
     help_result = runner.invoke(
-        application,
+        cli,
         ["--help"],
         obj=InvocationContext(),
     )
     version = runner.invoke(
-        application,
+        cli,
         ["--version"],
         obj=InvocationContext(),
     )

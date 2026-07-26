@@ -1,58 +1,49 @@
 """Cached dashboard frame rendering and terminal positioning."""
 
-from rich.console import Console, RenderableType
+from typing import TextIO
 
 from sidekick_usages.usage.dashboard.focus import initial_dashboard_cursor
 from sidekick_usages.usage.dashboard.models import (
     DashboardFooter,
     DashboardSnapshot,
 )
-from sidekick_usages.usage.presentation.dashboard.overview import (
-    dashboard_overview,
+from sidekick_usages.usage.presentation.dashboard.render.frame import (
+    render_dashboard,
 )
 
 CURSOR_COLUMN_START = "\r"
 
 
 def present_cached_dashboard(
-    console: Console,
+    output: TextIO,
     snapshot: DashboardSnapshot,
+    *,
+    width: int,
+    color: bool,
 ) -> int:
     """Render and present one cached dashboard frame."""
-    frame = render_dashboard_frame(
-        console,
-        dashboard_overview(
-            snapshot,
-            width=console.size.width,
-            cursor=initial_dashboard_cursor(snapshot),
-            footer=DashboardFooter(),
-        ),
+    frame = render_dashboard(
+        snapshot,
+        width=width,
+        cursor=initial_dashboard_cursor(snapshot),
+        footer=DashboardFooter(),
+        color=color,
     )
-    return present_dashboard_frame(console, frame)
+    return present_dashboard_frame(output, frame)
 
 
-def render_dashboard_frame(
-    console: Console,
-    renderable: RenderableType,
-) -> str:
-    """Render one cached frame through the invocation's Rich configuration."""
-    with console.capture() as capture:
-        console.print(renderable)
-    return capture.get()
-
-
-def present_dashboard_frame(console: Console, frame: str) -> int:
+def present_dashboard_frame(output: TextIO, frame: str) -> int:
     """Write one frame and rewind to its origin for process replacement."""
     line_count = frame.count("\n")
-    console.file.write(frame)
+    output.write(frame)
     if line_count:
-        console.file.write(f"\x1b[{line_count}A{CURSOR_COLUMN_START}")
-    console.file.flush()
+        output.write(f"\x1b[{line_count}A{CURSOR_COLUMN_START}")
+    output.flush()
     return line_count
 
 
-def restore_after_failed_replace(console: Console, line_count: int) -> None:
+def restore_after_failed_replace(output: TextIO, line_count: int) -> None:
     """Move below the cached frame before rendering a launch failure."""
     if line_count:
-        console.file.write(f"\x1b[{line_count}B{CURSOR_COLUMN_START}")
-        console.file.flush()
+        output.write(f"\x1b[{line_count}B{CURSOR_COLUMN_START}")
+        output.flush()

@@ -3,8 +3,6 @@
 from datetime import datetime
 from typing import assert_never
 
-from rich.text import Text
-
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.usage.dashboard.models import (
     DashboardAccount,
@@ -13,7 +11,6 @@ from sidekick_usages.usage.dashboard.models import (
     DashboardExternalRow,
     DashboardRow,
 )
-from sidekick_usages.usage.presentation.layout.accounts import account_dot
 
 EXTERNAL_ROW_LABELS = {
     ProviderId.CLAUDE: "External Claude Code login",
@@ -43,27 +40,6 @@ STATIC_STATE_DETAILS = {
         "Account actions are unavailable until Sidekick is ready."
     ),
 }
-
-
-def cursor_account_dot(
-    row: DashboardRow,
-    cursor: DashboardCursor,
-) -> Text:
-    """Render a two-cell cursor prefix before the existing account bullet."""
-    marker = Text(f"{CURSOR_GLYPH} " if row_is_selected(row, cursor) else "  ")
-    marker.stylize("bold cyan", 0, 1)
-    marker.append_text(account_dot(row.provider_id))
-    return marker
-
-
-def row_marker(
-    row: DashboardRow,
-    cursor: DashboardCursor,
-) -> Text:
-    """Render the two-cell cursor prefix followed by the account bullet."""
-    marker = cursor_account_dot(row, cursor)
-    marker.append(" ")
-    return marker
 
 
 def row_is_selected(

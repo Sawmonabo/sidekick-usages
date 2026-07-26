@@ -1,42 +1,15 @@
 """Token-activity summary layout without lookup-result dependencies."""
 
-from datetime import date
-
 from rich.text import Text
 
-from sidekick_usages.branding import PROVIDER_COLORS
+from sidekick_usages.branding.rich import PROVIDER_COLORS
 from sidekick_usages.core.models import TokenActivitySummary
 from sidekick_usages.core.types import ProviderId
-
-TOKENS_PER_THOUSAND = 1_000
-TOKENS_PER_MILLION = 1_000_000
-TOKENS_PER_BILLION = 1_000_000_000
-
-
-def format_tokens_exact(value: int) -> str:
-    """Render an exact token count with grouped digits."""
-    return f"{value:,}"
-
-
-def format_tokens_compact(value: int) -> str:
-    """Render a compact token count without hiding useful precision."""
-    if value >= TOKENS_PER_BILLION:
-        amount = f"{value / TOKENS_PER_BILLION:.3f}"
-        suffix = "B"
-    elif value >= TOKENS_PER_MILLION:
-        amount = f"{value / TOKENS_PER_MILLION:.2f}"
-        suffix = "M"
-    elif value >= TOKENS_PER_THOUSAND:
-        amount = f"{value / TOKENS_PER_THOUSAND:.2f}"
-        suffix = "K"
-    else:
-        return str(value)
-    return f"{amount.rstrip('0').rstrip('.')}{suffix}"
-
-
-def _format_since(value: date) -> str:
-    """Render a source date as ``Mon D, YYYY``."""
-    return f"{value:%b} {value.day}, {value.year}"
+from sidekick_usages.usage.presentation.formatting import (
+    format_since,
+    format_tokens_compact,
+    format_tokens_exact,
+)
 
 
 def _summary_text(summary: TokenActivitySummary, *, compact: bool) -> Text:
@@ -52,7 +25,7 @@ def panel_activity_summary(summary: TokenActivitySummary) -> Text:
     rendered = _summary_text(summary, compact=False)
     if summary.since is not None:
         rendered.append(
-            f"  ·  since {_format_since(summary.since)}",
+            f"  ·  since {format_since(summary.since)}",
             style="grey35",
         )
     return rendered
@@ -66,7 +39,7 @@ def narrow_activity_summary(
     if summary.since is not None:
         lines.append(
             Text(
-                f"since {_format_since(summary.since)}",
+                f"since {format_since(summary.since)}",
                 style="grey35",
             )
         )

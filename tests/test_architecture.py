@@ -11,6 +11,9 @@ import check_architecture
 from sidekick_usages.cli.app import create_app
 
 REPO_ROOT = Path(__file__).parents[1]
+_RICH_FREE_STARTUP_PATH = (
+    "src/sidekick_usages/usage/presentation/dashboard/render/frame.py"
+)
 
 
 _MUTATIONS = (
@@ -185,9 +188,13 @@ _MUTATIONS = (
     ),
     architecture.models.SourceMutation(
         "CLI001",
-        "src/sidekick_usages/cli/runtime/bootstrap.py",
-        "import sys\n",
-        "import sys\n\nimport typer\n",
+        _RICH_FREE_STARTUP_PATH,
+        "from sidekick_usages.branding.content import FULL_HEADER_MIN_WIDTH\n",
+        (
+            "import rich\n\n"
+            "from sidekick_usages.branding.content "
+            "import FULL_HEADER_MIN_WIDTH\n"
+        ),
     ),
     architecture.models.SourceMutation(
         "CLI001",
@@ -317,6 +324,11 @@ def test_every_static_rule_rejects_a_deliberate_violation() -> None:
         violation.rule_id == "PKG001"
         and violation.path.as_posix()
         == "src/sidekick_usages/_internal/fixture.py"
+        for violation in report.violations
+    )
+    assert any(
+        violation.rule_id == "CLI001"
+        and violation.path.as_posix() == _RICH_FREE_STARTUP_PATH
         for violation in report.violations
     )
 

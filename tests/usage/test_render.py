@@ -4,6 +4,11 @@ from dataclasses import replace
 from datetime import date, datetime, timedelta
 
 import pytest
+from prompt_toolkit.formatted_text import (
+    ANSI,
+    fragment_list_to_text,
+    to_formatted_text,
+)
 from rich.console import Console
 
 from sidekick_usages.core.accounts.types import (
@@ -21,6 +26,11 @@ from sidekick_usages.core.types import (
     TokenActivityScope,
 )
 from sidekick_usages.persistence.errors import PersistenceCode
+from sidekick_usages.usage.dashboard.models import (
+    DashboardAccount,
+    DashboardFooter,
+    DashboardFooterKind,
+)
 from sidekick_usages.usage.models import (
     AccountUsage,
     AuthenticationFailure,
@@ -35,10 +45,21 @@ from sidekick_usages.usage.models import (
     UsageCheckResult,
 )
 from sidekick_usages.usage.presentation import overview
-from sidekick_usages.usage.presentation.dashboard.overview import (
-    dashboard_overview,
+from sidekick_usages.usage.presentation.dashboard.render.frame import (
+    render_dashboard,
 )
-from sidekick_usages.usage.presentation.reset import compact_reset_text
+from sidekick_usages.usage.presentation.dashboard.render.style import (
+    ANSI_HEAT_CYAN,
+    ANSI_HEAT_RED,
+    ANSI_RESET,
+    ANSI_RESET_TEXT,
+    dashboard_color_enabled,
+)
+from sidekick_usages.usage.presentation.formatting import (
+    cell_width,
+    compact_reset_text,
+    panel_model_width,
+)
 from tests.fakes.dashboard.render import (
     FORBIDDEN_SELECTION_LABELS,
     PROGRESS_COPY,
@@ -229,16 +250,13 @@ def _result(
 
 def _render_interactive(width: int) -> str:
     snapshot, cursor, footer = interactive_dashboard_state(REFERENCE_TIME)
-    output = io.StringIO()
-    Console(width=width, file=output, legacy_windows=False).print(
-        dashboard_overview(
-            snapshot,
-            width=width,
-            cursor=cursor,
-            footer=footer,
-        )
+    return render_dashboard(
+        snapshot,
+        width=width,
+        cursor=cursor,
+        footer=footer,
+        color=False,
     )
-    return output.getvalue()
 
 
 @pytest.mark.parametrize(
@@ -308,6 +326,65 @@ def test_interactive_wide_render_preserves_dashboard_contract() -> None:
     assert max(len(line) for line in out.splitlines()) <= (
         _INTERACTIVE_WIDE_WIDTH
     )
+
+    snapshot, cursor_state, _ = interactive_dashboard_state(REFERENCE_TIME)
+    provider = snapshot.providers[0]
+    account = provider.rows[0]
+    assert isinstance(account, DashboardAccount)
+    assert account.usage is not None
+    source_window = account.usage.report.windows[1]
+    unsafe_window = replace(
+        source_window,
+        name="group 99%\x1b[31m 7d",
+    )
+    unsafe_account = replace(
+        account,
+        label=AccountLabel("work-99%@example.test"),
+        usage=replace(
+            account.usage,
+            report=replace(
+                account.usage.report,
+                windows=(unsafe_window,),
+            ),
+        ),
+    )
+    unsafe_snapshot = replace(
+        snapshot,
+        providers=(
+            replace(
+                provider,
+                rows=(unsafe_account, *provider.rows[1:]),
+            ),
+            *snapshot.providers[1:],
+        ),
+    )
+    unsafe_footer = DashboardFooter(
+        kind=DashboardFooterKind.PROGRESS,
+        message="working 99%",
+    )
+    plain = render_dashboard(
+        unsafe_snapshot,
+        width=_INTERACTIVE_WIDE_WIDTH,
+        cursor=cursor_state,
+        footer=unsafe_footer,
+        color=False,
+    )
+    colored = render_dashboard(
+        unsafe_snapshot,
+        width=_INTERACTIVE_WIDE_WIDTH,
+        cursor=cursor_state,
+        footer=unsafe_footer,
+        color=True,
+    )
+
+    assert fragment_list_to_text(to_formatted_text(ANSI(colored))) == plain
+    assert "\x1b[31m" not in plain
+    assert "\N{REPLACEMENT CHARACTER}" in plain
+    assert f"{ANSI_HEAT_CYAN}51%{ANSI_RESET}" in colored
+    assert f"{ANSI_HEAT_RED}99%{ANSI_RESET}" not in colored
+    assert f"{ANSI_RESET_TEXT}3h 50m{ANSI_RESET}" in colored
+    assert dashboard_color_enabled({}, terminal=True)
+    assert not dashboard_color_enabled({"NO_COLOR": ""}, terminal=True)
 
 
 def test_overview_shows_robot_masthead_and_provider_titles() -> None:
@@ -411,6 +488,40 @@ def test_interactive_narrow_render_preserves_dashboard_contract() -> None:
         _INTERACTIVE_NARROW_WIDTH
     )
 
+    snapshot, cursor_state, footer = interactive_dashboard_state(
+        REFERENCE_TIME
+    )
+    provider = snapshot.providers[0]
+    account = provider.rows[0]
+    assert isinstance(account, DashboardAccount)
+    assert account.usage is not None
+    no_window_account = replace(
+        account,
+        usage=replace(
+            account.usage,
+            report=replace(account.usage.report, windows=()),
+        ),
+    )
+    no_window_snapshot = replace(
+        snapshot,
+        providers=(
+            replace(
+                provider,
+                rows=(no_window_account, *provider.rows[1:]),
+            ),
+            *snapshot.providers[1:],
+        ),
+    )
+    width = 3
+    narrow = render_dashboard(
+        no_window_snapshot,
+        width=width,
+        cursor=cursor_state,
+        footer=footer,
+        color=False,
+    )
+    assert all(cell_width(line) <= width for line in narrow.splitlines())
+
 
 def test_overview_empty_pairs() -> None:
     out = _render_at(80, [])
@@ -424,6 +535,9 @@ def test_named_group_caption_row_and_rule_present() -> None:
     )
     assert "%" not in cap  # caption sits above the tiles, not inline
     assert "│" in out  # the model rule is drawn on data rows
+    group = "模型名稱"
+    assert panel_model_width(group, 1) == cell_width(group)
+    assert cell_width(group) > len(group)
 
 
 def test_subtitle_not_truncated_when_wider_than_content() -> None:

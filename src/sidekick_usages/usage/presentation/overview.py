@@ -3,7 +3,8 @@
 from rich.console import Console, Group, RenderableType
 from rich.text import Text
 
-from sidekick_usages.branding import FULL_HEADER_MIN_WIDTH, brand_header
+from sidekick_usages.branding.content import FULL_HEADER_MIN_WIDTH
+from sidekick_usages.branding.rich import brand_header
 from sidekick_usages.usage.models import UsageCheckResult
 from sidekick_usages.usage.presentation.layout.panels import (
     legend,

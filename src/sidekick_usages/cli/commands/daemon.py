@@ -2,7 +2,7 @@
 
 import typer
 
-from sidekick_usages.branding import brand_header
+from sidekick_usages.branding.rich import brand_header
 from sidekick_usages.cli.context import invocation_context
 from sidekick_usages.cli.help import BrandedTyperGroup, branded_command
 from sidekick_usages.core.types import ExitCode

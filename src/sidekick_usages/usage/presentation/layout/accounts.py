@@ -2,7 +2,7 @@
 
 from rich.text import Text
 
-from sidekick_usages.branding import PROVIDER_COLORS
+from sidekick_usages.branding.rich import PROVIDER_COLORS
 from sidekick_usages.core.types import ProviderId
 
 PLAN_COLORS: dict[str, str] = {

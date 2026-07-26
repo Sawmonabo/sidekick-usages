@@ -11,7 +11,7 @@ from typer import rich_utils
 from typer.core import TyperCommand, TyperGroup
 from typer.models import CommandFunctionType
 
-from sidekick_usages.branding import brand_header
+from sidekick_usages.branding.rich import brand_header
 
 _DEFAULT_HELP_WIDTH = 80
 

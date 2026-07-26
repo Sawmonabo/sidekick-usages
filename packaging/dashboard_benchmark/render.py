@@ -1,15 +1,12 @@
-"""Bounded Rich rendering used by the dashboard release trace."""
+"""Bounded canonical rendering used by the dashboard release trace."""
 
 import io
 import time
-
-from rich.console import Console
 
 from dashboard_benchmark.errors import DashboardBenchmarkError
 from sidekick_usages.cli.dashboard.controller import DashboardController
 from sidekick_usages.cli.dashboard.launch import (
     present_dashboard_frame,
-    render_dashboard_frame,
 )
 from sidekick_usages.cli.dashboard.models.controller import DashboardMove
 from sidekick_usages.usage.dashboard.models import (
@@ -17,22 +14,12 @@ from sidekick_usages.usage.dashboard.models import (
     DashboardFooter,
     DashboardSnapshot,
 )
-from sidekick_usages.usage.presentation.dashboard.overview import (
-    dashboard_overview,
+from sidekick_usages.usage.presentation.dashboard.render.frame import (
+    render_dashboard,
 )
 
 CURSOR_SAMPLE_COUNT = 40
 OUTPUT_WIDTH = 200
-
-
-def _console(output: io.StringIO) -> Console:
-    return Console(
-        width=OUTPUT_WIDTH,
-        file=output,
-        color_system=None,
-        force_terminal=False,
-        legacy_windows=False,
-    )
 
 
 def _cursor(controller: DashboardController) -> DashboardCursor:
@@ -46,21 +33,18 @@ def _cursor(controller: DashboardController) -> DashboardCursor:
 def _render(
     snapshot: DashboardSnapshot,
     controller: DashboardController,
-    console: Console,
     output: io.StringIO,
 ) -> int:
     output.seek(0)
     output.truncate(0)
-    frame = render_dashboard_frame(
-        console,
-        dashboard_overview(
-            snapshot,
-            width=OUTPUT_WIDTH,
-            cursor=_cursor(controller),
-            footer=DashboardFooter(),
-        ),
+    frame = render_dashboard(
+        snapshot,
+        width=OUTPUT_WIDTH,
+        cursor=_cursor(controller),
+        footer=DashboardFooter(),
+        color=False,
     )
-    present_dashboard_frame(console, frame)
+    present_dashboard_frame(output, frame)
     rendered = output.getvalue()
     if not rendered:
         raise DashboardBenchmarkError("Dashboard render produced no output.")
@@ -73,7 +57,6 @@ def render_snapshot(snapshot: DashboardSnapshot) -> int:
     return _render(
         snapshot,
         DashboardController.start(snapshot),
-        _console(output),
         output,
     )
 
@@ -82,13 +65,12 @@ def cursor_render_p95(snapshot: DashboardSnapshot) -> int:
     """Measure bounded cursor-to-render CPU time in nanoseconds."""
     controller = DashboardController.start(snapshot)
     output = io.StringIO()
-    console = _console(output)
     durations: list[int] = []
     for sample in range(CURSOR_SAMPLE_COUNT):
         direction = DashboardMove.DOWN if sample % 2 == 0 else DashboardMove.UP
         started_at = time.process_time_ns()
         controller = controller.move(direction)
-        _render(snapshot, controller, console, output)
+        _render(snapshot, controller, output)
         durations.append(time.process_time_ns() - started_at)
     durations.sort()
     percentile_index = (len(durations) * 95 + 99) // 100 - 1

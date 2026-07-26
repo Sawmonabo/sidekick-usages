@@ -9,13 +9,15 @@ from rich.text import Text
 from sidekick_usages.core.accounts.types import MetricsFreshness
 from sidekick_usages.core.models import UsageReport
 from sidekick_usages.core.types import ProviderId
+from sidekick_usages.usage.presentation.formatting import (
+    CYAN_PERCENT_THRESHOLD,
+    NARROW_BAR_WIDTH,
+    RED_PERCENT_THRESHOLD,
+    YELLOW_PERCENT_THRESHOLD,
+    utilization_bar_segments,
+)
 from sidekick_usages.usage.presentation.layout.accounts import account_header
 from sidekick_usages.usage.presentation.reset import reset_text
-
-BAR_WIDTH = 18
-RED_PERCENT_THRESHOLD = 90
-YELLOW_PERCENT_THRESHOLD = 70
-CYAN_PERCENT_THRESHOLD = 40
 
 
 def _utilization_color(percent: float) -> str:
@@ -28,12 +30,11 @@ def _utilization_color(percent: float) -> str:
     return "green"
 
 
-def _braille_bar(percent: float, width: int = BAR_WIDTH) -> Text:
-    bounded = max(0.0, min(100.0, percent))
-    filled = round(bounded / 100.0 * width)
+def _braille_bar(percent: float, width: int = NARROW_BAR_WIDTH) -> Text:
+    filled, idle = utilization_bar_segments(percent, width)
     bar = Text()
-    bar.append("⣿" * filled, style=_utilization_color(bounded))
-    bar.append("⣀" * (width - filled), style="dim")
+    bar.append(filled, style=_utilization_color(percent))
+    bar.append(idle, style="dim")
     return bar
 
 

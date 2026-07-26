@@ -22,7 +22,7 @@ from dashboard_benchmark.fixtures import (
     REFERENCE_ACCOUNT_COUNT,
     saved_accounts,
 )
-from sidekick_usages.branding import BRAND_TITLE
+from sidekick_usages.branding.content import BRAND_TITLE
 from sidekick_usages.cli.runtime.bootstrap import (
     PROCESS_LAUNCH_FAILURE_MESSAGE,
 )
@@ -32,7 +32,9 @@ from sidekick_usages.platform.process import (
     SubprocessProcessGroup,
     terminate_process_group,
 )
-from sidekick_usages.usage.presentation.dashboard.footer import KEY_FOOTER
+from sidekick_usages.usage.presentation.dashboard.render.text import (
+    KEY_FOOTER,
+)
 
 COMPLETED_FRAME_REWIND = re.compile(rb"\x1b\[\d+A\r")
 MAXIMUM_FRAME_BYTES = 1_048_576

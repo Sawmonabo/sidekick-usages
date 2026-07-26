@@ -8,7 +8,7 @@ from enum import StrEnum
 from rich.console import Group, RenderableType
 from rich.text import Text
 
-from sidekick_usages.branding import brand_header
+from sidekick_usages.branding.rich import brand_header
 from sidekick_usages.core.models import Account
 from sidekick_usages.core.types import (
     AccountLabel,

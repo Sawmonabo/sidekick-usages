@@ -6,7 +6,7 @@ from pathlib import Path
 
 from rich.console import Console
 
-from sidekick_usages.branding import ROBOT_LINES
+from sidekick_usages.branding.content import ROBOT_LINES
 from sidekick_usages.core.types import (
     AccountLabel,
     ExitCode,

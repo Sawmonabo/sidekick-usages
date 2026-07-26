@@ -1,6 +1,5 @@
 """Shared provider-panel layout primitives."""
 
-import re
 from datetime import datetime
 
 from rich.console import Console, RenderableType
@@ -8,45 +7,34 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from sidekick_usages.branding import PROVIDER_COLORS
-from sidekick_usages.core.models import UsageReport, UsageWindow
+from sidekick_usages.branding.rich import PROVIDER_COLORS
+from sidekick_usages.core.models import UsageWindow
 from sidekick_usages.core.types import ProviderId
+from sidekick_usages.usage.presentation.formatting import (
+    ACTIVE_PERCENT_THRESHOLD,
+    CYAN_PERCENT_THRESHOLD,
+    PANEL_CHROME_WIDTH,
+    PANEL_TILE_WIDTH,
+    RED_PERCENT_THRESHOLD,
+    YELLOW_PERCENT_THRESHOLD,
+    compact_reset_text,
+    panel_columns,
+    panel_model_width,
+    window_index,
+)
 from sidekick_usages.usage.presentation.layout.accounts import plan_text
 from sidekick_usages.usage.presentation.layout.models import ProviderPanelRow
-from sidekick_usages.usage.presentation.reset import compact_reset_text
 
 HEAT_BANDS: tuple[tuple[int, str, str], ...] = (
-    (90, "#ffe6e6", "#b03030"),
-    (70, "#fff4e0", "#9c6f12"),
-    (40, "#e2fbff", "#1b6a87"),
-    (1, "#dfffe9", "#1d5e35"),
+    (RED_PERCENT_THRESHOLD, "#ffe6e6", "#b03030"),
+    (YELLOW_PERCENT_THRESHOLD, "#fff4e0", "#9c6f12"),
+    (CYAN_PERCENT_THRESHOLD, "#e2fbff", "#1b6a87"),
+    (ACTIVE_PERCENT_THRESHOLD, "#dfffe9", "#1d5e35"),
 )
 IDLE_FOREGROUND = "grey39"
 ZERO_FOREGROUND = "#cdd3d8"
 ZERO_BACKGROUND = "#353a40"
-TILE_WIDTH = 6
 RULE_STYLE = "#356f78"
-PANEL_CHROME = 6
-WINDOW_LENGTH_PATTERN = re.compile(r"\d+[hd]")
-
-
-def _classify_window(name: str) -> tuple[str, str]:
-    """Split a window name into its detected length and optional group."""
-    match = WINDOW_LENGTH_PATTERN.search(name)
-    if match is None:
-        return (name.strip(), "")
-    length = match.group(0)
-    group = (name[: match.start()] + name[match.end() :]).strip()
-    return (length, group)
-
-
-def _length_hours(length: str) -> int:
-    """Return an hour-based sort key for one length token."""
-    match = WINDOW_LENGTH_PATTERN.fullmatch(length)
-    if match is None:
-        return 0
-    value = int(length[:-1])
-    return value * 24 if length[-1] == "d" else value
 
 
 def _heat_band(percent: int) -> tuple[str, str] | None:
@@ -62,12 +50,12 @@ def _heat_tile(percent: int) -> Text:
     band = _heat_band(percent)
     if band is None:
         return Text(
-            f"{'0%':^{TILE_WIDTH}}",
+            f"{'0%':^{PANEL_TILE_WIDTH}}",
             style=f"{ZERO_FOREGROUND} on {ZERO_BACKGROUND}",
         )
     foreground, background = band
     return Text(
-        f"{f'{percent}%':^{TILE_WIDTH}}",
+        f"{f'{percent}%':^{PANEL_TILE_WIDTH}}",
         style=f"{foreground} on {background}",
     )
 
@@ -77,49 +65,11 @@ def _reset_cell(
     reference_time: datetime,
 ) -> Text:
     """Build one fixed-width reset-countdown cell."""
+    reset = compact_reset_text(reset_at, reference_time)
     return Text(
-        f"{compact_reset_text(reset_at, reference_time):^{TILE_WIDTH}}",
+        f"{reset:^{PANEL_TILE_WIDTH}}",
         style="grey42",
     )
-
-
-def panel_columns(
-    reports: list[UsageReport],
-) -> tuple[list[str], list[tuple[str, list[str]]]]:
-    """Derive primary and named-group columns from usage reports."""
-    primary_windows: dict[str, int] = {}
-    grouped_windows: dict[str, dict[str, int]] = {}
-    for report in reports:
-        for window in report.windows:
-            length, group = _classify_window(window.name)
-            hours = _length_hours(length)
-            if group == "":
-                primary_windows[length] = hours
-            else:
-                grouped_windows.setdefault(group, {})[length] = hours
-    primary = sorted(
-        primary_windows,
-        key=lambda length: primary_windows[length],
-    )
-    grouped = [
-        (
-            group,
-            sorted(lengths, key=lambda length: lengths[length]),
-        )
-        for group, lengths in sorted(grouped_windows.items())
-    ]
-    return primary, grouped
-
-
-def window_index(
-    report: UsageReport,
-) -> dict[tuple[str, str], UsageWindow]:
-    """Map each group and length pair to its usage window."""
-    index: dict[tuple[str, str], UsageWindow] = {}
-    for window in report.windows:
-        length, group = _classify_window(window.name)
-        index[(group, length)] = window
-    return index
 
 
 def utilization_cell(window: UsageWindow | None) -> Text:
@@ -146,17 +96,11 @@ def rule_cell() -> Text:
     return Text("│", style=RULE_STYLE)
 
 
-def _model_width(name: str, length_count: int) -> int:
-    """Return the width required for a named-group column."""
-    tiles = TILE_WIDTH * length_count + 2 * (length_count - 1)
-    return max(len(name), tiles)
-
-
 def model_subgrid(cells: list[Text]) -> Table:
     """Lay out one named group's length cells."""
     grid = Table.grid(padding=(0, 1))
     for _cell in cells:
-        grid.add_column(width=TILE_WIDTH, justify="center")
+        grid.add_column(width=PANEL_TILE_WIDTH, justify="center")
     grid.add_row(*cells)
     return grid
 
@@ -179,11 +123,11 @@ def build_table(
     table.add_column(width=name_width)
     table.add_column(width=4)
     for _length in primary:
-        table.add_column(width=TILE_WIDTH, justify="center")
+        table.add_column(width=PANEL_TILE_WIDTH, justify="center")
     for group, lengths in grouped:
         table.add_column(width=1, justify="center")
         table.add_column(
-            width=_model_width(group, len(lengths)),
+            width=panel_model_width(group, len(lengths)),
             justify="left",
         )
     blank = Text("")
@@ -302,7 +246,7 @@ def panel_min_width(measure: Console, panel: Panel) -> int:
         if label is not None:
             width = max(
                 width,
-                measure.measure(label).maximum + PANEL_CHROME,
+                measure.measure(label).maximum + PANEL_CHROME_WIDTH,
             )
     return width
 
