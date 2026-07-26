@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import sidekick_usages.providers.codex.app_server.capabilities
 from sidekick_usages.core.accounts.types import (
     AuthorityGeneration,
     ProviderIdentity,
@@ -20,6 +21,7 @@ from sidekick_usages.providers.codex.app_server.errors import (
 )
 from sidekick_usages.providers.codex.app_server.executable import (
     discover_codex_executable,
+    verify_codex_executable,
 )
 from sidekick_usages.providers.codex.app_server.jsonrpc.models import (
     JsonRpcNotification,
@@ -50,6 +52,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 SCHEMA_HASH_HEX_LENGTH = 64
+_CAPABILITY_EXECUTABLE_VERIFICATIONS = 2
 _ACCOUNT_ID = SidekickAccountId("33333333-3333-4333-8333-333333333333")
 _PROVIDER_IDENTITY = "workspace-account-alpha"
 _GENERATION = "2026-07-24T10:00:00.000000000Z"
@@ -77,6 +80,7 @@ def _prepare_shared_runtime(
 
 def test_versioned_codex_app_server_boundary_is_complete(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     schema_root = tmp_path / "schema"
     write_codex_schema(schema_root, external_auth=True)
@@ -89,6 +93,18 @@ def test_versioned_codex_app_server_boundary_is_complete(
         "PATH": os.pathsep.join((str(tmp_path), os.environ["PATH"])),
     }
 
+    verification_calls = 0
+
+    def record_verification(executable: CodexExecutable) -> None:
+        nonlocal verification_calls
+        verification_calls += 1
+        verify_codex_executable(executable)
+
+    monkeypatch.setattr(
+        sidekick_usages.providers.codex.app_server.capabilities,
+        "verify_codex_executable",
+        record_verification,
+    )
     executable = discover_codex_executable(environment)
     capabilities = probe_codex_capabilities(executable, environment)
     with CodexAppServerSession.open(
@@ -104,6 +120,7 @@ def test_versioned_codex_app_server_boundary_is_complete(
 
         assert executable.provenance.path == executable_path.resolve()
         assert str(executable.version) == "0.145.0"
+        assert verification_calls == _CAPABILITY_EXECUTABLE_VERIFICATIONS
         assert len(capabilities.schema_hash) == SCHEMA_HASH_HEX_LENGTH
         assert result["requiresOpenaiAuth"] is True
         assert isinstance(notification, JsonRpcNotification)

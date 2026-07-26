@@ -111,10 +111,13 @@ def probe_codex_capabilities(
                 process_group=process_group,
             ) as session:
                 probe_codex_auth_status(session)
-        except CodexAppServerError:
+        except CodexAppServerError as error:
+            if error.code is CodexAppServerFailure.EXECUTABLE_UNSAFE:
+                raise
             raise CodexAppServerError(
                 CodexAppServerFailure.CAPABILITY_UNSUPPORTED
             ) from None
+        verify_codex_executable(executable)
         return capabilities
 
 

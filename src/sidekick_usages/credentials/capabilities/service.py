@@ -91,10 +91,18 @@ class ProviderCapabilityService:
             self._results[provider_id] = result
             return result
 
-    def report(self) -> ProviderCapabilityReport:
-        """Return deterministic evidence for every supported provider."""
+    def report(
+        self,
+        provider_id: ProviderId | None = None,
+    ) -> ProviderCapabilityReport:
+        """Return cached evidence for one provider or every provider."""
+        provider_ids = (
+            tuple(ProviderId)
+            if provider_id is None
+            else (provider_id,)
+        )
         return ProviderCapabilityReport(
-            tuple(self.probe(provider_id) for provider_id in ProviderId)
+            tuple(self.probe(candidate) for candidate in provider_ids)
         )
 
     def _probe_claude(self) -> ProviderCapabilityResult:

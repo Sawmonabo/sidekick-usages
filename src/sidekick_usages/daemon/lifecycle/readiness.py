@@ -56,6 +56,7 @@ from sidekick_usages.persistence.supervisor.activation import (
 )
 from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
 from sidekick_usages.persistence.supervisor.service import ServiceStateStore
+from sidekick_usages.platform.peer import PeerVerificationError
 
 _READINESS_TIMEOUT_SECONDS = 30.0
 _READINESS_WAIT_SECONDS = 0.1
@@ -321,9 +322,14 @@ class SupervisorReadiness:
             )
         try:
             client = self._connect_client()
-        except OSError, ValueError:
+        except PeerVerificationError:
             return (
                 ServiceComponentState.UNHEALTHY,
+                ServiceComponentState.UNAVAILABLE,
+            )
+        except OSError, ValueError:
+            return (
+                ServiceComponentState.UNAVAILABLE,
                 ServiceComponentState.UNAVAILABLE,
             )
         try:

@@ -89,14 +89,24 @@ class StaticProviderCapabilityService:
 
     def __init__(self, report: ProviderCapabilityReport) -> None:
         self._report = report
+        self.requested_provider_ids: list[ProviderId] = []
 
     def cancel(self) -> None:
         """Leave immutable evidence unchanged."""
 
     def ready(self, provider_id: ProviderId) -> bool:
         """Return one provider result's readiness."""
+        self.requested_provider_ids.append(provider_id)
         return self._report.result(provider_id).ready
 
-    def report(self) -> ProviderCapabilityReport:
-        """Return the complete deterministic report."""
-        return self._report
+    def report(
+        self,
+        provider_id: ProviderId | None = None,
+    ) -> ProviderCapabilityReport:
+        """Return deterministic complete or provider-scoped evidence."""
+        if provider_id is None:
+            return self._report
+        self.requested_provider_ids.append(provider_id)
+        return ProviderCapabilityReport(
+            (self._report.result(provider_id),)
+        )

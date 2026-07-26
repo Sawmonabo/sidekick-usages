@@ -141,14 +141,19 @@ class ProviderCapabilityResult:
 
 @dataclass(frozen=True, slots=True)
 class ProviderCapabilityReport:
-    """Deterministic complete capability evidence for every provider."""
+    """Deterministic capability evidence for one canonical provider scope."""
 
     results: tuple[ProviderCapabilityResult, ...]
 
     def __post_init__(self) -> None:
-        """Require exactly one result in canonical provider order."""
+        """Require a non-empty canonical subset without duplicates."""
         provider_ids = tuple(result.provider_id for result in self.results)
-        if provider_ids != tuple(ProviderId):
+        canonical = tuple(
+            provider_id
+            for provider_id in ProviderId
+            if provider_id in provider_ids
+        )
+        if not provider_ids or provider_ids != canonical:
             raise ValueError(
                 "Capability report must follow canonical provider order."
             )

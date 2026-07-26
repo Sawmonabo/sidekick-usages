@@ -71,10 +71,34 @@ class DoctorRuntimeService:
         expected = {account.account_id for account in accounts}
         if set(metrics) != expected:
             raise ValueError("Doctor runtime accounts do not match.")
-        selected = {state.provider_id: state for state in selected_states}
         account_map = {
             account.account_id: account for account in accounts
         }
+        for state in selected_states:
+            if state.runtime_state is not ProviderRuntimeState.SAVED_ACTIVE:
+                continue
+            selected_account_id = state.account_id
+            if selected_account_id is None:
+                raise ValueError(
+                    "Doctor selected account identity is incomplete."
+                )
+            selected_account = account_map.get(selected_account_id)
+            if selected_account is None:
+                raise ValueError(
+                    "Doctor selected account does not exist."
+                )
+            if selected_account.provider_id is not state.provider_id:
+                raise ValueError(
+                    "Doctor selected provider does not match its account."
+                )
+            if (
+                selected_account.provider_identity
+                != state.provider_identity
+            ):
+                raise ValueError(
+                    "Doctor selected identity does not match its account."
+                )
+        selected = {state.provider_id: state for state in selected_states}
         self._diagnostics = {
             account.account_id: _diagnostic(
                 account,

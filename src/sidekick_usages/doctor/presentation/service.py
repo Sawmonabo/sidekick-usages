@@ -15,6 +15,7 @@ from sidekick_usages.credentials.claude.lifetime import (
     ClaudeLoginRenewalState,
 )
 from sidekick_usages.daemon.models.lifecycle import SupervisorHealth
+from sidekick_usages.daemon.types.lifecycle import ServiceComponentState
 from sidekick_usages.doctor.accounts.models import (
     AccountDiagnostic,
     AuthorityDiagnostic,
@@ -70,7 +71,13 @@ def render_doctor(
     elif isinstance(result, DoctorFailedResult):
         parts.extend(_service_lines(result.supervisor))
         parts.extend(_capability_lines(result.capabilities))
-        parts.extend(_operation_lines(result.supervisor, (), ()))
+        parts.extend(
+            _operation_lines(
+                result.supervisor,
+                ServiceComponentState.UNAVAILABLE,
+                ServiceComponentState.UNAVAILABLE,
+            )
+        )
         parts.extend(_persistence_failure_lines(result.failure))
         diagnostics = ()
     else:
@@ -122,8 +129,12 @@ def _service_lines(health: SupervisorHealth) -> tuple[Text, ...]:
 
 def _operation_lines(
     health: SupervisorHealth,
-    scheduled: tuple[ScheduledOperationDiagnostic, ...],
-    activations: tuple[UnfinishedActivationDiagnostic, ...],
+    scheduled: (
+        tuple[ScheduledOperationDiagnostic, ...] | ServiceComponentState
+    ),
+    activations: (
+        tuple[UnfinishedActivationDiagnostic, ...] | ServiceComponentState
+    ),
 ) -> tuple[Text, ...]:
     """Build independent durable queue and journal health."""
     lines = [
@@ -131,11 +142,15 @@ def _operation_lines(
         Text(f"  queue: {health.queue}"),
         Text(f"  journal: {health.journal}"),
     ]
-    if not scheduled:
+    if isinstance(scheduled, ServiceComponentState):
+        lines.append(Text(f"  due and retry: {scheduled}"))
+    elif not scheduled:
         lines.append(Text("  due and retry: none"))
     else:
         lines.extend(_scheduled_operation_lines(scheduled))
-    if not activations:
+    if isinstance(activations, ServiceComponentState):
+        lines.append(Text(f"  unfinished activation: {activations}"))
+    elif not activations:
         lines.append(Text("  unfinished activation: none"))
     else:
         lines.extend(_unfinished_activation_lines(activations))

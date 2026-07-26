@@ -26,8 +26,8 @@ from sidekick_usages.credentials.accounts.lifecycle.service import (
     AccountLifecycleCoordinator,
 )
 from sidekick_usages.credentials.authorities import credential_resolver_for
-from sidekick_usages.credentials.capabilities.models import (
-    ProviderCapabilityReport,
+from sidekick_usages.credentials.capabilities.ports import (
+    ProviderCapabilityEvidenceSource,
 )
 from sidekick_usages.credentials.capabilities.service import (
     build_provider_capability_service,
@@ -172,7 +172,7 @@ class DoctorContext:
 
     state: DoctorState
     supervisor: SupervisorHealth
-    capabilities: ProviderCapabilityReport
+    capabilities: ProviderCapabilityEvidenceSource
 
 
 @dataclass(frozen=True, slots=True)
@@ -482,7 +482,6 @@ def compose_doctor_context(
             provider_readiness=capability_service,
         )
         supervisor = daemon.health()
-        capabilities = capability_service.report()
         persistence = _persistence(resolved_paths, daemon)
         try:
             accounts = persistence.open_store()
@@ -509,7 +508,7 @@ def compose_doctor_context(
                     _persistence_failure(error, resolved_paths.accounts)
                 ),
                 supervisor,
-                capabilities,
+                capability_service,
             )
         try:
             runtime = DoctorRuntimeService(
@@ -529,13 +528,13 @@ def compose_doctor_context(
             return DoctorContext(
                 DoctorFailed(failure),
                 supervisor,
-                capabilities,
+                capability_service,
             )
         return DoctorContext(
             DoctorReady(
                 DoctorService(
                     saved_accounts,
-                    capabilities.ready_provider_ids,
+                    capability_service,
                     heartbeat_map.keys(),
                     resolved_clock,
                     runtime,
@@ -544,7 +543,7 @@ def compose_doctor_context(
                 refresh_status,
             ),
             supervisor,
-            capabilities,
+            capability_service,
         )
 
     return _compose(build)

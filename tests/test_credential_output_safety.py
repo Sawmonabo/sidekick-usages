@@ -36,7 +36,10 @@ from sidekick_usages.persistence.private.credentials import (
 )
 from sidekick_usages.persistence.types.status import PersistenceState
 from sidekick_usages.providers.claude.provider import ClaudeProvider
-from tests.fakes.daemon.capabilities import make_provider_capability_report
+from tests.fakes.daemon.capabilities import (
+    StaticProviderCapabilityService,
+    make_provider_capability_report,
+)
 from tests.test_support import (
     REFERENCE_TIME,
     FixedClock,
@@ -97,9 +100,11 @@ def test_provider_secret_never_crosses_persisted_or_doctor_error_channels(
         clock=clock,
     ).refresh_account(store.saved_accounts()[0], force=True)
     saved = store.saved_accounts()[0]
+    capabilities = make_provider_capability_report()
+    capability_service = StaticProviderCapabilityService(capabilities)
     diagnostics = DoctorService(
         store.saved_accounts(),
-        {ProviderId.CLAUDE},
+        capability_service,
         set(),
         clock,
         DoctorRuntimeService(store.saved_accounts(), None, (), (), ()),
@@ -117,7 +122,7 @@ def test_provider_secret_never_crosses_persisted_or_doctor_error_channels(
             CredentialRefreshStateKind.CLEAN
         ),
         supervisor=make_supervisor_health(),
-        capabilities=make_provider_capability_report(),
+        capabilities=capabilities,
     )
     human_output = io.StringIO()
     Console(file=human_output, force_terminal=False).print(

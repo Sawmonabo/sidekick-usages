@@ -4,7 +4,7 @@ import json
 import os
 import re
 import sys
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 import pytest
@@ -15,6 +15,7 @@ from sidekick_usages.core.accounts.models import CodexStoredAuthority
 from sidekick_usages.core.expiry import Expiry, UnknownExpiry
 from sidekick_usages.core.models import (
     Account,
+    ClaudeSetupTokenCredentials,
     CodexCredentials,
     DetectedCredentials,
     UsageReport,
@@ -192,10 +193,19 @@ def test_codex_login_migrates_accounts_independently_without_native_copy(
     harness, store, stdout, stderr = install_cli_context(
         tmp_path,
         {ProviderId.CODEX: provider},
-        (account_a, account_b),
+        (
+            account_a,
+            account_b,
+            Account(
+                label=AccountLabel("alpha"),
+                credentials=ClaudeSetupTokenCredentials(
+                    access_token="sk-ant-oat01-duplicate-label"
+                ),
+            ),
+        ),
     )
     paths = make_application_paths(tmp_path)
-    saved_a, saved_b = store.saved_accounts()
+    saved_a, saved_b, _saved_claude = store.saved_accounts()
     subscription_a = saved_a.authority.subscription
     subscription_b = saved_b.authority.subscription
     assert isinstance(subscription_a, CodexStoredAuthority)
@@ -274,9 +284,18 @@ def test_codex_login_migrates_accounts_independently_without_native_copy(
         },
     )
 
-    migrated_a = harness.invoke(["refresh", "alpha"])
+    ambiguous = harness.invoke(["refresh", "alpha"])
+    migrated_a = harness.invoke(
+        ["refresh", "alpha", "--provider", "codex"]
+    )
 
-    assert migrated_a.exit_code == ExitCode.SUCCESS
+    assert (
+        ambiguous.exit_code,
+        migrated_a.exit_code,
+    ) == (
+        ExitCode.SYSTEM_ERROR,
+        ExitCode.SUCCESS,
+    )
     current_a = store.read_saved(saved_a.account_id)
     assert current_a is not None
     managed_a = managed_subscription(current_a)
@@ -433,8 +452,15 @@ def test_setup_token_delegates_only_to_claude_capability(
         environment: Mapping[str, str] | None = None,
         working_directory: Path | None = None,
         umask: int = -1,
+        cancelled: Callable[[], bool] | None = None,
     ) -> ClaudeCommandResult:
-        del maximum_output_bytes, environment, working_directory, umask
+        del (
+            maximum_output_bytes,
+            environment,
+            working_directory,
+            umask,
+            cancelled,
+        )
         if argv[1:] == ("--version",):
             return ClaudeCommandResult(0, CLAUDE_VERSION_OUTPUT)
         assert argv[1:] == ("setup-token",)

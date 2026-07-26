@@ -81,28 +81,38 @@ def _prompt_for_token(
     return TokenInput(spec.token_pattern, invocation.err_console).read()
 
 
-def _refresh_managed_codex(
+def _resolve_refresh_provider(
+    ctx: typer.Context,
+    app_context: AppContext,
+    label: AccountLabel,
+    *,
+    provider_id: ProviderId | None,
+) -> ProviderId | None:
+    """Resolve one label without guessing across provider namespaces."""
+    providers = tuple(
+        candidate
+        for candidate in ProviderId
+        if app_context.accounts.resolve_account_id(candidate, label)
+        is not None
+    )
+    if provider_id is not None:
+        return provider_id if provider_id in providers else None
+    if len(providers) > 1:
+        _usage_error(
+            ctx,
+            f"Account label '{label}' exists for both providers.",
+        )
+    return providers[0] if providers else None
+
+
+def _refresh_codex(
     ctx: typer.Context,
     app_context: AppContext,
     label: AccountLabel,
     *,
     replace_identity: bool,
-) -> bool:
-    """Run managed Codex repair when the label belongs to Codex."""
-    account_id = app_context.accounts.resolve_account_id(
-        ProviderId.CODEX,
-        label,
-    )
-    if account_id is None:
-        return False
-    if (
-        app_context.accounts.resolve_account_id(ProviderId.CLAUDE, label)
-        is not None
-    ):
-        _usage_error(
-            ctx,
-            f"Account label '{label}' exists for both providers.",
-        )
+) -> None:
+    """Run one explicitly resolved managed Codex repair."""
     if replace_identity:
         _usage_error(
             ctx,
@@ -123,7 +133,6 @@ def _refresh_managed_codex(
     message = Text("Managed Codex login ready for ", style="green")
     message.append(f"'{label}'.")
     invocation.console.print(message)
-    return True
 
 
 def add_cmd(
@@ -214,6 +223,13 @@ def refresh_cmd(
         str | None,
         typer.Argument(help="Account label."),
     ] = None,
+    provider: Annotated[
+        str | None,
+        typer.Option(
+            "--provider",
+            help="Select the provider when labels overlap.",
+        ),
+    ] = None,
     all_accounts: Annotated[
         bool,
         typer.Option(
@@ -258,6 +274,7 @@ def refresh_cmd(
         quiet=quiet,
         force=force,
         replace_identity=replace_identity,
+        provider=provider,
     )
     if all_accounts:
         run_refresh_all(ctx, quiet=quiet, force=force)
@@ -267,18 +284,24 @@ def refresh_cmd(
     invocation = invocation_context(ctx)
     app_context = invocation.require_app(ctx)
     account_label = validated_label(ctx, narrowed)
-    if _refresh_managed_codex(
+    provider_id = (
+        None if provider is None else validated_provider(ctx, provider)
+    )
+    target_provider = _resolve_refresh_provider(
         ctx,
         app_context,
         account_label,
-        replace_identity=replace_identity,
-    ):
-        return
-    account_id = app_context.accounts.resolve_account_id(
-        ProviderId.CLAUDE,
-        account_label,
+        provider_id=provider_id,
     )
-    if account_id is None:
+    if target_provider is ProviderId.CODEX:
+        _refresh_codex(
+            ctx,
+            app_context,
+            account_label,
+            replace_identity=replace_identity,
+        )
+        return
+    if target_provider is None:
         invocation.err_console.print(
             f"[yellow]No account named '{narrowed}'.[/yellow]"
         )
@@ -305,6 +328,7 @@ def _validate_refresh_args(
     quiet: bool,
     force: bool,
     replace_identity: bool,
+    provider: str | None,
 ) -> str | None:
     if all_accounts:
         if label is not None:
@@ -316,6 +340,11 @@ def _validate_refresh_args(
             _usage_error(
                 ctx,
                 "--replace-identity only applies to a label refresh.",
+            )
+        if provider is not None:
+            _usage_error(
+                ctx,
+                "--provider only applies to a label refresh.",
             )
         return None
     if label is None:

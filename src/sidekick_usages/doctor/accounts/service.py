@@ -36,16 +36,25 @@ from sidekick_usages.core.types import (
     HeartbeatStatus,
     ProviderId,
     RefreshStatus,
+    highest_exit_code,
+)
+from sidekick_usages.credentials.capabilities.ports import (
+    ProviderCapabilityEvidenceSource,
 )
 from sidekick_usages.credentials.claude.lifetime import (
     ClaudeLoginRenewalState,
     classify_saved_claude_login_renewal,
 )
+from sidekick_usages.daemon.models.lifecycle import SupervisorHealth
+from sidekick_usages.daemon.types.lifecycle import ServiceComponentState
 from sidekick_usages.doctor.accounts.models import (
     AccountDiagnostic,
     AuthorityDiagnostic,
     DoctorAuthorityManagement,
     DoctorCredentialKind,
+    DoctorFailedResult,
+    DoctorReadyResult,
+    DoctorResult,
     HeartbeatSupport,
     IdentityState,
 )
@@ -57,6 +66,9 @@ from sidekick_usages.doctor.runtime.service import DoctorRuntimeService
 from sidekick_usages.doctor.runtime.types import (
     DoctorAccountWarning,
     NativeAccountRelation,
+)
+from sidekick_usages.persistence.errors import (
+    exit_code_for_persistence_code,
 )
 
 _CLAUDE_SETUP_USAGE_ROUTE = "/v1/messages headers"
@@ -79,6 +91,18 @@ _PROVEN_HEARTBEAT_STATUSES = frozenset(
         HeartbeatStatus.WARMED,
     }
 )
+_MANUAL_SERVICE_STATES = frozenset(
+    {
+        ServiceComponentState.ABSENT,
+        ServiceComponentState.FEATURE_DISABLED,
+    }
+)
+_FAILED_SERVICE_STATES = frozenset(
+    {
+        ServiceComponentState.UNAVAILABLE,
+        ServiceComponentState.UNHEALTHY,
+    }
+)
 
 
 class DoctorService:
@@ -87,20 +111,20 @@ class DoctorService:
     def __init__(
         self,
         accounts: Sequence[SavedAccount],
-        provider_ids: Collection[ProviderId],
+        capabilities: ProviderCapabilityEvidenceSource,
         heartbeat_provider_ids: Collection[ProviderId],
         clock: Clock,
         runtime: DoctorRuntimeService,
     ) -> None:
         """:param accounts: Validated secret-free account snapshot.
 
-        :param provider_ids: Registered usage-provider identifiers.
+        :param capabilities: Cached provider capability evidence.
         :param heartbeat_provider_ids: Registered heartbeat identifiers.
         :param clock: Aware UTC application wall clock.
         :param runtime: Cached native relation and metrics diagnostics.
         """
         self.accounts = tuple(accounts)
-        self._provider_ids = frozenset(provider_ids)
+        self._capabilities = capabilities
         self._heartbeat_provider_ids = frozenset(heartbeat_provider_ids)
         self._clock = clock
         self._runtime = runtime
@@ -166,7 +190,7 @@ class DoctorService:
         reference_time: datetime,
     ) -> AccountDiagnostic:
         """Build one logical account diagnostic."""
-        provider_available = account.provider_id in self._provider_ids
+        provider_available = self._capabilities.ready(account.provider_id)
         setup_token, subscription = _authority_diagnostics(
             account,
             reference_time,
@@ -220,10 +244,58 @@ class DoctorService:
 
 
 def doctor_exit_code(
-    diagnostics: Sequence[AccountDiagnostic],
+    result: DoctorResult,
 ) -> ExitCode:
-    """Return manual-action status when any account requires intervention."""
-    if any(diagnostic.manual_action is not None for diagnostic in diagnostics):
+    """Reduce every completed Doctor evidence channel by precedence."""
+    account_code = ExitCode.SUCCESS
+    persistence_code = ExitCode.SUCCESS
+    if isinstance(result, DoctorReadyResult):
+        if any(
+            diagnostic.manual_action is not None
+            for diagnostic in result.diagnostics
+        ):
+            account_code = ExitCode.MANUAL_ACTION
+    elif isinstance(result, DoctorFailedResult):
+        persistence_code = exit_code_for_persistence_code(
+            result.failure.code
+        )
+    else:
+        assert_never(result)
+    capability_code = (
+        ExitCode.SYSTEM_ERROR
+        if any(
+            not capability.ready
+            for capability in result.capabilities.results
+        )
+        else ExitCode.SUCCESS
+    )
+    return highest_exit_code(
+        _supervisor_exit_code(result.supervisor),
+        capability_code,
+        persistence_code,
+        account_code,
+    )
+
+
+def _supervisor_exit_code(health: SupervisorHealth) -> ExitCode:
+    """Reduce independent resident-service evidence truthfully."""
+    primary = (health.platform, health.process)
+    if any(state in _FAILED_SERVICE_STATES for state in primary):
+        return ExitCode.SCHEDULER_ERROR
+    if any(state in _MANUAL_SERVICE_STATES for state in primary):
+        return ExitCode.MANUAL_ACTION
+    remaining = (
+        health.rescue,
+        health.socket,
+        health.peer,
+        health.protocol,
+        health.queue,
+        health.journal,
+        health.broker,
+    )
+    if any(state in _FAILED_SERVICE_STATES for state in remaining):
+        return ExitCode.SCHEDULER_ERROR
+    if any(state in _MANUAL_SERVICE_STATES for state in remaining):
         return ExitCode.MANUAL_ACTION
     return ExitCode.SUCCESS
 
@@ -239,11 +311,25 @@ def _manual_action(
 ) -> tuple[str, ...] | None:
     """Return one exact command for the highest-priority account repair."""
     label = str(account.label)
+    authority = account.authority
+    if (
+        isinstance(authority, ClaudeAccountAuthority)
+        and isinstance(
+            authority.subscription,
+            ClaudeStoredLoginAuthority,
+        )
+    ) or (
+        isinstance(authority, CodexAccountAuthority)
+        and isinstance(authority.subscription, CodexStoredAuthority)
+    ):
+        return ("sidekick-usages", "migrate", "managed-auth")
     if identity_state is IdentityState.ASSOCIATION_REQUIRED:
         return (
             "sidekick-usages",
             "refresh",
             label,
+            "--provider",
+            ProviderId.CLAUDE.value,
             "--replace-identity",
         )
     if setup_token is not None and setup_token.manual_action_required:
@@ -272,13 +358,15 @@ def _manual_action(
             account.provider_id.value,
             label,
         )
-    if (
-        account.provider_id is ProviderId.CODEX
-        and native_relation is NativeAccountRelation.ACTIVE
-        and generation_relation is AuthorityGenerationRelation.NEWER
-    ):
-        return _login_action(account)
-    return None
+    return (
+        _login_action(account)
+        if (
+            account.provider_id is ProviderId.CODEX
+            and native_relation is NativeAccountRelation.ACTIVE
+            and generation_relation is AuthorityGenerationRelation.NEWER
+        )
+        else None
+    )
 
 
 def _login_action(account: SavedAccount) -> tuple[str, ...]:
@@ -286,7 +374,13 @@ def _login_action(account: SavedAccount) -> tuple[str, ...]:
     label = str(account.label)
     if account.provider_id is ProviderId.CODEX:
         return ("sidekick-usages", "codex", "login", label)
-    return ("sidekick-usages", "refresh", label)
+    return (
+        "sidekick-usages",
+        "refresh",
+        label,
+        "--provider",
+        ProviderId.CLAUDE.value,
+    )
 
 
 def _account_warning(

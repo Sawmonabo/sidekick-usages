@@ -1,6 +1,7 @@
 """Read-only doctor command adapter."""
 
 import json
+from dataclasses import replace
 from typing import Annotated, assert_never
 
 import typer
@@ -12,7 +13,10 @@ from sidekick_usages.cli.context import (
     invocation_context,
 )
 from sidekick_usages.cli.help import branded_command
+from sidekick_usages.cli.validation import validated_provider
 from sidekick_usages.core.types import ExitCode, ProviderId
+from sidekick_usages.daemon.models.lifecycle import SupervisorHealth
+from sidekick_usages.daemon.types.lifecycle import ServiceComponentState
 from sidekick_usages.doctor.accounts.models import (
     DoctorFailedResult,
     DoctorReadyResult,
@@ -21,24 +25,6 @@ from sidekick_usages.doctor.accounts.models import (
 from sidekick_usages.doctor.accounts.service import doctor_exit_code
 from sidekick_usages.doctor.presentation.json import doctor_json
 from sidekick_usages.doctor.presentation.service import render_doctor
-from sidekick_usages.persistence.errors import (
-    exit_code_for_persistence_code,
-)
-
-
-def _provider_filter(
-    ctx: typer.Context,
-    value: str | None,
-) -> ProviderId | None:
-    if value is None:
-        return None
-    try:
-        return ProviderId(value)
-    except ValueError:
-        invocation_context(ctx).err_console.print(
-            f"[red]Unknown provider {value!r}.[/red]"
-        )
-        raise typer.Exit(code=ExitCode.SYSTEM_ERROR) from None
 
 
 def _write_result(
@@ -59,6 +45,19 @@ def _write_result(
     invocation.console.print(
         render_doctor(result, width=invocation.console.size.width)
     )
+
+
+def _scoped_supervisor(
+    health: SupervisorHealth,
+    provider_id: ProviderId | None,
+) -> SupervisorHealth:
+    """Remove provider-specific evidence outside the requested scope."""
+    if provider_id is ProviderId.CLAUDE:
+        return replace(
+            health,
+            broker=ServiceComponentState.NOT_REQUIRED,
+        )
+    return health
 
 
 def doctor_cmd(
@@ -87,20 +86,30 @@ def doctor_cmd(
 ) -> None:
     """Report what is healthy and what needs login."""
     invocation = invocation_context(ctx)
+    provider_filter = (
+        None
+        if provider_id is None
+        else validated_provider(ctx, provider_id)
+    )
     doctor = invocation.require_doctor(ctx)
     state = doctor.state
-    provider_filter = _provider_filter(ctx, provider_id)
+    capabilities = doctor.capabilities.report(provider_filter)
+    supervisor = _scoped_supervisor(
+        doctor.supervisor,
+        provider_filter,
+    )
     if isinstance(state, DoctorFailed):
+        result = DoctorFailedResult(
+            failure=state.failure,
+            supervisor=supervisor,
+            capabilities=capabilities,
+        )
         _write_result(
             invocation,
-            DoctorFailedResult(
-                failure=state.failure,
-                supervisor=doctor.supervisor,
-                capabilities=doctor.capabilities,
-            ),
+            result,
             json_output=json_output,
         )
-        code = exit_code_for_persistence_code(state.failure.code)
+        code = doctor_exit_code(result)
         if code:
             raise typer.Exit(code=code)
         return
@@ -109,48 +118,39 @@ def doctor_cmd(
             provider_id=provider_filter,
             label=label,
         )
-        if not diagnostics:
-            if not state.service.accounts:
-                _write_result(
-                    invocation,
-                    DoctorReadyResult(
-                        diagnostics=(),
-                        scheduled_operations=(),
-                        unfinished_activations=(),
-                        persistence=state.persistence,
-                        refresh_state=state.refresh_state,
-                        supervisor=doctor.supervisor,
-                        capabilities=doctor.capabilities,
-                    ),
-                    json_output=json_output,
-                )
-                return
+        scheduled_operations = state.service.scheduled_operations(
+            provider_id=provider_filter,
+            label=label,
+        )
+        unfinished_activations = state.service.unfinished_activations(
+            provider_id=provider_filter,
+            label=label,
+        )
+        if (
+            not diagnostics
+            and not scheduled_operations
+            and not unfinished_activations
+            and state.service.accounts
+        ):
             invocation.err_console.print(
                 "[yellow]No matching accounts.[/yellow]"
             )
             raise typer.Exit(code=ExitCode.MANUAL_ACTION)
+        result = DoctorReadyResult(
+            diagnostics=tuple(diagnostics),
+            scheduled_operations=scheduled_operations,
+            unfinished_activations=unfinished_activations,
+            persistence=state.persistence,
+            refresh_state=state.refresh_state,
+            supervisor=supervisor,
+            capabilities=capabilities,
+        )
         _write_result(
             invocation,
-            DoctorReadyResult(
-                diagnostics=tuple(diagnostics),
-                scheduled_operations=state.service.scheduled_operations(
-                    provider_id=provider_filter,
-                    label=label,
-                ),
-                unfinished_activations=(
-                    state.service.unfinished_activations(
-                        provider_id=provider_filter,
-                        label=label,
-                    )
-                ),
-                persistence=state.persistence,
-                refresh_state=state.refresh_state,
-                supervisor=doctor.supervisor,
-                capabilities=doctor.capabilities,
-            ),
+            result,
             json_output=json_output,
         )
-        code = doctor_exit_code(diagnostics)
+        code = doctor_exit_code(result)
         if code:
             raise typer.Exit(code=code)
         return

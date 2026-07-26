@@ -8,6 +8,7 @@ from sidekick_usages.credentials.capabilities.models import (
     ProviderCapabilityResult,
 )
 from sidekick_usages.daemon.models.lifecycle import SupervisorHealth
+from sidekick_usages.daemon.types.lifecycle import ServiceComponentState
 from sidekick_usages.doctor.accounts.models import (
     AccountDiagnostic,
     AuthorityDiagnostic,
@@ -58,12 +59,12 @@ def doctor_json(result: DoctorResult) -> JsonObject:
             (
                 result.scheduled_operations
                 if isinstance(result, DoctorReadyResult)
-                else ()
+                else ServiceComponentState.UNAVAILABLE
             ),
             (
                 result.unfinished_activations
                 if isinstance(result, DoctorReadyResult)
-                else ()
+                else ServiceComponentState.UNAVAILABLE
             ),
         ),
         "persistence": persistence,
@@ -92,21 +93,35 @@ def _service_dict(health: SupervisorHealth) -> JsonObject:
 
 def _operation_dict(
     health: SupervisorHealth,
-    scheduled: tuple[ScheduledOperationDiagnostic, ...],
-    activations: tuple[UnfinishedActivationDiagnostic, ...],
+    scheduled: (
+        tuple[ScheduledOperationDiagnostic, ...] | ServiceComponentState
+    ),
+    activations: (
+        tuple[UnfinishedActivationDiagnostic, ...] | ServiceComponentState
+    ),
 ) -> JsonObject:
     """Build machine-readable queue and journal health."""
+    scheduled_value: JsonValue = (
+        scheduled.value
+        if isinstance(scheduled, ServiceComponentState)
+        else [
+            _scheduled_operation_dict(operation)
+            for operation in scheduled
+        ]
+    )
+    activation_value: JsonValue = (
+        activations.value
+        if isinstance(activations, ServiceComponentState)
+        else [
+            _unfinished_activation_dict(activation)
+            for activation in activations
+        ]
+    )
     return {
         "queue": health.queue.value,
         "journal": health.journal.value,
-        "scheduled": [
-            _scheduled_operation_dict(operation)
-            for operation in scheduled
-        ],
-        "unfinished_activations": [
-            _unfinished_activation_dict(activation)
-            for activation in activations
-        ],
+        "scheduled": scheduled_value,
+        "unfinished_activations": activation_value,
     }
 
 

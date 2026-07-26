@@ -52,6 +52,8 @@ from sidekick_usages.daemon.control.protocol import (
     encode_request,
 )
 from sidekick_usages.daemon.control.server import LocalControlServer
+from sidekick_usages.daemon.lifecycle.readiness import SupervisorReadiness
+from sidekick_usages.daemon.models.lifecycle import ServiceBackendStatus
 from sidekick_usages.daemon.models.protocol import (
     ActivationPayload,
     ControlRequest,
@@ -60,7 +62,11 @@ from sidekick_usages.daemon.models.protocol import (
 from sidekick_usages.daemon.runtime.recovery import ActivationRecoveryScheduler
 from sidekick_usages.daemon.runtime.scheduler import DurableScheduler
 from sidekick_usages.daemon.runtime.supervisor import WakeupChannel
-from sidekick_usages.daemon.types.lifecycle import ServiceComponentState
+from sidekick_usages.daemon.types.lifecycle import (
+    ServiceBackendId,
+    ServiceComponentState,
+    ServiceLifecycleState,
+)
 from sidekick_usages.daemon.types.protocol import (
     ConnectedSocket,
     EventKind,
@@ -98,6 +104,7 @@ from tests.fakes.daemon.runtime import (
 )
 from tests.test_support import (
     REFERENCE_TIME,
+    FixedClock,
     make_application_paths,
     saved_account,
 )
@@ -518,6 +525,32 @@ def test_control_protocol_fails_closed_at_each_trust_boundary(
     with pytest.raises(PermissionError, match="unsafe_control_endpoint"):
         ControlClient.connect(socket_path)
     server.close()
+
+    stale_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    stale_socket.bind(str(socket_path))
+    socket_path.chmod(SOCKET_MODE)
+    stale_socket.close()
+    paths = replace(
+        make_application_paths(tmp_path),
+        runtime_directory=runtime_directory,
+        supervisor_socket=socket_path,
+    )
+    health = SupervisorReadiness(paths, FixedClock()).health(
+        ServiceBackendStatus.single(
+            ServiceBackendId.SYSTEMD,
+            ServiceLifecycleState.READY,
+        )
+    )
+    assert (
+        health.socket,
+        health.peer,
+        health.protocol,
+    ) == (
+        ServiceComponentState.HEALTHY,
+        ServiceComponentState.UNAVAILABLE,
+        ServiceComponentState.UNAVAILABLE,
+    )
+    socket_path.unlink()
 
 
 def test_supervisor_isolates_timeout_and_recovers_without_duplicate_work(
