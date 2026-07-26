@@ -2,34 +2,77 @@
 
 ## Status and scope
 
-This record captures the completed automated implementation through
-`20d859e`, focused evidence, and the serialized local gate at `d669799` for
-interactive global account selection. It is not the final cross-platform or
-current-machine rollout record.
+This record captures the automated implementation and the authorized
+current-machine rollout through `a2041cf`. Focused traceability remains
+**24/24 mapped**. The implementation, clean v3 storage transition, exact-wheel
+installation, resident WSL service, live read-only dashboard, and native
+command-isolation checks are complete.
 
-The 24 approved acceptance gates all have a focused evidence owner. A gate
-marked `Automated pass; live pending` has complete synthetic or static proof
-for its automatable behavior, but still requires the explicitly reserved
-Task 9 current-machine observation. `Live pending` means there is no safe
-automated substitute for that claim.
+Final provider-auth rollout is intentionally incomplete:
 
-Focused traceability is **24/24 mapped**. This does not mean that all 24 final
-release gates have passed.
+- two Codex accounts still require independent official managed-home login;
+- four Claude setup-token accounts still require official managed-profile
+  association; and
+- no Claude association or selection will run while an active Claude session
+  must remain untouched without separate approval naming the exact target.
 
-This record contains only synthetic account labels and secret-free
-measurements. Its creation did not:
+The current dashboard therefore presents the correct migration/login actions
+and keeps account switching disabled. It does not claim that the six legacy
+authorities are already managed or fresh.
 
-- access or mutate a real provider account;
-- install, uninstall, or restart a Sidekick service;
-- replace an installed Sidekick version or scheduler;
-- change the selected Claude or Codex account;
-- exercise a live provider session; or
-- establish cross-platform CI success for the final commit.
+This tracked record uses synthetic labels and secret-free measurements only.
+It contains no provider IDs, credential paths, token hashes, raw provider
+output, or account exports.
 
-Cross-platform validation, current-machine migration, provider-session
-checks, live WSL recovery, and target-specific Claude switch approval remain
-open in the
-[interactive rollout plan](../plans/2026-07-23-interactive-account-dashboard-and-rollout.md).
+## Current-machine rollout checkpoint
+
+| Boundary | Verified result |
+| --- | --- |
+| Storage | Six stable accounts migrated to strict v3: four Claude and two Codex |
+| Final verified artifact | `sidekick_usages-0.7.0-py3-none-any.whl`, SHA-256 `5526f21d56106071e8871112a830385e89664049b282e99b17643fb9938f75b8` |
+| Native CLIs | Claude Code `2.1.220`; Codex CLI `0.145.0` |
+| Resident service | WSL user service active and enabled; peer, socket, protocol, process, platform, and rescue checks healthy |
+| Scheduling | Legacy periodic task absent; one user supervisor plus one logon-only WSL rescue task |
+| Maintenance | Four setup-token Claude rows scheduled independently; two legacy Codex rows parked once as `managed_auth_migration_required` |
+| Live usage | Four Claude rows returned current metrics in one bounded lookup wave; both Codex rows returned exact managed-login actions |
+| Interactive contract | One cursor started on the observed active Claude row; no healthy-row active badge; quit without an account action |
+| Native isolation | Claude and Codex executables, ordinary commands, user wrapper, shell files, and native Codex login remained unchanged |
+| Live Claude session | Existing session remained running and was not signaled, restarted, attached to, or retargeted |
+| Remaining authority work | Two official Codex logins and four approved Claude associations |
+
+The clean-break v2-to-v3 transition used the reviewed, local-only disposable
+CLI at `86000b9`. It preserved stable account IDs and native provider files,
+was never merged or pushed, and was removed with its worktree after the live
+migration succeeded.
+
+The live service removal and reinstall journey also passed. Removal made the
+user service inactive and removed the WSL rescue task while preserving all six
+accounts. Reinstallation restored one active, enabled supervisor and one
+healthy rescue task. The account index and both native provider login files
+were byte-for-byte unchanged across the cycle, and the pre-existing Claude
+process remained running.
+
+The exercised public command surfaces were:
+
+```bash
+uv run python packaging/smoke_wheel.py --build
+uv tool install --force <verified-wheel>
+sidekick-usages daemon uninstall
+sidekick-usages daemon status
+sidekick-usages daemon install
+sidekick-usages doctor --json
+sidekick-usages --no-interactive
+sidekick-usages
+claude --version
+codex --version
+```
+
+The native Claude login changed once before final installation while the
+pre-existing Claude session remained active. Its timestamp and eight-hour
+expiry extension align with that official session refreshing its own login;
+Sidekick's isolated probes did not select or log in an account. The native
+file did not change during final installation, service verification, live
+usage lookup, or the launch-and-quit dashboard check.
 
 ## Committed evidence
 
@@ -48,7 +91,24 @@ The final cached-first launcher and installed-artifact proof are anchored by:
 - `fb8869a` — gives the private Windows Python child UTF-8 streams without
   changing the parent environment or public vendor commands; and
 - `20d859e` — makes the existing PTY journeys wait for and validate one
-  complete prompt-toolkit redraw under fragmented Unix PTY delivery.
+  complete prompt-toolkit redraw under fragmented Unix PTY delivery;
+- `b0b81c6` — parks legacy stored authorities once with an exact managed-auth
+  migration action while preserving setup-token-only Claude maintenance;
+- `3ef3108` — makes broker-owned WebSocket reads and writes cooperatively
+  cancellable so Linux and macOS shutdown cannot wait on the activation
+  deadline; and
+- `c7f3cd5` — keeps the `250 ms` release gate on the exact installed public
+  command while leaving the packaging-only first-paint trace as a measured
+  diagnostic; and
+- `b9cdb39` — measures the bounded in-process cursor-render benchmark as CPU
+  cost, excluding hosted-runner descheduling without adding a retry, platform
+  exception, or threshold increase; and
+- `7d46332` — separates the fake Codex daemon's outer deadlock watchdog from
+  the unchanged production recovery deadline so CI scheduling cannot mask the
+  load-bearing failure; and
+- `a2041cf` — binds the native macOS filesystem operation once, removes the
+  unused Linux mount classifier from the macOS cold path, and makes any
+  unchanged `250 ms` first-paint failure report its observed duration.
 
 Supporting focused boundaries include:
 
@@ -80,12 +140,12 @@ PTY, and denied access to real provider commands and application paths.
 
 | Measurement | Result | Required bound |
 | --- | ---: | ---: |
-| Installed-wheel cached first paint | 130.146 ms | 250 ms |
-| Synthetic cached trace first paint | 103.586 ms | 250 ms |
-| Six-account cursor-to-render p95 | 5.572 ms | 50 ms |
-| Expanded cursor-to-render p95 | 16.465 ms | 50 ms |
-| Reaped trace-process peak RSS | 46.805 MiB | 96 MiB |
-| Reaped lookup-worker peak RSS | 46.250 MiB | 96 MiB |
+| Installed-wheel cached first paint | 89.283 ms | 250 ms |
+| Synthetic cached trace first paint | 93.750 ms | diagnostic |
+| Six-account cursor-render CPU p95 | 4.790 ms | 50 ms |
+| Expanded cursor-render CPU p95 | 14.315 ms | 50 ms |
+| Reaped trace-process peak RSS | 46.629 MiB | 96 MiB |
+| Reaped lookup-worker peak RSS | 46.117 MiB | 96 MiB |
 
 The same trace proved:
 
@@ -97,10 +157,11 @@ The same trace proved:
 - final provider and account rows retained deterministic ordinal order; and
 - both the lookup worker and trace process were reaped.
 
-These numbers prove the focused Linux WSL2 artifact gate only. The macOS PTY
-and Windows stream corrections are committed, but the required final
-cross-platform CI run is still pending. Live service measurements also remain
-pending.
+These numbers prove the final Linux WSL2 exact-artifact gate. The installed
+public command remains a wall-clock `250 ms` product boundary. The synthetic
+first-paint trace remains diagnostic, while the pure in-process cursor render
+retains its unchanged `50 ms` CPU-cost gate without charging hosted-runner
+descheduling to Rich rendering.
 
 ## Serialized local gate
 
@@ -126,16 +187,18 @@ gates remain open until the final matrix validates them.
 Evidence: exact executable provenance in the Claude and Codex provider
 boundaries, plus the packaging command inventory.
 
-Disposition: **Automated pass; live pending.** Task 9 must still record the
-installed vendor paths and symlink targets before and after migration.
+Disposition: **Automated and live pass.** Installed command resolution,
+versions, and vendor targets were recorded before and after installation and
+remained unchanged.
 
 ### 2. No shell or command interception
 
 Evidence: the source-derived artifact contract, CLI architecture rules, and
 the exact wheel entry-point inventory contain no `claude` or `codex` wrapper.
 
-Disposition: **Automated pass; live pending.** Task 9 retains the real shell,
-PATH, alias, function, and symlink comparison.
+Disposition: **Automated and live pass.** Sidekick created no vendor wrapper,
+alias, function, symlink, or PATH entry. The pre-existing user shell
+customizations remained byte-for-byte unchanged.
 
 ### 3. Approved cursor interaction
 
@@ -179,15 +242,16 @@ separate approval naming the exact target.
 Evidence: selected-state, controller, Claude activation, and Codex activation
 tests prove that changing one provider leaves the other provider unchanged.
 
-Disposition: **Automated pass; live pending.**
+Disposition: **Automated pass; provider login and live selection pending.**
 
 ### 9. New ordinary terminals
 
 Evidence: packaging proves that normal vendor commands remain vendor-owned,
 and provider activation tests prove the selected native projection.
 
-Disposition: **Live pending.** Task 9 must verify new bare vendor commands
-after an authorized selection.
+Disposition: **Vendor ownership passed live; selected-account projection
+pending.** Bare vendor commands still resolve normally. Account identity
+cannot be verified until managed login and an authorized selection complete.
 
 ### 10. Supported ongoing sessions
 
@@ -212,7 +276,10 @@ Evidence: the Claude and Codex maintenance tests, global lookup wave, and
 activity snapshot tests prove selection-independent work and failure
 isolation.
 
-Disposition: **Automated pass; live pending.**
+Disposition: **Automated pass; managed-authority live proof pending.** All
+four setup-token Claude accounts returned fresh usage independently. Both
+legacy Codex accounts were isolated and returned the correct managed-login
+action instead of a false refresh-token diagnosis.
 
 ### 13. Fixed setup-token tracking
 
@@ -264,10 +331,11 @@ Evidence: platform-specific lifecycle artifacts, native Windows
 feature-disabled behavior, WSL rescue generation, and CI matrix definitions
 exist for Linux, macOS Arm, macOS Intel, and Windows.
 
-Disposition: **Cross-platform pending.** Platform-specific tests and workflow
-definitions exist, and focused proof passes for the macOS PTY and Windows
-stream corrections. The final matrix must validate both corrections before
-the platform gate can pass. Live WSL recovery also has not been recorded.
+Disposition: **Final matrix pending.** The shutdown regression is green on
+Linux, macOS Arm, and macOS Intel; Windows behavior remains feature-disabled
+as designed. The final `a2041cf` workflow run must finish before this gate can
+close. Installed WSL service and logon-rescue health passed; destructive WSL
+termination remains deferred.
 
 ### 20. Pre-mutation capability failure
 
@@ -290,15 +358,19 @@ Evidence: daemon lifecycle tests and the guided-setup journey prove
 user-scoped artifacts, one confirmation, readiness verification, action
 resumption, refusal, failure, and owned cleanup.
 
-Disposition: **Automated pass; live pending.** Task 9 owns actual scheduler
-retirement, installation, read-back, and uninstall verification.
+Disposition: **Automated and live pass.** The legacy periodic task is absent;
+clean removal deleted only the Sidekick service and rescue task; reinstall
+restored one active, enabled user supervisor and one healthy WSL rescue
+without changing accounts or native provider state.
 
 ### 23. Current-machine migration
 
 Evidence owner: interactive rollout Task 9.
 
-Disposition: **Live pending.** No migration, reinstall, provider login, or
-selection was performed for this record.
+Disposition: **Storage and installation passed live; managed authentication
+pending.** Six accounts were migrated through the disposable CLI into strict
+v3 state and the exact wheel was installed. Two Codex logins and four Claude
+associations remain.
 
 ### 24. Earlier-layout rejection
 
@@ -306,9 +378,9 @@ Evidence: the clean-break schema, migration coordinator, architecture rules,
 and packaging contract reject compatibility readers and scheduler-retirement
 runtime adapters.
 
-Disposition: **Automated pass; live pending.** Task 9 must use the still
-installed old release to remove only its observed scheduler before clean
-installation.
+Disposition: **Automated and live pass.** The old periodic scheduler is
+absent, the strict v3 store is current, and no compatibility reader,
+retirement adapter, or rollback writer was installed.
 
 ## Synthetic before-and-after captures
 
@@ -481,27 +553,20 @@ prove:
 - the key or progress footer is bounded; and
 - wide and narrow output preserve activity totals and reset meaning.
 
-These are sanitized test contracts, not captures of the current machine.
-Task 9 retains only the sanitized current-machine before/after capture.
+These are sanitized product contracts. The live launch matched the
+cursor-only layout and was closed with `q` before any account action.
 
 ## Remaining release evidence
 
-The feature is not yet at final release closure. The following evidence remains
-open:
+The implementation and authorized machine transition are complete. Final
+release closure still requires:
 
-1. Record green final Linux, macOS Arm, macOS Intel, and Windows CI results
-   for the committed PTY and Windows stream corrections.
-2. Complete Task 9's read-only executable, account, scheduler, service, and
-   recovery inventory.
-3. Build and digest the exact rollout wheel, remove the observed legacy
-   scheduler with the installed old release, and install the proven wheel.
-4. Verify the resident user service, WSL rescue, restart recovery, queue,
-   provider capability, broker, and maintenance state.
-5. Migrate each account through Sidekick and official provider processes.
-6. Obtain separate just-in-time approval before any live Claude selection.
-7. Verify new and supported ongoing provider sessions without retargeting an
-   in-flight request.
-8. Record sanitized live before/after captures, exact remaining actions, and
-   uninstall verification.
-9. Close the four plan phase gates and final release gate only after the
-    linked evidence is complete.
+1. a green terminal result for the final `a2041cf` cross-platform workflow;
+2. independent official login for both saved Codex accounts;
+3. official association of each Claude setup-token account, with separate
+   target-specific approval before any step that can alter the live Claude
+   selection;
+4. post-login verification of new and supported ongoing provider sessions,
+   in-flight stability, and cross-provider independence; and
+5. the deferred destructive WSL terminate/recovery journey, which cannot run
+   while the active Claude session must remain alive.

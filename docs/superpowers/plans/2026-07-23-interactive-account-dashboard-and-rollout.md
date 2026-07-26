@@ -657,28 +657,28 @@ mutation; this baseline is evidence, not authorization.
 ### Read-only preflight
 
 - [ ] Confirm the worktree and built artifact are clean and exact.
-- [ ] Record Sidekick, Claude, and Codex versions and absolute executable
+- [x] Record Sidekick, Claude, and Codex versions and absolute executable
   paths.
-- [ ] Record vendor symlink targets and shell command resolution without
+- [x] Record vendor symlink targets and shell command resolution without
   changing them.
-- [ ] Record the actual native identity relation for each provider without
+- [x] Record the actual native identity relation for each provider without
   logging raw provider IDs.
-- [ ] Inventory every saved logical account, credential kind, private
+- [x] Inventory every saved logical account, credential kind, private
   authority health, metrics timestamp, heartbeat state, scheduler, service,
   and WSL rescue state.
-- [ ] Record an owner-only, secret-safe recovery inventory. Do not copy token
+- [x] Record an owner-only, secret-safe recovery inventory. Do not copy token
   files or Keychain payloads.
 - [ ] Run the complete automated gate once more.
 
 ### Install the exact implementation
 
-- [ ] Build and smoke-test one exact wheel before changing the installed
+- [x] Build and smoke-test one exact wheel before changing the installed
   Sidekick tool or scheduler.
-- [ ] Record the wheel path and digest. Treat the successful exact-wheel
+- [x] Record the wheel path and digest. Treat the successful exact-wheel
   smoke, platform lifecycle tests, and release gates as the replacement
   artifact proof. Keep the old installation and its scheduler-removal command
   intact until that proof passes.
-- [ ] Re-read every legacy scheduler backend. Require the owned legacy job to
+- [x] Re-read every legacy scheduler backend. Require the owned legacy job to
   be idle, with no in-flight maintenance process. If any backend is
   unassessable or more than one is installed, stop.
 - [ ] Use the still-installed old release to remove its exact observed
@@ -688,7 +688,7 @@ mutation; this baseline is evidence, not authorization.
 sidekick-usages daemon uninstall --backend task-scheduler
 ```
 
-- [ ] Prove the legacy task, timer, service, LaunchAgent, and marked cron block
+- [x] Prove the legacy task, timer, service, LaunchAgent, and marked cron block
   are absent before installing the new service. If removal or read-back fails,
   stop with the old installation intact; do not start the new supervisor.
 - [ ] Uninstall the old Sidekick tool, then install the already-proven exact
@@ -699,23 +699,25 @@ uv tool uninstall sidekick-usages
 uv tool install <absolute-verified-wheel>
 ```
 
-- [ ] Do not install an old-layout reader, scheduler-retirement adapter,
-  rollback writer, or other compatibility runtime. Recreate each account
-  through supported Sidekick commands and official provider login.
-- [ ] Verify `command -v sidekick-usages`, `claude`, and `codex` plus vendor
+- [x] Do not install an old-layout reader, scheduler-retirement adapter,
+  rollback writer, or other compatibility runtime.
+- [ ] Recreate each account through supported Sidekick commands and official
+  provider login.
+- [x] Verify `command -v sidekick-usages`, `claude`, and `codex` plus vendor
   symlink targets are unchanged except for the expected Sidekick package
   version.
-- [ ] Start the default dashboard and capture a secret-safe before view with
+- [x] Start the default dashboard and capture a secret-safe before view with
   labels replaced by synthetic labels in tracked documentation.
 
 ### Transition the service
 
-- [ ] Run the guided service setup from the dashboard or the existing daemon
+- [x] Run the guided service setup from the dashboard or the existing daemon
   lifecycle command.
-- [ ] Verify user-service readiness, socket peer proof, queue enrollment for
-  every saved account, provider capability, Codex daemon/broker readiness, one
-  truthful maintenance pass, and restart recovery.
-- [ ] Prove the old periodic schedule is still absent and exactly one resident
+- [x] Verify user-service readiness, socket peer proof, provider capability,
+  one truthful maintenance pass, and restart recovery.
+- [ ] Verify managed-account queue enrollment and Codex daemon/broker
+  readiness after official managed login.
+- [x] Prove the old periodic schedule is still absent and exactly one resident
   scheduler remains. On WSL, the one Windows rescue task may also remain; it
   starts systemd and performs no maintenance.
 - [ ] If current-service installation or proof fails, leave the obsolete
@@ -746,12 +748,12 @@ sidekick-usages migrate managed-auth
   rollout, migration, or provider-login approval as selection approval.
 - [ ] Continue after account-scoped failures and return later. Ask the user
   only when the provider requires browser, MFA, password, or consent.
-- [ ] Never manually copy or edit an account, credential file, private auth
+- [x] Never manually copy or edit an account, credential file, private auth
   bundle, or Keychain item.
 
 ### Verify global selection
 
-- [ ] Preserve the deliberate current native selections before testing.
+- [x] Preserve the deliberate current native selections before testing.
 - [ ] Restart only Codex TUIs that predate official daemon enrollment.
 - [ ] With separate target-specific approval before each live Claude change,
   select the approved Claude account from the dashboard and verify a new bare
@@ -765,20 +767,20 @@ sidekick-usages migrate managed-auth
   and metrics.
 - [ ] Verify one provider selection never changes the other.
 - [ ] Perform one external official login reconciliation check per provider.
-- [ ] Verify rejected/expired warnings have been replaced by truthful current
+- [x] Verify rejected/expired warnings have been replaced by truthful current
   health or exact remaining action.
-- [ ] Verify vendor executable paths, symlinks, shell configuration, and PATH
+- [x] Verify vendor executable paths, symlinks, shell configuration, and PATH
   remain unchanged.
 - [ ] Exercise wide, narrow, resize, no-color, Ctrl-C, service restart,
   network loss/recovery, and WSL rescue behavior.
 
 ### Record and close
 
-- [ ] Write the completion record using synthetic labels and no provider IDs,
+- [x] Write the completion record using synthetic labels and no provider IDs,
   token hashes, credential paths, or raw provider output.
-- [ ] Include exact commands, versions, gate results, performance results,
+- [x] Include exact commands, versions, gate results, performance results,
   remaining unsupported session modes, and service uninstall verification.
-- [ ] Capture a sanitized after dashboard showing cursor-only selection and
+- [x] Capture a sanitized after dashboard showing cursor-only selection and
   no normal-state badges.
 - [ ] Confirm no credential-shaped value is tracked with:
 
