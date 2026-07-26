@@ -29,6 +29,47 @@ The resident supervisor owns one durable per-account queue and delegates due
 work to bounded worker processes. Saved-account maintenance never copies the
 current global Claude or Codex login into arbitrary labels.
 
+## Selection and private authorities
+
+Each saved account owns an independent private provider authority regardless
+of which account is selected:
+
+- every Claude subscription account keeps its official private profile fresh;
+- the selected Claude account additionally has separately verified native
+  state, with private and native credential generations kept distinct;
+- every Codex account keeps its official managed home fresh; and
+- the selected Codex runtime state is separate from those private homes.
+
+Changing Claude selection does not change Codex selection, and changing Codex
+selection does not change Claude selection. Unselected accounts remain
+eligible for maintenance, usage collection, and opted-in heartbeat.
+
+Sidekick does not install a `claude` or `codex` wrapper, alias, shell function,
+PATH shim, or replacement symlink. Normal provider commands keep using their
+vendor executables and native login locations. New bare commands see the
+provider-verified selection. Supported existing sessions update on their next
+safe request; an in-flight request is never retargeted.
+
+The next-release dashboard contract is cached-first and interactive only when
+both input and output are TTYs on Linux, WSL, or macOS. Its single cursor
+reflects provider read-back, not a separate `IN USE` label. Repeated Enter and
+Esc are ignored while activation is in flight; `q` and Ctrl-C remain safe and
+responsive. See the
+[complete key map](../README.md#check-select-and-manage-accounts).
+
+Explicit `check`, redirected I/O, and `--no-interactive` render once without
+reading keys. Scripts use:
+
+```bash
+sidekick-usages use <provider> <label>
+```
+
+`use` never prompts or installs the service. Native Windows keeps one-shot
+reporting, but interactive selection and resident supervision are
+feature-disabled. Codex session switching supports ordinary TUIs using the
+shared daemon; `codex exec`, pre-daemon embedded TUIs, native Windows, and
+launch modes that bypass daemon reuse remain unsupported.
+
 ## Supported account types
 
 | Account type | Auto-refresh | Notes |
@@ -165,6 +206,19 @@ final Sidekick-managed Codex home. It does not read or replace the active native
 Codex login. `refresh` uses browser login; `codex login --device-auth` selects
 the official device flow.
 
+### Migrate existing saved authorities
+
+```bash
+sidekick-usages migrate managed-auth
+```
+
+The migration prints a secret-safe preview, makes the user service ready,
+migrates Codex accounts and then Claude accounts independently, and proves the
+final saved-account set. It continues after account-scoped failures and can be
+rerun to resume. Claude setup-token authority is preserved when a subscription
+authority is added. The command accepts no token argument; provider browser,
+device, MFA, password, or consent remains inside the official login flow.
+
 ## Resident supervisor lifecycle
 
 ```bash
@@ -178,6 +232,12 @@ There is no backend flag, timer, periodic task, or cron fallback. Installation
 enrolls saved accounts, starts the service, verifies the local handshake and
 durable recovery state, completes one bounded readiness pass, restarts the
 service, and verifies it again.
+
+Under the next-release interactive contract, the first action that needs an
+absent service keeps the cached dashboard visible and asks once for `y` or
+`n`. Approval calls the same user-level lifecycle directly, verifies readiness,
+and resumes the original action. Refusal or bounded failure preserves the
+dashboard. Non-interactive `use` never prompts or starts setup.
 
 | Platform | Integration |
 | --- | --- |

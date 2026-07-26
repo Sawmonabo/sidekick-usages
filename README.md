@@ -48,7 +48,9 @@ require the provider's normal login flow.
 
 ## Requirements
 
-- macOS, Linux, WSL, or native Windows.
+- macOS, Linux, or WSL for interactive account selection and resident
+  supervision. Native Windows keeps one-shot reporting, but interactive
+  selection and resident supervision are explicitly feature-disabled.
 - Python 3.14 or newer. Homebrew and `uv --python 3.14` provision an
   appropriate interpreter when needed.
 - A normal Claude Code login for Claude credential auto-detection.
@@ -69,7 +71,7 @@ logins and Claude `setup-token` credentials, not Anthropic API keys.
 
 ### Homebrew on macOS or Linux
 
-The public tap currently packages release `v0.6.0` and its Python 3.14 runtime:
+The public tap currently packages release `v0.7.0` and its Python 3.14 runtime:
 
 ```bash
 brew tap Sawmonabo/tap
@@ -79,12 +81,12 @@ sidekick-usages --version
 
 ### uv from the GitHub release tag
 
-The project is not currently published on public PyPI, and release `v0.6.0`
+The project is not currently published on public PyPI, and release `v0.7.0`
 does not attach wheel or source-distribution assets. Install the tagged source
 directly instead:
 
 ```bash
-uv tool install --python 3.14 "git+https://github.com/Sawmonabo/sidekick-usages.git@v0.6.0"
+uv tool install --python 3.14 "git+https://github.com/Sawmonabo/sidekick-usages.git@v0.7.0"
 uv tool update-shell
 sidekick-usages --version
 ```
@@ -148,7 +150,19 @@ A setup token has no refresh token and must be replaced manually when rejected.
 Its usage check sends a tiny Claude model request to obtain rate-limit headers;
 see [How provider access works](#how-provider-access-works).
 
-### Check and manage accounts
+### Migrate existing saved accounts
+
+Move existing saved labels to independent provider-managed authorities:
+
+```bash
+sidekick-usages migrate managed-auth
+```
+
+The command starts with a secret-safe preview, uses official provider login
+when an account needs it, continues past account-scoped failures, and can be
+rerun to resume. It never accepts a token argument.
+
+### Check, select, and manage accounts
 
 ```bash
 # Cached account dashboard, for all accounts or one provider
@@ -163,6 +177,46 @@ sidekick-usages rename <old-label> <new-label>
 sidekick-usages set-plan <label> max
 sidekick-usages remove <label>
 ```
+
+The next-release dashboard contract paints secret-free cached metrics first on
+a supported TTY, then updates accounts from one bounded concurrent lookup.
+Exactly one `›` cursor appears in the focused provider. It begins on that
+provider's verified active account, so healthy rows need no `IN USE` label.
+When no native account is verified, the first row receives navigation focus
+without being presented as active.
+
+| Key | Behavior |
+| --- | --- |
+| Up/Down or `k`/`j` | Preview another account in the focused provider. |
+| Tab | Focus the other provider at its verified active account. |
+| Enter | Use or repair the previewed account. |
+| Esc | Return to the provider's verified active account. |
+| `r` / `R` | Refresh the previewed account / every due account. |
+| `?` | Toggle concise keyboard help. |
+| `y` / `n` | Approve or decline guided per-user service setup when asked. |
+| `q` / Ctrl-C | Exit normally / restore the terminal and exit with code 130. |
+
+While activation is in flight, another Enter or Esc is ignored. `q` and
+Ctrl-C remain responsive; an already-started provider transaction completes or
+recovers through the supervisor instead of being abandoned mid-change.
+
+Scripts can select one exact saved account without opening the dashboard:
+
+```bash
+sidekick-usages use claude <claude-label>
+sidekick-usages use codex <codex-label>
+```
+
+`use` never prompts or installs the service. If preparation is required, it
+returns the exact interactive command to run. Neither selection path creates a
+wrapper, alias, shell function, or PATH shim: normal `claude` and `codex`
+commands keep resolving to the vendor executables and their native login
+locations.
+
+Selection is provider-specific. Every saved account keeps an independent
+private authority, while the selected Claude native state and selected Codex
+runtime state remain separate. Unselected accounts continue to participate in
+maintenance, usage, and opted-in heartbeat.
 
 Claude `add` is idempotent by access token. It auto-detects Claude credentials
 first, then falls back to piped stdin or a hidden prompt when no local login is
@@ -306,9 +360,12 @@ rollout total is used as a fallback.
 
 | Command | Purpose |
 | --- | --- |
-| `sidekick-usages` | Open the secret-free cached account dashboard. |
-| `sidekick-usages check` | Explicit form of the default usage check. |
+| `sidekick-usages` | Open the cached-first interactive dashboard on a supported TTY; redirected I/O remains one-shot. |
+| `sidekick-usages check` | Run a one-shot usage check. |
 | `sidekick-usages --only <provider>` | Show only `claude` or `codex` accounts. |
+| `sidekick-usages --no-interactive` | Render once without reading terminal input. |
+| `sidekick-usages use <provider> <label>` | Select one exact saved account without prompting or installing the service. |
+| `sidekick-usages migrate managed-auth` | Migrate saved accounts to verified provider-managed authorities. |
 | `sidekick-usages add claude` | Save auto-detected, piped, prompted, or `--token` Claude credentials; supports `--label`, `--plan`, and `--force`. |
 | `sidekick-usages remove <label>` | Delete one saved account. |
 | `sidekick-usages rename <old> <new>` | Rename one saved account. |
@@ -389,6 +446,12 @@ sidekick-usages daemon install
 sidekick-usages daemon status
 sidekick-usages daemon uninstall
 ```
+
+Under the next-release interactive contract, the first action that needs an
+absent service keeps the cached view visible and asks once for approval.
+Approval installs and verifies the current user's service without
+administrator rights, then resumes the original action. Declining or a bounded
+setup failure leaves the dashboard usable.
 
 | Platform | Backend |
 | --- | --- |
@@ -505,8 +568,8 @@ Official Codex login repairs an existing enrolled label:
 sidekick-usages codex login <codex-label>
 ```
 
-It does not create a Codex account after a clean reset. Clean enrollment is
-part of the in-progress interactive account rollout.
+It repairs only an existing saved Codex label; it does not create a new saved
+identity after a clean reset.
 
 ### HTTP 401 or failed refresh
 
