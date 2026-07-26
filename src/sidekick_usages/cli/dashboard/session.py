@@ -483,8 +483,7 @@ class InteractiveDashboardSession:
     def _lookup_may_replace_footer(self) -> bool:
         """Return whether lookup owns the current informational footer."""
         return (
-            not self._view.action_in_flight
-            and not self._startup_owns_footer()
+            not self._view.action_in_flight and not self._startup_owns_footer()
         )
 
     def _startup_owns_footer(self) -> bool:
@@ -533,10 +532,7 @@ class InteractiveDashboardSession:
             if snapshot is not None:
                 controller = controller.rebase(snapshot)
             footer = self._view.footer
-            if (
-                result.state
-                is DashboardStartupReconciliationState.VERIFIED
-            ):
+            if result.state is DashboardStartupReconciliationState.VERIFIED:
                 self._startup_reconciliation_failures.discard(
                     result.provider_id
                 )
@@ -544,17 +540,14 @@ class InteractiveDashboardSession:
                     not self._startup_reconciliation_failures
                     and footer.message == self._startup_footer_message
                 ):
-                    footer = (
-                        self._deferred_lookup_footer
-                        or self._idle_footer(controller)
+                    footer = self._deferred_lookup_footer or self._idle_footer(
+                        controller
                     )
                 if not self._startup_reconciliation_failures:
                     self._deferred_lookup_footer = None
                     self._startup_footer_message = None
             else:
-                self._startup_reconciliation_failures.add(
-                    result.provider_id
-                )
+                self._startup_reconciliation_failures.add(result.provider_id)
                 message_template = (
                     STARTUP_RECONCILIATION_FAILED_MESSAGE
                     if result.state

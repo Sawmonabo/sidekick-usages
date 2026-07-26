@@ -97,9 +97,7 @@ class ProviderCapabilityService:
     ) -> ProviderCapabilityReport:
         """Return cached evidence for one provider or every provider."""
         provider_ids = (
-            tuple(ProviderId)
-            if provider_id is None
-            else (provider_id,)
+            tuple(ProviderId) if provider_id is None else (provider_id,)
         )
         return ProviderCapabilityReport(
             tuple(self.probe(candidate) for candidate in provider_ids)

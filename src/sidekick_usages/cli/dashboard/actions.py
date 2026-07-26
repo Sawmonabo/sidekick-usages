@@ -146,9 +146,7 @@ class DashboardActionExecutor:
                 verified = self._reconcile_provider(provider_id)
                 if not verified:
                     failed.append(provider_id)
-                final_attempt = (
-                    attempt + 1 == STARTUP_RECONCILIATION_ATTEMPTS
-                )
+                final_attempt = attempt + 1 == STARTUP_RECONCILIATION_ATTEMPTS
                 state = DashboardStartupReconciliationState.VERIFIED
                 if not verified:
                     state = (
@@ -176,14 +174,12 @@ class DashboardActionExecutor:
                 client.reconcile(provider_id),
                 identity=ControlOperationIdentity.PROVIDER,
             )
-            return (
-                isinstance(terminal, CompletedPayload)
-                and terminal.outcome
-                in {
-                    CompletionOutcome.SUCCEEDED,
-                    CompletionOutcome.NO_CHANGE,
-                }
-            )
+            return isinstance(
+                terminal, CompletedPayload
+            ) and terminal.outcome in {
+                CompletionOutcome.SUCCEEDED,
+                CompletionOutcome.NO_CHANGE,
+            }
         except (
             UnexpectedServiceEventError,
             OSError,

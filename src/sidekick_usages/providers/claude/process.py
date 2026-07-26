@@ -108,9 +108,7 @@ def _wait_for_claude_process(
         try:
             return process.wait(timeout=timeout_seconds)
         except subprocess.TimeoutExpired:
-            raise ClaudeProcessError(
-                ClaudeProcessFailure.TIMED_OUT
-            ) from None
+            raise ClaudeProcessError(ClaudeProcessFailure.TIMED_OUT) from None
         except OSError, subprocess.SubprocessError:
             raise ClaudeProcessError(
                 ClaudeProcessFailure.PROCESS_UNAVAILABLE

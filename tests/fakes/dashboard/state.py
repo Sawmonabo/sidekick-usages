@@ -68,16 +68,12 @@ CODEX_SAVED_ACCOUNT_ID = SidekickAccountId(
 )
 VALID_PROVIDER_IDENTITY = "synthetic-codex-valid"
 EXTERNAL_PROVIDER_IDENTITY = "synthetic-claude-external"
-_VALID_ACCOUNT_ID = SidekickAccountId(
-    "11111111-1111-4111-8111-111111111111"
-)
+_VALID_ACCOUNT_ID = SidekickAccountId("11111111-1111-4111-8111-111111111111")
 _CONFLICT_ACCOUNT_ID = SidekickAccountId(
     "22222222-2222-4222-8222-222222222222"
 )
 _VALID_AUTHORITY_ID = AuthorityId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
-_CONFLICT_AUTHORITY_ID = AuthorityId(
-    "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
-)
+_CONFLICT_AUTHORITY_ID = AuthorityId("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
 _CONFLICT_PROVIDER_IDENTITY = "synthetic-codex-conflict"
 
 
@@ -143,12 +139,8 @@ def seed_cached_dashboard(
             provider_id=ProviderId.CLAUDE,
             runtime_state=ProviderRuntimeState.EXTERNAL_ACTIVE,
             account_id=None,
-            provider_identity=ProviderIdentity(
-                EXTERNAL_PROVIDER_IDENTITY
-            ),
-            runtime_generation=AuthorityGeneration(
-                "external-generation"
-            ),
+            provider_identity=ProviderIdentity(EXTERNAL_PROVIDER_IDENTITY),
+            runtime_generation=AuthorityGeneration("external-generation"),
             verified_at=observed_at,
             outcome=ActivationOutcome.EXTERNAL_RECONCILED,
         )

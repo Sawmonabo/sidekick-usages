@@ -71,9 +71,7 @@ class DoctorRuntimeService:
         expected = {account.account_id for account in accounts}
         if set(metrics) != expected:
             raise ValueError("Doctor runtime accounts do not match.")
-        account_map = {
-            account.account_id: account for account in accounts
-        }
+        account_map = {account.account_id: account for account in accounts}
         for state in selected_states:
             if state.runtime_state is not ProviderRuntimeState.SAVED_ACTIVE:
                 continue
@@ -84,17 +82,12 @@ class DoctorRuntimeService:
                 )
             selected_account = account_map.get(selected_account_id)
             if selected_account is None:
-                raise ValueError(
-                    "Doctor selected account does not exist."
-                )
+                raise ValueError("Doctor selected account does not exist.")
             if selected_account.provider_id is not state.provider_id:
                 raise ValueError(
                     "Doctor selected provider does not match its account."
                 )
-            if (
-                selected_account.provider_identity
-                != state.provider_identity
-            ):
+            if selected_account.provider_identity != state.provider_identity:
                 raise ValueError(
                     "Doctor selected identity does not match its account."
                 )
@@ -222,16 +215,9 @@ def _validate_activation_authority(
                 "Doctor activation baseline generation does not match."
             )
     if target.provider_identity != activation.expected_target_identity:
-        raise ValueError(
-            "Doctor activation target identity does not match."
-        )
-    if (
-        _authority_generation(target)
-        != activation.target_authority_generation
-    ):
-        raise ValueError(
-            "Doctor activation target generation does not match."
-        )
+        raise ValueError("Doctor activation target identity does not match.")
+    if _authority_generation(target) != activation.target_authority_generation:
+        raise ValueError("Doctor activation target generation does not match.")
 
 
 def _snapshot_metrics(

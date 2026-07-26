@@ -107,6 +107,4 @@ class StaticProviderCapabilityService:
         if provider_id is None:
             return self._report
         self.requested_provider_ids.append(provider_id)
-        return ProviderCapabilityReport(
-            (self._report.result(provider_id),)
-        )
+        return ProviderCapabilityReport((self._report.result(provider_id),))

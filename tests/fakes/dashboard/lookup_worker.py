@@ -168,9 +168,7 @@ def _cancel_active_run(
         result_snapshot = tuple(results)
         process_count = len(lookup_processes)
         if joined_before_cleanup and process_count == 1:
-            reaped_before_cleanup = _process_was_reaped(
-                lookup_processes[0]
-            )
+            reaped_before_cleanup = _process_was_reaped(lookup_processes[0])
     finally:
         lookup.cancel()
         if thread_started:

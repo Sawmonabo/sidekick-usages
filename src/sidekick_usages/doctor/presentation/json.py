@@ -40,8 +40,7 @@ def doctor_json(result: DoctorResult) -> JsonObject:
     persistence: JsonObject
     if isinstance(result, DoctorReadyResult):
         accounts = [
-            _diagnostic_dict(diagnostic)
-            for diagnostic in result.diagnostics
+            _diagnostic_dict(diagnostic) for diagnostic in result.diagnostics
         ]
         persistence = _persistence_dict(result.persistence)
         persistence["credential_refresh"] = result.refresh_state.kind.value
@@ -104,10 +103,7 @@ def _operation_dict(
     scheduled_value: JsonValue = (
         scheduled.value
         if isinstance(scheduled, ServiceComponentState)
-        else [
-            _scheduled_operation_dict(operation)
-            for operation in scheduled
-        ]
+        else [_scheduled_operation_dict(operation) for operation in scheduled]
     )
     activation_value: JsonValue = (
         activations.value

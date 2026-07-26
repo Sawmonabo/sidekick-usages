@@ -380,9 +380,7 @@ class UsageCheckService:
             return {}, {}
         account_ids = tuple(pending)
         try:
-            durable = self._usage_snapshots.save_many(
-                tuple(pending.values())
-            )
+            durable = self._usage_snapshots.save_many(tuple(pending.values()))
         except PersistenceError as error:
             account_by_id = {
                 account.account_id: account for account in accounts

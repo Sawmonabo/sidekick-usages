@@ -155,7 +155,5 @@ class PersistenceService:
         present: bool,
         account_count: int,
     ) -> PersistenceStatus:
-        state = (
-            PersistenceState.CURRENT if present else PersistenceState.EMPTY
-        )
+        state = PersistenceState.CURRENT if present else PersistenceState.EMPTY
         return PersistenceStatus(state, self.paths.accounts, account_count)

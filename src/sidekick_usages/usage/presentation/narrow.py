@@ -44,6 +44,7 @@ _PCT_RED_THRESHOLD = 90
 _PCT_YELLOW_THRESHOLD = 70
 _PCT_CYAN_THRESHOLD = 40
 
+
 def _utilization_color(percent: float) -> str:
     if percent >= _PCT_RED_THRESHOLD:
         return "red"

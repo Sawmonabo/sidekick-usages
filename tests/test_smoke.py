@@ -237,9 +237,7 @@ def test_doctor_fails_closed_for_untrusted_persisted_state(
             runtime_state=ProviderRuntimeState.SAVED_ACTIVE,
             account_id=saved.account_id,
             provider_identity=ProviderIdentity("unrelated-identity"),
-            runtime_generation=AuthorityGeneration(
-                "unrelated-generation"
-            ),
+            runtime_generation=AuthorityGeneration("unrelated-generation"),
             verified_at=REFERENCE_TIME,
             outcome=ActivationOutcome.VERIFIED,
         )

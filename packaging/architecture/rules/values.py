@@ -45,9 +45,7 @@ def check_value_contracts(
     if paths is not None:
         _require_fields(paths, path_fields, "PATH002", violations)
 
-    context_models = by_path.get(
-        "src/sidekick_usages/cli/contexts/models.py"
-    )
+    context_models = by_path.get("src/sidekick_usages/cli/contexts/models.py")
     context_fields = {
         "AppContext": (
             ("accounts", "AccountStore"),

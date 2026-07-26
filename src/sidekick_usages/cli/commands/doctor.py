@@ -86,9 +86,7 @@ def doctor_cmd(
     """Report what is healthy and what needs login."""
     invocation = invocation_context(ctx)
     provider_filter = (
-        None
-        if provider_id is None
-        else validated_provider(ctx, provider_id)
+        None if provider_id is None else validated_provider(ctx, provider_id)
     )
     doctor = invocation.require_doctor(ctx)
     state = doctor.state

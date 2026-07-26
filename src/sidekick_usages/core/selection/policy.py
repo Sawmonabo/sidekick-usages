@@ -219,18 +219,15 @@ def coalesce_due_operation(
         return current
     if (
         (
-            (
-                current.kind is OperationKind.RECONCILE_NATIVE
-                and current.priority is OperationPriority.SCHEDULED
-            )
-            or current.state
-            in {
-                OperationState.ACTION_REQUIRED,
-                OperationState.RETRY_WAIT,
-            }
+            current.kind is OperationKind.RECONCILE_NATIVE
+            and current.priority is OperationPriority.SCHEDULED
         )
-        and incoming.priority is OperationPriority.INTERACTIVE
-    ):
+        or current.state
+        in {
+            OperationState.ACTION_REQUIRED,
+            OperationState.RETRY_WAIT,
+        }
+    ) and incoming.priority is OperationPriority.INTERACTIVE:
         return incoming
     priority = (
         incoming.priority

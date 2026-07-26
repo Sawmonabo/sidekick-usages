@@ -18,7 +18,5 @@ from sidekick_usages.providers.codex.app_server.types import (
 type ProviderCapabilityEvidence = (
     ClaudeRuntimeCapabilities | CodexAppServerCapabilities
 )
-type ProviderCapabilityFailure = (
-    ClaudeManagedFailure | CodexAppServerFailure
-)
+type ProviderCapabilityFailure = ClaudeManagedFailure | CodexAppServerFailure
 type ProviderExecutable = ClaudeExecutable | CodexExecutable

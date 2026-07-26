@@ -157,10 +157,7 @@ class DoctorService:
         return tuple(
             operation
             for operation in self._runtime.operations
-            if (
-                provider_id is None
-                or operation.provider_id is provider_id
-            )
+            if (provider_id is None or operation.provider_id is provider_id)
             and (
                 label is None
                 or (
@@ -180,10 +177,7 @@ class DoctorService:
         return tuple(
             activation
             for activation in self._runtime.unfinished_activations
-            if (
-                provider_id is None
-                or activation.provider_id is provider_id
-            )
+            if (provider_id is None or activation.provider_id is provider_id)
             and (label is None or activation.target_label == label)
         )
 
@@ -259,16 +253,13 @@ def doctor_exit_code(
         ):
             account_code = ExitCode.MANUAL_ACTION
     elif isinstance(result, DoctorFailedResult):
-        persistence_code = exit_code_for_persistence_code(
-            result.failure.code
-        )
+        persistence_code = exit_code_for_persistence_code(result.failure.code)
     else:
         assert_never(result)
     capability_code = (
         ExitCode.SYSTEM_ERROR
         if any(
-            not capability.ready
-            for capability in result.capabilities.results
+            not capability.ready for capability in result.capabilities.results
         )
         else ExitCode.SUCCESS
     )
@@ -307,8 +298,7 @@ def _supervisor_exit_code(health: SupervisorHealth) -> ExitCode:
         health.broker,
     )
     if any(
-        state in _FAILED_SERVICE_STATES
-        or state in _MANUAL_SERVICE_STATES
+        state in _FAILED_SERVICE_STATES or state in _MANUAL_SERVICE_STATES
         for state in remaining
     ):
         return ExitCode.SCHEDULER_ERROR

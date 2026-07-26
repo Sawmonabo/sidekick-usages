@@ -178,9 +178,7 @@ class TokenActivityCollector:
         )
         summaries: dict[SidekickAccountId, TokenActivitySummary] = {}
         issues = {account.account_id: [] for account in selected}
-        labels = {
-            account.account_id: account.label for account in selected
-        }
+        labels = {account.account_id: account.label for account in selected}
         pending: dict[
             SidekickAccountId,
             AccountTokenActivitySnapshot,

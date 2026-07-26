@@ -179,9 +179,7 @@ class UsageLookupWorkerClient:
         if cancel_before_start:
             cancellation.request()
         try:
-            return cancellation.finish(
-                self._run(cancellation, observe)
-            )
+            return cancellation.finish(self._run(cancellation, observe))
         finally:
             with self._active_lock:
                 self._active = None
@@ -348,8 +346,7 @@ class UsageLookupWorkerClient:
         if not ready:
             return UsageLookupFailure.TIMED_OUT
         if any(
-            key.fileobj == cancellation.read_descriptor
-            for key, _mask in ready
+            key.fileobj == cancellation.read_descriptor for key, _mask in ready
         ):
             return UsageLookupFailure.CANCELED
         return None

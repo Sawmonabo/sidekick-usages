@@ -227,9 +227,7 @@ class ScriptedCredentialCoordinator(CredentialRefresher):
             saved.credentials = replace(
                 credentials,
                 access_token=access_token,
-                access_expiry=KnownExpiry(
-                    REFERENCE_TIME + timedelta(hours=1)
-                ),
+                access_expiry=KnownExpiry(REFERENCE_TIME + timedelta(hours=1)),
             )
         elif isinstance(credentials, CodexCredentials):
             saved.credentials = replace(

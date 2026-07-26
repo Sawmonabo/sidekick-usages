@@ -7,9 +7,7 @@ from sidekick_usages.core.accounts.types import SidekickAccountId
 from sidekick_usages.core.types import ProviderId
 
 type DashboardIntent = (
-    ActivateOrRepairIntent
-    | RefreshAccountIntent
-    | RefreshDueAccountsIntent
+    ActivateOrRepairIntent | RefreshAccountIntent | RefreshDueAccountsIntent
 )
 
 
