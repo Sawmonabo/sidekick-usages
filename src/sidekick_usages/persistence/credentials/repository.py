@@ -13,6 +13,10 @@ from sidekick_usages.core.accounts.types import (
     SidekickAccountId,
 )
 from sidekick_usages.core.models import Account
+from sidekick_usages.persistence.accounts.runtime_bridge import (
+    active_stored_reference,
+    require_active_authority_kind,
+)
 from sidekick_usages.persistence.errors import InvalidSchemaError
 from sidekick_usages.persistence.models.credential import (
     StoredCredentialAuthority,
@@ -134,3 +138,30 @@ class CredentialAuthorityRepository:
         ):
             raise InvalidSchemaError
         return authority
+
+    def read_validated_payloads(
+        self,
+        account: SavedAccount,
+    ) -> dict[AuthorityId, bytes]:
+        """Read every stored authority referenced by a validated account."""
+        payloads: dict[AuthorityId, bytes] = {}
+        authorities: dict[AuthorityId, StoredCredentialAuthority] = {}
+        for authority_id in referenced_stored_authorities(account):
+            payload = self.read_payload(account.account_id, authority_id)
+            if payload is None:
+                raise InvalidSchemaError
+            authority = decode_credential_authority(payload)
+            if (
+                authority.account_id != account.account_id
+                or authority.authority_id != authority_id
+                or authority.provider_id is not account.provider_id
+            ):
+                raise InvalidSchemaError
+            payloads[authority_id] = payload
+            authorities[authority_id] = authority
+        if not account.has_managed_authority:
+            active = authorities.get(active_stored_reference(account))
+            if active is None:
+                raise InvalidSchemaError
+            require_active_authority_kind(account, active)
+        return payloads

@@ -33,7 +33,13 @@ from sidekick_usages.core.types import AccountLabel, ProviderId
 from sidekick_usages.doctor.accounts.models import HeartbeatSupport
 from sidekick_usages.http.client import HttpClient
 from sidekick_usages.persistence.accounts.index import AccountIndexReader
+from sidekick_usages.persistence.accounts.runtime_bridge import (
+    active_stored_reference,
+)
 from sidekick_usages.persistence.accounts.store import AccountStore
+from sidekick_usages.persistence.credentials.repository import (
+    CredentialAuthorityRepository,
+)
 from sidekick_usages.persistence.errors import ManagedFileReadError
 from sidekick_usages.persistence.supervisor.selection import (
     SelectedStateStore,
@@ -47,6 +53,7 @@ from tests.fakes.daemon.capabilities import (
 from tests.test_support import (
     REFERENCE_TIME,
     make_account_store,
+    make_account_store_with_private,
     make_application_paths,
 )
 
@@ -220,7 +227,8 @@ def test_doctor_fails_closed_for_untrusted_persisted_state(
             access_token="test-only-mismatch"
         ),
     )
-    saved = make_account_store(tmp_path, (account,)).saved_accounts()[0]
+    store, private = make_account_store_with_private(tmp_path, (account,))
+    saved = store.saved_accounts()[0]
     SelectedStateStore(paths.selected_state).save(
         SelectedAccountState(
             provider_id=ProviderId.CLAUDE,
@@ -249,3 +257,22 @@ def test_doctor_fails_closed_for_untrusted_persisted_state(
         )
     finally:
         mismatched.close()
+    repository = CredentialAuthorityRepository(private)
+    private.destroy_owned_directory(
+        repository.bundle_path(
+            saved.account_id,
+            active_stored_reference(saved),
+        )
+    )
+    missing_private = compose_doctor_context(
+        paths=paths,
+        providers={},
+        heartbeat_providers={},
+    )
+    try:
+        state = missing_private.value.state
+        assert isinstance(state, DoctorFailed)
+        assert state.failure.code is PersistenceCode.INVALID_SCHEMA
+        assert state.failure.path == paths.accounts
+    finally:
+        missing_private.close()

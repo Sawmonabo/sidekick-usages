@@ -16,6 +16,9 @@ from sidekick_usages.persistence.credentials.refresh.artifacts import (
 from sidekick_usages.persistence.credentials.refresh.service import (
     CredentialRefreshTransactions,
 )
+from sidekick_usages.persistence.credentials.repository import (
+    CredentialAuthorityRepository,
+)
 from sidekick_usages.persistence.errors import (
     ResetIncompleteError,
     SupervisorActiveError,
@@ -54,6 +57,7 @@ class PersistenceService:
             paths.private_credentials,
             account_path=paths.accounts,
         )
+        self._repository = CredentialAuthorityRepository(self._private)
         self._managed_codex = PrivateCredentialTree(
             paths.private_codex_profiles,
             account_path=paths.accounts,
@@ -97,6 +101,8 @@ class PersistenceService:
         """Passively read account metadata and its matching store status."""
         document = AccountIndexReader(self.paths.accounts).observe()
         accounts = () if document is None else document.accounts
+        for account in accounts:
+            self._repository.read_validated_payloads(account)
         return (
             self._status(
                 present=document is not None,

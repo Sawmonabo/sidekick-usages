@@ -12,7 +12,6 @@ from sidekick_usages.persistence.accounts.runtime_bridge import (
     active_stored_reference,
     authority_baseline_matches,
     copy_runtime_account,
-    require_active_authority_kind,
     runtime_account_from_saved,
 )
 from sidekick_usages.persistence.accounts.transactions.models import (
@@ -33,7 +32,6 @@ from sidekick_usages.persistence.credentials.transactions.transaction import (
 )
 from sidekick_usages.persistence.errors import (
     DurabilityUncertainError,
-    InvalidSchemaError,
     PrivateCredentialCollisionError,
     SourceChangedError,
 )
@@ -297,29 +295,17 @@ class AccountTransactionCoordinator:
         runtime: dict[SidekickAccountId, Account] = {}
         payloads: dict[tuple[SidekickAccountId, AuthorityId], bytes] = {}
         for saved in index:
-            for authority_id in referenced_stored_authorities(saved):
-                payload = self._repository.read_payload(
-                    saved.account_id,
-                    authority_id,
-                )
-                if payload is None:
-                    raise InvalidSchemaError
-                authority = decode_credential_authority(payload)
-                if (
-                    authority.account_id != saved.account_id
-                    or authority.authority_id != authority_id
-                    or authority.provider_id is not saved.provider_id
-                ):
-                    raise InvalidSchemaError
-                payloads[(saved.account_id, authority_id)] = payload
+            saved_payloads = self._repository.read_validated_payloads(saved)
+            payloads.update(
+                {
+                    (saved.account_id, authority_id): payload
+                    for authority_id, payload in saved_payloads.items()
+                }
+            )
             if saved.has_managed_authority:
                 continue
             active_id = active_stored_reference(saved)
-            active_payload = payloads.get((saved.account_id, active_id))
-            if active_payload is None:
-                raise InvalidSchemaError
-            active = decode_credential_authority(active_payload)
-            require_active_authority_kind(saved, active)
+            active = decode_credential_authority(saved_payloads[active_id])
             runtime[saved.account_id] = runtime_account_from_saved(
                 saved,
                 active.credentials,
