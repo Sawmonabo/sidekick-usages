@@ -14,7 +14,6 @@ from sidekick_usages.cli.dashboard.models.session import (
     DashboardConfirmationKind,
 )
 from sidekick_usages.cli.dashboard.session import InteractiveDashboardSession
-from sidekick_usages.cli.dashboard.setup import GuidedServiceSetup
 from sidekick_usages.core.accounts.types import (
     OperationId,
     RequestId,
@@ -62,6 +61,7 @@ from tests.fakes.dashboard.runtime import (
     EXPECTED_SERVICE_SETUP_PROGRESS,
     SetupDaemon,
 )
+from tests.fakes.dashboard.setup import guided_setup
 
 SESSION_WAIT_SECONDS = 2.0
 DEFAULT_TEST_CONTROL_TIMEOUT_SECONDS = 5.0
@@ -492,6 +492,7 @@ def unavailable_session_snapshot(
 def _partial_start_reaped(
     snapshot: DashboardSnapshot,
     account_id: SidekickAccountId,
+    state_root: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> bool:
     """Interrupt the second owner start and prove the first owner exits."""
@@ -505,7 +506,7 @@ def _partial_start_reaped(
         lookup=lookup,
         connector=SessionControlConnector(daemon, snapshots),
         socket_path=SESSION_SOCKET,
-        setup=GuidedServiceSetup(daemon),
+        setup=guided_setup(daemon, state_root / "partial.json"),
         environment={},
     )
     start_thread = Thread.start
@@ -643,6 +644,7 @@ def exercise_dashboard_session(
     active_account_id: SidekickAccountId,
     preview_account_id: SidekickAccountId,
     startup: DashboardStartupProof,
+    state_root: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> DashboardSessionProof:
     """Exercise setup, serialized activation, failure, and bounded close."""
@@ -654,9 +656,7 @@ def exercise_dashboard_session(
 
     unavailable = unavailable_session_snapshot(snapshot)
     partial_start_reaped = _partial_start_reaped(
-        unavailable,
-        active_account_id,
-        monkeypatch,
+        unavailable, active_account_id, state_root, monkeypatch
     )
     snapshots = SessionSnapshotSource(unavailable)
     option_connector = SessionControlConnector(
@@ -686,7 +686,7 @@ def exercise_dashboard_session(
         lookup=lookup,
         connector=connector,
         socket_path=SESSION_SOCKET,
-        setup=GuidedServiceSetup(daemon),
+        setup=guided_setup(daemon, state_root / "setup.json"),
         environment=environment,
     )
     environment["ANTHROPIC_API_KEY"] = "synthetic-late-secret"

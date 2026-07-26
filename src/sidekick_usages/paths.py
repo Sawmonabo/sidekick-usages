@@ -42,6 +42,7 @@ class ApplicationPaths:
     :ivar activation_journals: Provider activation journal root.
     :ivar durable_operations: Durable due and retry operation root.
     :ivar service_state: Supervisor readiness state authority.
+    :ivar service_setup_acknowledgement: Approved control protocol generation.
     :ivar service_logs: Sanitized supervisor diagnostic root.
     :ivar runtime_directory: Owner-only local control runtime root.
     :ivar supervisor_socket: Local supervisor control socket.
@@ -60,6 +61,7 @@ class ApplicationPaths:
     activation_journals: Path
     durable_operations: Path
     service_state: Path
+    service_setup_acknowledgement: Path
     service_logs: Path
     runtime_directory: Path
     supervisor_socket: Path
@@ -153,6 +155,9 @@ def discover_application_paths() -> ApplicationPaths:
         activation_journals=native_data_root / "activation-journals",
         durable_operations=native_data_root / "operations",
         service_state=native_data_root / "service-state.json",
+        service_setup_acknowledgement=(
+            native_data_root / "service-setup-acknowledgement.json"
+        ),
         service_logs=native.user_log_path,
         runtime_directory=runtime_directory,
         supervisor_socket=runtime_directory / "supervisor.sock",

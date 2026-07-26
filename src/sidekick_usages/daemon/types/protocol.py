@@ -3,6 +3,8 @@
 from enum import StrEnum
 from typing import Protocol
 
+MAX_PROTOCOL_VERSION = 65_535
+
 
 class RequestKind(StrEnum):
     """Closed client request vocabulary."""

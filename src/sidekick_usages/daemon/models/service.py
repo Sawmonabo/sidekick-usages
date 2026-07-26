@@ -10,13 +10,13 @@ from sidekick_usages.daemon.types.lifecycle import (
     ProviderReadinessScope,
     ServiceFailureCode,
 )
+from sidekick_usages.daemon.types.protocol import MAX_PROTOCOL_VERSION
 from sidekick_usages.daemon.types.service import (
     PackageVersion,
     ServicePhase,
 )
 
 _MAX_ACTIVE_WORKERS = 64
-_MAX_PROTOCOL_VERSION = 65_535
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -38,7 +38,7 @@ class ServiceState:
         """Validate bounded counters and readiness invariants."""
         if (
             type(self.protocol_version) is not int
-            or not 1 <= self.protocol_version <= _MAX_PROTOCOL_VERSION
+            or not 1 <= self.protocol_version <= MAX_PROTOCOL_VERSION
         ):
             raise ValueError("Service protocol version is invalid.")
         if (

@@ -34,6 +34,7 @@ def check_value_contracts(
             ("activation_journals", "Path"),
             ("durable_operations", "Path"),
             ("service_state", "Path"),
+            ("service_setup_acknowledgement", "Path"),
             ("service_logs", "Path"),
             ("runtime_directory", "Path"),
             ("supervisor_socket", "Path"),

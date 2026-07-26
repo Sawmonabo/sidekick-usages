@@ -23,6 +23,9 @@ from sidekick_usages.credentials.capabilities.service import (
 from sidekick_usages.daemon.control.client import ControlClient
 from sidekick_usages.daemon.lifecycle.manager import build_daemon_manager
 from sidekick_usages.paths import discover_application_paths
+from sidekick_usages.persistence.setup.store import (
+    ServiceSetupAcknowledgementStore,
+)
 from sidekick_usages.usage.lookup.worker.client import (
     UsageLookupModuleLaunchPlanner,
     UsageLookupWorkerClient,
@@ -69,7 +72,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 paths=paths,
                 clock=clock,
                 provider_readiness=capabilities,
-            )
+            ),
+            ServiceSetupAcknowledgementStore(
+                paths.service_setup_acknowledgement
+            ),
         ),
         environment=os.environ,
     )

@@ -1,6 +1,6 @@
 """Guided per-user service readiness for pending dashboard actions."""
 
-from threading import Event
+from threading import Event, Lock
 from typing import assert_never
 
 from sidekick_usages.cli.dashboard.models.controller import (
@@ -15,6 +15,7 @@ from sidekick_usages.cli.dashboard.models.setup import (
     ServiceSetupResult,
 )
 from sidekick_usages.core.types import ProviderId
+from sidekick_usages.daemon.control.protocol import PROTOCOL_VERSION
 from sidekick_usages.daemon.lifecycle.manager import DaemonManager
 from sidekick_usages.daemon.lifecycle.ports import (
     ServiceLifecycleObserver,
@@ -26,6 +27,10 @@ from sidekick_usages.daemon.types.lifecycle import (
     ServiceFailureCode,
     ServiceLifecycleState,
 )
+from sidekick_usages.persistence.errors import PersistenceError
+from sidekick_usages.persistence.setup.store import (
+    ServiceSetupAcknowledgementStore,
+)
 from sidekick_usages.usage.dashboard.models import DashboardService
 
 _ALL_PROVIDER_IDS = tuple(ProviderId)
@@ -34,13 +39,20 @@ _ALL_PROVIDER_IDS = tuple(ProviderId)
 class GuidedServiceSetup:
     """Prepare the resident service before one pending dashboard action."""
 
-    def __init__(self, daemon: DaemonManager) -> None:
+    def __init__(
+        self,
+        daemon: DaemonManager,
+        acknowledgements: ServiceSetupAcknowledgementStore,
+    ) -> None:
         self._daemon = daemon
+        self._acknowledgements = acknowledgements
         self._closed = Event()
+        self._state_lock = Lock()
 
     def close(self) -> None:
         """Interrupt only dashboard-owned lifecycle observation."""
-        self._closed.set()
+        with self._state_lock:
+            self._closed.set()
         self._daemon.cancel()
 
     def prepare(
@@ -57,7 +69,11 @@ class GuidedServiceSetup:
         """Return the original intent only after bounded service readiness."""
         provider_ids = _provider_ids(intent)
         status = self._daemon.status(provider_ids, progress=progress)
-        completion = self._completion(intent, status)
+        completion = self._approved_completion(
+            intent,
+            self._completion(intent, status),
+            decision,
+        )
         if completion is not None:
             return completion
         if status.state is ServiceLifecycleState.FEATURE_DISABLED:
@@ -71,7 +87,11 @@ class GuidedServiceSetup:
                 provider_ids,
                 progress=progress,
             )
-            completion = self._completion(intent, restarted)
+            completion = self._approved_completion(
+                intent,
+                self._completion(intent, restarted),
+                decision,
+            )
             if completion is not None:
                 return completion
         return self._install_or_block(
@@ -92,6 +112,13 @@ class GuidedServiceSetup:
         provider_ids: ProviderReadinessScope,
     ) -> ServiceSetupResult[DashboardIntent]:
         blocked_outcome = _blocked_setup_outcome(interactive, decision)
+        if blocked_outcome is ServiceSetupOutcome.CONFIRMATION_REQUIRED:
+            try:
+                acknowledged = self._acknowledgements.matches(PROTOCOL_VERSION)
+            except PersistenceError:
+                return self._failed(intent)
+            if acknowledged:
+                blocked_outcome = None
         if blocked_outcome is not None:
             return ServiceSetupResult(
                 intent=intent,
@@ -102,13 +129,41 @@ class GuidedServiceSetup:
             provider_ids,
             progress=progress,
         )
-        completion = self._completion(intent, installed)
-        if completion is not None:
-            return completion
-        return ServiceSetupResult(
-            intent=intent,
-            outcome=ServiceSetupOutcome.FAILED,
+        completion = self._approved_completion(
+            intent,
+            self._completion(intent, installed),
+            decision,
         )
+        if completion is None:
+            return self._failed(intent)
+        return completion
+
+    def _approved_completion(
+        self,
+        intent: DashboardIntent,
+        completion: ServiceSetupResult[DashboardIntent] | None,
+        decision: ServiceSetupDecision,
+    ) -> ServiceSetupResult[DashboardIntent] | None:
+        if (
+            completion is not None
+            and completion.outcome is ServiceSetupOutcome.RESUME
+            and decision is ServiceSetupDecision.APPROVED
+        ):
+            return self._acknowledge_success(intent)
+        return completion
+
+    def _acknowledge_success(
+        self,
+        intent: DashboardIntent,
+    ) -> ServiceSetupResult[DashboardIntent]:
+        with self._state_lock:
+            if self._closed.is_set():
+                return self._failed(intent)
+            try:
+                self._acknowledgements.acknowledge(PROTOCOL_VERSION)
+            except PersistenceError:
+                return self._failed(intent)
+        return self._resume(intent)
 
     def _completion(
         self,

@@ -229,6 +229,9 @@ def make_application_paths(root: Path) -> ApplicationPaths:
         activation_journals=root / "activation-journals",
         durable_operations=root / "operations",
         service_state=root / "service-state.json",
+        service_setup_acknowledgement=(
+            root / "service-setup-acknowledgement.json"
+        ),
         service_logs=root / "logs",
         runtime_directory=root / "runtime",
         supervisor_socket=root / "runtime" / "supervisor.sock",

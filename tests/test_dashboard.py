@@ -39,7 +39,6 @@ from sidekick_usages.cli.dashboard.models.setup import (
     ServiceSetupOutcome,
 )
 from sidekick_usages.cli.dashboard.models.use import UseActivationFailure
-from sidekick_usages.cli.dashboard.setup import GuidedServiceSetup
 from sidekick_usages.core.accounts.types import (
     CredentialHealth,
     MetricsFreshness,
@@ -90,6 +89,10 @@ from tests.fakes.dashboard.session import (
     SESSION_SOCKET,
     DashboardSessionProof,
     exercise_dashboard_session,
+)
+from tests.fakes.dashboard.setup import (
+    exercise_setup_acknowledgement,
+    guided_setup,
 )
 from tests.fakes.dashboard.startup import exercise_startup_reconciliation
 from tests.fakes.dashboard.state import (
@@ -238,6 +241,7 @@ def test_cached_dashboard_joins_stable_ids_without_credentials(
 
 
 def test_dashboard_controller_journey_preserves_verified_truth(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """One journey proves pure transitions and serialized live activation."""
@@ -381,12 +385,14 @@ def test_dashboard_controller_journey_preserves_verified_truth(
         snapshot,
         CLAUDE_ACTIVE_ACCOUNT_ID,
         CLAUDE_PREVIEW_ACCOUNT_ID,
+        tmp_path / "startup-setup-acknowledgement.json",
     )
     assert exercise_dashboard_session(
         snapshot,
         active_account_id=CLAUDE_ACTIVE_ACCOUNT_ID,
         preview_account_id=CLAUDE_PREVIEW_ACCOUNT_ID,
         startup=startup,
+        state_root=tmp_path,
         monkeypatch=monkeypatch,
     ) == DashboardSessionProof(
         control_connect_calls=(
@@ -582,7 +588,9 @@ def test_cli_routes_one_cached_frame_before_isolated_interaction(
     assert events == ["load:codex", "replace:codex"]
 
 
-def test_guided_setup_resumes_once_and_preserves_blocked_actions() -> None:
+def test_guided_setup_resumes_once_and_preserves_blocked_actions(
+    tmp_path: Path,
+) -> None:
     """One setup journey installs, reuses, refuses, and stays script-safe."""
     unavailable = DashboardService(
         ready=False,
@@ -601,7 +609,8 @@ def test_guided_setup_resumes_once_and_preserves_blocked_actions() -> None:
         account_id=CLAUDE_PREVIEW_ACCOUNT_ID,
     )
     daemon = SetupDaemon(ServiceLifecycleState.ABSENT)
-    setup = GuidedServiceSetup(daemon)
+    acknowledgement_path = tmp_path / "setup-acknowledgement.json"
+    setup = guided_setup(daemon, acknowledgement_path)
 
     confirmation = setup.prepare(
         service=unavailable,
@@ -624,6 +633,18 @@ def test_guided_setup_resumes_once_and_preserves_blocked_actions() -> None:
         "status:claude",
         "install:claude",
     ]
+    assert exercise_setup_acknowledgement(
+        acknowledgement_path,
+        service=unavailable,
+        intent=intent,
+    ) == (
+        True,
+        ServiceSetupOutcome.RESUME,
+        ("status:claude", "install:claude"),
+        ServiceSetupOutcome.CONFIRMATION_REQUIRED,
+        ("status:claude",),
+        True,
+    )
 
     daemon.state = ServiceLifecycleState.UNHEALTHY
     reused = setup.prepare(
@@ -639,7 +660,10 @@ def test_guided_setup_resumes_once_and_preserves_blocked_actions() -> None:
     assert daemon.events.count("install:claude") == 1
 
     blocked_daemon = SetupDaemon(ServiceLifecycleState.ABSENT)
-    blocked_setup = GuidedServiceSetup(blocked_daemon)
+    blocked_setup = guided_setup(
+        blocked_daemon,
+        tmp_path / "blocked-setup-acknowledgement.json",
+    )
     refused = blocked_setup.prepare(
         service=unavailable,
         intent=intent,
@@ -664,26 +688,41 @@ def test_guided_setup_resumes_once_and_preserves_blocked_actions() -> None:
     assert blocked_daemon.events == ["status:claude", "status:claude"]
 
     capability_blocked = SetupDaemon(
-        ServiceLifecycleState.READY,
+        ServiceLifecycleState.ABSENT,
         provider_ready=False,
     )
-    failed = GuidedServiceSetup(capability_blocked).prepare(
-        service=compatible,
+    failed_acknowledgement_path = (
+        tmp_path / "failed-setup-acknowledgement.json"
+    )
+    failed = guided_setup(
+        capability_blocked,
+        failed_acknowledgement_path,
+    ).prepare(
+        service=unavailable,
         intent=intent,
         interactive=True,
         decision=ServiceSetupDecision.APPROVED,
     )
-    assert failed.outcome is ServiceSetupOutcome.PROVIDER_UNAVAILABLE
-    assert failed.intent is intent
-    assert failed.provider_id is ProviderId.CLAUDE
-    assert failed.message is ServiceSetupMessage.CLAUDE_UNAVAILABLE
     corrective_action = failed.corrective_action
-    assert corrective_action is ServiceSetupAction.CHECK_CLAUDE
     assert (
-        corrective_action.value
-        == "Run sidekick-usages doctor --provider claude."
+        failed.outcome,
+        failed.intent,
+        failed.provider_id,
+        failed.message,
+        corrective_action,
+        None if corrective_action is None else corrective_action.value,
+        tuple(capability_blocked.events),
+        failed_acknowledgement_path.exists(),
+    ) == (
+        ServiceSetupOutcome.PROVIDER_UNAVAILABLE,
+        intent,
+        ProviderId.CLAUDE,
+        ServiceSetupMessage.CLAUDE_UNAVAILABLE,
+        ServiceSetupAction.CHECK_CLAUDE,
+        "Run sidekick-usages doctor --provider claude.",
+        ("status:claude", "install:claude"),
+        False,
     )
-    assert capability_blocked.events == ["status:claude"]
 
     codex_intent = RefreshAccountIntent(
         provider_id=ProviderId.CODEX,
@@ -693,7 +732,10 @@ def test_guided_setup_resumes_once_and_preserves_blocked_actions() -> None:
         ServiceLifecycleState.READY,
         provider_ready=False,
     )
-    codex_failure = GuidedServiceSetup(codex_blocked).prepare(
+    codex_failure = guided_setup(
+        codex_blocked,
+        tmp_path / "codex-setup-acknowledgement.json",
+    ).prepare(
         service=compatible,
         intent=codex_intent,
         interactive=True,

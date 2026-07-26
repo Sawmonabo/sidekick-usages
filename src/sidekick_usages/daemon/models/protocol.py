@@ -10,6 +10,7 @@ from sidekick_usages.core.accounts.types import (
 from sidekick_usages.core.selection.models import safe_outcome_code
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.types.protocol import (
+    MAX_PROTOCOL_VERSION,
     CompletionOutcome,
     EventKind,
     ProgressPhase,
@@ -20,7 +21,6 @@ from sidekick_usages.daemon.types.protocol import (
 from sidekick_usages.daemon.types.service import PackageVersion
 
 _MAX_INTEGER = (1 << 63) - 1
-_MAX_PROTOCOL_VERSION = 65_535
 
 type RequestPayload = (
     EmptyPayload | ActivationPayload | AccountPayload | ProviderPayload
@@ -201,7 +201,7 @@ def _require_protocol_version(value: int) -> None:
     if (
         isinstance(value, bool)
         or not isinstance(value, int)
-        or not 1 <= value <= _MAX_PROTOCOL_VERSION
+        or not 1 <= value <= MAX_PROTOCOL_VERSION
     ):
         raise ValueError("Protocol version must be a bounded integer.")
 

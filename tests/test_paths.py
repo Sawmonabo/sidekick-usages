@@ -83,6 +83,9 @@ def test_discovery_maps_platform_roots_to_one_current_layout(
     assert paths.activation_journals == root / "activation-journals"
     assert paths.durable_operations == root / "operations"
     assert paths.service_state == root / "service-state.json"
+    assert paths.service_setup_acknowledgement == (
+        root / "service-setup-acknowledgement.json"
+    )
     assert paths.service_logs == root / "logs"
     assert paths.supervisor_socket == root / "runtime" / "supervisor.sock"
     assert paths.systemd_user_service == (

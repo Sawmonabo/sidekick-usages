@@ -1,5 +1,7 @@
 """Synthetic provider-isolated dashboard startup reconciliation."""
 
+from pathlib import Path
+
 from sidekick_usages.cli.dashboard.models.session import (
     DashboardStartupReconciliation,
     DashboardStartupReconciliationState,
@@ -8,7 +10,6 @@ from sidekick_usages.cli.dashboard.session import (
     LOOKUP_FAILED_MESSAGE,
     InteractiveDashboardSession,
 )
-from sidekick_usages.cli.dashboard.setup import GuidedServiceSetup
 from sidekick_usages.core.accounts.types import SidekickAccountId
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.types.lifecycle import ServiceLifecycleState
@@ -25,12 +26,14 @@ from tests.fakes.dashboard.session import (
     SessionLookupWorker,
     SessionSnapshotSource,
 )
+from tests.fakes.dashboard.setup import guided_setup
 
 
 def exercise_startup_reconciliation(
     snapshot: DashboardSnapshot,
     active_account_id: SidekickAccountId,
     preview_account_id: SidekickAccountId,
+    acknowledgement_path: Path,
 ) -> DashboardStartupProof:
     """Prove degraded startup isolates providers and retries once."""
     snapshots = SessionSnapshotSource(snapshot)
@@ -50,7 +53,7 @@ def exercise_startup_reconciliation(
         lookup=lookup,
         connector=connector,
         socket_path=SESSION_SOCKET,
-        setup=GuidedServiceSetup(daemon),
+        setup=guided_setup(daemon, acknowledgement_path),
         environment={},
     )
     session.bind_invalidator(invalidation)
