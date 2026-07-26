@@ -34,6 +34,9 @@ REVIEW_MODULE_LINES = 800
 MAX_CLI_APP_LINES = 200
 _CODEX_JSONRPC_ROOT = "src/sidekick_usages/providers/codex/app_server/jsonrpc/"
 _CODEX_BROKER_WIRE_FILE = "src/sidekick_usages/providers/codex/broker/wire.py"
+_CACHED_DASHBOARD_SERVICE_FILE = (
+    "src/sidekick_usages/usage/dashboard/service.py"
+)
 _ISOLATED_WORKER_FILES = frozenset(
     {
         "src/sidekick_usages/daemon/worker/account.py",
@@ -353,6 +356,26 @@ def _check_import(
             path in _DAEMON_CONTROL_FILES,
             matches(module, "sidekick_usages.persistence"),
             "daemon control primitives cannot import persistence",
+        ),
+        (
+            "DEP006",
+            path == _CACHED_DASHBOARD_SERVICE_FILE,
+            matches_any(
+                module,
+                (
+                    "sidekick_usages.credentials",
+                    "sidekick_usages.daemon.lifecycle",
+                    "sidekick_usages.daemon.worker",
+                    "sidekick_usages.http",
+                    "sidekick_usages.maintenance",
+                    "sidekick_usages.persistence.accounts.store",
+                    "sidekick_usages.persistence.credentials",
+                    "sidekick_usages.persistence.private",
+                    "sidekick_usages.persistence.service",
+                    "sidekick_usages.providers",
+                ),
+            ),
+            "cached dashboard cannot compose credential or provider graphs",
         ),
         (
             "PATH001",

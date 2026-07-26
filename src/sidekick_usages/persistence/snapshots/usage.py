@@ -167,13 +167,50 @@ class UsageSnapshotStore:
 
     def load(self, account: SavedAccount) -> AccountUsageSnapshot | None:
         """Load one exact account snapshot without mutation."""
+        document = self._load_document()
+        return (
+            None
+            if document is None
+            else self._account_snapshot(document, account)
+        )
+
+    def load_all(
+        self,
+        accounts: tuple[SavedAccount, ...],
+    ) -> tuple[
+        tuple[AccountUsageSnapshot, ...],
+        tuple[SidekickAccountId, ...],
+    ]:
+        """Bulk-read cached usage and isolate account identity conflicts."""
+        document = self._load_document()
+        if document is None:
+            return (), ()
+        snapshots: list[AccountUsageSnapshot] = []
+        conflicts: list[SidekickAccountId] = []
+        for account in accounts:
+            try:
+                snapshot = self._account_snapshot(document, account)
+            except UsageSnapshotError as error:
+                if error.kind is not UsageSnapshotFailureKind.CONFLICT:
+                    raise
+                conflicts.append(account.account_id)
+                continue
+            if snapshot is not None:
+                snapshots.append(snapshot)
+        return tuple(snapshots), tuple(conflicts)
+
+    def _load_document(self) -> UsageSnapshotDocument | None:
         try:
             observed = self._filesystem.read_opaque_private()
         except PersistenceError:
             raise UsageSnapshotError(UsageSnapshotFailureKind.READ) from None
-        if observed is None:
-            return None
-        document = _decode(observed.data)
+        return None if observed is None else _decode(observed.data)
+
+    @staticmethod
+    def _account_snapshot(
+        document: UsageSnapshotDocument,
+        account: SavedAccount,
+    ) -> AccountUsageSnapshot | None:
         record = document.accounts.get(str(account.account_id))
         if record is None:
             return None

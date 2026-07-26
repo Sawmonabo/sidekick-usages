@@ -49,6 +49,10 @@ class SelectedStateStore:
         with self._lock.hold():
             return self._load_document().states
 
+    def observe_all(self) -> tuple[SelectedAccountState, ...]:
+        """Passively read every provider state without lock-sidecar writes."""
+        return self._load_document().states
+
     def save(self, state: SelectedAccountState) -> SelectedAccountState:
         """Atomically replace one provider state without changing the other."""
         return self._save(state)

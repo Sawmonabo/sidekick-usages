@@ -4,6 +4,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from sidekick_usages.core.accounts.models import SavedAccount
+from sidekick_usages.core.accounts.types import SidekickAccountId
 from sidekick_usages.core.models import (
     AccountTokenActivitySnapshot,
 )
@@ -97,17 +98,56 @@ class ActivitySnapshotStore:
         account: SavedAccount,
     ) -> AccountTokenActivitySnapshot | None:
         """Load one exact account snapshot without mutation."""
-        if (account_id := self._account_id(account)) is None:
-            return None
+        document = self._load_document()
+        return (
+            None
+            if document is None
+            else self._account_snapshot(document, account)
+        )
+
+    def load_all(
+        self,
+        accounts: tuple[SavedAccount, ...],
+    ) -> tuple[
+        tuple[
+            SidekickAccountId,
+            AccountTokenActivitySnapshot,
+        ],
+        ...,
+    ]:
+        """Bulk-read account activity and bind it to stable account IDs."""
+        document = self._load_document()
+        if document is None:
+            return ()
+        snapshots: list[
+            tuple[
+                SidekickAccountId,
+                AccountTokenActivitySnapshot,
+            ]
+        ] = []
+        for account in accounts:
+            snapshot = self._account_snapshot(document, account)
+            if snapshot is not None:
+                snapshots.append((account.account_id, snapshot))
+        return tuple(snapshots)
+
+    def _load_document(self) -> ActivitySnapshotDocument | None:
         try:
             observed = self._filesystem.read_opaque_private()
         except PersistenceError:
             raise ActivitySnapshotError(
                 ActivitySnapshotFailureKind.READ
             ) from None
-        if observed is None:
+        return None if observed is None else _decode(observed.data)
+
+    @classmethod
+    def _account_snapshot(
+        cls,
+        document: ActivitySnapshotDocument,
+        account: SavedAccount,
+    ) -> AccountTokenActivitySnapshot | None:
+        if (account_id := cls._account_id(account)) is None:
             return None
-        document = _decode(observed.data)
         record = document.accounts.get(
             str(_identity_key(account.provider_id, account_id))
         )

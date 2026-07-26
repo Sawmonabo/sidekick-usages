@@ -38,6 +38,10 @@ class ServiceStateStore:
         with self._lock.hold():
             return self._load()
 
+    def observe(self) -> ServiceState | None:
+        """Passively read service state without lock-sidecar writes."""
+        return self._load()
+
     def _load(self) -> ServiceState | None:
         snapshot = self._filesystem.read_opaque_private()
         return (

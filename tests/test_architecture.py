@@ -103,6 +103,15 @@ _MUTATIONS = (
         ),
     ),
     architecture.models.SourceMutation(
+        "DEP006",
+        "src/sidekick_usages/usage/dashboard/service.py",
+        "from sidekick_usages.paths import ApplicationPaths\n",
+        (
+            "from sidekick_usages.paths import ApplicationPaths\n"
+            "from sidekick_usages.credentials import service\n"
+        ),
+    ),
+    architecture.models.SourceMutation(
         "DEP007",
         "src/sidekick_usages/architecture_transport_fixture.py",
         "",
