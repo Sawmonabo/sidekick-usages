@@ -68,11 +68,7 @@ def seed_cached_dashboard(
 ) -> None:
     """Persist representative secret-free cache state below isolated paths."""
     accounts = saved_accounts(account_count)
-    filesystem = PersistenceFilesystem(paths.accounts)
-    filesystem.repair_parent_permissions()
-    filesystem.commit_opaque_private(
-        encode_version_three(VersionThreeDocument(accounts))
-    )
+    seed_saved_accounts(paths, accounts)
     UsageSnapshotStore(paths.usage_snapshots).save_many(
         tuple(
             AccountUsageSnapshot(
@@ -98,6 +94,18 @@ def seed_cached_dashboard(
             if account.provider_id is ProviderId.CODEX
             and account.provider_identity is not None
         )
+    )
+
+
+def seed_saved_accounts(
+    paths: ApplicationPaths,
+    accounts: tuple[SavedAccount, ...],
+) -> None:
+    """Persist one synthetic no-secret account authority."""
+    filesystem = PersistenceFilesystem(paths.accounts)
+    filesystem.repair_parent_permissions()
+    filesystem.commit_opaque_private(
+        encode_version_three(VersionThreeDocument(accounts))
     )
 
 

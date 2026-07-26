@@ -26,15 +26,20 @@ from dashboard_benchmark.models import (
     FirstPaintSignal,
     LookupTaskIdentity,
 )
+from dashboard_benchmark.unix.console import (
+    FIRST_PAINT_DEADLINE_SECONDS,
+    measure_installed_console_first_paint,
+    require_isolated_console_environment,
+)
 from dashboard_benchmark.unix.process import (
     BYTES_PER_MEBIBYTE,
     peak_reaped_child_rss_bytes,
 )
 from sidekick_usages.core.types import ProviderId
+from sidekick_usages.paths import discover_application_paths
 from sidekick_usages.usage.lookup.wave import USAGE_LOOKUP_MAX_WORKERS
 
 TRACE_PROCESS_MODULE = "dashboard_benchmark.unix.child"
-FIRST_PAINT_DEADLINE_SECONDS = 0.250
 CURSOR_P95_TARGET_MILLISECONDS = 50.0
 TRACE_PROCESS_RSS_CEILING_MIB = 96.0
 LOOKUP_WORKER_RSS_CEILING_MIB = 96.0
@@ -43,6 +48,7 @@ TRACE_PROCESS_COMPLETION_TIMEOUT_SECONDS = 10.0
 TRACE_PROCESS_CLEANUP_TIMEOUT_SECONDS = 1.0
 NANOSECONDS_PER_MILLISECOND = 1_000_000
 TEMPORARY_CACHE_PREFIX = "sidekick-dashboard-cache-"
+INSTALLED_CONSOLE_ARGUMENT_COUNT = 2
 
 
 def _terminate_and_reap(process: subprocess.Popen[str]) -> None:
@@ -285,12 +291,43 @@ def _run_trace(
     )
 
 
+def _installed_console_script() -> Path:
+    if len(sys.argv) != INSTALLED_CONSOLE_ARGUMENT_COUNT:
+        raise DashboardBenchmarkError(
+            "Unix dashboard benchmark requires one installed console script."
+        )
+    try:
+        console_script = Path(sys.argv[1]).resolve(strict=True)
+    except OSError:
+        raise DashboardBenchmarkError(
+            "Installed Sidekick console script is unavailable."
+        ) from None
+    if not console_script.is_file() or not os.access(console_script, os.X_OK):
+        raise DashboardBenchmarkError(
+            "Installed Sidekick console script is not executable."
+        )
+    return console_script
+
+
 def _run() -> int:
     packaging_root = Path(__file__).resolve().parents[2]
+    console_script = _installed_console_script()
+    paths = discover_application_paths()
+    console_home = require_isolated_console_environment(
+        console_script,
+        paths,
+        os.environ,
+    )
+    seed_cached_dashboard(paths, REFERENCE_ACCOUNT_COUNT)
+    installed_console_first_paint_ms = measure_installed_console_first_paint(
+        console_script,
+        cwd=console_home,
+        environment=os.environ,
+    )
     with TemporaryDirectory(prefix=TEMPORARY_CACHE_PREFIX) as raw:
         cache_root = Path(raw).resolve()
-        paths = benchmark_application_paths(cache_root)
-        seed_cached_dashboard(paths, REFERENCE_ACCOUNT_COUNT)
+        trace_paths = benchmark_application_paths(cache_root)
+        seed_cached_dashboard(trace_paths, REFERENCE_ACCOUNT_COUNT)
         result = _run_trace(packaging_root, cache_root)
     worker_thread_count = len(
         {start.thread_id for start in result.trace.task_starts}
@@ -307,7 +344,13 @@ def _run() -> int:
                 f"python={platform.python_version()}",
                 f"reference_accounts={REFERENCE_ACCOUNT_COUNT}",
                 f"expanded_accounts={EXPANDED_ACCOUNT_COUNT}",
-                f"first_paint_ms={result.first_paint_ms:.3f}",
+                (
+                    "installed_console_first_paint_ms="
+                    f"{installed_console_first_paint_ms:.3f}"
+                ),
+                "installed_console_paths_isolated=true",
+                "installed_console_process_group_reaped=true",
+                (f"synthetic_first_paint_ms={result.first_paint_ms:.3f}"),
                 (
                     "reference_cursor_p95_ms="
                     f"{result.reference_cursor_p95_ms:.3f}"
@@ -351,6 +394,7 @@ def _run() -> int:
                     "thread_wave_process_free="
                     f"{str(result.trace.thread_wave_process_free).lower()}"
                 ),
+                "final_row_order=provider_saved_account",
                 f"completion_ordinals={result.trace.completion_ordinals}",
             )
         )
@@ -361,10 +405,6 @@ def _run() -> int:
 
 def main() -> int:
     """Run the bounded Unix dashboard release trace."""
-    if len(sys.argv) != 1:
-        raise DashboardBenchmarkError(
-            "Unix dashboard benchmark accepts no arguments."
-        )
     return _run()
 
 

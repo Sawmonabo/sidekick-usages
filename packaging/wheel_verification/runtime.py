@@ -8,6 +8,7 @@ import tempfile
 from pathlib import Path
 
 from dashboard_benchmark.command import DASHBOARD_BENCHMARK_SUCCESS
+from dashboard_benchmark.environment import isolated_console_environment
 from wheel_verification import project
 from wheel_verification.errors import WheelVerificationError
 from wheel_verification.models import ProjectContract
@@ -23,6 +24,8 @@ DASHBOARD_BENCHMARK_RELATIVE_PATH = (
     Path("packaging") / "benchmark_dashboard.py"
 )
 DASHBOARD_BENCHMARK_HOME_PREFIX = "sidekick-dashboard-benchmark-home-"
+PUBLIC_ROOT_USAGE = "Usage: sidekick-usages"
+PRIVATE_ROOT_USAGE = "sidekick_usages.cli.runtime.application"
 SMOKE_ARGUMENTS: tuple[tuple[str, ...], ...] = (
     ("--version",),
     ("--help",),
@@ -47,14 +50,22 @@ import pathlib
 import sys
 
 import platformdirs
+import prompt_toolkit
 import sidekick_usages
+import wcwidth
 
 origin = pathlib.Path(sidekick_usages.__file__).resolve()
 prefix = pathlib.Path(sys.prefix).resolve()
-dependency = pathlib.Path(platformdirs.__file__).resolve()
+dependencies = (
+    pathlib.Path(platformdirs.__file__).resolve(),
+    pathlib.Path(prompt_toolkit.__file__).resolve(),
+    pathlib.Path(wcwidth.__file__).resolve(),
+)
 assert origin.is_relative_to(prefix), (origin, prefix)
-assert dependency.is_relative_to(prefix), (dependency, prefix)
+assert all(path.is_relative_to(prefix) for path in dependencies), dependencies
 assert importlib.metadata.version("platformdirs") == "4.10.0"
+assert importlib.metadata.version("prompt-toolkit") == "3.0.52"
+assert importlib.metadata.version("wcwidth") == "0.7.0"
 """
 ENTRY_POINT_INVENTORY_CHECK = """
 import importlib.metadata
@@ -148,9 +159,22 @@ def _isolated_command_env(home: Path) -> dict[str, str]:
     return env
 
 
+def _dashboard_benchmark_env(
+    home: Path,
+    public_script: Path,
+) -> dict[str, str]:
+    """Return a provider-free native environment for the Unix PTY gate."""
+    return isolated_console_environment(
+        _isolated_command_env(home),
+        home=home,
+        console_script=public_script,
+    )
+
+
 def _verify_dashboard_benchmark(
     contract: ProjectContract,
     python: Path,
+    public_script: Path,
     run_dir: Path,
 ) -> str:
     """Run the release benchmark with the isolated wheel interpreter."""
@@ -159,16 +183,27 @@ def _verify_dashboard_benchmark(
         raise WheelVerificationError(
             f"Dashboard benchmark is missing: {benchmark}"
         )
+    try:
+        verified_public_script = public_script.resolve(strict=True)
+    except OSError:
+        raise WheelVerificationError(
+            "Installed public console script is unavailable."
+        ) from None
     with tempfile.TemporaryDirectory(
         prefix=DASHBOARD_BENCHMARK_HOME_PREFIX
     ) as raw_home:
         home = Path(raw_home).resolve()
+        command = [str(python), str(benchmark)]
+        env = _isolated_command_env(home)
+        if os.name != "nt":
+            command.append(str(verified_public_script))
+            env = _dashboard_benchmark_env(home, verified_public_script)
         result = run_command(
-            [str(python), str(benchmark)],
+            command,
             cwd=run_dir,
-            env=_isolated_command_env(home),
+            env=env,
         )
-        if tuple(home.iterdir()):
+        if os.name == "nt" and tuple(home.iterdir()):
             raise WheelVerificationError(
                 "Dashboard benchmark created files below its isolated home."
             )
@@ -270,9 +305,11 @@ def verify_installed_wheel(
                 if arguments == ("--help",) and (
                     "┴" not in result.stdout
                     or "sidekick usages" not in result.stdout
+                    or PUBLIC_ROOT_USAGE not in result.stdout
+                    or PRIVATE_ROOT_USAGE in result.stdout
                 ):
                     raise WheelVerificationError(
-                        "Root help omitted the Unicode robot header."
+                        "Root help violated the public console contract."
                     )
 
         if Path(env["HOME"]).exists():
@@ -283,5 +320,6 @@ def verify_installed_wheel(
         return _verify_dashboard_benchmark(
             contract,
             python,
+            public_script,
             run_dir,
         )

@@ -14,8 +14,11 @@ UNIX_MODULE = "dashboard_benchmark.unix.parent"
 def main() -> int:
     """Run the platform gate and propagate its output and exit status."""
     platform_module = WINDOWS_MODULE if os.name == "nt" else UNIX_MODULE
+    arguments = [sys.executable, "-m", platform_module]
+    if os.name != "nt":
+        arguments.extend(sys.argv[1:])
     result = subprocess.run(
-        [sys.executable, "-m", platform_module],
+        arguments,
         cwd=PACKAGING_ROOT,
         capture_output=True,
         encoding="utf-8",

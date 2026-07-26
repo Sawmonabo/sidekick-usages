@@ -14,6 +14,7 @@ from threading import (
     get_native_id,
 )
 
+from dashboard_benchmark.cache.paths import benchmark_application_paths
 from dashboard_benchmark.errors import DashboardBenchmarkError
 from dashboard_benchmark.fixtures import (
     EXPANDED_ACCOUNT_COUNT,
@@ -21,6 +22,7 @@ from dashboard_benchmark.fixtures import (
     REFERENCE_TIME,
     dashboard_snapshot,
     saved_accounts,
+    seed_saved_accounts,
 )
 from dashboard_benchmark.models import (
     ChildTrace,
@@ -33,10 +35,19 @@ from dashboard_benchmark.unix.process import (
     peak_reaped_child_rss_bytes,
 )
 from sidekick_usages.core.accounts.models import SavedAccount
-from sidekick_usages.core.models import TokenActivitySummary, UsageReport
+from sidekick_usages.core.models import (
+    AccountUsageSnapshot,
+    TokenActivitySummary,
+    UsageReport,
+)
 from sidekick_usages.core.types import ProviderId, TokenActivityScope
 from sidekick_usages.http.client import HttpClient
+from sidekick_usages.persistence.snapshots.usage.store import (
+    UsageSnapshotStore,
+)
 from sidekick_usages.usage.activity import TokenActivityCollector
+from sidekick_usages.usage.dashboard.models import DashboardAccount
+from sidekick_usages.usage.dashboard.service import CachedDashboardService
 from sidekick_usages.usage.lookup.models import (
     AccountLookupReading,
     AccountMutationExchange,
@@ -64,6 +75,7 @@ LOOKUP_WORKER_TIMEOUT_SECONDS = 10.0
 LOOKUP_WORKER_TERMINATION_GRACE_SECONDS = 1.0
 OWNER_DIRECTORY_MODE = 0o700
 TEMPORARY_HOME_PREFIX = "sidekick-dashboard-benchmark-"
+TEMPORARY_ORDER_PREFIX = "sidekick-dashboard-order-"
 WORKER_DIRECTORY_ENVIRONMENT = (
     ("HOME", "home"),
     ("XDG_CONFIG_HOME", "config"),
@@ -214,6 +226,56 @@ def _reject_mutation(
     )
 
 
+def _validate_final_row_order(
+    accounts: tuple[SavedAccount, ...],
+    readings: tuple[AccountLookupReading, ...],
+) -> None:
+    snapshots: list[AccountUsageSnapshot] = []
+    for reading in readings:
+        account = accounts[reading.ordinal]
+        current = reading.usage
+        if (
+            current is None
+            or reading.account_id != account.account_id
+            or reading.provider_id is not account.provider_id
+        ):
+            raise DashboardBenchmarkError(
+                "Lookup completion cannot enter the final dashboard."
+            )
+        snapshots.append(
+            AccountUsageSnapshot(
+                account_id=account.account_id,
+                provider_id=account.provider_id,
+                provider_identity=account.provider_identity,
+                plan=current.plan,
+                report=current.report,
+                fetched_at=REFERENCE_TIME,
+            )
+        )
+    with TemporaryDirectory(prefix=TEMPORARY_ORDER_PREFIX) as raw:
+        paths = benchmark_application_paths(Path(raw).resolve())
+        seed_saved_accounts(paths, accounts)
+        UsageSnapshotStore(paths.usage_snapshots).save_many(tuple(snapshots))
+        dashboard = CachedDashboardService(paths).load(REFERENCE_TIME)
+    displayed_ids = tuple(
+        row.account_id
+        for provider in dashboard.providers
+        for row in provider.rows
+        if isinstance(row, DashboardAccount)
+    )
+    expected_ids = tuple(
+        account.account_id
+        for provider_id in ProviderId
+        for account in accounts
+        if account.provider_id is provider_id
+    )
+    if displayed_ids != expected_ids:
+        raise DashboardBenchmarkError(
+            "Final dashboard rows did not retain provider and saved-account "
+            "order."
+        )
+
+
 def _synthetic_lookup_trace() -> tuple[
     tuple[LookupTaskStart, ...],
     tuple[int, ...],
@@ -288,6 +350,14 @@ def _synthetic_lookup_trace() -> tuple[
             raise DashboardBenchmarkError(
                 "Lookup wave did not complete one Claude-local activity task."
             )
+        _validate_final_row_order(
+            accounts,
+            tuple(
+                reading
+                for reading in completed
+                if isinstance(reading, AccountLookupReading)
+            ),
+        )
         process_free = (
             all_children_reaped()
             and peak_reaped_child_rss_bytes() == reaped_child_rss_before
