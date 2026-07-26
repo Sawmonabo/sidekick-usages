@@ -262,17 +262,16 @@ class WorkerPool:
             )
         ):
             return False
-        if (
-            operation.provider_id is ProviderId.CODEX
-            and operation.kind in _SELECTION_OPERATION_KINDS
-            and any(
-                current.provider_id is ProviderId.CODEX
-                and (
-                    current.priority is OperationPriority.CODEX_CALLBACK
-                    or current.kind in _SELECTION_OPERATION_KINDS
+        if operation.kind in _SELECTION_OPERATION_KINDS and any(
+            current.provider_id is operation.provider_id
+            and (
+                current.kind in _SELECTION_OPERATION_KINDS
+                or (
+                    operation.provider_id is ProviderId.CODEX
+                    and current.priority is OperationPriority.CODEX_CALLBACK
                 )
-                for current in owned
             )
+            for current in owned
         ):
             return False
         if any(

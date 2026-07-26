@@ -10,6 +10,9 @@ from sidekick_usages.core.types import ProviderId
 from sidekick_usages.credentials.claude.activation.models import (
     ClaudeActivationError,
 )
+from sidekick_usages.credentials.claude.activation.recovery import (
+    ClaudeActivationRecoveryService,
+)
 from sidekick_usages.credentials.claude.activation.service import (
     ClaudeActivationService,
 )
@@ -23,15 +26,17 @@ from sidekick_usages.persistence.supervisor.authority import (
 )
 
 
-class ClaudeActivationWorkerExecutor:
-    """Run one Claude activation without a supervisor credential exchange."""
+class ClaudeSelectionWorkerExecutor:
+    """Run one Claude activation or recovery without credential exchange."""
 
     def __init__(
         self,
-        service: ClaudeActivationService,
+        activation: ClaudeActivationService,
+        recovery: ClaudeActivationRecoveryService,
         clock: Clock,
     ) -> None:
-        self._service = service
+        self._activation = activation
+        self._recovery = recovery
         self._clock = clock
 
     def execute(
@@ -39,23 +44,33 @@ class ClaudeActivationWorkerExecutor:
         operation: DueOperation,
         authority: ProviderMutationAuthority,
     ) -> WorkerResult:
-        """Execute one interactive Claude activation transaction."""
+        """Execute one interactive Claude selection transaction."""
         authority.require(ProviderId.CLAUDE)
         if (
             operation.provider_id is not ProviderId.CLAUDE
-            or operation.kind is not OperationKind.ACTIVATE
+            or operation.kind
+            not in {
+                OperationKind.ACTIVATE,
+                OperationKind.RECONCILE,
+            }
             or operation.priority is not OperationPriority.INTERACTIVE
         ):
-            raise ValueError("Worker operation is not a Claude activation.")
+            raise ValueError("Worker operation is not Claude selection.")
         try:
-            self._service.activate(
-                operation.operation_id,
-                operation.required_account_id,
-                authority,
-                allow_remote_control_disconnect=(
-                    operation.allow_remote_control_disconnect
-                ),
-            )
+            if operation.kind is OperationKind.ACTIVATE:
+                self._activation.activate(
+                    operation.operation_id,
+                    operation.required_account_id,
+                    authority,
+                    allow_remote_control_disconnect=(
+                        operation.allow_remote_control_disconnect
+                    ),
+                )
+            else:
+                self._recovery.recover(
+                    operation.required_account_id,
+                    authority,
+                )
         except ClaudeActivationError as error:
             return managed_worker_result(
                 operation,

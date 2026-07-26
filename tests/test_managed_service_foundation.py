@@ -95,6 +95,9 @@ from tests.test_support import (
 )
 
 _EXPECTED_WORKER_COUNT = 2
+_CLAUDE_RECOVERY_OPERATION_ID = OperationId(
+    "cc413f38-2b11-418a-a4a7-b0e45666067e"
+)
 
 
 def _accounts() -> AccountIndex:
@@ -483,6 +486,11 @@ def test_supervisor_isolates_timeout_and_recovers_without_duplicate_work(
         kind=OperationKind.ACTIVATE,
         priority=OperationPriority.INTERACTIVE,
     )
+    claude_recovery = replace(
+        first,
+        operation_id=_CLAUDE_RECOVERY_OPERATION_ID,
+        kind=OperationKind.RECONCILE,
+    )
     assert state.queue.enqueue(first) == first
     results = WorkerResultStore(state.paths.durable_operations)
     clock = RuntimeClock()
@@ -522,6 +530,7 @@ def test_supervisor_isolates_timeout_and_recovers_without_duplicate_work(
     runtime.run_cycle()
     runtime.run_cycle()
     assert workers.has_capacity_for(codex_selection)
+    assert not workers.has_capacity_for(claude_recovery)
     clock.advance(6)
     runtime.run_cycle()
 

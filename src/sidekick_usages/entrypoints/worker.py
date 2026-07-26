@@ -18,8 +18,14 @@ from sidekick_usages.core.selection.models import (
 )
 from sidekick_usages.core.selection.types import OperationKind
 from sidekick_usages.core.types import ProviderId
+from sidekick_usages.credentials.claude.activation.authority import (
+    ClaudeActivationAuthorityCoordinator,
+)
 from sidekick_usages.credentials.claude.activation.models import (
     ClaudeActivationRuntime,
+)
+from sidekick_usages.credentials.claude.activation.recovery import (
+    ClaudeActivationRecoveryService,
 )
 from sidekick_usages.credentials.claude.activation.service import (
     ClaudeActivationService,
@@ -49,7 +55,7 @@ from sidekick_usages.daemon.worker.claude.maintenance import (
     ClaudeManagedMaintenanceWorkerExecutor,
 )
 from sidekick_usages.daemon.worker.claude.selection import (
-    ClaudeActivationWorkerExecutor,
+    ClaudeSelectionWorkerExecutor,
 )
 from sidekick_usages.daemon.worker.codex import (
     CodexActivationWorkerExecutor,
@@ -312,7 +318,7 @@ def _run_provider_operation(
                 clock,
             )
         elif operation.provider_id is ProviderId.CLAUDE:
-            executor = _claude_activation_executor(
+            executor = _claude_selection_executor(
                 operation,
                 paths,
                 persistence,
@@ -387,7 +393,7 @@ def _codex_exchange_executor(
     )
 
 
-def _claude_activation_executor(
+def _claude_selection_executor(
     operation: DueOperation,
     paths: ApplicationPaths,
     persistence: PersistenceService,
@@ -395,18 +401,32 @@ def _claude_activation_executor(
     selected: SelectedStateStore,
     journals: ActivationJournalStore,
     clock: Clock,
-) -> ClaudeActivationWorkerExecutor:
-    if operation.kind is not OperationKind.ACTIVATE:
+) -> ClaudeSelectionWorkerExecutor:
+    if operation.kind not in {
+        OperationKind.ACTIVATE,
+        OperationKind.RECONCILE,
+    }:
         raise ValueError("Claude selection operation is unsupported.")
-    return ClaudeActivationWorkerExecutor(
+    runtime = ClaudeActivationRuntime(environment=os.environ)
+    authorities = ClaudeActivationAuthorityCoordinator(
+        paths,
+        store,
+        persistence.managed_claude_profiles,
+        clock,
+        runtime=runtime,
+    )
+    return ClaudeSelectionWorkerExecutor(
         ClaudeActivationService(
-            paths,
-            store,
-            persistence.managed_claude_profiles,
+            authorities,
             journals,
             selected,
             clock,
-            runtime=ClaudeActivationRuntime(environment=os.environ),
+        ),
+        ClaudeActivationRecoveryService(
+            authorities,
+            journals,
+            selected,
+            clock,
         ),
         clock,
     )
@@ -427,6 +447,16 @@ def _provider_account_ids(
                 account.account_id
                 for account in store.saved_accounts()
                 if account.provider_id is operation.provider_id
+            )
+        )
+    if (
+        operation.kind is OperationKind.RECONCILE
+        and operation.provider_id is ProviderId.CLAUDE
+    ):
+        return tuple(
+            sorted(
+                account.account_id
+                for account in store.saved_accounts(ProviderId.CLAUDE)
             )
         )
     if operation.kind not in {

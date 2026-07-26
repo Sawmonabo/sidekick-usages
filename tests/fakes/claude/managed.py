@@ -229,22 +229,28 @@ def credential_payload(
     *,
     token_suffix: str,
     access_expires_at: datetime,
+    refresh_expires_at: datetime | None = None,
     scopes: tuple[str, ...] = ("user:profile", "user:inference"),
 ) -> bytes:
     """Encode one complete synthetic Claude credential envelope."""
+    oauth: dict[str, object] = {
+        "accessToken": f"sk-ant-oat01-{token_suffix}",
+        "refreshToken": f"refresh-{token_suffix}",
+        "expiresAt": int(access_expires_at.timestamp() * 1000),
+        "subscriptionType": "pro",
+        "scopes": list(scopes),
+        "tokenAccount": {
+            "accountUuid": account_id,
+            "organizationUuid": organization_id,
+        },
+    }
+    if refresh_expires_at is not None:
+        oauth["refreshTokenExpiresAt"] = int(
+            refresh_expires_at.timestamp() * 1000
+        )
     return json.dumps(
         {
-            "claudeAiOauth": {
-                "accessToken": f"sk-ant-oat01-{token_suffix}",
-                "refreshToken": f"refresh-{token_suffix}",
-                "expiresAt": int(access_expires_at.timestamp() * 1000),
-                "subscriptionType": "pro",
-                "scopes": list(scopes),
-                "tokenAccount": {
-                    "accountUuid": account_id,
-                    "organizationUuid": organization_id,
-                },
-            }
+            "claudeAiOauth": oauth,
         }
     ).encode()
 

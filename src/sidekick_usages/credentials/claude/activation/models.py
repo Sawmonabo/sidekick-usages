@@ -4,6 +4,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 
+from sidekick_usages.core.accounts.models import (
+    ClaudeManagedLoginAuthority,
+    SavedAccount,
+)
+from sidekick_usages.core.selection.types import ProviderAuthState
 from sidekick_usages.platform.types import HostPlatform
 from sidekick_usages.providers.claude.activation.foreground import (
     inspect_claude_foreground,
@@ -13,6 +18,10 @@ from sidekick_usages.providers.claude.activation.types import (
     ClaudeActivationGuardFailure,
     ClaudeForegroundProbe,
 )
+from sidekick_usages.providers.claude.auth.storage.models import (
+    ClaudeAuthoritySnapshot,
+)
+from sidekick_usages.providers.claude.managed.models import ClaudeCapabilities
 from sidekick_usages.providers.claude.process import (
     run_bounded_claude_command,
 )
@@ -83,3 +92,32 @@ class ClaudeActivationRuntime:
     host: HostPlatform | None = None
     runner: ClaudeCommandRunner = run_bounded_claude_command
     foreground_probe: ClaudeForegroundProbe = inspect_claude_foreground
+
+
+@dataclass(frozen=True, slots=True)
+class ClaudeNativeObservation:
+    """One secret-free strict native Claude storage observation."""
+
+    state: ProviderAuthState
+    snapshot: ClaudeAuthoritySnapshot | None = None
+
+    def __post_init__(self) -> None:
+        """Require one snapshot exactly for active native state."""
+        active = self.state is ProviderAuthState.ACTIVE
+        if active != (self.snapshot is not None):
+            raise ValueError("Native Claude observation is incomplete.")
+
+
+@dataclass(frozen=True, slots=True)
+class ClaudeActivationRecoveryContext:
+    """Verified private and native boundaries for one recovery decision."""
+
+    source: SavedAccount
+    source_authority: ClaudeManagedLoginAuthority
+    source_capabilities: ClaudeCapabilities
+    source_private: ClaudeAuthoritySnapshot
+    target: SavedAccount
+    target_authority: ClaudeManagedLoginAuthority
+    target_capabilities: ClaudeCapabilities
+    target_private: ClaudeAuthoritySnapshot
+    native_capabilities: ClaudeCapabilities

@@ -258,14 +258,21 @@ class ActivationJournalTransaction:
             or state.provider_id is not self.provider_id
             or state.runtime_state
             not in {
+                ProviderRuntimeState.SAVED_ACTIVE,
                 ProviderRuntimeState.EXTERNAL_ACTIVE,
                 ProviderRuntimeState.LOGGED_OUT,
                 ProviderRuntimeState.UNSUPPORTED,
             }
+            or (
+                state.runtime_state is ProviderRuntimeState.SAVED_ACTIVE
+                and state.outcome is not ActivationOutcome.EXTERNAL_RECONCILED
+            )
         ):
             raise ManagedStateConflictError(
                 ManagedStateConflictKind.CONCURRENT_CHANGE
             )
+        if state.account_id is not None:
+            self._provider_authority.account(state.account_id)
         current = selected.load(self.provider_id)
         if _same_selected_runtime(current, state):
             expected = current
