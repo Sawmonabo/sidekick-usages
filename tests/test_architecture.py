@@ -96,9 +96,9 @@ _MUTATIONS = (
     architecture.models.SourceMutation(
         "DEP006",
         "src/sidekick_usages/usage/service.py",
-        "from dataclasses import dataclass, replace\n",
+        "from dataclasses import replace\n",
         (
-            "from dataclasses import dataclass, replace\n"
+            "from dataclasses import replace\n"
             "from rich.text import Text\n"
         ),
     ),
