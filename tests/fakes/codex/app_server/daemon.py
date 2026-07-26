@@ -28,6 +28,7 @@ from tests.fakes.codex.app_server.models import FakeCodexRefreshResponse
 from tests.fakes.codex.auth import managed_auth
 
 _CLIENT_TIMEOUT_SECONDS = 5.0
+_INSTALL_PAUSE_TIMEOUT_SECONDS = 10.0
 _REFRESH_RESPONSE_TIMEOUT_SECONDS = CODEX_CALLBACK_RESPONSE_SECONDS
 _EXTERNAL_REFRESH_ERROR_CODE = -32000
 _EXTERNAL_REFRESH_ERROR_MESSAGE = "external auth refresh unavailable"
@@ -114,7 +115,7 @@ class FakeCodexDaemon:
 
     def wait_for_paused_install(self) -> None:
         """Wait until the one-shot install boundary is reached."""
-        if not self._install_paused.wait(_CLIENT_TIMEOUT_SECONDS):
+        if not self._install_paused.wait(_INSTALL_PAUSE_TIMEOUT_SECONDS):
             raise AssertionError("Fake Codex install did not pause.")
 
     def resume_install(self) -> None:
