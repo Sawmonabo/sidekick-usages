@@ -5,6 +5,8 @@ from collections.abc import Callable
 
 from dashboard_benchmark.errors import DashboardBenchmarkError
 
+DASHBOARD_BENCHMARK_SUCCESS = "Dashboard benchmark passed."
+
 
 def execute(command: Callable[[], int]) -> None:
     """Run one benchmark command with concise release diagnostics."""

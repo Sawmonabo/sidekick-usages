@@ -10,7 +10,10 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from dashboard_benchmark.cache.paths import benchmark_application_paths
-from dashboard_benchmark.command import execute
+from dashboard_benchmark.command import (
+    DASHBOARD_BENCHMARK_SUCCESS,
+    execute,
+)
 from dashboard_benchmark.errors import DashboardBenchmarkError
 from dashboard_benchmark.fixtures import (
     EXPANDED_ACCOUNT_COUNT,
@@ -298,7 +301,7 @@ def _run() -> int:
     sys.stdout.write(
         "\n".join(
             (
-                "Dashboard benchmark passed.",
+                DASHBOARD_BENCHMARK_SUCCESS,
                 f"platform={platform.platform()}",
                 f"machine={platform.machine()}",
                 f"python={platform.python_version()}",

@@ -2,7 +2,10 @@
 
 import sys
 
-from dashboard_benchmark.command import execute
+from dashboard_benchmark.command import (
+    DASHBOARD_BENCHMARK_SUCCESS,
+    execute,
+)
 from dashboard_benchmark.errors import DashboardBenchmarkError
 from sidekick_usages.cli.dashboard.models.controller import (
     RefreshDueAccountsIntent,
@@ -55,7 +58,13 @@ def main() -> int:
             "contract."
         )
     sys.stdout.write(
-        "Native Windows dashboard account switching is feature-disabled.\n"
+        "\n".join(
+            (
+                DASHBOARD_BENCHMARK_SUCCESS,
+                "native_windows_account_switching=feature_disabled",
+            )
+        )
+        + "\n"
     )
     return 0
 

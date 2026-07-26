@@ -7,6 +7,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+from dashboard_benchmark.command import DASHBOARD_BENCHMARK_SUCCESS
 from wheel_verification import project
 from wheel_verification.errors import WheelVerificationError
 from wheel_verification.models import ProjectContract
@@ -20,11 +21,6 @@ ENVIRONMENT_VARIABLES_TO_CLEAR = (
 )
 DASHBOARD_BENCHMARK_RELATIVE_PATH = (
     Path("packaging") / "benchmark_dashboard.py"
-)
-DASHBOARD_BENCHMARK_SUCCESS = (
-    "Native Windows dashboard account switching is feature-disabled."
-    if os.name == "nt"
-    else "Dashboard benchmark passed."
 )
 SMOKE_ARGUMENTS: tuple[tuple[str, ...], ...] = (
     ("--version",),
