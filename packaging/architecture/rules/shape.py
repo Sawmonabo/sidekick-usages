@@ -41,6 +41,7 @@ def check_source_shape(
                 f"stale converted modules remain: {stale}",
             )
         )
+    _check_private_package_names(units, violations)
     _check_flat_namespaces(units, violations)
     _check_owner_module_names(units, violations)
     for unit in units:
@@ -57,6 +58,28 @@ def check_source_shape(
         if invalid is not None:
             violations.append(
                 finding(unit, invalid, "PKG001", "initializer is not thin")
+            )
+
+
+def _check_private_package_names(
+    units: Sequence[SourceUnit],
+    violations: list[ArchitectureFinding],
+) -> None:
+    for unit in units:
+        if not _repository_code(unit):
+            continue
+        private = next(
+            (part for part in unit.path.parent.parts if part.startswith("_")),
+            None,
+        )
+        if private is not None:
+            violations.append(
+                finding(
+                    unit,
+                    None,
+                    "PKG001",
+                    f"package directory {private!r} cannot be private",
+                )
             )
 
 

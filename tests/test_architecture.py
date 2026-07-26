@@ -97,10 +97,7 @@ _MUTATIONS = (
         "DEP006",
         "src/sidekick_usages/usage/service.py",
         "from dataclasses import replace\n",
-        (
-            "from dataclasses import replace\n"
-            "from rich.text import Text\n"
-        ),
+        ("from dataclasses import replace\nfrom rich.text import Text\n"),
     ),
     architecture.models.SourceMutation(
         "DEP006",
@@ -209,6 +206,12 @@ _MUTATIONS = (
         ),
     ),
     architecture.models.SourceMutation(
+        "PKG001",
+        "src/sidekick_usages/_internal/fixture.py",
+        "",
+        '"""Deliberate private package fixture."""\n',
+    ),
+    architecture.models.SourceMutation(
         "PKG002",
         "src/sidekick_usages/usage/activity_extra.py",
         "",
@@ -297,6 +300,12 @@ def test_every_static_rule_rejects_a_deliberate_violation() -> None:
 
     assert {violation.rule_id for violation in report.violations} == (
         architecture.source.VIOLATION_RULE_IDS
+    )
+    assert any(
+        violation.rule_id == "PKG001"
+        and violation.path.as_posix()
+        == "src/sidekick_usages/_internal/fixture.py"
+        for violation in report.violations
     )
     assert {mutation.rule_id for mutation in _MUTATIONS} == (
         architecture.source.VIOLATION_RULE_IDS
@@ -452,6 +461,7 @@ def test_cli_command_surface_is_registered_once_by_focused_owners() -> None:
         "heartbeat",
         "list",
         "maintain",
+        "migrate",
         "permissions",
         "refresh",
         "remove",
@@ -459,6 +469,7 @@ def test_cli_command_surface_is_registered_once_by_focused_owners() -> None:
         "reset",
         "set-plan",
         "update",
+        "use",
     }
     nested = {
         name: set(command.commands)
@@ -470,5 +481,6 @@ def test_cli_command_surface_is_registered_once_by_focused_owners() -> None:
         "codex": {"login"},
         "daemon": {"install", "status", "uninstall"},
         "heartbeat": {"disable", "enable", "run-label", "status"},
+        "migrate": {"managed-auth"},
         "permissions": {"repair"},
     }
