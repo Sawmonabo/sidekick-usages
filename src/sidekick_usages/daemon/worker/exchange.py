@@ -9,6 +9,9 @@ from contextlib import suppress
 from threading import Event, Lock
 
 from sidekick_usages.core.accounts.types import OperationId
+from sidekick_usages.core.selection.models import DueOperation
+from sidekick_usages.core.selection.types import OperationKind
+from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.models.worker import (
     MINIMUM_WORKER_EXCHANGE_DESCRIPTOR,
     WORKER_EXCHANGE_DESCRIPTOR_ENVIRONMENT_KEY,
@@ -31,6 +34,18 @@ WORKER_EXCHANGE_COMPLETION_TAIL_SECONDS = 2.0
 MAX_LIVE_WORKER_EXCHANGES = 2
 _READ_CHUNK_BYTES = 64 * 1024
 _CANCELLATION_POLL_SECONDS = 0.1
+
+
+def operation_requires_worker_exchange(operation: DueOperation) -> bool:
+    """Return whether one exact provider operation requires an exchange."""
+    return operation.kind is OperationKind.CODEX_CALLBACK or (
+        operation.provider_id is ProviderId.CODEX
+        and operation.kind
+        in {
+            OperationKind.ACTIVATE,
+            OperationKind.RECONCILE,
+        }
+    )
 
 
 class WorkerExchangeError(RuntimeError):

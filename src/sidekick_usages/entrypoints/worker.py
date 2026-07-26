@@ -51,6 +51,7 @@ from sidekick_usages.daemon.worker.codex import (
 from sidekick_usages.daemon.worker.exchange import (
     WorkerExchangeChannel,
     WorkerExchangeError,
+    operation_requires_worker_exchange,
 )
 from sidekick_usages.daemon.worker.runtime import (
     UnsupportedWorkerExecutor,
@@ -98,16 +99,11 @@ _EXIT_OK = 0
 _EXIT_INVALID_INVOCATION = 2
 _EXIT_STATE_UNAVAILABLE = 3
 _PROVIDER_AUTHORITY_TIMEOUT_SECONDS = 0.25
-_EXCHANGE_OPERATION_KINDS = frozenset(
+_PROVIDER_OPERATION_KINDS = frozenset(
     {
         OperationKind.CODEX_CALLBACK,
         OperationKind.ACTIVATE,
         OperationKind.RECONCILE,
-    }
-)
-_PROVIDER_OPERATION_KINDS = frozenset(
-    {
-        *_EXCHANGE_OPERATION_KINDS,
         OperationKind.RECONCILE_NATIVE,
     }
 )
@@ -258,7 +254,7 @@ def _run_provider_operation(
 ) -> bool:
     exchange = (
         WorkerExchangeChannel.from_environment()
-        if operation.kind in _EXCHANGE_OPERATION_KINDS
+        if operation_requires_worker_exchange(operation)
         else None
     )
     if (
@@ -277,7 +273,10 @@ def _run_provider_operation(
             paths.activation_journals,
             paths.durable_operations,
         )
-        if operation.kind is OperationKind.RECONCILE_NATIVE:
+        if (
+            operation.kind is OperationKind.RECONCILE_NATIVE
+            and operation.provider_id is ProviderId.CODEX
+        ):
             executor = CodexNativeReconciliationWorkerExecutor(
                 CodexNativeReconciliationService(
                     store,
@@ -292,8 +291,8 @@ def _run_provider_operation(
                 RuntimeAuthObservationStore(paths.durable_operations),
                 clock,
             )
-        else:
-            executor = _exchange_executor(
+        elif operation.provider_id is ProviderId.CODEX:
+            executor = _codex_exchange_executor(
                 operation,
                 paths,
                 persistence,
@@ -303,6 +302,10 @@ def _run_provider_operation(
                 exchange,
                 clock,
             )
+        elif operation.provider_id is ProviderId.CLAUDE:
+            raise ValueError("Claude selection executor is not composed.")
+        else:
+            raise ValueError("Provider worker operation is unsupported.")
         return run_provider_worker(
             operation_id,
             queue,
@@ -326,7 +329,7 @@ def _run_provider_operation(
             exchange.close()
 
 
-def _exchange_executor(
+def _codex_exchange_executor(
     operation: DueOperation,
     paths: ApplicationPaths,
     persistence: PersistenceService,
@@ -376,24 +379,27 @@ def _provider_account_ids(
     """Resolve the exact provider-first account lock set before execution."""
     if operation.kind is OperationKind.CODEX_CALLBACK:
         return (operation.required_account_id,)
-    if operation.provider_id is not ProviderId.CODEX:
-        raise ValueError("Managed exchange operation is not Codex.")
     if operation.kind is OperationKind.RECONCILE_NATIVE:
         return tuple(
             sorted(
                 account.account_id
                 for account in store.saved_accounts()
-                if account.provider_id is ProviderId.CODEX
+                if account.provider_id is operation.provider_id
             )
         )
+    if operation.kind not in {
+        OperationKind.ACTIVATE,
+        OperationKind.RECONCILE,
+    }:
+        raise ValueError("Provider operation cannot acquire activation locks.")
     account_id = operation.required_account_id
     if operation.kind is OperationKind.RECONCILE:
-        active = journals.load(ProviderId.CODEX).active
+        active = journals.load(operation.provider_id).active
         if active is None or active.target_account_id != account_id:
-            raise ValueError("Codex reconciliation journal is unavailable.")
+            raise ValueError("Provider reconciliation journal is unavailable.")
         baseline = active.selected_baseline
     else:
-        baseline = selected.load(ProviderId.CODEX)
+        baseline = selected.load(operation.provider_id)
     return tuple(sorted(activation_account_ids(baseline, account_id)))
 
 

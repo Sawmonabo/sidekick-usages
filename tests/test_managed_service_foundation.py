@@ -782,7 +782,19 @@ def test_supervisor_isolates_timeout_and_recovers_without_duplicate_work(
     """A timed-out account cannot block completion or restart recovery."""
     state = _foundation_state(tmp_path)
     first, second, third = state.operations
+    assert state.queue.remove_account(first.required_account_id) == 1
     assert state.queue.remove_account(third.required_account_id) == 1
+    first = replace(
+        first,
+        kind=OperationKind.ACTIVATE,
+        priority=OperationPriority.INTERACTIVE,
+    )
+    codex_selection = replace(
+        third,
+        kind=OperationKind.ACTIVATE,
+        priority=OperationPriority.INTERACTIVE,
+    )
+    assert state.queue.enqueue(first) == first
     results = WorkerResultStore(state.paths.durable_operations)
     clock = _RuntimeClock()
     wakeup = WakeupChannel()
@@ -814,6 +826,7 @@ def test_supervisor_isolates_timeout_and_recovers_without_duplicate_work(
     runtime.recover()
     runtime.run_cycle()
     runtime.run_cycle()
+    assert workers.has_capacity_for(codex_selection)
     clock.advance(6)
     runtime.run_cycle()
 

@@ -33,6 +33,7 @@ from sidekick_usages.daemon.worker.exchange import (
     SupervisorWorkerExchange,
     WorkerExchangeError,
     WorkerExchangeRegistry,
+    operation_requires_worker_exchange,
 )
 from sidekick_usages.platform.environment import (
     SAFE_WORKER_ENVIRONMENT_KEYS,
@@ -45,14 +46,7 @@ QUARANTINE_INITIAL_RETRY_SECONDS = 1.0
 QUARANTINE_MAX_RETRY_SECONDS = 30.0
 
 _WORKER_ENTRY_POINT = "sidekick-usages-worker"
-_EXCHANGE_REQUIRED_KINDS = frozenset(
-    {
-        OperationKind.CODEX_CALLBACK,
-        OperationKind.ACTIVATE,
-        OperationKind.RECONCILE,
-    }
-)
-_CODEX_TRANSITION_KINDS = frozenset(
+_SELECTION_OPERATION_KINDS = frozenset(
     {
         OperationKind.ACTIVATE,
         OperationKind.RECONCILE,
@@ -263,17 +257,20 @@ class WorkerPool:
         if callback and (
             any(
                 current.provider_id is ProviderId.CODEX
-                and current.kind in _CODEX_TRANSITION_KINDS
+                and current.kind in _SELECTION_OPERATION_KINDS
                 for current in owned
             )
         ):
             return False
         if (
             operation.provider_id is ProviderId.CODEX
-            and operation.kind in _CODEX_TRANSITION_KINDS
+            and operation.kind in _SELECTION_OPERATION_KINDS
             and any(
-                current.priority is OperationPriority.CODEX_CALLBACK
-                or current.kind in _CODEX_TRANSITION_KINDS
+                current.provider_id is ProviderId.CODEX
+                and (
+                    current.priority is OperationPriority.CODEX_CALLBACK
+                    or current.kind in _SELECTION_OPERATION_KINDS
+                )
                 for current in owned
             )
         ):
@@ -299,7 +296,7 @@ class WorkerPool:
         """Return whether capacity and required exchange are available."""
         if not self.has_capacity_for(operation):
             return False
-        return operation.kind not in _EXCHANGE_REQUIRED_KINDS or (
+        return not operation_requires_worker_exchange(operation) or (
             self._exchanges is not None
             and self._exchanges.available(operation.operation_id)
         )
@@ -340,12 +337,14 @@ class WorkerPool:
         self,
         operation: DueOperation,
     ) -> SupervisorWorkerExchange | None:
-        exchange = (
-            None
-            if self._exchanges is None
-            else self._exchanges.claim(operation.operation_id)
-        )
-        if exchange is None and operation.kind in _EXCHANGE_REQUIRED_KINDS:
+        if not operation_requires_worker_exchange(operation):
+            return None
+        if self._exchanges is None:
+            raise WorkerLaunchError(
+                WorkerLaunchFailureCode.CAPACITY_UNAVAILABLE
+            )
+        exchange = self._exchanges.claim(operation.operation_id)
+        if exchange is None:
             raise WorkerLaunchError(
                 WorkerLaunchFailureCode.CAPACITY_UNAVAILABLE
             )
@@ -424,7 +423,7 @@ class WorkerPool:
             if (
                 quarantined.operation.priority
                 is OperationPriority.CODEX_CALLBACK
-                or quarantined.operation.kind in _CODEX_TRANSITION_KINDS
+                or quarantined.operation.kind in _SELECTION_OPERATION_KINDS
             ):
                 raise WorkerLaunchError(WorkerLaunchFailureCode.AUTHORITY_BUSY)
             cleaned, completed = self._cleanup_quarantined(
@@ -437,7 +436,7 @@ class WorkerPool:
             return completed
         if (
             owner.operation.priority is OperationPriority.CODEX_CALLBACK
-            or owner.operation.kind in _CODEX_TRANSITION_KINDS
+            or owner.operation.kind in _SELECTION_OPERATION_KINDS
         ):
             raise WorkerLaunchError(WorkerLaunchFailureCode.AUTHORITY_BUSY)
         return self._stop(owner, preempted=True, timed_out=False)
@@ -446,7 +445,7 @@ class WorkerPool:
         """Return whether a non-preemptible Codex transition is running."""
         return any(
             operation.provider_id is ProviderId.CODEX
-            and operation.kind in _CODEX_TRANSITION_KINDS
+            and operation.kind in _SELECTION_OPERATION_KINDS
             for operation in self._owned_operations()
         )
 

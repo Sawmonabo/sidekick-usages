@@ -19,6 +19,9 @@ from sidekick_usages.daemon.types.ports import (
     OperationExchangePreparer,
 )
 from sidekick_usages.daemon.types.worker import WorkerOutcome
+from sidekick_usages.daemon.worker.exchange import (
+    operation_requires_worker_exchange,
+)
 from sidekick_usages.daemon.worker.pool import (
     WorkerLaunchError,
     WorkerPool,
@@ -100,10 +103,10 @@ class DurableScheduler:
         now = self._clock.now()
         monotonic_now = self._monotonic()
         for operation in self._queue.due(now):
-            requires_exchange_preparation = operation.kind in {
-                OperationKind.ACTIVATE,
-                OperationKind.RECONCILE,
-            }
+            callback = operation.priority is OperationPriority.CODEX_CALLBACK
+            requires_exchange_preparation = (
+                operation_requires_worker_exchange(operation) and not callback
+            )
             if (
                 requires_exchange_preparation
                 and not self._workers.has_capacity_for(operation)
@@ -114,12 +117,9 @@ class DurableScheduler:
                 or not self._exchange_preparer.prepare_operation(operation)
             ):
                 continue
-            if (
-                operation.priority is OperationPriority.CODEX_CALLBACK
-                and not self._prepare_callback(
-                    operation,
-                    monotonic_now,
-                )
+            if callback and not self._prepare_callback(
+                operation,
+                monotonic_now,
             ):
                 continue
             if not self._workers.can_start(operation):
