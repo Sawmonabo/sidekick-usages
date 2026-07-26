@@ -74,6 +74,11 @@ type DashboardConfirmationProof = tuple[
     DashboardFooterKind,
     str | None,
 ]
+type DashboardStartupProof = tuple[
+    tuple[ProviderId, ...],
+    SidekickAccountId | None,
+    DashboardFooterKind,
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +87,9 @@ class DashboardSessionProof:
 
     control_connect_calls: tuple[tuple[Path, float | None], ...]
     partial_start_reaped: bool
+    startup_reconciliations: tuple[ProviderId, ...]
+    startup_account_id: SidekickAccountId | None
+    startup_footer_kind: DashboardFooterKind
     activation_locked: bool
     confirmations: tuple[DashboardConfirmationProof, ...]
     activations: tuple[tuple[ProviderId, SidekickAccountId, bool], ...]
@@ -217,19 +225,29 @@ class SessionControlConnector:
     ) -> None:
         self.daemon = daemon
         self.snapshots = snapshots
+        self.reconciliation_targets: dict[
+            ProviderId,
+            SidekickAccountId,
+        ] = {}
+        self.reconciliations: list[ProviderId] = []
+        self.reconciliation_failures: set[ProviderId] = set()
         self.activations: list[tuple[ProviderId, SidekickAccountId, bool]] = []
         self.closed_clients = 0
         self.skip_readback_next = False
         self.require_remote_control_next = False
         self.snapshot_ready = True
         self.pause_next = False
+        self.allow_degraded = False
         self.stream_started = Event()
         self.stream_released = Event()
 
     def __call__(self, socket_path: Path) -> SessionControlClient:
         """Connect only when synthetic lifecycle state is ready."""
         del socket_path
-        if self.daemon.state is not ServiceLifecycleState.READY:
+        if (
+            self.daemon.state is not ServiceLifecycleState.READY
+            and not self.allow_degraded
+        ):
             raise ConnectionRefusedError
         return SessionControlClient(self)
 
@@ -343,6 +361,30 @@ class SessionControlClient:
         yield _event(
             EventKind.COMPLETED,
             CompletedPayload(None, CompletionOutcome.SUCCEEDED),
+        )
+
+    def reconcile(
+        self,
+        provider_id: ProviderId,
+    ) -> Iterator[ControlEvent]:
+        """Publish one synthetic provider-native read-back."""
+        self._owner.reconciliations.append(provider_id)
+        yield _event(
+            EventKind.ACCEPTED,
+            AcceptedPayload(SESSION_OPERATION_ID),
+        )
+        if provider_id in self._owner.reconciliation_failures:
+            self._owner.reconciliation_failures.remove(provider_id)
+            raise OSError("Synthetic provider read-back failed.")
+        target = self._owner.reconciliation_targets.get(provider_id)
+        if target is not None:
+            self._owner.snapshots.activate(provider_id, target)
+        yield _event(
+            EventKind.COMPLETED,
+            CompletedPayload(
+                SESSION_OPERATION_ID,
+                CompletionOutcome.SUCCEEDED,
+            ),
         )
 
     def close(self) -> None:
@@ -579,9 +621,16 @@ def exercise_dashboard_session(
     *,
     active_account_id: SidekickAccountId,
     preview_account_id: SidekickAccountId,
+    startup: DashboardStartupProof,
     monkeypatch: pytest.MonkeyPatch,
 ) -> DashboardSessionProof:
     """Exercise setup, serialized activation, failure, and bounded close."""
+    (
+        startup_reconciliations,
+        startup_account_id,
+        startup_footer_kind,
+    ) = startup
+
     unavailable = unavailable_session_snapshot(snapshot)
     partial_start_reaped = _partial_start_reaped(
         unavailable,
@@ -678,6 +727,9 @@ def exercise_dashboard_session(
     return DashboardSessionProof(
         control_connect_calls=tuple(connect.calls),
         partial_start_reaped=partial_start_reaped,
+        startup_reconciliations=startup_reconciliations,
+        startup_account_id=startup_account_id,
+        startup_footer_kind=startup_footer_kind,
         activation_locked=activation_locked,
         confirmations=(service_confirmation, remote_confirmation),
         activations=tuple(connector.activations),

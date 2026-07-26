@@ -22,6 +22,22 @@ class DashboardConfirmationKind(StrEnum):
     REMOTE_CONTROL = "remote_control"
 
 
+class DashboardStartupReconciliationState(StrEnum):
+    """Closed outcomes for one provider's passive startup read-back."""
+
+    VERIFIED = "verified"
+    RETRYING = "retrying"
+    UNAVAILABLE = "unavailable"
+
+
+@dataclass(frozen=True, slots=True)
+class DashboardStartupReconciliation:
+    """One provider-scoped passive startup read-back result."""
+
+    provider_id: ProviderId
+    state: DashboardStartupReconciliationState
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class DashboardConfirmation:
     """One pending approval without provider-owned identity."""

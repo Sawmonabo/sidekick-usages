@@ -13,6 +13,8 @@ from sidekick_usages.cli.dashboard.models.controller import (
 from sidekick_usages.cli.dashboard.models.session import (
     DashboardActionRequest,
     DashboardConfirmationKind,
+    DashboardStartupReconciliation,
+    DashboardStartupReconciliationState,
 )
 from sidekick_usages.cli.dashboard.models.setup import (
     ServiceSetupDecision,
@@ -33,11 +35,13 @@ from sidekick_usages.daemon.control.client import (
 )
 from sidekick_usages.daemon.control.protocol import ProtocolFailureError
 from sidekick_usages.daemon.models.protocol import (
+    CompletedPayload,
     ControlActionTerminalPayload,
     FailedPayload,
     SnapshotPayload,
 )
 from sidekick_usages.daemon.types.protocol import (
+    CompletionOutcome,
     ControlOperationIdentity,
     EventKind,
     ProgressPhase,
@@ -62,6 +66,7 @@ CONTROL_PROGRESS_MESSAGES = {
     ProgressPhase.VERIFYING: "Verifying provider account state.",
     ProgressPhase.RECONCILING: "Reconciling provider account state.",
 }
+STARTUP_RECONCILIATION_ATTEMPTS = 2
 
 
 class DashboardActionExecutor:
@@ -122,6 +127,68 @@ class DashboardActionExecutor:
             if terminal is None:
                 return
         self._sink.action_completed(request.intent, terminal)
+
+    def reconcile_startup(
+        self,
+        provider_ids: tuple[ProviderId, ...],
+    ) -> None:
+        """Reconcile displayed providers without setup or input blocking."""
+        pending = provider_ids
+        for attempt in range(STARTUP_RECONCILIATION_ATTEMPTS):
+            failed: list[ProviderId] = []
+            for provider_id in pending:
+                if self._sink.stopping:
+                    return
+                verified = self._reconcile_provider(provider_id)
+                if not verified:
+                    failed.append(provider_id)
+                final_attempt = (
+                    attempt + 1 == STARTUP_RECONCILIATION_ATTEMPTS
+                )
+                state = DashboardStartupReconciliationState.VERIFIED
+                if not verified:
+                    state = (
+                        DashboardStartupReconciliationState.UNAVAILABLE
+                        if final_attempt
+                        else DashboardStartupReconciliationState.RETRYING
+                    )
+                self._sink.startup_reconciled(
+                    DashboardStartupReconciliation(
+                        provider_id=provider_id,
+                        state=state,
+                    )
+                )
+            if not failed:
+                return
+            pending = tuple(failed)
+
+    def _reconcile_provider(self, provider_id: ProviderId) -> bool:
+        """Return whether one provider supplied a successful read-back."""
+        client: DashboardControlClient | None = None
+        try:
+            client = self._connector(self._socket_path)
+            self._retain_client(client)
+            terminal = consume_control_action(
+                client.reconcile(provider_id),
+                identity=ControlOperationIdentity.PROVIDER,
+            )
+            return (
+                isinstance(terminal, CompletedPayload)
+                and terminal.outcome
+                in {
+                    CompletionOutcome.SUCCEEDED,
+                    CompletionOutcome.NO_CHANGE,
+                }
+            )
+        except (
+            UnexpectedServiceEventError,
+            OSError,
+            ProtocolFailureError,
+        ):
+            return False
+        finally:
+            if client is not None:
+                self._release_client(client)
 
     def close(self) -> None:
         """Stop observing without cancelling durable supervisor work."""
@@ -195,10 +262,9 @@ class DashboardActionExecutor:
             OSError,
             ProtocolFailureError,
         ):
-            pass
-        if client is not None:
-            self._release_client(client)
-        return None
+            if client is not None:
+                self._release_client(client)
+            return None
 
     def _dispatch(
         self,

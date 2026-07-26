@@ -14,7 +14,10 @@ from sidekick_usages.core.selection.models import (
     ActivationRecord,
     SelectedAccountState,
 )
-from sidekick_usages.core.selection.policy import transition_activation
+from sidekick_usages.core.selection.policy import (
+    same_selected_runtime_authority,
+    transition_activation,
+)
 from sidekick_usages.core.selection.types import (
     ActivationOutcome,
     ActivationPhase,
@@ -175,7 +178,7 @@ class ActivationJournalTransaction:
                 ManagedStateConflictKind.CONCURRENT_CHANGE
             )
         current = selected.load(self.provider_id)
-        if _same_selected_runtime(
+        if same_selected_runtime_authority(
             current,
             state,
         ) or _matches_activation_target(current, active):
@@ -221,7 +224,7 @@ class ActivationJournalTransaction:
                 ManagedStateConflictKind.CONCURRENT_CHANGE
             )
         current = selected.load(self.provider_id)
-        if _same_selected_runtime(current, state):
+        if same_selected_runtime_authority(current, state):
             expected = current
         elif current == baseline:
             expected = baseline
@@ -274,7 +277,7 @@ class ActivationJournalTransaction:
         if state.account_id is not None:
             self._provider_authority.account(state.account_id)
         current = selected.load(self.provider_id)
-        if _same_selected_runtime(current, state):
+        if same_selected_runtime_authority(current, state):
             expected = current
         elif current == baseline:
             expected = baseline
@@ -495,20 +498,4 @@ def _matches_activation_target(
         and state.provider_identity == activation.expected_target_identity
         and state.runtime_generation == activation.verified_runtime_generation
         and state.outcome is ActivationOutcome.VERIFIED
-    )
-
-
-def _same_selected_runtime(
-    current: SelectedAccountState | None,
-    candidate: SelectedAccountState,
-) -> bool:
-    """Compare exact selected runtime authority without observation time."""
-    return (
-        current is not None
-        and current.provider_id is candidate.provider_id
-        and current.runtime_state is candidate.runtime_state
-        and current.account_id == candidate.account_id
-        and current.provider_identity == candidate.provider_identity
-        and current.runtime_generation == candidate.runtime_generation
-        and current.outcome is candidate.outcome
     )

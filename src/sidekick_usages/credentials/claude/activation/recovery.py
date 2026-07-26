@@ -1,10 +1,7 @@
 """Deterministic recovery for interrupted Claude native activation."""
 
 from sidekick_usages.clock import Clock
-from sidekick_usages.core.accounts.models import (
-    ClaudeManagedLoginAuthority,
-    SavedAccount,
-)
+from sidekick_usages.core.accounts.models import SavedAccount
 from sidekick_usages.core.accounts.types import (
     CredentialHealth,
     SidekickAccountId,
@@ -212,7 +209,10 @@ class ClaudeActivationRecoveryService:
                 context,
                 authority,
             )
-        self._require_native_current(context.native_capabilities, native)
+        self._authorities.require_native_current(
+            context.native_capabilities,
+            native,
+        )
         return self._commit_inactive(transaction, record)
 
     def _resolve_active(
@@ -276,7 +276,10 @@ class ClaudeActivationRecoveryService:
             snapshot is not None
             and snapshot.health is not CredentialHealth.LOGIN_REQUIRED
         ):
-            self._require_native_current(context.native_capabilities, native)
+            self._authorities.require_native_current(
+                context.native_capabilities,
+                native,
+            )
             return self._commit_rollback(
                 transaction,
                 record,
@@ -308,7 +311,10 @@ class ClaudeActivationRecoveryService:
             snapshot is not None
             and snapshot.health is not CredentialHealth.LOGIN_REQUIRED
         ):
-            self._require_native_current(context.native_capabilities, native)
+            self._authorities.require_native_current(
+                context.native_capabilities,
+                native,
+            )
             return self._commit_target(
                 transaction,
                 record,
@@ -495,7 +501,10 @@ class ClaudeActivationRecoveryService:
             raise ClaudeActivationError(
                 ClaudeActivationFailure.RECONCILIATION_REQUIRED
             )
-        self._require_native_current(context.native_capabilities, native)
+        self._authorities.require_native_current(
+            context.native_capabilities,
+            native,
+        )
         if (
             snapshot.provider_identity
             == context.source_authority.provider_identity
@@ -539,25 +548,16 @@ class ClaudeActivationRecoveryService:
             raise ClaudeActivationError(
                 ClaudeActivationFailure.RECONCILIATION_REQUIRED
             )
-        matches: list[tuple[SavedAccount, ClaudeManagedLoginAuthority]] = []
-        for account in self._authorities.saved_accounts():
-            if account.provider_id is not ProviderId.CLAUDE:
-                continue
-            try:
-                managed = self._authorities.managed_authority(
-                    account,
-                    ClaudeActivationFailure.TARGET_UNAVAILABLE,
-                )
-            except ClaudeActivationError:
-                continue
-            if managed.provider_identity == snapshot.provider_identity:
-                matches.append((account, managed))
-        if len(matches) > 1:
-            raise ClaudeActivationError(
-                ClaudeActivationFailure.RECONCILIATION_REQUIRED
-            )
-        self._require_native_current(native_capabilities, native)
-        if not matches:
+        account = self._authorities.relate_native_account(
+            snapshot,
+            reference_capabilities,
+            authority,
+        )
+        self._authorities.require_native_current(
+            native_capabilities,
+            native,
+        )
+        if account is None:
             selected = SelectedAccountState(
                 provider_id=ProviderId.CLAUDE,
                 runtime_state=ProviderRuntimeState.EXTERNAL_ACTIVE,
@@ -574,24 +574,6 @@ class ClaudeActivationRecoveryService:
                 updated_at=self._clock.now(),
             )
             return selected
-        account, managed = matches[0]
-        authority.account(account.account_id)
-        capabilities = self._authorities.prepare(account.account_id)
-        self._authorities.require_same_runtime(
-            reference_capabilities,
-            capabilities,
-        )
-        private = self._authorities.read_saved_private(
-            capabilities,
-            managed,
-            account,
-            ClaudeActivationFailure.RECONCILIATION_REQUIRED,
-        )
-        self._authorities.require_usable(
-            private,
-            ClaudeActivationFailure.RECONCILIATION_REQUIRED,
-        )
-        self._require_native_current(native_capabilities, native)
         return self._commit_external_saved(
             transaction,
             record,
@@ -668,14 +650,6 @@ class ClaudeActivationRecoveryService:
             updated_at=self._clock.now(),
         )
         return selected
-
-    def _require_native_current(
-        self,
-        capabilities: ClaudeCapabilities,
-        expected: ClaudeNativeObservation,
-    ) -> None:
-        if self._authorities.observe_native(capabilities) != expected:
-            raise ClaudeActivationError(ClaudeActivationFailure.NATIVE_CHANGED)
 
     def _require_reconciliation(
         self,

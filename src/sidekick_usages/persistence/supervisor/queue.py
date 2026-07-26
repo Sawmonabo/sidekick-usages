@@ -12,7 +12,11 @@ from sidekick_usages.core.selection.policy import (
     coalesce_due_operation,
     transition_operation,
 )
-from sidekick_usages.core.selection.types import OperationKind, OperationState
+from sidekick_usages.core.selection.types import (
+    OperationKind,
+    OperationPriority,
+    OperationState,
+)
 from sidekick_usages.core.time import as_utc
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.persistence.locking import PersistenceLock
@@ -128,6 +132,7 @@ class OperationQueueStore:
         updated_at: datetime,
         due_at: datetime | None = None,
         failure_code: str | None = None,
+        priority: OperationPriority | None = None,
     ) -> DueOperation:
         """Advance one exact durable operation through a legal state edge."""
         with self._lock.hold() as transaction:
@@ -152,6 +157,7 @@ class OperationQueueStore:
                 updated_at=updated_at,
                 due_at=due_at,
                 failure_code=failure_code,
+                priority=priority,
             )
             operations = tuple(
                 effective
@@ -230,6 +236,40 @@ class OperationQueueStore:
             )
             self._commit(retained, snapshot)
             return discarded
+
+    def discard_stale_activations(
+        self,
+        provider_id: ProviderId,
+        active_account_id: SidekickAccountId | None,
+        verified_before: datetime,
+    ) -> tuple[DueOperation, ...]:
+        """Remove older pending switches superseded by native proof."""
+        cutoff = as_utc(verified_before)
+        with self._lock.hold() as transaction:
+            recover_state_file(self._filesystem, transaction)
+            snapshot = self._filesystem.read_opaque_private()
+            document = self._document(snapshot)
+            stale = tuple(
+                operation
+                for operation in document.operations
+                if operation.provider_id is provider_id
+                and operation.kind is OperationKind.ACTIVATE
+                and operation.account_id != active_account_id
+                and operation.state is not OperationState.RUNNING
+                and operation.updated_at < cutoff
+            )
+            if not stale:
+                return ()
+            stale_ids = frozenset(
+                operation.operation_id for operation in stale
+            )
+            retained = tuple(
+                operation
+                for operation in document.operations
+                if operation.operation_id not in stale_ids
+            )
+            self._commit(retained, snapshot)
+            return stale
 
     def remove_account(self, account_id: SidekickAccountId) -> int:
         """Remove idle due state or reject a running account operation."""

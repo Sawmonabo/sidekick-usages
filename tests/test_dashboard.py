@@ -92,6 +92,7 @@ from tests.fakes.dashboard.session import (
     DashboardSessionProof,
     exercise_dashboard_session,
 )
+from tests.fakes.dashboard.startup import exercise_startup_reconciliation
 from tests.fakes.dashboard.state import (
     CLAUDE_ACTIVE_ACCOUNT_ID,
     CLAUDE_PREVIEW_ACCOUNT_ID,
@@ -377,16 +378,29 @@ def test_dashboard_controller_journey_preserves_verified_truth(
     assert fallback.state.focused_provider is ProviderId.CODEX
     assert fallback.state.account_id == CODEX_SAVED_ACCOUNT_ID
     assert not fallback.state.external
+    startup = exercise_startup_reconciliation(
+        snapshot,
+        CLAUDE_ACTIVE_ACCOUNT_ID,
+        CLAUDE_PREVIEW_ACCOUNT_ID,
+    )
     assert exercise_dashboard_session(
         snapshot,
         active_account_id=CLAUDE_ACTIVE_ACCOUNT_ID,
         preview_account_id=CLAUDE_PREVIEW_ACCOUNT_ID,
+        startup=startup,
         monkeypatch=monkeypatch,
     ) == DashboardSessionProof(
         control_connect_calls=(
             (SESSION_SOCKET, CONTROL_ACTION_TIMEOUT_SECONDS),
         ),
         partial_start_reaped=True,
+        startup_reconciliations=(
+            ProviderId.CLAUDE,
+            ProviderId.CODEX,
+            ProviderId.CLAUDE,
+        ),
+        startup_account_id=CLAUDE_PREVIEW_ACCOUNT_ID,
+        startup_footer_kind=DashboardFooterKind.KEYS,
         activation_locked=True,
         confirmations=(
             (

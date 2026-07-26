@@ -110,8 +110,8 @@ def _accepted_operation(
             "The service returned an invalid acceptance."
         )
     operation_id = payload.operation_id
-    account_operation = identity is ControlOperationIdentity.ACCOUNT
-    if account_operation != (operation_id is not None):
+    operation_scoped = identity is not ControlOperationIdentity.GLOBAL
+    if operation_scoped != (operation_id is not None):
         raise UnexpectedServiceEventError(
             "The service returned an invalid operation identity."
         )

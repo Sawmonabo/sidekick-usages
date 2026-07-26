@@ -51,6 +51,7 @@ class ControlOperationIdentity(StrEnum):
     """Expected operation identity for one control action stream."""
 
     ACCOUNT = "account"
+    PROVIDER = "provider"
     GLOBAL = "global"
 
 

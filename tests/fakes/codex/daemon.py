@@ -62,6 +62,7 @@ class FakeCodexDaemon:
         self._active_access_token: str | None = None
         self._originator: str | None = None
         self._ready_account_read_count = 0
+        self._auth_status_read_count = 0
         self._next_server_request_id = 0
         self._refresh_event: Event | None = None
         self._refresh_request_id: int | None = None
@@ -89,6 +90,12 @@ class FakeCodexDaemon:
         """Return successful post-install account-read observations."""
         with self._lock:
             return self._ready_account_read_count
+
+    @property
+    def auth_status_read_count(self) -> int:
+        """Return effective native-auth observations."""
+        with self._lock:
+            return self._auth_status_read_count
 
     @property
     def external_logins(self) -> tuple[tuple[str, str], ...]:
@@ -530,6 +537,7 @@ class FakeCodexDaemon:
         }:
             raise AssertionError("Codex fake auth-status request is invalid.")
         with self._lock:
+            self._auth_status_read_count += 1
             access_token = self._active_access_token
         if access_token is None:
             auth_path = self._codex_home / "auth.json"

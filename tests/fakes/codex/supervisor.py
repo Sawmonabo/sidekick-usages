@@ -113,6 +113,7 @@ class FakeCodexSupervisor:
         scheduler = DurableScheduler(
             queue,
             results,
+            selected,
             workers,
             clock,
             events=events,
@@ -121,7 +122,6 @@ class FakeCodexSupervisor:
         dispatcher = SupervisorDispatcher(
             queue,
             service_state,
-            recovery,
             events,
             clock,
             self._wakeup.notify,

@@ -142,6 +142,7 @@ def main() -> int:
     scheduler = DurableScheduler(
         queue,
         results,
+        selected,
         workers,
         clock,
         events=CompositeOperationSink(
@@ -158,7 +159,6 @@ def main() -> int:
     dispatcher = SupervisorDispatcher(
         queue,
         service_state,
-        recovery,
         events,
         clock,
         wakeup.notify,

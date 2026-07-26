@@ -138,6 +138,19 @@ class SelectedAccountState:
             raise ValueError("Provider runtime state and outcome disagree.")
 
 
+@dataclass(frozen=True, slots=True)
+class NativeReconciliationResult:
+    """One provider-native relation and whether its authority changed."""
+
+    selected: SelectedAccountState | None
+    changed: bool
+
+    def __post_init__(self) -> None:
+        """Require an explicit native-authority change decision."""
+        if type(self.changed) is not bool:
+            raise TypeError("Native reconciliation change must be boolean.")
+
+
 def activation_account_ids(
     selected_baseline: SelectedAccountState | None,
     target_account_id: SidekickAccountId,

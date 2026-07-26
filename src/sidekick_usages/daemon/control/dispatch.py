@@ -35,7 +35,6 @@ from sidekick_usages.daemon.models.scheduler import (
     OperationUpdate,
     SchedulerCompletion,
 )
-from sidekick_usages.daemon.runtime.recovery import ActivationRecoveryScheduler
 from sidekick_usages.daemon.types.ports import OperationEventSink
 from sidekick_usages.daemon.types.protocol import (
     CompletionOutcome,
@@ -195,7 +194,6 @@ class SupervisorDispatcher:
         self,
         queue: OperationQueueStore,
         service_state: ServiceStateStore,
-        recovery: ActivationRecoveryScheduler,
         events: OperationEventHub,
         clock: Clock,
         wake: Callable[[], None],
@@ -206,7 +204,6 @@ class SupervisorDispatcher:
     ) -> None:
         self._queue = queue
         self._service_state = service_state
-        self._recovery = recovery
         self._events = events
         self._clock = clock
         self._wake = wake
@@ -365,30 +362,25 @@ class SupervisorDispatcher:
                 FailedPayload(None, "dispatch_failed"),
             )
             return
-        enrolled = self._recovery.enroll(self._clock.now())
-        operation = next(
-            (
-                candidate
-                for candidate in enrolled
-                if candidate.provider_id is payload.provider_id
-            ),
-            None,
+        now = self._clock.now()
+        operation = self._queue.enqueue(
+            DueOperation(
+                operation_id=self._operation_id_factory(),
+                provider_id=payload.provider_id,
+                account_id=None,
+                kind=OperationKind.RECONCILE_NATIVE,
+                priority=OperationPriority.INTERACTIVE,
+                state=OperationState.SCHEDULED,
+                due_at=now,
+                updated_at=now,
+            )
         )
         self._wake()
         yield self._event(
             request,
             EventKind.ACCEPTED,
-            AcceptedPayload(
-                None if operation is None else operation.operation_id
-            ),
+            AcceptedPayload(operation.operation_id),
         )
-        if operation is None:
-            yield self._event(
-                request,
-                EventKind.COMPLETED,
-                CompletedPayload(None, CompletionOutcome.NO_CHANGE),
-            )
-            return
         for update in self._events.follow_operation(
             request.request_id,
             operation.operation_id,
@@ -422,13 +414,20 @@ class SupervisorDispatcher:
         completion = update.completion
         if completion is None:
             raise ValueError("Terminal operation update is incomplete.")
-        if completion.outcome is WorkerOutcome.SUCCEEDED:
+        if completion.outcome in {
+            WorkerOutcome.SUCCEEDED,
+            WorkerOutcome.NO_CHANGE,
+        }:
             return self._event(
                 request,
                 EventKind.COMPLETED,
                 CompletedPayload(
                     completion.operation_id,
-                    CompletionOutcome.SUCCEEDED,
+                    (
+                        CompletionOutcome.SUCCEEDED
+                        if completion.outcome is WorkerOutcome.SUCCEEDED
+                        else CompletionOutcome.NO_CHANGE
+                    ),
                 ),
             )
         if completion.outcome is WorkerOutcome.CANCELLED:

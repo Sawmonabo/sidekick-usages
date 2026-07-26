@@ -54,6 +54,7 @@ from sidekick_usages.providers.codex.broker.models import (
 )
 from sidekick_usages.providers.codex.broker.native_auth import (
     CodexNativeAuthReconciler,
+    CodexNativePreparationGate,
 )
 from sidekick_usages.providers.codex.broker.ports import (
     CodexOperationDispatcher,
@@ -119,6 +120,10 @@ class CodexRuntimeBroker:
             wall_time,
             monotonic,
         )
+        self._native_preparation = CodexNativePreparationGate(
+            self._native_auth,
+            monotonic,
+        )
 
     @property
     def ready(self) -> bool:
@@ -127,6 +132,15 @@ class CodexRuntimeBroker:
 
     def prepare_operation(self, operation: DueOperation) -> bool:
         """Prepare an exchange only after resident runtime qualification."""
+        if (
+            operation.provider_id is ProviderId.CODEX
+            and operation.kind is OperationKind.RECONCILE_NATIVE
+        ):
+            return self._native_preparation.prepare(
+                operation,
+                stopping=self._stop.is_set,
+                qualified=self._qualified.is_set,
+            )
         if (
             operation.provider_id is not ProviderId.CODEX
             or operation.kind
@@ -217,6 +231,7 @@ class CodexRuntimeBroker:
             self._operations.cancel(operation_id)
         if activation is not None:
             self._exchanges.cancel(activation.operation_id)
+        self._native_preparation.reset()
 
     def close(self) -> None:
         """Join the stopped daemon owner and release its connection."""
@@ -249,6 +264,7 @@ class CodexRuntimeBroker:
                     self._set_ready(False)
                     runtime = _drop_runtime(runtime)
                     self._native_auth.reset()
+                    self._native_preparation.reset()
                     self._stop.wait(reconnect_seconds)
                     reconnect_seconds = min(
                         reconnect_seconds * 2,
@@ -258,6 +274,7 @@ class CodexRuntimeBroker:
             self._set_qualified(False)
             self._set_ready(False)
             self._native_auth.reset()
+            self._native_preparation.reset()
             _drop_runtime(runtime)
 
     def _serve_once(
@@ -294,6 +311,11 @@ class CodexRuntimeBroker:
                 self._set_ready(False)
                 self._stop.wait(_BROKER_RECEIVE_SECONDS)
                 return runtime
+        if self._native_preparation.observe_requested(runtime):
+            self._set_ready(False)
+            if self._status_changed is not None:
+                self._status_changed()
+            return runtime
         if self._native_auth.observe_when_due(
             runtime,
             projection_active=self._expectation() is not None,

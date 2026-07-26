@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 import sidekick_usages.platform.executable
+from sidekick_usages.core.accounts.types import SidekickAccountId
 from sidekick_usages.core.selection.models import DueOperation
 from sidekick_usages.core.selection.types import (
     ActivationOutcome,
@@ -15,6 +16,10 @@ from sidekick_usages.core.selection.types import (
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.models.worker import WorkerResult
 from sidekick_usages.daemon.types.worker import WorkerOutcome
+from sidekick_usages.persistence.filesystem.service import (
+    PersistenceFilesystem,
+)
+from sidekick_usages.persistence.models.artifact import FileSnapshot
 from sidekick_usages.persistence.supervisor.authority import (
     ProviderMutationLock,
 )
@@ -73,6 +78,70 @@ def _recover(
         timeout_seconds=1.0,
     ).hold() as authority:
         return scenario.executor.execute(operation, authority)
+
+
+def _assert_steady_native_reconciliation(
+    scenario: ClaudeRecoveryScenario,
+    saved_ids: tuple[SidekickAccountId, ...],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Prove known, unknown, unchanged, and one raced native read-back."""
+    login_profiles = list(scenario.script.login_profiles)
+    scenario.native_credentials.write_bytes(scenario.known_native_payload)
+    steady_known = _recover(scenario, scenario.native_reconciliation)
+    selected_known = scenario.selected.load(ProviderId.CLAUDE)
+    assert steady_known.outcome is WorkerOutcome.SUCCEEDED
+    assert selected_known is not None
+    assert selected_known.account_id == scenario.known.account_id
+
+    scenario.native_credentials.write_bytes(scenario.unknown_native_payload)
+    steady_unknown = _recover(scenario, scenario.native_reconciliation)
+    selected_unknown = scenario.selected.load(ProviderId.CLAUDE)
+    assert steady_unknown.outcome is WorkerOutcome.SUCCEEDED
+    assert selected_unknown is not None
+    assert selected_unknown.runtime_state is (
+        ProviderRuntimeState.EXTERNAL_ACTIVE
+    )
+    assert selected_unknown.account_id is None
+    assert scenario.script.login_profiles == login_profiles
+    assert (
+        tuple(
+            account.account_id for account in scenario.store.saved_accounts()
+        )
+        == saved_ids
+    )
+    unchanged = _recover(scenario, scenario.native_reconciliation)
+    assert unchanged.outcome is WorkerOutcome.NO_CHANGE
+
+    original_read = PersistenceFilesystem.read_opaque_private
+    native_reads = 0
+
+    def change_native_after_first_read(
+        filesystem: PersistenceFilesystem,
+    ) -> FileSnapshot | None:
+        nonlocal native_reads
+        snapshot = original_read(filesystem)
+        if (
+            filesystem.authority_path == scenario.native_credentials
+            and native_reads == 0
+        ):
+            native_reads += 1
+            scenario.native_credentials.write_bytes(
+                scenario.known_native_payload
+            )
+        return snapshot
+
+    monkeypatch.setattr(
+        PersistenceFilesystem,
+        "read_opaque_private",
+        change_native_after_first_read,
+    )
+    raced = _recover(scenario, scenario.native_reconciliation)
+    selected_after_race = scenario.selected.load(ProviderId.CLAUDE)
+    assert raced.outcome is WorkerOutcome.SUCCEEDED
+    assert native_reads == 1
+    assert selected_after_race is not None
+    assert selected_after_race.account_id == scenario.known.account_id
 
 
 def test_interrupted_native_activation_rolls_back_once_or_requires_repair(
@@ -183,7 +252,7 @@ def test_external_claude_login_wins_without_importing_unknown_identity(
     )
     _interrupt(known)
     known.native_credentials.write_bytes(known.known_native_payload)
-    known_result = _recover(known, known.recovery)
+    known_result = _recover(known, known.native_reconciliation)
 
     assert known_result.outcome is WorkerOutcome.SUCCEEDED
     known_selected = known.selected.load(ProviderId.CLAUDE)
@@ -228,3 +297,9 @@ def test_external_claude_login_wins_without_importing_unknown_identity(
     )
     assert unknown.journals.load(ProviderId.CLAUDE).active is None
     assert unknown.selected.load(ProviderId.CODEX) == unknown.codex_state
+
+    _assert_steady_native_reconciliation(
+        unknown,
+        saved_ids,
+        monkeypatch,
+    )

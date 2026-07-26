@@ -53,6 +53,9 @@ from sidekick_usages.persistence.accounts.store import AccountStore
 from sidekick_usages.persistence.private.credentials import (
     PrivateCredentialTree,
 )
+from sidekick_usages.persistence.supervisor.authority import (
+    ProviderMutationAuthority,
+)
 from sidekick_usages.providers.claude.activation.service import (
     claude_environment_conflict,
     claude_native_switch_conflict,
@@ -157,16 +160,20 @@ class ClaudeActivationAuthorityCoordinator:
         managed: ClaudeCapabilities,
     ) -> ClaudeCapabilities:
         """Bind proven capabilities to the native default profile."""
+        native = self.prepare_native()
+        self.require_same_runtime(managed, native)
+        return native
+
+    def prepare_native(self) -> ClaudeCapabilities:
+        """Prove and bind the supported native default Claude profile."""
         try:
-            native = self._capabilities.native(
+            return self._capabilities.native(
                 environment=self._source_environment()
             )
         except ClaudeManagedError:
             raise ClaudeActivationError(
                 ClaudeActivationFailure.INCOMPATIBLE
             ) from None
-        self.require_same_runtime(managed, native)
-        return native
 
     def require_activation_environment(self) -> None:
         """Reject caller authentication that overrides native Claude."""
@@ -316,6 +323,57 @@ class ClaudeActivationAuthorityCoordinator:
             snapshot=snapshot,
         )
 
+    def require_native_current(
+        self,
+        capabilities: ClaudeCapabilities,
+        expected: ClaudeNativeObservation,
+    ) -> None:
+        """Require one native observation to remain current on read-back."""
+        if self.observe_native(capabilities) != expected:
+            raise ClaudeActivationError(ClaudeActivationFailure.NATIVE_CHANGED)
+
+    def relate_native_account(
+        self,
+        native: ClaudeAuthoritySnapshot,
+        reference_capabilities: ClaudeCapabilities,
+        authority: ProviderMutationAuthority,
+    ) -> SavedAccount | None:
+        """Relate one native identity to one verified managed account."""
+        matches: list[tuple[SavedAccount, ClaudeManagedLoginAuthority]] = []
+        for account in self.saved_accounts():
+            if account.provider_id is not ProviderId.CLAUDE:
+                continue
+            try:
+                managed = self.managed_authority(
+                    account,
+                    ClaudeActivationFailure.TARGET_UNAVAILABLE,
+                )
+            except ClaudeActivationError:
+                continue
+            if managed.provider_identity == native.provider_identity:
+                matches.append((account, managed))
+        if len(matches) > 1:
+            raise ClaudeActivationError(
+                ClaudeActivationFailure.RECONCILIATION_REQUIRED
+            )
+        if not matches:
+            return None
+        account, managed = matches[0]
+        authority.account(account.account_id)
+        capabilities = self.prepare(account.account_id)
+        self.require_same_runtime(reference_capabilities, capabilities)
+        private = self.read_saved_private(
+            capabilities,
+            managed,
+            account,
+            ClaudeActivationFailure.RECONCILIATION_REQUIRED,
+        )
+        self.require_usable(
+            private,
+            ClaudeActivationFailure.RECONCILIATION_REQUIRED,
+        )
+        return account
+
     def retain_source(
         self,
         source: SavedAccount,
@@ -416,8 +474,10 @@ class ClaudeActivationAuthorityCoordinator:
         failure: ClaudeActivationFailure,
     ) -> ClaudeAuthoritySnapshot:
         """Officially provision one private authority into native Claude."""
-        if self.observe_native(native_capabilities) != expected_native:
-            raise ClaudeActivationError(ClaudeActivationFailure.NATIVE_CHANGED)
+        self.require_native_current(
+            native_capabilities,
+            expected_native,
+        )
         try:
             with self._managed_reader.open_login(
                 private_capabilities,

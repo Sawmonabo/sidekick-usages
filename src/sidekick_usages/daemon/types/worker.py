@@ -21,6 +21,7 @@ class WorkerOutcome(StrEnum):
     """Closed sanitized outcomes written by isolated workers."""
 
     SUCCEEDED = "succeeded"
+    NO_CHANGE = "no_change"
     TRANSIENT_FAILURE = "transient_failure"
     ACTION_REQUIRED = "action_required"
     CANCELLED = "cancelled"

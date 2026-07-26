@@ -21,6 +21,8 @@ from sidekick_usages.cli.dashboard.models.session import (
     DashboardConfirmation,
     DashboardConfirmationKind,
     DashboardSessionView,
+    DashboardStartupReconciliation,
+    DashboardStartupReconciliationState,
 )
 from sidekick_usages.cli.dashboard.models.setup import (
     ServiceSetupDecision,
@@ -67,6 +69,13 @@ LOOKUP_FAILED_MESSAGE = "Live metrics refresh failed; cached metrics remain."
 CACHE_RELOAD_ERROR_MESSAGE = (
     "The action completed, but cached state could not be reloaded."
 )
+STARTUP_RECONCILIATION_RETRY_MESSAGE = (
+    "{provider} account verification is unavailable; retrying."
+)
+STARTUP_RECONCILIATION_FAILED_MESSAGE = (
+    "{provider} account verification is unavailable; cached selection "
+    "remains. Restart the dashboard to retry."
+)
 
 
 def _discard_invalidation() -> None:
@@ -112,6 +121,8 @@ class InteractiveDashboardSession:
         self._invalidate = _discard_invalidation
         self._lookup_thread: Thread | None = None
         self._action_thread: Thread | None = None
+        self._startup_reconciliation_failures: set[ProviderId] = set()
+        self._startup_footer_message: str | None = None
         self._started = False
         self._closed = False
         self._action_executor = DashboardActionExecutor(
@@ -473,11 +484,69 @@ class InteractiveDashboardSession:
             return None
 
     def _run_actions(self) -> None:
+        self._action_executor.reconcile_startup(
+            tuple(ProviderId) if self._only is None else (self._only,)
+        )
         while not self._stopping.is_set():
             request = self._actions.get()
             if request is None or self._stopping.is_set():
                 return
             self._action_executor.execute(request)
+
+    def startup_reconciled(
+        self,
+        result: DashboardStartupReconciliation,
+    ) -> None:
+        """Rebase and publish one provider's passive read-back result."""
+        with (
+            self._serialized_snapshot() as snapshot,
+            self._view_lock,
+        ):
+            if self._closed:
+                return
+            controller = self._controller()
+            if snapshot is not None:
+                controller = controller.rebase(snapshot)
+            footer = self._view.footer
+            if (
+                result.state
+                is DashboardStartupReconciliationState.VERIFIED
+            ):
+                self._startup_reconciliation_failures.discard(
+                    result.provider_id
+                )
+                if (
+                    not self._startup_reconciliation_failures
+                    and footer.message == self._startup_footer_message
+                ):
+                    footer = self._idle_footer(controller)
+                    self._startup_footer_message = None
+            else:
+                self._startup_reconciliation_failures.add(
+                    result.provider_id
+                )
+                message_template = (
+                    STARTUP_RECONCILIATION_FAILED_MESSAGE
+                    if result.state
+                    is DashboardStartupReconciliationState.UNAVAILABLE
+                    else STARTUP_RECONCILIATION_RETRY_MESSAGE
+                )
+                message = message_template.format(
+                    provider=result.provider_id.value.title()
+                )
+                self._startup_footer_message = message
+                footer = (
+                    self._error_footer(message)
+                    if result.state
+                    is DashboardStartupReconciliationState.UNAVAILABLE
+                    else self._progress_footer(message)
+                )
+            self._set_controller(
+                controller,
+                footer,
+            )
+            invalidate = self._invalidate
+        invalidate()
 
     def action_completed(
         self,

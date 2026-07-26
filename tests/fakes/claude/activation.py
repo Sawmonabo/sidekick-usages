@@ -39,6 +39,9 @@ from sidekick_usages.credentials.claude.activation.authority import (
 from sidekick_usages.credentials.claude.activation.models import (
     ClaudeActivationRuntime,
 )
+from sidekick_usages.credentials.claude.activation.reconciliation import (
+    ClaudeNativeReconciliationService,
+)
 from sidekick_usages.credentials.claude.activation.recovery import (
     ClaudeActivationRecoveryService,
 )
@@ -111,6 +114,9 @@ _CODEX_ACCOUNT_ID = SidekickAccountId("44444444-4444-4444-8444-444444444444")
 _ACTIVATION_OPERATION_ID = OperationId("55555555-5555-4555-8555-555555555555")
 _RECOVERY_OPERATION_ID = OperationId("66666666-6666-4666-8666-666666666666")
 _RETRY_OPERATION_ID = OperationId("77777777-7777-4777-8777-777777777777")
+_NATIVE_RECONCILIATION_OPERATION_ID = OperationId(
+    "88888888-8888-4888-8888-888888888888"
+)
 _SOURCE_IDENTITY = ClaudeLoginIdentity(
     account_id="provider-account-source",
     organization_id="provider-organization-source",
@@ -202,6 +208,7 @@ class ClaudeRecoveryScenario:
     activation: DueOperation
     recovery: DueOperation
     retry: DueOperation
+    native_reconciliation: DueOperation
     account_ids: tuple[SidekickAccountId, ...]
 
 
@@ -517,6 +524,11 @@ def claude_recovery_scenario(
         target.account_id,
         OperationKind.RECONCILE,
     )
+    native_reconciliation = _selection_operation(
+        _NATIVE_RECONCILIATION_OPERATION_ID,
+        None,
+        OperationKind.RECONCILE_NATIVE,
+    )
     return ClaudeRecoveryScenario(
         paths=paths,
         source=source,
@@ -543,6 +555,7 @@ def claude_recovery_scenario(
         activation=activation,
         recovery=recovery,
         retry=retry,
+        native_reconciliation=native_reconciliation,
         account_ids=tuple(
             sorted(
                 (
@@ -629,6 +642,12 @@ def _runtime_fixture(
         capabilities=capabilities,
         runtime=runtime,
     )
+    recovery = ClaudeActivationRecoveryService(
+        authorities,
+        journals,
+        selected,
+        clock,
+    )
     executor = ClaudeSelectionWorkerExecutor(
         ClaudeActivationService(
             authorities,
@@ -636,8 +655,10 @@ def _runtime_fixture(
             selected,
             clock,
         ),
-        ClaudeActivationRecoveryService(
+        recovery,
+        ClaudeNativeReconciliationService(
             authorities,
+            recovery,
             journals,
             selected,
             clock,
@@ -656,7 +677,7 @@ def _runtime_fixture(
 
 def _selection_operation(
     operation_id: OperationId,
-    account_id: SidekickAccountId,
+    account_id: SidekickAccountId | None,
     kind: OperationKind,
 ) -> DueOperation:
     """Build one running interactive Claude selection operation."""

@@ -48,6 +48,19 @@ def operation_requires_worker_exchange(operation: DueOperation) -> bool:
     )
 
 
+def operation_requires_provider_preparation(
+    operation: DueOperation,
+) -> bool:
+    """Return whether resident provider state must precede worker launch."""
+    return (
+        operation_requires_worker_exchange(operation)
+        and operation.kind is not OperationKind.CODEX_CALLBACK
+    ) or (
+        operation.provider_id is ProviderId.CODEX
+        and operation.kind is OperationKind.RECONCILE_NATIVE
+    )
+
+
 class WorkerExchangeError(RuntimeError):
     """A worker exchange failed without exposing its payload."""
 

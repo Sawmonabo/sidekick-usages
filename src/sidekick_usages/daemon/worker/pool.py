@@ -410,7 +410,11 @@ class WorkerPool:
         if self._exchanges is not None:
             self._exchanges.complete(
                 operation_id,
-                outcome is WorkerOutcome.SUCCEEDED,
+                outcome
+                in {
+                    WorkerOutcome.SUCCEEDED,
+                    WorkerOutcome.NO_CHANGE,
+                },
             )
 
     def close_exchanges(self) -> None:

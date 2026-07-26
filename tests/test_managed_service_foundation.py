@@ -59,6 +59,7 @@ from sidekick_usages.daemon.models.protocol import (
     ControlRequest,
     EmptyPayload,
 )
+from sidekick_usages.daemon.models.worker import WorkerResult
 from sidekick_usages.daemon.runtime.recovery import ActivationRecoveryScheduler
 from sidekick_usages.daemon.runtime.scheduler import DurableScheduler
 from sidekick_usages.daemon.runtime.supervisor import WakeupChannel
@@ -73,6 +74,7 @@ from sidekick_usages.daemon.types.protocol import (
     RequestKind,
 )
 from sidekick_usages.daemon.types.service import ServicePhase
+from sidekick_usages.daemon.types.worker import WorkerOutcome
 from sidekick_usages.daemon.worker.pool import WorkerPool
 from sidekick_usages.paths import ApplicationPaths
 from sidekick_usages.persistence.accounts.index import AccountIndex
@@ -113,6 +115,10 @@ _EXPECTED_WORKER_COUNT = 2
 _CLAUDE_RECOVERY_OPERATION_ID = OperationId(
     "cc413f38-2b11-418a-a4a7-b0e45666067e"
 )
+_CLAUDE_NATIVE_OPERATION_ID = OperationId(
+    "ddd13f38-2b11-418a-a4a7-b0e45666067e"
+)
+_NATIVE_SUPERSEDED_CODE = "superseded_by_native_login"
 
 
 def _accounts() -> AccountIndex:
@@ -251,6 +257,66 @@ def _foundation_state(tmp_path: Path) -> _FoundationState:
         operations=operations,
         codex_state=codex_state,
     )
+
+
+def _assert_native_login_cancels_stale_activation(
+    state: _FoundationState,
+    results: WorkerResultStore,
+    clock: RuntimeClock,
+    scheduler: DurableScheduler,
+    events: OperationEventHub,
+) -> None:
+    """Prove native read-back cancels and terminates an older switch."""
+    stale_activation = state.operations[0]
+    target = tuple(state.accounts)[1]
+    clock.advance(1)
+    state.selected.save(
+        _selected(
+            ProviderId.CLAUDE,
+            target.account_id,
+            "claude-target-id",
+            "claude-target-generation",
+            verified_in=7,
+        )
+    )
+    native = DueOperation(
+        operation_id=_CLAUDE_NATIVE_OPERATION_ID,
+        provider_id=ProviderId.CLAUDE,
+        account_id=None,
+        kind=OperationKind.RECONCILE_NATIVE,
+        priority=OperationPriority.INTERACTIVE,
+        state=OperationState.SCHEDULED,
+        due_at=clock.now(),
+        updated_at=clock.now(),
+    )
+    state.queue.enqueue(native)
+    running = state.queue.transition(
+        native.operation_id,
+        OperationState.RUNNING,
+        updated_at=clock.now(),
+    )
+    results.save(
+        WorkerResult(
+            operation_id=native.operation_id,
+            outcome=WorkerOutcome.SUCCEEDED,
+            finished_at=clock.now(),
+        )
+    )
+    completions = scheduler.recover()
+    update = next(
+        events.follow_operation(
+            new_request_id(),
+            stale_activation.operation_id,
+        )
+    )
+
+    assert len(completions) == 1
+    assert completions[0].operation_id == running.operation_id
+    assert completions[0].outcome is WorkerOutcome.SUCCEEDED
+    assert state.queue.find(stale_activation.operation_id) is None
+    assert update.completion is not None
+    assert update.completion.outcome is WorkerOutcome.CANCELLED
+    assert update.completion.failure_code == _NATIVE_SUPERSEDED_CODE
 
 
 def test_selection_and_queue_preserve_stable_independent_state(
@@ -429,7 +495,6 @@ def test_authenticated_control_stream_frames_completes_and_cancels(
     durable_dispatcher = SupervisorDispatcher(
         state.queue,
         ServiceStateStore(state.paths.service_state),
-        ActivationRecoveryScheduler(state.journals, state.queue),
         OperationEventHub(),
         RuntimeClock(),
         Event().set,
@@ -595,6 +660,7 @@ def test_supervisor_isolates_timeout_and_recovers_without_duplicate_work(
     scheduler = DurableScheduler(
         state.queue,
         results,
+        state.selected,
         workers,
         clock,
         monotonic=clock.monotonic,
@@ -646,14 +712,24 @@ def test_supervisor_isolates_timeout_and_recovers_without_duplicate_work(
         worker_planner(),
         lambda: None,
     )
+    restarted_events = OperationEventHub()
     restarted = DurableScheduler(
         OperationQueueStore(state.paths.durable_operations),
         results,
+        state.selected,
         restarted_workers,
         clock,
+        events=restarted_events,
         monotonic=clock.monotonic,
     )
     assert restarted.recover() == ()
+    _assert_native_login_cancels_stale_activation(
+        state,
+        results,
+        clock,
+        restarted,
+        restarted_events,
+    )
     durable = OperationQueueStore(state.paths.durable_operations).load()
     assert len(durable) == _EXPECTED_WORKER_COUNT
     assert len({operation.operation_id for operation in durable}) == len(

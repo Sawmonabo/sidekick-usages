@@ -12,6 +12,7 @@ from sidekick_usages.core.accounts.types import (
 )
 from sidekick_usages.core.selection.models import (
     DueOperation,
+    NativeReconciliationResult,
     SelectedAccountState,
 )
 from sidekick_usages.core.selection.types import (
@@ -51,6 +52,7 @@ from sidekick_usages.daemon.worker.ports import ManagedAccountService
 from sidekick_usages.daemon.worker.runtime import (
     managed_worker_result,
     worker_failure,
+    worker_no_change,
     worker_success,
 )
 from sidekick_usages.heartbeat.service import heartbeat_exit_code
@@ -393,7 +395,7 @@ class CodexNativeReconciliationWorkerExecutor:
                 self._clock,
             )
         try:
-            selected = self._service.reconcile(observation, authority)
+            reconciled = self._service.reconcile(observation, authority)
         except CodexNativeReconciliationError as error:
             return worker_failure(
                 operation,
@@ -419,13 +421,14 @@ class CodexNativeReconciliationWorkerExecutor:
                 "native_observation_changed",
                 self._clock,
             )
-        return self._selected_result(operation, selected)
+        return self._selected_result(operation, reconciled)
 
     def _selected_result(
         self,
         operation: DueOperation,
-        selected: SelectedAccountState | None,
+        reconciled: NativeReconciliationResult,
     ) -> WorkerResult:
+        selected = reconciled.selected
         if (
             selected is not None
             and selected.runtime_state is ProviderRuntimeState.UNREADABLE
@@ -446,6 +449,8 @@ class CodexNativeReconciliationWorkerExecutor:
                 "native_auth_unsupported",
                 self._clock,
             )
+        if not reconciled.changed:
+            return worker_no_change(operation, self._clock)
         return worker_success(operation, self._clock)
 
 

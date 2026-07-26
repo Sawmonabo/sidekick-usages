@@ -12,6 +12,7 @@ from sidekick_usages.core.selection.types import (
     OperationPriority,
     OperationState,
 )
+from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.models.scheduler import SchedulerCompletion
 from sidekick_usages.daemon.models.worker import WorkerExit, WorkerResult
 from sidekick_usages.daemon.types.ports import (
@@ -20,6 +21,7 @@ from sidekick_usages.daemon.types.ports import (
 )
 from sidekick_usages.daemon.types.worker import WorkerOutcome
 from sidekick_usages.daemon.worker.exchange import (
+    operation_requires_provider_preparation,
     operation_requires_worker_exchange,
 )
 from sidekick_usages.daemon.worker.pool import (
@@ -29,10 +31,12 @@ from sidekick_usages.daemon.worker.pool import (
 from sidekick_usages.persistence.state.files import ManagedStateConflictError
 from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
 from sidekick_usages.persistence.supervisor.results import WorkerResultStore
+from sidekick_usages.persistence.supervisor.selection import SelectedStateStore
 
 _SCHEDULE_INTERVAL = timedelta(minutes=5)
 _MINIMUM_RETRY = timedelta(minutes=1)
 _MAXIMUM_RETRY = timedelta(hours=1)
+_NATIVE_SUPERSEDED_CODE = "superseded_by_native_login"
 
 
 class NullOperationEventSink:
@@ -55,6 +59,7 @@ class DurableScheduler:
         self,
         queue: OperationQueueStore,
         results: WorkerResultStore,
+        selected: SelectedStateStore,
         workers: WorkerPool,
         clock: Clock,
         *,
@@ -64,6 +69,7 @@ class DurableScheduler:
     ) -> None:
         self._queue = queue
         self._results = results
+        self._selected = selected
         self._workers = workers
         self._clock = clock
         self._events = events or NullOperationEventSink()
@@ -104,15 +110,15 @@ class DurableScheduler:
         monotonic_now = self._monotonic()
         for operation in self._queue.due(now):
             callback = operation.priority is OperationPriority.CODEX_CALLBACK
-            requires_exchange_preparation = (
-                operation_requires_worker_exchange(operation) and not callback
+            requires_provider_preparation = (
+                operation_requires_provider_preparation(operation)
             )
             if (
-                requires_exchange_preparation
+                requires_provider_preparation
                 and not self._workers.has_capacity_for(operation)
             ):
                 continue
-            if requires_exchange_preparation and (
+            if requires_provider_preparation and (
                 self._exchange_preparer is None
                 or not self._exchange_preparer.prepare_operation(operation)
             ):
@@ -123,7 +129,7 @@ class DurableScheduler:
             ):
                 continue
             if not self._workers.can_start(operation):
-                if requires_exchange_preparation:
+                if operation_requires_worker_exchange(operation):
                     self._workers.cancel_exchange(operation.operation_id)
                 continue
             try:
@@ -335,13 +341,26 @@ class DurableScheduler:
                 expected_state=OperationState.RUNNING,
             )
             state: OperationState | None = None
-        elif result.outcome is WorkerOutcome.SUCCEEDED:
-            if operation.priority is OperationPriority.SCHEDULED:
+        elif result.outcome in {
+            WorkerOutcome.SUCCEEDED,
+            WorkerOutcome.NO_CHANGE,
+        }:
+            if operation.kind is OperationKind.RECONCILE_NATIVE:
+                self._discard_stale_activations(operation.provider_id)
+            if (
+                operation.kind is OperationKind.RECONCILE_NATIVE
+                or operation.priority is OperationPriority.SCHEDULED
+            ):
                 updated = self._queue.transition(
                     operation.operation_id,
                     OperationState.SCHEDULED,
                     updated_at=now,
                     due_at=now + _SCHEDULE_INTERVAL,
+                    priority=(
+                        OperationPriority.SCHEDULED
+                        if operation.kind is OperationKind.RECONCILE_NATIVE
+                        else None
+                    ),
                 )
                 state = updated.state
             else:
@@ -377,6 +396,28 @@ class DurableScheduler:
             outcome=result.outcome,
             failure_code=result.failure_code,
         )
+
+    def _discard_stale_activations(
+        self,
+        provider_id: ProviderId,
+    ) -> None:
+        selected = self._selected.load(provider_id)
+        if selected is None:
+            return
+        stale = self._queue.discard_stale_activations(
+            provider_id,
+            selected.account_id,
+            selected.verified_at,
+        )
+        for superseded in stale:
+            self._events.completed(
+                SchedulerCompletion(
+                    operation_id=superseded.operation_id,
+                    state=None,
+                    outcome=WorkerOutcome.CANCELLED,
+                    failure_code=_NATIVE_SUPERSEDED_CODE,
+                )
+            )
 
 
 def _retry_delay(attempts: int) -> timedelta:

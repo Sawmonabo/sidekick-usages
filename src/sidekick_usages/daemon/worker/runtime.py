@@ -78,6 +78,18 @@ def worker_success(
     )
 
 
+def worker_no_change(
+    operation: DueOperation,
+    clock: Clock,
+) -> WorkerResult:
+    """Return one successful worker result with unchanged authority."""
+    return WorkerResult(
+        operation_id=operation.operation_id,
+        outcome=WorkerOutcome.NO_CHANGE,
+        finished_at=clock.now(),
+    )
+
+
 def worker_failure(
     operation: DueOperation,
     outcome: WorkerOutcome,

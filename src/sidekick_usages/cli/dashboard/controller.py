@@ -237,6 +237,24 @@ class DashboardController:
                         help_visible=self.state.help_visible,
                     ),
                 )
+        if _focused_at_anchor(self.state):
+            anchor = next(
+                (
+                    candidate
+                    for candidate in anchors
+                    if candidate.provider_id is self.state.focused_provider
+                ),
+                None,
+            )
+            if anchor is not None:
+                return DashboardController(
+                    snapshot=snapshot,
+                    state=_state_at_anchor(
+                        anchors,
+                        anchor,
+                        help_visible=self.state.help_visible,
+                    ),
+                )
         focused = _matching_row(snapshot, self.state)
         if focused is not None:
             state = DashboardControllerState(
@@ -434,3 +452,22 @@ def _focused_index(
         elif state.external:
             return index
     return 0
+
+
+def _focused_at_anchor(state: DashboardControllerState) -> bool:
+    provider_id = state.focused_provider
+    if provider_id is None:
+        return False
+    anchor = next(
+        (
+            candidate
+            for candidate in state.anchors
+            if candidate.provider_id is provider_id
+        ),
+        None,
+    )
+    return (
+        anchor is not None
+        and anchor.account_id == state.account_id
+        and anchor.external == state.external
+    )

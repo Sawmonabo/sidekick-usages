@@ -8,11 +8,13 @@ from sidekick_usages.core.accounts.models import (
     SavedAccount,
 )
 from sidekick_usages.core.selection.models import (
+    NativeReconciliationResult,
     ProviderAuthObservation,
     SelectedAccountState,
 )
 from sidekick_usages.core.selection.policy import (
     same_provider_auth_authority,
+    same_selected_runtime_authority,
 )
 from sidekick_usages.core.selection.types import (
     ActivationOutcome,
@@ -67,9 +69,23 @@ class CodexNativeReconciliationService:
         self,
         observation: ProviderAuthObservation,
         authority: ProviderMutationAuthority,
-    ) -> SelectedAccountState | None:
+    ) -> NativeReconciliationResult:
         """Persist the newest observed native selection under provider lock."""
         authority.require(ProviderId.CODEX)
+        baseline = self._selected.load(ProviderId.CODEX)
+        selected = self._reconcile(observation, authority, baseline)
+        return NativeReconciliationResult(
+            selected,
+            not same_selected_runtime_authority(baseline, selected),
+        )
+
+    def _reconcile(
+        self,
+        observation: ProviderAuthObservation,
+        authority: ProviderMutationAuthority,
+        baseline: SelectedAccountState | None,
+    ) -> SelectedAccountState | None:
+        """Apply one native relation after capturing its selected baseline."""
         candidate = self._candidate(observation, authority)
         journal = self._journals.load(ProviderId.CODEX).active
         if journal is not None:
@@ -77,12 +93,12 @@ class CodexNativeReconciliationService:
                 observation,
                 journal.native_auth_baseline,
             ):
-                return self._selected.load(ProviderId.CODEX)
+                return baseline
             if (
                 candidate.runtime_state is ProviderRuntimeState.SAVED_ACTIVE
                 and candidate.account_id == journal.target_account_id
             ):
-                return self._selected.load(ProviderId.CODEX)
+                return baseline
             if candidate.runtime_state is ProviderRuntimeState.UNREADABLE:
                 raise CodexNativeReconciliationError(
                     "native_auth_unreadable",
@@ -123,9 +139,9 @@ class CodexNativeReconciliationService:
                 updated_at=self._clock.now(),
             )
             return candidate
-        current = self._selected.load(ProviderId.CODEX)
-        self._selected.compare_and_swap(candidate, expected=current)
-        return candidate
+        if same_selected_runtime_authority(baseline, candidate):
+            return baseline
+        return self._selected.compare_and_swap(candidate, expected=baseline)
 
     def _candidate(
         self,

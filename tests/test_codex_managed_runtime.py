@@ -37,6 +37,7 @@ from sidekick_usages.daemon.models.protocol import (
     ProgressPayload,
 )
 from sidekick_usages.daemon.types.protocol import EventKind
+from sidekick_usages.paths import ApplicationPaths
 from sidekick_usages.persistence.supervisor.activation import (
     ActivationJournalStore,
 )
@@ -124,6 +125,40 @@ def _require_selected(
     assert state.provider_identity == ProviderIdentity(provider_identity)
     assert state.runtime_generation == AuthorityGeneration(generation)
     return state
+
+
+def _assert_fresh_codex_reconciliation(
+    socket_path: Path,
+    daemon: FakeCodexDaemon,
+) -> None:
+    """Require each native operation to read its current runtime first."""
+    reads_before = daemon.auth_status_read_count
+    client = ControlClient.connect(socket_path)
+    events = tuple(client.reconcile(ProviderId.CODEX))
+    client.close()
+    assert events[-1].kind is EventKind.COMPLETED
+    assert daemon.auth_status_read_count > reads_before
+
+
+def _codex_recovery_state(
+    paths: ApplicationPaths,
+) -> tuple[SelectedStateStore, ActivationJournalStore]:
+    """Seed the selected baseline and return both recovery stores."""
+    selected = SelectedStateStore(paths.selected_state)
+    selected.save(
+        selected_account(
+            ACCOUNT_A_ID,
+            ACCOUNT_A_PROVIDER_IDENTITY,
+            GENERATION,
+        )
+    )
+    return (
+        selected,
+        ActivationJournalStore(
+            paths.activation_journals,
+            paths.durable_operations,
+        ),
+    )
 
 
 def test_shared_codex_runtime_is_idempotent_and_rehydrates(
@@ -428,18 +463,7 @@ def test_codex_activation_recovers_at_official_mutation_boundary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fixture = broker_fixture(tmp_path, short_socket_root, monkeypatch)
-    selected = SelectedStateStore(fixture.paths.selected_state)
-    selected.save(
-        selected_account(
-            ACCOUNT_A_ID,
-            ACCOUNT_A_PROVIDER_IDENTITY,
-            GENERATION,
-        )
-    )
-    journals = ActivationJournalStore(
-        fixture.paths.activation_journals,
-        fixture.paths.durable_operations,
-    )
+    selected, journals = _codex_recovery_state(fixture.paths)
 
     with FakeCodexDaemon(fixture.native_home) as daemon:
         configure_codex_daemon_lifecycle(
@@ -491,6 +515,10 @@ def test_codex_activation_recovers_at_official_mutation_boundary(
             assert tuple(retry)[-1].kind is EventKind.COMPLETED
             client.close()
             restarted.wait_until_ready()
+            _assert_fresh_codex_reconciliation(
+                fixture.paths.supervisor_socket,
+                daemon,
+            )
 
             assert (
                 len(daemon.installed_account_ids) > installed_before_recovery

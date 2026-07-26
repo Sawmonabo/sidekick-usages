@@ -11,6 +11,7 @@ from sidekick_usages.cli.dashboard.models.controller import (
 from sidekick_usages.cli.dashboard.models.session import (
     DashboardConfirmationKind,
     DashboardSessionView,
+    DashboardStartupReconciliation,
 )
 from sidekick_usages.cli.dashboard.models.setup import ServiceSetupDecision
 from sidekick_usages.cli.dashboard.models.use import UseActivationResult
@@ -103,6 +104,13 @@ class DashboardControlClient(Protocol):
         """Schedule every due account for maintenance."""
         ...
 
+    def reconcile(
+        self,
+        provider_id: ProviderId,
+    ) -> Iterator[ControlEvent]:
+        """Reconcile one provider's current native account."""
+        ...
+
     def close(self) -> None:
         """Stop observing without cancelling durable provider work."""
         ...
@@ -159,6 +167,13 @@ class DashboardActionSink(Protocol):
         message: str,
     ) -> None:
         """Restore cached truth and show one fixed corrective action."""
+        ...
+
+    def startup_reconciled(
+        self,
+        result: DashboardStartupReconciliation,
+    ) -> None:
+        """Publish one provider's passive startup read-back result."""
         ...
 
 

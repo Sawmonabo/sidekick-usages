@@ -8,6 +8,7 @@ from sidekick_usages.core.selection.models import (
     ActivationRecord,
     DueOperation,
     ProviderAuthObservation,
+    SelectedAccountState,
 )
 from sidekick_usages.core.selection.types import (
     ActivationOutcome,
@@ -93,6 +94,22 @@ def same_provider_auth_authority(
     )
 
 
+def same_selected_runtime_authority(
+    first: SelectedAccountState | None,
+    second: SelectedAccountState | None,
+) -> bool:
+    """Return whether two selected states prove the same runtime authority."""
+    if first is None or second is None:
+        return first is second
+    return (
+        first.provider_id is second.provider_id
+        and first.runtime_state is second.runtime_state
+        and first.account_id == second.account_id
+        and first.provider_identity == second.provider_identity
+        and first.runtime_generation == second.runtime_generation
+    )
+
+
 def transition_activation(
     record: ActivationRecord,
     phase: ActivationPhase,
@@ -133,10 +150,19 @@ def transition_operation(
     updated_at: datetime,
     due_at: datetime | None = None,
     failure_code: str | None = None,
+    priority: OperationPriority | None = None,
 ) -> DueOperation:
     """Advance one durable operation through one legal lifecycle edge."""
     if state not in _OPERATION_TRANSITIONS[operation.state]:
         raise ValueError("Illegal durable operation transition.")
+    if priority is not None and (
+        operation.kind is not OperationKind.RECONCILE_NATIVE
+        or state is not OperationState.SCHEDULED
+        or priority is not OperationPriority.SCHEDULED
+    ):
+        raise ValueError(
+            "Only recurrent native reconciliation may change priority."
+        )
     normalized_update = max(as_utc(updated_at), operation.updated_at)
     effective_due_at = operation.due_at if due_at is None else as_utc(due_at)
     attempts = operation.attempts
@@ -147,6 +173,7 @@ def transition_operation(
         failure_code = None
     return replace(
         operation,
+        priority=operation.priority if priority is None else priority,
         state=state,
         due_at=effective_due_at,
         updated_at=normalized_update,
@@ -191,11 +218,17 @@ def coalesce_due_operation(
     ):
         return current
     if (
-        current.state
-        in {
-            OperationState.ACTION_REQUIRED,
-            OperationState.RETRY_WAIT,
-        }
+        (
+            (
+                current.kind is OperationKind.RECONCILE_NATIVE
+                and current.priority is OperationPriority.SCHEDULED
+            )
+            or current.state
+            in {
+                OperationState.ACTION_REQUIRED,
+                OperationState.RETRY_WAIT,
+            }
+        )
         and incoming.priority is OperationPriority.INTERACTIVE
     ):
         return incoming

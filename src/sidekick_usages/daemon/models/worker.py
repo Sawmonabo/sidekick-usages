@@ -37,9 +37,13 @@ class WorkerResult:
         """Normalize time and require truthful safe failure metadata."""
         object.__setattr__(self, "finished_at", as_utc(self.finished_at))
         code = safe_outcome_code(self.failure_code)
-        if self.outcome is WorkerOutcome.SUCCEEDED and code is not None:
+        succeeded = self.outcome in {
+            WorkerOutcome.SUCCEEDED,
+            WorkerOutcome.NO_CHANGE,
+        }
+        if succeeded and code is not None:
             raise ValueError("Successful worker results cannot carry errors.")
-        if self.outcome is not WorkerOutcome.SUCCEEDED and code is None:
+        if not succeeded and code is None:
             raise ValueError("Failed worker results require a safe code.")
         object.__setattr__(self, "failure_code", code)
 

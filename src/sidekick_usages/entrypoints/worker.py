@@ -24,6 +24,9 @@ from sidekick_usages.credentials.claude.activation.authority import (
 from sidekick_usages.credentials.claude.activation.models import (
     ClaudeActivationRuntime,
 )
+from sidekick_usages.credentials.claude.activation.reconciliation import (
+    ClaudeNativeReconciliationService,
+)
 from sidekick_usages.credentials.claude.activation.recovery import (
     ClaudeActivationRecoveryService,
 )
@@ -420,6 +423,7 @@ def _claude_selection_executor(
     if operation.kind not in {
         OperationKind.ACTIVATE,
         OperationKind.RECONCILE,
+        OperationKind.RECONCILE_NATIVE,
     }:
         raise ValueError("Claude selection operation is unsupported.")
     runtime = ClaudeActivationRuntime(environment=os.environ)
@@ -437,6 +441,12 @@ def _claude_selection_executor(
         capabilities=capabilities,
         runtime=runtime,
     )
+    recovery = ClaudeActivationRecoveryService(
+        authorities,
+        journals,
+        selected,
+        clock,
+    )
     return ClaudeSelectionWorkerExecutor(
         ClaudeActivationService(
             authorities,
@@ -444,8 +454,10 @@ def _claude_selection_executor(
             selected,
             clock,
         ),
-        ClaudeActivationRecoveryService(
+        recovery,
+        ClaudeNativeReconciliationService(
             authorities,
+            recovery,
             journals,
             selected,
             clock,
