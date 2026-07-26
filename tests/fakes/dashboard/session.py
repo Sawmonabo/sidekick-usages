@@ -618,6 +618,9 @@ def exercise_dashboard_session(
     session.start()
     try:
         lookup.wait_until_finished()
+        invalidation.wait_for(
+            lambda: session.view.footer.kind is DashboardFooterKind.ERROR
+        )
         lookup_failure_reported = (
             session.view.footer.kind is DashboardFooterKind.ERROR
         )
