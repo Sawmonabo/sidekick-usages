@@ -71,6 +71,7 @@ class FakeCodexDaemon:
         self._pause_install = False
         self._install_paused = Event()
         self._resume_install = Event()
+        self._install_resumed = Event()
         self._failures: list[BaseException] = []
 
     @property
@@ -112,6 +113,7 @@ class FakeCodexDaemon:
             self._pause_install = True
             self._install_paused.clear()
             self._resume_install.clear()
+            self._install_resumed.clear()
 
     def wait_for_paused_install(self) -> None:
         """Wait until the one-shot install boundary is reached."""
@@ -121,6 +123,8 @@ class FakeCodexDaemon:
     def resume_install(self) -> None:
         """Release the one-shot install boundary."""
         self._resume_install.set()
+        if not self._install_resumed.wait(_INSTALL_HANDSHAKE_TIMEOUT_SECONDS):
+            raise AssertionError("Fake Codex install did not resume.")
 
     def perform_external_login(
         self,
@@ -496,6 +500,7 @@ class FakeCodexDaemon:
                 _INSTALL_HANDSHAKE_TIMEOUT_SECONDS
             ):
                 raise AssertionError("Fake Codex install was not resumed.")
+            self._install_resumed.set()
 
     def _read_account(
         self,
