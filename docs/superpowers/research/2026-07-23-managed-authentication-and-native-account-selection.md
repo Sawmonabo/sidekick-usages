@@ -817,6 +817,30 @@ The default remains safe for automation:
 key input and terminal restoration. Rich remains the renderer. The selection
 transaction is provider-neutral; provider adapters own activation.
 
+### `prompt_toolkit` 3.0.52 dependency verification
+
+Primary evidence was refreshed on 2026-07-25 before adopting the dependency:
+
+- PyPI publishes 3.0.52 for Python 3.8 or newer as the universal
+  `py3-none-any` wheel. Its declared runtime dependency is `wcwidth`, its
+  classifier is BSD, and the release describes pure-Python support for Linux
+  and macOS. The wheel SHA-256 is
+  `9aac639a3bbd33284347de5ad8d68ecc044b91a762dc39b7c21095fcd6a19955`.
+- The upstream 3.0.52 tag contains the full three-clause BSD license.
+- An isolated local resolution imported `prompt_toolkit==3.0.52` and
+  `wcwidth==0.7.0` successfully under CPython 3.14.6 on Linux/WSL. This
+  verifies the required Python runtime without altering the project lock.
+  The implementation lock now resolves those same exact versions.
+- GitHub's runner inventory maps `macos-15` to arm64 and
+  `macos-15-intel` to Intel. CI uses both exact labels, plus Linux, so Unix
+  terminal behavior is exercised on every required architecture.
+
+This favors the maintained dependency over owning another raw-mode, key
+decoding, resize, and terminal-restoration implementation. Sidekick still
+keeps the dependency isolated to the dedicated interactive process so normal
+help, non-interactive commands, workers, and the supervisor do not pay its
+import or memory cost.
+
 ### Normal provider commands remain normal
 
 No command indirection is part of this design:
@@ -2089,6 +2113,9 @@ contract analysis.
 | [`darwin-arm64`](https://www.npmjs.com/package/@anthropic-ai/claude-code-darwin-arm64/v/2.1.218) and [`darwin-x64`](https://www.npmjs.com/package/@anthropic-ai/claude-code-darwin-x64/v/2.1.218) Claude packages | Exact official platform packages and binaries | Claude 2.1.218 | Config-derived Keychain namespaces, official Keychain writes, and plaintext fallback behavior on both macOS architectures | High for this release |
 | [Microsoft WSL systemd](https://learn.microsoft.com/en-us/windows/wsl/systemd) | Official platform docs | 2025-03-17 | User services can run in WSL, but do not keep the distribution alive | High |
 | [Apple launchd guide](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html) | Official platform docs | Current archived platform guide | Per-user LaunchAgents, service restart, and user-session scope | High |
+| [PyPI prompt-toolkit 3.0.52 JSON](https://pypi.org/pypi/prompt-toolkit/3.0.52/json) | Primary package metadata | 3.0.52, checked 2026-07-25 | Python floor, universal wheel, hash, `wcwidth`, classifier, and platform claims | High |
+| [prompt-toolkit 3.0.52 license](https://github.com/prompt-toolkit/python-prompt-toolkit/blob/3.0.52/LICENSE) | Tagged upstream source | 3.0.52 | Three-clause BSD license text | High |
+| [GitHub-hosted runner reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners) | Official platform docs | Checked 2026-07-25 | `macos-15` arm64 and `macos-15-intel` x64 CI labels | High |
 | Installed schema generated from the local binary | Local binary-generated primary evidence | Codex 0.145.0 | Confirms the local binary exposes external login and refresh-broker messages and marks them internal-only | High |
 | Installed Codex empty-home, daemon-help, process, and socket probes | Local runtime evidence | Codex 0.145.0, 2026-07-23 | Confirms `CODEX_HOME` isolation, native daemon commands, and that current live sessions are embedded | High |
 | Installed Linux Claude help, empty-home probes, read-only binary trace, and exact macOS package inspection | Local and release-binary primary evidence | Claude 2.1.220, 2026-07-25 | Confirms Linux file isolation, shared-profile next-request cache invalidation, macOS hashed Keychain isolation, auth-status surfaces, and provider-owned writes | High for Linux and static macOS contracts; macOS next-request runtime smoke remains |

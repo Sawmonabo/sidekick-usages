@@ -1,5 +1,6 @@
 """Cross-platform per-user supervisor lifecycle orchestration."""
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import assert_never
 
@@ -214,7 +215,7 @@ class DaemonManager:
 
 def build_service_backend(
     platform_info: PlatformInfo,
-    executable: Path,
+    supervisor_executable: Callable[[], Path],
     paths: ApplicationPaths,
     runner: SystemCommandRunner,
     artifacts: ServiceArtifactStore,
@@ -222,7 +223,9 @@ def build_service_backend(
     """Build the one supported backend for explicit platform facts."""
     if platform_info.system == "Windows":
         return FeatureDisabledBackend()
-    qualified_executable = qualify_supervisor_executable(executable)
+    qualified_executable = qualify_supervisor_executable(
+        supervisor_executable()
+    )
     if platform_info.system == "Darwin":
         return LaunchdBackend(
             paths.launch_agent,
@@ -257,7 +260,7 @@ def build_daemon_manager(
     runner = SystemCommandRunner()
     backend = build_service_backend(
         platform_info,
-        resolve_supervisor_executable(),
+        resolve_supervisor_executable,
         resolved_paths,
         runner,
         ServiceArtifactStore(platform_info.home, platform_info.uid),

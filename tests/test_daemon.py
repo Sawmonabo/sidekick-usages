@@ -174,7 +174,7 @@ def test_service_artifacts_are_user_scoped_resident_and_secret_free(
     executable = _supervisor_executable(tmp_path)
     backend = build_service_backend(
         platform_info,
-        executable,
+        lambda: executable,
         paths,
         runner,
         ServiceArtifactStore(platform_info.home, platform_info.uid),
