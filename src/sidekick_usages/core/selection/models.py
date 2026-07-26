@@ -161,10 +161,11 @@ class ActivationRecord:
     native_auth_baseline: ProviderAuthObservation
     target_account_id: SidekickAccountId
     expected_target_identity: ProviderIdentity
-    expected_target_generation: AuthorityGeneration
+    target_authority_generation: AuthorityGeneration
     phase: ActivationPhase
     started_at: datetime
     updated_at: datetime
+    verified_runtime_generation: AuthorityGeneration | None = None
     outcome: ActivationOutcome | None = None
     failure_code: str | None = None
 
@@ -191,6 +192,11 @@ class ActivationRecord:
         ):
             raise ValueError("Activation source and target must differ.")
         _validate_activation_outcome(self.phase, self.outcome)
+        _validate_activation_generation(
+            self.phase,
+            self.outcome,
+            self.verified_runtime_generation,
+        )
         object.__setattr__(self, "started_at", started_at)
         object.__setattr__(self, "updated_at", updated_at)
         object.__setattr__(
@@ -222,6 +228,7 @@ class DueOperation:
     updated_at: datetime
     attempts: int = 0
     failure_code: str | None = None
+    allow_remote_control_disconnect: bool = False
 
     def __post_init__(self) -> None:
         """Normalize wall time and validate retry state."""
@@ -234,6 +241,15 @@ class DueOperation:
             or self.attempts > _MAX_ATTEMPTS
         ):
             raise ValueError("Operation attempts are outside the bound.")
+        if type(self.allow_remote_control_disconnect) is not bool:
+            raise ValueError("Remote Control approval must be boolean.")
+        if self.allow_remote_control_disconnect and (
+            self.provider_id is not ProviderId.CLAUDE
+            or self.kind is not OperationKind.ACTIVATE
+        ):
+            raise ValueError(
+                "Remote Control approval is only valid for Claude activation."
+            )
         due_at = as_utc(self.due_at)
         updated_at = as_utc(self.updated_at)
         failure_code = safe_outcome_code(self.failure_code)
@@ -294,3 +310,38 @@ def _validate_activation_outcome(
         allowed = frozenset({None})
     if outcome not in allowed:
         raise ValueError("Activation phase and outcome disagree.")
+
+
+def _validate_activation_generation(
+    phase: ActivationPhase,
+    outcome: ActivationOutcome | None,
+    generation: AuthorityGeneration | None,
+) -> None:
+    """Require runtime generations only after provider proof."""
+    if phase in {
+        ActivationPhase.PREPARED,
+        ActivationPhase.OUTGOING_RETAINED,
+        ActivationPhase.TARGET_ACTIVATED,
+    }:
+        if generation is not None:
+            raise ValueError(
+                "Unverified activation cannot claim a runtime generation."
+            )
+        return
+    if phase in {
+        ActivationPhase.PROVIDER_PROOF_VERIFIED,
+        ActivationPhase.COMMITTED,
+    }:
+        if generation is None:
+            raise ValueError(
+                "Provider-proven activation requires a runtime generation."
+            )
+        return
+    if phase is not ActivationPhase.ROLLED_BACK:
+        return
+    generation_required = outcome in {
+        ActivationOutcome.ROLLED_BACK,
+        ActivationOutcome.EXTERNAL_RECONCILED,
+    }
+    if generation_required != (generation is not None):
+        raise ValueError("Rollback outcome and runtime generation disagree.")

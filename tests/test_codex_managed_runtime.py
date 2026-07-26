@@ -712,6 +712,12 @@ def test_codex_activation_commits_only_correlated_target(
             ).load(ProviderId.CODEX)
             assert journal.active is None
             assert journal.history[-1].phase is ActivationPhase.COMMITTED
+            assert journal.history[-1].target_authority_generation == (
+                AuthorityGeneration(_NEXT_GENERATION)
+            )
+            assert journal.history[-1].verified_runtime_generation == (
+                AuthorityGeneration(_NEXT_GENERATION)
+            )
             assert selected.load(ProviderId.CLAUDE) == claude
 
     assert fixture.native_auth.read_bytes() == _NATIVE_AUTH_SENTINEL
@@ -846,7 +852,15 @@ def test_codex_activation_recovers_at_official_mutation_boundary(
             assert reconciled.active is None
             assert tuple(record.outcome for record in reconciled.history) == (
                 ActivationOutcome.VERIFIED,
-                ActivationOutcome.EXTERNAL_RECONCILED,
+                ActivationOutcome.ROLLED_BACK,
+            )
+            rollback = reconciled.history[-1]
+            assert (
+                rollback.target_authority_generation,
+                rollback.verified_runtime_generation,
+            ) == (
+                AuthorityGeneration(_UNSELECTED_NEXT_GENERATION),
+                AuthorityGeneration(_NEXT_GENERATION),
             )
             saved_ids = tuple(
                 account.account_id

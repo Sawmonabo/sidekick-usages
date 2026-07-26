@@ -31,6 +31,7 @@ from sidekick_usages.persistence.models.selection import (
     SelectedStateDocument,
 )
 from sidekick_usages.persistence.state.fields import (
+    require_boolean,
     require_exact_keys,
     require_integer,
     require_list,
@@ -49,8 +50,9 @@ from sidekick_usages.persistence.time_codec import (
 )
 from sidekick_usages.serialization.json import JsonObject, JsonValue
 
-STATE_SCHEMA_VERSION = 2
-ACTIVATION_SCHEMA_VERSION = 2
+SELECTED_STATE_SCHEMA_VERSION = 2
+ACTIVATION_SCHEMA_VERSION = 3
+OPERATION_QUEUE_SCHEMA_VERSION = 3
 RUNTIME_OBSERVATION_SCHEMA_VERSION = 1
 MAX_SELECTED_STATE_BYTES = 256 * 1024
 MAX_ACTIVATION_JOURNAL_BYTES = 512 * 1024
@@ -70,7 +72,6 @@ _SELECTED_KEYS = frozenset(
 _ACTIVATION_KEYS = frozenset(
     {
         "expected_target_identity",
-        "expected_target_generation",
         "failure_code",
         "native_auth_baseline",
         "operation_id",
@@ -79,8 +80,10 @@ _ACTIVATION_KEYS = frozenset(
         "provider_id",
         "selected_baseline",
         "started_at",
+        "target_authority_generation",
         "target_account_id",
         "updated_at",
+        "verified_runtime_generation",
     }
 )
 _PROVIDER_AUTH_KEYS = frozenset(
@@ -94,6 +97,7 @@ _PROVIDER_AUTH_KEYS = frozenset(
 _OPERATION_KEYS = frozenset(
     {
         "account_id",
+        "allow_remote_control_disconnect",
         "attempts",
         "due_at",
         "failure_code",
@@ -111,7 +115,10 @@ def decode_selected_state(payload: bytes) -> SelectedStateDocument:
     """Decode one canonical provider selected-state document."""
     root = decode_state_object(payload, MAX_SELECTED_STATE_BYTES)
     require_exact_keys(root, {"providers", "schema_version"})
-    require_schema_version(root["schema_version"], STATE_SCHEMA_VERSION)
+    require_schema_version(
+        root["schema_version"],
+        SELECTED_STATE_SCHEMA_VERSION,
+    )
     providers = require_object(root["providers"])
     if len(providers) > len(ProviderId):
         raise InvalidSchemaError
@@ -203,7 +210,10 @@ def decode_operation_queue(payload: bytes) -> OperationQueueDocument:
     """Decode one canonical durable operation queue."""
     root = decode_state_object(payload, MAX_OPERATION_QUEUE_BYTES)
     require_exact_keys(root, {"operations", "schema_version"})
-    require_schema_version(root["schema_version"], STATE_SCHEMA_VERSION)
+    require_schema_version(
+        root["schema_version"],
+        OPERATION_QUEUE_SCHEMA_VERSION,
+    )
     records = require_object(root["operations"])
     if len(records) > MAX_OPERATION_RECORDS:
         raise InvalidSchemaError
@@ -332,7 +342,7 @@ def _selected_payload(document: SelectedStateDocument) -> bytes:
     return encode_state_object(
         {
             "providers": providers,
-            "schema_version": STATE_SCHEMA_VERSION,
+            "schema_version": SELECTED_STATE_SCHEMA_VERSION,
         },
         MAX_SELECTED_STATE_BYTES,
     )
@@ -343,6 +353,9 @@ def _activation_record(record: JsonObject) -> ActivationRecord:
     provider_id = ProviderId(require_string(record["provider_id"]))
     selected_value = record["selected_baseline"]
     outcome = require_optional_string(record["outcome"])
+    verified_generation = require_optional_string(
+        record["verified_runtime_generation"]
+    )
     return ActivationRecord(
         provider_id=provider_id,
         operation_id=OperationId(require_string(record["operation_id"])),
@@ -364,8 +377,8 @@ def _activation_record(record: JsonObject) -> ActivationRecord:
         expected_target_identity=ProviderIdentity(
             require_string(record["expected_target_identity"])
         ),
-        expected_target_generation=AuthorityGeneration(
-            require_string(record["expected_target_generation"])
+        target_authority_generation=AuthorityGeneration(
+            require_string(record["target_authority_generation"])
         ),
         phase=ActivationPhase(require_string(record["phase"])),
         started_at=parse_canonical_timestamp(
@@ -374,6 +387,11 @@ def _activation_record(record: JsonObject) -> ActivationRecord:
         updated_at=parse_canonical_timestamp(
             require_string(record["updated_at"])
         ),
+        verified_runtime_generation=(
+            None
+            if verified_generation is None
+            else AuthorityGeneration(verified_generation)
+        ),
         outcome=(None if outcome is None else ActivationOutcome(outcome)),
         failure_code=require_optional_string(record["failure_code"]),
     )
@@ -381,7 +399,6 @@ def _activation_record(record: JsonObject) -> ActivationRecord:
 
 def _activation_object(record: ActivationRecord) -> JsonObject:
     return {
-        "expected_target_generation": str(record.expected_target_generation),
         "expected_target_identity": str(record.expected_target_identity),
         "failure_code": record.failure_code,
         "native_auth_baseline": _provider_auth_object(
@@ -397,8 +414,14 @@ def _activation_object(record: ActivationRecord) -> JsonObject:
             else _selected_object(record.selected_baseline)
         ),
         "started_at": canonical_timestamp(record.started_at),
+        "target_authority_generation": str(record.target_authority_generation),
         "target_account_id": str(record.target_account_id),
         "updated_at": canonical_timestamp(record.updated_at),
+        "verified_runtime_generation": (
+            None
+            if record.verified_runtime_generation is None
+            else str(record.verified_runtime_generation)
+        ),
     }
 
 
@@ -477,6 +500,9 @@ def _due_operation(record: JsonObject) -> DueOperation:
         ),
         attempts=require_integer(record["attempts"]),
         failure_code=require_optional_string(record["failure_code"]),
+        allow_remote_control_disconnect=require_boolean(
+            record["allow_remote_control_disconnect"]
+        ),
     )
 
 
@@ -489,6 +515,9 @@ def _operation_object(operation: DueOperation) -> JsonObject:
     return {
         "account_id": (
             None if operation.account_id is None else str(operation.account_id)
+        ),
+        "allow_remote_control_disconnect": (
+            operation.allow_remote_control_disconnect
         ),
         "attempts": operation.attempts,
         "due_at": canonical_timestamp(operation.due_at),
@@ -514,7 +543,7 @@ def _operation_payload(document: OperationQueueDocument) -> bytes:
     return encode_state_object(
         {
             "operations": operations,
-            "schema_version": STATE_SCHEMA_VERSION,
+            "schema_version": OPERATION_QUEUE_SCHEMA_VERSION,
         },
         MAX_OPERATION_QUEUE_BYTES,
     )

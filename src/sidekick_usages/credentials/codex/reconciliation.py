@@ -1,5 +1,7 @@
 """Reconcile effective Codex authentication with saved authorities."""
 
+from dataclasses import replace
+
 from sidekick_usages.clock import Clock
 from sidekick_usages.core.accounts.models import (
     CodexManagedAuthority,
@@ -91,6 +93,29 @@ class CodexNativeReconciliationService:
                 tuple(sorted(journal.account_ids)),
                 authority,
             )
+            if candidate.runtime_state is ProviderRuntimeState.SAVED_ACTIVE:
+                baseline = journal.selected_baseline
+                if (
+                    baseline is None
+                    or candidate.account_id != baseline.account_id
+                    or candidate.provider_identity
+                    != baseline.provider_identity
+                ):
+                    raise CodexNativeReconciliationError(
+                        "native_auth_changed",
+                        action_required=True,
+                    )
+                rollback = replace(
+                    candidate,
+                    outcome=ActivationOutcome.ROLLED_BACK,
+                )
+                transaction.commit_rollback(
+                    journal.operation_id,
+                    rollback,
+                    self._selected,
+                    updated_at=self._clock.now(),
+                )
+                return rollback
             transaction.commit_external(
                 journal.operation_id,
                 candidate,

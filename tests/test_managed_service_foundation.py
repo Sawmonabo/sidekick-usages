@@ -4,10 +4,12 @@ import os
 import socket
 from collections.abc import Iterator
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from threading import Event, Thread
+
+import pytest
 
 from sidekick_usages import __version__
 from sidekick_usages.core.accounts.identifiers import new_request_id
@@ -329,6 +331,34 @@ def test_selection_and_queue_preserve_stable_independent_state(
         )
         is not None
     )
+    pending_switch = DueOperation(
+        operation_id=OperationId("bb413f38-2b11-418a-a4a7-b0e45666067e"),
+        provider_id=ProviderId.CLAUDE,
+        account_id=target.account_id,
+        kind=OperationKind.ACTIVATE,
+        priority=OperationPriority.INTERACTIVE,
+        state=OperationState.SCHEDULED,
+        due_at=REFERENCE_TIME,
+        updated_at=REFERENCE_TIME,
+    )
+    state.queue.enqueue(pending_switch)
+    approved_switch = replace(
+        pending_switch,
+        operation_id=OperationId("e16508f9-aea0-4c51-9d16-1b4168b3411a"),
+        allow_remote_control_disconnect=True,
+    )
+    coalesced = state.queue.enqueue(approved_switch)
+    assert coalesced.operation_id == pending_switch.operation_id
+    assert coalesced.allow_remote_control_disconnect
+    assert state.queue.find(coalesced.operation_id) == coalesced
+    with pytest.raises(
+        ValueError,
+        match="only valid for Claude activation",
+    ):
+        replace(
+            approved_switch,
+            provider_id=ProviderId.CODEX,
+        )
 
 
 class _FragmentingSocket:

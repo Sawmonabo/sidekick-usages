@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 from sidekick_usages.core.accounts.types import (
+    AuthorityGeneration,
     OperationId,
     SidekickAccountId,
 )
@@ -108,6 +109,7 @@ class ActivationJournalTransaction:
         phase: ActivationPhase,
         *,
         updated_at: datetime,
+        verified_runtime_generation: AuthorityGeneration | None = None,
         outcome: ActivationOutcome | None = None,
         failure_code: str | None = None,
     ) -> ActivationRecord:
@@ -126,6 +128,7 @@ class ActivationJournalTransaction:
                 active,
                 phase,
                 updated_at=updated_at,
+                verified_runtime_generation=verified_runtime_generation,
                 outcome=outcome,
                 failure_code=failure_code,
             )
@@ -165,18 +168,20 @@ class ActivationJournalTransaction:
             or state.runtime_state is not ProviderRuntimeState.SAVED_ACTIVE
             or state.account_id != active.target_account_id
             or state.provider_identity != active.expected_target_identity
-            or state.runtime_generation != active.expected_target_generation
+            or state.runtime_generation != active.verified_runtime_generation
             or state.outcome is not ActivationOutcome.VERIFIED
         ):
             raise ManagedStateConflictError(
                 ManagedStateConflictKind.CONCURRENT_CHANGE
             )
         current = selected.load(self.provider_id)
-        expected = (
-            current
-            if current == state or _matches_activation_target(current, active)
-            else active.selected_baseline
-        )
+        if _same_selected_runtime(
+            current,
+            state,
+        ) or _matches_activation_target(current, active):
+            expected = current
+        else:
+            expected = active.selected_baseline
         selected.compare_and_swap(
             state,
             expected=expected,
@@ -185,6 +190,54 @@ class ActivationJournalTransaction:
             operation_id,
             ActivationPhase.COMMITTED,
             updated_at=updated_at,
+            verified_runtime_generation=state.runtime_generation,
+        )
+
+    def commit_rollback(
+        self,
+        operation_id: OperationId,
+        state: SelectedAccountState,
+        selected: SelectedStateStore,
+        *,
+        updated_at: datetime,
+    ) -> ActivationRecord:
+        """Commit one provider-proven saved source as the rollback."""
+        document = self.load()
+        active = document.active
+        baseline = None if active is None else active.selected_baseline
+        if (
+            active is None
+            or active.operation_id != operation_id
+            or baseline is None
+            or baseline.runtime_state is not ProviderRuntimeState.SAVED_ACTIVE
+            or state.provider_id is not self.provider_id
+            or state.runtime_state is not ProviderRuntimeState.SAVED_ACTIVE
+            or state.account_id != baseline.account_id
+            or state.provider_identity != baseline.provider_identity
+            or state.runtime_generation is None
+            or state.outcome is not ActivationOutcome.ROLLED_BACK
+        ):
+            raise ManagedStateConflictError(
+                ManagedStateConflictKind.CONCURRENT_CHANGE
+            )
+        current = selected.load(self.provider_id)
+        if _same_selected_runtime(current, state):
+            expected = current
+        elif current == baseline:
+            expected = baseline
+        elif _matches_activation_target(current, active):
+            expected = current
+        else:
+            raise ManagedStateConflictError(
+                ManagedStateConflictKind.CONCURRENT_CHANGE
+            )
+        selected.compare_and_swap(state, expected=expected)
+        return self.advance(
+            operation_id,
+            ActivationPhase.ROLLED_BACK,
+            updated_at=updated_at,
+            verified_runtime_generation=state.runtime_generation,
+            outcome=ActivationOutcome.ROLLED_BACK,
         )
 
     def commit_external(
@@ -203,19 +256,19 @@ class ActivationJournalTransaction:
             active is None
             or active.operation_id != operation_id
             or state.provider_id is not self.provider_id
-            or state.outcome
+            or state.runtime_state
             not in {
-                ActivationOutcome.EXTERNAL_RECONCILED,
-                ActivationOutcome.LOGGED_OUT,
-                ActivationOutcome.UNSUPPORTED,
+                ProviderRuntimeState.EXTERNAL_ACTIVE,
+                ProviderRuntimeState.LOGGED_OUT,
+                ProviderRuntimeState.UNSUPPORTED,
             }
         ):
             raise ManagedStateConflictError(
                 ManagedStateConflictKind.CONCURRENT_CHANGE
             )
         current = selected.load(self.provider_id)
-        if current == state:
-            expected = state
+        if _same_selected_runtime(current, state):
+            expected = current
         elif current == baseline:
             expected = baseline
         elif _matches_activation_target(current, active):
@@ -229,6 +282,7 @@ class ActivationJournalTransaction:
             operation_id,
             ActivationPhase.ROLLED_BACK,
             updated_at=updated_at,
+            verified_runtime_generation=state.runtime_generation,
             outcome=state.outcome,
         )
 
@@ -419,6 +473,22 @@ def _matches_activation_target(
         and state.runtime_state is ProviderRuntimeState.SAVED_ACTIVE
         and state.account_id == activation.target_account_id
         and state.provider_identity == activation.expected_target_identity
-        and state.runtime_generation == activation.expected_target_generation
+        and state.runtime_generation == activation.verified_runtime_generation
         and state.outcome is ActivationOutcome.VERIFIED
+    )
+
+
+def _same_selected_runtime(
+    current: SelectedAccountState | None,
+    candidate: SelectedAccountState,
+) -> bool:
+    """Compare exact selected runtime authority without observation time."""
+    return (
+        current is not None
+        and current.provider_id is candidate.provider_id
+        and current.runtime_state is candidate.runtime_state
+        and current.account_id == candidate.account_id
+        and current.provider_identity == candidate.provider_identity
+        and current.runtime_generation == candidate.runtime_generation
+        and current.outcome is candidate.outcome
     )

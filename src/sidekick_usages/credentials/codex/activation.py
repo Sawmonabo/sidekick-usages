@@ -146,7 +146,7 @@ class CodexActivationService:
                 native_auth_baseline=native_baseline,
                 target_account_id=target_account_id,
                 expected_target_identity=target.provider_identity,
-                expected_target_generation=target.generation,
+                target_authority_generation=target.generation,
                 phase=ActivationPhase.PREPARED,
                 started_at=now,
                 updated_at=now,
@@ -257,10 +257,11 @@ class CodexActivationService:
                 guarded,
             )
             if rollback_chosen:
-                return self._commit_external_receipt(
+                return self._commit_rollback_receipt(
                     transaction,
                     current,
                     receipt,
+                    expectation.generation,
                 )
             return self._commit_receipt(transaction, current, receipt)
         except Exception as error:
@@ -276,7 +277,7 @@ class CodexActivationService:
         if (
             receipt.account_id != record.target_account_id
             or receipt.provider_identity != record.expected_target_identity
-            or receipt.generation != record.expected_target_generation
+            or receipt.generation != record.target_authority_generation
         ):
             raise CodexActivationError(CodexActivationFailure.RECEIPT_MISMATCH)
         active = transaction.load().active
@@ -297,6 +298,7 @@ class CodexActivationService:
                 active.operation_id,
                 ActivationPhase.PROVIDER_PROOF_VERIFIED,
                 updated_at=self._clock.now(),
+                verified_runtime_generation=receipt.generation,
             )
         if active.phase is not ActivationPhase.PROVIDER_PROOF_VERIFIED:
             raise CodexActivationError(CodexActivationFailure.STATE_CHANGED)
@@ -317,11 +319,12 @@ class CodexActivationService:
         )
         return selected
 
-    def _commit_external_receipt(
+    def _commit_rollback_receipt(
         self,
         transaction: ActivationJournalTransaction,
         record: ActivationRecord,
         receipt: CodexProjectionReceipt,
+        source_authority_generation: AuthorityGeneration,
     ) -> SelectedAccountState:
         baseline = record.selected_baseline
         if (
@@ -329,6 +332,7 @@ class CodexActivationService:
             or baseline.runtime_state is not ProviderRuntimeState.SAVED_ACTIVE
             or receipt.account_id != baseline.account_id
             or receipt.provider_identity != baseline.provider_identity
+            or receipt.generation != source_authority_generation
         ):
             raise CodexActivationError(CodexActivationFailure.RECEIPT_MISMATCH)
         selected = SelectedAccountState(
@@ -338,9 +342,9 @@ class CodexActivationService:
             provider_identity=receipt.provider_identity,
             runtime_generation=receipt.generation,
             verified_at=self._clock.now(),
-            outcome=ActivationOutcome.EXTERNAL_RECONCILED,
+            outcome=ActivationOutcome.ROLLED_BACK,
         )
-        transaction.commit_external(
+        transaction.commit_rollback(
             record.operation_id,
             selected,
             self._selected,
@@ -429,6 +433,9 @@ class CodexActivationService:
                 active.operation_id,
                 ActivationPhase.RECONCILIATION_REQUIRED,
                 updated_at=self._clock.now(),
+                verified_runtime_generation=(
+                    active.verified_runtime_generation
+                ),
                 failure_code="activation_interrupted",
             )
         except Exception as journal_error:

@@ -3,6 +3,7 @@
 from dataclasses import replace
 from datetime import datetime
 
+from sidekick_usages.core.accounts.types import AuthorityGeneration
 from sidekick_usages.core.selection.models import (
     ActivationRecord,
     DueOperation,
@@ -97,6 +98,7 @@ def transition_activation(
     phase: ActivationPhase,
     *,
     updated_at: datetime,
+    verified_runtime_generation: AuthorityGeneration | None = None,
     outcome: ActivationOutcome | None = None,
     failure_code: str | None = None,
 ) -> ActivationRecord:
@@ -118,6 +120,7 @@ def transition_activation(
         record,
         phase=phase,
         updated_at=normalized_update,
+        verified_runtime_generation=verified_runtime_generation,
         outcome=effective_outcome,
         failure_code=failure_code,
     )
@@ -208,4 +211,8 @@ def coalesce_due_operation(
         due_at=min(current.due_at, incoming.due_at),
         updated_at=max(current.updated_at, incoming.updated_at),
         failure_code=None,
+        allow_remote_control_disconnect=(
+            current.allow_remote_control_disconnect
+            or incoming.allow_remote_control_disconnect
+        ),
     )
