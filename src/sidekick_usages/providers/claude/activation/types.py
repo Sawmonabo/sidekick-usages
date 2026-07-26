@@ -16,13 +16,13 @@ class ClaudeActivationGuardFailure(StrEnum):
 
     ALTERNATE_PROFILE = "alternate_profile_conflict"
     ANTHROPIC_API_KEY = "anthropic_api_key_conflict"
-    ANTHROPIC_AUTH_TOKEN = "anthropic_auth_token_conflict"
+    ANTHROPIC_AUTH_OVERRIDE = "anthropic_auth_token_conflict"
     API_KEY_HELPER = "api_key_helper_conflict"
     CLOUD_PROVIDER = "cloud_provider_conflict"
     CONFIGURATION_UNREADABLE = "configuration_unreadable"
     FOREGROUND_PROOF_UNAVAILABLE = "foreground_proof_unavailable"
     GATEWAY = "gateway_conflict"
-    OAUTH_TOKEN = "oauth_token_conflict"
+    CLAUDE_OAUTH_OVERRIDE = "oauth_token_conflict"
     REMOTE_CONTROL_DISCONNECT_REQUIRED = "remote_control_disconnect_required"
 
     @property

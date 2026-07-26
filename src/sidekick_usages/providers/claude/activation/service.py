@@ -48,7 +48,7 @@ _PROFILE_OVERRIDE_KEYS = (
 _DIRECT_ENVIRONMENT_FAILURES = (
     (
         "ANTHROPIC_AUTH_TOKEN",
-        ClaudeActivationGuardFailure.ANTHROPIC_AUTH_TOKEN,
+        ClaudeActivationGuardFailure.ANTHROPIC_AUTH_OVERRIDE,
     ),
     (
         "ANTHROPIC_API_KEY",
@@ -56,7 +56,7 @@ _DIRECT_ENVIRONMENT_FAILURES = (
     ),
     (
         "CLAUDE_CODE_OAUTH_TOKEN",
-        ClaudeActivationGuardFailure.OAUTH_TOKEN,
+        ClaudeActivationGuardFailure.CLAUDE_OAUTH_OVERRIDE,
     ),
 )
 _MANAGED_SETTINGS_PATHS = {
