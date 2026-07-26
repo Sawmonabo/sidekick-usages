@@ -3,7 +3,7 @@
 ## Status and scope
 
 This record captures the automated implementation and the authorized
-current-machine rollout through `902621e`. Focused traceability remains
+current-machine rollout through `ee3f788`. Focused traceability remains
 **24/24 mapped**. The implementation, clean v3 storage transition, exact-wheel
 installation, resident WSL service, live read-only dashboard, and native
 command-isolation checks are complete. Both saved Codex accounts now have
@@ -19,10 +19,12 @@ Final Claude provider-auth rollout is intentionally deferred:
   must remain untouched without separate approval naming the exact target.
 
 The current dashboard presents live Claude and Codex metrics, padded usage
-tiles, account-local warnings, cursor-only selection, and both provider token
-totals. Claude setup-token rows truthfully retain their official-login action;
-Codex rows are managed, maintained, and free of false service or update
-warnings.
+tiles, account-local muted advisories, cursor-only selection, and both
+provider token totals. Its cached first frame has no freshness warning until a
+live lookup actually fails; existing credential failures can still render
+immediately. A Claude setup-token row shows its connection hint only while
+focused, and the navigation bar remains visible while a separate status line
+reports a real action or error.
 
 This tracked record uses synthetic labels and secret-free measurements only.
 It contains no provider IDs, credential paths, token hashes, raw provider
@@ -33,13 +35,13 @@ output, or account exports.
 | Boundary | Verified result |
 | --- | --- |
 | Storage | Six stable accounts migrated to strict v3: four Claude and two Codex |
-| Final verified artifact | `sidekick_usages-0.7.0-py3-none-any.whl`, SHA-256 `0d14f8c04b232b6f9c16d4e5da10c384be5312632288c12b4738ecd998f451ad` |
+| Final verified artifact | `sidekick_usages-0.7.0-py3-none-any.whl`, SHA-256 `56fbfe0c3bceb0c0ead9f368d3030559b71c3b83d910c4347493f4a3b611f39f` |
 | Native CLIs | Claude Code `2.1.220`; Codex CLI `0.145.0` |
 | Resident service | WSL user service active and enabled; peer, socket, protocol, process, platform, and rescue checks healthy |
 | Scheduling | Legacy periodic task absent; one user supervisor plus one logon-only WSL rescue task |
 | Maintenance | Four setup-token Claude rows scheduled independently; both managed Codex authorities healthy and independently scheduled with zero failed attempts |
 | Live usage | All six rows returned current metrics in one bounded lookup wave; Claude and Codex token totals rendered |
-| Interactive contract | One cursor identified the selected row; padded usage tiles and account-local warnings rendered; no active badge; quit without an unintended account action |
+| Interactive contract | One cursor identified the selected row; the muted historical palette, padded usage tiles, focused hints, truthful account-local warnings, and permanent key bar rendered; no active badge; quit without an unintended account action |
 | Native isolation | Vendor executables, ordinary commands, user wrapper, shell files, and the active Claude login remained untouched; Sidekick projected only the selected Codex authority |
 | Live Claude session | Existing session remained running and was not signaled, restarted, attached to, or retargeted |
 | Remaining authority work | Four approved Claude associations, intentionally deferred |
@@ -145,7 +147,15 @@ The final cached-first launcher and installed-artifact proof are anchored by:
 - `d0d541d` — honors the official native Codex file-store default while
   retaining strict managed-profile configuration; and
 - `902621e` — recognizes the official projected ChatGPT-token auth mode during
-  post-activation reconciliation.
+  post-activation reconciliation;
+- `8c99814` — restores the exact muted true-color palette and one shared
+  dependency-free theme for the Rich and fast ANSI renderers;
+- `948dc83` — replaces false cached staleness with lookup-outcome truth,
+  protocol-v2 account success or failure events, and the Claude
+  switch-setup-required state; and
+- `ee3f788` — renders one prioritized muted account advisory, preserves the
+  key bar beside independent status, and keeps live lookup outcome truth
+  across concurrent startup and account actions.
 
 Supporting focused boundaries include:
 
@@ -178,12 +188,12 @@ PTY, and denied access to real provider commands and application paths.
 
 | Measurement | Result | Required bound |
 | --- | ---: | ---: |
-| Installed-wheel cached first paint | 81.740 ms | 250 ms |
-| Synthetic cached trace first paint | 91.385 ms | diagnostic |
-| Six-account cursor-render CPU p95 | 2.082 ms | 50 ms |
-| Expanded cursor-render CPU p95 | 5.753 ms | 50 ms |
-| Reaped trace-process peak RSS | 46.398 MiB | 96 MiB |
-| Reaped lookup-worker peak RSS | 46.398 MiB | 96 MiB |
+| Installed-wheel cached first paint | 83.423 ms | 250 ms |
+| Synthetic cached trace first paint | 104.888 ms | diagnostic |
+| Six-account cursor-render CPU p95 | 1.374 ms | 50 ms |
+| Expanded cursor-render CPU p95 | 3.781 ms | 50 ms |
+| Reaped trace-process peak RSS | 46.277 MiB | 96 MiB |
+| Reaped lookup-worker peak RSS | 46.277 MiB | 96 MiB |
 
 The same trace proved:
 
@@ -227,6 +237,16 @@ the two existing load-bearing activation and durable-worker boundaries. No
 new test file or broad suite was added or rerun. Focused Ruff, Ty,
 architecture, wheel-smoke, and live installed-CLI checks passed; architecture
 reported only its existing non-failing cohesion warnings.
+
+The final dashboard-regression repair changed no test inventory. Four existing
+load-bearing wide, narrow, controller, and PTY cases passed. Focused Ruff,
+Ty, and architecture checks passed. The architecture check reported only its
+three non-failing cohesion warnings. The exact wheel then passed the installed
+performance, memory, concurrency, ordering, and process-reaping gates. Its live
+dashboard showed both providers and the key bar on the first frame, contained
+no false `retry scheduled` copy, and exited on `q` without an account action.
+The pre-existing Claude process and native Claude credential file remained
+unchanged across installation and both launch-and-quit checks.
 
 ## Approved 24-gate evidence map
 
@@ -274,6 +294,9 @@ Disposition: **Automated pass.**
 
 Evidence: cached-state, render, migration, and doctor tests keep authority,
 service, metric, reconciliation, and login warnings scoped to one account.
+One prioritized advisory renders per row; metrics appear only after an actual
+failed lookup, and a focused Claude connection hint suppresses lower-priority
+metrics copy.
 
 Disposition: **Automated pass.**
 
@@ -507,34 +530,34 @@ a product-path comparison, not a claim that the one-shot command was removed.
   | O   O |   >> A multi-account usage dashboard for Claude Code and Codex CLI.
   | ||||| |   >> Limits + resets + account status, one terminal.
   '--___--'
-─────────────────────────────────────────────────────────────────────────────────────────────────
+───────────────────────────────────────────────────────────────────────────────
 
-╭─ CLAUDE · 2 accounts ─────────────────────────────────────────────────────────────────────────╮
-│                                                                                               │
-│                                         5h      7d                                            │
-│  › ●  work@example.test         max      0%     51%                                           │
-│                                       3h 50m  3h 50m                                          │
-│                                                                                               │
-│    ●  personal@example.test     max                                                           │
-│  ⚠ work@example.test: Metrics last updated 2h 14m ago; retry scheduled.                       │
-│  ⚠ personal@example.test: Complete the official Claude Code login before using this account.  │
-│                                                                                               │
-╰─────────────────────────────────────────────────── 903,464,085 tokens  ·  since Dec 28, 2025 ─╯
+╭─ CLAUDE · 2 accounts ───────────────────────────────────────────────────────╮
+│                                                                             │
+│                                         5h      7d                          │
+│  › ●  work@example.test         max     0%     51%                          │
+│                                       3h 50m  3h 50m                        │
+│       ⚠ Live metrics refresh failed; showing data from 2h 14m ago.          │
+│                                                                             │
+│    ●  personal@example.test     max                                         │
+│       ⚠ Complete the official Claude Code login before using this account.  │
+│                                                                             │
+╰───────────────────────────────── 903,464,085 tokens  ·  since Dec 28, 2025 ─╯
 
-╭─ CODEX · 2 accounts ──────────────────────────────────────────────────────────────────────────╮
-│                                                                                               │
-│                                         5h      7d                                            │
-│    ●  codex@example.test        pro      8%     45%                                           │
-│                                       3h 50m  3h 50m                                          │
-│                                                                                               │
-│    ●  External Codex CLI login                                                                │
-│  ⚠ External Codex CLI login: This external login is not saved in Sidekick.                    │
-│                                                                                               │
-╰────────────────────────────────────────────────── 7,449,473,297 tokens  ·  since Apr 7, 2026 ─╯
+╭─ CODEX · 2 accounts ────────────────────────────────────────────────────────╮
+│                                                                             │
+│                                         5h      7d                          │
+│    ●  codex@example.test        pro     8%     45%                          │
+│                                       3h 50m  3h 50m                        │
+│                                                                             │
+│    ●  External Codex CLI login                                              │
+│       ⚠ This external login is not saved in Sidekick.                       │
+│                                                                             │
+╰──────────────────────────────── 7,449,473,297 tokens  ·  since Apr 7, 2026 ─╯
 
  <40    40-69    70-89    ≥90      dim = resets in
 
- Switching to personal@example.test… verifying with Claude Code
+ ↑/↓ or j/k move   Tab provider   Enter use   r refresh   ? help   q exit
 ```
 
 ### Narrow before: one-shot check
@@ -582,10 +605,10 @@ CODEX · 7.449B tokens
 ────────────────────────────────────────────────────
 
 › ● work@example.test  [claude · max]
-  ⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀…    ↻ Fri Jun 12, 12:24 PM (in 3h …
-  ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣀⣀⣀⣀⣀…    ↻ Fri Jun 12, 12:24 PM (in 3h …
-    ⚠ Metrics last updated 2h 14m ago; retry
-    scheduled.
+ 5h  ⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀   0%  ↻ Sun Jul 26, 11:50 A…
+ 7d  ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣀⣀⣀⣀⣀⣀⣀⣀⣀  51%  ↻ Sun Jul 26, 11:50 A…
+    ⚠ Live metrics refresh failed; showing data from
+    2h 14m ago.
 
   ● personal@example.test  [claude · max]
     ⚠ Complete the official Claude Code login before
@@ -595,8 +618,8 @@ CLAUDE · 903.46M tokens
          since Dec 28, 2025
 
   ● codex@example.test  [codex · pro]
-  ⣿⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀…    ↻ Fri Jun 12, 12:24 PM (in 3h …
-  ⣿⣿⣿⣿⣿⣿⣿⣿⣀⣀⣀⣀⣀⣀…    ↻ Fri Jun 12, 12:24 PM (in 3h …
+ 5h  ⣿⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀   8%  ↻ Sun Jul 26, 11:50 A…
+ 7d  ⣿⣿⣿⣿⣿⣿⣿⣿⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀  45%  ↻ Sun Jul 26, 11:50 A…
 
   ● External Codex CLI login  [codex]
     ⚠ This external login is not saved in Sidekick.
@@ -604,14 +627,15 @@ CLAUDE · 903.46M tokens
 CODEX · 7.449B tokens
         since Apr 7, 2026
 
- Switching to personal@example.test… verifying with
-Claude Code
+↑/↓ or j/k move Tab provider Enter use r refresh ?
+help q exit
 ```
 
 Manual inspection confirms that both widths retain the recognizable robot,
 provider grouping, metric meaning, reset timing, and account-specific
-warnings. The interactive path adds one cursor and one bounded action footer;
-it adds no healthy-row active-state label.
+warnings. The interactive path adds one cursor, one permanent navigation bar,
+and at most one separate bounded status line; it adds no healthy-row
+active-state label.
 
 ## Synthetic dashboard contract
 
@@ -622,8 +646,10 @@ prove:
 - the robot masthead and recognizable provider layout remain;
 - exactly one `›` cursor precedes the existing account bullet;
 - healthy rows have no active-state badge;
-- actionable and stale detail stays account-specific;
-- the key or progress footer is bounded; and
+- actionable and failed-refresh detail stays account-specific;
+- a focused setup-only Claude row suppresses its lower-priority metrics
+  advisory and shows `Enter to connect this account for Claude switching.`;
+- status renders above exactly one permanent navigation bar; and
 - wide and narrow output preserve activity totals and reset meaning.
 
 These are sanitized product contracts. The live launch matched the
