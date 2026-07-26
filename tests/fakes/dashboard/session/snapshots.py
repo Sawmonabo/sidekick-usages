@@ -109,7 +109,7 @@ class SessionLookupWorker:
             if observe is not None:
                 observe(
                     UsageLookupWorkerEvent(
-                        UsageLookupEventKind.ACCOUNT_COMPLETED,
+                        UsageLookupEventKind.ACCOUNT_SUCCEEDED,
                         account_id=self._account_id,
                     )
                 )

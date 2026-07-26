@@ -393,7 +393,7 @@ class UsageLookupWorkerClient:
     ) -> UsageLookupWorkerEvent | None:
         if terminal is not None:
             raise UsageLookupProtocolError
-        if event.kind is UsageLookupEventKind.ACCOUNT_COMPLETED:
+        if event.kind.is_account_completion:
             account_id = event.account_id
             if (
                 account_id is None

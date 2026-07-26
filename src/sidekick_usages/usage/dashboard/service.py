@@ -218,8 +218,6 @@ class CachedDashboardService:
         usage_conflicted: bool,
     ) -> DashboardAccount:
         states = list(self._credential_states(account))
-        if usage is not None or activity is not None:
-            states.append(DashboardActionState.METRICS_STALE)
         if usage_conflicted:
             states.append(DashboardActionState.REPAIR_REQUIRED)
         if selected is not None:
@@ -272,7 +270,12 @@ class CachedDashboardService:
             isinstance(account.authority, ClaudeAccountAuthority)
             and account.authority.subscription is None
         )
-        if not account.has_managed_authority and health in {
+        if setup_only and health in {
+            CredentialHealth.HEALTHY,
+            CredentialHealth.UNKNOWN,
+        }:
+            state = DashboardActionState.SWITCH_SETUP_REQUIRED
+        elif not account.has_managed_authority and health in {
             CredentialHealth.HEALTHY,
             CredentialHealth.UNKNOWN,
         }:

@@ -29,6 +29,7 @@ class DashboardActionState(StrEnum):
 
     HEALTHY = "healthy"
     LOGIN_REQUIRED = "login_required"
+    SWITCH_SETUP_REQUIRED = "switch_setup_required"
     REPAIR_REQUIRED = "repair_required"
     SETUP_REGENERATION_REQUIRED = "setup_regeneration_required"
     METRICS_STALE = "metrics_stale"
@@ -102,13 +103,10 @@ class DashboardUsage:
     plan: str
     report: UsageReport
     observed_at: datetime
-    freshness: MetricsFreshness = MetricsFreshness.STALE
 
     def __post_init__(self) -> None:
-        """Normalize observation time and require retained freshness."""
+        """Normalize the observation time."""
         object.__setattr__(self, "observed_at", as_utc(self.observed_at))
-        if self.freshness is not MetricsFreshness.STALE:
-            raise ValueError("Cached dashboard usage must remain stale.")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -117,13 +115,10 @@ class DashboardActivity:
 
     summary: TokenActivitySummary
     observed_at: datetime
-    freshness: MetricsFreshness = MetricsFreshness.STALE
 
     def __post_init__(self) -> None:
-        """Normalize observation time and require retained freshness."""
+        """Normalize the observation time."""
         object.__setattr__(self, "observed_at", as_utc(self.observed_at))
-        if self.freshness is not MetricsFreshness.STALE:
-            raise ValueError("Cached dashboard activity must remain stale.")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -137,13 +132,29 @@ class DashboardAccount:
     credential_health: CredentialHealth
     active: bool
     states: tuple[DashboardActionState, ...]
+    metrics_freshness: MetricsFreshness | None = None
     usage: DashboardUsage | None = None
     activity: DashboardActivity | None = None
 
     def __post_init__(self) -> None:
-        """Reject duplicate states and provider-scoped account activity."""
+        """Validate states, metrics truth, and account-scoped activity."""
         if len(self.states) != len(set(self.states)):
             raise ValueError("Dashboard account states must be unique.")
+        has_observation = self.usage is not None or self.activity is not None
+        if (
+            self.metrics_freshness is MetricsFreshness.FRESH
+            or self.metrics_freshness is MetricsFreshness.STALE
+        ) and not has_observation:
+            raise ValueError(
+                "Fresh or stale dashboard metrics require an observation."
+            )
+        if (
+            self.metrics_freshness is MetricsFreshness.UNAVAILABLE
+            and has_observation
+        ):
+            raise ValueError(
+                "Unavailable dashboard metrics cannot retain an observation."
+            )
         if (
             self.activity is not None
             and self.activity.summary.scope is not TokenActivityScope.ACCOUNT

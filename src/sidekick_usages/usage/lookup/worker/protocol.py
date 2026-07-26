@@ -19,7 +19,7 @@ from sidekick_usages.usage.lookup.worker.models import (
     UsageLookupWorkerEvent,
 )
 
-USAGE_LOOKUP_PROTOCOL_VERSION = 1
+USAGE_LOOKUP_PROTOCOL_VERSION = 2
 MAX_USAGE_LOOKUP_FRAME_BYTES = 512
 
 _EVENT_KEYS = frozenset(

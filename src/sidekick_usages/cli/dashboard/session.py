@@ -54,7 +54,6 @@ from sidekick_usages.usage.dashboard.models import (
     DashboardSnapshot,
 )
 from sidekick_usages.usage.lookup.worker.models import (
-    UsageLookupEventKind,
     UsageLookupWorkerEvent,
 )
 
@@ -423,10 +422,7 @@ class InteractiveDashboardSession:
         )
 
     def _observe_lookup(self, event: UsageLookupWorkerEvent) -> None:
-        if (
-            self._stopping.is_set()
-            or event.kind is not UsageLookupEventKind.ACCOUNT_COMPLETED
-        ):
+        if self._stopping.is_set() or not event.kind.is_account_completion:
             return
         self._publish_lookup_snapshot(LOOKUP_PROGRESS_MESSAGE)
 

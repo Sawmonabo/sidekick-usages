@@ -17,9 +17,18 @@ USAGE_LOOKUP_MODULE = "sidekick_usages.entrypoints.usage_lookup"
 class UsageLookupEventKind(StrEnum):
     """Closed global lookup-worker event kinds."""
 
-    ACCOUNT_COMPLETED = "account_completed"
+    ACCOUNT_SUCCEEDED = "account_succeeded"
+    ACCOUNT_FAILED = "account_failed"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
+
+    @property
+    def is_account_completion(self) -> bool:
+        """Return whether this event completes one account lookup."""
+        return (
+            self is UsageLookupEventKind.ACCOUNT_SUCCEEDED
+            or self is UsageLookupEventKind.ACCOUNT_FAILED
+        )
 
 
 class UsageLookupFailure(StrEnum):
@@ -45,7 +54,7 @@ class UsageLookupWorkerEvent:
 
     def __post_init__(self) -> None:
         """Require exactly the fields owned by the selected event kind."""
-        account_event = self.kind is UsageLookupEventKind.ACCOUNT_COMPLETED
+        account_event = self.kind.is_account_completion
         failure_event = self.kind is UsageLookupEventKind.FAILED
         if (self.account_id is not None) is not account_event:
             raise ValueError("Lookup event account identity is invalid.")

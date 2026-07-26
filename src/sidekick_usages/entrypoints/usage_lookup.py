@@ -145,7 +145,11 @@ def _run_lookup(
 def _write_completion(completion: AccountLookupCompletion) -> None:
     _write_event(
         UsageLookupWorkerEvent(
-            UsageLookupEventKind.ACCOUNT_COMPLETED,
+            (
+                UsageLookupEventKind.ACCOUNT_SUCCEEDED
+                if completion.failure is None
+                else UsageLookupEventKind.ACCOUNT_FAILED
+            ),
             completion.account_id,
         )
     )

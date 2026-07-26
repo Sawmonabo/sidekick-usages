@@ -17,7 +17,10 @@ from sidekick_usages.cli.dashboard.models.controller import (
 from sidekick_usages.cli.dashboard.models.session import (
     DashboardConfirmationKind,
 )
-from sidekick_usages.core.accounts.models import SavedAccount
+from sidekick_usages.core.accounts.models import (
+    ClaudeAccountAuthority,
+    SavedAccount,
+)
 from sidekick_usages.core.accounts.types import (
     CredentialHealth,
     MetricsFreshness,
@@ -128,18 +131,36 @@ def test_cached_dashboard_joins_stable_ids_without_credentials(
     assert current.active
     assert current.usage is not None
     assert current.usage.observed_at == OBSERVED_AT
-    assert current.usage.freshness is MetricsFreshness.STALE
     assert current.activity is not None
     assert current.activity.observed_at == OBSERVED_AT
-    assert current.activity.freshness is MetricsFreshness.STALE
+    assert current.metrics_freshness is None
     assert current.states == (
         DashboardActionState.HEALTHY,
-        DashboardActionState.METRICS_STALE,
         DashboardActionState.SERVICE_UNAVAILABLE,
+    )
+    assert (
+        replace(
+            current, metrics_freshness=MetricsFreshness.FRESH
+        ).metrics_freshness
+        is MetricsFreshness.FRESH
+    )
+    assert (
+        replace(
+            current, metrics_freshness=MetricsFreshness.STALE
+        ).metrics_freshness
+        is MetricsFreshness.STALE
     )
     assert isinstance(failed, DashboardAccount)
     assert failed.account_id == conflicted.account_id
     assert failed.usage is None
+    assert failed.activity is None
+    assert failed.metrics_freshness is None
+    assert (
+        replace(
+            failed, metrics_freshness=MetricsFreshness.UNAVAILABLE
+        ).metrics_freshness
+        is MetricsFreshness.UNAVAILABLE
+    )
     assert failed.states == (
         DashboardActionState.HEALTHY,
         DashboardActionState.REPAIR_REQUIRED,
@@ -212,6 +233,46 @@ def test_cached_dashboard_scopes_codex_broker_degradation(
         and row.states[0] is DashboardActionState.LOGIN_REQUIRED
         and DashboardActionState.SERVICE_UNAVAILABLE not in row.states
         for row in unmanaged_codex.rows
+    )
+
+    setup_source = managed_auth_scenario().accounts.saved_accounts(
+        ProviderId.CLAUDE
+    )[0]
+    setup_authority = setup_source.authority
+    assert isinstance(setup_authority, ClaudeAccountAuthority)
+    assert setup_authority.setup_token is not None
+    setup_only_accounts = tuple(
+        replace(
+            setup_source,
+            account_id=account_id,
+            authority=ClaudeAccountAuthority(
+                setup_token=setup_authority.setup_token
+            ),
+            credential_health=health,
+        )
+        for account_id, health in (
+            (CLAUDE_PREVIEW_ACCOUNT_ID, CredentialHealth.HEALTHY),
+            (CLAUDE_ACTIVE_ACCOUNT_ID, CredentialHealth.UNKNOWN),
+            (CODEX_SAVED_ACCOUNT_ID, CredentialHealth.LOGIN_REQUIRED),
+        )
+    )
+
+    def load_setup_only(
+        _reader: AccountIndexReader,
+    ) -> tuple[SavedAccount, ...]:
+        return setup_only_accounts
+
+    monkeypatch.setattr(AccountIndexReader, "load", load_setup_only)
+    setup_only = CachedDashboardService(paths).load(REFERENCE_TIME)
+    setup_rows = tuple(
+        row
+        for row in setup_only.providers[0].rows
+        if isinstance(row, DashboardAccount)
+    )
+    assert tuple(row.states[0] for row in setup_rows) == (
+        DashboardActionState.SWITCH_SETUP_REQUIRED,
+        DashboardActionState.SWITCH_SETUP_REQUIRED,
+        DashboardActionState.SETUP_REGENERATION_REQUIRED,
     )
 
 
