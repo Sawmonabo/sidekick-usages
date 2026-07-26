@@ -10,6 +10,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import Thread
 
 from sidekick_usages.cli.dashboard.application import (
     InteractiveDashboardApplication,
@@ -50,12 +51,15 @@ from tests.fakes.dashboard.session.snapshots import (
 from tests.support.pty import PtySession
 
 ANSI_CONTROL_PATTERN = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|[()][0-2A-Z])")
+CURSOR_UP_PATTERN = re.compile(r"\x1b\[(\d+)A")
 CHILD_MODE_ENVIRONMENT_KEY = "SIDEKICK_PTY_CHILD"
 LOOKUP_EXECUTABLE_ENVIRONMENT_KEY = "SIDEKICK_PTY_LOOKUP_EXECUTABLE"
 SETUP_ACKNOWLEDGEMENT_ENVIRONMENT_KEY = "SIDEKICK_PTY_SETUP_ACKNOWLEDGEMENT"
 TRACE_ENVIRONMENT_KEY = "SIDEKICK_PTY_TRACE"
 CHILD_MODE_VALUE = "1"
 CHILD_MODULE = "tests.dashboard.test_pty"
+PAUSE_ACTION_ARGUMENT = "--pause-action"
+PAUSED_ACTION_MARKER_FILENAME = "paused-action"
 CHILD_TIMEOUT_SECONDS = 5.0
 INTERRUPTED_EXIT_CODE = 130
 FILE_POLL_SECONDS = 0.01
@@ -146,13 +150,45 @@ class TracingSessionControlClient(SessionControlClient):
         self._tracing_owner.refreshes.append((provider_id, account_id))
         return super().refresh_account(provider_id, account_id)
 
+    def activate(
+        self,
+        provider_id: ProviderId,
+        account_id: SidekickAccountId,
+        *,
+        allow_remote_control_disconnect: bool = False,
+    ) -> Iterator[ControlEvent]:
+        """Trace the exact interval occupied by one paused action stream."""
+        owner = self._tracing_owner
+        if owner.pause_next:
+            paused_action_path = Path(
+                os.environ[TRACE_ENVIRONMENT_KEY]
+            ).with_name(PAUSED_ACTION_MARKER_FILENAME)
+            Thread(
+                target=_record_paused_action,
+                args=(owner, paused_action_path),
+                name="sidekick-pty-paused-action",
+            ).start()
+        return super().activate(
+            provider_id,
+            account_id,
+            allow_remote_control_disconnect=allow_remote_control_disconnect,
+        )
+
 
 def _child_main() -> int:
     snapshot, _cursor, _footer = interactive_dashboard_state(REFERENCE_TIME)
     unavailable = unavailable_session_snapshot(snapshot)
     snapshots = SessionSnapshotSource(unavailable)
     daemon = SetupDaemon(ServiceLifecycleState.ABSENT)
+    paused_action_path = (
+        Path(os.environ[TRACE_ENVIRONMENT_KEY]).with_name(
+            PAUSED_ACTION_MARKER_FILENAME
+        )
+        if sys.argv[1:] == [PAUSE_ACTION_ARGUMENT]
+        else None
+    )
     connector = TracingSessionControlConnector(daemon, snapshots)
+    connector.pause_next = paused_action_path is not None
     lookup = TracingLookupWorker(
         UsageLookupWorkerClient(
             UsageLookupModuleLaunchPlanner(
@@ -190,6 +226,14 @@ def _child_main() -> int:
     return exit_code
 
 
+def _record_paused_action(
+    connector: TracingSessionControlConnector,
+    path: Path,
+) -> None:
+    connector.wait_for_stream()
+    path.write_text("accepted\n", encoding="utf-8")
+
+
 def _write_trace(
     path: Path,
     exit_code: int,
@@ -209,6 +253,8 @@ def _write_trace(
         f"lookup_failure={lookup_failure}",
         f"daemon_cancelled={str(daemon.cancelled).lower()}",
         f"closed_clients={connector.closed_clients}",
+        "action_stream_released="
+        f"{str(connector.stream_released.is_set()).lower()}",
         f"snapshot_loads={snapshots.loads}",
     ]
     trace.extend(f"setup={event}" for event in daemon.events)
@@ -273,6 +319,8 @@ def _write_blocking_lookup_executable(
 
 def _start_dashboard(
     root: Path,
+    *,
+    pause_action: bool = False,
 ) -> tuple[PtySession, Path, Path]:
     lookup_executable = root / "synthetic-lookup"
     lookup_process_id = root / "lookup.pid"
@@ -286,8 +334,13 @@ def _start_dashboard(
         lookup_executable,
         trace_path,
     )
+    arguments = (
+        (sys.executable, "-m", CHILD_MODULE, PAUSE_ACTION_ARGUMENT)
+        if pause_action
+        else (sys.executable, "-m", CHILD_MODULE)
+    )
     session = PtySession.start(
-        (sys.executable, "-m", CHILD_MODULE),
+        arguments,
         cwd=REPOSITORY_ROOT,
         environment=environment,
         columns=WIDE_COLUMNS,
@@ -299,8 +352,13 @@ def _start_dashboard(
 @contextmanager
 def _dashboard_process(
     root: Path,
+    *,
+    pause_action: bool = False,
 ) -> Iterator[tuple[PtySession, Path, Path]]:
-    session, lookup_process_id, trace_path = _start_dashboard(root)
+    session, lookup_process_id, trace_path = _start_dashboard(
+        root,
+        pause_action=pause_action,
+    )
     try:
         with session:
             yield session, lookup_process_id, trace_path
@@ -340,8 +398,26 @@ def _wait_for_process_absence(process_id: int) -> None:
     raise AssertionError("Synthetic lookup process was not reaped.")
 
 
+def _wait_for_path(path: Path) -> None:
+    deadline = time.monotonic() + CHILD_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        if path.exists():
+            return
+        time.sleep(FILE_POLL_SECONDS)
+    raise AssertionError("Synthetic control action did not enter its pause.")
+
+
 def _plain_terminal_output(output: str) -> str:
     return ANSI_CONTROL_PATTERN.sub("", output).replace("\r", "")
+
+
+def _redraw_reuses_terminal_region(output: str) -> bool:
+    plain = _plain_terminal_output(output)
+    upward_rows = sum(int(rows) for rows in CURSOR_UP_PATTERN.findall(output))
+    return (
+        plain.count(KEY_FOOTER_TEXT) == 1
+        and upward_rows == output.count("\n")
+    )
 
 
 def _selected(output: str, label: str) -> bool:
@@ -442,6 +518,17 @@ def test_dashboard_pty_completes_the_interactive_account_journey(
         wide = _resize_and_read(session, WIDE_COLUMNS)
         assert WIDE_PANEL_TEXT in _plain_terminal_output(wide)
         assert NARROW_ACCOUNT_TEXT not in _plain_terminal_output(wide)
+        assert all(
+            _redraw_reuses_terminal_region(redraw)
+            for redraw in (
+                moved_down,
+                moved_up,
+                restored,
+                codex,
+                narrow,
+                wide,
+            )
+        )
 
         session.clear_output()
         session.send(HELP_KEY)
@@ -469,13 +556,19 @@ def test_dashboard_pty_completes_the_interactive_account_journey(
 def test_dashboard_pty_interrupt_restores_terminal_and_reaps_lookup(
     tmp_path: Path,
 ) -> None:
-    with _dashboard_process(tmp_path) as (
+    with _dashboard_process(tmp_path, pause_action=True) as (
         session,
         lookup_process_id_path,
         trace_path,
     ):
         session.read_until(STARTUP_FAILURE_TEXT)
         lookup_process_id = _read_process_id(lookup_process_id_path)
+        _send_key(session, DOWN_KEY)
+        session.send(ENTER_KEY)
+        session.read_until(SETUP_CONFIRMATION_TEXT)
+        session.clear_output()
+        session.send(APPROVE_KEY)
+        _wait_for_path(tmp_path / PAUSED_ACTION_MARKER_FILENAME)
         session.send(INTERRUPT_KEY)
         assert session.wait() == INTERRUPTED_EXIT_CODE
         assert (
@@ -490,7 +583,9 @@ def test_dashboard_pty_interrupt_restores_terminal_and_reaps_lookup(
     assert "lookup_cancel_calls=1" in trace
     assert "lookup_failure=canceled" in trace
     assert "daemon_cancelled=true" in trace
-    assert "closed_clients=0" in trace
+    assert "closed_clients=1" in trace
+    assert "action_stream_released=true" in trace
+    assert f"activation=claude:{CLAUDE_WARNING_ID}:false" in trace
 
 
 if (
