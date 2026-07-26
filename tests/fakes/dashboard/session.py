@@ -94,6 +94,7 @@ class DashboardSessionProof:
     restored_account_id: SidekickAccountId | None
     failure_footer_kind: DashboardFooterKind
     remote_control_scoped_to_claude: bool
+    lookup_failure_reported: bool
     lookup_cancelled: bool
     daemon_cancelled: bool
     stream_released: bool
@@ -165,9 +166,11 @@ class SessionLookupWorker:
         account_id: SidekickAccountId,
         *,
         block: bool = False,
+        fail: bool = False,
     ) -> None:
         self._account_id = account_id
         self._block = block
+        self._fail = fail
         self._release = Event()
         self.finished = Event()
         self.cancelled = False
@@ -187,6 +190,8 @@ class SessionLookupWorker:
                         account_id=self._account_id,
                     )
                 )
+            if self._fail:
+                raise OSError("Synthetic lookup owner failed.")
             return UsageLookupWorkerResult((self._account_id,))
         finally:
             self.finished.set()
@@ -593,7 +598,7 @@ def exercise_dashboard_session(
     dashboard_client.close()
 
     daemon = SetupDaemon(ServiceLifecycleState.ABSENT)
-    lookup = SessionLookupWorker(active_account_id)
+    lookup = SessionLookupWorker(active_account_id, fail=True)
     connector = SessionControlConnector(daemon, snapshots)
     connector.require_remote_control_next = True
     invalidation = SessionInvalidationProbe()
@@ -613,6 +618,9 @@ def exercise_dashboard_session(
     session.start()
     try:
         lookup.wait_until_finished()
+        lookup_failure_reported = (
+            session.view.footer.kind is DashboardFooterKind.ERROR
+        )
         (
             activation_locked,
             setup_refusal_restored,
@@ -673,6 +681,7 @@ def exercise_dashboard_session(
         restored_account_id=restored_account_id,
         failure_footer_kind=failure_footer_kind,
         remote_control_scoped_to_claude=remote_control_scoped_to_claude,
+        lookup_failure_reported=lookup_failure_reported,
         lookup_cancelled=lookup.cancelled,
         daemon_cancelled=daemon.cancelled,
         stream_released=connector.stream_released.is_set(),

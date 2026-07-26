@@ -12,7 +12,6 @@ from sidekick_usages.cli.dashboard.ports import AccountActivation
 from sidekick_usages.core.accounts.types import SidekickAccountId
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.control.client import (
-    CONTROL_ACTION_TIMEOUT_SECONDS,
     ControlClient,
     consume_control_action,
 )
@@ -52,10 +51,7 @@ class _SupervisorAccountActivation:
         account_id: SidekickAccountId,
         allow_remote_control_disconnect: bool,
     ) -> UseActivationResult:
-        client = ControlClient.connect(
-            self._socket_path,
-            action_timeout_seconds=CONTROL_ACTION_TIMEOUT_SECONDS,
-        )
+        client = ControlClient.connect(self._socket_path)
         try:
             terminal = consume_control_action(
                 client.activate(

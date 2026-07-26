@@ -386,7 +386,16 @@ class InteractiveDashboardSession:
 
     def _run_lookup(self) -> None:
         self._lookup_notice(LOOKUP_STARTED_MESSAGE)
-        result = self._lookup.run(self._observe_lookup)
+        try:
+            result = self._lookup.run(self._observe_lookup)
+        except OSError:
+            if self._stopping.is_set():
+                return
+            self._publish_lookup_snapshot(
+                LOOKUP_FAILED_MESSAGE,
+                failed=True,
+            )
+            return
         if self._stopping.is_set():
             return
         self._publish_lookup_snapshot(

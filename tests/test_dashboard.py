@@ -46,6 +46,9 @@ from sidekick_usages.core.accounts.types import (
 )
 from sidekick_usages.core.selection.types import ProviderRuntimeState
 from sidekick_usages.core.types import ExitCode, ProviderId
+from sidekick_usages.daemon.control.client import (
+    CONTROL_ACTION_TIMEOUT_SECONDS,
+)
 from sidekick_usages.daemon.types.lifecycle import ServiceLifecycleState
 from sidekick_usages.daemon.types.service import ServicePhase
 from sidekick_usages.persistence.accounts.index import AccountIndex
@@ -379,7 +382,9 @@ def test_dashboard_controller_journey_preserves_verified_truth(
         preview_account_id=CLAUDE_PREVIEW_ACCOUNT_ID,
         monkeypatch=monkeypatch,
     ) == DashboardSessionProof(
-        control_connect_calls=((SESSION_SOCKET, None),),
+        control_connect_calls=(
+            (SESSION_SOCKET, CONTROL_ACTION_TIMEOUT_SECONDS),
+        ),
         partial_start_reaped=True,
         activation_locked=True,
         confirmations=(
@@ -416,6 +421,7 @@ def test_dashboard_controller_journey_preserves_verified_truth(
         restored_account_id=CLAUDE_PREVIEW_ACCOUNT_ID,
         failure_footer_kind=DashboardFooterKind.ERROR,
         remote_control_scoped_to_claude=True,
+        lookup_failure_reported=True,
         lookup_cancelled=True,
         daemon_cancelled=True,
         stream_released=True,

@@ -32,10 +32,7 @@ ONLY_ARGUMENT_COUNT = 2
 
 def _connect_dashboard_control(socket_path: Path) -> ControlClient:
     """Open one bounded local supervisor connection."""
-    return ControlClient.connect(
-        socket_path,
-        action_timeout_seconds=None,
-    )
+    return ControlClient.connect(socket_path)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
