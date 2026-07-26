@@ -151,11 +151,6 @@ class ReadyProviderCapabilities:
         return True
 
 
-def _connect_readiness_client(_socket_path: Path) -> ReadinessControlClient:
-    """Connect one synthetic peer-qualified local-control client."""
-    return ReadinessControlClient()
-
-
 class ReadyLifecycle:
     """Record the exact readiness sequence without provider activity."""
 
@@ -385,10 +380,19 @@ def _exercise_real_lifecycle_progress(
         readiness,
         cleanup,
     )
+    connection_attempts = 0
+
+    def connect_after_startup(_socket_path: Path) -> ReadinessControlClient:
+        nonlocal connection_attempts
+        connection_attempts += 1
+        if connection_attempts == 1:
+            raise FileNotFoundError
+        return ReadinessControlClient()
+
     monkeypatch.setattr(
         ControlClient,
         "connect",
-        staticmethod(_connect_readiness_client),
+        staticmethod(connect_after_startup),
     )
     readiness.enroll_accounts()
     broker_manager = DaemonManager(

@@ -21,7 +21,11 @@ from sidekick_usages.core.selection.types import (
     OperationState,
 )
 from sidekick_usages.core.types import ProviderId
-from sidekick_usages.daemon.control.client import ControlClient
+from sidekick_usages.daemon.control.client import (
+    ControlClient,
+    ServiceCompatibilityError,
+    UnexpectedServiceEventError,
+)
 from sidekick_usages.daemon.control.endpoint import control_endpoint_state
 from sidekick_usages.daemon.control.server import cleanup_control_endpoint
 from sidekick_usages.daemon.lifecycle.errors import ServiceLifecycleError
@@ -483,17 +487,43 @@ class SupervisorReadiness:
         progress(
             ServiceLifecycleObservation(ServiceLifecyclePhase.CONTROL_SOCKET)
         )
-        try:
-            client = self._connect_client()
+        deadline = self._monotonic() + _READINESS_TIMEOUT_SECONDS
+        while True:
             try:
-                client.handshake()
-            finally:
-                self._release_client(client)
-        except OSError, ValueError:
-            self._raise_if_cancelled()
-            raise ServiceLifecycleError(
-                ServiceFailureCode.HANDSHAKE_FAILED
-            ) from None
+                client = self._connect_client()
+                try:
+                    client.handshake()
+                finally:
+                    self._release_client(client)
+            except (
+                PermissionError,
+                ServiceCompatibilityError,
+                UnexpectedServiceEventError,
+                ValueError,
+            ):
+                self._raise_if_cancelled()
+                raise ServiceLifecycleError(
+                    ServiceFailureCode.HANDSHAKE_FAILED
+                ) from None
+            except (
+                FileNotFoundError,
+                TimeoutError,
+                ConnectionError,
+            ):
+                self._raise_if_cancelled()
+                remaining = deadline - self._monotonic()
+                if remaining <= 0:
+                    raise ServiceLifecycleError(
+                        ServiceFailureCode.HANDSHAKE_FAILED
+                    ) from None
+                self._cancelled.wait(min(_READINESS_WAIT_SECONDS, remaining))
+                continue
+            except OSError:
+                self._raise_if_cancelled()
+                raise ServiceLifecycleError(
+                    ServiceFailureCode.HANDSHAKE_FAILED
+                ) from None
+            return
 
     def _request_maintenance(self) -> None:
         try:
