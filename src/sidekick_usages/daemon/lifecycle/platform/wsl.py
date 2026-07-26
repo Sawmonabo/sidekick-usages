@@ -12,8 +12,8 @@ from sidekick_usages.daemon.lifecycle.constants import (
     WSL_RESCUE_UNHEALTHY,
 )
 from sidekick_usages.daemon.lifecycle.errors import ServiceLifecycleError
+from sidekick_usages.daemon.lifecycle.platform.systemd import SystemdBackend
 from sidekick_usages.daemon.lifecycle.ports import ServiceLifecycleObserver
-from sidekick_usages.daemon.lifecycle.systemd import SystemdBackend
 from sidekick_usages.daemon.models.lifecycle import (
     PlatformInfo,
     ServiceBackendStatus,

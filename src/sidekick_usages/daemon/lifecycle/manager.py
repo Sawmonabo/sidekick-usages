@@ -9,13 +9,15 @@ from sidekick_usages.core.types import ExitCode
 from sidekick_usages.daemon.lifecycle.artifacts import ServiceArtifactStore
 from sidekick_usages.daemon.lifecycle.commands import SystemCommandRunner
 from sidekick_usages.daemon.lifecycle.errors import ServiceLifecycleError
-from sidekick_usages.daemon.lifecycle.launchd import LaunchdBackend
-from sidekick_usages.daemon.lifecycle.platform import (
+from sidekick_usages.daemon.lifecycle.platform.launchd import LaunchdBackend
+from sidekick_usages.daemon.lifecycle.platform.selection import (
     FeatureDisabledBackend,
     detect_platform_info,
     qualify_supervisor_executable,
     resolve_supervisor_executable,
 )
+from sidekick_usages.daemon.lifecycle.platform.systemd import SystemdBackend
+from sidekick_usages.daemon.lifecycle.platform.wsl import WslBackend
 from sidekick_usages.daemon.lifecycle.ports import (
     ProviderCapabilityReadiness,
     ServiceBackend,
@@ -28,8 +30,6 @@ from sidekick_usages.daemon.lifecycle.readiness import (
     RuntimeCleanup,
     SupervisorReadiness,
 )
-from sidekick_usages.daemon.lifecycle.systemd import SystemdBackend
-from sidekick_usages.daemon.lifecycle.wsl import WslBackend
 from sidekick_usages.daemon.models.lifecycle import (
     DaemonOperationResult,
     PlatformInfo,

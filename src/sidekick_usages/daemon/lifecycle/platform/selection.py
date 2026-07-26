@@ -1,4 +1,4 @@
-"""Operating-system detection for per-user service integration."""
+"""Select and qualify per-user service integration."""
 
 import getpass
 import os
