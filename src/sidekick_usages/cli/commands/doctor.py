@@ -7,11 +7,10 @@ from typing import Annotated, assert_never
 import typer
 
 from sidekick_usages.cli.context import (
-    DoctorFailed,
-    DoctorReady,
     InvocationContext,
     invocation_context,
 )
+from sidekick_usages.cli.contexts.models import DoctorFailed, DoctorReady
 from sidekick_usages.cli.help import branded_command
 from sidekick_usages.cli.validation import validated_provider
 from sidekick_usages.core.types import ExitCode, ProviderId

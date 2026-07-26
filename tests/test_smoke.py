@@ -8,16 +8,18 @@ import click
 import pytest
 
 import sidekick_usages
-from sidekick_usages.cli import context
-from sidekick_usages.cli.context import (
-    Composed,
-    DoctorFailed,
-    DoctorReady,
-    InvocationContext,
-    UpdateContext,
+from sidekick_usages.cli.context import InvocationContext
+from sidekick_usages.cli.contexts import composition
+from sidekick_usages.cli.contexts.composition import (
     compose_app_context,
     compose_doctor_context,
     default_invocation_composers,
+)
+from sidekick_usages.cli.contexts.models import (
+    Composed,
+    DoctorFailed,
+    DoctorReady,
+    UpdateContext,
 )
 from sidekick_usages.core.accounts.types import (
     AuthorityGeneration,
@@ -84,7 +86,7 @@ def test_failed_composition_closes_resources_without_masking(
     client = _RecordingHttpClient()
     failure = RuntimeError("composition sentinel")
     monkeypatch.setattr(
-        context,
+        composition,
         "HttpClient",
         lambda *, clock: client,
     )
@@ -151,7 +153,7 @@ def test_composition_honors_empty_provider_maps_and_current_store(
         make_provider_capability_report()
     )
     monkeypatch.setattr(
-        context,
+        composition,
         "build_provider_capability_service",
         lambda _paths: capability_service,
     )
@@ -194,7 +196,7 @@ def test_doctor_fails_closed_for_untrusted_persisted_state(
         make_provider_capability_report()
     )
     monkeypatch.setattr(
-        context,
+        composition,
         "build_provider_capability_service",
         lambda _paths: capability_service,
     )

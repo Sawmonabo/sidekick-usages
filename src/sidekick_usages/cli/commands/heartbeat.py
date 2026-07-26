@@ -1,13 +1,14 @@
 """Heartbeat command group, fallback parsing, and presentation."""
 
 import json
-from typing import Annotated, NoReturn
+from typing import Annotated
 
 import click
 import typer
 
 from sidekick_usages.cli.context import invocation_context
 from sidekick_usages.cli.help import BrandedTyperGroup, branded_command
+from sidekick_usages.cli.validation import exit_usage_error
 from sidekick_usages.core.types import ExitCode, ProviderId
 from sidekick_usages.heartbeat.models import HeartbeatOutcome
 from sidekick_usages.heartbeat.render import (
@@ -38,12 +39,6 @@ class _HeartbeatGroup(BrandedTyperGroup):
                 if command is not None:
                     return self.label_command_name, command, args
             raise
-
-
-def _usage_error(ctx: typer.Context, message: str) -> NoReturn:
-    """Render a heartbeat-command usage failure and stop."""
-    invocation_context(ctx).err_console.print(f"[red]{message}[/red]")
-    raise typer.Exit(code=ExitCode.SYSTEM_ERROR)
 
 
 def render_outcomes(
@@ -100,14 +95,14 @@ def heartbeat_cmd(
     args = list(ctx.args)
     label = args[0] if args else None
     if len(args) > 1:
-        _usage_error(ctx, "Pass at most one account label.")
+        exit_usage_error(ctx, "Pass at most one account label.")
     if all_accounts:
         try:
             provider_filter = (
                 ProviderId(provider_id) if provider_id is not None else None
             )
         except ValueError:
-            _usage_error(ctx, f"Unknown provider {provider_id!r}.")
+            exit_usage_error(ctx, f"Unknown provider {provider_id!r}.")
         outcomes = (
             invocation_context(ctx)
             .require_app(ctx)
@@ -122,11 +117,11 @@ def heartbeat_cmd(
             raise typer.Exit(code=code)
         return
     if provider_id is not None:
-        _usage_error(ctx, "--provider only applies with --all.")
+        exit_usage_error(ctx, "--provider only applies with --all.")
     if quiet:
-        _usage_error(ctx, "--quiet only applies with --all.")
+        exit_usage_error(ctx, "--quiet only applies with --all.")
     if label is None:
-        _usage_error(ctx, "Pass an account label or use --all.")
+        exit_usage_error(ctx, "Pass an account label or use --all.")
     _run_label(ctx, label, target_id=target_id)
 
 

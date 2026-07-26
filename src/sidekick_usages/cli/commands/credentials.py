@@ -8,10 +8,12 @@ from rich.console import Console
 from rich.text import Text
 
 from sidekick_usages.cli.commands.maintenance import run_refresh_all
-from sidekick_usages.cli.context import AppContext, invocation_context
+from sidekick_usages.cli.context import invocation_context
+from sidekick_usages.cli.contexts.models import AppContext
 from sidekick_usages.cli.help import branded_command
 from sidekick_usages.cli.token_input import TokenInput
 from sidekick_usages.cli.validation import (
+    exit_usage_error,
     validated_label,
     validated_provider,
 )
@@ -54,12 +56,6 @@ def render_codex_login_event(
         console.print(code)
 
 
-def _usage_error(ctx: typer.Context, message: str) -> NoReturn:
-    """Render a credential-command usage failure and stop."""
-    invocation_context(ctx).err_console.print(f"[red]{message}[/red]")
-    raise typer.Exit(code=ExitCode.SYSTEM_ERROR)
-
-
 def _prompt_for_token(
     ctx: typer.Context,
     spec: TokenPromptSpec,
@@ -98,7 +94,7 @@ def _resolve_refresh_provider(
     if provider_id is not None:
         return provider_id if provider_id in providers else None
     if len(providers) > 1:
-        _usage_error(
+        exit_usage_error(
             ctx,
             f"Account label '{label}' exists for both providers.",
         )
@@ -114,7 +110,7 @@ def _refresh_codex(
 ) -> None:
     """Run one explicitly resolved managed Codex repair."""
     if replace_identity:
-        _usage_error(
+        exit_usage_error(
             ctx,
             "--replace-identity applies only to setup-token-only "
             "Claude accounts.",
@@ -332,27 +328,27 @@ def _validate_refresh_args(
 ) -> str | None:
     if all_accounts:
         if label is not None:
-            _usage_error(
+            exit_usage_error(
                 ctx,
                 "--all cannot be combined with an account label.",
             )
         if replace_identity:
-            _usage_error(
+            exit_usage_error(
                 ctx,
                 "--replace-identity only applies to a label refresh.",
             )
         if provider is not None:
-            _usage_error(
+            exit_usage_error(
                 ctx,
                 "--provider only applies to a label refresh.",
             )
         return None
     if label is None:
-        _usage_error(ctx, "Pass an account label or use --all.")
+        exit_usage_error(ctx, "Pass an account label or use --all.")
     if quiet:
-        _usage_error(ctx, "--quiet only applies with --all.")
+        exit_usage_error(ctx, "--quiet only applies with --all.")
     if force:
-        _usage_error(ctx, "--force only applies with --all.")
+        exit_usage_error(ctx, "--force only applies with --all.")
     return label
 
 

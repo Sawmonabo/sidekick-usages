@@ -14,10 +14,11 @@ from typer.testing import CliRunner
 
 from sidekick_usages.cli.app import create_app
 from sidekick_usages.cli.commands import usage, use
-from sidekick_usages.cli.context import InvocationContext, MigrationContext
+from sidekick_usages.cli.context import InvocationContext
 from sidekick_usages.cli.contexts.migration import (
     ManagedAuthDaemonLifecycle,
 )
+from sidekick_usages.cli.contexts.models import MigrationContext
 from sidekick_usages.cli.contexts.use import UseContext
 from sidekick_usages.cli.dashboard import launch
 from sidekick_usages.cli.dashboard.controller import DashboardController

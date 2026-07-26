@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from rich.console import Console
 
-from sidekick_usages.cli.context import (
+from sidekick_usages.cli.contexts.models import (
     DoctorContext,
     DoctorFailed,
     DoctorReady,

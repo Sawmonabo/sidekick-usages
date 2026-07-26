@@ -6,7 +6,7 @@ from pathlib import Path
 from rich.console import Console
 
 from sidekick_usages.branding import ROBOT_LINES
-from sidekick_usages.cli.context import DaemonContext
+from sidekick_usages.cli.contexts.models import DaemonContext
 from sidekick_usages.core.models import Account, ClaudeSetupTokenCredentials
 from sidekick_usages.core.types import AccountLabel, ExitCode
 from sidekick_usages.daemon.lifecycle.manager import DaemonManager

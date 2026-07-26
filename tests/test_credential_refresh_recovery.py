@@ -9,7 +9,7 @@ from typing import Never
 
 import pytest
 
-from sidekick_usages.cli.context import compose_app_context
+from sidekick_usages.cli.contexts.composition import compose_app_context
 from sidekick_usages.core.types import AccountLabel, ProviderId
 from sidekick_usages.credentials.refresh import (
     CredentialRefreshCoordinator,

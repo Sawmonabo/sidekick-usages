@@ -1,5 +1,7 @@
 """Shared validation for CLI-owned scalar inputs."""
 
+from typing import Never
+
 import typer
 
 from sidekick_usages.cli.context import invocation_context
@@ -8,6 +10,12 @@ from sidekick_usages.core.types import (
     ExitCode,
     ProviderId,
 )
+
+
+def exit_usage_error(ctx: typer.Context, message: str) -> Never:
+    """Render one invalid command combination and stop."""
+    invocation_context(ctx).err_console.print(f"[red]{message}[/red]")
+    raise typer.Exit(code=ExitCode.SYSTEM_ERROR)
 
 
 def validated_label(ctx: typer.Context, value: str) -> AccountLabel:

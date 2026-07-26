@@ -8,7 +8,7 @@ import pytest
 from rich.console import Console
 
 from sidekick_usages import __version__
-from sidekick_usages.cli.context import UpdateContext
+from sidekick_usages.cli.contexts.models import UpdateContext
 from sidekick_usages.errors import ForbiddenError
 from sidekick_usages.http.client import HttpClient
 from sidekick_usages.serialization.json import JsonObject

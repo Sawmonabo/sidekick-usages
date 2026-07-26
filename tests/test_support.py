@@ -12,13 +12,13 @@ from rich.console import Console
 from typer.testing import CliRunner, Result
 
 from sidekick_usages.cli.app import create_app
-from sidekick_usages.cli.context import (
+from sidekick_usages.cli.context import InvocationContext
+from sidekick_usages.cli.contexts.models import (
     AppContext,
     Composed,
     DaemonContext,
     DoctorContext,
     InvocationComposers,
-    InvocationContext,
     MigrationContext,
     PersistenceContext,
     UpdateContext,
