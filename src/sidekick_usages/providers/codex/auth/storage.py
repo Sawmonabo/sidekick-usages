@@ -209,10 +209,7 @@ def _native_config_failure(
     try:
         payload = _read_bounded(path)
     except FileNotFoundError:
-        return codex_failure(
-            ProviderFailureKind.UNREADABLE,
-            "The native Codex credential store could not be resolved.",
-        )
+        return None
     except OSError:
         return codex_failure(
             ProviderFailureKind.UNREADABLE,
@@ -223,7 +220,20 @@ def _native_config_failure(
             ProviderFailureKind.UNREADABLE,
             "The native Codex config exceeds the supported size.",
         )
-    return _file_auth_config_failure(payload)
+    try:
+        document = tomllib.loads(payload.decode("utf-8"))
+    except UnicodeDecodeError, tomllib.TOMLDecodeError:
+        return codex_failure(
+            ProviderFailureKind.MALFORMED,
+            "The native Codex config is malformed.",
+        )
+    storage = document.get("cli_auth_credentials_store")
+    if storage is None or storage == "file":
+        return None
+    return codex_failure(
+        ProviderFailureKind.UNSUPPORTED,
+        "The native Codex credential store is not file-backed.",
+    )
 
 
 def _native_auth_failure(

@@ -137,7 +137,7 @@ def broker_fixture(
     native_auth.write_bytes(NATIVE_AUTH_SENTINEL)
     os.chmod(native_auth, 0o600)
     (native_home / "config.toml").write_text(
-        'cli_auth_credentials_store = "file"\n',
+        "# Codex defaults to file-backed CLI authentication.\n",
         encoding="utf-8",
     )
     write_codex_schema(schema_root, external_auth=True)
