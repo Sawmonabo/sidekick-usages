@@ -7,6 +7,9 @@ from collections.abc import Callable, Mapping
 from datetime import datetime
 from pathlib import Path
 
+import pytest
+
+import sidekick_usages.platform.executable
 from sidekick_usages.core.accounts.types import (
     SidekickAccountId,
 )
@@ -62,6 +65,17 @@ CLAUDE_LOGGED_OUT_STATUS = (
 CLAUDE_VERSION_OUTPUT = b"2.1.220 (Claude Code)\n"
 _PRIVATE_DIRECTORY_MODE = 0o700
 _PRIVATE_FILE_MODE = 0o600
+
+
+def use_synthetic_claude(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Resolve the Python executable as the synthetic Claude CLI."""
+    monkeypatch.setattr(
+        sidekick_usages.platform.executable.shutil,
+        "which",
+        lambda command, path=None: (
+            sys.executable if command == "claude" else None
+        ),
+    )
 
 
 class ClaudeRunner:

@@ -1,13 +1,11 @@
 """Load-bearing Claude activation recovery scenarios."""
 
-import sys
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
 
 import pytest
 
-import sidekick_usages.platform.executable
 from sidekick_usages.core.accounts.types import SidekickAccountId
 from sidekick_usages.core.selection.models import DueOperation
 from sidekick_usages.core.selection.types import (
@@ -32,23 +30,13 @@ from tests.fakes.claude.activation import (
     ClaudeRecoveryScenario,
     claude_recovery_scenario,
 )
+from tests.fakes.claude.managed import use_synthetic_claude
 
 _EXPECTED_NATIVE_LOGINS = 2
 
 
 class _SimulatedCrash(BaseException):
     """Stop activation after the native provider mutation."""
-
-
-def _use_synthetic_claude(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Resolve the synthetic exact executable for activation tests."""
-    monkeypatch.setattr(
-        sidekick_usages.platform.executable.shutil,
-        "which",
-        lambda command, path=None: (
-            sys.executable if command == "claude" else None
-        ),
-    )
 
 
 def _interrupt(scenario: ClaudeRecoveryScenario) -> None:
@@ -159,7 +147,7 @@ def test_interrupted_native_activation_rolls_back_once_or_requires_repair(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Recovery performs one official rollback and never loops on failure."""
-    _use_synthetic_claude(monkeypatch)
+    use_synthetic_claude(monkeypatch)
     recovered = claude_recovery_scenario(
         tmp_path / "recovered",
         _SimulatedCrash(),
@@ -254,7 +242,7 @@ def test_external_claude_login_wins_without_importing_unknown_identity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Known external login is related; unknown login remains unsaved."""
-    _use_synthetic_claude(monkeypatch)
+    use_synthetic_claude(monkeypatch)
     known = claude_recovery_scenario(
         tmp_path / "known",
         _SimulatedCrash(),
