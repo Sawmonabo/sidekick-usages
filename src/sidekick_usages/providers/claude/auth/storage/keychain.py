@@ -22,6 +22,7 @@ from sidekick_usages.providers.claude.auth.storage.types import (
     ClaudeProtectedStorageFailure,
 )
 from sidekick_usages.providers.claude.environment import (
+    CLAUDE_SECURE_STORAGE_CONFIG_DIR_ENVIRONMENT_KEY,
     claude_keychain_environment,
 )
 from sidekick_usages.providers.claude.errors import ClaudeProcessError
@@ -68,7 +69,6 @@ _KEYCHAIN_SUPPORTED_PLATFORMS = frozenset(
     }
 )
 _KEYCHAIN_NAMESPACE_VERSIONS = frozenset({SUPPORTED_CLAUDE_VERSION})
-_SECURE_STORAGE_OVERRIDE = "CLAUDE_SECURESTORAGE_CONFIG_DIR"
 
 
 def native_keychain_target(
@@ -90,7 +90,7 @@ def protected_keychain_target(
     if (
         capabilities.platform not in _KEYCHAIN_SUPPORTED_PLATFORMS
         or capabilities.executable.version not in _KEYCHAIN_NAMESPACE_VERSIONS
-        or _SECURE_STORAGE_OVERRIDE in source
+        or CLAUDE_SECURE_STORAGE_CONFIG_DIR_ENVIRONMENT_KEY in source
     ):
         raise ClaudeProtectedStorageError(
             ClaudeProtectedStorageFailure.NAMESPACE_UNPROVEN

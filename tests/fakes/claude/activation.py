@@ -59,13 +59,22 @@ from sidekick_usages.persistence.supervisor.activation import (
 from sidekick_usages.persistence.supervisor.selection import SelectedStateStore
 from sidekick_usages.persistence.types.artifact import AuthorityExpectation
 from sidekick_usages.platform.types import HostPlatform
+from sidekick_usages.providers.claude.activation.types import (
+    ClaudeForegroundState,
+)
 from sidekick_usages.providers.claude.auth.generation import (
     claude_access_token_generation,
 )
 from sidekick_usages.providers.claude.auth.storage.service import (
     CLAUDE_CREDENTIAL_FILE,
 )
-from sidekick_usages.providers.claude.models import ClaudeNativeProfile
+from sidekick_usages.providers.claude.managed.types import (
+    ClaudeManagedPlatform,
+)
+from sidekick_usages.providers.claude.models import (
+    ClaudeExecutable,
+    ClaudeNativeProfile,
+)
 from tests.fakes.claude.managed import (
     ClaudeManagedLoginScript,
     ClaudeRunner,
@@ -101,6 +110,22 @@ _NATIVE_TARGET_ACCESS_EXPIRY = REFERENCE_TIME + timedelta(hours=4)
 
 
 @dataclass(frozen=True, slots=True)
+class FixedClaudeForegroundProbe:
+    """Return one deterministic foreground proof state."""
+
+    state: ClaudeForegroundState
+
+    def __call__(
+        self,
+        executable: ClaudeExecutable,
+        platform: ClaudeManagedPlatform,
+    ) -> ClaudeForegroundState:
+        """Return the injected state without inspecting local processes."""
+        del executable, platform
+        return self.state
+
+
+@dataclass(frozen=True, slots=True)
 class ClaudeActivationScenario:
     """Complete synthetic state for one healthy native activation."""
 
@@ -123,9 +148,15 @@ class ClaudeActivationScenario:
     journals: ActivationJournalStore
     executor: ClaudeActivationWorkerExecutor
     operation: DueOperation
+    environment: Mapping[str, str]
 
 
-def claude_activation_scenario(root: Path) -> ClaudeActivationScenario:
+def claude_activation_scenario(
+    root: Path,
+    *,
+    environment: dict[str, str] | None = None,
+    foreground: ClaudeForegroundState = ClaudeForegroundState.CLEAR,
+) -> ClaudeActivationScenario:
     """Build one healthy A-to-B official Claude activation scenario."""
     source_payload = credential_payload(
         "provider-account-source",
@@ -201,6 +232,17 @@ def claude_activation_scenario(root: Path) -> ClaudeActivationScenario:
         },
     )
     runner = ClaudeRunner(script=script)
+    source_environment = (
+        {
+            "HOME": str(native.config_directory.parent),
+            "PATH": os.defpath,
+            "USER": "sidekick-test",
+        }
+        if environment is None
+        else environment
+    )
+    if source_environment.get("HOME") != str(native.config_directory.parent):
+        raise ValueError("Synthetic native Claude home is inconsistent.")
     selected = SelectedStateStore(paths.selected_state)
     selected.save(
         SelectedAccountState(
@@ -239,13 +281,10 @@ def claude_activation_scenario(root: Path) -> ClaudeActivationScenario:
             selected,
             clock,
             runtime=ClaudeActivationRuntime(
-                environment={
-                    "HOME": str(native.config_directory.parent),
-                    "PATH": os.defpath,
-                    "USER": "sidekick-test",
-                },
+                environment=source_environment,
                 host=HostPlatform.LINUX,
                 runner=runner,
+                foreground_probe=FixedClaudeForegroundProbe(foreground),
             ),
         ),
         clock,
@@ -280,6 +319,7 @@ def claude_activation_scenario(root: Path) -> ClaudeActivationScenario:
         journals=journals,
         executor=executor,
         operation=operation,
+        environment=source_environment,
     )
 
 

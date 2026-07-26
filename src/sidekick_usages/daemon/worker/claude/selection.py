@@ -52,6 +52,9 @@ class ClaudeActivationWorkerExecutor:
                 operation.operation_id,
                 operation.required_account_id,
                 authority,
+                allow_remote_control_disconnect=(
+                    operation.allow_remote_control_disconnect
+                ),
             )
         except ClaudeActivationError as error:
             return managed_worker_result(

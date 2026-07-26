@@ -5,12 +5,18 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from sidekick_usages.platform.types import HostPlatform
+from sidekick_usages.providers.claude.activation.foreground import (
+    inspect_claude_foreground,
+)
+from sidekick_usages.providers.claude.activation.types import (
+    CLAUDE_ACTIVATION_FAILURE_CODE_PREFIX,
+    ClaudeActivationGuardFailure,
+    ClaudeForegroundProbe,
+)
 from sidekick_usages.providers.claude.process import (
     run_bounded_claude_command,
 )
 from sidekick_usages.providers.claude.types import ClaudeCommandRunner
-
-_FAILURE_CODE_PREFIX = "claude_activation_"
 
 
 class ClaudeActivationFailure(StrEnum):
@@ -40,13 +46,16 @@ class ClaudeActivationFailure(StrEnum):
     @property
     def failure_code(self) -> str:
         """Return the complete sanitized worker and journal code."""
-        return _FAILURE_CODE_PREFIX + self.value
+        return CLAUDE_ACTIVATION_FAILURE_CODE_PREFIX + self.value
 
 
 class ClaudeActivationError(RuntimeError):
     """One secret-safe native Claude activation failure."""
 
-    def __init__(self, failure: ClaudeActivationFailure) -> None:
+    def __init__(
+        self,
+        failure: ClaudeActivationFailure | ClaudeActivationGuardFailure,
+    ) -> None:
         self.failure = failure
         super().__init__(failure.value)
 
@@ -73,3 +82,4 @@ class ClaudeActivationRuntime:
     environment: Mapping[str, str] | None = None
     host: HostPlatform | None = None
     runner: ClaudeCommandRunner = run_bounded_claude_command
+    foreground_probe: ClaudeForegroundProbe = inspect_claude_foreground

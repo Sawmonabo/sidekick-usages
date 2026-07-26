@@ -30,6 +30,7 @@ from sidekick_usages.core.models import (
     UsageReport,
     UsageWindow,
 )
+from sidekick_usages.core.selection.models import DueOperation
 from sidekick_usages.core.selection.types import ActivationPhase
 from sidekick_usages.core.types import (
     AccountLabel,
@@ -47,6 +48,7 @@ from sidekick_usages.credentials.claude.setup.service import (
     ClaudeSetupTokenCoordinator,
 )
 from sidekick_usages.credentials.models import CredentialLoginSuccess
+from sidekick_usages.daemon.models.worker import WorkerResult
 from sidekick_usages.daemon.types.worker import WorkerOutcome
 from sidekick_usages.paths import ApplicationPaths
 from sidekick_usages.persistence.accounts.store import AccountStore
@@ -65,6 +67,10 @@ from sidekick_usages.providers.base import (
     ProviderFailure,
     ProviderFailureKind,
 )
+from sidekick_usages.providers.claude.activation.types import (
+    ClaudeActivationGuardFailure,
+    ClaudeForegroundState,
+)
 from sidekick_usages.providers.claude.auth.generation import (
     claude_access_token_generation,
 )
@@ -74,7 +80,10 @@ from sidekick_usages.providers.claude.auth.storage.service import (
 from sidekick_usages.providers.claude.environment import (
     CLAUDE_CONFIG_DIR_ENVIRONMENT_KEY,
 )
-from tests.fakes.claude.activation import claude_activation_scenario
+from tests.fakes.claude.activation import (
+    ClaudeActivationScenario,
+    claude_activation_scenario,
+)
 from tests.fakes.claude.managed import (
     ClaudeManagedLoginScript,
     ClaudeRunner,
@@ -629,21 +638,81 @@ def test_interrupted_commit_recovers_profile_before_retiring_legacy(
     assert script.login_profiles == [profile]
 
 
-def test_native_activation_retains_source_and_commits_verified_target(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """One official A-to-B switch preserves both private authorities."""
-    _use_synthetic_claude(monkeypatch)
-    scenario = claude_activation_scenario(tmp_path)
-
+def _execute_activation(
+    scenario: ClaudeActivationScenario,
+    operation: DueOperation,
+) -> WorkerResult:
     with ProviderMutationLock(
         scenario.paths.durable_operations,
         ProviderId.CLAUDE,
         (scenario.source.account_id, scenario.target.account_id),
         timeout_seconds=1.0,
     ).hold() as authority:
-        result = scenario.executor.execute(scenario.operation, authority)
+        return scenario.executor.execute(operation, authority)
+
+
+def _guarded_activation_scenario(
+    root: Path,
+) -> ClaudeActivationScenario:
+    conflict_root = root / "credential-conflict"
+    conflict_environment = {
+        "ANTHROPIC_API_KEY": "synthetic-parent-secret",
+        "HOME": str(conflict_root / "native-home"),
+        "PATH": os.defpath,
+        "USER": "sidekick-test",
+    }
+    original_environment = dict(conflict_environment)
+    conflict = claude_activation_scenario(
+        conflict_root,
+        environment=conflict_environment,
+    )
+    rejected = _execute_activation(conflict, conflict.operation)
+
+    assert rejected.outcome is WorkerOutcome.ACTION_REQUIRED
+    assert rejected.failure_code == (
+        ClaudeActivationGuardFailure.ANTHROPIC_API_KEY.failure_code
+    )
+    assert conflict_environment == original_environment
+    assert conflict.runner.calls == []
+    assert conflict.script.login_profiles == []
+    assert conflict.journals.load(ProviderId.CLAUDE).active is None
+
+    scenario = claude_activation_scenario(
+        root / "foreground",
+        foreground=ClaudeForegroundState.PRESENT,
+    )
+    native_before = scenario.native_credentials.read_bytes()
+    selected_before = scenario.selected.load(ProviderId.CLAUDE)
+    refused = _execute_activation(scenario, scenario.operation)
+
+    assert refused.outcome is WorkerOutcome.ACTION_REQUIRED
+    assert (
+        refused.failure_code
+        == (
+            ClaudeActivationGuardFailure.REMOTE_CONTROL_DISCONNECT_REQUIRED
+        ).failure_code
+    )
+    assert scenario.native_credentials.read_bytes() == native_before
+    assert scenario.selected.load(ProviderId.CLAUDE) == selected_before
+    assert scenario.script.login_profiles == []
+    assert scenario.journals.load(ProviderId.CLAUDE).active is None
+    return scenario
+
+
+def test_native_activation_retains_source_and_commits_verified_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Guards fail closed before one approved, provider-proven switch."""
+    _use_synthetic_claude(monkeypatch)
+    scenario = _guarded_activation_scenario(tmp_path)
+    result = _execute_activation(
+        scenario,
+        replace(
+            scenario.operation,
+            allow_remote_control_disconnect=True,
+        ),
+    )
 
     assert result.outcome is WorkerOutcome.SUCCEEDED
     current_source = scenario.store.read_saved(scenario.source.account_id)

@@ -1,5 +1,7 @@
 """Journaled official Claude native-account activation."""
 
+import os
+from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 
@@ -72,6 +74,10 @@ from sidekick_usages.persistence.supervisor.authority import (
     ProviderMutationAuthority,
 )
 from sidekick_usages.persistence.supervisor.selection import SelectedStateStore
+from sidekick_usages.providers.claude.activation.service import (
+    claude_environment_conflict,
+    claude_native_switch_conflict,
+)
 from sidekick_usages.providers.claude.auth.storage.errors import (
     ClaudeProtectedStorageError,
 )
@@ -79,9 +85,6 @@ from sidekick_usages.providers.claude.auth.storage.models import (
     ClaudeAuthoritySnapshot,
 )
 from sidekick_usages.providers.claude.credentials import native_claude_profile
-from sidekick_usages.providers.claude.environment import (
-    CLAUDE_CONFIG_DIR_ENVIRONMENT_KEY,
-)
 from sidekick_usages.providers.claude.managed.errors import ClaudeManagedError
 from sidekick_usages.providers.claude.managed.models import ClaudeCapabilities
 from sidekick_usages.providers.claude.models import ClaudeNativeProfile
@@ -123,6 +126,7 @@ class ClaudeActivationService:
         self._environment = resolved_runtime.environment
         self._host = resolved_runtime.host
         self._runner = resolved_runtime.runner
+        self._foreground_probe = resolved_runtime.foreground_probe
         self._managed_reader = ClaudeManagedAuthorityReader(paths, profiles)
 
     def activate(
@@ -130,9 +134,16 @@ class ClaudeActivationService:
         operation_id: OperationId,
         target_account_id: SidekickAccountId,
         authority: ProviderMutationAuthority,
+        *,
+        allow_remote_control_disconnect: bool = False,
     ) -> SelectedAccountState:
         """Retain the native source, activate the target, and commit proof."""
         authority.require(ProviderId.CLAUDE)
+        environment = self._source_environment()
+        environment_conflict = claude_environment_conflict(environment)
+        if environment_conflict is not None:
+            raise ClaudeActivationError(environment_conflict)
+        native_profile = self._resolve_native_profile(environment)
         baseline = self._selected.load(ProviderId.CLAUDE)
         source_account_id = self._source_account_id(
             baseline,
@@ -154,7 +165,18 @@ class ClaudeActivationService:
             source_capabilities,
             target_capabilities,
         )
-        native_capabilities = self._native_capabilities(target_capabilities)
+        native_capabilities = self._native_capabilities(
+            target_capabilities,
+            native_profile,
+        )
+        native_conflict = claude_native_switch_conflict(
+            native_capabilities,
+            environment,
+            self._foreground_probe,
+            allow_remote_control_disconnect=(allow_remote_control_disconnect),
+        )
+        if native_conflict is not None:
+            raise ClaudeActivationError(native_conflict)
         self._read_private(
             source_capabilities,
             source_authority,
@@ -477,37 +499,36 @@ class ClaudeActivationService:
     def _native_capabilities(
         self,
         managed: ClaudeCapabilities,
+        profile: ClaudeNativeProfile,
     ) -> ClaudeCapabilities:
-        if (
-            self._environment is not None
-            and CLAUDE_CONFIG_DIR_ENVIRONMENT_KEY in self._environment
-        ):
-            raise ClaudeActivationError(ClaudeActivationFailure.INCOMPATIBLE)
-        try:
-            profile = self._resolve_native_profile()
-        except ValueError:
-            raise ClaudeActivationError(
-                ClaudeActivationFailure.INCOMPATIBLE
-            ) from None
         return ClaudeCapabilities(
             managed.executable,
             profile,
             managed.platform,
         )
 
-    def _resolve_native_profile(self) -> ClaudeNativeProfile:
-        if self._environment is None:
-            return native_claude_profile(environment={})
-        home = self._environment.get("HOME")
+    @staticmethod
+    def _resolve_native_profile(
+        environment: Mapping[str, str],
+    ) -> ClaudeNativeProfile:
+        home = environment.get("HOME")
         if home is None or not home:
-            raise ValueError("Claude native profile path is unavailable.")
+            raise ClaudeActivationError(ClaudeActivationFailure.INCOMPATIBLE)
         home_path = Path(home)
         if not home_path.is_absolute() or ".." in home_path.parts:
-            raise ValueError("Claude native profile path is unavailable.")
-        return native_claude_profile(
-            credential_home=home_path / ".claude",
-            environment={},
-        )
+            raise ClaudeActivationError(ClaudeActivationFailure.INCOMPATIBLE)
+        try:
+            return native_claude_profile(
+                credential_home=home_path / ".claude",
+                environment={},
+            )
+        except ValueError:
+            raise ClaudeActivationError(
+                ClaudeActivationFailure.INCOMPATIBLE
+            ) from None
+
+    def _source_environment(self) -> Mapping[str, str]:
+        return os.environ if self._environment is None else self._environment
 
     @staticmethod
     def _require_native_profile(
