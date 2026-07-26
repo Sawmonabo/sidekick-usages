@@ -597,8 +597,3 @@ def encode_version_three(document: VersionThreeDocument) -> bytes:
     if decode_version_three(payload) != document:
         raise InvalidSchemaError
     return payload
-
-
-def has_managed_authority(document: VersionThreeDocument) -> bool:
-    """Return whether any account uses a provider-managed authority."""
-    return any(account.has_managed_authority for account in document.accounts)
