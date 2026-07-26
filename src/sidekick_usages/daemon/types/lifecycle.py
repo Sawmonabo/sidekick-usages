@@ -45,6 +45,19 @@ class ServiceLifecycleState(StrEnum):
     FEATURE_DISABLED = "feature_disabled"
 
 
+class ServiceLifecyclePhase(StrEnum):
+    """One transient phase emitted by its lifecycle operation owner."""
+
+    INSTALLING = "installing"
+    STARTING = "starting"
+    CONTROL_SOCKET = "control_socket"
+    DURABLE_RECOVERY = "durable_recovery"
+    CODEX_BROKER = "codex_broker"
+    PROVIDER_CAPABILITY = "provider_capability"
+    MAINTENANCE_PASS = "maintenance_pass"
+    RESTARTING = "restarting"
+
+
 class ServiceFailureCode(StrEnum):
     """Safe resident-service lifecycle failures."""
 

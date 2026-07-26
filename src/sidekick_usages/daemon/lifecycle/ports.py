@@ -1,16 +1,29 @@
 """Structural ports for user-service lifecycle composition."""
 
+from collections.abc import Callable
 from typing import Protocol
 
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.models.lifecycle import (
     ServiceBackendStatus,
+    ServiceLifecycleObservation,
     SupervisorHealth,
 )
 from sidekick_usages.daemon.types.lifecycle import (
     ProviderReadinessScope,
     ServiceBackendId,
 )
+
+type ServiceLifecycleObserver = Callable[
+    [ServiceLifecycleObservation],
+    None,
+]
+
+
+def discard_service_lifecycle_observation(
+    _observation: ServiceLifecycleObservation,
+) -> None:
+    """Discard optional lifecycle progress."""
 
 
 class ServiceBackend(Protocol):
@@ -21,10 +34,10 @@ class ServiceBackend(Protocol):
     def cancel(self) -> None:
         """Interrupt one active native lifecycle command."""
 
-    def install(self) -> None:
+    def install(self, progress: ServiceLifecycleObserver, /) -> None:
         """Install and start the resident service."""
 
-    def restart(self) -> None:
+    def restart(self, progress: ServiceLifecycleObserver, /) -> None:
         """Restart the installed resident service."""
 
     def status(self) -> ServiceBackendStatus:
@@ -46,10 +59,15 @@ class ServiceReadiness(Protocol):
     def verify_ready(
         self,
         provider_ids: ProviderReadinessScope = (),
+        *,
+        progress: ServiceLifecycleObserver,
     ) -> None:
         """Verify protocol, state, queue, and broker capability."""
 
-    def complete_maintenance_pass(self) -> None:
+    def complete_maintenance_pass(
+        self,
+        progress: ServiceLifecycleObserver,
+    ) -> None:
         """Complete or truthfully settle one bounded readiness pass."""
 
     def health(self, status: ServiceBackendStatus) -> SupervisorHealth:

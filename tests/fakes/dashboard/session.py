@@ -58,7 +58,10 @@ from sidekick_usages.usage.lookup.worker.models import (
     UsageLookupWorkerEvent,
     UsageLookupWorkerResult,
 )
-from tests.fakes.dashboard.runtime import SetupDaemon
+from tests.fakes.dashboard.runtime import (
+    EXPECTED_SERVICE_SETUP_PROGRESS,
+    SetupDaemon,
+)
 
 SESSION_WAIT_SECONDS = 2.0
 DEFAULT_TEST_CONTROL_TIMEOUT_SECONDS = 5.0
@@ -94,6 +97,7 @@ class DashboardSessionProof:
     confirmations: tuple[DashboardConfirmationProof, ...]
     activations: tuple[tuple[ProviderId, SidekickAccountId, bool], ...]
     setup_events: tuple[str, ...]
+    setup_progress_sanitized: bool
     setup_refusal_restored: bool
     setup_refusal_message: str | None
     verified_account_id: SidekickAccountId | None
@@ -434,11 +438,24 @@ class SessionInvalidationProbe:
 
     def __init__(self) -> None:
         self._event = Event()
+        self._session: InteractiveDashboardSession | None = None
+        self.progress_messages: list[str] = []
         self.count = 0
+
+    def bind_session(self, session: InteractiveDashboardSession) -> None:
+        """Observe public footer state after each session invalidation."""
+        self._session = session
 
     def __call__(self) -> None:
         """Record one thread-safe redraw request."""
         self.count += 1
+        if self._session is not None:
+            footer = self._session.view.footer
+            if (
+                footer.kind is DashboardFooterKind.PROGRESS
+                and footer.message is not None
+            ):
+                self.progress_messages.append(footer.message)
         self._event.set()
 
     def wait_for(self, condition: Callable[[], bool]) -> None:
@@ -673,6 +690,7 @@ def exercise_dashboard_session(
         environment=environment,
     )
     environment["ANTHROPIC_API_KEY"] = "synthetic-late-secret"
+    invalidation.bind_session(session)
     session.bind_invalidator(invalidation)
     session.start()
     try:
@@ -738,6 +756,9 @@ def exercise_dashboard_session(
         confirmations=(service_confirmation, remote_confirmation),
         activations=tuple(connector.activations),
         setup_events=setup_events,
+        setup_progress_sanitized=EXPECTED_SERVICE_SETUP_PROGRESS.issubset(
+            invalidation.progress_messages
+        ),
         setup_refusal_restored=setup_refusal_restored,
         setup_refusal_message=setup_refusal_message,
         verified_account_id=verified_account_id,

@@ -12,6 +12,7 @@ from sidekick_usages.daemon.lifecycle.constants import (
     WSL_RESCUE_UNHEALTHY,
 )
 from sidekick_usages.daemon.lifecycle.errors import ServiceLifecycleError
+from sidekick_usages.daemon.lifecycle.ports import ServiceLifecycleObserver
 from sidekick_usages.daemon.lifecycle.systemd import SystemdBackend
 from sidekick_usages.daemon.models.lifecycle import (
     PlatformInfo,
@@ -54,18 +55,18 @@ class WslBackend:
         """Interrupt one active WSL or systemd user command."""
         self._runner.cancel()
 
-    def install(self) -> None:
+    def install(self, progress: ServiceLifecycleObserver) -> None:
         """Install the Linux service and current-user logon rescue."""
-        self._systemd.install()
+        self._systemd.install(progress)
         if (
             self._runner.run((*_POWERSHELL, self._install_script())).returncode
             != 0
         ):
             raise ServiceLifecycleError(ServiceFailureCode.COMMAND_FAILED)
 
-    def restart(self) -> None:
+    def restart(self, progress: ServiceLifecycleObserver) -> None:
         """Restart only the resident Linux service."""
-        self._systemd.restart()
+        self._systemd.restart(progress)
 
     def status(self) -> ServiceBackendStatus:
         """Require both the Linux service and Windows rescue."""

@@ -9,13 +9,16 @@ from sidekick_usages.daemon.lifecycle.constants import (
     SYSTEMD_SERVICE_NAME,
 )
 from sidekick_usages.daemon.lifecycle.errors import ServiceLifecycleError
+from sidekick_usages.daemon.lifecycle.ports import ServiceLifecycleObserver
 from sidekick_usages.daemon.models.lifecycle import (
     ServiceArtifact,
     ServiceBackendStatus,
+    ServiceLifecycleObservation,
 )
 from sidekick_usages.daemon.types.lifecycle import (
     ServiceBackendId,
     ServiceFailureCode,
+    ServiceLifecyclePhase,
     ServiceLifecycleState,
 )
 
@@ -49,8 +52,9 @@ class SystemdBackend:
         """Interrupt one active systemd user command."""
         self._runner.cancel()
 
-    def install(self) -> None:
+    def install(self, progress: ServiceLifecycleObserver) -> None:
         """Publish, reload, and enable the resident user service."""
+        progress(ServiceLifecycleObservation(ServiceLifecyclePhase.INSTALLING))
         self._artifacts.write(
             ServiceArtifact(
                 self._artifact_path,
@@ -59,10 +63,15 @@ class SystemdBackend:
         )
         self._require_success((*_SYSTEMCTL, "daemon-reload"))
         self._require_success((*_SYSTEMCTL, "enable", SYSTEMD_SERVICE_NAME))
-        self.restart()
+        progress(ServiceLifecycleObservation(ServiceLifecyclePhase.STARTING))
+        self._restart()
 
-    def restart(self) -> None:
+    def restart(self, progress: ServiceLifecycleObserver) -> None:
         """Restart the exact installed resident user service."""
+        progress(ServiceLifecycleObservation(ServiceLifecyclePhase.RESTARTING))
+        self._restart()
+
+    def _restart(self) -> None:
         self._require_success((*_SYSTEMCTL, "restart", SYSTEMD_SERVICE_NAME))
 
     def status(self) -> ServiceBackendStatus:

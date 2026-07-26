@@ -37,7 +37,6 @@ from sidekick_usages.cli.dashboard.models.setup import (
     ServiceSetupDecision,
     ServiceSetupMessage,
     ServiceSetupOutcome,
-    ServiceSetupProgress,
 )
 from sidekick_usages.cli.dashboard.models.use import UseActivationFailure
 from sidekick_usages.cli.dashboard.setup import GuidedServiceSetup
@@ -431,6 +430,7 @@ def test_dashboard_controller_journey_preserves_verified_truth(
             "status:claude",
             "install:claude",
         ),
+        setup_progress_sanitized=True,
         setup_refusal_restored=True,
         setup_refusal_message=(
             "The Sidekick user service was not installed. "
@@ -602,21 +602,18 @@ def test_guided_setup_resumes_once_and_preserves_blocked_actions() -> None:
     )
     daemon = SetupDaemon(ServiceLifecycleState.ABSENT)
     setup = GuidedServiceSetup(daemon)
-    progress: list[ServiceSetupProgress] = []
 
     confirmation = setup.prepare(
         service=unavailable,
         intent=intent,
         interactive=True,
         decision=ServiceSetupDecision.NOT_REQUESTED,
-        progress=progress.append,
     )
     approved = setup.prepare(
         service=unavailable,
         intent=intent,
         interactive=True,
         decision=ServiceSetupDecision.APPROVED,
-        progress=progress.append,
     )
 
     assert confirmation.outcome is ServiceSetupOutcome.CONFIRMATION_REQUIRED
@@ -627,32 +624,19 @@ def test_guided_setup_resumes_once_and_preserves_blocked_actions() -> None:
         "status:claude",
         "install:claude",
     ]
-    assert progress == [
-        ServiceSetupProgress.CHECKING,
-        ServiceSetupProgress.CHECKING,
-        ServiceSetupProgress.INSTALLING,
-        ServiceSetupProgress.READY,
-    ]
 
     daemon.state = ServiceLifecycleState.UNHEALTHY
-    progress.clear()
     reused = setup.prepare(
         service=compatible,
         intent=intent,
         interactive=True,
         decision=ServiceSetupDecision.NOT_REQUESTED,
-        progress=progress.append,
     )
 
     assert reused.outcome is ServiceSetupOutcome.RESUME
     assert reused.intent is intent
     assert daemon.events[-2:] == ["status:claude", "restart:claude"]
     assert daemon.events.count("install:claude") == 1
-    assert progress == [
-        ServiceSetupProgress.CHECKING,
-        ServiceSetupProgress.RESTARTING,
-        ServiceSetupProgress.READY,
-    ]
 
     blocked_daemon = SetupDaemon(ServiceLifecycleState.ABSENT)
     blocked_setup = GuidedServiceSetup(blocked_daemon)

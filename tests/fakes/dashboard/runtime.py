@@ -6,15 +6,37 @@ from datetime import datetime
 
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.lifecycle.manager import DaemonManager
-from sidekick_usages.daemon.models.lifecycle import DaemonOperationResult
+from sidekick_usages.daemon.lifecycle.ports import (
+    ServiceLifecycleObserver,
+    discard_service_lifecycle_observation,
+)
+from sidekick_usages.daemon.models.lifecycle import (
+    DaemonOperationResult,
+    ServiceLifecycleObservation,
+)
 from sidekick_usages.daemon.types.lifecycle import (
     ProviderReadinessScope,
     ServiceBackendId,
     ServiceFailureCode,
+    ServiceLifecyclePhase,
     ServiceLifecycleState,
 )
 from sidekick_usages.usage.dashboard.models import DashboardSnapshot
 from tests.fakes.dashboard.state import controller_snapshot
+
+EXPECTED_SERVICE_SETUP_PROGRESS = frozenset(
+    {
+        "Installing the Sidekick user service.",
+        "Starting the Sidekick user service.",
+        "Verifying the Sidekick control socket.",
+        "Verifying durable account-maintenance recovery.",
+        "Verifying Claude CLI capabilities.",
+        "Verifying the initial account-maintenance pass.",
+        "Restarting the Sidekick user service.",
+        "Verifying the Codex account broker.",
+        "Verifying Codex CLI capabilities.",
+    }
+)
 
 
 class RoutingSnapshotSource:
@@ -89,28 +111,55 @@ class SetupDaemon(DaemonManager):
     def status(
         self,
         provider_ids: ProviderReadinessScope = (),
+        *,
+        progress: ServiceLifecycleObserver = (
+            discard_service_lifecycle_observation
+        ),
     ) -> DaemonOperationResult:
         """Record one current service check."""
         self.events.append(_setup_event("status", provider_ids))
+        if self.state is ServiceLifecycleState.READY:
+            _publish_readiness(provider_ids, progress)
         return self._result(provider_ids)
 
     def restart(
         self,
         provider_ids: ProviderReadinessScope = (),
+        *,
+        progress: ServiceLifecycleObserver = (
+            discard_service_lifecycle_observation
+        ),
     ) -> DaemonOperationResult:
         """Record one bounded restart."""
         self.events.append(_setup_event("restart", provider_ids))
         self.state = ServiceLifecycleState.READY
+        progress(ServiceLifecycleObservation(ServiceLifecyclePhase.RESTARTING))
+        _publish_readiness(provider_ids, progress)
         return self._result(provider_ids)
 
     def install(
         self,
         provider_ids: ProviderReadinessScope = (),
+        *,
+        progress: ServiceLifecycleObserver = (
+            discard_service_lifecycle_observation
+        ),
     ) -> DaemonOperationResult:
         """Record one approved user-level installation."""
         self.events.append(_setup_event("install", provider_ids))
         self.state = ServiceLifecycleState.READY
-        return self._result(provider_ids)
+        progress(ServiceLifecycleObservation(ServiceLifecyclePhase.INSTALLING))
+        progress(ServiceLifecycleObservation(ServiceLifecyclePhase.STARTING))
+        _publish_readiness(provider_ids, progress)
+        result = self._result(provider_ids)
+        if result.state is not ServiceLifecycleState.READY:
+            return result
+        progress(
+            ServiceLifecycleObservation(ServiceLifecyclePhase.MAINTENANCE_PASS)
+        )
+        progress(ServiceLifecycleObservation(ServiceLifecyclePhase.RESTARTING))
+        _publish_readiness(provider_ids, progress)
+        return result
 
     def _result(
         self,
@@ -146,6 +195,27 @@ def _setup_event(
         return operation
     providers = "+".join(provider_id.value for provider_id in provider_ids)
     return f"{operation}:{providers}"
+
+
+def _publish_readiness(
+    provider_ids: ProviderReadinessScope,
+    progress: ServiceLifecycleObserver,
+) -> None:
+    progress(ServiceLifecycleObservation(ServiceLifecyclePhase.CONTROL_SOCKET))
+    progress(
+        ServiceLifecycleObservation(ServiceLifecyclePhase.DURABLE_RECOVERY)
+    )
+    if ProviderId.CODEX in provider_ids:
+        progress(
+            ServiceLifecycleObservation(ServiceLifecyclePhase.CODEX_BROKER)
+        )
+    for provider_id in provider_ids:
+        progress(
+            ServiceLifecycleObservation(
+                ServiceLifecyclePhase.PROVIDER_CAPABILITY,
+                provider_id,
+            )
+        )
 
 
 def interactive_terminal() -> bool:

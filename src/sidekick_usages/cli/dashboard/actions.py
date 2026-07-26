@@ -3,6 +3,7 @@
 from dataclasses import replace
 from pathlib import Path
 from threading import Lock
+from typing import assert_never
 
 from sidekick_usages.cli.dashboard.models.controller import (
     ActivateOrRepairIntent,
@@ -19,7 +20,6 @@ from sidekick_usages.cli.dashboard.models.session import (
 from sidekick_usages.cli.dashboard.models.setup import (
     ServiceSetupDecision,
     ServiceSetupOutcome,
-    ServiceSetupProgress,
     ServiceSetupResult,
 )
 from sidekick_usages.cli.dashboard.ports import (
@@ -34,12 +34,16 @@ from sidekick_usages.daemon.control.client import (
     consume_control_action,
 )
 from sidekick_usages.daemon.control.protocol import ProtocolFailureError
+from sidekick_usages.daemon.models.lifecycle import (
+    ServiceLifecycleObservation,
+)
 from sidekick_usages.daemon.models.protocol import (
     CompletedPayload,
     ControlActionTerminalPayload,
     FailedPayload,
     SnapshotPayload,
 )
+from sidekick_usages.daemon.types.lifecycle import ServiceLifecyclePhase
 from sidekick_usages.daemon.types.protocol import (
     CompletionOutcome,
     ControlOperationIdentity,
@@ -331,8 +335,13 @@ class DashboardActionExecutor:
             and terminal.code == REMOTE_CONTROL_FAILURE_CODE
         )
 
-    def _setup_progress(self, progress: ServiceSetupProgress) -> None:
-        self._sink.publish_progress(str(progress))
+    def _setup_progress(
+        self,
+        observation: ServiceLifecycleObservation,
+    ) -> None:
+        self._sink.publish_progress(
+            _service_setup_progress_message(observation)
+        )
 
     def _setup_failed(
         self,
@@ -355,3 +364,36 @@ class DashboardActionExecutor:
         with self._client_lock:
             if self._active_client is client:
                 self._active_client = None
+
+
+def _service_setup_progress_message(
+    observation: ServiceLifecycleObservation,
+) -> str:
+    """Map one closed lifecycle observation to sanitized dashboard copy."""
+    match observation.phase:
+        case ServiceLifecyclePhase.INSTALLING:
+            message = "Installing the Sidekick user service."
+        case ServiceLifecyclePhase.STARTING:
+            message = "Starting the Sidekick user service."
+        case ServiceLifecyclePhase.CONTROL_SOCKET:
+            message = "Verifying the Sidekick control socket."
+        case ServiceLifecyclePhase.DURABLE_RECOVERY:
+            message = "Verifying durable account-maintenance recovery."
+        case ServiceLifecyclePhase.CODEX_BROKER:
+            message = "Verifying the Codex account broker."
+        case ServiceLifecyclePhase.PROVIDER_CAPABILITY:
+            provider_id = observation.provider_id
+            if provider_id is None:
+                raise AssertionError(
+                    "Provider capability progress lost its provider."
+                )
+            message = (
+                f"Verifying {provider_id.value.title()} CLI capabilities."
+            )
+        case ServiceLifecyclePhase.MAINTENANCE_PASS:
+            message = "Verifying the initial account-maintenance pass."
+        case ServiceLifecyclePhase.RESTARTING:
+            message = "Restarting the Sidekick user service."
+        case _:
+            assert_never(observation.phase)
+    return message

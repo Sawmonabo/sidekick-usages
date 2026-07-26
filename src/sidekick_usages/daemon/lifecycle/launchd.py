@@ -10,13 +10,16 @@ from sidekick_usages.daemon.lifecycle.constants import (
     SERVICE_ARTIFACT_VERSION,
 )
 from sidekick_usages.daemon.lifecycle.errors import ServiceLifecycleError
+from sidekick_usages.daemon.lifecycle.ports import ServiceLifecycleObserver
 from sidekick_usages.daemon.models.lifecycle import (
     ServiceArtifact,
     ServiceBackendStatus,
+    ServiceLifecycleObservation,
 )
 from sidekick_usages.daemon.types.lifecycle import (
     ServiceBackendId,
     ServiceFailureCode,
+    ServiceLifecyclePhase,
     ServiceLifecycleState,
 )
 
@@ -54,8 +57,9 @@ class LaunchdBackend:
     def _target(self) -> str:
         return f"{self._domain}/{LAUNCH_AGENT_LABEL}"
 
-    def install(self) -> None:
+    def install(self, progress: ServiceLifecycleObserver) -> None:
         """Publish and start one exact per-user LaunchAgent."""
+        progress(ServiceLifecycleObservation(ServiceLifecyclePhase.INSTALLING))
         self._artifacts.ensure_directory(self._log_root)
         self._artifacts.write(
             ServiceArtifact(
@@ -65,6 +69,7 @@ class LaunchdBackend:
         )
         self._runner.run(("launchctl", "bootout", self._target))
         self._require_success(("launchctl", "enable", self._target))
+        progress(ServiceLifecycleObservation(ServiceLifecyclePhase.STARTING))
         self._require_success(
             (
                 "launchctl",
@@ -73,10 +78,14 @@ class LaunchdBackend:
                 str(self._artifact_path),
             )
         )
-        self._require_success(("launchctl", "kickstart", "-k", self._target))
+        self._kickstart()
 
-    def restart(self) -> None:
+    def restart(self, progress: ServiceLifecycleObserver) -> None:
         """Restart the exact installed LaunchAgent."""
+        progress(ServiceLifecycleObservation(ServiceLifecyclePhase.RESTARTING))
+        self._kickstart()
+
+    def _kickstart(self) -> None:
         self._require_success(("launchctl", "kickstart", "-k", self._target))
 
     def status(self) -> ServiceBackendStatus:

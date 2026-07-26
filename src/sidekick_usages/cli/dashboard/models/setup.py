@@ -27,15 +27,6 @@ class ServiceSetupOutcome(StrEnum):
     UNSUPPORTED = "unsupported"
 
 
-class ServiceSetupProgress(StrEnum):
-    """Sanitized progress safe for the dashboard footer."""
-
-    CHECKING = "Checking the Sidekick user service."
-    RESTARTING = "Restarting the Sidekick user service."
-    INSTALLING = "Installing the Sidekick user service."
-    READY = "The Sidekick user service is ready."
-
-
 class ServiceSetupMessage(StrEnum):
     """Sanitized guidance safe for dashboard presentation."""
 

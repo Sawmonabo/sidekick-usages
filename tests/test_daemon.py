@@ -2,13 +2,16 @@
 
 import os
 import stat
+from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from sidekick_usages import __version__
+from sidekick_usages.core.accounts.types import RequestId
 from sidekick_usages.core.types import ExitCode, ProviderId
+from sidekick_usages.daemon.control.client import ControlClient
 from sidekick_usages.daemon.control.protocol import PROTOCOL_VERSION
 from sidekick_usages.daemon.lifecycle.artifacts import ServiceArtifactStore
 from sidekick_usages.daemon.lifecycle.commands import SystemCommandRunner
@@ -22,7 +25,10 @@ from sidekick_usages.daemon.lifecycle.manager import (
     DaemonManager,
     build_service_backend,
 )
-from sidekick_usages.daemon.lifecycle.ports import ServiceBackend
+from sidekick_usages.daemon.lifecycle.ports import (
+    ServiceBackend,
+    ServiceLifecycleObserver,
+)
 from sidekick_usages.daemon.lifecycle.readiness import (
     RuntimeCleanup,
     SupervisorReadiness,
@@ -31,7 +37,13 @@ from sidekick_usages.daemon.models.lifecycle import (
     CommandResult,
     PlatformInfo,
     ServiceBackendStatus,
+    ServiceLifecycleObservation,
     SupervisorHealth,
+)
+from sidekick_usages.daemon.models.protocol import (
+    AcceptedPayload,
+    CompletedPayload,
+    ControlEvent,
 )
 from sidekick_usages.daemon.models.service import ServiceState
 from sidekick_usages.daemon.types.lifecycle import (
@@ -39,8 +51,10 @@ from sidekick_usages.daemon.types.lifecycle import (
     ServiceBackendId,
     ServiceComponentState,
     ServiceFailureCode,
+    ServiceLifecyclePhase,
     ServiceLifecycleState,
 )
+from sidekick_usages.daemon.types.protocol import CompletionOutcome, EventKind
 from sidekick_usages.daemon.types.service import PackageVersion, ServicePhase
 from sidekick_usages.paths import ApplicationPaths
 from sidekick_usages.persistence.supervisor.service import ServiceStateStore
@@ -51,11 +65,13 @@ from tests.fakes.daemon.lifecycle import (
 from tests.test_support import (
     REFERENCE_TIME,
     FixedClock,
+    make_account_store,
     make_application_paths,
     make_supervisor_health,
 )
 
 _OWNER_FILE_MODE = 0o600
+_READINESS_REQUEST_ID = RequestId("88888888-8888-4888-8888-888888888888")
 
 
 class RecordingRunner(SystemCommandRunner):
@@ -91,6 +107,47 @@ class RecordingRunner(SystemCommandRunner):
         return CommandResult(0, "", "")
 
 
+class ReadinessControlClient:
+    """Complete synthetic local-control readiness without a real socket."""
+
+    def handshake(self) -> AcceptedPayload:
+        """Accept one compatible supervisor handshake."""
+        return AcceptedPayload(None)
+
+    def refresh_all(self) -> Iterator[ControlEvent]:
+        """Complete one bounded maintenance-readiness request."""
+        yield ControlEvent(
+            protocol_version=PROTOCOL_VERSION,
+            request_id=_READINESS_REQUEST_ID,
+            kind=EventKind.COMPLETED,
+            payload=CompletedPayload(None, CompletionOutcome.SUCCEEDED),
+            package_version=__version__,
+        )
+
+    def close(self) -> None:
+        """Close one synthetic observation boundary."""
+
+
+class ReadyProviderCapabilities:
+    """Record provider capability proofs without opening provider state."""
+
+    def __init__(self) -> None:
+        self.checked: list[ProviderId] = []
+
+    def cancel(self) -> None:
+        """Leave synthetic provider state unchanged."""
+
+    def ready(self, provider_id: ProviderId) -> bool:
+        """Record and approve one synthetic provider capability."""
+        self.checked.append(provider_id)
+        return True
+
+
+def _connect_readiness_client(_socket_path: Path) -> ReadinessControlClient:
+    """Connect one synthetic peer-qualified local-control client."""
+    return ReadinessControlClient()
+
+
 class ReadyLifecycle:
     """Record the exact readiness sequence without provider activity."""
 
@@ -107,13 +164,18 @@ class ReadyLifecycle:
     def verify_ready(
         self,
         provider_ids: ProviderReadinessScope = (),
+        *,
+        progress: ServiceLifecycleObserver,
     ) -> None:
-        providers = "+".join(
-            provider_id.value for provider_id in provider_ids
-        )
+        del progress
+        providers = "+".join(provider_id.value for provider_id in provider_ids)
         self.events.append("ready" if not providers else f"ready:{providers}")
 
-    def complete_maintenance_pass(self) -> None:
+    def complete_maintenance_pass(
+        self,
+        progress: ServiceLifecycleObserver,
+    ) -> None:
+        del progress
         self.events.append("maintain")
 
     def health(self, status: ServiceBackendStatus) -> SupervisorHealth:
@@ -146,10 +208,12 @@ class RecordingBackend:
         """Record backend command cancellation."""
         self.events.append("cancel-backend")
 
-    def install(self) -> None:
+    def install(self, progress: ServiceLifecycleObserver) -> None:
+        del progress
         self.events.append("install")
 
-    def restart(self) -> None:
+    def restart(self, progress: ServiceLifecycleObserver) -> None:
+        del progress
         self.events.append("restart")
 
     def status(self) -> ServiceBackendStatus:
@@ -244,6 +308,67 @@ def _exercise_wsl_health_failures(
         ServiceFailureCode.CANCELLED,
         ServiceFailureCode.CANCELLED,
     )
+
+
+def _exercise_real_lifecycle_progress(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[
+    ServiceLifecycleState,
+    tuple[ProviderId, ...],
+    tuple[ServiceLifecycleObservation, ...],
+]:
+    """Run the real lifecycle stack against synthetic local boundaries."""
+    root = tmp_path / "progress"
+    home = root / "home"
+    paths = replace(
+        make_application_paths(root),
+        systemd_user_service=(
+            home / ".config" / "systemd" / "user" / "sidekick-usages.service"
+        ),
+    )
+    make_account_store(root)
+    ServiceStateStore(paths.service_state).save(
+        ServiceState(
+            protocol_version=PROTOCOL_VERSION,
+            package_version=PackageVersion(__version__),
+            phase=ServicePhase.READY,
+            revision=1,
+            observed_at=REFERENCE_TIME,
+            queue_recovered=True,
+            journals_reconciled=True,
+            broker_ready=True,
+            active_workers=0,
+        )
+    )
+    provider_capabilities = ReadyProviderCapabilities()
+    platform_info = _platform(home, system="Linux")
+    manager = DaemonManager(
+        build_service_backend(
+            platform_info,
+            lambda: _supervisor_executable(root),
+            paths,
+            RecordingRunner(),
+            ServiceArtifactStore(platform_info.home, platform_info.uid),
+        ),
+        SupervisorReadiness(
+            paths,
+            FixedClock(),
+            provider_readiness=provider_capabilities,
+        ),
+        RuntimeCleanup(paths),
+    )
+    monkeypatch.setattr(
+        ControlClient,
+        "connect",
+        staticmethod(_connect_readiness_client),
+    )
+    progress: list[ServiceLifecycleObservation] = []
+    result = manager.install(
+        (ProviderId.CODEX,),
+        progress=progress.append,
+    )
+    return result.state, tuple(provider_capabilities.checked), tuple(progress)
 
 
 @pytest.mark.parametrize(
@@ -574,9 +699,40 @@ def test_lifecycle_is_idempotent_cancellable_and_preserves_user_state(
     )
     assert broker_degraded.ready_for((ProviderId.CLAUDE,))
     assert not broker_degraded.ready_for((ProviderId.CODEX,))
-    assert not broker_degraded.ready_for(
-        (ProviderId.CLAUDE, ProviderId.CODEX)
+    assert not broker_degraded.ready_for((ProviderId.CLAUDE, ProviderId.CODEX))
+
+    progress_state, provider_checks, progress = (
+        _exercise_real_lifecycle_progress(
+            tmp_path,
+            monkeypatch,
+        )
     )
+
+    assert (
+        progress_state,
+        provider_checks,
+        tuple(item.phase for item in progress),
+        progress[-1].provider_id,
+    ) == (
+        ServiceLifecycleState.READY,
+        (ProviderId.CODEX, ProviderId.CODEX),
+        (
+            ServiceLifecyclePhase.INSTALLING,
+            ServiceLifecyclePhase.STARTING,
+            ServiceLifecyclePhase.CONTROL_SOCKET,
+            ServiceLifecyclePhase.DURABLE_RECOVERY,
+            ServiceLifecyclePhase.CODEX_BROKER,
+            ServiceLifecyclePhase.PROVIDER_CAPABILITY,
+            ServiceLifecyclePhase.MAINTENANCE_PASS,
+            ServiceLifecyclePhase.RESTARTING,
+            ServiceLifecyclePhase.CONTROL_SOCKET,
+            ServiceLifecyclePhase.DURABLE_RECOVERY,
+            ServiceLifecyclePhase.CODEX_BROKER,
+            ServiceLifecyclePhase.PROVIDER_CAPABILITY,
+        ),
+        ProviderId.CODEX,
+    )
+
     manager.cancel()
     assert events[-2:] == ["cancel-backend", "cancel-readiness"]
 

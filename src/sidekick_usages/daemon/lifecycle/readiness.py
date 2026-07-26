@@ -28,9 +28,12 @@ from sidekick_usages.daemon.control.server import cleanup_control_endpoint
 from sidekick_usages.daemon.lifecycle.errors import ServiceLifecycleError
 from sidekick_usages.daemon.lifecycle.ports import (
     ProviderCapabilityReadiness,
+    ServiceLifecycleObserver,
+    discard_service_lifecycle_observation,
 )
 from sidekick_usages.daemon.models.lifecycle import (
     ServiceBackendStatus,
+    ServiceLifecycleObservation,
     SupervisorHealth,
 )
 from sidekick_usages.daemon.models.service import ServiceState
@@ -39,6 +42,7 @@ from sidekick_usages.daemon.types.lifecycle import (
     ProviderReadinessScope,
     ServiceComponentState,
     ServiceFailureCode,
+    ServiceLifecyclePhase,
     ServiceLifecycleState,
 )
 from sidekick_usages.daemon.types.protocol import EventKind
@@ -121,10 +125,33 @@ class SupervisorReadiness:
     def verify_ready(
         self,
         provider_ids: ProviderReadinessScope = (),
+        *,
+        progress: ServiceLifecycleObserver = (
+            discard_service_lifecycle_observation
+        ),
     ) -> None:
         """Verify service state plus each requested provider capability."""
         self._raise_if_cancelled()
-        self._verify_handshake()
+        self._verify_handshake(progress)
+        progress(
+            ServiceLifecycleObservation(ServiceLifecyclePhase.DURABLE_RECOVERY)
+        )
+        state, accounts, operations = self._load_readiness_state()
+        self._require_resident_readiness(
+            state,
+            accounts,
+            operations,
+            provider_ids,
+            progress,
+        )
+        self._require_provider_readiness(provider_ids, progress)
+
+    def _load_readiness_state(
+        self,
+    ) -> tuple[
+        ServiceState, tuple[SavedAccount, ...], tuple[DueOperation, ...]
+    ]:
+        """Load one internally compatible resident recovery snapshot."""
         try:
             state = self._state.load()
             accounts = self._accounts()
@@ -137,8 +164,29 @@ class SupervisorReadiness:
             state is None
             or state.protocol_version != PROTOCOL_VERSION
             or state.package_version != PackageVersion(__version__)
-            or not state.ready_for(provider_ids)
         ):
+            raise ServiceLifecycleError(ServiceFailureCode.SERVICE_UNHEALTHY)
+        return state, accounts, operations
+
+    @staticmethod
+    def _require_resident_readiness(
+        state: ServiceState,
+        accounts: tuple[SavedAccount, ...],
+        operations: tuple[DueOperation, ...],
+        provider_ids: ProviderReadinessScope,
+        progress: ServiceLifecycleObserver,
+    ) -> None:
+        """Prove durable recovery and the requested Codex broker."""
+        broker_required = (
+            ProviderId.CODEX in provider_ids
+            if provider_ids
+            else any(_requires_codex_broker(account) for account in accounts)
+        )
+        if broker_required:
+            progress(
+                ServiceLifecycleObservation(ServiceLifecyclePhase.CODEX_BROKER)
+            )
+        if not state.ready_for(provider_ids):
             raise ServiceLifecycleError(ServiceFailureCode.SERVICE_UNHEALTHY)
         enrolled = {
             operation.account_id
@@ -147,33 +195,45 @@ class SupervisorReadiness:
         }
         if any(account.account_id not in enrolled for account in accounts):
             raise ServiceLifecycleError(ServiceFailureCode.QUEUE_INCOMPLETE)
-        broker_required = (
-            ProviderId.CODEX in provider_ids
-            if provider_ids
-            else any(_requires_codex_broker(account) for account in accounts)
-        )
         if broker_required and not state.broker_ready:
             raise ServiceLifecycleError(
                 ServiceFailureCode.CODEX_BROKER_UNAVAILABLE
             )
-        provider_readiness = self._provider_readiness
-        if provider_ids and provider_readiness is None:
-            raise ServiceLifecycleError(
-                ServiceFailureCode.PROVIDER_CAPABILITY_UNAVAILABLE,
-                provider_id=provider_ids[0],
-            )
-        if provider_readiness is not None:
-            for provider_id in provider_ids:
-                self._raise_if_cancelled()
-                if not provider_readiness.ready(provider_id):
-                    self._raise_if_cancelled()
-                    raise ServiceLifecycleError(
-                        ServiceFailureCode.PROVIDER_CAPABILITY_UNAVAILABLE,
-                        provider_id=provider_id,
-                    )
 
-    def complete_maintenance_pass(self) -> None:
+    def _require_provider_readiness(
+        self,
+        provider_ids: ProviderReadinessScope,
+        progress: ServiceLifecycleObserver,
+    ) -> None:
+        """Prove each requested provider at its authoritative adapter."""
+        provider_readiness = self._provider_readiness
+        for provider_id in provider_ids:
+            self._raise_if_cancelled()
+            progress(
+                ServiceLifecycleObservation(
+                    ServiceLifecyclePhase.PROVIDER_CAPABILITY,
+                    provider_id,
+                )
+            )
+            if provider_readiness is None or not provider_readiness.ready(
+                provider_id
+            ):
+                self._raise_if_cancelled()
+                raise ServiceLifecycleError(
+                    ServiceFailureCode.PROVIDER_CAPABILITY_UNAVAILABLE,
+                    provider_id=provider_id,
+                )
+
+    def complete_maintenance_pass(
+        self,
+        progress: ServiceLifecycleObserver = (
+            discard_service_lifecycle_observation
+        ),
+    ) -> None:
         """Wake maintenance and wait for each enrolled slot to settle."""
+        progress(
+            ServiceLifecycleObservation(ServiceLifecyclePhase.MAINTENANCE_PASS)
+        )
         self._request_maintenance()
         deadline = self._monotonic() + _READINESS_TIMEOUT_SECONDS
         while True:
@@ -412,7 +472,15 @@ class SupervisorReadiness:
     def _observe_accounts(self) -> tuple[SavedAccount, ...]:
         return AccountIndexReader(self._paths.accounts).load()
 
-    def _verify_handshake(self) -> None:
+    def _verify_handshake(
+        self,
+        progress: ServiceLifecycleObserver = (
+            discard_service_lifecycle_observation
+        ),
+    ) -> None:
+        progress(
+            ServiceLifecycleObservation(ServiceLifecyclePhase.CONTROL_SOCKET)
+        )
         try:
             client = self._connect_client()
             try:

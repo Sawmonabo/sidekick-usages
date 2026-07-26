@@ -8,6 +8,7 @@ from sidekick_usages.daemon.types.lifecycle import (
     ServiceBackendId,
     ServiceComponentState,
     ServiceFailureCode,
+    ServiceLifecyclePhase,
     ServiceLifecycleState,
 )
 from sidekick_usages.daemon.types.service import PackageVersion
@@ -150,6 +151,29 @@ class ServiceBackendStatus:
             ServiceComponentState.UNHEALTHY,
             rescue,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class ServiceLifecycleObservation:
+    """One secret-free transient lifecycle progress observation."""
+
+    phase: ServiceLifecyclePhase
+    provider_id: ProviderId | None = None
+
+    def __post_init__(self) -> None:
+        """Require provider identity only for its capability proof."""
+        if not isinstance(self.phase, ServiceLifecyclePhase):
+            raise ValueError("Service lifecycle progress phase is invalid.")
+        provider_capability = (
+            self.phase is ServiceLifecyclePhase.PROVIDER_CAPABILITY
+        )
+        if provider_capability != (self.provider_id is not None):
+            raise ValueError("Service lifecycle progress provider is invalid.")
+        if self.provider_id is not None and not isinstance(
+            self.provider_id,
+            ProviderId,
+        ):
+            raise ValueError("Service lifecycle progress provider is invalid.")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

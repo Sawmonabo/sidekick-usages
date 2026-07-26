@@ -11,6 +11,7 @@ from sidekick_usages.daemon.lifecycle.constants import (
     SUPERVISOR_ENTRY_POINT,
 )
 from sidekick_usages.daemon.lifecycle.errors import ServiceLifecycleError
+from sidekick_usages.daemon.lifecycle.ports import ServiceLifecycleObserver
 from sidekick_usages.daemon.models.lifecycle import (
     PlatformInfo,
     ServiceBackendStatus,
@@ -33,10 +34,10 @@ class FeatureDisabledBackend:
     def cancel(self) -> None:
         """Leave unsupported native service state unchanged."""
 
-    def install(self) -> None:
+    def install(self, _progress: ServiceLifecycleObserver) -> None:
         """Leave unsupported native service state unchanged."""
 
-    def restart(self) -> None:
+    def restart(self, _progress: ServiceLifecycleObserver) -> None:
         """Leave unsupported native service state unchanged."""
 
     def status(self) -> ServiceBackendStatus:

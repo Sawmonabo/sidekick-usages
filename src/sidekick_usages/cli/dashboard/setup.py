@@ -1,6 +1,5 @@
 """Guided per-user service readiness for pending dashboard actions."""
 
-from collections.abc import Callable
 from threading import Event
 from typing import assert_never
 
@@ -13,11 +12,14 @@ from sidekick_usages.cli.dashboard.models.controller import (
 from sidekick_usages.cli.dashboard.models.setup import (
     ServiceSetupDecision,
     ServiceSetupOutcome,
-    ServiceSetupProgress,
     ServiceSetupResult,
 )
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.lifecycle.manager import DaemonManager
+from sidekick_usages.daemon.lifecycle.ports import (
+    ServiceLifecycleObserver,
+    discard_service_lifecycle_observation,
+)
 from sidekick_usages.daemon.models.lifecycle import DaemonOperationResult
 from sidekick_usages.daemon.types.lifecycle import (
     ProviderReadinessScope,
@@ -26,13 +28,7 @@ from sidekick_usages.daemon.types.lifecycle import (
 )
 from sidekick_usages.usage.dashboard.models import DashboardService
 
-type ServiceSetupProgressSink = Callable[[ServiceSetupProgress], None]
-
 _ALL_PROVIDER_IDS = tuple(ProviderId)
-
-
-def _discard_progress(_progress: ServiceSetupProgress) -> None:
-    """Discard optional setup progress."""
 
 
 class GuidedServiceSetup:
@@ -54,13 +50,14 @@ class GuidedServiceSetup:
         intent: DashboardIntent,
         interactive: bool,
         decision: ServiceSetupDecision,
-        progress: ServiceSetupProgressSink = _discard_progress,
+        progress: ServiceLifecycleObserver = (
+            discard_service_lifecycle_observation
+        ),
     ) -> ServiceSetupResult[DashboardIntent]:
         """Return the original intent only after bounded service readiness."""
         provider_ids = _provider_ids(intent)
-        progress(ServiceSetupProgress.CHECKING)
-        status = self._daemon.status(provider_ids)
-        completion = self._completion(intent, status, progress)
+        status = self._daemon.status(provider_ids, progress=progress)
+        completion = self._completion(intent, status)
         if completion is not None:
             return completion
         if status.state is ServiceLifecycleState.FEATURE_DISABLED:
@@ -70,9 +67,11 @@ class GuidedServiceSetup:
             )
 
         if service.compatible:
-            progress(ServiceSetupProgress.RESTARTING)
-            restarted = self._daemon.restart(provider_ids)
-            completion = self._completion(intent, restarted, progress)
+            restarted = self._daemon.restart(
+                provider_ids,
+                progress=progress,
+            )
+            completion = self._completion(intent, restarted)
             if completion is not None:
                 return completion
         return self._install_or_block(
@@ -89,7 +88,7 @@ class GuidedServiceSetup:
         intent: DashboardIntent,
         interactive: bool,
         decision: ServiceSetupDecision,
-        progress: ServiceSetupProgressSink,
+        progress: ServiceLifecycleObserver,
         provider_ids: ProviderReadinessScope,
     ) -> ServiceSetupResult[DashboardIntent]:
         blocked_outcome = _blocked_setup_outcome(interactive, decision)
@@ -99,9 +98,11 @@ class GuidedServiceSetup:
                 outcome=blocked_outcome,
             )
 
-        progress(ServiceSetupProgress.INSTALLING)
-        installed = self._daemon.install(provider_ids)
-        completion = self._completion(intent, installed, progress)
+        installed = self._daemon.install(
+            provider_ids,
+            progress=progress,
+        )
+        completion = self._completion(intent, installed)
         if completion is not None:
             return completion
         return ServiceSetupResult(
@@ -113,7 +114,6 @@ class GuidedServiceSetup:
         self,
         intent: DashboardIntent,
         result: DaemonOperationResult,
-        progress: ServiceSetupProgressSink,
     ) -> ServiceSetupResult[DashboardIntent] | None:
         """Classify a completed lifecycle operation."""
         if self._closed.is_set():
@@ -123,7 +123,6 @@ class GuidedServiceSetup:
             return provider_failure
         if result.state is not ServiceLifecycleState.READY:
             return None
-        progress(ServiceSetupProgress.READY)
         return self._resume(intent)
 
     @staticmethod
