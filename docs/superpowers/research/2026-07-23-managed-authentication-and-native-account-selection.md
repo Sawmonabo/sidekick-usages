@@ -827,6 +827,12 @@ Primary evidence was refreshed on 2026-07-25 before adopting the dependency:
   and macOS. The wheel SHA-256 is
   `9aac639a3bbd33284347de5ad8d68ecc044b91a762dc39b7c21095fcd6a19955`.
 - The upstream 3.0.52 tag contains the full three-clause BSD license.
+- [PyPI's release history](https://pypi.org/project/prompt-toolkit/) shows
+  maintenance releases 3.0.48, 3.0.49/3.0.50, 3.0.51, and 3.0.52 on
+  2024-09-25, 2025-01-20, 2025-04-15, and 2025-08-27. The release batches
+  were 117, 85, and 134 days apart, followed by no newer release through
+  2026-07-26. The maintenance cadence is irregular, so Sidekick pins the exact
+  reviewed version and does not assume a scheduled upgrade interval.
 - An isolated local resolution imported `prompt_toolkit==3.0.52` and
   `wcwidth==0.7.0` successfully under CPython 3.14.6 on Linux/WSL. This
   verifies the required Python runtime without altering the project lock.
@@ -2155,6 +2161,7 @@ contract analysis.
 | [Microsoft WSL systemd](https://learn.microsoft.com/en-us/windows/wsl/systemd) | Official platform docs | 2025-03-17 | User services can run in WSL, but do not keep the distribution alive | High |
 | [Apple launchd guide](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html) | Official platform docs | Current archived platform guide | Per-user LaunchAgents, service restart, and user-session scope | High |
 | [PyPI prompt-toolkit 3.0.52 JSON](https://pypi.org/pypi/prompt-toolkit/3.0.52/json) | Primary package metadata | 3.0.52, checked 2026-07-25 | Python floor, universal wheel, hash, `wcwidth`, classifier, and platform claims | High |
+| [PyPI prompt-toolkit release history](https://pypi.org/project/prompt-toolkit/) | Primary release metadata | Checked 2026-07-26 | Recent maintenance-release dates and irregular cadence | High |
 | [prompt-toolkit 3.0.52 license](https://github.com/prompt-toolkit/python-prompt-toolkit/blob/3.0.52/LICENSE) | Tagged upstream source | 3.0.52 | Three-clause BSD license text | High |
 | [GitHub-hosted runner reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners) | Official platform docs | Checked 2026-07-25 | `macos-15` arm64 and `macos-15-intel` x64 CI labels | High |
 | Installed schema generated from the local binary | Local binary-generated primary evidence | Codex 0.145.0 | Confirms the local binary exposes external login and refresh-broker messages and marks them internal-only | High |
