@@ -22,6 +22,7 @@ ENVIRONMENT_VARIABLES_TO_CLEAR = (
 DASHBOARD_BENCHMARK_RELATIVE_PATH = (
     Path("packaging") / "benchmark_dashboard.py"
 )
+DASHBOARD_BENCHMARK_HOME_PREFIX = "sidekick-dashboard-benchmark-home-"
 SMOKE_ARGUMENTS: tuple[tuple[str, ...], ...] = (
     ("--version",),
     ("--help",),
@@ -151,7 +152,6 @@ def _verify_dashboard_benchmark(
     contract: ProjectContract,
     python: Path,
     run_dir: Path,
-    env: dict[str, str],
 ) -> str:
     """Run the release benchmark with the isolated wheel interpreter."""
     benchmark = contract.repository_root / DASHBOARD_BENCHMARK_RELATIVE_PATH
@@ -159,11 +159,19 @@ def _verify_dashboard_benchmark(
         raise WheelVerificationError(
             f"Dashboard benchmark is missing: {benchmark}"
         )
-    result = run_command(
-        [str(python), str(benchmark)],
-        cwd=run_dir,
-        env=env,
-    )
+    with tempfile.TemporaryDirectory(
+        prefix=DASHBOARD_BENCHMARK_HOME_PREFIX
+    ) as raw_home:
+        home = Path(raw_home).resolve()
+        result = run_command(
+            [str(python), str(benchmark)],
+            cwd=run_dir,
+            env=_isolated_command_env(home),
+        )
+        if tuple(home.iterdir()):
+            raise WheelVerificationError(
+                "Dashboard benchmark created files below its isolated home."
+            )
     if DASHBOARD_BENCHMARK_SUCCESS not in result.stdout:
         raise WheelVerificationError(
             "Installed-wheel dashboard benchmark omitted its success proof."
@@ -267,14 +275,13 @@ def verify_installed_wheel(
                         "Root help omitted the Unicode robot header."
                     )
 
-        benchmark_report = _verify_dashboard_benchmark(
+        if Path(env["HOME"]).exists():
+            raise WheelVerificationError(
+                "Installed-wheel smoke commands created files below the "
+                "absent home."
+            )
+        return _verify_dashboard_benchmark(
             contract,
             python,
             run_dir,
-            env,
         )
-        if Path(env["HOME"]).exists():
-            raise WheelVerificationError(
-                "Help or version created files below the isolated home."
-            )
-        return benchmark_report
