@@ -18,9 +18,9 @@ from sidekick_usages.providers.base import (
     ProviderBoundaryError,
     ProviderFailureKind,
 )
+from sidekick_usages.providers.claude.errors import claude_failure
 from sidekick_usages.providers.claude.schema.usage import (
     ClaudeActivityCache,
-    claude_failure,
     parse_activity_cache,
     parse_activity_record,
 )

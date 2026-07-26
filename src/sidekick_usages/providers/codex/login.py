@@ -6,7 +6,6 @@ from sidekick_usages.core.accounts.validation import (
     MAX_METADATA_BYTES,
     require_bounded_text,
 )
-from sidekick_usages.core.types import ProviderId
 from sidekick_usages.providers.base import (
     ProviderFailure,
     ProviderFailureKind,
@@ -30,6 +29,7 @@ from sidekick_usages.providers.codex.app_server.session import (
 from sidekick_usages.providers.codex.app_server.types import (
     CodexAppServerFailure,
 )
+from sidekick_usages.providers.codex.failures import codex_failure
 from sidekick_usages.providers.codex.models import (
     CodexAccountObservation,
     CodexLoginAttempt,
@@ -187,10 +187,9 @@ def _matching_completion(
         if error is not None:
             raise CodexAppServerError(CodexAppServerFailure.PROTOCOL_MALFORMED)
         return True, None
-    return True, ProviderFailure(
-        provider_id=ProviderId.CODEX,
-        kind=ProviderFailureKind.REJECTED,
-        message="Codex login was cancelled or rejected.",
+    return True, codex_failure(
+        ProviderFailureKind.REJECTED,
+        "Codex login was cancelled or rejected.",
     )
 
 
@@ -204,10 +203,9 @@ def _authenticated_update(
     ):
         raise CodexAppServerError(CodexAppServerFailure.PROTOCOL_MALFORMED)
     if auth_mode != "chatgpt":
-        return ProviderFailure(
-            provider_id=ProviderId.CODEX,
-            kind=ProviderFailureKind.REJECTED,
-            message="Codex completed sign-in without a ChatGPT account.",
+        return codex_failure(
+            ProviderFailureKind.REJECTED,
+            "Codex completed sign-in without a ChatGPT account.",
         )
     if plan is not None:
         try:

@@ -48,7 +48,10 @@ from sidekick_usages.providers.claude.credentials import (
 from sidekick_usages.providers.claude.environment import (
     claude_private_refresh_environment,
 )
-from sidekick_usages.providers.claude.errors import ClaudeProcessError
+from sidekick_usages.providers.claude.errors import (
+    ClaudeProcessError,
+    claude_failure,
+)
 from sidekick_usages.providers.claude.managed.errors import ClaudeManagedError
 from sidekick_usages.providers.claude.managed.executable import (
     discover_claude_executable,
@@ -68,7 +71,6 @@ from sidekick_usages.providers.claude.schema.credentials import (
     CLAUDE_TOKEN_PATTERN,
     validate_setup_token,
 )
-from sidekick_usages.providers.claude.schema.usage import claude_failure
 from sidekick_usages.providers.claude.types import (
     ClaudeProcessFailure,
     SetupTokenCapture,

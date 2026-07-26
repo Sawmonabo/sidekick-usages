@@ -29,10 +29,10 @@ from sidekick_usages.providers.base import (
     ProviderBoundaryError,
     ProviderFailureKind,
 )
+from sidekick_usages.providers.claude.errors import claude_failure
 from sidekick_usages.providers.claude.schema.usage import (
     _bounded_string,
     _validate,
-    claude_failure,
 )
 from sidekick_usages.serialization.json import JsonObject, JsonValue
 

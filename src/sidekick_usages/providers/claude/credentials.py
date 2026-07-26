@@ -40,15 +40,13 @@ from sidekick_usages.providers.claude.auth.storage.types import (
 from sidekick_usages.providers.claude.environment import (
     CLAUDE_CONFIG_DIR_ENVIRONMENT_KEY,
 )
+from sidekick_usages.providers.claude.errors import claude_failure
 from sidekick_usages.providers.claude.models import ClaudeNativeProfile
 from sidekick_usages.providers.claude.process import (
     run_bounded_claude_command,
 )
 from sidekick_usages.providers.claude.schema.credentials import (
     parse_credentials_blob,
-)
-from sidekick_usages.providers.claude.schema.usage import (
-    claude_failure,
 )
 from sidekick_usages.providers.claude.types import ClaudeCommandRunner
 from sidekick_usages.serialization.json import decode_json_object

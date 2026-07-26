@@ -1,6 +1,12 @@
-"""Secret-safe Claude process failures."""
+"""Secret-safe Claude provider failures."""
 
+from sidekick_usages.core.types import ProviderId
 from sidekick_usages.errors import UsageError
+from sidekick_usages.providers.base import (
+    ProviderFailure,
+    ProviderFailureCause,
+    ProviderFailureKind,
+)
 from sidekick_usages.providers.claude.types import ClaudeProcessFailure
 
 _PROCESS_FAILURE_MESSAGES = {
@@ -18,6 +24,25 @@ _PROCESS_FAILURE_MESSAGES = {
         "The Claude process exceeded its time limit."
     ),
 }
+
+
+def claude_failure(
+    kind: ProviderFailureKind,
+    message: str,
+    *,
+    cause: ProviderFailureCause | None = None,
+    action_required: bool = True,
+    fields: tuple[str, ...] = (),
+) -> ProviderFailure:
+    """Build one secret-safe Claude provider failure."""
+    return ProviderFailure(
+        provider_id=ProviderId.CLAUDE,
+        kind=kind,
+        message=message,
+        cause=cause,
+        action_required=action_required,
+        fields=fields,
+    )
 
 
 class ClaudeProcessError(UsageError):

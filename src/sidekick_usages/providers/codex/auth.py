@@ -24,6 +24,7 @@ from sidekick_usages.providers.base import (
     ProviderFailure,
     ProviderFailureKind,
 )
+from sidekick_usages.providers.codex.failures import codex_failure
 from sidekick_usages.providers.codex.generation import codex_generation_order
 from sidekick_usages.providers.codex.models import CodexAuthSnapshot
 from sidekick_usages.providers.codex.native import default_codex_home
@@ -43,14 +44,6 @@ _NATIVE_AUTH_FAILURE_STATES = {
 }
 
 
-def _failure(kind: ProviderFailureKind, message: str) -> ProviderFailure:
-    return ProviderFailure(
-        provider_id=ProviderId.CODEX,
-        kind=kind,
-        message=message,
-    )
-
-
 def _codex_auth_path(credential_home: Path | None = None) -> Path:
     """Return the auth.json path for a Codex home or auth file path."""
     home = default_codex_home() if credential_home is None else credential_home
@@ -68,24 +61,24 @@ def _read_auth_blob(
     try:
         payload = _read_bounded(path)
     except FileNotFoundError:
-        return _failure(
+        return codex_failure(
             ProviderFailureKind.MISSING,
             "No Codex auth.json was found; run `codex login` first.",
         )
     except OSError:
-        return _failure(
+        return codex_failure(
             ProviderFailureKind.UNREADABLE,
             "Codex auth.json could not be read; check its permissions.",
         )
     if len(payload) > _MAX_CODEX_FILE_BYTES:
-        return _failure(
+        return codex_failure(
             ProviderFailureKind.MALFORMED,
             "Codex auth.json exceeds the supported size; log in again.",
         )
     try:
         return decode_json_object(payload)
     except InvalidPayloadError:
-        return _failure(
+        return codex_failure(
             ProviderFailureKind.MALFORMED,
             "Codex auth.json is not valid JSON; run `codex login` again.",
         )
@@ -111,7 +104,7 @@ def parse_managed_auth_credentials(
     if config_failure is not None:
         return config_failure
     if auth_payload is None:
-        return _failure(
+        return codex_failure(
             ProviderFailureKind.MISSING,
             "The managed Codex home is logged out.",
         )
@@ -119,7 +112,7 @@ def parse_managed_auth_credentials(
         blob = decode_json_object(auth_payload)
         detected = parse_auth_credentials(blob)
     except InvalidPayloadError, ProviderBoundaryError:
-        return _failure(
+        return codex_failure(
             ProviderFailureKind.MALFORMED,
             "The managed Codex auth state is malformed.",
         )
@@ -136,14 +129,14 @@ def managed_auth_snapshot(
         or credentials.account_id is None
         or credentials.auth_last_refresh is None
     ):
-        return _failure(
+        return codex_failure(
             ProviderFailureKind.MALFORMED,
             "The managed Codex auth state is incomplete.",
         )
     try:
         order = codex_generation_order(credentials.auth_last_refresh)
     except ValueError:
-        return _failure(
+        return codex_failure(
             ProviderFailureKind.MALFORMED,
             "The managed Codex credential generation is malformed.",
         )
@@ -155,7 +148,7 @@ def managed_auth_snapshot(
             plan=detected.plan,
         )
     except TypeError, ValueError:
-        return _failure(
+        return codex_failure(
             ProviderFailureKind.MALFORMED,
             "The managed Codex auth metadata is malformed.",
         )
@@ -192,7 +185,7 @@ def observe_native_auth(
     credentials = detected.credentials
     if not isinstance(credentials, CodexCredentials):
         return _native_auth_failure(
-            _failure(
+            codex_failure(
                 ProviderFailureKind.MALFORMED,
                 "The native Codex credentials are malformed.",
             ),
@@ -214,17 +207,17 @@ def _native_config_failure(
     try:
         payload = _read_bounded(path)
     except FileNotFoundError:
-        return _failure(
+        return codex_failure(
             ProviderFailureKind.UNREADABLE,
             "The native Codex credential store could not be resolved.",
         )
     except OSError:
-        return _failure(
+        return codex_failure(
             ProviderFailureKind.UNREADABLE,
             "The native Codex config could not be read.",
         )
     if len(payload) > _MAX_CODEX_FILE_BYTES:
-        return _failure(
+        return codex_failure(
             ProviderFailureKind.UNREADABLE,
             "The native Codex config exceeds the supported size.",
         )
@@ -262,7 +255,7 @@ def prepare_file_auth_config(
     try:
         text = existing.decode("utf-8")
     except UnicodeDecodeError:
-        return _failure(
+        return codex_failure(
             ProviderFailureKind.MALFORMED,
             "The target Codex config.toml is not valid UTF-8.",
         )
@@ -281,19 +274,19 @@ def _file_auth_config_failure(
     payload: bytes | None,
 ) -> ProviderFailure | None:
     if payload is None:
-        return _failure(
+        return codex_failure(
             ProviderFailureKind.UNSUPPORTED,
             "The managed Codex home is not configured for file auth.",
         )
     try:
         document = tomllib.loads(payload.decode("utf-8"))
     except UnicodeDecodeError, tomllib.TOMLDecodeError:
-        return _failure(
+        return codex_failure(
             ProviderFailureKind.MALFORMED,
             "The managed Codex config is malformed.",
         )
     if document.get("cli_auth_credentials_store") != "file":
-        return _failure(
+        return codex_failure(
             ProviderFailureKind.UNSUPPORTED,
             "The managed Codex home is not configured for file auth.",
         )

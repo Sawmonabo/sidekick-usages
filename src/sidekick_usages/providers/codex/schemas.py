@@ -21,12 +21,12 @@ from sidekick_usages.core.models import (
     UsageReport,
     UsageWindow,
 )
-from sidekick_usages.core.types import ProviderId, TokenActivityScope
+from sidekick_usages.core.types import TokenActivityScope
 from sidekick_usages.providers.base import (
     ProviderBoundaryError,
-    ProviderFailure,
     ProviderFailureKind,
 )
+from sidekick_usages.providers.codex.failures import codex_failure
 from sidekick_usages.providers.codex.models import CodexTokenClaims
 from sidekick_usages.providers.codex.token import (
     decode_codex_token_claims,
@@ -210,20 +210,6 @@ def _token_usage_profile_adapter() -> TypeAdapter[_TokenUsageProfileSchema]:
     return TypeAdapter(_TokenUsageProfileSchema)
 
 
-def _failure(
-    kind: ProviderFailureKind,
-    message: str,
-    *,
-    fields: tuple[str, ...] = (),
-) -> ProviderFailure:
-    return ProviderFailure(
-        provider_id=ProviderId.CODEX,
-        kind=kind,
-        message=message,
-        fields=fields,
-    )
-
-
 def _validation_kind(error: ValidationError) -> ProviderFailureKind:
     details = error.errors(include_input=False, include_url=False)
     if any(detail["type"] == "missing" for detail in details):
@@ -266,7 +252,7 @@ def _validate[T](
     except ValidationError as error:
         fields = _safe_paths(error)
         raise ProviderBoundaryError(
-            _failure(
+            codex_failure(
                 _validation_kind(error),
                 message,
                 fields=fields,
@@ -279,7 +265,7 @@ def _token_claims(token: str) -> CodexTokenClaims:
         return decode_codex_token_claims(token)
     except TypeError, ValueError:
         raise ProviderBoundaryError(
-            _failure(
+            codex_failure(
                 ProviderFailureKind.MALFORMED,
                 "Codex access-token metadata is malformed; log in again.",
             )
@@ -297,7 +283,7 @@ def jwt_expiry(token: str) -> Expiry:
         )
     except OverflowError:
         raise ProviderBoundaryError(
-            _failure(
+            codex_failure(
                 ProviderFailureKind.MALFORMED,
                 "Codex access-token expiry is outside the supported range.",
             )
@@ -332,7 +318,7 @@ def parse_auth_credentials(blob: JsonObject) -> DetectedCredentials:
             and field_value is None
         ):
             raise ProviderBoundaryError(
-                _failure(
+                codex_failure(
                     ProviderFailureKind.MALFORMED,
                     "Codex auth.json contains invalid token metadata.",
                     fields=(f"tokens.{field_name}",),
@@ -350,7 +336,7 @@ def parse_auth_credentials(blob: JsonObject) -> DetectedCredentials:
     )
     if account_id is None:
         raise ProviderBoundaryError(
-            _failure(
+            codex_failure(
                 ProviderFailureKind.INCOMPLETE,
                 "Codex auth.json contains no account identity; log in again.",
                 fields=("tokens.account_id",),
@@ -380,7 +366,7 @@ def credentials_from_access_token(token: str) -> DetectedCredentials:
     )
     if account_id is None:
         raise ProviderBoundaryError(
-            _failure(
+            codex_failure(
                 ProviderFailureKind.INCOMPLETE,
                 "The Codex token contains no account identity; log in again.",
                 fields=("auth.chatgpt_account_id",),
@@ -438,7 +424,7 @@ def _consistent_account_id(
         and declared_id != claims_id
     ):
         raise ProviderBoundaryError(
-            _failure(
+            codex_failure(
                 ProviderFailureKind.IDENTITY_MISMATCH,
                 "Codex auth.json contains conflicting account identities.",
                 fields=("tokens.account_id", "auth.chatgpt_account_id"),
@@ -463,7 +449,7 @@ def parse_usage_response(value: JsonObject) -> UsageReport:
         label = extra.limit_name or extra.label or extra.model
         if label is None:
             raise ProviderBoundaryError(
-                _failure(
+                codex_failure(
                     ProviderFailureKind.INCOMPLETE,
                     "Codex returned an unnamed additional usage limit.",
                 )
@@ -473,7 +459,7 @@ def parse_usage_response(value: JsonObject) -> UsageReport:
             continue
         if extra.used_percent is None:
             raise ProviderBoundaryError(
-                _failure(
+                codex_failure(
                     ProviderFailureKind.INCOMPLETE,
                     "Codex returned an incomplete additional usage limit.",
                 )
@@ -490,7 +476,7 @@ def parse_usage_response(value: JsonObject) -> UsageReport:
         )
     if not windows:
         raise ProviderBoundaryError(
-            _failure(
+            codex_failure(
                 ProviderFailureKind.INCOMPLETE,
                 "Codex returned no supported usage windows.",
             )
@@ -516,7 +502,7 @@ def parse_activity_response(value: JsonObject) -> TokenActivitySummary:
             bucket_date = date.fromisoformat(bucket.start_date)
         except ValueError:
             raise ProviderBoundaryError(
-                _failure(
+                codex_failure(
                     ProviderFailureKind.MALFORMED,
                     "Codex token activity contains an invalid bucket date.",
                     fields=("stats.daily_usage_buckets.start_date",),
@@ -524,7 +510,7 @@ def parse_activity_response(value: JsonObject) -> TokenActivitySummary:
             ) from None
         if bucket_date in seen_dates:
             raise ProviderBoundaryError(
-                _failure(
+                codex_failure(
                     ProviderFailureKind.MALFORMED,
                     "Codex token activity contains duplicate bucket dates.",
                     fields=("stats.daily_usage_buckets.start_date",),
@@ -581,14 +567,14 @@ def _provider_time(value: str | None) -> datetime | None:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         raise ProviderBoundaryError(
-            _failure(
+            codex_failure(
                 ProviderFailureKind.MALFORMED,
                 "Codex returned an invalid usage reset timestamp.",
             )
         ) from None
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise ProviderBoundaryError(
-            _failure(
+            codex_failure(
                 ProviderFailureKind.MALFORMED,
                 "Codex returned a timezone-free usage reset timestamp.",
             )
@@ -599,7 +585,7 @@ def _provider_time(value: str | None) -> datetime | None:
 def _epoch_time(value: int | float) -> datetime:
     if isinstance(value, bool):
         raise ProviderBoundaryError(
-            _failure(
+            codex_failure(
                 ProviderFailureKind.MALFORMED,
                 "Codex returned an invalid usage reset timestamp.",
             )
@@ -608,7 +594,7 @@ def _epoch_time(value: int | float) -> datetime:
         return datetime.fromtimestamp(value, tz=UTC)
     except OverflowError, OSError, ValueError:
         raise ProviderBoundaryError(
-            _failure(
+            codex_failure(
                 ProviderFailureKind.MALFORMED,
                 "Codex returned an invalid usage reset timestamp.",
             )

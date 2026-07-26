@@ -1,6 +1,5 @@
 """Provider failure mapping for strict Codex account reads."""
 
-from sidekick_usages.core.types import ProviderId
 from sidekick_usages.providers.base import (
     ProviderFailure,
     ProviderFailureKind,
@@ -8,6 +7,7 @@ from sidekick_usages.providers.base import (
 from sidekick_usages.providers.codex.account.types import (
     CodexAccountReadFailure,
 )
+from sidekick_usages.providers.codex.failures import codex_failure
 
 _FAILURE_KINDS = {
     CodexAccountReadFailure.MISSING: ProviderFailureKind.MISSING,
@@ -29,8 +29,7 @@ def codex_account_provider_failure(
     failure: CodexAccountReadFailure,
 ) -> ProviderFailure:
     """Translate one account-read outcome to provider vocabulary."""
-    return ProviderFailure(
-        provider_id=ProviderId.CODEX,
-        kind=_FAILURE_KINDS[failure],
-        message=_FAILURE_MESSAGES[failure],
+    return codex_failure(
+        _FAILURE_KINDS[failure],
+        _FAILURE_MESSAGES[failure],
     )

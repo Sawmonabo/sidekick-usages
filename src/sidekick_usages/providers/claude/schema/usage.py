@@ -17,13 +17,11 @@ from pydantic import (
 )
 
 from sidekick_usages.core.models import UsageWindow
-from sidekick_usages.core.types import ProviderId
 from sidekick_usages.providers.base import (
     ProviderBoundaryError,
-    ProviderFailure,
-    ProviderFailureCause,
     ProviderFailureKind,
 )
+from sidekick_usages.providers.claude.errors import claude_failure
 from sidekick_usages.serialization.json import JsonObject, JsonValue
 
 _MAX_METADATA_BYTES = 4_096
@@ -279,25 +277,6 @@ class ClaudeActivityEvent:
     occurred_at: datetime
     total_tokens: int
     is_sidechain: bool
-
-
-def claude_failure(
-    kind: ProviderFailureKind,
-    message: str,
-    *,
-    cause: ProviderFailureCause | None = None,
-    action_required: bool = True,
-    fields: tuple[str, ...] = (),
-) -> ProviderFailure:
-    """Build one secret-safe Claude provider failure."""
-    return ProviderFailure(
-        provider_id=ProviderId.CLAUDE,
-        kind=kind,
-        message=message,
-        cause=cause,
-        action_required=action_required,
-        fields=fields,
-    )
 
 
 def _safe_paths(error: ValidationError) -> tuple[str, ...]:

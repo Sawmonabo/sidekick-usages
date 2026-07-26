@@ -16,6 +16,7 @@ from sidekick_usages.providers.base import (
     ProviderFailureKind,
     RefreshResult,
 )
+from sidekick_usages.providers.codex.failures import codex_failure
 from sidekick_usages.providers.codex.usage import fetch_usage
 
 TOKEN_RE = re.compile(
@@ -62,17 +63,9 @@ class CodexProvider(Provider):
         return _managed_login_required()
 
 
-def _failure(kind: ProviderFailureKind, message: str) -> ProviderFailure:
-    return ProviderFailure(
-        provider_id=ProviderId.CODEX,
-        kind=kind,
-        message=message,
-    )
-
-
 def _managed_login_required() -> ProviderFailure:
     """Return the single retired-import and direct-refresh policy."""
-    return _failure(
+    return codex_failure(
         ProviderFailureKind.REJECTED,
         _MANAGED_LOGIN_REQUIRED,
     )
