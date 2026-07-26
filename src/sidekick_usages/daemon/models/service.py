@@ -5,11 +5,7 @@ from datetime import datetime
 
 from sidekick_usages.core.selection.models import safe_outcome_code
 from sidekick_usages.core.time import as_utc
-from sidekick_usages.core.types import ProviderId
-from sidekick_usages.daemon.types.lifecycle import (
-    ProviderReadinessScope,
-    ServiceFailureCode,
-)
+from sidekick_usages.daemon.types.lifecycle import ServiceFailureCode
 from sidekick_usages.daemon.types.protocol import MAX_PROTOCOL_VERSION
 from sidekick_usages.daemon.types.service import (
     PackageVersion,
@@ -65,14 +61,13 @@ class ServiceState:
             )
         object.__setattr__(self, "failure_code", code)
 
-    def ready_for(self, provider_ids: ProviderReadinessScope) -> bool:
-        """Allow broker-only degradation solely for Claude-scoped work."""
+    def ready_for(self, *, broker_required: bool) -> bool:
+        """Allow broker-only degradation when no selected account needs it."""
         if self.phase is ServicePhase.READY:
             return True
         return (
             self.phase is ServicePhase.DEGRADED
-            and bool(provider_ids)
-            and ProviderId.CODEX not in provider_ids
+            and not broker_required
             and self.queue_recovered
             and self.journals_reconciled
             and self.failure_code

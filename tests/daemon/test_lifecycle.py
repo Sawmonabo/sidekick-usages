@@ -10,7 +10,8 @@ import pytest
 
 from sidekick_usages import __version__
 from sidekick_usages.core.accounts.types import RequestId
-from sidekick_usages.core.types import ExitCode, ProviderId
+from sidekick_usages.core.models import Account, CodexCredentials
+from sidekick_usages.core.types import AccountLabel, ExitCode, ProviderId
 from sidekick_usages.daemon.control.client import ControlClient
 from sidekick_usages.daemon.lifecycle.artifacts import ServiceArtifactStore
 from sidekick_usages.daemon.lifecycle.commands import SystemCommandRunner
@@ -321,7 +322,11 @@ def _exercise_real_lifecycle_progress(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> tuple[
-    ServiceLifecycleState,
+    tuple[
+        ServiceLifecycleState,
+        ServiceLifecycleState,
+        ServiceLifecycleState,
+    ],
     tuple[ProviderId, ...],
     tuple[ServiceLifecycleObservation, ...],
 ]:
@@ -334,22 +339,41 @@ def _exercise_real_lifecycle_progress(
             home / ".config" / "systemd" / "user" / "sidekick-usages.service"
         ),
     )
-    make_account_store(root)
-    ServiceStateStore(paths.service_state).save(
-        ServiceState(
-            protocol_version=PROTOCOL_VERSION,
-            package_version=PackageVersion(__version__),
-            phase=ServicePhase.READY,
-            revision=1,
-            observed_at=REFERENCE_TIME,
-            queue_recovered=True,
-            journals_reconciled=True,
-            broker_ready=True,
-            active_workers=0,
-        )
+    account_store = make_account_store(
+        root,
+        (
+            Account(
+                label=AccountLabel("codex-stored"),
+                credentials=CodexCredentials(
+                    access_token="test-only-codex-secret",
+                    account_id="account-stored",
+                ),
+            ),
+        ),
     )
+    state_store = ServiceStateStore(paths.service_state)
+    degraded = ServiceState(
+        protocol_version=PROTOCOL_VERSION,
+        package_version=PackageVersion(__version__),
+        phase=ServicePhase.DEGRADED,
+        revision=1,
+        observed_at=REFERENCE_TIME,
+        queue_recovered=True,
+        journals_reconciled=True,
+        broker_ready=False,
+        active_workers=0,
+        failure_code=ServiceFailureCode.CODEX_BROKER_UNAVAILABLE.value,
+    )
+    state_store.save(degraded)
+    assert not degraded.ready_for(broker_required=True)
     provider_capabilities = ReadyProviderCapabilities()
     platform_info = _platform(home, system="Linux")
+    readiness = SupervisorReadiness(
+        paths,
+        FixedClock(),
+        provider_readiness=provider_capabilities,
+    )
+    cleanup = RuntimeCleanup(paths)
     manager = DaemonManager(
         build_service_backend(
             platform_info,
@@ -358,24 +382,50 @@ def _exercise_real_lifecycle_progress(
             RecordingRunner(),
             ServiceArtifactStore(platform_info.home, platform_info.uid),
         ),
-        SupervisorReadiness(
-            paths,
-            FixedClock(),
-            provider_readiness=provider_capabilities,
-        ),
-        RuntimeCleanup(paths),
+        readiness,
+        cleanup,
     )
     monkeypatch.setattr(
         ControlClient,
         "connect",
         staticmethod(_connect_readiness_client),
     )
+    readiness.enroll_accounts()
+    broker_manager = DaemonManager(
+        RecordingBackend([]),
+        readiness,
+        cleanup,
+    )
+    unscoped = broker_manager.status()
+    codex_scoped = broker_manager.status((ProviderId.CODEX,))
+    stored_account = account_store.saved_accounts()[0]
+    account_store.remove_saved(
+        stored_account.account_id,
+        expected=stored_account,
+    )
+    state_store.save(
+        ServiceState(
+            protocol_version=PROTOCOL_VERSION,
+            package_version=PackageVersion(__version__),
+            phase=ServicePhase.READY,
+            revision=2,
+            observed_at=REFERENCE_TIME,
+            queue_recovered=True,
+            journals_reconciled=True,
+            broker_ready=True,
+            active_workers=0,
+        )
+    )
     progress: list[ServiceLifecycleObservation] = []
     result = manager.install(
         (ProviderId.CODEX,),
         progress=progress.append,
     )
-    return result.state, tuple(provider_capabilities.checked), tuple(progress)
+    return (
+        (unscoped.state, codex_scoped.state, result.state),
+        tuple(provider_capabilities.checked),
+        tuple(progress),
+    )
 
 
 @pytest.mark.parametrize(
@@ -723,23 +773,7 @@ def test_lifecycle_is_idempotent_cancellable_and_preserves_user_state(
             process_count=1,
             process_group_reaped=True,
         )
-    broker_degraded = ServiceState(
-        protocol_version=PROTOCOL_VERSION,
-        package_version=PackageVersion(__version__),
-        phase=ServicePhase.DEGRADED,
-        revision=1,
-        observed_at=REFERENCE_TIME,
-        queue_recovered=True,
-        journals_reconciled=True,
-        broker_ready=False,
-        active_workers=0,
-        failure_code=ServiceFailureCode.CODEX_BROKER_UNAVAILABLE.value,
-    )
-    assert broker_degraded.ready_for((ProviderId.CLAUDE,))
-    assert not broker_degraded.ready_for((ProviderId.CODEX,))
-    assert not broker_degraded.ready_for((ProviderId.CLAUDE, ProviderId.CODEX))
-
-    progress_state, provider_checks, progress = (
+    progress_states, provider_checks, progress = (
         _exercise_real_lifecycle_progress(
             tmp_path,
             monkeypatch,
@@ -747,25 +781,27 @@ def test_lifecycle_is_idempotent_cancellable_and_preserves_user_state(
     )
 
     assert (
-        progress_state,
+        progress_states,
         provider_checks,
         tuple(item.phase for item in progress),
         progress[-1].provider_id,
     ) == (
-        ServiceLifecycleState.READY,
-        (ProviderId.CODEX, ProviderId.CODEX),
+        (
+            ServiceLifecycleState.READY,
+            ServiceLifecycleState.READY,
+            ServiceLifecycleState.READY,
+        ),
+        (ProviderId.CODEX, ProviderId.CODEX, ProviderId.CODEX),
         (
             ServiceLifecyclePhase.INSTALLING,
             ServiceLifecyclePhase.STARTING,
             ServiceLifecyclePhase.CONTROL_SOCKET,
             ServiceLifecyclePhase.DURABLE_RECOVERY,
-            ServiceLifecyclePhase.CODEX_BROKER,
             ServiceLifecyclePhase.PROVIDER_CAPABILITY,
             ServiceLifecyclePhase.MAINTENANCE_COMPLETED,
             ServiceLifecyclePhase.RESTARTING,
             ServiceLifecyclePhase.CONTROL_SOCKET,
             ServiceLifecyclePhase.DURABLE_RECOVERY,
-            ServiceLifecyclePhase.CODEX_BROKER,
             ServiceLifecyclePhase.PROVIDER_CAPABILITY,
         ),
         ProviderId.CODEX,

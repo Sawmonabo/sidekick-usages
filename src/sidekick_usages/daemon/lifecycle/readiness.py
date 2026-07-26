@@ -176,16 +176,17 @@ class SupervisorReadiness:
         progress: ServiceLifecycleObserver,
     ) -> None:
         """Prove durable recovery and the requested Codex broker."""
-        broker_required = (
-            ProviderId.CODEX in provider_ids
-            if provider_ids
-            else any(_requires_codex_broker(account) for account in accounts)
+        managed_codex_present = any(
+            _requires_codex_broker(account) for account in accounts
+        )
+        broker_required = managed_codex_present and (
+            not provider_ids or ProviderId.CODEX in provider_ids
         )
         if broker_required:
             progress(
                 ServiceLifecycleObservation(ServiceLifecyclePhase.CODEX_BROKER)
             )
-        if not state.ready_for(provider_ids):
+        if not state.ready_for(broker_required=broker_required):
             raise ServiceLifecycleError(ServiceFailureCode.SERVICE_UNHEALTHY)
         enrolled = {
             operation.account_id
