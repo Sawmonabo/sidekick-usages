@@ -19,19 +19,33 @@ from sidekick_usages.cli.context import (
     compose_doctor_context,
     default_invocation_composers,
 )
+from sidekick_usages.core.accounts.types import (
+    AuthorityGeneration,
+    ProviderIdentity,
+)
 from sidekick_usages.core.models import Account, ClaudeSetupTokenCredentials
+from sidekick_usages.core.selection.models import SelectedAccountState
+from sidekick_usages.core.selection.types import (
+    ActivationOutcome,
+    ProviderRuntimeState,
+)
 from sidekick_usages.core.types import AccountLabel, ProviderId
 from sidekick_usages.doctor.accounts.models import HeartbeatSupport
 from sidekick_usages.http.client import HttpClient
 from sidekick_usages.persistence.accounts.index import AccountIndexReader
 from sidekick_usages.persistence.accounts.store import AccountStore
 from sidekick_usages.persistence.errors import ManagedFileReadError
+from sidekick_usages.persistence.supervisor.selection import (
+    SelectedStateStore,
+)
+from sidekick_usages.persistence.types.error import PersistenceCode
 from sidekick_usages.update import UpdateService
 from tests.fakes.daemon.capabilities import (
     StaticProviderCapabilityService,
     make_provider_capability_report,
 )
 from tests.test_support import (
+    REFERENCE_TIME,
     make_account_store,
     make_application_paths,
 )
@@ -163,7 +177,7 @@ def test_composition_honors_empty_provider_maps_and_current_store(
         application.close()
 
 
-def test_doctor_translates_current_store_failure(
+def test_doctor_fails_closed_for_untrusted_persisted_state(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -177,6 +191,7 @@ def test_doctor_translates_current_store_failure(
         "build_provider_capability_service",
         lambda _paths: capability_service,
     )
+    observe_accounts = AccountIndexReader.observe
 
     def fail_observe(_reader: AccountIndexReader) -> None:
         raise failure
@@ -194,3 +209,43 @@ def test_doctor_translates_current_store_failure(
         assert state.failure.path == paths.accounts
     finally:
         owner.close()
+    monkeypatch.setattr(
+        AccountIndexReader,
+        "observe",
+        observe_accounts,
+    )
+    account = Account(
+        label=AccountLabel("identity-mismatch"),
+        credentials=ClaudeSetupTokenCredentials(
+            access_token="test-only-mismatch"
+        ),
+    )
+    saved = make_account_store(tmp_path, (account,)).saved_accounts()[0]
+    SelectedStateStore(paths.selected_state).save(
+        SelectedAccountState(
+            provider_id=ProviderId.CLAUDE,
+            runtime_state=ProviderRuntimeState.SAVED_ACTIVE,
+            account_id=saved.account_id,
+            provider_identity=ProviderIdentity("unrelated-identity"),
+            runtime_generation=AuthorityGeneration(
+                "unrelated-generation"
+            ),
+            verified_at=REFERENCE_TIME,
+            outcome=ActivationOutcome.VERIFIED,
+        )
+    )
+
+    mismatched = compose_doctor_context(
+        paths=paths,
+        providers={},
+        heartbeat_providers={},
+    )
+    try:
+        state = mismatched.value.state
+        assert isinstance(state, DoctorFailed)
+        assert state.failure.code is PersistenceCode.INVALID_SCHEMA
+        assert state.failure.message == (
+            "Supervisor state does not match the saved accounts."
+        )
+    finally:
+        mismatched.close()

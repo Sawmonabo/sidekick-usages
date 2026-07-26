@@ -69,6 +69,7 @@ from sidekick_usages.persistence.models.status import (
     PersistenceFailure,
     PersistenceStatus,
 )
+from sidekick_usages.persistence.time_codec import canonical_timestamp
 from sidekick_usages.persistence.types.error import PersistenceCode
 from sidekick_usages.persistence.types.status import PersistenceState
 from sidekick_usages.providers.registry import (
@@ -160,6 +161,74 @@ def _harness(
         ),
         output,
         clock,
+    )
+
+
+def _cached_doctor_dashboard(
+    claude: SavedAccount,
+    codex: SavedAccount,
+) -> tuple[DashboardSnapshot, str]:
+    """Project the established cached fixture onto Doctor account IDs."""
+    dashboard, _cursor, _footer = interactive_dashboard_state(
+        REFERENCE_TIME
+    )
+    claude_provider, codex_provider = dashboard.providers
+    claude_row = claude_provider.rows[0]
+    codex_row = codex_provider.rows[0]
+    assert isinstance(claude_row, DashboardAccount)
+    assert isinstance(codex_row, DashboardAccount)
+    assert claude_row.usage is not None
+    metrics_observed_at = canonical_timestamp(
+        claude_row.usage.observed_at
+    )
+    return (
+        replace(
+            dashboard,
+            providers=(
+                replace(
+                    claude_provider,
+                    runtime_state=None,
+                    active_account_id=None,
+                    verified_at=None,
+                    actions_enabled=False,
+                    rows=(
+                        replace(
+                            claude_row,
+                            account_id=claude.account_id,
+                            label=claude.label,
+                            plan=claude.plan,
+                            credential_health=claude.credential_health,
+                            active=False,
+                            states=(
+                                DashboardActionState.LOGIN_REQUIRED,
+                            ),
+                        ),
+                    ),
+                ),
+                replace(
+                    codex_provider,
+                    runtime_state=ProviderRuntimeState.SAVED_ACTIVE,
+                    active_account_id=codex.account_id,
+                    verified_at=REFERENCE_TIME,
+                    rows=(
+                        replace(
+                            codex_row,
+                            account_id=codex.account_id,
+                            label=codex.label,
+                            plan=codex.plan,
+                            credential_health=codex.credential_health,
+                            active=True,
+                            states=(
+                                DashboardActionState.RECONCILIATION_REQUIRED,
+                            ),
+                            usage=None,
+                            activity=None,
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        metrics_observed_at,
     )
 
 
@@ -271,57 +340,9 @@ def test_json_reports_current_auth_state_without_secrets(
         updated_at=REFERENCE_TIME - timedelta(minutes=1),
         failure_code="worker_interrupted",
     )
-    dashboard, _cursor, _footer = interactive_dashboard_state(
-        REFERENCE_TIME
-    )
-    claude_provider, codex_provider = dashboard.providers
-    claude_row = claude_provider.rows[0]
-    codex_row = codex_provider.rows[0]
-    assert isinstance(claude_row, DashboardAccount)
-    assert isinstance(codex_row, DashboardAccount)
-    dashboard = replace(
-        dashboard,
-        providers=(
-            replace(
-                claude_provider,
-                runtime_state=None,
-                active_account_id=None,
-                verified_at=None,
-                actions_enabled=False,
-                rows=(
-                    replace(
-                        claude_row,
-                        account_id=login_saved.account_id,
-                        label=login_saved.label,
-                        plan=login_saved.plan,
-                        credential_health=(
-                            login_saved.credential_health
-                        ),
-                        active=False,
-                        states=(DashboardActionState.LOGIN_REQUIRED,),
-                    ),
-                ),
-            ),
-            replace(
-                codex_provider,
-                runtime_state=ProviderRuntimeState.SAVED_ACTIVE,
-                active_account_id=saved.account_id,
-                verified_at=REFERENCE_TIME,
-                rows=(
-                    replace(
-                        codex_row,
-                        account_id=saved.account_id,
-                        label=saved.label,
-                        plan=saved.plan,
-                        credential_health=saved.credential_health,
-                        active=True,
-                        states=(
-                            DashboardActionState.RECONCILIATION_REQUIRED,
-                        ),
-                    ),
-                ),
-            ),
-        ),
+    dashboard, metrics_observed_at = _cached_doctor_dashboard(
+        login_saved,
+        saved,
     )
     harness, output, clock = _harness(
         tmp_path,
@@ -370,7 +391,7 @@ def test_json_reports_current_auth_state_without_secrets(
         True,
         "login_required",
         "stale",
-        "2026-06-12T10:34:56.789Z",
+        metrics_observed_at,
         "login_required",
         ["sidekick-usages", "migrate", "managed-auth"],
     )
@@ -646,7 +667,7 @@ def test_filters_are_composable(tmp_path: Path) -> None:
     )
 
     claude_payload = json.loads(claude_output.getvalue())
-    assert claude_result.exit_code == ExitCode.SUCCESS
+    assert claude_result.exit_code == ExitCode.MANUAL_ACTION
     assert claude_payload["service"]["broker"] == "not_required"
     assert [
         result["provider"]
