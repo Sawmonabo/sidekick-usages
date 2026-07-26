@@ -13,6 +13,9 @@ from sidekick_usages.core.selection.models import (
     SelectedAccountState,
     activation_account_ids,
 )
+from sidekick_usages.core.selection.policy import (
+    same_provider_auth_authority,
+)
 from sidekick_usages.core.selection.types import (
     ActivationOutcome,
     ActivationPhase,
@@ -198,7 +201,7 @@ class CodexActivationService:
             self._require_reconciliation(transaction, current, error)
             raise error
         baseline = current.selected_baseline
-        native_unchanged = _same_native_auth(
+        native_unchanged = same_provider_auth_authority(
             native,
             current.native_auth_baseline,
         )
@@ -392,7 +395,7 @@ class CodexActivationService:
     ) -> None:
         current = self._native_auth.observe()
         self._require_trusted_native(current)
-        if not _same_native_auth(current, baseline):
+        if not same_provider_auth_authority(current, baseline):
             raise CodexActivationError(CodexActivationFailure.NATIVE_CHANGED)
 
     @staticmethod
@@ -484,17 +487,5 @@ class _NativeGuardedInstaller:
                 CodexActivationFailure.NATIVE_UNREADABLE,
                 action_required=True,
             )
-        if not _same_native_auth(current, self._baseline):
+        if not same_provider_auth_authority(current, self._baseline):
             raise CodexActivationError(CodexActivationFailure.NATIVE_CHANGED)
-
-
-def _same_native_auth(
-    first: ProviderAuthObservation,
-    second: ProviderAuthObservation,
-) -> bool:
-    return (
-        first.provider_id is second.provider_id
-        and first.state is second.state
-        and first.provider_identity == second.provider_identity
-        and first.generation == second.generation
-    )
