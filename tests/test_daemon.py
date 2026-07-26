@@ -15,7 +15,9 @@ from sidekick_usages.daemon.lifecycle.commands import SystemCommandRunner
 from sidekick_usages.daemon.lifecycle.constants import (
     WSL_RESCUE_ABSENT,
     WSL_RESCUE_INSTALLED,
+    WSL_RESCUE_TASK_NAME,
 )
+from sidekick_usages.daemon.lifecycle.errors import ServiceLifecycleError
 from sidekick_usages.daemon.lifecycle.manager import (
     DaemonManager,
     build_service_backend,
@@ -61,10 +63,14 @@ class RecordingRunner(SystemCommandRunner):
     def __init__(self) -> None:
         self.calls: list[tuple[str, ...]] = []
         self.rescue_output = WSL_RESCUE_INSTALLED
+        self.rescue_status_fails = False
+        self.systemd_status_fails = False
 
     def run(self, argv: tuple[str, ...]) -> CommandResult:
         self.calls.append(argv)
         if argv[:3] == ("systemctl", "--user", "show"):
+            if self.systemd_status_fails:
+                raise ServiceLifecycleError(ServiceFailureCode.COMMAND_FAILED)
             return CommandResult(
                 0,
                 (
@@ -78,6 +84,8 @@ class RecordingRunner(SystemCommandRunner):
         if argv[:2] == ("launchctl", "print"):
             return CommandResult(0, "state = running\n", "")
         if argv[0] == "powershell.exe" and "Get-ScheduledTask" in argv[-1]:
+            if self.rescue_status_fails:
+                raise ServiceLifecycleError(ServiceFailureCode.COMMAND_FAILED)
             return CommandResult(0, self.rescue_output + "\n", "")
         return CommandResult(0, "", "")
 
@@ -248,7 +256,14 @@ def test_service_artifacts_are_user_scoped_resident_and_secret_free(
         ExitCode.SUCCESS,
     )
     status = backend.status()
-    assert status.process is ServiceComponentState.HEALTHY
+    assert (status.process, status.rescue) == (
+        ServiceComponentState.HEALTHY,
+        (
+            ServiceComponentState.HEALTHY
+            if backend_id is ServiceBackendId.WSL
+            else ServiceComponentState.NOT_REQUIRED
+        ),
+    )
     artifact_text = _service_artifact(platform_info, backend_id).read_text(
         encoding="utf-8"
     )
@@ -281,17 +296,37 @@ def test_service_artifacts_are_user_scoped_resident_and_secret_free(
         assert "<false/>" in artifact_text
         assert "StartInterval" not in artifact_text
     if backend_id is ServiceBackendId.WSL:
-        assert status.rescue is ServiceComponentState.HEALTHY
+        runner.systemd_status_fails = True
+        systemd_degraded = backend.status()
+        runner.systemd_status_fails = False
+        runner.rescue_status_fails = True
+        rescue_degraded = backend.status()
+        runner.rescue_status_fails = False
         runner.rescue_output = WSL_RESCUE_ABSENT
         degraded = backend.status()
         assert (
-            degraded.state,
-            degraded.process,
-            degraded.rescue,
+            systemd_degraded,
+            rescue_degraded,
+            degraded,
         ) == (
-            ServiceLifecycleState.UNHEALTHY,
-            ServiceComponentState.HEALTHY,
-            ServiceComponentState.ABSENT,
+            ServiceBackendStatus(
+                ServiceBackendId.WSL,
+                ServiceLifecycleState.UNHEALTHY,
+                ServiceComponentState.UNHEALTHY,
+                ServiceComponentState.HEALTHY,
+            ),
+            ServiceBackendStatus(
+                ServiceBackendId.WSL,
+                ServiceLifecycleState.UNHEALTHY,
+                ServiceComponentState.HEALTHY,
+                ServiceComponentState.UNHEALTHY,
+            ),
+            ServiceBackendStatus(
+                ServiceBackendId.WSL,
+                ServiceLifecycleState.UNHEALTHY,
+                ServiceComponentState.HEALTHY,
+                ServiceComponentState.ABSENT,
+            ),
         )
         rescue = next(
             argv[-1]
@@ -299,19 +334,53 @@ def test_service_artifacts_are_user_scoped_resident_and_secret_free(
             if argv[0] == "powershell.exe"
             and "Register-ScheduledTask" in argv[-1]
         )
-        assert (
-            "New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME" in rescue
+        rescue_status = next(
+            argv[-1]
+            for argv in runner.calls
+            if argv[0] == "powershell.exe" and "Get-ScheduledTask" in argv[-1]
         )
-        assert "Sidekick-Distro" in rescue
-        assert "sidekick-user" in rescue
-        assert "systemctl" in rescue
-        assert "--user" in rescue
-        assert "start" in rescue
-        assert "maintain" not in rescue
-        assert "refresh" not in rescue
-        assert "token" not in rescue.lower()
-    else:
-        assert status.rescue is ServiceComponentState.NOT_REQUIRED
+        assert all(
+            contract in rescue
+            for contract in (
+                "New-ScheduledTaskTrigger -AtLogOn -User $currentUser",
+                "New-ScheduledTaskPrincipal -UserId $currentUser",
+                "-LogonType Interactive",
+                "-RunLevel Limited",
+                "$trigger.Enabled = $true",
+                "$settings.Enabled = $true",
+                "-TaskPath '\\'",
+                "-Principal $principal",
+                "Sidekick-Distro",
+                "sidekick-user",
+                "systemctl",
+                "--user",
+                "start",
+            )
+        )
+        assert all(
+            forbidden not in rescue.lower()
+            for forbidden in ("maintain", "refresh", "token")
+        )
+        assert all(
+            contract in rescue_status
+            for contract in (
+                "$tasks.Count -ne 1",
+                f"$task.TaskName -ceq '{WSL_RESCUE_TASK_NAME}'",
+                "$task.TaskPath -ceq '\\'",
+                "$triggers[0].Enabled -eq $true",
+                "$triggers[0].UserId -ieq $currentUser",
+                "$principals.Count -eq 1",
+                "$principals[0].UserId -ieq $currentUser",
+                "[string]$principals[0].LogonType -ceq 'Interactive'",
+                "[string]$principals[0].RunLevel -ceq 'Limited'",
+                "$settings.Count -eq 1",
+                "$settings[0].Enabled -eq $true",
+                "$settings[0].StartWhenAvailable -eq $true",
+                "[string]$settings[0].MultipleInstances -ceq 'IgnoreNew'",
+                "$settings[0].Hidden -eq $true",
+                "$settings[0].ExecutionTimeLimit -ceq 'PT2M'",
+            )
+        )
 
 
 def test_lifecycle_is_idempotent_cancellable_and_preserves_user_state(

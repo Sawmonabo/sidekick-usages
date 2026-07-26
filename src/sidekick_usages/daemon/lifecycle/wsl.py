@@ -30,6 +30,7 @@ _POWERSHELL = (
     "-NonInteractive",
     "-Command",
 )
+_WSL_RESCUE_TASK_PATH = "\\"
 
 
 class WslBackend:
@@ -68,7 +69,13 @@ class WslBackend:
 
     def status(self) -> ServiceBackendStatus:
         """Require both the Linux service and Windows rescue."""
-        service = self._systemd.status()
+        try:
+            service = self._systemd.status()
+        except ServiceLifecycleError:
+            service = ServiceBackendStatus.single(
+                ServiceBackendId.SYSTEMD,
+                ServiceLifecycleState.UNHEALTHY,
+            )
         rescue = self._rescue_status()
         if (
             service.state is ServiceLifecycleState.ABSENT
@@ -103,7 +110,10 @@ class WslBackend:
         self._systemd.uninstall()
 
     def _rescue_status(self) -> ServiceLifecycleState:
-        result = self._runner.run((*_POWERSHELL, self._status_script()))
+        try:
+            result = self._runner.run((*_POWERSHELL, self._status_script()))
+        except ServiceLifecycleError:
+            return ServiceLifecycleState.UNHEALTHY
         if result.returncode != 0:
             return ServiceLifecycleState.UNHEALTHY
         output = result.stdout.strip()
@@ -118,21 +128,35 @@ class WslBackend:
         description = _rescue_description()
         return "\n".join(
             (
+                "$ErrorActionPreference = 'Stop'",
+                "$currentUser = "
+                "[System.Security.Principal.WindowsIdentity]"
+                "::GetCurrent().Name",
+                "if ([string]::IsNullOrWhiteSpace($currentUser)) { "
+                "throw 'Current Windows user is unavailable.' }",
                 "$action = New-ScheduledTaskAction "
                 "-Execute 'wsl.exe' "
                 f"-Argument {_powershell_literal(arguments)}",
                 "$trigger = New-ScheduledTaskTrigger "
-                "-AtLogOn -User $env:USERNAME",
+                "-AtLogOn -User $currentUser",
+                "$trigger.Enabled = $true",
+                "$principal = New-ScheduledTaskPrincipal "
+                "-UserId $currentUser "
+                "-LogonType Interactive "
+                "-RunLevel Limited",
                 "$settings = New-ScheduledTaskSettingsSet "
                 "-StartWhenAvailable "
                 "-MultipleInstances IgnoreNew "
                 "-ExecutionTimeLimit (New-TimeSpan -Minutes 2)",
                 "$settings.Hidden = $true",
+                "$settings.Enabled = $true",
                 "Register-ScheduledTask "
                 f"-TaskName {_powershell_literal(WSL_RESCUE_TASK_NAME)} "
+                f"-TaskPath {_powershell_literal(_WSL_RESCUE_TASK_PATH)} "
                 "-Action $action "
                 "-Trigger $trigger "
                 "-Settings $settings "
+                "-Principal $principal "
                 f"-Description {_powershell_literal(description)} "
                 "-Force | Out-Null",
             )
@@ -143,22 +167,51 @@ class WslBackend:
         description = _powershell_literal(_rescue_description())
         return "\n".join(
             (
-                "$task = Get-ScheduledTask "
-                f"-TaskName {_powershell_literal(WSL_RESCUE_TASK_NAME)} "
-                "-ErrorAction SilentlyContinue",
-                "if ($null -eq $task) {",
+                "$ErrorActionPreference = 'Stop'",
+                "$currentUser = "
+                "[System.Security.Principal.WindowsIdentity]"
+                "::GetCurrent().Name",
+                "$tasks = @(Get-ScheduledTask | Where-Object {",
+                "  $_.TaskName -ieq "
+                f"{_powershell_literal(WSL_RESCUE_TASK_NAME)}",
+                "})",
+                "if ($tasks.Count -eq 0) {",
                 f"  Write-Output '{WSL_RESCUE_ABSENT}'",
+                "} elseif ($tasks.Count -ne 1) {",
+                f"  Write-Output '{WSL_RESCUE_UNHEALTHY}'",
                 "} else {",
+                "  $task = $tasks[0]",
                 "  $actions = @($task.Actions)",
                 "  $triggers = @($task.Triggers)",
+                "  $principals = @($task.Principal)",
+                "  $settings = @($task.Settings)",
                 "  $valid = "
-                f"$task.Description -ceq {description} "
+                "-not [string]::IsNullOrWhiteSpace($currentUser) "
+                f"-and $task.TaskName -ceq "
+                f"{_powershell_literal(WSL_RESCUE_TASK_NAME)} "
+                f"-and $task.Description -ceq {description} "
+                f"-and $task.TaskPath -ceq "
+                f"{_powershell_literal(_WSL_RESCUE_TASK_PATH)} "
                 "-and $actions.Count -eq 1 "
                 "-and $actions[0].Execute -ieq 'wsl.exe' "
                 f"-and $actions[0].Arguments -ceq {arguments} "
                 "-and $triggers.Count -eq 1 "
                 "-and $triggers[0].CimClass.CimClassName "
-                "-eq 'MSFT_TaskLogonTrigger'",
+                "-ceq 'MSFT_TaskLogonTrigger' "
+                "-and $triggers[0].Enabled -eq $true "
+                "-and $triggers[0].UserId -ieq $currentUser "
+                "-and $principals.Count -eq 1 "
+                "-and $principals[0].UserId -ieq $currentUser "
+                "-and [string]$principals[0].LogonType "
+                "-ceq 'Interactive' "
+                "-and [string]$principals[0].RunLevel -ceq 'Limited' "
+                "-and $settings.Count -eq 1 "
+                "-and $settings[0].Enabled -eq $true "
+                "-and $settings[0].StartWhenAvailable -eq $true "
+                "-and [string]$settings[0].MultipleInstances "
+                "-ceq 'IgnoreNew' "
+                "-and $settings[0].Hidden -eq $true "
+                "-and $settings[0].ExecutionTimeLimit -ceq 'PT2M'",
                 "  if ($valid) {",
                 f"    Write-Output '{WSL_RESCUE_INSTALLED}'",
                 "  } else {",
@@ -191,6 +244,7 @@ class WslBackend:
         return (
             "Unregister-ScheduledTask "
             f"-TaskName {_powershell_literal(WSL_RESCUE_TASK_NAME)} "
+            f"-TaskPath {_powershell_literal(_WSL_RESCUE_TASK_PATH)} "
             "-Confirm:$false -ErrorAction SilentlyContinue"
         )
 
