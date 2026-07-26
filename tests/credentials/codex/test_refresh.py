@@ -62,8 +62,10 @@ from tests.fakes.codex.managed import (
     managed_subscription,
     seed_managed_accounts,
 )
+from tests.support.platform import REQUIRES_MANAGED_RUNTIME
 from tests.support.time import REFERENCE_TIME, FixedClock
 
+pytestmark = REQUIRES_MANAGED_RUNTIME
 _MANAGED_ACCOUNT_A = SidekickAccountId("11111111-1111-4111-8111-111111111111")
 _MANAGED_ACCOUNT_B = SidekickAccountId("22222222-2222-4222-8222-222222222222")
 _MANAGED_AUTHORITY_A = AuthorityId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")

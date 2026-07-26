@@ -56,11 +56,13 @@ from tests.fakes.migration.managed_auth import (
     managed_auth_scenario,
 )
 from tests.support.cli import CliHarness
+from tests.support.platform import REQUIRES_MANAGED_RUNTIME
 from tests.support.time import FixedClock
 
 REFERENCE_TIME = datetime(2026, 7, 25, 14, tzinfo=UTC)
 
 
+@REQUIRES_MANAGED_RUNTIME
 def test_guided_setup_resumes_once_and_preserves_blocked_actions(
     tmp_path: Path,
 ) -> None:

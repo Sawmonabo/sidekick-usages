@@ -38,8 +38,10 @@ from tests.fakes.claude.maintenance import (
     resolver_scenario,
     unverified_generation_scenario,
 )
+from tests.support.platform import REQUIRES_MANAGED_RUNTIME
 
 
+@REQUIRES_MANAGED_RUNTIME
 def test_managed_resolver_uses_selected_native_and_inactive_private_authority(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -87,6 +89,7 @@ def test_managed_resolver_uses_selected_native_and_inactive_private_authority(
     )
 
 
+@REQUIRES_MANAGED_RUNTIME
 def test_managed_claude_maintenance_isolated_per_account_and_continues(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

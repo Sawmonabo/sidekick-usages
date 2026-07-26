@@ -2,6 +2,7 @@
 
 import os
 import socket
+import sys
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -38,6 +39,9 @@ from sidekick_usages.persistence.supervisor.service import ServiceStateStore
 from tests.fakes.daemon.control import VerifiedPeer
 from tests.support.time import REFERENCE_TIME
 
+SYNTHETIC_WORKER_EXECUTABLE = (
+    Path(sys.executable).resolve().parent / "sidekick-usages-worker"
+)
 _MONOTONIC_START = 100.0
 
 
@@ -208,7 +212,7 @@ class _NoopResidentService:
 def worker_planner() -> WorkerLaunchPlanner:
     """Build one planner that proves secret environment stripping."""
     return WorkerLaunchPlanner(
-        Path("/opt/sidekick/bin/sidekick-usages-worker"),
+        SYNTHETIC_WORKER_EXECUTABLE,
         {
             "ANTHROPIC_AUTH_TOKEN": "test-only-secret",
             "CODEX_HOME": "/test-only-secret-home",

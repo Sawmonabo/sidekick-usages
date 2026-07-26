@@ -50,6 +50,7 @@ from tests.fakes.codex.auth import managed_auth
 from tests.fakes.codex.managed import managed_subscription
 from tests.fakes.credentials.provider import install_cli_context
 from tests.support.persistence import make_application_paths
+from tests.support.platform import REQUIRES_MANAGED_RUNTIME
 from tests.support.time import REFERENCE_TIME, FixedClock
 
 
@@ -159,6 +160,7 @@ def _seed_native_codex_home() -> tuple[Path, bytes]:
     return native_home, native_auth
 
 
+@REQUIRES_MANAGED_RUNTIME
 def test_codex_login_migrates_accounts_independently_without_native_copy(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -343,6 +345,7 @@ def test_codex_login_migrates_accounts_independently_without_native_copy(
     }
 
 
+@REQUIRES_MANAGED_RUNTIME
 def test_codex_login_recovers_proven_home_after_interrupted_commit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

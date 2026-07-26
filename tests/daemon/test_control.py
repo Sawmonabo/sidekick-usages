@@ -75,6 +75,7 @@ from tests.fakes.daemon.foundation import (
 )
 from tests.fakes.daemon.runtime import RuntimeClock
 from tests.support.persistence import make_application_paths
+from tests.support.platform import REQUIRES_MANAGED_RUNTIME
 from tests.support.time import REFERENCE_TIME, FixedClock
 
 
@@ -132,6 +133,7 @@ def _assert_reused_operation_follows_current_events(
     )
 
 
+@REQUIRES_MANAGED_RUNTIME
 def test_authenticated_control_stream_frames_completes_and_cancels(
     tmp_path: Path,
 ) -> None:

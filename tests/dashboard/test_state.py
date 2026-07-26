@@ -54,6 +54,7 @@ from tests.fakes.dashboard.state import (
     seed_cached_dashboard,
 )
 from tests.support.persistence import make_application_paths
+from tests.support.platform import REQUIRES_MANAGED_RUNTIME
 
 REFERENCE_TIME = datetime(2026, 7, 25, 14, tzinfo=UTC)
 OBSERVED_AT = REFERENCE_TIME - timedelta(hours=2)
@@ -141,6 +142,7 @@ def test_cached_dashboard_joins_stable_ids_without_credentials(
     assert VALID_PROVIDER_IDENTITY not in rendered
 
 
+@REQUIRES_MANAGED_RUNTIME
 def test_dashboard_controller_journey_preserves_verified_truth(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -1,5 +1,6 @@
 """Synthetic provider capability evidence for daemon and Doctor tests."""
 
+import sys
 from pathlib import Path
 
 from sidekick_usages.core.types import ProviderId
@@ -27,6 +28,8 @@ from sidekick_usages.providers.codex.app_server.types import (
     CodexAppServerFailure,
 )
 
+_SYNTHETIC_EXECUTABLE_ROOT = Path(sys.executable).resolve().parent
+
 
 def make_provider_capability_report(
     *,
@@ -35,7 +38,7 @@ def make_provider_capability_report(
     """Return deterministic secret-free provider capability evidence."""
     claude_executable = ClaudeExecutable(
         ExecutableProvenance(
-            Path("/opt/sidekick-test/bin/claude"),
+            _SYNTHETIC_EXECUTABLE_ROOT / "claude",
             10,
             11,
             12,
@@ -45,7 +48,7 @@ def make_provider_capability_report(
     )
     codex_executable = CodexExecutable(
         ExecutableProvenance(
-            Path("/opt/sidekick-test/bin/codex"),
+            _SYNTHETIC_EXECUTABLE_ROOT / "codex",
             20,
             21,
             22,

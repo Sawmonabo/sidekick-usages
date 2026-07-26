@@ -67,6 +67,11 @@ from tests.support.persistence import (
     make_account_store,
     make_application_paths,
 )
+from tests.support.platform import (
+    MANAGED_RUNTIME_REASON,
+    MANAGED_RUNTIME_SUPPORTED,
+    REQUIRES_MANAGED_RUNTIME,
+)
 from tests.support.time import REFERENCE_TIME, FixedClock
 
 _OWNER_FILE_MODE = 0o600
@@ -237,7 +242,7 @@ def _platform(
     return PlatformInfo(
         system=system,
         home=tmp_path,
-        uid=os.geteuid(),
+        uid=tmp_path.parent.stat().st_uid,
         user_name="sidekick-user",
         is_wsl=is_wsl,
         wsl_distro="Sidekick-Distro" if is_wsl else None,
@@ -387,6 +392,11 @@ def test_service_artifacts_are_user_scoped_resident_and_secret_free(
     backend_id: ServiceBackendId,
 ) -> None:
     """Each supported OS gets one exact resident-service contract."""
+    if (
+        not MANAGED_RUNTIME_SUPPORTED
+        and backend_id is not ServiceBackendId.FEATURE_DISABLED
+    ):
+        pytest.skip(MANAGED_RUNTIME_REASON)
     home = tmp_path / "home"
     paths = replace(
         make_application_paths(tmp_path / "state"),
@@ -566,6 +576,7 @@ def test_service_artifacts_are_user_scoped_resident_and_secret_free(
         _exercise_wsl_health_failures(backend, manager, runner, paths)
 
 
+@REQUIRES_MANAGED_RUNTIME
 def test_lifecycle_is_idempotent_cancellable_and_preserves_user_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -35,6 +35,7 @@ from tests.fakes.dashboard.runtime import (
     interactive_terminal,
     redirected_terminal,
 )
+from tests.support.platform import MANAGED_RUNTIME_SUPPORTED
 
 REFERENCE_TIME = datetime(2026, 7, 25, 14, tzinfo=UTC)
 ONE_SHOT_ROUTE_COUNT = 3
@@ -158,15 +159,23 @@ def test_cli_routes_one_cached_frame_before_isolated_interaction(
 
     cancellation = exercise_lookup_worker_cancellation(monkeypatch)
     canceled = UsageLookupWorkerResult((), UsageLookupFailure.CANCELED)
+    active_result = (
+        canceled
+        if MANAGED_RUNTIME_SUPPORTED
+        else UsageLookupWorkerResult(
+            (),
+            UsageLookupFailure.FEATURE_DISABLED,
+        )
+    )
     assert cancellation == LookupCancellationProof(
         before_start_joined=True,
         before_start_results=(canceled,),
         before_start_process_count=0,
-        worker_started=True,
+        worker_started=MANAGED_RUNTIME_SUPPORTED,
         active_joined=True,
-        active_results=(canceled,),
-        active_process_count=1,
-        active_reaped=True,
+        active_results=(active_result,),
+        active_process_count=int(MANAGED_RUNTIME_SUPPORTED),
+        active_reaped=MANAGED_RUNTIME_SUPPORTED,
     )
 
     one_shot = OneShotRecorder()

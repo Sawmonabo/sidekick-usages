@@ -2,7 +2,6 @@
 
 import json
 import os
-import sys
 from pathlib import Path
 
 import pytest
@@ -45,11 +44,9 @@ from tests.fakes.codex.app_server.executable import (
 )
 from tests.fakes.codex.app_server.schema import write_codex_schema
 from tests.fakes.codex.auth import managed_auth
+from tests.support.platform import REQUIRES_MANAGED_RUNTIME
 
-pytestmark = pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="Managed Codex runtimes require Linux, WSL, or macOS.",
-)
+pytestmark = REQUIRES_MANAGED_RUNTIME
 
 SCHEMA_HASH_HEX_LENGTH = 64
 _CAPABILITY_EXECUTABLE_VERIFICATIONS = 2

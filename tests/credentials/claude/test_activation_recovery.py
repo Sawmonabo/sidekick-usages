@@ -31,7 +31,9 @@ from tests.fakes.claude.activation import (
     claude_recovery_scenario,
 )
 from tests.fakes.claude.managed import use_synthetic_claude
+from tests.support.platform import REQUIRES_MANAGED_RUNTIME
 
+pytestmark = REQUIRES_MANAGED_RUNTIME
 _EXPECTED_NATIVE_LOGINS = 2
 
 

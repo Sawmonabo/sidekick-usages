@@ -32,6 +32,7 @@ from tests.fakes.daemon.foundation import (
     selected,
 )
 from tests.fakes.daemon.runtime import (
+    SYNTHETIC_WORKER_EXECUTABLE,
     FakeWorkerLauncher,
     RuntimeClock,
     foundation_runtime,
@@ -187,7 +188,7 @@ def test_supervisor_isolates_timeout_and_recovers_without_duplicate_work(
     assert len(launcher.specs) == EXPECTED_WORKER_COUNT
     for spec in launcher.specs:
         assert spec.argv == (
-            "/opt/sidekick/bin/sidekick-usages-worker",
+            str(SYNTHETIC_WORKER_EXECUTABLE),
             str(spec.operation_id),
         )
         assert spec.environment_map() == {

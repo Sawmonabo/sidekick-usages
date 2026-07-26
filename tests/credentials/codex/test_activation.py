@@ -1,6 +1,5 @@
 """Load-bearing managed Codex activation tests."""
 
-import sys
 from pathlib import Path
 
 import pytest
@@ -58,12 +57,10 @@ from tests.fakes.codex.broker.runtime import (
     wait_for_external_selection,
 )
 from tests.fakes.codex.broker.supervisor import FakeCodexSupervisor
+from tests.support.platform import REQUIRES_MANAGED_RUNTIME
 from tests.support.time import REFERENCE_TIME
 
-pytestmark = pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="Managed Codex runtimes require Linux, WSL, or macOS.",
-)
+pytestmark = REQUIRES_MANAGED_RUNTIME
 
 _CLAUDE_ACCOUNT_ID = SidekickAccountId("55555555-5555-4555-8555-555555555555")
 _FIRST_ACTIVATION_ID = OperationId("88888888-8888-4888-8888-888888888888")

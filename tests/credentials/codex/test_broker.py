@@ -1,7 +1,6 @@
 """Load-bearing tests for the versioned managed Codex runtime."""
 
 import os
-import sys
 import time
 from pathlib import Path
 
@@ -63,12 +62,10 @@ from tests.fakes.codex.managed import (
     managed_saved_account,
     seed_managed_accounts,
 )
+from tests.support.platform import REQUIRES_MANAGED_RUNTIME
 from tests.support.time import REFERENCE_TIME, FixedClock
 
-pytestmark = pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="Managed Codex runtimes require Linux, WSL, or macOS.",
-)
+pytestmark = REQUIRES_MANAGED_RUNTIME
 
 _MAINTENANCE_OPERATION_ID = OperationId("77777777-7777-4777-8777-777777777777")
 _IDLE_BROKER_OBSERVATION_SECONDS = 0.6
