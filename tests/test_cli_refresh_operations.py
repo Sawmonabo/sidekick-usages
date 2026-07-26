@@ -19,7 +19,7 @@ from sidekick_usages.providers.base import (
     ProviderFailure,
     ProviderFailureKind,
 )
-from tests.fakes.credentials import (
+from tests.fakes.credentials.provider import (
     FakeCredentialProvider,
     claude_login_account,
     detected_setup_token,

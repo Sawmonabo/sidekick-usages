@@ -115,9 +115,7 @@ def test_provider_secret_never_crosses_persisted_or_doctor_error_channels(
             store.path,
             1,
         ),
-        refresh_state=CredentialRefreshState(
-            CredentialRefreshStateKind.CLEAN
-        ),
+        refresh_state=CredentialRefreshState(CredentialRefreshStateKind.CLEAN),
         supervisor=make_supervisor_health(),
         capabilities=capabilities,
     )

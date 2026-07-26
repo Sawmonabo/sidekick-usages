@@ -48,7 +48,7 @@ from tests.fakes.codex.executable import (
 from tests.fakes.codex.managed import managed_subscription
 from tests.fakes.codex.models import FakeCodexLogin
 from tests.fakes.codex.schema import write_codex_schema
-from tests.fakes.credentials import install_cli_context
+from tests.fakes.credentials.provider import install_cli_context
 from tests.support.persistence import make_application_paths
 from tests.support.time import REFERENCE_TIME, FixedClock
 
