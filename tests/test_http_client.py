@@ -106,7 +106,8 @@ def _install_manager(
     manager: _Manager,
 ) -> None:
     """Route one constructed client through a test-owned transport."""
-    monkeypatch.setattr(client, "_manager_for", lambda _url: manager)
+    monkeypatch.setattr(client, "_acquire_manager", lambda _url: manager)
+    monkeypatch.setattr(client, "_release_manager", lambda: None)
 
 
 def test_client_enforces_boundary_and_preserves_reusable_connection(

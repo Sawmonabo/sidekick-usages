@@ -1,15 +1,14 @@
 """Load-bearing behavior tests for typed usage orchestration."""
 
 import re
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
+from threading import Barrier, Event
 
 import pytest
 
-from sidekick_usages.core.accounts.models import SavedAccount
-from sidekick_usages.core.accounts.types import SidekickAccountId
 from sidekick_usages.core.expiry import (
     Expiry,
     KnownExpiry,
@@ -19,7 +18,6 @@ from sidekick_usages.core.models import (
     Account,
     ClaudeLoginCredentials,
     CodexCredentials,
-    Credentials,
     UsageReport,
     UsageWindow,
 )
@@ -30,15 +28,8 @@ from sidekick_usages.core.types import (
     RefreshStatus,
 )
 from sidekick_usages.credentials.authorities import (
-    CredentialResolver,
+    AuthorizedCredentialResolver,
 )
-from sidekick_usages.credentials.models import (
-    CredentialRefreshResult,
-    CredentialRefreshSuccess,
-    CredentialUpdateResult,
-    CredentialUpdateSuccess,
-)
-from sidekick_usages.credentials.refresh import CredentialRefreshReason
 from sidekick_usages.errors import (
     AuthError,
     ForbiddenError,
@@ -51,7 +42,6 @@ from sidekick_usages.maintenance import (
     CredentialRefresher,
     TokenMaintenanceService,
 )
-from sidekick_usages.persistence.accounts.store import AccountStore
 from sidekick_usages.persistence.errors import (
     PersistenceCode,
     PersistenceError,
@@ -65,6 +55,8 @@ from sidekick_usages.providers.base import (
     ProviderFailureKind,
     RefreshResult,
 )
+from sidekick_usages.usage.lookup.models import AccountLookupCompletion
+from sidekick_usages.usage.lookup.service import AccountCredentialAccess
 from sidekick_usages.usage.models import (
     AccountUsage,
     FetchFailureKind,
@@ -77,9 +69,11 @@ from sidekick_usages.usage.models import (
     TransientFailure,
     UnknownProviderFailure,
 )
-from sidekick_usages.usage.service import (
-    CredentialCoordinator,
-    UsageCheckService,
+from sidekick_usages.usage.service import UsageCheckService
+from tests.fakes.usage import (
+    InMemoryAccountStore,
+    InMemoryOperationLocks,
+    ScriptedCredentialCoordinator,
 )
 from tests.test_support import (
     REFERENCE_TIME,
@@ -89,117 +83,11 @@ from tests.test_support import (
 )
 
 type FetchStep = UsageReport | UsageError
+type FetchGate = Callable[[Account], None]
 
 _RETRY_AFTER_SECONDS = 17
-
-
-def _copy_account(account: Account) -> Account:
-    """Return an independent mutable account for the test boundary."""
-    resets = account.heartbeat_window_resets
-    return replace(
-        account,
-        heartbeat_window_resets=(
-            dict(resets.items()) if resets is not None else None
-        ),
-    )
-
-
-class InMemoryAccountStore(AccountStore):
-    """Small AccountStore test double preserving its public contract."""
-
-    def __init__(
-        self,
-        accounts: tuple[Account, ...],
-        *,
-        persist_error: PersistenceError | None = None,
-    ) -> None:
-        self._saved = {
-            str(account.label): _copy_account(account) for account in accounts
-        }
-        self.persist_error = persist_error
-        self.persisted: list[Account] = []
-        self.iterations = 0
-        self.filters: list[ProviderId] = []
-
-    def __iter__(self) -> Iterator[Account]:
-        self.iterations += 1
-        return iter(tuple(_copy_account(a) for a in self._saved.values()))
-
-    def filter_by_provider(self, provider_id: ProviderId) -> list[Account]:
-        self.filters.append(provider_id)
-        return [
-            _copy_account(account)
-            for account in self._saved.values()
-            if account.provider_id is provider_id
-        ]
-
-    def get(
-        self,
-        label: str,
-        *,
-        provider_id: ProviderId | None = None,
-    ) -> Account | None:
-        account = self._saved.get(label)
-        if account is None or (
-            provider_id is not None and account.provider_id is not provider_id
-        ):
-            return None
-        return _copy_account(account)
-
-    def persist(self, account: Account) -> None:
-        if self.persist_error is not None:
-            raise self.persist_error
-        saved = _copy_account(account)
-        self._saved[str(saved.label)] = saved
-        self.persisted.append(_copy_account(saved))
-
-    def saved_accounts(
-        self,
-        provider_id: ProviderId | None = None,
-    ) -> tuple[SavedAccount, ...]:
-        """Return stable synthetic metadata for resolver-bound scenarios."""
-        if provider_id is not None:
-            self.filters.append(provider_id)
-        return tuple(
-            saved_account(account)
-            for account in self._saved.values()
-            if provider_id is None or account.provider_id is provider_id
-        )
-
-    def read_saved(
-        self,
-        account_id: SidekickAccountId,
-    ) -> SavedAccount | None:
-        """Return one stable account by exact synthetic ID."""
-        return next(
-            (
-                account
-                for account in self.saved_accounts()
-                if account.account_id == account_id
-            ),
-            None,
-        )
-
-    def persist_state(
-        self,
-        account: SavedAccount,
-        *,
-        expected: SavedAccount | None = None,
-    ) -> None:
-        """Persist only non-secret state against the expected snapshot."""
-        current = self.read_saved(account.account_id)
-        if expected is not None and current != expected:
-            raise AssertionError("Synthetic account state changed.")
-        runtime = self._saved[str(account.label)]
-        runtime.plan = account.plan
-        runtime.last_refresh_at = account.last_refresh_at
-        runtime.last_refresh_status = account.last_refresh_status
-        runtime.last_refresh_error = account.last_refresh_error_code
-        self.persisted.append(_copy_account(runtime))
-
-    def saved(self, label: str) -> Account:
-        """Return one independent durable account for assertions."""
-        return _copy_account(self._saved[label])
+_CONCURRENCY_TIMEOUT_SECONDS = 5.0
+_EXPECTED_LEASE_EVENTS = 4
 
 
 class ScriptedProvider(Provider):
@@ -213,11 +101,13 @@ class ScriptedProvider(Provider):
         provider_id: ProviderId,
         fetch_steps: dict[str, list[FetchStep]],
         *,
-        account_id_on_fetch: str | None = None,
+        account_ids_on_fetch: dict[str, str] | None = None,
+        fetch_gate: FetchGate | None = None,
     ) -> None:
         self.id = provider_id
         self.fetch_steps = fetch_steps
-        self.account_id_on_fetch = account_id_on_fetch
+        self.account_ids_on_fetch = account_ids_on_fetch or {}
+        self.fetch_gate = fetch_gate
         self.events: list[str] = []
         self.fetch_tokens: list[str] = []
         self.fetch_scopes: list[tuple[str, ...] | None] = []
@@ -248,16 +138,18 @@ class ScriptedProvider(Provider):
     ) -> UsageReport:
         del http
         label = str(account.label)
+        if self.fetch_gate is not None:
+            self.fetch_gate(account)
         self.events.append(f"fetch:{label}")
         self.fetch_tokens.append(account.access_token)
         self.fetch_scopes.append(account.scopes)
-        if self.account_id_on_fetch is not None:
+        if label in self.account_ids_on_fetch:
             credentials = account.credentials
             if not isinstance(credentials, CodexCredentials):
                 raise AssertionError("Account-id mutation requires Codex.")
             account.credentials = replace(
                 credentials,
-                account_id=self.account_id_on_fetch,
+                account_id=self.account_ids_on_fetch[label],
             )
         step = self.fetch_steps[label].pop(0)
         if isinstance(step, UsageError):
@@ -273,79 +165,6 @@ class ScriptedProvider(Provider):
         raise AssertionError(
             "Usage orchestration must refresh through CredentialRefresher."
         )
-
-
-class ScriptedCredentialCoordinator(CredentialRefresher):
-    """Script the already-coordinated credential-service boundary."""
-
-    def __init__(
-        self,
-        store: InMemoryAccountStore,
-        steps: tuple[CredentialRefreshResult | UsageError, ...] = (),
-    ) -> None:
-        self.store = store
-        self.steps = list(steps)
-        self.calls: list[str] = []
-
-    def refresh(
-        self,
-        *,
-        provider_id: ProviderId,
-        label: AccountLabel,
-        reason: CredentialRefreshReason,
-    ) -> CredentialRefreshResult:
-        del reason
-        account = self.store.get(str(label))
-        if account is None or account.provider_id is not provider_id:
-            raise AssertionError("Scripted refresh target disappeared.")
-        self.calls.append(str(label))
-        step = (
-            self.steps.pop(0)
-            if self.steps
-            else CredentialRefreshSuccess(account.label)
-        )
-        if isinstance(step, UsageError):
-            raise step
-        if isinstance(step, ProviderFailure):
-            return step
-        saved = _copy_account(account)
-        credentials = saved.credentials
-        access_token = f"test-only-{account.label}-refreshed"
-        if isinstance(credentials, ClaudeLoginCredentials):
-            saved.credentials = replace(
-                credentials,
-                access_token=access_token,
-                access_expiry=KnownExpiry(REFERENCE_TIME + timedelta(hours=1)),
-            )
-        elif isinstance(credentials, CodexCredentials):
-            saved.credentials = replace(
-                credentials,
-                access_token=access_token,
-                expiry=KnownExpiry(REFERENCE_TIME + timedelta(hours=1)),
-            )
-        else:
-            saved.credentials = replace(
-                credentials,
-                access_token=access_token,
-            )
-        self.store.persist(saved)
-        return step
-
-    def persist_provider_update(
-        self,
-        account: Account,
-        *,
-        expected_credentials: Credentials,
-        expected_plan: str,
-    ) -> CredentialUpdateResult:
-        current = self.store.get(str(account.label))
-        assert current is not None
-        assert current.credentials == expected_credentials
-        assert current.plan == expected_plan
-        current.credentials = account.credentials
-        current.plan = account.plan
-        self.store.persist(current)
-        return CredentialUpdateSuccess(account.label)
 
 
 @pytest.fixture
@@ -400,9 +219,10 @@ def _service(
     store: InMemoryAccountStore,
     http: HttpClient,
     *providers: ScriptedProvider,
-    refresher: CredentialCoordinator | None = None,
+    refresher: CredentialRefresher | None = None,
     clock: FixedClock | None = None,
-    resolver: CredentialResolver | None = None,
+    resolver: AuthorizedCredentialResolver | None = None,
+    operation_locks: InMemoryOperationLocks | None = None,
 ) -> UsageCheckService:
     credential_refresher = refresher or ScriptedCredentialCoordinator(store)
     credential_resolver = resolver or RuntimeCredentialResolver(store)
@@ -412,7 +232,14 @@ def _service(
         {provider.id: provider for provider in providers},
         credential_refresher,
         clock=clock or FixedClock(),
-        resolver=credential_resolver,
+        credential_access=AccountCredentialAccess(
+            credential_resolver,
+            (
+                InMemoryOperationLocks()
+                if operation_locks is None
+                else operation_locks
+            ),
+        ),
     )
 
 
@@ -425,12 +252,33 @@ def test_filter_selects_store_accounts_and_returns_immutable_results(
         _account("codex-two", ProviderId.CODEX),
     )
     store = InMemoryAccountStore(accounts)
+    started = Barrier(2)
+    release = Event()
+    blocked_waiting = Event()
+
+    def coordinate(account: Account) -> None:
+        blocked = str(account.label) == "codex-one"
+        if blocked:
+            blocked_waiting.set()
+        started.wait(timeout=_CONCURRENCY_TIMEOUT_SECONDS)
+        if blocked:
+            assert release.wait(_CONCURRENCY_TIMEOUT_SECONDS)
+
     codex = ScriptedProvider(
         ProviderId.CODEX,
         {"codex-one": [_report()], "codex-two": [_report()]},
+        fetch_gate=coordinate,
     )
     clock = FixedClock()
     resolver = RuntimeCredentialResolver(store)
+    operation_locks = InMemoryOperationLocks()
+    completion_order: list[AccountLabel] = []
+
+    def observe(completion: AccountLookupCompletion) -> None:
+        completion_order.append(completion.label)
+        if completion.label == "codex-two":
+            assert blocked_waiting.is_set()
+            release.set()
 
     result = _service(
         store,
@@ -438,24 +286,34 @@ def test_filter_selects_store_accounts_and_returns_immutable_results(
         codex,
         clock=clock,
         resolver=resolver,
-    ).check(ProviderId.CODEX)
+        operation_locks=operation_locks,
+    ).check(ProviderId.CODEX, observe=observe)
 
     assert [usage.label for usage in result.usages] == [
         "codex-one",
         "codex-two",
     ]
+    assert completion_order == ["codex-two", "codex-one"]
     assert result.failures == ()
     assert store.filters == [ProviderId.CODEX]
     assert store.iterations == 0
     assert result.reference_time == REFERENCE_TIME
     assert clock.calls == 1
     assert AccountUsage.__dataclass_params__.frozen is True
-    assert resolver.events == [
+    assert set(resolver.events[:2]) == {
         "open:codex-one",
-        "close:codex-one",
         "open:codex-two",
-        "close:codex-two",
-    ]
+    }
+    assert len(resolver.events) == _EXPECTED_LEASE_EVENTS
+    assert resolver.events.count("open:codex-one") == 1
+    assert resolver.events.count("open:codex-two") == 1
+    assert resolver.events.count("close:codex-one") == 1
+    assert resolver.events.count("close:codex-two") == 1
+    assert set(operation_locks.entries) == {
+        saved_account(accounts[0]).account_id,
+        saved_account(accounts[2]).account_id,
+    }
+    assert len(operation_locks.entries) == len(result.usages)
     assert "test-only-codex-one-access" not in repr(result)
 
 
@@ -752,28 +610,37 @@ def test_operational_refresh_failures_never_become_auth_rejection(
         )
 
 
-def test_plan_and_account_identity_change_in_one_atomic_persist(
+def test_owner_persists_plan_and_rejects_credential_mutation(
     http: HttpClient,
 ) -> None:
-    account = _account(
-        "codex",
+    plan_account = _account(
+        "plan",
         ProviderId.CODEX,
         plan="unknown",
     )
-    store = InMemoryAccountStore((account,))
+    identity_account = _account("identity", ProviderId.CODEX)
+    store = InMemoryAccountStore((plan_account, identity_account))
     provider = ScriptedProvider(
         ProviderId.CODEX,
-        {"codex": [_report(plan="pro")]},
-        account_id_on_fetch="acct_discovered",
+        {
+            "plan": [_report(plan="pro")],
+            "identity": [_report()],
+        },
+        account_ids_on_fetch={"identity": "acct_discovered"},
     )
 
     result = _service(store, http, provider).check()
 
     assert result.usages[0].plan == "pro"
+    assert isinstance(result.failures[0], ProviderPayloadFailure)
+    assert (
+        result.failures[0].provider_failure.kind
+        is ProviderFailureKind.IDENTITY_MISMATCH
+    )
     assert len(store.persisted) == 1
-    saved = store.saved("codex")
+    saved = store.saved("plan")
     assert saved.plan == "pro"
-    assert saved.provider_account_id == "acct_discovered"
+    assert store.saved("identity").provider_account_id == "acct_identity"
 
 
 def test_persistence_failure_cannot_be_presented_as_successful_usage(

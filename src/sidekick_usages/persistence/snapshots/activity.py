@@ -21,6 +21,7 @@ from sidekick_usages.persistence.schema.activity import (
     ACTIVITY_SCHEMA_VERSION,
     ActivitySnapshotDecodeError,
     ActivitySnapshotDocument,
+    ActivitySnapshotRecord,
     account_activity_snapshot,
     activity_record,
     decode_activity_snapshot_document,
@@ -76,6 +77,47 @@ def _merge(
     return replace(incoming, summary=summary)
 
 
+def _snapshot(
+    document: ActivitySnapshotDocument,
+    account: SavedAccount,
+    provider_account_id: str,
+) -> AccountTokenActivitySnapshot | None:
+    """Read one account snapshot from an already-decoded document."""
+    record = document.accounts.get(
+        str(_identity_key(account.provider_id, provider_account_id))
+    )
+    return (
+        None
+        if record is None
+        else account_activity_snapshot(provider_account_id, record)
+    )
+
+
+def _merge_snapshot(
+    accounts: dict[str, ActivitySnapshotRecord],
+    snapshot: AccountTokenActivitySnapshot,
+) -> AccountTokenActivitySnapshot:
+    """Merge one observation into an already-decoded activity document."""
+    key = str(
+        _identity_key(
+            snapshot.provider_id,
+            snapshot.provider_account_id,
+        )
+    )
+    current_record = accounts.get(key)
+    current = (
+        None
+        if current_record is None
+        else account_activity_snapshot(
+            snapshot.provider_account_id,
+            current_record,
+        )
+    )
+    effective = _merge(current, snapshot)
+    accounts[key] = activity_record(effective)
+    return effective
+
+
 class ActivitySnapshotStore:
     """Persist last successful account activity under stable identity."""
 
@@ -98,12 +140,7 @@ class ActivitySnapshotStore:
         account: SavedAccount,
     ) -> AccountTokenActivitySnapshot | None:
         """Load one exact account snapshot without mutation."""
-        document = self._load_document()
-        return (
-            None
-            if document is None
-            else self._account_snapshot(document, account)
-        )
+        return self.load_many((account,)).get(account.account_id)
 
     def load_all(
         self,
@@ -126,10 +163,22 @@ class ActivitySnapshotStore:
             ]
         ] = []
         for account in accounts:
-            snapshot = self._account_snapshot(document, account)
+            provider_account_id = self._account_id(account)
+            snapshot = (
+                None
+                if provider_account_id is None
+                else _snapshot(document, account, provider_account_id)
+            )
             if snapshot is not None:
                 snapshots.append((account.account_id, snapshot))
         return tuple(snapshots)
+
+    def load_many(
+        self,
+        accounts: tuple[SavedAccount, ...],
+    ) -> dict[SidekickAccountId, AccountTokenActivitySnapshot]:
+        """Load exact account snapshots through one document decode."""
+        return dict(self.load_all(accounts))
 
     def _load_document(self) -> ActivitySnapshotDocument | None:
         try:
@@ -140,34 +189,20 @@ class ActivitySnapshotStore:
             ) from None
         return None if observed is None else _decode(observed.data)
 
-    @classmethod
-    def _account_snapshot(
-        cls,
-        document: ActivitySnapshotDocument,
-        account: SavedAccount,
-    ) -> AccountTokenActivitySnapshot | None:
-        if (account_id := cls._account_id(account)) is None:
-            return None
-        record = document.accounts.get(
-            str(_identity_key(account.provider_id, account_id))
-        )
-        return (
-            None
-            if record is None
-            else account_activity_snapshot(account_id, record)
-        )
-
     def save(
         self,
         snapshot: AccountTokenActivitySnapshot,
     ) -> AccountTokenActivitySnapshot:
         """Merge and durably commit one authoritative account snapshot."""
-        key = str(
-            _identity_key(
-                snapshot.provider_id,
-                snapshot.provider_account_id,
-            )
-        )
+        return self.save_many((snapshot,))[0]
+
+    def save_many(
+        self,
+        snapshots: tuple[AccountTokenActivitySnapshot, ...],
+    ) -> tuple[AccountTokenActivitySnapshot, ...]:
+        """Merge observations through one decode and at most one commit."""
+        if not snapshots:
+            return ()
         try:
             with self._lock.hold():
                 observed = self._filesystem.read_opaque_private()
@@ -180,31 +215,23 @@ class ActivitySnapshotStore:
                 else:
                     document = _decode(observed.data)
                     expected = observed.fingerprint
-                current_record = document.accounts.get(key)
-                current = (
-                    None
-                    if current_record is None
-                    else account_activity_snapshot(
-                        snapshot.provider_account_id,
-                        current_record,
+                accounts = dict(document.accounts)
+                effective: list[AccountTokenActivitySnapshot] = []
+                for snapshot in snapshots:
+                    effective.append(_merge_snapshot(accounts, snapshot))
+                payload = encode_activity_snapshot_document(
+                    ActivitySnapshotDocument(
+                        schema_version=ACTIVITY_SCHEMA_VERSION,
+                        accounts=accounts,
                     )
                 )
-                effective = _merge(current, snapshot)
-                updated = ActivitySnapshotDocument(
-                    schema_version=ACTIVITY_SCHEMA_VERSION,
-                    accounts={
-                        **document.accounts,
-                        key: activity_record(effective),
-                    },
-                )
-                payload = encode_activity_snapshot_document(updated)
                 if observed is not None and observed.data == payload:
-                    return effective
+                    return tuple(effective)
                 self._filesystem.commit_opaque_private(
                     payload,
                     expected_source=expected,
                 )
-                return effective
+                return tuple(effective)
         except ActivitySnapshotError:
             raise
         except PersistenceError:

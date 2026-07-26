@@ -81,6 +81,10 @@ from sidekick_usages.persistence.private.credentials import (
 from sidekick_usages.persistence.supervisor.activation import (
     ActivationJournalStore,
 )
+from sidekick_usages.persistence.supervisor.authority import (
+    OperationAuthority,
+    OperationAuthorityLocks,
+)
 from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
 from sidekick_usages.persistence.supervisor.selection import (
     SelectedStateStore,
@@ -98,6 +102,7 @@ from sidekick_usages.usage.activity import (
     AccountTokenActivitySource,
     LocalTokenActivitySource,
 )
+from sidekick_usages.usage.lookup.service import AccountCredentialAccess
 from sidekick_usages.usage.service import UsageCheckService
 
 REFERENCE_TIME = datetime(2026, 6, 12, 12, 34, 56, 789000, tzinfo=UTC)
@@ -163,6 +168,15 @@ class RuntimeCredentialResolver:
         account: SavedAccount,
     ) -> AbstractContextManager[AuthenticatedSavedAccount]:
         """Return one unopened synthetic credential lease."""
+        return self._open(account)
+
+    def open_authorized(
+        self,
+        account: SavedAccount,
+        authority: OperationAuthority,
+    ) -> AbstractContextManager[AuthenticatedSavedAccount]:
+        """Return a lease under the synthetic lookup's held authority."""
+        authority.require(account.account_id)
         return self._open(account)
 
     @contextmanager
@@ -347,9 +361,12 @@ def make_app_context(
             providers,
             credential_service,
             clock=clock,
+            credential_access=AccountCredentialAccess(
+                resolver,
+                OperationAuthorityLocks(paths.durable_operations),
+            ),
             local_activity_sources=local_activity_sources,
             account_activity_sources=account_activity_sources,
-            resolver=resolver,
         ),
         credentials=credential_service,
         lifecycle=AccountLifecycleCoordinator(

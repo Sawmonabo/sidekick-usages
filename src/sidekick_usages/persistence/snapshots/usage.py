@@ -122,6 +122,85 @@ def _matches_promotion(
     )
 
 
+def _snapshot(
+    document: UsageSnapshotDocument,
+    account: SavedAccount,
+) -> AccountUsageSnapshot | None:
+    """Read one exact account snapshot from an already-decoded document."""
+    key = str(account.account_id)
+    record = document.accounts.get(key)
+    if record is None:
+        return None
+    snapshot = account_usage_snapshot(account.account_id, record)
+    if snapshot.provider_id is not account.provider_id:
+        raise UsageSnapshotError(UsageSnapshotFailureKind.CONFLICT)
+    promotion = document.identity_promotions.get(key)
+    if promotion is None:
+        if snapshot.provider_identity != account.provider_identity:
+            raise UsageSnapshotError(UsageSnapshotFailureKind.CONFLICT)
+        return snapshot
+    source_identity, target_identity = _promotion_identities(promotion)
+    if ProviderId(
+        promotion.provider_id
+    ) is not account.provider_id or account.provider_identity not in {
+        source_identity,
+        target_identity,
+    }:
+        raise UsageSnapshotError(UsageSnapshotFailureKind.CONFLICT)
+    return replace(
+        snapshot,
+        provider_identity=account.provider_identity,
+    )
+
+
+def _merge_snapshot(
+    accounts: dict[str, UsageSnapshotRecord],
+    promotions: dict[str, UsageIdentityPromotionRecord],
+    snapshot: AccountUsageSnapshot,
+) -> AccountUsageSnapshot:
+    """Merge one observation into an already-decoded usage document."""
+    key = str(snapshot.account_id)
+    current_record = accounts.get(key)
+    current = (
+        None
+        if current_record is None
+        else account_usage_snapshot(
+            snapshot.account_id,
+            current_record,
+        )
+    )
+    pending = promotions.get(key)
+    incoming = snapshot
+    if pending is not None:
+        source_identity, target_identity = _promotion_identities(pending)
+        if incoming.provider_id is not ProviderId(
+            pending.provider_id
+        ) or incoming.provider_identity not in {
+            source_identity,
+            target_identity,
+        }:
+            raise UsageSnapshotError(UsageSnapshotFailureKind.CONFLICT)
+        if (
+            current is not None
+            and current.provider_identity == target_identity
+            and incoming.provider_identity == source_identity
+        ):
+            incoming = replace(
+                incoming,
+                provider_identity=target_identity,
+            )
+        elif incoming.provider_identity == target_identity:
+            if current is not None:
+                current = replace(
+                    current,
+                    provider_identity=target_identity,
+                )
+            promotions.pop(key)
+    effective = _merge(current, incoming)
+    accounts[key] = usage_record(effective)
+    return effective
+
+
 def _begun_promotions(
     document: UsageSnapshotDocument,
     key: str,
@@ -167,12 +246,7 @@ class UsageSnapshotStore:
 
     def load(self, account: SavedAccount) -> AccountUsageSnapshot | None:
         """Load one exact account snapshot without mutation."""
-        document = self._load_document()
-        return (
-            None
-            if document is None
-            else self._account_snapshot(document, account)
-        )
+        return self.load_many((account,)).get(account.account_id)
 
     def load_all(
         self,
@@ -189,7 +263,7 @@ class UsageSnapshotStore:
         conflicts: list[SidekickAccountId] = []
         for account in accounts:
             try:
-                snapshot = self._account_snapshot(document, account)
+                snapshot = _snapshot(document, account)
             except UsageSnapshotError as error:
                 if error.kind is not UsageSnapshotFailureKind.CONFLICT:
                     raise
@@ -199,6 +273,16 @@ class UsageSnapshotStore:
                 snapshots.append(snapshot)
         return tuple(snapshots), tuple(conflicts)
 
+    def load_many(
+        self,
+        accounts: tuple[SavedAccount, ...],
+    ) -> dict[SidekickAccountId, AccountUsageSnapshot]:
+        """Load exact account snapshots through one document decode."""
+        snapshots, conflicts = self.load_all(accounts)
+        if conflicts:
+            raise UsageSnapshotError(UsageSnapshotFailureKind.CONFLICT)
+        return {snapshot.account_id: snapshot for snapshot in snapshots}
+
     def _load_document(self) -> UsageSnapshotDocument | None:
         try:
             observed = self._filesystem.read_opaque_private()
@@ -206,41 +290,20 @@ class UsageSnapshotStore:
             raise UsageSnapshotError(UsageSnapshotFailureKind.READ) from None
         return None if observed is None else _decode(observed.data)
 
-    @staticmethod
-    def _account_snapshot(
-        document: UsageSnapshotDocument,
-        account: SavedAccount,
-    ) -> AccountUsageSnapshot | None:
-        record = document.accounts.get(str(account.account_id))
-        if record is None:
-            return None
-        snapshot = account_usage_snapshot(account.account_id, record)
-        if snapshot.provider_id is not account.provider_id:
-            raise UsageSnapshotError(UsageSnapshotFailureKind.CONFLICT)
-        promotion = document.identity_promotions.get(str(account.account_id))
-        if promotion is None:
-            if snapshot.provider_identity != account.provider_identity:
-                raise UsageSnapshotError(UsageSnapshotFailureKind.CONFLICT)
-            return snapshot
-        source_identity, target_identity = _promotion_identities(promotion)
-        if ProviderId(
-            promotion.provider_id
-        ) is not account.provider_id or account.provider_identity not in {
-            source_identity,
-            target_identity,
-        }:
-            raise UsageSnapshotError(UsageSnapshotFailureKind.CONFLICT)
-        return replace(
-            snapshot,
-            provider_identity=account.provider_identity,
-        )
-
     def save(
         self,
         snapshot: AccountUsageSnapshot,
     ) -> AccountUsageSnapshot:
         """Merge and durably commit one successful usage snapshot."""
-        key = str(snapshot.account_id)
+        return self.save_many((snapshot,))[0]
+
+    def save_many(
+        self,
+        snapshots: tuple[AccountUsageSnapshot, ...],
+    ) -> tuple[AccountUsageSnapshot, ...]:
+        """Merge observations through one decode and at most one commit."""
+        if not snapshots:
+            return ()
         try:
             with self._lock.hold():
                 observed = self._filesystem.read_opaque_private()
@@ -250,63 +313,27 @@ class UsageSnapshotStore:
                 else:
                     document = _decode(observed.data)
                     expected = observed.fingerprint
-                current_record = document.accounts.get(key)
-                current = (
-                    None
-                    if current_record is None
-                    else account_usage_snapshot(
-                        snapshot.account_id,
-                        current_record,
-                    )
-                )
+                accounts = dict(document.accounts)
                 promotions = dict(document.identity_promotions)
-                pending = promotions.get(key)
-                incoming = snapshot
-                if pending is not None:
-                    source_identity, target_identity = _promotion_identities(
-                        pending
+                effective: list[AccountUsageSnapshot] = []
+                for snapshot in snapshots:
+                    effective.append(
+                        _merge_snapshot(
+                            accounts,
+                            promotions,
+                            snapshot,
+                        )
                     )
-                    if incoming.provider_id is not ProviderId(
-                        pending.provider_id
-                    ) or incoming.provider_identity not in {
-                        source_identity,
-                        target_identity,
-                    }:
-                        raise UsageSnapshotError(
-                            UsageSnapshotFailureKind.CONFLICT
-                        )
-                    if (
-                        current is not None
-                        and current.provider_identity == target_identity
-                        and incoming.provider_identity == source_identity
-                    ):
-                        incoming = replace(
-                            incoming,
-                            provider_identity=target_identity,
-                        )
-                    elif incoming.provider_identity == target_identity:
-                        if current is not None:
-                            current = replace(
-                                current,
-                                provider_identity=target_identity,
-                            )
-                        promotions.pop(key)
-                effective = _merge(current, incoming)
-                updated = _document(
-                    {
-                        **document.accounts,
-                        key: usage_record(effective),
-                    },
-                    promotions,
+                payload = encode_usage_snapshot_document(
+                    _document(accounts, promotions)
                 )
-                payload = encode_usage_snapshot_document(updated)
                 if observed is not None and observed.data == payload:
-                    return effective
+                    return tuple(effective)
                 self._filesystem.commit_opaque_private(
                     payload,
                     expected_source=expected,
                 )
-                return effective
+                return tuple(effective)
         except UsageSnapshotError:
             raise
         except PersistenceError:

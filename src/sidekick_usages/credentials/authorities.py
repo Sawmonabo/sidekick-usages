@@ -37,10 +37,13 @@ from sidekick_usages.persistence.models.credential import (
 from sidekick_usages.persistence.private.credentials import (
     PrivateCredentialTree,
 )
+from sidekick_usages.persistence.supervisor.authority import (
+    OperationAuthority,
+)
 
 type AuthenticatedSavedAccount = AuthenticatedAccount[CredentialLease]
 type CredentialLeaseFactory = Callable[
-    [SavedAccount],
+    [SavedAccount, OperationAuthority],
     AbstractContextManager[AuthenticatedSavedAccount],
 ]
 
@@ -156,6 +159,17 @@ class CredentialResolver(Protocol):
         account: SavedAccount,
     ) -> AbstractContextManager[AuthenticatedSavedAccount]:
         """Return one unopened authenticated-account context."""
+
+
+class AuthorizedCredentialResolver(Protocol):
+    """Open credentials under an exact held account-operation authority."""
+
+    def open_authorized(
+        self,
+        account: SavedAccount,
+        authority: OperationAuthority,
+    ) -> AbstractContextManager[AuthenticatedSavedAccount]:
+        """Return one unopened authority-bound account context."""
 
 
 class SavedAccountSource(Protocol):
@@ -325,10 +339,21 @@ class AuthenticatedAccountResolver:
     ) -> AbstractContextManager[AuthenticatedSavedAccount]:
         """Return an unopened context for one exact saved account."""
         if account.has_managed_authority:
+            raise ManagedCredentialAuthorityError
+        return self._open(account)
+
+    def open_authorized(
+        self,
+        account: SavedAccount,
+        authority: OperationAuthority,
+    ) -> AbstractContextManager[AuthenticatedSavedAccount]:
+        """Resolve one account through the exact held operation authority."""
+        authority.require(account.account_id)
+        if account.has_managed_authority:
             factory = self._managed_factories.get(account.provider_id)
             if factory is None:
                 raise ManagedCredentialAuthorityError
-            return factory(account)
+            return factory(account, authority)
         return self._open(account)
 
     @contextmanager
@@ -356,7 +381,7 @@ def credential_resolver_for(
         CredentialLeaseFactory,
     ]
     | None = None,
-) -> CredentialResolver:
+) -> AuthenticatedAccountResolver:
     """Compose protected leases for the current stable account source."""
     source.saved_accounts()
     return AuthenticatedAccountResolver(
@@ -365,3 +390,22 @@ def credential_resolver_for(
         ),
         managed_factories,
     )
+
+
+class HeldAuthorizedCredentialResolver:
+    """Bind an authority-aware resolver to one already-held capability."""
+
+    def __init__(
+        self,
+        resolver: AuthorizedCredentialResolver,
+        authority: OperationAuthority,
+    ) -> None:
+        self._resolver = resolver
+        self._authority = authority
+
+    def open(
+        self,
+        account: SavedAccount,
+    ) -> AbstractContextManager[AuthenticatedSavedAccount]:
+        """Open one account through the exact authority held by the worker."""
+        return self._resolver.open_authorized(account, self._authority)

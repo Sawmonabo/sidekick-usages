@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from sidekick_usages.core.accounts.models import SavedAccount
+from sidekick_usages.core.accounts.types import SidekickAccountId
 from sidekick_usages.core.expiry import Expiry, KnownExpiry, UnknownExpiry
 from sidekick_usages.core.models import (
     Account,
@@ -51,6 +52,7 @@ from sidekick_usages.usage.activity import (
     AccountTokenActivitySource,
     LocalTokenActivitySource,
 )
+from sidekick_usages.usage.lookup.service import AccountCredentialAccess
 from sidekick_usages.usage.models import (
     CompleteTokenActivity,
     PartialTokenActivity,
@@ -65,6 +67,7 @@ from sidekick_usages.usage.ports import (
     UsagePersistence,
 )
 from sidekick_usages.usage.service import UsageCheckService
+from tests.fakes.usage import InMemoryOperationLocks
 from tests.test_support import (
     REFERENCE_TIME,
     FixedClock,
@@ -187,6 +190,8 @@ class _ActivitySnapshots(AccountTokenActivitySnapshots):
         self.save_error = save_error
         self.loads: list[AccountLabel] = []
         self.saves: list[AccountTokenActivitySnapshot] = []
+        self.load_batches = 0
+        self.save_batches = 0
 
     def load(
         self,
@@ -195,6 +200,22 @@ class _ActivitySnapshots(AccountTokenActivitySnapshots):
         self.loads.append(account.label)
         identity = account.provider_identity
         return None if identity is None else self.snapshots.get(str(identity))
+
+    def load_many(
+        self,
+        accounts: tuple[SavedAccount, ...],
+    ) -> dict[SidekickAccountId, AccountTokenActivitySnapshot]:
+        """Return retained synthetic snapshots in one logical read."""
+        self.load_batches += 1
+        loaded: dict[
+            SidekickAccountId,
+            AccountTokenActivitySnapshot,
+        ] = {}
+        for account in accounts:
+            snapshot = self.load(account)
+            if snapshot is not None:
+                loaded[account.account_id] = snapshot
+        return loaded
 
     def save(
         self,
@@ -205,6 +226,17 @@ class _ActivitySnapshots(AccountTokenActivitySnapshots):
             raise self.save_error
         self.snapshots[snapshot.provider_account_id] = snapshot
         return snapshot
+
+    def save_many(
+        self,
+        snapshots: tuple[AccountTokenActivitySnapshot, ...],
+    ) -> tuple[AccountTokenActivitySnapshot, ...]:
+        """Persist synthetic snapshots in one logical write."""
+        self.save_batches += 1
+        if self.save_error is not None:
+            self.saves.extend(snapshots)
+            raise self.save_error
+        return tuple(self.save(snapshot) for snapshot in snapshots)
 
 
 @pytest.fixture
@@ -278,8 +310,9 @@ def _service(
     local_activity: LocalTokenActivitySource | None = None,
     account_activity: AccountTokenActivitySource | None = None,
     activity_snapshots: AccountTokenActivitySnapshots | None = None,
-) -> tuple[UsageCheckService, AccountStore]:
+) -> tuple[UsageCheckService, AccountStore, RuntimeCredentialResolver]:
     store, _private = make_account_store_with_private(tmp_path, accounts)
+    resolver = RuntimeCredentialResolver(store)
     registry: dict[ProviderId, Provider] = {
         provider.id: provider for provider in providers
     }
@@ -295,6 +328,10 @@ def _service(
             registry,
             credentials,
             clock=FixedClock(),
+            credential_access=AccountCredentialAccess(
+                resolver,
+                InMemoryOperationLocks(),
+            ),
             local_activity_sources=(
                 {}
                 if local_activity is None
@@ -306,9 +343,9 @@ def _service(
                 else {ProviderId.CODEX: account_activity}
             ),
             persistence=UsagePersistence(activity=activity_snapshots),
-            resolver=RuntimeCredentialResolver(store),
         ),
         store,
+        resolver,
     )
 
 
@@ -348,14 +385,16 @@ def test_collection_preserves_scope_and_is_independent_of_usage_rows(
             ),
         }
     )
+    snapshots = _ActivitySnapshots()
 
-    service, _ = _service(
+    service, _, resolver = _service(
         tmp_path,
         http,
         accounts,
         (claude, codex),
         local_activity=local,
         account_activity=profiles,
+        activity_snapshots=snapshots,
     )
     result = service.check()
 
@@ -366,8 +405,16 @@ def test_collection_preserves_scope_and_is_independent_of_usage_rows(
     ]
     assert isinstance(result.failures[0], TransientFailure)
     assert local.calls == 1
-    assert profiles.calls == ["codex-one", "codex-two"]
-    assert profiles.account_ids == ["acct_codex-one", "acct_codex-two"]
+    assert set(profiles.calls) == {"codex-one", "codex-two"}
+    assert set(profiles.account_ids) == {
+        "acct_codex-one",
+        "acct_codex-two",
+    }
+    assert snapshots.save_batches == 1
+    assert snapshots.load_batches == 0
+    assert len(snapshots.saves) == len(profiles.calls)
+    assert resolver.events.count("open:codex-one") == 1
+    assert resolver.events.count("open:codex-two") == 1
     assert result.activities == (
         CompleteTokenActivity(
             provider_id=ProviderId.CLAUDE,
@@ -413,7 +460,7 @@ def test_account_activity_reports_known_coverage_and_attempt_failures(
         }
     )
 
-    service, _store = _service(
+    service, _store, _resolver = _service(
         tmp_path,
         http,
         accounts,
@@ -455,7 +502,7 @@ def test_missing_provider_identity_is_not_activity_eligible(
     )
     profiles = _AccountActivity({})
 
-    service, _store = _service(
+    service, _store, _resolver = _service(
         tmp_path,
         http,
         (account,),
@@ -500,7 +547,7 @@ def test_fresh_and_retained_account_snapshots_form_one_complete_total(
     snapshots = _ActivitySnapshots(
         (_snapshot(retained, 900_000_000, date(2026, 3, 30)),)
     )
-    service, _store = _service(
+    service, _store, _resolver = _service(
         tmp_path,
         http,
         (fresh, retained),
@@ -542,7 +589,7 @@ def test_profile_failure_uses_snapshot_and_preserves_activity_warning(
     snapshots = _ActivitySnapshots(
         (_snapshot(account, _CODEX_TOTAL, date(2026, 4, 7)),)
     )
-    service, _store = _service(
+    service, _store, _resolver = _service(
         tmp_path,
         http,
         (account,),
@@ -578,7 +625,7 @@ def test_snapshot_write_failure_keeps_fresh_total_and_fails_explicitly(
     snapshots = _ActivitySnapshots(
         save_error=ActivitySnapshotError(ActivitySnapshotFailureKind.WRITE)
     )
-    service, _store = _service(
+    service, _store, _resolver = _service(
         tmp_path,
         http,
         (account,),

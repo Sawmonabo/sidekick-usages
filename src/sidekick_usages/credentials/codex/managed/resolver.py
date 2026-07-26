@@ -54,28 +54,28 @@ class CodexManagedCredentialResolver:
     def __init__(
         self,
         coordinator: CodexManagedAuthorityCoordinator,
-        authority: OperationAuthority,
     ) -> None:
         self._coordinator = coordinator
-        self._authority = authority
 
-    def open(
+    def open_authorized(
         self,
         account: SavedAccount,
+        authority: OperationAuthority,
     ) -> AbstractContextManager[AuthenticatedSavedAccount]:
         """Return an unopened exact managed credential context."""
-        return self._open(account)
+        return self._open(account, authority)
 
     @contextmanager
     def _open(
         self,
         account: SavedAccount,
+        authority: OperationAuthority,
     ) -> Iterator[AuthenticatedSavedAccount]:
         managed = require_managed_codex_authority(account)
-        self._authority.require(account.account_id)
+        authority.require(account.account_id)
         projection = self._coordinator.open_projection_with_authority(
             account.account_id,
-            self._authority,
+            authority,
         )
         if isinstance(projection, CodexManagedAuthorityResult):
             raise CodexManagedCredentialError(projection.outcome)

@@ -63,6 +63,7 @@ _SERVICE_FILES = frozenset(
         "src/sidekick_usages/maintenance.py",
         "src/sidekick_usages/update.py",
         "src/sidekick_usages/usage/activity.py",
+        "src/sidekick_usages/usage/lookup/service.py",
         "src/sidekick_usages/usage/service.py",
     }
 )
@@ -98,8 +99,10 @@ _CREDENTIAL_LEASE_CONSUMERS = frozenset(
         ),
         "src/sidekick_usages/credentials/codex/managed/resolver.py",
         "src/sidekick_usages/credentials/refresh.py",
+        "src/sidekick_usages/daemon/worker/account.py",
         "src/sidekick_usages/heartbeat/service.py",
         "src/sidekick_usages/usage/activity.py",
+        "src/sidekick_usages/usage/lookup/service.py",
         "src/sidekick_usages/usage/service.py",
     }
 )

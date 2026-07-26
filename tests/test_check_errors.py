@@ -2,7 +2,7 @@
 
 import io
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from datetime import date
 from pathlib import Path
 
@@ -53,7 +53,7 @@ class _FakeProvider(Provider):
 
     def __init__(
         self,
-        fetch_results: Iterable[UsageReport | Exception] = (),
+        fetch_results: Mapping[str, UsageReport | Exception] | None = None,
         refresh_ok: bool = True,
         provider_id: str = "codex",
     ) -> None:
@@ -61,7 +61,7 @@ class _FakeProvider(Provider):
         self.display_name = (
             "Codex CLI" if provider_id == "codex" else "Claude Code"
         )
-        self.fetch_results = list(fetch_results)
+        self.fetch_results = dict(fetch_results or {})
         self.refresh_ok = refresh_ok
         self.fetch_calls = 0
 
@@ -91,12 +91,12 @@ class _FakeProvider(Provider):
     ) -> UsageReport:
         del http
         self.fetch_calls += 1
-        if not self.fetch_results:
+        result = self.fetch_results.get(str(account.label))
+        if result is None:
             return UsageReport(
                 windows=(UsageWindow("5h", 0.0, None),),
                 plan="pro",
             )
-        result = self.fetch_results.pop(0)
         if isinstance(result, Exception):
             raise result
         return result
@@ -207,7 +207,10 @@ def test_check_renders_partial_success_and_typed_auth_recovery(
         plan="pro",
     )
     codex = _FakeProvider(
-        fetch_results=[report, AuthError("Token expired")],
+        fetch_results={
+            "codex-ok": report,
+            "my work account": AuthError("Token expired"),
+        },
         refresh_ok=False,
     )
     activity = _ScriptedAccountActivity(
@@ -271,7 +274,9 @@ def test_activity_failure_renders_before_forcing_system_error(
 ) -> None:
     acct = _acct()
     provider = _FakeProvider(
-        fetch_results=[TransientError("provider unavailable")]
+        fetch_results={
+            str(acct.label): TransientError("provider unavailable")
+        }
     )
     activity = _ScriptedAccountActivity(
         {str(acct.label): TransientError("test-only provider response detail")}

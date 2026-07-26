@@ -65,6 +65,9 @@ from sidekick_usages.persistence.snapshots.usage import UsageSnapshotStore
 from sidekick_usages.persistence.supervisor.activation import (
     ActivationJournalStore,
 )
+from sidekick_usages.persistence.supervisor.authority import (
+    OperationAuthorityLocks,
+)
 from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
 from sidekick_usages.persistence.supervisor.selection import (
     SelectedStateStore,
@@ -86,6 +89,7 @@ from sidekick_usages.usage.activity import (
     AccountTokenActivitySource,
     LocalTokenActivitySource,
 )
+from sidekick_usages.usage.lookup.service import AccountCredentialAccess
 from sidekick_usages.usage.ports import UsagePersistence
 from sidekick_usages.usage.service import UsageCheckService
 
@@ -362,6 +366,12 @@ def compose_app_context(
             provider_map,
             credentials,
             clock=resolved_clock,
+            credential_access=AccountCredentialAccess(
+                resolver,
+                OperationAuthorityLocks(
+                    resolved_paths.durable_operations
+                ),
+            ),
             local_activity_sources=local_activity_map,
             account_activity_sources=account_activity_map,
             persistence=UsagePersistence(
@@ -370,7 +380,6 @@ def compose_app_context(
                 ),
                 usage=usage_snapshots,
             ),
-            resolver=resolver,
         )
         heartbeat = HeartbeatService(
             accounts,

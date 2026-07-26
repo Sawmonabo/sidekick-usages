@@ -3,6 +3,9 @@
 from sidekick_usages.clock import Clock
 from sidekick_usages.core.accounts.types import SidekickAccountId
 from sidekick_usages.core.types import ProviderId
+from sidekick_usages.credentials.authorities import (
+    HeldAuthorizedCredentialResolver,
+)
 from sidekick_usages.credentials.codex.managed.resolver import (
     CodexManagedCredentialResolver,
 )
@@ -18,11 +21,13 @@ from sidekick_usages.persistence.snapshots.activity import (
 )
 from sidekick_usages.persistence.snapshots.usage import UsageSnapshotStore
 from sidekick_usages.persistence.supervisor.authority import (
+    HeldOperationAuthorityLocks,
     OperationAuthority,
 )
 from sidekick_usages.providers.codex.activity import CodexActivity
 from sidekick_usages.providers.codex.heartbeat import CodexHeartbeat
 from sidekick_usages.providers.codex.provider import CodexProvider
+from sidekick_usages.usage.lookup.service import AccountCredentialAccess
 from sidekick_usages.usage.models import UsageCheckResult
 from sidekick_usages.usage.ports import UsagePersistence
 from sidekick_usages.usage.service import UsageCheckService
@@ -53,16 +58,17 @@ class CodexManagedAccountService:
         authority: OperationAuthority,
     ) -> UsageCheckResult:
         """Collect current usage and activity for one exact account."""
-        resolver = CodexManagedCredentialResolver(
-            self._coordinator,
-            authority,
-        )
+        resolver = CodexManagedCredentialResolver(self._coordinator)
         service = UsageCheckService(
             self._store,
             self._http,
             {ProviderId.CODEX: CodexProvider()},
             None,
             clock=self._clock,
+            credential_access=AccountCredentialAccess(
+                resolver,
+                HeldOperationAuthorityLocks(authority),
+            ),
             account_activity_sources={
                 ProviderId.CODEX: CodexActivity(),
             },
@@ -70,7 +76,6 @@ class CodexManagedAccountService:
                 activity=self._activity_snapshots,
                 usage=self._usage_snapshots,
             ),
-            resolver=resolver,
         )
         return service.check_account(account_id)
 
@@ -80,8 +85,8 @@ class CodexManagedAccountService:
         authority: OperationAuthority,
     ) -> tuple[HeartbeatOutcome, ...]:
         """Heartbeat enabled targets for one exact managed account."""
-        resolver = CodexManagedCredentialResolver(
-            self._coordinator,
+        resolver = HeldAuthorizedCredentialResolver(
+            CodexManagedCredentialResolver(self._coordinator),
             authority,
         )
         provider = CodexProvider()

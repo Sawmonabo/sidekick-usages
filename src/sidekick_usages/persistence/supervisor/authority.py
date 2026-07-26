@@ -155,6 +155,55 @@ class OperationAuthorityLock:
                 authority._invalidate()
 
 
+class OperationAuthorityLocks:
+    """Construct machine-wide operation locks for account lookup."""
+
+    def __init__(self, operations_root: Path) -> None:
+        if not operations_root.is_absolute():
+            raise ValueError("Durable-operation root must be absolute.")
+        self._operations_root = operations_root
+
+    def hold(
+        self,
+        account_id: SidekickAccountId,
+    ) -> AbstractContextManager[OperationAuthority]:
+        """Hold the exact account's machine-wide operation lock."""
+        return self._hold(account_id)
+
+    @contextmanager
+    def _hold(
+        self,
+        account_id: SidekickAccountId,
+    ) -> Iterator[OperationAuthority]:
+        with OperationAuthorityLock(
+            self._operations_root,
+            account_id,
+        ).hold() as authority:
+            yield authority
+
+
+class HeldOperationAuthorityLocks:
+    """Reuse an account authority already held by an isolated worker."""
+
+    def __init__(self, authority: OperationAuthority) -> None:
+        self._authority = authority
+
+    def hold(
+        self,
+        account_id: SidekickAccountId,
+    ) -> AbstractContextManager[OperationAuthority]:
+        """Validate the worker's existing account operation authority."""
+        return self._hold(account_id)
+
+    @contextmanager
+    def _hold(
+        self,
+        account_id: SidekickAccountId,
+    ) -> Iterator[OperationAuthority]:
+        self._authority.require(account_id)
+        yield self._authority
+
+
 class ProviderMutationLock:
     """Acquire provider authority before canonical account authorities."""
 

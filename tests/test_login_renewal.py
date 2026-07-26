@@ -17,11 +17,11 @@ from sidekick_usages.core.types import (
     RefreshStatus,
 )
 from sidekick_usages.maintenance import TokenMaintenanceService
-from tests.test_support import REFERENCE_TIME, FixedClock
-from tests.test_usage_service import (
+from tests.fakes.usage import (
     InMemoryAccountStore,
     ScriptedCredentialCoordinator,
 )
+from tests.test_support import REFERENCE_TIME, FixedClock
 
 
 def _login_account(*, refresh_expiry: KnownExpiry | UnknownExpiry) -> Account:

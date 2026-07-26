@@ -9,6 +9,7 @@ import urllib.request
 from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager
 from http import HTTPMethod, HTTPStatus
+from threading import Lock
 from types import TracebackType
 
 import urllib3
@@ -69,7 +70,10 @@ class HttpClient(AbstractContextManager["HttpClient"]):
         self._direct_manager: urllib3.PoolManager | None = None
         self._proxy_manager: urllib3.ProxyManager | None = None
         self._proxy_url: str | None = None
+        self._retired_managers: list[_PoolManager] = []
+        self._active_requests = 0
         self._closed = False
+        self._transport_lock = Lock()
 
     def __enter__(self) -> HttpClient:
         """Return this client without eagerly creating a pool."""
@@ -87,13 +91,16 @@ class HttpClient(AbstractContextManager["HttpClient"]):
 
     def close(self) -> None:
         """Close initialized connection pools idempotently."""
-        if self._closed:
-            return
-        self._closed = True
-        if self._proxy_manager is not None:
-            self._proxy_manager.clear()
-        if self._direct_manager is not None:
-            self._direct_manager.clear()
+        with self._transport_lock:
+            if self._closed:
+                return
+            self._closed = True
+            managers = (
+                self._detach_managers()
+                if self._active_requests == 0
+                else ()
+            )
+        _clear_managers(managers)
 
     def get_json(
         self,
@@ -212,81 +219,132 @@ class HttpClient(AbstractContextManager["HttpClient"]):
         discard_oversized: bool,
     ) -> HttpAttempt:
         """Perform one retry-disabled, redirect-disabled request."""
-        manager = self._manager_for(url)
-        timeout = Timeout(
-            total=remaining,
-            connect=min(CONNECT_TIMEOUT_SECONDS, remaining),
-            read=min(READ_TIMEOUT_SECONDS, remaining),
-        )
-        response = manager.request(
-            method,
-            url,
-            body=body,
-            headers=headers,
-            timeout=timeout,
-            preload_content=False,
-            decode_content=False,
-            redirect=False,
-            retries=False,
-        )
-        response_headers = {
-            str(key).lower(): str(value)
-            for key, value in response.headers.items()
-        }
-        limit = (
-            response_limit
-            if HTTPStatus.OK <= response.status < HTTPStatus.MULTIPLE_CHOICES
-            else ERROR_BODY_LIMIT
-        )
-        payload = _read_bounded(
-            response,
-            limit,
-            discard_oversized
-            or not (
-                HTTPStatus.OK <= response.status < HTTPStatus.MULTIPLE_CHOICES
-            ),
-        )
-        return HttpAttempt(
-            status_code=response.status,
-            headers=response_headers,
-            body=payload,
-        )
+        manager = self._acquire_manager(url)
+        try:
+            timeout = Timeout(
+                total=remaining,
+                connect=min(CONNECT_TIMEOUT_SECONDS, remaining),
+                read=min(READ_TIMEOUT_SECONDS, remaining),
+            )
+            response = manager.request(
+                method,
+                url,
+                body=body,
+                headers=headers,
+                timeout=timeout,
+                preload_content=False,
+                decode_content=False,
+                redirect=False,
+                retries=False,
+            )
+            response_headers = {
+                str(key).lower(): str(value)
+                for key, value in response.headers.items()
+            }
+            limit = (
+                response_limit
+                if HTTPStatus.OK
+                <= response.status
+                < HTTPStatus.MULTIPLE_CHOICES
+                else ERROR_BODY_LIMIT
+            )
+            payload = _read_bounded(
+                response,
+                limit,
+                discard_oversized
+                or not (
+                    HTTPStatus.OK
+                    <= response.status
+                    < HTTPStatus.MULTIPLE_CHOICES
+                ),
+            )
+            return HttpAttempt(
+                status_code=response.status,
+                headers=response_headers,
+                body=payload,
+            )
+        finally:
+            self._release_manager()
 
-    def _manager_for(self, url: str) -> _PoolManager:
-        """Return the lazy direct or environment-proxy pool."""
-        if self._closed:
-            raise TransientError("HTTP client is closed.") from None
-        manager_failure = False
+    def _acquire_manager(self, url: str) -> _PoolManager:
+        """Reserve one shared lazy pool for a concurrent request."""
         try:
             proxy_url = _environment_proxy(url)
-            if proxy_url is None:
-                if self._direct_manager is None:
-                    self._direct_manager = urllib3.PoolManager(
-                        retries=False,
-                        cert_reqs="CERT_REQUIRED",
-                    )
-                return self._direct_manager
-            if self._proxy_manager is None or proxy_url != self._proxy_url:
-                if self._proxy_manager is not None:
-                    self._proxy_manager.clear()
-                self._proxy_manager = urllib3.ProxyManager(
-                    proxy_url,
-                    retries=False,
-                    cert_reqs="CERT_REQUIRED",
-                )
-                self._proxy_url = proxy_url
-            return self._proxy_manager
+            with self._transport_lock:
+                if self._closed:
+                    raise TransientError("HTTP client is closed.") from None
+                manager, retired = self._manager(proxy_url)
+                self._active_requests += 1
         except (
             urllib3.exceptions.HTTPError,
             ValueError,
             OSError,
         ):
-            manager_failure = True
-        if manager_failure:
             raise TransientError(
                 "HTTP transport configuration failed."
             ) from None
-        raise AssertionError("unreachable HTTP manager state")
+        if retired is not None:
+            retired.clear()
+        return manager
+
+    def _manager(
+        self,
+        proxy_url: str | None,
+    ) -> tuple[_PoolManager, _PoolManager | None]:
+        """Return one manager while the transport lock is held."""
+        if proxy_url is None:
+            if self._direct_manager is None:
+                self._direct_manager = urllib3.PoolManager(
+                    retries=False,
+                    cert_reqs="CERT_REQUIRED",
+                )
+            return self._direct_manager, None
+        retired: _PoolManager | None = None
+        if self._proxy_manager is None or proxy_url != self._proxy_url:
+            retired = self._proxy_manager
+            self._proxy_manager = urllib3.ProxyManager(
+                proxy_url,
+                retries=False,
+                cert_reqs="CERT_REQUIRED",
+            )
+            self._proxy_url = proxy_url
+            if retired is not None and self._active_requests > 0:
+                self._retired_managers.append(retired)
+                retired = None
+        return self._proxy_manager, retired
+
+    def _release_manager(self) -> None:
+        """Release one request and clear pools only after all users finish."""
+        with self._transport_lock:
+            self._active_requests -= 1
+            if self._active_requests < 0:
+                raise AssertionError("HTTP request ownership underflow.")
+            managers = (
+                self._detach_managers()
+                if self._active_requests == 0
+                else ()
+            )
+        _clear_managers(managers)
+
+    def _detach_managers(self) -> tuple[_PoolManager, ...]:
+        """Detach pools eligible for clearing while the lock is held."""
+        managers = list(self._retired_managers)
+        self._retired_managers.clear()
+        if self._closed:
+            if self._proxy_manager is not None:
+                managers.append(self._proxy_manager)
+                self._proxy_manager = None
+                self._proxy_url = None
+            if self._direct_manager is not None:
+                managers.append(self._direct_manager)
+                self._direct_manager = None
+        return tuple(managers)
+
+
+def _clear_managers(managers: tuple[_PoolManager, ...]) -> None:
+    """Clear detached pools outside the transport-state lock."""
+    for manager in managers:
+        manager.clear()
 
 
 def _require_https(url: str) -> None:
