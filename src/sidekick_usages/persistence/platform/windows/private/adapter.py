@@ -48,22 +48,6 @@ if sys.platform == "win32":
     def _native_error(kind: NativeFailureKind) -> NativeFilesystemError:
         return NativeFilesystemError(kind)
 
-    def _close_descriptors(
-        descriptors: list[int],
-        primary: BaseException | None = None,
-    ) -> None:
-        failure = primary
-        for descriptor in reversed(descriptors):
-            try:
-                os.close(descriptor)
-            except OSError:
-                if failure is None:
-                    failure = _native_error(NativeFailureKind.UNSAFE)
-                else:
-                    failure.add_note("Native descriptor cleanup also failed.")
-        if failure is not None:
-            raise failure from None
-
     def _duplicate_descriptor(
         descriptor: int,
         kind: NativeFailureKind,
@@ -220,9 +204,9 @@ if sys.platform == "win32":
                 current_descriptor = child
                 current_path /= component
         except BaseException as error:
-            _close_descriptors(descriptors, error)
+            handles.close_descriptors(descriptors, error)
         final = descriptors.pop()
-        _close_descriptors(descriptors)
+        handles.close_descriptors(descriptors)
         return current_path, final
 
     def _security_is_valid(descriptor: int, *, directory: bool) -> bool:

@@ -54,6 +54,23 @@ if sys.platform == "win32":
         if primary is not None:
             raise primary from None
 
+    def close_descriptors(
+        descriptors: list[int],
+        primary: BaseException | None = None,
+    ) -> None:
+        """Close descriptors in reverse order while preserving a failure."""
+        failure = primary
+        for descriptor in reversed(descriptors):
+            try:
+                os.close(descriptor)
+            except OSError:
+                if failure is None:
+                    failure = _native_error(NativeFailureKind.UNSAFE)
+                else:
+                    failure.add_note("Native descriptor cleanup also failed.")
+        if failure is not None:
+            raise failure from None
+
     @contextmanager
     def owned_descriptor(
         descriptor: int,
