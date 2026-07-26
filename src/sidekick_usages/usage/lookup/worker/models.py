@@ -25,6 +25,7 @@ class UsageLookupEventKind(StrEnum):
 class UsageLookupFailure(StrEnum):
     """Safe global lookup-worker failure categories."""
 
+    CANCELED = "canceled"
     FEATURE_DISABLED = "feature_disabled"
     INTERPRETER_UNSAFE = "interpreter_unsafe"
     LAUNCH_FAILED = "launch_failed"

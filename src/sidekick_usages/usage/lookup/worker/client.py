@@ -7,6 +7,8 @@ import sys
 import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
+from threading import Lock
+from typing import IO
 
 from sidekick_usages.core.accounts.types import SidekickAccountId
 from sidekick_usages.persistence.limits import MAX_ACCOUNTS
@@ -41,6 +43,68 @@ from sidekick_usages.usage.lookup.worker.protocol import (
 USAGE_LOOKUP_TIMEOUT_SECONDS = 120.0
 USAGE_LOOKUP_TERMINATION_GRACE_SECONDS = 0.5
 USAGE_LOOKUP_READ_BYTES = 4096
+
+
+class _CancellationSignal:
+    """Wake one blocked lookup receiver without polling."""
+
+    def __init__(self) -> None:
+        self._read_descriptor, self._write_descriptor = os.pipe()
+        os.set_blocking(self._write_descriptor, False)
+        self._lock = Lock()
+        self._requested = False
+        self._finished = False
+        self._closed = False
+
+    @property
+    def read_descriptor(self) -> int:
+        """Return the selector-visible cancellation descriptor."""
+        return self._read_descriptor
+
+    @property
+    def requested(self) -> bool:
+        """Return whether the active run was canceled."""
+        with self._lock:
+            return self._requested
+
+    def request(self) -> None:
+        """Idempotently wake the active run."""
+        with self._lock:
+            if self._requested or self._finished:
+                return
+            self._requested = True
+            try:
+                os.write(self._write_descriptor, b"\0")
+            except BlockingIOError:
+                return
+
+    def finish(
+        self,
+        result: UsageLookupWorkerResult,
+    ) -> UsageLookupWorkerResult:
+        """Close cancellation and preserve a stronger cleanup failure."""
+        with self._lock:
+            self._finished = True
+            canceled = self._requested
+        if (
+            canceled
+            and result.failure is not UsageLookupFailure.TERMINATION_FAILED
+        ):
+            return UsageLookupWorkerResult(
+                result.completed_account_ids,
+                UsageLookupFailure.CANCELED,
+            )
+        return result
+
+    def close(self) -> None:
+        """Close the owned wake descriptors exactly once."""
+        with self._lock:
+            if self._closed:
+                return
+            self._finished = True
+            self._closed = True
+            os.close(self._read_descriptor)
+            os.close(self._write_descriptor)
 
 
 class UsageLookupLaunchError(RuntimeError):
@@ -95,12 +159,53 @@ class UsageLookupWorkerClient:
         self._timeout = timeout_seconds
         self._termination_grace = termination_grace_seconds
         self._monotonic = monotonic
+        self._active_lock = Lock()
+        self._active: _CancellationSignal | None = None
+        self._cancel_next_run = False
 
     def run(
         self,
         observe: UsageLookupEventObserver | None = None,
     ) -> UsageLookupWorkerResult:
         """Stream stable-ID completions and return one terminal outcome."""
+        cancellation = _CancellationSignal()
+        with self._active_lock:
+            if self._active is not None:
+                cancellation.close()
+                raise RuntimeError("Usage lookup worker is already active.")
+            cancel_before_start = self._cancel_next_run
+            self._cancel_next_run = False
+            self._active = cancellation
+        if cancel_before_start:
+            cancellation.request()
+        try:
+            return cancellation.finish(
+                self._run(cancellation, observe)
+            )
+        finally:
+            with self._active_lock:
+                self._active = None
+            cancellation.close()
+
+    def cancel(self) -> None:
+        """Cancel the active or next not-yet-started lookup run."""
+        with self._active_lock:
+            cancellation = self._active
+            if cancellation is None:
+                self._cancel_next_run = True
+        if cancellation is not None:
+            cancellation.request()
+
+    def _run(
+        self,
+        cancellation: _CancellationSignal,
+        observe: UsageLookupEventObserver | None,
+    ) -> UsageLookupWorkerResult:
+        if cancellation.requested:
+            return UsageLookupWorkerResult(
+                (),
+                UsageLookupFailure.CANCELED,
+            )
         if sys.platform == "win32":
             return UsageLookupWorkerResult(
                 (),
@@ -126,6 +231,7 @@ class UsageLookupWorkerClient:
         return self._receive(
             process,
             self._monotonic() + self._timeout,
+            cancellation,
             observe,
         )
 
@@ -133,6 +239,7 @@ class UsageLookupWorkerClient:
         self,
         process: subprocess.Popen[bytes],
         deadline: float,
+        cancellation: _CancellationSignal,
         observe: UsageLookupEventObserver | None,
     ) -> UsageLookupWorkerResult:
         stream = process.stdout
@@ -143,47 +250,39 @@ class UsageLookupWorkerClient:
         terminal: UsageLookupWorkerEvent | None = None
         decoder = BoundedFrameDecoder(MAX_USAGE_LOOKUP_FRAME_BYTES)
         selector = selectors.DefaultSelector()
-        reaped = False
+        cleanup_attempted = False
         try:
             selector.register(stream, selectors.EVENT_READ)
-            while True:
-                remaining = deadline - self._monotonic()
-                if remaining <= 0 or not selector.select(remaining):
-                    return self._failed(
-                        handle,
-                        completed,
-                        UsageLookupFailure.TIMED_OUT,
-                    )
-                chunk = os.read(stream.fileno(), USAGE_LOOKUP_READ_BYTES)
-                if not chunk:
-                    decoder.finish()
-                    break
-                for payload in decoder.feed(chunk):
-                    try:
-                        event = decode_usage_lookup_event(payload)
-                    finally:
-                        clear_mutable_buffer(payload)
-                    terminal = self._accept(
-                        event,
-                        completed,
-                        terminal,
-                        observe,
-                    )
-            exit_code = handle.wait(max(0.0, deadline - self._monotonic()))
-            if exit_code is None:
+            selector.register(
+                cancellation.read_descriptor,
+                selectors.EVENT_READ,
+            )
+            failure, terminal = self._read_events(
+                selector,
+                stream,
+                decoder,
+                completed,
+                terminal,
+                deadline,
+                cancellation,
+                observe,
+            )
+            cleanup_attempted = True
+            if failure is not None:
                 return self._failed(
                     handle,
                     completed,
-                    UsageLookupFailure.TIMED_OUT,
+                    failure,
                 )
-            reaped = clear_process_group(handle, self._termination_grace)
-            if not reaped:
-                return UsageLookupWorkerResult(
-                    tuple(completed),
-                    UsageLookupFailure.TERMINATION_FAILED,
-                )
-            return self._terminal_result(completed, terminal, exit_code)
+            return self._complete(
+                handle,
+                completed,
+                terminal,
+                deadline,
+                cancellation,
+            )
         except FramingError, OSError, UsageLookupProtocolError:
+            cleanup_attempted = True
             return self._failed(
                 handle,
                 completed,
@@ -193,8 +292,100 @@ class UsageLookupWorkerClient:
             selector.close()
             decoder.clear()
             stream.close()
-            if not reaped and handle.poll() is None:
+            if not cleanup_attempted:
                 terminate_process_group(handle, self._termination_grace)
+
+    def _read_events(
+        self,
+        selector: selectors.BaseSelector,
+        stream: IO[bytes],
+        decoder: BoundedFrameDecoder,
+        completed: list[SidekickAccountId],
+        terminal: UsageLookupWorkerEvent | None,
+        deadline: float,
+        cancellation: _CancellationSignal,
+        observe: UsageLookupEventObserver | None,
+    ) -> tuple[
+        UsageLookupFailure | None,
+        UsageLookupWorkerEvent | None,
+    ]:
+        while True:
+            failure = self._wait_for_event(
+                selector,
+                deadline,
+                cancellation,
+            )
+            if failure is not None:
+                return failure, terminal
+            chunk = os.read(stream.fileno(), USAGE_LOOKUP_READ_BYTES)
+            if not chunk:
+                decoder.finish()
+                return None, terminal
+            for payload in decoder.feed(chunk):
+                try:
+                    event = decode_usage_lookup_event(payload)
+                finally:
+                    clear_mutable_buffer(payload)
+                terminal = self._accept(
+                    event,
+                    completed,
+                    terminal,
+                    observe,
+                )
+
+    def _wait_for_event(
+        self,
+        selector: selectors.BaseSelector,
+        deadline: float,
+        cancellation: _CancellationSignal,
+    ) -> UsageLookupFailure | None:
+        if cancellation.requested:
+            return UsageLookupFailure.CANCELED
+        remaining = deadline - self._monotonic()
+        if remaining <= 0:
+            return UsageLookupFailure.TIMED_OUT
+        ready = selector.select(remaining)
+        if not ready:
+            return UsageLookupFailure.TIMED_OUT
+        if any(
+            key.fileobj == cancellation.read_descriptor
+            for key, _mask in ready
+        ):
+            return UsageLookupFailure.CANCELED
+        return None
+
+    def _complete(
+        self,
+        handle: SubprocessProcessGroup,
+        completed: list[SidekickAccountId],
+        terminal: UsageLookupWorkerEvent | None,
+        deadline: float,
+        cancellation: _CancellationSignal,
+    ) -> UsageLookupWorkerResult:
+        exit_code = handle.wait(
+            min(
+                self._termination_grace,
+                max(0.0, deadline - self._monotonic()),
+            )
+        )
+        if exit_code is None:
+            return self._failed(
+                handle,
+                completed,
+                UsageLookupFailure.TIMED_OUT,
+            )
+        if cancellation.requested:
+            return self._failed(
+                handle,
+                completed,
+                UsageLookupFailure.CANCELED,
+            )
+        if not clear_process_group(handle, self._termination_grace):
+            return UsageLookupWorkerResult(
+                tuple(completed),
+                UsageLookupFailure.TERMINATION_FAILED,
+            )
+        return self._terminal_result(completed, terminal, exit_code)
 
     @staticmethod
     def _accept(

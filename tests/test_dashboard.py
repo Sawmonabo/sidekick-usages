@@ -57,6 +57,14 @@ from sidekick_usages.usage.dashboard.models import (
     DashboardService,
 )
 from sidekick_usages.usage.dashboard.service import CachedDashboardService
+from sidekick_usages.usage.lookup.worker.models import (
+    UsageLookupFailure,
+    UsageLookupWorkerResult,
+)
+from tests.fakes.dashboard.lookup_worker import (
+    LookupCancellationProof,
+    exercise_lookup_worker_cancellation,
+)
 from tests.fakes.dashboard.runtime import (
     OneShotRecorder,
     RoutingDashboardProcess,
@@ -369,6 +377,19 @@ def test_cli_routes_one_cached_frame_before_isolated_interaction(
     )
 
     monkeypatch.setattr(launch, "qualify_executable", qualify_executable)
+
+    cancellation = exercise_lookup_worker_cancellation(monkeypatch)
+    canceled = UsageLookupWorkerResult((), UsageLookupFailure.CANCELED)
+    assert cancellation == LookupCancellationProof(
+        before_start_joined=True,
+        before_start_results=(canceled,),
+        before_start_process_count=0,
+        worker_started=True,
+        active_joined=True,
+        active_results=(canceled,),
+        active_process_count=1,
+        active_reaped=True,
+    )
 
     one_shot = OneShotRecorder()
     monkeypatch.setattr(usage, "run", one_shot)
