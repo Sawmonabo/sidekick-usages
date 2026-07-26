@@ -36,18 +36,18 @@ _RETIRED_AUTH_VALUES = frozenset(
         "--codex-home",
     }
 )
-_NATIVE_HOME_OWNER = "src/sidekick_usages/providers/codex/native.py"
+_NATIVE_HOME_OWNER = "src/sidekick_usages/providers/codex/auth/home.py"
 _NATIVE_HOME_CONSUMERS = frozenset(
     {
         _NATIVE_HOME_OWNER,
         "src/sidekick_usages/entrypoints/supervisor.py",
         "src/sidekick_usages/entrypoints/worker.py",
-        "src/sidekick_usages/providers/codex/auth.py",
+        "src/sidekick_usages/providers/codex/auth/storage.py",
     }
 )
 _NATIVE_HOME_LITERALS = frozenset({".codex", "CODEX_HOME"})
 _DEFAULT_CODEX_HOME_NAME = "default_codex_home"
-_AUTH_OWNER = "src/sidekick_usages/providers/codex/auth.py"
+_AUTH_OWNER = "src/sidekick_usages/providers/codex/auth/storage.py"
 _MANAGED_AUTH_READER = "src/sidekick_usages/credentials/codex/managed/home.py"
 _AUTH_REFERENCE_OWNERS = frozenset({_AUTH_OWNER, _MANAGED_AUTH_READER})
 _AUTH_BASENAME = "auth.json"

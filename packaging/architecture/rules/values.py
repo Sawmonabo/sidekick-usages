@@ -45,7 +45,9 @@ def check_value_contracts(
     if paths is not None:
         _require_fields(paths, path_fields, "PATH002", violations)
 
-    context = by_path.get("src/sidekick_usages/cli/context.py")
+    context_models = by_path.get(
+        "src/sidekick_usages/cli/contexts/models.py"
+    )
     context_fields = {
         "AppContext": (
             ("accounts", "AccountStore"),
@@ -65,14 +67,24 @@ def check_value_contracts(
         "DaemonContext": (("daemon", "DaemonManager"),),
         "UpdateContext": (("update", "UpdateService"),),
     }
-    if context is not None:
-        _require_fields(context, context_fields, "CTX001", violations)
-        alias = type_alias(context.tree, "DoctorState")
+    if context_models is not None:
+        _require_fields(
+            context_models,
+            context_fields,
+            "CTX001",
+            violations,
+        )
+        alias = type_alias(context_models.tree, "DoctorState")
         if alias is None or compact(ast.unparse(alias.value)) != (
             "DoctorReady|DoctorFailed"
         ):
             violations.append(
-                finding(context, alias, "CTX001", "DoctorState is not closed")
+                finding(
+                    context_models,
+                    alias,
+                    "CTX001",
+                    "DoctorState is not closed",
+                )
             )
         composed = {
             "Composed": (
@@ -81,7 +93,10 @@ def check_value_contracts(
                 ("_closed", "bool"),
             )
         }
-        _require_fields(context, composed, "CTX002", violations)
+        _require_fields(context_models, composed, "CTX002", violations)
+
+    context = by_path.get("src/sidekick_usages/cli/context.py")
+    if context is not None:
         _check_close_once(context, violations)
 
 

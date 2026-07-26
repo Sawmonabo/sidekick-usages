@@ -27,7 +27,11 @@ _ISOLATED_WORKER_FILES = frozenset(
         "src/sidekick_usages/daemon/worker/account.py",
         "src/sidekick_usages/daemon/worker/claude/maintenance.py",
         "src/sidekick_usages/daemon/worker/claude/selection.py",
-        "src/sidekick_usages/daemon/worker/codex.py",
+        "src/sidekick_usages/daemon/worker/codex/activation.py",
+        "src/sidekick_usages/daemon/worker/codex/callback.py",
+        "src/sidekick_usages/daemon/worker/codex/maintenance.py",
+        "src/sidekick_usages/daemon/worker/codex/reconciliation.py",
+        "src/sidekick_usages/daemon/worker/codex/results.py",
         "src/sidekick_usages/daemon/worker/ports.py",
     }
 )
@@ -35,9 +39,9 @@ _SUPERVISOR_ENTRYPOINT_FILE = "src/sidekick_usages/entrypoints/supervisor.py"
 _SUPERVISOR_PROVIDER_IMPORTS = frozenset(
     {
         "sidekick_usages.providers.codex.app_server.executable",
+        "sidekick_usages.providers.codex.auth.home",
         "sidekick_usages.providers.codex.broker.responder",
         "sidekick_usages.providers.codex.broker.service",
-        "sidekick_usages.providers.codex.native",
     }
 )
 _SERVICE_FILES = frozenset(
@@ -61,12 +65,13 @@ _RENDERER_FILES = frozenset(
         "src/sidekick_usages/usage/presentation/dashboard/selection.py",
         "src/sidekick_usages/usage/presentation/narrow.py",
         "src/sidekick_usages/usage/presentation/overview.py",
+        "src/sidekick_usages/usage/presentation/panels.py",
         "src/sidekick_usages/usage/presentation/reset.py",
     }
 )
 _CREDENTIAL_LEASE_CONSUMERS = frozenset(
     {
-        "src/sidekick_usages/cli/context.py",
+        "src/sidekick_usages/cli/contexts/composition.py",
         "src/sidekick_usages/credentials/authorities.py",
         "src/sidekick_usages/credentials/claude/authority/resolver.py",
         (
@@ -93,7 +98,11 @@ _PYDANTIC_OWNERS = frozenset(
     {
         "src/sidekick_usages/providers/claude/schema/credentials.py",
         "src/sidekick_usages/providers/claude/schema/usage.py",
-        "src/sidekick_usages/providers/codex/schemas.py",
+        "src/sidekick_usages/providers/claude/schema/validation.py",
+        "src/sidekick_usages/providers/codex/schema/activity.py",
+        "src/sidekick_usages/providers/codex/schema/auth.py",
+        "src/sidekick_usages/providers/codex/schema/usage.py",
+        "src/sidekick_usages/providers/codex/schema/validation.py",
         "src/sidekick_usages/serialization/json.py",
     }
 )

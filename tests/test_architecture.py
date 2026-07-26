@@ -122,9 +122,9 @@ _MUTATIONS = (
     architecture.models.SourceMutation(
         "DEP008",
         "src/sidekick_usages/usage/presentation/overview.py",
-        "from rich.console import RenderableType\n",
+        "from rich.console import Console, Group, RenderableType\n",
         (
-            "from rich.console import RenderableType\n"
+            "from rich.console import Console, Group, RenderableType\n"
             "from sidekick_usages.credentials import authorities\n"
         ),
     ),
@@ -164,7 +164,7 @@ _MUTATIONS = (
     ),
     architecture.models.SourceMutation(
         "CTX001",
-        "src/sidekick_usages/cli/context.py",
+        "src/sidekick_usages/cli/contexts/models.py",
         "    accounts: AccountStore\n",
         "    paths: ApplicationPaths\n",
     ),
