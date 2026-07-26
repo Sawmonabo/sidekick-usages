@@ -9,7 +9,6 @@ from typing import Annotated, Literal
 from pydantic import (
     AfterValidator,
     BaseModel,
-    ConfigDict,
     ValidationError,
     model_validator,
 )
@@ -22,6 +21,7 @@ from sidekick_usages.persistence.private.bundles.writes import (
     MAX_PRIVATE_FILE_BYTES,
     PreparedPrivateBundleWrite,
 )
+from sidekick_usages.persistence.schema.config import STRICT_SCHEMA_CONFIG
 from sidekick_usages.serialization.json import (
     JsonDecodeError,
     decode_json_value,
@@ -70,7 +70,7 @@ def _base64_value(value: str) -> str:
 class _PrivateFileStage(BaseModel):
     """One bounded target and exact optional base expectation."""
 
-    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
+    model_config = STRICT_SCHEMA_CONFIG
 
     target_base64: _Base64Value
     expected_state: _ExpectedState
@@ -88,7 +88,7 @@ class _PrivateFileStage(BaseModel):
 class _PrivateBundleStage(BaseModel):
     """One complete prepared private-bundle write."""
 
-    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
+    model_config = STRICT_SCHEMA_CONFIG
 
     schema_version: Literal[1]
     path: _PathValue

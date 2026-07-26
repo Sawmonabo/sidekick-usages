@@ -14,17 +14,13 @@ PRIVATE_DIRECTORY_MODE = 0o700
 PRIVATE_FILE_MODE = 0o600
 
 
-def _native_error(kind: NativeFailureKind) -> NativeFilesystemError:
-    return NativeFilesystemError(kind)
-
-
 def no_follow_flag() -> int:
     """Return the platform's strongest no-follow open flag."""
     if sys.platform != "darwin":
         return os.O_NOFOLLOW
     no_follow_any = getattr(os, "O_NOFOLLOW_ANY", None)
     if type(no_follow_any) is not int:
-        raise _native_error(NativeFailureKind.UNSUPPORTED)
+        raise NativeFilesystemError(NativeFailureKind.UNSUPPORTED)
     return no_follow_any
 
 
@@ -35,7 +31,7 @@ def path_metadata(path: Path) -> os.stat_result | None:
     except FileNotFoundError:
         return None
     except OSError:
-        raise _native_error(NativeFailureKind.UNSAFE) from None
+        raise NativeFilesystemError(NativeFailureKind.UNSAFE) from None
 
 
 def existing_ancestor(path: Path) -> Path:
@@ -44,11 +40,11 @@ def existing_ancestor(path: Path) -> Path:
     while path_metadata(candidate) is None:
         parent = candidate.parent
         if parent == candidate:
-            raise _native_error(NativeFailureKind.UNSUPPORTED)
+            raise NativeFilesystemError(NativeFailureKind.UNSUPPORTED)
         candidate = parent
     metadata = path_metadata(candidate)
     if metadata is None or not stat.S_ISDIR(metadata.st_mode):
-        raise _native_error(NativeFailureKind.UNSAFE)
+        raise NativeFilesystemError(NativeFailureKind.UNSAFE)
     return candidate
 
 
@@ -61,7 +57,7 @@ def close_descriptor(
         os.close(descriptor)
     except OSError:
         if primary is None:
-            raise _native_error(NativeFailureKind.UNSAFE) from None
+            raise NativeFilesystemError(NativeFailureKind.UNSAFE) from None
         primary.add_note("Native descriptor cleanup also failed.")
     if primary is not None:
         raise primary from None
@@ -97,7 +93,7 @@ def owned_descriptor(
     except NativeFilesystemError as error:
         primary = error
     except OSError:
-        primary = _native_error(failure_kind)
+        primary = NativeFilesystemError(failure_kind)
     except BaseException as error:
         primary = error
     try:
@@ -106,7 +102,7 @@ def owned_descriptor(
         if primary is not None:
             primary.add_note("Native descriptor cleanup also failed.")
         else:
-            primary = _native_error(NativeFailureKind.UNSAFE)
+            primary = NativeFilesystemError(NativeFailureKind.UNSAFE)
     if primary is not None:
         raise primary from None
 
@@ -117,25 +113,25 @@ def open_directory(path: Path, *, private: bool) -> int:
     try:
         descriptor = os.open(path, flags)
     except OSError:
-        raise _native_error(NativeFailureKind.UNSAFE) from None
+        raise NativeFilesystemError(NativeFailureKind.UNSAFE) from None
     try:
         metadata = os.fstat(descriptor)
         if not stat.S_ISDIR(metadata.st_mode):
-            raise _native_error(NativeFailureKind.UNSAFE)
+            raise NativeFilesystemError(NativeFailureKind.UNSAFE)
         if not private and (
             metadata.st_uid not in {0, os.geteuid()}
             or stat.S_IMODE(metadata.st_mode) & 0o022
         ):
-            raise _native_error(NativeFailureKind.UNSAFE)
+            raise NativeFilesystemError(NativeFailureKind.UNSAFE)
         if private and (
             metadata.st_uid != os.geteuid()
             or stat.S_IMODE(metadata.st_mode) & 0o077
         ):
-            raise _native_error(NativeFailureKind.UNSAFE)
+            raise NativeFilesystemError(NativeFailureKind.UNSAFE)
     except OSError:
         close_descriptor(
             descriptor,
-            _native_error(NativeFailureKind.UNSAFE),
+            NativeFilesystemError(NativeFailureKind.UNSAFE),
         )
     except NativeFilesystemError as error:
         close_descriptor(descriptor, error)
@@ -155,7 +151,7 @@ def open_child_directory(
     try:
         descriptor = os.open(basename, flags, dir_fd=parent_descriptor)
     except OSError:
-        raise _native_error(NativeFailureKind.UNSAFE) from None
+        raise NativeFilesystemError(NativeFailureKind.UNSAFE) from None
     try:
         metadata = os.fstat(descriptor)
         parent_metadata = os.fstat(parent_descriptor)
@@ -177,11 +173,11 @@ def open_child_directory(
                 )
             )
         ):
-            raise _native_error(NativeFailureKind.UNSAFE)
+            raise NativeFilesystemError(NativeFailureKind.UNSAFE)
     except OSError:
         close_descriptor(
             descriptor,
-            _native_error(NativeFailureKind.UNSAFE),
+            NativeFilesystemError(NativeFailureKind.UNSAFE),
         )
     except NativeFilesystemError as error:
         close_descriptor(descriptor, error)
@@ -196,7 +192,7 @@ def require_exact_entry(
     try:
         entries = tuple(os.listdir(parent_descriptor))
     except OSError:
-        raise _native_error(NativeFailureKind.UNREADABLE) from None
+        raise NativeFilesystemError(NativeFailureKind.UNREADABLE) from None
     if basename in entries:
         try:
             metadata = os.stat(
@@ -205,13 +201,13 @@ def require_exact_entry(
                 follow_symlinks=False,
             )
         except FileNotFoundError:
-            raise _native_error(NativeFailureKind.CHANGED) from None
+            raise NativeFilesystemError(NativeFailureKind.CHANGED) from None
         except OSError:
-            raise _native_error(NativeFailureKind.UNSAFE) from None
+            raise NativeFilesystemError(NativeFailureKind.UNSAFE) from None
         return metadata.st_dev, metadata.st_ino
     requested = basename.casefold()
     if any(entry.casefold() == requested for entry in entries):
-        raise _native_error(NativeFailureKind.UNSAFE)
+        raise NativeFilesystemError(NativeFailureKind.UNSAFE)
     return None
 
 
@@ -233,7 +229,7 @@ def extend_parent_chain(
         except FileExistsError:
             pass
         except OSError:
-            raise _native_error(NativeFailureKind.CREATE) from None
+            raise NativeFilesystemError(NativeFailureKind.CREATE) from None
         child = open_child_directory(
             parent_descriptor,
             component,
@@ -244,4 +240,6 @@ def extend_parent_chain(
             try:
                 os.fsync(parent_descriptor)
             except OSError:
-                raise _native_error(NativeFailureKind.SYNCHRONIZE) from None
+                raise NativeFilesystemError(
+                    NativeFailureKind.SYNCHRONIZE
+                ) from None

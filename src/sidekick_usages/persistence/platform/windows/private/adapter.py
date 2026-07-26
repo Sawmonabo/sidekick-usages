@@ -39,9 +39,6 @@ if sys.platform == "win32":
 
 if sys.platform == "win32":
 
-    def _native_error(kind: NativeFailureKind) -> NativeFilesystemError:
-        return NativeFilesystemError(kind)
-
     def _duplicate_descriptor(
         descriptor: int,
         kind: NativeFailureKind,
@@ -49,7 +46,7 @@ if sys.platform == "win32":
         try:
             return os.dup(descriptor)
         except OSError:
-            raise _native_error(kind) from None
+            raise NativeFilesystemError(kind) from None
 
     def _descriptor_handle(
         descriptor: int,
@@ -58,7 +55,7 @@ if sys.platform == "win32":
         try:
             return msvcrt.get_osfhandle(descriptor)
         except OSError:
-            raise _native_error(kind) from None
+            raise NativeFilesystemError(kind) from None
 
     def _open_repair_child(
         parent: Path,
@@ -69,7 +66,7 @@ if sys.platform == "win32":
     ) -> int:
         """Open an owner-owned child for exact DACL repair."""
         if not namespace.require_exact_entry(parent, basename):
-            raise _native_error(NativeFailureKind.CHANGED)
+            raise NativeFilesystemError(NativeFailureKind.CHANGED)
         attributes = namespace.path_attributes(
             namespace.child_path(parent, basename)
         )
@@ -78,7 +75,7 @@ if sys.platform == "win32":
             or bool(attributes & stat.FILE_ATTRIBUTE_DIRECTORY)
             is not directory
         ):
-            raise _native_error(NativeFailureKind.UNSAFE)
+            raise NativeFilesystemError(NativeFailureKind.UNSAFE)
         flags = win32file.FILE_FLAG_OPEN_REPARSE_POINT
         os_flags = os.O_RDONLY | os.O_BINARY
         if directory:
@@ -98,7 +95,7 @@ if sys.platform == "win32":
                 None,
             )
         except pywintypes.error:
-            raise _native_error(NativeFailureKind.UNSAFE) from None
+            raise NativeFilesystemError(NativeFailureKind.UNSAFE) from None
         try:
             security.validate_repair_owner(int(handle))
             namespace.validate_membership(
@@ -122,7 +119,7 @@ if sys.platform == "win32":
                 allow_interrupted_link=False,
             )
             if metadata.st_dev != parent_metadata.st_dev:
-                raise _native_error(NativeFailureKind.UNSAFE)
+                raise NativeFilesystemError(NativeFailureKind.UNSAFE)
         except BaseException as error:
             handles.close_descriptor(descriptor, error)
         return descriptor
@@ -173,7 +170,7 @@ if sys.platform == "win32":
         try:
             current_descriptor = os.dup(opened.root_descriptor)
         except OSError:
-            raise _native_error(NativeFailureKind.UNREADABLE) from None
+            raise NativeFilesystemError(NativeFailureKind.UNREADABLE) from None
         descriptors = [current_descriptor]
         current_path = opened.root_path
         traversed: RelativePath = ()
@@ -194,7 +191,7 @@ if sys.platform == "win32":
                     metadata.st_dev,
                     metadata.st_ino,
                 ) != identities[traversed]:
-                    raise _native_error(NativeFailureKind.CHANGED)
+                    raise NativeFilesystemError(NativeFailureKind.CHANGED)
                 current_descriptor = child
                 current_path /= component
         except BaseException as error:
@@ -260,7 +257,7 @@ if sys.platform == "win32":
                     if attributes is None or (
                         attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT
                     ):
-                        raise _native_error(NativeFailureKind.UNSAFE)
+                        raise NativeFilesystemError(NativeFailureKind.UNSAFE)
                     directory = bool(
                         attributes & stat.FILE_ATTRIBUTE_DIRECTORY
                     )
@@ -349,7 +346,7 @@ if sys.platform == "win32":
                     NativeFailureKind.CHANGED,
                 )
                 if (metadata.st_dev, metadata.st_ino) != entry.identity:
-                    raise _native_error(NativeFailureKind.CHANGED)
+                    raise NativeFilesystemError(NativeFailureKind.CHANGED)
                 handle = _descriptor_handle(
                     descriptor,
                     NativeFailureKind.UNSAFE,
@@ -371,7 +368,7 @@ if sys.platform == "win32":
                     NativeFailureKind.HARDEN,
                 )
                 if (after.st_dev, after.st_ino) != entry.identity:
-                    raise _native_error(NativeFailureKind.CHANGED)
+                    raise NativeFilesystemError(NativeFailureKind.CHANGED)
                 namespace.validate_membership(
                     parent_descriptor,
                     handle,
@@ -503,7 +500,7 @@ if sys.platform == "win32":
                     tree.delete_entry(opened, entry, identities)
                 remaining, _remaining_identities = tree.scan_tree(opened)
                 if remaining:
-                    raise _native_error(NativeFailureKind.CHANGED)
+                    raise NativeFilesystemError(NativeFailureKind.CHANGED)
 
         def destroy_tree(self, root: Path) -> None:
             """Delete one exact validated private tree including its root."""

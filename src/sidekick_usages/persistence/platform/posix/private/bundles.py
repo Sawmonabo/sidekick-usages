@@ -40,10 +40,6 @@ from sidekick_usages.persistence.private.bundles.paths import (
 )
 
 
-def _native_error(kind: NativeFailureKind) -> NativeFilesystemError:
-    return NativeFilesystemError(kind)
-
-
 def _require_chain_identity(
     opened: OpenedTree,
     chain: OpenedChain,
@@ -54,14 +50,14 @@ def _require_chain_identity(
     if not chain.descriptors or len(chain.descriptors) != len(
         chain.identities
     ):
-        raise _native_error(NativeFailureKind.CHANGED)
+        raise NativeFilesystemError(NativeFailureKind.CHANGED)
     for index, descriptor in enumerate(chain.descriptors):
         metadata = _metadata(descriptor, NativeFailureKind.CHANGED)
         if (
             metadata.st_dev,
             metadata.st_ino,
         ) != chain.identities[index] or metadata.st_dev != opened.root_device:
-            raise _native_error(NativeFailureKind.CHANGED)
+            raise NativeFilesystemError(NativeFailureKind.CHANGED)
         if index == 0:
             continue
         parent = chain.descriptors[index - 1]
@@ -69,9 +65,9 @@ def _require_chain_identity(
         observed = namespace.require_exact_entry(parent, basename)
         if final_may_be_absent and index == len(chain.descriptors) - 1:
             if observed not in {None, chain.identities[index]}:
-                raise _native_error(NativeFailureKind.CHANGED)
+                raise NativeFilesystemError(NativeFailureKind.CHANGED)
         elif observed != chain.identities[index]:
-            raise _native_error(NativeFailureKind.CHANGED)
+            raise NativeFilesystemError(NativeFailureKind.CHANGED)
 
 
 def _open_chain_child(
@@ -93,12 +89,12 @@ def _open_chain_child(
             )
             os.fsync(parent)
         except FileExistsError:
-            raise _native_error(NativeFailureKind.CHANGED) from None
+            raise NativeFilesystemError(NativeFailureKind.CHANGED) from None
         except OSError:
-            raise _native_error(NativeFailureKind.CREATE) from None
+            raise NativeFilesystemError(NativeFailureKind.CREATE) from None
         identity = namespace.require_exact_entry(parent, component)
         if identity is None:
-            raise _native_error(NativeFailureKind.CHANGED)
+            raise NativeFilesystemError(NativeFailureKind.CHANGED)
     child = namespace.open_child_directory(parent, component, private=True)
     metadata = _metadata(child, NativeFailureKind.UNREADABLE)
     if (
@@ -107,7 +103,7 @@ def _open_chain_child(
     ) != identity or metadata.st_dev != opened.root_device:
         namespace.close_descriptor_stack(
             [child],
-            _native_error(NativeFailureKind.CHANGED),
+            NativeFilesystemError(NativeFailureKind.CHANGED),
         )
     return child, identity
 
@@ -123,7 +119,7 @@ def _open_component_chain(
     try:
         root_descriptor = os.dup(opened.root_descriptor)
     except OSError:
-        raise _native_error(NativeFailureKind.UNREADABLE) from None
+        raise NativeFilesystemError(NativeFailureKind.UNREADABLE) from None
     descriptors = [root_descriptor]
     identities = [opened.root_identity]
     primary: BaseException | None = None
@@ -179,16 +175,16 @@ def _read_relative_file(
     try:
         descriptor = os.open(basename, flags, dir_fd=parent)
     except FileNotFoundError:
-        raise _native_error(NativeFailureKind.CHANGED) from None
+        raise NativeFilesystemError(NativeFailureKind.CHANGED) from None
     except OSError:
-        raise _native_error(NativeFailureKind.UNSAFE) from None
+        raise NativeFilesystemError(NativeFailureKind.UNSAFE) from None
     with namespace.owned_descriptor(descriptor, NativeFailureKind.UNREADABLE):
         metadata = _metadata(descriptor, NativeFailureKind.UNREADABLE)
         if (metadata.st_dev, metadata.st_ino) != identity:
-            raise _native_error(NativeFailureKind.CHANGED)
+            raise NativeFilesystemError(NativeFailureKind.CHANGED)
         result = files.read_descriptor(descriptor, opened.root_device, limit)
         if namespace.require_exact_entry(parent, basename) != identity:
-            raise _native_error(NativeFailureKind.CHANGED)
+            raise NativeFilesystemError(NativeFailureKind.CHANGED)
     _require_chain_identity(opened, chain)
     return result
 
@@ -209,7 +205,7 @@ def _install_staged_file(
         limit,
     )
     if stage is None:
-        raise _native_error(NativeFailureKind.CHANGED)
+        raise NativeFilesystemError(NativeFailureKind.CHANGED)
     current = _read_relative_file(
         opened,
         target,
@@ -217,7 +213,7 @@ def _install_staged_file(
         limit,
     )
     if current != expected:
-        raise _native_error(NativeFailureKind.CHANGED)
+        raise NativeFilesystemError(NativeFailureKind.CHANGED)
     source_descriptor = transaction.descriptors[-1]
     target_descriptor = target.descriptors[-1]
     _require_chain_identity(opened, transaction)
@@ -231,7 +227,7 @@ def _install_staged_file(
         )
         != expected
     ):
-        raise _native_error(NativeFailureKind.CHANGED)
+        raise NativeFilesystemError(NativeFailureKind.CHANGED)
     _require_chain_identity(opened, transaction)
     _require_chain_identity(opened, target)
     try:
@@ -253,9 +249,9 @@ def _install_staged_file(
         os.fsync(source_descriptor)
         os.fsync(target_descriptor)
     except FileExistsError:
-        raise _native_error(NativeFailureKind.CHANGED) from None
+        raise NativeFilesystemError(NativeFailureKind.CHANGED) from None
     except OSError:
-        raise _native_error(NativeFailureKind.REPLACE) from None
+        raise NativeFilesystemError(NativeFailureKind.REPLACE) from None
     final = _read_relative_file(
         opened,
         target,
@@ -267,7 +263,7 @@ def _install_staged_file(
         or (final.device, final.inode) != (stage.device, stage.inode)
         or final.data != stage.data
     ):
-        raise _native_error(NativeFailureKind.CHANGED)
+        raise NativeFilesystemError(NativeFailureKind.CHANGED)
     _require_chain_identity(opened, transaction)
     _require_chain_identity(opened, target)
     return final
@@ -281,7 +277,7 @@ def _delete_relative_file(
     limit: int,
 ) -> None:
     if _read_relative_file(opened, chain, basename, limit) != expected:
-        raise _native_error(NativeFailureKind.CHANGED)
+        raise NativeFilesystemError(NativeFailureKind.CHANGED)
     parent = chain.descriptors[-1]
     _remove_exact_entry(
         parent,
@@ -292,9 +288,9 @@ def _delete_relative_file(
     try:
         os.fsync(parent)
     except OSError:
-        raise _native_error(NativeFailureKind.SYNCHRONIZE) from None
+        raise NativeFilesystemError(NativeFailureKind.SYNCHRONIZE) from None
     if namespace.require_exact_entry(parent, basename) is not None:
-        raise _native_error(NativeFailureKind.CHANGED)
+        raise NativeFilesystemError(NativeFailureKind.CHANGED)
     _require_chain_identity(opened, chain)
 
 
@@ -308,11 +304,11 @@ def _bundle_names(
             private_bundle_relative_components(basename)
         require_portable_unique_basenames(names)
     except ValueError:
-        raise _native_error(NativeFailureKind.UNSAFE) from None
+        raise NativeFilesystemError(NativeFailureKind.UNSAFE) from None
     except OSError:
-        raise _native_error(NativeFailureKind.UNREADABLE) from None
+        raise NativeFilesystemError(NativeFailureKind.UNREADABLE) from None
     if len(names) > max_files:
-        raise _native_error(NativeFailureKind.TOO_LARGE)
+        raise NativeFilesystemError(NativeFailureKind.TOO_LARGE)
     return names
 
 
@@ -333,10 +329,10 @@ def _read_bundle_pass(
             file_limit,
         )
         if snapshot is None:
-            raise _native_error(NativeFailureKind.CHANGED)
+            raise NativeFilesystemError(NativeFailureKind.CHANGED)
         total += len(snapshot.data)
         if total > total_limit:
-            raise _native_error(NativeFailureKind.TOO_LARGE)
+            raise NativeFilesystemError(NativeFailureKind.TOO_LARGE)
         files.append((basename, snapshot))
     return tuple(files)
 
@@ -367,9 +363,9 @@ def _read_bundle_files(
             )
             != snapshot
         ):
-            raise _native_error(NativeFailureKind.CHANGED)
+            raise NativeFilesystemError(NativeFailureKind.CHANGED)
     if _bundle_names(chain, max_files) != names:
-        raise _native_error(NativeFailureKind.CHANGED)
+        raise NativeFilesystemError(NativeFailureKind.CHANGED)
     return files
 
 
@@ -407,7 +403,7 @@ class PosixPrivateBundlePlatform:
                 identity = namespace.require_exact_entry(parent, basename)
                 _require_chain_identity(opened, chain)
                 if namespace.require_exact_entry(parent, basename) != identity:
-                    raise _native_error(NativeFailureKind.CHANGED)
+                    raise NativeFilesystemError(NativeFailureKind.CHANGED)
                 return identity is not None
 
     def ensure_relative_directory(
@@ -419,14 +415,14 @@ class PosixPrivateBundlePlatform:
         self._ensure_root(root)
         with _open_tree(root) as opened:
             if opened is None:
-                raise _native_error(NativeFailureKind.CHANGED)
+                raise NativeFilesystemError(NativeFailureKind.CHANGED)
             with _open_component_chain(
                 opened,
                 relative,
                 create=True,
             ) as chain:
                 if chain is None:
-                    raise _native_error(NativeFailureKind.CHANGED)
+                    raise NativeFilesystemError(NativeFailureKind.CHANGED)
 
     def read_relative_file(
         self,
@@ -496,21 +492,21 @@ class PosixPrivateBundlePlatform:
         self._qualifier.qualify(root)
         with _open_tree(root) as opened:
             if opened is None:
-                raise _native_error(NativeFailureKind.CHANGED)
+                raise NativeFilesystemError(NativeFailureKind.CHANGED)
             with _open_component_chain(
                 opened,
                 transaction_relative,
                 create=False,
             ) as transaction:
                 if transaction is None:
-                    raise _native_error(NativeFailureKind.CHANGED)
+                    raise NativeFilesystemError(NativeFailureKind.CHANGED)
                 with _open_component_chain(
                     opened,
                     target_relative,
                     create=True,
                 ) as target:
                     if target is None:
-                        raise _native_error(NativeFailureKind.CHANGED)
+                        raise NativeFilesystemError(NativeFailureKind.CHANGED)
                     return _install_staged_file(
                         opened,
                         transaction,
@@ -533,14 +529,14 @@ class PosixPrivateBundlePlatform:
         self._qualifier.qualify(root)
         with _open_tree(root) as opened:
             if opened is None:
-                raise _native_error(NativeFailureKind.CHANGED)
+                raise NativeFilesystemError(NativeFailureKind.CHANGED)
             with _open_component_chain(
                 opened,
                 relative,
                 create=False,
             ) as chain:
                 if chain is None:
-                    raise _native_error(NativeFailureKind.CHANGED)
+                    raise NativeFilesystemError(NativeFailureKind.CHANGED)
                 _delete_relative_file(
                     opened,
                     chain,
@@ -613,7 +609,7 @@ class PosixPrivateBundlePlatform:
                     _delete_entry(nested, entry, identities)
                 remaining, _remaining_identities = _scan_tree(nested)
                 if remaining:
-                    raise _native_error(NativeFailureKind.CHANGED)
+                    raise NativeFilesystemError(NativeFailureKind.CHANGED)
                 _delete_directory(
                     nested,
                     nested.parent_descriptor,

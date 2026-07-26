@@ -25,11 +25,11 @@ from sidekick_usages.persistence.schema.refresh.journal import (
     credential_digest,
     decode_refresh_journal,
     refresh_credential_kind,
-    require_sha256,
 )
 from sidekick_usages.persistence.schema.refresh.stage.credential import (
     decode_credential_refresh_stage,
 )
+from sidekick_usages.persistence.schema.validation import sha256_text
 from sidekick_usages.persistence.types.credential import (
     PrivateCredentialState,
 )
@@ -175,7 +175,7 @@ class CredentialRefreshArtifacts:
 
     def _inspect_directory(self, directory: Path) -> None:
         try:
-            require_sha256(directory.name)
+            sha256_text(directory.name)
         except ValueError:
             raise CredentialRefreshRecoveryBlockedError from None
         journal_snapshot = self._tree.read_owned_file(
@@ -221,7 +221,7 @@ def _require_direct_file_namespace(files: tuple[Path, ...]) -> None:
             continue
         for suffix in _ROUTED_LOCK_SUFFIXES:
             if path.name.endswith(suffix):
-                require_sha256(path.name.removesuffix(suffix))
+                sha256_text(path.name.removesuffix(suffix))
                 break
         else:
             raise CredentialRefreshRecoveryBlockedError

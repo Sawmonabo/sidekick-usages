@@ -42,9 +42,6 @@ if sys.platform == "win32":
         validate_security,
     )
 
-    def _native_error(kind: NativeFailureKind) -> NativeFilesystemError:
-        return NativeFilesystemError(kind)
-
     def open_directory(path: Path, *, private: bool = True) -> int:
         """Open and validate one exact non-reparse directory."""
         try:
@@ -59,7 +56,7 @@ if sys.platform == "win32":
                 None,
             )
         except pywintypes.error:
-            raise _native_error(NativeFailureKind.UNSAFE) from None
+            raise NativeFilesystemError(NativeFailureKind.UNSAFE) from None
         try:
             if private:
                 validate_security(int(handle), directory=True)
@@ -99,7 +96,7 @@ if sys.platform == "win32":
     ) -> int:
         """Open one exact protected child and prove parent membership."""
         if not require_exact_entry(parent, basename):
-            raise _native_error(NativeFailureKind.CHANGED)
+            raise NativeFilesystemError(NativeFailureKind.CHANGED)
         path = child_path(parent, basename)
         access = win32file.GENERIC_READ
         flags = os.O_RDONLY | os.O_BINARY
@@ -122,13 +119,15 @@ if sys.platform == "win32":
                 winerror.ERROR_FILE_NOT_FOUND,
                 winerror.ERROR_PATH_NOT_FOUND,
             ):
-                raise _native_error(NativeFailureKind.CHANGED) from None
+                raise NativeFilesystemError(
+                    NativeFailureKind.CHANGED
+                ) from None
             kind = (
                 NativeFailureKind.UNSAFE
                 if error.winerror == winerror.ERROR_ACCESS_DENIED
                 else NativeFailureKind.UNREADABLE
             )
-            raise _native_error(kind) from None
+            raise NativeFilesystemError(kind) from None
         try:
             if external_source:
                 validate_external_private_source_file(int(handle))
@@ -167,7 +166,7 @@ if sys.platform == "win32":
             try:
                 win32file.FlushFileBuffers(msvcrt.get_osfhandle(descriptor))
             except OSError, pywintypes.error:
-                raise _native_error(NativeFailureKind.HARDEN) from None
+                raise NativeFilesystemError(NativeFailureKind.HARDEN) from None
 
     def read_file(
         parent: Path,
@@ -184,7 +183,7 @@ if sys.platform == "win32":
             attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT
             or not attributes & stat.FILE_ATTRIBUTE_DIRECTORY
         ):
-            raise _native_error(NativeFailureKind.UNSAFE)
+            raise NativeFilesystemError(NativeFailureKind.UNSAFE)
         directory_descriptor = (
             open_external_source_directory(parent)
             if external_source
@@ -219,14 +218,16 @@ if sys.platform == "win32":
                 try:
                     child_handle = msvcrt.get_osfhandle(file_descriptor)
                 except OSError:
-                    raise _native_error(NativeFailureKind.UNREADABLE) from None
+                    raise NativeFilesystemError(
+                        NativeFailureKind.UNREADABLE
+                    ) from None
                 validate_membership(
                     directory_descriptor,
                     child_handle,
                     basename,
                 )
                 if not require_exact_entry(parent, basename):
-                    raise _native_error(NativeFailureKind.CHANGED)
+                    raise NativeFilesystemError(NativeFailureKind.CHANGED)
                 return result
 
     def create_private_file(
@@ -258,8 +259,10 @@ if sys.platform == "win32":
                     winerror.ERROR_FILE_EXISTS,
                     winerror.ERROR_ALREADY_EXISTS,
                 ):
-                    raise _native_error(NativeFailureKind.EXISTS) from None
-                raise _native_error(NativeFailureKind.CREATE) from None
+                    raise NativeFilesystemError(
+                        NativeFailureKind.EXISTS
+                    ) from None
+                raise NativeFilesystemError(NativeFailureKind.CREATE) from None
             with owned_handle(handle):
                 validate_security(int(handle), directory=False)
                 validate_membership(
@@ -270,7 +273,7 @@ if sys.platform == "win32":
                 write_handle(int(handle), data)
             reopened = read_file(parent, basename, len(data))
             if reopened is None or reopened.data != data:
-                raise _native_error(NativeFailureKind.WRITE)
+                raise NativeFilesystemError(NativeFailureKind.WRITE)
             return reopened
 
     def publish_no_replace(
@@ -307,8 +310,12 @@ if sys.platform == "win32":
                         winerror.ERROR_FILE_EXISTS,
                         winerror.ERROR_ALREADY_EXISTS,
                     }:
-                        raise _native_error(NativeFailureKind.EXISTS) from None
-                    raise _native_error(NativeFailureKind.PUBLISH) from None
+                        raise NativeFilesystemError(
+                            NativeFailureKind.EXISTS
+                        ) from None
+                    raise NativeFilesystemError(
+                        NativeFailureKind.PUBLISH
+                    ) from None
                 source_handle = msvcrt.get_osfhandle(source_descriptor)
                 validate_membership(
                     descriptor,
@@ -334,7 +341,7 @@ if sys.platform == "win32":
                 parent,
                 final_basename,
             ):
-                raise _native_error(NativeFailureKind.CHANGED)
+                raise NativeFilesystemError(NativeFailureKind.CHANGED)
             source_descriptor = open_mutation_source(
                 parent,
                 temporary_basename,
@@ -360,8 +367,12 @@ if sys.platform == "win32":
                         winerror.ERROR_FILE_EXISTS,
                         winerror.ERROR_ALREADY_EXISTS,
                     }:
-                        raise _native_error(NativeFailureKind.EXISTS) from None
-                    raise _native_error(NativeFailureKind.REPLACE) from None
+                        raise NativeFilesystemError(
+                            NativeFailureKind.EXISTS
+                        ) from None
+                    raise NativeFilesystemError(
+                        NativeFailureKind.REPLACE
+                    ) from None
                 source_handle = msvcrt.get_osfhandle(source_descriptor)
                 validate_membership(
                     descriptor,
@@ -379,7 +390,7 @@ if sys.platform == "win32":
         with owned_descriptor(descriptor, NativeFailureKind.HARDEN):
             _flush_path(parent, final_basename, descriptor)
             if read_file(parent, final_basename, limit) is None:
-                raise _native_error(NativeFailureKind.HARDEN)
+                raise NativeFilesystemError(NativeFailureKind.HARDEN)
 
     def remove_candidate(parent: Path, basename: str) -> bool:
         """Delete one exact owned temporary when present."""
@@ -405,11 +416,11 @@ if sys.platform == "win32":
             except OSError, pywintypes.error:
                 close_descriptor(
                     descriptor,
-                    _native_error(NativeFailureKind.REMOVE),
+                    NativeFilesystemError(NativeFailureKind.REMOVE),
                 )
             close_descriptor(descriptor)
             if require_exact_entry(parent, basename):
-                raise _native_error(NativeFailureKind.CHANGED)
+                raise NativeFilesystemError(NativeFailureKind.CHANGED)
             return True
 
     def remove_validated(
@@ -443,7 +454,7 @@ if sys.platform == "win32":
                     device,
                     inode,
                 ):
-                    raise _native_error(NativeFailureKind.CHANGED)
+                    raise NativeFilesystemError(NativeFailureKind.CHANGED)
                 try:
                     handle = msvcrt.get_osfhandle(descriptor)
                     win32file.SetFileInformationByHandle(
@@ -452,7 +463,9 @@ if sys.platform == "win32":
                         True,
                     )
                 except OSError, pywintypes.error:
-                    raise _native_error(NativeFailureKind.REMOVE) from None
+                    raise NativeFilesystemError(
+                        NativeFailureKind.REMOVE
+                    ) from None
             if require_exact_entry(parent, basename):
-                raise _native_error(NativeFailureKind.CHANGED)
+                raise NativeFilesystemError(NativeFailureKind.CHANGED)
             return True

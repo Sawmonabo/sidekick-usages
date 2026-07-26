@@ -2,14 +2,11 @@
 
 import hashlib
 import json
-import re
-from datetime import UTC, datetime
 from typing import Annotated, Literal
 
 from pydantic import (
     AfterValidator,
     BaseModel,
-    ConfigDict,
     ValidationError,
 )
 
@@ -20,9 +17,12 @@ from sidekick_usages.core.models import (
     Credentials,
 )
 from sidekick_usages.core.types import AccountLabel, ProviderId
+from sidekick_usages.persistence.schema.config import STRICT_SCHEMA_CONFIG
 from sidekick_usages.persistence.schema.credential import (
     encode_credentials,
 )
+from sidekick_usages.persistence.schema.validation import sha256_text
+from sidekick_usages.persistence.time_codec import canonical_timestamp_text
 from sidekick_usages.serialization.json import (
     JsonDecodeError,
     decode_json_value,
@@ -33,15 +33,12 @@ CREDENTIAL_DOMAIN = b"sidekick-usages credential refresh credential\0"
 JOURNAL_BASENAME = "intent.json"
 STAGE_BASENAME = "replacement.json"
 JOURNAL_SCHEMA_VERSION = 1
-_SHA256_PATTERN = re.compile(r"[0-9a-f]{64}\Z", re.ASCII)
-_TIMESTAMP_PATTERN = re.compile(
-    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:"
-    r"[0-9]{2}:[0-9]{2}\.[0-9]{6}Z\Z",
-    re.ASCII,
-)
 
-type _Sha256Value = Annotated[str, AfterValidator(require_sha256)]
-type _TimestampValue = Annotated[str, AfterValidator(_timestamp_value)]
+type _Sha256Value = Annotated[str, AfterValidator(sha256_text)]
+type _TimestampValue = Annotated[
+    str,
+    AfterValidator(canonical_timestamp_text),
+]
 type CredentialKind = Literal["subscription_login", "codex_login"]
 type RefreshReason = Literal[
     "scheduled_due",
@@ -61,29 +58,10 @@ class RefreshJournalDecodeError(ValueError):
     """Private refresh journal or stage violates its strict contract."""
 
 
-def require_sha256(value: str) -> str:
-    """Require one lower-case SHA-256 hexadecimal value."""
-    if _SHA256_PATTERN.fullmatch(value) is None:
-        raise ValueError
-    return value
-
-
-def _timestamp_value(value: str) -> str:
-    if _TIMESTAMP_PATTERN.fullmatch(value) is None:
-        raise ValueError
-    try:
-        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
-    except ValueError:
-        raise ValueError from None
-    if parsed.tzinfo is None or parsed.utcoffset() is None:
-        raise ValueError
-    return value
-
-
 class RefreshJournal(BaseModel):
     """Strict non-secret refresh intent and stage proof."""
 
-    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
+    model_config = STRICT_SCHEMA_CONFIG
 
     schema_version: Literal[1]
     provider_id: Literal["claude", "codex"]
@@ -137,13 +115,6 @@ def refresh_reason(value: str) -> RefreshReason:
     if value == "operator_forced":
         return "operator_forced"
     raise ValueError("Credential refresh reason is invalid.")
-
-
-def refresh_timestamp(value: datetime) -> str:
-    """Encode one aware instant in the canonical journal form."""
-    if value.tzinfo is None or value.utcoffset() is None:
-        raise ValueError("Credential refresh time must be aware.")
-    return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
 def encode_refresh_journal(journal: RefreshJournal) -> bytes:

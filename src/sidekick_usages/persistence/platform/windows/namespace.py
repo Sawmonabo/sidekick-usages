@@ -26,9 +26,6 @@ if sys.platform == "win32":
         winerror.ERROR_PATH_NOT_FOUND,
     }
 
-    def _native_error(kind: NativeFailureKind) -> NativeFilesystemError:
-        return NativeFilesystemError(kind)
-
     def path_attributes(path: Path) -> int | None:
         """Return exact no-follow attributes or proven absence."""
         try:
@@ -36,9 +33,9 @@ if sys.platform == "win32":
         except pywintypes.error as error:
             if error.winerror in _NOT_FOUND_ERRORS:
                 return None
-            raise _native_error(NativeFailureKind.UNSAFE) from None
+            raise NativeFilesystemError(NativeFailureKind.UNSAFE) from None
         if type(attributes) is not int:
-            raise _native_error(NativeFailureKind.UNSAFE)
+            raise NativeFilesystemError(NativeFailureKind.UNSAFE)
         return attributes
 
     def existing_ancestor(path: Path) -> Path:
@@ -47,14 +44,14 @@ if sys.platform == "win32":
         while path_attributes(candidate) is None:
             parent = candidate.parent
             if parent == candidate:
-                raise _native_error(NativeFailureKind.UNSUPPORTED)
+                raise NativeFilesystemError(NativeFailureKind.UNSUPPORTED)
             candidate = parent
         attributes = path_attributes(candidate)
         if attributes is None or (
             attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT
             or not attributes & stat.FILE_ATTRIBUTE_DIRECTORY
         ):
-            raise _native_error(NativeFailureKind.UNSAFE)
+            raise NativeFilesystemError(NativeFailureKind.UNSAFE)
         return candidate
 
     def _normalized_final_path(value: str) -> str:
@@ -70,7 +67,7 @@ if sys.platform == "win32":
                 win32file.GetFinalPathNameByHandle(handle, 0)
             )
         except pywintypes.error:
-            raise _native_error(NativeFailureKind.UNSAFE) from None
+            raise NativeFilesystemError(NativeFailureKind.UNSAFE) from None
 
     def validate_membership(
         parent_descriptor: int,
@@ -81,7 +78,7 @@ if sys.platform == "win32":
         try:
             parent_handle = msvcrt.get_osfhandle(parent_descriptor)
         except OSError:
-            raise _native_error(NativeFailureKind.UNSAFE) from None
+            raise NativeFilesystemError(NativeFailureKind.UNSAFE) from None
         parent_path = _final_path(parent_handle)
         child_path = _final_path(child_handle)
         if (
@@ -89,19 +86,19 @@ if sys.platform == "win32":
             != ntpath.normcase(parent_path)
             or ntpath.basename(child_path) != basename
         ):
-            raise _native_error(NativeFailureKind.UNSAFE)
+            raise NativeFilesystemError(NativeFailureKind.UNSAFE)
 
     def require_exact_entry(parent: Path, basename: str) -> bool:
         """Reject aliases without opening their contents."""
         try:
             entries = tuple(entry.name for entry in parent.iterdir())
         except OSError:
-            raise _native_error(NativeFailureKind.UNREADABLE) from None
+            raise NativeFilesystemError(NativeFailureKind.UNREADABLE) from None
         if basename in entries:
             return True
         requested = portable_basename_key(basename)
         if any(portable_basename_key(entry) == requested for entry in entries):
-            raise _native_error(NativeFailureKind.UNSAFE)
+            raise NativeFilesystemError(NativeFailureKind.UNSAFE)
         return False
 
     def child_path(parent: Path, basename: str) -> Path:
@@ -112,14 +109,14 @@ if sys.platform == "win32":
             or "/" in basename
             or "\\" in basename
         ):
-            raise _native_error(NativeFailureKind.UNSAFE)
+            raise NativeFilesystemError(NativeFailureKind.UNSAFE)
         return parent / basename
 
     def qualify_local_ntfs(ancestor: Path) -> FilesystemFamily:
         """Require the actual ancestor volume to be fixed local NTFS."""
         text = str(ancestor)
         if text.startswith("\\\\") or not ancestor.anchor:
-            raise _native_error(NativeFailureKind.UNSUPPORTED)
+            raise NativeFilesystemError(NativeFailureKind.UNSUPPORTED)
         try:
             volume_path = win32file.GetVolumePathName(text)
             drive_type = win32file.GetDriveTypeW(volume_path)
@@ -127,7 +124,9 @@ if sys.platform == "win32":
                 win32api.GetVolumeInformation(volume_path)
             )
         except pywintypes.error:
-            raise _native_error(NativeFailureKind.UNSUPPORTED) from None
+            raise NativeFilesystemError(
+                NativeFailureKind.UNSUPPORTED
+            ) from None
         volume = Path(volume_path)
         if (
             not volume.anchor
@@ -136,5 +135,5 @@ if sys.platform == "win32":
             or filesystem.casefold() != "ntfs"
             or not flags & win32con.FILE_PERSISTENT_ACLS
         ):
-            raise _native_error(NativeFailureKind.UNSUPPORTED)
+            raise NativeFilesystemError(NativeFailureKind.UNSUPPORTED)
         return FilesystemFamily.NTFS

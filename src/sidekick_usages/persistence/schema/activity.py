@@ -1,13 +1,12 @@
 """Strict codec for authoritative account token-activity snapshots."""
 
 import json
-from datetime import UTC, date, datetime
+from datetime import date
 from typing import Annotated, Literal
 
 from pydantic import (
     AfterValidator,
     BaseModel,
-    ConfigDict,
     Field,
     ValidationError,
 )
@@ -16,9 +15,14 @@ from sidekick_usages.core.models import (
     AccountTokenActivitySnapshot,
     TokenActivitySummary,
 )
-from sidekick_usages.core.time import as_utc
 from sidekick_usages.core.types import ProviderId, TokenActivityScope
-from sidekick_usages.persistence.types.artifact import Sha256Digest
+from sidekick_usages.persistence.schema.config import STRICT_SCHEMA_CONFIG
+from sidekick_usages.persistence.schema.validation import sha256_text
+from sidekick_usages.persistence.time_codec import (
+    canonical_timestamp,
+    canonical_timestamp_text,
+    parse_canonical_timestamp,
+)
 from sidekick_usages.serialization.json import (
     JsonDecodeError,
     decode_json_value,
@@ -27,12 +31,11 @@ from sidekick_usages.serialization.json import (
 ACTIVITY_SCHEMA_VERSION = 1
 MAX_ACTIVITY_RECORDS = 4_096
 MAX_TOKEN_COUNT = 9_223_372_036_854_775_807
-MODEL_CONFIG = ConfigDict(strict=True, extra="forbid", frozen=True)
 
 
-type DigestText = Annotated[str, AfterValidator(_digest)]
+type DigestText = Annotated[str, AfterValidator(sha256_text)]
 type DateText = Annotated[str, AfterValidator(_date_text)]
-type TimestampText = Annotated[str, AfterValidator(_timestamp_text)]
+type TimestampText = Annotated[str, AfterValidator(canonical_timestamp_text)]
 type SnapshotRecords = Annotated[
     dict[DigestText, ActivitySnapshotRecord],
     AfterValidator(_records),
@@ -43,36 +46,12 @@ class ActivitySnapshotDecodeError(ValueError):
     """Persisted activity bytes violate the current strict schema."""
 
 
-def _digest(value: str) -> str:
-    Sha256Digest(value)
-    return value
-
-
 def _date_text(value: str) -> str:
     try:
         parsed = date.fromisoformat(value)
     except ValueError:
         raise ValueError from None
     if parsed.isoformat() != value:
-        raise ValueError
-    return value
-
-
-def _timestamp(value: datetime) -> str:
-    utc_value = as_utc(value)
-    return utc_value.isoformat(timespec="microseconds").replace(
-        "+00:00",
-        "Z",
-    )
-
-
-def _timestamp_text(value: str) -> str:
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        canonical = _timestamp(parsed)
-    except ValueError:
-        raise ValueError from None
-    if canonical != value:
         raise ValueError
     return value
 
@@ -88,7 +67,7 @@ def _records(
 class ActivitySnapshotRecord(BaseModel):
     """Strict persisted snapshot record."""
 
-    model_config = MODEL_CONFIG
+    model_config = STRICT_SCHEMA_CONFIG
 
     provider_id: Literal["codex"]
     total_tokens: int = Field(ge=0, le=MAX_TOKEN_COUNT)
@@ -99,7 +78,7 @@ class ActivitySnapshotRecord(BaseModel):
 class ActivitySnapshotDocument(BaseModel):
     """Strict versioned activity-snapshot document."""
 
-    model_config = MODEL_CONFIG
+    model_config = STRICT_SCHEMA_CONFIG
 
     schema_version: Literal[1]
     accounts: SnapshotRecords
@@ -152,7 +131,7 @@ def activity_record(
             if snapshot.summary.since is None
             else snapshot.summary.since.isoformat()
         ),
-        fetched_at=_timestamp(snapshot.fetched_at),
+        fetched_at=canonical_timestamp(snapshot.fetched_at),
     )
 
 
@@ -173,7 +152,5 @@ def account_activity_snapshot(
                 else date.fromisoformat(record.since)
             ),
         ),
-        fetched_at=datetime.fromisoformat(
-            record.fetched_at.replace("Z", "+00:00")
-        ).astimezone(UTC),
+        fetched_at=parse_canonical_timestamp(record.fetched_at),
     )

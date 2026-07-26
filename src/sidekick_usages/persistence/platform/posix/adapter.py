@@ -18,10 +18,6 @@ from sidekick_usages.persistence.platform.types import (
 )
 
 
-def _native_error(kind: NativeFailureKind) -> NativeFilesystemError:
-    return NativeFilesystemError(kind)
-
-
 def _open_lock_descriptor(
     parent_descriptor: int,
     basename: str,
@@ -50,7 +46,7 @@ def _open_lock_descriptor(
             basename,
         )
         if expected_identity is None:
-            raise _native_error(NativeFailureKind.UNSAFE) from None
+            raise NativeFilesystemError(NativeFailureKind.UNSAFE) from None
         try:
             descriptor = os.open(
                 basename,
@@ -61,9 +57,9 @@ def _open_lock_descriptor(
                 dir_fd=parent_descriptor,
             )
         except OSError:
-            raise _native_error(NativeFailureKind.UNSAFE) from None
+            raise NativeFilesystemError(NativeFailureKind.UNSAFE) from None
     except OSError:
-        raise _native_error(NativeFailureKind.CREATE) from None
+        raise NativeFilesystemError(NativeFailureKind.CREATE) from None
     try:
         if created:
             os.fchmod(descriptor, namespace.PRIVATE_FILE_MODE)
@@ -79,11 +75,11 @@ def _open_lock_descriptor(
             or namespace.require_exact_entry(parent_descriptor, basename)
             != expected_identity
         ):
-            raise _native_error(NativeFailureKind.CHANGED)
+            raise NativeFilesystemError(NativeFailureKind.CHANGED)
     except OSError:
         namespace.close_descriptor(
             descriptor,
-            _native_error(NativeFailureKind.UNSAFE),
+            NativeFilesystemError(NativeFailureKind.UNSAFE),
         )
     except NativeFilesystemError as error:
         namespace.close_descriptor(descriptor, error)
@@ -110,52 +106,52 @@ def _remove_exact_entry(
             dir_fd=parent_descriptor,
         )
     except FileNotFoundError:
-        raise _native_error(NativeFailureKind.CHANGED) from None
+        raise NativeFilesystemError(NativeFailureKind.CHANGED) from None
     except OSError as error:
         kind = (
             NativeFailureKind.UNSAFE
             if error.errno in {errno.ELOOP, errno.EACCES, errno.EPERM}
             else NativeFailureKind.REMOVE
         )
-        raise _native_error(kind) from None
+        raise NativeFilesystemError(kind) from None
 
     with namespace.owned_descriptor(file_descriptor, NativeFailureKind.REMOVE):
         try:
             before = os.fstat(file_descriptor)
             directory_device = os.fstat(parent_descriptor).st_dev
         except OSError:
-            raise _native_error(NativeFailureKind.REMOVE) from None
+            raise NativeFilesystemError(NativeFailureKind.REMOVE) from None
         files.validate_file(
             before,
             directory_device,
             allow_interrupted_link=allow_interrupted_link,
         )
         if (before.st_dev, before.st_ino) != expected_identity:
-            raise _native_error(NativeFailureKind.CHANGED)
+            raise NativeFilesystemError(NativeFailureKind.CHANGED)
         if (
             namespace.require_exact_entry(parent_descriptor, basename)
             != expected_identity
         ):
-            raise _native_error(NativeFailureKind.CHANGED)
+            raise NativeFilesystemError(NativeFailureKind.CHANGED)
 
         try:
             os.unlink(basename, dir_fd=parent_descriptor)
         except FileNotFoundError:
-            raise _native_error(NativeFailureKind.CHANGED) from None
+            raise NativeFilesystemError(NativeFailureKind.CHANGED) from None
         except OSError:
-            raise _native_error(NativeFailureKind.REMOVE) from None
+            raise NativeFilesystemError(NativeFailureKind.REMOVE) from None
 
         try:
             after = os.fstat(file_descriptor)
         except OSError:
-            raise _native_error(NativeFailureKind.REMOVE) from None
+            raise NativeFilesystemError(NativeFailureKind.REMOVE) from None
         if (
             (after.st_dev, after.st_ino) != expected_identity
             or after.st_nlink != before.st_nlink - 1
             or namespace.require_exact_entry(parent_descriptor, basename)
             is not None
         ):
-            raise _native_error(NativeFailureKind.CHANGED)
+            raise NativeFilesystemError(NativeFailureKind.CHANGED)
 
 
 def _fail_lock_open(
@@ -198,11 +194,11 @@ class PosixPlatform:
                     metadata.st_uid != os.geteuid()
                     or stat.S_IMODE(metadata.st_mode) & 0o077
                 ):
-                    raise _native_error(NativeFailureKind.UNSAFE)
+                    raise NativeFilesystemError(NativeFailureKind.UNSAFE)
         except OSError:
             namespace.close_descriptor_stack(
                 descriptors,
-                _native_error(NativeFailureKind.UNSAFE),
+                NativeFilesystemError(NativeFailureKind.UNSAFE),
             )
         except NativeFilesystemError as error:
             namespace.close_descriptor_stack(descriptors, error)
@@ -226,7 +222,7 @@ class PosixPlatform:
                 parent_descriptor, parent.name
             )
             if expected is None:
-                raise _native_error(NativeFailureKind.CHANGED)
+                raise NativeFilesystemError(NativeFailureKind.CHANGED)
             descriptor = namespace.open_child_directory(
                 parent_descriptor,
                 parent.name,
@@ -246,7 +242,7 @@ class PosixPlatform:
                     )
                     != expected
                 ):
-                    raise _native_error(NativeFailureKind.UNSAFE)
+                    raise NativeFilesystemError(NativeFailureKind.UNSAFE)
                 if mode == namespace.PRIVATE_DIRECTORY_MODE:
                     return False
                 try:
@@ -255,7 +251,7 @@ class PosixPlatform:
                     os.fsync(parent_descriptor)
                     after = os.fstat(descriptor)
                 except OSError:
-                    raise _native_error(
+                    raise NativeFilesystemError(
                         NativeFailureKind.SYNCHRONIZE
                     ) from None
                 if (
@@ -268,7 +264,7 @@ class PosixPlatform:
                     )
                     != expected
                 ):
-                    raise _native_error(NativeFailureKind.CHANGED)
+                    raise NativeFilesystemError(NativeFailureKind.CHANGED)
                 return True
 
     def list_basenames(self, parent: Path) -> tuple[str, ...]:
@@ -277,7 +273,7 @@ class PosixPlatform:
         if metadata is None:
             return ()
         if not stat.S_ISDIR(metadata.st_mode):
-            raise _native_error(NativeFailureKind.UNSAFE)
+            raise NativeFilesystemError(NativeFailureKind.UNSAFE)
         descriptor = namespace.open_directory(parent, private=True)
         with namespace.owned_descriptor(
             descriptor,
@@ -291,7 +287,7 @@ class PosixPlatform:
                     if error.errno in {errno.ELOOP, errno.EACCES, errno.EPERM}
                     else NativeFailureKind.UNREADABLE
                 )
-                raise _native_error(kind) from None
+                raise NativeFilesystemError(kind) from None
 
     def read(
         self,
@@ -321,7 +317,7 @@ class PosixPlatform:
         if metadata is None:
             return None
         if not stat.S_ISDIR(metadata.st_mode):
-            raise _native_error(NativeFailureKind.UNSAFE)
+            raise NativeFilesystemError(NativeFailureKind.UNSAFE)
         parent_descriptor = namespace.open_directory(
             parent, private=private_parent
         )
@@ -348,14 +344,16 @@ class PosixPlatform:
                     dir_fd=parent_descriptor,
                 )
             except FileNotFoundError:
-                raise _native_error(NativeFailureKind.CHANGED) from None
+                raise NativeFilesystemError(
+                    NativeFailureKind.CHANGED
+                ) from None
             except OSError as error:
                 kind = (
                     NativeFailureKind.UNSAFE
                     if error.errno in {errno.ELOOP, errno.EACCES, errno.EPERM}
                     else NativeFailureKind.UNREADABLE
                 )
-                raise _native_error(kind) from None
+                raise NativeFilesystemError(kind) from None
             with namespace.owned_descriptor(
                 file_descriptor,
                 NativeFailureKind.UNREADABLE,
@@ -364,12 +362,14 @@ class PosixPlatform:
                     file_metadata = os.fstat(file_descriptor)
                     directory_device = os.fstat(parent_descriptor).st_dev
                 except OSError:
-                    raise _native_error(NativeFailureKind.UNREADABLE) from None
+                    raise NativeFilesystemError(
+                        NativeFailureKind.UNREADABLE
+                    ) from None
                 if (
                     file_metadata.st_dev,
                     file_metadata.st_ino,
                 ) != expected_identity:
-                    raise _native_error(NativeFailureKind.CHANGED)
+                    raise NativeFilesystemError(NativeFailureKind.CHANGED)
                 if (
                     namespace.require_exact_entry(
                         parent_descriptor,
@@ -377,7 +377,7 @@ class PosixPlatform:
                     )
                     != expected_identity
                 ):
-                    raise _native_error(NativeFailureKind.CHANGED)
+                    raise NativeFilesystemError(NativeFailureKind.CHANGED)
                 result = files.read_descriptor(
                     file_descriptor,
                     directory_device,
@@ -391,14 +391,16 @@ class PosixPlatform:
                     )
                     != expected_identity
                 ):
-                    raise _native_error(NativeFailureKind.CHANGED)
+                    raise NativeFilesystemError(NativeFailureKind.CHANGED)
                 return result
 
     def _synchronize_file(self, descriptor: int) -> None:
         try:
             os.fsync(descriptor)
         except OSError:
-            raise _native_error(NativeFailureKind.SYNCHRONIZE) from None
+            raise NativeFilesystemError(
+                NativeFailureKind.SYNCHRONIZE
+            ) from None
 
     def _synchronize_created_lock(
         self,
@@ -411,7 +413,9 @@ class PosixPlatform:
         except NativeFilesystemError:
             raise
         except OSError:
-            raise _native_error(NativeFailureKind.SYNCHRONIZE) from None
+            raise NativeFilesystemError(
+                NativeFailureKind.SYNCHRONIZE
+            ) from None
 
     def create_private(
         self,
@@ -440,9 +444,9 @@ class PosixPlatform:
                     dir_fd=parent_descriptor,
                 )
             except FileExistsError:
-                raise _native_error(NativeFailureKind.EXISTS) from None
+                raise NativeFilesystemError(NativeFailureKind.EXISTS) from None
             except OSError:
-                raise _native_error(NativeFailureKind.CREATE) from None
+                raise NativeFilesystemError(NativeFailureKind.CREATE) from None
 
             with namespace.owned_descriptor(
                 file_descriptor,
@@ -451,22 +455,28 @@ class PosixPlatform:
                 try:
                     os.fchmod(file_descriptor, namespace.PRIVATE_FILE_MODE)
                 except OSError:
-                    raise _native_error(NativeFailureKind.CREATE) from None
+                    raise NativeFilesystemError(
+                        NativeFailureKind.CREATE
+                    ) from None
                 view = memoryview(data)
                 written = 0
                 try:
                     while written < len(view):
                         count = os.write(file_descriptor, view[written:])
                         if count <= 0:
-                            raise _native_error(NativeFailureKind.WRITE)
+                            raise NativeFilesystemError(
+                                NativeFailureKind.WRITE
+                            )
                         written += count
                 except OSError:
-                    raise _native_error(NativeFailureKind.WRITE) from None
+                    raise NativeFilesystemError(
+                        NativeFailureKind.WRITE
+                    ) from None
                 self._synchronize_file(file_descriptor)
 
         reopened = self.read(parent, basename, len(data))
         if reopened is None or reopened.data != data:
-            raise _native_error(NativeFailureKind.WRITE)
+            raise NativeFilesystemError(NativeFailureKind.WRITE)
         return reopened
 
     def publish_no_replace(
@@ -484,7 +494,7 @@ class PosixPlatform:
                 descriptor,
                 temporary_basename,
             ) != (device, inode):
-                raise _native_error(NativeFailureKind.CHANGED)
+                raise NativeFilesystemError(NativeFailureKind.CHANGED)
             try:
                 os.link(
                     temporary_basename,
@@ -494,9 +504,11 @@ class PosixPlatform:
                     follow_symlinks=False,
                 )
             except FileExistsError:
-                raise _native_error(NativeFailureKind.EXISTS) from None
+                raise NativeFilesystemError(NativeFailureKind.EXISTS) from None
             except OSError:
-                raise _native_error(NativeFailureKind.PUBLISH) from None
+                raise NativeFilesystemError(
+                    NativeFailureKind.PUBLISH
+                ) from None
 
     def replace(
         self,
@@ -515,7 +527,7 @@ class PosixPlatform:
                 descriptor,
                 temporary_basename,
             ) != (device, inode):
-                raise _native_error(NativeFailureKind.CHANGED)
+                raise NativeFilesystemError(NativeFailureKind.CHANGED)
             try:
                 if destination_exists:
                     os.replace(
@@ -534,9 +546,11 @@ class PosixPlatform:
                     )
                     os.unlink(temporary_basename, dir_fd=descriptor)
             except FileExistsError:
-                raise _native_error(NativeFailureKind.EXISTS) from None
+                raise NativeFilesystemError(NativeFailureKind.EXISTS) from None
             except OSError:
-                raise _native_error(NativeFailureKind.REPLACE) from None
+                raise NativeFilesystemError(
+                    NativeFailureKind.REPLACE
+                ) from None
 
     def harden(
         self,
@@ -555,7 +569,7 @@ class PosixPlatform:
             try:
                 os.fsync(descriptor)
             except OSError:
-                raise _native_error(NativeFailureKind.HARDEN) from None
+                raise NativeFilesystemError(NativeFailureKind.HARDEN) from None
 
     def remove_candidate(
         self,
@@ -592,7 +606,7 @@ class PosixPlatform:
             if identity is None:
                 return False
             if identity != (device, inode):
-                raise _native_error(NativeFailureKind.CHANGED)
+                raise NativeFilesystemError(NativeFailureKind.CHANGED)
             _remove_exact_entry(
                 descriptor,
                 basename,
@@ -624,12 +638,12 @@ class PosixPlatform:
                 namespace.close_descriptor(file_descriptor, error)
             raise
         if file_descriptor is None:
-            raise _native_error(NativeFailureKind.UNSAFE)
+            raise NativeFilesystemError(NativeFailureKind.UNSAFE)
         try:
             return os.fdopen(file_descriptor, "r+b", buffering=0)
         except OSError:
             namespace.close_descriptor(file_descriptor)
-            raise _native_error(NativeFailureKind.UNSAFE) from None
+            raise NativeFilesystemError(NativeFailureKind.UNSAFE) from None
 
     def prove_lock_identity(
         self,
@@ -648,7 +662,7 @@ class PosixPlatform:
                 locked = os.fstat(file_descriptor)
                 parent_metadata = os.fstat(parent_descriptor)
             except OSError, ValueError:
-                raise _native_error(NativeFailureKind.UNSAFE) from None
+                raise NativeFilesystemError(NativeFailureKind.UNSAFE) from None
             files.validate_file(
                 locked,
                 parent_metadata.st_dev,
@@ -661,7 +675,7 @@ class PosixPlatform:
             try:
                 current = os.fstat(file_descriptor)
             except OSError:
-                raise _native_error(NativeFailureKind.UNSAFE) from None
+                raise NativeFilesystemError(NativeFailureKind.UNSAFE) from None
             files.validate_file(
                 current,
                 parent_metadata.st_dev,
@@ -673,11 +687,11 @@ class PosixPlatform:
                 or named_identity != locked_identity
                 or (current.st_dev, current.st_ino) != locked_identity
             ):
-                raise _native_error(NativeFailureKind.CHANGED)
+                raise NativeFilesystemError(NativeFailureKind.CHANGED)
 
     @staticmethod
     def _metadata(descriptor: int) -> os.stat_result:
         try:
             return os.fstat(descriptor)
         except OSError:
-            raise _native_error(NativeFailureKind.UNSAFE) from None
+            raise NativeFilesystemError(NativeFailureKind.UNSAFE) from None

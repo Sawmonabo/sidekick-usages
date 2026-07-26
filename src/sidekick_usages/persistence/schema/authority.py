@@ -8,7 +8,6 @@ from typing import Annotated, Literal
 from pydantic import (
     AfterValidator,
     BaseModel,
-    ConfigDict,
     ValidationError,
 )
 
@@ -22,10 +21,14 @@ from sidekick_usages.persistence.models.credential import (
     StoredCredentialAuthority,
     stored_credential_kind,
 )
+from sidekick_usages.persistence.schema.config import STRICT_SCHEMA_CONFIG
 from sidekick_usages.persistence.schema.credential import (
     CredentialDecodeError,
     decode_credentials,
     encode_credentials,
+)
+from sidekick_usages.persistence.schema.validation import (
+    canonical_account_id_text,
 )
 from sidekick_usages.serialization.json import (
     JsonDecodeError,
@@ -34,19 +37,16 @@ from sidekick_usages.serialization.json import (
 
 AUTHORITY_BASENAME = "authority.json"
 AUTHORITY_SCHEMA_VERSION = 1
-MODEL_CONFIG = ConfigDict(strict=True, extra="forbid", frozen=True)
 
 
-type UuidValue = Annotated[str, AfterValidator(_canonical_uuid)]
+type UuidValue = Annotated[
+    str,
+    AfterValidator(canonical_account_id_text),
+]
 type CredentialBase64 = Annotated[
     str,
     AfterValidator(_credential_base64),
 ]
-
-
-def _canonical_uuid(value: str) -> str:
-    SidekickAccountId(value)
-    return value
 
 
 def _credential_base64(value: str) -> str:
@@ -63,7 +63,7 @@ def _credential_base64(value: str) -> str:
 class _AuthorityModel(BaseModel):
     """Strict protected credential authority envelope."""
 
-    model_config = MODEL_CONFIG
+    model_config = STRICT_SCHEMA_CONFIG
 
     schema_version: Literal[1]
     authority_id: UuidValue

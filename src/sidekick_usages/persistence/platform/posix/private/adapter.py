@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from sidekick_usages.persistence.platform.errors import NativeFilesystemError
 from sidekick_usages.persistence.platform.models import TreeEntry
 from sidekick_usages.persistence.platform.ports import NativePlatform
 from sidekick_usages.persistence.platform.posix.private import tree
@@ -123,7 +124,7 @@ class PosixPrivateCredentialPlatform:
                 tree._delete_entry(opened, entry, identities)
             remaining, _remaining_identities = tree._scan_tree(opened)
             if remaining:
-                raise tree._native_error(NativeFailureKind.CHANGED)
+                raise NativeFilesystemError(NativeFailureKind.CHANGED)
 
     def destroy_tree(self, root: Path) -> None:
         """Delete one exact validated private tree including its root."""
@@ -143,7 +144,7 @@ class PosixPrivateCredentialPlatform:
                 tree._delete_entry(opened, entry, identities)
             remaining, _remaining_identities = tree._scan_tree(opened)
             if remaining:
-                raise tree._native_error(NativeFailureKind.CHANGED)
+                raise NativeFilesystemError(NativeFailureKind.CHANGED)
             tree._require_root_identity(opened)
             root_entry = TreeEntry(
                 (opened.root_basename,),

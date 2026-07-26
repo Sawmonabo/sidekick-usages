@@ -6,7 +6,6 @@ from typing import Annotated, Literal
 from pydantic import (
     AfterValidator,
     BaseModel,
-    ConfigDict,
     Field,
     TypeAdapter,
     ValidationError,
@@ -24,8 +23,10 @@ from sidekick_usages.persistence.limits import MAX_DOCUMENT_BYTES
 from sidekick_usages.persistence.models.credential import (
     stored_credential_kind,
 )
+from sidekick_usages.persistence.schema.config import STRICT_SCHEMA_CONFIG
 from sidekick_usages.persistence.time_codec import (
     canonical_timestamp,
+    canonical_timestamp_text,
     parse_canonical_timestamp,
 )
 from sidekick_usages.serialization.json import (
@@ -38,10 +39,12 @@ CREDENTIAL_SCHEMA_VERSION = 1
 MAX_CREDENTIAL_METADATA_BYTES = 4_096
 MAX_CREDENTIAL_SECRET_BYTES = 1024 * 1024
 MAX_CLAUDE_SCOPES = 128
-MODEL_CONFIG = ConfigDict(strict=True, extra="forbid", frozen=True)
 
 
-type TimestampValue = Annotated[str, AfterValidator(_timestamp)]
+type TimestampValue = Annotated[
+    str,
+    AfterValidator(canonical_timestamp_text),
+]
 type SecretValue = Annotated[str, AfterValidator(_secret)]
 type MetadataValue = Annotated[str, AfterValidator(_metadata)]
 type CredentialModel = Annotated[
@@ -54,11 +57,6 @@ type CredentialModel = Annotated[
 
 class CredentialDecodeError(ValueError):
     """Protected credential bytes violate the strict current schema."""
-
-
-def _timestamp(value: str) -> str:
-    parse_canonical_timestamp(value)
-    return value
 
 
 def _secret(value: str) -> str:
@@ -84,7 +82,7 @@ def _metadata(value: str) -> str:
 class ClaudeIdentityModel(BaseModel):
     """Strict complete Claude provider identity."""
 
-    model_config = MODEL_CONFIG
+    model_config = STRICT_SCHEMA_CONFIG
 
     account_id: MetadataValue
     organization_id: MetadataValue
@@ -93,7 +91,7 @@ class ClaudeIdentityModel(BaseModel):
 class ClaudeSetupCredentialModel(BaseModel):
     """Strict protected Claude setup-token credentials."""
 
-    model_config = MODEL_CONFIG
+    model_config = STRICT_SCHEMA_CONFIG
 
     schema_version: Literal[1]
     provider_id: Literal["claude"]
@@ -104,7 +102,7 @@ class ClaudeSetupCredentialModel(BaseModel):
 class ClaudeSubscriptionCredentialModel(BaseModel):
     """Strict protected Claude subscription credentials."""
 
-    model_config = MODEL_CONFIG
+    model_config = STRICT_SCHEMA_CONFIG
 
     schema_version: Literal[1]
     provider_id: Literal["claude"]
@@ -123,7 +121,7 @@ class ClaudeSubscriptionCredentialModel(BaseModel):
 class CodexSubscriptionCredentialModel(BaseModel):
     """Strict protected Codex subscription credentials."""
 
-    model_config = MODEL_CONFIG
+    model_config = STRICT_SCHEMA_CONFIG
 
     schema_version: Literal[1]
     provider_id: Literal["codex"]

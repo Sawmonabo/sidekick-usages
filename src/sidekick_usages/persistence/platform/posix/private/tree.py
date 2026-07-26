@@ -22,15 +22,11 @@ from sidekick_usages.persistence.platform.types import (
 _PRIVATE_DIRECTORY_MODE = 0o700
 
 
-def _native_error(kind: NativeFailureKind) -> NativeFilesystemError:
-    return NativeFilesystemError(kind)
-
-
 def _metadata(descriptor: int, kind: NativeFailureKind) -> os.stat_result:
     try:
         return os.fstat(descriptor)
     except OSError:
-        raise _native_error(kind) from None
+        raise NativeFilesystemError(kind) from None
 
 
 def _validate_directory(
@@ -43,7 +39,7 @@ def _validate_directory(
         or metadata.st_uid != os.geteuid()
         or stat.S_IMODE(metadata.st_mode) & 0o077
     ):
-        raise _native_error(NativeFailureKind.UNSAFE)
+        raise NativeFilesystemError(NativeFailureKind.UNSAFE)
 
 
 def _open_repair_child_directory(
@@ -53,7 +49,7 @@ def _open_repair_child_directory(
     """Open one owner-owned directory without accepting a path race."""
     expected = namespace.require_exact_entry(parent_descriptor, basename)
     if expected is None:
-        raise _native_error(NativeFailureKind.CHANGED)
+        raise NativeFilesystemError(NativeFailureKind.CHANGED)
     flags = (
         os.O_RDONLY
         | os.O_CLOEXEC
@@ -63,7 +59,7 @@ def _open_repair_child_directory(
     try:
         descriptor = os.open(basename, flags, dir_fd=parent_descriptor)
     except OSError:
-        raise _native_error(NativeFailureKind.UNSAFE) from None
+        raise NativeFilesystemError(NativeFailureKind.UNSAFE) from None
     try:
         metadata = _metadata(descriptor, NativeFailureKind.UNREADABLE)
         parent_metadata = _metadata(
@@ -78,7 +74,7 @@ def _open_repair_child_directory(
             or namespace.require_exact_entry(parent_descriptor, basename)
             != expected
         ):
-            raise _native_error(NativeFailureKind.UNSAFE)
+            raise NativeFilesystemError(NativeFailureKind.UNSAFE)
     except BaseException as error:
         namespace.close_descriptor_stack([descriptor], error)
     return descriptor
@@ -113,7 +109,7 @@ def _open_tree(root: Path) -> Iterator[OpenedTree | None]:
                 NativeFailureKind.UNREADABLE,
             )
             if identity != (metadata.st_dev, metadata.st_ino):
-                raise _native_error(NativeFailureKind.CHANGED)
+                raise NativeFilesystemError(NativeFailureKind.CHANGED)
             yield OpenedTree(
                 parent_descriptor,
                 root_descriptor,
@@ -152,7 +148,7 @@ def _open_repair_tree(root: Path) -> Iterator[OpenedTree | None]:
                 NativeFailureKind.UNREADABLE,
             )
             if identity != (metadata.st_dev, metadata.st_ino):
-                raise _native_error(NativeFailureKind.CHANGED)
+                raise NativeFilesystemError(NativeFailureKind.CHANGED)
             yield OpenedTree(
                 parent_descriptor,
                 root_descriptor,
@@ -170,13 +166,13 @@ def _require_root_identity(opened: OpenedTree) -> None:
         )
         != opened.root_identity
     ):
-        raise _native_error(NativeFailureKind.CHANGED)
+        raise NativeFilesystemError(NativeFailureKind.CHANGED)
     metadata = _metadata(
         opened.root_descriptor,
         NativeFailureKind.CHANGED,
     )
     if (metadata.st_dev, metadata.st_ino) != opened.root_identity:
-        raise _native_error(NativeFailureKind.CHANGED)
+        raise NativeFilesystemError(NativeFailureKind.CHANGED)
 
 
 def _open_relative_directory(
@@ -187,7 +183,7 @@ def _open_relative_directory(
     try:
         current = os.dup(opened.root_descriptor)
     except OSError:
-        raise _native_error(NativeFailureKind.UNREADABLE) from None
+        raise NativeFilesystemError(NativeFailureKind.UNREADABLE) from None
     descriptors = [current]
     traversed: RelativePath = ()
     try:
@@ -204,7 +200,7 @@ def _open_relative_directory(
                 metadata.st_dev,
                 metadata.st_ino,
             ) != identities[traversed]:
-                raise _native_error(NativeFailureKind.CHANGED)
+                raise NativeFilesystemError(NativeFailureKind.CHANGED)
             current = child
     except BaseException as error:
         namespace.close_descriptor_stack(descriptors, error)
@@ -222,7 +218,7 @@ def _open_repair_relative_directory(
     try:
         current = os.dup(opened.root_descriptor)
     except OSError:
-        raise _native_error(NativeFailureKind.UNREADABLE) from None
+        raise NativeFilesystemError(NativeFailureKind.UNREADABLE) from None
     descriptors = [current]
     traversed: RelativePath = ()
     try:
@@ -232,7 +228,7 @@ def _open_repair_relative_directory(
             descriptors.append(child)
             metadata = _metadata(child, NativeFailureKind.UNREADABLE)
             if (metadata.st_dev, metadata.st_ino) != identities[traversed]:
-                raise _native_error(NativeFailureKind.CHANGED)
+                raise NativeFilesystemError(NativeFailureKind.CHANGED)
             current = child
     except BaseException as error:
         namespace.close_descriptor_stack(descriptors, error)
@@ -245,7 +241,7 @@ def _list_names(descriptor: int) -> tuple[str, ...]:
     try:
         return tuple(sorted(os.listdir(descriptor)))
     except OSError:
-        raise _native_error(NativeFailureKind.UNREADABLE) from None
+        raise NativeFilesystemError(NativeFailureKind.UNREADABLE) from None
 
 
 def _namespace_snapshot(
@@ -257,10 +253,10 @@ def _namespace_snapshot(
     for name in names:
         identity = namespace.require_exact_entry(descriptor, name)
         if identity is None:
-            raise _native_error(NativeFailureKind.CHANGED)
+            raise NativeFilesystemError(NativeFailureKind.CHANGED)
         entries.append((name, identity))
     if _list_names(descriptor) != names:
-        raise _native_error(NativeFailureKind.CHANGED)
+        raise NativeFilesystemError(NativeFailureKind.CHANGED)
     return tuple(entries)
 
 
@@ -271,7 +267,7 @@ def _entry_metadata(
     """Return stable no-follow metadata for one exact child name."""
     identity = namespace.require_exact_entry(descriptor, basename)
     if identity is None:
-        raise _native_error(NativeFailureKind.CHANGED)
+        raise NativeFilesystemError(NativeFailureKind.CHANGED)
     try:
         metadata = os.stat(
             basename,
@@ -279,11 +275,11 @@ def _entry_metadata(
             follow_symlinks=False,
         )
     except FileNotFoundError:
-        raise _native_error(NativeFailureKind.CHANGED) from None
+        raise NativeFilesystemError(NativeFailureKind.CHANGED) from None
     except OSError:
-        raise _native_error(NativeFailureKind.UNSAFE) from None
+        raise NativeFilesystemError(NativeFailureKind.UNSAFE) from None
     if identity != (metadata.st_dev, metadata.st_ino):
-        raise _native_error(NativeFailureKind.CHANGED)
+        raise NativeFilesystemError(NativeFailureKind.CHANGED)
     return identity, metadata
 
 
@@ -303,9 +299,9 @@ def _open_regular(
             dir_fd=parent_descriptor,
         )
     except FileNotFoundError:
-        raise _native_error(NativeFailureKind.CHANGED) from None
+        raise NativeFilesystemError(NativeFailureKind.CHANGED) from None
     except OSError:
-        raise _native_error(NativeFailureKind.UNSAFE) from None
+        raise NativeFilesystemError(NativeFailureKind.UNSAFE) from None
     try:
         metadata = _metadata(descriptor, NativeFailureKind.UNREADABLE)
         files.validate_file(
@@ -319,7 +315,7 @@ def _open_regular(
         ) != expected or namespace.require_exact_entry(
             parent_descriptor, basename
         ) != expected:
-            raise _native_error(NativeFailureKind.CHANGED)
+            raise NativeFilesystemError(NativeFailureKind.CHANGED)
     except BaseException as error:
         namespace.close_descriptor_stack([descriptor], error)
     return descriptor
@@ -356,11 +352,11 @@ def _scan_direct_tree(opened: OpenedTree) -> tuple[TreeEntry, ...]:
                         child_metadata.st_dev,
                         child_metadata.st_ino,
                     ) != identity:
-                        raise _native_error(NativeFailureKind.CHANGED)
+                        raise NativeFilesystemError(NativeFailureKind.CHANGED)
                 entries.append(TreeEntry((basename,), identity, True))
                 continue
             if not stat.S_ISREG(metadata.st_mode):
-                raise _native_error(NativeFailureKind.UNSAFE)
+                raise NativeFilesystemError(NativeFailureKind.UNSAFE)
             file_descriptor = _open_regular(
                 descriptor,
                 basename,
@@ -413,13 +409,15 @@ def _scan_tree(
                             child_metadata.st_dev,
                             child_metadata.st_ino,
                         ) != identity:
-                            raise _native_error(NativeFailureKind.CHANGED)
+                            raise NativeFilesystemError(
+                                NativeFailureKind.CHANGED
+                            )
                     identities[child_relative] = identity
                     pending.append(child_relative)
                     entries.append(TreeEntry(child_relative, identity, True))
                     continue
                 if not stat.S_ISREG(metadata.st_mode):
-                    raise _native_error(NativeFailureKind.UNSAFE)
+                    raise NativeFilesystemError(NativeFailureKind.UNSAFE)
                 file_descriptor = _open_regular(
                     descriptor,
                     basename,
@@ -452,7 +450,7 @@ def _scan_repair_tree(
         root_metadata.st_uid != os.geteuid()
         or root_metadata.st_dev != opened.root_device
     ):
-        raise _native_error(NativeFailureKind.UNSAFE)
+        raise NativeFilesystemError(NativeFailureKind.UNSAFE)
     identities: dict[RelativePath, NativeIdentity] = {(): opened.root_identity}
     directories = [
         RepairDirectory(
@@ -493,7 +491,9 @@ def _scan_repair_tree(
                             child_metadata.st_dev,
                             child_metadata.st_ino,
                         ) != identity:
-                            raise _native_error(NativeFailureKind.CHANGED)
+                            raise NativeFilesystemError(
+                                NativeFailureKind.CHANGED
+                            )
                         mode = stat.S_IMODE(child_metadata.st_mode)
                     identities[child_relative] = identity
                     directories.append(
@@ -502,7 +502,7 @@ def _scan_repair_tree(
                     pending.append(child_relative)
                     continue
                 if not stat.S_ISREG(metadata.st_mode):
-                    raise _native_error(NativeFailureKind.UNSAFE)
+                    raise NativeFilesystemError(NativeFailureKind.UNSAFE)
                 file_descriptor = _open_regular(
                     descriptor,
                     basename,
@@ -537,7 +537,7 @@ def _require_repair_directory_identity(
             namespace.require_exact_entry(parent, directory.relative[-1])
             != directory.identity
         ):
-            raise _native_error(NativeFailureKind.CHANGED)
+            raise NativeFilesystemError(NativeFailureKind.CHANGED)
 
 
 def _repair_directory_permissions(
@@ -559,21 +559,21 @@ def _repair_directory_permissions(
             or metadata.st_dev != opened.root_device
             or stat.S_IMODE(metadata.st_mode) != directory.mode
         ):
-            raise _native_error(NativeFailureKind.CHANGED)
+            raise NativeFilesystemError(NativeFailureKind.CHANGED)
         _require_repair_directory_identity(opened, directory, identities)
         if stat.S_IMODE(metadata.st_mode) == _PRIVATE_DIRECTORY_MODE:
             return False
         try:
             os.fchmod(descriptor, _PRIVATE_DIRECTORY_MODE)
         except OSError:
-            raise _native_error(NativeFailureKind.HARDEN) from None
+            raise NativeFilesystemError(NativeFailureKind.HARDEN) from None
         hardened = _metadata(descriptor, NativeFailureKind.HARDEN)
         if (
             (hardened.st_dev, hardened.st_ino) != directory.identity
             or hardened.st_uid != os.geteuid()
             or stat.S_IMODE(hardened.st_mode) != _PRIVATE_DIRECTORY_MODE
         ):
-            raise _native_error(NativeFailureKind.HARDEN)
+            raise NativeFilesystemError(NativeFailureKind.HARDEN)
         _require_repair_directory_identity(opened, directory, identities)
         _synchronize_namespace(descriptor)
         return True
@@ -583,7 +583,7 @@ def _synchronize_namespace(descriptor: int) -> None:
     try:
         os.fsync(descriptor)
     except OSError:
-        raise _native_error(NativeFailureKind.SYNCHRONIZE) from None
+        raise NativeFilesystemError(NativeFailureKind.SYNCHRONIZE) from None
 
 
 def _delete_file(
@@ -602,11 +602,11 @@ def _delete_file(
         try:
             os.unlink(basename, dir_fd=parent_descriptor)
         except FileNotFoundError:
-            raise _native_error(NativeFailureKind.CHANGED) from None
+            raise NativeFilesystemError(NativeFailureKind.CHANGED) from None
         except OSError:
-            raise _native_error(NativeFailureKind.REMOVE) from None
+            raise NativeFilesystemError(NativeFailureKind.REMOVE) from None
         if _metadata(descriptor, NativeFailureKind.REMOVE).st_nlink != 0:
-            raise _native_error(NativeFailureKind.CHANGED)
+            raise NativeFilesystemError(NativeFailureKind.CHANGED)
     _synchronize_namespace(parent_descriptor)
 
 
@@ -627,13 +627,13 @@ def _delete_directory(
         if (metadata.st_dev, metadata.st_ino) != entry.identity or _list_names(
             descriptor
         ):
-            raise _native_error(NativeFailureKind.CHANGED)
+            raise NativeFilesystemError(NativeFailureKind.CHANGED)
         try:
             os.rmdir(basename, dir_fd=parent_descriptor)
         except FileNotFoundError:
-            raise _native_error(NativeFailureKind.CHANGED) from None
+            raise NativeFilesystemError(NativeFailureKind.CHANGED) from None
         except OSError:
-            raise _native_error(NativeFailureKind.REMOVE) from None
+            raise NativeFilesystemError(NativeFailureKind.REMOVE) from None
         expected_namespace = tuple(
             member for member in before_namespace if member[0] != basename
         )
@@ -644,7 +644,7 @@ def _delete_directory(
         ) != entry.identity or _namespace_snapshot(
             parent_descriptor
         ) != expected_namespace:
-            raise _native_error(NativeFailureKind.CHANGED)
+            raise NativeFilesystemError(NativeFailureKind.CHANGED)
     _synchronize_namespace(parent_descriptor)
 
 
@@ -668,7 +668,7 @@ def _delete_entry(
             entry.relative[-1],
         )
         if observed != entry.identity:
-            raise _native_error(NativeFailureKind.CHANGED)
+            raise NativeFilesystemError(NativeFailureKind.CHANGED)
         if entry.directory:
             _delete_directory(opened, parent_descriptor, entry)
         else:
@@ -680,4 +680,4 @@ def _delete_entry(
             )
             is not None
         ):
-            raise _native_error(NativeFailureKind.CHANGED)
+            raise NativeFilesystemError(NativeFailureKind.CHANGED)

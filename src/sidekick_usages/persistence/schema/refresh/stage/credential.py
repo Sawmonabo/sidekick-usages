@@ -9,7 +9,6 @@ from typing import Annotated, Literal
 from pydantic import (
     AfterValidator,
     BaseModel,
-    ConfigDict,
     TypeAdapter,
     ValidationError,
 )
@@ -24,6 +23,7 @@ from sidekick_usages.persistence.private.bundles.writes import (
     MAX_PRIVATE_FILE_BYTES,
     PreparedPrivateBundleWrite,
 )
+from sidekick_usages.persistence.schema.config import STRICT_SCHEMA_CONFIG
 from sidekick_usages.persistence.schema.credential import (
     CredentialDecodeError,
     decode_credentials,
@@ -35,6 +35,7 @@ from sidekick_usages.persistence.schema.refresh.stage.private import (
 )
 from sidekick_usages.persistence.time_codec import (
     canonical_timestamp,
+    canonical_timestamp_text,
     parse_canonical_timestamp,
 )
 from sidekick_usages.serialization.json import (
@@ -43,7 +44,6 @@ from sidekick_usages.serialization.json import (
 )
 
 SCHEMA_VERSION = 1
-MODEL_CONFIG = ConfigDict(strict=True, extra="forbid", frozen=True)
 
 
 type CredentialBase64 = Annotated[
@@ -52,7 +52,10 @@ type CredentialBase64 = Annotated[
 ]
 type BundleBase64 = Annotated[str, AfterValidator(_bundle_base64)]
 type LabelValue = Annotated[str, AfterValidator(_label)]
-type TimestampValue = Annotated[str, AfterValidator(_timestamp)]
+type TimestampValue = Annotated[
+    str,
+    AfterValidator(canonical_timestamp_text),
+]
 
 
 class CredentialRefreshStageDecodeError(ValueError):
@@ -89,15 +92,10 @@ def _label(value: str) -> str:
     return value
 
 
-def _timestamp(value: str) -> str:
-    parse_canonical_timestamp(value)
-    return value
-
-
 class _CredentialRefreshStage(BaseModel):
     """One atomically published secret replacement envelope."""
 
-    model_config = MODEL_CONFIG
+    model_config = STRICT_SCHEMA_CONFIG
 
     schema_version: Literal[1]
     account_label: LabelValue

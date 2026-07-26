@@ -37,9 +37,6 @@ _READ_CHUNK_BYTES = 64 * 1024
 
 if sys.platform == "win32":
 
-    def _native_error(kind: NativeFailureKind) -> NativeFilesystemError:
-        return NativeFilesystemError(kind)
-
     def close_descriptor(
         descriptor: int,
         primary: BaseException | None = None,
@@ -49,7 +46,7 @@ if sys.platform == "win32":
             os.close(descriptor)
         except OSError:
             if primary is None:
-                raise _native_error(NativeFailureKind.UNSAFE) from None
+                raise NativeFilesystemError(NativeFailureKind.UNSAFE) from None
             primary.add_note("Native descriptor cleanup also failed.")
         if primary is not None:
             raise primary from None
@@ -65,7 +62,7 @@ if sys.platform == "win32":
                 os.close(descriptor)
             except OSError:
                 if failure is None:
-                    failure = _native_error(NativeFailureKind.UNSAFE)
+                    failure = NativeFilesystemError(NativeFailureKind.UNSAFE)
                 else:
                     failure.add_note("Native descriptor cleanup also failed.")
         if failure is not None:
@@ -83,7 +80,7 @@ if sys.platform == "win32":
         except NativeFilesystemError as error:
             primary = error
         except OSError:
-            primary = _native_error(failure_kind)
+            primary = NativeFilesystemError(failure_kind)
         except BaseException as error:
             primary = error
         try:
@@ -92,7 +89,7 @@ if sys.platform == "win32":
             if primary is not None:
                 primary.add_note("Native descriptor cleanup also failed.")
             else:
-                primary = _native_error(NativeFailureKind.UNSAFE)
+                primary = NativeFilesystemError(NativeFailureKind.UNSAFE)
         if primary is not None:
             raise primary from None
 
@@ -104,7 +101,7 @@ if sys.platform == "win32":
         try:
             return os.fstat(descriptor)
         except OSError:
-            raise _native_error(failure_kind) from None
+            raise NativeFilesystemError(failure_kind) from None
 
     def close_handle(
         handle: _win32typing.PyHANDLE,
@@ -115,7 +112,7 @@ if sys.platform == "win32":
             handle.Close()
         except pywintypes.error:
             if primary is None:
-                raise _native_error(NativeFailureKind.UNSAFE) from None
+                raise NativeFilesystemError(NativeFailureKind.UNSAFE) from None
             primary.add_note("Native handle cleanup also failed.")
         if primary is not None:
             raise primary from None
@@ -140,7 +137,7 @@ if sys.platform == "win32":
             win32api.CloseHandle(handle)
         except pywintypes.error:
             if primary is None:
-                raise _native_error(NativeFailureKind.UNSAFE) from None
+                raise NativeFilesystemError(NativeFailureKind.UNSAFE) from None
             primary.add_note("Native handle cleanup also failed.")
         if primary is not None:
             raise primary from None
@@ -155,7 +152,7 @@ if sys.platform == "win32":
             raw_handle = int(handle.Detach())
             return msvcrt.open_osfhandle(raw_handle, flags)
         except OSError, ValueError, pywintypes.error:
-            error = _native_error(NativeFailureKind.UNSAFE)
+            error = NativeFilesystemError(NativeFailureKind.UNSAFE)
             if raw_handle is None:
                 close_handle(handle, error)
             else:
@@ -180,10 +177,10 @@ if sys.platform == "win32":
         if type(attributes) is not int or (
             attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT
         ):
-            raise _native_error(NativeFailureKind.UNSAFE)
+            raise NativeFilesystemError(NativeFailureKind.UNSAFE)
         if directory:
             if not stat.S_ISDIR(value.st_mode):
-                raise _native_error(NativeFailureKind.UNSAFE)
+                raise NativeFilesystemError(NativeFailureKind.UNSAFE)
             return
         allowed_links = {1, 2} if allow_interrupted_link else {1}
         if (
@@ -194,7 +191,7 @@ if sys.platform == "win32":
                 and value.st_dev != directory_device
             )
         ):
-            raise _native_error(NativeFailureKind.UNSAFE)
+            raise NativeFilesystemError(NativeFailureKind.UNSAFE)
 
     def read_descriptor(
         descriptor: int,
@@ -212,7 +209,7 @@ if sys.platform == "win32":
             allow_interrupted_link=allow_interrupted_link,
         )
         if before.st_size > limit:
-            raise _native_error(NativeFailureKind.TOO_LARGE)
+            raise NativeFilesystemError(NativeFailureKind.TOO_LARGE)
         chunks: list[bytes] = []
         remaining = 0 if before.st_size == 0 else limit + 1
         try:
@@ -226,15 +223,15 @@ if sys.platform == "win32":
                 chunks.append(chunk)
                 remaining -= len(chunk)
         except OSError:
-            raise _native_error(NativeFailureKind.UNREADABLE) from None
+            raise NativeFilesystemError(NativeFailureKind.UNREADABLE) from None
         data = b"".join(chunks)
         if len(data) > limit:
-            raise _native_error(NativeFailureKind.TOO_LARGE)
+            raise NativeFilesystemError(NativeFailureKind.TOO_LARGE)
         after = metadata(descriptor, NativeFailureKind.UNREADABLE)
         try:
             handle = msvcrt.get_osfhandle(descriptor)
         except OSError:
-            raise _native_error(NativeFailureKind.UNREADABLE) from None
+            raise NativeFilesystemError(NativeFailureKind.UNREADABLE) from None
         validate_security(handle, directory=False)
         validate_stat(
             after,
@@ -249,7 +246,7 @@ if sys.platform == "win32":
             or before.st_ctime_ns != after.st_ctime_ns
             or len(data) != after.st_size
         ):
-            raise _native_error(NativeFailureKind.CHANGED)
+            raise NativeFilesystemError(NativeFailureKind.CHANGED)
         return NativeFile(
             after.st_dev,
             after.st_ino,
@@ -267,11 +264,11 @@ if sys.platform == "win32":
                     data[written:],
                 )
                 if count <= 0:
-                    raise _native_error(NativeFailureKind.WRITE)
+                    raise NativeFilesystemError(NativeFailureKind.WRITE)
                 written += count
             win32file.FlushFileBuffers(handle)
         except pywintypes.error:
-            raise _native_error(NativeFailureKind.WRITE) from None
+            raise NativeFilesystemError(NativeFailureKind.WRITE) from None
 
     def open_mutation_source(
         parent: Path,
@@ -282,7 +279,7 @@ if sys.platform == "win32":
     ) -> int:
         """Open and identity-bind one candidate before native mutation."""
         if not require_exact_entry(parent, basename):
-            raise _native_error(NativeFailureKind.CHANGED)
+            raise NativeFilesystemError(NativeFailureKind.CHANGED)
         try:
             handle = win32file.CreateFile(
                 str(child_path(parent, basename)),
@@ -299,7 +296,7 @@ if sys.platform == "win32":
                 None,
             )
         except pywintypes.error:
-            raise _native_error(NativeFailureKind.CHANGED) from None
+            raise NativeFilesystemError(NativeFailureKind.CHANGED) from None
         try:
             validate_security(int(handle), directory=False)
             validate_membership(
@@ -317,7 +314,7 @@ if sys.platform == "win32":
         if (value.st_dev, value.st_ino) != (device, inode):
             close_descriptor(
                 descriptor,
-                _native_error(NativeFailureKind.CHANGED),
+                NativeFilesystemError(NativeFailureKind.CHANGED),
             )
         return descriptor
 
@@ -328,7 +325,7 @@ if sys.platform == "win32":
     ) -> int:
         """Open and membership-bind one exact deletion target."""
         if not require_exact_entry(parent, basename):
-            raise _native_error(NativeFailureKind.CHANGED)
+            raise NativeFilesystemError(NativeFailureKind.CHANGED)
         try:
             handle = win32file.CreateFile(
                 str(child_path(parent, basename)),
@@ -343,7 +340,7 @@ if sys.platform == "win32":
                 None,
             )
         except pywintypes.error:
-            raise _native_error(NativeFailureKind.CHANGED) from None
+            raise NativeFilesystemError(NativeFailureKind.CHANGED) from None
         try:
             validate_security(int(handle), directory=False)
             validate_membership(

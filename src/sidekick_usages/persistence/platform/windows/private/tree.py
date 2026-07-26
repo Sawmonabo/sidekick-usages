@@ -54,9 +54,6 @@ if sys.platform == "win32":
 
 if sys.platform == "win32":
 
-    def _native_error(kind: NativeFailureKind) -> NativeFilesystemError:
-        return NativeFilesystemError(kind)
-
     def _open_child_directory(
         parent: Path,
         basename: str,
@@ -65,7 +62,7 @@ if sys.platform == "win32":
         delete: bool,
     ) -> int:
         if not require_exact_entry(parent, basename):
-            raise _native_error(NativeFailureKind.CHANGED)
+            raise NativeFilesystemError(NativeFailureKind.CHANGED)
         access = win32file.GENERIC_READ
         if delete:
             access |= win32con.DELETE
@@ -81,7 +78,7 @@ if sys.platform == "win32":
                 None,
             )
         except pywintypes.error:
-            raise _native_error(NativeFailureKind.CHANGED) from None
+            raise NativeFilesystemError(NativeFailureKind.CHANGED) from None
         try:
             validate_security(int(handle), directory=True)
             validate_membership(parent_descriptor, int(handle), basename)
@@ -102,7 +99,7 @@ if sys.platform == "win32":
             )
             validate_stat(child_metadata, directory=True)
             if child_metadata.st_dev != parent_metadata.st_dev:
-                raise _native_error(NativeFailureKind.UNSAFE)
+                raise NativeFilesystemError(NativeFailureKind.UNSAFE)
         except BaseException as error:
             close_descriptor(descriptor, error)
         return descriptor
@@ -151,7 +148,7 @@ if sys.platform == "win32":
             opened.root_path.parent,
             opened.root_basename,
         ):
-            raise _native_error(NativeFailureKind.CHANGED)
+            raise NativeFilesystemError(NativeFailureKind.CHANGED)
         root_metadata = metadata(
             opened.root_descriptor,
             NativeFailureKind.CHANGED,
@@ -160,11 +157,11 @@ if sys.platform == "win32":
             root_metadata.st_dev,
             root_metadata.st_ino,
         ) != opened.root_identity:
-            raise _native_error(NativeFailureKind.CHANGED)
+            raise NativeFilesystemError(NativeFailureKind.CHANGED)
         try:
             root_handle = msvcrt.get_osfhandle(opened.root_descriptor)
         except OSError:
-            raise _native_error(NativeFailureKind.CHANGED) from None
+            raise NativeFilesystemError(NativeFailureKind.CHANGED) from None
         validate_membership(
             opened.parent_descriptor,
             root_handle,
@@ -182,14 +179,14 @@ if sys.platform == "win32":
         if not chain.descriptors or len(chain.descriptors) != len(
             chain.identities
         ):
-            raise _native_error(NativeFailureKind.CHANGED)
+            raise NativeFilesystemError(NativeFailureKind.CHANGED)
         for index, descriptor in enumerate(chain.descriptors):
             value = metadata(descriptor, NativeFailureKind.CHANGED)
             identity = (value.st_dev, value.st_ino)
             if identity != chain.identities[index] or (
                 value.st_dev != opened.root_device
             ):
-                raise _native_error(NativeFailureKind.CHANGED)
+                raise NativeFilesystemError(NativeFailureKind.CHANGED)
             if index == 0:
                 continue
             parent_descriptor = chain.descriptors[index - 1]
@@ -205,7 +202,7 @@ if sys.platform == "win32":
                     )
                 continue
             if not present:
-                raise _native_error(NativeFailureKind.CHANGED)
+                raise NativeFilesystemError(NativeFailureKind.CHANGED)
             validate_membership(
                 parent_descriptor,
                 msvcrt.get_osfhandle(descriptor),
@@ -234,8 +231,10 @@ if sys.platform == "win32":
                     winerror.ERROR_ALREADY_EXISTS,
                     winerror.ERROR_FILE_EXISTS,
                 }:
-                    raise _native_error(NativeFailureKind.CHANGED) from None
-                raise _native_error(NativeFailureKind.CREATE) from None
+                    raise NativeFilesystemError(
+                        NativeFailureKind.CHANGED
+                    ) from None
+                raise NativeFilesystemError(NativeFailureKind.CREATE) from None
         child = _open_child_directory(
             parent,
             component,
@@ -246,7 +245,7 @@ if sys.platform == "win32":
         if value.st_dev != opened.root_device:
             close_descriptor(
                 child,
-                _native_error(NativeFailureKind.CHANGED),
+                NativeFilesystemError(NativeFailureKind.CHANGED),
             )
         return child
 
@@ -262,7 +261,7 @@ if sys.platform == "win32":
         try:
             root_descriptor = os.dup(opened.root_descriptor)
         except OSError:
-            raise _native_error(NativeFailureKind.UNREADABLE) from None
+            raise NativeFilesystemError(NativeFailureKind.UNREADABLE) from None
         descriptors = [root_descriptor]
         paths = [opened.root_path]
         identities = [opened.root_identity]
@@ -313,7 +312,7 @@ if sys.platform == "win32":
         try:
             current_descriptor = os.dup(opened.root_descriptor)
         except OSError:
-            raise _native_error(NativeFailureKind.UNREADABLE) from None
+            raise NativeFilesystemError(NativeFailureKind.UNREADABLE) from None
         descriptors = [current_descriptor]
         current_path = opened.root_path
         traversed: RelativePath = ()
@@ -335,7 +334,7 @@ if sys.platform == "win32":
                     child_metadata.st_dev,
                     child_metadata.st_ino,
                 ) != identities[traversed]:
-                    raise _native_error(NativeFailureKind.CHANGED)
+                    raise NativeFilesystemError(NativeFailureKind.CHANGED)
                 current_descriptor = child
                 current_path /= component
         except BaseException as error:
@@ -349,7 +348,7 @@ if sys.platform == "win32":
         try:
             return tuple(sorted(entry.name for entry in path.iterdir()))
         except OSError:
-            raise _native_error(NativeFailureKind.UNREADABLE) from None
+            raise NativeFilesystemError(NativeFailureKind.UNREADABLE) from None
 
     def scan_tree(
         opened: OpenedTree,
@@ -374,12 +373,12 @@ if sys.platform == "win32":
             ):
                 for basename in list_names(path):
                     if not require_exact_entry(path, basename):
-                        raise _native_error(NativeFailureKind.CHANGED)
+                        raise NativeFilesystemError(NativeFailureKind.CHANGED)
                     attributes = path_attributes(child_path(path, basename))
                     if attributes is None:
-                        raise _native_error(NativeFailureKind.CHANGED)
+                        raise NativeFilesystemError(NativeFailureKind.CHANGED)
                     if attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
-                        raise _native_error(NativeFailureKind.UNSAFE)
+                        raise NativeFilesystemError(NativeFailureKind.UNSAFE)
                     child_relative = (*relative, basename)
                     if attributes & stat.FILE_ATTRIBUTE_DIRECTORY:
                         child = _open_child_directory(
@@ -440,14 +439,14 @@ if sys.platform == "win32":
         entries: list[TreeEntry] = []
         for basename in list_names(opened.root_path):
             if not require_exact_entry(opened.root_path, basename):
-                raise _native_error(NativeFailureKind.CHANGED)
+                raise NativeFilesystemError(NativeFailureKind.CHANGED)
             attributes = path_attributes(
                 child_path(opened.root_path, basename)
             )
             if attributes is None:
-                raise _native_error(NativeFailureKind.CHANGED)
+                raise NativeFilesystemError(NativeFailureKind.CHANGED)
             if attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
-                raise _native_error(NativeFailureKind.UNSAFE)
+                raise NativeFilesystemError(NativeFailureKind.UNSAFE)
             directory = bool(attributes & stat.FILE_ATTRIBUTE_DIRECTORY)
             if directory:
                 child = _open_child_directory(
@@ -477,7 +476,7 @@ if sys.platform == "win32":
                     allow_interrupted_link=False,
                 )
                 if child_metadata.st_dev != opened.root_device:
-                    raise _native_error(NativeFailureKind.UNSAFE)
+                    raise NativeFilesystemError(NativeFailureKind.UNSAFE)
                 identity = (child_metadata.st_dev, child_metadata.st_ino)
             entries.append(TreeEntry((basename,), identity, directory))
         require_root_identity(opened)
@@ -492,7 +491,7 @@ if sys.platform == "win32":
                 True,
             )
         except OSError, pywintypes.error:
-            raise _native_error(NativeFailureKind.REMOVE) from None
+            raise NativeFilesystemError(NativeFailureKind.REMOVE) from None
 
     def _delete_file(
         parent: Path,
@@ -514,7 +513,7 @@ if sys.platform == "win32":
                 file_metadata.st_dev,
                 file_metadata.st_ino,
             ) != entry.identity:
-                raise _native_error(NativeFailureKind.CHANGED)
+                raise NativeFilesystemError(NativeFailureKind.CHANGED)
             _mark_for_deletion(descriptor)
 
     def _delete_directory(
@@ -538,7 +537,7 @@ if sys.platform == "win32":
                 directory_metadata.st_dev,
                 directory_metadata.st_ino,
             ) != entry.identity or list_names(child_path(parent, basename)):
-                raise _native_error(NativeFailureKind.CHANGED)
+                raise NativeFilesystemError(NativeFailureKind.CHANGED)
             _mark_for_deletion(descriptor)
 
     def delete_entry(
@@ -559,13 +558,13 @@ if sys.platform == "win32":
         ):
             basename = entry.relative[-1]
             if not require_exact_entry(parent, basename):
-                raise _native_error(NativeFailureKind.CHANGED)
+                raise NativeFilesystemError(NativeFailureKind.CHANGED)
             if entry.directory:
                 _delete_directory(parent, parent_descriptor, entry)
             else:
                 _delete_file(parent, parent_descriptor, entry)
             if require_exact_entry(parent, basename):
-                raise _native_error(NativeFailureKind.CHANGED)
+                raise NativeFilesystemError(NativeFailureKind.CHANGED)
 
     def delete_empty_tree(root: Path) -> None:
         """Handle-delete one exact validated empty private-tree root."""
@@ -574,7 +573,7 @@ if sys.platform == "win32":
                 return
             entries, _identities = scan_tree(opened)
             if entries:
-                raise _native_error(NativeFailureKind.CHANGED)
+                raise NativeFilesystemError(NativeFailureKind.CHANGED)
             identity = opened.root_identity
         parent_descriptor = open_directory(root.parent, private=False)
         with owned_descriptor(
@@ -582,11 +581,11 @@ if sys.platform == "win32":
             NativeFailureKind.REMOVE,
         ):
             if not require_exact_entry(root.parent, root.name):
-                raise _native_error(NativeFailureKind.CHANGED)
+                raise NativeFilesystemError(NativeFailureKind.CHANGED)
             _delete_directory(
                 root.parent,
                 parent_descriptor,
                 TreeEntry((root.name,), identity, True),
             )
             if require_exact_entry(root.parent, root.name):
-                raise _native_error(NativeFailureKind.CHANGED)
+                raise NativeFilesystemError(NativeFailureKind.CHANGED)

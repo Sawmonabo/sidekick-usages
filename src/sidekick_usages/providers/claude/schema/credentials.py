@@ -30,9 +30,9 @@ from sidekick_usages.providers.base import (
     ProviderFailureKind,
 )
 from sidekick_usages.providers.claude.errors import claude_failure
-from sidekick_usages.providers.claude.schema.usage import (
-    _bounded_string,
-    _validate,
+from sidekick_usages.providers.claude.schema.validation import (
+    bounded_string,
+    validate_payload,
 )
 from sidekick_usages.serialization.json import JsonObject, JsonValue
 
@@ -60,15 +60,15 @@ type _NonnegativeInteger = Annotated[
 
 
 def _token(value: str) -> str:
-    return _bounded_string(value, _MAX_TOKEN_BYTES)
+    return bounded_string(value, _MAX_TOKEN_BYTES)
 
 
 def _metadata(value: str) -> str:
-    return _bounded_string(value, _MAX_METADATA_BYTES)
+    return bounded_string(value, _MAX_METADATA_BYTES)
 
 
 def _plan(value: str) -> str:
-    return _bounded_string(value, _MAX_PLAN_BYTES)
+    return bounded_string(value, _MAX_PLAN_BYTES)
 
 
 def _scopes(value: list[str]) -> list[str]:
@@ -188,7 +188,7 @@ def _login_identity(
 
 def parse_credentials_blob(blob: JsonObject) -> DetectedCredentials:
     """Validate and normalize complete Claude Code login credentials."""
-    validated = _validate(
+    validated = validate_payload(
         _credentials_adapter(),
         blob,
         boundary="credential",

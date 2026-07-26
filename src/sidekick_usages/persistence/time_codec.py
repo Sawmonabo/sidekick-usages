@@ -36,6 +36,15 @@ def parse_canonical_timestamp(value: str) -> datetime:
         raise InvalidSchemaError from None
 
 
+def canonical_timestamp_text(value: str) -> str:
+    """Require canonical timestamp text for a schema validator."""
+    try:
+        parse_canonical_timestamp(value)
+    except InvalidSchemaError:
+        raise ValueError from None
+    return value
+
+
 def canonical_timestamp(value: datetime) -> str:
     """Encode one aware timestamp as exact microsecond-resolution UTC."""
     if value.tzinfo is None or value.utcoffset() is None:

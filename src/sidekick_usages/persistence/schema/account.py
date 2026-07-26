@@ -7,7 +7,6 @@ from typing import Annotated, Literal
 from pydantic import (
     AfterValidator,
     BaseModel,
-    ConfigDict,
     Field,
     ValidationError,
 )
@@ -46,11 +45,16 @@ from sidekick_usages.persistence.limits import (
     MAX_DOCUMENT_BYTES,
 )
 from sidekick_usages.persistence.models.account import VersionThreeDocument
+from sidekick_usages.persistence.schema.config import STRICT_SCHEMA_CONFIG
+from sidekick_usages.persistence.schema.validation import (
+    canonical_account_id_text,
+)
 from sidekick_usages.persistence.state.validation import (
     validate_non_secret_state,
 )
 from sidekick_usages.persistence.time_codec import (
     canonical_timestamp,
+    canonical_timestamp_text,
     parse_canonical_timestamp,
 )
 from sidekick_usages.serialization.json import (
@@ -63,14 +67,9 @@ from sidekick_usages.serialization.json import (
 
 SCHEMA_VERSION = 3
 _MAX_METADATA_BYTES = 4_096
-_MODEL_CONFIG = ConfigDict(
-    strict=True,
-    extra="forbid",
-    frozen=True,
-)
 
-type _Uuid = Annotated[str, AfterValidator(_canonical_uuid)]
-type _Timestamp = Annotated[str, AfterValidator(_canonical_time)]
+type _Uuid = Annotated[str, AfterValidator(canonical_account_id_text)]
+type _Timestamp = Annotated[str, AfterValidator(canonical_timestamp_text)]
 type _BoundedText = Annotated[str, AfterValidator(_bounded_text)]
 type _Health = Literal[
     "healthy",
@@ -97,18 +96,6 @@ type _AccountModel = Annotated[
 ]
 
 
-def _canonical_uuid(value: str) -> str:
-    """Validate a canonical Sidekick UUID while preserving its text."""
-    SidekickAccountId(value)
-    return value
-
-
-def _canonical_time(value: str) -> str:
-    """Validate one canonical persisted UTC timestamp."""
-    parse_canonical_timestamp(value)
-    return value
-
-
 def _bounded_text(value: str) -> str:
     """Require one bounded nonempty UTF-8 metadata value."""
     try:
@@ -123,7 +110,7 @@ def _bounded_text(value: str) -> str:
 class _ClaudeSetupTokenModel(BaseModel):
     """Validated setup-token reference metadata."""
 
-    model_config = _MODEL_CONFIG
+    model_config = STRICT_SCHEMA_CONFIG
 
     authority_id: _Uuid
     expires_at: _Timestamp | None
@@ -134,7 +121,7 @@ class _ClaudeSetupTokenModel(BaseModel):
 class _ClaudeStoredModel(BaseModel):
     """Validated Sidekick-stored Claude subscription metadata."""
 
-    model_config = _MODEL_CONFIG
+    model_config = STRICT_SCHEMA_CONFIG
 
     kind: Literal["stored"]
     authority_id: _Uuid
@@ -148,7 +135,7 @@ class _ClaudeStoredModel(BaseModel):
 class _ClaudeManagedModel(BaseModel):
     """Validated managed Claude subscription metadata."""
 
-    model_config = _MODEL_CONFIG
+    model_config = STRICT_SCHEMA_CONFIG
 
     kind: Literal["managed"]
     authority_id: _Uuid
@@ -165,7 +152,7 @@ class _ClaudeManagedModel(BaseModel):
 class _ClaudeAuthorityModel(BaseModel):
     """Validated Claude authority envelope."""
 
-    model_config = _MODEL_CONFIG
+    model_config = STRICT_SCHEMA_CONFIG
 
     provider_id: Literal["claude"]
     setup_token: _ClaudeSetupTokenModel | None
@@ -175,7 +162,7 @@ class _ClaudeAuthorityModel(BaseModel):
 class _CodexStoredModel(BaseModel):
     """Validated Sidekick-stored Codex subscription metadata."""
 
-    model_config = _MODEL_CONFIG
+    model_config = STRICT_SCHEMA_CONFIG
 
     kind: Literal["stored"]
     authority_id: _Uuid
@@ -189,7 +176,7 @@ class _CodexStoredModel(BaseModel):
 class _CodexManagedModel(BaseModel):
     """Validated managed Codex subscription metadata."""
 
-    model_config = _MODEL_CONFIG
+    model_config = STRICT_SCHEMA_CONFIG
 
     kind: Literal["managed"]
     authority_id: _Uuid
@@ -203,7 +190,7 @@ class _CodexManagedModel(BaseModel):
 class _CodexAuthorityModel(BaseModel):
     """Validated Codex authority envelope."""
 
-    model_config = _MODEL_CONFIG
+    model_config = STRICT_SCHEMA_CONFIG
 
     provider_id: Literal["codex"]
     subscription: _CodexSubscriptionModel
@@ -212,7 +199,7 @@ class _CodexAuthorityModel(BaseModel):
 class _AccountStateModel(BaseModel):
     """Strict provider-neutral saved-account state."""
 
-    model_config = _MODEL_CONFIG
+    model_config = STRICT_SCHEMA_CONFIG
 
     label: _BoundedText
     plan: _BoundedText
@@ -255,7 +242,7 @@ class _CodexAccountModel(_AccountStateModel):
 class _EnvelopeModel(BaseModel):
     """Strict schema-version-three document envelope."""
 
-    model_config = _MODEL_CONFIG
+    model_config = STRICT_SCHEMA_CONFIG
 
     schema_version: Literal[3]
     accounts: dict[_Uuid, _AccountModel]

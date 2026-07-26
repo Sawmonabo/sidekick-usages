@@ -5,6 +5,7 @@ import stat
 import sys
 from pathlib import Path
 
+from sidekick_usages.persistence.platform.errors import NativeFilesystemError
 from sidekick_usages.persistence.platform.macos.acl import has_extended_acl
 from sidekick_usages.persistence.platform.ports import NativePlatform
 from sidekick_usages.persistence.platform.posix import namespace
@@ -19,7 +20,6 @@ from sidekick_usages.persistence.platform.posix.private.tree import (
     _entry_metadata,
     _list_names,
     _metadata,
-    _native_error,
     _open_repair_child_directory,
     _open_repair_relative_directory,
     _open_repair_tree,
@@ -41,7 +41,7 @@ _PRIVATE_FILE_MODE = 0o600
 def _validate_stage_mode(mode: int, private_mode: int) -> None:
     """Allow normalization only when no foreign principal can write."""
     if mode & 0o022 or (sys.platform == "darwin" and mode != private_mode):
-        raise _native_error(NativeFailureKind.UNSAFE)
+        raise NativeFilesystemError(NativeFailureKind.UNSAFE)
 
 
 def _require_no_macos_acl(descriptor: int) -> None:
@@ -50,9 +50,9 @@ def _require_no_macos_acl(descriptor: int) -> None:
         return
     try:
         if has_extended_acl(descriptor):
-            raise _native_error(NativeFailureKind.UNSAFE)
+            raise NativeFilesystemError(NativeFailureKind.UNSAFE)
     except OSError:
-        raise _native_error(NativeFailureKind.UNSAFE) from None
+        raise NativeFilesystemError(NativeFailureKind.UNSAFE) from None
 
 
 def _open_stage_regular(
@@ -72,9 +72,9 @@ def _open_stage_regular(
             dir_fd=parent_descriptor,
         )
     except FileNotFoundError:
-        raise _native_error(NativeFailureKind.CHANGED) from None
+        raise NativeFilesystemError(NativeFailureKind.CHANGED) from None
     except OSError:
-        raise _native_error(NativeFailureKind.UNSAFE) from None
+        raise NativeFilesystemError(NativeFailureKind.UNSAFE) from None
     try:
         metadata = _metadata(descriptor, NativeFailureKind.UNREADABLE)
         mode = stat.S_IMODE(metadata.st_mode)
@@ -84,7 +84,7 @@ def _open_stage_regular(
             or metadata.st_uid != os.geteuid()
             or metadata.st_nlink != 1
         ):
-            raise _native_error(NativeFailureKind.UNSAFE)
+            raise NativeFilesystemError(NativeFailureKind.UNSAFE)
         _require_no_macos_acl(descriptor)
         _validate_stage_mode(mode, _PRIVATE_FILE_MODE)
         if (
@@ -93,7 +93,7 @@ def _open_stage_regular(
         ) != expected or namespace.require_exact_entry(
             parent_descriptor, basename
         ) != expected:
-            raise _native_error(NativeFailureKind.CHANGED)
+            raise NativeFilesystemError(NativeFailureKind.CHANGED)
     except BaseException as error:
         namespace.close_descriptor_stack([descriptor], error)
     return descriptor
@@ -113,7 +113,7 @@ def _scan_stage_tree(
         root_metadata.st_uid != os.geteuid()
         or root_metadata.st_dev != opened.root_device
     ):
-        raise _native_error(NativeFailureKind.UNSAFE)
+        raise NativeFilesystemError(NativeFailureKind.UNSAFE)
     _require_no_macos_acl(opened.root_descriptor)
     _validate_stage_mode(root_mode, _PRIVATE_DIRECTORY_MODE)
     identities: dict[RelativePath, NativeIdentity] = {(): opened.root_identity}
@@ -150,7 +150,9 @@ def _scan_stage_tree(
                             child_metadata.st_dev,
                             child_metadata.st_ino,
                         ) != identity:
-                            raise _native_error(NativeFailureKind.CHANGED)
+                            raise NativeFilesystemError(
+                                NativeFailureKind.CHANGED
+                            )
                         _require_no_macos_acl(child)
                         mode = stat.S_IMODE(child_metadata.st_mode)
                         _validate_stage_mode(mode, _PRIVATE_DIRECTORY_MODE)
@@ -166,7 +168,7 @@ def _scan_stage_tree(
                     pending.append(child_relative)
                     continue
                 if not stat.S_ISREG(metadata.st_mode):
-                    raise _native_error(NativeFailureKind.UNSAFE)
+                    raise NativeFilesystemError(NativeFailureKind.UNSAFE)
                 file_descriptor = _open_stage_regular(
                     descriptor,
                     basename,
@@ -212,14 +214,14 @@ def _repair_stage_file(
         with namespace.owned_descriptor(descriptor, NativeFailureKind.HARDEN):
             metadata = _metadata(descriptor, NativeFailureKind.CHANGED)
             if stat.S_IMODE(metadata.st_mode) != entry.mode:
-                raise _native_error(NativeFailureKind.CHANGED)
+                raise NativeFilesystemError(NativeFailureKind.CHANGED)
             if entry.mode == _PRIVATE_FILE_MODE:
                 return False
             try:
                 os.fchmod(descriptor, _PRIVATE_FILE_MODE)
                 os.fsync(descriptor)
             except OSError:
-                raise _native_error(NativeFailureKind.HARDEN) from None
+                raise NativeFilesystemError(NativeFailureKind.HARDEN) from None
             hardened = _metadata(descriptor, NativeFailureKind.HARDEN)
             if (
                 (hardened.st_dev, hardened.st_ino) != entry.identity
@@ -229,7 +231,7 @@ def _repair_stage_file(
                 or namespace.require_exact_entry(parent, basename)
                 != entry.identity
             ):
-                raise _native_error(NativeFailureKind.HARDEN)
+                raise NativeFilesystemError(NativeFailureKind.HARDEN)
         _synchronize_namespace(parent)
         return True
 

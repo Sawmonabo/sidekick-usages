@@ -6,7 +6,6 @@ from typing import Annotated, Literal, Self
 from pydantic import (
     AfterValidator,
     BaseModel,
-    ConfigDict,
     Field,
     ValidationError,
     model_validator,
@@ -22,8 +21,13 @@ from sidekick_usages.core.models import (
     UsageWindow,
 )
 from sidekick_usages.core.types import ProviderId
+from sidekick_usages.persistence.schema.config import STRICT_SCHEMA_CONFIG
+from sidekick_usages.persistence.schema.validation import (
+    canonical_account_id_text,
+)
 from sidekick_usages.persistence.time_codec import (
     canonical_timestamp,
+    canonical_timestamp_text,
     parse_canonical_timestamp,
 )
 from sidekick_usages.serialization.json import (
@@ -35,11 +39,13 @@ USAGE_SCHEMA_VERSION = 2
 MAX_USAGE_RECORDS = 4_096
 MAX_USAGE_WINDOWS = 64
 MAX_USAGE_TEXT_BYTES = 4_096
-MODEL_CONFIG = ConfigDict(strict=True, extra="forbid", frozen=True)
 
-type AccountIdText = Annotated[str, AfterValidator(_account_id)]
+type AccountIdText = Annotated[
+    str,
+    AfterValidator(canonical_account_id_text),
+]
 type BoundedText = Annotated[str, AfterValidator(_bounded_text)]
-type TimestampText = Annotated[str, AfterValidator(_timestamp_text)]
+type TimestampText = Annotated[str, AfterValidator(canonical_timestamp_text)]
 type UsageRecords = Annotated[
     dict[AccountIdText, UsageSnapshotRecord],
     AfterValidator(_records),
@@ -58,23 +64,12 @@ class UsageSnapshotDecodeError(ValueError):
     """Persisted usage bytes violate the current strict schema."""
 
 
-def _account_id(value: str) -> str:
-    SidekickAccountId(value)
-    return value
-
-
 def _bounded_text(value: str) -> str:
     try:
         encoded = value.encode("utf-8")
     except UnicodeEncodeError:
         raise ValueError from None
     if not encoded or len(encoded) > MAX_USAGE_TEXT_BYTES:
-        raise ValueError
-    return value
-
-
-def _timestamp_text(value: str) -> str:
-    if canonical_timestamp(parse_canonical_timestamp(value)) != value:
         raise ValueError
     return value
 
@@ -107,7 +102,7 @@ def _windows(value: list[UsageWindowRecord]) -> list[UsageWindowRecord]:
 class UsageWindowRecord(BaseModel):
     """Strict normalized usage-window record."""
 
-    model_config = MODEL_CONFIG
+    model_config = STRICT_SCHEMA_CONFIG
 
     name: BoundedText
     utilization: float = Field(ge=0.0, le=100.0, allow_inf_nan=False)
@@ -117,7 +112,7 @@ class UsageWindowRecord(BaseModel):
 class UsageSnapshotRecord(BaseModel):
     """Strict last-successful account usage record."""
 
-    model_config = MODEL_CONFIG
+    model_config = STRICT_SCHEMA_CONFIG
 
     provider_id: Literal["claude", "codex"]
     provider_identity: BoundedText | None
@@ -129,7 +124,7 @@ class UsageSnapshotRecord(BaseModel):
 class UsageIdentityPromotionRecord(BaseModel):
     """Secret-free intent to bind one usage record to a proven identity."""
 
-    model_config = MODEL_CONFIG
+    model_config = STRICT_SCHEMA_CONFIG
 
     provider_id: Literal["claude", "codex"]
     source_identity: BoundedText | None
@@ -139,7 +134,7 @@ class UsageIdentityPromotionRecord(BaseModel):
 class UsageSnapshotDocument(BaseModel):
     """Strict versioned account-usage document."""
 
-    model_config = MODEL_CONFIG
+    model_config = STRICT_SCHEMA_CONFIG
 
     schema_version: Literal[2]
     accounts: UsageRecords

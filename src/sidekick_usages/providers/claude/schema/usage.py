@@ -13,7 +13,6 @@ from pydantic import (
     ConfigDict,
     Field,
     TypeAdapter,
-    ValidationError,
 )
 
 from sidekick_usages.core.models import UsageWindow
@@ -22,50 +21,15 @@ from sidekick_usages.providers.base import (
     ProviderFailureKind,
 )
 from sidekick_usages.providers.claude.errors import claude_failure
+from sidekick_usages.providers.claude.schema.validation import (
+    bounded_string,
+    validate_payload,
+)
 from sidekick_usages.serialization.json import JsonObject, JsonValue
 
 _MAX_METADATA_BYTES = 4_096
 _MAX_UTILIZATION_PERCENT = 100
 _MAX_TOKEN_COUNT = 9_223_372_036_854_775_807
-_SAFE_PATH_SEGMENTS = frozenset(
-    {
-        "accessToken",
-        "accountUuid",
-        "cacheCreationInputTokens",
-        "cacheReadInputTokens",
-        "cache_creation_input_tokens",
-        "cache_read_input_tokens",
-        "claudeAiOauth",
-        "expiresAt",
-        "expires_in",
-        "five_hour",
-        "firstSessionDate",
-        "inputTokens",
-        "input_tokens",
-        "isSidechain",
-        "lastComputedDate",
-        "message",
-        "modelUsage",
-        "outputTokens",
-        "output_tokens",
-        "refreshToken",
-        "refreshTokenExpiresAt",
-        "refresh_token",
-        "refresh_token_expires_in",
-        "resets_at",
-        "scopes",
-        "seven_day",
-        "seven_day_oauth_apps",
-        "seven_day_opus",
-        "subscriptionType",
-        "tokenAccount",
-        "organizationUuid",
-        "timestamp",
-        "type",
-        "usage",
-        "utilization",
-    }
-)
 _OAUTH_USAGE_BUCKETS: tuple[tuple[str, str], ...] = (
     ("five_hour", "5h"),
     ("seven_day", "7d"),
@@ -81,18 +45,8 @@ type _Utilization = Annotated[
 ]
 
 
-def _bounded_string(value: str, maximum: int) -> str:
-    try:
-        encoded = value.encode("utf-8")
-    except UnicodeEncodeError as error:
-        raise ValueError from error
-    if not encoded or len(encoded) > maximum:
-        raise ValueError
-    return value
-
-
 def _metadata(value: str) -> str:
-    return _bounded_string(value, _MAX_METADATA_BYTES)
+    return bounded_string(value, _MAX_METADATA_BYTES)
 
 
 def _utilization(value: int | float) -> int | float:
@@ -279,61 +233,6 @@ class ClaudeActivityEvent:
     is_sidechain: bool
 
 
-def _safe_paths(error: ValidationError) -> tuple[str, ...]:
-    details = error.errors(include_input=False, include_url=False)
-    if not details:
-        return ("payload",)
-    result: list[str] = []
-    for detail in details:
-        path = tuple(
-            segment
-            for segment in detail["loc"]
-            if isinstance(segment, int) or segment in _SAFE_PATH_SEGMENTS
-        )
-        rendered = (
-            ".".join(str(segment) for segment in path) if path else "payload"
-        )
-        if rendered not in result:
-            result.append(rendered)
-    return tuple(result)
-
-
-def _validation_kind(error: ValidationError) -> ProviderFailureKind:
-    details = error.errors(include_input=False, include_url=False)
-    if any(detail["type"] == "missing" for detail in details):
-        return ProviderFailureKind.INCOMPLETE
-    return ProviderFailureKind.MALFORMED
-
-
-def _validate[T](
-    adapter: TypeAdapter[T],
-    value: object,
-    *,
-    boundary: str,
-) -> T:
-    try:
-        result = adapter.validate_python(value, strict=True)
-    except ValidationError as validation_error:
-        kind = _validation_kind(validation_error)
-        adjective = (
-            "incomplete"
-            if kind is ProviderFailureKind.INCOMPLETE
-            else "invalid"
-        )
-        fields = _safe_paths(validation_error)
-        error = ProviderBoundaryError(
-            claude_failure(
-                kind,
-                f"Claude {boundary} data is {adjective} at "
-                f"{', '.join(fields)}.",
-                fields=fields,
-            )
-        )
-    else:
-        return result
-    raise error from None
-
-
 def _activity_error(message: str) -> ProviderBoundaryError:
     return ProviderBoundaryError(
         claude_failure(
@@ -360,7 +259,7 @@ def _activity_time(value: str) -> datetime:
 
 def parse_activity_cache(value: JsonObject) -> ClaudeActivityCache:
     """Validate and aggregate Claude's historical activity cache."""
-    validated = _validate(
+    validated = validate_payload(
         _activity_cache_adapter(),
         value,
         boundary="activity cache",
@@ -391,7 +290,7 @@ def parse_activity_record(
     """Return one validated assistant activity event, when relevant."""
     if value.get("type") != "assistant":
         return None
-    validated = _validate(
+    validated = validate_payload(
         _assistant_record_adapter(),
         value,
         boundary="activity transcript",
@@ -441,7 +340,7 @@ def oauth_usage_window(
     """Validate and normalize one optional OAuth usage bucket."""
     if value is None:
         return None
-    validated = _validate(
+    validated = validate_payload(
         _usage_window_adapter(),
         value,
         boundary="usage",
@@ -457,7 +356,11 @@ def oauth_usage_windows(
     value: JsonObject,
 ) -> tuple[UsageWindow, ...]:
     """Validate and normalize all requested OAuth usage buckets."""
-    validated = _validate(_usage_adapter(), value, boundary="usage")
+    validated = validate_payload(
+        _usage_adapter(),
+        value,
+        boundary="usage",
+    )
     windows_by_key = {
         "five_hour": validated.five_hour,
         "seven_day": validated.seven_day,
@@ -484,7 +387,7 @@ def header_usage_window(
     response_headers: dict[str, str],
 ) -> UsageWindow | None:
     """Validate one unified rate-limit header pair when present."""
-    headers = _validate(
+    headers = validate_payload(
         _headers_adapter(),
         response_headers,
         boundary="header",
@@ -500,7 +403,7 @@ def header_usage_window(
                 "Claude rate-limit headers are incomplete.",
             )
         ) from None
-    validated = _validate(
+    validated = validate_payload(
         _header_window_adapter(),
         {"utilization": util_raw, "reset": reset_raw},
         boundary="header",
@@ -521,7 +424,7 @@ def header_reset(
     prefix: str,
 ) -> datetime | None:
     """Validate one unified Claude rate-limit reset header."""
-    headers = _validate(
+    headers = validate_payload(
         _headers_adapter(),
         response_headers,
         boundary="header",
@@ -529,7 +432,7 @@ def header_reset(
     reset_raw = headers.get(f"{prefix}-reset")
     if reset_raw is None:
         return None
-    validated = _validate(
+    validated = validate_payload(
         _header_reset_adapter(),
         {"reset": reset_raw},
         boundary="header",

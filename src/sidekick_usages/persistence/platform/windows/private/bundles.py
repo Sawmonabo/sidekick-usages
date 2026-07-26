@@ -55,9 +55,6 @@ if sys.platform == "win32":
 
 if sys.platform == "win32":
 
-    def _native_error(kind: NativeFailureKind) -> NativeFilesystemError:
-        return NativeFilesystemError(kind)
-
     def _descriptor_handle(
         descriptor: int,
         kind: NativeFailureKind,
@@ -65,7 +62,7 @@ if sys.platform == "win32":
         try:
             return msvcrt.get_osfhandle(descriptor)
         except OSError:
-            raise _native_error(kind) from None
+            raise NativeFilesystemError(kind) from None
 
     def _install_staged_file(
         opened: OpenedTree,
@@ -82,7 +79,7 @@ if sys.platform == "win32":
         if stage is None or (
             read_file(target_parent, target_basename, limit) != expected
         ):
-            raise _native_error(NativeFailureKind.CHANGED)
+            raise NativeFilesystemError(NativeFailureKind.CHANGED)
         source_descriptor = open_mutation_source(
             source_parent,
             stage_basename,
@@ -97,7 +94,7 @@ if sys.platform == "win32":
             require_chain_identity(opened, transaction)
             require_chain_identity(opened, target)
             if read_file(target_parent, target_basename, limit) != expected:
-                raise _native_error(NativeFailureKind.CHANGED)
+                raise NativeFilesystemError(NativeFailureKind.CHANGED)
             require_chain_identity(opened, transaction)
             require_chain_identity(opened, target)
             flags = win32file.MOVEFILE_WRITE_THROUGH
@@ -110,7 +107,9 @@ if sys.platform == "win32":
                     flags,
                 )
             except pywintypes.error:
-                raise _native_error(NativeFailureKind.REPLACE) from None
+                raise NativeFilesystemError(
+                    NativeFailureKind.REPLACE
+                ) from None
             validate_membership(
                 target.descriptors[-1],
                 _descriptor_handle(
@@ -124,7 +123,7 @@ if sys.platform == "win32":
             (final.device, final.inode) != (stage.device, stage.inode)
             or final.data != stage.data
         ):
-            raise _native_error(NativeFailureKind.CHANGED)
+            raise NativeFilesystemError(NativeFailureKind.CHANGED)
         require_chain_identity(opened, transaction)
         require_chain_identity(opened, target)
         return final
@@ -142,25 +141,25 @@ if sys.platform == "win32":
                 private_bundle_relative_components(basename)
             require_portable_unique_basenames(names)
         except ValueError:
-            raise _native_error(NativeFailureKind.UNSAFE) from None
+            raise NativeFilesystemError(NativeFailureKind.UNSAFE) from None
         if len(names) > max_files:
-            raise _native_error(NativeFailureKind.TOO_LARGE)
+            raise NativeFilesystemError(NativeFailureKind.TOO_LARGE)
         files: list[tuple[str, NativeFile]] = []
         total = 0
         for basename in names:
             snapshot = read_file(chain.paths[-1], basename, file_limit)
             if snapshot is None:
-                raise _native_error(NativeFailureKind.CHANGED)
+                raise NativeFilesystemError(NativeFailureKind.CHANGED)
             total += len(snapshot.data)
             if total > total_limit:
-                raise _native_error(NativeFailureKind.TOO_LARGE)
+                raise NativeFilesystemError(NativeFailureKind.TOO_LARGE)
             files.append((basename, snapshot))
         require_chain_identity(opened, chain)
         for basename, snapshot in files:
             if read_file(chain.paths[-1], basename, file_limit) != snapshot:
-                raise _native_error(NativeFailureKind.CHANGED)
+                raise NativeFilesystemError(NativeFailureKind.CHANGED)
         if list_names(chain.paths[-1]) != names:
-            raise _native_error(NativeFailureKind.CHANGED)
+            raise NativeFilesystemError(NativeFailureKind.CHANGED)
         return tuple(files)
 
     class WindowsPrivateBundlePlatform:
@@ -197,14 +196,16 @@ if sys.platform == "win32":
                     try:
                         require_portable_unique_basenames(names)
                     except ValueError:
-                        raise _native_error(NativeFailureKind.UNSAFE) from None
+                        raise NativeFilesystemError(
+                            NativeFailureKind.UNSAFE
+                        ) from None
                     target = portable_basename_key(basename)
                     present = any(
                         portable_basename_key(name) == target for name in names
                     )
                     require_chain_identity(opened, chain)
                     if list_names(chain.paths[-1]) != names:
-                        raise _native_error(NativeFailureKind.CHANGED)
+                        raise NativeFilesystemError(NativeFailureKind.CHANGED)
                     return present
 
         def ensure_relative_directory(
@@ -216,14 +217,14 @@ if sys.platform == "win32":
             self._ensure_root(root)
             with open_tree(root) as opened:
                 if opened is None:
-                    raise _native_error(NativeFailureKind.CHANGED)
+                    raise NativeFilesystemError(NativeFailureKind.CHANGED)
                 with open_component_chain(
                     opened,
                     relative,
                     create=True,
                 ) as chain:
                     if chain is None:
-                        raise _native_error(NativeFailureKind.CHANGED)
+                        raise NativeFilesystemError(NativeFailureKind.CHANGED)
 
         def read_relative_file(
             self,
@@ -291,21 +292,23 @@ if sys.platform == "win32":
             self._qualifier.qualify(root)
             with open_tree(root) as opened:
                 if opened is None:
-                    raise _native_error(NativeFailureKind.CHANGED)
+                    raise NativeFilesystemError(NativeFailureKind.CHANGED)
                 with open_component_chain(
                     opened,
                     transaction_relative,
                     create=False,
                 ) as transaction:
                     if transaction is None:
-                        raise _native_error(NativeFailureKind.CHANGED)
+                        raise NativeFilesystemError(NativeFailureKind.CHANGED)
                     with open_component_chain(
                         opened,
                         target_relative,
                         create=True,
                     ) as target:
                         if target is None:
-                            raise _native_error(NativeFailureKind.CHANGED)
+                            raise NativeFilesystemError(
+                                NativeFailureKind.CHANGED
+                            )
                         return _install_staged_file(
                             opened,
                             transaction,
@@ -328,7 +331,7 @@ if sys.platform == "win32":
             self._qualifier.qualify(root)
             with open_tree(root) as opened:
                 if opened is None:
-                    raise _native_error(NativeFailureKind.CHANGED)
+                    raise NativeFilesystemError(NativeFailureKind.CHANGED)
                 with open_component_chain(
                     opened,
                     relative,
@@ -337,14 +340,14 @@ if sys.platform == "win32":
                     if chain is None or (
                         read_file(chain.paths[-1], basename, limit) != expected
                     ):
-                        raise _native_error(NativeFailureKind.CHANGED)
+                        raise NativeFilesystemError(NativeFailureKind.CHANGED)
                     if not remove_validated(
                         chain.paths[-1],
                         basename,
                         expected.device,
                         expected.inode,
                     ):
-                        raise _native_error(NativeFailureKind.CHANGED)
+                        raise NativeFilesystemError(NativeFailureKind.CHANGED)
                     require_chain_identity(opened, chain)
 
         def contains_relative_artifacts(
@@ -414,13 +417,13 @@ if sys.platform == "win32":
                         delete_entry(nested, entry, identities)
                     remaining, _remaining = scan_tree(nested)
                     if remaining:
-                        raise _native_error(NativeFailureKind.CHANGED)
+                        raise NativeFilesystemError(NativeFailureKind.CHANGED)
                 with open_component_chain(
                     opened,
                     relative[:-1],
                     create=False,
                 ) as parent_chain:
                     if parent_chain is None or target_path is None:
-                        raise _native_error(NativeFailureKind.CHANGED)
+                        raise NativeFilesystemError(NativeFailureKind.CHANGED)
                     delete_empty_tree(target_path)
                     require_chain_identity(opened, parent_chain)

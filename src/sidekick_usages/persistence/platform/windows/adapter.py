@@ -28,9 +28,6 @@ if sys.platform == "win32":
         security,
     )
 
-    def _native_error(kind: NativeFailureKind) -> NativeFilesystemError:
-        return NativeFilesystemError(kind)
-
     def _open_security_repair_directory(path: Path) -> int:
         try:
             handle = win32file.CreateFile(
@@ -46,7 +43,7 @@ if sys.platform == "win32":
                 None,
             )
         except pywintypes.error:
-            raise _native_error(NativeFailureKind.UNSAFE) from None
+            raise NativeFilesystemError(NativeFailureKind.UNSAFE) from None
         descriptor = handles.descriptor_from_handle(
             handle,
             os.O_RDONLY | os.O_BINARY,
@@ -86,12 +83,14 @@ if sys.platform == "win32":
                 )
             except pywintypes.error as error:
                 if error.winerror != winerror.ERROR_ALREADY_EXISTS:
-                    raise _native_error(NativeFailureKind.CREATE) from None
+                    raise NativeFilesystemError(
+                        NativeFailureKind.CREATE
+                    ) from None
         elif (
             attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT
             or not attributes & stat.FILE_ATTRIBUTE_DIRECTORY
         ):
-            raise _native_error(NativeFailureKind.UNSAFE)
+            raise NativeFilesystemError(NativeFailureKind.UNSAFE)
         return files.open_directory(path, private=private)
 
     def _ensure_private_parent(parent: Path) -> None:
@@ -116,7 +115,7 @@ if sys.platform == "win32":
         except OSError:
             _close_descriptor_stack(
                 descriptors,
-                _native_error(NativeFailureKind.UNSAFE),
+                NativeFilesystemError(NativeFailureKind.UNSAFE),
             )
         except NativeFilesystemError as error:
             _close_descriptor_stack(descriptors, error)
@@ -147,9 +146,9 @@ if sys.platform == "win32":
                 winerror.ERROR_FILE_EXISTS,
                 winerror.ERROR_ALREADY_EXISTS,
             ):
-                raise _native_error(NativeFailureKind.CREATE) from None
+                raise NativeFilesystemError(NativeFailureKind.CREATE) from None
             if not namespace.require_exact_entry(parent, basename):
-                raise _native_error(NativeFailureKind.UNSAFE) from None
+                raise NativeFilesystemError(NativeFailureKind.UNSAFE) from None
             try:
                 handle = win32file.CreateFile(
                     str(path),
@@ -162,7 +161,7 @@ if sys.platform == "win32":
                     None,
                 )
             except pywintypes.error:
-                raise _native_error(NativeFailureKind.UNSAFE) from None
+                raise NativeFilesystemError(NativeFailureKind.UNSAFE) from None
         try:
             security.validate_security(int(handle), directory=False)
             namespace.validate_membership(
@@ -175,7 +174,7 @@ if sys.platform == "win32":
         except OSError, pywintypes.error:
             handles.close_handle(
                 handle,
-                _native_error(NativeFailureKind.UNSAFE),
+                NativeFilesystemError(NativeFailureKind.UNSAFE),
             )
         except BaseException as error:
             handles.close_handle(handle, error)
@@ -191,7 +190,7 @@ if sys.platform == "win32":
             return os.fdopen(descriptor, "r+b", buffering=0)
         except OSError:
             handles.close_descriptor(descriptor)
-            raise _native_error(NativeFailureKind.UNSAFE) from None
+            raise NativeFilesystemError(NativeFailureKind.UNSAFE) from None
         except NativeFilesystemError as error:
             handles.close_descriptor(descriptor, error)
 
@@ -221,7 +220,7 @@ if sys.platform == "win32":
                 attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT
                 or not attributes & stat.FILE_ATTRIBUTE_DIRECTORY
             ):
-                raise _native_error(NativeFailureKind.UNSAFE)
+                raise NativeFilesystemError(NativeFailureKind.UNSAFE)
             parent_descriptor = files.open_directory(
                 parent.parent,
                 private=False,
@@ -233,7 +232,7 @@ if sys.platform == "win32":
                 if not namespace.require_exact_entry(
                     parent.parent, parent.name
                 ):
-                    raise _native_error(NativeFailureKind.CHANGED)
+                    raise NativeFilesystemError(NativeFailureKind.CHANGED)
                 descriptor = _open_security_repair_directory(parent)
                 with handles.owned_descriptor(
                     descriptor,
@@ -269,7 +268,7 @@ if sys.platform == "win32":
                         parent.parent,
                         parent.name,
                     ):
-                        raise _native_error(NativeFailureKind.CHANGED)
+                        raise NativeFilesystemError(NativeFailureKind.CHANGED)
                     namespace.validate_membership(
                         parent_descriptor,
                         handle,
@@ -286,7 +285,7 @@ if sys.platform == "win32":
                 attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT
                 or not attributes & stat.FILE_ATTRIBUTE_DIRECTORY
             ):
-                raise _native_error(NativeFailureKind.UNSAFE)
+                raise NativeFilesystemError(NativeFailureKind.UNSAFE)
             descriptor = files.open_directory(parent)
             with handles.owned_descriptor(
                 descriptor,
@@ -295,7 +294,9 @@ if sys.platform == "win32":
                 try:
                     return tuple(entry.name for entry in parent.iterdir())
                 except OSError:
-                    raise _native_error(NativeFailureKind.UNREADABLE) from None
+                    raise NativeFilesystemError(
+                        NativeFailureKind.UNREADABLE
+                    ) from None
 
         def read(
             self,
@@ -410,7 +411,7 @@ if sys.platform == "win32":
                         error.add_note("Native lock cleanup also failed.")
                 raise
             if stream is None:
-                raise _native_error(NativeFailureKind.UNSAFE)
+                raise NativeFilesystemError(NativeFailureKind.UNSAFE)
             return stream
 
         def prove_lock_identity(
@@ -429,7 +430,9 @@ if sys.platform == "win32":
                     descriptor = sidecar.fileno()
                     handle = msvcrt.get_osfhandle(descriptor)
                 except OSError, ValueError:
-                    raise _native_error(NativeFailureKind.UNSAFE) from None
+                    raise NativeFilesystemError(
+                        NativeFailureKind.UNSAFE
+                    ) from None
                 security.validate_security(handle, directory=False)
                 handles.validate_stat(
                     handles.metadata(descriptor, NativeFailureKind.UNSAFE),

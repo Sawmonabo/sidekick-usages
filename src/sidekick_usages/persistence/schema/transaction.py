@@ -8,7 +8,6 @@ from typing import Annotated, Literal, Self
 from pydantic import (
     AfterValidator,
     BaseModel,
-    ConfigDict,
     Field,
     TypeAdapter,
     ValidationError,
@@ -30,9 +29,10 @@ from sidekick_usages.persistence.private.bundles.paths import (
     PRIVATE_TRANSACTION_DIRECTORY,
     PRIVATE_TRANSACTION_JOURNAL,
 )
+from sidekick_usages.persistence.schema.config import STRICT_SCHEMA_CONFIG
+from sidekick_usages.persistence.schema.validation import sha256_text
 from sidekick_usages.persistence.types.artifact import (
     AuthorityExpectation,
-    Sha256Digest,
 )
 from sidekick_usages.serialization.json import (
     JsonDecodeError,
@@ -47,7 +47,7 @@ _STAGE_PATTERN = re.compile(r"stage-[0-9]{4}\.bin\Z", re.ASCII)
 _BACKUP_PATTERN = re.compile(r"backup-[0-9]{4}\.bin\Z", re.ASCII)
 
 type _SafeBasename = Annotated[str, AfterValidator(_safe_basename)]
-type _Digest = Annotated[str, AfterValidator(_digest)]
+type _Digest = Annotated[str, AfterValidator(sha256_text)]
 type _StageBasename = Annotated[str, AfterValidator(_stage_basename)]
 type _BackupBasename = Annotated[str, AfterValidator(_backup_basename)]
 type JournalAuthority = Annotated[
@@ -61,11 +61,6 @@ def _safe_basename(value: str) -> str:
     require_safe_basename(value)
     if len(value.encode("utf-8")) > _MAX_BASENAME_BYTES:
         raise ValueError
-    return value
-
-
-def _digest(value: str) -> str:
-    Sha256Digest(value)
     return value
 
 
@@ -84,7 +79,7 @@ def _backup_basename(value: str) -> str:
 class AbsentAuthority(BaseModel):
     """Journal authority expectation for first persistence."""
 
-    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
+    model_config = STRICT_SCHEMA_CONFIG
 
     kind: Literal["absent"]
 
@@ -92,7 +87,7 @@ class AbsentAuthority(BaseModel):
 class PresentAuthority(BaseModel):
     """Exact journal authority fingerprint for an existing store."""
 
-    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
+    model_config = STRICT_SCHEMA_CONFIG
 
     kind: Literal["present"]
     device: int = Field(ge=0)
@@ -104,7 +99,7 @@ class PresentAuthority(BaseModel):
 class CredentialSourceGuardRecord(BaseModel):
     """Non-secret identity and expectation for a retained source authority."""
 
-    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
+    model_config = STRICT_SCHEMA_CONFIG
 
     path_sha256: _Digest
     authority: JournalAuthority
@@ -113,7 +108,7 @@ class CredentialSourceGuardRecord(BaseModel):
 class CredentialTransactionFile(BaseModel):
     """One bounded target-file transition without credential bytes."""
 
-    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
+    model_config = STRICT_SCHEMA_CONFIG
 
     bundle_basename: _SafeBasename
     basename: _SafeBasename
@@ -132,7 +127,7 @@ class CredentialTransactionFile(BaseModel):
 class CredentialTransactionJournal(BaseModel):
     """Strict recovery authority containing no credential bytes."""
 
-    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
+    model_config = STRICT_SCHEMA_CONFIG
 
     journal_version: Literal[1]
     base_authority: JournalAuthority

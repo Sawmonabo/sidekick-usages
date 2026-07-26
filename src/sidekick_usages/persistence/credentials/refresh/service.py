@@ -51,13 +51,13 @@ from sidekick_usages.persistence.schema.refresh.journal import (
     encode_refresh_journal,
     refresh_credential_kind,
     refresh_reason,
-    refresh_timestamp,
-    require_sha256,
 )
 from sidekick_usages.persistence.schema.refresh.stage.credential import (
     decode_credential_refresh_stage,
     encode_credential_refresh_stage,
 )
+from sidekick_usages.persistence.schema.validation import sha256_text
+from sidekick_usages.persistence.time_codec import canonical_timestamp
 from sidekick_usages.persistence.types.artifact import AuthorityExpectation
 
 _LOCK_DOMAIN = b"sidekick-usages credential refresh lock\0"
@@ -177,7 +177,7 @@ class CredentialRefreshTransactions:
         try:
             directories = self._tree.list_owned_directories_shallow()
             for directory in directories:
-                require_sha256(directory.name)
+                sha256_text(directory.name)
                 evidence_lock = PersistenceLock(
                     PersistenceFilesystem(
                         self._root / _evidence_basename(directory.name)
@@ -440,7 +440,7 @@ class CredentialRefreshTransactions:
 
     def _recover_directory(self, directory: Path) -> None:
         try:
-            require_sha256(directory.name)
+            sha256_text(directory.name)
         except ValueError:
             raise CredentialRefreshRecoveryBlockedError from None
         journal = self._read_journal(directory)
@@ -560,7 +560,7 @@ def _operation_basename(account: Account) -> str:
 
 
 def _evidence_basename(account_digest: str) -> str:
-    require_sha256(account_digest)
+    sha256_text(account_digest)
     return f"{account_digest}.evidence"
 
 
@@ -578,7 +578,7 @@ def _intent_journal(
         ),
         expected_credential_kind=refresh_credential_kind(account.credentials),
         expected_credential_sha256=credential_digest(account.credentials),
-        operation_started_at=refresh_timestamp(started_at),
+        operation_started_at=canonical_timestamp(started_at),
         refresh_reason=reason,
         stage_state="intent",
         staged_credential_sha256=None,
