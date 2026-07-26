@@ -1,6 +1,7 @@
 """Command-boundary tests for typed usage-check outcomes."""
 
 import io
+import os
 import re
 from collections.abc import Mapping
 from datetime import date
@@ -8,6 +9,11 @@ from pathlib import Path
 
 from rich.console import Console
 
+from sidekick_usages.cli.contexts.composition import compose_app_context
+from sidekick_usages.core.accounts.types import (
+    AuthorityId,
+    SidekickAccountId,
+)
 from sidekick_usages.core.models import (
     Account,
     ClaudeSetupTokenCredentials,
@@ -36,10 +42,26 @@ from sidekick_usages.providers.base import (
     RefreshSuccess,
 )
 from sidekick_usages.usage.activity import AccountTokenActivitySource
+from tests.fakes.codex.app_server.executable import (
+    configure_codex_logins,
+    write_fake_codex,
+)
+from tests.fakes.codex.app_server.schema import write_codex_schema
+from tests.fakes.codex.auth import managed_auth
+from tests.fakes.codex.managed import (
+    managed_saved_account,
+    seed_managed_accounts,
+)
 from tests.support.application import make_app_context
 from tests.support.cli import CliHarness
 from tests.support.persistence import make_account_store_with_private
+from tests.support.platform import REQUIRES_MANAGED_RUNTIME
 from tests.support.time import FixedClock
+
+_MANAGED_ACCOUNT_ID = SidekickAccountId("33333333-3333-4333-8333-333333333333")
+_MANAGED_AUTHORITY_ID = AuthorityId("cccccccc-cccc-4ccc-8ccc-cccccccccccc")
+_MANAGED_GENERATION = "2026-07-24T10:00:00.000000000Z"
+_MANAGED_PROVIDER_IDENTITY = "acct-managed-check"
 
 
 class _FakeProvider(Provider):
@@ -193,6 +215,63 @@ def _install_ctx(
         ),
     )
     return harness, store, stdout, stderr
+
+
+@REQUIRES_MANAGED_RUNTIME
+def test_no_interactive_check_reads_managed_codex_authority(
+    tmp_path: Path,
+) -> None:
+    """One-shot usage opens one managed Codex home under its account lock."""
+    account = managed_saved_account(
+        _MANAGED_ACCOUNT_ID,
+        _MANAGED_AUTHORITY_ID,
+        "managed-codex",
+        _MANAGED_PROVIDER_IDENTITY,
+        _MANAGED_GENERATION,
+    )
+    paths, _store, _private = seed_managed_accounts(
+        tmp_path,
+        (account,),
+        {
+            _MANAGED_ACCOUNT_ID: managed_auth(
+                _MANAGED_PROVIDER_IDENTITY,
+                _MANAGED_GENERATION,
+            )
+        },
+    )
+    schema_root = tmp_path / "schema"
+    write_codex_schema(schema_root, external_auth=True)
+    write_fake_codex(tmp_path, schema_root)
+    configure_codex_logins(tmp_path, {})
+    environment = {
+        "HOME": str(tmp_path),
+        "PATH": os.pathsep.join((str(tmp_path), os.environ["PATH"])),
+    }
+    provider = _FakeProvider()
+    stdout = io.StringIO()
+    composed = compose_app_context(
+        paths=paths,
+        clock=FixedClock(),
+        providers={ProviderId.CODEX: provider},
+        heartbeat_providers={},
+        local_activity_sources={},
+        account_activity_sources={},
+        environment=environment,
+    )
+    try:
+        result = CliHarness(
+            console=Console(file=stdout, width=200, force_terminal=False),
+            err_console=Console(file=io.StringIO(), force_terminal=False),
+            application=composed.value,
+        ).invoke(["--only", "codex", "--no-interactive"])
+    finally:
+        composed.close()
+
+    assert result.exit_code == ExitCode.SUCCESS
+    assert provider.fetch_calls == 1
+    output = stdout.getvalue()
+    assert "CODEX · 1 account" in output
+    assert "provider-managed credential authority" not in output
 
 
 def test_check_renders_partial_success_and_typed_auth_recovery(

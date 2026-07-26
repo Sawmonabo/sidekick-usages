@@ -1,0 +1,1 @@
+"""Provider-managed credential composition."""

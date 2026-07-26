@@ -13,10 +13,10 @@ from sidekick_usages.credentials.claude.managed.maintenance.models import (
 from sidekick_usages.credentials.claude.managed.maintenance.types import (
     ClaudeManagedOutcome,
 )
-from sidekick_usages.daemon.types.worker import WorkerOutcome
-from sidekick_usages.entrypoints.usage_lookup import (
-    managed_credential_factories,
+from sidekick_usages.credentials.managed.composition import (
+    compose_managed_credential_factories,
 )
+from sidekick_usages.daemon.types.worker import WorkerOutcome
 from sidekick_usages.persistence.service import PersistenceService
 from sidekick_usages.persistence.supervisor.authority import (
     OperationAuthorityLock,
@@ -48,7 +48,7 @@ def test_managed_resolver_uses_selected_native_and_inactive_private_authority(
 ) -> None:
     """One logical account opens exactly one verified Claude authority."""
     scenario = resolver_scenario(tmp_path, monkeypatch)
-    factories = managed_credential_factories(
+    factories = compose_managed_credential_factories(
         scenario.paths,
         PersistenceService(
             scenario.paths,

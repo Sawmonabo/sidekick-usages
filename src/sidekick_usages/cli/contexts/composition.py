@@ -1,5 +1,6 @@
 """Invocation-scoped production composition."""
 
+import os
 from collections.abc import Callable, Mapping
 from contextlib import ExitStack
 from pathlib import Path
@@ -40,6 +41,9 @@ from sidekick_usages.credentials.claude.setup.service import (
 )
 from sidekick_usages.credentials.codex.migration import (
     CodexAuthMigrationCoordinator,
+)
+from sidekick_usages.credentials.managed.composition import (
+    compose_managed_credential_factories,
 )
 from sidekick_usages.credentials.migration.managed_auth.service import (
     ManagedAuthMigrationCoordinator,
@@ -201,12 +205,16 @@ def compose_app_context(
     ]
     | None = None,
     claude_setup_token: ClaudeSetupToken | None = None,
+    environment: Mapping[str, str] | None = None,
 ) -> Composed[AppContext]:
     """Compose normal store-backed application services."""
 
     def build(resources: ExitStack) -> AppContext:
         resolved_paths = _resolved_paths(paths)
         resolved_clock = _resolved_clock(clock)
+        resolved_environment = (
+            os.environ if environment is None else environment
+        )
         provider_map, heartbeat_map = _provider_maps(
             resolved_clock,
             providers,
@@ -227,7 +235,17 @@ def compose_app_context(
             raise ApplicationCompositionError(
                 _persistence_failure(error, resolved_paths.accounts)
             ) from None
-        resolver = credential_resolver_for(accounts, private)
+        resolver = credential_resolver_for(
+            accounts,
+            private,
+            managed_factories=compose_managed_credential_factories(
+                resolved_paths,
+                persistence,
+                accounts,
+                resolved_clock,
+                resolved_environment,
+            ),
+        )
         refresh_coordinator = CredentialRefreshCoordinator(
             accounts,
             http,
@@ -284,7 +302,7 @@ def compose_app_context(
             ] = {}
             if ProviderId.CLAUDE in provider_map:
                 local_activity_map[ProviderId.CLAUDE] = ClaudeActivity(
-                    discover_claude_config_dir()
+                    discover_claude_config_dir(resolved_environment)
                 )
         else:
             local_activity_map = dict(local_activity_sources)
