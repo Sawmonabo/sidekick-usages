@@ -2,12 +2,12 @@
 
 import socket
 from collections.abc import Iterator
-from contextlib import suppress
 from dataclasses import dataclass
 from threading import Event, Thread
 
 from sidekick_usages import __version__
 from sidekick_usages.core.accounts.types import OperationId, RequestId
+from sidekick_usages.daemon.control.client import ControlClient
 from sidekick_usages.daemon.control.protocol import PROTOCOL_VERSION
 from sidekick_usages.daemon.control.server import ControlConnection
 from sidekick_usages.daemon.models.protocol import (
@@ -37,6 +37,7 @@ _FRAGMENT_SIZE = 3
 _RESPONSE_BUFFER_SIZE = 65_540
 _SERVER_JOIN_SECONDS = 2
 _SUBSCRIPTION_WAIT_SECONDS = 2
+_BLOCKED_RECEIVE_SECONDS = 2
 
 
 class FragmentingSocket:
@@ -44,9 +45,11 @@ class FragmentingSocket:
 
     def __init__(self, connection: socket.socket) -> None:
         self._connection = connection
+        self.receive_started = Event()
 
     def recv(self, size: int, /) -> bytes:
         """Receive up to ``size`` bytes from the real socket."""
+        self.receive_started.set()
         return self._connection.recv(size)
 
     def sendall(self, data: bytes, /) -> None:
@@ -54,11 +57,39 @@ class FragmentingSocket:
         for offset in range(0, len(data), _FRAGMENT_SIZE):
             self._connection.sendall(data[offset : offset + _FRAGMENT_SIZE])
 
+    def shutdown(self, how: int, /) -> None:
+        """Disable communication in the requested directions."""
+        self._connection.shutdown(how)
+
     def close(self) -> None:
-        """Close both directions of the real socket."""
-        with suppress(OSError):
-            self._connection.shutdown(socket.SHUT_RDWR)
+        """Close the real socket."""
         self._connection.close()
+
+
+def exercise_blocked_stream_cancellation(
+    client: ControlClient,
+    stream: Iterator[ControlEvent],
+    connection: FragmentingSocket,
+) -> Exception | None:
+    """Close one client only after its reader reaches blocking I/O."""
+    failures: list[Exception] = []
+
+    def receive_event() -> None:
+        try:
+            next(stream)
+        except Exception as error:
+            failures.append(error)
+
+    connection.receive_started.clear()
+    reader = Thread(target=receive_event)
+    reader.start()
+    if not connection.receive_started.wait(_BLOCKED_RECEIVE_SECONDS):
+        raise AssertionError("Control stream did not begin receiving.")
+    client.close()
+    reader.join(_BLOCKED_RECEIVE_SECONDS)
+    if reader.is_alive():
+        raise AssertionError("Blocked control receive did not stop.")
+    return failures[0] if len(failures) == 1 else None
 
 
 class VerifiedPeer:

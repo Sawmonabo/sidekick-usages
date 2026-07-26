@@ -79,6 +79,7 @@ from tests.fakes.daemon.control import (
     RecordingDispatcher,
     RejectedPeer,
     VerifiedPeer,
+    exercise_blocked_stream_cancellation,
     rejected_protocol_response,
     serve_protocol_connection,
 )
@@ -372,7 +373,8 @@ def test_authenticated_control_stream_frames_completes_and_cancels(
         args=(server_socket, VerifiedPeer(), dispatcher),
     )
     server.start()
-    fragmented_client: ConnectedSocket = FragmentingSocket(client_socket)
+    fragmented_socket = FragmentingSocket(client_socket)
+    fragmented_client: ConnectedSocket = fragmented_socket
     client = ControlClient(fragmented_client)
 
     activation = tuple(
@@ -390,10 +392,15 @@ def test_authenticated_control_stream_frames_completes_and_cancels(
     subscription = client.subscribe()
     accepted = next(subscription)
     assert accepted.kind is EventKind.ACCEPTED
-    subscription.close()
+    cancellation_failure = exercise_blocked_stream_cancellation(
+        client,
+        subscription,
+        fragmented_socket,
+    )
     dispatcher.release_subscription.set()
     server.join(timeout=2)
 
+    assert isinstance(cancellation_failure, ConnectionError)
     assert not server.is_alive()
     assert tuple(request.kind for request in dispatcher.requests) == (
         RequestKind.ACTIVATE,

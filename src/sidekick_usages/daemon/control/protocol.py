@@ -1,6 +1,8 @@
 """Bounded secret-free supervisor control protocol."""
 
+import socket
 from collections import deque
+from contextlib import suppress
 
 from sidekick_usages.core.accounts.types import (
     OperationId,
@@ -147,7 +149,9 @@ class FramedTransport:
         self._connection.sendall(encode_event(event))
 
     def close(self) -> None:
-        """Close the connected stream."""
+        """Wake blocked I/O and close the connected stream."""
+        with suppress(OSError):
+            self._connection.shutdown(socket.SHUT_RDWR)
         self._connection.close()
 
 

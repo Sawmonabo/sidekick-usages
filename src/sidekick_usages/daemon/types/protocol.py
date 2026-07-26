@@ -76,5 +76,8 @@ class ConnectedSocket(Protocol):
     def sendall(self, data: bytes, /) -> None:
         """Send all bytes or raise an operating-system error."""
 
+    def shutdown(self, how: int, /) -> None:
+        """Disable communication in the requested directions."""
+
     def close(self) -> None:
         """Close this connection."""
