@@ -3,9 +3,7 @@
 from pathlib import Path
 
 from sidekick_usages.core.accounts.models import SavedAccount
-from sidekick_usages.persistence.filesystem.service import (
-    PersistenceFilesystem,
-)
+from sidekick_usages.persistence.filesystem.reader import PrivateFileReader
 from sidekick_usages.persistence.models.account import VersionThreeDocument
 from sidekick_usages.persistence.schema.account import decode_version_three
 
@@ -17,7 +15,7 @@ class AccountIndexReader:
         if not path.is_absolute():
             raise ValueError("Account authority path must be absolute.")
         self.path = path
-        self._filesystem = PersistenceFilesystem(path)
+        self._filesystem = PrivateFileReader(path)
 
     def load(self) -> tuple[SavedAccount, ...]:
         """Decode the current no-secret account index exactly once."""

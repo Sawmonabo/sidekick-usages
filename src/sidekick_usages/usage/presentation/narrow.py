@@ -1,23 +1,11 @@
-"""Narrow-terminal per-account usage presentation."""
-
-from datetime import datetime
+"""One-shot narrow-terminal usage presentation."""
 
 from rich.console import Group, RenderableType
-from rich.padding import Padding
-from rich.table import Table
 from rich.text import Text
 
-from sidekick_usages.branding import PROVIDER_COLORS
 from sidekick_usages.core.types import ProviderId
-from sidekick_usages.usage.dashboard.models import (
-    DashboardAccount,
-    DashboardCursor,
-    DashboardSnapshot,
-)
 from sidekick_usages.usage.models import (
-    AccountUsage,
     FetchFailure,
-    MetricsFreshness,
     ProviderTokenActivity,
     TokenActivityIssue,
     UsageCheckResult,
@@ -26,139 +14,16 @@ from sidekick_usages.usage.presentation.activity import (
     activity_failure_label,
     narrow_activity_lines,
 )
-from sidekick_usages.usage.presentation.dashboard.selection import (
-    PLAN_COLORS,
+from sidekick_usages.usage.presentation.failures import (
     account_activity_issues,
     activity_issue_copy,
     failure_copy,
-    row_details,
-    row_label,
-    row_marker,
-    row_plan,
 )
-from sidekick_usages.usage.presentation.reset import reset_text
-
-BAR_WIDTH = 18
-
-_PCT_RED_THRESHOLD = 90
-_PCT_YELLOW_THRESHOLD = 70
-_PCT_CYAN_THRESHOLD = 40
-
-
-def _utilization_color(percent: float) -> str:
-    if percent >= _PCT_RED_THRESHOLD:
-        return "red"
-    if percent >= _PCT_YELLOW_THRESHOLD:
-        return "yellow"
-    if percent >= _PCT_CYAN_THRESHOLD:
-        return "cyan"
-    return "green"
-
-
-def _braille_bar(percent: float, width: int = BAR_WIDTH) -> Text:
-    bounded = max(0.0, min(100.0, percent))
-    filled = round(bounded / 100.0 * width)
-    bar = Text()
-    bar.append("⣿" * filled, style=_utilization_color(bounded))
-    bar.append("⣀" * (width - filled), style="dim")
-    return bar
-
-
-def _account_tag(provider_id: ProviderId, plan: str) -> Text:
-    provider_color = PROVIDER_COLORS.get(provider_id, "dim")
-    tag = Text("[", style="dim")
-    tag.append(provider_id, style=provider_color)
-    if plan and plan != "unknown":
-        tag.append(" · ", style="dim")
-        tag.append(plan, style=PLAN_COLORS.get(plan, "dim"))
-    tag.append("]", style="dim")
-    return tag
-
-
-def account_header(
-    label: str,
-    provider_id: ProviderId,
-    plan: str,
-    *,
-    marker: Text | None = None,
-) -> Text:
-    """Render a standalone account label and provider-plan tag."""
-    header = Text()
-    if marker is not None:
-        header.append_text(marker)
-    header.append(label, style="bold")
-    header.append("  ")
-    header.append_text(_account_tag(provider_id, plan))
-    return header
-
-
-def usage_report(
-    usage: AccountUsage,
-    reference_time: datetime,
-    *,
-    marker: Text | None = None,
-    show_freshness: bool = True,
-) -> RenderableType:
-    """Render one complete narrow-terminal account usage block."""
-    freshness = (
-        Text(
-            "  Last known · " + usage.fetched_at.isoformat(),
-            style="yellow",
-        )
-        if show_freshness and usage.freshness is MetricsFreshness.STALE
-        else None
-    )
-    windows = usage.report.active_windows()
-    if not windows:
-        lines: list[RenderableType] = [
-            account_header(
-                usage.label,
-                usage.provider_id,
-                usage.plan,
-                marker=marker,
-            ),
-        ]
-        if freshness is not None:
-            lines.append(freshness)
-        lines.append(Text("  No active usage windows reported.", style="dim"))
-        return Group(
-            *lines,
-        )
-
-    table = Table(
-        show_header=False,
-        show_edge=False,
-        box=None,
-        padding=(0, 1),
-        pad_edge=False,
-    )
-    table.add_column("name", style="dim", no_wrap=True)
-    table.add_column("bar", no_wrap=True)
-    table.add_column("pct", justify="right", no_wrap=True)
-    table.add_column("reset", no_wrap=True)
-    for window in windows:
-        percent = round(window.utilization)
-        table.add_row(
-            f" {window.name}",
-            _braille_bar(window.utilization),
-            Text(
-                f"{percent}%",
-                style=_utilization_color(window.utilization),
-            ),
-            reset_text(window.resets_at, reference_time),
-        )
-    blocks: list[RenderableType] = [
-        account_header(
-            usage.label,
-            usage.provider_id,
-            usage.plan,
-            marker=marker,
-        ),
-    ]
-    if freshness is not None:
-        blocks.append(freshness)
-    blocks.append(table)
-    return Group(*blocks)
+from sidekick_usages.usage.presentation.layout.accounts import account_header
+from sidekick_usages.usage.presentation.layout.activity import (
+    provider_activity_lines,
+)
+from sidekick_usages.usage.presentation.layout.narrow import usage_block
 
 
 def _failure_block(failure: FetchFailure) -> Group:
@@ -209,25 +74,17 @@ def _narrow_activity_blocks(
         for item in (*result.usages, *result.failures)
     }
     for provider_id in provider_ids:
-        activity = activities.get(provider_id)
+        activity: ProviderTokenActivity | None = activities.get(provider_id)
         if activity is None:
             continue
         if blocks:
             blocks.append(Text(""))
-        provider_name = provider_id.upper()
-        color = PROVIDER_COLORS.get(provider_id, "white")
-        prefix_width = len(provider_name) + len(" · ")
-        for position, activity_line in enumerate(
-            narrow_activity_lines(activity)
-        ):
-            line = Text()
-            if position == 0:
-                line.append(provider_name, style=f"bold {color}")
-                line.append(" · ", style="grey54")
-            else:
-                line.append(" " * prefix_width)
-            line.append_text(activity_line)
-            blocks.append(line)
+        blocks.extend(
+            provider_activity_lines(
+                provider_id,
+                narrow_activity_lines(activity),
+            )
+        )
         for issue in account_activity_issues(activity):
             if blocks:
                 blocks.append(Text(""))
@@ -252,7 +109,17 @@ def narrow_overview(
     for index, usage in enumerate(result.usages):
         if index:
             blocks.append(Text(""))
-        blocks.append(usage_report(usage, result.reference_time))
+        blocks.append(
+            usage_block(
+                usage.label,
+                usage.provider_id,
+                usage.plan,
+                usage.report,
+                usage.fetched_at,
+                usage.freshness,
+                result.reference_time,
+            )
+        )
     for failure in result.failures:
         if blocks:
             blocks.append(Text(""))
@@ -261,72 +128,4 @@ def narrow_overview(
     if blocks and activity_blocks:
         blocks.append(Text(""))
     blocks.extend(activity_blocks)
-    return Group(*blocks)
-
-
-def dashboard_narrow_overview(
-    snapshot: DashboardSnapshot,
-    cursor: DashboardCursor,
-    activities: dict[ProviderId, ProviderTokenActivity],
-) -> RenderableType:
-    """Render interactive rows and provider totals for narrow terminals."""
-    blocks: list[RenderableType] = []
-    for provider in snapshot.providers:
-        if not provider.rows:
-            continue
-        for row in provider.rows:
-            if blocks:
-                blocks.append(Text(""))
-            marker = row_marker(row, cursor)
-            if isinstance(row, DashboardAccount) and row.usage is not None:
-                blocks.append(
-                    usage_report(
-                        AccountUsage(
-                            account_id=row.account_id,
-                            label=row.label,
-                            provider_id=row.provider_id,
-                            plan=row.plan,
-                            report=row.usage.report,
-                            fetched_at=row.usage.observed_at,
-                            freshness=MetricsFreshness.STALE,
-                        ),
-                        snapshot.reference_time,
-                        marker=marker,
-                        show_freshness=False,
-                    )
-                )
-            else:
-                blocks.append(
-                    account_header(
-                        row_label(row),
-                        row.provider_id,
-                        row_plan(row),
-                        marker=marker,
-                    )
-                )
-            blocks.extend(
-                Padding(
-                    Text(f"⚠ {detail}", style="yellow"),
-                    (0, 0, 0, 4),
-                )
-                for detail in row_details(row, snapshot.reference_time)
-            )
-        activity = activities.get(provider.provider_id)
-        if activity is None:
-            continue
-        blocks.append(Text(""))
-        provider_name = provider.provider_id.upper()
-        provider_color = PROVIDER_COLORS.get(provider.provider_id, "white")
-        prefix_width = len(provider_name) + len(" · ")
-        for position, activity_line in enumerate(
-            narrow_activity_lines(activity)
-        ):
-            line = Text()
-            if position == 0:
-                line.append(provider_name, style=f"bold {provider_color}")
-                line.append(" · ", style="grey54")
-            else:
-                line.append(" " * prefix_width)
-            line.append_text(activity_line)
-            blocks.append(line)
     return Group(*blocks)

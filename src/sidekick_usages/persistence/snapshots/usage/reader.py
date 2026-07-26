@@ -1,7 +1,5 @@
 """Passive usage snapshot reader."""
 
-from pathlib import Path
-
 from sidekick_usages.core.accounts.models import SavedAccount
 from sidekick_usages.core.accounts.types import SidekickAccountId
 from sidekick_usages.core.models import AccountUsageSnapshot
@@ -9,9 +7,7 @@ from sidekick_usages.persistence.errors import (
     PersistenceError,
     UsageSnapshotError,
 )
-from sidekick_usages.persistence.filesystem.service import (
-    PersistenceFilesystem,
-)
+from sidekick_usages.persistence.filesystem.reader import PrivateDocumentReader
 from sidekick_usages.persistence.schema.usage import UsageSnapshotDocument
 from sidekick_usages.persistence.snapshots.usage.codec import (
     decode_usage_document,
@@ -19,15 +15,13 @@ from sidekick_usages.persistence.snapshots.usage.codec import (
 )
 from sidekick_usages.persistence.types.error import UsageSnapshotFailureKind
 
+USAGE_SNAPSHOT_PATH_ERROR = "Usage snapshot path must be absolute."
 
-class UsageSnapshotReader:
+
+class UsageSnapshotReader(PrivateDocumentReader):
     """Read last-successful usage without mutable coordination."""
 
-    def __init__(self, path: Path) -> None:
-        if not path.is_absolute():
-            raise ValueError("Usage snapshot path must be absolute.")
-        self.path = path
-        self._filesystem = PersistenceFilesystem(path)
+    absolute_path_error = USAGE_SNAPSHOT_PATH_ERROR
 
     def load(self, account: SavedAccount) -> AccountUsageSnapshot | None:
         """Load one exact account snapshot without mutation."""

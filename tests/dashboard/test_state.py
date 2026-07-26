@@ -27,9 +27,7 @@ from sidekick_usages.daemon.control.client import (
     CONTROL_ACTION_TIMEOUT_SECONDS,
 )
 from sidekick_usages.daemon.types.service import ServicePhase
-from sidekick_usages.persistence.filesystem.service import (
-    PersistenceFilesystem,
-)
+from sidekick_usages.persistence.filesystem.reader import PrivateFileReader
 from sidekick_usages.persistence.models.artifact import FileSnapshot
 from sidekick_usages.usage.dashboard.models import (
     DashboardAccount,
@@ -69,10 +67,10 @@ def test_cached_dashboard_joins_stable_ids_without_credentials(
     renamed, conflicted = seed_cached_dashboard(paths, REFERENCE_TIME)
 
     reads: dict[Path, int] = {}
-    read_opaque_private = PersistenceFilesystem.read_opaque_private
+    read_opaque_private = PrivateFileReader.read_opaque_private
 
     def counted_read(
-        current: PersistenceFilesystem,
+        current: PrivateFileReader,
     ) -> FileSnapshot | None:
         reads[current.authority_path] = (
             reads.get(current.authority_path, 0) + 1
@@ -80,7 +78,7 @@ def test_cached_dashboard_joins_stable_ids_without_credentials(
         return read_opaque_private(current)
 
     monkeypatch.setattr(
-        PersistenceFilesystem,
+        PrivateFileReader,
         "read_opaque_private",
         counted_read,
     )
@@ -90,6 +88,8 @@ def test_cached_dashboard_joins_stable_ids_without_credentials(
     assert reads == {
         paths.accounts: 1,
         paths.activity_snapshots: 1,
+        paths.selected_state: 1,
+        paths.service_state: 1,
         paths.usage_snapshots: 1,
     }
     assert tuple(provider.provider_id for provider in dashboard.providers) == (

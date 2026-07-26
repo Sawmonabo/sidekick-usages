@@ -55,20 +55,13 @@ _SERVICE_FILES = frozenset(
         "src/sidekick_usages/usage/service.py",
     }
 )
-_RENDERER_FILES = frozenset(
+_STANDALONE_RENDERER_FILES = frozenset(
     {
         "src/sidekick_usages/branding.py",
         "src/sidekick_usages/heartbeat/render.py",
-        "src/sidekick_usages/usage/presentation/activity.py",
-        "src/sidekick_usages/usage/presentation/dashboard/footer.py",
-        "src/sidekick_usages/usage/presentation/dashboard/overview.py",
-        "src/sidekick_usages/usage/presentation/dashboard/selection.py",
-        "src/sidekick_usages/usage/presentation/narrow.py",
-        "src/sidekick_usages/usage/presentation/overview.py",
-        "src/sidekick_usages/usage/presentation/panels.py",
-        "src/sidekick_usages/usage/presentation/reset.py",
     }
 )
+_USAGE_PRESENTATION_ROOT = "src/sidekick_usages/usage/presentation/"
 _CREDENTIAL_LEASE_CONSUMERS = frozenset(
     {
         "src/sidekick_usages/cli/contexts/composition.py",
@@ -121,7 +114,7 @@ def check_import_boundaries(
         unit_imports = tuple(scan_imports(unit))
         for node, module in unit_imports:
             _check_import(unit, path, node, module, violations)
-        if path in _RENDERER_FILES:
+        if _is_renderer(path):
             _check_renderer(unit, unit_imports, violations)
 
 
@@ -399,6 +392,12 @@ def _is_resident_daemon(path: str) -> bool:
 def _is_pydantic_owner(path: str) -> bool:
     return path in _PYDANTIC_OWNERS or path.startswith(
         "src/sidekick_usages/persistence/schema/"
+    )
+
+
+def _is_renderer(path: str) -> bool:
+    return path in _STANDALONE_RENDERER_FILES or path.startswith(
+        _USAGE_PRESENTATION_ROOT
     )
 
 

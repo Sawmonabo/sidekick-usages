@@ -1,26 +1,17 @@
 """Passive provider-selection state reader."""
 
-from pathlib import Path
-
 from sidekick_usages.core.selection.models import SelectedAccountState
+from sidekick_usages.persistence.filesystem.reader import PrivateDocumentReader
 from sidekick_usages.persistence.models.selection import SelectedStateDocument
 from sidekick_usages.persistence.schema.selection import decode_selected_state
-from sidekick_usages.persistence.state.filesystem import (
-    ManagedStateFilesystem,
-)
+
+SELECTED_STATE_PATH_ERROR = "Selected-state path must be absolute."
 
 
-class SelectedStateReader:
+class SelectedStateReader(PrivateDocumentReader):
     """Read verified provider state without mutable coordination."""
 
-    def __init__(self, path: Path) -> None:
-        if not path.is_absolute():
-            raise ValueError("Selected-state path must be absolute.")
-        self.path = path
-        self._filesystem = ManagedStateFilesystem(
-            path,
-            decode_selected_state,
-        )
+    absolute_path_error = SELECTED_STATE_PATH_ERROR
 
     def observe_all(self) -> tuple[SelectedAccountState, ...]:
         """Passively read every provider state without lock-sidecar writes."""

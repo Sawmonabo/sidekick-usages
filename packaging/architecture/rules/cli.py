@@ -20,7 +20,6 @@ PUBLIC_BOOTSTRAP_IMPORTS = (
     "os",
     "pathlib",
     "rich.console",
-    "subprocess",
     "sys",
     "sidekick_usages.cli.contexts.dashboard.snapshot",
     "sidekick_usages.cli.dashboard",

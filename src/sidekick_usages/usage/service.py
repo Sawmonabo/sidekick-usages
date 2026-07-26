@@ -6,7 +6,10 @@ from datetime import datetime
 
 from sidekick_usages.clock import Clock
 from sidekick_usages.core.accounts.models import SavedAccount
-from sidekick_usages.core.accounts.types import SidekickAccountId
+from sidekick_usages.core.accounts.types import (
+    MetricsFreshness,
+    SidekickAccountId,
+)
 from sidekick_usages.core.models import AccountUsageSnapshot
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.http.client import HttpClient
@@ -52,7 +55,6 @@ from sidekick_usages.usage.lookup.wave import UsageLookupWave
 from sidekick_usages.usage.models import (
     AccountUsage,
     FetchFailure,
-    MetricsFreshness,
     RefreshRejectedFailure,
     UsageCheckResult,
 )
@@ -344,7 +346,7 @@ class UsageCheckService:
                 usage = self._account_usage(
                     account,
                     snapshot,
-                    MetricsFreshness.CURRENT,
+                    MetricsFreshness.FRESH,
                 )
                 failure = None
             else:
@@ -459,7 +461,7 @@ class UsageCheckService:
             else cls._account_usage(
                 account,
                 cls._usage_snapshot(account, current, reference_time),
-                MetricsFreshness.CURRENT,
+                MetricsFreshness.FRESH,
             )
         )
         return cls._completion(

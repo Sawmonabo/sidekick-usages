@@ -13,22 +13,20 @@ from sidekick_usages.usage.dashboard.models import (
     DashboardProvider,
     DashboardSnapshot,
 )
-from sidekick_usages.usage.models import (
-    CompleteTokenActivity,
-    ProviderTokenActivity,
-)
 from sidekick_usages.usage.presentation.dashboard.footer import (
     footer_renderable,
+)
+from sidekick_usages.usage.presentation.dashboard.narrow import (
+    dashboard_narrow_overview,
+)
+from sidekick_usages.usage.presentation.dashboard.panels import (
+    dashboard_provider_panel,
 )
 from sidekick_usages.usage.presentation.dashboard.selection import (
     row_is_selected,
     row_label,
 )
-from sidekick_usages.usage.presentation.narrow import (
-    dashboard_narrow_overview,
-)
-from sidekick_usages.usage.presentation.panels import (
-    dashboard_provider_panel,
+from sidekick_usages.usage.presentation.layout.panels import (
     legend,
     panel_min_width,
 )
@@ -36,7 +34,7 @@ from sidekick_usages.usage.presentation.panels import (
 
 def _dashboard_activity(
     provider: DashboardProvider,
-) -> ProviderTokenActivity | None:
+) -> TokenActivitySummary | None:
     observations = tuple(
         row.activity
         for row in provider.rows
@@ -49,29 +47,23 @@ def _dashboard_activity(
         raise ValueError("Dashboard provider activity scopes must agree.")
     scope = next(iter(scopes))
     if scope is TokenActivityScope.LOCAL_INSTALLATION:
-        summary = max(
+        return max(
             observations,
             key=lambda observation: observation.observed_at,
         ).summary
-    else:
-        since_values = tuple(
-            observation.summary.since for observation in observations
-        )
-        summary = TokenActivitySummary(
-            total_tokens=sum(
-                observation.summary.total_tokens
-                for observation in observations
-            ),
-            scope=scope,
-            since=(
-                min(since_values)
-                if all(value is not None for value in since_values)
-                else None
-            ),
-        )
-    return CompleteTokenActivity(
-        provider_id=provider.provider_id,
-        summary=summary,
+    since_values = tuple(
+        observation.summary.since for observation in observations
+    )
+    return TokenActivitySummary(
+        total_tokens=sum(
+            observation.summary.total_tokens for observation in observations
+        ),
+        scope=scope,
+        since=(
+            min(since_values)
+            if all(value is not None for value in since_values)
+            else None
+        ),
     )
 
 

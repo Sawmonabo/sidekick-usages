@@ -15,6 +15,7 @@ from sidekick_usages.persistence.errors import (
     UsageSnapshotError,
 )
 from sidekick_usages.persistence.locking import PersistenceLock
+from sidekick_usages.persistence.private.filesystem import PrivateFilesystem
 from sidekick_usages.persistence.schema.usage import (
     account_usage_snapshot,
     encode_usage_snapshot_document,
@@ -38,8 +39,13 @@ from sidekick_usages.persistence.types.error import UsageSnapshotFailureKind
 class UsageSnapshotStore(UsageSnapshotReader):
     """Persist last successful usage under stable Sidekick account IDs."""
 
+    _filesystem: PrivateFilesystem
+
     def __init__(self, path: Path) -> None:
-        super().__init__(path)
+        super().__init__(
+            path,
+            filesystem_factory=PrivateFilesystem,
+        )
         self._lock = PersistenceLock(self._filesystem)
 
     def save(

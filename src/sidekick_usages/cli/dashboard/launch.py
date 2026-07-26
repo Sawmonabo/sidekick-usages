@@ -2,9 +2,8 @@
 
 from rich.console import Console, RenderableType
 
-from sidekick_usages.cli.dashboard.controller import DashboardController
+from sidekick_usages.usage.dashboard.focus import initial_dashboard_cursor
 from sidekick_usages.usage.dashboard.models import (
-    DashboardCursor,
     DashboardFooter,
     DashboardSnapshot,
 )
@@ -20,17 +19,12 @@ def present_cached_dashboard(
     snapshot: DashboardSnapshot,
 ) -> int:
     """Render and present one cached dashboard frame."""
-    state = DashboardController.start(snapshot).state
     frame = render_dashboard_frame(
         console,
         dashboard_overview(
             snapshot,
             width=console.size.width,
-            cursor=DashboardCursor(
-                focused_provider=state.focused_provider,
-                account_id=state.account_id,
-                external=state.external,
-            ),
+            cursor=initial_dashboard_cursor(snapshot),
             footer=DashboardFooter(),
         ),
     )

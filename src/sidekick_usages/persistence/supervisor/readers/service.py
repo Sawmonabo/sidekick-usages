@@ -1,25 +1,16 @@
 """Passive supervisor service-state reader."""
 
-from pathlib import Path
-
 from sidekick_usages.daemon.models.service import ServiceState
+from sidekick_usages.persistence.filesystem.reader import PrivateDocumentReader
 from sidekick_usages.persistence.schema.service import decode_service_state
-from sidekick_usages.persistence.state.filesystem import (
-    ManagedStateFilesystem,
-)
+
+SERVICE_STATE_PATH_ERROR = "Service-state path must be absolute."
 
 
-class ServiceStateReader:
+class ServiceStateReader(PrivateDocumentReader):
     """Read sanitized supervisor observations without mutable coordination."""
 
-    def __init__(self, path: Path) -> None:
-        if not path.is_absolute():
-            raise ValueError("Service-state path must be absolute.")
-        self.path = path
-        self._filesystem = ManagedStateFilesystem(
-            path,
-            decode_service_state,
-        )
+    absolute_path_error = SERVICE_STATE_PATH_ERROR
 
     def observe(self) -> ServiceState | None:
         """Passively read service state without lock-sidecar writes."""

@@ -9,6 +9,7 @@ from threading import Barrier, Event
 
 import pytest
 
+from sidekick_usages.core.accounts.types import MetricsFreshness
 from sidekick_usages.core.expiry import (
     Expiry,
     KnownExpiry,
@@ -61,7 +62,6 @@ from sidekick_usages.usage.models import (
     AccountUsage,
     FetchFailureKind,
     ForbiddenFailure,
-    MetricsFreshness,
     PersistenceFailure,
     ProviderPayloadFailure,
     RateLimitFailure,
@@ -338,7 +338,7 @@ def test_partial_success_keeps_usage_and_typed_failure(
             plan="team",
             report=_report(),
             fetched_at=REFERENCE_TIME,
-            freshness=MetricsFreshness.CURRENT,
+            freshness=MetricsFreshness.FRESH,
         ),
     )
     assert len(result.failures) == 1

@@ -63,15 +63,6 @@ class PrivateFilesystem(PersistenceFilesystemAccess):
             )
         return self._commit_payload(payload, expected, None)
 
-    def read_opaque_private(self) -> FileSnapshot | None:
-        """Read and prove one bounded opaque private file when present."""
-        self.qualify()
-        return self._read(
-            self.grammar.authority_basename,
-            MAX_DOCUMENT_BYTES,
-            require_complete=True,
-        )
-
     def delete_opaque_private(self, expected: FileFingerprint) -> None:
         """Delete one exact private file and prove namespace absence.
 

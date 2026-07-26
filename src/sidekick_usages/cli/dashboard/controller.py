@@ -14,6 +14,10 @@ from sidekick_usages.cli.dashboard.models.controller import (
 from sidekick_usages.core.accounts.types import CredentialHealth
 from sidekick_usages.core.selection.types import ProviderRuntimeState
 from sidekick_usages.core.types import ProviderId
+from sidekick_usages.usage.dashboard.focus import (
+    initial_dashboard_cursor,
+    provider_focus,
+)
 from sidekick_usages.usage.dashboard.models import (
     DashboardAccount,
     DashboardExternalRow,
@@ -38,20 +42,8 @@ class DashboardController:
             for provider in snapshot.providers
             if provider.rows
         )
-        initial_provider = next(
-            (
-                provider
-                for provider in snapshot.providers
-                if provider.provider_id is ProviderId.CLAUDE and provider.rows
-            ),
-            None,
-        )
-        if initial_provider is None:
-            initial_provider = next(
-                (provider for provider in snapshot.providers if provider.rows),
-                None,
-            )
-        if initial_provider is None:
+        cursor = initial_dashboard_cursor(snapshot)
+        if cursor.focused_provider is None:
             state = DashboardControllerState(
                 focused_provider=None,
                 account_id=None,
@@ -61,7 +53,7 @@ class DashboardController:
         else:
             state = _state_at_anchor(
                 anchors,
-                _find_anchor(anchors, initial_provider.provider_id),
+                _find_anchor(anchors, cursor.focused_provider),
             )
         return cls(snapshot=snapshot, state=state)
 
@@ -350,30 +342,12 @@ class DashboardController:
 def _provider_anchor(
     provider: DashboardProvider,
 ) -> DashboardProviderAnchor:
-    if provider.active_account_id is not None:
-        active_account = next(
-            (
-                row
-                for row in provider.rows
-                if isinstance(row, DashboardAccount)
-                and row.account_id == provider.active_account_id
-            ),
-            None,
-        )
-        if active_account is not None:
-            return _row_anchor(active_account)
-    if provider.runtime_state is ProviderRuntimeState.EXTERNAL_ACTIVE:
-        external = next(
-            (
-                row
-                for row in provider.rows
-                if isinstance(row, DashboardExternalRow)
-            ),
-            None,
-        )
-        if external is not None:
-            return _row_anchor(external)
-    return _row_anchor(provider.rows[0])
+    focus = provider_focus(provider)
+    return DashboardProviderAnchor(
+        provider_id=provider.provider_id,
+        account_id=focus.account_id,
+        external=focus.external,
+    )
 
 
 def _matching_row(
@@ -404,16 +378,6 @@ def _matching_row(
             )
         ),
         None,
-    )
-
-
-def _row_anchor(row: DashboardRow) -> DashboardProviderAnchor:
-    return DashboardProviderAnchor(
-        provider_id=row.provider_id,
-        account_id=(
-            row.account_id if isinstance(row, DashboardAccount) else None
-        ),
-        external=isinstance(row, DashboardExternalRow),
     )
 
 

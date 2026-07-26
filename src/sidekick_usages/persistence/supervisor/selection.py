@@ -17,17 +17,33 @@ from sidekick_usages.persistence.state.files import (
     ManagedStateConflictKind,
     recover_state_file,
 )
+from sidekick_usages.persistence.state.filesystem import (
+    ManagedStateFilesystem,
+)
 from sidekick_usages.persistence.supervisor.readers.selection import (
     SelectedStateReader,
 )
 from sidekick_usages.persistence.types.artifact import AuthorityExpectation
 
 
+def _selected_state_filesystem(path: Path) -> ManagedStateFilesystem:
+    """Build the mutation boundary used by the selected-state store."""
+    return ManagedStateFilesystem(
+        path,
+        decode_selected_state,
+    )
+
+
 class SelectedStateStore(SelectedStateReader):
     """Persist the last verified runtime state independently per provider."""
 
+    _filesystem: ManagedStateFilesystem
+
     def __init__(self, path: Path) -> None:
-        super().__init__(path)
+        super().__init__(
+            path,
+            filesystem_factory=_selected_state_filesystem,
+        )
         self._lock = PersistenceLock(self._filesystem)
 
     def load(

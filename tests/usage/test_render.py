@@ -6,7 +6,10 @@ from datetime import date, datetime, timedelta
 import pytest
 from rich.console import Console
 
-from sidekick_usages.core.accounts.types import SidekickAccountId
+from sidekick_usages.core.accounts.types import (
+    MetricsFreshness,
+    SidekickAccountId,
+)
 from sidekick_usages.core.models import (
     TokenActivitySummary,
     UsageReport,
@@ -25,7 +28,6 @@ from sidekick_usages.usage.models import (
     CredentialRecoveryKind,
     FailedTokenActivity,
     FetchFailure,
-    MetricsFreshness,
     PartialTokenActivity,
     PersistenceFailure,
     TokenActivityFailureKind,
@@ -117,7 +119,7 @@ def _usage(
         plan=plan,
         report=report,
         fetched_at=REFERENCE_TIME,
-        freshness=MetricsFreshness.CURRENT,
+        freshness=MetricsFreshness.FRESH,
     )
 
 

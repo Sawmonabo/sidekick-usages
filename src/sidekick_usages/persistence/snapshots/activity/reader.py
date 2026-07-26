@@ -1,7 +1,5 @@
 """Passive activity snapshot reader."""
 
-from pathlib import Path
-
 from sidekick_usages.core.accounts.models import SavedAccount
 from sidekick_usages.core.accounts.types import SidekickAccountId
 from sidekick_usages.core.models import AccountTokenActivitySnapshot
@@ -10,9 +8,7 @@ from sidekick_usages.persistence.errors import (
     ActivitySnapshotError,
     PersistenceError,
 )
-from sidekick_usages.persistence.filesystem.service import (
-    PersistenceFilesystem,
-)
+from sidekick_usages.persistence.filesystem.reader import PrivateDocumentReader
 from sidekick_usages.persistence.schema.activity import (
     ActivitySnapshotDocument,
 )
@@ -24,15 +20,13 @@ from sidekick_usages.persistence.types.error import (
     ActivitySnapshotFailureKind,
 )
 
+ACTIVITY_SNAPSHOT_PATH_ERROR = "Activity snapshot path must be absolute."
 
-class ActivitySnapshotReader:
+
+class ActivitySnapshotReader(PrivateDocumentReader):
     """Read authoritative account activity without mutable coordination."""
 
-    def __init__(self, path: Path) -> None:
-        if not path.is_absolute():
-            raise ValueError("Activity snapshot path must be absolute.")
-        self.path = path
-        self._filesystem = PersistenceFilesystem(path)
+    absolute_path_error = ACTIVITY_SNAPSHOT_PATH_ERROR
 
     @staticmethod
     def _account_id(account: SavedAccount) -> str | None:

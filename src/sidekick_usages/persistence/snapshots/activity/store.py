@@ -8,6 +8,7 @@ from sidekick_usages.persistence.errors import (
     PersistenceError,
 )
 from sidekick_usages.persistence.locking import PersistenceLock
+from sidekick_usages.persistence.private.filesystem import PrivateFilesystem
 from sidekick_usages.persistence.schema.activity import (
     ACTIVITY_SCHEMA_VERSION,
     ActivitySnapshotDocument,
@@ -29,8 +30,13 @@ from sidekick_usages.persistence.types.error import (
 class ActivitySnapshotStore(ActivitySnapshotReader):
     """Persist last successful account activity under stable identity."""
 
+    _filesystem: PrivateFilesystem
+
     def __init__(self, path: Path) -> None:
-        super().__init__(path)
+        super().__init__(
+            path,
+            filesystem_factory=PrivateFilesystem,
+        )
         self._lock = PersistenceLock(self._filesystem)
 
     def save(

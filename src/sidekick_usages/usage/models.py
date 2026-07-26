@@ -5,7 +5,10 @@ from datetime import datetime
 from enum import StrEnum, auto
 from typing import TYPE_CHECKING, ClassVar
 
-from sidekick_usages.core.accounts.types import SidekickAccountId
+from sidekick_usages.core.accounts.types import (
+    MetricsFreshness,
+    SidekickAccountId,
+)
 from sidekick_usages.core.models import TokenActivitySummary, UsageReport
 from sidekick_usages.core.time import as_utc
 from sidekick_usages.core.types import (
@@ -46,13 +49,6 @@ class CredentialRecoveryKind(StrEnum):
     CLAUDE_SETUP_TOKEN = auto()
     CLAUDE_SUBSCRIPTION_LOGIN = auto()
     CODEX_LOGIN = auto()
-
-
-class MetricsFreshness(StrEnum):
-    """Whether usage came from this fetch or a retained observation."""
-
-    CURRENT = auto()
-    STALE = auto()
 
 
 class TokenActivityFailureKind(StrEnum):
