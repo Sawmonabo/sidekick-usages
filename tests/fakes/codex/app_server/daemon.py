@@ -20,6 +20,7 @@ from websockets.sync.server import (
 )
 
 from sidekick_usages.errors import InvalidPayloadError
+from sidekick_usages.providers.codex.account.types import CodexAuthMode
 from sidekick_usages.providers.codex.broker.responder import (
     CODEX_CALLBACK_RESPONSE_SECONDS,
 )
@@ -547,6 +548,7 @@ class FakeCodexDaemon:
         with self._lock:
             self._auth_status_read_count += 1
             access_token = self._active_access_token
+            external_auth = access_token is not None
         if access_token is None:
             auth_path = self._codex_home / "auth.json"
             access_token = (
@@ -560,7 +562,13 @@ class FakeCodexDaemon:
                 "id": _request_id(request),
                 "result": {
                     "authMethod": (
-                        None if access_token is None else "chatgpt"
+                        None
+                        if access_token is None
+                        else (
+                            CodexAuthMode.CHATGPT_AUTH_TOKENS.value
+                            if external_auth
+                            else CodexAuthMode.CHATGPT.value
+                        )
                     ),
                     "authToken": access_token,
                     "requiresOpenaiAuth": True,

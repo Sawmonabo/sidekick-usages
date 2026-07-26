@@ -1,6 +1,13 @@
-"""Closed outcomes from a Codex account read."""
+"""Closed Codex account protocol values."""
 
 from enum import StrEnum
+
+
+class CodexAuthMode(StrEnum):
+    """Supported ChatGPT authentication modes from the official app server."""
+
+    CHATGPT = "chatgpt"
+    CHATGPT_AUTH_TOKENS = "chatgptAuthTokens"
 
 
 class CodexAccountReadFailure(StrEnum):

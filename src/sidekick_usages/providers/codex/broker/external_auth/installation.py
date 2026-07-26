@@ -5,6 +5,7 @@ import time
 from sidekick_usages.providers.codex.account.service import read_codex_account
 from sidekick_usages.providers.codex.account.types import (
     CodexAccountReadFailure,
+    CodexAuthMode,
 )
 from sidekick_usages.providers.codex.app_server.errors import (
     CodexAppServerError,
@@ -38,7 +39,6 @@ from sidekick_usages.providers.codex.broker.types import CodexBrokerFailure
 from sidekick_usages.providers.codex.broker.wire import CodexDaemonSession
 from sidekick_usages.serialization.json import JsonObject
 
-EXTERNAL_AUTH_TYPE = "chatgptAuthTokens"
 _INSTALL_TIMEOUT_SECONDS = 8.0
 _MAX_INSTALL_MESSAGES = 16
 
@@ -68,7 +68,7 @@ def install_codex_projection(
         "accessToken": projection.access_token,
         "chatgptAccountId": expected_identity,
         "chatgptPlanType": projection.plan,
-        "type": EXTERNAL_AUTH_TYPE,
+        "type": CodexAuthMode.CHATGPT_AUTH_TOKENS.value,
     }
     try:
         result = session.request(
@@ -78,7 +78,7 @@ def install_codex_projection(
         )
     finally:
         params.clear()
-    if result != {"type": EXTERNAL_AUTH_TYPE}:
+    if result != {"type": CodexAuthMode.CHATGPT_AUTH_TOKENS.value}:
         raise CodexAppServerError(CodexAppServerFailure.PROTOCOL_MALFORMED)
     _require_external_auth_update(
         session,
@@ -157,7 +157,7 @@ def _require_external_update(
     plan = params.get("planType")
     if (
         set(params) != {"authMode", "planType"}
-        or params.get("authMode") != EXTERNAL_AUTH_TYPE
+        or params.get("authMode") != CodexAuthMode.CHATGPT_AUTH_TOKENS.value
         or plan != expected_plan
     ):
         raise CodexAppServerError(CodexAppServerFailure.PROTOCOL_MALFORMED)

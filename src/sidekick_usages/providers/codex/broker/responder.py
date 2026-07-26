@@ -14,6 +14,7 @@ from sidekick_usages.core.selection.types import (
     ProviderRuntimeState,
 )
 from sidekick_usages.core.types import ProviderId
+from sidekick_usages.providers.codex.account.types import CodexAuthMode
 from sidekick_usages.providers.codex.app_server.errors import (
     CodexAppServerError,
 )
@@ -33,9 +34,6 @@ from sidekick_usages.providers.codex.broker.external_auth.activation import (
     decode_codex_activation_reply,
     encode_codex_activation_acknowledgement,
     encode_codex_activation_instruction,
-)
-from sidekick_usages.providers.codex.broker.external_auth.installation import (
-    EXTERNAL_AUTH_TYPE,
 )
 from sidekick_usages.providers.codex.broker.external_auth.refresh import (
     decode_codex_refresh_reply,
@@ -417,8 +415,7 @@ class CodexRuntimeBroker:
     def _record_failure(self, failure_code: str | None) -> None:
         with self._lock:
             changed = (
-                self._qualified.is_set()
-                or self._failure_code != failure_code
+                self._qualified.is_set() or self._failure_code != failure_code
             )
             self._qualified.clear()
             self._failure_code = failure_code
@@ -571,7 +568,7 @@ class CodexRuntimeBroker:
             plan is not None and not isinstance(plan, str)
         ):
             raise CodexAppServerError(CodexAppServerFailure.PROTOCOL_MALFORMED)
-        if auth_mode == EXTERNAL_AUTH_TYPE:
+        if auth_mode == CodexAuthMode.CHATGPT_AUTH_TOKENS.value:
             return
         runtime.invalidate_projection()
         self._set_ready(False)

@@ -6,6 +6,7 @@ from typing import Never
 from sidekick_usages.core.selection.models import ProviderAuthObservation
 from sidekick_usages.core.selection.types import ProviderAuthState
 from sidekick_usages.core.types import ProviderId
+from sidekick_usages.providers.codex.account.types import CodexAuthMode
 from sidekick_usages.providers.codex.app_server.errors import (
     CodexAppServerError,
 )
@@ -24,8 +25,6 @@ from sidekick_usages.providers.codex.auth.token import (
     decode_codex_token_claims,
 )
 from sidekick_usages.serialization.json import JsonObject
-
-CHATGPT_AUTH_METHOD = "chatgpt"
 
 
 def probe_codex_auth_status(
@@ -82,7 +81,14 @@ def observe_codex_auth_status(
                 ProviderAuthState.LOGGED_OUT,
                 observed_at,
             )
-        if auth_method != CHATGPT_AUTH_METHOD or not isinstance(token, str):
+        if not isinstance(auth_method, str) or not isinstance(token, str):
+            return _inactive_observation(
+                ProviderAuthState.UNSUPPORTED,
+                observed_at,
+            )
+        try:
+            CodexAuthMode(auth_method)
+        except ValueError:
             return _inactive_observation(
                 ProviderAuthState.UNSUPPORTED,
                 observed_at,
