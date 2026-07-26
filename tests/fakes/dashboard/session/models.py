@@ -1,0 +1,68 @@
+"""Dashboard-session constants and captured proof models."""
+
+from dataclasses import dataclass
+from pathlib import Path
+
+from sidekick_usages.cli.dashboard.models.session import (
+    DashboardConfirmationKind,
+)
+from sidekick_usages.core.accounts.types import (
+    OperationId,
+    RequestId,
+    SidekickAccountId,
+)
+from sidekick_usages.core.types import ProviderId
+from sidekick_usages.providers.claude.activation.types import (
+    ClaudeActivationGuardFailure,
+)
+from sidekick_usages.usage.dashboard.models import DashboardFooterKind
+
+SESSION_WAIT_SECONDS = 2.0
+DEFAULT_TEST_CONTROL_TIMEOUT_SECONDS = 5.0
+SESSION_SOCKET = Path("/synthetic/sidekick-supervisor.sock")
+SESSION_REQUEST_ID = RequestId("66666666-6666-4666-8666-666666666666")
+SESSION_OPERATION_ID = OperationId("77777777-7777-4777-8777-777777777777")
+REMOTE_CONTROL_REQUIRED_CODE = (
+    ClaudeActivationGuardFailure.REMOTE_CONTROL_DISCONNECT_REQUIRED
+).failure_code
+
+type DashboardConfirmationProof = tuple[
+    DashboardConfirmationKind | None,
+    DashboardFooterKind,
+    str | None,
+]
+type DashboardStartupProof = tuple[
+    tuple[ProviderId, ...],
+    SidekickAccountId | None,
+    DashboardFooterKind,
+]
+
+
+@dataclass(frozen=True, slots=True)
+class DashboardSessionProof:
+    """Load-bearing states captured from one serialized session journey."""
+
+    control_connect_calls: tuple[tuple[Path, float | None], ...]
+    partial_start_reaped: bool
+    startup_reconciliations: tuple[ProviderId, ...]
+    startup_account_id: SidekickAccountId | None
+    startup_footer_kind: DashboardFooterKind
+    activation_locked: bool
+    confirmations: tuple[DashboardConfirmationProof, ...]
+    activations: tuple[tuple[ProviderId, SidekickAccountId, bool], ...]
+    setup_events: tuple[str, ...]
+    setup_progress_sanitized: bool
+    setup_refusal_restored: bool
+    setup_refusal_message: str | None
+    verified_account_id: SidekickAccountId | None
+    success_footer_kind: DashboardFooterKind
+    setup_not_repeated: bool
+    restored_account_id: SidekickAccountId | None
+    failure_footer_kind: DashboardFooterKind
+    remote_control_scoped_to_claude: bool
+    lookup_failure_reported: bool
+    lookup_cancelled: bool
+    daemon_cancelled: bool
+    stream_released: bool
+    closed_clients: int
+    post_close_invalidations: int

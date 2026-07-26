@@ -18,10 +18,12 @@ from sidekick_usages.usage.dashboard.models import (
     DashboardSnapshot,
 )
 from tests.fakes.dashboard.runtime import SetupDaemon
-from tests.fakes.dashboard.session import (
+from tests.fakes.dashboard.session.control import SessionControlConnector
+from tests.fakes.dashboard.session.models import (
     SESSION_SOCKET,
     DashboardStartupProof,
-    SessionControlConnector,
+)
+from tests.fakes.dashboard.session.snapshots import (
     SessionInvalidationProbe,
     SessionLookupWorker,
     SessionSnapshotSource,

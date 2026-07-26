@@ -38,10 +38,12 @@ from tests.fakes.dashboard.render import (
     interactive_dashboard_state,
 )
 from tests.fakes.dashboard.runtime import SetupDaemon
-from tests.fakes.dashboard.session import (
-    SESSION_SOCKET,
+from tests.fakes.dashboard.session.control import (
     SessionControlClient,
     SessionControlConnector,
+)
+from tests.fakes.dashboard.session.models import SESSION_SOCKET
+from tests.fakes.dashboard.session.snapshots import (
     SessionSnapshotSource,
     unavailable_session_snapshot,
 )
@@ -53,7 +55,7 @@ LOOKUP_EXECUTABLE_ENVIRONMENT_KEY = "SIDEKICK_PTY_LOOKUP_EXECUTABLE"
 SETUP_ACKNOWLEDGEMENT_ENVIRONMENT_KEY = "SIDEKICK_PTY_SETUP_ACKNOWLEDGEMENT"
 TRACE_ENVIRONMENT_KEY = "SIDEKICK_PTY_TRACE"
 CHILD_MODE_VALUE = "1"
-CHILD_MODULE = "tests.test_dashboard_pty"
+CHILD_MODULE = "tests.dashboard.test_pty"
 CHILD_TIMEOUT_SECONDS = 5.0
 INTERRUPTED_EXIT_CODE = 130
 FILE_POLL_SECONDS = 0.01
@@ -84,6 +86,7 @@ STARTUP_FAILURE_TEXT = "cached selection remains"
 ACTIVE_LABEL = "work@example.test"
 PREVIEW_LABEL = "personal@example.test"
 CODEX_EXTERNAL_LABEL = "External Codex CLI login"
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 
 class TracingLookupWorker:
@@ -285,7 +288,7 @@ def _start_dashboard(
     )
     session = PtySession.start(
         (sys.executable, "-m", CHILD_MODULE),
-        cwd=Path(__file__).resolve().parent.parent,
+        cwd=REPOSITORY_ROOT,
         environment=environment,
         columns=WIDE_COLUMNS,
         rows=TERMINAL_ROWS,
