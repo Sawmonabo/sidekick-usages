@@ -212,6 +212,32 @@ def _assert_unmanaged_workers_require_migration(
     assert not paths.private_codex_profiles.exists()
 
 
+def test_provider_operations_use_independent_durable_slots(
+    tmp_path: Path,
+) -> None:
+    """Provider-owned reconciliation never collides across providers."""
+    queue = OperationQueueStore(
+        make_application_paths(tmp_path).durable_operations
+    )
+    timestamp = RuntimeClock().now()
+    for provider_id in ProviderId:
+        queue.enqueue(
+            DueOperation(
+                operation_id=new_operation_id(),
+                provider_id=provider_id,
+                account_id=None,
+                kind=OperationKind.RECONCILE_NATIVE,
+                priority=OperationPriority.INTERACTIVE,
+                state=OperationState.SCHEDULED,
+                due_at=timestamp,
+                updated_at=timestamp,
+            )
+        )
+    assert tuple(
+        operation.provider_id for operation in queue.load()
+    ) == tuple(ProviderId)
+
+
 def test_supervisor_and_workers_isolate_failures_and_recover_durably(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -93,7 +93,11 @@ class OperationQueueDocument:
         if len(self.operations) > MAX_OPERATION_RECORDS:
             raise InvalidSchemaError
         slots = {
-            (operation.account_id, operation.kind)
+            (
+                operation.provider_id,
+                operation.account_id,
+                operation.kind,
+            )
             for operation in self.operations
         }
         operation_ids = {
@@ -110,6 +114,7 @@ class OperationQueueDocument:
                 sorted(
                     self.operations,
                     key=lambda operation: (
+                        operation.provider_id.value,
                         str(operation.account_id),
                         operation.kind.value,
                     ),
