@@ -1,6 +1,7 @@
-"""Shared deterministic boundaries for credential-refresh tests."""
+"""Typed credential-refresh test boundaries and builders."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
@@ -15,20 +16,29 @@ from sidekick_usages.core.models import (
     UsageReport,
 )
 from sidekick_usages.core.types import AccountLabel, ProviderId
+from sidekick_usages.credentials.refresh import CredentialRefreshCoordinator
 from sidekick_usages.http.client import HttpClient
+from sidekick_usages.persistence.accounts.store import AccountStore
 from sidekick_usages.persistence.credentials.refresh.service import (
     CredentialRefreshCrashPoint,
+    CredentialRefreshTransactions,
 )
 from sidekick_usages.providers.base import (
     CredentialDetection,
     CredentialStageReader,
     Provider,
     ProviderAuthenticatedAccount,
+    ProviderFailure,
+    ProviderFailureKind,
     RefreshResult,
     RefreshSuccess,
     runtime_account,
 )
-from tests.test_support import REFERENCE_TIME
+from tests.test_support import (
+    REFERENCE_TIME,
+    FixedClock,
+    RuntimeCredentialResolver,
+)
 
 ACCESS_EXPIRY = REFERENCE_TIME + timedelta(hours=1)
 
@@ -51,6 +61,40 @@ def login_account(
         ),
         plan="team",
     )
+
+
+def refresh_coordinator(
+    store: AccountStore,
+    provider: Provider,
+    refresh_root: Path,
+) -> CredentialRefreshCoordinator:
+    """Compose one standard rotating-refresh transaction boundary."""
+    return CredentialRefreshCoordinator(
+        store,
+        HttpClient(),
+        {ProviderId.CLAUDE: provider},
+        CredentialRefreshTransactions(store, refresh_root),
+        clock=FixedClock(),
+        resolver=RuntimeCredentialResolver(store),
+    )
+
+
+class BoundaryRecordingRefreshTransactions(CredentialRefreshTransactions):
+    """Record setup-token crossings without creating persistence state."""
+
+    def __init__(self, store: AccountStore, root: Path) -> None:
+        super().__init__(store, root)
+        self.crossings: list[str] = []
+
+    @contextmanager
+    def hold_lifecycle(self) -> Iterator[None]:
+        """Record entry into lifecycle exclusion."""
+        self.crossings.append("lifecycle")
+        yield
+
+    def recover(self) -> None:
+        """Record a private refresh recovery scan."""
+        self.crossings.append("recovery")
 
 
 class RefreshProvider(Provider):
@@ -255,6 +299,28 @@ class ManagedStageRefreshProvider(RefreshProvider):
             self,
             runtime_account(account),
             http,
+        )
+
+
+class BroadStageFailureProvider(ManagedStageRefreshProvider):
+    """Create one conventional non-private directory before rejection."""
+
+    def refresh_credentials_in_stage(
+        self,
+        account: ProviderAuthenticatedAccount,
+        http: HttpClient,
+        stage_home: Path,
+        stage_reader: CredentialStageReader,
+    ) -> RefreshResult:
+        del account, http, stage_reader
+        self.stage_home = stage_home
+        backups = stage_home / ".claude" / "backups"
+        backups.mkdir(mode=0o755)
+        backups.chmod(0o755)
+        return ProviderFailure(
+            provider_id=ProviderId.CLAUDE,
+            kind=ProviderFailureKind.REJECTED,
+            message="The provider rejected the refresh.",
         )
 
 
