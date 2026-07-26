@@ -722,8 +722,8 @@ The Markdown toolchain requires Node.js 22 or newer; `package.json` records
 that development-only runtime floor.
 
 CI runs pre-commit, the full pytest suite on Linux, macOS, and Windows with
-Python 3.14, then builds and smoke-tests the exact installed wheel. No minimum
-coverage percentage is configured.
+Python 3.14, then builds, benchmarks, and smoke-tests the exact installed
+wheel. No minimum coverage percentage is configured.
 
 Ruff targets Python 3.14, double quotes, LF endings, a 79-column source and
 docstring limit, and explicit annotation enforcement. Use PEP 604 unions such

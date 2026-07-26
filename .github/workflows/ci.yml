@@ -103,10 +103,7 @@ jobs:
         --cov=sidekick_usages
         --cov-report=xml
 
-    - name: Verify dashboard performance and platform contract
-      run: uv run python packaging/benchmark_dashboard.py
-
-    - name: Verify exact wheel in isolation
+    - name: Verify exact wheel and dashboard release gates in isolation
       run: uv run python packaging/smoke_wheel.py --build
 
     - name: Upload coverage (Ubuntu only)

@@ -19,6 +19,8 @@ from sidekick_usages.core.accounts.types import (
     SidekickAccountId,
 )
 from sidekick_usages.core.models import (
+    AccountTokenActivitySnapshot,
+    AccountUsageSnapshot,
     TokenActivitySummary,
     UsageReport,
     UsageWindow,
@@ -30,6 +32,16 @@ from sidekick_usages.core.types import (
     TokenActivityScope,
 )
 from sidekick_usages.daemon.types.service import ServicePhase
+from sidekick_usages.paths import ApplicationPaths
+from sidekick_usages.persistence.filesystem.service import (
+    PersistenceFilesystem,
+)
+from sidekick_usages.persistence.models.account import VersionThreeDocument
+from sidekick_usages.persistence.schema.account import encode_version_three
+from sidekick_usages.persistence.snapshots.activity import (
+    ActivitySnapshotStore,
+)
+from sidekick_usages.persistence.snapshots.usage import UsageSnapshotStore
 from sidekick_usages.usage.dashboard.models import (
     DashboardAccount,
     DashboardActionState,
@@ -46,6 +58,45 @@ RESET_TIME = REFERENCE_TIME + timedelta(hours=3, minutes=30)
 MINIMUM_ACCOUNT_COUNT = 2
 REFERENCE_ACCOUNT_COUNT = 6
 EXPANDED_ACCOUNT_COUNT = 24
+
+
+def seed_cached_dashboard(
+    paths: ApplicationPaths,
+    account_count: int,
+) -> None:
+    """Persist representative secret-free cache state below isolated paths."""
+    accounts = saved_accounts(account_count)
+    filesystem = PersistenceFilesystem(paths.accounts)
+    filesystem.repair_parent_permissions()
+    filesystem.commit_opaque_private(
+        encode_version_three(VersionThreeDocument(accounts))
+    )
+    UsageSnapshotStore(paths.usage_snapshots).save_many(
+        tuple(
+            AccountUsageSnapshot(
+                account_id=account.account_id,
+                provider_id=account.provider_id,
+                provider_identity=account.provider_identity,
+                plan=account.plan,
+                report=_usage_report(account, ordinal),
+                fetched_at=REFERENCE_TIME,
+            )
+            for ordinal, account in enumerate(accounts)
+        )
+    )
+    ActivitySnapshotStore(paths.activity_snapshots).save_many(
+        tuple(
+            AccountTokenActivitySnapshot(
+                provider_id=account.provider_id,
+                provider_account_id=str(account.provider_identity),
+                summary=_activity_summary(account, ordinal),
+                fetched_at=REFERENCE_TIME,
+            )
+            for ordinal, account in enumerate(accounts)
+            if account.provider_id is ProviderId.CODEX
+            and account.provider_identity is not None
+        )
+    )
 
 
 def saved_accounts(account_count: int) -> tuple[SavedAccount, ...]:
@@ -167,25 +218,39 @@ def _dashboard_account(
         ),
         usage=DashboardUsage(
             plan=account.plan,
-            report=UsageReport(
-                windows=(
-                    UsageWindow("5h", float(ordinal % 20), RESET_TIME),
-                    UsageWindow("7d", float(40 + ordinal % 50), RESET_TIME),
-                ),
-                plan=account.plan,
-            ),
+            report=_usage_report(account, ordinal),
             observed_at=REFERENCE_TIME,
         ),
         activity=DashboardActivity(
-            summary=TokenActivitySummary(
-                total_tokens=1_000_000 + ordinal,
-                scope=(
-                    TokenActivityScope.LOCAL_INSTALLATION
-                    if account.provider_id is ProviderId.CLAUDE
-                    else TokenActivityScope.ACCOUNT
-                ),
-                since=date(2026, 1, 1),
-            ),
+            summary=_activity_summary(account, ordinal),
             observed_at=REFERENCE_TIME,
         ),
+    )
+
+
+def _usage_report(
+    account: SavedAccount,
+    ordinal: int,
+) -> UsageReport:
+    return UsageReport(
+        windows=(
+            UsageWindow("5h", float(ordinal % 20), RESET_TIME),
+            UsageWindow("7d", float(40 + ordinal % 50), RESET_TIME),
+        ),
+        plan=account.plan,
+    )
+
+
+def _activity_summary(
+    account: SavedAccount,
+    ordinal: int,
+) -> TokenActivitySummary:
+    return TokenActivitySummary(
+        total_tokens=1_000_000 + ordinal,
+        scope=(
+            TokenActivityScope.LOCAL_INSTALLATION
+            if account.provider_id is ProviderId.CLAUDE
+            else TokenActivityScope.ACCOUNT
+        ),
+        since=date(2026, 1, 1),
     )

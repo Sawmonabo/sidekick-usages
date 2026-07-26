@@ -21,18 +21,17 @@ from sidekick_usages.usage.models import (
 
 type ActivityObservation = TokenActivityReading | TokenActivityIssue
 type LookupWaveReading = AccountLookupReading | LocalActivityReading
+type LookupTaskFuture = (
+    Future[AccountLookupReading] | Future[LocalActivityReading]
+)
 type AccountLookupObserver = Callable[[AccountLookupCompletion], None]
 type AccountMutationIntent = CredentialRefreshIntent | ProviderStateIntent
-type AccountMutationResult = (
-    AccountRefreshResult | ProviderStateResult
-)
+type AccountMutationResult = AccountRefreshResult | ProviderStateResult
 type AccountMutationExchange = Callable[
     [AccountMutationIntent],
     AccountMutationResult,
 ]
-type LookupWaveEvent = (
-    Future[LookupWaveReading] | OwnerMutationRequest
-)
+type LookupWaveEvent = LookupTaskFuture | OwnerMutationRequest
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

@@ -12,6 +12,7 @@ from sidekick_usages.usage.lookup.models import (
     AccountMutationExchange,
     AccountMutationIntent,
     AccountMutationResult,
+    LookupTaskFuture,
     LookupWaveEvent,
     LookupWaveReading,
     OwnerMutationRequest,
@@ -114,9 +115,8 @@ class UsageLookupWave:
                 local_providers,
                 reference_time,
                 exchange,
+                completion_events,
             )
-            for future in futures:
-                future.add_done_callback(completion_events.put)
             yield from self._consume(
                 completion_events,
                 len(futures),
@@ -130,26 +130,28 @@ class UsageLookupWave:
         local_providers: tuple[ProviderId, ...],
         reference_time: datetime,
         exchange: AccountMutationExchange,
-    ) -> list[Future[LookupWaveReading]]:
-        """Submit account and local activity work in one global wave."""
-        futures: list[Future[LookupWaveReading]] = [
-            executor.submit(
+        completion_events: Queue[LookupWaveEvent],
+    ) -> list[LookupTaskFuture]:
+        """Attach completion routing as each global-wave task is submitted."""
+        futures: list[LookupTaskFuture] = []
+        for ordinal, account in enumerate(accounts):
+            future = executor.submit(
                 self._lookup.lookup,
                 account,
                 ordinal,
                 reference_time,
                 exchange,
             )
-            for ordinal, account in enumerate(accounts)
-        ]
-        futures.extend(
-            executor.submit(
+            future.add_done_callback(completion_events.put)
+            futures.append(future)
+        for provider_id in local_providers:
+            future = executor.submit(
                 self._activity.read_local,
                 provider_id,
                 reference_time,
             )
-            for provider_id in local_providers
-        )
+            future.add_done_callback(completion_events.put)
+            futures.append(future)
         return futures
 
     @staticmethod

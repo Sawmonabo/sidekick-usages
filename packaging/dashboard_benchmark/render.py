@@ -7,6 +7,10 @@ from rich.console import Console
 
 from dashboard_benchmark.errors import DashboardBenchmarkError
 from sidekick_usages.cli.dashboard.controller import DashboardController
+from sidekick_usages.cli.dashboard.launch import (
+    present_dashboard_frame,
+    render_dashboard_frame,
+)
 from sidekick_usages.cli.dashboard.models.controller import DashboardMove
 from sidekick_usages.usage.dashboard.models import (
     DashboardCursor,
@@ -47,14 +51,16 @@ def _render(
 ) -> int:
     output.seek(0)
     output.truncate(0)
-    console.print(
+    frame = render_dashboard_frame(
+        console,
         dashboard_overview(
             snapshot,
             width=OUTPUT_WIDTH,
             cursor=_cursor(controller),
             footer=DashboardFooter(),
-        )
+        ),
     )
+    present_dashboard_frame(console, frame)
     rendered = output.getvalue()
     if not rendered:
         raise DashboardBenchmarkError("Dashboard render produced no output.")

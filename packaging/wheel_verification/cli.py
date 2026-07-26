@@ -39,6 +39,14 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _write_success(benchmark_report: str, wheel: str) -> None:
+    """Write installed-wheel measurements and the verified artifact."""
+    sys.stdout.write(benchmark_report)
+    if benchmark_report and not benchmark_report.endswith("\n"):
+        sys.stdout.write("\n")
+    sys.stdout.write(f"Verified exact wheel: {wheel}\n")
+
+
 def main(repository_root: Path) -> int:
     """Run the selected artifact verification mode."""
     args = _parser().parse_args()
@@ -54,8 +62,8 @@ def main(repository_root: Path) -> int:
             prefix="sidekick-wheel-build-"
         ) as raw:
             wheel = build_distributions(contract, Path(raw) / "artifacts")
-            verify_exact_wheel(contract, wheel)
-            sys.stdout.write(f"Verified exact wheel: {wheel.name}\n")
+            benchmark_report = verify_exact_wheel(contract, wheel)
+            _write_success(benchmark_report, wheel.name)
         return 0
 
     if args.build:
@@ -64,6 +72,6 @@ def main(repository_root: Path) -> int:
         wheel = args.wheel.resolve()
     else:
         raise WheelVerificationError("One verification mode is required.")
-    verify_exact_wheel(contract, wheel)
-    sys.stdout.write(f"Verified exact wheel: {wheel}\n")
+    benchmark_report = verify_exact_wheel(contract, wheel)
+    _write_success(benchmark_report, str(wheel))
     return 0

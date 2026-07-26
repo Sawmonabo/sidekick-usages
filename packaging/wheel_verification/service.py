@@ -36,7 +36,7 @@ def build_distributions(
 def verify_exact_wheel(
     contract: ProjectContract,
     wheel: Path,
-) -> None:
+) -> str:
     """Verify one explicitly selected wheel and its isolated runtime."""
     selected, sdist = artifacts.require_exact_distribution_set(
         contract,
@@ -49,4 +49,4 @@ def verify_exact_wheel(
     project.verify_source_members(contract)
     artifacts.verify_sdist_members(contract, sdist)
     artifacts.verify_wheel_members(contract, selected)
-    runtime.verify_installed_wheel(contract, selected)
+    return runtime.verify_installed_wheel(contract, selected)
