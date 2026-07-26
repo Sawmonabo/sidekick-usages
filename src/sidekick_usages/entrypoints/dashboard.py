@@ -17,6 +17,9 @@ from sidekick_usages.cli.dashboard.session import (
 from sidekick_usages.cli.dashboard.setup import GuidedServiceSetup
 from sidekick_usages.clock import SystemClock
 from sidekick_usages.core.types import ExitCode, ProviderId
+from sidekick_usages.credentials.capabilities.service import (
+    build_provider_capability_service,
+)
 from sidekick_usages.daemon.control.client import ControlClient
 from sidekick_usages.daemon.lifecycle.manager import build_daemon_manager
 from sidekick_usages.paths import discover_application_paths
@@ -47,6 +50,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     paths = discover_application_paths()
     clock = SystemClock()
     snapshots = CachedDashboardSnapshotSource(paths, clock)
+    capabilities = build_provider_capability_service(paths, os.environ)
     lookup = UsageLookupWorkerClient(
         UsageLookupModuleLaunchPlanner(
             resolve_usage_lookup_interpreter(),
@@ -61,7 +65,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         connector=_connect_dashboard_control,
         socket_path=paths.supervisor_socket,
         setup=GuidedServiceSetup(
-            build_daemon_manager(paths=paths, clock=clock)
+            build_daemon_manager(
+                paths=paths,
+                clock=clock,
+                provider_readiness=capabilities,
+            )
         ),
         environment=os.environ,
     )

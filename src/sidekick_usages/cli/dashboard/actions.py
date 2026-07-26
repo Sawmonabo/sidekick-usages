@@ -105,7 +105,7 @@ class DashboardActionExecutor:
                         REMOTE_CONTROL_REFUSED_MESSAGE,
                     )
                 return
-            client = self._connect_ready()
+            client = self._connect_after_readiness()
             if client is None:
                 self._setup_failed(
                     ServiceSetupResult(
@@ -136,9 +136,6 @@ class DashboardActionExecutor:
         self,
         intent: DashboardIntent,
     ) -> DashboardControlClient | None:
-        client = self._connect_ready()
-        if client is not None:
-            return client
         result = self._setup.prepare(
             service=self._sink.service,
             intent=intent,
@@ -163,7 +160,7 @@ class DashboardActionExecutor:
         if result.outcome is not ServiceSetupOutcome.RESUME:
             self._setup_failed(result)
             return None
-        client = self._connect_ready()
+        client = self._connect_after_readiness()
         if client is None:
             self._setup_failed(
                 ServiceSetupResult(
@@ -173,7 +170,8 @@ class DashboardActionExecutor:
             )
         return client
 
-    def _connect_ready(self) -> DashboardControlClient | None:
+    def _connect_after_readiness(self) -> DashboardControlClient | None:
+        """Recheck the endpoint after exact provider-scoped readiness."""
         client: DashboardControlClient | None = None
         try:
             client = self._connector(self._socket_path)
@@ -191,8 +189,7 @@ class DashboardActionExecutor:
                 raise UnexpectedServiceEventError(
                     "The service returned an invalid snapshot."
                 )
-            if event.payload.ready:
-                return client
+            return client
         except (
             UnexpectedServiceEventError,
             OSError,

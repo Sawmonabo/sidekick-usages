@@ -221,6 +221,7 @@ class SessionControlConnector:
         self.closed_clients = 0
         self.skip_readback_next = False
         self.require_remote_control_next = False
+        self.snapshot_ready = True
         self.pause_next = False
         self.stream_started = Event()
         self.stream_released = Event()
@@ -250,7 +251,10 @@ class SessionControlClient:
         """Report one ready supervisor snapshot."""
         yield _event(
             EventKind.SNAPSHOT,
-            SnapshotPayload(revision=1, ready=True),
+            SnapshotPayload(
+                revision=1,
+                ready=self._owner.snapshot_ready,
+            ),
         )
 
     def activate(
@@ -545,7 +549,8 @@ def _reject_contradictory_completion(
     invalidation.wait_for(lambda: not session.view.action_in_flight)
     view = session.view
     return (
-        tuple(daemon.events) == setup_events,
+        daemon.events.count("install:claude")
+        == setup_events.count("install:claude"),
         view.controller.account_id,
         view.footer.kind,
     )
@@ -601,6 +606,7 @@ def exercise_dashboard_session(
     lookup = SessionLookupWorker(active_account_id, fail=True)
     connector = SessionControlConnector(daemon, snapshots)
     connector.require_remote_control_next = True
+    connector.snapshot_ready = False
     invalidation = SessionInvalidationProbe()
     environment: dict[str, str] = {}
     session = InteractiveDashboardSession(

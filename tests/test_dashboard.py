@@ -410,7 +410,13 @@ def test_dashboard_controller_journey_preserves_verified_truth(
             (ProviderId.CODEX, CODEX_SAVED_ACCOUNT_ID, False),
             (ProviderId.CLAUDE, CLAUDE_ACTIVE_ACCOUNT_ID, False),
         ),
-        setup_events=("status", "status", "status", "status", "install"),
+        setup_events=(
+            "status:claude",
+            "status:claude",
+            "status:claude",
+            "status:claude",
+            "install:claude",
+        ),
         setup_refusal_restored=True,
         setup_refusal_message=(
             "The Sidekick user service was not installed. "
@@ -699,10 +705,7 @@ def test_guided_setup_resumes_once_and_preserves_blocked_actions() -> None:
     assert codex_failure.message is ServiceSetupMessage.CODEX_UNAVAILABLE
     codex_action = codex_failure.corrective_action
     assert codex_action is ServiceSetupAction.CHECK_CODEX
-    assert (
-        codex_action.value
-        == "Run sidekick-usages doctor --provider codex."
-    )
+    assert codex_action.value == "Run sidekick-usages doctor --provider codex."
     assert codex_blocked.events == ["status:codex"]
 
 

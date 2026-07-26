@@ -60,31 +60,21 @@ class GuidedServiceSetup:
         provider_ids = _provider_ids(intent)
         progress(ServiceSetupProgress.CHECKING)
         status = self._daemon.status(provider_ids)
-        if self._closed.is_set():
-            return self._failed(intent)
-        provider_failure = _provider_failure(intent, status)
-        if provider_failure is not None:
-            return provider_failure
+        completion = self._completion(intent, status, progress)
+        if completion is not None:
+            return completion
         if status.state is ServiceLifecycleState.FEATURE_DISABLED:
             return ServiceSetupResult(
                 intent=intent,
                 outcome=ServiceSetupOutcome.UNSUPPORTED,
             )
-        if status.state is ServiceLifecycleState.READY:
-            progress(ServiceSetupProgress.READY)
-            return self._resume(intent)
 
         if service.compatible:
             progress(ServiceSetupProgress.RESTARTING)
             restarted = self._daemon.restart(provider_ids)
-            if self._closed.is_set():
-                return self._failed(intent)
-            provider_failure = _provider_failure(intent, restarted)
-            if provider_failure is not None:
-                return provider_failure
-            if restarted.state is ServiceLifecycleState.READY:
-                progress(ServiceSetupProgress.READY)
-                return self._resume(intent)
+            completion = self._completion(intent, restarted, progress)
+            if completion is not None:
+                return completion
         return self._install_or_block(
             intent=intent,
             interactive=interactive,
@@ -102,36 +92,39 @@ class GuidedServiceSetup:
         progress: ServiceSetupProgressSink,
         provider_ids: ProviderReadinessScope,
     ) -> ServiceSetupResult[DashboardIntent]:
-        if not interactive:
+        blocked_outcome = _blocked_setup_outcome(interactive, decision)
+        if blocked_outcome is not None:
             return ServiceSetupResult(
                 intent=intent,
-                outcome=ServiceSetupOutcome.NONINTERACTIVE,
-            )
-        if decision is ServiceSetupDecision.NOT_REQUESTED:
-            return ServiceSetupResult(
-                intent=intent,
-                outcome=ServiceSetupOutcome.CONFIRMATION_REQUIRED,
-            )
-        if decision is ServiceSetupDecision.REFUSED:
-            return ServiceSetupResult(
-                intent=intent,
-                outcome=ServiceSetupOutcome.REFUSED,
+                outcome=blocked_outcome,
             )
 
         progress(ServiceSetupProgress.INSTALLING)
         installed = self._daemon.install(provider_ids)
-        if self._closed.is_set():
-            return self._failed(intent)
-        provider_failure = _provider_failure(intent, installed)
-        if provider_failure is not None:
-            return provider_failure
-        if installed.state is ServiceLifecycleState.READY:
-            progress(ServiceSetupProgress.READY)
-            return self._resume(intent)
+        completion = self._completion(intent, installed, progress)
+        if completion is not None:
+            return completion
         return ServiceSetupResult(
             intent=intent,
             outcome=ServiceSetupOutcome.FAILED,
         )
+
+    def _completion(
+        self,
+        intent: DashboardIntent,
+        result: DaemonOperationResult,
+        progress: ServiceSetupProgressSink,
+    ) -> ServiceSetupResult[DashboardIntent] | None:
+        """Classify a completed lifecycle operation."""
+        if self._closed.is_set():
+            return self._failed(intent)
+        provider_failure = _provider_failure(intent, result)
+        if provider_failure is not None:
+            return provider_failure
+        if result.state is not ServiceLifecycleState.READY:
+            return None
+        progress(ServiceSetupProgress.READY)
+        return self._resume(intent)
 
     @staticmethod
     def _failed(
@@ -159,6 +152,20 @@ def _provider_ids(intent: DashboardIntent) -> ProviderReadinessScope:
     if isinstance(intent, RefreshDueAccountsIntent):
         return _ALL_PROVIDER_IDS
     assert_never(intent)
+
+
+def _blocked_setup_outcome(
+    interactive: bool,
+    decision: ServiceSetupDecision,
+) -> ServiceSetupOutcome | None:
+    """Return why installation cannot proceed without changing the service."""
+    if not interactive:
+        return ServiceSetupOutcome.NONINTERACTIVE
+    if decision is ServiceSetupDecision.NOT_REQUESTED:
+        return ServiceSetupOutcome.CONFIRMATION_REQUIRED
+    if decision is ServiceSetupDecision.REFUSED:
+        return ServiceSetupOutcome.REFUSED
+    return None
 
 
 def _provider_failure(
