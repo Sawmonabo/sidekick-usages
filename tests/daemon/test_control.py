@@ -227,7 +227,7 @@ def test_authenticated_control_stream_frames_completes_and_cancels(
 
 
 def test_control_protocol_fails_closed_at_each_trust_boundary(
-    tmp_path: Path,
+    short_socket_root: Path,
 ) -> None:
     """Unproved peers, malformed input, and mismatches never dispatch."""
     malformed = encode_frame(
@@ -265,7 +265,7 @@ def test_control_protocol_fails_closed_at_each_trust_boundary(
         assert len(frames) == 1
         assert decode_event(frames[0]).kind is expected_kind
 
-    runtime_directory = tmp_path / "runtime"
+    runtime_directory = short_socket_root / "runtime"
     socket_path = runtime_directory / "supervisor.sock"
     if sys.platform == "win32":
         with pytest.raises(ConnectionError):
@@ -306,7 +306,7 @@ def test_control_protocol_fails_closed_at_each_trust_boundary(
     socket_path.chmod(SOCKET_MODE)
     stale_socket.close()
     paths = replace(
-        make_application_paths(tmp_path),
+        make_application_paths(short_socket_root),
         runtime_directory=runtime_directory,
         supervisor_socket=socket_path,
     )

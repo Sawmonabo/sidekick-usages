@@ -191,10 +191,15 @@ class PtySession:
         *,
         timeout: float = DEFAULT_PROCESS_TIMEOUT_SECONDS,
     ) -> int:
-        """Wait for and reap the child, then drain ready terminal output."""
-        return_code = self.process.wait(timeout=timeout)
+        """Drain terminal output while waiting to reap the child."""
+        deadline = time.monotonic() + timeout
+        while self.process.poll() is None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(self.process.args, timeout)
+            self._read_once(min(remaining, READ_POLL_SECONDS))
         self._drain_ready()
-        return return_code
+        return self.process.wait()
 
     def process_group_exists(self) -> bool:
         """Return whether any process remains in the child's process group."""

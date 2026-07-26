@@ -3,6 +3,7 @@
 import socket
 from collections import deque
 from contextlib import suppress
+from threading import Event
 
 from sidekick_usages.core.accounts.types import (
     OperationId,
@@ -116,13 +117,19 @@ class FramedTransport:
         self._connection = connection
         self._decoder = FrameDecoder()
         self._pending: deque[bytes] = deque()
+        self._closed = Event()
 
     def receive_payload(self) -> bytes:
         """Block until one complete payload is available."""
         if self._pending:
             return self._pending.popleft()
         while True:
-            chunk = self._connection.recv(READ_CHUNK_BYTES)
+            try:
+                chunk = self._connection.recv(READ_CHUNK_BYTES)
+            except OSError:
+                if not self._closed.is_set():
+                    raise
+                chunk = b""
             if not chunk:
                 self._decoder.finish()
                 raise ConnectionClosedError(
@@ -150,6 +157,7 @@ class FramedTransport:
 
     def close(self) -> None:
         """Wake blocked I/O and close the connected stream."""
+        self._closed.set()
         with suppress(OSError):
             self._connection.shutdown(socket.SHUT_RDWR)
         self._connection.close()
