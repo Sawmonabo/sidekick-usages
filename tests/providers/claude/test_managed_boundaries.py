@@ -88,7 +88,7 @@ _FUTURE_EXPIRY = REFERENCE_TIME + timedelta(hours=1)
 _KEYCHAIN_EXECUTABLE = Path("/usr/bin/security")
 _KEYCHAIN_LOCKED_EXIT = (-25308) % 256
 _KEYCHAIN_PROVENANCE = ExecutableProvenance(
-    _KEYCHAIN_EXECUTABLE,
+    _KEYCHAIN_EXECUTABLE.absolute(),
     0,
     0,
     1,
