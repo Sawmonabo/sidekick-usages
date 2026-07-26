@@ -249,13 +249,14 @@ The usage route depends on the saved credential variant:
   unified 5-hour and 7-day rate-limit headers. This real request consumes a
   small amount of Claude quota.
 
-Saved Claude subscription logins rotate their access credentials before a
-known access-token expiry or after HTTP 401. On non-macOS systems with Claude
-Code available, refresh first runs `claude auth login --claudeai` inside a
-private staged home, then validates the staged credentials. On macOS, or when
-the executable cannot be resolved, Sidekick uses its bounded direct HTTPS
-OAuth exchange and immediately stages the result. Neither path overwrites the
-normal `~/.claude` login. Setup-token credentials cannot auto-refresh.
+Saved Claude subscription logins rotate only through official Claude login in
+the account's stable private profile. Sidekick validates the protected
+identity and credential generation afterward; it never calls Anthropic's
+OAuth refresh endpoint itself. Usage and heartbeat read the verified native
+authority for the selected account and the private authority for each inactive
+account. Background maintenance keeps every private copy fresh and separately
+refreshes the selected native authority without changing its identity or
+selecting another account. Setup-token credentials cannot auto-refresh.
 
 Access-token expiry and login expiry are independent. When a known Claude
 login expiry is at or inside five days, maintenance emits a manual renewal
@@ -433,7 +434,7 @@ Runtime network destinations are:
 | Purpose | Destination |
 | --- | --- |
 | Claude usage and tiny header probe | `api.anthropic.com` |
-| Claude direct refresh fallback | `platform.claude.com` |
+| Official Claude login and refresh | Provider destinations owned by Claude CLI |
 | Codex usage, token activity, and heartbeat | `chatgpt.com` |
 | Official Codex login and refresh | Provider destinations owned by Codex CLI |
 | Explicit release check | `api.github.com` |

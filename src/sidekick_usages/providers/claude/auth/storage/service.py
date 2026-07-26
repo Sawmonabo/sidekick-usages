@@ -223,8 +223,7 @@ def _protected_login(
     )
     return ClaudeProtectedLogin(
         snapshot=snapshot,
-        refresh_token=credentials.refresh_token,
-        scopes=credentials.scopes,
+        credentials=credentials,
     )
 
 

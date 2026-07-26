@@ -15,6 +15,7 @@ from sidekick_usages.providers.claude.managed.executable import (
 )
 from sidekick_usages.providers.claude.managed.models import (
     ClaudeCapabilities,
+    ClaudeRuntimeCapabilities,
 )
 from sidekick_usages.providers.claude.managed.types import (
     ClaudeManagedFailure,
@@ -72,6 +73,24 @@ def probe_claude_capabilities(
     runner: ClaudeCommandRunner = run_bounded_claude_command,
 ) -> ClaudeCapabilities:
     """Prove required auth surfaces without starting official login."""
+    return probe_claude_runtime_capabilities(
+        executable,
+        platform,
+        environment,
+        working_directory,
+        runner=runner,
+    ).bind(profile)
+
+
+def probe_claude_runtime_capabilities(
+    executable: ClaudeExecutable,
+    platform: ClaudeManagedPlatform,
+    environment: Mapping[str, str],
+    working_directory: Path,
+    *,
+    runner: ClaudeCommandRunner = run_bounded_claude_command,
+) -> ClaudeRuntimeCapabilities:
+    """Prove profile-independent auth surfaces once per invocation."""
     verify_claude_executable(executable)
     _probe_status(executable, environment, working_directory, runner)
     _probe_login(executable, environment, working_directory, runner)
@@ -80,7 +99,7 @@ def probe_claude_capabilities(
             ClaudeManagedFailure.REFRESH_PROVISIONING_UNPROVEN
         )
     verify_claude_executable(executable)
-    return ClaudeCapabilities(executable, profile, platform)
+    return ClaudeRuntimeCapabilities(executable, platform)
 
 
 def _probe_status(

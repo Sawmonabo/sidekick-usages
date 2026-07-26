@@ -56,11 +56,6 @@ _POLICIES = {
         rate_limit=True,
         server_status=True,
     ),
-    HttpOperation.CLAUDE_REFRESH: RetryPolicy(
-        ambiguous_transport=False,
-        rate_limit=False,
-        server_status=False,
-    ),
     HttpOperation.CLAUDE_HEARTBEAT: RetryPolicy(
         ambiguous_transport=False,
         rate_limit=True,

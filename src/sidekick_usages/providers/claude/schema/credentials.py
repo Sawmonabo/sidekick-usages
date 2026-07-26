@@ -25,7 +25,6 @@ from sidekick_usages.core.models import (
     ClaudeLoginIdentity,
     DetectedCredentials,
 )
-from sidekick_usages.core.time import as_utc
 from sidekick_usages.providers.base import (
     ProviderBoundaryError,
     ProviderFailureKind,
@@ -138,33 +137,9 @@ class _ClaudeCredentialsEnvelope(BaseModel):
     oauth: _ClaudeOAuthCredentials = Field(alias="claudeAiOauth")
 
 
-class _ClaudeRefreshResponse(BaseModel):
-    """Strict model for Claude's refresh response contract."""
-
-    model_config = ConfigDict(strict=True, extra="ignore", frozen=True)
-
-    access_token: _Token = Field(repr=False)
-    refresh_token: _Token | None = Field(default=None, repr=False)
-    expires_in: _NonnegativeInteger
-    refresh_token_expires_in: _NonnegativeInteger | None = None
-
-
 @cache
 def _credentials_adapter() -> TypeAdapter[_ClaudeCredentialsEnvelope]:
     return TypeAdapter(_ClaudeCredentialsEnvelope)
-
-
-@cache
-def _refresh_adapter() -> TypeAdapter[_ClaudeRefreshResponse]:
-    return TypeAdapter(_ClaudeRefreshResponse)
-
-
-@cache
-def _expires_in_adapter() -> TypeAdapter[_NonnegativeInteger]:
-    return TypeAdapter(
-        _NonnegativeInteger,
-        config=ConfigDict(strict=True),
-    )
 
 
 @cache
@@ -266,80 +241,6 @@ def claude_expiry(value: JsonValue | None) -> Expiry:
         return KnownExpiry(_EPOCH + timedelta(milliseconds=value))
     except OverflowError:
         return InvalidExpiry()
-
-
-def refresh_expiry(
-    value: JsonValue,
-    reference_time: datetime,
-) -> KnownExpiry:
-    """Normalize one strict Claude refresh-relative expiry duration."""
-    validated = _validate(
-        _expires_in_adapter(),
-        value,
-        boundary="refresh expiry",
-    )
-    normalized = as_utc(reference_time)
-    normalized = normalized.replace(
-        microsecond=(normalized.microsecond // 1000) * 1000
-    )
-    try:
-        return KnownExpiry(normalized + timedelta(seconds=validated))
-    except OverflowError:
-        raise ProviderBoundaryError(
-            claude_failure(
-                ProviderFailureKind.MALFORMED,
-                "Claude refresh expiry is outside the supported range.",
-            )
-        ) from None
-
-
-def parse_refresh_credentials(
-    value: JsonObject,
-    previous: ClaudeLoginCredentials,
-    reference_time: datetime,
-) -> ClaudeLoginCredentials:
-    """Validate a refresh response and build complete login credentials."""
-    validated = _validate(
-        _refresh_adapter(),
-        value,
-        boundary="refresh",
-    )
-    if "refresh_token" in value and validated.refresh_token is None:
-        raise ProviderBoundaryError(
-            claude_failure(
-                ProviderFailureKind.MALFORMED,
-                "Claude refresh data is invalid at refresh_token.",
-                fields=("refresh_token",),
-            )
-        ) from None
-    if (
-        "refresh_token_expires_in" in value
-        and validated.refresh_token_expires_in is None
-    ):
-        raise ProviderBoundaryError(
-            claude_failure(
-                ProviderFailureKind.MALFORMED,
-                "Claude refresh data is invalid at refresh_token_expires_in.",
-                fields=("refresh_token_expires_in",),
-            )
-        ) from None
-    next_refresh_expiry = previous.refresh_expiry
-    if validated.refresh_token_expires_in is not None:
-        next_refresh_expiry = refresh_expiry(
-            validated.refresh_token_expires_in,
-            reference_time,
-        )
-    return ClaudeLoginCredentials(
-        access_token=validated.access_token,
-        refresh_token=validated.refresh_token or previous.refresh_token,
-        access_expiry=refresh_expiry(
-            validated.expires_in,
-            reference_time,
-        ),
-        refresh_expiry=next_refresh_expiry,
-        scopes=previous.scopes,
-        identity=previous.identity,
-    )
 
 
 def validate_setup_token(value: str) -> str:

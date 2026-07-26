@@ -182,21 +182,16 @@ def test_local_server_connection_is_reused(
     assert first_port == second_port
 
 
-def test_post_capabilities_encode_and_return_sidekick_values(
+def test_post_probe_encodes_and_returns_sidekick_values(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The reviewed POST shapes preserve their concrete contracts."""
+    """The reviewed provider probe preserves its concrete contract."""
     header_response = _Response(
         HTTPStatus.OK,
         b"x" * (DISCARD_BODY_LIMIT + 1),
         {"X-Usage": "ready"},
     )
-    manager = _Manager(
-        [
-            header_response,
-            _Response(HTTPStatus.OK, b'{"access_token":"claude-new"}'),
-        ]
-    )
+    manager = _Manager([header_response])
     client = HttpClient()
     _install_manager(monkeypatch, client, manager)
 
@@ -206,21 +201,9 @@ def test_post_capabilities_encode_and_return_sidekick_values(
         {"Authorization": "Bearer sentinel"},
         operation=HttpOperation.CLAUDE_PROBE,
     )
-    claude = client.post_json(
-        "https://example.test/claude-refresh",
-        {"refresh_token": "claude old"},
-        operation=HttpOperation.CLAUDE_REFRESH,
-    )
     assert returned_headers == {"x-usage": "ready"}
-    assert claude == {"access_token": "claude-new"}
-    assert manager.bodies == [
-        b'{"prompt":"quota"}',
-        b'{"refresh_token":"claude old"}',
-    ]
-    assert [call[0] for call in manager.calls] == [
-        HTTPMethod.POST,
-        HTTPMethod.POST,
-    ]
+    assert manager.bodies == [b'{"prompt":"quota"}']
+    assert [call[0] for call in manager.calls] == [HTTPMethod.POST]
     assert all(
         not redirect and not retries for _, redirect, retries in manager.calls
     )
@@ -242,10 +225,11 @@ def test_request_and_response_size_bounds_fail_before_unbounded_work(
     with pytest.raises(InvalidPayloadError):
         client.get_json("https://example.test/oversized", {})
     with pytest.raises(InvalidPayloadError):
-        client.post_json(
-            "https://example.test/oversized-json",
+        client.post_capture_headers(
+            "https://example.test/oversized-probe",
             {"value": "x" * JSON_REQUEST_LIMIT},
-            operation=HttpOperation.CLAUDE_REFRESH,
+            {},
+            operation=HttpOperation.CLAUDE_PROBE,
         )
     assert len(manager.calls) == 1
     assert response.close_calls == 1

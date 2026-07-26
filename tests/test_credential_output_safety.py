@@ -2,10 +2,8 @@
 
 import io
 import json
-from collections.abc import Mapping
 from pathlib import Path
 
-import pytest
 from rich.console import Console
 
 from sidekick_usages.core.expiry import KnownExpiry, UnknownExpiry
@@ -21,9 +19,7 @@ from sidekick_usages.doctor.presentation.service import (
     render_doctor,
 )
 from sidekick_usages.doctor.runtime.service import DoctorRuntimeService
-from sidekick_usages.errors import AuthError
 from sidekick_usages.http.client import HttpClient
-from sidekick_usages.http.types import HttpOperation
 from sidekick_usages.maintenance import TokenMaintenanceService
 from sidekick_usages.persistence.accounts.store import AccountStore
 from sidekick_usages.persistence.credentials.refresh.artifacts import (
@@ -42,7 +38,6 @@ from sidekick_usages.persistence.private.credentials import (
 )
 from sidekick_usages.persistence.types.status import PersistenceState
 from sidekick_usages.providers.claude.provider import ClaudeProvider
-from sidekick_usages.serialization.json import JsonObject
 from tests.test_support import (
     REFERENCE_TIME,
     FixedClock,
@@ -53,15 +48,15 @@ from tests.test_support import (
 
 def test_provider_secret_never_crosses_persisted_or_doctor_error_channels(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """One provider rejection remains secret-safe through every consumer."""
-    response_secret = "test-only-provider-response-secret"
+    """Saved credentials remain secret-safe through every consumer."""
+    access_secret = "sk-ant-oat01-saved-access"
+    refresh_secret = "test-only-saved-refresh"
     account = Account(
         label=AccountLabel("team"),
         credentials=ClaudeLoginCredentials(
-            access_token="sk-ant-oat01-saved-access",
-            refresh_token="test-only-saved-refresh",
+            access_token=access_secret,
+            refresh_token=refresh_secret,
             access_expiry=KnownExpiry(REFERENCE_TIME),
             refresh_expiry=UnknownExpiry(),
             scopes=("user:profile",),
@@ -96,18 +91,6 @@ def test_provider_secret_never_crosses_persisted_or_doctor_error_channels(
         {ProviderId.CLAUDE: provider},
         refresh_coordinator=refresh,
     )
-
-    def reject_refresh(
-        url: str,
-        json_body: JsonObject,
-        headers: Mapping[str, str] | None = None,
-        *,
-        operation: HttpOperation,
-    ) -> JsonObject:
-        del url, json_body, headers, operation
-        raise AuthError(response_secret)
-
-    monkeypatch.setattr(http, "post_json", reject_refresh)
 
     outcome = TokenMaintenanceService(
         store,
@@ -146,4 +129,5 @@ def test_provider_secret_never_crosses_persisted_or_doctor_error_channels(
         human_output.getvalue(),
         machine_output,
     ):
-        assert response_secret not in rendered
+        assert access_secret not in rendered
+        assert refresh_secret not in rendered

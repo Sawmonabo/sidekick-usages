@@ -525,28 +525,48 @@ without a maintainable private authority.
   remain independently due, setup tokens receive fixed-lifetime checks but no
   refresh, and one failure leaves exact timestamped stale metrics while later
   accounts continue.
-- [ ] Extend the architecture check once to reject direct OAuth refresh and
-  credential-bearing HTTP mutation. Fold no-fallback proof into the official
-  login failure scenario and adapt existing activity/heartbeat assertions
+  - [x] Prove selected-native and inactive-private credential resolution once,
+    including one dual-authority account opening only its subscription.
+  - [x] Prove selection-independent maintenance and continuation after one
+    account failure.
+  - [ ] Complete cached stale-metric and composed activity/heartbeat proof.
+- [x] Extend the architecture check once to reject direct OAuth refresh and
+  credential-bearing HTTP mutation.
+- [ ] Fold no-fallback proof into composed activity/heartbeat assertions
   without cloning the multi-account workflow.
 
 ### Implementation
 
-- [ ] Route all subscription maintenance through official private/native
+- [x] Route all subscription maintenance through official private/native
   authority workflows.
-- [ ] Observe and retain the active native generation before switching away.
+- [x] Observe and retain the active native generation before switching away.
 - [ ] Collect usage and activity once per logical account. Choose the
   appropriate healthy credential mode without adding their totals.
-- [ ] Preserve fixed setup-token lifetime and use `regenerate`, never
+- [x] Provide one authority-aware credential resolver that opens verified
+  native state for the selected account and private state for inactive
+  accounts under the exact held account authority.
+- [x] Preserve fixed setup-token lifetime and use `regenerate`, never
   `refresh`, in action state.
-- [ ] Remove `OAUTH_REFRESH_ENDPOINT`, direct refresh request bodies,
+- [x] Remove `OAUTH_REFRESH_ENDPOINT`, direct refresh request bodies,
   refresh-response token parsing used only by that call, and fallback logic
   from `providers/claude/provider.py`.
-- [ ] Remove the deliberate macOS CLI-refresh skip.
-- [ ] Keep direct HTTPS only for provider usage and activity endpoints that
+- [x] Remove the deliberate macOS CLI-refresh skip.
+- [x] Keep direct HTTPS only for provider usage and activity endpoints that
   remain part of the established contract.
-- [ ] Search production code for a second subscription credential writer and
+- [x] Search production code for a second subscription credential writer and
   delete every obsolete path.
+
+The resolver consumes selected state as proof, not policy. Activation or
+reconciliation must first verify the selected native identity and generation.
+If native state drifts, the resolver fails closed with an authority mismatch;
+it does not duplicate reconciliation or silently fall back to the private
+authority.
+
+Selected accounts retain two independent generations. Maintenance first keeps
+the saved private profile fresh and persists only that private generation to
+the saved account. It separately verifies or refreshes native Claude and
+persists only the native generation to selected state. Neither projection can
+overwrite the other, so the private source remains valid for the next switch.
 
 ### Verify and commit
 

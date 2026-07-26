@@ -587,7 +587,7 @@ files Sidekick reads.
 | Surface | Public coverage | Sidekick handling |
 | --- | --- | --- |
 | Claude credential envelope | No complete schema | Strict narrow credential model; never log values |
-| OAuth refresh response | No Claude Code schema | Strict narrow refresh model |
+| Official login result | No credential response schema | Re-read and verify the protected credential envelope |
 | OAuth usage response | No Claude Code schema | Strict narrow usage-window model |
 | Unified rate-limit headers | HTTP fields, not JSON Schema | Strict header parser |
 | `stats-cache.json` | Purpose and retention documented | Read-only narrow activity-cache model |

@@ -4,6 +4,7 @@ import os
 import tempfile
 from collections.abc import Mapping
 from pathlib import Path
+from threading import Lock
 
 from sidekick_usages.core.accounts.types import SidekickAccountId
 from sidekick_usages.paths import (
@@ -16,30 +17,140 @@ from sidekick_usages.persistence.private.credentials import (
 )
 from sidekick_usages.platform.host import detect_host_platform
 from sidekick_usages.platform.types import HostPlatform
+from sidekick_usages.providers.claude.credentials import native_claude_profile
 from sidekick_usages.providers.claude.environment import (
+    CLAUDE_CONFIG_DIR_ENVIRONMENT_KEY,
     claude_private_profile_environment,
 )
 from sidekick_usages.providers.claude.managed.capabilities import (
     managed_claude_platform,
-    probe_claude_capabilities,
+    probe_claude_runtime_capabilities,
 )
 from sidekick_usages.providers.claude.managed.errors import ClaudeManagedError
 from sidekick_usages.providers.claude.managed.executable import (
     discover_claude_executable,
+    verify_claude_executable,
 )
 from sidekick_usages.providers.claude.managed.models import (
     ClaudeCapabilities,
+    ClaudeRuntimeCapabilities,
 )
 from sidekick_usages.providers.claude.managed.types import (
     ClaudeManagedFailure,
+    ClaudeManagedPlatform,
 )
-from sidekick_usages.providers.claude.models import ClaudeManagedProfile
+from sidekick_usages.providers.claude.models import (
+    ClaudeManagedProfile,
+    ClaudeNativeProfile,
+)
 from sidekick_usages.providers.claude.process import (
     run_bounded_claude_command,
 )
 from sidekick_usages.providers.claude.types import ClaudeCommandRunner
 
 _PRIVATE_DIRECTORY_MODE = 0o700
+
+
+class ClaudeProfileCapabilityFactory:
+    """Bind one invocation's capability proof to qualified profiles."""
+
+    def __init__(
+        self,
+        paths: ApplicationPaths,
+        profiles: PrivateCredentialTree,
+        *,
+        environment: Mapping[str, str] | None = None,
+        host: HostPlatform | None = None,
+        runner: ClaudeCommandRunner = run_bounded_claude_command,
+    ) -> None:
+        _require_profile_tree(paths, profiles)
+        source = os.environ if environment is None else environment
+        self._paths = paths
+        self._profiles = profiles
+        self._environment = dict(source)
+        self._platform = managed_claude_platform(
+            detect_host_platform(environment=source) if host is None else host
+        )
+        self._runner = runner
+        self._runtime: ClaudeRuntimeCapabilities | None = None
+        self._failure: ClaudeManagedFailure | None = None
+        self._proof_lock = Lock()
+
+    def managed(self, account_id: SidekickAccountId) -> ClaudeCapabilities:
+        """Qualify and bind one stable private account profile."""
+        profile = _qualified_managed_profile(self._paths, account_id)
+        runtime = self._runtime_capabilities()
+        verify_claude_executable(runtime.executable)
+        try:
+            self._profiles.ensure_owned_directory(profile.config_directory)
+        except PersistenceFilesystemError, ValueError:
+            raise ClaudeManagedError(
+                ClaudeManagedFailure.PROFILE_UNSAFE
+            ) from None
+        return runtime.bind(profile)
+
+    def native(
+        self,
+        *,
+        environment: Mapping[str, str] | None = None,
+    ) -> ClaudeCapabilities:
+        """Bind the proof to the native default Claude profile."""
+        profile = _native_profile(environment)
+        runtime = self._runtime_capabilities()
+        verify_claude_executable(runtime.executable)
+        return runtime.bind(profile)
+
+    def _runtime_capabilities(self) -> ClaudeRuntimeCapabilities:
+        """Return one thread-safe invocation capability proof."""
+        with self._proof_lock:
+            if self._runtime is not None:
+                return self._runtime
+            if self._failure is not None:
+                raise ClaudeManagedError(self._failure)
+            try:
+                runtime = _probe_runtime_capabilities(
+                    self._platform,
+                    self._environment,
+                    self._runner,
+                )
+            except ClaudeManagedError as error:
+                self._failure = error.code
+                raise
+            self._runtime = runtime
+            return runtime
+
+
+def _probe_runtime_capabilities(
+    platform: ClaudeManagedPlatform,
+    environment: Mapping[str, str],
+    runner: ClaudeCommandRunner,
+) -> ClaudeRuntimeCapabilities:
+    """Prove the provider process once when a profile first needs it."""
+    with tempfile.TemporaryDirectory(
+        prefix="sidekick-claude-capability-"
+    ) as raw_root:
+        probe_root = Path(raw_root)
+        probe_home = probe_root / "home"
+        probe_config = probe_root / "config"
+        probe_home.mkdir(mode=_PRIVATE_DIRECTORY_MODE)
+        probe_config.mkdir(mode=_PRIVATE_DIRECTORY_MODE)
+        probe_environment = claude_private_profile_environment(
+            environment,
+            process_home=probe_home,
+            config_directory=probe_config,
+        )
+        executable = discover_claude_executable(
+            probe_environment,
+            working_directory=probe_home,
+            runner=runner,
+        )
+        return probe_claude_runtime_capabilities(
+            executable,
+            platform,
+            probe_environment,
+            probe_home,
+            runner=runner,
+        )
 
 
 def prepare_claude_managed_profile(
@@ -52,46 +163,66 @@ def prepare_claude_managed_profile(
     runner: ClaudeCommandRunner = run_bounded_claude_command,
 ) -> ClaudeCapabilities:
     """Prove capabilities, then create one stable protected profile."""
+    _qualified_managed_profile(paths, account_id)
+    return ClaudeProfileCapabilityFactory(
+        paths,
+        profiles,
+        environment=environment,
+        host=host,
+        runner=runner,
+    ).managed(account_id)
+
+
+def _native_profile(
+    environment: Mapping[str, str] | None,
+) -> ClaudeNativeProfile:
+    """Resolve the unconfigured native profile from one explicit home."""
     source = os.environ if environment is None else environment
-    current_host = (
-        detect_host_platform(environment=source) if host is None else host
-    )
-    platform = managed_claude_platform(current_host)
-    if profiles.root != paths.private_claude_profiles:
+    if CLAUDE_CONFIG_DIR_ENVIRONMENT_KEY in source:
         raise ClaudeManagedError(ClaudeManagedFailure.PROFILE_UNSAFE)
+    home = source.get("HOME")
     try:
-        config_directory = managed_claude_config_dir(paths, account_id)
-        profile = ClaudeManagedProfile(account_id, config_directory)
+        profile = (
+            native_claude_profile(environment={})
+            if home is None
+            else native_claude_profile(
+                credential_home=_native_config_directory(home),
+                environment={},
+            )
+        )
     except ValueError:
         raise ClaudeManagedError(ClaudeManagedFailure.PROFILE_UNSAFE) from None
-    with tempfile.TemporaryDirectory(
-        prefix="sidekick-claude-capability-"
-    ) as raw_root:
-        probe_root = Path(raw_root)
-        probe_home = probe_root / "home"
-        probe_config = probe_root / "config"
-        probe_home.mkdir(mode=_PRIVATE_DIRECTORY_MODE)
-        probe_config.mkdir(mode=_PRIVATE_DIRECTORY_MODE)
-        probe_environment = claude_private_profile_environment(
-            source,
-            process_home=probe_home,
-            config_directory=probe_config,
-        )
-        executable = discover_claude_executable(
-            probe_environment,
-            working_directory=probe_home,
-            runner=runner,
-        )
-        capabilities = probe_claude_capabilities(
-            executable,
-            profile,
-            platform,
-            probe_environment,
-            probe_home,
-            runner=runner,
-        )
+    return profile
+
+
+def _qualified_managed_profile(
+    paths: ApplicationPaths,
+    account_id: SidekickAccountId,
+) -> ClaudeManagedProfile:
+    """Return one normalized stable managed profile without side effects."""
     try:
-        profiles.ensure_owned_directory(config_directory)
-    except PersistenceFilesystemError, ValueError:
+        return ClaudeManagedProfile(
+            account_id,
+            managed_claude_config_dir(paths, account_id),
+        )
+    except ValueError:
         raise ClaudeManagedError(ClaudeManagedFailure.PROFILE_UNSAFE) from None
-    return capabilities
+
+
+def _require_profile_tree(
+    paths: ApplicationPaths,
+    profiles: PrivateCredentialTree,
+) -> None:
+    """Require the exact protected tree before any provider process starts."""
+    if profiles.root != paths.private_claude_profiles:
+        raise ClaudeManagedError(ClaudeManagedFailure.PROFILE_UNSAFE)
+
+
+def _native_config_directory(home: str) -> Path:
+    """Return the native config path for one explicit absolute home."""
+    if not home:
+        raise ValueError("Claude native profile path is unavailable.")
+    home_path = Path(home)
+    if not home_path.is_absolute() or ".." in home_path.parts:
+        raise ValueError("Claude native profile path is unavailable.")
+    return home_path / ".claude"

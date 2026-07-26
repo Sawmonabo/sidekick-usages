@@ -1819,11 +1819,24 @@ Own:
 - installed binary discovery and compatibility; and
 - Linux, WSL, and macOS capability distinctions.
 
-The current provider already stages CLI refresh in an isolated home. Native
-activation needs a separately named, explicitly authorized adapter; background
-maintenance must never call it. Sidekick may read protected provider state for
-verification, but only official Claude may write credential files or Keychain
-items.
+The implemented provider no longer contains a direct Claude OAuth request,
+response parser, private endpoint, or platform fallback. Official Claude is
+the only subscription credential writer in native and private profiles.
+Background maintenance keeps every private authority fresh independently of
+selection. For the selected account it also calls the narrow official native
+refresh authority without invoking activation or changing the selected
+identity.
+
+The runtime credential resolver consumes the exact held account-operation
+authority. It opens verified native state only when selected state names the
+same account and its identity and native generation match protected read-back;
+inactive accounts open their managed private authority. The saved subscription
+generation continues to describe the private copy and is never replaced by
+the independent native generation. A dual-authority account still opens one
+subscription credential, so its preserved setup token cannot duplicate usage.
+Selected state remains an activation/reconciliation proof: native generation
+drift fails closed and must be reconciled before native credentials can be
+used. The resolver does not duplicate that policy or fall back silently.
 
 ### `credentials/`
 

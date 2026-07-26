@@ -11,6 +11,7 @@ from sidekick_usages.core.accounts.types import (
     CredentialHealth,
     ProviderIdentity,
 )
+from sidekick_usages.core.models import ClaudeLoginCredentials
 from sidekick_usages.providers.claude.types import ClaudeProfile
 
 
@@ -39,19 +40,17 @@ class ClaudeAuthoritySnapshot:
 
 
 class ClaudeProtectedLogin:
-    """Operation-scoped refresh input from protected Claude storage."""
+    """Operation-scoped login credentials from protected Claude storage."""
 
-    __slots__ = ("_active", "_refresh_token", "_scopes", "_snapshot")
+    __slots__ = ("_active", "_credentials", "_snapshot")
 
     def __init__(
         self,
         snapshot: ClaudeAuthoritySnapshot,
-        refresh_token: str,
-        scopes: tuple[str, ...],
+        credentials: ClaudeLoginCredentials,
     ) -> None:
         self._snapshot = snapshot
-        self._refresh_token: str | None = refresh_token
-        self._scopes: tuple[str, ...] | None = scopes
+        self._credentials: ClaudeLoginCredentials | None = credentials
         self._active = False
 
     @property
@@ -62,20 +61,23 @@ class ClaudeProtectedLogin:
     @property
     def refresh_token(self) -> str:
         """Return refresh material only while this lease is active."""
-        if not self._active or self._refresh_token is None:
-            raise RuntimeError("Claude protected login lease is not active.")
-        return self._refresh_token
+        return self.credentials.refresh_token
 
     @property
     def scopes(self) -> tuple[str, ...]:
         """Return OAuth scopes only while this lease is active."""
-        if not self._active or self._scopes is None:
+        return self.credentials.scopes
+
+    @property
+    def credentials(self) -> ClaudeLoginCredentials:
+        """Return complete credentials only while this lease is active."""
+        if not self._active or self._credentials is None:
             raise RuntimeError("Claude protected login lease is not active.")
-        return self._scopes
+        return self._credentials
 
     def __enter__(self) -> Self:
         """Open this protected login projection exactly once."""
-        if self._active or self._refresh_token is None or self._scopes is None:
+        if self._active or self._credentials is None:
             raise RuntimeError(
                 "Claude protected login lease is not available."
             )
@@ -91,8 +93,7 @@ class ClaudeProtectedLogin:
         """Release every credential reference."""
         del exception_type, exception, traceback
         self._active = False
-        self._refresh_token = None
-        self._scopes = None
+        self._credentials = None
 
     def __repr__(self) -> str:
         """Return a representation without credential material."""

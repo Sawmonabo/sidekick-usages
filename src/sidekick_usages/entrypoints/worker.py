@@ -33,6 +33,9 @@ from sidekick_usages.credentials.claude.activation.service import (
 from sidekick_usages.credentials.claude.managed.maintenance.service import (
     ClaudeManagedAuthorityCoordinator,
 )
+from sidekick_usages.credentials.claude.managed.profile import (
+    ClaudeProfileCapabilityFactory,
+)
 from sidekick_usages.credentials.codex.activation import (
     CodexActivationService,
 )
@@ -208,11 +211,30 @@ def _run_account_operation(
     store = persistence.open_store()
     with ExitStack() as resources:
         if operation.provider_id is ProviderId.CLAUDE:
+            profiles = persistence.managed_claude_profiles
+            selected = SelectedStateStore(paths.selected_state)
+            runtime = ClaudeActivationRuntime(environment=os.environ)
+            capabilities = ClaudeProfileCapabilityFactory(
+                paths,
+                profiles,
+                environment=os.environ,
+            )
+            authorities = ClaudeActivationAuthorityCoordinator(
+                paths,
+                store,
+                profiles,
+                clock,
+                capabilities=capabilities,
+                runtime=runtime,
+            )
             executor = ClaudeManagedMaintenanceWorkerExecutor(
                 ClaudeManagedAuthorityCoordinator(
                     paths,
                     store,
-                    persistence.managed_claude_profiles,
+                    profiles,
+                    selected,
+                    authorities,
+                    capabilities,
                     clock,
                     environment=os.environ,
                 ),
@@ -401,11 +423,18 @@ def _claude_selection_executor(
     }:
         raise ValueError("Claude selection operation is unsupported.")
     runtime = ClaudeActivationRuntime(environment=os.environ)
+    profiles = persistence.managed_claude_profiles
+    capabilities = ClaudeProfileCapabilityFactory(
+        paths,
+        profiles,
+        environment=os.environ,
+    )
     authorities = ClaudeActivationAuthorityCoordinator(
         paths,
         store,
-        persistence.managed_claude_profiles,
+        profiles,
         clock,
+        capabilities=capabilities,
         runtime=runtime,
     )
     return ClaudeSelectionWorkerExecutor(

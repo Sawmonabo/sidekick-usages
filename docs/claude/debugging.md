@@ -81,19 +81,14 @@ subscription identity association while retaining the setup token.
 
 ## Refresh failure causes
 
-Claude refresh returns bounded, cause-only states. The provider adapter does
-not append recovery prose. Current causes distinguish:
+Claude maintenance returns bounded, cause-only states from its official
+private-profile operation. Current states distinguish:
 
-- missing refresh credential;
-- access credential expired;
-- login credential expired;
-- provider rejected refresh;
-- refresh timed out;
-- refresh process unavailable;
-- refresh output incomplete;
-- refresh output malformed;
-- refreshed identity mismatch; and
-- refresh temporarily unavailable.
+- official Claude missing, unsupported, timed out, or unavailable;
+- protected credentials missing, unreadable, incomplete, or malformed;
+- login lifetime expired;
+- identity or generation mismatch requiring reconciliation; and
+- provider login failure with the existing authority left unchanged.
 
 CLI and usage renderers select the single recovery action from the saved
 credential mode. Raw process output, provider payloads, environment values,
@@ -124,12 +119,13 @@ sidekick-usages doctor
 sidekick-usages daemon status
 ```
 
-Maintenance uses saved credentials only. It never adopts the active Claude
-login. Refreshes sharing one credential are serialized before provider
-traffic, and a complete private stage can be recovered locally without a
-second provider request. If doctor reports blocked refresh recovery, preserve
-the evidence and follow its emitted action; do not delete journals or staging
-directories by hand.
+Maintenance enrolls every saved account independently of selection. It uses
+the exact account's private authority and, for the selected account, separately
+maintains the verified native authority for the same identity. Both operations
+are serialized under that account's lock. Maintenance never adopts another
+native identity or changes account selection. If doctor reports blocked
+recovery, preserve the evidence and follow its emitted action; do not delete
+journals or private profiles by hand.
 
 ## Safe support report
 

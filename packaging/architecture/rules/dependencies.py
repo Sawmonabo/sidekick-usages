@@ -7,9 +7,7 @@ from architecture.models import ArchitectureFinding, SourceUnit
 from architecture.source import finding, matches, matches_any, scan_imports
 
 _CODEX_JSONRPC_ROOT = "src/sidekick_usages/providers/codex/app_server/jsonrpc/"
-_CODEX_BROKER_WIRE_FILE = (
-    "src/sidekick_usages/providers/codex/broker/wire.py"
-)
+_CODEX_BROKER_WIRE_FILE = "src/sidekick_usages/providers/codex/broker/wire.py"
 _CACHED_DASHBOARD_SERVICE_FILE = (
     "src/sidekick_usages/usage/dashboard/service.py"
 )
@@ -70,6 +68,7 @@ _CREDENTIAL_LEASE_CONSUMERS = frozenset(
     {
         "src/sidekick_usages/cli/context.py",
         "src/sidekick_usages/credentials/authorities.py",
+        "src/sidekick_usages/credentials/claude/authority/resolver.py",
         (
             "src/sidekick_usages/credentials/claude/managed/"
             "migration/service.py"

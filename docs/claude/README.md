@@ -15,6 +15,13 @@ usage routes; adding or renewing one never replaces the other.
 | setup-token credential | One protected access credential captured from `claude setup-token` | Tiny `/v1/messages` request and rate-limit headers | Manual replacement only |
 | subscription-login credential | Sanitized metadata for one official login in the account's stable private profile; legacy stored refresh authority is migration input only | `/api/oauth/usage` | Serialized official provider refresh |
 
+Sidekick never calls Claude's OAuth refresh endpoint directly. Official Claude
+owns every subscription credential write. Background maintenance keeps each
+account's private profile fresh. For the selected account it independently
+verifies and refreshes the same identity in native Claude without switching
+accounts. Runtime usage and heartbeat open that verified native authority for
+the selected account and a private authority for each inactive account.
+
 A setup token is documented by Anthropic as a one-year automation credential,
 but its value does not encode the creation time. Sidekick records the capture
 or renewal time when it owns that event. A preexisting token lacking

@@ -96,9 +96,7 @@ class HttpClient(AbstractContextManager["HttpClient"]):
                 return
             self._closed = True
             managers = (
-                self._detach_managers()
-                if self._active_requests == 0
-                else ()
+                self._detach_managers() if self._active_requests == 0 else ()
             )
         _clear_managers(managers)
 
@@ -145,33 +143,6 @@ class HttpClient(AbstractContextManager["HttpClient"]):
             discard_oversized=True,
         )
         return result.headers
-
-    def post_json(
-        self,
-        url: str,
-        json_body: JsonObject,
-        headers: Mapping[str, str] | None = None,
-        *,
-        operation: HttpOperation,
-    ) -> JsonObject:
-        """POST bounded JSON and decode a JSON-object response."""
-        _require_operation(operation, HttpOperation.CLAUDE_REFRESH)
-        body = _encode_json(json_body)
-        request_headers = {
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        }
-        if headers is not None:
-            request_headers.update(headers)
-        result = self._request(
-            HTTPMethod.POST,
-            url,
-            request_headers,
-            body=body,
-            operation=operation,
-            response_limit=JSON_RESPONSE_LIMIT,
-        )
-        return decode_json_object(result.body)
 
     def _request(
         self,
@@ -320,9 +291,7 @@ class HttpClient(AbstractContextManager["HttpClient"]):
             if self._active_requests < 0:
                 raise AssertionError("HTTP request ownership underflow.")
             managers = (
-                self._detach_managers()
-                if self._active_requests == 0
-                else ()
+                self._detach_managers() if self._active_requests == 0 else ()
             )
         _clear_managers(managers)
 

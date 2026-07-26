@@ -10,8 +10,8 @@ proxy, retry, and error contracts.
   User information, invalid ports, and non-HTTPS schemes are rejected before
   transport access.
 - Certificate verification is required for direct and proxy connection pools.
-- Redirect following is disabled. A provider cannot silently redirect OAuth
-  credentials to another host.
+- Redirect following is disabled. A provider cannot silently redirect a
+  credential-bearing request to another host.
 - Direct and proxy connections are pooled for one composed CLI invocation and
   closed exactly once when that invocation exits.
 - Successful bounded reads release reusable connections back to the pool.
@@ -32,9 +32,8 @@ Each operation has:
 - at most 3 attempts, including the first attempt.
 
 Every request and response shape has a fixed byte limit. JSON responses are
-limited to 4 MiB, JSON requests to 1 MiB, form requests to 256 KiB, and
-discarded or error bodies to 64 KiB. JSON must decode to an object, not an
-arbitrary scalar or list.
+limited to 4 MiB, JSON requests to 1 MiB, and discarded or error bodies to
+64 KiB. JSON must decode to an object, not an arbitrary scalar or list.
 
 ## Closed retry policy
 
@@ -45,15 +44,14 @@ cannot pass an arbitrary retry flag or a transport-library retry object.
 | --- | --- | --- | --- | --- |
 | Safe GET | Retry | Retry | Retry | Retry |
 | Claude usage probe | Retry | Stop | Retry | Stop |
-| Claude refresh | Retry | Stop | Stop | Stop |
-| Codex refresh | Retry | Stop | Stop | Stop |
 | Claude heartbeat | Retry | Stop | Retry | Stop |
 | Codex heartbeat | Retry | Stop | Stop | Stop |
 
 A proven connection failure occurred before a request could be sent. An
 ambiguous transport failure may have happened after transmission, so only a
-safe read can repeat it. Mutating OAuth and model-request operations do not
-retry ambiguous failures.
+safe read can repeat it. Model-request operations do not retry ambiguous
+failures. Official provider processes own authentication traffic; Sidekick's
+HTTP client has no direct OAuth refresh operation.
 
 Eligible retries use full-jitter exponential backoff. A valid RFC 9110
 `Retry-After` delay takes precedence, but a delay that does not fit inside the

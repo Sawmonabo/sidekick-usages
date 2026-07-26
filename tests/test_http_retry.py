@@ -38,7 +38,6 @@ RETRY_AFTER_SECONDS = 7
         ),
         (HttpOperation.CLAUDE_PROBE, 529, {}, 3, TransientError),
         (HttpOperation.CLAUDE_PROBE, 429, {}, 3, RateLimitError),
-        (HttpOperation.CLAUDE_REFRESH, 429, {}, 1, RateLimitError),
         (HttpOperation.CLAUDE_HEARTBEAT, 429, {}, 3, RateLimitError),
         (HttpOperation.CODEX_HEARTBEAT, 429, {}, 1, RateLimitError),
     ],
@@ -72,7 +71,7 @@ def test_closed_operation_status_matrix(
     ("operation", "failure", "attempts"),
     [
         (
-            HttpOperation.CLAUDE_REFRESH,
+            HttpOperation.CLAUDE_PROBE,
             ConnectTimeoutError(None, "connect"),
             3,
         ),
@@ -82,7 +81,7 @@ def test_closed_operation_status_matrix(
             3,
         ),
         (
-            HttpOperation.CLAUDE_REFRESH,
+            HttpOperation.CLAUDE_PROBE,
             ProtocolError("ambiguous send"),
             1,
         ),
@@ -262,7 +261,7 @@ def test_transport_errors_are_redacted_and_drop_library_context() -> None:
         raise ProtocolError(f"failed with {secret}")
 
     with pytest.raises(TransientError) as exc_info:
-        executor.execute(HttpOperation.CLAUDE_REFRESH, attempt)
+        executor.execute(HttpOperation.CLAUDE_PROBE, attempt)
     assert secret not in str(exc_info.value)
     assert exc_info.value.__cause__ is None
     assert exc_info.value.__context__ is None

@@ -45,6 +45,9 @@ from sidekick_usages.credentials.claude.activation.recovery import (
 from sidekick_usages.credentials.claude.activation.service import (
     ClaudeActivationService,
 )
+from sidekick_usages.credentials.claude.managed.profile import (
+    ClaudeProfileCapabilityFactory,
+)
 from sidekick_usages.daemon.worker.claude.selection import (
     ClaudeSelectionWorkerExecutor,
 )
@@ -611,11 +614,19 @@ def _runtime_fixture(
         runner=runner,
         foreground_probe=FixedClaudeForegroundProbe(foreground),
     )
+    capabilities = ClaudeProfileCapabilityFactory(
+        paths,
+        profiles,
+        environment=source_environment,
+        host=HostPlatform.LINUX,
+        runner=runner,
+    )
     authorities = ClaudeActivationAuthorityCoordinator(
         paths,
         store,
         profiles,
         clock,
+        capabilities=capabilities,
         runtime=runtime,
     )
     executor = ClaudeSelectionWorkerExecutor(

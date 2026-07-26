@@ -38,6 +38,7 @@ _KEYCHAIN_READ_CONSTANTS = frozenset(
         "find-generic-password",
     }
 )
+_PRIVATE_OAUTH_ENDPOINT = "https://platform.claude.com/v1/oauth/token"
 _PROHIBITED_FLAT_MODULES = frozenset(
     {
         "src/sidekick_usages/credentials/claude/managed/authority.py",
@@ -82,7 +83,9 @@ def _claude_violation(unit: SourceUnit) -> ast.AST | None:
     if path in _PROHIBITED_FLAT_MODULES:
         return unit.tree
     for node in ast.walk(unit.tree):
-        if _forbidden_storage_constant(path, node):
+        if _forbidden_storage_constant(
+            path, node
+        ) or _forbidden_refresh_mutation(path, node):
             return node
         if (
             path not in _CLAUDE_CONFIG_OWNER_PATHS
@@ -102,6 +105,18 @@ def _claude_violation(unit: SourceUnit) -> ast.AST | None:
         ):
             return node
     return None
+
+
+def _forbidden_refresh_mutation(path: str, node: ast.AST) -> bool:
+    """Reject direct Claude OAuth transport and its private endpoint."""
+    return (
+        isinstance(node, ast.Constant)
+        and node.value == _PRIVATE_OAUTH_ENDPOINT
+    ) or (
+        path.startswith("src/sidekick_usages/providers/claude/")
+        and isinstance(node, ast.Call)
+        and (dotted_name(node.func) or "").split(".")[-1] == "post_json"
+    )
 
 
 def _forbidden_storage_constant(path: str, node: ast.AST) -> bool:

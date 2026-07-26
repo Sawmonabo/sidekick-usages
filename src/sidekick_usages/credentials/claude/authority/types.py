@@ -5,7 +5,16 @@ from contextlib import AbstractContextManager
 from datetime import datetime
 from typing import Protocol
 
-from sidekick_usages.core.accounts.types import ProviderIdentity
+from sidekick_usages.core.accounts.types import (
+    ProviderIdentity,
+    SidekickAccountId,
+)
+from sidekick_usages.credentials.claude.managed.maintenance.models import (
+    ClaudeManagedAuthorityResult,
+)
+from sidekick_usages.persistence.supervisor.authority import (
+    OperationAuthority,
+)
 from sidekick_usages.providers.claude.auth.storage.models import (
     ClaudeAuthoritySnapshot,
     ClaudeProtectedLogin,
@@ -41,3 +50,14 @@ class ClaudeAuthorityReader(Protocol):
         runner: ClaudeCommandRunner = run_bounded_claude_command,
     ) -> AbstractContextManager[ClaudeProtectedLogin]:
         """Open one short-lived protected credential lease."""
+
+
+class ClaudeAuthorityMaintainer(Protocol):
+    """Maintain one current Claude authority under an existing lock."""
+
+    def maintain_with_authority(
+        self,
+        account_id: SidekickAccountId,
+        authority: OperationAuthority,
+    ) -> ClaudeManagedAuthorityResult:
+        """Return one secret-free verified current account or outcome."""

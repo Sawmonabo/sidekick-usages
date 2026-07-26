@@ -10,9 +10,11 @@ resident supervisor is managed.
 `sidekick-usages` has two different account-maintenance paths:
 
 1. `sidekick-usages refresh <label>` repairs that exact Claude or Codex
-   account through official login in its independent private profile.
+   account through official login in its independent private profile. When
+   that Claude account is selected, it also maintains its verified native
+   authority.
 2. `sidekick-usages refresh --all` maintains every saved or managed authority
-   without reading either native global login.
+   independently of selection.
 
 `sidekick-usages maintain --quiet` is the explicit foreground maintenance
 command. It runs the second path above, then optional heartbeat/window warming
@@ -81,19 +83,30 @@ sidekick-usages refresh --all --force
 
 `refresh --all` is the provider-owned maintenance command. It:
 
+- enrolls every saved account independently of the selected account
 - refreshes accounts that are expired or near expiry
 - skips fresh accounts unless `--force` is supplied
 - persists each successful rotation immediately
 - records failed refresh attempts on the affected account
 - continues checking other accounts after one account fails
-- never reads either provider's native global login
+- reads native Claude only for the exact provider-verified selected account
 - never replaces saved identity from global Claude or Codex state
 
-Every refresh goes through its owning coordinator. Claude refreshes sharing one
-provider credential are serialized before provider traffic. Codex refreshes
-are serialized per stable account and run through the official process in that
-account's protected managed home. Each coordinator resamples durable state
+Every refresh goes through its owning coordinator and exact account-operation
+lock. Claude keeps the stable private profile fresh for every subscription
+account. For the selected account it separately verifies and refreshes the
+same identity in native Claude, while keeping private and native generations
+distinct. Codex runs its official process in that account's protected managed
+home. Selection never filters enrollment, due checks, or later attempts. One
+account's failure does not stop the next account, and background maintenance
+never switches a native identity. Each coordinator resamples durable state
 before commit and cannot overwrite an unrelated account.
+
+Usage and heartbeat use a separate authority-aware lease. The selected Claude
+account opens its provider-verified native authority; inactive Claude accounts
+open their private managed authorities. A dual-authority Claude account still
+opens one credential mode for one logical lookup, so its preserved setup token
+does not duplicate subscription metrics.
 
 Known Claude login expiry is independent from access-token expiry. At or
 inside five days, maintenance emits the five-day login-renewal warning and one
@@ -365,8 +378,14 @@ platform lifecycle ownership separate:
 - `sidekick_usages.maintenance.TokenMaintenanceService` owns saved-token
   access-refresh policy, derived Claude login-renewal warnings, per-account
   outcomes, and diagnostic persistence.
-- `sidekick_usages.credentials.CredentialRefreshCoordinator` owns stored
-  Claude credential refresh.
+- `sidekick_usages.credentials.claude.managed.maintenance.`
+  `ClaudeManagedAuthorityCoordinator` owns exact-account Claude verification
+  plus independent official private-profile and selected-native refresh.
+- `sidekick_usages.credentials.claude.authority.`
+  `ClaudeManagedCredentialResolver` opens the selected verified native
+  authority or an inactive private authority under one held account lock.
+- `sidekick_usages.credentials.CredentialRefreshCoordinator` remains only for
+  legacy stored-authority migration input.
 - `sidekick_usages.credentials.codex.managed.service.`
   `CodexManagedAuthorityCoordinator` owns exact-account Codex verification and
   official managed-home refresh.

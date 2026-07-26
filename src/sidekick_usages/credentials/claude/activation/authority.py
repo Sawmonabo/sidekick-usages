@@ -3,7 +3,6 @@
 import os
 from collections.abc import Mapping
 from dataclasses import replace
-from pathlib import Path
 
 from sidekick_usages.clock import Clock
 from sidekick_usages.core.accounts.models import (
@@ -44,7 +43,7 @@ from sidekick_usages.credentials.claude.managed.authority.service import (
     managed_login_authority,
 )
 from sidekick_usages.credentials.claude.managed.profile import (
-    prepare_claude_managed_profile,
+    ClaudeProfileCapabilityFactory,
 )
 from sidekick_usages.credentials.claude.native.authority.service import (
     ClaudeNativeAuthorityReader,
@@ -66,10 +65,6 @@ from sidekick_usages.providers.claude.auth.storage.models import (
 )
 from sidekick_usages.providers.claude.auth.storage.types import (
     ClaudeProtectedStorageFailure,
-)
-from sidekick_usages.providers.claude.credentials import native_claude_profile
-from sidekick_usages.providers.claude.environment import (
-    CLAUDE_CONFIG_DIR_ENVIRONMENT_KEY,
 )
 from sidekick_usages.providers.claude.managed.errors import ClaudeManagedError
 from sidekick_usages.providers.claude.managed.models import ClaudeCapabilities
@@ -102,19 +97,18 @@ class ClaudeActivationAuthorityCoordinator:
         profiles: PrivateCredentialTree,
         clock: Clock,
         *,
+        capabilities: ClaudeProfileCapabilityFactory,
         runtime: ClaudeActivationRuntime | None = None,
     ) -> None:
         resolved_runtime = (
             ClaudeActivationRuntime() if runtime is None else runtime
         )
-        self._paths = paths
         self._store = store
-        self._profiles = profiles
         self._clock = clock
         self._environment = resolved_runtime.environment
-        self._host = resolved_runtime.host
         self._runner = resolved_runtime.runner
         self._foreground_probe = resolved_runtime.foreground_probe
+        self._capabilities = capabilities
         self._managed_reader = ClaudeManagedAuthorityReader(paths, profiles)
 
     def saved_accounts(self) -> tuple[SavedAccount, ...]:
@@ -152,14 +146,7 @@ class ClaudeActivationAuthorityCoordinator:
     ) -> ClaudeCapabilities:
         """Prove one stable managed profile and exact Claude release."""
         try:
-            return prepare_claude_managed_profile(
-                self._paths,
-                self._profiles,
-                account_id,
-                environment=self._environment,
-                host=self._host,
-                runner=self._runner,
-            )
+            return self._capabilities.managed(account_id)
         except ClaudeManagedError:
             raise ClaudeActivationError(
                 ClaudeActivationFailure.INCOMPATIBLE
@@ -170,22 +157,16 @@ class ClaudeActivationAuthorityCoordinator:
         managed: ClaudeCapabilities,
     ) -> ClaudeCapabilities:
         """Bind proven capabilities to the native default profile."""
-        if (
-            self._environment is not None
-            and CLAUDE_CONFIG_DIR_ENVIRONMENT_KEY in self._environment
-        ):
-            raise ClaudeActivationError(ClaudeActivationFailure.INCOMPATIBLE)
         try:
-            profile = self._resolve_native_profile()
-        except ValueError:
+            native = self._capabilities.native(
+                environment=self._source_environment()
+            )
+        except ClaudeManagedError:
             raise ClaudeActivationError(
                 ClaudeActivationFailure.INCOMPATIBLE
             ) from None
-        return ClaudeCapabilities(
-            managed.executable,
-            profile,
-            managed.platform,
-        )
+        self.require_same_runtime(managed, native)
+        return native
 
     def require_activation_environment(self) -> None:
         """Reject caller authentication that overrides native Claude."""
@@ -479,18 +460,6 @@ class ClaudeActivationAuthorityCoordinator:
             return result.snapshot
         failure = _EXCHANGE_FAILURES.get(result.kind, unavailable)
         raise ClaudeActivationError(failure)
-
-    def _resolve_native_profile(self) -> ClaudeNativeProfile:
-        home = self._source_environment().get("HOME")
-        if home is None or not home:
-            raise ValueError("Claude native profile path is unavailable.")
-        home_path = Path(home)
-        if not home_path.is_absolute() or ".." in home_path.parts:
-            raise ValueError("Claude native profile path is unavailable.")
-        return native_claude_profile(
-            credential_home=home_path / ".claude",
-            environment={},
-        )
 
     def _source_environment(self) -> Mapping[str, str]:
         return os.environ if self._environment is None else self._environment
