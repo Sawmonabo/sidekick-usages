@@ -19,21 +19,24 @@ from sidekick_usages.providers.base import (
     ProviderFailure,
     ProviderFailureKind,
 )
-from tests.test_cli_refresh import (
-    _claude_login_account,
-    _detected,
-    _FakeProvider,
-    _install_empty_ctx,
-    _install_many_ctx,
-    _isolate_default_codex_home,
+from tests.fakes.credentials import (
+    FakeCredentialProvider,
+    claude_login_account,
+    detected_setup_token,
+    install_cli_context,
 )
 from tests.test_support import REFERENCE_TIME, FixedClock
 
 _MAINTENANCE_REFRESH_CLOCK_CALLS = 3
 
-pytestmark = pytest.mark.usefixtures(
-    _isolate_default_codex_home.__name__,
-)
+
+@pytest.fixture(autouse=True)
+def _isolate_default_codex_home(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Prevent tests from reading the developer's native Codex login."""
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "native-codex"))
 
 
 def _claude_login_with_lifetimes(
@@ -42,7 +45,7 @@ def _claude_login_with_lifetimes(
     login_remaining: timedelta,
 ) -> Account:
     """Build one quoted-label login with independent test lifetimes."""
-    account = _claude_login_account(access_expiry=access_expiry)
+    account = claude_login_account(access_expiry=access_expiry)
     account.label = AccountLabel("team account")
     credentials = account.credentials
     assert isinstance(credentials, ClaudeLoginCredentials)
@@ -57,14 +60,14 @@ def test_refresh_all_refreshes_due_tokens_without_detecting_local_credentials(
     tmp_path: Path,
 ) -> None:
     """Bulk maintenance refresh uses saved refresh tokens only."""
-    acct = _claude_login_account(
+    acct = claude_login_account(
         access_expiry=KnownExpiry(REFERENCE_TIME - timedelta(seconds=1))
     )
-    provider = _FakeProvider(
-        detected=_detected(access_token="sk-ant-oat01-local")
+    provider = FakeCredentialProvider(
+        detected=detected_setup_token(access_token="sk-ant-oat01-local")
     )
     clock = FixedClock()
-    harness, store, stdout, stderr = _install_many_ctx(
+    harness, store, stdout, stderr = install_cli_context(
         tmp_path,
         {ProviderId.CLAUDE: provider},
         [acct],
@@ -90,12 +93,12 @@ def test_refresh_all_skips_fresh_tokens_unless_forced(
     tmp_path: Path,
 ) -> None:
     """Bulk maintenance avoids needless refreshes until forced."""
-    acct = _claude_login_account(
+    acct = claude_login_account(
         access_expiry=KnownExpiry(REFERENCE_TIME + timedelta(hours=1))
     )
-    provider = _FakeProvider()
+    provider = FakeCredentialProvider()
     clock = FixedClock()
-    harness, _, _, _ = _install_many_ctx(
+    harness, _, _, _ = install_cli_context(
         tmp_path,
         {ProviderId.CLAUDE: provider},
         [acct],
@@ -120,7 +123,7 @@ def test_refresh_all_quiet_prints_one_login_renewal_action(
     tmp_path: Path,
 ) -> None:
     """Quiet maintenance preserves the manual login-renewal warning."""
-    acct = _claude_login_account(
+    acct = claude_login_account(
         access_expiry=KnownExpiry(REFERENCE_TIME + timedelta(hours=1))
     )
     credentials = acct.credentials
@@ -129,8 +132,8 @@ def test_refresh_all_quiet_prints_one_login_renewal_action(
         credentials,
         refresh_expiry=KnownExpiry(REFERENCE_TIME + timedelta(days=5)),
     )
-    provider = _FakeProvider()
-    harness, store, stdout, stderr = _install_many_ctx(
+    provider = FakeCredentialProvider()
+    harness, store, stdout, stderr = install_cli_context(
         tmp_path,
         {ProviderId.CLAUDE: provider},
         [acct],
@@ -159,8 +162,8 @@ def test_refresh_all_renders_renewal_after_successful_access_refresh(
         access_expiry=KnownExpiry(REFERENCE_TIME - timedelta(seconds=1)),
         login_remaining=timedelta(days=2),
     )
-    provider = _FakeProvider()
-    harness, store, stdout, stderr = _install_many_ctx(
+    provider = FakeCredentialProvider()
+    harness, store, stdout, stderr = install_cli_context(
         tmp_path,
         {ProviderId.CLAUDE: provider},
         [account],
@@ -195,8 +198,8 @@ def test_refresh_all_renders_renewal_after_failed_access_refresh(
         access_expiry=KnownExpiry(REFERENCE_TIME - timedelta(seconds=1)),
         login_remaining=timedelta(days=2),
     )
-    provider = _FakeProvider(refresh_ok=False)
-    harness, store, stdout, stderr = _install_many_ctx(
+    provider = FakeCredentialProvider(refresh_ok=False)
+    harness, store, stdout, stderr = install_cli_context(
         tmp_path,
         {ProviderId.CLAUDE: provider},
         [account],
@@ -227,8 +230,8 @@ def test_refresh_all_renders_action_for_rejected_subscription_login(
         access_expiry=KnownExpiry(REFERENCE_TIME - timedelta(seconds=1)),
         login_remaining=timedelta(days=30),
     )
-    provider = _FakeProvider(refresh_ok=False)
-    harness, _, stdout, stderr = _install_many_ctx(
+    provider = FakeCredentialProvider(refresh_ok=False)
+    harness, _, stdout, stderr = install_cli_context(
         tmp_path,
         {ProviderId.CLAUDE: provider},
         [account],
@@ -249,11 +252,11 @@ def test_refresh_all_persists_failed_refresh_diagnostic(
     tmp_path: Path,
 ) -> None:
     """Rejected refresh tokens are recorded for doctor and exit 1."""
-    acct = _claude_login_account(
+    acct = claude_login_account(
         access_expiry=KnownExpiry(REFERENCE_TIME - timedelta(seconds=1))
     )
-    provider = _FakeProvider(refresh_ok=False)
-    harness, store, stdout, _ = _install_many_ctx(
+    provider = FakeCredentialProvider(refresh_ok=False)
+    harness, store, stdout, _ = install_cli_context(
         tmp_path,
         {ProviderId.CLAUDE: provider},
         [acct],
@@ -277,14 +280,17 @@ def test_add_prompts_only_for_missing_local_credentials(
     failure_kind: ProviderFailureKind,
 ) -> None:
     """Only an absent local login authorizes interactive token fallback."""
-    provider = _FakeProvider(
+    provider = FakeCredentialProvider(
         detected=ProviderFailure(
             provider_id=ProviderId.CLAUDE,
             kind=failure_kind,
             message=f"Synthetic {failure_kind} credential failure.",
         )
     )
-    harness, store, _, _ = _install_empty_ctx(tmp_path, provider)
+    harness, store, _, _ = install_cli_context(
+        tmp_path,
+        {ProviderId.CLAUDE: provider},
+    )
     prompt_calls = 0
 
     def read_token(

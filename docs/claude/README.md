@@ -4,42 +4,40 @@ This directory owns Claude-specific credential, provider-contract, and
 troubleshooting guidance. Shared scheduling, persistence, networking, and
 heartbeat behavior remains in the cross-provider guides linked below.
 
-## Credential modes
+## Credential authorities
 
-Sidekick stores two closed Claude credential variants. They are different
-authentication methods, not one record whose meaning is inferred from missing
-fields.
+One logical Claude account can hold two independent authorities. The
+setup-token authority and subscription authority keep separate lifetimes and
+usage routes; adding or renewing one never replaces the other.
 
 | Mode | Saved contract | Usage route | Rotation |
 | --- | --- | --- | --- |
-| setup-token credential | One access credential captured from `claude setup-token` | Tiny `/v1/messages` request and rate-limit headers | Manual replacement only |
-| subscription-login credential | Access credential, refresh credential, known access expiry, login scopes, and provider metadata when available | `/api/oauth/usage` | Serialized saved-account refresh |
+| setup-token credential | One protected access credential captured from `claude setup-token` | Tiny `/v1/messages` request and rate-limit headers | Manual replacement only |
+| subscription-login credential | Sanitized metadata for one official login in the account's stable private profile; legacy stored refresh authority is migration input only | `/api/oauth/usage` | Serialized official provider refresh |
 
 A setup token is documented by Anthropic as a one-year automation credential,
-but its value does not encode the creation time.
-The issue date cannot be recovered from the token. Sidekick therefore reports
-its expiry as unknown
-instead of inventing a date.
+but its value does not encode the creation time. Sidekick records the capture
+or renewal time when it owns that event. A preexisting token lacking
+trusted capture evidence keeps unknown expiry rather than receiving an
+invented date.
 
-Create or replace a setup-token credential explicitly:
+Create, attach, or renew a setup-token authority explicitly:
 
 ```bash
 sidekick-usages claude setup-token --label <label>
 sidekick-usages claude setup-token --label <label> --force
 ```
 
-Import a current subscription login into a new label:
+Migrate an existing saved subscription label into its private profile:
 
 ```bash
-claude auth login
-sidekick-usages add claude --label <label>
+sidekick-usages refresh <label>
 ```
 
-`sidekick-usages refresh <label>` is a local-login import command for a
-subscription-login label. It is not a general repair command for every Claude
-credential. Changing authentication method requires
-`--replace-auth-method`; changing a known or unprovable identity requires
-`--replace-identity`. When both change, both authorizations are required.
+`sidekick-usages refresh <label>` never imports or changes the native Claude
+login. A setup-token-only account requires `--replace-identity` once to approve
+its first subscription identity association; the setup token remains attached.
+An established subscription identity must match on later repair.
 
 ## Lifetime model
 
@@ -77,16 +75,17 @@ or local application state into the repository.
 
 ```mermaid
 flowchart LR
-    accTitle: Claude credential transitions
-    accDescr: Setup tokens and subscription logins remain separate and every method change is explicit.
+    accTitle: Claude credential authorities
+    accDescr: One stable account may retain independent setup-token and subscription authorities.
 
-    Setup["setup-token credential"]
-    Login["subscription-login credential"]
-    Import["import current matching login"]
-    Replace["capture a new setup token"]
+    Account["stable logical account"]
+    Setup["setup-token authority"]
+    Login["managed subscription authority"]
+    Capture["capture or renew setup token"]
+    Repair["official private-profile login"]
 
-    Replace --> Setup
-    Import --> Login
-    Setup -- "replace auth method" --> Login
-    Login -- "replace auth method and identity authority" --> Setup
+    Account --> Setup
+    Account --> Login
+    Capture --> Setup
+    Repair --> Login
 ```

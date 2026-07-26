@@ -4,9 +4,6 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from datetime import datetime
 
-from sidekick_usages.core.accounts.generation import (
-    hashed_authority_generation,
-)
 from sidekick_usages.core.accounts.types import (
     CredentialAction,
     CredentialHealth,
@@ -24,6 +21,9 @@ from sidekick_usages.providers.claude.environment import (
     encode_claude_refresh_scopes,
 )
 from sidekick_usages.providers.claude.errors import ClaudeProcessError
+from sidekick_usages.providers.claude.managed.generation import (
+    claude_access_token_generation,
+)
 from sidekick_usages.providers.claude.managed.models import ClaudeCapabilities
 from sidekick_usages.providers.claude.managed.storage.errors import (
     ClaudeProtectedStorageError,
@@ -52,7 +52,6 @@ from sidekick_usages.providers.claude.schema.credentials import (
 from sidekick_usages.providers.claude.types import ClaudeCommandRunner
 from sidekick_usages.serialization.json import decode_json_object
 
-_CLAUDE_GENERATION_PREFIX = "claude-access-token-sha256:"
 _FILE_PLATFORMS = frozenset(
     {
         ClaudeManagedPlatform.LINUX_FILE,
@@ -209,10 +208,7 @@ def _protected_login(
         profile=capabilities.profile,
         executable_version=str(capabilities.executable.version),
         provider_identity=provider_identity,
-        generation=hashed_authority_generation(
-            credentials.access_token,
-            prefix=_CLAUDE_GENERATION_PREFIX,
-        ),
+        generation=claude_access_token_generation(credentials.access_token),
         plan=detected.plan,
         scopes=credentials.scopes,
         access_expires_at=credentials.access_expiry.at,

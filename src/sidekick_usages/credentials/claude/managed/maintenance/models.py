@@ -24,14 +24,6 @@ class ClaudeManagedAuthorityResult:
 
 
 @dataclass(frozen=True, slots=True)
-class ClaudeOfficialLoginAttempt:
-    """Secret-free pre-state and outcome from one official login attempt."""
-
-    before: ClaudeAuthoritySnapshot
-    outcome: ClaudeManagedOutcome | None
-
-
-@dataclass(frozen=True, slots=True)
 class ClaudeVerifiedAuthorityExchange:
     """One verified secret-free Claude generation transition."""
 

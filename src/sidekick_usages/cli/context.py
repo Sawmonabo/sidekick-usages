@@ -12,7 +12,19 @@ from rich.console import Console
 
 from sidekick_usages.clock import Clock, SystemClock
 from sidekick_usages.core.types import ProviderId
+from sidekick_usages.credentials.accounts.lifecycle.models import (
+    AccountLifecyclePersistence,
+)
+from sidekick_usages.credentials.accounts.lifecycle.service import (
+    AccountLifecycleCoordinator,
+)
 from sidekick_usages.credentials.authorities import credential_resolver_for
+from sidekick_usages.credentials.claude.managed.migration.service import (
+    ClaudeManagedMigrationCoordinator,
+)
+from sidekick_usages.credentials.claude.setup.service import (
+    ClaudeSetupTokenCoordinator,
+)
 from sidekick_usages.credentials.codex.migration import (
     CodexAuthMigrationCoordinator,
 )
@@ -23,7 +35,7 @@ from sidekick_usages.daemon.lifecycle.manager import (
     build_daemon_manager,
 )
 from sidekick_usages.daemon.models.lifecycle import SupervisorHealth
-from sidekick_usages.doctor.service import DoctorService
+from sidekick_usages.doctor.accounts.service import DoctorService
 from sidekick_usages.heartbeat.ports import HeartbeatProvider
 from sidekick_usages.heartbeat.service import HeartbeatService
 from sidekick_usages.http.client import HttpClient
@@ -50,6 +62,13 @@ from sidekick_usages.persistence.snapshots.activity import (
     ActivitySnapshotStore,
 )
 from sidekick_usages.persistence.snapshots.usage import UsageSnapshotStore
+from sidekick_usages.persistence.supervisor.activation import (
+    ActivationJournalStore,
+)
+from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
+from sidekick_usages.persistence.supervisor.selection import (
+    SelectedStateStore,
+)
 from sidekick_usages.providers.base import Provider
 from sidekick_usages.providers.claude.activity import (
     ClaudeActivity,
@@ -96,6 +115,7 @@ class AppContext:
     accounts: AccountStore
     usage: UsageCheckService
     credentials: CredentialService
+    lifecycle: AccountLifecycleCoordinator
     heartbeat: HeartbeatService
     maintenance: TokenMaintenanceService
     claude_setup_token: ClaudeSetupToken
@@ -275,17 +295,45 @@ def compose_app_context(
             clock=resolved_clock,
             resolver=resolver,
         )
+        usage_snapshots = UsageSnapshotStore(resolved_paths.usage_snapshots)
         credentials = CredentialService(
             accounts,
             http,
             provider_map,
-            clock=resolved_clock,
             refresh_coordinator=refresh_coordinator,
             codex_auth_migration=CodexAuthMigrationCoordinator(
                 resolved_paths,
                 accounts,
                 persistence.managed_codex_profiles,
                 resolved_clock,
+            ),
+            claude_auth_migration=ClaudeManagedMigrationCoordinator(
+                resolved_paths,
+                accounts,
+                resolver,
+                persistence.managed_claude_profiles,
+                usage_snapshots,
+                resolved_clock,
+            ),
+            claude_setup_tokens=ClaudeSetupTokenCoordinator(
+                accounts,
+                resolved_clock,
+            ),
+        )
+        lifecycle = AccountLifecycleCoordinator(
+            resolved_paths,
+            AccountLifecyclePersistence(
+                accounts=accounts,
+                operations=OperationQueueStore(
+                    resolved_paths.durable_operations
+                ),
+                activations=ActivationJournalStore(
+                    resolved_paths.activation_journals,
+                    resolved_paths.durable_operations,
+                ),
+                selected=SelectedStateStore(resolved_paths.selected_state),
+                claude_profiles=persistence.managed_claude_profiles,
+                codex_profiles=persistence.managed_codex_profiles,
             ),
         )
         if local_activity_sources is None:
@@ -320,7 +368,7 @@ def compose_app_context(
                 activity=ActivitySnapshotStore(
                     resolved_paths.activity_snapshots
                 ),
-                usage=UsageSnapshotStore(resolved_paths.usage_snapshots),
+                usage=usage_snapshots,
             ),
             resolver=resolver,
         )
@@ -340,6 +388,7 @@ def compose_app_context(
             accounts=accounts,
             usage=usage,
             credentials=credentials,
+            lifecycle=lifecycle,
             heartbeat=heartbeat,
             maintenance=TokenMaintenanceService(
                 accounts,
@@ -401,9 +450,9 @@ def compose_doctor_context(
         return DoctorContext(
             DoctorReady(
                 DoctorService(
-                    tuple(accounts),
-                    provider_map,
-                    heartbeat_map,
+                    accounts.saved_accounts(),
+                    provider_map.keys(),
+                    heartbeat_map.keys(),
                     resolved_clock,
                 ),
                 status,

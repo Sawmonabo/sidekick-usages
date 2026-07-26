@@ -57,24 +57,10 @@ def _run_setup_token(
     label: str | None,
     plan: str | None,
     force: bool,
-    replace_identity: bool,
 ) -> None:
     invocation = invocation_context(ctx)
     app_context = invocation.require_app(ctx)
     target_label = validated_label(ctx, label) if label is not None else None
-    preview = app_context.credentials.preview_setup_token_save(
-        target_label,
-        force=force,
-        replace_identity=replace_identity,
-    )
-    if isinstance(preview, ProviderFailure):
-        exit_credential_failure(ctx, preview)
-    if preview is not None:
-        invocation.err_console.print(
-            "[yellow]Authentication for "
-            f"'{preview.label}' will change from a Claude subscription "
-            "login to a setup token.[/yellow]"
-        )
     invocation.err_console.print(
         "[dim]Running `claude setup-token` — complete the browser OAuth "
         "flow when it opens...[/dim]"
@@ -94,12 +80,12 @@ def _run_setup_token(
         label=target_label,
         plan=plan,
         force=force,
-        replace_identity=replace_identity,
     )
     if isinstance(result, ProviderFailure):
         exit_credential_failure(ctx, result)
-    action = "Saved" if result.created else "Updated"
-    invocation.console.print(f"[green]{action} '{result.label}'.[/green]")
+    invocation.console.print(
+        f"[green]Saved setup token for '{result.label}'.[/green]"
+    )
     if result.warning is not None:
         invocation.console.print(f"[yellow]Note: {result.warning}[/yellow]")
 
@@ -121,22 +107,12 @@ def setup_token_cmd(
         bool,
         typer.Option(
             "--force",
-            help="Overwrite an existing label.",
-        ),
-    ] = False,
-    replace_identity: Annotated[
-        bool,
-        typer.Option(
-            "--replace-identity",
-            help=(
-                "Allow deleting a saved Claude login identity when "
-                "replacing it with a setup token."
-            ),
+            help="Attach or renew the token for an existing Claude label.",
         ),
     ] = False,
 ) -> None:
     """Run Claude Code's long-lived token generator and save its token."""
-    _run_setup_token(ctx, label, plan, force, replace_identity)
+    _run_setup_token(ctx, label, plan, force)
 
 
 def register(application: typer.Typer) -> None:

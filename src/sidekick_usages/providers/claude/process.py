@@ -28,21 +28,9 @@ def run_bounded_claude_command(
     umask: int = -1,
 ) -> ClaudeCommandResult:
     """Run one Claude command and capture strictly bounded merged output."""
-    if timeout_seconds <= 0 or maximum_output_bytes < 1:
+    if maximum_output_bytes < 1:
         raise ValueError("Claude command bounds must be positive.")
-    if (
-        not argv
-        or not Path(argv[0]).is_absolute()
-        or any(not argument or "\0" in argument for argument in argv)
-        or (
-            working_directory is not None
-            and (
-                not working_directory.is_absolute()
-                or not working_directory.is_dir()
-            )
-        )
-    ):
-        raise ClaudeProcessError(ClaudeProcessFailure.PROCESS_UNSAFE)
+    _require_safe_command(argv, timeout_seconds, working_directory)
     try:
         process = subprocess.Popen(
             list(argv),
@@ -108,6 +96,68 @@ def run_bounded_claude_command(
     stdout.close()
     _require_reader_finished(reader, overflow, read_failed)
     return ClaudeCommandResult(return_code, bytes(output))
+
+
+def run_interactive_claude_command(
+    argv: tuple[str, ...],
+    *,
+    timeout_seconds: float,
+    environment: Mapping[str, str] | None = None,
+    working_directory: Path | None = None,
+    umask: int = -1,
+) -> int:
+    """Run one bounded Claude command with provider-owned terminal I/O."""
+    _require_safe_command(argv, timeout_seconds, working_directory)
+    try:
+        process = subprocess.Popen(
+            list(argv),
+            close_fds=True,
+            cwd=working_directory,
+            env=None if environment is None else dict(environment),
+            shell=False,
+            start_new_session=os.name == "posix",
+            umask=umask,
+        )
+    except OSError, subprocess.SubprocessError:
+        raise ClaudeProcessError(
+            ClaudeProcessFailure.PROCESS_UNAVAILABLE
+        ) from None
+    try:
+        return process.wait(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        _terminate_and_reap(process)
+        raise ClaudeProcessError(ClaudeProcessFailure.TIMED_OUT) from None
+    except OSError, subprocess.SubprocessError:
+        _terminate_and_reap(process)
+        raise ClaudeProcessError(
+            ClaudeProcessFailure.PROCESS_UNAVAILABLE
+        ) from None
+    except BaseException:
+        _terminate_and_reap(process)
+        raise
+
+
+def _require_safe_command(
+    argv: tuple[str, ...],
+    timeout_seconds: float,
+    working_directory: Path | None,
+) -> None:
+    """Require one absolute command and a qualified working directory."""
+    if timeout_seconds <= 0:
+        raise ValueError("Claude command bounds must be positive.")
+    if (
+        not argv
+        or not Path(argv[0]).is_absolute()
+        or any(not argument or "\0" in argument for argument in argv)
+        or (
+            working_directory is not None
+            and (
+                not working_directory.is_absolute()
+                or not working_directory.is_dir()
+            )
+        )
+    ):
+        raise ClaudeProcessError(ClaudeProcessFailure.PROCESS_UNSAFE)
 
 
 def _require_reader_finished(

@@ -261,9 +261,7 @@ class ClaudeProvider(Provider):
             return claude_failure(
                 ProviderFailureKind.UNREADABLE,
                 "Claude refresh is temporarily unavailable.",
-                cause=(
-                    ProviderFailureCause.REFRESH_TEMPORARILY_UNAVAILABLE
-                ),
+                cause=(ProviderFailureCause.REFRESH_TEMPORARILY_UNAVAILABLE),
                 action_required=False,
             )
         payload = stage_reader.read()

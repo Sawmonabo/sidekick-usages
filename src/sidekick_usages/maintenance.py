@@ -104,7 +104,7 @@ class TokenMaintenanceService:
         """Refresh all matching accounts that are due.
 
         :param provider_id: Optional provider filter.
-        :param force: Refresh every account with a saved refresh token.
+        :param force: Refresh every matching account regardless of due time.
         :return: Per-account outcomes in store order.
         """
         accounts = self.store.saved_accounts(provider_id)

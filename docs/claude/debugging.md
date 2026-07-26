@@ -40,8 +40,9 @@ overwrite `last_refresh_status` or `last_refresh_error`.
 
 An expired or invalid login lifetime fails closed before a provider exchange.
 An unknown login expiry stays unknown and produces no proximity warning. A
-setup token has no login expiry at all; its provider-issued creation time is
-not encoded in the token, so Sidekick cannot recover or infer it.
+setup token has no refresh authority. Sidekick records its one-year access
+lifetime only when it owns the capture or renewal event; older tokens without
+trusted capture evidence remain unknown.
 
 ## Match the recovery action to the credential mode
 
@@ -67,21 +68,16 @@ login.
 
 ### Subscription login rejected or expiring
 
-First sign in to the same Claude account intentionally:
-
-```bash
-claude auth login
-```
-
-Then import that matching login into the subscription-login label:
+Repair the matching subscription-login label:
 
 ```bash
 sidekick-usages refresh <label>
 ```
 
-Do not use `--replace-identity` to silence a mismatch. That flag authorizes a
-real identity change. Do not use `--replace-auth-method` unless intentionally
-converting a setup-token label to a subscription login.
+The provider may open browser, MFA, password, or consent UI for that private
+profile. Do not use `--replace-identity` to silence an established mismatch.
+For a setup-token-only account, the flag explicitly approves the first
+subscription identity association while retaining the setup token.
 
 ## Refresh failure causes
 
@@ -105,20 +101,18 @@ credential bytes, and stable identity values are excluded from diagnostics.
 
 ## Command transition failures
 
-`sidekick-usages refresh <label>` imports the current local login. The command
-fails before persistence when any required authority is absent:
+`sidekick-usages refresh <label>` uses only the label's private managed
+profile. The command fails before persistence when required proof is absent:
 
 | Intended change | Required authorization |
 | --- | --- |
 | Refresh the same proven login | None |
-| Replace the known or unprovable login identity | `--replace-identity` |
-| Convert setup token to subscription login | `--replace-auth-method` |
-| Convert setup token and introduce a different identity | Both replacement flags |
+| Establish the first subscription identity on a setup-token-only account | `--replace-identity` |
+| Replace an established subscription identity | Refused; reconcile the saved account |
 
-Converting a subscription login to a setup token uses the setup-token command.
-It requires the explicit overwrite flow and independent identity authority.
-The saved plan and heartbeat history remain account state; login-only refresh
-metadata is cleared because it cannot exist on the setup-token variant.
+Capturing a setup token uses the setup-token command and preserves any
+subscription authority. The saved plan, metrics, and heartbeat history remain
+attached to the same stable account ID.
 
 ## Maintenance and recovery states
 

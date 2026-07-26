@@ -287,7 +287,6 @@ def _service(
         store,
         http,
         registry,
-        clock=FixedClock(),
     )
     return (
         UsageCheckService(

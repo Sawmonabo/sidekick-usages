@@ -99,7 +99,7 @@ def test_operator_guides_describe_only_current_secret_safe_flows() -> None:
     for contract in (
         "setup-token credential",
         "subscription-login credential",
-        "issue date cannot be recovered",
+        "trusted capture evidence",
     ):
         assert contract in claude
     for stale in STALE_CURRENT_COMMANDS:

@@ -2,6 +2,7 @@
 
 import io
 import json
+from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
 
@@ -11,6 +12,15 @@ from sidekick_usages.cli.context import (
     DoctorContext,
     DoctorFailed,
     DoctorReady,
+)
+from sidekick_usages.core.accounts.models import (
+    ClaudeAccountAuthority,
+    ClaudeSetupTokenAuthority,
+    SavedAccount,
+)
+from sidekick_usages.core.accounts.types import (
+    AuthorityId,
+    CredentialHealth,
 )
 from sidekick_usages.core.expiry import KnownExpiry
 from sidekick_usages.core.models import (
@@ -22,7 +32,7 @@ from sidekick_usages.core.models import (
 )
 from sidekick_usages.core.types import AccountLabel, ExitCode
 from sidekick_usages.daemon.types.lifecycle import ServiceComponentState
-from sidekick_usages.doctor.service import DoctorService
+from sidekick_usages.doctor.accounts.service import DoctorService
 from sidekick_usages.persistence.credentials.refresh.artifacts import (
     CredentialRefreshState,
     CredentialRefreshStateKind,
@@ -48,27 +58,28 @@ from tests.test_support import (
 _SUPERVISOR_HEALTH = make_supervisor_health(
     queue=ServiceComponentState.UNHEALTHY,
 )
+_SETUP_AUTHORITY_ID = AuthorityId("00000000-0000-4000-8000-000000000001")
 
 
 def _harness(
     tmp_path: Path,
-    accounts: tuple[Account, ...],
+    accounts: tuple[SavedAccount, ...],
 ) -> tuple[CliHarness, io.StringIO, FixedClock]:
-    store = make_account_store(tmp_path, accounts)
     output = io.StringIO()
     clock = FixedClock()
     providers = build_provider_registry(clock)
+    heartbeat_providers = build_heartbeat_registry(providers)
     context = DoctorContext(
         DoctorReady(
             DoctorService(
-                tuple(store),
-                providers,
-                build_heartbeat_registry(providers),
+                accounts,
+                providers.keys(),
+                heartbeat_providers.keys(),
                 clock,
             ),
             PersistenceStatus(
                 PersistenceState.CURRENT,
-                store.path,
+                tmp_path / "accounts.json",
                 len(accounts),
             ),
             CredentialRefreshState(CredentialRefreshStateKind.CLEAN),
@@ -107,32 +118,46 @@ def test_json_reports_current_auth_state_without_secrets(
         ),
         plan="team",
     )
-    setup = Account(
-        label=AccountLabel("setup"),
-        credentials=ClaudeSetupTokenCredentials(
-            access_token="test-only-secret-setup"
+    store = make_account_store(tmp_path, (login,))
+    saved = store.saved_accounts()[0]
+    authority = saved.authority
+    assert isinstance(authority, ClaudeAccountAuthority)
+    saved = replace(
+        saved,
+        authority=ClaudeAccountAuthority(
+            setup_token=ClaudeSetupTokenAuthority(
+                authority_id=_SETUP_AUTHORITY_ID,
+                expires_at=REFERENCE_TIME + timedelta(days=365),
+                health=CredentialHealth.HEALTHY,
+                observed_at=REFERENCE_TIME,
+            ),
+            subscription=authority.subscription,
         ),
-        plan="max",
     )
-    harness, output, clock = _harness(tmp_path, (login, setup))
+    harness, output, clock = _harness(tmp_path, (saved,))
 
     result = harness.invoke(["doctor", "--json"])
 
     payload = json.loads(output.getvalue())
-    accounts = {item["label"]: item for item in payload["accounts"]}
+    accounts = payload["accounts"]
+    authorities = accounts[0]["authorities"]
     assert result.exit_code == ExitCode.SUCCESS
-    assert accounts["team"]["credential_kind"] == "subscription_login"
-    assert accounts["team"]["access_expiry_state"] == "valid"
-    assert accounts["team"]["refresh_expiry_state"] == "valid"
-    assert accounts["team"]["identity_state"] == "known"
-    assert accounts["team"]["can_auto_refresh"] is True
-    assert accounts["team"]["provider_available"] is True
-    assert accounts["setup"]["credential_kind"] == "setup_token"
-    assert accounts["setup"]["can_auto_refresh"] is False
+    assert len(accounts) == 1
+    assert accounts[0]["label"] == "team"
+    assert accounts[0]["identity_state"] == "known"
+    assert accounts[0]["provider_available"] is True
+    setup_authority = authorities["setup_token"]
+    subscription_authority = authorities["subscription"]
+    assert setup_authority["kind"] == "setup_token"
+    assert setup_authority["management"] == "sidekick_stored"
+    assert setup_authority["can_auto_refresh"] is False
+    assert subscription_authority["kind"] == "subscription_login"
+    assert subscription_authority["management"] == "sidekick_stored"
+    assert subscription_authority["can_auto_refresh"] is True
     assert payload["persistence"] == {
         "state": "current",
         "path": str(tmp_path / "accounts.json"),
-        "account_count": 2,
+        "account_count": 1,
         "credential_refresh": "clean",
     }
     assert payload["supervisor"] == {
@@ -152,7 +177,6 @@ def test_json_reports_current_auth_state_without_secrets(
         "test-only-secret-refresh",
         "test-only-secret-account",
         "test-only-secret-org",
-        "test-only-secret-setup",
     ):
         assert secret not in rendered
     assert clock.calls == 1
@@ -171,7 +195,8 @@ def test_human_view_explains_login_renewal_action(
             scopes=("user:profile",),
         ),
     )
-    harness, output, _clock = _harness(tmp_path, (login,))
+    store = make_account_store(tmp_path, (login,))
+    harness, output, _clock = _harness(tmp_path, store.saved_accounts())
 
     result = harness.invoke(["doctor"])
 
@@ -227,7 +252,8 @@ def test_filters_are_composable(tmp_path: Path) -> None:
             refresh_token="test-only-codex-refresh",
         ),
     )
-    harness, output, _clock = _harness(tmp_path, (claude, codex))
+    store = make_account_store(tmp_path, (claude, codex))
+    harness, output, _clock = _harness(tmp_path, store.saved_accounts())
 
     result = harness.invoke(
         ["doctor", "--provider", "codex", "--label", "codex-pro"]

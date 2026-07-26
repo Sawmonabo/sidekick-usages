@@ -13,11 +13,13 @@ from sidekick_usages.cli.context import (
 )
 from sidekick_usages.cli.help import branded_command
 from sidekick_usages.core.types import ExitCode, ProviderId
-from sidekick_usages.doctor.service import (
+from sidekick_usages.doctor.accounts.models import (
     DoctorFailedResult,
     DoctorReadyResult,
     DoctorResult,
-    doctor_exit_code,
+)
+from sidekick_usages.doctor.accounts.service import doctor_exit_code
+from sidekick_usages.doctor.presentation.service import (
     doctor_json,
     render_doctor,
 )

@@ -31,7 +31,13 @@ from sidekick_usages.core.accounts.types import (
     SidekickAccountId,
 )
 from sidekick_usages.core.models import Account
-from sidekick_usages.core.types import ProviderId
+from sidekick_usages.core.types import AccountLabel, ProviderId
+from sidekick_usages.credentials.accounts.lifecycle.models import (
+    AccountLifecyclePersistence,
+)
+from sidekick_usages.credentials.accounts.lifecycle.service import (
+    AccountLifecycleCoordinator,
+)
 from sidekick_usages.credentials.authorities import (
     AuthenticatedSavedAccount,
     CredentialLease,
@@ -71,6 +77,13 @@ from sidekick_usages.persistence.filesystem.service import (
 )
 from sidekick_usages.persistence.private.credentials import (
     PrivateCredentialTree,
+)
+from sidekick_usages.persistence.supervisor.activation import (
+    ActivationJournalStore,
+)
+from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
+from sidekick_usages.persistence.supervisor.selection import (
+    SelectedStateStore,
 )
 from sidekick_usages.providers.base import (
     CredentialAccountLease,
@@ -235,6 +248,19 @@ def make_account_store_with_private(
     return store, private_credentials
 
 
+def remove_saved_account(
+    store: AccountStore,
+    label: AccountLabel,
+) -> None:
+    """Remove one exact saved test account through the stable-ID API."""
+    matches = tuple(
+        account for account in store.saved_accounts() if account.label == label
+    )
+    if len(matches) != 1:
+        raise AssertionError("Expected one saved test account.")
+    store.remove_saved(matches[0].account_id, expected=matches[0])
+
+
 @dataclass(slots=True)
 class FixedClock:
     """Return one fixed instant while counting wall-time acquisitions."""
@@ -282,6 +308,14 @@ def make_app_context(
     )
     paths = make_application_paths(store.path.parent)
     resolver = credential_resolver_for(store, private_credentials)
+    codex_profiles = PrivateCredentialTree(
+        paths.private_codex_profiles,
+        account_path=paths.accounts,
+    )
+    claude_profiles = PrivateCredentialTree(
+        paths.private_claude_profiles,
+        account_path=paths.accounts,
+    )
     refresh_coordinator = CredentialRefreshCoordinator(
         store,
         http,
@@ -297,15 +331,11 @@ def make_app_context(
         store,
         http,
         providers,
-        clock=clock,
         refresh_coordinator=refresh_coordinator,
         codex_auth_migration=CodexAuthMigrationCoordinator(
             paths,
             store,
-            PrivateCredentialTree(
-                paths.private_codex_profiles,
-                account_path=paths.accounts,
-            ),
+            codex_profiles,
             clock,
         ),
     )
@@ -322,6 +352,20 @@ def make_app_context(
             resolver=resolver,
         ),
         credentials=credential_service,
+        lifecycle=AccountLifecycleCoordinator(
+            paths,
+            AccountLifecyclePersistence(
+                accounts=store,
+                operations=OperationQueueStore(paths.durable_operations),
+                activations=ActivationJournalStore(
+                    paths.activation_journals,
+                    paths.durable_operations,
+                ),
+                selected=SelectedStateStore(paths.selected_state),
+                claude_profiles=claude_profiles,
+                codex_profiles=codex_profiles,
+            ),
+        ),
         heartbeat=HeartbeatService(
             store,
             http,

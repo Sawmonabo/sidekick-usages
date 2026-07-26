@@ -5,19 +5,15 @@ from pathlib import Path
 
 import pytest
 
-from sidekick_usages.core.expiry import KnownExpiry, UnknownExpiry
 from sidekick_usages.core.models import (
     Account,
-    ClaudeLoginCredentials,
-    ClaudeLoginIdentity,
     ClaudeSetupTokenCredentials,
     DetectedCredentials,
     UsageReport,
 )
-from sidekick_usages.core.types import AccountLabel, ProviderId, RefreshStatus
+from sidekick_usages.core.types import ProviderId
 from sidekick_usages.credentials.authorities import credential_resolver_for
 from sidekick_usages.credentials.models import (
-    CredentialSaveSuccess,
     LocalCredentialSource,
     TokenCredentialSource,
     TokenPromptSpec,
@@ -43,7 +39,6 @@ from sidekick_usages.providers.base import (
     RefreshResult,
 )
 from tests.test_support import (
-    REFERENCE_TIME,
     FixedClock,
     make_application_paths,
 )
@@ -128,7 +123,6 @@ def _service(
             store,
             http,
             {provider.id: provider},
-            clock=FixedClock(),
             refresh_coordinator=refresh,
         ),
         store,
@@ -187,161 +181,11 @@ def test_prompt_spec_exposes_only_bounded_token_entry_metadata(
     assert spec.display_name == "Test provider"
     assert spec.token_pattern.fullmatch("test-token") is not None
     assert spec.setup_hint is not None
-    assert "setup-token claude" in spec.setup_hint
+    assert "claude setup-token" in spec.setup_hint
     unavailable = CredentialService(
         store,
         HttpClient(),
         {},
-        clock=FixedClock(),
     ).prompt_spec(ProviderId.CLAUDE)
     assert isinstance(unavailable, ProviderFailure)
     assert unavailable.kind is ProviderFailureKind.UNSUPPORTED
-
-
-def test_save_rechecks_login_to_setup_authorization_without_cli_preflight(
-    tmp_path: Path,
-) -> None:
-    account = Account(
-        label=AccountLabel("team"),
-        credentials=ClaudeLoginCredentials(
-            access_token="sk-ant-oat01-shared-material",
-            refresh_token="old-refresh-secret",
-            access_expiry=KnownExpiry(REFERENCE_TIME),
-            refresh_expiry=UnknownExpiry(),
-            scopes=("user:profile",),
-            identity=ClaudeLoginIdentity(
-                account_id="old-account",
-                organization_id="old-organization",
-            ),
-        ),
-        plan="max",
-        last_refresh_at=REFERENCE_TIME,
-        last_refresh_status=RefreshStatus.OK,
-    )
-    missing = ProviderFailure(
-        provider_id=ProviderId.CLAUDE,
-        kind=ProviderFailureKind.MISSING,
-        message="No local credentials.",
-    )
-    service, store = _service(tmp_path, _Provider(missing), (account,))
-    source = TokenCredentialSource(
-        provider_id=ProviderId.CLAUDE,
-        token="sk-ant-oat01-shared-material",
-    )
-    authority_before = store.path.read_bytes()
-
-    refused = service.save(
-        source,
-        label=AccountLabel("team"),
-        plan=None,
-        force=True,
-    )
-    assert isinstance(refused, ProviderFailure)
-    assert refused.kind is ProviderFailureKind.IDENTITY_MISMATCH
-    assert store.path.read_bytes() == authority_before
-
-    replaced = service.save(
-        source,
-        label=AccountLabel("team"),
-        plan=None,
-        force=True,
-        replace_identity=True,
-    )
-
-    assert isinstance(replaced, CredentialSaveSuccess)
-    saved = store.get("team")
-    assert saved is not None
-    assert saved.credentials == ClaudeSetupTokenCredentials(
-        access_token="sk-ant-oat01-shared-material"
-    )
-    assert saved.plan == "max"
-    assert saved.last_refresh_at is None
-    assert saved.last_refresh_status is None
-
-
-def test_replacing_rejected_setup_token_clears_stale_failure(
-    tmp_path: Path,
-) -> None:
-    account = Account(
-        label=AccountLabel("team"),
-        credentials=ClaudeSetupTokenCredentials(
-            access_token="sk-ant-oat01-rejected-material"
-        ),
-        plan="team",
-        last_refresh_at=REFERENCE_TIME,
-        last_refresh_status=RefreshStatus.FAILED,
-        last_refresh_error="Claude rejected the saved setup token.",
-    )
-    missing = ProviderFailure(
-        provider_id=ProviderId.CLAUDE,
-        kind=ProviderFailureKind.MISSING,
-        message="No local credentials.",
-    )
-    service, store = _service(tmp_path, _Provider(missing), (account,))
-
-    result = service.save(
-        TokenCredentialSource(
-            provider_id=ProviderId.CLAUDE,
-            token="sk-ant-oat01-replacement-material",
-        ),
-        label=account.label,
-        plan=None,
-        force=True,
-    )
-
-    assert isinstance(result, CredentialSaveSuccess)
-    saved = store.get("team")
-    assert saved is not None
-    assert saved.last_refresh_at is None
-    assert saved.last_refresh_status is None
-    assert saved.last_refresh_error is None
-
-
-def test_effective_same_claude_login_preserves_refresh_diagnostic(
-    tmp_path: Path,
-) -> None:
-    credentials = ClaudeLoginCredentials(
-        access_token="same-access-token",
-        refresh_token="same-refresh-token",
-        access_expiry=KnownExpiry(REFERENCE_TIME),
-        refresh_expiry=UnknownExpiry(),
-        scopes=("user:profile",),
-        identity=ClaudeLoginIdentity(
-            account_id="account-id",
-            organization_id="organization-id",
-        ),
-    )
-    account = Account(
-        label=AccountLabel("team"),
-        credentials=credentials,
-        plan="team",
-        last_refresh_at=REFERENCE_TIME,
-        last_refresh_status=RefreshStatus.FAILED,
-        last_refresh_error="Provider rejected the saved login.",
-    )
-    detected = DetectedCredentials(
-        credentials=ClaudeLoginCredentials(
-            access_token=credentials.access_token,
-            refresh_token=credentials.refresh_token,
-            access_expiry=credentials.access_expiry,
-            refresh_expiry=credentials.refresh_expiry,
-            scopes=credentials.scopes,
-        ),
-        plan="team",
-    )
-    service, store = _service(tmp_path, _Provider(detected), (account,))
-
-    result = service.save(
-        LocalCredentialSource(provider_id=ProviderId.CLAUDE),
-        label=account.label,
-        plan=None,
-        force=True,
-    )
-
-    assert isinstance(result, CredentialSaveSuccess)
-    saved = store.get("team")
-    assert saved is not None
-    assert saved.credentials == credentials
-    assert saved.last_refresh_at == REFERENCE_TIME
-    assert saved.last_refresh_status is RefreshStatus.FAILED
-    assert saved.last_refresh_error == "Provider rejected the saved login."

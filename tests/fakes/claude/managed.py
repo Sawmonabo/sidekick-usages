@@ -7,6 +7,9 @@ from datetime import datetime
 from pathlib import Path
 
 from sidekick_usages.core.accounts.types import SidekickAccountId
+from sidekick_usages.credentials.claude.managed.authority.service import (
+    CLAUDE_CREDENTIAL_FILE,
+)
 from sidekick_usages.paths import (
     ApplicationPaths,
     managed_claude_config_dir,
@@ -36,6 +39,18 @@ type ClaudeCommandScript = Callable[
     ],
     ClaudeCommandResult,
 ]
+
+CLAUDE_LOGIN_HELP_OUTPUT = (
+    b"Usage: claude auth login "
+    b"[--claudeai] [--console] [--email <email>] [--sso]\n"
+)
+CLAUDE_LOGGED_IN_STATUS = (
+    b'{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty"}\n'
+)
+CLAUDE_LOGGED_OUT_STATUS = (
+    b'{"loggedIn":false,"authMethod":"none","apiProvider":"firstParty"}\n'
+)
+CLAUDE_VERSION_OUTPUT = b"2.1.220 (Claude Code)\n"
 
 
 class ClaudeRunner:
@@ -92,6 +107,102 @@ class ClaudeRunner:
             raise AssertionError(
                 f"Unexpected Claude command: {arguments!r}"
             ) from None
+
+
+class ClaudeManagedLoginScript:
+    """Write scripted official-login results into exact private profiles."""
+
+    def __init__(
+        self,
+        profiles: PrivateCredentialTree,
+        refresh_payloads: Mapping[Path, tuple[bytes | None, ...]],
+        *,
+        interactive_payloads: Mapping[Path, bytes] | None = None,
+    ) -> None:
+        self._profiles = profiles
+        self._refresh_payloads = {
+            profile: list(payloads)
+            for profile, payloads in refresh_payloads.items()
+        }
+        self._interactive_payloads = dict(interactive_payloads or {})
+        self.login_profiles: list[Path] = []
+        self.interactive_profiles: list[Path] = []
+
+    def __call__(
+        self,
+        arguments: tuple[str, ...],
+        environment: dict[str, str] | None,
+        working_directory: Path | None,
+    ) -> ClaudeCommandResult:
+        del working_directory
+        if arguments == ("--version",):
+            return ClaudeCommandResult(0, CLAUDE_VERSION_OUTPUT)
+        if arguments == ("auth", "login", "--help"):
+            return ClaudeCommandResult(0, CLAUDE_LOGIN_HELP_OUTPUT)
+        if arguments == ("auth", "status"):
+            config_directory = self._config_directory(environment)
+            credential_file = config_directory / CLAUDE_CREDENTIAL_FILE
+            return (
+                ClaudeCommandResult(0, CLAUDE_LOGGED_IN_STATUS)
+                if credential_file.is_file()
+                else ClaudeCommandResult(1, CLAUDE_LOGGED_OUT_STATUS)
+            )
+        if arguments != ("auth", "login", "--claudeai"):
+            raise AssertionError(f"Unexpected Claude command: {arguments!r}")
+        config_directory = self._config_directory(environment)
+        try:
+            payload = self._refresh_payloads[config_directory].pop(0)
+        except KeyError, IndexError:
+            raise AssertionError(
+                "Official login targeted an unexpected profile."
+            ) from None
+        self.login_profiles.append(config_directory)
+        if payload is None:
+            return ClaudeCommandResult(1, b"synthetic login rejected")
+        self._profiles.write_owned_file(
+            config_directory,
+            CLAUDE_CREDENTIAL_FILE,
+            payload,
+        )
+        return ClaudeCommandResult(0, b"synthetic official login complete")
+
+    def interactive(
+        self,
+        argv: tuple[str, ...],
+        *,
+        timeout_seconds: float,
+        environment: Mapping[str, str] | None = None,
+        working_directory: Path | None = None,
+        umask: int = -1,
+    ) -> int:
+        """Write one provider-controlled interactive login result."""
+        del timeout_seconds, working_directory, umask
+        if argv[1:] != ("auth", "login", "--claudeai"):
+            raise AssertionError(
+                f"Unexpected interactive Claude command: {argv[1:]!r}"
+            )
+        config_directory = self._config_directory(environment)
+        try:
+            payload = self._interactive_payloads[config_directory]
+        except KeyError:
+            raise AssertionError(
+                "Interactive login targeted an unexpected profile."
+            ) from None
+        self._profiles.write_owned_file(
+            config_directory,
+            CLAUDE_CREDENTIAL_FILE,
+            payload,
+        )
+        self.interactive_profiles.append(config_directory)
+        return 0
+
+    @staticmethod
+    def _config_directory(
+        environment: Mapping[str, str] | None,
+    ) -> Path:
+        if environment is None:
+            raise AssertionError("Claude process environment was omitted.")
+        return Path(environment["CLAUDE_CONFIG_DIR"])
 
 
 def credential_payload(

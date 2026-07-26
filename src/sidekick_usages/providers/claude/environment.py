@@ -40,17 +40,11 @@ def claude_probe_environment(
     config_directory: Path,
 ) -> dict[str, str]:
     """Build a credential-free environment for capability probes."""
-    environment = _safe_environment(source_environment)
-    environment.update(
-        {
-            "HOME": str(isolated_home),
-            "USERPROFILE": str(isolated_home),
-            "XDG_CONFIG_HOME": str(isolated_home / ".config"),
-            CLAUDE_CONFIG_DIR_ENVIRONMENT_KEY: str(config_directory),
-        }
+    return _private_profile_environment(
+        source_environment,
+        process_home=isolated_home,
+        config_directory=config_directory,
     )
-    _validate_environment(environment)
-    return environment
 
 
 def claude_refresh_environment(
@@ -62,6 +56,30 @@ def claude_refresh_environment(
     scopes: tuple[str, ...],
 ) -> dict[str, str]:
     """Build the closed environment for official refresh-token login."""
+    environment = _private_profile_environment(
+        source_environment,
+        process_home=process_home,
+        config_directory=config_directory,
+    )
+    environment.update(
+        {
+            CLAUDE_OAUTH_PROVISIONING_ENVIRONMENT_KEY: refresh_token,
+            CLAUDE_REFRESH_SCOPES_ENVIRONMENT_KEY: (
+                encode_claude_refresh_scopes(scopes)
+            ),
+        }
+    )
+    _validate_environment(environment)
+    return environment
+
+
+def _private_profile_environment(
+    source_environment: Mapping[str, str] | None,
+    *,
+    process_home: Path,
+    config_directory: Path,
+) -> dict[str, str]:
+    """Build the common credential-free private-profile environment."""
     environment = _safe_environment(source_environment)
     environment.update(
         {
@@ -71,10 +89,6 @@ def claude_refresh_environment(
             "LOCALAPPDATA": str(process_home / "AppData" / "Local"),
             "XDG_CONFIG_HOME": str(process_home / ".config"),
             CLAUDE_CONFIG_DIR_ENVIRONMENT_KEY: str(config_directory),
-            CLAUDE_OAUTH_PROVISIONING_ENVIRONMENT_KEY: refresh_token,
-            CLAUDE_REFRESH_SCOPES_ENVIRONMENT_KEY: (
-                encode_claude_refresh_scopes(scopes)
-            ),
         }
     )
     _validate_environment(environment)
@@ -96,9 +110,7 @@ def encode_claude_refresh_scopes(scopes: tuple[str, ...]) -> str:
     ):
         raise ClaudeProcessError(ClaudeProcessFailure.PROCESS_UNSAFE)
     encoded = " ".join(scopes)
-    _validate_environment(
-        {CLAUDE_REFRESH_SCOPES_ENVIRONMENT_KEY: encoded}
-    )
+    _validate_environment({CLAUDE_REFRESH_SCOPES_ENVIRONMENT_KEY: encoded})
     return encoded
 
 

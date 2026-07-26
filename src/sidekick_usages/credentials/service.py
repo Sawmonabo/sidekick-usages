@@ -3,11 +3,10 @@
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 
-from sidekick_usages.clock import Clock
+from sidekick_usages.core.accounts.types import SidekickAccountId
 from sidekick_usages.core.expiry import InvalidExpiry
 from sidekick_usages.core.models import (
     Account,
-    ClaudeLoginCredentials,
     ClaudeSetupTokenCredentials,
     Credentials,
     DetectedCredentials,
@@ -15,26 +14,23 @@ from sidekick_usages.core.models import (
 from sidekick_usages.core.types import (
     AccountLabel,
     ProviderId,
-    RefreshStatus,
 )
 from sidekick_usages.credentials.account_state import (
     persist_provider_plan_without_credentials,
 )
-from sidekick_usages.credentials.claude.setup_save import (
-    preview_claude_setup_token_save,
+from sidekick_usages.credentials.claude.managed.migration.service import (
+    ClaudeManagedMigrationCoordinator,
 )
-from sidekick_usages.credentials.claude.transitions import (
-    apply_claude_transition,
+from sidekick_usages.credentials.claude.setup.service import (
+    ClaudeSetupTokenCoordinator,
 )
 from sidekick_usages.credentials.codex.migration import (
     CodexAuthMigrationCoordinator,
 )
 from sidekick_usages.credentials.codex.types import CodexLoginEventSink
 from sidekick_usages.credentials.models import (
-    ClaudeSetupTokenSavePreview,
     CredentialLoginResult,
     CredentialRefreshResult,
-    CredentialRefreshSuccess,
     CredentialSaveResult,
     CredentialSaveSuccess,
     CredentialSource,
@@ -65,7 +61,7 @@ from sidekick_usages.providers.base import (
 )
 
 _CLAUDE_SETUP_HINT = (
-    "Run `sidekick-usages setup-token claude` to generate one."
+    "Run `sidekick-usages claude setup-token` to generate one."
 )
 
 
@@ -115,23 +111,24 @@ class CredentialService:
         http: HttpClient,
         providers: Mapping[ProviderId, Provider],
         *,
-        clock: Clock,
         refresh_coordinator: CredentialRefreshCoordinator | None = None,
         codex_auth_migration: CodexAuthMigrationCoordinator | None = None,
+        claude_auth_migration: ClaudeManagedMigrationCoordinator | None = None,
+        claude_setup_tokens: ClaudeSetupTokenCoordinator | None = None,
     ) -> None:
         """Bind credential workflows to invocation-scoped dependencies.
 
         :param store: Loaded transactional account store.
         :param http: Shared provider HTTP facade.
         :param providers: Closed provider adapter registry.
-        :param clock: Aware application wall clock.
         """
         self._store = store
         self._http = http
         self._providers = providers
-        self._clock = clock
         self._refresh = refresh_coordinator
         self._codex_auth_migration = codex_auth_migration
+        self._claude_auth_migration = claude_auth_migration
+        self._claude_setup_tokens = claude_setup_tokens
 
     def prompt_spec(
         self,
@@ -202,7 +199,6 @@ class CredentialService:
         label: AccountLabel | None,
         plan: str | None,
         force: bool,
-        replace_identity: bool = False,
     ) -> CredentialSaveResult:
         """Resolve and durably save one account in a single commit."""
         result = self.resolve(source)
@@ -214,13 +210,20 @@ class CredentialService:
                 ProviderFailureKind.MALFORMED,
                 "Detected credential expiry metadata is invalid.",
             )
+        setup_result = self._save_existing_setup_token(
+            result,
+            label=label,
+            plan=plan,
+            force=force,
+        )
+        if setup_result is not None:
+            return setup_result
         save_plan = self._build_save_plan(
             source,
             result,
             label=label,
             plan=plan,
             force=force,
-            replace_identity=replace_identity,
         )
         if isinstance(save_plan, ProviderFailure):
             return save_plan
@@ -262,7 +265,6 @@ class CredentialService:
         label: AccountLabel | None,
         plan: str | None,
         force: bool,
-        replace_identity: bool,
     ) -> _SavePlan | ProviderFailure:
         """Build one save candidate without mutating durable state."""
         by_token = self._store.find_by_token(
@@ -277,7 +279,29 @@ class CredentialService:
                 plan or detected.plan or "account",
             )
         )
-        target = self._store.get(str(target_label))
+        target_id = self._store.resolve_account_id(
+            source.provider_id,
+            target_label,
+        )
+        saved_target = next(
+            (
+                account
+                for account in self._store.saved_accounts(source.provider_id)
+                if account.account_id == target_id
+            ),
+            None,
+        )
+        if saved_target is not None and saved_target.has_managed_authority:
+            return _failure(
+                source.provider_id,
+                ProviderFailureKind.REJECTED,
+                "Managed account credentials must be repaired with "
+                "`sidekick-usages refresh`.",
+            )
+        target = self._store.get(
+            str(target_label),
+            provider_id=source.provider_id,
+        )
         if (
             by_token is not None
             and target is not None
@@ -311,24 +335,8 @@ class CredentialService:
             )
         else:
             candidate = _copy_account(previous, label=target_label)
-            applied = self._apply_detected(
-                candidate,
-                detected,
-                replace_identity=replace_identity,
-                replace_auth_method=force,
-            )
-            if isinstance(applied, ProviderFailure):
-                return applied
-            candidate = applied
             if plan is not None:
                 candidate.plan = plan
-            if (
-                candidate.provider_id is ProviderId.CLAUDE
-                and previous.credentials != candidate.credentials
-            ):
-                candidate.last_refresh_at = None
-                candidate.last_refresh_status = None
-                candidate.last_refresh_error = None
         return _SavePlan(
             candidate,
             previous,
@@ -340,62 +348,91 @@ class CredentialService:
             ),
         )
 
-    def preview_setup_token_save(
+    def _save_existing_setup_token(
         self,
-        label: AccountLabel | None,
+        detected: DetectedCredentials,
         *,
+        label: AccountLabel | None,
+        plan: str | None,
         force: bool,
-        replace_identity: bool,
-    ) -> ClaudeSetupTokenSavePreview | ProviderFailure | None:
-        """Authorize a known login-to-setup crossing before token capture."""
-        return preview_claude_setup_token_save(
-            self._store,
+    ) -> CredentialSaveResult | None:
+        """Attach one setup token to an existing logical Claude account."""
+        credentials = detected.credentials
+        if label is None or not isinstance(
+            credentials, ClaudeSetupTokenCredentials
+        ):
+            return None
+        account_id = self._store.resolve_account_id(
+            ProviderId.CLAUDE,
             label,
+        )
+        if account_id is None:
+            return None
+        return self._update_existing_setup_token(
+            account_id,
+            label,
+            credentials,
+            plan=plan,
             force=force,
-            replace_identity=replace_identity,
         )
 
-    def refresh_claude_from_source(
+    def _update_existing_setup_token(
         self,
-        label: str,
-        source: LocalCredentialSource,
+        account_id: SidekickAccountId,
+        label: AccountLabel,
+        credentials: ClaudeSetupTokenCredentials,
         *,
-        replace_identity: bool,
-        replace_auth_method: bool = False,
-    ) -> CredentialRefreshResult:
-        """Import one local Claude login into an existing saved account."""
-        if source.provider_id is not ProviderId.CLAUDE:
+        plan: str | None,
+        force: bool,
+    ) -> CredentialSaveResult:
+        """Persist one explicit existing-account setup-token update."""
+        preflight: CredentialSaveResult | None = None
+        if not force:
+            preflight = _failure(
+                ProviderId.CLAUDE,
+                ProviderFailureKind.REJECTED,
+                f"Account '{label}' already exists; use --force.",
+            )
+        elif plan is not None:
+            preflight = _failure(
+                ProviderId.CLAUDE,
+                ProviderFailureKind.REJECTED,
+                "Update an existing account plan with `set-plan`.",
+            )
+        if preflight is not None:
+            return preflight
+        if self._claude_setup_tokens is None:
             return _failure(
-                source.provider_id,
+                ProviderId.CLAUDE,
                 ProviderFailureKind.UNSUPPORTED,
-                "Local-login import is supported only for Claude.",
+                "Claude setup-token persistence is unavailable.",
             )
-        account = self._store.get(label, provider_id=ProviderId.CLAUDE)
-        if account is None:
+        account = self._store.read_saved(account_id)
+        if account is None or account.label != label:
             return _failure(
-                source.provider_id,
+                ProviderId.CLAUDE,
                 ProviderFailureKind.MISSING,
-                f"No account named '{label}'.",
+                f"No Claude account named '{label}'.",
             )
-        detected = self.resolve(source)
-        if isinstance(detected, ProviderFailure):
-            return detected
-        candidate = _copy_account(account)
-        applied = self._apply_detected(
-            candidate,
-            detected,
-            replace_identity=replace_identity,
-            replace_auth_method=replace_auth_method,
+        provider = self._providers.get(ProviderId.CLAUDE)
+        if provider is None:
+            return _failure(
+                ProviderId.CLAUDE,
+                ProviderFailureKind.UNSUPPORTED,
+                "Claude provider is not registered.",
+            )
+        validation = self._validate_new_account(
+            Account(
+                label=account.label,
+                credentials=credentials,
+                plan=account.plan,
+            ),
+            provider,
         )
-        if isinstance(applied, ProviderFailure):
-            return applied
-        candidate = applied
-        reference_time = self._clock.now()
-        candidate.last_refresh_at = reference_time
-        candidate.last_refresh_status = RefreshStatus.OK
-        candidate.last_refresh_error = None
-        self._store.persist_credentials(candidate)
-        return CredentialRefreshSuccess(candidate.label)
+        if isinstance(validation, ProviderFailure):
+            return validation
+        saved = self._claude_setup_tokens.save(account, credentials)
+        return CredentialSaveSuccess(saved.label, False, validation)
 
     def persist_provider_update(
         self,
@@ -481,53 +518,31 @@ class CredentialService:
             events=events,
         )
 
-    def _apply_detected(
+    def login_claude(
         self,
-        account: Account,
-        detected: DetectedCredentials,
+        label: AccountLabel,
         *,
-        replace_identity: bool,
-        replace_auth_method: bool,
-    ) -> Account | ProviderFailure:
-        if account.provider_id is not detected.provider_id:
+        establish_identity: bool,
+        interactive: bool,
+    ) -> CredentialLoginResult:
+        """Authenticate one account inside its final managed Claude profile."""
+        if ProviderId.CLAUDE not in self._providers:
             return _failure(
-                account.provider_id,
-                ProviderFailureKind.IDENTITY_MISMATCH,
-                "Detected credentials belong to another provider.",
+                ProviderId.CLAUDE,
+                ProviderFailureKind.UNSUPPORTED,
+                "Claude provider is not registered.",
             )
-        if isinstance(detected.expiry, InvalidExpiry):
+        if self._claude_auth_migration is None:
             return _failure(
-                account.provider_id,
-                ProviderFailureKind.MALFORMED,
-                "Detected credential expiry metadata is invalid.",
+                ProviderId.CLAUDE,
+                ProviderFailureKind.UNSUPPORTED,
+                "Managed Claude login is not available.",
             )
-        current = account.credentials
-        incoming = detected.credentials
-        if isinstance(
-            current,
-            ClaudeSetupTokenCredentials | ClaudeLoginCredentials,
-        ) and isinstance(
-            incoming,
-            ClaudeSetupTokenCredentials | ClaudeLoginCredentials,
-        ):
-            applied = apply_claude_transition(
-                current,
-                incoming,
-                replace_identity=replace_identity,
-                replace_auth_method=replace_auth_method,
-            )
-            if isinstance(applied, ProviderFailure):
-                return applied
-            account.credentials = applied
-        else:
-            return _failure(
-                account.provider_id,
-                ProviderFailureKind.MALFORMED,
-                "Detected credentials are provider-incompatible.",
-            )
-        if detected.plan and detected.plan != "unknown":
-            account.plan = detected.plan
-        return account
+        return self._claude_auth_migration.migrate(
+            label,
+            establish_identity=establish_identity,
+            interactive=interactive,
+        )
 
     def _validate_new_account(
         self,

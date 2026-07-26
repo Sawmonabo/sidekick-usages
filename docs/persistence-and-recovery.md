@@ -67,11 +67,11 @@ authority is not treated as an empty store.
 
 ## Account recovery
 
-Use the provider's official login flow, then a Sidekick command:
+Use the Sidekick command that scopes the provider's official login to the
+saved account:
 
 ```bash
 # Claude subscription login
-claude auth login
 sidekick-usages refresh <claude-label>
 
 # Claude setup token
@@ -81,8 +81,9 @@ sidekick-usages claude setup-token --label <claude-label> --force
 sidekick-usages codex login <codex-label>
 ```
 
-Identity or authentication-method changes require the explicit replacement
-flags shown by command help. Do not use them to bypass an unexpected mismatch.
+A setup-token-only Claude account requires `--replace-identity` once to approve
+its first subscription association. Do not use it to bypass an established
+identity mismatch.
 
 Saved-account refresh recovery is local and transaction-aware. A complete safe
 stage can finish without another provider request. Unsafe, incomplete, linked,
@@ -111,9 +112,9 @@ sidekick-usages reset --yes
 ```
 
 Use `--provider claude` or `--provider codex` to remove only that provider's
-accounts. Reset requires the resident supervisor to be absent and deletes the
-matching Sidekick-owned credential authorities. It does not log out Claude Code
-or Codex CLI.
+accounts. Reset requires the resident supervisor to be absent. It verifies
+official logout before retiring a managed Claude profile and deletes managed
+Codex homes. Native Claude and Codex logins remain untouched.
 
 After reinstalling a clean-break release, recreate Claude accounts with `add`
 or `claude setup-token`. `codex login` authenticates or repairs an existing

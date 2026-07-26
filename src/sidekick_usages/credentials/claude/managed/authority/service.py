@@ -4,7 +4,10 @@ from collections.abc import Mapping
 from contextlib import AbstractContextManager
 from datetime import datetime
 
-from sidekick_usages.core.accounts.models import ClaudeManagedLoginAuthority
+from sidekick_usages.core.accounts.models import (
+    ClaudeManagedLoginAuthority,
+    SavedAccount,
+)
 from sidekick_usages.core.accounts.types import AuthorityId, ProviderIdentity
 from sidekick_usages.paths import (
     ApplicationPaths,
@@ -177,4 +180,20 @@ def managed_login_authority(
         executable_version=snapshot.executable_version,
         health=snapshot.health,
         action=snapshot.action,
+    )
+
+
+def managed_authority_matches(
+    account: SavedAccount,
+    authority: ClaudeManagedLoginAuthority,
+    snapshot: ClaudeAuthoritySnapshot,
+) -> bool:
+    """Match saved metadata to one exact protected Claude generation."""
+    return (
+        account.plan == snapshot.plan
+        and authority.provider_identity == snapshot.provider_identity
+        and authority.generation == snapshot.generation
+        and authority.access_expires_at == snapshot.access_expires_at
+        and authority.refresh_expires_at == snapshot.refresh_expires_at
+        and authority.executable_version == snapshot.executable_version
     )

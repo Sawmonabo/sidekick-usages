@@ -119,12 +119,14 @@ above when you need a stable, reproducible version.
 
 ### Save provider accounts
 
-Import a Claude login under a stable label:
+Save an initial Claude login under a stable label, then move that saved
+authority into its stable Sidekick-managed profile:
 
 ```bash
 # Claude Code subscription login
 claude auth login
 sidekick-usages add claude --label <claude-label>
+sidekick-usages refresh <claude-label>
 ```
 
 Authenticate an existing Codex label in its independent managed home:
@@ -308,11 +310,11 @@ rollout total is used as a fallback.
 | `sidekick-usages check` | Explicit form of the default usage check. |
 | `sidekick-usages --only <provider>` | Check only `claude` or `codex` accounts. |
 | `sidekick-usages add claude` | Save auto-detected, piped, prompted, or `--token` Claude credentials; supports `--label`, `--plan`, and `--force`. |
-| `sidekick-usages list` | List labels, providers, plans, heartbeat state, and masked tokens. |
+| `sidekick-usages list` | List labels, providers, plans, and heartbeat state without opening credentials. |
 | `sidekick-usages remove <label>` | Delete one saved account. |
 | `sidekick-usages rename <old> <new>` | Rename one saved account. |
 | `sidekick-usages set-plan <label> <plan>` | Correct a display plan that the provider cannot introspect. |
-| `sidekick-usages refresh <label>` | Repair a Codex label through official managed-home login, or import the current matching Claude login. |
+| `sidekick-usages refresh <label>` | Repair one Claude or Codex label through official login in its stable private profile. |
 | `sidekick-usages refresh --all [--force] [--quiet]` | Maintain every due saved authority without reading the current global login. |
 | `sidekick-usages maintain [--quiet]` | Manually refresh due tokens, then heartbeat opted-in accounts. |
 | `sidekick-usages doctor [--provider ...] [--label ...] [--json]` | Report independent supervisor, persistence, provider, auth, refresh, and heartbeat health. |
@@ -331,16 +333,16 @@ to see its options.
 
 ### Refresh identity safety
 
-For Claude, `refresh <label>` imports the current local login. It is the normal
-recovery path for a subscription-login label, not a blanket repair for a setup
-token. Sidekick refuses a known identity mismatch unless
-`--replace-identity` is explicit. Converting a Claude setup-token label to a
-subscription login additionally requires `--replace-auth-method`; both flags
-are required when both method and identity change.
+For Claude, `refresh <label>` operates only on that label's stable private
+profile. A legacy saved subscription authority may seed official login there;
+the active native Claude login is never read or changed. A setup-token-only
+label retains its setup token and requires `--replace-identity` once to approve
+the first subscription identity association. Later identity mismatches fail
+closed.
 
 For Codex, `refresh <label>` starts official browser login in the label's final
-managed home. It never imports the active native login, and Claude replacement
-flags are rejected. `refresh --all` uses only saved or managed authorities.
+managed home. It never imports the active native login. `refresh --all` uses
+only saved or managed authorities.
 
 ### Updating a Git-tag installation
 
@@ -513,13 +515,14 @@ Saved Claude subscription logins rotate access credentials before known access
 expiry and retry once after HTTP 401. Codex authentication failures recover
 through the managed authority, never through inline private OAuth.
 
-For a Claude subscription login, sign in as that exact account and update the
-login label explicitly:
+For a Claude subscription login, repair that exact saved label:
 
 ```bash
-claude auth login
 sidekick-usages refresh <claude-label>
 ```
+
+Sidekick opens provider-controlled login only when the label's private
+authority requires it. The native Claude login remains unchanged.
 
 For a rejected setup token, capture a new setup token instead of importing the
 active subscription login:
@@ -596,7 +599,9 @@ Verify the Keychain item directly:
 security find-generic-password -s 'Claude Code-credentials' >/dev/null
 ```
 
-If it is missing, run `claude auth login` and retry `add` or `refresh`.
+If it is missing, run `claude auth login` and retry `add`. Repair an already
+saved label with `sidekick-usages refresh <label>`, which uses only that
+label's private managed profile.
 
 ## Development
 

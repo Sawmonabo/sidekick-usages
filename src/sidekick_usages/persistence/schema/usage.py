@@ -1,7 +1,7 @@
 """Strict codec for last-successful account usage snapshots."""
 
 import json
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Self
 
 from pydantic import (
     AfterValidator,
@@ -9,6 +9,7 @@ from pydantic import (
     ConfigDict,
     Field,
     ValidationError,
+    model_validator,
 )
 
 from sidekick_usages.core.accounts.types import (
@@ -30,7 +31,7 @@ from sidekick_usages.serialization.json import (
     decode_json_value,
 )
 
-USAGE_SCHEMA_VERSION = 1
+USAGE_SCHEMA_VERSION = 2
 MAX_USAGE_RECORDS = 4_096
 MAX_USAGE_WINDOWS = 64
 MAX_USAGE_TEXT_BYTES = 4_096
@@ -42,6 +43,10 @@ type TimestampText = Annotated[str, AfterValidator(_timestamp_text)]
 type UsageRecords = Annotated[
     dict[AccountIdText, UsageSnapshotRecord],
     AfterValidator(_records),
+]
+type UsageIdentityPromotions = Annotated[
+    dict[AccountIdText, UsageIdentityPromotionRecord],
+    AfterValidator(_promotions),
 ]
 type UsageWindows = Annotated[
     list[UsageWindowRecord],
@@ -82,6 +87,14 @@ def _records(
     return value
 
 
+def _promotions(
+    value: dict[str, UsageIdentityPromotionRecord],
+) -> dict[str, UsageIdentityPromotionRecord]:
+    if len(value) > MAX_USAGE_RECORDS:
+        raise ValueError
+    return value
+
+
 def _windows(value: list[UsageWindowRecord]) -> list[UsageWindowRecord]:
     if len(value) > MAX_USAGE_WINDOWS:
         raise ValueError
@@ -113,13 +126,42 @@ class UsageSnapshotRecord(BaseModel):
     fetched_at: TimestampText
 
 
+class UsageIdentityPromotionRecord(BaseModel):
+    """Secret-free intent to bind one usage record to a proven identity."""
+
+    model_config = MODEL_CONFIG
+
+    provider_id: Literal["claude", "codex"]
+    source_identity: BoundedText | None
+    target_identity: BoundedText
+
+
 class UsageSnapshotDocument(BaseModel):
     """Strict versioned account-usage document."""
 
     model_config = MODEL_CONFIG
 
-    schema_version: Literal[1]
+    schema_version: Literal[2]
     accounts: UsageRecords
+    identity_promotions: UsageIdentityPromotions
+
+    @model_validator(mode="after")
+    def validate_identity_promotions(self) -> Self:
+        """Bind every promotion to one compatible exact usage record."""
+        for account_id, promotion in self.identity_promotions.items():
+            record = self.accounts.get(account_id)
+            if (
+                record is None
+                or record.provider_id != promotion.provider_id
+                or record.provider_identity
+                not in {
+                    promotion.source_identity,
+                    promotion.target_identity,
+                }
+                or promotion.source_identity == promotion.target_identity
+            ):
+                raise ValueError
+        return self
 
 
 def encode_usage_snapshot_document(

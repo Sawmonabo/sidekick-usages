@@ -50,6 +50,7 @@ def check_value_contracts(
             ("accounts", "AccountStore"),
             ("usage", "UsageCheckService"),
             ("credentials", "CredentialService"),
+            ("lifecycle", "AccountLifecycleCoordinator"),
             ("heartbeat", "HeartbeatService"),
             ("maintenance", "TokenMaintenanceService"),
             ("claude_setup_token", "ClaudeSetupToken"),

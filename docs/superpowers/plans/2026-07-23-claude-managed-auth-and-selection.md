@@ -313,46 +313,52 @@ uv run pytest \
 
 ### Tests first
 
-- [ ] In `tests/test_claude_managed_runtime.py`, add one two-account migration
+- [x] In `tests/test_claude_managed_runtime.py`, add one two-account migration
   scenario covering a setup-token plus legacy subscription account and a
   second legacy account. Official private login preserves setup-token
   lifetime, metrics, and heartbeat state, aggregates one logical row, commits
   before legacy retirement, and continues when one account is canceled or
   mismatched.
-- [ ] In the same file, add one interruption scenario after official login
+- [x] In the same file, add one interruption scenario after official login
   but before metadata commit. Recovery verifies identity and either completes
   the same transaction or requires reconciliation without losing either
   original authority.
-- [ ] Fold existing setup-token save/restore assertions into the logical
+- [x] Fold existing setup-token save/recovery assertions into the logical
   dual-authority contract and delete superseded replacement semantics.
 
 ### Implementation
 
-- [ ] On Enter or explicit repair for a setup-token-only account, allocate the
-  final stable private profile and start official subscription login there.
-- [ ] Require user involvement only for provider-controlled browser, MFA,
+- [x] On explicit repair for a setup-token-only account, allocate the final
+  stable private profile and start official subscription login there. Task 9
+  connects dashboard Enter to this same boundary.
+- [x] Require user involvement only for provider-controlled browser, MFA,
   password, or consent.
-- [ ] Verify the returned stable account and organization identity against the
-  saved logical account. A mismatch leaves both the setup token and native
-  selection unchanged.
-- [ ] Commit managed subscription metadata while retaining the setup-token
+- [x] For a legacy subscription, verify the returned account and organization
+  identity against the saved logical account. A setup-token-only account has
+  no provider identity evidence, so explicit `--replace-identity` approves its
+  first subscription identity association; every later mismatch fails closed.
+  Failure leaves both the setup token and native selection unchanged.
+- [x] Commit managed subscription metadata while retaining the setup-token
   authority and its fixed-lifetime tracking.
-- [ ] For a legacy subscription login, use its protected migration authority
+- [x] For a legacy subscription login, use its protected migration authority
   only as input to official login in the final private profile. Retire the
   legacy token store only after managed read-back and refresh proof.
-- [ ] Attribute usage, heartbeat, and activity to the logical stable account
+- [x] Attribute usage, heartbeat, and activity to the logical stable account
   ID so two credential modes do not double-count.
-- [ ] Update `setup-token`, restore, remove, reset, rename, and doctor
-  workflows for dual authority.
-- [ ] Never make migration itself change the native selected account.
+- [x] Update `setup-token`, interruption recovery, remove, reset, rename, and
+  doctor workflows for dual authority. There is no restore compatibility
+  command.
+- [x] Never make migration itself change the native selected account.
 
 ### Verify and commit
 
-- [ ] Run the two managed-migration scenarios plus existing setup-token,
+- [x] Run the two managed-migration scenarios plus existing setup-token,
   lifetime, transaction, activity, and output-safety regressions they touch.
-- [ ] Run Ruff, `ty`, and architecture checks.
-- [ ] Inspect test account counts and metrics aggregation for duplication,
-  then commit.
+- [x] Run Ruff, `ty`, and architecture checks.
+- [x] Inspect test account counts and metrics aggregation for duplication.
+  Task 4 adds exactly two load-bearing migration scenarios, deletes ten
+  obsolete tests, and reduces the suite by eight tests overall.
+- [x] Commit and push the verified Task 4 checkpoint.
 
 ## 7. Task 5 — Native Activation Transaction
 

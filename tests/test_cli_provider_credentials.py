@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import sys
 from collections.abc import Mapping
 from pathlib import Path
@@ -11,18 +12,33 @@ import pytest
 import sidekick_usages.platform.executable
 import sidekick_usages.providers.claude.provider
 from sidekick_usages.core.accounts.models import CodexStoredAuthority
-from sidekick_usages.core.models import UsageReport
+from sidekick_usages.core.expiry import Expiry, UnknownExpiry
+from sidekick_usages.core.models import (
+    Account,
+    CodexCredentials,
+    DetectedCredentials,
+    UsageReport,
+)
 from sidekick_usages.core.types import (
     AccountLabel,
     ExitCode,
     HeartbeatStatus,
     ProviderId,
 )
+from sidekick_usages.http.client import HttpClient
 from sidekick_usages.persistence.credentials.repository import (
     authority_bundle_name,
 )
+from sidekick_usages.providers.base import (
+    CredentialDetection,
+    Provider,
+    ProviderFailure,
+    ProviderFailureKind,
+    RefreshResult,
+)
 from sidekick_usages.providers.claude.models import ClaudeCommandResult
 from sidekick_usages.providers.claude.provider import ClaudeProvider
+from tests.fakes.claude.managed import CLAUDE_VERSION_OUTPUT
 from tests.fakes.codex.auth import managed_auth
 from tests.fakes.codex.executable import (
     configure_codex_logins,
@@ -31,21 +47,90 @@ from tests.fakes.codex.executable import (
 from tests.fakes.codex.managed import managed_subscription
 from tests.fakes.codex.models import FakeCodexLogin
 from tests.fakes.codex.schema import write_codex_schema
-from tests.test_cli_refresh import (
-    _codex_acct,
-    _FakeProvider,
-    _install_many_ctx,
-    _isolate_default_codex_home,
-)
+from tests.fakes.credentials import install_cli_context
 from tests.test_support import (
     REFERENCE_TIME,
     FixedClock,
     make_application_paths,
 )
 
-pytestmark = pytest.mark.usefixtures(
-    _isolate_default_codex_home.__name__,
-)
+
+class _CodexProvider(Provider):
+    """Minimal provider registry entry for managed Codex login tests."""
+
+    id = ProviderId.CODEX
+    display_name = "Codex CLI"
+    token_pattern = re.compile(r".+")
+
+    def detect_credentials(
+        self,
+        credential_home: Path | None = None,
+    ) -> CredentialDetection:
+        del credential_home
+        return ProviderFailure(
+            provider_id=self.id,
+            kind=ProviderFailureKind.MISSING,
+            message="No synthetic Codex credentials.",
+        )
+
+    def credentials_from_token(self, token: str) -> CredentialDetection:
+        return DetectedCredentials(
+            credentials=CodexCredentials(access_token=token)
+        )
+
+    def _fetch_usage(
+        self,
+        account: Account,
+        http: HttpClient,
+    ) -> UsageReport:
+        del account, http
+        return UsageReport()
+
+    def _refresh_credentials(
+        self,
+        account: Account,
+        http: HttpClient,
+    ) -> RefreshResult:
+        del account, http
+        return ProviderFailure(
+            provider_id=self.id,
+            kind=ProviderFailureKind.REJECTED,
+            message="Synthetic refresh is unavailable.",
+        )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_default_codex_home(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Prevent tests from reading the developer's native Codex login."""
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "native-codex"))
+
+
+def _codex_account(
+    *,
+    access_token: str,
+    refresh_token: str,
+    plan: str = "team",
+    expiry: Expiry | None = None,
+    provider_account_id: str,
+    id_token: str,
+    last_refresh: str,
+) -> Account:
+    """Build one complete legacy Codex account."""
+    return Account(
+        label=AccountLabel("team"),
+        credentials=CodexCredentials(
+            access_token=access_token,
+            refresh_token=refresh_token,
+            expiry=UnknownExpiry() if expiry is None else expiry,
+            account_id=provider_account_id,
+            id_token=id_token,
+            auth_last_refresh=last_refresh,
+        ),
+        plan=plan,
+    )
 
 
 def _install_fake_codex_login(
@@ -81,7 +166,7 @@ def test_codex_login_migrates_accounts_independently_without_native_copy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Cancellation preserves one account while another migration succeeds."""
-    account_a = _codex_acct(
+    account_a = _codex_account(
         access_token="eyJ-alpha.access.sig",
         refresh_token="legacy-refresh-alpha",
         plan="alpha-plan",
@@ -94,7 +179,7 @@ def test_codex_login_migrates_accounts_independently_without_native_copy(
     account_a.heartbeat_targets = ("five-hour",)
     account_a.last_heartbeat_at = REFERENCE_TIME
     account_a.last_heartbeat_status = HeartbeatStatus.WARMED
-    account_b = _codex_acct(
+    account_b = _codex_account(
         access_token="eyJ-beta.access.sig",
         refresh_token="legacy-refresh-beta",
         plan="beta-plan",
@@ -103,8 +188,8 @@ def test_codex_login_migrates_accounts_independently_without_native_copy(
         last_refresh="2026-06-12T00:00:00Z",
     )
     account_b.label = AccountLabel("beta")
-    provider = _FakeProvider(provider_id="codex")
-    harness, store, stdout, stderr = _install_many_ctx(
+    provider = _CodexProvider()
+    harness, store, stdout, stderr = install_cli_context(
         tmp_path,
         {ProviderId.CODEX: provider},
         (account_a, account_b),
@@ -249,15 +334,15 @@ def test_codex_login_recovers_proven_home_after_interrupted_commit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Retry verifies the final home without repeating official login."""
-    account = _codex_acct(
+    account = _codex_account(
         access_token="eyJ-current.access.sig",
         refresh_token="legacy-refresh",
         provider_account_id="acct_current",
         id_token="legacy-id",
         last_refresh="2026-06-12T00:00:00Z",
     )
-    provider = _FakeProvider(provider_id="codex")
-    harness, store, stdout, _ = _install_many_ctx(
+    provider = _CodexProvider()
+    harness, store, stdout, _ = install_cli_context(
         tmp_path,
         {ProviderId.CODEX: provider},
         (account,),
@@ -283,13 +368,13 @@ def test_codex_login_recovers_proven_home_after_interrupted_commit(
             )
         },
     )
-    commit = store.migrate_codex_authority
+    commit = store.migrate_stored_authority
 
     def interrupt_commit(*args: object, **kwargs: object) -> None:
         del args, kwargs
         raise OSError("synthetic interruption")
 
-    monkeypatch.setattr(store, "migrate_codex_authority", interrupt_commit)
+    monkeypatch.setattr(store, "migrate_stored_authority", interrupt_commit)
     interrupted = harness.invoke(["codex", "login", "team", "--device-auth"])
 
     assert interrupted.exit_code == ExitCode.MANUAL_ACTION
@@ -308,7 +393,7 @@ def test_codex_login_recovers_proven_home_after_interrupted_commit(
             )
         },
     )
-    monkeypatch.setattr(store, "migrate_codex_authority", commit)
+    monkeypatch.setattr(store, "migrate_stored_authority", commit)
 
     recovered = harness.invoke(["codex", "login", "team", "--device-auth"])
 
@@ -351,7 +436,7 @@ def test_setup_token_delegates_only_to_claude_capability(
     ) -> ClaudeCommandResult:
         del maximum_output_bytes, environment, working_directory, umask
         if argv[1:] == ("--version",):
-            return ClaudeCommandResult(0, b"2.1.220 (Claude Code)\n")
+            return ClaudeCommandResult(0, CLAUDE_VERSION_OUTPUT)
         assert argv[1:] == ("setup-token",)
         assert timeout_seconds > 0
         return ClaudeCommandResult(
@@ -369,7 +454,7 @@ def test_setup_token_delegates_only_to_claude_capability(
         "validate_credentials",
         lambda account, http: UsageReport(),
     )
-    harness, store, stdout, stderr = _install_many_ctx(
+    harness, store, stdout, stderr = install_cli_context(
         tmp_path,
         {ProviderId.CLAUDE: provider},
         (),
@@ -382,7 +467,7 @@ def test_setup_token_delegates_only_to_claude_capability(
 
     assert result.exit_code == 0
     assert "DeprecationWarning" not in result.output
-    assert "Saved 'setup'." in stdout.getvalue()
+    assert "Saved setup token for 'setup'." in stdout.getvalue()
     assert raw_secret not in result.output
     assert raw_secret not in stdout.getvalue()
     assert raw_secret not in stderr.getvalue()

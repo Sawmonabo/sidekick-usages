@@ -3,6 +3,9 @@
 from collections.abc import Callable
 
 from sidekick_usages.paths import ApplicationPaths
+from sidekick_usages.persistence.accounts.removal.store import (
+    AccountRemovalStore,
+)
 from sidekick_usages.persistence.accounts.store import AccountStore
 from sidekick_usages.persistence.credentials.refresh.artifacts import (
     CredentialRefreshArtifacts,
@@ -11,7 +14,10 @@ from sidekick_usages.persistence.credentials.refresh.artifacts import (
 from sidekick_usages.persistence.credentials.refresh.service import (
     CredentialRefreshTransactions,
 )
-from sidekick_usages.persistence.errors import SupervisorActiveError
+from sidekick_usages.persistence.errors import (
+    ResetIncompleteError,
+    SupervisorActiveError,
+)
 from sidekick_usages.persistence.filesystem.service import (
     PersistenceFilesystem,
 )
@@ -21,6 +27,9 @@ from sidekick_usages.persistence.models.status import (
 )
 from sidekick_usages.persistence.private.credentials import (
     PrivateCredentialTree,
+)
+from sidekick_usages.persistence.types.credential import (
+    PrivateCredentialState,
 )
 from sidekick_usages.persistence.types.status import PersistenceState
 
@@ -88,7 +97,7 @@ class PersistenceService:
         return self._refresh.assess()
 
     def reset_all(self) -> int:
-        """Delete all Sidekick account and credential state."""
+        """Delete global state after provider-aware account retirement."""
         self._require_maintenance_quiescence()
         with self._refresh.hold_quiescent():
             self._require_maintenance_quiescence()
@@ -97,10 +106,17 @@ class PersistenceService:
                 store,
                 self.paths.credential_refresh,
             ).recover()
-            removed = store.reset_all()
+            if len(store):
+                raise ResetIncompleteError(self.paths.accounts.name)
+            removals = AccountRemovalStore(self.paths.durable_operations)
+            if removals.load():
+                raise ResetIncompleteError(removals.path.name)
+            for profiles in (self._managed_claude, self._managed_codex):
+                if profiles.observe() is not PrivateCredentialState.ABSENT:
+                    raise ResetIncompleteError(profiles.root.name)
             self._refresh.destroy_all()
             self._private.destroy_all()
-            return removed
+            return 0
 
     def repair_permissions(self) -> PermissionRepairResult:
         """Repair current Sidekick-owned credential permissions."""

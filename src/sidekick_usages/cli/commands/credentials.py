@@ -12,10 +12,6 @@ from sidekick_usages.cli.commands.maintenance import run_refresh_all
 from sidekick_usages.cli.context import AppContext, invocation_context
 from sidekick_usages.cli.help import branded_command
 from sidekick_usages.cli.token_input import TokenInput
-from sidekick_usages.core.models import (
-    ClaudeLoginCredentials,
-    ClaudeSetupTokenCredentials,
-)
 from sidekick_usages.core.types import AccountLabel, ExitCode, ProviderId
 from sidekick_usages.credentials.models import (
     LocalCredentialSource,
@@ -99,7 +95,6 @@ def _refresh_managed_codex(
     label: AccountLabel,
     *,
     replace_identity: bool,
-    replace_auth_method: bool,
 ) -> bool:
     """Run managed Codex repair when the label belongs to Codex."""
     account_id = app_context.accounts.resolve_account_id(
@@ -119,12 +114,8 @@ def _refresh_managed_codex(
     if replace_identity:
         _usage_error(
             ctx,
-            "--replace-identity applies only to Claude accounts.",
-        )
-    if replace_auth_method:
-        _usage_error(
-            ctx,
-            "--replace-auth-method applies only to Claude accounts.",
+            "--replace-identity applies only to setup-token-only "
+            "Claude accounts.",
         )
     invocation = invocation_context(ctx)
     result = app_context.credentials.login_codex(
@@ -235,7 +226,7 @@ def refresh_cmd(
         bool,
         typer.Option(
             "--all",
-            help="Refresh every due account using saved refresh tokens.",
+            help="Refresh every due account from its owned authority.",
         ),
     ] = False,
     quiet: Annotated[
@@ -257,26 +248,16 @@ def refresh_cmd(
         typer.Option(
             "--replace-identity",
             help=(
-                "Allow replacing a saved Claude provider identity with the "
-                "current local login."
-            ),
-        ),
-    ] = False,
-    replace_auth_method: Annotated[
-        bool,
-        typer.Option(
-            "--replace-auth-method",
-            help=(
-                "Allow replacing a saved Claude setup token with the "
-                "current subscription login."
+                "Confirm the first subscription identity association for "
+                "a setup-token-only Claude account."
             ),
         ),
     ] = False,
 ) -> None:
     """Repair one account or refresh all accounts from owned authorities.
 
-    A Codex label starts official login in its managed home. A Claude label
-    imports the current Claude login. ``--all`` uses saved authorities only.
+    A provider label repairs its isolated managed profile through the
+    official CLI. ``--all`` uses saved authorities only.
     """
     narrowed = _validate_refresh_args(
         ctx,
@@ -285,7 +266,6 @@ def refresh_cmd(
         quiet=quiet,
         force=force,
         replace_identity=replace_identity,
-        replace_auth_method=replace_auth_method,
     )
     if all_accounts:
         run_refresh_all(ctx, quiet=quiet, force=force)
@@ -300,42 +280,29 @@ def refresh_cmd(
         app_context,
         account_label,
         replace_identity=replace_identity,
-        replace_auth_method=replace_auth_method,
     ):
         return
-    account = app_context.accounts.get(
-        narrowed,
-        provider_id=ProviderId.CLAUDE,
+    account_id = app_context.accounts.resolve_account_id(
+        ProviderId.CLAUDE,
+        account_label,
     )
-    if account is None:
+    if account_id is None:
         invocation.err_console.print(
             f"[yellow]No account named '{narrowed}'.[/yellow]"
         )
         raise typer.Exit(code=ExitCode.MANUAL_ACTION)
-    result = app_context.credentials.refresh_claude_from_source(
-        narrowed,
-        LocalCredentialSource(
-            provider_id=account.provider_id,
+    result = app_context.credentials.login_claude(
+        account_label,
+        establish_identity=replace_identity,
+        interactive=(
+            sys.stdin.isatty() and sys.stdout.isatty() and sys.stderr.isatty()
         ),
-        replace_identity=replace_identity,
-        replace_auth_method=replace_auth_method,
     )
     if isinstance(result, ProviderFailure):
         exit_credential_failure(ctx, result)
-    saved = app_context.accounts.get(narrowed)
-    if saved is not None and isinstance(
-        saved.credentials,
-        ClaudeLoginCredentials,
-    ):
-        message = f"Updated '{narrowed}' as a Claude subscription login."
-    elif saved is not None and isinstance(
-        saved.credentials,
-        ClaudeSetupTokenCredentials,
-    ):
-        message = f"Updated '{narrowed}' as a Claude setup token."
-    else:
-        message = f"Updated token for '{narrowed}'."
-    invocation.console.print(f"[green]{message}[/green]")
+    invocation.console.print(
+        f"[green]Managed Claude login ready for '{narrowed}'.[/green]"
+    )
 
 
 def _validate_refresh_args(
@@ -346,7 +313,6 @@ def _validate_refresh_args(
     quiet: bool,
     force: bool,
     replace_identity: bool,
-    replace_auth_method: bool,
 ) -> str | None:
     if all_accounts:
         if label is not None:
@@ -358,11 +324,6 @@ def _validate_refresh_args(
             _usage_error(
                 ctx,
                 "--replace-identity only applies to a label refresh.",
-            )
-        if replace_auth_method:
-            _usage_error(
-                ctx,
-                "--replace-auth-method only applies to a label refresh.",
             )
         return None
     if label is None:

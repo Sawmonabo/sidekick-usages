@@ -37,6 +37,7 @@ from tests.test_support import (
     RuntimeCredentialResolver,
     make_account_store,
     make_application_paths,
+    remove_saved_account,
 )
 
 
@@ -359,7 +360,7 @@ def test_complete_stage_recovery_does_not_resurrect_changed_target(
         )
     external = make_account_store(tmp_path)
     if remove_target:
-        assert external.remove(str(label))
+        remove_saved_account(external, label)
     else:
         external.persist(login_account(generation="manual"))
 

@@ -52,6 +52,21 @@ class ClaudeCommandRunner(Protocol):
         """Return one bounded process result or raise a typed failure."""
 
 
+class ClaudeInteractiveCommandRunner(Protocol):
+    """Run one bounded Claude command with inherited terminal streams."""
+
+    def __call__(
+        self,
+        argv: tuple[str, ...],
+        *,
+        timeout_seconds: float,
+        environment: Mapping[str, str] | None = None,
+        working_directory: Path | None = None,
+        umask: int = -1,
+    ) -> int:
+        """Return the provider process exit status."""
+
+
 class ClaudeSetupToken(Protocol):
     """Narrow structural capability for Claude setup-token capture."""
 

@@ -9,10 +9,10 @@ resident supervisor is managed.
 
 `sidekick-usages` has two different account-maintenance paths:
 
-1. `sidekick-usages refresh <label>` imports the current local Claude login or
-   starts official Codex login in that label's independent managed home.
-2. `sidekick-usages refresh --all` maintains Claude stored authorities and
-   every Codex managed home without reading either native global login.
+1. `sidekick-usages refresh <label>` repairs that exact Claude or Codex
+   account through official login in its independent private profile.
+2. `sidekick-usages refresh --all` maintains every saved or managed authority
+   without reading either native global login.
 
 `sidekick-usages maintain --quiet` is the explicit foreground maintenance
 command. It runs the second path above, then optional heartbeat/window warming
@@ -31,8 +31,8 @@ current global Claude or Codex login into arbitrary labels.
 
 | Account type | Auto-refresh | Notes |
 | --- | --- | --- |
-| Claude subscription-login credential | Yes, while login remains usable | On non-macOS systems with Claude Code installed, prefers the CLI in a private staged home. macOS or a missing executable uses bounded HTTPS refresh and immediately stages the result. Neither path changes the active Claude login. |
-| Claude setup-token credential | No | Setup tokens do not contain refresh credentials. Replace explicitly when rejected; their issue date cannot be recovered from the token. |
+| Claude subscription-login credential | Yes, while login remains usable | Official Claude refresh runs in the account's stable private profile. A legacy stored authority is migration input only. The native Claude login is unchanged. |
+| Claude setup-token credential | No | Setup tokens do not contain refresh credentials. Replace explicitly when rejected. Sidekick tracks lifetime only when it has trusted capture evidence. |
 | Codex ChatGPT managed login | Yes | The official Codex process refreshes the exact account's independent managed home. Sidekick performs no private OAuth exchange. |
 | Account with rejected or revoked refresh authority | No | Requires logging into the matching provider account again, then running an explicit single-label refresh. |
 
@@ -136,25 +136,21 @@ installed service command.
 # Claude
 sidekick-usages refresh <label>
 sidekick-usages refresh <label> --replace-identity
-sidekick-usages refresh <label> --replace-auth-method
 
 # Codex
 sidekick-usages refresh <label>
 sidekick-usages codex login <label> [--device-auth]
 ```
 
-For Claude, `refresh` intentionally updates one saved label from the current
-Claude login. For Claude setup-token credentials, use
-`sidekick-usages claude setup-token` instead. The replacement flags apply only
-to Claude.
+For Claude, `refresh` operates only on the saved label's stable private
+profile. A setup-token-only label retains that authority and uses
+`--replace-identity` once to approve its first subscription association.
+Renew a rejected setup token with `sidekick-usages claude setup-token`.
 
 For Codex, either command starts the official sign-in inside that account's
 final Sidekick-managed Codex home. It does not read or replace the active native
 Codex login. `refresh` uses browser login; `codex login --device-auth` selects
 the official device flow.
-
-`--replace-auth-method` independently authorizes setup token to subscription
-login. When method and identity both change, both flags are required.
 
 ## Resident supervisor lifecycle
 
@@ -310,11 +306,9 @@ then use the official managed-login repair if action is required.
 
 ### Doctor says the refresh credential was rejected
 
-For a Claude subscription-login label, sign into the matching account, then
-update that one label:
+For a Claude subscription-login label, repair that exact private profile:
 
 ```bash
-claude auth login
 sidekick-usages refresh <label>
 ```
 

@@ -1,8 +1,11 @@
-"""No-secret persistence rules for managed Claude authorities."""
+"""No-secret persistence rules for Claude authority transitions."""
+
+from dataclasses import replace
 
 from sidekick_usages.core.accounts.models import (
     ClaudeAccountAuthority,
     ClaudeManagedLoginAuthority,
+    ClaudeStoredLoginAuthority,
     SavedAccount,
 )
 from sidekick_usages.core.accounts.types import (
@@ -13,6 +16,10 @@ from sidekick_usages.core.types import ProviderId, RefreshStatus
 from sidekick_usages.persistence.credentials.transitions.account import (
     account_transition_state_matches,
 )
+from sidekick_usages.persistence.models.credential import (
+    StoredCredentialAuthority,
+)
+from sidekick_usages.persistence.types.credential import StoredCredentialKind
 
 
 def managed_claude_transition_matches(
@@ -67,4 +74,82 @@ def managed_claude_transition_matches(
         and candidate.last_refresh_at == candidate_subscription.verified_at
         and candidate.last_refresh_status is RefreshStatus.OK
         and candidate.last_refresh_error_code is None
+    )
+
+
+def stored_claude_transition_matches(
+    current: SavedAccount,
+    candidate: SavedAccount,
+) -> bool:
+    """Return whether stored Claude state became a managed subscription."""
+    if (
+        not account_transition_state_matches(
+            current,
+            candidate,
+            ProviderId.CLAUDE,
+        )
+        or not isinstance(current.authority, ClaudeAccountAuthority)
+        or not isinstance(candidate.authority, ClaudeAccountAuthority)
+        or current.authority.setup_token != candidate.authority.setup_token
+    ):
+        return False
+    source = current.authority.subscription
+    managed = candidate.authority.subscription
+    if not isinstance(managed, ClaudeManagedLoginAuthority):
+        return False
+    if isinstance(source, ClaudeStoredLoginAuthority):
+        authority_matches = source.authority_id == managed.authority_id and (
+            source.provider_identity is None
+            or source.provider_identity == managed.provider_identity
+        )
+    elif source is None and current.authority.setup_token is not None:
+        authority_matches = (
+            managed.authority_id != current.authority.setup_token.authority_id
+        )
+    else:
+        return False
+    return (
+        authority_matches
+        and managed.access_expires_at > managed.verified_at
+        and (
+            managed.refresh_expires_at is None
+            or managed.refresh_expires_at > managed.verified_at
+        )
+        and managed.health is CredentialHealth.HEALTHY
+        and managed.action is CredentialAction.NONE
+        and candidate.credential_health is CredentialHealth.HEALTHY
+        and candidate.last_refresh_at == managed.verified_at
+        and candidate.last_refresh_status is RefreshStatus.OK
+        and candidate.last_refresh_error_code is None
+    )
+
+
+def stored_claude_setup_transition_matches(
+    current: SavedAccount,
+    candidate: SavedAccount,
+    authority: StoredCredentialAuthority,
+) -> bool:
+    """Return whether only one protected setup-token authority changed."""
+    old_authority = current.authority
+    new_authority = candidate.authority
+    if (
+        not isinstance(old_authority, ClaudeAccountAuthority)
+        or not isinstance(new_authority, ClaudeAccountAuthority)
+        or new_authority.setup_token is None
+        or old_authority.subscription != new_authority.subscription
+        or candidate != replace(current, authority=new_authority)
+        or authority.account_id != current.account_id
+        or authority.authority_id != new_authority.setup_token.authority_id
+        or authority.provider_id is not ProviderId.CLAUDE
+        or authority.kind is not StoredCredentialKind.CLAUDE_SETUP
+    ):
+        return False
+    old_setup = old_authority.setup_token
+    subscription = new_authority.subscription
+    return (
+        old_setup is None
+        or old_setup.authority_id == new_authority.setup_token.authority_id
+    ) and (
+        subscription is None
+        or subscription.authority_id != new_authority.setup_token.authority_id
     )

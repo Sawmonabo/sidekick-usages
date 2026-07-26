@@ -75,11 +75,7 @@ class ClaudeProtectedLogin:
 
     def __enter__(self) -> Self:
         """Open this protected login projection exactly once."""
-        if (
-            self._active
-            or self._refresh_token is None
-            or self._scopes is None
-        ):
+        if self._active or self._refresh_token is None or self._scopes is None:
             raise RuntimeError(
                 "Claude protected login lease is not available."
             )

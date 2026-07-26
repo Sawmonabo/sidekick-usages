@@ -2,7 +2,6 @@
 
 from collections.abc import Mapping
 from dataclasses import replace
-from pathlib import Path
 
 from sidekick_usages.clock import Clock
 from sidekick_usages.core.accounts.models import (
@@ -12,7 +11,6 @@ from sidekick_usages.core.accounts.models import (
     SavedAccount,
 )
 from sidekick_usages.core.accounts.types import (
-    CredentialAction,
     CredentialHealth,
     SidekickAccountId,
 )
@@ -27,11 +25,22 @@ from sidekick_usages.credentials.claude.lifetime import (
 )
 from sidekick_usages.credentials.claude.managed.authority.service import (
     ClaudeManagedAuthorityReader,
+    managed_authority_matches,
     managed_login_authority,
+)
+from sidekick_usages.credentials.claude.managed.exchange.models import (
+    ClaudeExchangeFailure,
+    ClaudeExchangeSuccess,
+    authority_expectation,
+)
+from sidekick_usages.credentials.claude.managed.exchange.service import (
+    ClaudeManagedLoginExchange,
+)
+from sidekick_usages.credentials.claude.managed.exchange.types import (
+    ClaudeExchangeFailureKind,
 )
 from sidekick_usages.credentials.claude.managed.maintenance.models import (
     ClaudeManagedAuthorityResult,
-    ClaudeOfficialLoginAttempt,
     ClaudeVerifiedAuthorityExchange,
     require_managed_claude_authority,
 )
@@ -52,30 +61,14 @@ from sidekick_usages.persistence.supervisor.authority import (
     OperationAuthorityLock,
 )
 from sidekick_usages.platform.types import HostPlatform
-from sidekick_usages.providers.claude.environment import (
-    claude_refresh_environment,
-)
-from sidekick_usages.providers.claude.errors import ClaudeProcessError
 from sidekick_usages.providers.claude.managed.errors import ClaudeManagedError
-from sidekick_usages.providers.claude.managed.login.service import (
-    run_official_claude_login,
-    verify_official_claude_login_status,
-)
 from sidekick_usages.providers.claude.managed.models import ClaudeCapabilities
 from sidekick_usages.providers.claude.managed.storage.errors import (
     ClaudeProtectedStorageError,
 )
-from sidekick_usages.providers.claude.managed.storage.models import (
-    ClaudeAuthoritySnapshot,
-)
 from sidekick_usages.providers.claude.managed.storage.types import (
     ClaudeProtectedStorageFailure,
 )
-from sidekick_usages.providers.claude.managed.types import (
-    ClaudeManagedFailure,
-    ClaudeOfficialLoginResult,
-)
-from sidekick_usages.providers.claude.models import ClaudeExecutable
 from sidekick_usages.providers.claude.process import (
     run_bounded_claude_command,
 )
@@ -104,6 +97,12 @@ class ClaudeManagedAuthorityCoordinator:
         self._host = host
         self._runner = runner
         self._reader = ClaudeManagedAuthorityReader(paths, profiles)
+        self._exchange = ClaudeManagedLoginExchange(
+            self._reader,
+            clock,
+            environment=environment,
+            runner=runner,
+        )
 
     def maintain(
         self,
@@ -194,7 +193,7 @@ class ClaudeManagedAuthorityCoordinator:
                 account,
                 ClaudeManagedOutcome.INCOMPATIBLE,
             )
-        prepared = self._prepare_attempt(
+        prepared = self._prepare_exchange(
             account,
             subscription,
             capabilities,
@@ -202,21 +201,16 @@ class ClaudeManagedAuthorityCoordinator:
         )
         if isinstance(prepared, ClaudeManagedAuthorityResult):
             return prepared
-        return self._verify_attempt(
-            account,
-            subscription,
-            capabilities,
-            prepared,
-        )
+        return self._persist_exchange(prepared)
 
-    def _prepare_attempt(
+    def _prepare_exchange(
         self,
         account: SavedAccount,
         subscription: ClaudeManagedLoginAuthority,
         capabilities: ClaudeCapabilities,
         *,
         forced: bool,
-    ) -> ClaudeOfficialLoginAttempt | ClaudeManagedAuthorityResult:
+    ) -> ClaudeVerifiedAuthorityExchange | ClaudeManagedAuthorityResult:
         reference_time = self._clock.now()
         try:
             with self._reader.open_login(
@@ -227,7 +221,7 @@ class ClaudeManagedAuthorityCoordinator:
                 runner=self._runner,
             ) as protected:
                 before = protected.snapshot
-                if not _saved_authority_matches(
+                if not managed_authority_matches(
                     account,
                     subscription,
                     before,
@@ -253,112 +247,28 @@ class ClaudeManagedAuthorityCoordinator:
                         account,
                         ClaudeManagedOutcome.HEALTHY,
                     )
-                return ClaudeOfficialLoginAttempt(
+                exchanged = self._exchange.provision(
+                    capabilities,
+                    authority_expectation(before),
+                    protected.refresh_token,
+                )
+                if isinstance(exchanged, ClaudeExchangeFailure):
+                    return self._persist_failure(
+                        account,
+                        _exchange_outcome(exchanged.kind),
+                    )
+                if not isinstance(exchanged, ClaudeExchangeSuccess):
+                    raise AssertionError("Claude exchange result is invalid.")
+                return ClaudeVerifiedAuthorityExchange(
+                    account,
                     before,
-                    self._run_login(
-                        capabilities.profile.config_directory,
-                        capabilities.executable,
-                        protected.refresh_token,
-                        protected.scopes,
-                    ),
+                    exchanged.snapshot,
                 )
         except ClaudeProtectedStorageError as error:
             return self._persist_failure(
                 account,
                 _storage_outcome(error.code),
             )
-
-    def _verify_attempt(
-        self,
-        account: SavedAccount,
-        subscription: ClaudeManagedLoginAuthority,
-        capabilities: ClaudeCapabilities,
-        attempt: ClaudeOfficialLoginAttempt,
-    ) -> ClaudeManagedAuthorityResult:
-        outcome = attempt.outcome
-        if outcome is None:
-            try:
-                verify_official_claude_login_status(
-                    capabilities.executable,
-                    self._environment,
-                    capabilities.profile.config_directory,
-                    capabilities.profile.config_directory,
-                    capabilities.profile.config_directory,
-                    runner=self._runner,
-                )
-            except ClaudeManagedError:
-                outcome = ClaudeManagedOutcome.RECONCILIATION_REQUIRED
-        try:
-            after = self._reader.read(
-                capabilities,
-                self._clock.now(),
-                expected_identity=subscription.provider_identity,
-                environment=self._environment,
-                runner=self._runner,
-            )
-        except ClaudeProtectedStorageError:
-            return self._persist_failure(
-                account,
-                ClaudeManagedOutcome.RECONCILIATION_REQUIRED,
-            )
-        if outcome is not None:
-            verified_outcome = (
-                outcome
-                if after == attempt.before
-                else ClaudeManagedOutcome.RECONCILIATION_REQUIRED
-            )
-            return self._persist_failure(account, verified_outcome)
-        invalid = _invalid_transition(attempt.before, after)
-        if invalid is not None:
-            return self._persist_failure(account, invalid)
-        return self._persist_exchange(
-            ClaudeVerifiedAuthorityExchange(
-                account,
-                attempt.before,
-                after,
-            )
-        )
-
-    def _run_login(
-        self,
-        config_directory: Path,
-        executable: ClaudeExecutable,
-        refresh_token: str,
-        scopes: tuple[str, ...],
-    ) -> ClaudeManagedOutcome | None:
-        environment: dict[str, str] = {}
-        try:
-            environment.update(
-                claude_refresh_environment(
-                    self._environment,
-                    process_home=config_directory,
-                    config_directory=config_directory,
-                    refresh_token=refresh_token,
-                    scopes=scopes,
-                )
-            )
-            result = run_official_claude_login(
-                executable,
-                environment,
-                config_directory,
-                runner=self._runner,
-            )
-        except ClaudeProcessError:
-            return ClaudeManagedOutcome.INCOMPATIBLE
-        except ClaudeManagedError as error:
-            return (
-                ClaudeManagedOutcome.TIMED_OUT
-                if error.code
-                is ClaudeManagedFailure.OFFICIAL_LOGIN_TIMED_OUT
-                else ClaudeManagedOutcome.TRANSIENT
-            )
-        finally:
-            environment.clear()
-        return (
-            None
-            if result is ClaudeOfficialLoginResult.SUCCEEDED
-            else ClaudeManagedOutcome.TRANSIENT
-        )
 
     def _persist_exchange(
         self,
@@ -421,9 +331,8 @@ class ClaudeManagedAuthorityCoordinator:
         account: SavedAccount,
     ) -> ClaudeSubscriptionAuthority | None:
         authority = account.authority
-        if (
-            account.provider_id is not ProviderId.CLAUDE
-            or not isinstance(authority, ClaudeAccountAuthority)
+        if account.provider_id is not ProviderId.CLAUDE or not isinstance(
+            authority, ClaudeAccountAuthority
         ):
             raise ValueError("Account is not owned by Claude.")
         return authority.subscription
@@ -442,46 +351,6 @@ class ClaudeManagedAuthorityCoordinator:
         return ClaudeManagedAuthorityResult(outcome, account)
 
 
-def _saved_authority_matches(
-    account: SavedAccount,
-    authority: ClaudeManagedLoginAuthority,
-    snapshot: ClaudeAuthoritySnapshot,
-) -> bool:
-    return (
-        account.plan == snapshot.plan
-        and authority.provider_identity == snapshot.provider_identity
-        and authority.generation == snapshot.generation
-        and authority.access_expires_at == snapshot.access_expires_at
-        and authority.refresh_expires_at == snapshot.refresh_expires_at
-        and authority.executable_version == snapshot.executable_version
-    )
-
-
-def _invalid_transition(
-    before: ClaudeAuthoritySnapshot,
-    after: ClaudeAuthoritySnapshot,
-) -> ClaudeManagedOutcome | None:
-    if after.generation == before.generation:
-        return ClaudeManagedOutcome.UNCHANGED
-    if (
-        after.profile != before.profile
-        or after.provider_identity != before.provider_identity
-        or frozenset(after.scopes) != frozenset(before.scopes)
-        or after.access_expires_at <= before.access_expires_at
-        or (
-            before.refresh_expires_at is not None
-            and (
-                after.refresh_expires_at is None
-                or after.refresh_expires_at < before.refresh_expires_at
-            )
-        )
-        or after.health is not CredentialHealth.HEALTHY
-        or after.action is not CredentialAction.NONE
-    ):
-        return ClaudeManagedOutcome.RECONCILIATION_REQUIRED
-    return None
-
-
 def _storage_outcome(
     failure: ClaudeProtectedStorageFailure,
 ) -> ClaudeManagedOutcome:
@@ -498,6 +367,23 @@ def _storage_outcome(
     if failure is ClaudeProtectedStorageFailure.MALFORMED:
         return ClaudeManagedOutcome.MALFORMED
     return ClaudeManagedOutcome.INCOMPATIBLE
+
+
+def _exchange_outcome(
+    failure: ClaudeExchangeFailureKind,
+) -> ClaudeManagedOutcome:
+    if failure is ClaudeExchangeFailureKind.UNCHANGED:
+        return ClaudeManagedOutcome.UNCHANGED
+    if failure is ClaudeExchangeFailureKind.TIMED_OUT:
+        return ClaudeManagedOutcome.TIMED_OUT
+    if failure is ClaudeExchangeFailureKind.INCOMPATIBLE:
+        return ClaudeManagedOutcome.INCOMPATIBLE
+    if failure in {
+        ClaudeExchangeFailureKind.LOGIN_FAILED,
+        ClaudeExchangeFailureKind.TRANSIENT,
+    }:
+        return ClaudeManagedOutcome.TRANSIENT
+    return ClaudeManagedOutcome.RECONCILIATION_REQUIRED
 
 
 def _failure_health(

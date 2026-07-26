@@ -82,6 +82,10 @@ from sidekick_usages.providers.claude.models import ClaudeCommandResult
 from sidekick_usages.providers.claude.provider import ClaudeProvider
 from sidekick_usages.serialization.json import JsonObject
 from tests.fakes.claude.managed import (
+    CLAUDE_LOGGED_IN_STATUS,
+    CLAUDE_LOGGED_OUT_STATUS,
+    CLAUDE_LOGIN_HELP_OUTPUT,
+    CLAUDE_VERSION_OUTPUT,
     ClaudeRunner,
     credential_payload,
     managed_capabilities,
@@ -101,10 +105,6 @@ _AUTHORITY_A = AuthorityId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
 _AUTHORITY_B = AuthorityId("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
 _INITIAL_EXPIRY = REFERENCE_TIME + timedelta(minutes=10)
 _FUTURE_EXPIRY = REFERENCE_TIME + timedelta(hours=1)
-_LOGIN_HELP_OUTPUT = (
-    b"Usage: claude auth login "
-    b"[--claudeai] [--console] [--email <email>] [--sso]\n"
-)
 _MANAGED_LOGIN_ENVIRONMENT_KEYS = frozenset(
     {
         "APPDATA",
@@ -120,14 +120,6 @@ _MANAGED_LOGIN_ENVIRONMENT_KEYS = frozenset(
         "XDG_CONFIG_HOME",
     }
 )
-_LOGGED_IN_STATUS = (
-    b'{"loggedIn":true,"authMethod":"claude.ai",'
-    b'"apiProvider":"firstParty"}\n'
-)
-_LOGGED_OUT_STATUS = (
-    b'{"loggedIn":false,"authMethod":"none","apiProvider":"firstParty"}\n'
-)
-_VERSION_OUTPUT = b"2.1.220 (Claude Code)\n"
 _PRIVATE_PROCESS_UMASK = 0o077 if os.name == "posix" else -1
 
 
@@ -313,11 +305,14 @@ def _assert_managed_login_boundaries(
         Path(sys.executable).resolve(),
         Path(sys.executable).resolve(),
     )
-    assert tuple(
-        Path(record[1]["CLAUDE_CONFIG_DIR"])
-        for record in records
-        if record[1] is not None
-    ) == profiles
+    assert (
+        tuple(
+            Path(record[1]["CLAUDE_CONFIG_DIR"])
+            for record in records
+            if record[1] is not None
+        )
+        == profiles
+    )
     for record, expected_token in zip(
         records,
         expected_tokens,
@@ -417,15 +412,15 @@ def test_managed_claude_maintenance_isolated_per_account_and_continues(
     ) -> ClaudeCommandResult:
         del working_directory
         if arguments == ("--version",):
-            return ClaudeCommandResult(0, _VERSION_OUTPUT)
+            return ClaudeCommandResult(0, CLAUDE_VERSION_OUTPUT)
         if arguments == ("auth", "login", "--help"):
-            return ClaudeCommandResult(0, _LOGIN_HELP_OUTPUT)
+            return ClaudeCommandResult(0, CLAUDE_LOGIN_HELP_OUTPUT)
         if arguments == ("auth", "status"):
             assert environment is not None
             return (
-                ClaudeCommandResult(0, _LOGGED_IN_STATUS)
+                ClaudeCommandResult(0, CLAUDE_LOGGED_IN_STATUS)
                 if Path(environment["CLAUDE_CONFIG_DIR"]) in final_profiles
-                else ClaudeCommandResult(1, _LOGGED_OUT_STATUS)
+                else ClaudeCommandResult(1, CLAUDE_LOGGED_OUT_STATUS)
             )
         if arguments != ("auth", "login", "--claudeai"):
             raise AssertionError(f"Unexpected Claude command: {arguments!r}")
@@ -474,9 +469,7 @@ def test_managed_claude_maintenance_isolated_per_account_and_continues(
         ("refresh-account-a-old", "refresh-account-b-old"),
         unsafe_parent,
     )
-    saved = {
-        account.account_id: account for account in store.saved_accounts()
-    }
+    saved = {account.account_id: account for account in store.saved_accounts()}
     protected_a = profiles.read_relative_authority_file(
         str(_ACCOUNT_A),
         CLAUDE_CREDENTIAL_FILE,
@@ -490,10 +483,7 @@ def test_managed_claude_maintenance_isolated_per_account_and_continues(
     assert protected_a.data == payload_a
     assert protected_b.data == refreshed_b
     assert saved[_ACCOUNT_A].authority == original[0].authority
-    assert (
-        saved[_ACCOUNT_A].credential_health
-        is original[0].credential_health
-    )
+    assert saved[_ACCOUNT_A].credential_health is original[0].credential_health
     assert saved[_ACCOUNT_A].last_refresh_status is RefreshStatus.FAILED
     assert saved[_ACCOUNT_B].last_refresh_status is RefreshStatus.OK
     assert (
@@ -622,15 +612,15 @@ def test_managed_claude_maintenance_rejects_unverified_generation(
     ) -> ClaudeCommandResult:
         del working_directory
         if arguments == ("--version",):
-            return ClaudeCommandResult(0, _VERSION_OUTPUT)
+            return ClaudeCommandResult(0, CLAUDE_VERSION_OUTPUT)
         if arguments == ("auth", "login", "--help"):
-            return ClaudeCommandResult(0, _LOGIN_HELP_OUTPUT)
+            return ClaudeCommandResult(0, CLAUDE_LOGIN_HELP_OUTPUT)
         if arguments == ("auth", "status"):
             assert environment is not None
             return (
-                ClaudeCommandResult(0, _LOGGED_IN_STATUS)
+                ClaudeCommandResult(0, CLAUDE_LOGGED_IN_STATUS)
                 if Path(environment["CLAUDE_CONFIG_DIR"]) == profile
-                else ClaudeCommandResult(1, _LOGGED_OUT_STATUS)
+                else ClaudeCommandResult(1, CLAUDE_LOGGED_OUT_STATUS)
             )
         if arguments == ("auth", "login", "--claudeai"):
             return ClaudeCommandResult(

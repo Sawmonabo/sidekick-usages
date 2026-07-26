@@ -352,7 +352,7 @@ class CodexAuthMigrationCoordinator:
                 current.authority.subscription,
                 CodexStoredAuthority,
             ):
-                self._store.migrate_codex_authority(
+                self._store.migrate_stored_authority(
                     candidate,
                     expected=current,
                 )

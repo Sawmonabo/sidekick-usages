@@ -24,9 +24,11 @@ from sidekick_usages.providers.claude.models import (
 )
 from sidekick_usages.providers.claude.process import (
     run_bounded_claude_command,
+    run_interactive_claude_command,
 )
 from sidekick_usages.providers.claude.types import (
     ClaudeCommandRunner,
+    ClaudeInteractiveCommandRunner,
     ClaudeProcessFailure,
 )
 from sidekick_usages.serialization.json import decode_json_object
@@ -34,6 +36,7 @@ from sidekick_usages.serialization.json import decode_json_object
 _AUTH_STATUS_OUTPUT_BYTES = 4096
 _AUTH_STATUS_TIMEOUT_SECONDS = 5.0
 _MAXIMUM_LOGIN_OUTPUT_BYTES = 1024 * 1024
+_INTERACTIVE_LOGIN_TIMEOUT_SECONDS = 600.0
 _OFFICIAL_LOGIN_TIMEOUT_SECONDS = 60.0
 _PRIVATE_PROCESS_UMASK = 0o077
 _SUBSCRIPTION_AUTH_METHOD = "claude.ai"
@@ -50,12 +53,7 @@ def run_official_claude_login(
     verify_claude_executable(executable)
     try:
         result = runner(
-            (
-                str(executable.provenance.path),
-                "auth",
-                "login",
-                "--claudeai",
-            ),
+            _official_login_command(executable),
             timeout_seconds=_OFFICIAL_LOGIN_TIMEOUT_SECONDS,
             maximum_output_bytes=_MAXIMUM_LOGIN_OUTPUT_BYTES,
             environment=environment,
@@ -78,6 +76,39 @@ def run_official_claude_login(
     )
     del result
     return login_result
+
+
+def run_interactive_official_claude_login(
+    executable: ClaudeExecutable,
+    environment: Mapping[str, str],
+    working_directory: Path,
+    *,
+    runner: ClaudeInteractiveCommandRunner = run_interactive_claude_command,
+) -> ClaudeOfficialLoginResult:
+    """Run official login with direct provider-owned terminal interaction."""
+    verify_claude_executable(executable)
+    try:
+        return_code = runner(
+            _official_login_command(executable),
+            timeout_seconds=_INTERACTIVE_LOGIN_TIMEOUT_SECONDS,
+            environment=environment,
+            working_directory=working_directory,
+            umask=_PRIVATE_PROCESS_UMASK if os.name == "posix" else -1,
+        )
+    except ClaudeProcessError as error:
+        failure = (
+            ClaudeManagedFailure.OFFICIAL_LOGIN_TIMED_OUT
+            if error.code is ClaudeProcessFailure.TIMED_OUT
+            else ClaudeManagedFailure.OFFICIAL_LOGIN_UNAVAILABLE
+        )
+        raise ClaudeManagedError(failure) from None
+    finally:
+        verify_claude_executable(executable)
+    return (
+        ClaudeOfficialLoginResult.SUCCEEDED
+        if return_code == 0
+        else ClaudeOfficialLoginResult.FAILED
+    )
 
 
 def verify_logged_out_claude_status(
@@ -164,6 +195,18 @@ def _read_auth_status(
     status = _decode_auth_status(result, failure)
     del result
     return status
+
+
+def _official_login_command(
+    executable: ClaudeExecutable,
+) -> tuple[str, ...]:
+    """Return the sole supported subscription-login command."""
+    return (
+        str(executable.provenance.path),
+        "auth",
+        "login",
+        "--claudeai",
+    )
 
 
 def _decode_auth_status(

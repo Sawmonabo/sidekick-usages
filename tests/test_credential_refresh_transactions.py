@@ -55,6 +55,7 @@ from tests.test_support import (
     FixedClock,
     RuntimeCredentialResolver,
     make_account_store,
+    remove_saved_account,
 )
 
 _TWO_CALLERS = 2
@@ -451,7 +452,7 @@ def test_changed_or_removed_target_is_never_resurrected(
     def replace_or_remove(account: Account) -> RefreshResult:
         external = make_account_store(tmp_path)
         if remove_target:
-            assert external.remove(str(label))
+            remove_saved_account(external, label)
         else:
             replacement = login_account(generation="manual")
             external.persist(replacement)
@@ -547,7 +548,7 @@ def test_target_disappearance_during_stabilization_is_typed(
     label = AccountLabel("claude-team")
     stale_store = make_account_store(tmp_path, (login_account(),))
     external = make_account_store(tmp_path)
-    assert external.remove(str(label))
+    remove_saved_account(external, label)
     provider = RefreshProvider()
     coordinator = CredentialRefreshCoordinator(
         stale_store,

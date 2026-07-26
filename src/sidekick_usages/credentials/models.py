@@ -69,13 +69,6 @@ class CredentialSaveSuccess:
 
 
 @dataclass(frozen=True, slots=True)
-class ClaudeSetupTokenSavePreview:
-    """Authorized login-to-setup method-change preview."""
-
-    label: AccountLabel
-
-
-@dataclass(frozen=True, slots=True)
 class CredentialRefreshSuccess:
     """One account's credentials were durably refreshed."""
 
@@ -91,6 +84,6 @@ class CredentialUpdateSuccess:
 
 @dataclass(frozen=True, slots=True)
 class CredentialLoginSuccess:
-    """One Codex managed login was verified and committed."""
+    """One provider-managed login was verified and committed."""
 
     label: AccountLabel

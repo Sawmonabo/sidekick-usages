@@ -14,9 +14,9 @@ from sidekick_usages.core.types import AccountLabel, ProviderId
 from sidekick_usages.credentials.authorities import credential_resolver_for
 from sidekick_usages.credentials.refresh import CredentialRefreshCoordinator
 from sidekick_usages.credentials.service import CredentialService
-from sidekick_usages.doctor.service import (
-    DoctorReadyResult,
-    DoctorService,
+from sidekick_usages.doctor.accounts.models import DoctorReadyResult
+from sidekick_usages.doctor.accounts.service import DoctorService
+from sidekick_usages.doctor.presentation.service import (
     doctor_json,
     render_doctor,
 )
@@ -93,7 +93,6 @@ def test_provider_secret_never_crosses_persisted_or_doctor_error_channels(
         store,
         http,
         {ProviderId.CLAUDE: provider},
-        clock=clock,
         refresh_coordinator=refresh,
     )
 
@@ -114,12 +113,11 @@ def test_provider_secret_never_crosses_persisted_or_doctor_error_channels(
         service,
         clock=clock,
     ).refresh_account(store.saved_accounts()[0], force=True)
-    saved = store.get("team")
-    assert saved is not None
+    saved = store.saved_accounts()[0]
     diagnostics = DoctorService(
-        tuple(store),
-        {ProviderId.CLAUDE: provider},
-        {},
+        store.saved_accounts(),
+        {ProviderId.CLAUDE},
+        set(),
         clock,
     ).diagnostics()
     completed = DoctorReadyResult(
@@ -138,11 +136,9 @@ def test_provider_secret_never_crosses_persisted_or_doctor_error_channels(
     )
     machine_output = json.dumps(doctor_json(completed))
 
-    assert saved.last_refresh_error == (
-        "Claude rejected the saved subscription login."
-    )
     for rendered in (
         repr(outcome),
+        repr(saved),
         store.path.read_text(),
         repr(diagnostics),
         human_output.getvalue(),

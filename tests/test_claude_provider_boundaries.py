@@ -81,6 +81,9 @@ from sidekick_usages.providers.claude.types import (
 )
 from sidekick_usages.serialization.json import JsonObject
 from tests.fakes.claude.managed import (
+    CLAUDE_LOGGED_OUT_STATUS,
+    CLAUDE_LOGIN_HELP_OUTPUT,
+    CLAUDE_VERSION_OUTPUT,
     ClaudeRunner,
     credential_payload,
     managed_capabilities,
@@ -96,15 +99,7 @@ from tests.test_support import (
 SETUP_TOKEN_TIMEOUT_SECONDS = 600
 _ACCOUNT_A = SidekickAccountId("11111111-1111-4111-8111-111111111111")
 _ACCOUNT_B = SidekickAccountId("22222222-2222-4222-8222-222222222222")
-_CLAUDE_VERSION_OUTPUT = b"2.1.220 (Claude Code)\n"
-_LOGIN_HELP_OUTPUT = (
-    b"Usage: claude auth login "
-    b"[--claudeai] [--console] [--email <email>] [--sso]\n"
-)
 _PRIVATE_DIRECTORY_MODE = 0o700
-_STATUS_OUTPUT = (
-    b'{"loggedIn":false,"authMethod":"none","apiProvider":"firstParty"}\n'
-)
 _PROCESS_OUTPUT_LIMIT = 1024 * 1024
 _PROCESS_TIMEOUT_SECONDS = 0.01
 _AUTHORITY_ID = AuthorityId("33333333-3333-4333-8333-333333333333")
@@ -143,11 +138,14 @@ def _probe_runner(
 ) -> ClaudeRunner:
     return ClaudeRunner(
         {
-            ("--version",): ClaudeCommandResult(0, _CLAUDE_VERSION_OUTPUT),
-            ("auth", "status"): ClaudeCommandResult(1, _STATUS_OUTPUT),
+            ("--version",): ClaudeCommandResult(0, CLAUDE_VERSION_OUTPUT),
+            ("auth", "status"): ClaudeCommandResult(
+                1,
+                CLAUDE_LOGGED_OUT_STATUS,
+            ),
             ("auth", "login", "--help"): ClaudeCommandResult(
                 login_return_code,
-                _LOGIN_HELP_OUTPUT,
+                CLAUDE_LOGIN_HELP_OUTPUT,
             ),
         }
     )
@@ -234,7 +232,7 @@ def test_setup_token_capture_returns_no_arbitrary_process_output(
     raw_secret = "oauth-code=arbitrary-secret-sentinel"
     runner = ClaudeRunner(
         {
-            ("--version",): ClaudeCommandResult(0, _CLAUDE_VERSION_OUTPUT),
+            ("--version",): ClaudeCommandResult(0, CLAUDE_VERSION_OUTPUT),
             ("setup-token",): ClaudeCommandResult(
                 0,
                 f"{raw_secret}\nToken: {first_token}\n".encode(),
@@ -362,8 +360,10 @@ def test_supported_claude_boundary_freezes_executable_and_profiles(
         assert environment is not None
         probe_home = Path(environment["HOME"])
         assert environment == {
+            "APPDATA": str(probe_home / "AppData" / "Roaming"),
             "CLAUDE_CONFIG_DIR": str(probe_home.parent / "config"),
             "HOME": str(probe_home),
+            "LOCALAPPDATA": str(probe_home / "AppData" / "Local"),
             "PATH": source_environment["PATH"],
             "USERPROFILE": str(probe_home),
             "XDG_CONFIG_HOME": str(probe_home / ".config"),

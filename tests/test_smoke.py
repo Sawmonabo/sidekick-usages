@@ -19,6 +19,7 @@ from sidekick_usages.cli.context import (
 )
 from sidekick_usages.core.models import Account, ClaudeSetupTokenCredentials
 from sidekick_usages.core.types import AccountLabel, ProviderId
+from sidekick_usages.doctor.accounts.models import HeartbeatSupport
 from sidekick_usages.http.client import HttpClient
 from sidekick_usages.persistence.accounts.store import AccountStore
 from sidekick_usages.persistence.errors import ManagedFileReadError
@@ -129,7 +130,10 @@ def test_composition_honors_empty_provider_maps_and_current_store(
             "unsupported"
         )
         assert isinstance(state, DoctorReady)
-        assert state.service.diagnostics()[0].heartbeat_supported is False
+        assert (
+            state.service.diagnostics()[0].heartbeat_support
+            is HeartbeatSupport.UNSUPPORTED
+        )
     finally:
         doctor.close()
         application.close()

@@ -76,6 +76,10 @@ _CREDENTIAL_LEASE_CONSUMERS = frozenset(
     {
         "src/sidekick_usages/cli/context.py",
         "src/sidekick_usages/credentials/authorities.py",
+        (
+            "src/sidekick_usages/credentials/claude/managed/"
+            "migration/service.py"
+        ),
         "src/sidekick_usages/credentials/codex/managed/resolver.py",
         "src/sidekick_usages/credentials/refresh.py",
         "src/sidekick_usages/heartbeat/service.py",
@@ -259,7 +263,7 @@ def _check_import(
                         (
                             "sidekick_usages.cli",
                             "sidekick_usages.daemon",
-                            "sidekick_usages.doctor.service",
+                            "sidekick_usages.doctor",
                             "sidekick_usages.heartbeat",
                             "sidekick_usages.maintenance",
                             "sidekick_usages.update",
