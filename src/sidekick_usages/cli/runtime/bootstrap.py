@@ -13,6 +13,8 @@ from sidekick_usages.platform.executable import qualify_executable
 APPLICATION_MODULE = "sidekick_usages.cli.runtime.application"
 CACHED_DASHBOARD_MODULE = "sidekick_usages.cli.runtime.dashboard"
 INTERACTIVE_DASHBOARD_MODULE = "sidekick_usages.entrypoints.dashboard"
+PYTHON_IO_ENCODING_ENVIRONMENT_KEY = "PYTHONIOENCODING"
+UTF8_IO_ENCODING = "utf-8"
 PROCESS_LAUNCH_FAILURE_MESSAGE = "Sidekick could not start the requested CLI."
 PROCESS_LAUNCH_FAILURE_EXIT_CODE = 2
 
@@ -63,6 +65,7 @@ def _execute_module(module: str, arguments: Sequence[str]) -> int:
     command = (str(executable), "-m", module, *arguments)
     environment = os.environ.copy()
     if sys.platform == "win32":
+        environment[PYTHON_IO_ENCODING_ENVIRONMENT_KEY] = UTF8_IO_ENCODING
         return subprocess.run(
             command,
             check=False,

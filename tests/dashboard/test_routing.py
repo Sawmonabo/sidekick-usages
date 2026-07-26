@@ -66,6 +66,7 @@ def _assert_execve_process_boundary(
         raise OSError("Synthetic no-shell replacement failure.")
 
     with monkeypatch.context() as replacement_boundary:
+        replacement_boundary.setattr(bootstrap.sys, "platform", "linux")
         replacement_boundary.setattr(bootstrap.os, "execve", record_execve)
         replacement_boundary.setattr(
             bootstrap,
@@ -119,13 +120,19 @@ def _assert_execve_process_boundary(
         windows_calls.append((command, check, env))
         return subprocess.CompletedProcess(command, WINDOWS_CHILD_EXIT_CODE)
 
+    expected_environment: dict[str, str]
     with monkeypatch.context() as windows_boundary:
         windows_boundary.setattr(bootstrap.sys, "platform", "win32")
         windows_boundary.setattr(bootstrap.subprocess, "run", run_windows)
-        assert (
-            bootstrap.execute_application(("--version",))
-            == WINDOWS_CHILD_EXIT_CODE
+        windows_boundary.setenv(
+            bootstrap.PYTHON_IO_ENCODING_ENVIRONMENT_KEY,
+            "cp1252",
         )
+        expected_environment = os.environ.copy()
+        expected_environment[bootstrap.PYTHON_IO_ENCODING_ENVIRONMENT_KEY] = (
+            bootstrap.UTF8_IO_ENCODING
+        )
+        assert bootstrap.main(()) == WINDOWS_CHILD_EXIT_CODE
 
     assert len(windows_calls) == 1
     command, check, environment = windows_calls[0]
@@ -133,10 +140,9 @@ def _assert_execve_process_boundary(
         sys.executable,
         "-m",
         bootstrap.APPLICATION_MODULE,
-        "--version",
     )
     assert check is False
-    assert environment == os.environ
+    assert environment == expected_environment
     assert environment is not os.environ
 
 
