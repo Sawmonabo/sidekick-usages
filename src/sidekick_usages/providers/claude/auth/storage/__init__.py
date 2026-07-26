@@ -1,0 +1,1 @@
+"""Protected Claude credential storage."""

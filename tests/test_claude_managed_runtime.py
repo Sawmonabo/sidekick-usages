@@ -36,9 +36,6 @@ from sidekick_usages.core.types import (
     ProviderId,
 )
 from sidekick_usages.credentials.authorities import credential_resolver_for
-from sidekick_usages.credentials.claude.managed.authority.service import (
-    CLAUDE_CREDENTIAL_FILE,
-)
 from sidekick_usages.credentials.claude.managed.migration.models import (
     ClaudeMigrationRuntime,
 )
@@ -62,6 +59,9 @@ from sidekick_usages.platform.types import HostPlatform
 from sidekick_usages.providers.base import (
     ProviderFailure,
     ProviderFailureKind,
+)
+from sidekick_usages.providers.claude.auth.storage.service import (
+    CLAUDE_CREDENTIAL_FILE,
 )
 from tests.fakes.claude.managed import (
     ClaudeManagedLoginScript,

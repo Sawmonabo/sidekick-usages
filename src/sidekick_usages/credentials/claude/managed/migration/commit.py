@@ -35,7 +35,7 @@ from sidekick_usages.persistence.supervisor.authority import (
     OperationAuthorityLock,
 )
 from sidekick_usages.providers.base import ProviderFailureKind
-from sidekick_usages.providers.claude.managed.storage.models import (
+from sidekick_usages.providers.claude.auth.storage.models import (
     ClaudeAuthoritySnapshot,
 )
 

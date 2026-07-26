@@ -1,4 +1,4 @@
-"""Managed Claude credential-generation identity."""
+"""Claude credential-generation identity."""
 
 from sidekick_usages.core.accounts.generation import (
     hashed_authority_generation,

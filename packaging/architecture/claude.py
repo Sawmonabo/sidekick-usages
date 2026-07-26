@@ -16,9 +16,8 @@ _CLAUDE_CONFIG_VARIABLE = "CLAUDE_CONFIG_DIR"
 _CREDENTIAL_FILE = ".credentials.json"
 _CREDENTIAL_FILE_OWNERS = frozenset(
     {
-        "src/sidekick_usages/credentials/claude/managed/authority/service.py",
         "src/sidekick_usages/persistence/credentials/refresh/service.py",
-        "src/sidekick_usages/providers/claude/credentials.py",
+        "src/sidekick_usages/providers/claude/auth/storage/service.py",
     }
 )
 _EXECUTABLE_OWNER = "src/sidekick_usages/platform/executable.py"
@@ -29,7 +28,7 @@ _KEYCHAIN_MUTATIONS = frozenset(
     }
 )
 _KEYCHAIN_OWNER = (
-    "src/sidekick_usages/providers/claude/managed/storage/keychain.py"
+    "src/sidekick_usages/providers/claude/auth/storage/keychain.py"
 )
 _KEYCHAIN_READ_CONSTANTS = frozenset(
     {

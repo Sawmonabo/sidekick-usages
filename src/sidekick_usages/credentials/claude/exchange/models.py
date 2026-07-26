@@ -7,10 +7,10 @@ from sidekick_usages.core.accounts.types import (
     AuthorityGeneration,
     ProviderIdentity,
 )
-from sidekick_usages.credentials.claude.managed.exchange.types import (
+from sidekick_usages.credentials.claude.exchange.types import (
     ClaudeExchangeFailureKind,
 )
-from sidekick_usages.providers.claude.managed.storage.models import (
+from sidekick_usages.providers.claude.auth.storage.models import (
     ClaudeAuthoritySnapshot,
 )
 

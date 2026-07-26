@@ -20,6 +20,17 @@ from sidekick_usages.core.expiry import (
     refresh_due,
 )
 from sidekick_usages.core.types import ProviderId, RefreshStatus
+from sidekick_usages.credentials.claude.exchange.models import (
+    ClaudeExchangeFailure,
+    ClaudeExchangeSuccess,
+    authority_expectation,
+)
+from sidekick_usages.credentials.claude.exchange.service import (
+    ClaudeOfficialLoginExchange,
+)
+from sidekick_usages.credentials.claude.exchange.types import (
+    ClaudeExchangeFailureKind,
+)
 from sidekick_usages.credentials.claude.lifetime import (
     CLAUDE_REFRESH_MARGIN,
 )
@@ -27,17 +38,6 @@ from sidekick_usages.credentials.claude.managed.authority.service import (
     ClaudeManagedAuthorityReader,
     managed_authority_matches,
     managed_login_authority,
-)
-from sidekick_usages.credentials.claude.managed.exchange.models import (
-    ClaudeExchangeFailure,
-    ClaudeExchangeSuccess,
-    authority_expectation,
-)
-from sidekick_usages.credentials.claude.managed.exchange.service import (
-    ClaudeManagedLoginExchange,
-)
-from sidekick_usages.credentials.claude.managed.exchange.types import (
-    ClaudeExchangeFailureKind,
 )
 from sidekick_usages.credentials.claude.managed.maintenance.models import (
     ClaudeManagedAuthorityResult,
@@ -61,14 +61,14 @@ from sidekick_usages.persistence.supervisor.authority import (
     OperationAuthorityLock,
 )
 from sidekick_usages.platform.types import HostPlatform
-from sidekick_usages.providers.claude.managed.errors import ClaudeManagedError
-from sidekick_usages.providers.claude.managed.models import ClaudeCapabilities
-from sidekick_usages.providers.claude.managed.storage.errors import (
+from sidekick_usages.providers.claude.auth.storage.errors import (
     ClaudeProtectedStorageError,
 )
-from sidekick_usages.providers.claude.managed.storage.types import (
+from sidekick_usages.providers.claude.auth.storage.types import (
     ClaudeProtectedStorageFailure,
 )
+from sidekick_usages.providers.claude.managed.errors import ClaudeManagedError
+from sidekick_usages.providers.claude.managed.models import ClaudeCapabilities
 from sidekick_usages.providers.claude.process import (
     run_bounded_claude_command,
 )
@@ -97,7 +97,7 @@ class ClaudeManagedAuthorityCoordinator:
         self._host = host
         self._runner = runner
         self._reader = ClaudeManagedAuthorityReader(paths, profiles)
-        self._exchange = ClaudeManagedLoginExchange(
+        self._exchange = ClaudeOfficialLoginExchange(
             self._reader,
             clock,
             environment=environment,

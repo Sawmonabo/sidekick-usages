@@ -3,16 +3,16 @@
 import os
 from collections.abc import Mapping
 
+from sidekick_usages.providers.claude.auth.login.service import (
+    verify_logged_out_claude_status,
+)
 from sidekick_usages.providers.claude.environment import (
-    claude_probe_environment,
+    claude_private_profile_environment,
 )
 from sidekick_usages.providers.claude.errors import ClaudeProcessError
 from sidekick_usages.providers.claude.managed.errors import ClaudeManagedError
 from sidekick_usages.providers.claude.managed.executable import (
     verify_claude_executable,
-)
-from sidekick_usages.providers.claude.managed.login.service import (
-    verify_logged_out_claude_status,
 )
 from sidekick_usages.providers.claude.managed.models import ClaudeCapabilities
 from sidekick_usages.providers.claude.process import (
@@ -33,9 +33,9 @@ def logout_managed_claude_profile(
 ) -> None:
     """Officially log out and verify one exact private Claude profile."""
     profile = capabilities.profile
-    environment = claude_probe_environment(
+    environment = claude_private_profile_environment(
         source_environment,
-        isolated_home=profile.config_directory,
+        process_home=profile.config_directory,
         config_directory=profile.config_directory,
     )
     verify_claude_executable(capabilities.executable)

@@ -22,31 +22,33 @@ from sidekick_usages.persistence.errors import (
 from sidekick_usages.persistence.private.credentials import (
     PrivateCredentialTree,
 )
-from sidekick_usages.providers.claude.managed.models import ClaudeCapabilities
-from sidekick_usages.providers.claude.managed.storage.errors import (
+from sidekick_usages.providers.claude.auth.storage.errors import (
     ClaudeProtectedStorageError,
 )
-from sidekick_usages.providers.claude.managed.storage.models import (
+from sidekick_usages.providers.claude.auth.storage.models import (
     ClaudeAuthoritySnapshot,
     ClaudeProtectedLogin,
 )
-from sidekick_usages.providers.claude.managed.storage.service import (
+from sidekick_usages.providers.claude.auth.storage.service import (
+    CLAUDE_CREDENTIAL_FILE,
     protected_claude_login,
     read_protected_claude_authority,
 )
-from sidekick_usages.providers.claude.managed.storage.types import (
+from sidekick_usages.providers.claude.auth.storage.types import (
     ClaudeProtectedStorageFailure,
 )
+from sidekick_usages.providers.claude.managed.models import ClaudeCapabilities
 from sidekick_usages.providers.claude.models import ClaudeManagedProfile
 from sidekick_usages.providers.claude.process import (
     run_bounded_claude_command,
 )
-from sidekick_usages.providers.claude.types import ClaudeCommandRunner
+from sidekick_usages.providers.claude.types import (
+    ClaudeCommandRunner,
+    ClaudeProfile,
+)
 
-CLAUDE_CREDENTIAL_FILE = ".credentials.json"
 
-
-class ClaudeManagedCredentialFiles:
+class _ClaudeManagedCredentialFiles:
     """Read one exact private Claude profile through persistence."""
 
     def __init__(
@@ -59,7 +61,7 @@ class ClaudeManagedCredentialFiles:
         self._paths = paths
         self._profiles = profiles
 
-    def read(self, profile: ClaudeManagedProfile) -> bytes | None:
+    def read(self, profile: ClaudeProfile) -> bytes | None:
         """Return qualified bounded credentials or proven absence."""
         relative = self._relative(profile)
         try:
@@ -81,7 +83,7 @@ class ClaudeManagedCredentialFiles:
             ) from None
         return None if snapshot is None else snapshot.data
 
-    def present(self, profile: ClaudeManagedProfile) -> bool:
+    def present(self, profile: ClaudeProfile) -> bool:
         """Report the exact artifact without reading its contents."""
         relative = self._relative(profile)
         try:
@@ -98,7 +100,11 @@ class ClaudeManagedCredentialFiles:
                 ClaudeProtectedStorageFailure.UNREADABLE
             ) from None
 
-    def _relative(self, profile: ClaudeManagedProfile) -> str:
+    def _relative(self, profile: ClaudeProfile) -> str:
+        if not isinstance(profile, ClaudeManagedProfile):
+            raise ClaudeProtectedStorageError(
+                ClaudeProtectedStorageFailure.UNSAFE
+            )
         try:
             expected = managed_claude_config_dir(
                 self._paths,
@@ -123,7 +129,7 @@ class ClaudeManagedAuthorityReader:
         paths: ApplicationPaths,
         profiles: PrivateCredentialTree,
     ) -> None:
-        self._files = ClaudeManagedCredentialFiles(paths, profiles)
+        self._files = _ClaudeManagedCredentialFiles(paths, profiles)
 
     def read(
         self,

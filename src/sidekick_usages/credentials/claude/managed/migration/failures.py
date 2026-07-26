@@ -1,7 +1,7 @@
 """Provider-safe failures for managed Claude migration."""
 
 from sidekick_usages.core.types import ProviderId
-from sidekick_usages.credentials.claude.managed.exchange.types import (
+from sidekick_usages.credentials.claude.exchange.types import (
     ClaudeExchangeFailureKind,
 )
 from sidekick_usages.providers.base import (

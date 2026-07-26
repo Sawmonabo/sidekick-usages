@@ -36,6 +36,12 @@ from sidekick_usages.providers.base import (
     RefreshSuccess,
     runtime_account,
 )
+from sidekick_usages.providers.claude.auth.login.models import (
+    ClaudeOfficialLoginResult,
+)
+from sidekick_usages.providers.claude.auth.login.service import (
+    run_official_claude_login,
+)
 from sidekick_usages.providers.claude.credentials import (
     CLAUDE_SUBSCRIPTION_LOGIN_REJECTED,
     detect_credentials,
@@ -45,20 +51,14 @@ from sidekick_usages.providers.claude.credentials import (
     unreadable_credentials,
 )
 from sidekick_usages.providers.claude.environment import (
-    claude_refresh_environment,
+    claude_private_refresh_environment,
 )
 from sidekick_usages.providers.claude.errors import ClaudeProcessError
 from sidekick_usages.providers.claude.managed.errors import ClaudeManagedError
 from sidekick_usages.providers.claude.managed.executable import (
     discover_claude_executable,
 )
-from sidekick_usages.providers.claude.managed.login.service import (
-    run_official_claude_login,
-)
-from sidekick_usages.providers.claude.managed.types import (
-    ClaudeManagedFailure,
-    ClaudeOfficialLoginResult,
-)
+from sidekick_usages.providers.claude.managed.types import ClaudeManagedFailure
 from sidekick_usages.providers.claude.models import (
     SetupTokenMissing,
     SetupTokenRejected,
@@ -223,7 +223,7 @@ class ClaudeProvider(Provider):
         stage_reader: CredentialStageReader,
     ) -> RefreshResult | None:
         scopes = self._refresh_scopes(credentials)
-        environment = claude_refresh_environment(
+        environment = claude_private_refresh_environment(
             os.environ,
             process_home=isolated_home,
             config_directory=isolated_home / ".claude",

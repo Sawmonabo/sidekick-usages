@@ -4,14 +4,14 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from sidekick_usages.platform.types import HostPlatform
+from sidekick_usages.providers.claude.auth.login.service import (
+    verify_logged_out_claude_status,
+)
 from sidekick_usages.providers.claude.errors import ClaudeProcessError
 from sidekick_usages.providers.claude.managed.errors import ClaudeManagedError
 from sidekick_usages.providers.claude.managed.executable import (
     SUPPORTED_CLAUDE_VERSION,
     verify_claude_executable,
-)
-from sidekick_usages.providers.claude.managed.login.service import (
-    verify_logged_out_claude_status,
 )
 from sidekick_usages.providers.claude.managed.models import (
     ClaudeCapabilities,
@@ -22,12 +22,14 @@ from sidekick_usages.providers.claude.managed.types import (
 )
 from sidekick_usages.providers.claude.models import (
     ClaudeExecutable,
-    ClaudeManagedProfile,
 )
 from sidekick_usages.providers.claude.process import (
     run_bounded_claude_command,
 )
-from sidekick_usages.providers.claude.types import ClaudeCommandRunner
+from sidekick_usages.providers.claude.types import (
+    ClaudeCommandRunner,
+    ClaudeProfile,
+)
 
 _LOGIN_HELP_OUTPUT_BYTES = 64 * 1024
 _LOGIN_HELP_TIMEOUT_SECONDS = 5.0
@@ -62,7 +64,7 @@ def managed_claude_platform(
 
 def probe_claude_capabilities(
     executable: ClaudeExecutable,
-    profile: ClaudeManagedProfile,
+    profile: ClaudeProfile,
     platform: ClaudeManagedPlatform,
     environment: Mapping[str, str],
     working_directory: Path,

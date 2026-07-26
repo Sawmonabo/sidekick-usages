@@ -7,24 +7,14 @@ from sidekick_usages.providers.claude.managed.types import (
 )
 from sidekick_usages.providers.claude.models import (
     ClaudeExecutable,
-    ClaudeManagedProfile,
 )
+from sidekick_usages.providers.claude.types import ClaudeProfile
 
 
 @dataclass(frozen=True, slots=True)
 class ClaudeCapabilities:
-    """Complete proof of one supported managed Claude boundary."""
+    """Complete proof of one supported Claude auth boundary."""
 
     executable: ClaudeExecutable
-    profile: ClaudeManagedProfile
+    profile: ClaudeProfile
     platform: ClaudeManagedPlatform
-
-
-@dataclass(frozen=True, slots=True)
-class ClaudeAuthStatus:
-    """Bounded non-secret state from the official auth-status command."""
-
-    return_code: int
-    logged_in: bool
-    auth_method: str
-    api_provider: str

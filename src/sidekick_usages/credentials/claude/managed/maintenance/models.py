@@ -10,7 +10,7 @@ from sidekick_usages.core.accounts.models import (
 from sidekick_usages.credentials.claude.managed.maintenance.types import (
     ClaudeManagedOutcome,
 )
-from sidekick_usages.providers.claude.managed.storage.models import (
+from sidekick_usages.providers.claude.auth.storage.models import (
     ClaudeAuthoritySnapshot,
 )
 

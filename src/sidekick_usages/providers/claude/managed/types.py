@@ -12,13 +12,6 @@ class ClaudeManagedPlatform(StrEnum):
     MACOS_X64_KEYCHAIN = "macos_x64_keychain"
 
 
-class ClaudeOfficialLoginResult(StrEnum):
-    """Secret-safe outcome from one official Claude login process."""
-
-    SUCCEEDED = "succeeded"
-    FAILED = "failed"
-
-
 class ClaudeManagedFailure(StrEnum):
     """Safe reasons managed Claude authentication is unavailable."""
 

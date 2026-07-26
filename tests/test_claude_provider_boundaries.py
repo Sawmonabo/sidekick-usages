@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 import sidekick_usages.platform.executable
-import sidekick_usages.providers.claude.managed.storage.keychain
+import sidekick_usages.providers.claude.auth.storage.keychain
 import sidekick_usages.providers.claude.provider
 from sidekick_usages.core.accounts.types import (
     AuthorityId,
@@ -23,12 +23,14 @@ from sidekick_usages.core.models import (
     DetectedCredentials,
 )
 from sidekick_usages.credentials.claude.managed.authority.service import (
-    CLAUDE_CREDENTIAL_FILE,
     ClaudeManagedAuthorityReader,
     managed_login_authority,
 )
 from sidekick_usages.credentials.claude.managed.profile import (
     prepare_claude_managed_profile,
+)
+from sidekick_usages.credentials.claude.native.authority.service import (
+    ClaudeNativeAuthorityReader,
 )
 from sidekick_usages.paths import managed_claude_config_dir
 from sidekick_usages.persistence.private.credentials import (
@@ -41,22 +43,23 @@ from sidekick_usages.providers.base import (
     ProviderFailure,
     ProviderFailureKind,
 )
+from sidekick_usages.providers.claude.auth.storage.errors import (
+    ClaudeProtectedStorageError,
+)
+from sidekick_usages.providers.claude.auth.storage.keychain import (
+    KEYCHAIN_CREDENTIAL_BYTES,
+    KEYCHAIN_READ_TIMEOUT_SECONDS,
+)
+from sidekick_usages.providers.claude.auth.storage.service import (
+    CLAUDE_CREDENTIAL_FILE,
+)
+from sidekick_usages.providers.claude.auth.storage.types import (
+    ClaudeProtectedStorageFailure,
+)
 from sidekick_usages.providers.claude.errors import ClaudeProcessError
 from sidekick_usages.providers.claude.managed.errors import ClaudeManagedError
 from sidekick_usages.providers.claude.managed.executable import (
     SUPPORTED_CLAUDE_VERSION,
-)
-from sidekick_usages.providers.claude.managed.storage.errors import (
-    ClaudeProtectedStorageError,
-)
-from sidekick_usages.providers.claude.managed.storage.keychain import (
-    KEYCHAIN_CREDENTIAL_BYTES,
-    KEYCHAIN_READ_TIMEOUT_SECONDS,
-    native_keychain_target,
-    read_keychain_payload,
-)
-from sidekick_usages.providers.claude.managed.storage.types import (
-    ClaudeProtectedStorageFailure,
 )
 from sidekick_usages.providers.claude.managed.types import (
     ClaudeManagedFailure,
@@ -85,9 +88,10 @@ from tests.fakes.claude.managed import (
     CLAUDE_LOGIN_HELP_OUTPUT,
     CLAUDE_VERSION_OUTPUT,
     ClaudeRunner,
+    claude_capabilities,
     credential_payload,
-    managed_capabilities,
     managed_profile,
+    native_profile,
     profile_tree,
 )
 from tests.test_support import (
@@ -475,30 +479,17 @@ def test_file_profile_readback_is_exact_identity_bound_and_fail_closed(
     paths = make_application_paths(tmp_path / "state")
     profiles = profile_tree(paths)
     profile_a = managed_profile(paths, _ACCOUNT_A)
-    profile_b = managed_profile(paths, _ACCOUNT_B)
     profiles.ensure_owned_directory(profile_a.config_directory)
-    profiles.ensure_owned_directory(profile_b.config_directory)
     payload_a = credential_payload(
         "provider-account-a",
         "provider-organization-a",
         token_suffix="profile-a",
         access_expires_at=_FUTURE_EXPIRY,
     )
-    payload_b = credential_payload(
-        "provider-account-b",
-        "provider-organization-b",
-        token_suffix="profile-b",
-        access_expires_at=_FUTURE_EXPIRY,
-    )
     profiles.write_owned_file(
         profile_a.config_directory,
         CLAUDE_CREDENTIAL_FILE,
         payload_a,
-    )
-    profiles.write_owned_file(
-        profile_b.config_directory,
-        CLAUDE_CREDENTIAL_FILE,
-        payload_b,
     )
     expected_identity = ClaudeLoginIdentity(
         account_id="provider-account-a",
@@ -512,7 +503,7 @@ def test_file_profile_readback_is_exact_identity_bound_and_fail_closed(
 
     snapshots = tuple(
         reader.read(
-            managed_capabilities(profile_a, platform),
+            claude_capabilities(profile_a, platform),
             REFERENCE_TIME,
             expected_identity=expected_identity,
         )
@@ -540,7 +531,7 @@ def test_file_profile_readback_is_exact_identity_bound_and_fail_closed(
 
     with pytest.raises(ClaudeProtectedStorageError) as mismatch:
         reader.read(
-            managed_capabilities(
+            claude_capabilities(
                 profile_a,
                 ClaudeManagedPlatform.LINUX_FILE,
             ),
@@ -555,7 +546,7 @@ def test_file_profile_readback_is_exact_identity_bound_and_fail_closed(
     credential_path.chmod(0o644)
     with pytest.raises(ClaudeProtectedStorageError) as unsafe:
         reader.read(
-            managed_capabilities(
+            claude_capabilities(
                 profile_a,
                 ClaudeManagedPlatform.WSL_FILE,
             ),
@@ -563,6 +554,34 @@ def test_file_profile_readback_is_exact_identity_bound_and_fail_closed(
             expected_identity=expected_identity,
         )
     assert unsafe.value.code is ClaudeProtectedStorageFailure.UNSAFE
+
+    native = native_profile(tmp_path / "native-home")
+    native_path = native.config_directory / CLAUDE_CREDENTIAL_FILE
+    native_path.write_bytes(payload_a)
+    native_path.chmod(0o600)
+    native_reader = ClaudeNativeAuthorityReader(native)
+    native_capabilities = claude_capabilities(
+        native,
+        ClaudeManagedPlatform.LINUX_FILE,
+    )
+    native_snapshot = native_reader.read(
+        native_capabilities,
+        REFERENCE_TIME,
+        expected_identity=expected_identity,
+    )
+    assert (
+        native_snapshot.profile,
+        native_snapshot.provider_identity,
+    ) == (native, expected_identity)
+
+    native_path.chmod(0o644)
+    with pytest.raises(ClaudeProtectedStorageError) as native_unsafe:
+        native_reader.read(
+            native_capabilities,
+            REFERENCE_TIME,
+            expected_identity=expected_identity,
+        )
+    assert native_unsafe.value.code is ClaudeProtectedStorageFailure.UNSAFE
 
 
 @pytest.mark.skipif(
@@ -579,13 +598,18 @@ def test_keychain_readback_is_namespaced_bounded_and_fail_closed(
     profile_b = managed_profile(paths, _ACCOUNT_B)
     profiles.ensure_owned_directory(profile_a.config_directory)
     profiles.ensure_owned_directory(profile_b.config_directory)
-    capabilities_a = managed_capabilities(
+    capabilities_a = claude_capabilities(
         profile_a,
         ClaudeManagedPlatform.MACOS_ARM64_KEYCHAIN,
     )
-    capabilities_b = managed_capabilities(
+    capabilities_b = claude_capabilities(
         profile_b,
         ClaudeManagedPlatform.MACOS_X64_KEYCHAIN,
+    )
+    native = native_profile(tmp_path / "native-home")
+    native_capabilities = claude_capabilities(
+        native,
+        ClaudeManagedPlatform.MACOS_ARM64_KEYCHAIN,
     )
     payload_a = credential_payload(
         "provider-account-a",
@@ -613,20 +637,22 @@ def test_keychain_readback_is_namespaced_bounded_and_fail_closed(
         }
     )
     monkeypatch.setattr(
-        sidekick_usages.providers.claude.managed.storage.keychain,
+        sidekick_usages.providers.claude.auth.storage.keychain,
         "qualify_executable",
         lambda path: _KEYCHAIN_PROVENANCE,
     )
     monkeypatch.setattr(
-        sidekick_usages.providers.claude.managed.storage.keychain,
+        sidekick_usages.providers.claude.auth.storage.keychain,
         "verify_executable",
         lambda provenance: None,
     )
     reader = ClaudeManagedAuthorityReader(paths, profiles)
+    native_reader = ClaudeNativeAuthorityReader(native)
 
-    native_payload = read_keychain_payload(
-        native_keychain_target(environment),
-        environment,
+    native_snapshot = native_reader.read(
+        native_capabilities,
+        REFERENCE_TIME,
+        environment=environment,
         runner=runner,
     )
     snapshot_a = reader.read(
@@ -642,7 +668,7 @@ def test_keychain_readback_is_namespaced_bounded_and_fail_closed(
         runner=runner,
     )
 
-    assert native_payload == payload_a
+    assert native_snapshot.profile == native
     assert snapshot_a.profile == profile_a
     assert snapshot_b.profile == profile_b
     assert service_a != service_b

@@ -21,23 +21,23 @@ from sidekick_usages.credentials.authorities import (
     CredentialAuthorityError,
     CredentialResolver,
 )
-from sidekick_usages.credentials.claude.managed.authority.service import (
-    ClaudeManagedAuthorityReader,
-    managed_authority_matches,
-)
-from sidekick_usages.credentials.claude.managed.exchange.models import (
+from sidekick_usages.credentials.claude.exchange.models import (
     ClaudeAuthorityExpectation,
     ClaudeExchangeFailure,
     ClaudeExchangeSuccess,
     authority_expectation,
 )
-from sidekick_usages.credentials.claude.managed.exchange.service import (
-    ClaudeManagedLoginExchange,
+from sidekick_usages.credentials.claude.exchange.service import (
+    ClaudeOfficialLoginExchange,
     verified_claude_exchange,
 )
-from sidekick_usages.credentials.claude.managed.exchange.types import (
+from sidekick_usages.credentials.claude.exchange.types import (
     ClaudeExchangeFailureKind,
     claude_exchange_storage_failure,
+)
+from sidekick_usages.credentials.claude.managed.authority.service import (
+    ClaudeManagedAuthorityReader,
+    managed_authority_matches,
 )
 from sidekick_usages.credentials.claude.managed.migration.commit import (
     ClaudeMigrationCommitCoordinator,
@@ -67,27 +67,27 @@ from sidekick_usages.persistence.supervisor.authority import (
     OperationAuthorityLock,
 )
 from sidekick_usages.providers.base import ProviderFailure, ProviderFailureKind
-from sidekick_usages.providers.claude.environment import (
-    claude_probe_environment,
-)
-from sidekick_usages.providers.claude.managed.errors import ClaudeManagedError
-from sidekick_usages.providers.claude.managed.generation import (
+from sidekick_usages.providers.claude.auth.generation import (
     claude_access_token_generation,
 )
-from sidekick_usages.providers.claude.managed.login.service import (
+from sidekick_usages.providers.claude.auth.login.models import (
+    ClaudeOfficialLoginResult,
+)
+from sidekick_usages.providers.claude.auth.login.service import (
     run_interactive_official_claude_login,
     verify_official_claude_login_status,
 )
-from sidekick_usages.providers.claude.managed.models import ClaudeCapabilities
-from sidekick_usages.providers.claude.managed.storage.errors import (
+from sidekick_usages.providers.claude.auth.storage.errors import (
     ClaudeProtectedStorageError,
 )
-from sidekick_usages.providers.claude.managed.storage.models import (
+from sidekick_usages.providers.claude.auth.storage.models import (
     ClaudeAuthoritySnapshot,
 )
-from sidekick_usages.providers.claude.managed.types import (
-    ClaudeOfficialLoginResult,
+from sidekick_usages.providers.claude.environment import (
+    claude_private_profile_environment,
 )
+from sidekick_usages.providers.claude.managed.errors import ClaudeManagedError
+from sidekick_usages.providers.claude.managed.models import ClaudeCapabilities
 
 
 class ClaudeManagedMigrationCoordinator:
@@ -118,7 +118,7 @@ class ClaudeManagedMigrationCoordinator:
         self._interactive_runner = resolved_runtime.interactive_runner
         self._authority_id_factory = resolved_runtime.authority_id_factory
         self._reader = ClaudeManagedAuthorityReader(paths, profiles)
-        self._exchange = ClaudeManagedLoginExchange(
+        self._exchange = ClaudeOfficialLoginExchange(
             self._reader,
             clock,
             environment=resolved_runtime.environment,
@@ -403,9 +403,9 @@ class ClaudeManagedMigrationCoordinator:
         environment: dict[str, str] = {}
         try:
             environment.update(
-                claude_probe_environment(
+                claude_private_profile_environment(
                     self._environment,
-                    isolated_home=capabilities.profile.config_directory,
+                    process_home=capabilities.profile.config_directory,
                     config_directory=capabilities.profile.config_directory,
                 )
             )
@@ -428,11 +428,14 @@ class ClaudeManagedMigrationCoordinator:
                 "Official Claude login did not complete successfully.",
             )
         try:
+            environment = claude_private_profile_environment(
+                self._environment,
+                process_home=capabilities.profile.config_directory,
+                config_directory=capabilities.profile.config_directory,
+            )
             verify_official_claude_login_status(
                 capabilities.executable,
-                self._environment,
-                capabilities.profile.config_directory,
-                capabilities.profile.config_directory,
+                environment,
                 capabilities.profile.config_directory,
                 runner=self._runner,
             )

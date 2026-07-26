@@ -1,23 +1,20 @@
-"""Official managed-Claude login process boundary."""
+"""Official Claude login process boundary."""
 
 import os
 from collections.abc import Mapping
 from pathlib import Path
 
 from sidekick_usages.errors import InvalidPayloadError
-from sidekick_usages.providers.claude.environment import (
-    claude_probe_environment,
+from sidekick_usages.providers.claude.auth.login.models import (
+    ClaudeAuthStatus,
+    ClaudeOfficialLoginResult,
 )
 from sidekick_usages.providers.claude.errors import ClaudeProcessError
 from sidekick_usages.providers.claude.managed.errors import ClaudeManagedError
 from sidekick_usages.providers.claude.managed.executable import (
     verify_claude_executable,
 )
-from sidekick_usages.providers.claude.managed.models import ClaudeAuthStatus
-from sidekick_usages.providers.claude.managed.types import (
-    ClaudeManagedFailure,
-    ClaudeOfficialLoginResult,
-)
+from sidekick_usages.providers.claude.managed.types import ClaudeManagedFailure
 from sidekick_usages.providers.claude.models import (
     ClaudeCommandResult,
     ClaudeExecutable,
@@ -137,19 +134,12 @@ def verify_logged_out_claude_status(
 
 def verify_official_claude_login_status(
     executable: ClaudeExecutable,
-    source_environment: Mapping[str, str] | None,
-    process_home: Path,
-    config_directory: Path,
+    environment: Mapping[str, str],
     working_directory: Path,
     *,
     runner: ClaudeCommandRunner = run_bounded_claude_command,
 ) -> None:
     """Require a logged-in first-party status in a credential-free process."""
-    environment = claude_probe_environment(
-        source_environment,
-        isolated_home=process_home,
-        config_directory=config_directory,
-    )
     status = _read_auth_status(
         executable,
         environment,

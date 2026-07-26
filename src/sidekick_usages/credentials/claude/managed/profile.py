@@ -17,7 +17,7 @@ from sidekick_usages.persistence.private.credentials import (
 from sidekick_usages.platform.host import detect_host_platform
 from sidekick_usages.platform.types import HostPlatform
 from sidekick_usages.providers.claude.environment import (
-    claude_probe_environment,
+    claude_private_profile_environment,
 )
 from sidekick_usages.providers.claude.managed.capabilities import (
     managed_claude_platform,
@@ -72,9 +72,9 @@ def prepare_claude_managed_profile(
         probe_config = probe_root / "config"
         probe_home.mkdir(mode=_PRIVATE_DIRECTORY_MODE)
         probe_config.mkdir(mode=_PRIVATE_DIRECTORY_MODE)
-        probe_environment = claude_probe_environment(
+        probe_environment = claude_private_profile_environment(
             source,
-            isolated_home=probe_home,
+            process_home=probe_home,
             config_directory=probe_config,
         )
         executable = discover_claude_executable(

@@ -1,4 +1,4 @@
-"""Single official Claude refresh-token exchange implementation."""
+"""Profile-neutral official Claude refresh-token exchange."""
 
 from collections.abc import Mapping
 
@@ -7,51 +7,61 @@ from sidekick_usages.core.accounts.types import (
     CredentialAction,
     CredentialHealth,
 )
-from sidekick_usages.credentials.claude.managed.authority.service import (
-    ClaudeManagedAuthorityReader,
+from sidekick_usages.credentials.claude.authority.types import (
+    ClaudeAuthorityReader,
 )
-from sidekick_usages.credentials.claude.managed.exchange.models import (
+from sidekick_usages.credentials.claude.exchange.models import (
     ClaudeAuthorityExpectation,
     ClaudeExchangeFailure,
     ClaudeExchangeResult,
     ClaudeExchangeSuccess,
 )
-from sidekick_usages.credentials.claude.managed.exchange.types import (
+from sidekick_usages.credentials.claude.exchange.types import (
     ClaudeExchangeFailureKind,
     claude_exchange_storage_failure,
 )
-from sidekick_usages.providers.claude.environment import (
-    claude_refresh_environment,
+from sidekick_usages.providers.claude.auth.login.models import (
+    ClaudeOfficialLoginResult,
 )
-from sidekick_usages.providers.claude.errors import ClaudeProcessError
-from sidekick_usages.providers.claude.managed.errors import ClaudeManagedError
-from sidekick_usages.providers.claude.managed.login.service import (
+from sidekick_usages.providers.claude.auth.login.service import (
     run_official_claude_login,
     verify_official_claude_login_status,
 )
-from sidekick_usages.providers.claude.managed.models import ClaudeCapabilities
-from sidekick_usages.providers.claude.managed.storage.errors import (
+from sidekick_usages.providers.claude.auth.storage.errors import (
     ClaudeProtectedStorageError,
 )
-from sidekick_usages.providers.claude.managed.storage.models import (
+from sidekick_usages.providers.claude.auth.storage.models import (
     ClaudeAuthoritySnapshot,
 )
-from sidekick_usages.providers.claude.managed.types import (
-    ClaudeManagedFailure,
-    ClaudeOfficialLoginResult,
+from sidekick_usages.providers.claude.environment import (
+    claude_native_profile_environment,
+    claude_native_refresh_environment,
+    claude_private_profile_environment,
+    claude_private_refresh_environment,
+)
+from sidekick_usages.providers.claude.errors import ClaudeProcessError
+from sidekick_usages.providers.claude.managed.errors import ClaudeManagedError
+from sidekick_usages.providers.claude.managed.models import ClaudeCapabilities
+from sidekick_usages.providers.claude.managed.types import ClaudeManagedFailure
+from sidekick_usages.providers.claude.models import (
+    ClaudeManagedProfile,
+    ClaudeNativeProfile,
 )
 from sidekick_usages.providers.claude.process import (
     run_bounded_claude_command,
 )
-from sidekick_usages.providers.claude.types import ClaudeCommandRunner
+from sidekick_usages.providers.claude.types import (
+    ClaudeCommandRunner,
+    ClaudeProcessFailure,
+)
 
 
-class ClaudeManagedLoginExchange:
+class ClaudeOfficialLoginExchange:
     """Advance one Claude authority through the official login command."""
 
     def __init__(
         self,
-        reader: ClaudeManagedAuthorityReader,
+        reader: ClaudeAuthorityReader,
         clock: Clock,
         *,
         environment: Mapping[str, str] | None = None,
@@ -100,12 +110,10 @@ class ClaudeManagedLoginExchange:
         environment: dict[str, str] = {}
         try:
             environment.update(
-                claude_refresh_environment(
-                    self._environment,
-                    process_home=capabilities.profile.config_directory,
-                    config_directory=capabilities.profile.config_directory,
-                    refresh_token=refresh_token,
-                    scopes=expectation.scopes,
+                self._refresh_environment(
+                    capabilities,
+                    expectation,
+                    refresh_token,
                 )
             )
             result = run_official_claude_login(
@@ -139,12 +147,12 @@ class ClaudeManagedLoginExchange:
         expectation: ClaudeAuthorityExpectation,
     ) -> ClaudeExchangeFailure | None:
         """Verify that the official command left an authenticated profile."""
+        environment: dict[str, str] = {}
         try:
+            environment.update(self._profile_environment(capabilities))
             verify_official_claude_login_status(
                 capabilities.executable,
-                self._environment,
-                capabilities.profile.config_directory,
-                capabilities.profile.config_directory,
+                environment,
                 capabilities.profile.config_directory,
                 runner=self._runner,
             )
@@ -154,7 +162,57 @@ class ClaudeManagedLoginExchange:
                 expectation,
                 ClaudeExchangeFailureKind.RECONCILIATION_REQUIRED,
             )
+        except ClaudeProcessError:
+            return ClaudeExchangeFailure(
+                ClaudeExchangeFailureKind.INCOMPATIBLE
+            )
+        finally:
+            environment.clear()
         return None
+
+    def _refresh_environment(
+        self,
+        capabilities: ClaudeCapabilities,
+        expectation: ClaudeAuthorityExpectation,
+        refresh_token: str,
+    ) -> dict[str, str]:
+        profile = capabilities.profile
+        if isinstance(profile, ClaudeManagedProfile):
+            return claude_private_refresh_environment(
+                self._environment,
+                process_home=profile.config_directory,
+                config_directory=profile.config_directory,
+                refresh_token=refresh_token,
+                scopes=expectation.scopes,
+            )
+        if isinstance(profile, ClaudeNativeProfile):
+            return claude_native_refresh_environment(
+                self._environment,
+                process_home=profile.config_directory.parent,
+                config_directory=profile.config_directory,
+                refresh_token=refresh_token,
+                scopes=expectation.scopes,
+            )
+        raise ClaudeProcessError(ClaudeProcessFailure.PROCESS_UNSAFE)
+
+    def _profile_environment(
+        self,
+        capabilities: ClaudeCapabilities,
+    ) -> dict[str, str]:
+        profile = capabilities.profile
+        if isinstance(profile, ClaudeManagedProfile):
+            return claude_private_profile_environment(
+                self._environment,
+                process_home=profile.config_directory,
+                config_directory=profile.config_directory,
+            )
+        if isinstance(profile, ClaudeNativeProfile):
+            return claude_native_profile_environment(
+                self._environment,
+                process_home=profile.config_directory.parent,
+                config_directory=profile.config_directory,
+            )
+        raise ClaudeProcessError(ClaudeProcessFailure.PROCESS_UNSAFE)
 
     def _failure_after_attempt(
         self,

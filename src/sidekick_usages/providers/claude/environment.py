@@ -33,21 +33,41 @@ _CLAUDE_SAFE_ENVIRONMENT_KEYS = (
 )
 
 
-def claude_probe_environment(
+def claude_private_profile_environment(
     source_environment: Mapping[str, str] | None,
     *,
-    isolated_home: Path,
+    process_home: Path,
     config_directory: Path,
 ) -> dict[str, str]:
-    """Build a credential-free environment for capability probes."""
-    return _private_profile_environment(
+    """Build a credential-free private-profile environment."""
+    environment = _profile_environment(
         source_environment,
-        process_home=isolated_home,
-        config_directory=config_directory,
+        process_home=process_home,
     )
+    _require_absolute_path(config_directory)
+    environment[CLAUDE_CONFIG_DIR_ENVIRONMENT_KEY] = str(config_directory)
+    _validate_environment(environment)
+    return environment
 
 
-def claude_refresh_environment(
+def claude_native_profile_environment(
+    source_environment: Mapping[str, str] | None,
+    *,
+    process_home: Path,
+    config_directory: Path,
+) -> dict[str, str]:
+    """Build a credential-free native-default profile environment."""
+    _require_native_default(process_home, config_directory)
+    environment = _profile_environment(
+        source_environment,
+        process_home=process_home,
+    )
+    if CLAUDE_CONFIG_DIR_ENVIRONMENT_KEY in environment:
+        raise ClaudeProcessError(ClaudeProcessFailure.PROCESS_UNSAFE)
+    return environment
+
+
+def claude_private_refresh_environment(
     source_environment: Mapping[str, str] | None,
     *,
     process_home: Path,
@@ -55,12 +75,58 @@ def claude_refresh_environment(
     refresh_token: str,
     scopes: tuple[str, ...],
 ) -> dict[str, str]:
-    """Build the closed environment for official refresh-token login."""
-    environment = _private_profile_environment(
+    """Build a private-profile environment for official token login."""
+    environment = claude_private_profile_environment(
         source_environment,
         process_home=process_home,
         config_directory=config_directory,
     )
+    return _refresh_environment(environment, refresh_token, scopes)
+
+
+def claude_native_refresh_environment(
+    source_environment: Mapping[str, str] | None,
+    *,
+    process_home: Path,
+    config_directory: Path,
+    refresh_token: str,
+    scopes: tuple[str, ...],
+) -> dict[str, str]:
+    """Build a native-default environment for official token login."""
+    environment = claude_native_profile_environment(
+        source_environment,
+        process_home=process_home,
+        config_directory=config_directory,
+    )
+    return _refresh_environment(environment, refresh_token, scopes)
+
+
+def _profile_environment(
+    source_environment: Mapping[str, str] | None,
+    *,
+    process_home: Path,
+) -> dict[str, str]:
+    """Build the common credential-free profile environment."""
+    _require_absolute_path(process_home)
+    environment = _safe_environment(source_environment)
+    environment.update(
+        {
+            "HOME": str(process_home),
+            "USERPROFILE": str(process_home),
+            "APPDATA": str(process_home / "AppData" / "Roaming"),
+            "LOCALAPPDATA": str(process_home / "AppData" / "Local"),
+            "XDG_CONFIG_HOME": str(process_home / ".config"),
+        }
+    )
+    _validate_environment(environment)
+    return environment
+
+
+def _refresh_environment(
+    environment: dict[str, str],
+    refresh_token: str,
+    scopes: tuple[str, ...],
+) -> dict[str, str]:
     environment.update(
         {
             CLAUDE_OAUTH_PROVISIONING_ENVIRONMENT_KEY: refresh_token,
@@ -73,26 +139,19 @@ def claude_refresh_environment(
     return environment
 
 
-def _private_profile_environment(
-    source_environment: Mapping[str, str] | None,
-    *,
+def _require_native_default(
     process_home: Path,
     config_directory: Path,
-) -> dict[str, str]:
-    """Build the common credential-free private-profile environment."""
-    environment = _safe_environment(source_environment)
-    environment.update(
-        {
-            "HOME": str(process_home),
-            "USERPROFILE": str(process_home),
-            "APPDATA": str(process_home / "AppData" / "Roaming"),
-            "LOCALAPPDATA": str(process_home / "AppData" / "Local"),
-            "XDG_CONFIG_HOME": str(process_home / ".config"),
-            CLAUDE_CONFIG_DIR_ENVIRONMENT_KEY: str(config_directory),
-        }
-    )
-    _validate_environment(environment)
-    return environment
+) -> None:
+    _require_absolute_path(process_home)
+    _require_absolute_path(config_directory)
+    if config_directory != process_home / ".claude":
+        raise ClaudeProcessError(ClaudeProcessFailure.PROCESS_UNSAFE)
+
+
+def _require_absolute_path(path: Path) -> None:
+    if not path.is_absolute() or ".." in path.parts:
+        raise ClaudeProcessError(ClaudeProcessFailure.PROCESS_UNSAFE)
 
 
 def encode_claude_refresh_scopes(scopes: tuple[str, ...]) -> str:

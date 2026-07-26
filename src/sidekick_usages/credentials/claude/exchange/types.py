@@ -2,7 +2,7 @@
 
 from enum import StrEnum
 
-from sidekick_usages.providers.claude.managed.storage.types import (
+from sidekick_usages.providers.claude.auth.storage.types import (
     ClaudeProtectedStorageFailure,
 )
 

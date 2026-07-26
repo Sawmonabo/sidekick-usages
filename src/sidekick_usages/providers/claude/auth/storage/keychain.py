@@ -12,6 +12,15 @@ from sidekick_usages.platform.executable import (
     qualify_executable,
     verify_executable,
 )
+from sidekick_usages.providers.claude.auth.storage.errors import (
+    ClaudeProtectedStorageError,
+)
+from sidekick_usages.providers.claude.auth.storage.models import (
+    ClaudeKeychainTarget,
+)
+from sidekick_usages.providers.claude.auth.storage.types import (
+    ClaudeProtectedStorageFailure,
+)
 from sidekick_usages.providers.claude.environment import (
     claude_keychain_environment,
 )
@@ -20,17 +29,12 @@ from sidekick_usages.providers.claude.managed.executable import (
     SUPPORTED_CLAUDE_VERSION,
 )
 from sidekick_usages.providers.claude.managed.models import ClaudeCapabilities
-from sidekick_usages.providers.claude.managed.storage.errors import (
-    ClaudeProtectedStorageError,
-)
-from sidekick_usages.providers.claude.managed.storage.models import (
-    ClaudeKeychainTarget,
-)
-from sidekick_usages.providers.claude.managed.storage.types import (
-    ClaudeProtectedStorageFailure,
-)
 from sidekick_usages.providers.claude.managed.types import (
     ClaudeManagedPlatform,
+)
+from sidekick_usages.providers.claude.models import (
+    ClaudeManagedProfile,
+    ClaudeNativeProfile,
 )
 from sidekick_usages.providers.claude.process import (
     run_bounded_claude_command,
@@ -77,11 +81,11 @@ def native_keychain_target(
     )
 
 
-def managed_keychain_target(
+def protected_keychain_target(
     capabilities: ClaudeCapabilities,
     environment: Mapping[str, str] | None = None,
 ) -> ClaudeKeychainTarget:
-    """Return one release-proven managed-profile Keychain target."""
+    """Return the release-proven Keychain target for one exact profile."""
     source = os.environ if environment is None else environment
     if (
         capabilities.platform not in _KEYCHAIN_SUPPORTED_PLATFORMS
@@ -91,7 +95,21 @@ def managed_keychain_target(
         raise ClaudeProtectedStorageError(
             ClaudeProtectedStorageFailure.NAMESPACE_UNPROVEN
         )
-    config_text = str(capabilities.profile.config_directory)
+    profile = capabilities.profile
+    if isinstance(profile, ClaudeNativeProfile):
+        if (
+            profile.config_directory.name != ".claude"
+            or ".." in profile.config_directory.parts
+        ):
+            raise ClaudeProtectedStorageError(
+                ClaudeProtectedStorageFailure.NAMESPACE_UNPROVEN
+            )
+        return native_keychain_target(source)
+    if not isinstance(profile, ClaudeManagedProfile):
+        raise ClaudeProtectedStorageError(
+            ClaudeProtectedStorageFailure.NAMESPACE_UNPROVEN
+        )
+    config_text = str(profile.config_directory)
     if unicodedata.normalize("NFC", config_text) != config_text:
         raise ClaudeProtectedStorageError(
             ClaudeProtectedStorageFailure.NAMESPACE_UNPROVEN

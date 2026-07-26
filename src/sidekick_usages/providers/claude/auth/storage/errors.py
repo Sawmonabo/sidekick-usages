@@ -1,22 +1,22 @@
 """Secret-safe protected Claude storage failures."""
 
 from sidekick_usages.errors import UsageError
-from sidekick_usages.providers.claude.managed.storage.types import (
+from sidekick_usages.providers.claude.auth.storage.types import (
     ClaudeProtectedStorageFailure,
 )
 
 _STORAGE_FAILURE_MESSAGES = {
     ClaudeProtectedStorageFailure.MISSING: (
-        "The managed Claude credential authority is missing."
+        "The Claude credential authority is missing."
     ),
     ClaudeProtectedStorageFailure.UNSAFE: (
-        "The managed Claude credential authority is unsafe."
+        "The Claude credential authority is unsafe."
     ),
     ClaudeProtectedStorageFailure.UNREADABLE: (
-        "The managed Claude credential authority is unreadable."
+        "The Claude credential authority is unreadable."
     ),
     ClaudeProtectedStorageFailure.MALFORMED: (
-        "The managed Claude credential authority is malformed."
+        "The Claude credential authority is malformed."
     ),
     ClaudeProtectedStorageFailure.KEYCHAIN_LOCKED: (
         "The macOS Keychain is locked or unavailable."
@@ -31,7 +31,7 @@ _STORAGE_FAILURE_MESSAGES = {
         "The Claude credential namespace is not proven for this release."
     ),
     ClaudeProtectedStorageFailure.IDENTITY_MISMATCH: (
-        "The managed Claude credential identity does not match."
+        "The Claude credential identity does not match."
     ),
 }
 

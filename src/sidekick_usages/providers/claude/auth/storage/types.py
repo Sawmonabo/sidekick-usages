@@ -3,7 +3,7 @@
 from enum import StrEnum
 from typing import Protocol
 
-from sidekick_usages.providers.claude.models import ClaudeManagedProfile
+from sidekick_usages.providers.claude.types import ClaudeProfile
 
 
 class ClaudeProtectedStorageFailure(StrEnum):
@@ -21,10 +21,10 @@ class ClaudeProtectedStorageFailure(StrEnum):
 
 
 class ClaudeCredentialFileSource(Protocol):
-    """Read one exact managed-profile credential file."""
+    """Read one exact native or private profile credential file."""
 
-    def present(self, profile: ClaudeManagedProfile) -> bool:
+    def present(self, profile: ClaudeProfile) -> bool:
         """Report the exact artifact without reading its contents."""
 
-    def read(self, profile: ClaudeManagedProfile) -> bytes | None:
+    def read(self, profile: ClaudeProfile) -> bytes | None:
         """Return qualified bounded bytes or proven absence."""

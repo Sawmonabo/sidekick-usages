@@ -1,4 +1,4 @@
-"""Protected managed-Claude credential authority composition."""
+"""Protected Claude credential authority composition."""
 
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
@@ -17,29 +17,29 @@ from sidekick_usages.core.expiry import (
 from sidekick_usages.core.models import ClaudeLoginCredentials
 from sidekick_usages.errors import InvalidPayloadError
 from sidekick_usages.providers.base import ProviderBoundaryError
+from sidekick_usages.providers.claude.auth.generation import (
+    claude_access_token_generation,
+)
+from sidekick_usages.providers.claude.auth.storage.errors import (
+    ClaudeProtectedStorageError,
+)
+from sidekick_usages.providers.claude.auth.storage.keychain import (
+    protected_keychain_target,
+    read_keychain_payload,
+)
+from sidekick_usages.providers.claude.auth.storage.models import (
+    ClaudeAuthoritySnapshot,
+    ClaudeProtectedLogin,
+)
+from sidekick_usages.providers.claude.auth.storage.types import (
+    ClaudeCredentialFileSource,
+    ClaudeProtectedStorageFailure,
+)
 from sidekick_usages.providers.claude.environment import (
     encode_claude_refresh_scopes,
 )
 from sidekick_usages.providers.claude.errors import ClaudeProcessError
-from sidekick_usages.providers.claude.managed.generation import (
-    claude_access_token_generation,
-)
 from sidekick_usages.providers.claude.managed.models import ClaudeCapabilities
-from sidekick_usages.providers.claude.managed.storage.errors import (
-    ClaudeProtectedStorageError,
-)
-from sidekick_usages.providers.claude.managed.storage.keychain import (
-    managed_keychain_target,
-    read_keychain_payload,
-)
-from sidekick_usages.providers.claude.managed.storage.models import (
-    ClaudeAuthoritySnapshot,
-    ClaudeProtectedLogin,
-)
-from sidekick_usages.providers.claude.managed.storage.types import (
-    ClaudeCredentialFileSource,
-    ClaudeProtectedStorageFailure,
-)
 from sidekick_usages.providers.claude.managed.types import (
     ClaudeManagedPlatform,
 )
@@ -52,6 +52,7 @@ from sidekick_usages.providers.claude.schema.credentials import (
 from sidekick_usages.providers.claude.types import ClaudeCommandRunner
 from sidekick_usages.serialization.json import decode_json_object
 
+CLAUDE_CREDENTIAL_FILE = ".credentials.json"
 _FILE_PLATFORMS = frozenset(
     {
         ClaudeManagedPlatform.LINUX_FILE,
@@ -75,7 +76,7 @@ def read_protected_claude_authority(
     environment: Mapping[str, str] | None = None,
     runner: ClaudeCommandRunner = run_bounded_claude_command,
 ) -> ClaudeAuthoritySnapshot:
-    """Read and bind one exact managed Claude credential authority."""
+    """Read and bind one exact Claude credential authority."""
     with protected_claude_login(
         capabilities,
         files,
@@ -153,7 +154,7 @@ def _read_macos_payload(
         raise ClaudeProtectedStorageError(
             ClaudeProtectedStorageFailure.PLAINTEXT_FALLBACK
         )
-    target = managed_keychain_target(capabilities, environment)
+    target = protected_keychain_target(capabilities, environment)
     payload = read_keychain_payload(
         target,
         environment,

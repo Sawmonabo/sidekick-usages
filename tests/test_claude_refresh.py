@@ -30,7 +30,6 @@ from sidekick_usages.core.types import (
     RefreshStatus,
 )
 from sidekick_usages.credentials.claude.managed.authority.service import (
-    CLAUDE_CREDENTIAL_FILE,
     ClaudeManagedAuthorityReader,
     managed_login_authority,
 )
@@ -75,6 +74,9 @@ from sidekick_usages.providers.base import (
     ProviderFailureKind,
     RefreshSuccess,
 )
+from sidekick_usages.providers.claude.auth.storage.service import (
+    CLAUDE_CREDENTIAL_FILE,
+)
 from sidekick_usages.providers.claude.managed.types import (
     ClaudeManagedPlatform,
 )
@@ -87,8 +89,8 @@ from tests.fakes.claude.managed import (
     CLAUDE_LOGIN_HELP_OUTPUT,
     CLAUDE_VERSION_OUTPUT,
     ClaudeRunner,
+    claude_capabilities,
     credential_payload,
-    managed_capabilities,
     managed_profile,
     profile_tree,
 )
@@ -211,7 +213,7 @@ def _seed_managed_accounts(
             payload,
         )
         snapshot = reader.read(
-            managed_capabilities(
+            claude_capabilities(
                 profile,
                 ClaudeManagedPlatform.LINUX_FILE,
             ),

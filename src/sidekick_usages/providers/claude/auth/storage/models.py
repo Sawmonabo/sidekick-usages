@@ -11,7 +11,7 @@ from sidekick_usages.core.accounts.types import (
     CredentialHealth,
     ProviderIdentity,
 )
-from sidekick_usages.providers.claude.models import ClaudeManagedProfile
+from sidekick_usages.providers.claude.types import ClaudeProfile
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,7 +26,7 @@ class ClaudeKeychainTarget:
 class ClaudeAuthoritySnapshot:
     """Secret-free metadata for one protected credential generation."""
 
-    profile: ClaudeManagedProfile
+    profile: ClaudeProfile
     executable_version: str
     provider_identity: ProviderIdentity
     generation: AuthorityGeneration

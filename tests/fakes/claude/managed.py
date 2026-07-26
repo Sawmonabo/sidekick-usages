@@ -7,9 +7,6 @@ from datetime import datetime
 from pathlib import Path
 
 from sidekick_usages.core.accounts.types import SidekickAccountId
-from sidekick_usages.credentials.claude.managed.authority.service import (
-    CLAUDE_CREDENTIAL_FILE,
-)
 from sidekick_usages.paths import (
     ApplicationPaths,
     managed_claude_config_dir,
@@ -18,6 +15,9 @@ from sidekick_usages.persistence.private.credentials import (
     PrivateCredentialTree,
 )
 from sidekick_usages.platform.models import ExecutableProvenance
+from sidekick_usages.providers.claude.auth.storage.service import (
+    CLAUDE_CREDENTIAL_FILE,
+)
 from sidekick_usages.providers.claude.managed.executable import (
     SUPPORTED_CLAUDE_VERSION,
 )
@@ -29,7 +29,9 @@ from sidekick_usages.providers.claude.models import (
     ClaudeCommandResult,
     ClaudeExecutable,
     ClaudeManagedProfile,
+    ClaudeNativeProfile,
 )
+from sidekick_usages.providers.claude.types import ClaudeProfile
 
 type ClaudeCommandScript = Callable[
     [
@@ -51,6 +53,7 @@ CLAUDE_LOGGED_OUT_STATUS = (
     b'{"loggedIn":false,"authMethod":"none","apiProvider":"firstParty"}\n'
 )
 CLAUDE_VERSION_OUTPUT = b"2.1.220 (Claude Code)\n"
+_PRIVATE_DIRECTORY_MODE = 0o700
 
 
 class ClaudeRunner:
@@ -231,8 +234,8 @@ def credential_payload(
     ).encode()
 
 
-def managed_capabilities(
-    profile: ClaudeManagedProfile,
+def claude_capabilities(
+    profile: ClaudeProfile,
     platform: ClaudeManagedPlatform,
 ) -> ClaudeCapabilities:
     """Return release-matched capabilities for one synthetic profile."""
@@ -259,6 +262,14 @@ def managed_profile(
         account_id,
         managed_claude_config_dir(paths, account_id),
     )
+
+
+def native_profile(root: Path) -> ClaudeNativeProfile:
+    """Create one secure synthetic native-default Claude profile."""
+    root.mkdir(mode=_PRIVATE_DIRECTORY_MODE)
+    profile = ClaudeNativeProfile(root / ".claude")
+    profile.config_directory.mkdir(mode=_PRIVATE_DIRECTORY_MODE)
+    return profile
 
 
 def profile_tree(paths: ApplicationPaths) -> PrivateCredentialTree:

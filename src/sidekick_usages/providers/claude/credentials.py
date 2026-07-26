@@ -24,18 +24,21 @@ from sidekick_usages.providers.base import (
     ProviderFailureCause,
     ProviderFailureKind,
 )
-from sidekick_usages.providers.claude.environment import (
-    CLAUDE_CONFIG_DIR_ENVIRONMENT_KEY,
-)
-from sidekick_usages.providers.claude.managed.storage.errors import (
+from sidekick_usages.providers.claude.auth.storage.errors import (
     ClaudeProtectedStorageError,
 )
-from sidekick_usages.providers.claude.managed.storage.keychain import (
+from sidekick_usages.providers.claude.auth.storage.keychain import (
     native_keychain_target,
     read_keychain_payload,
 )
-from sidekick_usages.providers.claude.managed.storage.types import (
+from sidekick_usages.providers.claude.auth.storage.service import (
+    CLAUDE_CREDENTIAL_FILE,
+)
+from sidekick_usages.providers.claude.auth.storage.types import (
     ClaudeProtectedStorageFailure,
+)
+from sidekick_usages.providers.claude.environment import (
+    CLAUDE_CONFIG_DIR_ENVIRONMENT_KEY,
 )
 from sidekick_usages.providers.claude.models import ClaudeNativeProfile
 from sidekick_usages.providers.claude.process import (
@@ -101,7 +104,7 @@ def detect_credentials(
         )
     if system in {"Linux", "Windows"}:
         return read_credentials_path(
-            profile.config_directory / ".credentials.json",
+            profile.config_directory / CLAUDE_CREDENTIAL_FILE,
             reference_time,
         )
     return claude_failure(
