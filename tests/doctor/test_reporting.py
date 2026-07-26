@@ -331,7 +331,7 @@ def test_json_reports_current_auth_state_without_secrets(
     }
     assert (
         capabilities["claude"]["ready"],
-        capabilities["claude"]["executable"]["path"].endswith("/claude"),
+        Path(capabilities["claude"]["executable"]["path"]).name == "claude",
         capabilities["codex"]["ready"],
         capabilities["codex"]["failure_code"],
         capabilities["codex"]["executable"]["version"],
