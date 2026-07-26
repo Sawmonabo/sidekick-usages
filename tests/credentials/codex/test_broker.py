@@ -213,6 +213,7 @@ def test_resident_broker_refreshes_and_recovers_provider_ahead_state(
                 fixture.provider_root,
                 fixture.native_home,
                 daemon.socket_path,
+                managed=False,
             )
             supervisor.wait_until_ready()
             assert supervisor.broker_available

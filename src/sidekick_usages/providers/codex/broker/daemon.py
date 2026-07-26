@@ -66,6 +66,12 @@ _LIFECYCLE_FIELDS = {
     CodexDaemonStatus.ALREADY_RUNNING: _LIFECYCLE_BASE_FIELDS,
     CodexDaemonStatus.RUNNING: _LIFECYCLE_BASE_FIELDS,
 }
+_ATTACHABLE_UNMANAGED_STATUSES = frozenset(
+    {
+        CodexDaemonStatus.ALREADY_RUNNING,
+        CodexDaemonStatus.RUNNING,
+    }
+)
 
 
 class CodexDaemonManager:
@@ -226,11 +232,15 @@ class CodexDaemonManager:
         status = self._status(payload)
         expected_fields = _LIFECYCLE_FIELDS[status]
         actual_fields = set(payload)
-        if actual_fields == expected_fields - {"backend"}:
+        backend_missing = actual_fields == expected_fields - {"backend"}
+        if (
+            backend_missing
+            and status not in _ATTACHABLE_UNMANAGED_STATUSES
+        ):
             raise CodexBrokerError(CodexBrokerFailure.DAEMON_UNMANAGED)
-        if actual_fields != expected_fields:
+        if not backend_missing and actual_fields != expected_fields:
             raise CodexBrokerError(CodexBrokerFailure.LIFECYCLE_MALFORMED)
-        if payload.get("backend") != "pid":
+        if not backend_missing and payload.get("backend") != "pid":
             raise CodexBrokerError(CodexBrokerFailure.DAEMON_UNMANAGED)
         if status is CodexDaemonStatus.STARTED and not _valid_process_id(
             payload.get("pid")

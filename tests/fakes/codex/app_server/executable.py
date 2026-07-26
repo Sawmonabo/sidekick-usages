@@ -141,9 +141,10 @@ def configure_codex_daemon_lifecycle(
     socket_path: Path,
     *,
     app_server_version: str = "0.145.0",
+    managed: bool = True,
 ) -> FakeCodexDaemonLifecycle:
     """Configure exact start and version responses for the fake executable."""
-    managed = native_home.joinpath(
+    managed_path = native_home.joinpath(
         "packages",
         "standalone",
         "current",
@@ -151,7 +152,8 @@ def configure_codex_daemon_lifecycle(
     )
     payload = {
         "app_server_version": app_server_version,
-        "managed_codex_path": str(managed),
+        "managed": managed,
+        "managed_codex_path": str(managed_path),
         "pid": os.getpid(),
         "socket_path": str(socket_path),
     }
@@ -237,13 +239,14 @@ def write_fake_codex(tmp_path: Path, schema_root: Path) -> Path:
                 version = configured["app_server_version"]
                 response = {{
                     "appServerVersion": version,
-                    "backend": "pid",
                     "cliVersion": version,
                     "managedCodexPath": configured["managed_codex_path"],
                     "managedCodexVersion": version,
                     "socketPath": configured["socket_path"],
                     "status": status,
                 }}
+                if configured["managed"]:
+                    response["backend"] = "pid"
                 if status == "started":
                     response["pid"] = configured["pid"]
                 print(json.dumps(response))
