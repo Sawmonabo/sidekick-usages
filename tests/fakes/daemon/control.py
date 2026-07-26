@@ -57,6 +57,10 @@ class FragmentingSocket:
         for offset in range(0, len(data), _FRAGMENT_SIZE):
             self._connection.sendall(data[offset : offset + _FRAGMENT_SIZE])
 
+    def settimeout(self, value: float | None, /) -> None:
+        """Set the real socket timeout."""
+        self._connection.settimeout(value)
+
     def shutdown(self, how: int, /) -> None:
         """Disable communication in the requested directions."""
         self._connection.shutdown(how)

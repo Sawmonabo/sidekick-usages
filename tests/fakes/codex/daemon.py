@@ -20,11 +20,15 @@ from websockets.sync.server import (
 )
 
 from sidekick_usages.errors import InvalidPayloadError
+from sidekick_usages.providers.codex.broker.responder import (
+    CODEX_CALLBACK_RESPONSE_SECONDS,
+)
 from sidekick_usages.serialization.json import JsonObject, decode_json_object
 from tests.fakes.codex.auth import managed_auth
 from tests.fakes.codex.models import FakeCodexRefreshResponse
 
 _CLIENT_TIMEOUT_SECONDS = 5.0
+_REFRESH_RESPONSE_TIMEOUT_SECONDS = CODEX_CALLBACK_RESPONSE_SECONDS
 _EXTERNAL_REFRESH_ERROR_CODE = -32000
 _EXTERNAL_REFRESH_ERROR_MESSAGE = "external auth refresh unavailable"
 _EXTERNAL_REFRESH_METHOD = "account/chatgptAuthTokens/refresh"
@@ -178,7 +182,7 @@ class FakeCodexDaemon:
         }
         for recipient in recipients:
             _send(recipient, message)
-        if not event.wait(_CLIENT_TIMEOUT_SECONDS):
+        if not event.wait(_REFRESH_RESPONSE_TIMEOUT_SECONDS):
             raise AssertionError("Fake Codex refresh received no response.")
         with self._lock:
             response = self._refresh_response

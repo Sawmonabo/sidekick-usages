@@ -76,6 +76,9 @@ class ConnectedSocket(Protocol):
     def sendall(self, data: bytes, /) -> None:
         """Send all bytes or raise an operating-system error."""
 
+    def settimeout(self, value: float | None, /) -> None:
+        """Set the blocking operation timeout."""
+
     def shutdown(self, how: int, /) -> None:
         """Disable communication in the requested directions."""
 

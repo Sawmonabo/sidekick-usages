@@ -31,7 +31,18 @@ from sidekick_usages.daemon.types.protocol import (
     RequestKind,
 )
 
-_DEFAULT_CONNECT_TIMEOUT_SECONDS = 5.0
+CONTROL_ACTION_TIMEOUT_SECONDS = 125.0
+_LOCAL_RESPONSE_TIMEOUT_SECONDS = 5.0
+_LONG_ACTION_REQUEST_KINDS = frozenset(
+    {
+        RequestKind.ACTIVATE,
+        RequestKind.RECONCILE,
+        RequestKind.REFRESH_ACCOUNT,
+    }
+)
+_EXTENDED_STREAM_REQUEST_KINDS = (
+    _LONG_ACTION_REQUEST_KINDS | {RequestKind.SUBSCRIBE}
+)
 
 
 class ServiceCompatibilityError(ConnectionError):
@@ -47,16 +58,29 @@ class UnexpectedServiceEventError(ConnectionError):
 
 
 class ControlClient:
-    """One bounded connection to the resident per-user supervisor."""
+    """One phase-bounded connection to the resident per-user supervisor."""
 
     def __init__(
         self,
         connection: ConnectedSocket,
         *,
         package_version: str = __version__,
+        response_timeout_seconds: float = _LOCAL_RESPONSE_TIMEOUT_SECONDS,
+        action_timeout_seconds: float | None = (
+            CONTROL_ACTION_TIMEOUT_SECONDS
+        ),
     ) -> None:
+        if response_timeout_seconds <= 0 or (
+            action_timeout_seconds is not None
+            and action_timeout_seconds <= 0
+        ):
+            raise ValueError("Control timeouts must be positive.")
+        connection.settimeout(response_timeout_seconds)
+        self._connection = connection
         self._transport = FramedTransport(connection)
         self._package_version = package_version
+        self._response_timeout_seconds = response_timeout_seconds
+        self._action_timeout_seconds = action_timeout_seconds
         self._handshaken = False
         self._closed = False
 
@@ -66,7 +90,11 @@ class ControlClient:
         socket_path: Path,
         *,
         package_version: str = __version__,
-        timeout_seconds: float = _DEFAULT_CONNECT_TIMEOUT_SECONDS,
+        connect_timeout_seconds: float = _LOCAL_RESPONSE_TIMEOUT_SECONDS,
+        response_timeout_seconds: float = _LOCAL_RESPONSE_TIMEOUT_SECONDS,
+        action_timeout_seconds: float | None = (
+            CONTROL_ACTION_TIMEOUT_SECONDS
+        ),
     ) -> ControlClient:
         """Connect to one qualified Unix socket.
 
@@ -77,12 +105,17 @@ class ControlClient:
             raise ServiceCompatibilityError(ProtocolErrorCode.FEATURE_DISABLED)
         connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
-            connection.settimeout(timeout_seconds)
+            connection.settimeout(connect_timeout_seconds)
             connection.connect(str(socket_path))
+            return cls(
+                connection,
+                package_version=package_version,
+                response_timeout_seconds=response_timeout_seconds,
+                action_timeout_seconds=action_timeout_seconds,
+            )
         except OSError, ValueError:
             connection.close()
             raise
-        return cls(connection, package_version=package_version)
 
     def handshake(self) -> AcceptedPayload:
         """Negotiate exact protocol and package compatibility once."""
@@ -179,6 +212,7 @@ class ControlClient:
         if kind is RequestKind.HANDSHAKE:
             raise ValueError("Use handshake() for protocol negotiation.")
         self.handshake()
+        self._connection.settimeout(self._response_timeout_seconds)
         request = self._new_request(kind, payload)
         self._transport.send_request(request)
         return self._event_stream(request)
@@ -203,15 +237,30 @@ class ControlClient:
             package_version=self._package_version,
         )
 
+    def _accepted_stream_timeout(self, kind: RequestKind) -> float | None:
+        if kind is RequestKind.SUBSCRIBE:
+            return None
+        return self._action_timeout_seconds
+
     def _event_stream(
         self,
         request: ControlRequest,
     ) -> Generator[ControlEvent]:
+        first_event = True
         terminal = False
         try:
             while True:
                 event = self._transport.receive_event()
                 self._validate_event(request, event)
+                if (
+                    first_event
+                    and event.kind is EventKind.ACCEPTED
+                    and request.kind in _EXTENDED_STREAM_REQUEST_KINDS
+                ):
+                    self._connection.settimeout(
+                        self._accepted_stream_timeout(request.kind)
+                    )
+                first_event = False
                 yield event
                 if event.kind in {
                     EventKind.COMPLETED,
