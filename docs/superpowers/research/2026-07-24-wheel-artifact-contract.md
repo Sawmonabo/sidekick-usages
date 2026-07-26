@@ -44,6 +44,30 @@ one bounded source walk, and exact set comparisons for both artifacts.
 `check-wheel-contents` remains a reasonable future addition if generic wheel
 lint rules become a separate requirement.
 
+## Implementation ownership
+
+The stable `packaging/smoke_wheel.py` executable is intentionally only command
+composition and error rendering. The cohesive `packaging/wheel_verification/`
+package owns:
+
+- project and Hatch contract loading in `project.py`;
+- wheel, `RECORD`, and source-distribution inspection in `artifacts.py`;
+- isolated subprocess and installed-wheel behavior in `runtime.py`;
+- build and verification sequencing in `service.py`; and
+- command parsing in `cli.py`.
+
+One immutable project model is loaded once and passed between those owners.
+This avoids mutable module configuration, dynamic test imports, repeated TOML
+decoding, and a flat verifier that mixes archive, process, and CLI policy.
+
+The public CLI is exercised through its installed console script and
+`python -m` entry point. The internal supervisor and worker targets use a
+static-import subprocess probe because a successful real invocation is not a
+bounded smoke operation: the supervisor runs until signaled and owns service
+state, while the worker requires a real durable operation and may mutate it.
+The verifier first requires the exact internal metadata targets, then imports
+those named modules and checks their `main` callables without dynamic loading.
+
 ## Failure policy
 
 The verifier fails closed when the build mapping changes. Legitimate package

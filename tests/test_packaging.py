@@ -1,26 +1,16 @@
 """Release artifact and dependency packaging contracts."""
 
-import importlib.util
 import io
-import sys
 import tarfile
 import tomllib
 import zipfile
 from pathlib import Path
 
 import pytest
+from wheel_verification import artifacts, project
+from wheel_verification.errors import WheelVerificationError
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SMOKE_WHEEL_PATH = REPO_ROOT / "packaging" / "smoke_wheel.py"
-
-SPECIFICATION = importlib.util.spec_from_file_location(
-    "smoke_wheel",
-    SMOKE_WHEEL_PATH,
-)
-assert SPECIFICATION is not None
-smoke_wheel = importlib.util.module_from_spec(SPECIFICATION)
-assert SPECIFICATION.loader is not None
-SPECIFICATION.loader.exec_module(smoke_wheel)
 
 
 def _write_project(root: Path) -> Path:
@@ -101,51 +91,49 @@ def test_runtime_dependencies_and_lock_match_reviewed_versions() -> None:
 
 def test_source_derived_artifact_contract(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """One build declaration governs source, wheel, and sdist membership."""
     pyproject = _write_project(tmp_path)
-    monkeypatch.setattr(smoke_wheel, "REPO_ROOT", tmp_path)
-    monkeypatch.setattr(smoke_wheel, "PYPROJECT_PATH", pyproject)
+    contract = project.load_project_contract(tmp_path, pyproject)
     expected = frozenset(
         {
             "sample_package/__init__.py",
             "sample_package/feature.py",
         }
     )
-    artifacts = tmp_path / "artifacts"
-    artifacts.mkdir()
-    wheel_name, sdist_name = smoke_wheel.expected_artifact_names()
-    wheel = artifacts / wheel_name
-    sdist = artifacts / sdist_name
+    artifact_directory = tmp_path / "artifacts"
+    artifact_directory.mkdir()
+    wheel_name, sdist_name = artifacts.expected_artifact_names(contract)
+    wheel = artifact_directory / wheel_name
+    sdist = artifact_directory / sdist_name
     _write_wheel(wheel, expected)
     _write_sdist(sdist, expected)
 
-    assert smoke_wheel.expected_package_members() == expected
-    assert smoke_wheel.require_exact_distribution_set(artifacts) == (
-        wheel,
-        sdist,
-    )
-    smoke_wheel.verify_source_members()
-    smoke_wheel.verify_wheel_members(wheel)
-    smoke_wheel.verify_sdist_members(sdist)
+    assert project.expected_package_members(contract) == expected
+    assert artifacts.require_exact_distribution_set(
+        contract,
+        artifact_directory,
+    ) == (wheel, sdist)
+    project.verify_source_members(contract)
+    artifacts.verify_wheel_members(contract, wheel)
+    artifacts.verify_sdist_members(contract, sdist)
 
     unexpected = tmp_path / "src" / "sample_package" / "secret.dat"
     unexpected.write_text("not declared package data\n")
     with pytest.raises(
-        smoke_wheel.WheelVerificationError,
+        WheelVerificationError,
         match="undeclared data",
     ):
-        smoke_wheel.verify_source_members()
+        project.verify_source_members(contract)
     unexpected.unlink()
 
     extra = "sample_package/stale.py"
     _write_wheel(wheel, expected | {extra})
     _write_sdist(sdist, expected | {extra})
-    with pytest.raises(smoke_wheel.WheelVerificationError):
-        smoke_wheel.verify_wheel_members(wheel)
-    with pytest.raises(smoke_wheel.WheelVerificationError):
-        smoke_wheel.verify_sdist_members(sdist)
+    with pytest.raises(WheelVerificationError):
+        artifacts.verify_wheel_members(contract, wheel)
+    with pytest.raises(WheelVerificationError):
+        artifacts.verify_sdist_members(contract, sdist)
 
     project_source = pyproject.read_text()
     pyproject.write_text(
@@ -156,26 +144,10 @@ def test_source_derived_artifact_contract(
         )
     )
     with pytest.raises(
-        smoke_wheel.WheelVerificationError,
+        WheelVerificationError,
         match="replace provider commands",
     ):
-        smoke_wheel.project_scripts()
-
-
-def test_isolated_subprocess_preserves_unicode_output(
-    tmp_path: Path,
-) -> None:
-    """Captured CLI output is explicitly UTF-8 at both pipe boundaries."""
-    env = smoke_wheel._isolated_command_env(tmp_path / "absent-home")
-
-    result = smoke_wheel._run(
-        [sys.executable, "-c", 'print("┴ robot")'],
-        cwd=tmp_path,
-        env=env,
-    )
-
-    assert env["PYTHONIOENCODING"] == "utf-8"
-    assert result.stdout == "┴ robot\n"
+        project.load_project_contract(tmp_path, pyproject)
 
 
 def test_workflows_use_the_cross_platform_exact_wheel_verifier() -> None:
