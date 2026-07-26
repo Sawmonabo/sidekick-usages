@@ -55,6 +55,7 @@ def _scoped_supervisor(
         return replace(
             health,
             broker=ServiceComponentState.NOT_REQUIRED,
+            broker_failure_code=None,
         )
     return health
 

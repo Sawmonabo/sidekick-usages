@@ -87,6 +87,7 @@ def _service_dict(health: SupervisorHealth) -> JsonObject:
         "peer_verification": health.peer.value,
         "protocol": health.protocol.value,
         "broker": health.broker.value,
+        "broker_failure_code": health.broker_failure_code,
     }
 
 

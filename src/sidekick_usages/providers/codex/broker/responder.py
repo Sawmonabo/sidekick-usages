@@ -113,6 +113,7 @@ class CodexRuntimeBroker:
         self._ready = Event()
         self._lock = Lock()
         self._thread: Thread | None = None
+        self._failure_code: str | None = None
         self._active_operation: OperationId | None = None
         self._activation_instruction: CodexActivationInstruction | None = None
         self._activation_exchange: CodexWorkerExchange | None = None
@@ -131,6 +132,18 @@ class CodexRuntimeBroker:
     def ready(self) -> bool:
         """Return whether the selected projection can be refreshed."""
         return self._ready.is_set()
+
+    @property
+    def available(self) -> bool:
+        """Return whether the official shared runtime is qualified."""
+        with self._lock:
+            return self._qualified.is_set()
+
+    @property
+    def failure_code(self) -> str | None:
+        """Return the current safe typed qualification failure."""
+        with self._lock:
+            return self._failure_code
 
     def prepare_operation(self, operation: DueOperation) -> bool:
         """Prepare an exchange only after resident runtime qualification."""
@@ -261,8 +274,15 @@ class CodexRuntimeBroker:
                     OSError,
                     RuntimeError,
                     ValueError,
-                ):
-                    self._set_qualified(False)
+                ) as error:
+                    self._record_failure(
+                        error.code.value
+                        if isinstance(
+                            error,
+                            CodexAppServerError | CodexBrokerError,
+                        )
+                        else None
+                    )
                     self._set_ready(False)
                     runtime = _drop_runtime(runtime)
                     self._native_auth.reset()
@@ -380,14 +400,29 @@ class CodexRuntimeBroker:
     def _set_qualified(self, qualified: bool) -> None:
         if qualified and self._stop.is_set():
             qualified = False
-        current = self._qualified.is_set()
-        if current == qualified:
-            return
-        if qualified:
-            self._qualified.set()
-        else:
-            self._qualified.clear()
+        with self._lock:
+            current = self._qualified.is_set()
+            current_failure = self._failure_code
+            next_failure = None if qualified else current_failure
+            if current == qualified and current_failure == next_failure:
+                return
+            if qualified:
+                self._qualified.set()
+            else:
+                self._qualified.clear()
+            self._failure_code = next_failure
         if self._status_changed is not None:
+            self._status_changed()
+
+    def _record_failure(self, failure_code: str | None) -> None:
+        with self._lock:
+            changed = (
+                self._qualified.is_set()
+                or self._failure_code != failure_code
+            )
+            self._qualified.clear()
+            self._failure_code = failure_code
+        if changed and self._status_changed is not None:
             self._status_changed()
 
     def _pending_activation(

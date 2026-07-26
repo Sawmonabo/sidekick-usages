@@ -85,6 +85,13 @@ def consume_control_action(
             accepted = True
             continue
         if not accepted:
+            payload = event.payload
+            if (
+                event.kind is EventKind.FAILED
+                and isinstance(payload, FailedPayload)
+                and payload.operation_id is None
+            ):
+                return payload
             raise UnexpectedServiceEventError(
                 "The service returned progress before acceptance."
             )

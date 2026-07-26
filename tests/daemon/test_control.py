@@ -18,7 +18,10 @@ from sidekick_usages.core.selection.types import (
     OperationState,
 )
 from sidekick_usages.core.types import ProviderId
-from sidekick_usages.daemon.control.client import ControlClient
+from sidekick_usages.daemon.control.client import (
+    ControlClient,
+    consume_control_action,
+)
 from sidekick_usages.daemon.control.dispatch import (
     OperationEventHub,
     SupervisorDispatcher,
@@ -41,6 +44,7 @@ from sidekick_usages.daemon.models.protocol import (
     ActivationPayload,
     ControlRequest,
     EmptyPayload,
+    FailedPayload,
     ProviderPayload,
 )
 from sidekick_usages.daemon.models.scheduler import SchedulerCompletion
@@ -52,6 +56,7 @@ from sidekick_usages.daemon.types.lifecycle import (
 from sidekick_usages.daemon.types.protocol import (
     PROTOCOL_VERSION,
     ConnectedSocket,
+    ControlOperationIdentity,
     EventKind,
     RequestKind,
 )
@@ -73,7 +78,7 @@ from tests.fakes.daemon.foundation import (
     FoundationState,
     foundation_state,
 )
-from tests.fakes.daemon.runtime import RuntimeClock
+from tests.fakes.daemon.runtime import ResidentState, RuntimeClock
 from tests.support.persistence import make_application_paths
 from tests.support.platform import REQUIRES_MANAGED_RUNTIME
 from tests.support.time import REFERENCE_TIME, FixedClock
@@ -111,6 +116,7 @@ def _assert_reused_operation_follows_current_events(
         state.queue,
         ServiceStateStore(state.paths.service_state),
         events,
+        ResidentState(),
         RuntimeClock(),
         Event().set,
         Event().set,
@@ -203,10 +209,12 @@ def test_authenticated_control_stream_frames_completes_and_cancels(
     assert dispatcher.cancellations == [accepted.request_id]
 
     state = foundation_state(tmp_path)
+    resident = ResidentState()
     durable_dispatcher = SupervisorDispatcher(
         state.queue,
         ServiceStateStore(state.paths.service_state),
         OperationEventHub(),
+        resident,
         RuntimeClock(),
         Event().set,
         Event().set,
@@ -225,6 +233,26 @@ def test_authenticated_control_stream_frames_completes_and_cancels(
     )
     assert persisted is not None
     assert persisted.allow_remote_control_disconnect
+    resident.available = False
+    resident.failure_code = "version_unsupported"
+    rejected_request = replace(
+        fragmented_request,
+        request_id=new_request_id(),
+        payload=ActivationPayload(ProviderId.CODEX, account_id),
+    )
+    rejected = consume_control_action(
+        durable_dispatcher.dispatch(rejected_request),
+        identity=ControlOperationIdentity.ACCOUNT,
+    )
+    assert rejected == FailedPayload(None, "version_unsupported")
+    assert (
+        restarted_queue.get(
+            ProviderId.CODEX,
+            account_id,
+            OperationKind.ACTIVATE,
+        )
+        is None
+    )
     _assert_reused_operation_follows_current_events(state)
 
 

@@ -10,7 +10,6 @@ from sidekick_usages.core.accounts.models import (
 )
 from sidekick_usages.core.selection.models import safe_outcome_code
 from sidekick_usages.core.time import as_utc
-from sidekick_usages.daemon.types.lifecycle import ServiceFailureCode
 from sidekick_usages.daemon.types.protocol import MAX_PROTOCOL_VERSION
 from sidekick_usages.daemon.types.service import (
     PackageVersion,
@@ -79,11 +78,14 @@ class ServiceState:
         """Allow broker-only degradation when no selected account needs it."""
         if self.phase is ServicePhase.READY:
             return True
+        return not broker_required and self.broker_degraded()
+
+    def broker_degraded(self) -> bool:
+        """Return whether durable recovery isolates degradation to broker."""
         return (
             self.phase is ServicePhase.DEGRADED
-            and not broker_required
             and self.queue_recovered
             and self.journals_reconciled
-            and self.failure_code
-            == ServiceFailureCode.CODEX_BROKER_UNAVAILABLE.value
+            and not self.broker_ready
+            and self.failure_code is not None
         )

@@ -26,8 +26,12 @@ class ResidentService(Protocol):
     """One supervisor-owned service independent of dashboard connections."""
 
     @property
-    def ready(self) -> bool:
-        """Return whether the resident service can serve current state."""
+    def available(self) -> bool:
+        """Return whether the resident service is live and qualified."""
+
+    @property
+    def failure_code(self) -> str | None:
+        """Return the current safe typed availability failure."""
 
     def start(self) -> None:
         """Start after singleton control ownership is established."""

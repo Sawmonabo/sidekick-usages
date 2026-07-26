@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 
+from sidekick_usages.core.selection.models import safe_outcome_code
 from sidekick_usages.core.types import ExitCode, ProviderId
 from sidekick_usages.daemon.types.lifecycle import (
     ServiceBackendId,
@@ -212,6 +213,7 @@ class SupervisorHealth:
     queue: ServiceComponentState
     journal: ServiceComponentState
     broker: ServiceComponentState
+    broker_failure_code: str | None = None
 
     def __post_init__(self) -> None:
         """Require closed component states and bounded versions."""
@@ -240,6 +242,19 @@ class SupervisorHealth:
             for component in components
         ):
             raise ValueError("Supervisor component health is invalid.")
+        broker_failure_code = safe_outcome_code(self.broker_failure_code)
+        if (
+            broker_failure_code is not None
+            and self.broker is not ServiceComponentState.UNHEALTHY
+        ):
+            raise ValueError(
+                "Supervisor broker failure requires unhealthy broker state."
+            )
+        object.__setattr__(
+            self,
+            "broker_failure_code",
+            broker_failure_code,
+        )
 
 
 @dataclass(frozen=True, slots=True)

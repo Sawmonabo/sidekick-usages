@@ -191,13 +191,12 @@ class _NoopControlDispatcher:
         del request_id
 
 
-class _NoopResidentService:
-    """Expose an inactive resident boundary for direct runtime cycles."""
+@dataclass(slots=True)
+class ResidentState:
+    """Expose controllable resident availability without provider work."""
 
-    @property
-    def ready(self) -> bool:
-        """Return readiness for direct runtime-cycle testing."""
-        return True
+    available: bool = True
+    failure_code: str | None = None
 
     def start(self) -> None:
         pass
@@ -243,5 +242,5 @@ def foundation_runtime(
         clock,
         wakeup,
         Event(),
-        _NoopResidentService(),
+        ResidentState(),
     )

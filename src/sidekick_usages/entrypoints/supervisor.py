@@ -175,6 +175,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         queue,
         service_state,
         events,
+        broker,
         clock,
         wakeup.notify,
         request_stop,

@@ -112,7 +112,7 @@ def _service_lines(health: SupervisorHealth) -> tuple[Text, ...]:
         if health.supervisor_version is None
         else str(health.supervisor_version)
     )
-    return (
+    lines = [
         Text("service"),
         Text(f"  backend: {health.backend}"),
         Text(f"  CLI version: {health.cli_version}"),
@@ -124,7 +124,12 @@ def _service_lines(health: SupervisorHealth) -> tuple[Text, ...]:
         Text(f"  peer verification: {health.peer}"),
         Text(f"  protocol: {health.protocol}"),
         Text(f"  broker: {health.broker}"),
-    )
+    ]
+    if health.broker_failure_code is not None:
+        lines.append(
+            Text(f"  broker failure: {health.broker_failure_code}")
+        )
+    return tuple(lines)
 
 
 def _operation_lines(

@@ -17,6 +17,7 @@ from sidekick_usages.core.selection.types import (
     OperationPriority,
     OperationState,
 )
+from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.models.protocol import (
     AcceptedPayload,
     AccountPayload,
@@ -34,7 +35,11 @@ from sidekick_usages.daemon.models.scheduler import (
     OperationUpdate,
     SchedulerCompletion,
 )
-from sidekick_usages.daemon.types.ports import OperationEventSink
+from sidekick_usages.daemon.types.lifecycle import ServiceFailureCode
+from sidekick_usages.daemon.types.ports import (
+    OperationEventSink,
+    ResidentService,
+)
 from sidekick_usages.daemon.types.protocol import (
     PROTOCOL_VERSION,
     CompletionOutcome,
@@ -202,6 +207,7 @@ class SupervisorDispatcher:
         queue: OperationQueueStore,
         service_state: ServiceStateStore,
         events: OperationEventHub,
+        resident: ResidentService,
         clock: Clock,
         wake: Callable[[], None],
         request_stop: Callable[[], None],
@@ -212,6 +218,7 @@ class SupervisorDispatcher:
         self._queue = queue
         self._service_state = service_state
         self._events = events
+        self._resident = resident
         self._clock = clock
         self._wake = wake
         self._request_stop = request_stop
@@ -285,6 +292,21 @@ class SupervisorDispatcher:
                 request,
                 EventKind.FAILED,
                 FailedPayload(None, "dispatch_failed"),
+            )
+            return
+        if (
+            kind is OperationKind.ACTIVATE
+            and payload.provider_id is ProviderId.CODEX
+            and not self._resident.available
+        ):
+            yield self._event(
+                request,
+                EventKind.FAILED,
+                FailedPayload(
+                    None,
+                    self._resident.failure_code
+                    or ServiceFailureCode.CODEX_BROKER_UNAVAILABLE.value,
+                ),
             )
             return
         now = self._clock.now()

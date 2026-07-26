@@ -367,10 +367,15 @@ def _exercise_real_lifecycle_progress(
         journals_reconciled=True,
         broker_ready=False,
         active_workers=0,
-        failure_code=ServiceFailureCode.CODEX_BROKER_UNAVAILABLE.value,
+        failure_code="version_unsupported",
     )
     state_store.save(degraded)
+    assert degraded.ready_for(broker_required=False)
     assert not degraded.ready_for(broker_required=True)
+    assert not replace(
+        degraded,
+        queue_recovered=False,
+    ).ready_for(broker_required=False)
     provider_capabilities = ReadyProviderCapabilities()
     platform_info = _platform(home, system="Linux")
     readiness = SupervisorReadiness(

@@ -187,6 +187,7 @@ def test_codex_activation_commits_only_correlated_target(
             assert selected.load(ProviderId.CLAUDE) == claude
 
             mode.write_text("normal", encoding="utf-8")
+            supervisor.wait_until_ready()
             client = ControlClient.connect(fixture.paths.supervisor_socket)
             completed = tuple(
                 client.activate(ProviderId.CODEX, MANAGED_ACCOUNT_ID)

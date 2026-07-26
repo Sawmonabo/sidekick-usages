@@ -196,6 +196,7 @@ def test_resident_broker_refreshes_and_recovers_provider_ahead_state(
             fixture.provider_root,
             fixture.native_home,
             daemon.socket_path,
+            app_server_version="0.144.0",
         )
         observer_a = daemon.connect_tui()
         observer_b = daemon.connect_tui()
@@ -206,7 +207,16 @@ def test_resident_broker_refreshes_and_recovers_provider_ahead_state(
             fixture.environment,
             real_worker_executable(),
         ) as supervisor:
+            supervisor.wait_until_broker_failure("version_unsupported")
+            assert not supervisor.broker_available
+            configure_codex_daemon_lifecycle(
+                fixture.provider_root,
+                fixture.native_home,
+                daemon.socket_path,
+            )
             supervisor.wait_until_ready()
+            assert supervisor.broker_available
+            assert supervisor.broker_failure_code is None
             observer_a.wait_for_account_update()
             observer_b.wait_for_account_update()
             dashboard = ControlClient.connect(paths.supervisor_socket)

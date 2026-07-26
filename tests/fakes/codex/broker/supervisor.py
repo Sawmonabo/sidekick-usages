@@ -123,6 +123,7 @@ class FakeCodexSupervisor:
             queue,
             service_state,
             events,
+            broker,
             clock,
             self._wakeup.notify,
             self._request_stop,
@@ -155,6 +156,16 @@ class FakeCodexSupervisor:
             and self._broker.ready
         )
 
+    @property
+    def broker_available(self) -> bool:
+        """Return the broker's live shared-runtime qualification."""
+        return self._broker.available
+
+    @property
+    def broker_failure_code(self) -> str | None:
+        """Return the broker's retained safe typed failure."""
+        return self._broker.failure_code
+
     def start(self) -> None:
         """Start the production runtime in one owned background thread."""
         if self._thread is not None:
@@ -175,6 +186,26 @@ class FakeCodexSupervisor:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise AssertionError("Fake supervisor did not become ready.")
+            self._stop.wait(min(_WAIT_INTERVAL_SECONDS, remaining))
+
+    def wait_until_broker_failure(self, failure_code: str) -> None:
+        """Wait for one exact live broker failure observation."""
+        deadline = time.monotonic() + _READINESS_TIMEOUT_SECONDS
+        while True:
+            state = self._service_state.load()
+            if (
+                self.broker_failure_code == failure_code
+                and state is not None
+                and not state.broker_ready
+                and state.failure_code == failure_code
+            ):
+                return
+            self._raise_failure()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise AssertionError(
+                    "Fake supervisor did not report broker failure."
+                )
             self._stop.wait(min(_WAIT_INTERVAL_SECONDS, remaining))
 
     def notify(self) -> None:

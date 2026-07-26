@@ -18,6 +18,7 @@ from sidekick_usages.daemon.control.server import LocalControlServer
 from sidekick_usages.daemon.models.service import ServiceState
 from sidekick_usages.daemon.runtime.recovery import ActivationRecoveryScheduler
 from sidekick_usages.daemon.runtime.scheduler import DurableScheduler
+from sidekick_usages.daemon.types.lifecycle import ServiceFailureCode
 from sidekick_usages.daemon.types.ports import ResidentService
 from sidekick_usages.daemon.types.protocol import PROTOCOL_VERSION
 from sidekick_usages.daemon.types.service import (
@@ -206,7 +207,7 @@ class SupervisorRuntime:
         current = self._service_state.load()
         queue_recovered = self._queue_recovered
         journals_reconciled = self._recovery.reconciled()
-        broker_ready = self._resident.ready
+        broker_ready = self._resident.available
         failure_code: str | None = None
         if phase is None:
             recovered = (
@@ -217,7 +218,10 @@ class SupervisorRuntime:
                 failure_code = (
                     "reconciliation_required"
                     if not journals_reconciled
-                    else "codex_broker_unavailable"
+                    else (
+                        self._resident.failure_code
+                        or ServiceFailureCode.CODEX_BROKER_UNAVAILABLE.value
+                    )
                 )
         candidate = ServiceState(
             protocol_version=PROTOCOL_VERSION,

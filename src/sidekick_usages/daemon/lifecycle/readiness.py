@@ -189,7 +189,7 @@ class SupervisorReadiness:
             progress(
                 ServiceLifecycleObservation(ServiceLifecyclePhase.CODEX_BROKER)
             )
-        if not state.ready_for(broker_required=broker_required):
+        if not state.queue_recovered or not state.journals_reconciled:
             raise ServiceLifecycleError(ServiceFailureCode.SERVICE_UNHEALTHY)
         enrolled = {
             operation.account_id
@@ -202,6 +202,8 @@ class SupervisorReadiness:
             raise ServiceLifecycleError(
                 ServiceFailureCode.CODEX_BROKER_UNAVAILABLE
             )
+        if not state.ready_for(broker_required=broker_required):
+            raise ServiceLifecycleError(ServiceFailureCode.SERVICE_UNHEALTHY)
 
     def _require_provider_readiness(
         self,
@@ -315,6 +317,7 @@ class SupervisorReadiness:
                 queue=unavailable,
                 journal=unavailable,
                 broker=broker,
+                broker_failure_code=None,
             )
 
         state_readable = True
@@ -354,6 +357,11 @@ class SupervisorReadiness:
             ),
             journal=self._journal_health(state, state_readable),
             broker=broker,
+            broker_failure_code=_broker_failure_code(
+                broker,
+                state,
+                state_readable,
+            ),
         )
 
     def _protocol_health(
@@ -615,6 +623,21 @@ def _broker_health(
         if state.broker_ready
         else ServiceComponentState.UNHEALTHY
     )
+
+
+def _broker_failure_code(
+    broker: ServiceComponentState,
+    state: ServiceState | None,
+    state_readable: bool,
+) -> str | None:
+    if (
+        broker is not ServiceComponentState.UNHEALTHY
+        or not state_readable
+        or state is None
+        or not state.broker_degraded()
+    ):
+        return None
+    return state.failure_code
 
 
 def _maintenance_settled(
