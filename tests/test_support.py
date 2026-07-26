@@ -17,7 +17,9 @@ from sidekick_usages.cli.context import (
     Composed,
     DaemonContext,
     DoctorContext,
+    InvocationComposers,
     InvocationContext,
+    MigrationContext,
     PersistenceContext,
     UpdateContext,
 )
@@ -425,6 +427,7 @@ class CliHarness:
     persistence: PersistenceContext | None = None
     doctor: DoctorContext | None = None
     daemon: DaemonContext | None = None
+    migration: MigrationContext | None = None
     update: UpdateContext | None = None
     use: UseContext | None = None
 
@@ -442,30 +445,37 @@ class CliHarness:
             obj=InvocationContext(
                 console=self.console,
                 err_console=self.err_console,
-                app_composer=(
-                    _unexpected_composition
-                    if self.application is None
-                    else _fixed_composer(self.application)
-                ),
-                persistence_composer=(
-                    _unexpected_composition
-                    if self.persistence is None
-                    else _fixed_composer(self.persistence)
-                ),
-                doctor_composer=(
-                    _unexpected_composition
-                    if self.doctor is None
-                    else _fixed_composer(self.doctor)
-                ),
-                daemon_composer=(
-                    _unexpected_composition
-                    if self.daemon is None
-                    else _fixed_composer(self.daemon)
-                ),
-                update_composer=(
-                    _unexpected_composition
-                    if self.update is None
-                    else _fixed_composer(self.update)
+                composers=InvocationComposers(
+                    application=(
+                        _unexpected_composition
+                        if self.application is None
+                        else _fixed_composer(self.application)
+                    ),
+                    persistence=(
+                        _unexpected_composition
+                        if self.persistence is None
+                        else _fixed_composer(self.persistence)
+                    ),
+                    doctor=(
+                        _unexpected_composition
+                        if self.doctor is None
+                        else _fixed_composer(self.doctor)
+                    ),
+                    daemon=(
+                        _unexpected_composition
+                        if self.daemon is None
+                        else _fixed_composer(self.daemon)
+                    ),
+                    migration=(
+                        _unexpected_composition
+                        if self.migration is None
+                        else _fixed_composer(self.migration)
+                    ),
+                    update=(
+                        _unexpected_composition
+                        if self.update is None
+                        else _fixed_composer(self.update)
+                    ),
                 ),
                 use_composer=self._compose_use,
             ),

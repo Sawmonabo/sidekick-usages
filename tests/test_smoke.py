@@ -1,6 +1,7 @@
 """Package import and composition-root smoke tests."""
 
 from contextlib import ExitStack
+from dataclasses import replace
 from pathlib import Path
 
 import click
@@ -16,6 +17,7 @@ from sidekick_usages.cli.context import (
     UpdateContext,
     compose_app_context,
     compose_doctor_context,
+    default_invocation_composers,
 )
 from sidekick_usages.core.models import Account, ClaudeSetupTokenCredentials
 from sidekick_usages.core.types import AccountLabel, ProviderId
@@ -86,7 +88,12 @@ def test_lazy_composition_caches_and_closes_once() -> None:
         compose_calls += 1
         return owner
 
-    invocation = InvocationContext(update_composer=compose)
+    invocation = InvocationContext(
+        composers=replace(
+            default_invocation_composers(),
+            update=compose,
+        )
+    )
     click_context = click.Context(click.Command("lifecycle"))
 
     assert invocation.require_update(click_context) is owner.value

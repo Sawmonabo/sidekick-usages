@@ -242,9 +242,9 @@ def test_check_renders_partial_success_and_typed_auth_recovery(
     assert "7,449,473,297 tokens" in out
     assert "since Apr 7, 2026" in out
     assert "known tokens" not in out
-    assert "⚠ token expired" in out
-    assert "Log in to Codex CLI again, then run:" in out
-    assert "sidekick-usages refresh 'my work account'" in out
+    assert "⚠ login required" in out
+    assert "Run official managed Codex login:" in out
+    assert "sidekick-usages codex login 'my work account'" in out
     assert activity.calls == ["codex-ok"]
 
 
@@ -274,9 +274,7 @@ def test_activity_failure_renders_before_forcing_system_error(
 ) -> None:
     acct = _acct()
     provider = _FakeProvider(
-        fetch_results={
-            str(acct.label): TransientError("provider unavailable")
-        }
+        fetch_results={str(acct.label): TransientError("provider unavailable")}
     )
     activity = _ScriptedAccountActivity(
         {str(acct.label): TransientError("test-only provider response detail")}

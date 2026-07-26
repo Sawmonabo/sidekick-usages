@@ -20,6 +20,7 @@ from sidekick_usages.doctor.presentation.service import (
     doctor_json,
     render_doctor,
 )
+from sidekick_usages.doctor.runtime.service import DoctorRuntimeService
 from sidekick_usages.errors import AuthError
 from sidekick_usages.http.client import HttpClient
 from sidekick_usages.http.types import HttpOperation
@@ -119,6 +120,7 @@ def test_provider_secret_never_crosses_persisted_or_doctor_error_channels(
         {ProviderId.CLAUDE},
         set(),
         clock,
+        DoctorRuntimeService(store.saved_accounts(), None),
     ).diagnostics()
     completed = DoctorReadyResult(
         tuple(diagnostics),

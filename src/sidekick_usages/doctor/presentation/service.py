@@ -22,6 +22,7 @@ from sidekick_usages.doctor.accounts.models import (
     DoctorResult,
     IdentityState,
 )
+from sidekick_usages.doctor.runtime.types import DoctorAccountWarning
 from sidekick_usages.persistence.models.status import (
     PersistenceFailure,
     PersistenceStatus,
@@ -39,14 +40,16 @@ def render_doctor(
         brand_header(width, section="doctor · account diagnostics")
     ]
     if isinstance(result, DoctorReadyResult):
-        parts.extend(_supervisor_lines(result.supervisor))
+        parts.extend(_service_lines(result.supervisor))
+        parts.extend(_operation_lines(result.supervisor))
         parts.extend(_persistence_lines(result.persistence))
         parts.append(
             Text("  credential refresh: " + result.refresh_state.kind.value)
         )
         diagnostics = result.diagnostics
     elif isinstance(result, DoctorFailedResult):
-        parts.extend(_supervisor_lines(result.supervisor))
+        parts.extend(_service_lines(result.supervisor))
+        parts.extend(_operation_lines(result.supervisor))
         parts.extend(_persistence_failure_lines(result.failure))
         diagnostics = ()
     else:
@@ -63,6 +66,7 @@ def render_doctor(
             Text(f"{diagnostic.label}  [{diagnostic.provider.value}{suffix}]")
         )
         parts.extend(_auth_lines(diagnostic))
+        parts.extend(_runtime_lines(diagnostic))
         parts.extend(_heartbeat_lines(diagnostic))
         parts.append(
             Text(
@@ -91,34 +95,42 @@ def doctor_json(result: DoctorResult) -> JsonObject:
     ]
     return {
         "accounts": accounts,
+        "service": _service_dict(result.supervisor),
+        "operations": _operation_dict(result.supervisor),
         "persistence": persistence,
-        "supervisor": _supervisor_dict(result.supervisor),
     }
 
 
-def _supervisor_lines(health: SupervisorHealth) -> tuple[Text, ...]:
-    """Build independent human-readable supervisor health."""
+def _service_lines(health: SupervisorHealth) -> tuple[Text, ...]:
+    """Build independent resident-service health."""
     supervisor_version = (
         "unavailable"
         if health.supervisor_version is None
         else str(health.supervisor_version)
     )
     return (
-        Text("supervisor"),
+        Text("service"),
         Text(f"  backend: {health.backend}"),
         Text(f"  CLI version: {health.cli_version}"),
         Text(f"  supervisor version: {supervisor_version}"),
         Text(f"  platform: {health.platform}"),
         Text(f"  process: {health.process}"),
         Text(f"  protocol: {health.protocol}"),
-        Text(f"  queue: {health.queue}"),
-        Text(f"  journal: {health.journal}"),
         Text(f"  broker: {health.broker}"),
     )
 
 
-def _supervisor_dict(health: SupervisorHealth) -> JsonObject:
-    """Build machine-readable independent supervisor health."""
+def _operation_lines(health: SupervisorHealth) -> tuple[Text, ...]:
+    """Build independent durable queue and journal health."""
+    return (
+        Text("operations"),
+        Text(f"  queue: {health.queue}"),
+        Text(f"  journal: {health.journal}"),
+    )
+
+
+def _service_dict(health: SupervisorHealth) -> JsonObject:
+    """Build machine-readable resident-service health."""
     return {
         "backend": health.backend.value,
         "cli_version": str(health.cli_version),
@@ -130,9 +142,15 @@ def _supervisor_dict(health: SupervisorHealth) -> JsonObject:
         "platform": health.platform.value,
         "process": health.process.value,
         "protocol": health.protocol.value,
+        "broker": health.broker.value,
+    }
+
+
+def _operation_dict(health: SupervisorHealth) -> JsonObject:
+    """Build machine-readable queue and journal health."""
+    return {
         "queue": health.queue.value,
         "journal": health.journal.value,
-        "broker": health.broker.value,
     }
 
 
@@ -310,6 +328,37 @@ def _heartbeat_lines(diagnostic: AccountDiagnostic) -> tuple[Text, ...]:
     return tuple(lines)
 
 
+def _runtime_lines(diagnostic: AccountDiagnostic) -> tuple[Text, ...]:
+    """Build native relation, cached metrics, and account warning lines."""
+    lines = [
+        Text(f"  native relation: {diagnostic.native_relation}"),
+    ]
+    if diagnostic.metrics_observed_at is None:
+        lines.append(Text("  metrics: unavailable"))
+    else:
+        lines.append(
+            Text(
+                f"  metrics: {diagnostic.metrics_freshness} · "
+                f"{_format_machine_time(diagnostic.metrics_observed_at)}"
+            )
+        )
+    if diagnostic.warning is DoctorAccountWarning.LOGIN_REQUIRED:
+        lines.append(
+            Text(
+                "  warning: official provider login is required for this "
+                "account"
+            )
+        )
+    elif diagnostic.warning is DoctorAccountWarning.RECONCILIATION_REQUIRED:
+        lines.append(
+            Text(
+                "  warning: this account's native provider relation "
+                "requires reconciliation"
+            )
+        )
+    return tuple(lines)
+
+
 def _authentication_label(kind: DoctorCredentialKind) -> str:
     """Return the product label for one credential authority."""
     if kind is DoctorCredentialKind.SETUP_TOKEN:
@@ -383,6 +432,16 @@ def _diagnostic_dict(diagnostic: AccountDiagnostic) -> JsonObject:
             else None
         ),
         "last_heartbeat_error": diagnostic.last_heartbeat_error,
+        "native_relation": diagnostic.native_relation.value,
+        "metrics_freshness": diagnostic.metrics_freshness.value,
+        "metrics_observed_at": _optional_machine_time(
+            diagnostic.metrics_observed_at
+        ),
+        "warning": (
+            diagnostic.warning.value
+            if diagnostic.warning is not None
+            else None
+        ),
         "manual_action_required": diagnostic.manual_action_required,
     }
 

@@ -475,9 +475,9 @@ def test_stale_usage_and_failure_render_as_one_timestamped_account() -> None:
     failures = [_auth_failure("acct-stale")]
     out = _render_at(200, usages, failures=failures)
     assert "last known · 2026-06-12T11:34:56.789000+00:00" in out
-    assert "⚠ token expired" in out
-    assert "Log in to Codex CLI again, then run:" in out
-    assert "sidekick-usages refresh acct-stale" in out
+    assert "⚠ login required" in out
+    assert "Run official managed Codex login:" in out
+    assert "sidekick-usages codex login acct-stale" in out
     assert "╭─ CODEX · 1 account ─" in out
     assert "needs attention" not in out
     first = next(line for line in out.splitlines() if line.strip())
@@ -548,7 +548,7 @@ def test_failures_widen_shared_panels() -> None:
     out = buf.getvalue()
     widths = _panel_line_widths(out)
     assert len(widths) == 1
-    assert "sidekick-usages refresh long.account.name@example.test" in out
+    assert "sidekick-usages codex login long.account.name@example.test" in out
 
 
 def test_narrow_layout_renders_failures() -> None:
@@ -571,7 +571,7 @@ def test_narrow_layout_renders_failures() -> None:
         )
     )
     out = buf.getvalue()
-    assert "token expired" in out
+    assert "login required" in out
     assert "7.449B tokens" in out
     assert "since Apr 7, 2026" in out
     assert max(map(len, out.splitlines())) <= _NARROW_TEST_WIDTH
@@ -636,7 +636,9 @@ def test_partial_activity_keeps_usage_and_actionable_warning(
     assert "known" in out
     assert "profile failed" in out
     assert "token activity authentication failed" in out
-    assert "sidekick-usages refresh 'profile failed'" in out.replace("\n", "")
+    assert "sidekick-usages codex login 'profile failed'" in out.replace(
+        "\n", ""
+    )
     assert "Safe application message" not in out
 
 

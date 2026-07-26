@@ -29,10 +29,15 @@ from sidekick_usages.core.models import (
     ClaudeLoginIdentity,
     ClaudeSetupTokenCredentials,
     CodexCredentials,
+    UsageReport,
+    UsageWindow,
 )
-from sidekick_usages.core.types import AccountLabel, ExitCode
+from sidekick_usages.core.selection.types import ProviderRuntimeState
+from sidekick_usages.core.types import AccountLabel, ExitCode, ProviderId
 from sidekick_usages.daemon.types.lifecycle import ServiceComponentState
+from sidekick_usages.daemon.types.service import ServicePhase
 from sidekick_usages.doctor.accounts.service import DoctorService
+from sidekick_usages.doctor.runtime.service import DoctorRuntimeService
 from sidekick_usages.persistence.credentials.refresh.artifacts import (
     CredentialRefreshState,
     CredentialRefreshStateKind,
@@ -46,6 +51,14 @@ from sidekick_usages.persistence.types.status import PersistenceState
 from sidekick_usages.providers.registry import (
     build_heartbeat_registry,
     build_provider_registry,
+)
+from sidekick_usages.usage.dashboard.models import (
+    DashboardAccount,
+    DashboardActionState,
+    DashboardProvider,
+    DashboardService,
+    DashboardSnapshot,
+    DashboardUsage,
 )
 from tests.test_support import (
     REFERENCE_TIME,
@@ -64,6 +77,7 @@ _SETUP_AUTHORITY_ID = AuthorityId("00000000-0000-4000-8000-000000000001")
 def _harness(
     tmp_path: Path,
     accounts: tuple[SavedAccount, ...],
+    dashboard: DashboardSnapshot | None = None,
 ) -> tuple[CliHarness, io.StringIO, FixedClock]:
     output = io.StringIO()
     clock = FixedClock()
@@ -76,6 +90,7 @@ def _harness(
                 providers.keys(),
                 heartbeat_providers.keys(),
                 clock,
+                DoctorRuntimeService(accounts, dashboard),
             ),
             PersistenceStatus(
                 PersistenceState.CURRENT,
@@ -118,8 +133,20 @@ def test_json_reports_current_auth_state_without_secrets(
         ),
         plan="team",
     )
-    store = make_account_store(tmp_path, (login,))
-    saved = store.saved_accounts()[0]
+    codex = Account(
+        label=AccountLabel("codex-reconcile"),
+        credentials=CodexCredentials(
+            access_token="test-only-codex-access",
+            refresh_token="test-only-codex-refresh",
+            account_id="test-only-codex-identity",
+        ),
+        plan="pro",
+    )
+    store = make_account_store(tmp_path, (login, codex))
+    saved_by_label = {
+        account.label: account for account in store.saved_accounts()
+    }
+    saved = saved_by_label[AccountLabel("team")]
     authority = saved.authority
     assert isinstance(authority, ClaudeAccountAuthority)
     saved = replace(
@@ -133,19 +160,90 @@ def test_json_reports_current_auth_state_without_secrets(
             ),
             subscription=authority.subscription,
         ),
+        credential_health=CredentialHealth.LOGIN_REQUIRED,
     )
-    harness, output, clock = _harness(tmp_path, (saved,))
+    codex_saved = saved_by_label[AccountLabel("codex-reconcile")]
+    metrics_time = REFERENCE_TIME - timedelta(minutes=30)
+    dashboard = DashboardSnapshot(
+        providers=(
+            DashboardProvider(
+                provider_id=ProviderId.CLAUDE,
+                runtime_state=ProviderRuntimeState.SAVED_ACTIVE,
+                active_account_id=saved.account_id,
+                verified_at=REFERENCE_TIME,
+                actions_enabled=True,
+                rows=(
+                    DashboardAccount(
+                        account_id=saved.account_id,
+                        label=saved.label,
+                        provider_id=ProviderId.CLAUDE,
+                        plan=saved.plan,
+                        credential_health=saved.credential_health,
+                        active=True,
+                        states=(DashboardActionState.LOGIN_REQUIRED,),
+                        usage=DashboardUsage(
+                            plan=saved.plan,
+                            report=UsageReport(
+                                windows=(UsageWindow("5h", 20, None),),
+                                plan=saved.plan,
+                            ),
+                            observed_at=metrics_time,
+                        ),
+                    ),
+                ),
+            ),
+            DashboardProvider(
+                provider_id=ProviderId.CODEX,
+                runtime_state=ProviderRuntimeState.UNREADABLE,
+                active_account_id=None,
+                verified_at=REFERENCE_TIME,
+                actions_enabled=False,
+                rows=(
+                    DashboardAccount(
+                        account_id=codex_saved.account_id,
+                        label=codex_saved.label,
+                        provider_id=ProviderId.CODEX,
+                        plan=codex_saved.plan,
+                        credential_health=codex_saved.credential_health,
+                        active=False,
+                        states=(DashboardActionState.RECONCILIATION_REQUIRED,),
+                    ),
+                ),
+            ),
+        ),
+        service=DashboardService(
+            ready=True,
+            compatible=True,
+            phase=ServicePhase.READY,
+            observed_at=REFERENCE_TIME,
+            failure_code=None,
+        ),
+        reference_time=REFERENCE_TIME,
+    )
+    harness, output, clock = _harness(
+        tmp_path,
+        (saved, codex_saved),
+        dashboard,
+    )
 
     result = harness.invoke(["doctor", "--json"])
 
     payload = json.loads(output.getvalue())
-    accounts = payload["accounts"]
-    authorities = accounts[0]["authorities"]
-    assert result.exit_code == ExitCode.SUCCESS
-    assert len(accounts) == 1
-    assert accounts[0]["label"] == "team"
-    assert accounts[0]["identity_state"] == "known"
-    assert accounts[0]["provider_available"] is True
+    accounts = {account["label"]: account for account in payload["accounts"]}
+    authorities = accounts["team"]["authorities"]
+    assert result.exit_code == ExitCode.MANUAL_ACTION
+    assert set(accounts) == {"team", "codex-reconcile"}
+    assert accounts["team"]["identity_state"] == "known"
+    assert accounts["team"]["provider_available"] is True
+    assert accounts["team"]["native_relation"] == "active"
+    assert accounts["team"]["metrics_freshness"] == "stale"
+    assert accounts["team"]["metrics_observed_at"] is not None
+    assert accounts["team"]["warning"] == "login_required"
+    assert (
+        accounts["codex-reconcile"]["native_relation"]
+        == "reconciliation_required"
+    )
+    assert accounts["codex-reconcile"]["warning"] == "reconciliation_required"
     setup_authority = authorities["setup_token"]
     subscription_authority = authorities["subscription"]
     assert setup_authority["kind"] == "setup_token"
@@ -157,26 +255,34 @@ def test_json_reports_current_auth_state_without_secrets(
     assert payload["persistence"] == {
         "state": "current",
         "path": str(tmp_path / "accounts.json"),
-        "account_count": 1,
+        "account_count": 2,
         "credential_refresh": "clean",
     }
-    assert payload["supervisor"] == {
+    assert payload["service"] == {
         "backend": "systemd",
         "cli_version": "0.7.0",
         "supervisor_version": "0.7.0",
         "platform": "healthy",
         "process": "healthy",
         "protocol": "healthy",
-        "queue": "unhealthy",
-        "journal": "healthy",
         "broker": "not_required",
     }
+    assert payload["operations"] == {
+        "queue": "unhealthy",
+        "journal": "healthy",
+    }
+    assert all(
+        "migration_badge" not in account for account in accounts.values()
+    )
     rendered = output.getvalue()
     for secret in (
         "test-only-secret-access",
         "test-only-secret-refresh",
         "test-only-secret-account",
         "test-only-secret-org",
+        "test-only-codex-access",
+        "test-only-codex-refresh",
+        "test-only-codex-identity",
     ):
         assert secret not in rendered
     assert clock.calls == 1
@@ -235,7 +341,7 @@ def test_json_represents_current_store_failure(tmp_path: Path) -> None:
         "artifact_basename": "accounts.json",
         "message": "The account store could not be read safely.",
     }
-    assert payload["supervisor"]["queue"] == "unhealthy"
+    assert payload["operations"]["queue"] == "unhealthy"
 
 
 def test_filters_are_composable(tmp_path: Path) -> None:

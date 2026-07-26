@@ -12,7 +12,10 @@ from typer.testing import CliRunner
 
 from sidekick_usages.cli.app import create_app
 from sidekick_usages.cli.commands import usage, use
-from sidekick_usages.cli.context import InvocationContext
+from sidekick_usages.cli.context import InvocationContext, MigrationContext
+from sidekick_usages.cli.contexts.migration import (
+    ManagedAuthDaemonLifecycle,
+)
 from sidekick_usages.cli.contexts.use import UseContext
 from sidekick_usages.cli.dashboard import launch
 from sidekick_usages.cli.dashboard.controller import DashboardController
@@ -36,7 +39,7 @@ from sidekick_usages.core.accounts.types import (
     MetricsFreshness,
 )
 from sidekick_usages.core.selection.types import ProviderRuntimeState
-from sidekick_usages.core.types import ProviderId
+from sidekick_usages.core.types import ExitCode, ProviderId
 from sidekick_usages.daemon.types.lifecycle import ServiceLifecycleState
 from sidekick_usages.daemon.types.service import ServicePhase
 from sidekick_usages.persistence.accounts.index import AccountIndex
@@ -75,7 +78,11 @@ from tests.fakes.dashboard.use import (
     RecordingUseActivation,
     scriptable_use_accounts,
 )
-from tests.test_support import CliHarness, make_application_paths
+from tests.fakes.migration.managed_auth import (
+    MIGRATION_IDENTITIES,
+    managed_auth_scenario,
+)
+from tests.test_support import CliHarness, FixedClock, make_application_paths
 
 REFERENCE_TIME = datetime(2026, 7, 25, 14, tzinfo=UTC)
 OBSERVED_AT = REFERENCE_TIME - timedelta(hours=2)
@@ -495,6 +502,68 @@ def test_guided_setup_resumes_once_and_preserves_blocked_actions() -> None:
     assert blocked_daemon.events == ["status", "status"]
 
 
+def test_managed_auth_migration_resumes_without_exposing_secrets() -> None:
+    """One CLI journey proves ordering, isolation, resume, and final proof."""
+    scenario = managed_auth_scenario()
+    daemon = SetupDaemon(ServiceLifecycleState.ABSENT)
+    clock = FixedClock(REFERENCE_TIME)
+    output = io.StringIO()
+    errors = io.StringIO()
+    harness = CliHarness(
+        console=Console(file=output, force_terminal=False, width=120),
+        err_console=Console(file=errors, force_terminal=False, width=120),
+        migration=MigrationContext(
+            scenario.coordinator(
+                ManagedAuthDaemonLifecycle(daemon),
+                clock,
+            )
+        ),
+    )
+
+    first = harness.invoke(["migrate", "managed-auth", "--yes"])
+
+    assert first.exit_code == ExitCode.MANUAL_ACTION
+    assert scenario.trace == [
+        "codex:codex-ready",
+        "codex:codex-retry",
+        "claude:claude-team",
+    ]
+    assert daemon.events == ["status", "install"]
+    assert scenario.codex_login_events == ("codex-ready", "codex-retry")
+    assert scenario.setup_preserved
+    assert scenario.retry_is_stored
+    first_output = output.getvalue() + errors.getvalue()
+    assert "codex · codex-retry · action_required" in first_output
+    assert "claude · claude-team · action_required" in first_output
+    assert "due state could not be proven" in first_output
+    assert "Rerun this command to resume." in first_output
+
+    scenario.allow_codex_retry()
+    second = harness.invoke(["migrate", "managed-auth", "--yes"])
+
+    assert second.exit_code == ExitCode.SUCCESS
+    assert scenario.trace[3:] == [
+        "codex:codex-ready",
+        "codex:codex-retry",
+        "claude:claude-team",
+    ]
+    assert daemon.events == ["status", "install", "status"]
+    assert scenario.codex_login_events == (
+        "codex-ready",
+        "codex-retry",
+        "codex-retry",
+    )
+    assert scenario.all_managed
+    rendered = output.getvalue() + errors.getvalue()
+    assert "All saved accounts have verified managed authorities." in rendered
+    for identity in MIGRATION_IDENTITIES:
+        assert identity not in rendered
+
+    help_result = harness.invoke(["migrate", "managed-auth", "--help"])
+    assert help_result.exit_code == ExitCode.SUCCESS
+    assert "--token" not in help_result.output
+
+
 def test_scriptable_use_dispatches_only_stable_selection_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -502,9 +571,7 @@ def test_scriptable_use_dispatches_only_stable_selection_contract(
     environment: dict[str, str] = {}
     monkeypatch.setattr(use.os, "environ", environment)
     activation = RecordingUseActivation()
-    codex, claude, needs_login = scriptable_use_accounts(
-        REFERENCE_TIME
-    )
+    codex, claude, needs_login = scriptable_use_accounts(REFERENCE_TIME)
     output = io.StringIO()
     errors = io.StringIO()
     harness = CliHarness(
@@ -550,9 +617,7 @@ def test_scriptable_use_dispatches_only_stable_selection_contract(
         (ProviderId.CODEX, CODEX_SAVED_ACCOUNT_ID, False),
         (ProviderId.CLAUDE, CLAUDE_ACTIVE_ACCOUNT_ID, True),
     ]
-    assert environment == {
-        "ANTHROPIC_API_KEY": "synthetic-parent-secret"
-    }
+    assert environment == {"ANTHROPIC_API_KEY": "synthetic-parent-secret"}
     rendered = output.getvalue() + errors.getvalue()
     assert "No saved claude account labeled 'missing'." in rendered
     assert "Next: sidekick-usages\n" in rendered

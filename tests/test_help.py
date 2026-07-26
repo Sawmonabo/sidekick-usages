@@ -11,7 +11,7 @@ from typer.testing import CliRunner
 from sidekick_usages import __version__
 from sidekick_usages.branding import BRAND_DESCRIPTION, ROBOT_LINES
 from sidekick_usages.cli.app import create_app
-from sidekick_usages.cli.context import InvocationContext
+from sidekick_usages.cli.context import InvocationComposers, InvocationContext
 
 CLI_APP = create_app()
 
@@ -29,11 +29,14 @@ def _sentinel(
 
 def _no_composition_context(calls: list[str]) -> InvocationContext:
     return InvocationContext(
-        app_composer=_sentinel("app", calls),
-        persistence_composer=_sentinel("persistence", calls),
-        doctor_composer=_sentinel("doctor", calls),
-        daemon_composer=_sentinel("daemon", calls),
-        update_composer=_sentinel("update", calls),
+        composers=InvocationComposers(
+            application=_sentinel("app", calls),
+            persistence=_sentinel("persistence", calls),
+            doctor=_sentinel("doctor", calls),
+            daemon=_sentinel("daemon", calls),
+            migration=_sentinel("migration", calls),
+            update=_sentinel("update", calls),
+        ),
         use_composer=_sentinel("use", calls),
     )
 

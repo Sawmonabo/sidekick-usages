@@ -80,9 +80,7 @@ def cursor_account_dot(
     cursor: DashboardCursor,
 ) -> Text:
     """Render a two-cell cursor prefix before the existing account bullet."""
-    marker = Text(
-        f"{CURSOR_GLYPH} " if row_is_selected(row, cursor) else "  "
-    )
+    marker = Text(f"{CURSOR_GLYPH} " if row_is_selected(row, cursor) else "  ")
     marker.stylize("bold cyan", 0, 1)
     marker.append_text(account_dot(row.provider_id))
     return marker
@@ -93,9 +91,7 @@ def row_marker(
     cursor: DashboardCursor,
 ) -> Text:
     """Render the two-cell cursor prefix followed by the account bullet."""
-    marker = Text(
-        f"{CURSOR_GLYPH} " if row_is_selected(row, cursor) else "  "
-    )
+    marker = Text(f"{CURSOR_GLYPH} " if row_is_selected(row, cursor) else "  ")
     marker.stylize("bold cyan", 0, 1)
     marker.append_text(account_dot(row.provider_id))
     marker.append(" ")
@@ -241,13 +237,12 @@ def _authentication_failure_copy(
                 command,
             ),
         )
-    provider_name = PROVIDER_NAMES[failure.provider_id]
-    command = shlex.join(["sidekick-usages", "refresh", failure.label])
+    command = shlex.join(["sidekick-usages", "codex", "login", failure.label])
     return (
-        "token expired",
+        "login required",
         (
             *message_lines,
-            f"Log in to {provider_name} again, then run:",
+            "Run official managed Codex login:",
             command,
         ),
     )
@@ -297,10 +292,16 @@ def activity_issue_copy(
         or issue.label is None
     ):
         return ()
-    provider_name = PROVIDER_NAMES[provider_id]
-    command = shlex.join(["sidekick-usages", "refresh", issue.label])
+    if provider_id is ProviderId.CODEX:
+        action = "Run official managed Codex login:"
+        command = shlex.join(
+            ["sidekick-usages", "codex", "login", issue.label]
+        )
+    else:
+        action = "Run official managed Claude login:"
+        command = shlex.join(["sidekick-usages", "refresh", issue.label])
     return (
-        f"Log in to {provider_name} again, then run:",
+        action,
         command,
     )
 

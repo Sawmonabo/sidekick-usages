@@ -10,7 +10,11 @@ import click
 import typer
 from rich.console import Console
 
-from sidekick_usages.cli.contexts.dashboard import compose_dashboard_runtime
+from sidekick_usages.cli.contexts.dashboard import (
+    CachedDashboardSnapshotSource,
+    compose_dashboard_runtime,
+)
+from sidekick_usages.cli.contexts.migration import ManagedAuthDaemonLifecycle
 from sidekick_usages.cli.contexts.use import UseContext, compose_use_context
 from sidekick_usages.cli.dashboard.models.runtime import DashboardRuntime
 from sidekick_usages.clock import Clock, SystemClock
@@ -31,6 +35,9 @@ from sidekick_usages.credentials.claude.setup.service import (
 from sidekick_usages.credentials.codex.migration import (
     CodexAuthMigrationCoordinator,
 )
+from sidekick_usages.credentials.migration.managed_auth.service import (
+    ManagedAuthMigrationCoordinator,
+)
 from sidekick_usages.credentials.refresh import CredentialRefreshCoordinator
 from sidekick_usages.credentials.service import CredentialService
 from sidekick_usages.daemon.lifecycle.manager import (
@@ -39,6 +46,7 @@ from sidekick_usages.daemon.lifecycle.manager import (
 )
 from sidekick_usages.daemon.models.lifecycle import SupervisorHealth
 from sidekick_usages.doctor.accounts.service import DoctorService
+from sidekick_usages.doctor.runtime.service import DoctorRuntimeService
 from sidekick_usages.heartbeat.ports import HeartbeatProvider
 from sidekick_usages.heartbeat.service import HeartbeatService
 from sidekick_usages.http.client import HttpClient
@@ -167,10 +175,29 @@ class DaemonContext:
 
 
 @dataclass(frozen=True, slots=True)
+class MigrationContext:
+    """Interactive managed-auth migration context."""
+
+    managed_auth: ManagedAuthMigrationCoordinator
+
+
+@dataclass(frozen=True, slots=True)
 class UpdateContext:
     """Self-update command context."""
 
     update: UpdateService
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class InvocationComposers:
+    """Typed lazy composers configured as one cohesive dependency."""
+
+    application: Callable[[], Composed[AppContext]]
+    persistence: Callable[[], Composed[PersistenceContext]]
+    doctor: Callable[[], Composed[DoctorContext]]
+    daemon: Callable[[], Composed[DaemonContext]]
+    migration: Callable[[], Composed[MigrationContext]]
+    update: Callable[[], Composed[UpdateContext]]
 
 
 class _ApplicationCompositionError(Exception):
@@ -371,9 +398,7 @@ def compose_app_context(
             clock=resolved_clock,
             credential_access=AccountCredentialAccess(
                 resolver,
-                OperationAuthorityLocks(
-                    resolved_paths.durable_operations
-                ),
+                OperationAuthorityLocks(resolved_paths.durable_operations),
             ),
             local_activity_sources=local_activity_map,
             account_activity_sources=account_activity_map,
@@ -452,6 +477,11 @@ def compose_doctor_context(
             accounts = persistence.open_store()
             status = persistence.status(accounts)
             refresh_status = persistence.refresh_status()
+            saved_accounts = accounts.saved_accounts()
+            dashboard = CachedDashboardSnapshotSource(
+                resolved_paths,
+                resolved_clock,
+            ).load(None)
         except PersistenceError as error:
             return DoctorContext(
                 DoctorFailed(
@@ -462,10 +492,11 @@ def compose_doctor_context(
         return DoctorContext(
             DoctorReady(
                 DoctorService(
-                    accounts.saved_accounts(),
+                    saved_accounts,
                     provider_map.keys(),
                     heartbeat_map.keys(),
                     resolved_clock,
+                    DoctorRuntimeService(saved_accounts, dashboard),
                 ),
                 status,
                 refresh_status,
@@ -488,6 +519,56 @@ def compose_daemon_context(
     )
 
 
+def compose_migration_context(
+    *,
+    paths: ApplicationPaths | None = None,
+    clock: Clock | None = None,
+) -> Composed[MigrationContext]:
+    """Compose managed-auth migration without HTTP or usage services."""
+
+    def build(_resources: ExitStack) -> MigrationContext:
+        resolved_paths = _resolved_paths(paths)
+        resolved_clock = _resolved_clock(clock)
+        daemon = build_daemon_manager(
+            paths=resolved_paths,
+            clock=resolved_clock,
+        )
+        try:
+            persistence = _persistence(resolved_paths, daemon)
+            accounts = persistence.open_store()
+        except PersistenceError as error:
+            raise _ApplicationCompositionError(
+                _persistence_failure(error, resolved_paths.accounts)
+            ) from None
+        resolver = credential_resolver_for(
+            accounts,
+            persistence.private_credentials,
+        )
+        return MigrationContext(
+            ManagedAuthMigrationCoordinator(
+                accounts,
+                ManagedAuthDaemonLifecycle(daemon),
+                resolved_clock,
+                CodexAuthMigrationCoordinator(
+                    resolved_paths,
+                    accounts,
+                    persistence.managed_codex_profiles,
+                    resolved_clock,
+                ),
+                ClaudeManagedMigrationCoordinator(
+                    resolved_paths,
+                    accounts,
+                    resolver,
+                    persistence.managed_claude_profiles,
+                    UsageSnapshotStore(resolved_paths.usage_snapshots),
+                    resolved_clock,
+                ),
+            )
+        )
+
+    return _compose(build)
+
+
 def compose_update_context(
     *,
     clock: Clock | None = None,
@@ -500,6 +581,18 @@ def compose_update_context(
         return UpdateContext(UpdateService(http))
 
     return _compose(build)
+
+
+def default_invocation_composers() -> InvocationComposers:
+    """Return the complete production lazy-composition graph."""
+    return InvocationComposers(
+        application=compose_app_context,
+        persistence=compose_persistence_context,
+        doctor=compose_doctor_context,
+        daemon=compose_daemon_context,
+        migration=compose_migration_context,
+        update=compose_update_context,
+    )
 
 
 class _LazyComposition[T]:
@@ -527,37 +620,27 @@ class InvocationContext:
         *,
         console: Console | None = None,
         err_console: Console | None = None,
-        app_composer: Callable[[], Composed[AppContext]] = (
-            compose_app_context
-        ),
-        persistence_composer: Callable[[], Composed[PersistenceContext]] = (
-            compose_persistence_context
-        ),
-        doctor_composer: Callable[[], Composed[DoctorContext]] = (
-            compose_doctor_context
-        ),
-        daemon_composer: Callable[[], Composed[DaemonContext]] = (
-            compose_daemon_context
-        ),
-        update_composer: Callable[[], Composed[UpdateContext]] = (
-            compose_update_context
-        ),
+        composers: InvocationComposers | None = None,
         dashboard_composer: Callable[
             [],
             DashboardRuntime,
         ] = compose_dashboard_runtime,
         use_composer: Callable[[], UseContext] = compose_use_context,
     ) -> None:
+        resolved_composers = (
+            default_invocation_composers() if composers is None else composers
+        )
         self.console = console if console is not None else Console()
         self.err_console = (
             err_console if err_console is not None else Console(stderr=True)
         )
         self.only: ProviderId | None = None
-        self._app = _LazyComposition(app_composer)
-        self._persistence = _LazyComposition(persistence_composer)
-        self._doctor = _LazyComposition(doctor_composer)
-        self._daemon = _LazyComposition(daemon_composer)
-        self._update = _LazyComposition(update_composer)
+        self._app = _LazyComposition(resolved_composers.application)
+        self._persistence = _LazyComposition(resolved_composers.persistence)
+        self._doctor = _LazyComposition(resolved_composers.doctor)
+        self._daemon = _LazyComposition(resolved_composers.daemon)
+        self._migration = _LazyComposition(resolved_composers.migration)
+        self._update = _LazyComposition(resolved_composers.update)
         self._dashboard_composer = dashboard_composer
         self._dashboard: DashboardRuntime | None = None
         self._use_composer = use_composer
@@ -592,6 +675,16 @@ class InvocationContext:
         value = self._daemon.require(ctx)
         if not isinstance(value, DaemonContext):
             raise TypeError("Daemon composer returned the wrong context.")
+        return value
+
+    def require_migration(self, ctx: click.Context) -> MigrationContext:
+        """Return managed-auth migration coordination."""
+        try:
+            value = self._migration.require(ctx)
+        except _ApplicationCompositionError as error:
+            self._exit_failure(error.failure)
+        if not isinstance(value, MigrationContext):
+            raise TypeError("Migration composer returned the wrong context.")
         return value
 
     def require_update(self, ctx: click.Context) -> UpdateContext:

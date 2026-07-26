@@ -7,6 +7,7 @@ from enum import StrEnum, auto
 from sidekick_usages.core.accounts.types import (
     CredentialAction,
     CredentialHealth,
+    MetricsFreshness,
 )
 from sidekick_usages.core.types import (
     AccountLabel,
@@ -19,6 +20,10 @@ from sidekick_usages.credentials.claude.lifetime import (
     ClaudeLoginRenewalState,
 )
 from sidekick_usages.daemon.models.lifecycle import SupervisorHealth
+from sidekick_usages.doctor.runtime.types import (
+    DoctorAccountWarning,
+    NativeAccountRelation,
+)
 from sidekick_usages.persistence.credentials.refresh.artifacts import (
     CredentialRefreshState,
 )
@@ -104,6 +109,10 @@ class AccountDiagnostic:
     last_heartbeat_at: datetime | None
     last_heartbeat_status: HeartbeatStatus | None
     last_heartbeat_error: str | None
+    native_relation: NativeAccountRelation
+    metrics_freshness: MetricsFreshness
+    metrics_observed_at: datetime | None
+    warning: DoctorAccountWarning | None
     manual_action_required: bool
 
 

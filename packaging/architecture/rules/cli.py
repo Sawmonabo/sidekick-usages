@@ -34,6 +34,7 @@ def check_cli_contract(
         "doctor.py": {"require_doctor"},
         "heartbeat.py": {"require_app"},
         "maintenance.py": {"require_app"},
+        "migration.py": {"require_migration"},
         "permissions.py": {"require_persistence"},
         "updates.py": {"require_update"},
         "usage.py": {"require_app", "require_dashboard"},

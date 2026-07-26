@@ -15,6 +15,7 @@ from sidekick_usages.cli.commands import (
     doctor,
     heartbeat,
     maintenance,
+    migration,
     permissions,
     updates,
     usage,
@@ -94,6 +95,7 @@ def create_app() -> typer.Typer:
     credentials.register(application)
     heartbeat.register(application)
     maintenance.register(application)
+    migration.register(application)
     doctor.register(application)
     permissions.register(application)
     daemon.register(application)

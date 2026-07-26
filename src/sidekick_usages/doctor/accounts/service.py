@@ -46,6 +46,11 @@ from sidekick_usages.doctor.accounts.models import (
     HeartbeatSupport,
     IdentityState,
 )
+from sidekick_usages.doctor.runtime.service import DoctorRuntimeService
+from sidekick_usages.doctor.runtime.types import (
+    DoctorAccountWarning,
+    NativeAccountRelation,
+)
 
 _CLAUDE_SETUP_USAGE_ROUTE = "/v1/messages headers"
 _CLAUDE_SUBSCRIPTION_USAGE_ROUTE = "/api/oauth/usage"
@@ -78,17 +83,20 @@ class DoctorService:
         provider_ids: Collection[ProviderId],
         heartbeat_provider_ids: Collection[ProviderId],
         clock: Clock,
+        runtime: DoctorRuntimeService,
     ) -> None:
         """:param accounts: Validated secret-free account snapshot.
 
         :param provider_ids: Registered usage-provider identifiers.
         :param heartbeat_provider_ids: Registered heartbeat identifiers.
         :param clock: Aware UTC application wall clock.
+        :param runtime: Cached native relation and metrics diagnostics.
         """
         self.accounts = tuple(accounts)
         self._provider_ids = frozenset(provider_ids)
         self._heartbeat_provider_ids = frozenset(heartbeat_provider_ids)
         self._clock = clock
+        self._runtime = runtime
 
     def diagnostics(
         self,
@@ -122,6 +130,8 @@ class DoctorService:
             account,
             self._heartbeat_provider_ids,
         )
+        runtime = self._runtime.diagnostic(account.account_id)
+        warning = _account_warning(account, runtime.native_relation)
         authority_action = any(
             diagnostic is not None and diagnostic.manual_action_required
             for diagnostic in (setup_token, subscription)
@@ -130,6 +140,7 @@ class DoctorService:
             identity_state is IdentityState.ASSOCIATION_REQUIRED
             or account.last_refresh_status is RefreshStatus.FAILED
             or authority_action
+            or warning is not None
         )
         return AccountDiagnostic(
             label=account.label,
@@ -151,6 +162,10 @@ class DoctorService:
             last_heartbeat_at=account.last_heartbeat_at,
             last_heartbeat_status=account.last_heartbeat_status,
             last_heartbeat_error=account.last_heartbeat_error_code,
+            native_relation=runtime.native_relation,
+            metrics_freshness=runtime.metrics_freshness,
+            metrics_observed_at=runtime.metrics_observed_at,
+            warning=warning,
             manual_action_required=manual_action_required,
         )
 
@@ -162,6 +177,26 @@ def doctor_exit_code(
     if any(diagnostic.manual_action_required for diagnostic in diagnostics):
         return ExitCode.MANUAL_ACTION
     return ExitCode.SUCCESS
+
+
+def _account_warning(
+    account: SavedAccount,
+    native_relation: NativeAccountRelation,
+) -> DoctorAccountWarning | None:
+    """Select one account-specific warning without persistent badge state."""
+    if (
+        native_relation is NativeAccountRelation.RECONCILIATION_REQUIRED
+        or account.credential_health
+        is CredentialHealth.RECONCILIATION_REQUIRED
+    ):
+        return DoctorAccountWarning.RECONCILIATION_REQUIRED
+    if account.credential_health in {
+        CredentialHealth.LOGIN_REQUIRED,
+        CredentialHealth.MALFORMED,
+        CredentialHealth.UNREADABLE,
+    }:
+        return DoctorAccountWarning.LOGIN_REQUIRED
+    return None
 
 
 def _authority_diagnostics(
