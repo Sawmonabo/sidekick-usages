@@ -64,6 +64,14 @@ class ServiceReadiness(Protocol):
     ) -> None:
         """Verify protocol, state, queue, and broker capability."""
 
+    def wait_until_ready(
+        self,
+        provider_ids: ProviderReadinessScope = (),
+        *,
+        progress: ServiceLifecycleObserver,
+    ) -> None:
+        """Wait for bounded resident startup, then verify readiness."""
+
     def complete_maintenance_pass(
         self,
         progress: ServiceLifecycleObserver,

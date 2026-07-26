@@ -176,6 +176,16 @@ class ReadyLifecycle:
         providers = "+".join(provider_id.value for provider_id in provider_ids)
         self.events.append("ready" if not providers else f"ready:{providers}")
 
+    def wait_until_ready(
+        self,
+        provider_ids: ProviderReadinessScope = (),
+        *,
+        progress: ServiceLifecycleObserver,
+    ) -> None:
+        del progress
+        providers = "+".join(provider_id.value for provider_id in provider_ids)
+        self.events.append("wait" if not providers else f"wait:{providers}")
+
     def complete_maintenance_pass(
         self,
         progress: ServiceLifecycleObserver,
@@ -822,17 +832,17 @@ def test_lifecycle_is_idempotent_cancellable_and_preserves_user_state(
     install_sequence = [
         "enroll",
         "install",
-        "ready",
+        "wait",
         "maintain",
         "restart",
-        "ready",
+        "wait",
         "status",
     ]
     assert events == [
         *install_sequence,
         *install_sequence,
         "restart",
-        "ready",
+        "wait",
         "status",
         "status",
         "ready",

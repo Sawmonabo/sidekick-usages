@@ -111,13 +111,13 @@ class DaemonManager:
         try:
             self._readiness.enroll_accounts()
             self._backend.install(progress)
-            self._readiness.verify_ready(
+            self._readiness.wait_until_ready(
                 provider_ids,
                 progress=progress,
             )
             self._readiness.complete_maintenance_pass(progress)
             self._backend.restart(progress)
-            self._readiness.verify_ready(
+            self._readiness.wait_until_ready(
                 provider_ids,
                 progress=progress,
             )
@@ -183,7 +183,7 @@ class DaemonManager:
             return self._feature_disabled_result()
         try:
             self._backend.restart(progress)
-            self._readiness.verify_ready(
+            self._readiness.wait_until_ready(
                 provider_ids,
                 progress=progress,
             )

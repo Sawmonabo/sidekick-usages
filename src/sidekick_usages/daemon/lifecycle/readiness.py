@@ -67,6 +67,12 @@ from sidekick_usages.platform.peer import PeerVerificationError
 
 _READINESS_TIMEOUT_SECONDS = 30.0
 _READINESS_WAIT_SECONDS = 0.1
+_TRANSIENT_READINESS_FAILURES = frozenset(
+    {
+        ServiceFailureCode.CODEX_BROKER_UNAVAILABLE,
+        ServiceFailureCode.SERVICE_UNHEALTHY,
+    }
+)
 
 
 class SupervisorReadiness:
@@ -139,13 +145,66 @@ class SupervisorReadiness:
             ServiceLifecycleObservation(ServiceLifecyclePhase.DURABLE_RECOVERY)
         )
         state, accounts, operations = self._load_readiness_state()
+        broker_required = _broker_required(accounts, provider_ids)
+        if broker_required:
+            progress(
+                ServiceLifecycleObservation(
+                    ServiceLifecyclePhase.CODEX_BROKER
+                )
+            )
         self._require_resident_readiness(
             state,
             accounts,
             operations,
-            provider_ids,
-            progress,
+            broker_required=broker_required,
         )
+        self._require_provider_readiness(provider_ids, progress)
+
+    def wait_until_ready(
+        self,
+        provider_ids: ProviderReadinessScope = (),
+        *,
+        progress: ServiceLifecycleObserver = (
+            discard_service_lifecycle_observation
+        ),
+    ) -> None:
+        """Wait for bounded resident startup, then verify each provider."""
+        self._raise_if_cancelled()
+        self._verify_handshake(progress)
+        progress(
+            ServiceLifecycleObservation(ServiceLifecyclePhase.DURABLE_RECOVERY)
+        )
+        deadline = self._monotonic() + _READINESS_TIMEOUT_SECONDS
+        broker_reported = False
+        while True:
+            self._raise_if_cancelled()
+            try:
+                state, accounts, operations = self._load_readiness_state()
+                broker_required = _broker_required(accounts, provider_ids)
+                if broker_required and not broker_reported:
+                    progress(
+                        ServiceLifecycleObservation(
+                            ServiceLifecyclePhase.CODEX_BROKER
+                        )
+                    )
+                    broker_reported = True
+                self._require_resident_readiness(
+                    state,
+                    accounts,
+                    operations,
+                    broker_required=broker_required,
+                )
+            except ServiceLifecycleError as error:
+                if error.code not in _TRANSIENT_READINESS_FAILURES:
+                    raise
+                remaining = deadline - self._monotonic()
+                if remaining <= 0:
+                    raise
+                self._cancelled.wait(
+                    min(_READINESS_WAIT_SECONDS, remaining)
+                )
+                continue
+            break
         self._require_provider_readiness(provider_ids, progress)
 
     def _load_readiness_state(
@@ -175,20 +234,10 @@ class SupervisorReadiness:
         state: ServiceState,
         accounts: tuple[SavedAccount, ...],
         operations: tuple[DueOperation, ...],
-        provider_ids: ProviderReadinessScope,
-        progress: ServiceLifecycleObserver,
+        *,
+        broker_required: bool,
     ) -> None:
         """Prove durable recovery and the requested Codex broker."""
-        managed_codex_present = any(
-            requires_codex_broker(account) for account in accounts
-        )
-        broker_required = managed_codex_present and (
-            not provider_ids or ProviderId.CODEX in provider_ids
-        )
-        if broker_required:
-            progress(
-                ServiceLifecycleObservation(ServiceLifecyclePhase.CODEX_BROKER)
-            )
         if not state.queue_recovered or not state.journals_reconciled:
             raise ServiceLifecycleError(ServiceFailureCode.SERVICE_UNHEALTHY)
         enrolled = {
@@ -602,6 +651,15 @@ def _platform_health(
         case ServiceLifecycleState.FEATURE_DISABLED:
             return ServiceComponentState.FEATURE_DISABLED
     return assert_never(state)
+
+
+def _broker_required(
+    accounts: tuple[SavedAccount, ...],
+    provider_ids: ProviderReadinessScope,
+) -> bool:
+    return any(requires_codex_broker(account) for account in accounts) and (
+        not provider_ids or ProviderId.CODEX in provider_ids
+    )
 
 
 def _broker_health(
