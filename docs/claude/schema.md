@@ -675,9 +675,10 @@ Then run the synthetic provider-boundary contract:
 
 ```bash
 uv run pytest \
-  tests/test_claude_credential_modes.py \
-  tests/test_claude_provider_boundaries.py \
-  tests/test_claude_refresh.py -q
+  tests/providers/claude/test_credentials.py \
+  tests/providers/claude/test_input_boundaries.py \
+  tests/providers/claude/test_managed_boundaries.py \
+  tests/credentials/claude/test_maintenance.py -q
 ```
 
 If an exact runtime shape must be confirmed, use a disposable isolated Claude

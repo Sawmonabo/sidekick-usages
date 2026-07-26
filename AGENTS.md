@@ -40,8 +40,8 @@ files.
   editable by default; do not follow it with `uv pip install -e .`.
 - `uv run sidekick-usages -h`: exercise the working-tree CLI. `-h` and
   `--help` work at every command level.
-- `uv run pytest tests/test_<owner>.py`: iterate on the smallest relevant
-  behavior suite.
+- `uv run pytest tests/<owner>/test_<behavior>.py`: iterate on the smallest
+  relevant behavior suite.
 - `uv run pytest --cov=sidekick_usages`: run the full branch-coverage suite.
 - `uv run ruff check src/ tests/ packaging/` and
   `uv run ty check src/ tests/ packaging/`: lint and type-check production,
@@ -126,8 +126,8 @@ Inject typed fakes at provider, HTTP, filesystem, clock, subprocess, and
 scheduler boundaries. Never require real credentials, mutate provider logins,
 or depend on public network access. Test code follows the same type and
 maintenance standards as production code. Pytest uses strict configuration,
-discovers `tests/test_*.py` and `test_*`, and has no minimum coverage
-threshold.
+discovers `test_*.py` files beneath `tests/` and `test_*` functions, and has
+no minimum coverage threshold.
 
 ## Commit and Pull Request Guidelines
 

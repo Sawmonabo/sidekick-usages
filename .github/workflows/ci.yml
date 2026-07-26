@@ -99,7 +99,7 @@ jobs:
       if: runner.os == 'Windows'
       run: >-
         uv run pytest
-        --ignore=tests/test_dashboard_pty.py
+        --ignore=tests/dashboard/test_pty.py
         --cov=sidekick_usages
         --cov-report=xml
 

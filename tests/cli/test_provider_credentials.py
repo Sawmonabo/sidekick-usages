@@ -282,9 +282,7 @@ def test_codex_login_migrates_accounts_independently_without_native_copy(
     )
 
     ambiguous = harness.invoke(["refresh", "alpha"])
-    migrated_a = harness.invoke(
-        ["refresh", "alpha", "--provider", "codex"]
-    )
+    migrated_a = harness.invoke(["refresh", "alpha", "--provider", "codex"])
 
     assert (
         ambiguous.exit_code,

@@ -687,8 +687,9 @@ label's private managed profile.
   and managed Codex home and authority coordination.
 - `src/sidekick_usages/usage/`: usage results, application service, and Rich
   presentation; `branding.py` is the one robot and product-copy source.
-- `tests/`: focused pytest coverage for CLI behavior, providers, HTTP errors,
-  storage, rendering, maintenance, packaging, and cross-platform supervision.
+- `tests/`: owner-grouped pytest coverage for CLI behavior, providers, HTTP
+  errors, storage, rendering, maintenance, packaging, and cross-platform
+  supervision.
 - `docs/`: shared operational guides, provider research and schemas,
   architecture specifications, and implementation records.
 - `packaging/homebrew/`: formula generator and in-tree formula copy.
@@ -729,8 +730,8 @@ Ruff targets Python 3.14, double quotes, LF endings, a 79-column source and
 docstring limit, and explicit annotation enforcement. Use PEP 604 unions such
 as `str | None`, Python 3.14 native type parameters and aliases, and
 Sphinx-style public docstrings. Ty treats warnings as errors. Pytest discovers
-`tests/test_*.py` and `test_*` functions under strict marker and configuration
-checks.
+`test_*.py` files beneath `tests/` and `test_*` functions under strict marker
+and configuration checks.
 
 Use Conventional Commits such as `feat(render): ...`, `fix(cli): ...`,
 `test: ...`, and `docs: ...`. Release Please builds release notes and tags from

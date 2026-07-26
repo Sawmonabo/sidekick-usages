@@ -91,7 +91,7 @@ print(json.dumps(loaded))
 
     assert completed.stdout.strip() == "[]"
 
-    package_root = Path(__file__).parents[1] / "src" / "sidekick_usages"
+    package_root = Path(__file__).parents[2] / "src" / "sidekick_usages"
     assert (package_root / "core" / "expiry.py").is_file()
     assert (package_root / "core" / "models.py").is_file()
     assert not (package_root / "store.py").exists()
