@@ -27,7 +27,6 @@ from dashboard_benchmark.models import (
     LookupTaskIdentity,
 )
 from dashboard_benchmark.unix.console import (
-    FIRST_PAINT_DEADLINE_SECONDS,
     measure_installed_console_first_paint,
     require_isolated_console_environment,
 )
@@ -74,13 +73,10 @@ def _first_paint_line(
     selector = selectors.DefaultSelector()
     selector.register(process.stdout, selectors.EVENT_READ)
     try:
-        remaining = FIRST_PAINT_DEADLINE_SECONDS - (
-            time.perf_counter() - started_at
-        )
-        events = selector.select(max(0.0, remaining))
+        events = selector.select(TRACE_PROCESS_COMPLETION_TIMEOUT_SECONDS)
         if not events:
             raise DashboardBenchmarkError(
-                "Cached first paint exceeded the 250 ms deadline."
+                "Dashboard trace did not emit its first-paint signal."
             )
         line = process.stdout.readline()
     finally:
