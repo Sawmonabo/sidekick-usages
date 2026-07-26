@@ -57,6 +57,13 @@ def _main(
             help="Show version and exit.",
         ),
     ] = False,
+    no_interactive: Annotated[
+        bool,
+        typer.Option(
+            "--no-interactive",
+            help="Render once without reading terminal input.",
+        ),
+    ] = False,
 ) -> None:
     """Default invocation runs ``check`` if no subcommand is given."""
     del version
@@ -71,7 +78,7 @@ def _main(
         )
         raise typer.Exit(code=ExitCode.MANUAL_ACTION) from None
     if ctx.invoked_subcommand is None:
-        usage.run(ctx)
+        usage.run_default(ctx, interactive=not no_interactive)
 
 
 def create_app() -> typer.Typer:

@@ -112,6 +112,12 @@ _MUTATIONS = (
         ),
     ),
     architecture.models.SourceMutation(
+        "DEP006",
+        "src/sidekick_usages/cli/commands/usage.py",
+        "import typer\n",
+        "import prompt_toolkit\nimport typer\n",
+    ),
+    architecture.models.SourceMutation(
         "DEP007",
         "src/sidekick_usages/architecture_transport_fixture.py",
         "",
@@ -120,9 +126,9 @@ _MUTATIONS = (
     architecture.models.SourceMutation(
         "DEP008",
         "src/sidekick_usages/usage/presentation/overview.py",
-        "from rich.console import Console, Group, RenderableType\n",
+        "from rich.console import RenderableType\n",
         (
-            "from rich.console import Console, Group, RenderableType\n"
+            "from rich.console import RenderableType\n"
             "from sidekick_usages.credentials import authorities\n"
         ),
     ),

@@ -41,6 +41,7 @@ dependencies = [
   "platformdirs==4.10.0",
   "pydantic==2.13.4",
   "portalocker==3.2.0",
+  "prompt-toolkit==3.0.52",
   "pywin32==312; sys_platform == 'win32'",
   "rich>=13.9",
   "typer>=0.15",
@@ -67,7 +68,6 @@ dev = [
 lint = [
   "bandit[toml]>=1.9.2",
   "codespell>=2.4.1",
-  "commitizen>=4.10.1",
   "pre-commit>=4.5.1",
   "pyupgrade>=3.21.2",
   "ruff>=0.15.12"

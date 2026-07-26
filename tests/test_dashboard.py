@@ -1,11 +1,18 @@
 """Load-bearing cached dashboard-state behavior."""
 
+import io
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from rich.console import Console
+from typer.testing import CliRunner
 
+from sidekick_usages.cli.app import create_app
+from sidekick_usages.cli.commands import usage
+from sidekick_usages.cli.context import InvocationContext
+from sidekick_usages.cli.dashboard import launch
 from sidekick_usages.cli.dashboard.controller import DashboardController
 from sidekick_usages.cli.dashboard.models.controller import (
     ActivateOrRepairIntent,
@@ -14,6 +21,7 @@ from sidekick_usages.cli.dashboard.models.controller import (
     RefreshAccountIntent,
     RefreshDueAccountsIntent,
 )
+from sidekick_usages.cli.dashboard.models.runtime import DashboardRuntime
 from sidekick_usages.cli.dashboard.models.setup import (
     ServiceSetupAction,
     ServiceSetupDecision,
@@ -103,6 +111,61 @@ CONFLICT_AUTHORITY_ID = AuthorityId("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
 VALID_IDENTITY = "synthetic-codex-valid"
 CONFLICT_IDENTITY = "synthetic-codex-conflict"
 EXTERNAL_IDENTITY = "synthetic-claude-external"
+ONE_SHOT_ROUTE_COUNT = 3
+
+
+class RoutingSnapshotSource:
+    """Record one provider-scoped cached read."""
+
+    def __init__(self, events: list[str]) -> None:
+        self._events = events
+
+    def load(self, only: ProviderId | None) -> DashboardSnapshot:
+        """Return the synthetic dashboard with the requested scope."""
+        self._events.append(f"load:{only}")
+        snapshot = _controller_snapshot()
+        if only is None:
+            return snapshot
+        return replace(
+            snapshot,
+            providers=(
+                replace(snapshot.providers[0], rows=()),
+                snapshot.providers[1],
+            ),
+        )
+
+
+class RoutingDashboardProcess:
+    """Record replacement only after observing the cached frame."""
+
+    def __init__(self, events: list[str], output: io.StringIO) -> None:
+        self._events = events
+        self._output = output
+        self.frame_at_replace = ""
+
+    def replace(self, only: ProviderId | None) -> None:
+        """Capture the exact output visible at the replacement boundary."""
+        self.frame_at_replace = self._output.getvalue()
+        self._events.append(f"replace:{only}")
+
+
+class OneShotRecorder:
+    """Record stable one-shot routing without composing providers."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def __call__(self, _ctx: object) -> None:
+        """Record one existing workflow dispatch."""
+        self.calls += 1
+
+
+def _interactive_terminal() -> bool:
+    return True
+
+
+def _redirected_terminal() -> bool:
+    return False
 
 
 class SetupDaemon(DaemonManager):
@@ -533,6 +596,77 @@ def test_dashboard_controller_journey_preserves_verified_truth() -> None:
     assert fallback.state.focused_provider is ProviderId.CODEX
     assert fallback.state.account_id == CODEX_SAVED_ACCOUNT_ID
     assert not fallback.state.external
+
+
+def test_cli_routes_one_cached_frame_before_isolated_interaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One routing journey preserves TTY and one-shot process boundaries."""
+    output = io.StringIO()
+    events: list[str] = []
+    process = RoutingDashboardProcess(events, output)
+    runtime = DashboardRuntime(RoutingSnapshotSource(events), process)
+    application = create_app()
+    runner = CliRunner()
+    monkeypatch.setattr(
+        launch,
+        "interactive_dashboard_supported",
+        _interactive_terminal,
+    )
+
+    interactive = runner.invoke(
+        application,
+        ["--only", "codex"],
+        obj=InvocationContext(
+            console=Console(file=output, width=100, force_terminal=True),
+            dashboard_composer=lambda: runtime,
+        ),
+    )
+
+    assert interactive.exit_code == 0
+    assert events == ["load:codex", "replace:codex"]
+    assert "CODEX" in process.frame_at_replace
+    assert "CLAUDE" not in process.frame_at_replace
+
+    one_shot = OneShotRecorder()
+    monkeypatch.setattr(usage, "run", one_shot)
+    monkeypatch.setattr(
+        launch,
+        "interactive_dashboard_supported",
+        _redirected_terminal,
+    )
+    redirected = runner.invoke(application, [], obj=InvocationContext())
+    check = runner.invoke(application, ["check"], obj=InvocationContext())
+    monkeypatch.setattr(
+        launch,
+        "interactive_dashboard_supported",
+        _interactive_terminal,
+    )
+    disabled = runner.invoke(
+        application,
+        ["--no-interactive"],
+        obj=InvocationContext(),
+    )
+    help_result = runner.invoke(
+        application,
+        ["--help"],
+        obj=InvocationContext(),
+    )
+    version = runner.invoke(
+        application,
+        ["--version"],
+        obj=InvocationContext(),
+    )
+
+    assert (
+        redirected.exit_code,
+        check.exit_code,
+        disabled.exit_code,
+        help_result.exit_code,
+        version.exit_code,
+    ) == (0, 0, 0, 0, 0)
+    assert one_shot.calls == ONE_SHOT_ROUTE_COUNT
+    assert events == ["load:codex", "replace:codex"]
 
 
 def test_guided_setup_resumes_once_and_preserves_blocked_actions() -> None:

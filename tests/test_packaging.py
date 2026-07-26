@@ -69,6 +69,7 @@ def test_runtime_dependencies_and_lock_match_reviewed_versions() -> None:
     assert "platformdirs==4.10.0" in dependencies
     assert "pydantic==2.13.4" in dependencies
     assert "portalocker==3.2.0" in dependencies
+    assert "prompt-toolkit==3.0.52" in dependencies
     assert "pywin32==312; sys_platform == 'win32'" in dependencies
     assert all(
         not dependency.startswith("pywin32==312")
@@ -84,6 +85,7 @@ def test_runtime_dependencies_and_lock_match_reviewed_versions() -> None:
     assert locked["platformdirs"] == "4.10.0"
     assert locked["pydantic"] == "2.13.4"
     assert locked["pydantic-core"] == "2.46.4"
+    assert locked["prompt-toolkit"] == "3.0.52"
     assert locked["pywin32"] == "312"
     assert locked["urllib3"] == "2.7.0"
     assert "B310" not in pyproject["tool"]["bandit"]["skips"]

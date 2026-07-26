@@ -6,10 +6,55 @@ from rich.text import Text
 
 from sidekick_usages.branding import brand_header
 from sidekick_usages.cli.context import invocation_context
+from sidekick_usages.cli.dashboard import launch
+from sidekick_usages.cli.dashboard.controller import DashboardController
 from sidekick_usages.cli.help import branded_command
 from sidekick_usages.core.types import ExitCode, ProviderId, highest_exit_code
+from sidekick_usages.usage.dashboard.models import (
+    DashboardCursor,
+    DashboardFooter,
+)
 from sidekick_usages.usage.models import activity_has_failure
+from sidekick_usages.usage.presentation.dashboard.overview import (
+    dashboard_overview,
+)
 from sidekick_usages.usage.presentation.overview import usage_overview
+
+
+def run_default(ctx: typer.Context, *, interactive: bool) -> None:
+    """Choose cached interactive launch or the stable one-shot workflow."""
+    if not interactive or not launch.interactive_dashboard_supported():
+        run(ctx)
+        return
+    invocation = invocation_context(ctx)
+    runtime = invocation.require_dashboard()
+    snapshot = runtime.snapshots.load(invocation.only)
+    controller = DashboardController.start(snapshot)
+    state = controller.state
+    frame = launch.render_dashboard_frame(
+        invocation.console,
+        dashboard_overview(
+            snapshot,
+            width=invocation.console.size.width,
+            cursor=DashboardCursor(
+                focused_provider=state.focused_provider,
+                account_id=state.account_id,
+                external=state.external,
+            ),
+            footer=DashboardFooter(),
+        ),
+    )
+    line_count = launch.present_dashboard_frame(invocation.console, frame)
+    try:
+        runtime.process.replace(invocation.only)
+    except OSError as error:
+        launch.restore_after_failed_replace(
+            invocation.console,
+            line_count,
+        )
+        raise launch.InteractiveDashboardLaunchError(
+            "The interactive dashboard could not be started."
+        ) from error
 
 
 def run(ctx: typer.Context) -> None:

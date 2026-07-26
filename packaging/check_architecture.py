@@ -37,6 +37,17 @@ _CODEX_BROKER_WIRE_FILE = "src/sidekick_usages/providers/codex/broker/wire.py"
 _CACHED_DASHBOARD_SERVICE_FILE = (
     "src/sidekick_usages/usage/dashboard/service.py"
 )
+_DASHBOARD_ENTRYPOINT_FILE = "src/sidekick_usages/entrypoints/dashboard.py"
+_DASHBOARD_APPLICATION_FILE = (
+    "src/sidekick_usages/cli/dashboard/application.py"
+)
+_DASHBOARD_INPUT_FILE = "src/sidekick_usages/cli/dashboard/input.py"
+_PROMPT_TOOLKIT_FILES = frozenset(
+    {
+        _DASHBOARD_APPLICATION_FILE,
+        _DASHBOARD_INPUT_FILE,
+    }
+)
 _ISOLATED_WORKER_FILES = frozenset(
     {
         "src/sidekick_usages/daemon/worker/account.py",
@@ -72,18 +83,9 @@ _RENDERER_FILES = frozenset(
         "src/sidekick_usages/branding.py",
         "src/sidekick_usages/heartbeat/render.py",
         "src/sidekick_usages/usage/presentation/activity.py",
-        (
-            "src/sidekick_usages/usage/presentation/dashboard/"
-            "footer.py"
-        ),
-        (
-            "src/sidekick_usages/usage/presentation/dashboard/"
-            "overview.py"
-        ),
-        (
-            "src/sidekick_usages/usage/presentation/dashboard/"
-            "selection.py"
-        ),
+        ("src/sidekick_usages/usage/presentation/dashboard/footer.py"),
+        ("src/sidekick_usages/usage/presentation/dashboard/overview.py"),
+        ("src/sidekick_usages/usage/presentation/dashboard/selection.py"),
         "src/sidekick_usages/usage/presentation/narrow.py",
         "src/sidekick_usages/usage/presentation/overview.py",
         "src/sidekick_usages/usage/presentation/reset.py",
@@ -237,9 +239,37 @@ def _check_import(
         ),
         (
             "DEP002",
-            "/cli/" not in path and not path.endswith("/__main__.py"),
+            "/cli/" not in path
+            and not path.endswith("/__main__.py")
+            and path != _DASHBOARD_ENTRYPOINT_FILE,
             matches(module, "sidekick_usages.cli"),
             "non-CLI code cannot import CLI composition",
+        ),
+        (
+            "DEP006",
+            root == "prompt_toolkit",
+            path not in _PROMPT_TOOLKIT_FILES,
+            "prompt-toolkit belongs only to the isolated dashboard process",
+        ),
+        (
+            "DEP006",
+            path.startswith("src/")
+            and path
+            not in {
+                _DASHBOARD_ENTRYPOINT_FILE,
+                _DASHBOARD_APPLICATION_FILE,
+            },
+            matches(
+                module,
+                "sidekick_usages.cli.dashboard.application",
+            ),
+            "only the dashboard entrypoint can reach interactive imports",
+        ),
+        (
+            "DEP006",
+            path.startswith("src/") and path != _DASHBOARD_APPLICATION_FILE,
+            matches(module, "sidekick_usages.cli.dashboard.input"),
+            "dashboard input is private to its isolated application",
         ),
         (
             "DEP003",
@@ -664,7 +694,7 @@ def _check_cli(
         "maintenance.py": {"require_app"},
         "permissions.py": {"require_persistence"},
         "updates.py": {"require_update"},
-        "usage.py": {"require_app"},
+        "usage.py": {"require_app", "require_dashboard"},
     }
     for filename, expected in accessors.items():
         command = by_path.get(f"src/sidekick_usages/cli/commands/{filename}")

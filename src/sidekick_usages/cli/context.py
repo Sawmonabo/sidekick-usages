@@ -10,6 +10,8 @@ import click
 import typer
 from rich.console import Console
 
+from sidekick_usages.cli.contexts.dashboard import compose_dashboard_runtime
+from sidekick_usages.cli.dashboard.models.runtime import DashboardRuntime
 from sidekick_usages.clock import Clock, SystemClock
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.credentials.accounts.lifecycle.models import (
@@ -517,7 +519,7 @@ class _LazyComposition[T]:
 
 
 class InvocationContext:
-    """Lightweight presentation state and five lazy typed composers."""
+    """Lightweight presentation state and lazy typed composers."""
 
     def __init__(
         self,
@@ -539,6 +541,10 @@ class InvocationContext:
         update_composer: Callable[[], Composed[UpdateContext]] = (
             compose_update_context
         ),
+        dashboard_composer: Callable[
+            [],
+            DashboardRuntime,
+        ] = compose_dashboard_runtime,
     ) -> None:
         self.console = console if console is not None else Console()
         self.err_console = (
@@ -550,6 +556,8 @@ class InvocationContext:
         self._doctor = _LazyComposition(doctor_composer)
         self._daemon = _LazyComposition(daemon_composer)
         self._update = _LazyComposition(update_composer)
+        self._dashboard_composer = dashboard_composer
+        self._dashboard: DashboardRuntime | None = None
 
     def require_app(self, ctx: click.Context) -> AppContext:
         """Return the one normal application context."""
@@ -588,6 +596,14 @@ class InvocationContext:
         if not isinstance(value, UpdateContext):
             raise TypeError("Update composer returned the wrong context.")
         return value
+
+    def require_dashboard(self) -> DashboardRuntime:
+        """Compose the passive dashboard boundary at most once."""
+        dashboard = self._dashboard
+        if dashboard is None:
+            dashboard = self._dashboard_composer()
+            self._dashboard = dashboard
+        return dashboard
 
     def _exit_failure(self, failure: PersistenceFailure) -> Never:
         self.err_console.print(f"[red]{failure.message}[/red]")
