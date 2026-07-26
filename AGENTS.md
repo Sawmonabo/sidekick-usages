@@ -43,8 +43,9 @@ files.
 - `uv run pytest tests/test_<owner>.py`: iterate on the smallest relevant
   behavior suite.
 - `uv run pytest --cov=sidekick_usages`: run the full branch-coverage suite.
-- `uv run ruff check src/ tests/` and `uv run ty check src/ tests/`: lint and
-  type-check production and test code.
+- `uv run ruff check src/ tests/ packaging/` and
+  `uv run ty check src/ tests/ packaging/`: lint and type-check production,
+  test, and packaging code.
 - `uv run python packaging/check_architecture.py`: enforce repository-specific
   ownership, dependency, path, context, clock, type, and package contracts.
 - `uv run pre-commit run --all-files`: run the complete local static gate.
@@ -55,9 +56,9 @@ files.
   and exercise one exact wheel outside the checkout.
 
 Run focused checks first and the full relevant gates before handoff. CI also
-tests Python 3.14 on Linux, macOS, and Windows, verifies released-v0.6.0
-compatibility, builds the Homebrew source path on Linux and macOS, and
-validates the exact distributions.
+tests Python 3.14 on Linux, macOS Arm and Intel, and Windows, builds the
+Homebrew source path on Linux and macOS, and validates the exact
+distributions.
 
 ## Investigation, Reuse, and Abstraction
 

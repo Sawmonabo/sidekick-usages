@@ -2,13 +2,12 @@
 
 from pathlib import Path
 
-import architecture.models
-import architecture.source
-import check_architecture
 import click
 import pytest
 from typer.main import get_command
 
+import architecture.models
+import check_architecture
 from sidekick_usages.cli.app import create_app
 
 REPO_ROOT = Path(__file__).parents[1]
@@ -248,6 +247,7 @@ _MUTATIONS = (
         'CLAUDE_CONFIG_DIR = "CLAUDE_CONFIG_DIR"\n',
     ),
 )
+_MUTATION_RULE_IDS = frozenset(mutation.rule_id for mutation in _MUTATIONS)
 
 
 def test_real_tree_satisfies_every_static_architecture_contract() -> None:
@@ -298,17 +298,14 @@ def test_every_static_rule_rejects_a_deliberate_violation() -> None:
     """Every advertised failure rule is executable, not documentation."""
     report = _deliberately_broken_report()
 
-    assert {violation.rule_id for violation in report.violations} == (
-        architecture.source.VIOLATION_RULE_IDS
-    )
+    assert {
+        violation.rule_id for violation in report.violations
+    } == _MUTATION_RULE_IDS
     assert any(
         violation.rule_id == "PKG001"
         and violation.path.as_posix()
         == "src/sidekick_usages/_internal/fixture.py"
         for violation in report.violations
-    )
-    assert {mutation.rule_id for mutation in _MUTATIONS} == (
-        architecture.source.VIOLATION_RULE_IDS
     )
 
 

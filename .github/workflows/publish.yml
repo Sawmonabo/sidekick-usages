@@ -38,9 +38,7 @@ jobs:
       run: uv run pre-commit run --all-files --show-diff-on-failure
 
     - name: pytest
-      run: |
-        uv pip install -e .
-        uv run pytest
+      run: uv run pytest
 
   # ---- Build wheel + sdist --------------------------------------------
   build:

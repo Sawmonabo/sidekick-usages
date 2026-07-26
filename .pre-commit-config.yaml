@@ -72,7 +72,7 @@ repos:
     pass_filenames: false
   - id: ty
     name: ty type check
-    entry: uv run ty check src/ tests/
+    entry: uv run ty check src/ tests/ packaging/
     language: system
     types: [python]
     pass_filenames: false

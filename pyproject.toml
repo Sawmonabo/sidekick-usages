@@ -88,7 +88,7 @@ packages = ["src/sidekick_usages"]
 [tool.ruff]
 target-version = "py314"
 line-length = 79
-src = ["src", "tests"]
+src = ["src", "tests", "packaging"]
 cache-dir = ".cache/ruff"
 # Local agent infra committed alongside the package is not project code.
 extend-exclude = [".claude/", ".codex/"]
@@ -144,7 +144,7 @@ python = ".venv"
 extra-paths = ["packaging"]
 
 [tool.ty.src]
-include = ["src/", "tests/"]
+include = ["src/", "tests/", "packaging/"]
 
 [tool.ty.rules]
 possibly-unresolved-reference = "error"

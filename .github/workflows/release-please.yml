@@ -45,7 +45,7 @@ jobs:
     # re-triggers this workflow, but with no release cut the guard is false and
     # these steps are skipped. The PAT (not GITHUB_TOKEN) attributes the push to
     # a real user, matching how the release tag is pushed.
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
       if: ${{ steps.release.outputs.release_created }}
       with:
         ref: main

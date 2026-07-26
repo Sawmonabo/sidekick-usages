@@ -9,6 +9,7 @@ import tomllib
 import urllib.request
 
 import pytest
+
 from homebrew import generate
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]

@@ -4,6 +4,9 @@ import sys
 
 from dashboard_benchmark.command import execute
 from dashboard_benchmark.errors import DashboardBenchmarkError
+from sidekick_usages.cli.dashboard.models.controller import (
+    RefreshDueAccountsIntent,
+)
 from sidekick_usages.cli.dashboard.models.setup import (
     ServiceSetupDecision,
     ServiceSetupMessage,
@@ -11,6 +14,10 @@ from sidekick_usages.cli.dashboard.models.setup import (
 )
 from sidekick_usages.cli.dashboard.setup import GuidedServiceSetup
 from sidekick_usages.daemon.lifecycle.manager import build_daemon_manager
+from sidekick_usages.paths import discover_application_paths
+from sidekick_usages.persistence.setup.store import (
+    ServiceSetupAcknowledgementStore,
+)
 from sidekick_usages.usage.dashboard.models import DashboardService
 
 
@@ -20,8 +27,12 @@ def main() -> int:
         raise DashboardBenchmarkError(
             "Native Windows dashboard gate accepts no arguments."
         )
-    intent = "native-windows-platform-gate"
-    result = GuidedServiceSetup(build_daemon_manager()).prepare(
+    paths = discover_application_paths()
+    intent = RefreshDueAccountsIntent()
+    result = GuidedServiceSetup(
+        build_daemon_manager(paths=paths),
+        ServiceSetupAcknowledgementStore(paths.service_setup_acknowledgement),
+    ).prepare(
         service=DashboardService(
             ready=False,
             compatible=False,

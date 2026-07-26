@@ -6,7 +6,6 @@ from pathlib import PurePosixPath
 
 from architecture.models import ArchitectureFinding, SourceUnit
 from architecture.source import (
-    ROBOT_ART,
     assigned_names,
     assignment_literal,
     contains_call,
@@ -14,6 +13,15 @@ from architecture.source import (
     dotted_name,
     finding,
     function_node,
+)
+
+_ROBOT_ART = (
+    "      o",
+    "     .-.",
+    "  .--┴-┴--.",
+    "  | O   O |",
+    "  | ||||| |",
+    "  '--___--'",
 )
 
 
@@ -194,7 +202,7 @@ def _check_brand(
     )
     valid = owners == {"src/sidekick_usages/branding.py"} and (
         branding is not None
-        and assignment_literal(branding.tree, "ROBOT_LINES") == ROBOT_ART
+        and assignment_literal(branding.tree, "ROBOT_LINES") == _ROBOT_ART
     )
     if not valid:
         violations.append(

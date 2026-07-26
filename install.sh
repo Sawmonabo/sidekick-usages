@@ -119,16 +119,28 @@ esac
 # Smoke test
 # ----------------------------------------------------------------------
 echo
-if command -v sidekick-usages >/dev/null 2>&1; then
-    INSTALLED_VERSION="$(sidekick-usages --version 2>&1 || true)"
-    ok "${BOLD}${INSTALLED_VERSION}${RESET} is ready."
-    echo
-    echo "Next steps:"
-    echo "  ${CYAN}sidekick-usages${RESET}                 # check usage for all accounts"
-    echo "  ${CYAN}sidekick-usages add claude${RESET}      # save your first Claude Code account"
-    echo "  ${CYAN}sidekick-usages --help${RESET}          # full command list"
-else
-    warn "Installed, but 'sidekick-usages' isn't on PATH in this shell."
-    echo "Try opening a new terminal, or run:"
-    echo "  ${DIM}export PATH=\"\$HOME/.local/bin:\$PATH\"${RESET}"
+if ! command -v sidekick-usages >/dev/null 2>&1; then
+    fail \
+        "Installation finished, but 'sidekick-usages' isn't on PATH." \
+        "Open a new terminal or add '\$HOME/.local/bin' to PATH, then re-run."
 fi
+if ! INSTALLED_VERSION="$(sidekick-usages --version 2>&1)"; then
+    fail \
+        "Installation finished, but 'sidekick-usages --version' failed:" \
+        "$INSTALLED_VERSION"
+fi
+if [[ -z "$INSTALLED_VERSION" ]]; then
+    fail "Installation finished, but the version check returned no output."
+fi
+if [[ -n "${SIDEKICK_USAGES_VERSION:-}" ]] \
+    && [[ "${INSTALLED_VERSION##* }" != "$SIDEKICK_USAGES_VERSION" ]]; then
+    fail \
+        "Installed '$SIDEKICK_USAGES_VERSION', but PATH resolves to:" \
+        "$INSTALLED_VERSION"
+fi
+ok "${BOLD}${INSTALLED_VERSION}${RESET} is ready."
+echo
+echo "Next steps:"
+echo "  ${CYAN}sidekick-usages${RESET}                 # check usage for all accounts"
+echo "  ${CYAN}sidekick-usages add claude${RESET}      # save your first Claude Code account"
+echo "  ${CYAN}sidekick-usages --help${RESET}          # full command list"

@@ -705,8 +705,8 @@ uv sync --all-groups
 
 uv run sidekick-usages -h
 uv run python packaging/check_architecture.py
-uv run ruff check src/ tests/
-uv run ty check src/ tests/
+uv run ruff check src/ tests/ packaging/
+uv run ty check src/ tests/ packaging/
 uv run pytest --cov=sidekick_usages
 uv run pre-commit run --all-files
 

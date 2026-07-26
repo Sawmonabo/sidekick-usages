@@ -7,6 +7,7 @@ import zipfile
 from pathlib import Path
 
 import pytest
+
 from wheel_verification import artifacts, project
 from wheel_verification.errors import WheelVerificationError
 
@@ -169,8 +170,7 @@ def test_workflows_use_the_cross_platform_exact_wheel_verifier() -> None:
         ("windows-latest", "windows-x64"),
     ):
         assert (
-            f"- os: {operating_system}\n"
-            f"          platform: {platform}"
+            f"- os: {operating_system}\n          platform: {platform}"
         ) in ci
     assert "pytest with Unix pseudoterminal coverage" in ci
     assert "if: runner.os != 'Windows'" in ci
