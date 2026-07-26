@@ -6,6 +6,14 @@ from pathlib import Path
 
 import pytest
 
+from sidekick_usages.cli.dashboard.controller import DashboardController
+from sidekick_usages.cli.dashboard.models.controller import (
+    ActivateOrRepairIntent,
+    DashboardActivationProof,
+    DashboardMove,
+    RefreshAccountIntent,
+    RefreshDueAccountsIntent,
+)
 from sidekick_usages.core.accounts.models import (
     CodexAccountAuthority,
     CodexManagedAuthority,
@@ -57,12 +65,24 @@ from sidekick_usages.usage.dashboard.models import (
     DashboardAccount,
     DashboardActionState,
     DashboardExternalRow,
+    DashboardProvider,
+    DashboardService,
+    DashboardSnapshot,
 )
 from sidekick_usages.usage.dashboard.service import CachedDashboardService
 from tests.test_support import make_application_paths
 
 REFERENCE_TIME = datetime(2026, 7, 25, 14, tzinfo=UTC)
 OBSERVED_AT = REFERENCE_TIME - timedelta(hours=2)
+CLAUDE_PREVIEW_ACCOUNT_ID = SidekickAccountId(
+    "33333333-3333-4333-8333-333333333333"
+)
+CLAUDE_ACTIVE_ACCOUNT_ID = SidekickAccountId(
+    "44444444-4444-4444-8444-444444444444"
+)
+CODEX_SAVED_ACCOUNT_ID = SidekickAccountId(
+    "55555555-5555-4555-8555-555555555555"
+)
 VALID_ACCOUNT_ID = SidekickAccountId("11111111-1111-4111-8111-111111111111")
 CONFLICT_ACCOUNT_ID = SidekickAccountId("22222222-2222-4222-8222-222222222222")
 VALID_AUTHORITY_ID = AuthorityId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
@@ -196,6 +216,73 @@ def _seed_dashboard(
     return renamed, conflicted
 
 
+def _controller_snapshot() -> DashboardSnapshot:
+    claude_rows = (
+        DashboardAccount(
+            account_id=CLAUDE_PREVIEW_ACCOUNT_ID,
+            label=AccountLabel("claude-preview"),
+            provider_id=ProviderId.CLAUDE,
+            plan="max",
+            credential_health=CredentialHealth.REFRESH_DUE,
+            active=False,
+            states=(DashboardActionState.REPAIR_REQUIRED,),
+        ),
+        DashboardAccount(
+            account_id=CLAUDE_ACTIVE_ACCOUNT_ID,
+            label=AccountLabel("claude-active"),
+            provider_id=ProviderId.CLAUDE,
+            plan="max",
+            credential_health=CredentialHealth.HEALTHY,
+            active=True,
+            states=(DashboardActionState.HEALTHY,),
+        ),
+    )
+    codex_rows = (
+        DashboardAccount(
+            account_id=CODEX_SAVED_ACCOUNT_ID,
+            label=AccountLabel("codex-saved"),
+            provider_id=ProviderId.CODEX,
+            plan="pro",
+            credential_health=CredentialHealth.HEALTHY,
+            active=False,
+            states=(DashboardActionState.HEALTHY,),
+        ),
+        DashboardExternalRow(
+            provider_id=ProviderId.CODEX,
+            observed_at=OBSERVED_AT,
+            states=(DashboardActionState.EXTERNAL_ACTIVE,),
+        ),
+    )
+    return DashboardSnapshot(
+        providers=(
+            DashboardProvider(
+                provider_id=ProviderId.CLAUDE,
+                runtime_state=ProviderRuntimeState.SAVED_ACTIVE,
+                active_account_id=CLAUDE_ACTIVE_ACCOUNT_ID,
+                verified_at=OBSERVED_AT,
+                actions_enabled=True,
+                rows=claude_rows,
+            ),
+            DashboardProvider(
+                provider_id=ProviderId.CODEX,
+                runtime_state=ProviderRuntimeState.EXTERNAL_ACTIVE,
+                active_account_id=None,
+                verified_at=OBSERVED_AT,
+                actions_enabled=True,
+                rows=codex_rows,
+            ),
+        ),
+        service=DashboardService(
+            ready=True,
+            compatible=True,
+            phase=ServicePhase.READY,
+            observed_at=OBSERVED_AT,
+            failure_code=None,
+        ),
+        reference_time=REFERENCE_TIME,
+    )
+
+
 def test_cached_dashboard_joins_stable_ids_without_credentials(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -276,3 +363,127 @@ def test_cached_dashboard_joins_stable_ids_without_credentials(
     rendered = repr(dashboard)
     assert EXTERNAL_IDENTITY not in rendered
     assert VALID_IDENTITY not in rendered
+
+
+def test_dashboard_controller_journey_preserves_verified_truth() -> None:
+    """One pure journey proves cursor, intent, and activation semantics."""
+    snapshot = _controller_snapshot()
+    controller = DashboardController.start(snapshot)
+
+    assert (
+        controller.state.focused_provider,
+        controller.state.account_id,
+        controller.state.external,
+    ) == (
+        ProviderId.CLAUDE,
+        CLAUDE_ACTIVE_ACCOUNT_ID,
+        False,
+    )
+    verified_anchors = controller.state.anchors
+
+    controller = controller.move(DashboardMove.UP)
+    assert controller.state.account_id == CLAUDE_PREVIEW_ACCOUNT_ID
+    assert controller.state.anchors == verified_anchors
+    assert controller.activate_or_repair() == ActivateOrRepairIntent(
+        provider_id=ProviderId.CLAUDE,
+        account_id=CLAUDE_PREVIEW_ACCOUNT_ID,
+    )
+    assert controller.refresh_account() == RefreshAccountIntent(
+        provider_id=ProviderId.CLAUDE,
+        account_id=CLAUDE_PREVIEW_ACCOUNT_ID,
+    )
+    assert controller.refresh_due_accounts() == RefreshDueAccountsIntent()
+
+    controller = controller.move(DashboardMove.UP)
+    assert controller.state.account_id == CLAUDE_PREVIEW_ACCOUNT_ID
+    controller = controller.restore()
+    assert controller.state.account_id == CLAUDE_ACTIVE_ACCOUNT_ID
+    controller = controller.move(DashboardMove.DOWN)
+    assert controller.state.account_id == CLAUDE_ACTIVE_ACCOUNT_ID
+
+    controller = controller.focus_next_provider()
+    assert controller.state.focused_provider is ProviderId.CODEX
+    assert controller.state.external
+    assert controller.state.account_id is None
+    assert controller.activate_or_repair() is None
+    assert controller.refresh_account() is None
+
+    controller = controller.move(DashboardMove.UP)
+    assert controller.state.account_id == CODEX_SAVED_ACCOUNT_ID
+    assert not controller.state.external
+    controller = controller.activation_succeeded(
+        DashboardActivationProof(
+            provider_id=ProviderId.CODEX,
+            account_id=CODEX_SAVED_ACCOUNT_ID,
+        )
+    )
+    assert controller.state.focused_provider is ProviderId.CODEX
+    assert controller.state.account_id == CODEX_SAVED_ACCOUNT_ID
+    controller = controller.move(DashboardMove.DOWN).restore()
+    assert controller.state.account_id == CODEX_SAVED_ACCOUNT_ID
+    assert not controller.state.external
+
+    controller = controller.toggle_help()
+    assert controller.state.help_visible
+    assert not controller.toggle_help().state.help_visible
+
+    claude, codex = snapshot.providers
+    due_account, active_account = claude.rows
+    assert isinstance(due_account, DashboardAccount)
+    all_healthy = DashboardController.start(
+        replace(
+            snapshot,
+            providers=(
+                replace(
+                    claude,
+                    rows=(
+                        replace(
+                            due_account,
+                            credential_health=CredentialHealth.HEALTHY,
+                        ),
+                        active_account,
+                    ),
+                ),
+                codex,
+            ),
+        )
+    )
+    assert all_healthy.refresh_due_accounts() is None
+
+    disabled = DashboardController.start(
+        replace(
+            snapshot,
+            providers=tuple(
+                replace(provider, actions_enabled=False)
+                for provider in snapshot.providers
+            ),
+            service=replace(snapshot.service, ready=False),
+        )
+    ).move(DashboardMove.UP)
+    assert disabled.activate_or_repair() is None
+    assert disabled.refresh_account() is None
+    assert disabled.refresh_due_accounts() is None
+
+    codex_saved = codex.rows[0]
+    fallback = DashboardController.start(
+        replace(
+            snapshot,
+            providers=(
+                replace(
+                    claude,
+                    runtime_state=ProviderRuntimeState.LOGGED_OUT,
+                    active_account_id=None,
+                    rows=(),
+                ),
+                replace(
+                    codex,
+                    runtime_state=ProviderRuntimeState.LOGGED_OUT,
+                    active_account_id=None,
+                    rows=(codex_saved,),
+                ),
+            ),
+        )
+    )
+    assert fallback.state.focused_provider is ProviderId.CODEX
+    assert fallback.state.account_id == CODEX_SAVED_ACCOUNT_ID
+    assert not fallback.state.external
