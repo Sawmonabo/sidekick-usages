@@ -79,17 +79,17 @@ def render_snapshot(snapshot: DashboardSnapshot) -> int:
 
 
 def cursor_render_p95(snapshot: DashboardSnapshot) -> int:
-    """Measure one bounded cursor-to-render trace in nanoseconds."""
+    """Measure bounded cursor-to-render CPU time in nanoseconds."""
     controller = DashboardController.start(snapshot)
     output = io.StringIO()
     console = _console(output)
     durations: list[int] = []
     for sample in range(CURSOR_SAMPLE_COUNT):
         direction = DashboardMove.DOWN if sample % 2 == 0 else DashboardMove.UP
-        started_at = time.perf_counter_ns()
+        started_at = time.process_time_ns()
         controller = controller.move(direction)
         _render(snapshot, controller, console, output)
-        durations.append(time.perf_counter_ns() - started_at)
+        durations.append(time.process_time_ns() - started_at)
     durations.sort()
     percentile_index = (len(durations) * 95 + 99) // 100 - 1
     return durations[percentile_index]

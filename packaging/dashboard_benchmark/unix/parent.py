@@ -173,7 +173,7 @@ def _cursor_measurements(trace: ChildTrace) -> tuple[float, float]:
         or expanded_cursor_ms > CURSOR_P95_TARGET_MILLISECONDS
     ):
         raise DashboardBenchmarkError(
-            "Cursor-to-render p95 exceeded the 50 ms target."
+            "Cursor-to-render CPU p95 exceeded the 50 ms target."
         )
     return reference_cursor_ms, expanded_cursor_ms
 
