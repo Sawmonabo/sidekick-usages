@@ -428,7 +428,7 @@ class InteractiveDashboardSession:
 
     def _lookup_notice(self, message: str, *, failed: bool = False) -> None:
         with self._view_lock:
-            if self._closed or self._view.action_in_flight:
+            if self._closed or not self._lookup_may_replace_footer():
                 return
             self._view = replace(
                 self._view,
@@ -456,7 +456,7 @@ class InteractiveDashboardSession:
             if snapshot is not None:
                 controller = controller.rebase(snapshot)
             footer = self._view.footer
-            if not self._view.action_in_flight:
+            if self._lookup_may_replace_footer():
                 footer = (
                     self._error_footer(message)
                     if failed or snapshot is None
@@ -468,6 +468,13 @@ class InteractiveDashboardSession:
             )
             invalidate = self._invalidate
         invalidate()
+
+    def _lookup_may_replace_footer(self) -> bool:
+        """Return whether lookup owns the current informational footer."""
+        return (
+            not self._view.action_in_flight
+            and not self._startup_reconciliation_failures
+        )
 
     @contextmanager
     def _serialized_snapshot(

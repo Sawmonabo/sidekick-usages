@@ -209,6 +209,10 @@ class SessionLookupWorker:
         self.cancelled = True
         self._release.set()
 
+    def release(self) -> None:
+        """Release one synthetic blocked lookup without cancelling it."""
+        self._release.set()
+
     def wait_until_finished(self) -> None:
         """Wait for one bounded owner completion."""
         if not self.finished.wait(SESSION_WAIT_SECONDS):

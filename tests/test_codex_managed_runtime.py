@@ -36,7 +36,10 @@ from sidekick_usages.daemon.models.protocol import (
     FailedPayload,
     ProgressPayload,
 )
-from sidekick_usages.daemon.types.protocol import EventKind
+from sidekick_usages.daemon.types.protocol import (
+    CompletionOutcome,
+    EventKind,
+)
 from sidekick_usages.paths import ApplicationPaths
 from sidekick_usages.persistence.supervisor.activation import (
     ActivationJournalStore,
@@ -130,14 +133,22 @@ def _require_selected(
 def _assert_fresh_codex_reconciliation(
     socket_path: Path,
     daemon: FakeCodexDaemon,
+    selected: SelectedStateStore,
 ) -> None:
     """Require each native operation to read its current runtime first."""
     reads_before = daemon.auth_status_read_count
+    selected_before = selected.load(ProviderId.CODEX)
+    assert selected_before is not None
     client = ControlClient.connect(socket_path)
     events = tuple(client.reconcile(ProviderId.CODEX))
     client.close()
+    selected_after = selected.load(ProviderId.CODEX)
     assert events[-1].kind is EventKind.COMPLETED
+    assert isinstance(events[-1].payload, CompletedPayload)
+    assert events[-1].payload.outcome is CompletionOutcome.NO_CHANGE
     assert daemon.auth_status_read_count > reads_before
+    assert selected_after is not None
+    assert selected_after.verified_at > selected_before.verified_at
 
 
 def _codex_recovery_state(
@@ -518,6 +529,7 @@ def test_codex_activation_recovers_at_official_mutation_boundary(
             _assert_fresh_codex_reconciliation(
                 fixture.paths.supervisor_socket,
                 daemon,
+                selected,
             )
 
             assert (

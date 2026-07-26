@@ -97,12 +97,10 @@ class ClaudeNativeReconciliationService:
                     capabilities,
                     observed,
                 )
-        committed = current
-        if not same_selected_runtime_authority(current, candidate):
-            committed = self._selected.compare_and_swap(
-                candidate,
-                expected=current,
-            )
+        committed = self._selected.compare_and_swap(
+            candidate,
+            expected=current,
+        )
         return NativeReconciliationResult(
             committed,
             not same_selected_runtime_authority(baseline, committed),

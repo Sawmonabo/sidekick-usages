@@ -1,6 +1,8 @@
 """Load-bearing Claude activation recovery scenarios."""
 
 import sys
+from dataclasses import replace
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -110,8 +112,16 @@ def _assert_steady_native_reconciliation(
         )
         == saved_ids
     )
+    stale_selected = replace(
+        selected_unknown,
+        verified_at=selected_unknown.verified_at - timedelta(seconds=1),
+    )
+    scenario.selected.save(stale_selected)
     unchanged = _recover(scenario, scenario.native_reconciliation)
+    refreshed_selected = scenario.selected.load(ProviderId.CLAUDE)
     assert unchanged.outcome is WorkerOutcome.NO_CHANGE
+    assert refreshed_selected is not None
+    assert refreshed_selected.verified_at > stale_selected.verified_at
 
     original_read = PersistenceFilesystem.read_opaque_private
     native_reads = 0

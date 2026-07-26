@@ -139,8 +139,6 @@ class CodexNativeReconciliationService:
                 updated_at=self._clock.now(),
             )
             return candidate
-        if same_selected_runtime_authority(baseline, candidate):
-            return baseline
         return self._selected.compare_and_swap(candidate, expected=baseline)
 
     def _candidate(

@@ -58,6 +58,10 @@ from sidekick_usages.daemon.models.protocol import (
     ActivationPayload,
     ControlRequest,
     EmptyPayload,
+    ProviderPayload,
+)
+from sidekick_usages.daemon.models.scheduler import (
+    SchedulerCompletion,
 )
 from sidekick_usages.daemon.models.worker import WorkerResult
 from sidekick_usages.daemon.runtime.recovery import ActivationRecoveryScheduler
@@ -298,7 +302,7 @@ def _assert_native_login_cancels_stale_activation(
     results.save(
         WorkerResult(
             operation_id=native.operation_id,
-            outcome=WorkerOutcome.SUCCEEDED,
+            outcome=WorkerOutcome.NO_CHANGE,
             finished_at=clock.now(),
         )
     )
@@ -312,11 +316,65 @@ def _assert_native_login_cancels_stale_activation(
 
     assert len(completions) == 1
     assert completions[0].operation_id == running.operation_id
-    assert completions[0].outcome is WorkerOutcome.SUCCEEDED
+    assert completions[0].outcome is WorkerOutcome.NO_CHANGE
     assert state.queue.find(stale_activation.operation_id) is None
     assert update.completion is not None
     assert update.completion.outcome is WorkerOutcome.CANCELLED
     assert update.completion.failure_code == _NATIVE_SUPERSEDED_CODE
+
+
+def _assert_reused_operation_follows_current_events(
+    state: _FoundationState,
+) -> None:
+    """Ignore retained completion from an earlier recurrent operation run."""
+    native = DueOperation(
+        operation_id=_CLAUDE_NATIVE_OPERATION_ID,
+        provider_id=ProviderId.CLAUDE,
+        account_id=None,
+        kind=OperationKind.RECONCILE_NATIVE,
+        priority=OperationPriority.SCHEDULED,
+        state=OperationState.SCHEDULED,
+        due_at=REFERENCE_TIME,
+        updated_at=REFERENCE_TIME,
+    )
+    state.queue.enqueue(native)
+    running = state.queue.transition(
+        native.operation_id,
+        OperationState.RUNNING,
+        updated_at=REFERENCE_TIME,
+    )
+    events = OperationEventHub()
+    completion = SchedulerCompletion(
+        operation_id=native.operation_id,
+        state=OperationState.SCHEDULED,
+        outcome=WorkerOutcome.SUCCEEDED,
+        failure_code=None,
+    )
+    events.completed(completion)
+    dispatcher = SupervisorDispatcher(
+        state.queue,
+        ServiceStateStore(state.paths.service_state),
+        events,
+        RuntimeClock(),
+        Event().set,
+        Event().set,
+    )
+    stream = dispatcher.dispatch(
+        ControlRequest(
+            protocol_version=PROTOCOL_VERSION,
+            request_id=new_request_id(),
+            kind=RequestKind.RECONCILE,
+            payload=ProviderPayload(ProviderId.CLAUDE),
+            package_version=__version__,
+        )
+    )
+    assert next(stream).kind is EventKind.ACCEPTED
+    events.started(running)
+    events.completed(completion)
+    assert tuple(event.kind for event in stream) == (
+        EventKind.PROGRESS,
+        EventKind.COMPLETED,
+    )
 
 
 def test_selection_and_queue_preserve_stable_independent_state(
@@ -514,6 +572,7 @@ def test_authenticated_control_stream_frames_completes_and_cancels(
     )
     assert persisted is not None
     assert persisted.allow_remote_control_disconnect
+    _assert_reused_operation_follows_current_events(state)
 
 
 def test_control_protocol_fails_closed_at_each_trust_boundary(

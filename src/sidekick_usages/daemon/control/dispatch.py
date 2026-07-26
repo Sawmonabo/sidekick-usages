@@ -91,13 +91,20 @@ class OperationEventHub(OperationEventSink):
             )
         )
 
+    def current_sequence(self) -> int:
+        """Return the last committed event sequence."""
+        with self._condition:
+            return self._sequence
+
     def follow_operation(
         self,
         request_id: RequestId,
         operation_id: OperationId,
+        *,
+        after_sequence: int = 0,
     ) -> Iterator[OperationUpdate]:
         """Yield matching retained and future updates until terminal."""
-        cursor = 0
+        cursor = after_sequence
         try:
             while True:
                 update = self._next_update(
@@ -281,6 +288,7 @@ class SupervisorDispatcher:
             )
             return
         now = self._clock.now()
+        event_sequence = self._events.current_sequence()
         effective = self._queue.enqueue(
             DueOperation(
                 operation_id=self._operation_id_factory(),
@@ -305,6 +313,7 @@ class SupervisorDispatcher:
         for update in self._events.follow_operation(
             request.request_id,
             effective.operation_id,
+            after_sequence=event_sequence,
         ):
             yield self._update_event(request, update)
 
@@ -363,6 +372,7 @@ class SupervisorDispatcher:
             )
             return
         now = self._clock.now()
+        event_sequence = self._events.current_sequence()
         operation = self._queue.enqueue(
             DueOperation(
                 operation_id=self._operation_id_factory(),
@@ -384,6 +394,7 @@ class SupervisorDispatcher:
         for update in self._events.follow_operation(
             request.request_id,
             operation.operation_id,
+            after_sequence=event_sequence,
         ):
             yield self._update_event(request, update)
 
