@@ -3,6 +3,11 @@
 from dataclasses import dataclass
 from datetime import datetime
 
+from sidekick_usages.core.accounts.models import (
+    CodexAccountAuthority,
+    CodexManagedAuthority,
+    SavedAccount,
+)
 from sidekick_usages.core.selection.models import safe_outcome_code
 from sidekick_usages.core.time import as_utc
 from sidekick_usages.daemon.types.lifecycle import ServiceFailureCode
@@ -13,6 +18,15 @@ from sidekick_usages.daemon.types.service import (
 )
 
 _MAX_ACTIVE_WORKERS = 64
+
+
+def requires_codex_broker(account: SavedAccount) -> bool:
+    """Return whether one account requires the managed Codex broker."""
+    authority = account.authority
+    return isinstance(
+        authority,
+        CodexAccountAuthority,
+    ) and isinstance(authority.subscription, CodexManagedAuthority)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

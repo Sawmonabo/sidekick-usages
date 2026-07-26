@@ -19,7 +19,10 @@ from sidekick_usages.core.models import (
 from sidekick_usages.core.selection.models import SelectedAccountState
 from sidekick_usages.core.selection.types import ProviderRuntimeState
 from sidekick_usages.core.types import ProviderId
-from sidekick_usages.daemon.models.service import ServiceState
+from sidekick_usages.daemon.models.service import (
+    ServiceState,
+    requires_codex_broker,
+)
 from sidekick_usages.daemon.types.protocol import PROTOCOL_VERSION
 from sidekick_usages.daemon.types.service import PackageVersion, ServicePhase
 from sidekick_usages.paths import ApplicationPaths
@@ -122,9 +125,7 @@ class CachedDashboardService:
         if state is None or not compatible:
             return False
         broker_required = provider_id is ProviderId.CODEX and any(
-            account.provider_id is ProviderId.CODEX
-            and account.has_managed_authority
-            for account in accounts
+            requires_codex_broker(account) for account in accounts
         )
         return state.ready_for(broker_required=broker_required)
 

@@ -9,11 +9,7 @@ from typing import assert_never
 from sidekick_usages import __version__
 from sidekick_usages.clock import Clock
 from sidekick_usages.core.accounts.identifiers import new_operation_id
-from sidekick_usages.core.accounts.models import (
-    CodexAccountAuthority,
-    CodexManagedAuthority,
-    SavedAccount,
-)
+from sidekick_usages.core.accounts.models import SavedAccount
 from sidekick_usages.core.selection.models import DueOperation
 from sidekick_usages.core.selection.types import (
     OperationKind,
@@ -39,7 +35,10 @@ from sidekick_usages.daemon.models.lifecycle import (
     ServiceLifecycleObservation,
     SupervisorHealth,
 )
-from sidekick_usages.daemon.models.service import ServiceState
+from sidekick_usages.daemon.models.service import (
+    ServiceState,
+    requires_codex_broker,
+)
 from sidekick_usages.daemon.runtime.diagnostics import SanitizedDiagnosticLog
 from sidekick_usages.daemon.types.lifecycle import (
     ProviderReadinessScope,
@@ -181,7 +180,7 @@ class SupervisorReadiness:
     ) -> None:
         """Prove durable recovery and the requested Codex broker."""
         managed_codex_present = any(
-            _requires_codex_broker(account) for account in accounts
+            requires_codex_broker(account) for account in accounts
         )
         broker_required = managed_codex_present and (
             not provider_ids or ProviderId.CODEX in provider_ids
@@ -582,14 +581,6 @@ class RuntimeCleanup:
             ) from None
 
 
-def _requires_codex_broker(account: SavedAccount) -> bool:
-    authority = account.authority
-    return isinstance(
-        authority,
-        CodexAccountAuthority,
-    ) and isinstance(authority.subscription, CodexManagedAuthority)
-
-
 def _platform_health(
     state: ServiceLifecycleState,
 ) -> ServiceComponentState:
@@ -613,7 +604,7 @@ def _broker_health(
 ) -> ServiceComponentState:
     if not accounts_readable:
         return ServiceComponentState.UNAVAILABLE
-    if not any(_requires_codex_broker(account) for account in accounts):
+    if not any(requires_codex_broker(account) for account in accounts):
         return ServiceComponentState.NOT_REQUIRED
     if not state_readable:
         return ServiceComponentState.UNHEALTHY
