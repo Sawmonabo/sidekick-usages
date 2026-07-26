@@ -2,10 +2,10 @@
 
 ## Status and scope
 
-This record captures the completed automated implementation, focused
-evidence, and serialized local gate for interactive global account selection
-at commit `d669799`. It is not the final cross-platform or current-machine
-rollout record.
+This record captures the completed automated implementation through
+`20d859e`, focused evidence, and the serialized local gate at `d669799` for
+interactive global account selection. It is not the final cross-platform or
+current-machine rollout record.
 
 The 24 approved acceptance gates all have a focused evidence owner. A gate
 marked `Automated pass; live pending` has complete synthetic or static proof
@@ -26,9 +26,9 @@ measurements. Its creation did not:
 - exercise a live provider session; or
 - establish cross-platform CI success for the final commit.
 
-Cross-platform fixes, current-machine migration, provider-session checks,
-live WSL recovery, and target-specific Claude switch approval remain open in
-the
+Cross-platform validation, current-machine migration, provider-session
+checks, live WSL recovery, and target-specific Claude switch approval remain
+open in the
 [interactive rollout plan](../plans/2026-07-23-interactive-account-dashboard-and-rollout.md).
 
 ## Committed evidence
@@ -44,7 +44,11 @@ The final cached-first launcher and installed-artifact proof are anchored by:
 - `d1d6ac2` — aligns the installed runtime dependency and benchmark contract;
   and
 - `d669799` — applies the formatter-only dashboard startup cleanup after the
-  complete serialized local gate.
+  complete serialized local gate;
+- `fb8869a` — gives the private Windows Python child UTF-8 streams without
+  changing the parent environment or public vendor commands; and
+- `20d859e` — makes the existing PTY journeys wait for and validate one
+  complete prompt-toolkit redraw under fragmented Unix PTY delivery.
 
 Supporting focused boundaries include:
 
@@ -93,9 +97,9 @@ The same trace proved:
 - final provider and account rows retained deterministic ordinal order; and
 - both the lookup worker and trace process were reaped.
 
-These numbers prove the focused Linux WSL2 artifact gate only. Cross-platform
-CI is not green: the macOS Arm PTY failure and expected Windows portability
-issue are under active correction. Live service measurements also remain
+These numbers prove the focused Linux WSL2 artifact gate only. The macOS PTY
+and Windows stream corrections are committed, but the required final
+cross-platform CI run is still pending. Live service measurements also remain
 pending.
 
 ## Serialized local gate
@@ -111,9 +115,9 @@ The serialized local gate completed at `d669799` with:
 - npm audit reporting zero vulnerabilities and Markdown lint green; and
 - `uv build` plus the exact-wheel smoke green.
 
-This local result does not replace the required platform matrix. The
-confirmed macOS Arm PTY failure and expected Windows portability issue keep
-cross-platform and final release gates open.
+This local result does not replace the required platform matrix. Focused
+Linux proof passes for both corrections, but cross-platform and final release
+gates remain open until the final matrix validates them.
 
 ## Approved 24-gate evidence map
 
@@ -261,9 +265,9 @@ feature-disabled behavior, WSL rescue generation, and CI matrix definitions
 exist for Linux, macOS Arm, macOS Intel, and Windows.
 
 Disposition: **Cross-platform pending.** Platform-specific tests and workflow
-definitions exist, but the macOS Arm PTY failure and expected Windows
-portability issue must be corrected before the platform gate can pass. Live
-WSL recovery also has not been recorded.
+definitions exist, and focused proof passes for the macOS PTY and Windows
+stream corrections. The final matrix must validate both corrections before
+the platform gate can pass. Live WSL recovery also has not been recorded.
 
 ### 20. Pre-mutation capability failure
 
@@ -327,9 +331,8 @@ final before/after terminal captures remain open for Task 9.
 The feature is not yet at final release closure. The following evidence remains
 open:
 
-1. Correct the macOS Arm PTY failure and expected Windows portability issue,
-   then record the final Linux, macOS Arm, macOS Intel, and Windows CI
-   results.
+1. Record green final Linux, macOS Arm, macOS Intel, and Windows CI results
+   for the committed PTY and Windows stream corrections.
 2. Complete Task 9's read-only executable, account, scheduler, service, and
    recovery inventory.
 3. Build and digest the exact rollout wheel, remove the observed legacy

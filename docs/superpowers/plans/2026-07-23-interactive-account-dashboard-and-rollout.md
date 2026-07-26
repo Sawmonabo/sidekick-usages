@@ -107,7 +107,7 @@ WSL, macOS arm64, and macOS x64.
 ---
 
 - **Status:** Automated implementation and local gate complete;
-  cross-platform fixes and current-machine rollout pending
+  cross-platform validation and current-machine rollout pending
 - **Date:** 2026-07-23
 - **Repository:** `/home/sabossedgh/dev/sidekick-usages`
 - **Branch:** `develop`
@@ -635,9 +635,9 @@ passed, seven platform cases skipped, static and security checks passed, and
 the exact wheel passed. The
 [completion evidence](../completion/2026-07-23-interactive-global-account-selection.md)
 maps all 24 gates without claiming cross-platform CI, provider-session checks,
-current-machine migration, or live Claude selection. The macOS Arm PTY failure
-and expected Windows portability issue keep the platform and final release
-gates open.
+current-machine migration, or live Claude selection. The macOS PTY and Windows
+stream corrections are committed with focused proof; their final platform
+matrix and release gates remain open.
 
 ## 11. Task 9 — Current-Machine Migration and Live Verification
 
