@@ -59,7 +59,7 @@ def check_value_contracts(
         "DoctorContext": (
             ("state", "DoctorState"),
             ("supervisor", "SupervisorHealth"),
-            ("capabilities", "ProviderCapabilityReport"),
+            ("capabilities", "ProviderCapabilityEvidenceSource"),
         ),
         "DaemonContext": (("daemon", "DaemonManager"),),
         "UpdateContext": (("update", "UpdateService"),),

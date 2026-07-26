@@ -6,6 +6,7 @@ from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
 
+import pytest
 from rich.console import Console
 
 from sidekick_usages.cli.context import (
@@ -29,6 +30,7 @@ from sidekick_usages.core.accounts.types import (
     CredentialHealth,
     OperationId,
     ProviderIdentity,
+    SidekickAccountId,
 )
 from sidekick_usages.core.expiry import KnownExpiry
 from sidekick_usages.core.models import (
@@ -477,6 +479,71 @@ def test_json_reports_current_auth_state_without_secrets(
     }
     assert "test-only-secret" not in output.getvalue()
     assert clock.calls == 1
+    DoctorRuntimeService(
+        (saved,),
+        None,
+        (),
+        (),
+        (
+            replace(
+                activation,
+                selected_baseline=SelectedAccountState(
+                    provider_id=ProviderId.CODEX,
+                    runtime_state=ProviderRuntimeState.EXTERNAL_ACTIVE,
+                    account_id=None,
+                    provider_identity=provider_identity,
+                    runtime_generation=selected_generation,
+                    verified_at=REFERENCE_TIME,
+                    outcome=ActivationOutcome.EXTERNAL_RECONCILED,
+                ),
+            ),
+        ),
+    )
+    baseline_account = replace(
+        saved,
+        account_id=SidekickAccountId(
+            "00000000-0000-4000-8000-000000000010"
+        ),
+        label=AccountLabel("codex-baseline"),
+    )
+    with pytest.raises(ValueError, match="baseline identity does not match"):
+        DoctorRuntimeService(
+            (baseline_account, saved),
+            None,
+            (),
+            (),
+            (
+                replace(
+                    activation,
+                    selected_baseline=SelectedAccountState(
+                        provider_id=ProviderId.CODEX,
+                        runtime_state=ProviderRuntimeState.SAVED_ACTIVE,
+                        account_id=baseline_account.account_id,
+                        provider_identity=ProviderIdentity(
+                            "unexpected-baseline"
+                        ),
+                        runtime_generation=saved_generation,
+                        verified_at=REFERENCE_TIME,
+                        outcome=ActivationOutcome.VERIFIED,
+                    ),
+                ),
+            ),
+        )
+    with pytest.raises(ValueError, match="target generation does not match"):
+        DoctorRuntimeService(
+            (saved,),
+            None,
+            (),
+            (),
+            (
+                replace(
+                    activation,
+                    target_authority_generation=AuthorityGeneration(
+                        "unexpected-generation"
+                    ),
+                ),
+            ),
+        )
 
 
 def test_human_view_explains_login_renewal_action(
@@ -576,6 +643,40 @@ def test_json_represents_current_store_failure(tmp_path: Path) -> None:
         "scheduled": "unavailable",
         "unfinished_activations": "unavailable",
     }
+
+    healthy_supervisor = make_supervisor_health()
+    primary_harness, _primary_output, _primary_clock = _harness(
+        tmp_path / "primary-absent",
+        (),
+        supervisor=replace(
+            healthy_supervisor,
+            platform=ServiceComponentState.ABSENT,
+        ),
+    )
+    downstream_harness, _downstream_output, _downstream_clock = _harness(
+        tmp_path / "downstream-absent",
+        (),
+        supervisor=replace(
+            healthy_supervisor,
+            socket=ServiceComponentState.ABSENT,
+        ),
+    )
+    capability_harness, _capability_output, _capability_clock = _harness(
+        tmp_path / "provider-capability",
+        (),
+        capabilities=make_provider_capability_report(codex_ready=False),
+        supervisor=healthy_supervisor,
+    )
+
+    primary_result = primary_harness.invoke(["doctor", "--json"])
+    downstream_result = downstream_harness.invoke(["doctor", "--json"])
+    capability_result = capability_harness.invoke(
+        ["doctor", "--provider", "codex", "--json"]
+    )
+
+    assert primary_result.exit_code == ExitCode.MANUAL_ACTION
+    assert downstream_result.exit_code == ExitCode.SCHEDULER_ERROR
+    assert capability_result.exit_code == ExitCode.SYSTEM_ERROR
 
 
 def test_filters_are_composable(tmp_path: Path) -> None:

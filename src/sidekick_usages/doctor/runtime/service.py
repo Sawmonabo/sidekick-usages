@@ -174,6 +174,7 @@ def _activation_diagnostic(
         raise ValueError(
             "Doctor activation provider does not match its target."
         )
+    _validate_activation_authority(activation, accounts, account)
     return UnfinishedActivationDiagnostic(
         provider_id=activation.provider_id,
         target_label=account.label,
@@ -182,6 +183,55 @@ def _activation_diagnostic(
         updated_at=activation.updated_at,
         failure_code=activation.failure_code,
     )
+
+
+def _validate_activation_authority(
+    activation: ActivationRecord,
+    accounts: dict[SidekickAccountId, SavedAccount],
+    target: SavedAccount,
+) -> None:
+    """Require an unfinished activation to match current saved authority."""
+    baseline = activation.selected_baseline
+    if (
+        baseline is not None
+        and baseline.runtime_state is ProviderRuntimeState.SAVED_ACTIVE
+    ):
+        baseline_account_id = baseline.account_id
+        if baseline_account_id is None:
+            raise ValueError(
+                "Doctor activation baseline account is incomplete."
+            )
+        baseline_account = accounts.get(baseline_account_id)
+        if baseline_account is None:
+            raise ValueError(
+                "Doctor activation baseline account does not exist."
+            )
+        if baseline_account.provider_id is not activation.provider_id:
+            raise ValueError(
+                "Doctor activation provider does not match its baseline."
+            )
+        if baseline_account.provider_identity != baseline.provider_identity:
+            raise ValueError(
+                "Doctor activation baseline identity does not match."
+            )
+        if (
+            _authority_generation(baseline_account)
+            != baseline.runtime_generation
+        ):
+            raise ValueError(
+                "Doctor activation baseline generation does not match."
+            )
+    if target.provider_identity != activation.expected_target_identity:
+        raise ValueError(
+            "Doctor activation target identity does not match."
+        )
+    if (
+        _authority_generation(target)
+        != activation.target_authority_generation
+    ):
+        raise ValueError(
+            "Doctor activation target generation does not match."
+        )
 
 
 def _snapshot_metrics(

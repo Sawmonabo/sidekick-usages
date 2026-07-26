@@ -293,10 +293,12 @@ def _supervisor_exit_code(health: SupervisorHealth) -> ExitCode:
         health.journal,
         health.broker,
     )
-    if any(state in _FAILED_SERVICE_STATES for state in remaining):
+    if any(
+        state in _FAILED_SERVICE_STATES
+        or state in _MANUAL_SERVICE_STATES
+        for state in remaining
+    ):
         return ExitCode.SCHEDULER_ERROR
-    if any(state in _MANUAL_SERVICE_STATES for state in remaining):
-        return ExitCode.MANUAL_ACTION
     return ExitCode.SUCCESS
 
 
