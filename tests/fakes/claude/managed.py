@@ -21,6 +21,7 @@ from sidekick_usages.platform.models import ExecutableProvenance
 from sidekick_usages.providers.claude.auth.storage.service import (
     CLAUDE_CREDENTIAL_FILE,
 )
+from sidekick_usages.providers.claude.errors import ClaudeProcessError
 from sidekick_usages.providers.claude.managed.executable import (
     SUPPORTED_CLAUDE_VERSION,
 )
@@ -34,7 +35,10 @@ from sidekick_usages.providers.claude.models import (
     ClaudeManagedProfile,
     ClaudeNativeProfile,
 )
-from sidekick_usages.providers.claude.types import ClaudeProfile
+from sidekick_usages.providers.claude.types import (
+    ClaudeProcessFailure,
+    ClaudeProfile,
+)
 
 type ClaudeCommandScript = Callable[
     [
@@ -89,7 +93,10 @@ class ClaudeRunner:
         environment: Mapping[str, str] | None = None,
         working_directory: Path | None = None,
         umask: int = -1,
+        cancelled: Callable[[], bool] | None = None,
     ) -> ClaudeCommandResult:
+        if cancelled is not None and cancelled():
+            raise ClaudeProcessError(ClaudeProcessFailure.CANCELLED)
         arguments = argv[1:]
         captured_environment = (
             None if environment is None else dict(environment)

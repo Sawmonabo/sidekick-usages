@@ -1,6 +1,6 @@
 """Closed Claude CLI and setup-token types."""
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
@@ -29,6 +29,7 @@ type SetupTokenCapture = (
 class ClaudeProcessFailure(StrEnum):
     """Safe reasons a bounded Claude command failed."""
 
+    CANCELLED = "cancelled"
     PROCESS_UNAVAILABLE = "process_unavailable"
     PROCESS_UNSAFE = "process_unsafe"
     OUTPUT_TOO_LARGE = "output_too_large"
@@ -48,6 +49,7 @@ class ClaudeCommandRunner(Protocol):
         environment: Mapping[str, str] | None = None,
         working_directory: Path | None = None,
         umask: int = -1,
+        cancelled: Callable[[], bool] | None = None,
     ) -> ClaudeCommandResult:
         """Return one bounded process result or raise a typed failure."""
 

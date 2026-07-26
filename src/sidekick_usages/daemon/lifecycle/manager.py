@@ -226,6 +226,8 @@ class DaemonManager:
             ServiceLifecycleState.UNHEALTHY,
             str(error),
             ExitCode.SCHEDULER_ERROR,
+            failure_code=error.code,
+            failure_provider_id=error.provider_id,
         )
 
 

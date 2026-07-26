@@ -1,5 +1,6 @@
 """Typed failures for resident-service lifecycle operations."""
 
+from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.types.lifecycle import ServiceFailureCode
 from sidekick_usages.errors import UsageError
 
@@ -40,6 +41,19 @@ _MESSAGES = {
 class ServiceLifecycleError(UsageError):
     """One sanitized platform or readiness failure."""
 
-    def __init__(self, code: ServiceFailureCode) -> None:
+    def __init__(
+        self,
+        code: ServiceFailureCode,
+        *,
+        provider_id: ProviderId | None = None,
+    ) -> None:
+        provider_failure = (
+            code is ServiceFailureCode.PROVIDER_CAPABILITY_UNAVAILABLE
+        )
+        if provider_failure != (provider_id is not None):
+            raise ValueError(
+                "Provider capability failures require one provider."
+            )
         self.code = code
+        self.provider_id = provider_id
         super().__init__(_MESSAGES[code])

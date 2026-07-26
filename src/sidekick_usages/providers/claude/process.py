@@ -3,7 +3,8 @@
 import os
 import signal
 import subprocess
-from collections.abc import Mapping
+import time
+from collections.abc import Callable, Mapping
 from contextlib import suppress
 from pathlib import Path
 from threading import Event, Thread
@@ -15,6 +16,7 @@ from sidekick_usages.providers.claude.types import ClaudeProcessFailure
 
 PROCESS_GRACE_SECONDS = 0.25
 PROCESS_KILL_SECONDS = 1.0
+_PROCESS_POLL_SECONDS = 0.1
 _READ_CHUNK_BYTES = 8192
 
 
@@ -26,11 +28,13 @@ def run_bounded_claude_command(
     environment: Mapping[str, str] | None = None,
     working_directory: Path | None = None,
     umask: int = -1,
+    cancelled: Callable[[], bool] | None = None,
 ) -> ClaudeCommandResult:
     """Run one Claude command and capture strictly bounded merged output."""
     if maximum_output_bytes < 1:
         raise ValueError("Claude command bounds must be positive.")
     _require_safe_command(argv, timeout_seconds, working_directory)
+    _raise_if_cancelled(cancelled)
     try:
         process = subprocess.Popen(
             list(argv),
@@ -76,19 +80,16 @@ def run_bounded_claude_command(
             ClaudeProcessFailure.PROCESS_UNAVAILABLE
         ) from None
     try:
-        return_code = process.wait(timeout=timeout_seconds)
-    except subprocess.TimeoutExpired:
+        return_code = _wait_for_claude_process(
+            process,
+            timeout_seconds,
+            cancelled,
+        )
+    except ClaudeProcessError:
         _terminate_and_reap(process)
         reader.join(PROCESS_KILL_SECONDS)
         stdout.close()
-        raise ClaudeProcessError(ClaudeProcessFailure.TIMED_OUT) from None
-    except OSError, subprocess.SubprocessError:
-        _terminate_and_reap(process)
-        reader.join(PROCESS_KILL_SECONDS)
-        stdout.close()
-        raise ClaudeProcessError(
-            ClaudeProcessFailure.PROCESS_UNAVAILABLE
-        ) from None
+        raise
     reader.join(PROCESS_GRACE_SECONDS)
     if reader.is_alive():
         _terminate_group(process)
@@ -96,6 +97,45 @@ def run_bounded_claude_command(
     stdout.close()
     _require_reader_finished(reader, overflow, read_failed)
     return ClaudeCommandResult(return_code, bytes(output))
+
+
+def _wait_for_claude_process(
+    process: subprocess.Popen[bytes],
+    timeout_seconds: float,
+    cancelled: Callable[[], bool] | None,
+) -> int:
+    if cancelled is None:
+        try:
+            return process.wait(timeout=timeout_seconds)
+        except subprocess.TimeoutExpired:
+            raise ClaudeProcessError(
+                ClaudeProcessFailure.TIMED_OUT
+            ) from None
+        except OSError, subprocess.SubprocessError:
+            raise ClaudeProcessError(
+                ClaudeProcessFailure.PROCESS_UNAVAILABLE
+            ) from None
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        _raise_if_cancelled(cancelled)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ClaudeProcessError(ClaudeProcessFailure.TIMED_OUT)
+        try:
+            return process.wait(timeout=min(remaining, _PROCESS_POLL_SECONDS))
+        except subprocess.TimeoutExpired:
+            continue
+        except OSError, subprocess.SubprocessError:
+            raise ClaudeProcessError(
+                ClaudeProcessFailure.PROCESS_UNAVAILABLE
+            ) from None
+
+
+def _raise_if_cancelled(
+    cancelled: Callable[[], bool] | None,
+) -> None:
+    if cancelled is not None and cancelled():
+        raise ClaudeProcessError(ClaudeProcessFailure.CANCELLED)
 
 
 def run_interactive_claude_command(

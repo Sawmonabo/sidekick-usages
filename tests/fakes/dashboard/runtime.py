@@ -10,6 +10,7 @@ from sidekick_usages.daemon.models.lifecycle import DaemonOperationResult
 from sidekick_usages.daemon.types.lifecycle import (
     ProviderReadinessScope,
     ServiceBackendId,
+    ServiceFailureCode,
     ServiceLifecycleState,
 )
 from sidekick_usages.usage.dashboard.models import DashboardSnapshot
@@ -91,7 +92,7 @@ class SetupDaemon(DaemonManager):
     ) -> DaemonOperationResult:
         """Record one current service check."""
         self.events.append(_setup_event("status", provider_ids))
-        return self._result(self._provider_state(provider_ids))
+        return self._result(provider_ids)
 
     def restart(
         self,
@@ -100,7 +101,7 @@ class SetupDaemon(DaemonManager):
         """Record one bounded restart."""
         self.events.append(_setup_event("restart", provider_ids))
         self.state = ServiceLifecycleState.READY
-        return self._result(self._provider_state(provider_ids))
+        return self._result(provider_ids)
 
     def install(
         self,
@@ -109,26 +110,31 @@ class SetupDaemon(DaemonManager):
         """Record one approved user-level installation."""
         self.events.append(_setup_event("install", provider_ids))
         self.state = ServiceLifecycleState.READY
-        return self._result(self._provider_state(provider_ids))
+        return self._result(provider_ids)
 
-    def _provider_state(
+    def _result(
         self,
         provider_ids: ProviderReadinessScope,
-    ) -> ServiceLifecycleState:
-        if (
+    ) -> DaemonOperationResult:
+        provider_failure = (
             self.state is ServiceLifecycleState.READY
-            and provider_ids
+            and bool(provider_ids)
             and not self.provider_ready
-        ):
-            return ServiceLifecycleState.UNHEALTHY
-        return self.state
-
-    @staticmethod
-    def _result(state: ServiceLifecycleState) -> DaemonOperationResult:
+        )
         return DaemonOperationResult(
             ServiceBackendId.SYSTEMD,
-            state,
+            (
+                ServiceLifecycleState.UNHEALTHY
+                if provider_failure
+                else self.state
+            ),
             "Synthetic user-service result.",
+            failure_code=(
+                ServiceFailureCode.PROVIDER_CAPABILITY_UNAVAILABLE
+                if provider_failure
+                else None
+            ),
+            failure_provider_id=provider_ids[0] if provider_failure else None,
         )
 
 

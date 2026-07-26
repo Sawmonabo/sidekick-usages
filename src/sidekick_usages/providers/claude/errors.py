@@ -10,6 +10,7 @@ from sidekick_usages.providers.base import (
 from sidekick_usages.providers.claude.types import ClaudeProcessFailure
 
 _PROCESS_FAILURE_MESSAGES = {
+    ClaudeProcessFailure.CANCELLED: "The Claude process was cancelled.",
     ClaudeProcessFailure.PROCESS_UNAVAILABLE: (
         "The Claude process is unavailable."
     ),

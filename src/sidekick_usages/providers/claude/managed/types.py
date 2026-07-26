@@ -15,6 +15,7 @@ class ClaudeManagedPlatform(StrEnum):
 class ClaudeManagedFailure(StrEnum):
     """Safe reasons managed Claude authentication is unavailable."""
 
+    CAPABILITY_CANCELLED = "capability_cancelled"
     FEATURE_DISABLED = "feature_disabled"
     PLATFORM_UNSUPPORTED = "platform_unsupported"
     PROFILE_UNSAFE = "profile_unsafe"

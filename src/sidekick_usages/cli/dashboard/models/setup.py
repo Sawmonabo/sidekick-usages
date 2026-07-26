@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import assert_never
 
+from sidekick_usages.core.types import ProviderId
+
 
 class ServiceSetupDecision(StrEnum):
     """One explicit answer to a guided installation request."""
@@ -20,6 +22,7 @@ class ServiceSetupOutcome(StrEnum):
     CONFIRMATION_REQUIRED = "confirmation_required"
     REFUSED = "refused"
     FAILED = "failed"
+    PROVIDER_UNAVAILABLE = "provider_unavailable"
     NONINTERACTIVE = "noninteractive"
     UNSUPPORTED = "unsupported"
 
@@ -44,6 +47,12 @@ class ServiceSetupMessage(StrEnum):
     )
     REFUSED = "The Sidekick user service was not installed."
     FAILED = "The Sidekick user service could not be made ready."
+    CLAUDE_UNAVAILABLE = (
+        "Sidekick could not verify the required Claude CLI capabilities."
+    )
+    CODEX_UNAVAILABLE = (
+        "Sidekick could not verify the required Codex CLI capabilities."
+    )
     NONINTERACTIVE = "The Sidekick user service requires interactive setup."
     UNSUPPORTED = "Account switching is not supported on native Windows."
 
@@ -58,6 +67,8 @@ class ServiceSetupAction(StrEnum):
         "Retry in sidekick-usages; run sidekick-usages daemon status "
         "if setup fails again."
     )
+    CHECK_CLAUDE = "Run sidekick-usages doctor --provider claude."
+    CHECK_CODEX = "Run sidekick-usages doctor --provider codex."
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -66,24 +77,37 @@ class ServiceSetupResult[IntentT]:
 
     intent: IntentT
     outcome: ServiceSetupOutcome
+    provider_id: ProviderId | None = None
+
+    def __post_init__(self) -> None:
+        """Require a provider only for provider-capability failure."""
+        provider_failure = (
+            self.outcome is ServiceSetupOutcome.PROVIDER_UNAVAILABLE
+        )
+        if provider_failure != (self.provider_id is not None):
+            raise ValueError("Service setup provider failure is invalid.")
 
     @property
     def message(self) -> ServiceSetupMessage:
         """Return the one safe message for this outcome."""
         match self.outcome:
             case ServiceSetupOutcome.RESUME:
-                return ServiceSetupMessage.READY
+                message = ServiceSetupMessage.READY
             case ServiceSetupOutcome.CONFIRMATION_REQUIRED:
-                return ServiceSetupMessage.CONFIRMATION_REQUIRED
+                message = ServiceSetupMessage.CONFIRMATION_REQUIRED
             case ServiceSetupOutcome.REFUSED:
-                return ServiceSetupMessage.REFUSED
+                message = ServiceSetupMessage.REFUSED
             case ServiceSetupOutcome.FAILED:
-                return ServiceSetupMessage.FAILED
+                message = ServiceSetupMessage.FAILED
+            case ServiceSetupOutcome.PROVIDER_UNAVAILABLE:
+                message = self._provider_message
             case ServiceSetupOutcome.NONINTERACTIVE:
-                return ServiceSetupMessage.NONINTERACTIVE
+                message = ServiceSetupMessage.NONINTERACTIVE
             case ServiceSetupOutcome.UNSUPPORTED:
-                return ServiceSetupMessage.UNSUPPORTED
-        assert_never(self.outcome)
+                message = ServiceSetupMessage.UNSUPPORTED
+            case _:
+                assert_never(self.outcome)
+        return message
 
     @property
     def corrective_action(self) -> ServiceSetupAction | None:
@@ -93,6 +117,8 @@ class ServiceSetupResult[IntentT]:
                 return ServiceSetupAction.OPEN_DASHBOARD
             case ServiceSetupOutcome.FAILED:
                 return ServiceSetupAction.RETRY_DASHBOARD
+            case ServiceSetupOutcome.PROVIDER_UNAVAILABLE:
+                return self._provider_action
             case ServiceSetupOutcome.NONINTERACTIVE:
                 return ServiceSetupAction.OPEN_DASHBOARD
             case (
@@ -102,3 +128,27 @@ class ServiceSetupResult[IntentT]:
             ):
                 return None
         assert_never(self.outcome)
+
+    @property
+    def _provider_message(self) -> ServiceSetupMessage:
+        match self.provider_id:
+            case ProviderId.CLAUDE:
+                return ServiceSetupMessage.CLAUDE_UNAVAILABLE
+            case ProviderId.CODEX:
+                return ServiceSetupMessage.CODEX_UNAVAILABLE
+            case None:
+                raise AssertionError("Provider failure lost its provider.")
+            case _:
+                assert_never(self.provider_id)
+
+    @property
+    def _provider_action(self) -> ServiceSetupAction:
+        match self.provider_id:
+            case ProviderId.CLAUDE:
+                return ServiceSetupAction.CHECK_CLAUDE
+            case ProviderId.CODEX:
+                return ServiceSetupAction.CHECK_CODEX
+            case None:
+                raise AssertionError("Provider failure lost its provider.")
+            case _:
+                assert_never(self.provider_id)

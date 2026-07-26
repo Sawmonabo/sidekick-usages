@@ -156,7 +156,8 @@ class SupervisorReadiness:
         provider_readiness = self._provider_readiness
         if provider_ids and provider_readiness is None:
             raise ServiceLifecycleError(
-                ServiceFailureCode.PROVIDER_CAPABILITY_UNAVAILABLE
+                ServiceFailureCode.PROVIDER_CAPABILITY_UNAVAILABLE,
+                provider_id=provider_ids[0],
             )
         if provider_readiness is not None:
             for provider_id in provider_ids:
@@ -164,7 +165,8 @@ class SupervisorReadiness:
                 if not provider_readiness.ready(provider_id):
                     self._raise_if_cancelled()
                     raise ServiceLifecycleError(
-                        ServiceFailureCode.PROVIDER_CAPABILITY_UNAVAILABLE
+                        ServiceFailureCode.PROVIDER_CAPABILITY_UNAVAILABLE,
+                        provider_id=provider_id,
                     )
 
     def complete_maintenance_pass(self) -> None:

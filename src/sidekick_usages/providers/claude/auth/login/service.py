@@ -1,7 +1,7 @@
 """Official Claude login process boundary."""
 
 import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from sidekick_usages.errors import InvalidPayloadError
@@ -10,7 +10,10 @@ from sidekick_usages.providers.claude.auth.login.models import (
     ClaudeOfficialLoginResult,
 )
 from sidekick_usages.providers.claude.errors import ClaudeProcessError
-from sidekick_usages.providers.claude.managed.errors import ClaudeManagedError
+from sidekick_usages.providers.claude.managed.errors import (
+    ClaudeManagedError,
+    raise_managed_capability_error,
+)
 from sidekick_usages.providers.claude.managed.executable import (
     verify_claude_executable,
 )
@@ -114,6 +117,7 @@ def verify_logged_out_claude_status(
     working_directory: Path,
     *,
     runner: ClaudeCommandRunner = run_bounded_claude_command,
+    cancelled: Callable[[], bool] | None = None,
 ) -> None:
     """Require the documented logged-out first-party auth status."""
     status = _read_auth_status(
@@ -122,6 +126,7 @@ def verify_logged_out_claude_status(
         working_directory,
         ClaudeManagedFailure.STATUS_UNSUPPORTED,
         runner,
+        cancelled,
     )
     if (
         status.return_code != 1
@@ -164,6 +169,7 @@ def _read_auth_status(
     working_directory: Path,
     failure: ClaudeManagedFailure,
     runner: ClaudeCommandRunner,
+    cancelled: Callable[[], bool] | None = None,
 ) -> ClaudeAuthStatus:
     verify_claude_executable(executable)
     try:
@@ -177,9 +183,10 @@ def _read_auth_status(
             maximum_output_bytes=_AUTH_STATUS_OUTPUT_BYTES,
             environment=environment,
             working_directory=working_directory,
+            cancelled=cancelled,
         )
-    except ClaudeProcessError:
-        raise ClaudeManagedError(failure) from None
+    except ClaudeProcessError as error:
+        raise_managed_capability_error(error, failure)
     finally:
         verify_claude_executable(executable)
     status = _decode_auth_status(result, failure)

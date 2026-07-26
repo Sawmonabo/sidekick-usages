@@ -35,6 +35,7 @@ from sidekick_usages.cli.dashboard.models.session import (
 from sidekick_usages.cli.dashboard.models.setup import (
     ServiceSetupAction,
     ServiceSetupDecision,
+    ServiceSetupMessage,
     ServiceSetupOutcome,
     ServiceSetupProgress,
 )
@@ -663,17 +664,46 @@ def test_guided_setup_resumes_once_and_preserves_blocked_actions() -> None:
         provider_ready=False,
     )
     failed = GuidedServiceSetup(capability_blocked).prepare(
-        service=unavailable,
+        service=compatible,
         intent=intent,
         interactive=True,
         decision=ServiceSetupDecision.APPROVED,
     )
-    assert failed.outcome is ServiceSetupOutcome.FAILED
+    assert failed.outcome is ServiceSetupOutcome.PROVIDER_UNAVAILABLE
     assert failed.intent is intent
-    assert capability_blocked.events == [
-        "status:claude",
-        "install:claude",
-    ]
+    assert failed.provider_id is ProviderId.CLAUDE
+    assert failed.message is ServiceSetupMessage.CLAUDE_UNAVAILABLE
+    corrective_action = failed.corrective_action
+    assert corrective_action is ServiceSetupAction.CHECK_CLAUDE
+    assert (
+        corrective_action.value
+        == "Run sidekick-usages doctor --provider claude."
+    )
+    assert capability_blocked.events == ["status:claude"]
+
+    codex_intent = RefreshAccountIntent(
+        provider_id=ProviderId.CODEX,
+        account_id=CODEX_SAVED_ACCOUNT_ID,
+    )
+    codex_blocked = SetupDaemon(
+        ServiceLifecycleState.READY,
+        provider_ready=False,
+    )
+    codex_failure = GuidedServiceSetup(codex_blocked).prepare(
+        service=compatible,
+        intent=codex_intent,
+        interactive=True,
+        decision=ServiceSetupDecision.APPROVED,
+    )
+    assert codex_failure.provider_id is ProviderId.CODEX
+    assert codex_failure.message is ServiceSetupMessage.CODEX_UNAVAILABLE
+    codex_action = codex_failure.corrective_action
+    assert codex_action is ServiceSetupAction.CHECK_CODEX
+    assert (
+        codex_action.value
+        == "Run sidekick-usages doctor --provider codex."
+    )
+    assert codex_blocked.events == ["status:codex"]
 
 
 def test_managed_auth_migration_resumes_without_exposing_secrets() -> None:

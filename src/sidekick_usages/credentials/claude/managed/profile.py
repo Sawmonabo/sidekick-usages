@@ -2,9 +2,9 @@
 
 import os
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from threading import Lock
+from threading import Event, Lock
 
 from sidekick_usages.core.accounts.types import SidekickAccountId
 from sidekick_usages.core.types import ProviderId
@@ -77,8 +77,13 @@ class ClaudeProfileCapabilityFactory:
             detect_host_platform(environment=source) if host is None else host
         )
         self._runner = runner
+        self._cancelled = Event()
         self._result: ProviderCapabilityResult | None = None
         self._proof_lock = Lock()
+
+    def cancel(self) -> None:
+        """Interrupt an active isolated capability subprocess."""
+        self._cancelled.set()
 
     def managed(self, account_id: SidekickAccountId) -> ClaudeCapabilities:
         """Qualify and bind one stable private account profile."""
@@ -123,6 +128,7 @@ class ClaudeProfileCapabilityFactory:
                     self._platform,
                     self._environment,
                     self._runner,
+                    self._cancelled.is_set,
                 )
             return self._result
 
@@ -131,6 +137,7 @@ def probe_claude_runtime_result(
     platform: ClaudeManagedPlatform,
     environment: Mapping[str, str],
     runner: ClaudeCommandRunner,
+    cancelled: Callable[[], bool] | None = None,
 ) -> ProviderCapabilityResult:
     """Prove Claude capabilities in an isolated credential-free profile."""
     executable: ClaudeExecutable | None = None
@@ -152,6 +159,7 @@ def probe_claude_runtime_result(
                 probe_environment,
                 working_directory=probe_home,
                 runner=runner,
+                cancelled=cancelled,
             )
             capabilities = probe_claude_runtime_capabilities(
                 executable,
@@ -159,6 +167,7 @@ def probe_claude_runtime_result(
                 probe_environment,
                 probe_home,
                 runner=runner,
+                cancelled=cancelled,
             )
     except ClaudeManagedError as error:
         return ProviderCapabilityResult.failed(

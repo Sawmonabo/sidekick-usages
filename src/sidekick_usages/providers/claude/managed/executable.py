@@ -2,7 +2,7 @@
 
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from sidekick_usages.platform.errors import ExecutableQualificationError
@@ -13,7 +13,10 @@ from sidekick_usages.platform.executable import (
 from sidekick_usages.platform.models import ExecutableProvenance
 from sidekick_usages.platform.types import ExecutableFailure
 from sidekick_usages.providers.claude.errors import ClaudeProcessError
-from sidekick_usages.providers.claude.managed.errors import ClaudeManagedError
+from sidekick_usages.providers.claude.managed.errors import (
+    ClaudeManagedError,
+    raise_managed_capability_error,
+)
 from sidekick_usages.providers.claude.managed.types import (
     ClaudeManagedFailure,
 )
@@ -41,6 +44,7 @@ def discover_claude_executable(
     *,
     working_directory: Path | None = None,
     runner: ClaudeCommandRunner = run_bounded_claude_command,
+    cancelled: Callable[[], bool] | None = None,
 ) -> ClaudeExecutable:
     """Resolve, version, and freeze one exact Claude executable."""
     source = os.environ if environment is None else environment
@@ -60,11 +64,13 @@ def discover_claude_executable(
             maximum_output_bytes=_VERSION_OUTPUT_BYTES,
             environment=source,
             working_directory=working_directory,
+            cancelled=cancelled,
         )
-    except ClaudeProcessError:
-        raise ClaudeManagedError(
-            ClaudeManagedFailure.EXECUTABLE_UNSAFE
-        ) from None
+    except ClaudeProcessError as error:
+        raise_managed_capability_error(
+            error,
+            ClaudeManagedFailure.EXECUTABLE_UNSAFE,
+        )
     if result.return_code != 0:
         raise ClaudeManagedError(ClaudeManagedFailure.VERSION_UNSUPPORTED)
     version = _parse_version(result.output)

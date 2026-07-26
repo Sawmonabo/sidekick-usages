@@ -61,6 +61,9 @@ class ProviderCapabilityService:
     def cancel(self) -> None:
         """Interrupt cancellable probes and reject late readiness."""
         self._cancelled.set()
+        claude = self._claude
+        if isinstance(claude, ClaudeProfileCapabilityFactory):
+            claude.cancel()
 
     def ready(self, provider_id: ProviderId) -> bool:
         """Return whether one authoritative provider capability gate passed."""

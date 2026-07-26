@@ -1,11 +1,18 @@
 """Secret-safe managed-Claude capability failures."""
 
+from typing import NoReturn
+
 from sidekick_usages.errors import UsageError
+from sidekick_usages.providers.claude.errors import ClaudeProcessError
 from sidekick_usages.providers.claude.managed.types import (
     ClaudeManagedFailure,
 )
+from sidekick_usages.providers.claude.types import ClaudeProcessFailure
 
 _MANAGED_FAILURE_MESSAGES = {
+    ClaudeManagedFailure.CAPABILITY_CANCELLED: (
+        "The managed Claude capability check was cancelled."
+    ),
     ClaudeManagedFailure.FEATURE_DISABLED: (
         "Managed Claude account switching is disabled on native Windows."
     ),
@@ -52,3 +59,16 @@ class ClaudeManagedError(UsageError):
     def __init__(self, code: ClaudeManagedFailure) -> None:
         self.code = code
         super().__init__(_MANAGED_FAILURE_MESSAGES[code])
+
+
+def raise_managed_capability_error(
+    error: ClaudeProcessError,
+    fallback: ClaudeManagedFailure,
+) -> NoReturn:
+    """Map process cancellation distinctly from one capability failure."""
+    code = (
+        ClaudeManagedFailure.CAPABILITY_CANCELLED
+        if error.code is ClaudeProcessFailure.CANCELLED
+        else fallback
+    )
+    raise ClaudeManagedError(code) from None

@@ -1,6 +1,6 @@
 """Release-pinned managed Claude capability gate."""
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from sidekick_usages.platform.types import HostPlatform
@@ -8,7 +8,10 @@ from sidekick_usages.providers.claude.auth.login.service import (
     verify_logged_out_claude_status,
 )
 from sidekick_usages.providers.claude.errors import ClaudeProcessError
-from sidekick_usages.providers.claude.managed.errors import ClaudeManagedError
+from sidekick_usages.providers.claude.managed.errors import (
+    ClaudeManagedError,
+    raise_managed_capability_error,
+)
 from sidekick_usages.providers.claude.managed.executable import (
     SUPPORTED_CLAUDE_VERSION,
     verify_claude_executable,
@@ -71,6 +74,7 @@ def probe_claude_capabilities(
     working_directory: Path,
     *,
     runner: ClaudeCommandRunner = run_bounded_claude_command,
+    cancelled: Callable[[], bool] | None = None,
 ) -> ClaudeCapabilities:
     """Prove required auth surfaces without starting official login."""
     return probe_claude_runtime_capabilities(
@@ -79,6 +83,7 @@ def probe_claude_capabilities(
         environment,
         working_directory,
         runner=runner,
+        cancelled=cancelled,
     ).bind(profile)
 
 
@@ -89,11 +94,24 @@ def probe_claude_runtime_capabilities(
     working_directory: Path,
     *,
     runner: ClaudeCommandRunner = run_bounded_claude_command,
+    cancelled: Callable[[], bool] | None = None,
 ) -> ClaudeRuntimeCapabilities:
     """Prove profile-independent auth surfaces once per invocation."""
     verify_claude_executable(executable)
-    _probe_status(executable, environment, working_directory, runner)
-    _probe_login(executable, environment, working_directory, runner)
+    _probe_status(
+        executable,
+        environment,
+        working_directory,
+        runner,
+        cancelled,
+    )
+    _probe_login(
+        executable,
+        environment,
+        working_directory,
+        runner,
+        cancelled,
+    )
     if executable.version not in _REFRESH_TOKEN_PROVISIONING_VERSIONS:
         raise ClaudeManagedError(
             ClaudeManagedFailure.REFRESH_PROVISIONING_UNPROVEN
@@ -107,12 +125,14 @@ def _probe_status(
     environment: Mapping[str, str],
     working_directory: Path,
     runner: ClaudeCommandRunner,
+    cancelled: Callable[[], bool] | None,
 ) -> None:
     verify_logged_out_claude_status(
         executable,
         environment,
         working_directory,
         runner=runner,
+        cancelled=cancelled,
     )
 
 
@@ -121,6 +141,7 @@ def _probe_login(
     environment: Mapping[str, str],
     working_directory: Path,
     runner: ClaudeCommandRunner,
+    cancelled: Callable[[], bool] | None,
 ) -> None:
     try:
         result = runner(
@@ -134,11 +155,13 @@ def _probe_login(
             maximum_output_bytes=_LOGIN_HELP_OUTPUT_BYTES,
             environment=environment,
             working_directory=working_directory,
+            cancelled=cancelled,
         )
-    except ClaudeProcessError:
-        raise ClaudeManagedError(
-            ClaudeManagedFailure.LOGIN_UNSUPPORTED
-        ) from None
+    except ClaudeProcessError as error:
+        raise_managed_capability_error(
+            error,
+            ClaudeManagedFailure.LOGIN_UNSUPPORTED,
+        )
     try:
         help_text = result.output.decode("utf-8")
     except UnicodeDecodeError:

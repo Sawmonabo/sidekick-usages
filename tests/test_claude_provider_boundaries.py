@@ -22,11 +22,16 @@ from sidekick_usages.core.models import (
     ClaudeLoginIdentity,
     DetectedCredentials,
 )
+from sidekick_usages.core.types import ProviderId
+from sidekick_usages.credentials.capabilities.service import (
+    ProviderCapabilityService,
+)
 from sidekick_usages.credentials.claude.managed.authority.service import (
     ClaudeManagedAuthorityReader,
     managed_login_authority,
 )
 from sidekick_usages.credentials.claude.managed.profile import (
+    ClaudeProfileCapabilityFactory,
     prepare_claude_managed_profile,
 )
 from sidekick_usages.credentials.claude.native.authority.service import (
@@ -283,6 +288,28 @@ def test_setup_token_process_timeout_is_explicit() -> None:
 
     assert failure.value.code is ClaudeProcessFailure.TIMED_OUT
 
+    cancellation_checks = 0
+
+    def cancelled() -> bool:
+        nonlocal cancellation_checks
+        cancellation_checks += 1
+        return cancellation_checks > 1
+
+    with pytest.raises(ClaudeProcessError) as cancellation:
+        run_bounded_claude_command(
+            (
+                sys.executable,
+                "-c",
+                "import time; time.sleep(1)",
+            ),
+            timeout_seconds=SETUP_TOKEN_TIMEOUT_SECONDS,
+            maximum_output_bytes=_PROCESS_OUTPUT_LIMIT,
+            cancelled=cancelled,
+        )
+
+    assert cancellation.value.code is ClaudeProcessFailure.CANCELLED
+    assert cancellation_checks > 1
+
 
 def test_setup_token_process_output_is_bounded() -> None:
     with pytest.raises(ClaudeProcessError) as failure:
@@ -378,6 +405,25 @@ def test_supported_claude_boundary_freezes_executable_and_profiles(
     assert managed_claude_config_dir(paths, _ACCOUNT_A) == profile_a
     assert managed_claude_config_dir(paths, _ACCOUNT_B) != profile_a
     assert stat.S_IMODE(profile_a.stat().st_mode) == _PRIVATE_DIRECTORY_MODE
+
+    cancelled_runner = _probe_runner()
+    capability_service = ProviderCapabilityService(
+        ClaudeProfileCapabilityFactory(
+            paths,
+            profiles,
+            environment=source_environment,
+            host=HostPlatform.LINUX,
+            runner=cancelled_runner,
+        ),
+        source_environment,
+    )
+    capability_service.cancel()
+    cancelled_result = capability_service.probe(ProviderId.CLAUDE)
+    assert (
+        cancelled_result.failure
+        is ClaudeManagedFailure.CAPABILITY_CANCELLED
+    )
+    assert cancelled_runner.calls == []
 
 
 @pytest.mark.parametrize(

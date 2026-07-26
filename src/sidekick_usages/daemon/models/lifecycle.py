@@ -3,10 +3,11 @@
 from dataclasses import dataclass
 from pathlib import Path
 
-from sidekick_usages.core.types import ExitCode
+from sidekick_usages.core.types import ExitCode, ProviderId
 from sidekick_usages.daemon.types.lifecycle import (
     ServiceBackendId,
     ServiceComponentState,
+    ServiceFailureCode,
     ServiceLifecycleState,
 )
 from sidekick_usages.daemon.types.service import PackageVersion
@@ -156,6 +157,8 @@ class DaemonOperationResult:
     state: ServiceLifecycleState
     message: str
     exit_code: ExitCode = ExitCode.SUCCESS
+    failure_code: ServiceFailureCode | None = None
+    failure_provider_id: ProviderId | None = None
 
     def __post_init__(self) -> None:
         """Require safe bounded presentation state."""
@@ -166,6 +169,22 @@ class DaemonOperationResult:
             raise ValueError("Daemon result state is invalid.")
         if not isinstance(self.exit_code, ExitCode):
             raise ValueError("Daemon exit code is invalid.")
+        if self.failure_code is not None and (
+            not isinstance(self.failure_code, ServiceFailureCode)
+            or self.state is not ServiceLifecycleState.UNHEALTHY
+        ):
+            raise ValueError("Daemon failure code is invalid.")
+        provider_failure = (
+            self.failure_code
+            is ServiceFailureCode.PROVIDER_CAPABILITY_UNAVAILABLE
+        )
+        if provider_failure != (self.failure_provider_id is not None):
+            raise ValueError("Daemon provider failure identity is invalid.")
+        if self.failure_provider_id is not None and not isinstance(
+            self.failure_provider_id,
+            ProviderId,
+        ):
+            raise ValueError("Daemon provider failure identity is invalid.")
         _require_text_bound(
             self.message,
             "Daemon result message",

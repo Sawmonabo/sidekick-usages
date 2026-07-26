@@ -18,8 +18,10 @@ from sidekick_usages.cli.dashboard.models.setup import (
 )
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.lifecycle.manager import DaemonManager
+from sidekick_usages.daemon.models.lifecycle import DaemonOperationResult
 from sidekick_usages.daemon.types.lifecycle import (
     ProviderReadinessScope,
+    ServiceFailureCode,
     ServiceLifecycleState,
 )
 from sidekick_usages.usage.dashboard.models import DashboardService
@@ -27,6 +29,7 @@ from sidekick_usages.usage.dashboard.models import DashboardService
 type ServiceSetupProgressSink = Callable[[ServiceSetupProgress], None]
 
 _ALL_PROVIDER_IDS = tuple(ProviderId)
+
 
 def _discard_progress(_progress: ServiceSetupProgress) -> None:
     """Discard optional setup progress."""
@@ -59,6 +62,9 @@ class GuidedServiceSetup:
         status = self._daemon.status(provider_ids)
         if self._closed.is_set():
             return self._failed(intent)
+        provider_failure = _provider_failure(intent, status)
+        if provider_failure is not None:
+            return provider_failure
         if status.state is ServiceLifecycleState.FEATURE_DISABLED:
             return ServiceSetupResult(
                 intent=intent,
@@ -73,6 +79,9 @@ class GuidedServiceSetup:
             restarted = self._daemon.restart(provider_ids)
             if self._closed.is_set():
                 return self._failed(intent)
+            provider_failure = _provider_failure(intent, restarted)
+            if provider_failure is not None:
+                return provider_failure
             if restarted.state is ServiceLifecycleState.READY:
                 progress(ServiceSetupProgress.READY)
                 return self._resume(intent)
@@ -113,6 +122,9 @@ class GuidedServiceSetup:
         installed = self._daemon.install(provider_ids)
         if self._closed.is_set():
             return self._failed(intent)
+        provider_failure = _provider_failure(intent, installed)
+        if provider_failure is not None:
+            return provider_failure
         if installed.state is ServiceLifecycleState.READY:
             progress(ServiceSetupProgress.READY)
             return self._resume(intent)
@@ -147,3 +159,23 @@ def _provider_ids(intent: DashboardIntent) -> ProviderReadinessScope:
     if isinstance(intent, RefreshDueAccountsIntent):
         return _ALL_PROVIDER_IDS
     assert_never(intent)
+
+
+def _provider_failure(
+    intent: DashboardIntent,
+    result: DaemonOperationResult,
+) -> ServiceSetupResult[DashboardIntent] | None:
+    """Return exact provider guidance without mutating a healthy service."""
+    if (
+        result.failure_code
+        is not ServiceFailureCode.PROVIDER_CAPABILITY_UNAVAILABLE
+    ):
+        return None
+    provider_id = result.failure_provider_id
+    if provider_id is None:
+        raise AssertionError("Provider capability failure lost its provider.")
+    return ServiceSetupResult(
+        intent=intent,
+        outcome=ServiceSetupOutcome.PROVIDER_UNAVAILABLE,
+        provider_id=provider_id,
+    )
