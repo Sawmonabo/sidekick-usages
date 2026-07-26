@@ -200,10 +200,13 @@ class ControlClient:
             raise ServiceCompatibilityError(ProtocolErrorCode.FEATURE_DISABLED)
         connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
-            if (
-                control_endpoint_state(socket_path.parent, socket_path)
-                is not ServiceComponentState.HEALTHY
-            ):
+            endpoint_state = control_endpoint_state(
+                socket_path.parent,
+                socket_path,
+            )
+            if endpoint_state is ServiceComponentState.ABSENT:
+                raise FileNotFoundError(socket_path)
+            if endpoint_state is not ServiceComponentState.HEALTHY:
                 raise PermissionError("unsafe_control_endpoint")
             connection.settimeout(connect_timeout_seconds)
             connection.connect(str(socket_path))

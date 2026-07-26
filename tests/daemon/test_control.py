@@ -273,6 +273,12 @@ def test_control_protocol_fails_closed_at_each_trust_boundary(
         with pytest.raises(ConnectionError):
             ControlClient.connect(socket_path)
         return
+    assert (
+        control_endpoint_state(runtime_directory, socket_path)
+        is ServiceComponentState.ABSENT
+    )
+    with pytest.raises(FileNotFoundError):
+        ControlClient.connect(socket_path)
     dispatcher = RecordingDispatcher([], [], Event())
     server = LocalControlServer(
         runtime_directory,
