@@ -25,6 +25,9 @@ from sidekick_usages.daemon.control.client import ControlClient
 from sidekick_usages.daemon.control.protocol import PROTOCOL_VERSION
 from sidekick_usages.daemon.control.server import cleanup_control_endpoint
 from sidekick_usages.daemon.lifecycle.errors import ServiceLifecycleError
+from sidekick_usages.daemon.lifecycle.ports import (
+    ProviderCapabilityReadiness,
+)
 from sidekick_usages.daemon.models.lifecycle import (
     ServiceBackendStatus,
     SupervisorHealth,
@@ -32,6 +35,7 @@ from sidekick_usages.daemon.models.lifecycle import (
 from sidekick_usages.daemon.models.service import ServiceState
 from sidekick_usages.daemon.runtime.diagnostics import SanitizedDiagnosticLog
 from sidekick_usages.daemon.types.lifecycle import (
+    ProviderReadinessScope,
     ServiceComponentState,
     ServiceFailureCode,
     ServiceLifecycleState,
@@ -39,7 +43,6 @@ from sidekick_usages.daemon.types.lifecycle import (
 from sidekick_usages.daemon.types.protocol import EventKind
 from sidekick_usages.daemon.types.service import (
     PackageVersion,
-    ServicePhase,
 )
 from sidekick_usages.paths import ApplicationPaths
 from sidekick_usages.persistence.accounts.store import AccountStore
@@ -66,6 +69,7 @@ class SupervisorReadiness:
         clock: Clock,
         *,
         monotonic: Callable[[], float] = time.monotonic,
+        provider_readiness: ProviderCapabilityReadiness | None = None,
     ) -> None:
         self._paths = paths
         self._clock = clock
@@ -75,10 +79,14 @@ class SupervisorReadiness:
         self._cancelled = Event()
         self._client_lock = Lock()
         self._active_client: ControlClient | None = None
+        self._provider_readiness = provider_readiness
 
     def cancel(self) -> None:
         """Interrupt active local-control observation."""
         self._cancelled.set()
+        provider_readiness = self._provider_readiness
+        if provider_readiness is not None:
+            provider_readiness.cancel()
         with self._client_lock:
             client = self._active_client
         if client is not None:
@@ -107,8 +115,11 @@ class SupervisorReadiness:
                 ServiceFailureCode.QUEUE_INCOMPLETE
             ) from None
 
-    def verify_ready(self) -> None:
-        """Verify handshake, current service state, queue, and Codex phase."""
+    def verify_ready(
+        self,
+        provider_ids: ProviderReadinessScope = (),
+    ) -> None:
+        """Verify service state plus each requested provider capability."""
         self._raise_if_cancelled()
         self._verify_handshake()
         try:
@@ -123,7 +134,7 @@ class SupervisorReadiness:
             state is None
             or state.protocol_version != PROTOCOL_VERSION
             or state.package_version != PackageVersion(__version__)
-            or state.phase is not ServicePhase.READY
+            or not state.ready_for(provider_ids)
         ):
             raise ServiceLifecycleError(ServiceFailureCode.SERVICE_UNHEALTHY)
         enrolled = {
@@ -133,13 +144,28 @@ class SupervisorReadiness:
         }
         if any(account.account_id not in enrolled for account in accounts):
             raise ServiceLifecycleError(ServiceFailureCode.QUEUE_INCOMPLETE)
-        if (
-            any(_requires_codex_broker(account) for account in accounts)
-            and not state.broker_ready
-        ):
+        broker_required = (
+            ProviderId.CODEX in provider_ids
+            if provider_ids
+            else any(_requires_codex_broker(account) for account in accounts)
+        )
+        if broker_required and not state.broker_ready:
             raise ServiceLifecycleError(
                 ServiceFailureCode.CODEX_BROKER_UNAVAILABLE
             )
+        provider_readiness = self._provider_readiness
+        if provider_ids and provider_readiness is None:
+            raise ServiceLifecycleError(
+                ServiceFailureCode.PROVIDER_CAPABILITY_UNAVAILABLE
+            )
+        if provider_readiness is not None:
+            for provider_id in provider_ids:
+                self._raise_if_cancelled()
+                if not provider_readiness.ready(provider_id):
+                    self._raise_if_cancelled()
+                    raise ServiceLifecycleError(
+                        ServiceFailureCode.PROVIDER_CAPABILITY_UNAVAILABLE
+                    )
 
     def complete_maintenance_pass(self) -> None:
         """Wake maintenance and wait for each enrolled slot to settle."""

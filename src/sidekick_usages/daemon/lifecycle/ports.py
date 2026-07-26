@@ -2,11 +2,15 @@
 
 from typing import Protocol
 
+from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.models.lifecycle import (
     ServiceBackendStatus,
     SupervisorHealth,
 )
-from sidekick_usages.daemon.types.lifecycle import ServiceBackendId
+from sidekick_usages.daemon.types.lifecycle import (
+    ProviderReadinessScope,
+    ServiceBackendId,
+)
 
 
 class ServiceBackend(Protocol):
@@ -39,7 +43,10 @@ class ServiceReadiness(Protocol):
     def enroll_accounts(self) -> None:
         """Persist one scheduled maintenance slot per saved account."""
 
-    def verify_ready(self) -> None:
+    def verify_ready(
+        self,
+        provider_ids: ProviderReadinessScope = (),
+    ) -> None:
         """Verify protocol, state, queue, and broker capability."""
 
     def complete_maintenance_pass(self) -> None:
@@ -47,6 +54,16 @@ class ServiceReadiness(Protocol):
 
     def health(self, status: ServiceBackendStatus) -> SupervisorHealth:
         """Inspect each resident-service component without mutation."""
+
+
+class ProviderCapabilityReadiness(Protocol):
+    """Read-only provider capability evidence consumed by readiness."""
+
+    def cancel(self) -> None:
+        """Interrupt any cancellable provider capability probe."""
+
+    def ready(self, provider_id: ProviderId) -> bool:
+        """Return whether the authoritative provider gate passed."""
 
 
 class ServiceCleanup(Protocol):

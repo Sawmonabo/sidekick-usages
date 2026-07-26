@@ -31,6 +31,9 @@ _MESSAGES = {
     ServiceFailureCode.CODEX_BROKER_UNAVAILABLE: (
         "Managed Codex accounts require the Codex broker phase."
     ),
+    ServiceFailureCode.PROVIDER_CAPABILITY_UNAVAILABLE: (
+        "The required provider capability is unavailable."
+    ),
 }
 
 

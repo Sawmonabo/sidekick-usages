@@ -2,17 +2,31 @@
 
 from collections.abc import Callable
 from threading import Event
+from typing import assert_never
 
+from sidekick_usages.cli.dashboard.models.controller import (
+    ActivateOrRepairIntent,
+    DashboardIntent,
+    RefreshAccountIntent,
+    RefreshDueAccountsIntent,
+)
 from sidekick_usages.cli.dashboard.models.setup import (
     ServiceSetupDecision,
     ServiceSetupOutcome,
     ServiceSetupProgress,
     ServiceSetupResult,
 )
+from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.lifecycle.manager import DaemonManager
-from sidekick_usages.daemon.types.lifecycle import ServiceLifecycleState
+from sidekick_usages.daemon.types.lifecycle import (
+    ProviderReadinessScope,
+    ServiceLifecycleState,
+)
 from sidekick_usages.usage.dashboard.models import DashboardService
 
+type ServiceSetupProgressSink = Callable[[ServiceSetupProgress], None]
+
+_ALL_PROVIDER_IDS = tuple(ProviderId)
 
 def _discard_progress(_progress: ServiceSetupProgress) -> None:
     """Discard optional setup progress."""
@@ -30,18 +44,19 @@ class GuidedServiceSetup:
         self._closed.set()
         self._daemon.cancel()
 
-    def prepare[IntentT](
+    def prepare(
         self,
         *,
         service: DashboardService,
-        intent: IntentT,
+        intent: DashboardIntent,
         interactive: bool,
         decision: ServiceSetupDecision,
-        progress: Callable[[ServiceSetupProgress], None] = _discard_progress,
-    ) -> ServiceSetupResult[IntentT]:
+        progress: ServiceSetupProgressSink = _discard_progress,
+    ) -> ServiceSetupResult[DashboardIntent]:
         """Return the original intent only after bounded service readiness."""
+        provider_ids = _provider_ids(intent)
         progress(ServiceSetupProgress.CHECKING)
-        status = self._daemon.status()
+        status = self._daemon.status(provider_ids)
         if self._closed.is_set():
             return self._failed(intent)
         if status.state is ServiceLifecycleState.FEATURE_DISABLED:
@@ -55,7 +70,7 @@ class GuidedServiceSetup:
 
         if service.compatible:
             progress(ServiceSetupProgress.RESTARTING)
-            restarted = self._daemon.restart()
+            restarted = self._daemon.restart(provider_ids)
             if self._closed.is_set():
                 return self._failed(intent)
             if restarted.state is ServiceLifecycleState.READY:
@@ -66,16 +81,18 @@ class GuidedServiceSetup:
             interactive=interactive,
             decision=decision,
             progress=progress,
+            provider_ids=provider_ids,
         )
 
-    def _install_or_block[IntentT](
+    def _install_or_block(
         self,
         *,
-        intent: IntentT,
+        intent: DashboardIntent,
         interactive: bool,
         decision: ServiceSetupDecision,
-        progress: Callable[[ServiceSetupProgress], None],
-    ) -> ServiceSetupResult[IntentT]:
+        progress: ServiceSetupProgressSink,
+        provider_ids: ProviderReadinessScope,
+    ) -> ServiceSetupResult[DashboardIntent]:
         if not interactive:
             return ServiceSetupResult(
                 intent=intent,
@@ -93,7 +110,7 @@ class GuidedServiceSetup:
             )
 
         progress(ServiceSetupProgress.INSTALLING)
-        installed = self._daemon.install()
+        installed = self._daemon.install(provider_ids)
         if self._closed.is_set():
             return self._failed(intent)
         if installed.state is ServiceLifecycleState.READY:
@@ -105,15 +122,28 @@ class GuidedServiceSetup:
         )
 
     @staticmethod
-    def _failed[IntentT](intent: IntentT) -> ServiceSetupResult[IntentT]:
+    def _failed(
+        intent: DashboardIntent,
+    ) -> ServiceSetupResult[DashboardIntent]:
         return ServiceSetupResult(
             intent=intent,
             outcome=ServiceSetupOutcome.FAILED,
         )
 
     @staticmethod
-    def _resume[IntentT](intent: IntentT) -> ServiceSetupResult[IntentT]:
+    def _resume(
+        intent: DashboardIntent,
+    ) -> ServiceSetupResult[DashboardIntent]:
         return ServiceSetupResult(
             intent=intent,
             outcome=ServiceSetupOutcome.RESUME,
         )
+
+
+def _provider_ids(intent: DashboardIntent) -> ProviderReadinessScope:
+    """Return every provider whose capability the intent requires."""
+    if isinstance(intent, ActivateOrRepairIntent | RefreshAccountIntent):
+        return (intent.provider_id,)
+    if isinstance(intent, RefreshDueAccountsIntent):
+        return _ALL_PROVIDER_IDS
+    assert_never(intent)

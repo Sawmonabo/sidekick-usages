@@ -17,6 +17,7 @@ from sidekick_usages.daemon.lifecycle.platform import (
     resolve_supervisor_executable,
 )
 from sidekick_usages.daemon.lifecycle.ports import (
+    ProviderCapabilityReadiness,
     ServiceBackend,
     ServiceCleanup,
     ServiceReadiness,
@@ -35,6 +36,7 @@ from sidekick_usages.daemon.models.lifecycle import (
 )
 from sidekick_usages.daemon.types.lifecycle import (
     DaemonOperation,
+    ProviderReadinessScope,
     ServiceBackendId,
     ServiceFailureCode,
     ServiceLifecycleState,
@@ -87,17 +89,20 @@ class DaemonManager:
                 return self.uninstall()
         assert_never(operation_id)
 
-    def install(self) -> DaemonOperationResult:
+    def install(
+        self,
+        provider_ids: ProviderReadinessScope = (),
+    ) -> DaemonOperationResult:
         """Install, prove readiness, restart, and prove singleton health."""
         if self._feature_disabled:
             return self._feature_disabled_result()
         try:
             self._readiness.enroll_accounts()
             self._backend.install()
-            self._readiness.verify_ready()
+            self._readiness.verify_ready(provider_ids)
             self._readiness.complete_maintenance_pass()
             self._backend.restart()
-            self._readiness.verify_ready()
+            self._readiness.verify_ready(provider_ids)
             status = self._backend.status()
             if status.state is not ServiceLifecycleState.READY:
                 raise ServiceLifecycleError(
@@ -111,7 +116,10 @@ class DaemonManager:
             _READY_MESSAGE,
         )
 
-    def status(self) -> DaemonOperationResult:
+    def status(
+        self,
+        provider_ids: ProviderReadinessScope = (),
+    ) -> DaemonOperationResult:
         """Verify native service state and resident protocol readiness."""
         if self._feature_disabled:
             return self._feature_disabled_result()
@@ -128,7 +136,7 @@ class DaemonManager:
                 raise ServiceLifecycleError(
                     ServiceFailureCode.SERVICE_UNHEALTHY
                 )
-            self._readiness.verify_ready()
+            self._readiness.verify_ready(provider_ids)
         except ServiceLifecycleError as error:
             return self._failure(error)
         return DaemonOperationResult(
@@ -137,13 +145,16 @@ class DaemonManager:
             _READY_MESSAGE,
         )
 
-    def restart(self) -> DaemonOperationResult:
+    def restart(
+        self,
+        provider_ids: ProviderReadinessScope = (),
+    ) -> DaemonOperationResult:
         """Restart and prove readiness of one installed user service."""
         if self._feature_disabled:
             return self._feature_disabled_result()
         try:
             self._backend.restart()
-            self._readiness.verify_ready()
+            self._readiness.verify_ready(provider_ids)
             status = self._backend.status()
             if status.state is not ServiceLifecycleState.READY:
                 raise ServiceLifecycleError(
@@ -257,13 +268,18 @@ def build_daemon_manager(
     *,
     paths: ApplicationPaths | None = None,
     clock: Clock | None = None,
+    provider_readiness: ProviderCapabilityReadiness | None = None,
 ) -> DaemonManager:
     """Compose lifecycle management without importing resident runtime."""
     resolved_paths = discover_application_paths() if paths is None else paths
     resolved_clock = SystemClock() if clock is None else clock
     platform_info = detect_platform_info()
     runner = SystemCommandRunner()
-    readiness = SupervisorReadiness(resolved_paths, resolved_clock)
+    readiness = SupervisorReadiness(
+        resolved_paths,
+        resolved_clock,
+        provider_readiness=provider_readiness,
+    )
     backend = build_service_backend(
         platform_info,
         resolve_supervisor_executable,

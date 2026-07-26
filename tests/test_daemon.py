@@ -7,7 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from sidekick_usages.core.types import ExitCode
+from sidekick_usages import __version__
+from sidekick_usages.core.types import ExitCode, ProviderId
+from sidekick_usages.daemon.control.protocol import PROTOCOL_VERSION
 from sidekick_usages.daemon.lifecycle.artifacts import ServiceArtifactStore
 from sidekick_usages.daemon.lifecycle.commands import SystemCommandRunner
 from sidekick_usages.daemon.lifecycle.manager import (
@@ -21,18 +23,22 @@ from sidekick_usages.daemon.models.lifecycle import (
     ServiceBackendStatus,
     SupervisorHealth,
 )
+from sidekick_usages.daemon.models.service import ServiceState
 from sidekick_usages.daemon.types.lifecycle import (
+    ProviderReadinessScope,
     ServiceBackendId,
     ServiceComponentState,
     ServiceFailureCode,
     ServiceLifecycleState,
 )
+from sidekick_usages.daemon.types.service import PackageVersion, ServicePhase
 from sidekick_usages.paths import ApplicationPaths
 from tests.fakes.daemon.lifecycle import (
     LifecycleCancellationProof,
     exercise_lifecycle_command_cancellation,
 )
 from tests.test_support import (
+    REFERENCE_TIME,
     make_application_paths,
     make_supervisor_health,
 )
@@ -79,8 +85,14 @@ class ReadyLifecycle:
     def enroll_accounts(self) -> None:
         self.events.append("enroll")
 
-    def verify_ready(self) -> None:
-        self.events.append("ready")
+    def verify_ready(
+        self,
+        provider_ids: ProviderReadinessScope = (),
+    ) -> None:
+        providers = "+".join(
+            provider_id.value for provider_id in provider_ids
+        )
+        self.events.append("ready" if not providers else f"ready:{providers}")
 
     def complete_maintenance_pass(self) -> None:
         self.events.append("maintain")
@@ -280,6 +292,7 @@ def test_lifecycle_is_idempotent_cancellable_and_preserves_user_state(
     second = manager.install()
     restarted = manager.restart()
     status = manager.status()
+    claude_status = manager.status((ProviderId.CLAUDE,))
     health = manager.health()
     removed = manager.uninstall()
 
@@ -301,6 +314,8 @@ def test_lifecycle_is_idempotent_cancellable_and_preserves_user_state(
         "status",
         "ready",
         "status",
+        "ready:claude",
+        "status",
         "health",
         "uninstall",
     ]
@@ -308,6 +323,7 @@ def test_lifecycle_is_idempotent_cancellable_and_preserves_user_state(
     assert second.state is ServiceLifecycleState.READY
     assert restarted.state is ServiceLifecycleState.READY
     assert status.state is ServiceLifecycleState.READY
+    assert claude_status.state is ServiceLifecycleState.READY
     assert health.process is ServiceComponentState.HEALTHY
     assert removed.state is ServiceLifecycleState.ABSENT
     assert paths.service_state.exists() is False
@@ -332,6 +348,23 @@ def test_lifecycle_is_idempotent_cancellable_and_preserves_user_state(
             process_count=1,
             process_group_reaped=True,
         )
+    broker_degraded = ServiceState(
+        protocol_version=PROTOCOL_VERSION,
+        package_version=PackageVersion(__version__),
+        phase=ServicePhase.DEGRADED,
+        revision=1,
+        observed_at=REFERENCE_TIME,
+        queue_recovered=True,
+        journals_reconciled=True,
+        broker_ready=False,
+        active_workers=0,
+        failure_code=ServiceFailureCode.CODEX_BROKER_UNAVAILABLE.value,
+    )
+    assert broker_degraded.ready_for((ProviderId.CLAUDE,))
+    assert not broker_degraded.ready_for((ProviderId.CODEX,))
+    assert not broker_degraded.ready_for(
+        (ProviderId.CLAUDE, ProviderId.CODEX)
+    )
     manager.cancel()
     assert events[-2:] == ["cancel-backend", "cancel-readiness"]
 

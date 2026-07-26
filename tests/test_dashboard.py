@@ -575,7 +575,10 @@ def test_guided_setup_resumes_once_and_preserves_blocked_actions() -> None:
         compatible=True,
         phase=ServicePhase.DEGRADED,
     )
-    intent = object()
+    intent = ActivateOrRepairIntent(
+        provider_id=ProviderId.CLAUDE,
+        account_id=CLAUDE_PREVIEW_ACCOUNT_ID,
+    )
     daemon = SetupDaemon(ServiceLifecycleState.ABSENT)
     setup = GuidedServiceSetup(daemon)
     progress: list[ServiceSetupProgress] = []
@@ -598,7 +601,11 @@ def test_guided_setup_resumes_once_and_preserves_blocked_actions() -> None:
     assert confirmation.outcome is ServiceSetupOutcome.CONFIRMATION_REQUIRED
     assert approved.outcome is ServiceSetupOutcome.RESUME
     assert confirmation.intent is approved.intent is intent
-    assert daemon.events == ["status", "status", "install"]
+    assert daemon.events == [
+        "status:claude",
+        "status:claude",
+        "install:claude",
+    ]
     assert progress == [
         ServiceSetupProgress.CHECKING,
         ServiceSetupProgress.CHECKING,
@@ -618,8 +625,8 @@ def test_guided_setup_resumes_once_and_preserves_blocked_actions() -> None:
 
     assert reused.outcome is ServiceSetupOutcome.RESUME
     assert reused.intent is intent
-    assert daemon.events[-2:] == ["status", "restart"]
-    assert daemon.events.count("install") == 1
+    assert daemon.events[-2:] == ["status:claude", "restart:claude"]
+    assert daemon.events.count("install:claude") == 1
     assert progress == [
         ServiceSetupProgress.CHECKING,
         ServiceSetupProgress.RESTARTING,
@@ -649,7 +656,24 @@ def test_guided_setup_resumes_once_and_preserves_blocked_actions() -> None:
     assert (
         noninteractive.corrective_action is ServiceSetupAction.OPEN_DASHBOARD
     )
-    assert blocked_daemon.events == ["status", "status"]
+    assert blocked_daemon.events == ["status:claude", "status:claude"]
+
+    capability_blocked = SetupDaemon(
+        ServiceLifecycleState.READY,
+        provider_ready=False,
+    )
+    failed = GuidedServiceSetup(capability_blocked).prepare(
+        service=unavailable,
+        intent=intent,
+        interactive=True,
+        decision=ServiceSetupDecision.APPROVED,
+    )
+    assert failed.outcome is ServiceSetupOutcome.FAILED
+    assert failed.intent is intent
+    assert capability_blocked.events == [
+        "status:claude",
+        "install:claude",
+    ]
 
 
 def test_managed_auth_migration_resumes_without_exposing_secrets() -> None:

@@ -8,6 +8,7 @@ from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.lifecycle.manager import DaemonManager
 from sidekick_usages.daemon.models.lifecycle import DaemonOperationResult
 from sidekick_usages.daemon.types.lifecycle import (
+    ProviderReadinessScope,
     ServiceBackendId,
     ServiceLifecycleState,
 )
@@ -69,8 +70,14 @@ class OneShotRecorder:
 class SetupDaemon(DaemonManager):
     """Record guided setup without opening platform boundaries."""
 
-    def __init__(self, state: ServiceLifecycleState) -> None:
+    def __init__(
+        self,
+        state: ServiceLifecycleState,
+        *,
+        provider_ready: bool = True,
+    ) -> None:
         self.state = state
+        self.provider_ready = provider_ready
         self.events: list[str] = []
         self.cancelled = False
 
@@ -78,22 +85,43 @@ class SetupDaemon(DaemonManager):
         """Record dashboard lifecycle cancellation."""
         self.cancelled = True
 
-    def status(self) -> DaemonOperationResult:
+    def status(
+        self,
+        provider_ids: ProviderReadinessScope = (),
+    ) -> DaemonOperationResult:
         """Record one current service check."""
-        self.events.append("status")
-        return self._result(self.state)
+        self.events.append(_setup_event("status", provider_ids))
+        return self._result(self._provider_state(provider_ids))
 
-    def restart(self) -> DaemonOperationResult:
+    def restart(
+        self,
+        provider_ids: ProviderReadinessScope = (),
+    ) -> DaemonOperationResult:
         """Record one bounded restart."""
-        self.events.append("restart")
+        self.events.append(_setup_event("restart", provider_ids))
         self.state = ServiceLifecycleState.READY
-        return self._result(self.state)
+        return self._result(self._provider_state(provider_ids))
 
-    def install(self) -> DaemonOperationResult:
+    def install(
+        self,
+        provider_ids: ProviderReadinessScope = (),
+    ) -> DaemonOperationResult:
         """Record one approved user-level installation."""
-        self.events.append("install")
+        self.events.append(_setup_event("install", provider_ids))
         self.state = ServiceLifecycleState.READY
-        return self._result(self.state)
+        return self._result(self._provider_state(provider_ids))
+
+    def _provider_state(
+        self,
+        provider_ids: ProviderReadinessScope,
+    ) -> ServiceLifecycleState:
+        if (
+            self.state is ServiceLifecycleState.READY
+            and provider_ids
+            and not self.provider_ready
+        ):
+            return ServiceLifecycleState.UNHEALTHY
+        return self.state
 
     @staticmethod
     def _result(state: ServiceLifecycleState) -> DaemonOperationResult:
@@ -102,6 +130,16 @@ class SetupDaemon(DaemonManager):
             state,
             "Synthetic user-service result.",
         )
+
+
+def _setup_event(
+    operation: str,
+    provider_ids: ProviderReadinessScope,
+) -> str:
+    if not provider_ids:
+        return operation
+    providers = "+".join(provider_id.value for provider_id in provider_ids)
+    return f"{operation}:{providers}"
 
 
 def interactive_terminal() -> bool:

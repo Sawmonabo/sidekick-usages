@@ -2,6 +2,10 @@
 
 from enum import StrEnum
 
+from sidekick_usages.core.types import ProviderId
+
+type ProviderReadinessScope = tuple[ProviderId, ...]
+
 
 class DaemonOperation(StrEnum):
     """Supported resident-service lifecycle operations."""
@@ -53,3 +57,4 @@ class ServiceFailureCode(StrEnum):
     QUEUE_INCOMPLETE = "queue_incomplete"
     SERVICE_UNHEALTHY = "service_unhealthy"
     CODEX_BROKER_UNAVAILABLE = "codex_broker_unavailable"
+    PROVIDER_CAPABILITY_UNAVAILABLE = "provider_capability_unavailable"

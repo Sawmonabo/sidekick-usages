@@ -5,6 +5,11 @@ from datetime import datetime
 
 from sidekick_usages.core.selection.models import safe_outcome_code
 from sidekick_usages.core.time import as_utc
+from sidekick_usages.core.types import ProviderId
+from sidekick_usages.daemon.types.lifecycle import (
+    ProviderReadinessScope,
+    ServiceFailureCode,
+)
 from sidekick_usages.daemon.types.service import (
     PackageVersion,
     ServicePhase,
@@ -59,3 +64,17 @@ class ServiceState:
                 "Ready service state requires recovered resident state."
             )
         object.__setattr__(self, "failure_code", code)
+
+    def ready_for(self, provider_ids: ProviderReadinessScope) -> bool:
+        """Allow broker-only degradation solely for Claude-scoped work."""
+        if self.phase is ServicePhase.READY:
+            return True
+        return (
+            self.phase is ServicePhase.DEGRADED
+            and bool(provider_ids)
+            and ProviderId.CODEX not in provider_ids
+            and self.queue_recovered
+            and self.journals_reconciled
+            and self.failure_code
+            == ServiceFailureCode.CODEX_BROKER_UNAVAILABLE.value
+        )

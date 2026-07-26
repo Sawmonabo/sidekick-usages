@@ -7,6 +7,10 @@ from pathlib import Path
 from threading import Lock
 
 from sidekick_usages.core.accounts.types import SidekickAccountId
+from sidekick_usages.core.types import ProviderId
+from sidekick_usages.credentials.capabilities.models import (
+    ProviderCapabilityResult,
+)
 from sidekick_usages.paths import (
     ApplicationPaths,
     managed_claude_config_dir,
@@ -40,6 +44,7 @@ from sidekick_usages.providers.claude.managed.types import (
     ClaudeManagedPlatform,
 )
 from sidekick_usages.providers.claude.models import (
+    ClaudeExecutable,
     ClaudeManagedProfile,
     ClaudeNativeProfile,
 )
@@ -72,14 +77,13 @@ class ClaudeProfileCapabilityFactory:
             detect_host_platform(environment=source) if host is None else host
         )
         self._runner = runner
-        self._runtime: ClaudeRuntimeCapabilities | None = None
-        self._failure: ClaudeManagedFailure | None = None
+        self._result: ProviderCapabilityResult | None = None
         self._proof_lock = Lock()
 
     def managed(self, account_id: SidekickAccountId) -> ClaudeCapabilities:
         """Qualify and bind one stable private account profile."""
         profile = _qualified_managed_profile(self._paths, account_id)
-        runtime = self._runtime_capabilities()
+        runtime = self.runtime()
         verify_claude_executable(runtime.executable)
         try:
             self._profiles.ensure_owned_directory(profile.config_directory)
@@ -96,61 +100,83 @@ class ClaudeProfileCapabilityFactory:
     ) -> ClaudeCapabilities:
         """Bind the proof to the native default Claude profile."""
         profile = _native_profile(environment)
-        runtime = self._runtime_capabilities()
+        runtime = self.runtime()
         verify_claude_executable(runtime.executable)
         return runtime.bind(profile)
 
-    def _runtime_capabilities(self) -> ClaudeRuntimeCapabilities:
-        """Return one thread-safe invocation capability proof."""
+    def runtime(self) -> ClaudeRuntimeCapabilities:
+        """Return or raise the authoritative runtime capability result."""
+        result = self.result()
+        capabilities = result.capabilities
+        if isinstance(capabilities, ClaudeRuntimeCapabilities):
+            return capabilities
+        failure = result.failure
+        if isinstance(failure, ClaudeManagedFailure):
+            raise ClaudeManagedError(failure)
+        raise AssertionError("Claude capability result is inconsistent.")
+
+    def result(self) -> ProviderCapabilityResult:
+        """Return one cached thread-safe provider capability result."""
         with self._proof_lock:
-            if self._runtime is not None:
-                return self._runtime
-            if self._failure is not None:
-                raise ClaudeManagedError(self._failure)
-            try:
-                runtime = _probe_runtime_capabilities(
+            if self._result is None:
+                self._result = probe_claude_runtime_result(
                     self._platform,
                     self._environment,
                     self._runner,
                 )
-            except ClaudeManagedError as error:
-                self._failure = error.code
-                raise
-            self._runtime = runtime
-            return runtime
+            return self._result
 
 
-def _probe_runtime_capabilities(
+def probe_claude_runtime_result(
     platform: ClaudeManagedPlatform,
     environment: Mapping[str, str],
     runner: ClaudeCommandRunner,
-) -> ClaudeRuntimeCapabilities:
-    """Prove the provider process once when a profile first needs it."""
-    with tempfile.TemporaryDirectory(
-        prefix="sidekick-claude-capability-"
-    ) as raw_root:
-        probe_root = Path(raw_root)
-        probe_home = probe_root / "home"
-        probe_config = probe_root / "config"
-        probe_home.mkdir(mode=_PRIVATE_DIRECTORY_MODE)
-        probe_config.mkdir(mode=_PRIVATE_DIRECTORY_MODE)
-        probe_environment = claude_private_profile_environment(
-            environment,
-            process_home=probe_home,
-            config_directory=probe_config,
+) -> ProviderCapabilityResult:
+    """Prove Claude capabilities in an isolated credential-free profile."""
+    executable: ClaudeExecutable | None = None
+    try:
+        with tempfile.TemporaryDirectory(
+            prefix="sidekick-claude-capability-"
+        ) as raw_root:
+            probe_root = Path(raw_root)
+            probe_home = probe_root / "home"
+            probe_config = probe_root / "config"
+            probe_home.mkdir(mode=_PRIVATE_DIRECTORY_MODE)
+            probe_config.mkdir(mode=_PRIVATE_DIRECTORY_MODE)
+            probe_environment = claude_private_profile_environment(
+                environment,
+                process_home=probe_home,
+                config_directory=probe_config,
+            )
+            executable = discover_claude_executable(
+                probe_environment,
+                working_directory=probe_home,
+                runner=runner,
+            )
+            capabilities = probe_claude_runtime_capabilities(
+                executable,
+                platform,
+                probe_environment,
+                probe_home,
+                runner=runner,
+            )
+    except ClaudeManagedError as error:
+        return ProviderCapabilityResult.failed(
+            ProviderId.CLAUDE,
+            error.code,
+            executable=executable,
         )
-        executable = discover_claude_executable(
-            probe_environment,
-            working_directory=probe_home,
-            runner=runner,
+    except OSError, ValueError:
+        return ProviderCapabilityResult.failed(
+            ProviderId.CLAUDE,
+            ClaudeManagedFailure.PROFILE_UNSAFE,
+            executable=executable,
         )
-        return probe_claude_runtime_capabilities(
-            executable,
-            platform,
-            probe_environment,
-            probe_home,
-            runner=runner,
-        )
+    return ProviderCapabilityResult.succeeded(
+        ProviderId.CLAUDE,
+        executable,
+        capabilities,
+    )
 
 
 def prepare_claude_managed_profile(
