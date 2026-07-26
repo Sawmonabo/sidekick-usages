@@ -1,9 +1,5 @@
 """Reusable dashboard routing and setup fakes."""
 
-import io
-from dataclasses import replace
-from datetime import datetime
-
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.lifecycle.manager import DaemonManager
 from sidekick_usages.daemon.lifecycle.ports import (
@@ -21,8 +17,6 @@ from sidekick_usages.daemon.types.lifecycle import (
     ServiceLifecyclePhase,
     ServiceLifecycleState,
 )
-from sidekick_usages.usage.dashboard.models import DashboardSnapshot
-from tests.fakes.dashboard.state import controller_snapshot
 
 EXPECTED_SERVICE_SETUP_PROGRESS = frozenset(
     {
@@ -37,46 +31,6 @@ EXPECTED_SERVICE_SETUP_PROGRESS = frozenset(
         "Verifying Codex CLI capabilities.",
     }
 )
-
-
-class RoutingSnapshotSource:
-    """Record one provider-scoped cached read."""
-
-    def __init__(
-        self,
-        events: list[str],
-        reference_time: datetime,
-    ) -> None:
-        self._events = events
-        self._reference_time = reference_time
-
-    def load(self, only: ProviderId | None) -> DashboardSnapshot:
-        """Return the synthetic dashboard with the requested scope."""
-        self._events.append(f"load:{only}")
-        snapshot = controller_snapshot(self._reference_time)
-        if only is None:
-            return snapshot
-        return replace(
-            snapshot,
-            providers=(
-                replace(snapshot.providers[0], rows=()),
-                snapshot.providers[1],
-            ),
-        )
-
-
-class RoutingDashboardProcess:
-    """Record replacement only after observing the cached frame."""
-
-    def __init__(self, events: list[str], output: io.StringIO) -> None:
-        self._events = events
-        self._output = output
-        self.frame_at_replace = ""
-
-    def replace(self, only: ProviderId | None) -> None:
-        """Capture the exact output visible at the replacement boundary."""
-        self.frame_at_replace = self._output.getvalue()
-        self._events.append(f"replace:{only}")
 
 
 class OneShotRecorder:

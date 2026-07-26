@@ -1,54 +1,40 @@
-"""Lean terminal and process-image boundary for the dashboard."""
-
-import os
-import sys
-from pathlib import Path
+"""Cached dashboard frame rendering and terminal positioning."""
 
 from rich.console import Console, RenderableType
 
-from sidekick_usages.core.types import ProviderId
-from sidekick_usages.errors import UsageError
-from sidekick_usages.platform.errors import ExecutableQualificationError
-from sidekick_usages.platform.executable import qualify_executable
-
-DASHBOARD_ENTRYPOINT_MODULE = "sidekick_usages.entrypoints.dashboard"
-DASHBOARD_LAUNCH_FAILURE_MESSAGE = (
-    "The interactive dashboard could not be started."
+from sidekick_usages.cli.dashboard.controller import DashboardController
+from sidekick_usages.usage.dashboard.models import (
+    DashboardCursor,
+    DashboardFooter,
+    DashboardSnapshot,
 )
+from sidekick_usages.usage.presentation.dashboard.overview import (
+    dashboard_overview,
+)
+
 CURSOR_COLUMN_START = "\r"
 
 
-class InteractiveDashboardLaunchError(UsageError):
-    """The dedicated interactive process could not replace the launcher."""
-
-
-class ExecveDashboardProcess:
-    """Replace the launcher with the same absolute Python executable."""
-
-    def replace(self, only: ProviderId | None) -> None:
-        """Execute the dedicated dashboard module with safe routing state."""
-        executable = Path(sys.executable)
-        try:
-            qualify_executable(executable)
-            arguments = [
-                str(executable),
-                "-m",
-                DASHBOARD_ENTRYPOINT_MODULE,
-            ]
-            if only is not None:
-                arguments.extend(("--only", only.value))
-            os.execve(executable, arguments, os.environ.copy())
-        except (ExecutableQualificationError, OSError) as error:
-            raise InteractiveDashboardLaunchError(
-                DASHBOARD_LAUNCH_FAILURE_MESSAGE
-            ) from error
-
-
-def interactive_dashboard_supported() -> bool:
-    """Return whether this process owns both required Unix terminal streams."""
-    return (
-        sys.platform != "win32" and sys.stdin.isatty() and sys.stdout.isatty()
+def present_cached_dashboard(
+    console: Console,
+    snapshot: DashboardSnapshot,
+) -> int:
+    """Render and present one cached dashboard frame."""
+    state = DashboardController.start(snapshot).state
+    frame = render_dashboard_frame(
+        console,
+        dashboard_overview(
+            snapshot,
+            width=console.size.width,
+            cursor=DashboardCursor(
+                focused_provider=state.focused_provider,
+                account_id=state.account_id,
+                external=state.external,
+            ),
+            footer=DashboardFooter(),
+        ),
     )
+    return present_dashboard_frame(console, frame)
 
 
 def render_dashboard_frame(

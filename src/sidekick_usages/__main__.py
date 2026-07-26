@@ -2,7 +2,7 @@
 
 import sys
 
-from sidekick_usages.cli.app import run
+from sidekick_usages.cli.runtime.bootstrap import main
 
 if __name__ == "__main__":
-    sys.exit(run())
+    sys.exit(main())

@@ -56,7 +56,7 @@ Issues = "https://github.com/Sawmonabo/sidekick-usages/issues"
 Changelog = "https://github.com/Sawmonabo/sidekick-usages/blob/main/CHANGELOG.md"
 
 [project.scripts]
-sidekick-usages = "sidekick_usages.cli.app:run"
+sidekick-usages = "sidekick_usages.cli.runtime.bootstrap:main"
 sidekick-usages-supervisor = "sidekick_usages.entrypoints.supervisor:main"
 sidekick-usages-worker = "sidekick_usages.entrypoints.worker:main"
 
@@ -209,7 +209,10 @@ skips = [
   # an absolute path or resolved via shutil.which. The flagged
   # call pattern is the SAFE pattern; the alternative
   # (shell=True) would be worse.
-  "B603"
+  "B603",
+  # B606 (start process without shell): CLI001 constrains the whole call
+  # family to one qualified os.execve in the closed-target public bootstrap.
+  "B606"
 ]
 targets = ["src"]
 

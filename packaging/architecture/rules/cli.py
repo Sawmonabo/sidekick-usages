@@ -14,6 +14,38 @@ from architecture.source import (
 )
 
 MAX_CLI_APP_LINES = 200
+PUBLIC_BOOTSTRAP_FILE = "src/sidekick_usages/cli/runtime/bootstrap.py"
+PUBLIC_BOOTSTRAP_IMPORTS = (
+    "collections.abc",
+    "os",
+    "pathlib",
+    "subprocess",
+    "sys",
+    "sidekick_usages.cli.runtime.routing",
+    "sidekick_usages.platform.errors",
+    "sidekick_usages.platform.executable",
+)
+B606_NO_SHELL_CALLS = frozenset(
+    {
+        "os.execl",
+        "os.execle",
+        "os.execlp",
+        "os.execlpe",
+        "os.execv",
+        "os.execve",
+        "os.execvp",
+        "os.execvpe",
+        "os.spawnl",
+        "os.spawnle",
+        "os.spawnlp",
+        "os.spawnlpe",
+        "os.spawnv",
+        "os.spawnve",
+        "os.spawnvp",
+        "os.spawnvpe",
+        "os.startfile",
+    }
+)
 
 
 def check_cli_contract(
@@ -25,6 +57,7 @@ def check_cli_contract(
     app = by_path.get("src/sidekick_usages/cli/app.py")
     if app is not None:
         _check_create_app(app, violations)
+    _check_public_bootstrap(units, by_path, violations)
     accessors = {
         "accounts.py": {"require_app", "require_persistence"},
         "claude.py": {"require_app"},
@@ -37,7 +70,7 @@ def check_cli_contract(
         "migration.py": {"require_migration"},
         "permissions.py": {"require_persistence"},
         "updates.py": {"require_update"},
-        "usage.py": {"require_app", "require_dashboard"},
+        "usage.py": {"require_app"},
         "use.py": {"require_use"},
     }
     for filename, expected in accessors.items():
@@ -59,6 +92,68 @@ def check_cli_contract(
                 violations.append(
                     finding(help_unit, node, "CLI001", "help composed runtime")
                 )
+
+
+def _check_public_bootstrap(
+    units: Sequence[SourceUnit],
+    by_path: dict[str, SourceUnit],
+    violations: list[ArchitectureFinding],
+) -> None:
+    bootstrap = by_path.get(PUBLIC_BOOTSTRAP_FILE)
+    if bootstrap is None:
+        return
+    for node, module in scan_imports(bootstrap):
+        if not any(
+            matches(module, allowed)
+            for allowed in PUBLIC_BOOTSTRAP_IMPORTS
+        ):
+            violations.append(
+                finding(
+                    bootstrap,
+                    node,
+                    "CLI001",
+                    "public bootstrap imported outside its lean boundaries",
+                )
+            )
+    replacements = [
+        (unit, node, dotted_name(node.func))
+        for unit in units
+        if unit.production
+        for node in ast.walk(unit.tree)
+        if isinstance(node, ast.Call)
+        and dotted_name(node.func) in B606_NO_SHELL_CALLS
+    ]
+    if (
+        len(replacements) != 1
+        or str(replacements[0][0].path) != PUBLIC_BOOTSTRAP_FILE
+        or replacements[0][2] != "os.execve"
+    ):
+        unit, node = (
+            replacements[0][:2] if replacements else (bootstrap, None)
+        )
+        violations.append(
+            finding(
+                unit,
+                node,
+                "CLI001",
+                "one qualified bootstrap execve must be the only B606 call",
+            )
+        )
+    qualifications = [
+        node
+        for node in ast.walk(bootstrap.tree)
+        if isinstance(node, ast.Call)
+        and dotted_name(node.func) == "qualify_executable"
+    ]
+    if len(qualifications) != 1:
+        violations.append(
+            finding(
+                bootstrap,
+                qualifications[0] if qualifications else None,
+                "CLI001",
+                "public bootstrap must use the canonical qualifier once",
+            )
+        )
 
 
 def _check_create_app(

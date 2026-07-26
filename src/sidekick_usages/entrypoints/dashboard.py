@@ -15,8 +15,9 @@ from sidekick_usages.cli.dashboard.session import (
     InteractiveDashboardSession,
 )
 from sidekick_usages.cli.dashboard.setup import GuidedServiceSetup
+from sidekick_usages.cli.runtime.routing import parse_dashboard_arguments
 from sidekick_usages.clock import SystemClock
-from sidekick_usages.core.types import ExitCode, ProviderId
+from sidekick_usages.core.types import ExitCode
 from sidekick_usages.credentials.capabilities.service import (
     build_provider_capability_service,
 )
@@ -33,7 +34,6 @@ from sidekick_usages.usage.lookup.worker.client import (
 )
 
 INVALID_INVOCATION_EXIT_CODE = 2
-ONLY_ARGUMENT_COUNT = 2
 
 
 def _connect_dashboard_control(socket_path: Path) -> ControlClient:
@@ -47,7 +47,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return int(ExitCode.MANUAL_ACTION)
     arguments = tuple(sys.argv[1:] if argv is None else argv)
     try:
-        only = _parse_only(arguments)
+        only = parse_dashboard_arguments(arguments)
     except ValueError:
         return INVALID_INVOCATION_EXIT_CODE
     paths = discover_application_paths()
@@ -80,15 +80,5 @@ def main(argv: Sequence[str] | None = None) -> int:
         environment=os.environ,
     )
     return InteractiveDashboardApplication(session).run()
-
-
-def _parse_only(arguments: tuple[str, ...]) -> ProviderId | None:
-    if not arguments:
-        return None
-    if len(arguments) == ONLY_ARGUMENT_COUNT and arguments[0] == "--only":
-        return ProviderId(arguments[1])
-    raise ValueError("Invalid private dashboard invocation.")
-
-
 if __name__ == "__main__":
     sys.exit(main())

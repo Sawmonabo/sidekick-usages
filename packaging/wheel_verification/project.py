@@ -18,7 +18,7 @@ UNSUPPORTED_SELECTION_KEYS = frozenset(
         "sources",
     }
 )
-PUBLIC_CLI_TARGET = "sidekick_usages.cli.app:run"
+PUBLIC_CLI_TARGET = "sidekick_usages.cli.runtime.bootstrap:main"
 VENDOR_COMMAND_NAMES = frozenset({"claude", "codex"})
 
 

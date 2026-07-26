@@ -16,9 +16,6 @@ from sidekick_usages.cli.dashboard.models.controller import (
     DashboardMove,
     RefreshAccountIntent,
 )
-from sidekick_usages.cli.dashboard.models.runtime import (
-    DashboardSnapshotSource,
-)
 from sidekick_usages.cli.dashboard.models.session import (
     DashboardActionRequest,
     DashboardConfirmation,
@@ -33,6 +30,7 @@ from sidekick_usages.cli.dashboard.models.setup import (
 from sidekick_usages.cli.dashboard.ports import (
     DashboardControlConnector,
     DashboardLookupWorker,
+    DashboardSnapshotSource,
 )
 from sidekick_usages.cli.dashboard.setup import GuidedServiceSetup
 from sidekick_usages.core.types import ProviderId

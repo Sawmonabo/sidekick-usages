@@ -2,6 +2,7 @@
 
 import io
 import os
+import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -15,11 +16,15 @@ from sidekick_usages.cli.app import create_app
 from sidekick_usages.cli.commands import usage
 from sidekick_usages.cli.context import InvocationContext
 from sidekick_usages.cli.dashboard import launch
-from sidekick_usages.cli.dashboard.models.runtime import DashboardRuntime
+from sidekick_usages.cli.runtime import bootstrap
+from sidekick_usages.cli.runtime.routing import (
+    dashboard_arguments,
+    dashboard_candidate,
+    parse_dashboard_arguments,
+)
 from sidekick_usages.core.types import ProviderId
-from sidekick_usages.platform.errors import ExecutableQualificationError
 from sidekick_usages.platform.executable import qualify_executable
-from sidekick_usages.platform.types import ExecutableFailure
+from sidekick_usages.platform.models import ExecutableProvenance
 from sidekick_usages.usage.lookup.worker.models import (
     UsageLookupFailure,
     UsageLookupWorkerResult,
@@ -30,54 +35,110 @@ from tests.fakes.dashboard.lookup_worker import (
 )
 from tests.fakes.dashboard.runtime import (
     OneShotRecorder,
-    RoutingDashboardProcess,
-    RoutingSnapshotSource,
     interactive_terminal,
     redirected_terminal,
 )
+from tests.fakes.dashboard.state import controller_snapshot
 from tests.support.platform import MANAGED_RUNTIME_SUPPORTED
 
 REFERENCE_TIME = datetime(2026, 7, 25, 14, tzinfo=UTC)
 ONE_SHOT_ROUTE_COUNT = 3
+WINDOWS_CHILD_EXIT_CODE = 7
 
 
 def _assert_execve_process_boundary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Prove the isolated handoff uses one qualified no-shell replacement."""
-    replacements: list[tuple[Path, list[str], dict[str, str]]] = []
+    """Prove closed routes use one qualified no-shell replacement."""
+    replacements: list[tuple[Path, tuple[str, ...], dict[str, str]]] = []
+    qualifications: list[Path] = []
+
+    def record_qualification(path: Path) -> ExecutableProvenance:
+        qualifications.append(path)
+        return qualify_executable(path)
 
     def record_execve(
         executable: Path,
-        arguments: list[str],
+        arguments: tuple[str, ...],
         environment: dict[str, str],
     ) -> Never:
         replacements.append((executable, arguments, environment))
         raise OSError("Synthetic no-shell replacement failure.")
 
     with monkeypatch.context() as replacement_boundary:
-        replacement_boundary.setattr(launch.os, "execve", record_execve)
-        with pytest.raises(
-            launch.InteractiveDashboardLaunchError,
-        ) as replacement_failure:
-            launch.ExecveDashboardProcess().replace(ProviderId.CODEX)
+        replacement_boundary.setattr(bootstrap.os, "execve", record_execve)
+        replacement_boundary.setattr(
+            bootstrap,
+            "qualify_executable",
+            record_qualification,
+        )
+        for terminal, arguments in (
+            (interactive_terminal, ()),
+            (interactive_terminal, ("--only", "codex")),
+            (interactive_terminal, ("--only=claude",)),
+            (interactive_terminal, ("--only", "unsupported")),
+            (interactive_terminal, ("--help",)),
+            (redirected_terminal, ()),
+        ):
+            replacement_boundary.setattr(
+                bootstrap,
+                "_interactive_terminal_supported",
+                terminal,
+            )
+            assert (
+                bootstrap.main(arguments)
+                == bootstrap.PROCESS_LAUNCH_FAILURE_EXIT_CODE
+            )
 
     executable = Path(sys.executable)
-    assert isinstance(replacement_failure.value.__cause__, OSError)
-    assert replacements == [
-        (
-            executable,
-            [
-                sys.executable,
-                "-m",
-                launch.DASHBOARD_ENTRYPOINT_MODULE,
-                "--only",
-                ProviderId.CODEX.value,
-            ],
-            os.environ.copy(),
-        )
+    assert qualifications == [executable] * 6
+    assert [arguments[2:] for _, arguments, _ in replacements] == [
+        (bootstrap.CACHED_DASHBOARD_MODULE,),
+        (bootstrap.CACHED_DASHBOARD_MODULE, "--only", "codex"),
+        (bootstrap.CACHED_DASHBOARD_MODULE, "--only=claude"),
+        (bootstrap.APPLICATION_MODULE, "--only", "unsupported"),
+        (bootstrap.APPLICATION_MODULE, "--help"),
+        (bootstrap.APPLICATION_MODULE,),
     ]
-    assert replacements[0][2] is not os.environ
+    assert all(
+        path == executable and arguments[:2] == (sys.executable, "-m")
+        for path, arguments, _ in replacements
+    )
+    assert all(
+        environment is not os.environ
+        for *_, environment in replacements
+    )
+
+    windows_calls: list[tuple[tuple[str, ...], bool, dict[str, str]]] = []
+
+    def run_windows(
+        command: tuple[str, ...],
+        *,
+        check: bool,
+        env: dict[str, str],
+    ) -> subprocess.CompletedProcess[bytes]:
+        windows_calls.append((command, check, env))
+        return subprocess.CompletedProcess(command, WINDOWS_CHILD_EXIT_CODE)
+
+    with monkeypatch.context() as windows_boundary:
+        windows_boundary.setattr(bootstrap.sys, "platform", "win32")
+        windows_boundary.setattr(bootstrap.subprocess, "run", run_windows)
+        assert (
+            bootstrap.execute_application(("--version",))
+            == WINDOWS_CHILD_EXIT_CODE
+        )
+
+    assert len(windows_calls) == 1
+    command, check, environment = windows_calls[0]
+    assert command == (
+        sys.executable,
+        "-m",
+        bootstrap.APPLICATION_MODULE,
+        "--version",
+    )
+    assert check is False
+    assert environment == os.environ
+    assert environment is not os.environ
 
 
 def test_cli_routes_one_cached_frame_before_isolated_interaction(
@@ -85,77 +146,34 @@ def test_cli_routes_one_cached_frame_before_isolated_interaction(
 ) -> None:
     """One routing journey preserves TTY and one-shot process boundaries."""
     output = io.StringIO()
-    events: list[str] = []
-    process = RoutingDashboardProcess(events, output)
-    runtime = DashboardRuntime(
-        RoutingSnapshotSource(events, REFERENCE_TIME),
-        process,
+    snapshot = controller_snapshot(REFERENCE_TIME)
+    line_count = launch.present_cached_dashboard(
+        Console(
+            file=output,
+            width=100,
+            color_system=None,
+            force_terminal=False,
+        ),
+        snapshot,
     )
     application = create_app()
     runner = CliRunner()
-    monkeypatch.setattr(
-        launch,
-        "interactive_dashboard_supported",
-        interactive_terminal,
-    )
+    frame = output.getvalue()
 
-    interactive = runner.invoke(
-        application,
-        ["--only", "codex"],
-        obj=InvocationContext(
-            console=Console(file=output, width=100, force_terminal=True),
-            dashboard_composer=lambda: runtime,
-        ),
-    )
-
-    assert interactive.exit_code == 0
-    assert events == ["load:codex", "replace:codex"]
-    assert "CODEX" in process.frame_at_replace
-    assert "CLAUDE" not in process.frame_at_replace
+    assert line_count > 0
+    assert "CLAUDE" in frame
+    assert "CODEX" in frame
+    assert frame.endswith(f"\x1b[{line_count}A\r")
+    assert parse_dashboard_arguments(()) is None
+    assert parse_dashboard_arguments(("--only", "codex")) is ProviderId.CODEX
+    assert parse_dashboard_arguments(("--only=claude",)) is ProviderId.CLAUDE
+    assert dashboard_candidate(("--only", "codex"))
+    assert not dashboard_candidate(("--only", "unsupported"))
+    assert dashboard_arguments(ProviderId.CODEX) == ("--only", "codex")
+    with pytest.raises(ValueError, match="not a valid ProviderId"):
+        parse_dashboard_arguments(("--only", "unsupported"))
 
     _assert_execve_process_boundary(monkeypatch)
-
-    def reject_executable(_path: Path) -> Never:
-        raise ExecutableQualificationError(ExecutableFailure.UNSAFE)
-
-    monkeypatch.setattr(launch, "qualify_executable", reject_executable)
-    qualification_output = io.StringIO()
-    qualification_events: list[str] = []
-    qualification = runner.invoke(
-        application,
-        [],
-        obj=InvocationContext(
-            console=Console(
-                file=qualification_output,
-                width=100,
-                force_terminal=True,
-            ),
-            dashboard_composer=lambda: DashboardRuntime(
-                RoutingSnapshotSource(
-                    qualification_events,
-                    REFERENCE_TIME,
-                ),
-                launch.ExecveDashboardProcess(),
-            ),
-        ),
-    )
-    qualification_frame = qualification_output.getvalue()
-
-    assert qualification.exit_code == 1
-    assert isinstance(
-        qualification.exception,
-        launch.InteractiveDashboardLaunchError,
-    )
-    assert isinstance(
-        qualification.exception.__cause__,
-        ExecutableQualificationError,
-    )
-    assert qualification_events == ["load:None"]
-    assert qualification_frame.endswith(
-        f"\x1b[{qualification_frame.count('\n')}B\r"
-    )
-
-    monkeypatch.setattr(launch, "qualify_executable", qualify_executable)
 
     cancellation = exercise_lookup_worker_cancellation(monkeypatch)
     canceled = UsageLookupWorkerResult((), UsageLookupFailure.CANCELED)
@@ -180,18 +198,8 @@ def test_cli_routes_one_cached_frame_before_isolated_interaction(
 
     one_shot = OneShotRecorder()
     monkeypatch.setattr(usage, "run", one_shot)
-    monkeypatch.setattr(
-        launch,
-        "interactive_dashboard_supported",
-        redirected_terminal,
-    )
     redirected = runner.invoke(application, [], obj=InvocationContext())
     check = runner.invoke(application, ["check"], obj=InvocationContext())
-    monkeypatch.setattr(
-        launch,
-        "interactive_dashboard_supported",
-        interactive_terminal,
-    )
     disabled = runner.invoke(
         application,
         ["--no-interactive"],
@@ -216,4 +224,3 @@ def test_cli_routes_one_cached_frame_before_isolated_interaction(
         version.exit_code,
     ) == (0, 0, 0, 0, 0)
     assert one_shot.calls == ONE_SHOT_ROUTE_COUNT
-    assert events == ["load:codex", "replace:codex"]

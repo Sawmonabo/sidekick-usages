@@ -184,6 +184,18 @@ _MUTATIONS = (
         "    compose_app_context()\n    return application\n",
     ),
     architecture.models.SourceMutation(
+        "CLI001",
+        "src/sidekick_usages/cli/runtime/bootstrap.py",
+        "import sys\n",
+        "import sys\n\nimport typer\n",
+    ),
+    architecture.models.SourceMutation(
+        "CLI001",
+        "src/sidekick_usages/cli/runtime/bootstrap.py",
+        "    return os.execve(executable, command, environment)\n",
+        "    raise RuntimeError\n",
+    ),
+    architecture.models.SourceMutation(
         "HTTP001",
         "src/sidekick_usages/architecture_retry_fixture.py",
         "",

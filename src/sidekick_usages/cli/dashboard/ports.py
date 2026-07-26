@@ -23,11 +23,20 @@ from sidekick_usages.daemon.models.protocol import (
 )
 from sidekick_usages.usage.dashboard.models import (
     DashboardService,
+    DashboardSnapshot,
 )
 from sidekick_usages.usage.lookup.worker.models import (
     UsageLookupEventObserver,
     UsageLookupWorkerResult,
 )
+
+
+class DashboardSnapshotSource(Protocol):
+    """Load one secret-free cached dashboard projection."""
+
+    def load(self, only: ProviderId | None) -> DashboardSnapshot:
+        """Return cached state constrained to one optional provider."""
+        ...
 
 
 class AccountActivation(Protocol):

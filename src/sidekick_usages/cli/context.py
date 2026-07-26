@@ -11,9 +11,6 @@ from sidekick_usages.cli.contexts.composition import (
     ApplicationCompositionError,
     default_invocation_composers,
 )
-from sidekick_usages.cli.contexts.dashboard.runtime import (
-    compose_dashboard_runtime,
-)
 from sidekick_usages.cli.contexts.models import (
     AppContext,
     Composed,
@@ -25,7 +22,6 @@ from sidekick_usages.cli.contexts.models import (
     UpdateContext,
 )
 from sidekick_usages.cli.contexts.use import UseContext, compose_use_context
-from sidekick_usages.cli.dashboard.models.runtime import DashboardRuntime
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.persistence.errors import (
     exit_code_for_persistence_code,
@@ -59,10 +55,6 @@ class InvocationContext:
         console: Console | None = None,
         err_console: Console | None = None,
         composers: InvocationComposers | None = None,
-        dashboard_composer: Callable[
-            [],
-            DashboardRuntime,
-        ] = compose_dashboard_runtime,
         use_composer: Callable[[], UseContext] = compose_use_context,
     ) -> None:
         resolved_composers = (
@@ -79,8 +71,6 @@ class InvocationContext:
         self._daemon = _LazyComposition(resolved_composers.daemon)
         self._migration = _LazyComposition(resolved_composers.migration)
         self._update = _LazyComposition(resolved_composers.update)
-        self._dashboard_composer = dashboard_composer
-        self._dashboard: DashboardRuntime | None = None
         self._use_composer = use_composer
         self._use: UseContext | None = None
 
@@ -131,14 +121,6 @@ class InvocationContext:
         if not isinstance(value, UpdateContext):
             raise TypeError("Update composer returned the wrong context.")
         return value
-
-    def require_dashboard(self) -> DashboardRuntime:
-        """Compose the passive dashboard boundary at most once."""
-        dashboard = self._dashboard
-        if dashboard is None:
-            dashboard = self._dashboard_composer()
-            self._dashboard = dashboard
-        return dashboard
 
     def require_use(self) -> UseContext:
         """Compose the secret-free selection boundary at most once."""

@@ -69,13 +69,13 @@ def _main(
     ] = False,
 ) -> None:
     """Default invocation runs ``check`` if no subcommand is given."""
-    del version
+    del no_interactive, version
     invocation = initialize_invocation(ctx)
     invocation.only = (
         validated_provider(ctx, only) if only is not None else None
     )
     if ctx.invoked_subcommand is None:
-        usage.run_default(ctx, interactive=not no_interactive)
+        usage.run(ctx)
 
 
 def create_app() -> typer.Typer:
