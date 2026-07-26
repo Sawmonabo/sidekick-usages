@@ -1349,6 +1349,34 @@ This is a materially better integration than:
 - an incidental `codex doctor` side-effect; or
 - experimental host-owned `chatgptAuthTokens` mode.
 
+### Codex 0.145.0 auth-status capability addendum
+
+A fresh 2026-07-25 triangulation resolved the installed capability blocker:
+
+- the installed `codex-cli 0.145.0` generated schema intentionally omits
+  `GetAuthStatusParams.json`, `GetAuthStatusResponse.json`, and
+  `getAuthStatus` from `ClientRequest.json`;
+- release-matched source exports only initialize types from v1 JSON and
+  explicitly excludes `getAuthStatus` as a v1 client method from the combined
+  request schema. [Schema exporter](https://github.com/openai/codex/blob/25af12f7e61572b0bc18ddb1008be543b91519b0/codex-rs/app-server-protocol/src/export.rs#L43-L65);
+- v2 `account/read` returns account kind, email, plan, and whether OpenAI auth
+  is required, but no ChatGPT account ID. [Account response](https://github.com/openai/codex/blob/25af12f7e61572b0bc18ddb1008be543b91519b0/codex-rs/app-server-protocol/src/protocol/v2/account.rs#L16-L39);
+  and
+- the same release marks `getAuthStatus` deprecated in favor of
+  `account/read` but still dispatches it and can return the effective auth
+  token when requested. [Protocol declaration](https://github.com/openai/codex/blob/25af12f7e61572b0bc18ddb1008be543b91519b0/codex-rs/app-server-protocol/src/protocol/common.rs#L1179-L1195),
+  [runtime handler](https://github.com/openai/codex/blob/25af12f7e61572b0bc18ddb1008be543b91519b0/codex-rs/app-server/src/request_processors/account_processor.rs#L920-L990).
+
+Sidekick must therefore gate the current generated v2 and external-auth
+schemas without requiring nonexistent split v1 files. It separately proves
+the required effective-auth method before mutation by starting app-server in
+an isolated empty `CODEX_HOME` and sending `getAuthStatus` with
+`includeToken: false` and `refreshToken: false`. The installed binary returned
+the exact logged-out response with no token. The qualified shared daemon uses
+the same proven method with token inclusion only when it must identify the
+effective in-memory account; there is no schema fallback or credential-file
+substitution.
+
 ## Comparative Analysis
 
 ### Resident service topology

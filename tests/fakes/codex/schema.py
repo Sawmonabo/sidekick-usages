@@ -43,21 +43,6 @@ def write_codex_schema(root: Path, *, external_auth: bool) -> None:
     )
     server_notifications["properties"] = {"emittedAtMs": {"type": "integer"}}
     schemas_by_path: dict[str, JsonObject] = {
-        "GetAuthStatusParams.json": _object_schema(
-            {
-                "includeToken": {"type": _json_values("boolean", "null")},
-                "refreshToken": {"type": _json_values("boolean", "null")},
-            }
-        ),
-        "GetAuthStatusResponse.json": _object_schema(
-            {
-                "authMethod": {"type": _json_values("string", "null")},
-                "authToken": {"type": _json_values("string", "null")},
-                "requiresOpenaiAuth": {
-                    "type": _json_values("boolean", "null")
-                },
-            }
-        ),
         "v1/InitializeParams.json": _object_schema(
             {"clientInfo": {"type": "object"}},
             required=("clientInfo",),
@@ -137,7 +122,6 @@ def write_codex_schema(root: Path, *, external_auth: bool) -> None:
             "initialize",
             "account/login/start",
             "account/read",
-            "getAuthStatus",
         ),
         "ClientNotification.json": _method_schema("initialized"),
         "ServerRequest.json": _method_schema(

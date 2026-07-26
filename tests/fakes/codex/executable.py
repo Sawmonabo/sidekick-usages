@@ -447,10 +447,23 @@ def write_fake_codex(tmp_path: Path, schema_root: Path) -> Path:
                         flush=True,
                     )
                 elif request["method"] == "getAuthStatus":
+                    with EVENTS_PATH.open("a", encoding="utf-8") as stream:
+                        stream.write(
+                            json.dumps(
+                                {{
+                                    "codex_home": os.environ["CODEX_HOME"],
+                                    "cwd": os.getcwd(),
+                                    "method": request["method"],
+                                    "params": request["params"],
+                                }}
+                            )
+                            + "\\n"
+                        )
                     home = Path(os.environ["CODEX_HOME"])
                     auth_path = home / "auth.json"
+                    include_token = request["params"]["includeToken"]
                     token = None
-                    if auth_path.exists():
+                    if include_token is True and auth_path.exists():
                         auth = json.loads(
                             auth_path.read_text(encoding="utf-8")
                         )

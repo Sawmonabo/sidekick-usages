@@ -8,6 +8,9 @@ from pathlib import Path
 from typing import NoReturn
 
 from sidekick_usages.errors import InvalidPayloadError
+from sidekick_usages.providers.codex.account.auth_status import (
+    probe_codex_auth_status,
+)
 from sidekick_usages.providers.codex.app_server.errors import (
     CodexAppServerError,
 )
@@ -22,6 +25,9 @@ from sidekick_usages.providers.codex.app_server.process import (
     minimal_codex_environment,
     run_quiet_codex_command,
 )
+from sidekick_usages.providers.codex.app_server.session import (
+    CodexAppServerSession,
+)
 from sidekick_usages.providers.codex.app_server.types import (
     CodexAppServerFailure,
     CodexProcessGroupPolicy,
@@ -33,8 +39,6 @@ from sidekick_usages.serialization.json import (
 )
 
 SCHEMA_FILES = (
-    "GetAuthStatusParams.json",
-    "GetAuthStatusResponse.json",
     "v1/InitializeParams.json",
     "v1/InitializeResponse.json",
     "v2/GetAccountParams.json",
@@ -64,7 +68,7 @@ def probe_codex_capabilities(
     ),
     cancelled: Callable[[], bool] | None = None,
 ) -> CodexAppServerCapabilities:
-    """Generate and prove the exact required app-server schema surface."""
+    """Prove the exact generated and unexported app-server capabilities."""
     verify_codex_executable(executable)
     with tempfile.TemporaryDirectory(
         prefix="sidekick-codex-schema-"
@@ -95,10 +99,23 @@ def probe_codex_capabilities(
         raw_schemas, schemas = _read_required_schemas(schema_directory)
         _validate_required_capabilities(schemas)
         schema_hash = _hash_schemas(raw_schemas)
-    return CodexAppServerCapabilities(
-        executable=executable,
-        schema_hash=schema_hash,
-    )
+        capabilities = CodexAppServerCapabilities(
+            executable=executable,
+            schema_hash=schema_hash,
+        )
+        try:
+            with CodexAppServerSession.open(
+                capabilities,
+                codex_home,
+                environment,
+                process_group=process_group,
+            ) as session:
+                probe_codex_auth_status(session)
+        except CodexAppServerError:
+            raise CodexAppServerError(
+                CodexAppServerFailure.CAPABILITY_UNSUPPORTED
+            ) from None
+        return capabilities
 
 
 def _read_required_schemas(
@@ -209,8 +226,6 @@ def _validate_required_capabilities(
     )
     _require_property(account_updated, "planType", "string")
 
-    _validate_auth_status_capabilities(schemas)
-
     refresh_params = schemas["ChatgptAuthTokensRefreshParams.json"]
     _require_names(refresh_params, "required", ("reason",))
     _require_property_enum(refresh_params, "reason", "unauthorized")
@@ -229,7 +244,6 @@ def _validate_required_capabilities(
         "initialize",
         "account/login/start",
         "account/read",
-        "getAuthStatus",
     ):
         _require_method(schemas["ClientRequest.json"], method)
     _require_method(schemas["ClientNotification.json"], "initialized")
@@ -250,23 +264,6 @@ def _validate_required_capabilities(
         "emittedAtMs",
         "integer",
     )
-
-
-def _validate_auth_status_capabilities(
-    schemas: dict[str, JsonObject],
-) -> None:
-    auth_status_params = schemas["GetAuthStatusParams.json"]
-    _require_property(auth_status_params, "includeToken", "boolean")
-    _require_property(auth_status_params, "refreshToken", "boolean")
-    auth_status_response = schemas["GetAuthStatusResponse.json"]
-    _require_property(auth_status_response, "authMethod", "string")
-    _require_property(auth_status_response, "authToken", "string")
-    _require_property(
-        auth_status_response,
-        "requiresOpenaiAuth",
-        "boolean",
-    )
-
 
 def _hash_schemas(raw_schemas: dict[str, bytes]) -> str:
     digest = hashlib.sha256()

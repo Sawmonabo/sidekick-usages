@@ -124,6 +124,12 @@ def test_versioned_codex_app_server_boundary_is_complete(
     assert Path(events[1]["argv"][4]).name == "schema"
     assert not Path(events[1]["argv"][4]).exists()
     assert events[2]["argv"] == ["app-server"]
+    assert events[3]["method"] == "getAuthStatus"
+    assert events[3]["params"] == {
+        "includeToken": False,
+        "refreshToken": False,
+    }
+    assert not Path(events[3]["codex_home"]).exists()
     assert all(event.get("openai_api_key") is None for event in events)
     assert events[-1]["codex_home"] == str(codex_home)
 

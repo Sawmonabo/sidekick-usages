@@ -20,9 +20,32 @@ from sidekick_usages.providers.codex.token import (
     codex_access_token_generation,
     decode_codex_token_claims,
 )
+from sidekick_usages.serialization.json import JsonObject
 
 AUTH_STATUS_METHOD = "getAuthStatus"
 CHATGPT_AUTH_METHOD = "chatgpt"
+
+
+def probe_codex_auth_status(
+    session: JsonRpcRequester,
+    *,
+    timeout_seconds: float = DEFAULT_JSON_RPC_TIMEOUT_SECONDS,
+) -> None:
+    """Prove the unexported auth-status request without reading a token."""
+    result = _request_auth_status(
+        session,
+        include_token=False,
+        timeout_seconds=timeout_seconds,
+    )
+    try:
+        if result != {
+            "authMethod": None,
+            "authToken": None,
+            "requiresOpenaiAuth": True,
+        }:
+            _malformed()
+    finally:
+        result.clear()
 
 
 def observe_codex_auth_status(
@@ -32,12 +55,9 @@ def observe_codex_auth_status(
     timeout_seconds: float = DEFAULT_JSON_RPC_TIMEOUT_SECONDS,
 ) -> ProviderAuthObservation:
     """Return the effective login without retaining its access token."""
-    result = session.request(
-        AUTH_STATUS_METHOD,
-        {
-            "includeToken": True,
-            "refreshToken": False,
-        },
+    result = _request_auth_status(
+        session,
+        include_token=True,
         timeout_seconds=timeout_seconds,
     )
     try:
@@ -80,6 +100,22 @@ def observe_codex_auth_status(
         _malformed()
     finally:
         result.clear()
+
+
+def _request_auth_status(
+    session: JsonRpcRequester,
+    *,
+    include_token: bool,
+    timeout_seconds: float,
+) -> JsonObject:
+    return session.request(
+        AUTH_STATUS_METHOD,
+        {
+            "includeToken": include_token,
+            "refreshToken": False,
+        },
+        timeout_seconds=timeout_seconds,
+    )
 
 
 def _inactive_observation(
