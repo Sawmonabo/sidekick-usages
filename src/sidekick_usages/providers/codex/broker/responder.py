@@ -244,13 +244,7 @@ class CodexRuntimeBroker:
                     OSError,
                     RuntimeError,
                     ValueError,
-                ) as error:
-                    if (
-                        isinstance(error, CodexAppServerError)
-                        and error.code
-                        is CodexAppServerFailure.PROTOCOL_TIMEOUT
-                    ):
-                        continue
+                ):
                     self._set_qualified(False)
                     self._set_ready(False)
                     runtime = _drop_runtime(runtime)
@@ -462,7 +456,12 @@ class CodexRuntimeBroker:
         expectation: CodexProjectionExpectation,
         receipt: CodexProjectionReceipt,
     ) -> None:
-        message = runtime.receive(timeout_seconds=_BROKER_RECEIVE_SECONDS)
+        try:
+            message = runtime.receive(timeout_seconds=_BROKER_RECEIVE_SECONDS)
+        except CodexAppServerError as error:
+            if error.code is CodexAppServerFailure.PROTOCOL_TIMEOUT:
+                return
+            raise
         if isinstance(message, JsonRpcNotification):
             self._handle_notification(runtime, message)
             return
