@@ -151,10 +151,15 @@ class AccountIndexReader:
 
     def load(self) -> tuple[SavedAccount, ...]:
         """Decode the current no-secret account index exactly once."""
+        observed = self.observe()
+        return () if observed is None else observed.accounts
+
+    def observe(self) -> VersionThreeDocument | None:
+        """Passively decode the account authority or prove its absence."""
         observed = self._filesystem.read_opaque_private()
         if observed is None:
-            return ()
-        return decode_version_three(observed.data).accounts
+            return None
+        return decode_version_three(observed.data)
 
 
 class AccountIndex:

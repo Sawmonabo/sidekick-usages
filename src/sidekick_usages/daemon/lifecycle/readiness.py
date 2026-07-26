@@ -46,6 +46,7 @@ from sidekick_usages.daemon.types.service import (
     PackageVersion,
 )
 from sidekick_usages.paths import ApplicationPaths
+from sidekick_usages.persistence.accounts.index import AccountIndexReader
 from sidekick_usages.persistence.accounts.store import AccountStore
 from sidekick_usages.persistence.errors import PersistenceError
 from sidekick_usages.persistence.private.credentials import (
@@ -211,7 +212,7 @@ class SupervisorReadiness:
         )
         accounts_readable = True
         try:
-            accounts = self._accounts()
+            accounts = self._observe_accounts()
         except PersistenceError, ValueError:
             accounts = ()
             accounts_readable = False
@@ -253,7 +254,7 @@ class SupervisorReadiness:
 
         state_readable = True
         try:
-            state = self._state.load()
+            state = self._state.observe()
         except PersistenceError, ValueError:
             state = None
             state_readable = False
@@ -361,7 +362,7 @@ class SupervisorReadiness:
         if not state.queue_recovered:
             return ServiceComponentState.UNHEALTHY
         try:
-            operations = self._queue.load()
+            operations = self._queue.observe()
         except PersistenceError, ValueError:
             return ServiceComponentState.UNHEALTHY
         enrolled = {
@@ -390,10 +391,7 @@ class SupervisorReadiness:
             self._paths.durable_operations,
         )
         try:
-            unfinished = any(
-                journals.load(provider_id).active is not None
-                for provider_id in ProviderId
-            )
+            unfinished = bool(journals.observe_all())
         except PersistenceError, ValueError:
             return ServiceComponentState.UNHEALTHY
         return (
@@ -410,6 +408,9 @@ class SupervisorReadiness:
         return (
             AccountStore(self._paths.accounts, private).load().saved_accounts()
         )
+
+    def _observe_accounts(self) -> tuple[SavedAccount, ...]:
+        return AccountIndexReader(self._paths.accounts).load()
 
     def _verify_handshake(self) -> None:
         try:

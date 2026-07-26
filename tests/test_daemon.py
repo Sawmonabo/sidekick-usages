@@ -20,7 +20,10 @@ from sidekick_usages.daemon.lifecycle.manager import (
     DaemonManager,
     build_service_backend,
 )
-from sidekick_usages.daemon.lifecycle.readiness import RuntimeCleanup
+from sidekick_usages.daemon.lifecycle.readiness import (
+    RuntimeCleanup,
+    SupervisorReadiness,
+)
 from sidekick_usages.daemon.models.lifecycle import (
     CommandResult,
     PlatformInfo,
@@ -37,12 +40,14 @@ from sidekick_usages.daemon.types.lifecycle import (
 )
 from sidekick_usages.daemon.types.service import PackageVersion, ServicePhase
 from sidekick_usages.paths import ApplicationPaths
+from sidekick_usages.persistence.supervisor.service import ServiceStateStore
 from tests.fakes.daemon.lifecycle import (
     LifecycleCancellationProof,
     exercise_lifecycle_command_cancellation,
 )
 from tests.test_support import (
     REFERENCE_TIME,
+    FixedClock,
     make_application_paths,
     make_supervisor_health,
 )
@@ -162,6 +167,20 @@ def _supervisor_executable(tmp_path: Path) -> Path:
     executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     executable.chmod(0o755)
     return executable
+
+
+def _state_tree_snapshot(
+    root: Path,
+) -> tuple[tuple[str, bytes | None, int], ...]:
+    """Capture every synthetic state path, payload, and modification time."""
+    return tuple(
+        (
+            "." if path == root else str(path.relative_to(root)),
+            path.read_bytes() if path.is_file() else None,
+            path.stat().st_mtime_ns,
+        )
+        for path in (root, *sorted(root.rglob("*")))
+    )
 
 
 @pytest.mark.parametrize(
@@ -300,6 +319,41 @@ def test_lifecycle_is_idempotent_cancellable_and_preserves_user_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Lifecycle work is idempotent, bounded, and ownership-safe."""
+    passive_root = tmp_path / "passive-state"
+    passive_paths = make_application_paths(passive_root)
+    passive_state = ServiceStateStore(passive_paths.service_state)
+    passive_state.save(
+        ServiceState(
+            protocol_version=PROTOCOL_VERSION,
+            package_version=PackageVersion(__version__),
+            phase=ServicePhase.READY,
+            revision=1,
+            observed_at=REFERENCE_TIME,
+            queue_recovered=True,
+            journals_reconciled=True,
+            broker_ready=True,
+            active_workers=0,
+        )
+    )
+    passive_state.path.with_name(f"{passive_state.path.name}.lock").unlink()
+    passive_manager = DaemonManager(
+        RecordingBackend([]),
+        SupervisorReadiness(passive_paths, FixedClock()),
+        RuntimeCleanup(passive_paths),
+    )
+    state_before = _state_tree_snapshot(passive_root)
+
+    passive_health = passive_manager.health()
+
+    assert (
+        passive_health.queue,
+        passive_health.journal,
+        _state_tree_snapshot(passive_root),
+    ) == (
+        ServiceComponentState.HEALTHY,
+        ServiceComponentState.HEALTHY,
+        state_before,
+    )
     assert (
         ServiceBackendStatus.single(
             ServiceBackendId.SYSTEMD,

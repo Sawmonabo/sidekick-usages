@@ -23,6 +23,7 @@ from sidekick_usages.core.models import Account, ClaudeSetupTokenCredentials
 from sidekick_usages.core.types import AccountLabel, ProviderId
 from sidekick_usages.doctor.accounts.models import HeartbeatSupport
 from sidekick_usages.http.client import HttpClient
+from sidekick_usages.persistence.accounts.index import AccountIndexReader
 from sidekick_usages.persistence.accounts.store import AccountStore
 from sidekick_usages.persistence.errors import ManagedFileReadError
 from sidekick_usages.update import UpdateService
@@ -177,10 +178,10 @@ def test_doctor_translates_current_store_failure(
         lambda _paths: capability_service,
     )
 
-    def fail_load(_store: AccountStore) -> None:
+    def fail_observe(_reader: AccountIndexReader) -> None:
         raise failure
 
-    monkeypatch.setattr(AccountStore, "load", fail_load)
+    monkeypatch.setattr(AccountIndexReader, "observe", fail_observe)
     owner = compose_doctor_context(
         paths=paths,
         providers={},

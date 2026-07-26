@@ -2,7 +2,9 @@
 
 from collections.abc import Callable
 
+from sidekick_usages.core.accounts.models import SavedAccount
 from sidekick_usages.paths import ApplicationPaths
+from sidekick_usages.persistence.accounts.index import AccountIndexReader
 from sidekick_usages.persistence.accounts.removal.store import (
     AccountRemovalStore,
 )
@@ -84,13 +86,24 @@ class PersistenceService:
     def status(self, store: AccountStore | None = None) -> PersistenceStatus:
         """Return current secret-free store status."""
         current = self.open_store() if store is None else store
-        authority = self._filesystem.read_authority()
-        state = (
-            PersistenceState.EMPTY
-            if authority is None
-            else PersistenceState.CURRENT
+        return self._status(
+            present=self._filesystem.read_authority() is not None,
+            account_count=len(current),
         )
-        return PersistenceStatus(state, self.paths.accounts, len(current))
+
+    def observe_accounts(
+        self,
+    ) -> tuple[PersistenceStatus, tuple[SavedAccount, ...]]:
+        """Passively read account metadata and its matching store status."""
+        document = AccountIndexReader(self.paths.accounts).observe()
+        accounts = () if document is None else document.accounts
+        return (
+            self._status(
+                present=document is not None,
+                account_count=len(accounts),
+            ),
+            accounts,
+        )
 
     def refresh_status(self) -> CredentialRefreshState:
         """Return passive private refresh-transaction status."""
@@ -129,3 +142,14 @@ class PersistenceService:
     def _require_maintenance_quiescence(self) -> None:
         if not self._maintenance_quiescent():
             raise SupervisorActiveError
+
+    def _status(
+        self,
+        *,
+        present: bool,
+        account_count: int,
+    ) -> PersistenceStatus:
+        state = (
+            PersistenceState.CURRENT if present else PersistenceState.EMPTY
+        )
+        return PersistenceStatus(state, self.paths.accounts, account_count)

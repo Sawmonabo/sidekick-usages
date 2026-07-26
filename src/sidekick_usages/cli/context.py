@@ -484,10 +484,8 @@ def compose_doctor_context(
         supervisor = daemon.health()
         persistence = _persistence(resolved_paths, daemon)
         try:
-            accounts = persistence.open_store()
-            status = persistence.status(accounts)
+            status, saved_accounts = persistence.observe_accounts()
             refresh_status = persistence.refresh_status()
-            saved_accounts = accounts.saved_accounts()
             selected_states = SelectedStateStore(
                 resolved_paths.selected_state
             ).observe_all()
