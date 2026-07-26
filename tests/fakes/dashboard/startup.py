@@ -4,7 +4,10 @@ from sidekick_usages.cli.dashboard.models.session import (
     DashboardStartupReconciliation,
     DashboardStartupReconciliationState,
 )
-from sidekick_usages.cli.dashboard.session import InteractiveDashboardSession
+from sidekick_usages.cli.dashboard.session import (
+    LOOKUP_FAILED_MESSAGE,
+    InteractiveDashboardSession,
+)
 from sidekick_usages.cli.dashboard.setup import GuidedServiceSetup
 from sidekick_usages.core.accounts.types import SidekickAccountId
 from sidekick_usages.core.types import ProviderId
@@ -39,7 +42,7 @@ def exercise_startup_reconciliation(
     connector.reconciliation_failures = {ProviderId.CLAUDE}
     connector.allow_degraded = True
     invalidation = SessionInvalidationProbe()
-    lookup = SessionLookupWorker(active_account_id, block=True)
+    lookup = SessionLookupWorker(active_account_id, block=True, fail=True)
     session = InteractiveDashboardSession(
         snapshot,
         snapshots=snapshots,
@@ -78,6 +81,16 @@ def exercise_startup_reconciliation(
         lookup.release()
         invalidation.wait_for(
             lambda: invalidation.count >= invalidations_before_lookup + 2
+        )
+        assert session.view.footer.kind is DashboardFooterKind.ERROR
+        session.startup_reconciled(
+            DashboardStartupReconciliation(
+                ProviderId.CLAUDE,
+                DashboardStartupReconciliationState.VERIFIED,
+            )
+        )
+        invalidation.wait_for(
+            lambda: session.view.footer.message == LOOKUP_FAILED_MESSAGE
         )
         assert session.view.footer.kind is DashboardFooterKind.ERROR
         return (

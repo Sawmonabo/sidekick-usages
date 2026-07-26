@@ -123,6 +123,7 @@ class InteractiveDashboardSession:
         self._action_thread: Thread | None = None
         self._startup_reconciliation_failures: set[ProviderId] = set()
         self._startup_footer_message: str | None = None
+        self._deferred_lookup_footer: DashboardFooter | None = None
         self._started = False
         self._closed = False
         self._action_executor = DashboardActionExecutor(
@@ -365,6 +366,7 @@ class InteractiveDashboardSession:
             self._actions.put_nowait(request)
         except Full:
             return _discard_invalidation
+        self._deferred_lookup_footer = None
         self._view = replace(
             self._view,
             footer=self._progress_footer(message),
@@ -405,6 +407,7 @@ class InteractiveDashboardSession:
             self._publish_lookup_snapshot(
                 LOOKUP_FAILED_MESSAGE,
                 failed=True,
+                terminal=True,
             )
             return
         if self._stopping.is_set():
@@ -416,6 +419,7 @@ class InteractiveDashboardSession:
                 else LOOKUP_FAILED_MESSAGE
             ),
             failed=not result.succeeded,
+            terminal=True,
         )
 
     def _observe_lookup(self, event: UsageLookupWorkerEvent) -> None:
@@ -445,6 +449,8 @@ class InteractiveDashboardSession:
         self,
         message: str,
         failed: bool = False,
+        *,
+        terminal: bool = False,
     ) -> None:
         with (
             self._serialized_snapshot() as snapshot,
@@ -456,12 +462,17 @@ class InteractiveDashboardSession:
             if snapshot is not None:
                 controller = controller.rebase(snapshot)
             footer = self._view.footer
+            lookup_footer = (
+                self._error_footer(message)
+                if failed or snapshot is None
+                else self._progress_footer(message)
+            )
             if self._lookup_may_replace_footer():
-                footer = (
-                    self._error_footer(message)
-                    if failed or snapshot is None
-                    else self._progress_footer(message)
-                )
+                footer = lookup_footer
+                if terminal:
+                    self._deferred_lookup_footer = None
+            elif terminal and self._startup_owns_footer():
+                self._deferred_lookup_footer = lookup_footer
             self._set_controller(
                 controller,
                 footer,
@@ -473,7 +484,14 @@ class InteractiveDashboardSession:
         """Return whether lookup owns the current informational footer."""
         return (
             not self._view.action_in_flight
-            and not self._startup_reconciliation_failures
+            and not self._startup_owns_footer()
+        )
+
+    def _startup_owns_footer(self) -> bool:
+        """Return whether startup verification owns the visible footer."""
+        return (
+            bool(self._startup_reconciliation_failures)
+            and self._view.footer.message == self._startup_footer_message
         )
 
     @contextmanager
@@ -526,7 +544,12 @@ class InteractiveDashboardSession:
                     not self._startup_reconciliation_failures
                     and footer.message == self._startup_footer_message
                 ):
-                    footer = self._idle_footer(controller)
+                    footer = (
+                        self._deferred_lookup_footer
+                        or self._idle_footer(controller)
+                    )
+                if not self._startup_reconciliation_failures:
+                    self._deferred_lookup_footer = None
                     self._startup_footer_message = None
             else:
                 self._startup_reconciliation_failures.add(
