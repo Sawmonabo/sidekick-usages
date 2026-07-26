@@ -1,11 +1,8 @@
 """Load-bearing durable state and recovery scenarios for the supervisor."""
 
-import os
 import socket
-from collections.abc import Iterator
-from contextlib import suppress
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 from threading import Event, Thread
 
@@ -17,7 +14,6 @@ from sidekick_usages.core.accounts.types import (
     AuthorityGeneration,
     OperationId,
     ProviderIdentity,
-    RequestId,
     SidekickAccountId,
 )
 from sidekick_usages.core.models import (
@@ -50,50 +46,21 @@ from sidekick_usages.daemon.control.protocol import (
     encode_frame,
     encode_request,
 )
-from sidekick_usages.daemon.control.server import (
-    ControlConnection,
-    LocalControlServer,
-)
 from sidekick_usages.daemon.models.protocol import (
-    AcceptedPayload,
     ActivationPayload,
-    CompletedPayload,
-    ControlEvent,
     ControlRequest,
     EmptyPayload,
-    EventPayload,
-    ProgressPayload,
-)
-from sidekick_usages.daemon.models.worker import (
-    WorkerLaunchSpec,
-    WorkerResult,
 )
 from sidekick_usages.daemon.runtime.recovery import ActivationRecoveryScheduler
 from sidekick_usages.daemon.runtime.scheduler import DurableScheduler
-from sidekick_usages.daemon.runtime.supervisor import (
-    SupervisorRuntime,
-    WakeupChannel,
-)
-from sidekick_usages.daemon.types.ports import (
-    ControlDispatcher,
-    WorkerHandle,
-)
+from sidekick_usages.daemon.runtime.supervisor import WakeupChannel
 from sidekick_usages.daemon.types.protocol import (
-    CompletionOutcome,
     ConnectedSocket,
     EventKind,
-    ProgressPhase,
     RequestKind,
 )
 from sidekick_usages.daemon.types.service import ServicePhase
-from sidekick_usages.daemon.types.worker import (
-    ExitNotifier,
-    WorkerOutcome,
-)
-from sidekick_usages.daemon.worker.pool import (
-    WorkerLaunchPlanner,
-    WorkerPool,
-)
+from sidekick_usages.daemon.worker.pool import WorkerPool
 from sidekick_usages.paths import ApplicationPaths
 from sidekick_usages.persistence.accounts.index import AccountIndex
 from sidekick_usages.persistence.filesystem.service import (
@@ -106,12 +73,20 @@ from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
 from sidekick_usages.persistence.supervisor.results import WorkerResultStore
 from sidekick_usages.persistence.supervisor.selection import SelectedStateStore
 from sidekick_usages.persistence.supervisor.service import ServiceStateStore
-from sidekick_usages.platform.models import PeerIdentity
-from sidekick_usages.platform.peer import PeerVerificationError
-from sidekick_usages.platform.types import (
-    PeerFailureCode,
-    PeerSocket,
-    PeerVerifier,
+from sidekick_usages.platform.types import PeerVerifier
+from tests.fakes.daemon.control import (
+    FragmentingSocket,
+    RecordingDispatcher,
+    RejectedPeer,
+    VerifiedPeer,
+    rejected_protocol_response,
+    serve_protocol_connection,
+)
+from tests.fakes.daemon.runtime import (
+    FakeWorkerLauncher,
+    RuntimeClock,
+    foundation_runtime,
+    worker_planner,
 )
 from tests.test_support import (
     REFERENCE_TIME,
@@ -120,7 +95,6 @@ from tests.test_support import (
 )
 
 _EXPECTED_WORKER_COUNT = 2
-_MONOTONIC_START = 100.0
 
 
 def _accounts() -> AccountIndex:
@@ -246,7 +220,7 @@ def _foundation_state(tmp_path: Path) -> _FoundationState:
     )
     queue = OperationQueueStore(paths.durable_operations)
     for operation in operations:
-        assert queue.enqueue(operation) == operation
+        queue.enqueue(operation)
     return _FoundationState(
         paths=paths,
         accounts=accounts,
@@ -365,143 +339,6 @@ def test_selection_and_queue_preserve_stable_independent_state(
         )
 
 
-class _FragmentingSocket:
-    """Send deliberately small fragments through a real socket."""
-
-    def __init__(self, connection: socket.socket) -> None:
-        self._connection = connection
-
-    def recv(self, size: int, /) -> bytes:
-        return self._connection.recv(size)
-
-    def sendall(self, data: bytes, /) -> None:
-        for offset in range(0, len(data), 3):
-            self._connection.sendall(data[offset : offset + 3])
-
-    def close(self) -> None:
-        with suppress(OSError):
-            self._connection.shutdown(socket.SHUT_RDWR)
-        self._connection.close()
-
-
-class _VerifiedPeer:
-    """Synthetic proof boundary for protocol contract tests."""
-
-    def verify(self, connection: PeerSocket) -> PeerIdentity:
-        del connection
-        return PeerIdentity(1000)
-
-
-class _RejectedPeer:
-    """Synthetic operating-system proof failure."""
-
-    def verify(self, connection: PeerSocket) -> PeerIdentity:
-        del connection
-        raise PeerVerificationError(PeerFailureCode.PROOF_UNAVAILABLE)
-
-
-@dataclass(slots=True)
-class _RecordingDispatcher:
-    """Record authenticated actions and expose one cancellable stream."""
-
-    requests: list[ControlRequest]
-    cancellations: list[RequestId]
-    release_subscription: Event
-
-    def dispatch(self, request: ControlRequest) -> Iterator[ControlEvent]:
-        self.requests.append(request)
-        if request.kind is RequestKind.ACTIVATE:
-            operation_id = OperationId("f619cb29-9f6e-40dd-b35d-cf6a6ed93f79")
-            yield _service_event(
-                request,
-                EventKind.ACCEPTED,
-                AcceptedPayload(operation_id),
-            )
-            yield _service_event(
-                request,
-                EventKind.PROGRESS,
-                ProgressPayload(operation_id, ProgressPhase.VERIFYING),
-            )
-            yield _service_event(
-                request,
-                EventKind.COMPLETED,
-                CompletedPayload(
-                    operation_id,
-                    CompletionOutcome.SUCCEEDED,
-                ),
-            )
-            return
-        if request.kind is RequestKind.SUBSCRIBE:
-            yield _service_event(
-                request,
-                EventKind.ACCEPTED,
-                AcceptedPayload(operation_id=None),
-            )
-            self.release_subscription.wait(timeout=2)
-            yield _service_event(
-                request,
-                EventKind.PROGRESS,
-                ProgressPayload(
-                    operation_id=None,
-                    phase=ProgressPhase.RUNNING,
-                ),
-            )
-            return
-        raise AssertionError("Unexpected synthetic dispatch request.")
-
-    def cancel(self, request_id: RequestId) -> None:
-        self.cancellations.append(request_id)
-
-
-def _service_event(
-    request: ControlRequest,
-    kind: EventKind,
-    payload: EventPayload,
-) -> ControlEvent:
-    return ControlEvent(
-        protocol_version=PROTOCOL_VERSION,
-        request_id=request.request_id,
-        kind=kind,
-        payload=payload,
-        package_version=__version__,
-    )
-
-
-def _serve_protocol_connection(
-    connection: socket.socket,
-    verifier: PeerVerifier,
-    dispatcher: ControlDispatcher,
-) -> None:
-    ControlConnection(connection, verifier, dispatcher).serve()
-
-
-def _rejected_protocol_response(
-    verifier: PeerVerifier,
-    outbound: bytes,
-    dispatcher: _RecordingDispatcher,
-) -> bytes:
-    server_socket, client_socket = socket.socketpair()
-    client_socket.sendall(outbound)
-    server = Thread(
-        target=_serve_protocol_connection,
-        args=(server_socket, verifier, dispatcher),
-    )
-    server.start()
-    server.join(timeout=2)
-    assert not server.is_alive()
-    response = bytearray()
-    while True:
-        try:
-            chunk = client_socket.recv(65_540)
-        except ConnectionResetError:
-            break
-        if not chunk:
-            break
-        response.extend(chunk)
-    client_socket.close()
-    return bytes(response)
-
-
 def test_authenticated_control_stream_frames_completes_and_cancels(
     tmp_path: Path,
 ) -> None:
@@ -526,13 +363,13 @@ def test_authenticated_control_stream_frames_completes_and_cancels(
     assert decode_request(decoded_frames[0]) == fragmented_request
 
     server_socket, client_socket = socket.socketpair()
-    dispatcher = _RecordingDispatcher([], [], Event())
+    dispatcher = RecordingDispatcher([], [], Event())
     server = Thread(
-        target=_serve_protocol_connection,
-        args=(server_socket, _VerifiedPeer(), dispatcher),
+        target=serve_protocol_connection,
+        args=(server_socket, VerifiedPeer(), dispatcher),
     )
     server.start()
-    fragmented_client: ConnectedSocket = _FragmentingSocket(client_socket)
+    fragmented_client: ConnectedSocket = FragmentingSocket(client_socket)
     client = ControlClient(fragmented_client)
 
     activation = tuple(
@@ -570,7 +407,7 @@ def test_authenticated_control_stream_frames_completes_and_cancels(
         ServiceStateStore(state.paths.service_state),
         ActivationRecoveryScheduler(state.journals, state.queue),
         OperationEventHub(),
-        _RuntimeClock(),
+        RuntimeClock(),
         Event().set,
         Event().set,
     )
@@ -605,13 +442,13 @@ def test_control_protocol_fails_closed_at_each_trust_boundary() -> None:
         )
     )
     cases: tuple[tuple[PeerVerifier, bytes, EventKind | None], ...] = (
-        (_RejectedPeer(), malformed, None),
-        (_VerifiedPeer(), malformed, EventKind.FAILED),
-        (_VerifiedPeer(), incompatible, EventKind.INCOMPATIBLE),
+        (RejectedPeer(), malformed, None),
+        (VerifiedPeer(), malformed, EventKind.FAILED),
+        (VerifiedPeer(), incompatible, EventKind.INCOMPATIBLE),
     )
     for verifier, outbound, expected_kind in cases:
-        dispatcher = _RecordingDispatcher([], [], Event())
-        response = _rejected_protocol_response(
+        dispatcher = RecordingDispatcher([], [], Event())
+        response = rejected_protocol_response(
             verifier,
             outbound,
             dispatcher,
@@ -626,196 +463,6 @@ def test_control_protocol_fails_closed_at_each_trust_boundary() -> None:
         decoder.finish()
         assert len(frames) == 1
         assert decode_event(frames[0]).kind is expected_kind
-
-
-@dataclass(slots=True)
-class _RuntimeClock:
-    """Deterministic wall and monotonic clocks for worker scheduling."""
-
-    wall_time: datetime = REFERENCE_TIME
-    monotonic_time: float = _MONOTONIC_START
-
-    def now(self) -> datetime:
-        return self.wall_time
-
-    def monotonic(self) -> float:
-        return self.monotonic_time
-
-    def advance(self, seconds: float) -> None:
-        self.wall_time += timedelta(seconds=seconds)
-        self.monotonic_time += seconds
-
-
-@dataclass(slots=True)
-class _FakeWorkerHandle:
-    """Controllable killable process boundary."""
-
-    operation_id: OperationId
-    events: list[str]
-    initial_exit_code: int | None
-    requires_kill: bool
-    exchange_endpoint: socket.socket | None = None
-    terminated: bool = False
-    killed: bool = False
-
-    @property
-    def process_id(self) -> int:
-        return 4242
-
-    def poll(self) -> int | None:
-        if self.initial_exit_code is not None:
-            self._close_exchange()
-        return self.initial_exit_code
-
-    def wait(self, timeout_seconds: float | None) -> int | None:
-        del timeout_seconds
-        if self.initial_exit_code is not None:
-            self._close_exchange()
-            return self.initial_exit_code
-        if self.killed:
-            self._close_exchange()
-            return -9
-        if self.terminated and not self.requires_kill:
-            self._close_exchange()
-            return -15
-        return None
-
-    def group_alive(self) -> bool:
-        return (
-            self.initial_exit_code is None
-            and not self.killed
-            and not (self.terminated and not self.requires_kill)
-        )
-
-    def terminate_group(self) -> None:
-        self.events.append(f"terminate:{self.operation_id}")
-        self.terminated = True
-
-    def kill_group(self) -> None:
-        self.events.append(f"kill:{self.operation_id}")
-        self.killed = True
-
-    def _close_exchange(self) -> None:
-        endpoint = self.exchange_endpoint
-        self.exchange_endpoint = None
-        if endpoint is not None:
-            endpoint.close()
-
-
-class _FakeWorkerLauncher:
-    """Persist configured synthetic results when exact workers launch."""
-
-    def __init__(
-        self,
-        results: WorkerResultStore,
-        clock: _RuntimeClock,
-        successful: frozenset[OperationId],
-        requires_kill: frozenset[OperationId] = frozenset(),
-    ) -> None:
-        self._results = results
-        self._clock = clock
-        self._successful = successful
-        self._requires_kill = requires_kill
-        self.specs: list[WorkerLaunchSpec] = []
-        self.events: list[str] = []
-        self.handles: dict[OperationId, _FakeWorkerHandle] = {}
-
-    def launch(
-        self,
-        spec: WorkerLaunchSpec,
-        notify_exit: ExitNotifier,
-    ) -> WorkerHandle:
-        self.specs.append(spec)
-        self.events.append(f"launch:{spec.operation_id}")
-        succeeded = spec.operation_id in self._successful
-        if succeeded:
-            self._results.save(
-                WorkerResult(
-                    operation_id=spec.operation_id,
-                    outcome=WorkerOutcome.SUCCEEDED,
-                    finished_at=self._clock.now(),
-                )
-            )
-        handle = _FakeWorkerHandle(
-            spec.operation_id,
-            self.events,
-            0 if succeeded else None,
-            spec.operation_id in self._requires_kill,
-            (
-                None
-                if spec.exchange_descriptor is None
-                else socket.socket(fileno=os.dup(spec.exchange_descriptor))
-            ),
-        )
-        self.handles[spec.operation_id] = handle
-        if succeeded:
-            notify_exit()
-        return handle
-
-
-class _NoopControlDispatcher:
-    """Unused control boundary for direct runtime-cycle scenarios."""
-
-    def dispatch(self, request: ControlRequest) -> Iterator[ControlEvent]:
-        del request
-        return iter(())
-
-    def cancel(self, request_id: RequestId) -> None:
-        del request_id
-
-
-class _NoopResidentService:
-    """Inactive resident boundary for direct scheduler-cycle tests."""
-
-    @property
-    def ready(self) -> bool:
-        """Return readiness for direct runtime-cycle testing."""
-        return True
-
-    def start(self) -> None:
-        pass
-
-    def request_stop(self) -> None:
-        pass
-
-    def close(self) -> None:
-        pass
-
-
-def _worker_planner() -> WorkerLaunchPlanner:
-    return WorkerLaunchPlanner(
-        Path("/opt/sidekick/bin/sidekick-usages-worker"),
-        {
-            "ANTHROPIC_AUTH_TOKEN": "test-only-secret",
-            "CODEX_HOME": "/test-only-secret-home",
-            "HOME": "/synthetic/home",
-            "PATH": "/usr/bin",
-        },
-    )
-
-
-def _runtime_for(
-    state: _FoundationState,
-    scheduler: DurableScheduler,
-    recovery: ActivationRecoveryScheduler,
-    clock: _RuntimeClock,
-    wakeup: WakeupChannel,
-) -> SupervisorRuntime:
-    return SupervisorRuntime(
-        LocalControlServer(
-            state.paths.runtime_directory,
-            state.paths.supervisor_socket,
-            _NoopControlDispatcher(),
-            peer_verifier=_VerifiedPeer(),
-        ),
-        scheduler,
-        recovery,
-        ServiceStateStore(state.paths.service_state),
-        clock,
-        wakeup,
-        Event(),
-        _NoopResidentService(),
-    )
 
 
 def test_supervisor_isolates_timeout_and_recovers_without_duplicate_work(
@@ -838,16 +485,16 @@ def test_supervisor_isolates_timeout_and_recovers_without_duplicate_work(
     )
     assert state.queue.enqueue(first) == first
     results = WorkerResultStore(state.paths.durable_operations)
-    clock = _RuntimeClock()
+    clock = RuntimeClock()
     wakeup = WakeupChannel()
-    launcher = _FakeWorkerLauncher(
+    launcher = FakeWorkerLauncher(
         results,
         clock,
         frozenset({second.operation_id}),
     )
     workers = WorkerPool(
         launcher,
-        _worker_planner(),
+        worker_planner(),
         wakeup.notify,
         general_timeout_seconds=5,
         termination_grace_seconds=0.01,
@@ -863,7 +510,13 @@ def test_supervisor_isolates_timeout_and_recovers_without_duplicate_work(
         state.journals,
         state.queue,
     )
-    runtime = _runtime_for(state, scheduler, recovery, clock, wakeup)
+    runtime = foundation_runtime(
+        state.paths,
+        scheduler,
+        recovery,
+        clock,
+        wakeup,
+    )
 
     runtime.recover()
     runtime.run_cycle()
@@ -895,8 +548,8 @@ def test_supervisor_isolates_timeout_and_recovers_without_duplicate_work(
             "PATH": "/usr/bin",
         }
     restarted_workers = WorkerPool(
-        _FakeWorkerLauncher(results, clock, frozenset()),
-        _worker_planner(),
+        FakeWorkerLauncher(results, clock, frozenset()),
+        worker_planner(),
         lambda: None,
     )
     restarted = DurableScheduler(
