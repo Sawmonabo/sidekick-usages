@@ -61,8 +61,10 @@ macOS Keychain through `/usr/bin/security`, Pydantic 2.13.4, Portalocker
   conflict and never clears the user's environment.
 - On macOS, a locked/unavailable Keychain or plaintext fallback fails closed.
   Sidekick never requests or stores the macOS password.
-- Remote Control disruption is the only planned routine extra confirmation.
-  Healthy ordinary switches require one Enter press from the dashboard.
+- Possible Remote Control disruption is the only planned routine extra
+  confirmation. When no same-user Claude foreground exists, a healthy switch
+  requires one Enter press. Otherwise Sidekick asks because exact Remote
+  Control state cannot be observed externally.
 - Native Windows is feature-disabled for this first release. Linux, WSL,
   macOS arm64, and macOS x64 are required.
 - Automated tests use synthetic profiles, fake Keychains, fake binaries,
@@ -85,7 +87,7 @@ macOS Keychain through `/usr/bin/security`, Pydantic 2.13.4, Portalocker
 
 ---
 
-- **Status:** In progress; Claude Tasks 1-2 complete
+- **Status:** In progress; Claude Tasks 1-4 complete
 - **Date:** 2026-07-23
 - **Repository:** `/home/sabossedgh/dev/sidekick-usages`
 - **Branch:** `develop`
@@ -125,7 +127,8 @@ The provider adapter exposes these typed operations:
 - detect higher-priority credential conflicts;
 - run official login in a target profile with browser or refresh-token input;
 - prove same identity and an acceptable generation transition;
-- classify Remote Control disruption; and
+- classify whether a same-user foreground means Remote Control disruption
+  cannot be ruled out; and
 - report setup-token fixed-lifetime health.
 
 ## 2. Target Ownership Map
@@ -369,7 +372,8 @@ uv run pytest \
 For source S and target T:
 
 1. preflight exact binary, platform, storage, higher-priority credentials,
-   target managed authority, Remote Control, locks, and service readiness;
+   target managed authority, foreground-session approval, locks, and service
+   readiness;
 2. read and verify the actual native identity;
 3. reconcile that identity to S or an external state;
 4. journal `prepared`;
@@ -393,7 +397,7 @@ without a maintainable private authority.
 - [ ] Extend `tests/test_claude_managed_runtime.py` with one healthy
   activation scenario that retains outgoing A, officially provisions B,
   verifies native identity, commits from read-back, requires one request when
-  Remote Control is inactive, and leaves Codex state untouched.
+  no foreground session is present, and leaves Codex state untouched.
 - [ ] Add one interruption scenario at the externally meaningful boundary
   after native mutation and before commit. Recovery must serialize a
   concurrent retry and produce verified commit, official rollback, or
@@ -474,9 +478,10 @@ without a maintainable private authority.
 ### Tests first
 
 - [ ] Add one guard scenario covering a representative higher-priority
-  credential and active Remote Control. Prove Sidekick changes no parent
-  environment, requires the exact disruption approval, and refuses
-  non-interactive activation without it.
+  credential and one same-user foreground whose Remote Control state cannot
+  be ruled out. Prove Sidekick changes no parent environment, requires the
+  exact disruption approval, and refuses non-interactive activation without
+  it.
 - [ ] Add one session-boundary scenario proving bare `claude` still resolves
   to the vendor executable, a supported existing subscription session adopts
   the verified account only on its next safe request, and in-flight or
@@ -491,13 +496,15 @@ without a maintainable private authority.
   and other documented higher-priority modes before native activation.
 - [ ] Do not unset, override, or persist any parent-shell value. Return a
   typed conflict with precise scope.
-- [ ] Detect active Claude Remote Control through the exact supported local
-  provider boundary.
-- [ ] Require explicit confirmation only when the switch is proven to disrupt
-  Remote Control. A non-interactive `use` command fails unless the caller
-  supplied `--allow-remote-control-disconnect`; it never prompts.
-- [ ] Keep existing sessions on next-safe-request semantics and never claim
-  mid-request retargeting.
+- [ ] Discover same-user Claude foregrounds without signaling, injecting
+  input, or treating argv absence as proof. An explicit Remote Control argv
+  flag proves risk; `/remote-control` and automatic enablement mean its absence
+  cannot disprove risk after launch.
+- [ ] Require explicit confirmation when a foreground means Remote Control
+  disruption cannot be ruled out. A non-interactive `use` command fails unless
+  the caller supplied `--allow-remote-control-disconnect`; it never prompts.
+- [ ] Keep ordinary shared-profile subscription sessions on exact
+  next-API-attempt semantics and never claim idle or mid-request retargeting.
 - [ ] Add support classification to doctor and sanitized dashboard state.
 
 ### Verify and commit
@@ -603,7 +610,8 @@ Do not begin the dashboard and rollout plan until all statements are true:
   rollback.
 - [ ] Keychain failure and plaintext fallback fail closed.
 - [ ] Higher-priority credential modes are not overridden.
-- [ ] Remote Control confirmation occurs only when disruption is proven.
+- [ ] Remote Control confirmation occurs only when a same-user foreground
+  makes disruption possible and exact status cannot be ruled out.
 - [ ] External official login wins without silent import.
 - [ ] Every unselected account remains maintained and measured.
 - [ ] Normal `claude` resolution is unchanged.

@@ -2,7 +2,7 @@
 
 **Investigation date:** 2026-07-23
 
-**Evidence cutoff:** 2026-07-23T23:30:00Z
+**Evidence cutoff:** 2026-07-25T23:59:59Z
 
 **Decisions:** Replace Sidekick-owned Codex OAuth refresh with one
 independently authenticated, Sidekick-owned `CODEX_HOME` per saved account and
@@ -69,15 +69,42 @@ provisioning input, not permission for Sidekick to implement OAuth rotation.
 The value may exist only in the closed child environment for the target
 profile; it must never enter argv, persistence, logs, errors, or the broker.
 
-The existing-session contract is also narrower than the original product
-aspiration. New bare `claude` launches read the newly selected native
-authority. Existing unrelated foreground sessions can adopt provider-owned
-credential changes when they next resolve auth, refresh, or recover from a
-401, but the public contract does not guarantee immediate cross-process
-retargeting. Sidekick must not claim instant mid-request switching. A user can
-switch a specific foreground session immediately with Claude's own `/login`.
-Same-supervisor workers may receive Claude's provider-owned token update, but
-that observation is not generalized to every running terminal.
+The exact installed Linux x64 binary strengthens the existing-session contract.
+Every normal API-client construction runs Claude's credential-freshness check
+before reading OAuth credentials. On Linux and WSL, that check stats the shared
+profile's `.credentials.json`; a changed modification time clears the OAuth and
+secure-storage caches before the request reads the new login. When that file is
+absent, the same path clears cached readers and reads secure storage again,
+which is the path used by the macOS Keychain backend. A release-matched macOS
+runtime smoke remains required because the Linux artifact cannot execute that
+backend.
+
+The resulting product contract is exact: after official login completes, a
+new bare `claude` uses the selected native authority immediately. An existing
+ordinary subscription session sharing that native profile adopts it when the
+session begins its next normal API attempt. An already-streaming request keeps
+the client and credential with which it started. Environment-authenticated,
+cloud-provider, helper, gateway, or alternate-profile sessions remain pinned
+to their own higher-priority authority.
+
+Claude exposes no supported attachable credential-reload channel for arbitrary
+foreground terminals. `SIGHUP` terminates the inspected foreground process;
+the daemon control socket has no auth-reload operation; and structured token
+updates work only when a controller already owns the process's structured
+standard input. Official login also preserves in-process tokens instead of
+deliberately revoking sibling sessions. Sidekick must therefore rely on the
+next-request freshness path and must never signal, inject input into, or
+restart unrelated terminals.
+
+Remote Control is likewise not externally observable with exact certainty.
+Anthropic documents that it can be enabled after launch with
+`/remote-control`, can be enabled automatically for every session, and uses
+outbound HTTPS without opening an inbound local port. The documented CLI has
+no external Remote Control status command. Sidekick may prove absence only
+when no same-user Claude foreground exists; otherwise it must conservatively
+require the one disruption approval because Remote Control cannot be ruled
+out. [Remote Control](https://code.claude.com/docs/en/remote-control),
+[Claude CLI reference](https://code.claude.com/docs/en/cli-usage).
 
 ## Table of Contents
 
@@ -2056,6 +2083,7 @@ contract analysis.
 | [Claude Code Authentication](https://code.claude.com/docs/en/iam) | Official product docs | 2026-07-23 | Credential locations, precedence, login renewal, setup-token limits | High |
 | [Claude Code environment variables](https://code.claude.com/docs/en/env-vars) | Official product docs | 2026-07-23 | Side-by-side accounts through `CLAUDE_CONFIG_DIR` and automated refresh-token provisioning | High |
 | [Claude Code quickstart](https://code.claude.com/docs/en/quickstart#step-2-log-in-to-your-account) | Official product docs | 2026-07-23 | `/login` is the native account-switch action | High |
+| [Claude Code Remote Control](https://code.claude.com/docs/en/remote-control) | Official product docs | 2026-07-25 | Runtime enablement, automatic enablement, outbound-only transport, and absence of an externally queryable local status boundary | High |
 | [Claude issue #261](https://github.com/anthropics/claude-code/issues/261) | Official repository issue closed as completed | 2025-03-05 | `CLAUDE_CONFIG_DIR` accepted as the CLI multi-account boundary | Medium-high |
 | [Claude Code changelog](https://github.com/anthropics/claude-code/blob/2982f951552e94f38cd972764ae94c1d90c41da3/CHANGELOG.md) | Official repository changelog | Claude 2.1.218 | Shared credential store, outside-session refresh reload, different-account Remote Control behavior, and concurrent refresh | High for released behavior |
 | [`darwin-arm64`](https://www.npmjs.com/package/@anthropic-ai/claude-code-darwin-arm64/v/2.1.218) and [`darwin-x64`](https://www.npmjs.com/package/@anthropic-ai/claude-code-darwin-x64/v/2.1.218) Claude packages | Exact official platform packages and binaries | Claude 2.1.218 | Config-derived Keychain namespaces, official Keychain writes, and plaintext fallback behavior on both macOS architectures | High for this release |
@@ -2063,7 +2091,7 @@ contract analysis.
 | [Apple launchd guide](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html) | Official platform docs | Current archived platform guide | Per-user LaunchAgents, service restart, and user-session scope | High |
 | Installed schema generated from the local binary | Local binary-generated primary evidence | Codex 0.145.0 | Confirms the local binary exposes external login and refresh-broker messages and marks them internal-only | High |
 | Installed Codex empty-home, daemon-help, process, and socket probes | Local runtime evidence | Codex 0.145.0, 2026-07-23 | Confirms `CODEX_HOME` isolation, native daemon commands, and that current live sessions are embedded | High |
-| Installed Linux Claude help, empty-home probes, read-only trace, and exact macOS package inspection | Local and release-binary primary evidence | Claude 2.1.218, 2026-07-23 | Confirms Linux file isolation, macOS hashed Keychain isolation, auth-status surfaces, and provider-owned writes | High |
+| Installed Linux Claude help, empty-home probes, read-only binary trace, and exact macOS package inspection | Local and release-binary primary evidence | Claude 2.1.220, 2026-07-25 | Confirms Linux file isolation, shared-profile next-request cache invalidation, macOS hashed Keychain isolation, auth-status surfaces, and provider-owned writes | High for Linux and static macOS contracts; macOS next-request runtime smoke remains |
 | Live `codex doctor --json` | Local redacted runtime evidence | 2026-07-23 | Valid native session and authenticated WebSocket reachability | High |
 | Live Sidekick doctor and protected state comparison | Local runtime/persistence evidence | Sidekick 0.7.0, 2026-07-23 | Saved failures, internal consistency, generation divergence | High |
 | Sidekick source under `src/sidekick_usages/` | Local implementation | Commit `8c957b1e...` | Current import, refresh, tracking, persistence, doctor behavior, and periodic one-shot scheduler boundary | High |
