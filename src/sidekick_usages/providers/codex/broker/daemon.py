@@ -121,6 +121,10 @@ class CodexDaemonManager:
         """Return the only accepted official daemon socket."""
         return self._native_home / CONTROL_DIRECTORY_NAME / CONTROL_SOCKET_NAME
 
+    def cancellation_requested(self) -> bool:
+        """Return whether the owning broker requested shutdown."""
+        return self._cancelled is not None and self._cancelled()
+
     def ensure_running(self) -> CodexDaemonAuthority:
         """Idempotently start, inspect, and qualify the official daemon."""
         verify_codex_executable(self._capabilities.executable)

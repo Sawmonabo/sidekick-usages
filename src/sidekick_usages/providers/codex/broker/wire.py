@@ -9,6 +9,7 @@ from contextlib import suppress
 from contextvars import ContextVar
 from types import TracebackType
 
+from websockets.client import ClientProtocol
 from websockets.exceptions import ConnectionClosed, WebSocketException
 from websockets.protocol import State
 from websockets.sync.client import ClientConnection, connect
@@ -47,8 +48,13 @@ _PING_INTERVAL_SECONDS = 20.0
 _PING_TIMEOUT_SECONDS = 20.0
 _MAX_QUEUED_FRAMES = 16
 _AUTOMATIC_WRITE_TIMEOUT_SECONDS = 5.0
+_CANCELLATION_POLL_SECONDS = 0.1
 _WRITE_DEADLINE: ContextVar[float | None] = ContextVar(
     "codex_websocket_write_deadline",
+    default=None,
+)
+_CONNECTION_CANCELLATION: ContextVar[Callable[[], bool] | None] = ContextVar(
+    "codex_websocket_connection_cancellation",
     default=None,
 )
 _WEBSOCKET_LOGGER = logging.Logger(
@@ -60,6 +66,26 @@ _WEBSOCKET_LOGGER.disabled = True
 
 class DeadlineBoundClientConnection(ClientConnection):
     """Write WebSocket frames without changing the receiver's socket mode."""
+
+    def __init__(
+        self,
+        websocket_socket: socket.socket,
+        protocol: ClientProtocol,
+        *,
+        ping_interval: float | None = 20,
+        ping_timeout: float | None = 20,
+        close_timeout: float | None = 10,
+        max_queue: int | None | tuple[int | None, int | None] = 16,
+    ) -> None:
+        self._cancelled = _CONNECTION_CANCELLATION.get()
+        super().__init__(
+            websocket_socket,
+            protocol,
+            ping_interval=ping_interval,
+            ping_timeout=ping_timeout,
+            close_timeout=close_timeout,
+            max_queue=max_queue,
+        )
 
     def send_data(self) -> None:
         """Flush protocol data through per-call nonblocking Unix writes."""
@@ -81,9 +107,15 @@ class DeadlineBoundClientConnection(ClientConnection):
         try:
             selector.register(self.socket, selectors.EVENT_WRITE)
             while pending:
+                if self._cancelled is not None and self._cancelled():
+                    raise TimeoutError("WebSocket write was cancelled.")
                 remaining = deadline - time.monotonic()
-                if remaining <= 0 or not selector.select(remaining):
+                if remaining <= 0:
                     raise TimeoutError("WebSocket write deadline elapsed.")
+                if not selector.select(
+                    min(remaining, _CANCELLATION_POLL_SECONDS)
+                ):
+                    continue
                 try:
                     written = self.socket.send(
                         pending,
@@ -104,9 +136,11 @@ class UnixWebSocketJsonRpcTransport:
     def __init__(
         self,
         connection: ClientConnection,
+        cancelled: Callable[[], bool],
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         self._connection = connection
+        self._cancelled = cancelled
         self._monotonic = monotonic
         self._closed = False
 
@@ -114,8 +148,11 @@ class UnixWebSocketJsonRpcTransport:
     def open(
         cls,
         connected_socket: socket.socket,
+        *,
+        cancelled: Callable[[], bool],
     ) -> UnixWebSocketJsonRpcTransport:
         """Upgrade one already connected and peer-verified Unix socket."""
+        cancellation_token = _CONNECTION_CANCELLATION.set(cancelled)
         try:
             connection = connect(
                 DAEMON_WEBSOCKET_URI,
@@ -138,7 +175,9 @@ class UnixWebSocketJsonRpcTransport:
             raise CodexBrokerError(
                 CodexBrokerFailure.CONNECTION_FAILED
             ) from None
-        return cls(connection)
+        finally:
+            _CONNECTION_CANCELLATION.reset(cancellation_token)
+        return cls(connection, cancelled)
 
     @property
     def closed(self) -> bool:
@@ -173,15 +212,24 @@ class UnixWebSocketJsonRpcTransport:
 
     def receive(self, deadline: float) -> bytes:
         """Receive one complete bounded text message before its deadline."""
-        remaining = deadline - self._monotonic()
-        if remaining <= 0:
-            raise CodexAppServerError(CodexAppServerFailure.PROTOCOL_TIMEOUT)
         try:
-            message = self._connection.recv(timeout=remaining)
-        except TimeoutError:
-            raise CodexAppServerError(
-                CodexAppServerFailure.PROTOCOL_TIMEOUT
-            ) from None
+            while True:
+                if self._cancelled():
+                    raise CodexAppServerError(
+                        CodexAppServerFailure.PROTOCOL_TIMEOUT
+                    )
+                remaining = deadline - self._monotonic()
+                if remaining <= 0:
+                    raise CodexAppServerError(
+                        CodexAppServerFailure.PROTOCOL_TIMEOUT
+                    )
+                try:
+                    message = self._connection.recv(
+                        timeout=min(remaining, _CANCELLATION_POLL_SECONDS)
+                    )
+                    break
+                except TimeoutError:
+                    continue
         except ConnectionClosed, OSError, WebSocketException:
             self._closed = True
             raise CodexAppServerError(
@@ -229,7 +277,8 @@ class CodexDaemonSession:
     ) -> CodexDaemonSession:
         """Connect, initialize, and revalidate one shared daemon."""
         transport = UnixWebSocketJsonRpcTransport.open(
-            manager.connect(authority)
+            manager.connect(authority),
+            cancelled=manager.cancellation_requested,
         )
         connection = JsonRpcClient(transport)
         try:
