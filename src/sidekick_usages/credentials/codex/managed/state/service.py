@@ -33,8 +33,10 @@ from sidekick_usages.providers.base import (
 from sidekick_usages.providers.codex.app_server.models import (
     CodexAppServerCapabilities,
 )
-from sidekick_usages.providers.codex.generation import codex_generation_order
-from sidekick_usages.providers.codex.models import CodexAuthSnapshot
+from sidekick_usages.providers.codex.auth.generation import (
+    codex_generation_order,
+)
+from sidekick_usages.providers.codex.auth.models import CodexAuthSnapshot
 
 
 class CodexManagedAccountState:

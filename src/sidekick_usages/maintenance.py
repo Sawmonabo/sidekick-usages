@@ -36,7 +36,7 @@ from sidekick_usages.errors import RateLimitError, TransientError, UsageError
 from sidekick_usages.persistence.accounts.store import AccountStore
 from sidekick_usages.persistence.errors import PersistenceError
 from sidekick_usages.providers.base import ProviderFailure, ProviderFailureKind
-from sidekick_usages.providers.codex.token import CODEX_REFRESH_MARGIN
+from sidekick_usages.providers.codex.auth.token import CODEX_REFRESH_MARGIN
 
 
 class CredentialRefresher(Protocol):

@@ -13,6 +13,10 @@ from sidekick_usages.providers.codex.app_server.errors import (
 from sidekick_usages.providers.codex.app_server.jsonrpc.client import (
     JsonRpcClient,
 )
+from sidekick_usages.providers.codex.app_server.methods import (
+    INITIALIZE_METHOD,
+    INITIALIZED_METHOD,
+)
 from sidekick_usages.providers.codex.app_server.models import CodexVersion
 from sidekick_usages.providers.codex.app_server.types import (
     CodexAppServerFailure,
@@ -21,8 +25,6 @@ from sidekick_usages.serialization.json import JsonObject
 
 CLIENT_NAME = "sidekick_usages"
 CLIENT_TITLE = "Sidekick Usages"
-INITIALIZE_METHOD = "initialize"
-INITIALIZED_METHOD = "initialized"
 _SUPPORTED_PLATFORM_FAMILIES = frozenset({"unix"})
 _SUPPORTED_PLATFORM_SYSTEMS = frozenset({"linux", "macos"})
 

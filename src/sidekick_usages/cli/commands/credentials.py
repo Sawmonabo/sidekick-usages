@@ -27,7 +27,7 @@ from sidekick_usages.providers.base import (
     ProviderFailure,
     ProviderFailureKind,
 )
-from sidekick_usages.providers.codex.models import CodexLoginEvent
+from sidekick_usages.providers.codex.auth.login.models import CodexLoginEvent
 
 
 def exit_credential_failure(

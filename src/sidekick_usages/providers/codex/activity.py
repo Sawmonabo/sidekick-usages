@@ -7,8 +7,10 @@ from sidekick_usages.providers.base import (
     ProviderAuthenticatedAccount,
     runtime_account,
 )
-from sidekick_usages.providers.codex.request import account_headers
-from sidekick_usages.providers.codex.schemas import parse_activity_response
+from sidekick_usages.providers.codex.auth.request import account_headers
+from sidekick_usages.providers.codex.schema.activity import (
+    parse_activity_response,
+)
 
 ACTIVITY_URL = "https://chatgpt.com/backend-api/wham/profiles/me"
 

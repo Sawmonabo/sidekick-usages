@@ -2,8 +2,8 @@
 
 from sidekick_usages.core.models import Account, UsageReport
 from sidekick_usages.http.client import HttpClient
-from sidekick_usages.providers.codex.request import account_headers
-from sidekick_usages.providers.codex.schemas import parse_usage_response
+from sidekick_usages.providers.codex.auth.request import account_headers
+from sidekick_usages.providers.codex.schema.usage import parse_usage_response
 
 USAGE_URL = "https://chatgpt.com/backend-api/codex/usage"
 

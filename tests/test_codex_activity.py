@@ -25,7 +25,9 @@ from sidekick_usages.providers.codex.activity import (
     ACTIVITY_URL,
     CodexActivity,
 )
-from sidekick_usages.providers.codex.schemas import parse_activity_response
+from sidekick_usages.providers.codex.schema.activity import (
+    parse_activity_response,
+)
 from sidekick_usages.serialization.json import JsonObject
 from tests.test_support import authenticated_account
 

@@ -4,8 +4,10 @@ from dataclasses import replace
 
 from sidekick_usages.core.models import Account
 from sidekick_usages.errors import ProviderIdentityError
-from sidekick_usages.providers.codex.auth import require_codex_credentials
-from sidekick_usages.providers.codex.schemas import account_id_from_token
+from sidekick_usages.providers.codex.auth.storage import (
+    require_codex_credentials,
+)
+from sidekick_usages.providers.codex.schema.auth import account_id_from_token
 
 CODEX_USER_AGENT = "codex-cli"
 

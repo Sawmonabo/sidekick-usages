@@ -13,16 +13,18 @@ from sidekick_usages.providers.codex.app_server.jsonrpc.ports import (
     DEFAULT_JSON_RPC_TIMEOUT_SECONDS,
     JsonRpcRequester,
 )
+from sidekick_usages.providers.codex.app_server.methods import (
+    AUTH_STATUS_METHOD,
+)
 from sidekick_usages.providers.codex.app_server.types import (
     CodexAppServerFailure,
 )
-from sidekick_usages.providers.codex.token import (
+from sidekick_usages.providers.codex.auth.token import (
     codex_access_token_generation,
     decode_codex_token_claims,
 )
 from sidekick_usages.serialization.json import JsonObject
 
-AUTH_STATUS_METHOD = "getAuthStatus"
 CHATGPT_AUTH_METHOD = "chatgpt"
 
 

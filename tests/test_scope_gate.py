@@ -26,7 +26,7 @@ from sidekick_usages.providers.claude.schema.credentials import (
     claude_expiry,
     parse_credentials_blob,
 )
-from sidekick_usages.providers.codex.schemas import jwt_expiry
+from sidekick_usages.providers.codex.schema.auth import jwt_expiry
 from sidekick_usages.serialization.json import JsonValue, decode_json_object
 from tests.test_support import make_account_store
 

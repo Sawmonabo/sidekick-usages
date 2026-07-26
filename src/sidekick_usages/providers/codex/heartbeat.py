@@ -16,8 +16,8 @@ from sidekick_usages.providers.base import (
     ProviderAuthenticatedAccount,
     runtime_account,
 )
+from sidekick_usages.providers.codex.auth.request import account_headers
 from sidekick_usages.providers.codex.provider import CodexProvider
-from sidekick_usages.providers.codex.request import account_headers
 from sidekick_usages.serialization.json import JsonObject
 
 CODEX_RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses"

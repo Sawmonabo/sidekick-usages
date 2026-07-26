@@ -18,10 +18,10 @@ from sidekick_usages.core.accounts.types import (
 from sidekick_usages.core.expiry import Expiry
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.credentials.codex.types import CodexManagedOutcome
-from sidekick_usages.providers.codex.models import (
+from sidekick_usages.providers.codex.account.models import (
     CodexAccountObservation,
-    CodexAuthSnapshot,
 )
+from sidekick_usages.providers.codex.auth.models import CodexAuthSnapshot
 
 
 def require_managed_codex_authority(

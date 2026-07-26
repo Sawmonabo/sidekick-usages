@@ -19,7 +19,7 @@ from sidekick_usages.providers.base import (
     ProviderFailureKind,
 )
 from sidekick_usages.providers.codex.provider import CodexProvider
-from sidekick_usages.providers.codex.schemas import auth_blob_account_id
+from sidekick_usages.providers.codex.schema.auth import auth_blob_account_id
 from sidekick_usages.serialization.json import JsonObject
 
 REFRESH_EXP = 1_900_000_000

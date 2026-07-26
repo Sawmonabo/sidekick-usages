@@ -33,7 +33,7 @@ from sidekick_usages.doctor.runtime.types import (
 from sidekick_usages.providers.claude.auth.generation import (
     claude_generation_relation,
 )
-from sidekick_usages.providers.codex.generation import (
+from sidekick_usages.providers.codex.auth.generation import (
     codex_generation_relation,
 )
 from sidekick_usages.usage.dashboard.models import (

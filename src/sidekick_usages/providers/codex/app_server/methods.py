@@ -1,0 +1,10 @@
+"""Canonical Codex app-server method names."""
+
+ACCOUNT_LOGIN_COMPLETED_METHOD = "account/login/completed"
+ACCOUNT_LOGIN_START_METHOD = "account/login/start"
+ACCOUNT_READ_METHOD = "account/read"
+ACCOUNT_TOKEN_REFRESH_METHOD = "account/chatgptAuthTokens/refresh"
+ACCOUNT_UPDATED_METHOD = "account/updated"
+AUTH_STATUS_METHOD = "getAuthStatus"
+INITIALIZED_METHOD = "initialized"
+INITIALIZE_METHOD = "initialize"

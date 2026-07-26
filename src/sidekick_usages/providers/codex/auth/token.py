@@ -13,7 +13,7 @@ from sidekick_usages.core.accounts.types import (
 )
 from sidekick_usages.core.accounts.validation import require_bounded_text
 from sidekick_usages.errors import InvalidPayloadError
-from sidekick_usages.providers.codex.models import CodexTokenClaims
+from sidekick_usages.providers.codex.auth.models import CodexTokenClaims
 from sidekick_usages.serialization.json import decode_json_object
 
 JWT_PART_COUNT = 3

@@ -56,9 +56,9 @@ from sidekick_usages.persistence.supervisor.service import ServiceStateStore
 from sidekick_usages.providers.codex.app_server.executable import (
     discover_codex_executable,
 )
+from sidekick_usages.providers.codex.auth.home import default_codex_home
 from sidekick_usages.providers.codex.broker.responder import CodexRuntimeBroker
 from sidekick_usages.providers.codex.broker.service import CodexSharedRuntime
-from sidekick_usages.providers.codex.native import default_codex_home
 
 _EXIT_OK = 0
 

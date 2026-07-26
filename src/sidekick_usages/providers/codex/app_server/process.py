@@ -20,7 +20,7 @@ from sidekick_usages.providers.codex.app_server.types import (
     CodexAppServerFailure,
     CodexProcessGroupPolicy,
 )
-from sidekick_usages.providers.codex.native import (
+from sidekick_usages.providers.codex.auth.home import (
     CODEX_HOME_ENVIRONMENT_KEY,
 )
 

@@ -63,10 +63,16 @@ from sidekick_usages.daemon.worker.claude.maintenance import (
 from sidekick_usages.daemon.worker.claude.selection import (
     ClaudeSelectionWorkerExecutor,
 )
-from sidekick_usages.daemon.worker.codex import (
+from sidekick_usages.daemon.worker.codex.activation import (
     CodexActivationWorkerExecutor,
+)
+from sidekick_usages.daemon.worker.codex.callback import (
     CodexCallbackWorkerExecutor,
+)
+from sidekick_usages.daemon.worker.codex.maintenance import (
     CodexManagedMaintenanceWorkerExecutor,
+)
+from sidekick_usages.daemon.worker.codex.reconciliation import (
     CodexNativeReconciliationWorkerExecutor,
 )
 from sidekick_usages.daemon.worker.exchange import (
@@ -104,8 +110,8 @@ from sidekick_usages.persistence.supervisor.selection import SelectedStateStore
 from sidekick_usages.providers.codex.app_server.errors import (
     CodexAppServerError,
 )
-from sidekick_usages.providers.codex.auth import observe_native_auth
-from sidekick_usages.providers.codex.native import default_codex_home
+from sidekick_usages.providers.codex.auth.home import default_codex_home
+from sidekick_usages.providers.codex.auth.storage import observe_native_auth
 
 _EXIT_OK = 0
 _EXIT_INVALID_INVOCATION = 2

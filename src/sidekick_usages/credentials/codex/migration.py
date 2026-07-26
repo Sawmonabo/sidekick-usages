@@ -67,12 +67,14 @@ from sidekick_usages.providers.codex.app_server.session import (
 from sidekick_usages.providers.codex.app_server.types import (
     CodexAppServerFailure,
 )
-from sidekick_usages.providers.codex.generation import codex_generation_order
-from sidekick_usages.providers.codex.login import (
+from sidekick_usages.providers.codex.auth.generation import (
+    codex_generation_order,
+)
+from sidekick_usages.providers.codex.auth.login.service import (
     complete_codex_login,
     start_codex_login,
 )
-from sidekick_usages.providers.codex.models import CodexAuthSnapshot
+from sidekick_usages.providers.codex.auth.models import CodexAuthSnapshot
 
 _RELOGIN_FAILURE_KINDS = frozenset(
     {

@@ -10,7 +10,7 @@ from sidekick_usages.core.accounts.models import (
 )
 from sidekick_usages.core.accounts.types import AuthorityId, CredentialHealth
 from sidekick_usages.core.types import RefreshStatus
-from sidekick_usages.providers.codex.models import CodexAuthSnapshot
+from sidekick_usages.providers.codex.auth.models import CodexAuthSnapshot
 
 
 def managed_codex_account(

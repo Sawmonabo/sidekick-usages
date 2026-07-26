@@ -40,7 +40,7 @@ from sidekick_usages.providers.codex.app_server.capabilities import (
 from sidekick_usages.providers.codex.app_server.executable import (
     discover_codex_executable,
 )
-from sidekick_usages.providers.codex.auth import (
+from sidekick_usages.providers.codex.auth.storage import (
     CODEX_AUTH_FILE,
     CODEX_CONFIG_FILE,
     CODEX_FILE_AUTH_CONFIG,

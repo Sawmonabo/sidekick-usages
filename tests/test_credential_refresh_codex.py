@@ -37,7 +37,7 @@ from sidekick_usages.daemon.types.worker import WorkerOutcome
 from sidekick_usages.daemon.worker.account import (
     CodexManagedAccountService,
 )
-from sidekick_usages.daemon.worker.codex import (
+from sidekick_usages.daemon.worker.codex.maintenance import (
     CodexManagedMaintenanceWorkerExecutor,
 )
 from sidekick_usages.http.client import HttpClient

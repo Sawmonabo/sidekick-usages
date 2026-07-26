@@ -4,6 +4,9 @@ from sidekick_usages.core.accounts.validation import (
     MAX_METADATA_BYTES,
     require_bounded_text,
 )
+from sidekick_usages.providers.codex.account.models import (
+    CodexAccountObservation,
+)
 from sidekick_usages.providers.codex.account.types import (
     CodexAccountReadFailure,
 )
@@ -11,10 +14,10 @@ from sidekick_usages.providers.codex.app_server.jsonrpc.ports import (
     DEFAULT_JSON_RPC_TIMEOUT_SECONDS,
     JsonRpcRequester,
 )
-from sidekick_usages.providers.codex.models import CodexAccountObservation
+from sidekick_usages.providers.codex.app_server.methods import (
+    ACCOUNT_READ_METHOD,
+)
 from sidekick_usages.serialization.json import JsonValue
-
-ACCOUNT_READ_METHOD = "account/read"
 
 
 def read_codex_account(

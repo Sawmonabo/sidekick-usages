@@ -6,6 +6,9 @@ from sidekick_usages.core.accounts.types import (
     ProviderIdentity,
     SidekickAccountId,
 )
+from sidekick_usages.providers.codex.auth.token import (
+    decode_codex_token_claims,
+)
 from sidekick_usages.providers.codex.broker.errors import CodexBrokerError
 from sidekick_usages.providers.codex.broker.external_auth.codec import (
     decode_worker_message,
@@ -25,7 +28,6 @@ from sidekick_usages.providers.codex.broker.types import (
     CodexActivationMode,
     CodexBrokerFailure,
 )
-from sidekick_usages.providers.codex.token import decode_codex_token_claims
 from sidekick_usages.serialization.json import (
     JsonEncodeError,
     encode_compact_json_buffer,

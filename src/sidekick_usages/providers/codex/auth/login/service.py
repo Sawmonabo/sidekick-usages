@@ -13,6 +13,9 @@ from sidekick_usages.providers.base import (
 from sidekick_usages.providers.codex.account.failures import (
     codex_account_provider_failure,
 )
+from sidekick_usages.providers.codex.account.models import (
+    CodexAccountObservation,
+)
 from sidekick_usages.providers.codex.account.service import read_codex_account
 from sidekick_usages.providers.codex.account.types import (
     CodexAccountReadFailure,
@@ -23,23 +26,24 @@ from sidekick_usages.providers.codex.app_server.errors import (
 from sidekick_usages.providers.codex.app_server.jsonrpc.models import (
     JsonRpcNotification,
 )
+from sidekick_usages.providers.codex.app_server.methods import (
+    ACCOUNT_LOGIN_COMPLETED_METHOD,
+    ACCOUNT_LOGIN_START_METHOD,
+    ACCOUNT_UPDATED_METHOD,
+)
 from sidekick_usages.providers.codex.app_server.session import (
     CodexAppServerSession,
 )
 from sidekick_usages.providers.codex.app_server.types import (
     CodexAppServerFailure,
 )
-from sidekick_usages.providers.codex.failures import codex_failure
-from sidekick_usages.providers.codex.models import (
-    CodexAccountObservation,
+from sidekick_usages.providers.codex.auth.login.models import (
     CodexLoginAttempt,
     CodexLoginEvent,
 )
+from sidekick_usages.providers.codex.failures import codex_failure
 from sidekick_usages.serialization.json import JsonObject
 
-ACCOUNT_LOGIN_START_METHOD = "account/login/start"
-ACCOUNT_LOGIN_COMPLETED_METHOD = "account/login/completed"
-ACCOUNT_UPDATED_METHOD = "account/updated"
 _BROWSER_LOGIN_TIMEOUT_SECONDS = 630.0
 _DEVICE_LOGIN_TIMEOUT_SECONDS = 930.0
 _LOGIN_START_TIMEOUT_SECONDS = 30.0

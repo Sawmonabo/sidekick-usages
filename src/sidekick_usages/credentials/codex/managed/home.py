@@ -28,7 +28,8 @@ from sidekick_usages.providers.codex.app_server.session import (
 from sidekick_usages.providers.codex.app_server.types import (
     CodexProcessGroupPolicy,
 )
-from sidekick_usages.providers.codex.auth import (
+from sidekick_usages.providers.codex.auth.models import CodexAuthSnapshot
+from sidekick_usages.providers.codex.auth.storage import (
     CODEX_AUTH_FILE,
     CODEX_CONFIG_FILE,
     managed_auth_snapshot,
@@ -36,10 +37,7 @@ from sidekick_usages.providers.codex.auth import (
     parse_managed_auth_snapshot,
     prepare_file_auth_config,
 )
-from sidekick_usages.providers.codex.models import (
-    CodexAuthSnapshot,
-)
-from sidekick_usages.providers.codex.token import (
+from sidekick_usages.providers.codex.auth.token import (
     codex_access_token_generation,
 )
 

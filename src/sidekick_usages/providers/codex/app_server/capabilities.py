@@ -17,6 +17,15 @@ from sidekick_usages.providers.codex.app_server.errors import (
 from sidekick_usages.providers.codex.app_server.executable import (
     verify_codex_executable,
 )
+from sidekick_usages.providers.codex.app_server.methods import (
+    ACCOUNT_LOGIN_COMPLETED_METHOD,
+    ACCOUNT_LOGIN_START_METHOD,
+    ACCOUNT_READ_METHOD,
+    ACCOUNT_TOKEN_REFRESH_METHOD,
+    ACCOUNT_UPDATED_METHOD,
+    INITIALIZE_METHOD,
+    INITIALIZED_METHOD,
+)
 from sidekick_usages.providers.codex.app_server.models import (
     CodexAppServerCapabilities,
     CodexExecutable,
@@ -244,29 +253,33 @@ def _validate_required_capabilities(
     _require_property(refresh_response, "chatgptPlanType", "string")
 
     for method in (
-        "initialize",
-        "account/login/start",
-        "account/read",
+        INITIALIZE_METHOD,
+        ACCOUNT_LOGIN_START_METHOD,
+        ACCOUNT_READ_METHOD,
     ):
         _require_method(schemas["ClientRequest.json"], method)
-    _require_method(schemas["ClientNotification.json"], "initialized")
+    _require_method(
+        schemas["ClientNotification.json"],
+        INITIALIZED_METHOD,
+    )
     _require_method(
         schemas["ServerRequest.json"],
-        "account/chatgptAuthTokens/refresh",
+        ACCOUNT_TOKEN_REFRESH_METHOD,
     )
     _require_method(
         schemas["ServerNotification.json"],
-        "account/login/completed",
+        ACCOUNT_LOGIN_COMPLETED_METHOD,
     )
     _require_method(
         schemas["ServerNotification.json"],
-        "account/updated",
+        ACCOUNT_UPDATED_METHOD,
     )
     _require_property(
         schemas["ServerNotification.json"],
         "emittedAtMs",
         "integer",
     )
+
 
 def _hash_schemas(raw_schemas: dict[str, bytes]) -> str:
     digest = hashlib.sha256()

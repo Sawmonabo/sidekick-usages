@@ -21,6 +21,10 @@ from sidekick_usages.providers.codex.app_server.jsonrpc.models import (
     JsonRpcNotification,
     JsonRpcServerRequest,
 )
+from sidekick_usages.providers.codex.app_server.methods import (
+    ACCOUNT_TOKEN_REFRESH_METHOD,
+    ACCOUNT_UPDATED_METHOD,
+)
 from sidekick_usages.providers.codex.app_server.types import (
     CodexAppServerFailure,
 )
@@ -31,11 +35,9 @@ from sidekick_usages.providers.codex.broker.external_auth.activation import (
     encode_codex_activation_instruction,
 )
 from sidekick_usages.providers.codex.broker.external_auth.installation import (
-    ACCOUNT_UPDATED_METHOD,
     EXTERNAL_AUTH_TYPE,
 )
 from sidekick_usages.providers.codex.broker.external_auth.refresh import (
-    CODEX_REFRESH_METHOD,
     decode_codex_refresh_reply,
     decode_codex_refresh_request,
     encode_codex_callback_acknowledgement,
@@ -489,7 +491,7 @@ class CodexRuntimeBroker:
             return
         if not isinstance(message, JsonRpcServerRequest):
             return
-        if message.method != CODEX_REFRESH_METHOD:
+        if message.method != ACCOUNT_TOKEN_REFRESH_METHOD:
             return
         started_at = self._monotonic()
         official_deadline = started_at + CODEX_CALLBACK_RESPONSE_SECONDS

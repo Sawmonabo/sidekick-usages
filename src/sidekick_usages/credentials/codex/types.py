@@ -3,7 +3,7 @@
 from collections.abc import Callable
 from enum import StrEnum
 
-from sidekick_usages.providers.codex.models import CodexLoginEvent
+from sidekick_usages.providers.codex.auth.login.models import CodexLoginEvent
 
 type CodexLoginEventSink = Callable[[CodexLoginEvent], None]
 

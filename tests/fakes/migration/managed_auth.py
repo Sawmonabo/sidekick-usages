@@ -38,7 +38,7 @@ from sidekick_usages.providers.base import (
     ProviderFailure,
     ProviderFailureKind,
 )
-from sidekick_usages.providers.codex.models import CodexLoginEvent
+from sidekick_usages.providers.codex.auth.login.models import CodexLoginEvent
 
 REFERENCE_TIME = datetime(2026, 7, 25, 14, tzinfo=UTC)
 OBSERVED_AT = REFERENCE_TIME - timedelta(hours=2)

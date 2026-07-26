@@ -24,14 +24,16 @@ from sidekick_usages.providers.base import (
     ProviderFailure,
     ProviderFailureKind,
 )
-from sidekick_usages.providers.codex.failures import codex_failure
-from sidekick_usages.providers.codex.generation import codex_generation_order
-from sidekick_usages.providers.codex.models import CodexAuthSnapshot
-from sidekick_usages.providers.codex.native import default_codex_home
-from sidekick_usages.providers.codex.schemas import parse_auth_credentials
-from sidekick_usages.providers.codex.token import (
+from sidekick_usages.providers.codex.auth.generation import (
+    codex_generation_order,
+)
+from sidekick_usages.providers.codex.auth.home import default_codex_home
+from sidekick_usages.providers.codex.auth.models import CodexAuthSnapshot
+from sidekick_usages.providers.codex.auth.token import (
     codex_access_token_generation,
 )
+from sidekick_usages.providers.codex.failures import codex_failure
+from sidekick_usages.providers.codex.schema.auth import parse_auth_credentials
 from sidekick_usages.serialization.json import JsonObject, decode_json_object
 
 CODEX_AUTH_FILE = "auth.json"

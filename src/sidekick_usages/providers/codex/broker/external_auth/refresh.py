@@ -12,6 +12,15 @@ from sidekick_usages.providers.codex.app_server.jsonrpc.codec import (
 from sidekick_usages.providers.codex.app_server.jsonrpc.models import (
     JsonRpcServerRequest,
 )
+from sidekick_usages.providers.codex.app_server.methods import (
+    ACCOUNT_TOKEN_REFRESH_METHOD,
+)
+from sidekick_usages.providers.codex.auth.generation import (
+    codex_generation_order,
+)
+from sidekick_usages.providers.codex.auth.token import (
+    decode_codex_token_claims,
+)
 from sidekick_usages.providers.codex.broker.errors import CodexBrokerError
 from sidekick_usages.providers.codex.broker.external_auth.codec import (
     decode_worker_message,
@@ -31,8 +40,6 @@ from sidekick_usages.providers.codex.broker.types import (
     CodexBrokerFailure,
     CodexCallbackMode,
 )
-from sidekick_usages.providers.codex.generation import codex_generation_order
-from sidekick_usages.providers.codex.token import decode_codex_token_claims
 from sidekick_usages.serialization.json import (
     JsonEncodeError,
     JsonObject,
@@ -40,7 +47,6 @@ from sidekick_usages.serialization.json import (
 )
 
 CODEX_CALLBACK_PROTOCOL_VERSION = 1
-CODEX_REFRESH_METHOD = "account/chatgptAuthTokens/refresh"
 CODEX_REFRESH_REASON = "unauthorized"
 CODEX_REFRESH_ERROR_CODE = -32000
 CODEX_REFRESH_ERROR_MESSAGE = "external auth refresh unavailable"
@@ -91,7 +97,7 @@ def decode_codex_refresh_request(
         or not isinstance(request.request_id, int)
         or request.request_id < 0
         or request.request_id > MAX_JSON_RPC_INTEGER
-        or request.method != CODEX_REFRESH_METHOD
+        or request.method != ACCOUNT_TOKEN_REFRESH_METHOD
         or set(request.params) != {"previousAccountId", "reason"}
         or request.params.get("reason") != CODEX_REFRESH_REASON
         or not isinstance(previous, str)
