@@ -30,6 +30,13 @@ platform runtime closure to `uv.lock`, hashes the GitHub tag archive, and emits
 the complete Ruby formula from source-distribution resources. It rejects a
 missing source distribution or an unreviewed native source-build closure.
 
+For unreleased development, the generated current-source formula is the
+dependency-complete artifact. Its resource set follows the current locked host
+runtime closure automatically, including transitive resources. Do not copy its
+local source URL or archive hash into the checked-in release formula; that
+formula changes only after a real release tag supplies the matching source
+archive.
+
 Pydantic-core 2.46.4 is the currently reviewed native resource. Its upstream
 metadata requires maturin `>=1.10,<2` and Rust `>=1.88`; the generated formula
 therefore declares both `maturin` and `rust` as build dependencies. A different
