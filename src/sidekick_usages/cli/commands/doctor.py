@@ -127,10 +127,10 @@ def doctor_cmd(
             label=label,
         )
         if (
-            not diagnostics
+            label is not None
+            and not diagnostics
             and not scheduled_operations
             and not unfinished_activations
-            and state.service.accounts
         ):
             invocation.err_console.print(
                 "[yellow]No matching accounts.[/yellow]"

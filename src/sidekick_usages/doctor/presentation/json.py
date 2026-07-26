@@ -36,20 +36,20 @@ from sidekick_usages.serialization.json import JsonObject, JsonValue
 
 def doctor_json(result: DoctorResult) -> JsonObject:
     """Build recursively typed Doctor JSON from one completed result."""
-    diagnostics: tuple[AccountDiagnostic, ...]
+    accounts: JsonValue
     persistence: JsonObject
     if isinstance(result, DoctorReadyResult):
-        diagnostics = result.diagnostics
+        accounts = [
+            _diagnostic_dict(diagnostic)
+            for diagnostic in result.diagnostics
+        ]
         persistence = _persistence_dict(result.persistence)
         persistence["credential_refresh"] = result.refresh_state.kind.value
     elif isinstance(result, DoctorFailedResult):
-        diagnostics = ()
+        accounts = ServiceComponentState.UNAVAILABLE.value
         persistence = _persistence_failure_dict(result.failure)
     else:
         assert_never(result)
-    accounts: list[JsonValue] = [
-        _diagnostic_dict(diagnostic) for diagnostic in diagnostics
-    ]
     return {
         "accounts": accounts,
         "provider_capabilities": _capability_dicts(result.capabilities),

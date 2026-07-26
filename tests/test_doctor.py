@@ -114,6 +114,9 @@ def _harness(
     activations: tuple[ActivationRecord, ...] = (),
     capabilities: ProviderCapabilityReport | None = None,
     supervisor: SupervisorHealth = _SUPERVISOR_HEALTH,
+    refresh_state: CredentialRefreshStateKind = (
+        CredentialRefreshStateKind.CLEAN
+    ),
 ) -> tuple[CliHarness, io.StringIO, FixedClock]:
     output = io.StringIO()
     clock = FixedClock()
@@ -147,7 +150,7 @@ def _harness(
                 tmp_path / "accounts.json",
                 len(accounts),
             ),
-            CredentialRefreshState(CredentialRefreshStateKind.CLEAN),
+            CredentialRefreshState(refresh_state),
         ),
         supervisor,
         capability_service,
@@ -629,7 +632,7 @@ def test_json_represents_current_store_failure(tmp_path: Path) -> None:
 
     assert result.exit_code == ExitCode.SCHEDULER_ERROR
     payload = json.loads(output.getvalue())
-    assert payload["accounts"] == []
+    assert payload["accounts"] == "unavailable"
     assert payload["persistence"] == {
         "state": "unreadable",
         "account_count": None,
@@ -667,16 +670,24 @@ def test_json_represents_current_store_failure(tmp_path: Path) -> None:
         capabilities=make_provider_capability_report(codex_ready=False),
         supervisor=healthy_supervisor,
     )
+    refresh_harness, _refresh_output, _refresh_clock = _harness(
+        tmp_path / "refresh-state",
+        (),
+        supervisor=healthy_supervisor,
+        refresh_state=CredentialRefreshStateKind.RECOVERABLE,
+    )
 
     primary_result = primary_harness.invoke(["doctor", "--json"])
     downstream_result = downstream_harness.invoke(["doctor", "--json"])
     capability_result = capability_harness.invoke(
         ["doctor", "--provider", "codex", "--json"]
     )
+    refresh_result = refresh_harness.invoke(["doctor", "--json"])
 
     assert primary_result.exit_code == ExitCode.MANUAL_ACTION
     assert downstream_result.exit_code == ExitCode.SCHEDULER_ERROR
     assert capability_result.exit_code == ExitCode.SYSTEM_ERROR
+    assert refresh_result.exit_code == ExitCode.SYSTEM_ERROR
 
 
 def test_filters_are_composable(tmp_path: Path) -> None:
@@ -763,6 +774,13 @@ def test_filters_are_composable(tmp_path: Path) -> None:
         ),
     )
 
+    no_account_result = claude_harness.invoke(
+        ["doctor", "--provider", "codex"]
+    )
+    assert no_account_result.exit_code == ExitCode.SCHEDULER_ERROR
+    assert "provider capabilities\n  codex:" in claude_output.getvalue()
+    claude_output.seek(0)
+    claude_output.truncate()
     claude_result = claude_harness.invoke(
         ["doctor", "--provider", "claude", "--json"]
     )
@@ -774,3 +792,8 @@ def test_filters_are_composable(tmp_path: Path) -> None:
         result["provider"]
         for result in claude_payload["provider_capabilities"]
     ] == ["claude"]
+    assert claude_payload["accounts"][0]["manual_action"] == [
+        "sidekick-usages",
+        "migrate",
+        "managed-auth",
+    ]

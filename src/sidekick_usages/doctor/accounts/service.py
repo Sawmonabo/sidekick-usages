@@ -67,6 +67,9 @@ from sidekick_usages.doctor.runtime.types import (
     DoctorAccountWarning,
     NativeAccountRelation,
 )
+from sidekick_usages.persistence.credentials.refresh.artifacts import (
+    CredentialRefreshStateKind,
+)
 from sidekick_usages.persistence.errors import (
     exit_code_for_persistence_code,
 )
@@ -269,9 +272,19 @@ def doctor_exit_code(
         )
         else ExitCode.SUCCESS
     )
+    refresh_code = (
+        ExitCode.SYSTEM_ERROR
+        if (
+            isinstance(result, DoctorReadyResult)
+            and result.refresh_state.kind
+            is not CredentialRefreshStateKind.CLEAN
+        )
+        else ExitCode.SUCCESS
+    )
     return highest_exit_code(
         _supervisor_exit_code(result.supervisor),
         capability_code,
+        refresh_code,
         persistence_code,
         account_code,
     )
@@ -313,17 +326,7 @@ def _manual_action(
 ) -> tuple[str, ...] | None:
     """Return one exact command for the highest-priority account repair."""
     label = str(account.label)
-    authority = account.authority
-    if (
-        isinstance(authority, ClaudeAccountAuthority)
-        and isinstance(
-            authority.subscription,
-            ClaudeStoredLoginAuthority,
-        )
-    ) or (
-        isinstance(authority, CodexAccountAuthority)
-        and isinstance(authority.subscription, CodexStoredAuthority)
-    ):
+    if not account.has_managed_authority:
         return ("sidekick-usages", "migrate", "managed-auth")
     if identity_state is IdentityState.ASSOCIATION_REQUIRED:
         return (
