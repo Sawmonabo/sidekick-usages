@@ -8,6 +8,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from sidekick_usages.branding.rich import rich_style
 from sidekick_usages.core.accounts.types import MetricsFreshness
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.usage.models import (
@@ -33,6 +34,10 @@ from sidekick_usages.usage.presentation.layout.models import ProviderPanelRow
 from sidekick_usages.usage.presentation.layout.panels import (
     provider_panel_frame,
     provider_usage_table,
+)
+from sidekick_usages.usage.presentation.theme import (
+    ACCOUNT_LABEL_STYLE,
+    ADVISORY_STYLE,
 )
 
 
@@ -97,7 +102,7 @@ def _stale_usage_lines(usages: Sequence[AccountUsage]) -> tuple[Text, ...]:
     return tuple(
         Text(
             f"⚠ {usage.label}: last known · {usage.fetched_at.isoformat()}",
-            style="yellow",
+            style=rich_style(ADVISORY_STYLE),
         )
         for usage in usages
         if usage.freshness is MetricsFreshness.STALE
@@ -113,8 +118,14 @@ def _error_table(
     rows: list[tuple[str, str, Text, tuple[Text, ...]]] = []
     for failure in failures:
         status_label, detail_lines = failure_copy(failure)
-        status = Text(f"⚠ {status_label}", style="yellow")
-        detail = tuple(Text(line, style="grey54") for line in detail_lines)
+        status = Text(
+            f"⚠ {status_label}",
+            style=rich_style(ADVISORY_STYLE),
+        )
+        detail = tuple(
+            Text(line, style=rich_style(ADVISORY_STYLE))
+            for line in detail_lines
+        )
         rows.append((failure.label, failure.plan, status, detail))
     return _warning_table(provider_id, rows, name_width)
 
@@ -146,7 +157,7 @@ def _warning_table(
             table.add_row(*([Text("")] * 4))
         table.add_row(
             account_dot(provider_id),
-            Text(label, style="grey85"),
+            Text(label, style=rich_style(ACCOUNT_LABEL_STYLE)),
             plan_text(plan),
             Group(status, *detail),
         )
@@ -165,10 +176,10 @@ def _activity_issue_table(
             raise ValueError("Account activity issue requires a label.")
         status = Text(
             f"⚠ {activity_failure_label(issue.kind)}",
-            style="yellow",
+            style=rich_style(ADVISORY_STYLE),
         )
         detail = tuple(
-            Text(line, style="grey54")
+            Text(line, style=rich_style(ADVISORY_STYLE))
             for line in activity_issue_copy(provider_id, issue)
         )
         rows.append((issue.label, "unknown", status, detail))

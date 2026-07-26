@@ -16,22 +16,18 @@ from sidekick_usages.usage.dashboard.models import (
 )
 from sidekick_usages.usage.presentation.dashboard.render.models import (
     DashboardLine,
-    DashboardTextStyle,
 )
 from sidekick_usages.usage.presentation.dashboard.render.text import (
     activity_summary_line,
     brand_lines,
     concat_lines,
     fit_line,
-    heat_style,
     line,
     line_width,
     plain_line,
-    plan_style,
-    provider_style,
-    provider_title_style,
     segment,
     visible_plan,
+    wrap_text,
 )
 from sidekick_usages.usage.presentation.dashboard.selection import (
     CURSOR_GLYPH,
@@ -43,12 +39,18 @@ from sidekick_usages.usage.presentation.dashboard.selection import (
 from sidekick_usages.usage.presentation.formatting import (
     PANEL_CHROME_WIDTH,
     PANEL_TILE_WIDTH,
-    cell_width,
     compact_reset_text,
     panel_columns,
     panel_model_width,
     sanitize_terminal_text,
     window_index,
+)
+from sidekick_usages.usage.presentation.theme import (
+    UsageTextRole,
+    heat_role,
+    plan_role,
+    provider_role,
+    provider_title_role,
 )
 
 PANEL_PADDING = 2
@@ -59,7 +61,6 @@ def dashboard_required_width(
     providers: tuple[DashboardProvider, ...],
     name_width: int,
     activities: dict[ProviderId, TokenActivitySummary],
-    reference_time: datetime,
 ) -> int:
     """Return the widest natural provider panel."""
     return max(
@@ -68,7 +69,6 @@ def dashboard_required_width(
                 provider,
                 name_width,
                 activities.get(provider.provider_id),
-                reference_time,
             )
             for provider in providers
         ),
@@ -116,11 +116,11 @@ def _provider_panel_lines(
 ) -> list[DashboardLine]:
     title = _provider_title(provider)
     top_fill = width - line_width(title) - 5
-    provider_role = provider_style(provider.provider_id)
+    provider_color_role = provider_role(provider.provider_id)
     top = concat_lines(
-        plain_line("╭─ ", provider_role),
+        plain_line("╭─ ", provider_color_role),
         title,
-        plain_line(f" {'─' * top_fill}╮", provider_role),
+        plain_line(f" {'─' * top_fill}╮", provider_color_role),
     )
     content_width = width - PANEL_CHROME_WIDTH
     content = _provider_content_lines(
@@ -128,16 +128,20 @@ def _provider_panel_lines(
         cursor,
         name_width,
         reference_time,
+        content_width,
     )
     lines = [
         top,
-        _panel_line(DashboardLine(), content_width, provider_role),
+        _panel_line(DashboardLine(), content_width, provider_color_role),
     ]
     lines.extend(
-        _panel_line(line, content_width, provider_role) for line in content
+        _panel_line(line, content_width, provider_color_role)
+        for line in content
     )
-    lines.append(_panel_line(DashboardLine(), content_width, provider_role))
-    lines.append(_panel_bottom(width, activity, provider_role))
+    lines.append(
+        _panel_line(DashboardLine(), content_width, provider_color_role)
+    )
+    lines.append(_panel_bottom(width, activity, provider_color_role))
     return lines
 
 
@@ -146,6 +150,7 @@ def _provider_content_lines(
     cursor: DashboardCursor,
     name_width: int,
     reference_time: datetime,
+    content_width: int,
 ) -> list[DashboardLine]:
     reports = [
         row.usage.report
@@ -169,13 +174,14 @@ def _provider_content_lines(
                 reference_time,
             )
         )
-        lines.extend(
-            _account_warning_line(
-                detail,
-                widths,
+        for detail in row_details(row, reference_time):
+            lines.extend(
+                _account_warning_lines(
+                    detail,
+                    widths,
+                    content_width,
+                )
             )
-            for detail in row_details(row, reference_time)
-        )
     return lines
 
 
@@ -197,7 +203,7 @@ def _table_header_lines(
             caption.extend(
                 (
                     DashboardLine(),
-                    plain_line(group, DashboardTextStyle.HEADER),
+                    plain_line(group, UsageTextRole.MODEL_CAPTION),
                 )
             )
         lines.extend(
@@ -214,15 +220,15 @@ def _table_header_lines(
         DashboardLine(),
         DashboardLine(),
         DashboardLine(),
-        *(plain_line(length, DashboardTextStyle.HEADER) for length in primary),
+        *(plain_line(length, UsageTextRole.HEADER) for length in primary),
     ]
     for _group, lengths in grouped:
         header.extend(
             (
-                plain_line("│", DashboardTextStyle.DIM),
+                plain_line("│", UsageTextRole.MODEL_RULE),
                 _subgrid(
                     [
-                        plain_line(length, DashboardTextStyle.HEADER)
+                        plain_line(length, UsageTextRole.HEADER)
                         for length in lengths
                     ]
                 ),
@@ -252,9 +258,9 @@ def _account_table_lines(
         _marker(row, cursor),
         plain_line(
             sanitize_terminal_text(row_label(row)),
-            DashboardTextStyle.LABEL,
+            UsageTextRole.ACCOUNT_LABEL,
         ),
-        plain_line(safe_plan, plan_style(safe_plan)),
+        plain_line(safe_plan, plan_role(safe_plan)),
     ]
     usage_cells.extend(
         _utilization_tile(windows.get(("", length))) for length in primary
@@ -262,7 +268,7 @@ def _account_table_lines(
     for group, lengths in grouped:
         usage_cells.extend(
             (
-                plain_line("│", DashboardTextStyle.DIM),
+                plain_line("│", UsageTextRole.MODEL_RULE),
                 _subgrid(
                     [
                         _utilization_tile(windows.get((group, length)))
@@ -294,14 +300,10 @@ def _marker(
     return line(
         segment(
             CURSOR_GLYPH if selected else " ",
-            (
-                DashboardTextStyle.CURSOR
-                if selected
-                else DashboardTextStyle.PLAIN
-            ),
+            (UsageTextRole.CURSOR if selected else UsageTextRole.PLAIN),
         ),
         segment(" "),
-        segment("●", provider_style(row.provider_id)),
+        segment("●", provider_role(row.provider_id)),
     )
 
 
@@ -321,7 +323,7 @@ def _reset_row(
     for group, lengths in grouped:
         cells.extend(
             (
-                plain_line("│", DashboardTextStyle.DIM),
+                plain_line("│", UsageTextRole.MODEL_RULE),
                 _subgrid(
                     [
                         _reset_tile(
@@ -336,17 +338,19 @@ def _reset_row(
     return _join_cells(cells, widths, alignments)
 
 
-def _account_warning_line(
+def _account_warning_lines(
     detail: str,
     widths: list[int],
-) -> DashboardLine:
+    content_width: int,
+) -> list[DashboardLine]:
     prefix_width = widths[0] + len(TABLE_CELL_GAP)
-    return concat_lines(
-        plain_line(" " * prefix_width),
-        plain_line(
-            f"⚠ {sanitize_terminal_text(detail)}",
-            DashboardTextStyle.WARNING,
-        ),
+    prefix = " " * prefix_width
+    return wrap_text(
+        f"⚠ {sanitize_terminal_text(detail)}",
+        content_width,
+        UsageTextRole.ADVISORY,
+        initial_prefix=prefix,
+        subsequent_prefix=prefix,
     )
 
 
@@ -388,7 +392,7 @@ def _join_cells(
 
 def _rstrip_line(rendered: DashboardLine) -> DashboardLine:
     parts = list(rendered.segments)
-    while parts and parts[-1].style is DashboardTextStyle.PLAIN:
+    while parts and parts[-1].style is UsageTextRole.PLAIN:
         item = parts[-1]
         value = item.value.rstrip()
         if value:
@@ -412,7 +416,7 @@ def _utilization_tile(window: UsageWindow | None) -> DashboardLine:
         return DashboardLine()
     percent = round(window.utilization)
     value = f"{percent}%".center(PANEL_TILE_WIDTH)
-    return plain_line(value, heat_style(percent))
+    return plain_line(value, heat_role(percent))
 
 
 def _reset_tile(
@@ -423,14 +427,14 @@ def _reset_tile(
         return DashboardLine()
     return plain_line(
         compact_reset_text(window.resets_at, reference_time),
-        DashboardTextStyle.RESET,
+        UsageTextRole.RESET,
     )
 
 
 def _panel_line(
     content: DashboardLine,
     content_width: int,
-    provider_role: DashboardTextStyle,
+    provider_role: UsageTextRole,
 ) -> DashboardLine:
     return concat_lines(
         plain_line("│", provider_role),
@@ -444,7 +448,7 @@ def _panel_line(
 def _panel_bottom(
     width: int,
     activity: TokenActivitySummary | None,
-    provider_role: DashboardTextStyle,
+    provider_role: UsageTextRole,
 ) -> DashboardLine:
     if activity is None:
         return plain_line(f"╰{'─' * (width - 2)}╯", provider_role)
@@ -461,7 +465,6 @@ def _panel_required_width(
     provider: DashboardProvider,
     name_width: int,
     activity: TokenActivitySummary | None,
-    reference_time: datetime,
 ) -> int:
     reports = [
         row.usage.report
@@ -471,16 +474,6 @@ def _panel_required_width(
     primary, grouped = panel_columns(reports)
     widths, _alignments = _table_layout(name_width, primary, grouped)
     table_width = sum(widths) + len(TABLE_CELL_GAP) * (len(widths) - 1)
-    warning_prefix_width = widths[0] + len(TABLE_CELL_GAP)
-    warning_width = max(
-        (
-            warning_prefix_width
-            + cell_width(f"⚠ {sanitize_terminal_text(detail)}")
-            for row in provider.rows
-            for detail in row_details(row, reference_time)
-        ),
-        default=0,
-    )
     title_width = line_width(_provider_title(provider))
     subtitle_width = (
         0
@@ -489,7 +482,6 @@ def _panel_required_width(
     )
     return max(
         table_width + PANEL_CHROME_WIDTH,
-        warning_width + PANEL_CHROME_WIDTH,
         title_width + PANEL_CHROME_WIDTH,
         subtitle_width + PANEL_CHROME_WIDTH,
     )
@@ -501,11 +493,11 @@ def _provider_title(provider: DashboardProvider) -> DashboardLine:
     return line(
         segment(
             provider.provider_id.upper(),
-            provider_title_style(provider.provider_id),
+            provider_title_role(provider.provider_id),
         ),
         segment(
             f" · {count} {noun}",
-            DashboardTextStyle.HEADER,
+            UsageTextRole.PANEL_META,
         ),
     )
 
@@ -520,9 +512,9 @@ def _legend() -> DashboardLine:
     ):
         parts.extend(
             (
-                plain_line(f" {label} ", heat_style(value)),
+                plain_line(f" {label} ", heat_role(value)),
                 plain_line("  "),
             )
         )
-    parts.append(plain_line("   dim = resets in", DashboardTextStyle.RESET))
+    parts.append(plain_line("   dim = resets in", UsageTextRole.LEGEND))
     return concat_lines(*parts)

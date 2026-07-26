@@ -3,6 +3,7 @@
 from rich.console import Group, RenderableType
 from rich.text import Text
 
+from sidekick_usages.branding.rich import rich_style
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.usage.models import (
     FetchFailure,
@@ -24,6 +25,7 @@ from sidekick_usages.usage.presentation.layout.activity import (
     provider_activity_lines,
 )
 from sidekick_usages.usage.presentation.layout.narrow import usage_block
+from sidekick_usages.usage.presentation.theme import ADVISORY_STYLE
 
 
 def _failure_block(failure: FetchFailure) -> Group:
@@ -35,9 +37,14 @@ def _failure_block(failure: FetchFailure) -> Group:
             failure.provider_id,
             failure.plan,
         ),
-        Text(f"  ⚠ {status}", style="yellow"),
+        Text(
+            f"  ⚠ {status}",
+            style=rich_style(ADVISORY_STYLE),
+        ),
     ]
-    lines.extend(Text(f"  {line}", style="grey54") for line in detail)
+    lines.extend(
+        Text(f"  {line}", style=rich_style(ADVISORY_STYLE)) for line in detail
+    )
     return Group(*lines)
 
 
@@ -51,10 +58,13 @@ def _activity_issue_block(
         raise ValueError("Account activity issue requires a label.")
     lines: list[RenderableType] = [
         account_header(issue.label, provider_id, plan),
-        Text(f"  ⚠ {activity_failure_label(issue.kind)}", style="yellow"),
+        Text(
+            f"  ⚠ {activity_failure_label(issue.kind)}",
+            style=rich_style(ADVISORY_STYLE),
+        ),
     ]
     lines.extend(
-        Text(f"  {line}", style="grey54")
+        Text(f"  {line}", style=rich_style(ADVISORY_STYLE))
         for line in activity_issue_copy(provider_id, issue)
     )
     return Group(*lines)

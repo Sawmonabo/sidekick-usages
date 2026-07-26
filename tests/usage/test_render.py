@@ -28,6 +28,7 @@ from sidekick_usages.core.types import (
 from sidekick_usages.persistence.errors import PersistenceCode
 from sidekick_usages.usage.dashboard.models import (
     DashboardAccount,
+    DashboardActionState,
     DashboardFooter,
     DashboardFooterKind,
 )
@@ -49,16 +50,18 @@ from sidekick_usages.usage.presentation.dashboard.render.frame import (
     render_dashboard,
 )
 from sidekick_usages.usage.presentation.dashboard.render.style import (
-    ANSI_HEAT_CYAN,
-    ANSI_HEAT_RED,
     ANSI_RESET,
-    ANSI_RESET_TEXT,
+    ansi_style,
     dashboard_color_enabled,
 )
 from sidekick_usages.usage.presentation.formatting import (
     cell_width,
     compact_reset_text,
     panel_model_width,
+)
+from sidekick_usages.usage.presentation.theme import (
+    UsageTextRole,
+    usage_style,
 )
 from tests.fakes.dashboard.render import (
     FORBIDDEN_SELECTION_LABELS,
@@ -89,6 +92,22 @@ _PANEL_FLOOR = 85
 _NARROW_TEST_WIDTH = 40
 _INTERACTIVE_WIDE_WIDTH = 200
 _INTERACTIVE_NARROW_WIDTH = 70
+_EXPECTED_THEME_COLORS = {
+    UsageTextRole.HEAT_ZERO: ("#cdd3d8", "#353a40"),
+    UsageTextRole.HEAT_GREEN: ("#dfffe9", "#1d5e35"),
+    UsageTextRole.HEAT_CYAN: ("#e2fbff", "#1b6a87"),
+    UsageTextRole.HEAT_YELLOW: ("#fff4e0", "#9c6f12"),
+    UsageTextRole.HEAT_RED: ("#ffe6e6", "#b03030"),
+    UsageTextRole.ACCOUNT_LABEL: ("#dadada", None),
+    UsageTextRole.PANEL_META: ("#8a8a8a", None),
+    UsageTextRole.HEADER: ("#6c6c6c", None),
+    UsageTextRole.MODEL_CAPTION: ("#767676", None),
+    UsageTextRole.ACTIVITY_SINCE: ("#585858", None),
+    UsageTextRole.MASTHEAD_DIVIDER: ("#3a3a3a", None),
+    UsageTextRole.MODEL_RULE: ("#356f78", None),
+    UsageTextRole.FOOTER_HELP: ("#b2b2b2", None),
+    UsageTextRole.ADVISORY: ("#b59a55", None),
+}
 
 
 def _time_after(**delta: float) -> datetime:
@@ -291,6 +310,14 @@ def _panel_line_widths(out: str) -> set[int]:
     }
 
 
+def _assert_theme_palette() -> None:
+    for role, expected in _EXPECTED_THEME_COLORS.items():
+        theme = usage_style(role)
+        assert (theme.foreground, theme.background) == expected
+    assert not usage_style(UsageTextRole.ACCOUNT_LABEL).bold
+    assert usage_style(UsageTextRole.ADVISORY).dim
+
+
 def test_panels_share_one_width() -> None:
     # measure-then-pin: every provider panel is pinned to the single
     # binding width, so all panel border/interior lines share one right edge.
@@ -362,6 +389,7 @@ def test_interactive_wide_render_preserves_dashboard_contract() -> None:
     unsafe_account = replace(
         account,
         label=AccountLabel("work-99%@example.test"),
+        states=(DashboardActionState.REPAIR_REQUIRED,),
         usage=replace(
             account.usage,
             report=replace(
@@ -402,9 +430,22 @@ def test_interactive_wide_render_preserves_dashboard_contract() -> None:
     assert fragment_list_to_text(to_formatted_text(ANSI(colored))) == plain
     assert "\x1b[31m" not in plain
     assert "\N{REPLACEMENT CHARACTER}" in plain
-    assert f"{ANSI_HEAT_CYAN} 51%  {ANSI_RESET}" in colored
-    assert f"{ANSI_HEAT_RED}99%{ANSI_RESET}" not in colored
-    assert f"{ANSI_RESET_TEXT}3h 50m{ANSI_RESET}" in colored
+    assert (
+        f"{ansi_style(UsageTextRole.HEAT_CYAN)} 51%  {ANSI_RESET}" in colored
+    )
+    assert (
+        f"{ansi_style(UsageTextRole.HEAT_RED)}99%{ANSI_RESET}" not in colored
+    )
+    assert f"{ansi_style(UsageTextRole.RESET)}3h 50m{ANSI_RESET}" in colored
+    _assert_theme_palette()
+    assert (
+        f"{ansi_style(UsageTextRole.ACCOUNT_LABEL)}"
+        f"work-99%@example.test{ANSI_RESET}" in colored
+    )
+    assert _panel_line_widths(plain) == _panel_line_widths(out)
+    assert all(
+        copy in plain for copy in ("Press Enter to repair and", "use it.")
+    )
     assert dashboard_color_enabled({}, terminal=True)
     assert not dashboard_color_enabled({"NO_COLOR": ""}, terminal=True)
 

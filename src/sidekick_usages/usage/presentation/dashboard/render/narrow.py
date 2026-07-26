@@ -12,17 +12,13 @@ from sidekick_usages.usage.dashboard.models import (
 )
 from sidekick_usages.usage.presentation.dashboard.render.models import (
     DashboardLine,
-    DashboardTextStyle,
 )
 from sidekick_usages.usage.presentation.dashboard.render.text import (
     brand_lines,
     concat_lines,
     fit_line,
-    heat_style,
     line,
     plain_line,
-    plan_style,
-    provider_style,
     segment,
     visible_plan,
     wrap_text,
@@ -41,6 +37,13 @@ from sidekick_usages.usage.presentation.formatting import (
     format_tokens_compact,
     sanitize_terminal_text,
     utilization_bar_segments,
+)
+from sidekick_usages.usage.presentation.theme import (
+    UsageTextRole,
+    heat_role,
+    plan_role,
+    provider_role,
+    provider_title_role,
 )
 
 
@@ -88,30 +91,26 @@ def _account_header_line(
     parts = [
         segment(
             CURSOR_GLYPH if selected else " ",
-            (
-                DashboardTextStyle.CURSOR
-                if selected
-                else DashboardTextStyle.PLAIN
-            ),
+            (UsageTextRole.CURSOR if selected else UsageTextRole.PLAIN),
         ),
         segment(" "),
-        segment("●", provider_style(row.provider_id)),
+        segment("●", provider_role(row.provider_id)),
         segment(" "),
         segment(
             sanitize_terminal_text(row_label(row)),
-            DashboardTextStyle.LABEL,
+            UsageTextRole.ACCOUNT_LABEL,
         ),
-        segment("  [", DashboardTextStyle.DIM),
-        segment(str(row.provider_id), provider_style(row.provider_id)),
+        segment("  [", UsageTextRole.DIM),
+        segment(str(row.provider_id), provider_role(row.provider_id)),
     ]
     if safe_plan:
         parts.extend(
             (
-                segment(" · ", DashboardTextStyle.DIM),
-                segment(safe_plan, plan_style(safe_plan)),
+                segment(" · ", UsageTextRole.DIM),
+                segment(safe_plan, plan_role(safe_plan)),
             )
         )
-    parts.append(segment("]", DashboardTextStyle.DIM))
+    parts.append(segment("]", UsageTextRole.DIM))
     return line(*parts)
 
 
@@ -124,7 +123,7 @@ def _usage_lines(
         return [
             plain_line(
                 "  No active usage windows reported.",
-                DashboardTextStyle.DIM,
+                UsageTextRole.DIM,
             )
         ]
     lines: list[DashboardLine] = []
@@ -138,18 +137,18 @@ def _usage_lines(
             line(
                 segment(
                     f" {sanitize_terminal_text(window.name)}  ",
-                    DashboardTextStyle.HEADER,
+                    UsageTextRole.HEADER,
                 ),
-                segment(filled, heat_style(percent)),
-                segment(idle, DashboardTextStyle.DIM),
-                segment(f"  {percent:>2}%", heat_style(percent)),
+                segment(filled, heat_role(percent)),
+                segment(idle, UsageTextRole.DIM),
+                segment(f"  {percent:>2}%", heat_role(percent)),
                 segment("  "),
                 segment(
                     format_reset_text(
                         window.resets_at,
                         reference_time,
                     ),
-                    DashboardTextStyle.RESET,
+                    UsageTextRole.RESET,
                 ),
             )
         )
@@ -162,7 +161,7 @@ def _warning_lines(detail: str, width: int) -> list[DashboardLine]:
         for line in wrap_text(
             sanitize_terminal_text(f"⚠ {detail}"),
             width,
-            DashboardTextStyle.WARNING,
+            UsageTextRole.ADVISORY,
             initial_prefix="    ",
             subsequent_prefix="    ",
         )
@@ -177,11 +176,11 @@ def _activity_lines(
     prefix = f"{provider} · "
     lines = [
         concat_lines(
-            plain_line(provider, provider_style(provider_id)),
-            plain_line(" · ", DashboardTextStyle.DIM),
+            plain_line(provider, provider_title_role(provider_id)),
+            plain_line(" · ", UsageTextRole.PANEL_META),
             plain_line(
                 f"{format_tokens_compact(activity.total_tokens)} tokens",
-                DashboardTextStyle.DIM,
+                UsageTextRole.PANEL_META,
             ),
         )
     ]
@@ -191,7 +190,7 @@ def _activity_lines(
                 segment(" " * len(prefix)),
                 segment(
                     f"since {format_since(activity.since)}",
-                    DashboardTextStyle.RESET,
+                    UsageTextRole.ACTIVITY_SINCE,
                 ),
             )
         )

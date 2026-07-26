@@ -7,16 +7,13 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from sidekick_usages.branding.rich import PROVIDER_COLORS
+from sidekick_usages.branding.rich import rich_style
+from sidekick_usages.branding.theme import PROVIDER_COLORS
 from sidekick_usages.core.models import UsageWindow
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.usage.presentation.formatting import (
-    ACTIVE_PERCENT_THRESHOLD,
-    CYAN_PERCENT_THRESHOLD,
     PANEL_CHROME_WIDTH,
     PANEL_TILE_WIDTH,
-    RED_PERCENT_THRESHOLD,
-    YELLOW_PERCENT_THRESHOLD,
     compact_reset_text,
     panel_columns,
     panel_model_width,
@@ -24,39 +21,24 @@ from sidekick_usages.usage.presentation.formatting import (
 )
 from sidekick_usages.usage.presentation.layout.accounts import plan_text
 from sidekick_usages.usage.presentation.layout.models import ProviderPanelRow
-
-HEAT_BANDS: tuple[tuple[int, str, str], ...] = (
-    (RED_PERCENT_THRESHOLD, "#ffe6e6", "#b03030"),
-    (YELLOW_PERCENT_THRESHOLD, "#fff4e0", "#9c6f12"),
-    (CYAN_PERCENT_THRESHOLD, "#e2fbff", "#1b6a87"),
-    (ACTIVE_PERCENT_THRESHOLD, "#dfffe9", "#1d5e35"),
+from sidekick_usages.usage.presentation.theme import (
+    ACCOUNT_LABEL_STYLE,
+    HEADER_STYLE,
+    MODEL_CAPTION_STYLE,
+    MODEL_RULE_STYLE,
+    PANEL_META_STYLE,
+    UsageTextRole,
+    heat_role,
+    provider_title_role,
+    usage_style,
 )
-IDLE_FOREGROUND = "grey39"
-ZERO_FOREGROUND = "#cdd3d8"
-ZERO_BACKGROUND = "#353a40"
-RULE_STYLE = "#356f78"
-
-
-def _heat_band(percent: int) -> tuple[str, str] | None:
-    """Return the utilization colors for one rounded percentage."""
-    for threshold, foreground, background in HEAT_BANDS:
-        if percent >= threshold:
-            return (foreground, background)
-    return None
 
 
 def _heat_tile(percent: int) -> Text:
     """Build one fixed-width utilization tile."""
-    band = _heat_band(percent)
-    if band is None:
-        return Text(
-            f"{'0%':^{PANEL_TILE_WIDTH}}",
-            style=f"{ZERO_FOREGROUND} on {ZERO_BACKGROUND}",
-        )
-    foreground, background = band
     return Text(
         f"{f'{percent}%':^{PANEL_TILE_WIDTH}}",
-        style=f"{foreground} on {background}",
+        style=rich_style(usage_style(heat_role(percent))),
     )
 
 
@@ -68,7 +50,7 @@ def _reset_cell(
     reset = compact_reset_text(reset_at, reference_time)
     return Text(
         f"{reset:^{PANEL_TILE_WIDTH}}",
-        style="grey42",
+        style=rich_style(HEADER_STYLE),
     )
 
 
@@ -93,7 +75,7 @@ def reset_or_blank(
 
 def rule_cell() -> Text:
     """Render the divider between primary and named-group columns."""
-    return Text("│", style=RULE_STYLE)
+    return Text("│", style=rich_style(MODEL_RULE_STYLE))
 
 
 def model_subgrid(cells: list[Text]) -> Table:
@@ -135,18 +117,28 @@ def build_table(
         caption: list[Text] = [blank, blank, blank]
         caption.extend(blank for _length in primary)
         for group, _lengths in grouped:
-            caption.extend((blank, Text(group, style="grey46")))
+            caption.extend(
+                (
+                    blank,
+                    Text(group, style=rich_style(MODEL_CAPTION_STYLE)),
+                )
+            )
         table.add_row(*caption)
         column_count = 3 + len(primary) + 2 * len(grouped)
         table.add_row(*([blank] * column_count))
     header: list[RenderableType] = [blank, blank, blank]
-    header.extend(Text(length, style="grey42") for length in primary)
+    header.extend(
+        Text(length, style=rich_style(HEADER_STYLE)) for length in primary
+    )
     for _group, lengths in grouped:
         header.extend(
             (
                 rule_cell(),
                 model_subgrid(
-                    [Text(length, style="grey42") for length in lengths]
+                    [
+                        Text(length, style=rich_style(HEADER_STYLE))
+                        for length in lengths
+                    ]
                 ),
             )
         )
@@ -172,7 +164,7 @@ def provider_usage_table(
         windows = {} if row.report is None else window_index(row.report)
         utilization_row: list[RenderableType] = [
             row.marker,
-            Text(row.label, style="grey85"),
+            Text(row.label, style=rich_style(ACCOUNT_LABEL_STYLE)),
             plan_text(row.plan),
         ]
         reset_row: list[RenderableType] = [Text(""), Text(""), Text("")]
@@ -222,10 +214,13 @@ def provider_panel_frame(
     color = PROVIDER_COLORS.get(provider_id, "white")
     account_noun = "account" if account_count == 1 else "accounts"
     title = Text()
-    title.append(provider_id.upper(), style=f"bold {color}")
+    title.append(
+        provider_id.upper(),
+        style=rich_style(usage_style(provider_title_role(provider_id))),
+    )
     title.append(
         f" · {account_count} {account_noun}",
-        style="grey54",
+        style=rich_style(PANEL_META_STYLE),
     )
     return Panel(
         content,
@@ -260,14 +255,13 @@ def legend() -> Text:
         ("70-89", 80),
         ("≥90", 95),
     ):
-        band = _heat_band(sample)
-        foreground, background = (
-            band if band is not None else (IDLE_FOREGROUND, "default")
-        )
         rendered.append(
             f" {label} ",
-            style=f"{foreground} on {background}",
+            style=rich_style(usage_style(heat_role(sample))),
         )
         rendered.append("  ")
-    rendered.append("   dim = resets in", style="grey42")
+    rendered.append(
+        "   dim = resets in",
+        style=rich_style(usage_style(UsageTextRole.LEGEND)),
+    )
     return rendered

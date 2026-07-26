@@ -4,6 +4,7 @@ from typing import assert_never
 
 from rich.text import Text
 
+from sidekick_usages.branding.rich import rich_style
 from sidekick_usages.usage.models import (
     CompleteTokenActivity,
     FailedTokenActivity,
@@ -15,6 +16,10 @@ from sidekick_usages.usage.models import (
 from sidekick_usages.usage.presentation.layout.activity import (
     narrow_activity_summary,
     panel_activity_summary,
+)
+from sidekick_usages.usage.presentation.theme import (
+    ADVISORY_STYLE,
+    HEADER_STYLE,
 )
 
 
@@ -47,11 +52,14 @@ def _state_text(
     activity: UnavailableTokenActivity | FailedTokenActivity,
 ) -> Text:
     if isinstance(activity, UnavailableTokenActivity):
-        return Text("token activity unavailable", style="grey42")
+        return Text(
+            "token activity unavailable",
+            style=rich_style(HEADER_STYLE),
+        )
     if isinstance(activity, FailedTokenActivity):
         return Text(
             activity_failure_label(activity.issues[0].kind),
-            style="yellow",
+            style=rich_style(ADVISORY_STYLE),
         )
     assert_never(activity)
 

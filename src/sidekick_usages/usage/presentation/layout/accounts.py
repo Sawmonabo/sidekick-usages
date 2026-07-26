@@ -2,17 +2,14 @@
 
 from rich.text import Text
 
-from sidekick_usages.branding.rich import PROVIDER_COLORS
+from sidekick_usages.branding.rich import rich_style
+from sidekick_usages.branding.theme import PROVIDER_COLORS
 from sidekick_usages.core.types import ProviderId
-
-PLAN_COLORS: dict[str, str] = {
-    "max": "magenta",
-    "team": "cyan",
-    "pro": "green",
-    "plus": "green",
-    "enterprise": "yellow",
-    "business": "yellow",
-}
+from sidekick_usages.usage.presentation.theme import (
+    ACCOUNT_LABEL_STYLE,
+    PLAN_DIM_STYLE,
+    PLAN_STYLES,
+)
 
 
 def account_dot(provider_id: ProviderId) -> Text:
@@ -24,7 +21,8 @@ def plan_text(plan: str) -> Text:
     """Render a plan chip, suppressing empty and unknown values."""
     if not plan or plan == "unknown":
         return Text("")
-    return Text(plan, style=PLAN_COLORS.get(plan, "grey42"))
+    theme = PLAN_STYLES.get(plan.casefold(), PLAN_DIM_STYLE)
+    return Text(plan, style=rich_style(theme))
 
 
 def account_tag(provider_id: ProviderId, plan: str) -> Text:
@@ -34,7 +32,8 @@ def account_tag(provider_id: ProviderId, plan: str) -> Text:
     tag.append(provider_id, style=provider_color)
     if plan and plan != "unknown":
         tag.append(" · ", style="dim")
-        tag.append(plan, style=PLAN_COLORS.get(plan, "dim"))
+        theme = PLAN_STYLES.get(plan.casefold(), PLAN_DIM_STYLE)
+        tag.append(plan, style=rich_style(theme))
     tag.append("]", style="dim")
     return tag
 
@@ -50,7 +49,7 @@ def account_header(
     header = Text()
     if marker is not None:
         header.append_text(marker)
-    header.append(label, style="bold")
+    header.append(label, style=rich_style(ACCOUNT_LABEL_STYLE))
     header.append("  ")
     header.append_text(account_tag(provider_id, plan))
     return header

@@ -36,3 +36,13 @@ class BrandLine:
     def plain(self) -> str:
         """Return the exact unstyled masthead text."""
         return "".join(segment.value for segment in self.segments)
+
+
+@dataclass(frozen=True, slots=True)
+class TerminalStyle:
+    """Dependency-free terminal color and emphasis definition."""
+
+    foreground: str | None = None
+    background: str | None = None
+    bold: bool = False
+    dim: bool = False

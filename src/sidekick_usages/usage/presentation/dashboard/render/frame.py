@@ -12,7 +12,6 @@ from sidekick_usages.usage.dashboard.models import (
 )
 from sidekick_usages.usage.presentation.dashboard.render.models import (
     DashboardLine,
-    DashboardTextStyle,
 )
 from sidekick_usages.usage.presentation.dashboard.render.narrow import (
     render_narrow,
@@ -39,6 +38,7 @@ from sidekick_usages.usage.presentation.formatting import (
     cell_width,
     sanitize_terminal_text,
 )
+from sidekick_usages.usage.presentation.theme import UsageTextRole
 
 
 def render_dashboard(
@@ -62,7 +62,7 @@ def render_dashboard(
             DashboardLine(),
             plain_line(
                 "No accounts to display.",
-                DashboardTextStyle.DIM,
+                UsageTextRole.DIM,
             ),
             DashboardLine(),
             *rendered_footer,
@@ -85,7 +85,6 @@ def render_dashboard(
             providers,
             name_width,
             activities,
-            snapshot.reference_time,
         ),
     )
     if safe_width < required_width:

@@ -1,6 +1,7 @@
 """Rich adapters for non-dashboard product surfaces."""
 
 from rich.console import Group, RenderableType
+from rich.style import Style
 from rich.text import Text
 
 from sidekick_usages.branding.content import (
@@ -10,39 +11,37 @@ from sidekick_usages.branding.content import (
 )
 from sidekick_usages.branding.models import (
     BrandLine,
-    BrandTextRole,
+    TerminalStyle,
 )
-from sidekick_usages.core.types import ProviderId
+from sidekick_usages.branding.theme import (
+    BRAND_STYLES,
+    DIVIDER_STYLE,
+    PRODUCT_STYLE,
+    SECTION_STYLE,
+    TITLE_STYLE,
+    UPDATE_LABEL_STYLE,
+    UPDATE_SEPARATOR_STYLE,
+)
 
-PROVIDER_COLORS: dict[str, str] = {
-    ProviderId.CLAUDE: "magenta",
-    ProviderId.CODEX: "cyan",
-}
-ROBOT_STYLE = "grey62"
-TITLE_STYLE = "bold grey85"
-PRODUCT_STYLE = "bold grey62"
-DESCRIPTION_STYLE = "grey78"
-PROMISE_STYLE = "grey62"
-SECTION_STYLE = "bold grey70"
-DIVIDER_STYLE = "grey23"
-BRAND_STYLES = {
-    BrandTextRole.PLAIN: None,
-    BrandTextRole.ROBOT: ROBOT_STYLE,
-    BrandTextRole.TITLE: TITLE_STYLE,
-    BrandTextRole.PRODUCT: PRODUCT_STYLE,
-    BrandTextRole.DESCRIPTION: DESCRIPTION_STYLE,
-    BrandTextRole.PROMISE: PROMISE_STYLE,
-    BrandTextRole.CLAUDE: PROVIDER_COLORS[ProviderId.CLAUDE],
-    BrandTextRole.CODEX: PROVIDER_COLORS[ProviderId.CODEX],
-    BrandTextRole.DIVIDER: DIVIDER_STYLE,
-}
+
+def rich_style(theme: TerminalStyle) -> Style:
+    """Adapt one dependency-free terminal style to Rich."""
+    return Style(
+        color=theme.foreground,
+        bgcolor=theme.background,
+        bold=theme.bold,
+        dim=theme.dim,
+    )
 
 
 def _render_line(line: BrandLine) -> Text:
     """Adapt one canonical masthead line to Rich text."""
     rendered = Text()
     for segment in line.segments:
-        rendered.append(segment.value, style=BRAND_STYLES[segment.role])
+        rendered.append(
+            segment.value,
+            style=rich_style(BRAND_STYLES[segment.role]),
+        )
     return rendered
 
 
@@ -59,7 +58,7 @@ def brand_header(
         parts.extend(
             (
                 Text(""),
-                Text(section, style=SECTION_STYLE),
+                Text(section, style=rich_style(SECTION_STYLE)),
                 Text(""),
             )
         )
@@ -69,10 +68,10 @@ def brand_header(
 def update_status_line() -> Text:
     """Render compact update-status branding plus a matching divider."""
     line = Text()
-    line.append(BRAND_NAME, style=TITLE_STYLE)
-    line.append(f" {BRAND_PRODUCT}", style=PRODUCT_STYLE)
-    line.append(" · ", style="grey42")
-    line.append("update status", style="grey62")
+    line.append(BRAND_NAME, style=rich_style(TITLE_STYLE))
+    line.append(f" {BRAND_PRODUCT}", style=rich_style(PRODUCT_STYLE))
+    line.append(" · ", style=rich_style(UPDATE_SEPARATOR_STYLE))
+    line.append("update status", style=rich_style(UPDATE_LABEL_STYLE))
     divider = "─" * line.cell_len
-    line.append(f"\n{divider}", style=DIVIDER_STYLE)
+    line.append(f"\n{divider}", style=rich_style(DIVIDER_STYLE))
     return line

@@ -7,7 +7,6 @@ from wcwidth import wcwidth
 from sidekick_usages.branding.content import brand_layout
 from sidekick_usages.branding.models import BrandTextRole
 from sidekick_usages.core.models import TokenActivitySummary
-from sidekick_usages.core.types import ProviderId
 from sidekick_usages.usage.dashboard.models import (
     DashboardFooter,
     DashboardFooterKind,
@@ -15,19 +14,15 @@ from sidekick_usages.usage.dashboard.models import (
 from sidekick_usages.usage.presentation.dashboard.render.models import (
     DashboardLine,
     DashboardText,
-    DashboardTextStyle,
 )
 from sidekick_usages.usage.presentation.formatting import (
-    ACTIVE_PERCENT_THRESHOLD,
-    CYAN_PERCENT_THRESHOLD,
-    RED_PERCENT_THRESHOLD,
-    YELLOW_PERCENT_THRESHOLD,
     cell_width,
     format_since,
     format_tokens_compact,
     format_tokens_exact,
     sanitize_terminal_text,
 )
+from sidekick_usages.usage.presentation.theme import UsageTextRole
 
 KEY_FOOTER = (
     " ↑/↓ or j/k move   Tab provider   Enter use   r refresh   ? help   q exit"
@@ -36,22 +31,22 @@ HELP_FOOTER = (
     " ↑/↓ or j/k move   Tab provider   Enter use   Esc cancel   "
     "r refresh   R refresh all   ? close help   q exit"
 )
-BRAND_STYLES = {
-    BrandTextRole.PLAIN: DashboardTextStyle.PLAIN,
-    BrandTextRole.ROBOT: DashboardTextStyle.ROBOT,
-    BrandTextRole.TITLE: DashboardTextStyle.TITLE,
-    BrandTextRole.PRODUCT: DashboardTextStyle.PRODUCT,
-    BrandTextRole.DESCRIPTION: DashboardTextStyle.DESCRIPTION,
-    BrandTextRole.PROMISE: DashboardTextStyle.PROMISE,
-    BrandTextRole.CLAUDE: DashboardTextStyle.CLAUDE,
-    BrandTextRole.CODEX: DashboardTextStyle.CODEX,
-    BrandTextRole.DIVIDER: DashboardTextStyle.DIM,
+BRAND_ROLES = {
+    BrandTextRole.PLAIN: UsageTextRole.PLAIN,
+    BrandTextRole.ROBOT: UsageTextRole.ROBOT,
+    BrandTextRole.TITLE: UsageTextRole.TITLE,
+    BrandTextRole.PRODUCT: UsageTextRole.PRODUCT,
+    BrandTextRole.DESCRIPTION: UsageTextRole.DESCRIPTION,
+    BrandTextRole.PROMISE: UsageTextRole.PROMISE,
+    BrandTextRole.CLAUDE: UsageTextRole.CLAUDE,
+    BrandTextRole.CODEX: UsageTextRole.CODEX,
+    BrandTextRole.DIVIDER: UsageTextRole.MASTHEAD_DIVIDER,
 }
 
 
 def segment(
     value: str,
-    style: DashboardTextStyle = DashboardTextStyle.PLAIN,
+    style: UsageTextRole = UsageTextRole.PLAIN,
 ) -> DashboardText:
     """Create one sanitized semantic text segment."""
     return DashboardText(sanitize_terminal_text(value), style)
@@ -64,7 +59,7 @@ def line(*segments: DashboardText) -> DashboardLine:
 
 def plain_line(
     value: str,
-    style: DashboardTextStyle = DashboardTextStyle.PLAIN,
+    style: UsageTextRole = UsageTextRole.PLAIN,
 ) -> DashboardLine:
     """Create one sanitized single-role line."""
     return line(segment(value, style))
@@ -89,7 +84,7 @@ def clip_line(rendered: DashboardLine, width: int) -> DashboardLine:
     if line_width(rendered) <= width:
         return rendered
     if width == 1:
-        return plain_line("…", DashboardTextStyle.DIM)
+        return plain_line("…", UsageTextRole.DIM)
     target = width - 1
     used = 0
     clipped: list[DashboardText] = []
@@ -105,7 +100,7 @@ def clip_line(rendered: DashboardLine, width: int) -> DashboardLine:
             clipped.append(DashboardText("".join(characters), item.style))
         if used >= target or len(characters) != len(item.value):
             break
-    clipped.append(segment("…", DashboardTextStyle.DIM))
+    clipped.append(segment("…", UsageTextRole.DIM))
     return DashboardLine(tuple(clipped))
 
 
@@ -130,7 +125,7 @@ def fit_line(
 def wrap_text(
     value: str,
     width: int,
-    style: DashboardTextStyle,
+    style: UsageTextRole,
     *,
     initial_prefix: str = "",
     subsequent_prefix: str = "",
@@ -184,14 +179,14 @@ def activity_summary_line(
     parts = [
         segment(
             f"{formatter(activity.total_tokens)} tokens",
-            DashboardTextStyle.DIM,
+            UsageTextRole.PANEL_META,
         )
     ]
     if activity.since is not None:
         parts.append(
             segment(
                 f"  ·  since {format_since(activity.since)}",
-                DashboardTextStyle.RESET,
+                UsageTextRole.ACTIVITY_SINCE,
             )
         )
     return line(*parts)
@@ -235,53 +230,12 @@ def visible_plan(plan: str) -> str:
     return "" if not safe_plan or safe_plan == "unknown" else safe_plan
 
 
-def provider_style(provider_id: ProviderId) -> DashboardTextStyle:
-    """Return one provider's semantic color role."""
-    if provider_id is ProviderId.CLAUDE:
-        return DashboardTextStyle.CLAUDE
-    return DashboardTextStyle.CODEX
-
-
-def provider_title_style(provider_id: ProviderId) -> DashboardTextStyle:
-    """Return one provider title's bold semantic color role."""
-    if provider_id is ProviderId.CLAUDE:
-        return DashboardTextStyle.CLAUDE_TITLE
-    return DashboardTextStyle.CODEX_TITLE
-
-
-def plan_style(plan: str) -> DashboardTextStyle:
-    """Return the canonical plan-chip role."""
-    normalized = plan.casefold()
-    if normalized == "max":
-        return DashboardTextStyle.PLAN_MAX
-    if normalized == "team":
-        return DashboardTextStyle.PLAN_TEAM
-    if normalized in {"pro", "plus"}:
-        return DashboardTextStyle.PLAN_GREEN
-    if normalized in {"enterprise", "business"}:
-        return DashboardTextStyle.PLAN_YELLOW
-    return DashboardTextStyle.PLAN_DIM
-
-
-def heat_style(percent: int) -> DashboardTextStyle:
-    """Return the semantic heat role for one usage value."""
-    if percent >= RED_PERCENT_THRESHOLD:
-        return DashboardTextStyle.HEAT_RED
-    if percent >= YELLOW_PERCENT_THRESHOLD:
-        return DashboardTextStyle.HEAT_YELLOW
-    if percent >= CYAN_PERCENT_THRESHOLD:
-        return DashboardTextStyle.HEAT_CYAN
-    if percent >= ACTIVE_PERCENT_THRESHOLD:
-        return DashboardTextStyle.HEAT_GREEN
-    return DashboardTextStyle.HEAT_ZERO
-
-
 def brand_lines(width: int) -> list[DashboardLine]:
     """Adapt the canonical masthead layout to dashboard text."""
     return [
         line(
             *(
-                segment(item.value, BRAND_STYLES[item.role])
+                segment(item.value, BRAND_ROLES[item.role])
                 for item in brand_line.segments
             )
         )
@@ -289,17 +243,17 @@ def brand_lines(width: int) -> list[DashboardLine]:
     ]
 
 
-def _footer_style(kind: DashboardFooterKind) -> DashboardTextStyle:
+def _footer_style(kind: DashboardFooterKind) -> UsageTextRole:
     match kind:
         case DashboardFooterKind.KEYS:
-            return DashboardTextStyle.FOOTER_KEYS
+            return UsageTextRole.FOOTER_KEYS
         case DashboardFooterKind.HELP:
-            return DashboardTextStyle.FOOTER_HELP
+            return UsageTextRole.FOOTER_HELP
         case DashboardFooterKind.PROGRESS:
-            return DashboardTextStyle.FOOTER_PROGRESS
+            return UsageTextRole.FOOTER_PROGRESS
         case DashboardFooterKind.CONFIRMATION:
-            return DashboardTextStyle.FOOTER_CONFIRMATION
+            return UsageTextRole.FOOTER_CONFIRMATION
         case DashboardFooterKind.ERROR:
-            return DashboardTextStyle.FOOTER_ERROR
+            return UsageTextRole.FOOTER_ERROR
         case _ as unreachable:
             assert_never(unreachable)
