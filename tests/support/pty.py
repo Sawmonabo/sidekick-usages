@@ -22,8 +22,20 @@ DEFAULT_PROCESS_TIMEOUT_SECONDS = 5.0
 PROCESS_CLEANUP_TIMEOUT_SECONDS = 1.0
 PROCESS_GROUP_POLL_SECONDS = 0.01
 READ_POLL_SECONDS = 0.05
+RAW_MODE_INPUT_FLAGS = (
+    termios.IXON
+    | termios.IXOFF
+    | termios.ICRNL
+    | termios.INLCR
+    | termios.IGNCR
+)
+RAW_MODE_LOCAL_FLAGS = (
+    termios.ECHO | termios.ICANON | termios.IEXTEN | termios.ISIG
+)
+TERMINAL_CONTROL_CHARACTERS_INDEX = 6
+TERMINAL_INPUT_FLAGS_INDEX = 0
 TERMINAL_LOCAL_FLAGS_INDEX = 3
-type TerminalAttributes = list[int | list[bytes]]
+type TerminalModeSnapshot = tuple[int, int, bytes | int]
 
 
 class PtyOutputTimeoutError(TimeoutError):
@@ -43,13 +55,13 @@ class PtySession:
         master_fd: int,
         slave_fd: int,
         output_limit_bytes: int,
-        initial_terminal_attributes: TerminalAttributes,
+        initial_terminal_modes: TerminalModeSnapshot,
     ) -> None:
         self.process = process
         self._master_fd = master_fd
         self._slave_fd = slave_fd
         self._output_limit_bytes = output_limit_bytes
-        self._initial_terminal_attributes = initial_terminal_attributes
+        self._initial_terminal_modes = initial_terminal_modes
         self._output = bytearray()
         self._selector = selectors.DefaultSelector()
         self._selector.register(master_fd, selectors.EVENT_READ)
@@ -74,7 +86,7 @@ class PtySession:
         master_fd, slave_fd = pty.openpty()
         try:
             _set_terminal_size(slave_fd, columns, rows)
-            initial_terminal_attributes = termios.tcgetattr(slave_fd)
+            initial_terminal_modes = _terminal_mode_snapshot(slave_fd)
             os.set_blocking(master_fd, False)
             process = subprocess.Popen(
                 tuple(arguments),
@@ -95,7 +107,7 @@ class PtySession:
             master_fd,
             slave_fd,
             output_limit_bytes,
-            initial_terminal_attributes,
+            initial_terminal_modes,
         )
 
     def __enter__(self) -> PtySession:
@@ -118,10 +130,10 @@ class PtySession:
 
     @property
     def terminal_restored(self) -> bool:
-        """Return whether the child restored the original terminal modes."""
+        """Return whether the child restored every owned raw-input mode."""
         return (
-            termios.tcgetattr(self._slave_fd)
-            == self._initial_terminal_attributes
+            _terminal_mode_snapshot(self._slave_fd)
+            == self._initial_terminal_modes
         )
 
     @property
@@ -284,3 +296,23 @@ def _set_terminal_size(file_descriptor: int, columns: int, rows: int) -> None:
         raise ValueError("Terminal dimensions must be positive.")
     packed_size = struct.pack("HHHH", rows, columns, 0, 0)
     fcntl.ioctl(file_descriptor, termios.TIOCSWINSZ, packed_size)
+
+
+def _terminal_mode_snapshot(
+    file_descriptor: int,
+) -> TerminalModeSnapshot:
+    attributes = termios.tcgetattr(file_descriptor)
+    input_flags = attributes[TERMINAL_INPUT_FLAGS_INDEX]
+    local_flags = attributes[TERMINAL_LOCAL_FLAGS_INDEX]
+    control_characters = attributes[TERMINAL_CONTROL_CHARACTERS_INDEX]
+    if (
+        not isinstance(input_flags, int)
+        or not isinstance(local_flags, int)
+        or not isinstance(control_characters, list)
+    ):
+        raise TypeError("The terminal returned malformed attributes.")
+    return (
+        input_flags & RAW_MODE_INPUT_FLAGS,
+        local_flags & RAW_MODE_LOCAL_FLAGS,
+        control_characters[termios.VMIN],
+    )
