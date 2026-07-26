@@ -24,7 +24,7 @@ from sidekick_usages.persistence.errors import ActivitySnapshotError
 from sidekick_usages.persistence.filesystem.service import (
     PersistenceFilesystem,
 )
-from sidekick_usages.persistence.snapshots.activity import (
+from sidekick_usages.persistence.snapshots.activity.store import (
     ActivitySnapshotStore,
 )
 from sidekick_usages.persistence.types.error import (

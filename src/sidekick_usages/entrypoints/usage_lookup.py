@@ -41,10 +41,12 @@ from sidekick_usages.persistence.credentials.refresh.service import (
     CredentialRefreshTransactions,
 )
 from sidekick_usages.persistence.service import PersistenceService
-from sidekick_usages.persistence.snapshots.activity import (
+from sidekick_usages.persistence.snapshots.activity.store import (
     ActivitySnapshotStore,
 )
-from sidekick_usages.persistence.snapshots.usage import UsageSnapshotStore
+from sidekick_usages.persistence.snapshots.usage.store import (
+    UsageSnapshotStore,
+)
 from sidekick_usages.persistence.supervisor.authority import (
     OperationAuthorityLocks,
 )

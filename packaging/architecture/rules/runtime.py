@@ -14,7 +14,9 @@ from architecture.source import (
 
 _REQUIRED_ACTIVITY_FILES = frozenset(
     {
-        "src/sidekick_usages/persistence/snapshots/activity.py",
+        "src/sidekick_usages/persistence/snapshots/activity/codec.py",
+        "src/sidekick_usages/persistence/snapshots/activity/reader.py",
+        "src/sidekick_usages/persistence/snapshots/activity/store.py",
         "src/sidekick_usages/providers/claude/activity.py",
         "src/sidekick_usages/providers/codex/activity.py",
     }

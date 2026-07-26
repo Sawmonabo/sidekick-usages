@@ -28,7 +28,6 @@ from sidekick_usages.daemon.control.endpoint import (
     control_endpoint_state,
 )
 from sidekick_usages.daemon.control.protocol import (
-    PROTOCOL_VERSION,
     FrameDecoder,
     decode_event,
     decode_request,
@@ -51,6 +50,7 @@ from sidekick_usages.daemon.types.lifecycle import (
     ServiceLifecycleState,
 )
 from sidekick_usages.daemon.types.protocol import (
+    PROTOCOL_VERSION,
     ConnectedSocket,
     EventKind,
     RequestKind,

@@ -5,7 +5,7 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from sidekick_usages.cli.contexts.dashboard import (
+from sidekick_usages.cli.contexts.dashboard.snapshot import (
     CachedDashboardSnapshotSource,
 )
 from sidekick_usages.cli.dashboard.application import (

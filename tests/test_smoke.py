@@ -34,7 +34,7 @@ from sidekick_usages.core.selection.types import (
 from sidekick_usages.core.types import AccountLabel, ProviderId
 from sidekick_usages.doctor.accounts.models import HeartbeatSupport
 from sidekick_usages.http.client import HttpClient
-from sidekick_usages.persistence.accounts.index import AccountIndexReader
+from sidekick_usages.persistence.accounts.reader import AccountIndexReader
 from sidekick_usages.persistence.accounts.runtime_bridge import (
     active_stored_reference,
 )

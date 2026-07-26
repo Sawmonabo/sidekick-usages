@@ -11,7 +11,9 @@ from sidekick_usages.cli.contexts.composition import (
     ApplicationCompositionError,
     default_invocation_composers,
 )
-from sidekick_usages.cli.contexts.dashboard import compose_dashboard_runtime
+from sidekick_usages.cli.contexts.dashboard.runtime import (
+    compose_dashboard_runtime,
+)
 from sidekick_usages.cli.contexts.models import (
     AppContext,
     Composed,

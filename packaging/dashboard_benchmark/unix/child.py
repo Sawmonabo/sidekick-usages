@@ -8,7 +8,7 @@ from dashboard_benchmark.cache.paths import benchmark_application_paths
 from dashboard_benchmark.errors import DashboardBenchmarkError
 from dashboard_benchmark.models import FirstPaintSignal
 from dashboard_benchmark.render import render_snapshot
-from sidekick_usages.cli.contexts.dashboard import (
+from sidekick_usages.cli.contexts.dashboard.snapshot import (
     CachedDashboardSnapshotSource,
 )
 from sidekick_usages.clock import SystemClock

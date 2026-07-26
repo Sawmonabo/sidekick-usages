@@ -30,7 +30,9 @@ from sidekick_usages.persistence.errors import (
     PersistenceError,
     SourceChangedError,
 )
-from sidekick_usages.persistence.snapshots.usage import UsageSnapshotStore
+from sidekick_usages.persistence.snapshots.usage.store import (
+    UsageSnapshotStore,
+)
 from sidekick_usages.persistence.supervisor.authority import (
     OperationAuthorityLock,
 )

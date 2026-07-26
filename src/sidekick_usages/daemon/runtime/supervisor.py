@@ -14,12 +14,12 @@ from threading import (
 
 from sidekick_usages import __version__
 from sidekick_usages.clock import Clock
-from sidekick_usages.daemon.control.protocol import PROTOCOL_VERSION
 from sidekick_usages.daemon.control.server import LocalControlServer
 from sidekick_usages.daemon.models.service import ServiceState
 from sidekick_usages.daemon.runtime.recovery import ActivationRecoveryScheduler
 from sidekick_usages.daemon.runtime.scheduler import DurableScheduler
 from sidekick_usages.daemon.types.ports import ResidentService
+from sidekick_usages.daemon.types.protocol import PROTOCOL_VERSION
 from sidekick_usages.daemon.types.service import (
     PackageVersion,
     ServicePhase,

@@ -52,7 +52,9 @@ from sidekick_usages.persistence.credentials.repository import (
 from sidekick_usages.persistence.private.credentials import (
     PrivateCredentialTree,
 )
-from sidekick_usages.persistence.snapshots.usage import UsageSnapshotStore
+from sidekick_usages.persistence.snapshots.usage.store import (
+    UsageSnapshotStore,
+)
 from sidekick_usages.platform.types import HostPlatform
 from sidekick_usages.providers.base import (
     ProviderFailure,

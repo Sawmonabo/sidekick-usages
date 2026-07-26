@@ -18,7 +18,6 @@ from sidekick_usages.daemon.control.endpoint import (
 )
 from sidekick_usages.daemon.control.protocol import (
     MAX_REQUESTS_PER_CONNECTION,
-    PROTOCOL_VERSION,
     UNATTRIBUTED_REQUEST_ID,
     ConnectionClosedError,
     FramedTransport,
@@ -38,6 +37,7 @@ from sidekick_usages.daemon.types.ports import (
     ControlDispatcher,
 )
 from sidekick_usages.daemon.types.protocol import (
+    PROTOCOL_VERSION,
     EventKind,
     ProtocolErrorCode,
     RequestKind,

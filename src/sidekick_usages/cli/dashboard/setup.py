@@ -15,7 +15,6 @@ from sidekick_usages.cli.dashboard.models.setup import (
     ServiceSetupResult,
 )
 from sidekick_usages.core.types import ProviderId
-from sidekick_usages.daemon.control.protocol import PROTOCOL_VERSION
 from sidekick_usages.daemon.lifecycle.manager import DaemonManager
 from sidekick_usages.daemon.lifecycle.ports import (
     ServiceLifecycleObserver,
@@ -27,6 +26,7 @@ from sidekick_usages.daemon.types.lifecycle import (
     ServiceFailureCode,
     ServiceLifecycleState,
 )
+from sidekick_usages.daemon.types.protocol import PROTOCOL_VERSION
 from sidekick_usages.persistence.errors import PersistenceError
 from sidekick_usages.persistence.setup.store import (
     ServiceSetupAcknowledgementStore,

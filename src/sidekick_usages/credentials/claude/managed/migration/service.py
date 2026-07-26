@@ -62,7 +62,9 @@ from sidekick_usages.persistence.errors import PersistenceError
 from sidekick_usages.persistence.private.credentials import (
     PrivateCredentialTree,
 )
-from sidekick_usages.persistence.snapshots.usage import UsageSnapshotStore
+from sidekick_usages.persistence.snapshots.usage.store import (
+    UsageSnapshotStore,
+)
 from sidekick_usages.persistence.supervisor.authority import (
     OperationAuthorityLock,
 )

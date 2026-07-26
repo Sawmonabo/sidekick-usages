@@ -14,39 +14,23 @@ from sidekick_usages.persistence.state.files import (
     ManagedStateConflictKind,
     recover_state_file,
 )
-from sidekick_usages.persistence.state.filesystem import (
-    ManagedStateFilesystem,
+from sidekick_usages.persistence.supervisor.readers.service import (
+    ServiceStateReader,
 )
 from sidekick_usages.persistence.types.artifact import AuthorityExpectation
 
 
-class ServiceStateStore:
+class ServiceStateStore(ServiceStateReader):
     """Persist monotonic sanitized supervisor observations."""
 
     def __init__(self, path: Path) -> None:
-        if not path.is_absolute():
-            raise ValueError("Service-state path must be absolute.")
-        self.path = path
-        self._filesystem = ManagedStateFilesystem(
-            path,
-            decode_service_state,
-        )
+        super().__init__(path)
         self._lock = PersistenceLock(self._filesystem)
 
     def load(self) -> ServiceState | None:
         """Load the latest service observation when present."""
         with self._lock.hold():
             return self._load()
-
-    def observe(self) -> ServiceState | None:
-        """Passively read service state without lock-sidecar writes."""
-        return self._load()
-
-    def _load(self) -> ServiceState | None:
-        snapshot = self._filesystem.read_opaque_private()
-        return (
-            None if snapshot is None else decode_service_state(snapshot.data)
-        )
 
     def save(self, state: ServiceState) -> ServiceState:
         """Commit exactly the next service-state revision."""

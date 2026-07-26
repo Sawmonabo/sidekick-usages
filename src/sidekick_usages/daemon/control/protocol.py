@@ -54,7 +54,6 @@ from sidekick_usages.serialization.json import (
     encode_compact_json,
 )
 
-PROTOCOL_VERSION = 2
 MAX_FRAME_BYTES = 65_536
 MAX_REQUESTS_PER_CONNECTION = 128
 READ_CHUNK_BYTES = 16_384

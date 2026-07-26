@@ -17,7 +17,6 @@ from sidekick_usages.core.selection.types import (
     OperationPriority,
     OperationState,
 )
-from sidekick_usages.daemon.control.protocol import PROTOCOL_VERSION
 from sidekick_usages.daemon.models.protocol import (
     AcceptedPayload,
     AccountPayload,
@@ -37,6 +36,7 @@ from sidekick_usages.daemon.models.scheduler import (
 )
 from sidekick_usages.daemon.types.ports import OperationEventSink
 from sidekick_usages.daemon.types.protocol import (
+    PROTOCOL_VERSION,
     CompletionOutcome,
     EventKind,
     ProgressPhase,

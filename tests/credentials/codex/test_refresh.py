@@ -42,10 +42,12 @@ from sidekick_usages.daemon.worker.codex.maintenance import (
 )
 from sidekick_usages.http.client import HttpClient
 from sidekick_usages.paths import managed_codex_home
-from sidekick_usages.persistence.snapshots.activity import (
+from sidekick_usages.persistence.snapshots.activity.store import (
     ActivitySnapshotStore,
 )
-from sidekick_usages.persistence.snapshots.usage import UsageSnapshotStore
+from sidekick_usages.persistence.snapshots.usage.store import (
+    UsageSnapshotStore,
+)
 from sidekick_usages.persistence.supervisor.authority import (
     OperationAuthorityLock,
 )

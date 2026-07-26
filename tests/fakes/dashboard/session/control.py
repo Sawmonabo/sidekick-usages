@@ -10,7 +10,6 @@ from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.control.client import (
     CONTROL_ACTION_TIMEOUT_SECONDS,
 )
-from sidekick_usages.daemon.control.protocol import PROTOCOL_VERSION
 from sidekick_usages.daemon.models.protocol import (
     AcceptedPayload,
     CompletedPayload,
@@ -21,6 +20,7 @@ from sidekick_usages.daemon.models.protocol import (
 )
 from sidekick_usages.daemon.types.lifecycle import ServiceLifecycleState
 from sidekick_usages.daemon.types.protocol import (
+    PROTOCOL_VERSION,
     CompletionOutcome,
     EventKind,
     ProgressPhase,

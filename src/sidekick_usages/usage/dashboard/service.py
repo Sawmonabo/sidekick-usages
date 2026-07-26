@@ -19,19 +19,23 @@ from sidekick_usages.core.models import (
 from sidekick_usages.core.selection.models import SelectedAccountState
 from sidekick_usages.core.selection.types import ProviderRuntimeState
 from sidekick_usages.core.types import ProviderId
-from sidekick_usages.daemon.control.protocol import PROTOCOL_VERSION
 from sidekick_usages.daemon.models.service import ServiceState
+from sidekick_usages.daemon.types.protocol import PROTOCOL_VERSION
 from sidekick_usages.daemon.types.service import PackageVersion, ServicePhase
 from sidekick_usages.paths import ApplicationPaths
-from sidekick_usages.persistence.accounts.index import AccountIndexReader
-from sidekick_usages.persistence.snapshots.activity import (
-    ActivitySnapshotStore,
+from sidekick_usages.persistence.accounts.reader import AccountIndexReader
+from sidekick_usages.persistence.snapshots.activity.reader import (
+    ActivitySnapshotReader,
 )
-from sidekick_usages.persistence.snapshots.usage import UsageSnapshotStore
-from sidekick_usages.persistence.supervisor.selection import (
-    SelectedStateStore,
+from sidekick_usages.persistence.snapshots.usage.reader import (
+    UsageSnapshotReader,
 )
-from sidekick_usages.persistence.supervisor.service import ServiceStateStore
+from sidekick_usages.persistence.supervisor.readers.selection import (
+    SelectedStateReader,
+)
+from sidekick_usages.persistence.supervisor.readers.service import (
+    ServiceStateReader,
+)
 from sidekick_usages.usage.dashboard.models import (
     DashboardAccount,
     DashboardActionState,
@@ -52,10 +56,10 @@ class CachedDashboardService:
 
     def __init__(self, paths: ApplicationPaths) -> None:
         self._accounts = AccountIndexReader(paths.accounts)
-        self._usage = UsageSnapshotStore(paths.usage_snapshots)
-        self._activity = ActivitySnapshotStore(paths.activity_snapshots)
-        self._selected = SelectedStateStore(paths.selected_state)
-        self._service = ServiceStateStore(paths.service_state)
+        self._usage = UsageSnapshotReader(paths.usage_snapshots)
+        self._activity = ActivitySnapshotReader(paths.activity_snapshots)
+        self._selected = SelectedStateReader(paths.selected_state)
+        self._service = ServiceStateReader(paths.service_state)
 
     def load(self, reference_time: datetime) -> DashboardSnapshot:
         """Read each cached artifact once and join it by stable account ID."""

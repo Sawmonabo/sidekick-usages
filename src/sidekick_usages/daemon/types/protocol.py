@@ -4,6 +4,7 @@ from enum import StrEnum
 from typing import Protocol
 
 MAX_PROTOCOL_VERSION = 65_535
+PROTOCOL_VERSION = 2
 
 
 class RequestKind(StrEnum):

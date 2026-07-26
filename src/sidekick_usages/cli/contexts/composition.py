@@ -4,7 +4,7 @@ from collections.abc import Callable, Mapping
 from contextlib import ExitStack
 from pathlib import Path
 
-from sidekick_usages.cli.contexts.dashboard import (
+from sidekick_usages.cli.contexts.dashboard.snapshot import (
     CachedDashboardSnapshotSource,
 )
 from sidekick_usages.cli.contexts.migration import ManagedAuthDaemonLifecycle
@@ -68,10 +68,12 @@ from sidekick_usages.persistence.models.status import (
     PersistenceFailure,
 )
 from sidekick_usages.persistence.service import PersistenceService
-from sidekick_usages.persistence.snapshots.activity import (
+from sidekick_usages.persistence.snapshots.activity.store import (
     ActivitySnapshotStore,
 )
-from sidekick_usages.persistence.snapshots.usage import UsageSnapshotStore
+from sidekick_usages.persistence.snapshots.usage.store import (
+    UsageSnapshotStore,
+)
 from sidekick_usages.persistence.supervisor.activation import (
     ActivationJournalStore,
 )

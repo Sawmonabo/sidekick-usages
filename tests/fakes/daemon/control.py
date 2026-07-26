@@ -8,7 +8,6 @@ from threading import Event, Thread
 from sidekick_usages import __version__
 from sidekick_usages.core.accounts.types import OperationId, RequestId
 from sidekick_usages.daemon.control.client import ControlClient
-from sidekick_usages.daemon.control.protocol import PROTOCOL_VERSION
 from sidekick_usages.daemon.control.server import ControlConnection
 from sidekick_usages.daemon.models.protocol import (
     AcceptedPayload,
@@ -20,6 +19,7 @@ from sidekick_usages.daemon.models.protocol import (
 )
 from sidekick_usages.daemon.types.ports import ControlDispatcher
 from sidekick_usages.daemon.types.protocol import (
+    PROTOCOL_VERSION,
     CompletionOutcome,
     EventKind,
     ProgressPhase,

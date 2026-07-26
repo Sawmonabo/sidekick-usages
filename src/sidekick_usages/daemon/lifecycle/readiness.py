@@ -23,7 +23,6 @@ from sidekick_usages.core.selection.types import (
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.control.client import ControlClient
 from sidekick_usages.daemon.control.endpoint import control_endpoint_state
-from sidekick_usages.daemon.control.protocol import PROTOCOL_VERSION
 from sidekick_usages.daemon.control.server import cleanup_control_endpoint
 from sidekick_usages.daemon.lifecycle.errors import ServiceLifecycleError
 from sidekick_usages.daemon.lifecycle.ports import (
@@ -45,12 +44,12 @@ from sidekick_usages.daemon.types.lifecycle import (
     ServiceLifecyclePhase,
     ServiceLifecycleState,
 )
-from sidekick_usages.daemon.types.protocol import EventKind
+from sidekick_usages.daemon.types.protocol import PROTOCOL_VERSION, EventKind
 from sidekick_usages.daemon.types.service import (
     PackageVersion,
 )
 from sidekick_usages.paths import ApplicationPaths
-from sidekick_usages.persistence.accounts.index import AccountIndexReader
+from sidekick_usages.persistence.accounts.reader import AccountIndexReader
 from sidekick_usages.persistence.accounts.store import AccountStore
 from sidekick_usages.persistence.errors import PersistenceError
 from sidekick_usages.persistence.private.credentials import (

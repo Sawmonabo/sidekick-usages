@@ -8,9 +8,9 @@ from sidekick_usages.cli.dashboard.models.setup import (
     ServiceSetupOutcome,
 )
 from sidekick_usages.cli.dashboard.setup import GuidedServiceSetup
-from sidekick_usages.daemon.control.protocol import PROTOCOL_VERSION
 from sidekick_usages.daemon.lifecycle.manager import DaemonManager
 from sidekick_usages.daemon.types.lifecycle import ServiceLifecycleState
+from sidekick_usages.daemon.types.protocol import PROTOCOL_VERSION
 from sidekick_usages.persistence.errors import InvalidSchemaError
 from sidekick_usages.persistence.setup.store import (
     ServiceSetupAcknowledgementStore,

@@ -17,23 +17,17 @@ from sidekick_usages.persistence.state.files import (
     ManagedStateConflictKind,
     recover_state_file,
 )
-from sidekick_usages.persistence.state.filesystem import (
-    ManagedStateFilesystem,
+from sidekick_usages.persistence.supervisor.readers.selection import (
+    SelectedStateReader,
 )
 from sidekick_usages.persistence.types.artifact import AuthorityExpectation
 
 
-class SelectedStateStore:
+class SelectedStateStore(SelectedStateReader):
     """Persist the last verified runtime state independently per provider."""
 
     def __init__(self, path: Path) -> None:
-        if not path.is_absolute():
-            raise ValueError("Selected-state path must be absolute.")
-        self.path = path
-        self._filesystem = ManagedStateFilesystem(
-            path,
-            decode_selected_state,
-        )
+        super().__init__(path)
         self._lock = PersistenceLock(self._filesystem)
 
     def load(
@@ -48,10 +42,6 @@ class SelectedStateStore:
         """Load every provider state in deterministic provider order."""
         with self._lock.hold():
             return self._load_document().states
-
-    def observe_all(self) -> tuple[SelectedAccountState, ...]:
-        """Passively read every provider state without lock-sidecar writes."""
-        return self._load_document().states
 
     def save(self, state: SelectedAccountState) -> SelectedAccountState:
         """Atomically replace one provider state without changing the other."""
@@ -147,11 +137,3 @@ class SelectedStateStore:
         with self._lock.hold() as transaction:
             recover_state_file(self._filesystem, transaction)
             self._load_document()
-
-    def _load_document(self) -> SelectedStateDocument:
-        snapshot = self._filesystem.read_opaque_private()
-        return (
-            SelectedStateDocument()
-            if snapshot is None
-            else decode_selected_state(snapshot.data)
-        )

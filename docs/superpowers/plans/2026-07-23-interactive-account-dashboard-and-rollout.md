@@ -176,8 +176,9 @@ Create cohesive owner packages:
 - `cli/dashboard/{launch,controller,input,application,setup}.py`: lean
   `execve` planning, immutable transitions, static prompt input, interactive
   orchestration, and guided service setup;
-- `cli/contexts/dashboard.py`: passive cached composition with no provider,
-  credential, HTTP, or maintenance graph;
+- `cli/contexts/dashboard/{snapshot,runtime}.py`: passive cached source and
+  launcher composition with no provider, credential, HTTP, or maintenance
+  graph;
 - `entrypoints/dashboard.py`: dedicated interactive process image;
 - `entrypoints/usage_lookup.py`: provider-heavy global lookup wave;
 - `cli/commands/use.py`: scriptable activation command; and

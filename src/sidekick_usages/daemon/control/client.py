@@ -14,7 +14,6 @@ from sidekick_usages.core.accounts.types import (
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.control.endpoint import control_endpoint_state
 from sidekick_usages.daemon.control.protocol import (
-    PROTOCOL_VERSION,
     FramedTransport,
 )
 from sidekick_usages.daemon.models.protocol import (
@@ -35,6 +34,7 @@ from sidekick_usages.daemon.models.protocol import (
 )
 from sidekick_usages.daemon.types.lifecycle import ServiceComponentState
 from sidekick_usages.daemon.types.protocol import (
+    PROTOCOL_VERSION,
     ConnectedSocket,
     ControlOperationIdentity,
     EventKind,

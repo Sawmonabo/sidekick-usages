@@ -4,7 +4,7 @@ from collections.abc import Callable
 
 from sidekick_usages.core.accounts.models import SavedAccount
 from sidekick_usages.paths import ApplicationPaths
-from sidekick_usages.persistence.accounts.index import AccountIndexReader
+from sidekick_usages.persistence.accounts.reader import AccountIndexReader
 from sidekick_usages.persistence.accounts.removal.store import (
     AccountRemovalStore,
 )

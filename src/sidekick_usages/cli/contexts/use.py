@@ -27,8 +27,8 @@ from sidekick_usages.daemon.types.protocol import (
 from sidekick_usages.paths import ApplicationPaths, discover_application_paths
 from sidekick_usages.persistence.accounts.index import (
     AccountIndex,
-    AccountIndexReader,
 )
+from sidekick_usages.persistence.accounts.reader import AccountIndexReader
 
 
 @dataclass(frozen=True, slots=True)

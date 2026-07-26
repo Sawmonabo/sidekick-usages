@@ -23,7 +23,6 @@ from sidekick_usages.daemon.models.protocol import (
 )
 from sidekick_usages.usage.dashboard.models import (
     DashboardService,
-    DashboardSnapshot,
 )
 from sidekick_usages.usage.lookup.worker.models import (
     UsageLookupEventObserver,
@@ -41,22 +40,6 @@ class AccountActivation(Protocol):
         allow_remote_control_disconnect: bool,
     ) -> UseActivationResult:
         """Return the supervisor's sanitized activation outcome."""
-        ...
-
-
-class DashboardSnapshotSource(Protocol):
-    """Load one secret-free cached dashboard projection."""
-
-    def load(self, only: ProviderId | None) -> DashboardSnapshot:
-        """Return cached state constrained to one optional provider."""
-        ...
-
-
-class DashboardProcess(Protocol):
-    """Replace the launcher with the dedicated interactive process."""
-
-    def replace(self, only: ProviderId | None) -> None:
-        """Replace the current process using safe routing state only."""
         ...
 
 

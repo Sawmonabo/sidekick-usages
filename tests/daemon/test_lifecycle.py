@@ -12,7 +12,6 @@ from sidekick_usages import __version__
 from sidekick_usages.core.accounts.types import RequestId
 from sidekick_usages.core.types import ExitCode, ProviderId
 from sidekick_usages.daemon.control.client import ControlClient
-from sidekick_usages.daemon.control.protocol import PROTOCOL_VERSION
 from sidekick_usages.daemon.lifecycle.artifacts import ServiceArtifactStore
 from sidekick_usages.daemon.lifecycle.commands import SystemCommandRunner
 from sidekick_usages.daemon.lifecycle.constants import (
@@ -54,7 +53,11 @@ from sidekick_usages.daemon.types.lifecycle import (
     ServiceLifecyclePhase,
     ServiceLifecycleState,
 )
-from sidekick_usages.daemon.types.protocol import CompletionOutcome, EventKind
+from sidekick_usages.daemon.types.protocol import (
+    PROTOCOL_VERSION,
+    CompletionOutcome,
+    EventKind,
+)
 from sidekick_usages.daemon.types.service import PackageVersion, ServicePhase
 from sidekick_usages.paths import ApplicationPaths
 from sidekick_usages.persistence.supervisor.service import ServiceStateStore

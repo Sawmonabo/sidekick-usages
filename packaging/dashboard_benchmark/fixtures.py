@@ -38,10 +38,12 @@ from sidekick_usages.persistence.filesystem.service import (
 )
 from sidekick_usages.persistence.models.account import VersionThreeDocument
 from sidekick_usages.persistence.schema.account import encode_version_three
-from sidekick_usages.persistence.snapshots.activity import (
+from sidekick_usages.persistence.snapshots.activity.store import (
     ActivitySnapshotStore,
 )
-from sidekick_usages.persistence.snapshots.usage import UsageSnapshotStore
+from sidekick_usages.persistence.snapshots.usage.store import (
+    UsageSnapshotStore,
+)
 from sidekick_usages.usage.dashboard.models import (
     DashboardAccount,
     DashboardActionState,
