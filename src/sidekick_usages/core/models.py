@@ -187,6 +187,27 @@ def _claude_scopes(credentials: Credentials) -> tuple[str, ...] | None:
             assert_never(unexpected)
 
 
+def _codex_account_id(credentials: Credentials) -> str | None:
+    """Return the provider account id only for Codex credentials."""
+    if isinstance(credentials, CodexCredentials):
+        return credentials.account_id
+    return None
+
+
+def _codex_id_token(credentials: Credentials) -> str | None:
+    """Return the ID token only for Codex credentials."""
+    if isinstance(credentials, CodexCredentials):
+        return credentials.id_token
+    return None
+
+
+def _codex_last_refresh(credentials: Credentials) -> str | None:
+    """Return native refresh metadata only for Codex credentials."""
+    if isinstance(credentials, CodexCredentials):
+        return credentials.auth_last_refresh
+    return None
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class TokenActivitySummary:
     """One exact provider token total with its truthful scope."""
@@ -274,23 +295,17 @@ class DetectedCredentials:
     @property
     def provider_account_id(self) -> str | None:
         """Return the Codex account id when present."""
-        if isinstance(self.credentials, CodexCredentials):
-            return self.credentials.account_id
-        return None
+        return _codex_account_id(self.credentials)
 
     @property
     def id_token(self) -> str | None:
         """Return the Codex id token when present."""
-        if isinstance(self.credentials, CodexCredentials):
-            return self.credentials.id_token
-        return None
+        return _codex_id_token(self.credentials)
 
     @property
     def last_refresh(self) -> str | None:
         """Return opaque Codex auth refresh metadata when present."""
-        if isinstance(self.credentials, CodexCredentials):
-            return self.credentials.auth_last_refresh
-        return None
+        return _codex_last_refresh(self.credentials)
 
 
 @dataclass(slots=True, kw_only=True)
@@ -369,9 +384,7 @@ class Account:
     @property
     def provider_account_id(self) -> str | None:
         """Return the Codex account id when present."""
-        if isinstance(self.credentials, CodexCredentials):
-            return self.credentials.account_id
-        return None
+        return _codex_account_id(self.credentials)
 
     @property
     def codex_home(self) -> str | None:
@@ -383,16 +396,12 @@ class Account:
     @property
     def codex_id_token(self) -> str | None:
         """Return the Codex id token when present."""
-        if isinstance(self.credentials, CodexCredentials):
-            return self.credentials.id_token
-        return None
+        return _codex_id_token(self.credentials)
 
     @property
     def codex_last_refresh(self) -> str | None:
         """Return opaque Codex auth refresh metadata when present."""
-        if isinstance(self.credentials, CodexCredentials):
-            return self.credentials.auth_last_refresh
-        return None
+        return _codex_last_refresh(self.credentials)
 
 
 @dataclass(frozen=True, slots=True)
