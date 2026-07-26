@@ -105,8 +105,7 @@ def _assert_execve_process_boundary(
         for path, arguments, _ in replacements
     )
     assert all(
-        environment is not os.environ
-        for *_, environment in replacements
+        environment is not os.environ for *_, environment in replacements
     )
 
     windows_calls: list[tuple[tuple[str, ...], bool, dict[str, str]]] = []

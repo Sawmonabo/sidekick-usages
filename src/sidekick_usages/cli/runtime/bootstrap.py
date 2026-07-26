@@ -36,13 +36,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Dispatch cached TTY startup without importing the Typer graph."""
     arguments = tuple(sys.argv[1:] if argv is None else argv)
     try:
-        if (
-            _interactive_terminal_supported()
-            and dashboard_candidate(arguments)
+        if _interactive_terminal_supported() and dashboard_candidate(
+            arguments
         ):
             return execute_cached_dashboard(arguments)
         return execute_application(arguments)
-    except (ExecutableQualificationError, OSError, ValueError):
+    except ExecutableQualificationError, OSError, ValueError:
         sys.stderr.write(f"{PROCESS_LAUNCH_FAILURE_MESSAGE}\n")
         return PROCESS_LAUNCH_FAILURE_EXIT_CODE
 

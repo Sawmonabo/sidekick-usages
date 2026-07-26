@@ -104,8 +104,7 @@ def _check_public_bootstrap(
         return
     for node, module in scan_imports(bootstrap):
         if not any(
-            matches(module, allowed)
-            for allowed in PUBLIC_BOOTSTRAP_IMPORTS
+            matches(module, allowed) for allowed in PUBLIC_BOOTSTRAP_IMPORTS
         ):
             violations.append(
                 finding(
@@ -128,9 +127,7 @@ def _check_public_bootstrap(
         or str(replacements[0][0].path) != PUBLIC_BOOTSTRAP_FILE
         or replacements[0][2] != "os.execve"
     ):
-        unit, node = (
-            replacements[0][:2] if replacements else (bootstrap, None)
-        )
+        unit, node = replacements[0][:2] if replacements else (bootstrap, None)
         violations.append(
             finding(
                 unit,

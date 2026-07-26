@@ -80,5 +80,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         environment=os.environ,
     )
     return InteractiveDashboardApplication(session).run()
+
+
 if __name__ == "__main__":
     sys.exit(main())

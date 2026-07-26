@@ -44,10 +44,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         ).load(only)
         line_count = launch.present_cached_dashboard(console, snapshot)
         try:
-            return execute_interactive_dashboard(
-                dashboard_arguments(only)
-            )
-        except (ExecutableQualificationError, OSError, ValueError):
+            return execute_interactive_dashboard(dashboard_arguments(only))
+        except ExecutableQualificationError, OSError, ValueError:
             launch.restore_after_failed_replace(console, line_count)
             raise UsageError(PROCESS_LAUNCH_FAILURE_MESSAGE) from None
     except PersistenceError as error:

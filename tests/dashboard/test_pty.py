@@ -414,9 +414,8 @@ def _plain_terminal_output(output: str) -> str:
 def _redraw_reuses_terminal_region(output: str) -> bool:
     plain = _plain_terminal_output(output)
     upward_rows = sum(int(rows) for rows in CURSOR_UP_PATTERN.findall(output))
-    return (
-        plain.count(KEY_FOOTER_TEXT) == 1
-        and upward_rows == output.count("\n")
+    return plain.count(KEY_FOOTER_TEXT) == 1 and upward_rows == output.count(
+        "\n"
     )
 
 
