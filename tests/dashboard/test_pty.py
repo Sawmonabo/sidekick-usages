@@ -443,27 +443,43 @@ def _trace_lines(path: Path) -> tuple[str, ...]:
 
 
 def _read_completed_redraw(session: PtySession, expected: str) -> str:
-    output = session.read_until(expected)
-    expected_end = output.rfind(expected) + len(expected)
-    if REDRAW_COMPLETION_SEQUENCE in output[expected_end:]:
-        return output
-    session.clear_output()
-    return output + session.read_until(REDRAW_COMPLETION_SEQUENCE)
+    pending_output = ""
+    while True:
+        output = pending_output + session.read_until(
+            REDRAW_COMPLETION_SEQUENCE
+        )
+        matching_redraw: str | None = None
+        for match in REDRAW_PATTERN.finditer(output):
+            redraw = match.group(0)
+            if expected in _plain_terminal_output(redraw):
+                matching_redraw = redraw
+        if matching_redraw is not None:
+            return matching_redraw
+        completion_end = output.rfind(REDRAW_COMPLETION_SEQUENCE) + len(
+            REDRAW_COMPLETION_SEQUENCE
+        )
+        pending_output = output[completion_end:]
+        session.clear_output()
 
 
-def _resize_and_read(session: PtySession, columns: int) -> str:
+def _resize_and_read(
+    session: PtySession,
+    columns: int,
+    expected_layout: str,
+) -> str:
     session.clear_output()
     session.resize(columns, TERMINAL_ROWS)
-    return _read_completed_redraw(session, KEY_FOOTER_TEXT)
+    return _read_completed_redraw(session, expected_layout)
 
 
 def _send_resize_and_read(
     session: PtySession,
     key: bytes,
     columns: int,
+    expected_layout: str,
 ) -> str:
     _send_key(session, key)
-    return _resize_and_read(session, columns)
+    return _resize_and_read(session, columns, expected_layout)
 
 
 def _send_key(session: PtySession, key: bytes) -> None:
@@ -494,6 +510,7 @@ def test_dashboard_pty_completes_the_interactive_account_journey(
             session,
             DOWN_KEY,
             WIDE_COLUMNS + 1,
+            WIDE_PANEL_TEXT,
         )
         assert WIDE_PANEL_TEXT in _plain_terminal_output(moved_down)
         assert _selected(moved_down, PREVIEW_LABEL)
@@ -502,6 +519,7 @@ def test_dashboard_pty_completes_the_interactive_account_journey(
             session,
             UP_KEY,
             WIDE_COLUMNS + 2,
+            WIDE_PANEL_TEXT,
         )
         assert WIDE_PANEL_TEXT in _plain_terminal_output(moved_up)
         assert _selected(moved_up, ACTIVE_LABEL)
@@ -511,6 +529,7 @@ def test_dashboard_pty_completes_the_interactive_account_journey(
             session,
             ESCAPE_KEY,
             WIDE_COLUMNS + 3,
+            WIDE_PANEL_TEXT,
         )
         assert _selected(restored, ACTIVE_LABEL)
 
@@ -529,14 +548,23 @@ def test_dashboard_pty_completes_the_interactive_account_journey(
             session,
             TAB_KEY,
             WIDE_COLUMNS + 4,
+            WIDE_PANEL_TEXT,
         )
         assert _selected(codex, CODEX_EXTERNAL_LABEL)
 
-        narrow = _resize_and_read(session, NARROW_COLUMNS)
+        narrow = _resize_and_read(
+            session,
+            NARROW_COLUMNS,
+            NARROW_ACCOUNT_TEXT,
+        )
         assert NARROW_ACCOUNT_TEXT in _plain_terminal_output(narrow)
         assert WIDE_PANEL_TEXT not in _plain_terminal_output(narrow)
 
-        wide = _resize_and_read(session, WIDE_COLUMNS)
+        wide = _resize_and_read(
+            session,
+            WIDE_COLUMNS,
+            WIDE_PANEL_TEXT,
+        )
         assert WIDE_PANEL_TEXT in _plain_terminal_output(wide)
         assert NARROW_ACCOUNT_TEXT not in _plain_terminal_output(wide)
         assert all(
