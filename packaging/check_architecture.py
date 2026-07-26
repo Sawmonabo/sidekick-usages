@@ -71,6 +71,18 @@ _RENDERER_FILES = frozenset(
         "src/sidekick_usages/branding.py",
         "src/sidekick_usages/heartbeat/render.py",
         "src/sidekick_usages/usage/presentation/activity.py",
+        (
+            "src/sidekick_usages/usage/presentation/dashboard/"
+            "footer.py"
+        ),
+        (
+            "src/sidekick_usages/usage/presentation/dashboard/"
+            "overview.py"
+        ),
+        (
+            "src/sidekick_usages/usage/presentation/dashboard/"
+            "selection.py"
+        ),
         "src/sidekick_usages/usage/presentation/narrow.py",
         "src/sidekick_usages/usage/presentation/overview.py",
         "src/sidekick_usages/usage/presentation/reset.py",

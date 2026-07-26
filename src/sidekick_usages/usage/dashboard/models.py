@@ -32,6 +32,49 @@ class DashboardActionState(StrEnum):
     SERVICE_UNAVAILABLE = "service_unavailable"
 
 
+class DashboardFooterKind(StrEnum):
+    """Closed footer presentations for the interactive dashboard."""
+
+    KEYS = "keys"
+    HELP = "help"
+    PROGRESS = "progress"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class DashboardCursor:
+    """One focused provider row without provider-owned identity."""
+
+    focused_provider: ProviderId | None
+    account_id: SidekickAccountId | None
+    external: bool = False
+
+    def __post_init__(self) -> None:
+        """Require external focus to remain distinct from saved accounts."""
+        if self.focused_provider is None and (
+            self.account_id is not None or self.external
+        ):
+            raise ValueError("An empty dashboard cursor cannot select a row.")
+        if self.external and self.account_id is not None:
+            raise ValueError("External dashboard focus cannot use an account.")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class DashboardFooter:
+    """One bounded transient or keyboard-help footer."""
+
+    kind: DashboardFooterKind = DashboardFooterKind.KEYS
+    message: str | None = None
+
+    def __post_init__(self) -> None:
+        """Require progress copy only for transient progress."""
+        if self.kind is DashboardFooterKind.PROGRESS:
+            valid = self.message is not None and bool(self.message.strip())
+        else:
+            valid = self.message is None
+        if not valid:
+            raise ValueError("Only progress footers require a message.")
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class DashboardUsage:
     """One retained usage observation projected without provider identity."""

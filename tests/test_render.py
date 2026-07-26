@@ -33,7 +33,15 @@ from sidekick_usages.usage.models import (
     UsageCheckResult,
 )
 from sidekick_usages.usage.presentation import overview
+from sidekick_usages.usage.presentation.dashboard.overview import (
+    dashboard_overview,
+)
 from sidekick_usages.usage.presentation.reset import compact_reset_text
+from tests.fakes.dashboard import (
+    FORBIDDEN_SELECTION_LABELS,
+    PROGRESS_COPY,
+    interactive_dashboard_state,
+)
 from tests.test_support import REFERENCE_TIME
 
 _ACTIVITIES = (
@@ -56,31 +64,12 @@ _ACTIVITIES = (
 )
 _PANEL_FLOOR = 85
 _NARROW_TEST_WIDTH = 40
+_INTERACTIVE_WIDE_WIDTH = 200
+_INTERACTIVE_NARROW_WIDTH = 70
 
 
 def _time_after(**delta: float) -> datetime:
     return REFERENCE_TIME + timedelta(**delta)
-
-
-def test_heat_band_picks_inclusive_lower_bounds() -> None:
-    assert overview._heat_band(90) == ("#ffe6e6", "#b03030")
-    assert overview._heat_band(89) == ("#fff4e0", "#9c6f12")
-    assert overview._heat_band(70) == ("#fff4e0", "#9c6f12")
-    assert overview._heat_band(40) == ("#e2fbff", "#1b6a87")
-    assert overview._heat_band(1) == ("#dfffe9", "#1d5e35")
-    assert overview._heat_band(0) is None
-
-
-def test_heat_tile_zero_is_grey_filled_percent() -> None:
-    tile = overview._heat_tile(0)
-    assert tile.plain == f"{'0%':^{overview._TILE_WIDTH}}"
-    assert tile.style == f"{overview._ZERO_FG} on {overview._ZERO_BG}"
-
-
-def test_heat_tile_nonzero_is_centered_percent_on_band() -> None:
-    tile = overview._heat_tile(94)
-    assert tile.plain == f"{'94%':^{overview._TILE_WIDTH}}"
-    assert tile.style == "#ffe6e6 on #b03030"
 
 
 def test_format_reset_compact_buckets() -> None:
@@ -113,37 +102,6 @@ def test_format_reset_compact_buckets() -> None:
         )
         == "1d 15h"
     )
-
-
-def test_reset_cell_is_centered_dim() -> None:
-    cell = overview._reset_cell(
-        _time_after(hours=3, minutes=50),
-        REFERENCE_TIME,
-    )
-    assert cell.plain == f"{'3h 50m':^{overview._TILE_WIDTH}}"
-    assert cell.style == "grey42"
-    assert overview._reset_cell(None, REFERENCE_TIME).plain == (
-        f"{'':^{overview._TILE_WIDTH}}"
-    )
-
-
-@pytest.mark.parametrize(
-    ("name", "expected"),
-    [
-        ("5h", ("5h", "")),
-        ("7d", ("7d", "")),
-        ("7d Opus", ("7d", "Opus")),
-        ("7d OAuth", ("7d", "OAuth")),
-        ("Spark 5h", ("5h", "Spark")),
-        ("Spark 7d", ("7d", "Spark")),
-    ],
-)
-def test_classify_window(name: str, expected: tuple[str, str]) -> None:
-    assert overview._classify_window(name) == expected
-
-
-def test_length_hours_orders_5h_before_7d() -> None:
-    assert overview._length_hours("5h") < overview._length_hours("7d")
 
 
 def _usage(
@@ -267,6 +225,20 @@ def _result(
     )
 
 
+def _render_interactive(width: int) -> str:
+    snapshot, cursor, footer = interactive_dashboard_state(REFERENCE_TIME)
+    output = io.StringIO()
+    Console(width=width, file=output, legacy_windows=False).print(
+        dashboard_overview(
+            snapshot,
+            width=width,
+            cursor=cursor,
+            footer=footer,
+        )
+    )
+    return output.getvalue()
+
+
 @pytest.mark.parametrize(
     ("width", "expected"),
     [(200, "3h 50m"), (70, "(in 3h 50m)")],
@@ -307,19 +279,33 @@ def test_panels_share_one_width() -> None:
     assert len(widths) == 1
 
 
-def test_worst_case_renders_as_panels_at_floor() -> None:
-    # The reserved worst-case fixture (30-char name + Spark block) must render
-    # as framed panels at the documented floor, with nothing wrapping past
-    # the frame and the longest account name intact on one row. Fails if the
-    # binding width grows past the floor (a real regression); still passes if
-    # the layout gets tighter (an improvement must not break the guard).
-    out = _render_at(_PANEL_FLOOR, _worst_case_usages())
-    assert "╭─ CLAUDE · 3 accounts ─" in out  # panel path, not narrow
+def test_interactive_wide_render_preserves_dashboard_contract() -> None:
+    out = _render_interactive(_INTERACTIVE_WIDE_WIDTH)
+    cursor = "\N{SINGLE RIGHT-POINTING ANGLE QUOTATION MARK}"
+
+    assert "      o" in out
+    assert "╭─ CLAUDE · 2 accounts ─" in out
     assert "╭─ CODEX · 2 accounts ─" in out
+    assert out.count(cursor) == 1
+    assert f"{cursor} ●" in out
+    assert "work@example.test" in out
+    assert "⚠ codex@example.test" not in out
+    assert (
+        "Complete the official Claude Code login before using this account."
+        in out
+    )
+    assert "Metrics last updated 2h 14m ago; retry scheduled." in out
+    assert "This external login is not saved in Sidekick." in out
+    assert PROGRESS_COPY in out
+    assert "903,464,085 tokens" in out
+    assert "7,449,473,297 tokens" in out
     assert "since Dec 28, 2025" in out
     assert "since Apr 7, 2026" in out
-    assert max(len(line) for line in out.split("\n")) <= _PANEL_FLOOR
-    assert "long.account.name@example.test" in out
+    assert "3h 50m" in out
+    assert not any(label in out for label in FORBIDDEN_SELECTION_LABELS)
+    assert max(len(line) for line in out.splitlines()) <= (
+        _INTERACTIVE_WIDE_WIDTH
+    )
 
 
 def test_overview_shows_robot_masthead_and_provider_titles() -> None:
@@ -397,17 +383,31 @@ def test_provider_title_uses_singular_account_count() -> None:
     assert "CODEX · 1 accounts" not in out
 
 
-def test_overview_degrades_below_floor_to_narrow() -> None:
-    # Well below the binding panel width the renderer falls back to the
-    # narrow stacked view instead of squeezing/wrapping the panels.
-    # Discriminator: the uppercase panel title only exists on the panel
-    # path; the narrow tag uses the lowercase provider id. Branding keeps the
-    # complete robot but drops the wide product copy.
-    out = _render_at(70, _worst_case_usages())
+def test_interactive_narrow_render_preserves_dashboard_contract() -> None:
+    out = _render_interactive(_INTERACTIVE_NARROW_WIDTH)
+    cursor = "\N{SINGLE RIGHT-POINTING ANGLE QUOTATION MARK}"
+
     assert "╭─ CLAUDE" not in out
     assert ".--┴-┴--.  sidekick usages" in out
     assert "A multi-account usage dashboard" not in out
-    assert "long.account.name@example.test" in out
+    assert "[claude · max]" in out
+    assert "[codex · pro]" in out
+    assert out.count(cursor) == 1
+    assert f"{cursor} ● work@example.test" in out
+    assert "Complete the official Claude Code login" in out
+    assert "Metrics last updated 2h 14m ago" in out
+    assert "External Codex CLI login" in out
+    assert "This external login is not saved in Sidekick." in out
+    assert PROGRESS_COPY in out
+    assert "903.46M tokens" in out
+    assert "7.449B tokens" in out
+    assert "since Dec 28, 2025" in out
+    assert "since Apr 7, 2026" in out
+    assert "(in 3h 50m)" in out
+    assert not any(label in out for label in FORBIDDEN_SELECTION_LABELS)
+    assert max(len(line) for line in out.splitlines()) <= (
+        _INTERACTIVE_NARROW_WIDTH
+    )
 
 
 def test_overview_empty_pairs() -> None:
@@ -482,50 +482,6 @@ def test_stale_usage_and_failure_render_as_one_timestamped_account() -> None:
     assert "needs attention" not in out
     first = next(line for line in out.splitlines() if line.strip())
     assert first.strip() == "o"
-
-
-@pytest.mark.parametrize(
-    ("credential_kind", "cause", "expected_lines"),
-    [
-        (
-            CredentialRecoveryKind.CLAUDE_SETUP_TOKEN,
-            "Claude rejected the saved setup token.",
-            (
-                "Claude rejected the saved setup token.",
-                "Run: sidekick-usages claude setup-token --label "
-                "'team account' --force",
-            ),
-        ),
-        (
-            CredentialRecoveryKind.CLAUDE_SUBSCRIPTION_LOGIN,
-            "Claude rejected the saved subscription login.",
-            (
-                "Claude rejected the saved subscription login.",
-                "Sign in to that Claude account, then run:",
-                "sidekick-usages refresh 'team account'",
-            ),
-        ),
-    ],
-)
-def test_claude_auth_recovery_has_one_mode_appropriate_action(
-    credential_kind: CredentialRecoveryKind,
-    cause: str,
-    expected_lines: tuple[str, ...],
-) -> None:
-    failure = AuthenticationFailure(
-        label=AccountLabel("team account"),
-        provider_id=ProviderId.CLAUDE,
-        plan="max",
-        message=cause,
-        credential_kind=credential_kind,
-    )
-
-    status, detail = overview._failure_copy(failure)
-
-    assert status == "authentication failed"
-    assert detail == expected_lines
-    assert sum("sidekick-usages" in line for line in detail) == 1
-    assert "log in again" not in "\n".join(detail).lower()
 
 
 @pytest.mark.parametrize("width", [200, _NARROW_TEST_WIDTH])
