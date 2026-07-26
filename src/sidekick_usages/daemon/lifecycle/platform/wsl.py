@@ -173,9 +173,27 @@ class WslBackend:
         return "\n".join(
             (
                 "$ErrorActionPreference = 'Stop'",
-                "$currentUser = "
+                "$sidType = [System.Security.Principal.SecurityIdentifier]",
+                "function Resolve-AccountSid([string]$accountIdentity) {",
+                "  if ([string]::IsNullOrWhiteSpace($accountIdentity)) {",
+                "    return $null",
+                "  }",
+                "  try {",
+                "    return "
+                "([System.Security.Principal.SecurityIdentifier]"
+                "::new($accountIdentity)).Value",
+                "  } catch [System.ArgumentException] {",
+                "    if (-not $accountIdentity.Contains('\\') "
+                "-and -not $accountIdentity.Contains('@')) {",
+                "      return $null",
+                "    }",
+                "    return ([System.Security.Principal.NTAccount]"
+                "$accountIdentity).Translate($sidType).Value",
+                "  }",
+                "}",
+                "$currentSid = "
                 "[System.Security.Principal.WindowsIdentity]"
-                "::GetCurrent().Name",
+                "::GetCurrent().User.Value",
                 "$tasks = @(Get-ScheduledTask | Where-Object {",
                 "  $_.TaskName -ieq "
                 f"{_powershell_literal(WSL_RESCUE_TASK_NAME)}",
@@ -190,8 +208,24 @@ class WslBackend:
                 "  $triggers = @($task.Triggers)",
                 "  $principals = @($task.Principal)",
                 "  $settings = @($task.Settings)",
+                "  $scheduler = New-Object -ComObject 'Schedule.Service'",
+                "  $scheduler.Connect()",
+                "  [xml]$definition = "
+                f"$scheduler.GetFolder("
+                f"{_powershell_literal(_WSL_RESCUE_TASK_PATH)}"
+                f").GetTask("
+                f"{_powershell_literal(WSL_RESCUE_TASK_NAME)}"
+                ").Xml",
+                "  $triggerSid = if ($triggers.Count -eq 1) {",
+                "    Resolve-AccountSid "
+                "([string]$definition.Task.Triggers.LogonTrigger.UserId)",
+                "  } else { $null }",
+                "  $principalSid = if ($principals.Count -eq 1) {",
+                "    Resolve-AccountSid "
+                "([string]$definition.Task.Principals.Principal.UserId)",
+                "  } else { $null }",
                 "  $valid = "
-                "-not [string]::IsNullOrWhiteSpace($currentUser) "
+                "-not [string]::IsNullOrWhiteSpace($currentSid) "
                 f"-and $task.TaskName -ceq "
                 f"{_powershell_literal(WSL_RESCUE_TASK_NAME)} "
                 f"-and $task.Description -ceq {description} "
@@ -204,9 +238,9 @@ class WslBackend:
                 "-and $triggers[0].CimClass.CimClassName "
                 "-ceq 'MSFT_TaskLogonTrigger' "
                 "-and $triggers[0].Enabled -eq $true "
-                "-and $triggers[0].UserId -ieq $currentUser "
+                "-and $triggerSid -ceq $currentSid "
                 "-and $principals.Count -eq 1 "
-                "-and $principals[0].UserId -ieq $currentUser "
+                "-and $principalSid -ceq $currentSid "
                 "-and [string]$principals[0].LogonType "
                 "-ceq 'Interactive' "
                 "-and [string]$principals[0].RunLevel -ceq 'Limited' "

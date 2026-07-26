@@ -557,23 +557,48 @@ def test_service_artifacts_are_user_scoped_resident_and_secret_free(
             for forbidden in ("maintain", "refresh", "token")
         )
         assert all(
-            contract in rescue_status
-            for contract in (
-                "$tasks.Count -ne 1",
-                f"$task.TaskName -ceq '{WSL_RESCUE_TASK_NAME}'",
-                "$task.TaskPath -ceq '\\'",
-                "$triggers[0].Enabled -eq $true",
-                "$triggers[0].UserId -ieq $currentUser",
-                "$principals.Count -eq 1",
-                "$principals[0].UserId -ieq $currentUser",
-                "[string]$principals[0].LogonType -ceq 'Interactive'",
-                "[string]$principals[0].RunLevel -ceq 'Limited'",
-                "$settings.Count -eq 1",
-                "$settings[0].Enabled -eq $true",
-                "$settings[0].StartWhenAvailable -eq $true",
-                "[string]$settings[0].MultipleInstances -ceq 'IgnoreNew'",
-                "$settings[0].Hidden -eq $true",
-                "$settings[0].ExecutionTimeLimit -ceq 'PT2M'",
+            (contract in rescue_status) is expected
+            for contract, expected in (
+                ("$tasks.Count -ne 1", True),
+                (f"$task.TaskName -ceq '{WSL_RESCUE_TASK_NAME}'", True),
+                ("$task.TaskPath -ceq '\\'", True),
+                ("$triggers[0].Enabled -eq $true", True),
+                ("function Resolve-AccountSid", True),
+                ("SecurityIdentifier]::new($accountIdentity)", True),
+                (
+                    "[System.Security.Principal.NTAccount]$accountIdentity",
+                    True,
+                ),
+                ("catch [System.ArgumentException]", True),
+                ("$accountIdentity.Contains('\\')", True),
+                ("$accountIdentity.Contains('@')", True),
+                ("::GetCurrent().User.Value", True),
+                ("$scheduler.GetFolder('\\').GetTask(", True),
+                ("$definition.Task.Triggers.LogonTrigger.UserId", True),
+                ("$definition.Task.Principals.Principal.UserId", True),
+                ("$triggerSid -ceq $currentSid", True),
+                ("$principals.Count -eq 1", True),
+                ("$principalSid -ceq $currentSid", True),
+                (
+                    "[string]$principals[0].LogonType -ceq 'Interactive'",
+                    True,
+                ),
+                (
+                    "[string]$principals[0].RunLevel -ceq 'Limited'",
+                    True,
+                ),
+                ("$settings.Count -eq 1", True),
+                ("$settings[0].Enabled -eq $true", True),
+                ("$settings[0].StartWhenAvailable -eq $true", True),
+                (
+                    "[string]$settings[0].MultipleInstances -ceq 'IgnoreNew'",
+                    True,
+                ),
+                ("$settings[0].Hidden -eq $true", True),
+                ("$settings[0].ExecutionTimeLimit -ceq 'PT2M'", True),
+                ("$currentUser", False),
+                (".UserId -ieq", False),
+                ("catch {", False),
             )
         )
         _exercise_wsl_health_failures(backend, manager, runner, paths)
