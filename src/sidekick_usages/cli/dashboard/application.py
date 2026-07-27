@@ -7,6 +7,7 @@ from prompt_toolkit import Application
 from prompt_toolkit.formatted_text import ANSI
 from prompt_toolkit.layout import Layout, Window
 from prompt_toolkit.layout.controls import FormattedTextControl
+from prompt_toolkit.output import ColorDepth
 
 from sidekick_usages.cli.dashboard.input import DashboardInputController
 from sidekick_usages.cli.dashboard.models.controller import (
@@ -54,6 +55,11 @@ class InteractiveDashboardApplication:
             key_bindings=self._input.bindings,
             full_screen=False,
             erase_when_done=False,
+            color_depth=(
+                ColorDepth.DEPTH_24_BIT
+                if self._color
+                else ColorDepth.DEPTH_1_BIT
+            ),
         )
         self._application = application
         self._session.bind_invalidator(self._application.invalidate)

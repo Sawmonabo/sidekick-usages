@@ -98,6 +98,7 @@ STARTUP_FAILURE_TEXT = "cached selection remains"
 ACTIVE_LABEL = "work@example.test"
 PREVIEW_LABEL = "personal@example.test"
 CODEX_EXTERNAL_LABEL = "External Codex CLI login"
+GREEN_BACKGROUND_CONTROL = "48;2;29;94;53"
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -519,7 +520,8 @@ def test_dashboard_pty_completes_the_interactive_account_journey(
             ACTIVE_LABEL in plain_initial,
             PREVIEW_LABEL in plain_initial,
             _selected(initial, ACTIVE_LABEL),
-        ) == (1, 1, True, True, True, True, True)
+            GREEN_BACKGROUND_CONTROL in initial,
+        ) == (1, 1, True, True, True, True, True, True)
 
         moved_down = _send_resize_and_read(
             session,
