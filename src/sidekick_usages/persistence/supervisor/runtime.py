@@ -64,6 +64,7 @@ class RuntimeStateReader:
         if (
             baseline is None
             or baseline.runtime_state is not ProviderRuntimeState.SAVED_ACTIVE
+            or baseline.account_id == target_account_id
         ):
             return None
         return baseline.account_id

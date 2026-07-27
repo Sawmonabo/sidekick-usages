@@ -213,8 +213,14 @@ class CodexSharedRuntime:
     ) -> CodexProjectionReceipt:
         """Install one prepared ephemeral projection and mark it ready."""
         session = self._session
+        authority = self._authority
         expectation = self._expected
-        if session is None or session.closed or expectation is None:
+        if (
+            session is None
+            or session.closed
+            or authority is None
+            or expectation is None
+        ):
             raise CodexBrokerError(CodexBrokerFailure.RUNTIME_CHANGED)
         if (
             projection.account_id != expectation.account_id
@@ -241,6 +247,7 @@ class CodexSharedRuntime:
             self._receipt = None
             self._projection_auth_generation = None
             raise
+        self._revalidate_authority(authority)
         self._expected = CodexProjectionExpectation(
             projection.account_id,
             projection.provider_identity,
@@ -295,6 +302,7 @@ class CodexSharedRuntime:
             )
         finally:
             result.clear()
+        self._revalidate_authority(authority)
         updated = replace(
             receipt,
             generation=reply.generation,
@@ -342,6 +350,17 @@ class CodexSharedRuntime:
         self._drop_session()
         self._session = CodexDaemonSession.open(self._manager, authority)
         self._authority = authority
+
+    def _revalidate_authority(
+        self,
+        authority: CodexDaemonAuthority,
+    ) -> None:
+        """Fail closed when the default socket changed during an exchange."""
+        try:
+            self._manager.revalidate(authority)
+        except CodexBrokerError:
+            self._drop_session()
+            raise
 
     def _drop_session(self) -> None:
         session = self._session

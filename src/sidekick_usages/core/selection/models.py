@@ -199,11 +199,6 @@ class ActivationRecord:
             raise ValueError(
                 "Native authentication must match the activation provider."
             )
-        if (
-            self.selected_baseline is not None
-            and self.selected_baseline.account_id == self.target_account_id
-        ):
-            raise ValueError("Activation source and target must differ.")
         _validate_activation_outcome(self.phase, self.outcome)
         _validate_activation_generation(
             self.phase,

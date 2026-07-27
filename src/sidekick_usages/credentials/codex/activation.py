@@ -105,12 +105,6 @@ class CodexActivationService:
         """Refresh, install, prove, and commit one new global selection."""
         authority.require(ProviderId.CODEX)
         baseline = self._selected.load(ProviderId.CODEX)
-        if (
-            baseline is not None
-            and baseline.runtime_state is ProviderRuntimeState.SAVED_ACTIVE
-            and baseline.account_id == target_account_id
-        ):
-            return baseline
         target_authority = authority.account(target_account_id)
         expectation = self._projection_expectation(
             target_account_id,
@@ -216,6 +210,7 @@ class CodexActivationService:
             and baseline is not None
             and baseline.runtime_state is ProviderRuntimeState.SAVED_ACTIVE
             and baseline.account_id is not None
+            and baseline.account_id != target_account_id
             and baseline.provider_identity == native.provider_identity
         )
         if not native_unchanged and not target_chosen and not rollback_chosen:

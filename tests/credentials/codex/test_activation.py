@@ -19,10 +19,8 @@ from sidekick_usages.core.selection.types import (
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.control.client import ControlClient
 from sidekick_usages.daemon.models.protocol import (
-    AcceptedPayload,
     CompletedPayload,
     FailedPayload,
-    ProgressPayload,
 )
 from sidekick_usages.daemon.types.protocol import (
     CompletionOutcome,
@@ -33,9 +31,12 @@ from sidekick_usages.persistence.supervisor.activation import (
     ActivationJournalStore,
 )
 from sidekick_usages.persistence.supervisor.selection import SelectedStateStore
+from sidekick_usages.providers.codex.broker.daemon import CodexDaemonManager
+from sidekick_usages.providers.codex.broker.errors import CodexBrokerError
+from sidekick_usages.providers.codex.broker.models import CodexDaemonAuthority
+from sidekick_usages.providers.codex.broker.types import CodexBrokerFailure
 from tests.fakes.codex.app_server.daemon import FakeCodexDaemon
 from tests.fakes.codex.app_server.executable import (
-    RAW_PROVIDER_SECRET,
     configure_codex_daemon_lifecycle,
 )
 from tests.fakes.codex.broker.runtime import (
@@ -131,13 +132,6 @@ def test_codex_activation_commits_only_correlated_target(
 ) -> None:
     fixture = broker_fixture(tmp_path, short_socket_root, monkeypatch)
     selected = SelectedStateStore(fixture.paths.selected_state)
-    selected.save(
-        selected_account(
-            ACCOUNT_A_ID,
-            ACCOUNT_A_PROVIDER_IDENTITY,
-            GENERATION,
-        )
-    )
     claude = SelectedAccountState(
         provider_id=ProviderId.CLAUDE,
         runtime_state=ProviderRuntimeState.SAVED_ACTIVE,
@@ -148,6 +142,22 @@ def test_codex_activation_commits_only_correlated_target(
         outcome=ActivationOutcome.VERIFIED,
     )
     selected.save(claude)
+    reject_revalidation = False
+    revalidate = CodexDaemonManager.revalidate
+
+    def revalidate_current_socket(
+        manager: CodexDaemonManager,
+        authority: CodexDaemonAuthority,
+    ) -> None:
+        if reject_revalidation:
+            raise CodexBrokerError(CodexBrokerFailure.RUNTIME_CHANGED)
+        revalidate(manager, authority)
+
+    monkeypatch.setattr(
+        CodexDaemonManager,
+        "revalidate",
+        revalidate_current_socket,
+    )
 
     with FakeCodexDaemon(fixture.native_home) as daemon:
         configure_codex_daemon_lifecycle(
@@ -163,8 +173,10 @@ def test_codex_activation_commits_only_correlated_target(
             real_worker_executable(),
         ) as supervisor:
             supervisor.wait_until_ready()
-            mode = fixture.provider_root / "mode"
-            mode.write_text("malformed", encoding="utf-8")
+            selected_baseline = selected.load(ProviderId.CODEX)
+            assert selected_baseline is not None
+            install_count = len(daemon.installed_account_ids)
+            reject_revalidation = True
             client = ControlClient.connect(fixture.paths.supervisor_socket)
             failed = tuple(
                 client.activate(ProviderId.CODEX, MANAGED_ACCOUNT_ID)
@@ -177,41 +189,31 @@ def test_codex_activation_commits_only_correlated_target(
                 EventKind.FAILED,
             ]
             assert isinstance(failed[-1].payload, FailedPayload)
-            assert MANAGED_ACCOUNT_ID not in daemon.installed_account_ids
-            _require_selected(
-                selected,
-                ACCOUNT_A_ID,
-                ACCOUNT_A_PROVIDER_IDENTITY,
-                GENERATION,
-            )
+            assert len(daemon.installed_account_ids) > install_count
+            assert selected.load(ProviderId.CODEX) == selected_baseline
             assert selected.load(ProviderId.CLAUDE) == claude
-
-            mode.write_text("normal", encoding="utf-8")
-            supervisor.wait_until_ready()
-            client = ControlClient.connect(fixture.paths.supervisor_socket)
-            completed = tuple(
-                client.activate(ProviderId.CODEX, MANAGED_ACCOUNT_ID)
-            )
-            client.close()
-
-            assert [event.kind for event in completed] == [
-                EventKind.ACCEPTED,
-                EventKind.PROGRESS,
-                EventKind.COMPLETED,
-            ]
-            accepted, progress, terminal = (
-                event.payload for event in completed
-            )
-            assert isinstance(accepted, AcceptedPayload)
-            assert isinstance(progress, ProgressPayload)
-            assert isinstance(terminal, CompletedPayload)
+            interrupted = ActivationJournalStore(
+                fixture.paths.activation_journals,
+                fixture.paths.durable_operations,
+            ).load(ProviderId.CODEX)
+            assert interrupted.active is not None
             assert (
-                accepted.operation_id
-                == progress.operation_id
-                == terminal.operation_id
+                interrupted.active.phase
+                is ActivationPhase.RECONCILIATION_REQUIRED
             )
-            assert PROVIDER_IDENTITY not in repr(completed)
-            assert RAW_PROVIDER_SECRET not in repr(completed)
+
+        reject_revalidation = False
+        daemon.pause_next_install()
+        with FakeCodexSupervisor(
+            fixture.paths,
+            fixture.executable,
+            fixture.native_home,
+            fixture.environment,
+            real_worker_executable(),
+        ) as restarted:
+            daemon.wait_for_paused_install()
+            daemon.resume_install()
+            restarted.wait_until_ready()
             _require_selected(
                 selected,
                 MANAGED_ACCOUNT_ID,
