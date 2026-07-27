@@ -10,6 +10,9 @@ from typing import IO, Never
 from sidekick_usages.persistence.platform.errors import NativeFilesystemError
 from sidekick_usages.persistence.platform.models import NativeFile
 from sidekick_usages.persistence.platform.posix import files, namespace
+from sidekick_usages.persistence.platform.posix.provider.read import (
+    read_provider_owned,
+)
 from sidekick_usages.persistence.platform.types import (
     FilesystemFamily,
     NativeFailureKind,
@@ -19,7 +22,6 @@ if sys.platform.startswith("linux"):
     from sidekick_usages.persistence.platform.posix import mounts
 else:
     mounts = None
-
 
 def _open_lock_descriptor(
     parent_descriptor: int,
@@ -309,6 +311,21 @@ class PosixPlatform:
             allow_interrupted_link=True,
         )
 
+    def read_provider_owned(
+        self,
+        parent: Path,
+        basename: str,
+        limit: int,
+    ) -> NativeFile | None:
+        """Read one provider file through a held qualified directory."""
+        return read_provider_owned(
+            parent,
+            basename,
+            limit,
+            qualify_descriptor=self._qualify_provider_descriptor,
+            validate_descriptor=self._validate_provider_descriptor,
+        )
+
     def _read_file(
         self,
         parent: Path,
@@ -330,74 +347,22 @@ class PosixPlatform:
             parent_descriptor,
             NativeFailureKind.UNREADABLE,
         ):
-            expected_identity = namespace.require_exact_entry(
+            return files.read_held_file(
                 parent_descriptor,
                 basename,
+                limit,
+                allow_interrupted_link=allow_interrupted_link,
             )
-            if expected_identity is None:
-                return None
-            flags = (
-                os.O_RDONLY
-                | os.O_CLOEXEC
-                | os.O_NONBLOCK
-                | namespace.no_follow_flag()
-            )
-            try:
-                file_descriptor = os.open(
-                    basename,
-                    flags,
-                    dir_fd=parent_descriptor,
-                )
-            except FileNotFoundError:
-                raise NativeFilesystemError(
-                    NativeFailureKind.CHANGED
-                ) from None
-            except OSError as error:
-                kind = (
-                    NativeFailureKind.UNSAFE
-                    if error.errno in {errno.ELOOP, errno.EACCES, errno.EPERM}
-                    else NativeFailureKind.UNREADABLE
-                )
-                raise NativeFilesystemError(kind) from None
-            with namespace.owned_descriptor(
-                file_descriptor,
-                NativeFailureKind.UNREADABLE,
-            ):
-                try:
-                    file_metadata = os.fstat(file_descriptor)
-                    directory_device = os.fstat(parent_descriptor).st_dev
-                except OSError:
-                    raise NativeFilesystemError(
-                        NativeFailureKind.UNREADABLE
-                    ) from None
-                if (
-                    file_metadata.st_dev,
-                    file_metadata.st_ino,
-                ) != expected_identity:
-                    raise NativeFilesystemError(NativeFailureKind.CHANGED)
-                if (
-                    namespace.require_exact_entry(
-                        parent_descriptor,
-                        basename,
-                    )
-                    != expected_identity
-                ):
-                    raise NativeFilesystemError(NativeFailureKind.CHANGED)
-                result = files.read_descriptor(
-                    file_descriptor,
-                    directory_device,
-                    limit,
-                    allow_interrupted_link=allow_interrupted_link,
-                )
-                if (
-                    namespace.require_exact_entry(
-                        parent_descriptor,
-                        basename,
-                    )
-                    != expected_identity
-                ):
-                    raise NativeFilesystemError(NativeFailureKind.CHANGED)
-                return result
+
+    def _qualify_provider_descriptor(self, descriptor: int) -> None:
+        """Require an approved Linux filesystem on the held directory."""
+        if mounts is None:
+            raise NativeFilesystemError(NativeFailureKind.UNSUPPORTED)
+        mounts.filesystem_for_descriptor(descriptor)
+
+    def _validate_provider_descriptor(self, descriptor: int) -> None:
+        """Apply platform-specific provider descriptor policy."""
+        del descriptor
 
     def _synchronize_file(self, descriptor: int) -> None:
         try:

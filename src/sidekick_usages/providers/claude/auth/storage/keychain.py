@@ -42,7 +42,7 @@ from sidekick_usages.providers.claude.types import (
     ClaudeProcessFailure,
 )
 
-KEYCHAIN_CREDENTIAL_BYTES = 1024 * 1024
+CLAUDE_CREDENTIAL_BYTES = 1024 * 1024
 KEYCHAIN_READ_TIMEOUT_SECONDS = 10.0
 _KEYCHAIN_ACCOUNT_PATTERN = re.compile(r"[A-Za-z0-9._-]+\Z", re.ASCII)
 _KEYCHAIN_ACCESS_DENIED_EXITS = frozenset(
@@ -56,7 +56,7 @@ _KEYCHAIN_FIND_ARGUMENT = "find-generic-password"
 _KEYCHAIN_LOCKED_EXIT = (-25308) % 256
 _KEYCHAIN_MISSING_EXIT = (-25300) % 256
 _KEYCHAIN_NATIVE_SERVICE = "Claude Code-credentials"
-_KEYCHAIN_OUTPUT_BYTES = KEYCHAIN_CREDENTIAL_BYTES + 2
+_KEYCHAIN_OUTPUT_BYTES = CLAUDE_CREDENTIAL_BYTES + 2
 _KEYCHAIN_PROFILE_PREFIX = "Claude Code-credentials-"
 _KEYCHAIN_SECURITY_EXECUTABLE = Path("/usr/bin/security")
 _KEYCHAIN_SUPPORTED_PLATFORMS = frozenset(
@@ -171,7 +171,7 @@ def read_keychain_payload(
         payload = payload[:-1]
         if payload.endswith(b"\r"):
             payload = payload[:-1]
-    if not payload or len(payload) > KEYCHAIN_CREDENTIAL_BYTES:
+    if not payload or len(payload) > CLAUDE_CREDENTIAL_BYTES:
         raise ClaudeProtectedStorageError(
             ClaudeProtectedStorageFailure.MALFORMED
         )

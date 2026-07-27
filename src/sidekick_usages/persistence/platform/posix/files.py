@@ -1,13 +1,21 @@
 """Bounded POSIX regular-file validation and reads."""
 
+import errno
 import os
 import stat
+from collections.abc import Callable
 
 from sidekick_usages.persistence.platform.errors import NativeFilesystemError
 from sidekick_usages.persistence.platform.models import NativeFile
+from sidekick_usages.persistence.platform.posix import namespace
 from sidekick_usages.persistence.platform.types import NativeFailureKind
 
 _READ_CHUNK_BYTES = 64 * 1024
+
+
+def _accept_descriptor(descriptor: int) -> None:
+    """Accept a descriptor covered by the caller's parent policy."""
+    del descriptor
 
 
 def validate_file(
@@ -86,4 +94,84 @@ def read_descriptor(
         inode=after.st_ino,
         link_count=after.st_nlink,
         data=data,
+        modified_nanoseconds=after.st_mtime_ns,
     )
+
+
+def read_held_file(
+    parent_descriptor: int,
+    basename: str,
+    limit: int,
+    *,
+    allow_interrupted_link: bool,
+    descriptor_validator: Callable[[int], None] = _accept_descriptor,
+) -> NativeFile | None:
+    """Open and read one exact sibling relative to a held directory."""
+    expected_identity = namespace.require_exact_entry(
+        parent_descriptor,
+        basename,
+    )
+    if expected_identity is None:
+        return None
+    flags = (
+        os.O_RDONLY
+        | os.O_CLOEXEC
+        | os.O_NONBLOCK
+        | namespace.no_follow_flag()
+    )
+    try:
+        file_descriptor = os.open(
+            basename,
+            flags,
+            dir_fd=parent_descriptor,
+        )
+    except FileNotFoundError:
+        raise NativeFilesystemError(NativeFailureKind.CHANGED) from None
+    except OSError as error:
+        kind = (
+            NativeFailureKind.UNSAFE
+            if error.errno in {errno.ELOOP, errno.EACCES, errno.EPERM}
+            else NativeFailureKind.UNREADABLE
+        )
+        raise NativeFilesystemError(kind) from None
+    with namespace.owned_descriptor(
+        file_descriptor,
+        NativeFailureKind.UNREADABLE,
+    ):
+        try:
+            file_metadata = os.fstat(file_descriptor)
+            directory_device = os.fstat(parent_descriptor).st_dev
+        except OSError:
+            raise NativeFilesystemError(
+                NativeFailureKind.UNREADABLE
+            ) from None
+        if (
+            file_metadata.st_dev,
+            file_metadata.st_ino,
+        ) != expected_identity:
+            raise NativeFilesystemError(NativeFailureKind.CHANGED)
+        if (
+            namespace.require_exact_entry(
+                parent_descriptor,
+                basename,
+            )
+            != expected_identity
+        ):
+            raise NativeFilesystemError(NativeFailureKind.CHANGED)
+        descriptor_validator(file_descriptor)
+        result = read_descriptor(
+            file_descriptor,
+            directory_device,
+            limit,
+            allow_interrupted_link=allow_interrupted_link,
+        )
+        descriptor_validator(file_descriptor)
+        if (
+            namespace.require_exact_entry(
+                parent_descriptor,
+                basename,
+            )
+            != expected_identity
+        ):
+            raise NativeFilesystemError(NativeFailureKind.CHANGED)
+        return result

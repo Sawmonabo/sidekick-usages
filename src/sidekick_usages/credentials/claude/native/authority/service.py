@@ -17,6 +17,9 @@ from sidekick_usages.persistence.filesystem.service import (
 from sidekick_usages.providers.claude.auth.storage.errors import (
     ClaudeProtectedStorageError,
 )
+from sidekick_usages.providers.claude.auth.storage.keychain import (
+    CLAUDE_CREDENTIAL_BYTES,
+)
 from sidekick_usages.providers.claude.auth.storage.models import (
     ClaudeAuthoritySnapshot,
     ClaudeCredentialObservation,
@@ -67,7 +70,9 @@ class _ClaudeNativeCredentialFiles:
         """Return qualified bounded native credentials or proven absence."""
         self._require_profile(profile)
         try:
-            snapshot = self._filesystem.read_opaque_private()
+            snapshot = self._filesystem.read_provider_owned(
+                CLAUDE_CREDENTIAL_BYTES
+            )
         except InvalidManagedArtifactError:
             raise ClaudeProtectedStorageError(
                 ClaudeProtectedStorageFailure.MALFORMED

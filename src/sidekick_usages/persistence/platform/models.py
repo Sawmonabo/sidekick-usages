@@ -26,6 +26,18 @@ class NativeFile:
     inode: int
     link_count: int
     data: bytes = field(repr=False)
+    modified_nanoseconds: int | None = field(
+        default=None,
+        compare=False,
+    )
+
+    def __post_init__(self) -> None:
+        """Reject invalid optional provider modification time."""
+        if (
+            self.modified_nanoseconds is not None
+            and self.modified_nanoseconds < 0
+        ):
+            raise ValueError("Native file modification time is invalid.")
 
 
 @dataclass(frozen=True, slots=True)

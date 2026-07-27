@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 
 from sidekick_usages.persistence.platform.errors import NativeFilesystemError
+from sidekick_usages.persistence.platform.macos.acl import has_extended_acl
 from sidekick_usages.persistence.platform.posix import namespace
 from sidekick_usages.persistence.platform.posix.adapter import PosixPlatform
 from sidekick_usages.persistence.platform.types import (
@@ -78,6 +79,19 @@ class MacOSPlatform(PosixPlatform):
             if _filesystem_name(descriptor) != "apfs":
                 raise NativeFilesystemError(NativeFailureKind.UNSUPPORTED)
             return FilesystemFamily.APFS
+
+    def _qualify_provider_descriptor(self, descriptor: int) -> None:
+        """Require APFS on the held provider directory."""
+        if _filesystem_name(descriptor) != "apfs":
+            raise NativeFilesystemError(NativeFailureKind.UNSUPPORTED)
+
+    def _validate_provider_descriptor(self, descriptor: int) -> None:
+        """Reject any extended ACL on a provider directory or file."""
+        try:
+            if has_extended_acl(descriptor):
+                raise NativeFilesystemError(NativeFailureKind.UNSAFE)
+        except OSError:
+            raise NativeFilesystemError(NativeFailureKind.UNSAFE) from None
 
     def _synchronize_file(self, descriptor: int) -> None:
         """Request both kernel and drive-cache synchronization."""

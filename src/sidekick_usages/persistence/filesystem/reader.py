@@ -24,6 +24,7 @@ from sidekick_usages.persistence.models.artifact import (
     FileIdentity,
     FileSnapshot,
     ManagedArtifact,
+    ProviderFileSnapshot,
 )
 from sidekick_usages.persistence.platform.errors import NativeFilesystemError
 from sidekick_usages.persistence.platform.models import (
@@ -106,6 +107,38 @@ class PrivateFileReader:
             self.grammar.authority_basename,
             MAX_DOCUMENT_BYTES,
             require_complete=True,
+        )
+
+    def read_provider_owned(self, limit: int) -> ProviderFileSnapshot | None:
+        """Read one bounded provider file through its read-only policy."""
+        if limit < 0 or limit > MAX_DOCUMENT_BYTES:
+            raise ValueError("Provider read limit is outside the contract.")
+        basename = self.grammar.authority_basename
+        try:
+            native = self._native.read_provider_owned(
+                self._parent,
+                basename,
+                limit,
+            )
+        except NativeFilesystemError as error:
+            raise self._read_error(basename, error) from None
+        if native is None:
+            return None
+        modified_nanoseconds = native.modified_nanoseconds
+        if (
+            native.link_count != SINGLE_LINK
+            or modified_nanoseconds is None
+        ):
+            raise UnsafeManagedFileError(basename)
+        data = native.data
+        return ProviderFileSnapshot(
+            FileFingerprint(
+                identity=FileIdentity(native.device, native.inode),
+                digest=sha256_digest(data),
+                size=len(data),
+            ),
+            modified_nanoseconds,
+            data,
         )
 
     def discover_managed(self) -> tuple[ManagedArtifact, ...]:

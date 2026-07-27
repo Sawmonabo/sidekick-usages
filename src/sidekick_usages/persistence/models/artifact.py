@@ -54,3 +54,21 @@ class FileSnapshot:
             or self.link_count not in {1, 2}
         ):
             raise ValueError("Snapshot fingerprint does not match its bytes.")
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderFileSnapshot:
+    """Read-only provider bytes and descriptor-bound modification time."""
+
+    fingerprint: FileFingerprint
+    modified_nanoseconds: int
+    data: bytes = field(repr=False)
+
+    def __post_init__(self) -> None:
+        """Require one valid fingerprint and provider timestamp."""
+        if (
+            self.fingerprint.size != len(self.data)
+            or self.fingerprint.digest != sha256_digest(self.data)
+            or self.modified_nanoseconds < 0
+        ):
+            raise ValueError("Provider snapshot does not match its bytes.")

@@ -30,6 +30,14 @@ class NativePlatform(Protocol):
     ) -> NativeFile | None:
         """No-follow read one protected regular object when present."""
 
+    def read_provider_owned(
+        self,
+        parent: Path,
+        basename: str,
+        limit: int,
+    ) -> NativeFile | None:
+        """Read one provider-owned file without changing its namespace."""
+
     def create_private(
         self,
         parent: Path,

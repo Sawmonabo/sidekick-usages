@@ -252,6 +252,7 @@ if sys.platform == "win32":
             after.st_ino,
             after.st_nlink,
             data,
+            after.st_mtime_ns,
         )
 
     def write_handle(handle: int, data: bytes) -> None:

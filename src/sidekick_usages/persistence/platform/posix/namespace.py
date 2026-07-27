@@ -10,6 +10,7 @@ from pathlib import Path
 from sidekick_usages.persistence.platform.errors import NativeFilesystemError
 from sidekick_usages.persistence.platform.types import NativeFailureKind
 
+_MAX_PROVIDER_DIRECTORY_ENTRIES = 4_096
 PRIVATE_DIRECTORY_MODE = 0o700
 PRIVATE_FILE_MODE = 0o600
 
@@ -189,11 +190,25 @@ def require_exact_entry(
     basename: str,
 ) -> tuple[int, int] | None:
     """Return an exact child's identity and reject case aliases."""
+    exact = False
+    alias = False
+    requested = basename.casefold()
     try:
-        entries = tuple(os.listdir(parent_descriptor))
+        with os.scandir(parent_descriptor) as entries:
+            for count, entry in enumerate(entries, start=1):
+                if count > _MAX_PROVIDER_DIRECTORY_ENTRIES:
+                    raise NativeFilesystemError(
+                        NativeFailureKind.TOO_LARGE
+                    )
+                if entry.name == basename:
+                    exact = True
+                elif entry.name.casefold() == requested:
+                    alias = True
     except OSError:
         raise NativeFilesystemError(NativeFailureKind.UNREADABLE) from None
-    if basename in entries:
+    if alias:
+        raise NativeFilesystemError(NativeFailureKind.UNSAFE)
+    if exact:
         try:
             metadata = os.stat(
                 basename,
@@ -205,9 +220,6 @@ def require_exact_entry(
         except OSError:
             raise NativeFilesystemError(NativeFailureKind.UNSAFE) from None
         return metadata.st_dev, metadata.st_ino
-    requested = basename.casefold()
-    if any(entry.casefold() == requested for entry in entries):
-        raise NativeFilesystemError(NativeFailureKind.UNSAFE)
     return None
 
 

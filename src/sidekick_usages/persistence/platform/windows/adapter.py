@@ -307,6 +307,16 @@ if sys.platform == "win32":
             """Read one bounded protected non-reparse sibling."""
             return files.read_file(parent, basename, limit)
 
+        def read_provider_owned(
+            self,
+            parent: Path,
+            basename: str,
+            limit: int,
+        ) -> NativeFile | None:
+            """Reject native provider credential reads on Windows."""
+            del parent, basename, limit
+            raise NativeFilesystemError(NativeFailureKind.UNSUPPORTED)
+
         def create_private(
             self,
             parent: Path,

@@ -6,7 +6,7 @@ from sidekick_usages.persistence.platform.errors import NativeFilesystemError
 from sidekick_usages.persistence.platform.models import TreeEntry
 from sidekick_usages.persistence.platform.ports import NativePlatform
 from sidekick_usages.persistence.platform.posix.private import tree
-from sidekick_usages.persistence.platform.posix.provider_stage import (
+from sidekick_usages.persistence.platform.posix.provider.stage import (
     harden_provider_stage,
 )
 from sidekick_usages.persistence.platform.types import NativeFailureKind

@@ -11,6 +11,9 @@ from pathlib import Path
 
 import pytest
 
+import sidekick_usages.persistence.platform.macos.adapter
+import sidekick_usages.persistence.platform.posix.files
+import sidekick_usages.persistence.platform.posix.mounts
 import sidekick_usages.platform.executable
 import sidekick_usages.providers.claude.auth.storage.keychain
 from sidekick_usages.core.accounts.types import (
@@ -37,6 +40,8 @@ from sidekick_usages.credentials.claude.native.authority.service import (
     ClaudeNativeAuthorityReader,
 )
 from sidekick_usages.paths import managed_claude_config_dir
+from sidekick_usages.persistence.platform.models import NativeFile
+from sidekick_usages.persistence.platform.types import FilesystemFamily
 from sidekick_usages.persistence.private.credentials import (
     PrivateCredentialTree,
 )
@@ -46,7 +51,7 @@ from sidekick_usages.providers.claude.auth.storage.errors import (
     ClaudeProtectedStorageError,
 )
 from sidekick_usages.providers.claude.auth.storage.keychain import (
-    KEYCHAIN_CREDENTIAL_BYTES,
+    CLAUDE_CREDENTIAL_BYTES,
     KEYCHAIN_READ_TIMEOUT_SECONDS,
 )
 from sidekick_usages.providers.claude.auth.storage.service import (
@@ -61,6 +66,7 @@ from sidekick_usages.providers.claude.managed.executable import (
     discover_claude_executable_from_launcher,
     verify_claude_executable,
 )
+from sidekick_usages.providers.claude.managed.models import ClaudeCapabilities
 from sidekick_usages.providers.claude.managed.types import (
     ClaudeManagedFailure,
     ClaudeManagedPlatform,
@@ -88,8 +94,10 @@ _ACCOUNT_B = SidekickAccountId("22222222-2222-4222-8222-222222222222")
 _PRIVATE_DIRECTORY_MODE = 0o700
 _AUTHORITY_ID = AuthorityId("33333333-3333-4333-8333-333333333333")
 _FUTURE_EXPIRY = REFERENCE_TIME + timedelta(hours=1)
+_KEYCHAIN_ACCESS_DENIED_EXIT = (-25293) % 256
 _KEYCHAIN_EXECUTABLE = Path("/usr/bin/security")
 _KEYCHAIN_LOCKED_EXIT = (-25308) % 256
+_KEYCHAIN_MISSING_EXIT = (-25300) % 256
 _KEYCHAIN_PROVENANCE = ExecutableProvenance(
     _KEYCHAIN_EXECUTABLE.absolute(),
     0,
@@ -133,6 +141,339 @@ def _probe_runner(
             ),
         }
     )
+
+
+def _native_failure(
+    reader: ClaudeNativeAuthorityReader,
+    capabilities: ClaudeCapabilities,
+) -> ClaudeProtectedStorageFailure:
+    """Return one safe failure from the native credential boundary."""
+    with pytest.raises(ClaudeProtectedStorageError) as failure:
+        reader.read(capabilities, REFERENCE_TIME)
+    return failure.value.code
+
+
+def _prove_provider_parent_contract(
+    reader: ClaudeNativeAuthorityReader,
+    capabilities: ClaudeCapabilities,
+    provider_directory: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Prove held qualification, parent policy, and no-follow identity."""
+    qualified_paths: list[Path] = []
+    if sys.platform.startswith("linux"):
+        original_qualify = (
+            sidekick_usages.persistence.platform.posix.mounts
+            .filesystem_for_descriptor
+        )
+
+        def record_qualified_directory(
+            descriptor: int,
+        ) -> FilesystemFamily:
+            qualified_paths.append(
+                Path(os.readlink(f"/proc/self/fd/{descriptor}"))
+            )
+            return original_qualify(descriptor)
+
+        with monkeypatch.context() as changes:
+            changes.setattr(
+                sidekick_usages.persistence.platform.posix.mounts,
+                "filesystem_for_descriptor",
+                record_qualified_directory,
+            )
+            reader.read(capabilities, REFERENCE_TIME)
+        assert qualified_paths == [provider_directory.resolve()]
+
+    provider_directory.chmod(0o775)
+    assert (
+        _native_failure(reader, capabilities)
+        is ClaudeProtectedStorageFailure.UNSAFE
+    )
+    provider_directory.chmod(0o755)
+
+    real_directory = provider_directory.with_name(".claude-real")
+    provider_directory.rename(real_directory)
+    provider_directory.symlink_to(
+        real_directory.name,
+        target_is_directory=True,
+    )
+    assert (
+        _native_failure(reader, capabilities)
+        is ClaudeProtectedStorageFailure.UNSAFE
+    )
+    provider_directory.unlink()
+    real_directory.rename(provider_directory)
+
+
+def _prove_provider_file_contract(
+    reader: ClaudeNativeAuthorityReader,
+    capabilities: ClaudeCapabilities,
+    credential_path: Path,
+    payload: bytes,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Prove file modes, identity, size, device, and exact-name policy."""
+    credential_path.chmod(0o644)
+    assert (
+        _native_failure(reader, capabilities)
+        is ClaudeProtectedStorageFailure.UNSAFE
+    )
+    credential_path.chmod(0o600)
+
+    linked_path = credential_path.with_name("credential-hard-link")
+    os.link(credential_path, linked_path)
+    assert (
+        _native_failure(reader, capabilities)
+        is ClaudeProtectedStorageFailure.UNSAFE
+    )
+    linked_path.unlink()
+
+    alias_path = credential_path.with_name(".CREDENTIALS.JSON")
+    alias_path.write_bytes(b"alias")
+    alias_path.chmod(0o600)
+    assert (
+        _native_failure(reader, capabilities)
+        is ClaudeProtectedStorageFailure.UNSAFE
+    )
+    alias_path.unlink()
+
+    moved_path = credential_path.with_name("credentials-real")
+    credential_path.rename(moved_path)
+    credential_path.symlink_to(moved_path.name)
+    assert (
+        _native_failure(reader, capabilities)
+        is ClaudeProtectedStorageFailure.UNSAFE
+    )
+    credential_path.unlink()
+    moved_path.rename(credential_path)
+
+    credential_path.write_bytes(b"x" * (CLAUDE_CREDENTIAL_BYTES + 1))
+    credential_path.chmod(0o600)
+    assert (
+        _native_failure(reader, capabilities)
+        is ClaudeProtectedStorageFailure.MALFORMED
+    )
+    credential_path.write_bytes(payload)
+    credential_path.chmod(0o600)
+
+    original_read = (
+        sidekick_usages.persistence.platform.posix.files.read_descriptor
+    )
+
+    def read_with_cross_device(
+        descriptor: int,
+        directory_device: int,
+        limit: int,
+        *,
+        allow_interrupted_link: bool = True,
+    ) -> NativeFile:
+        return original_read(
+            descriptor,
+            directory_device + 1,
+            limit,
+            allow_interrupted_link=allow_interrupted_link,
+        )
+
+    with monkeypatch.context() as changes:
+        changes.setattr(
+            sidekick_usages.persistence.platform.posix.files,
+            "read_descriptor",
+            read_with_cross_device,
+        )
+        assert (
+            _native_failure(reader, capabilities)
+            is ClaudeProtectedStorageFailure.UNSAFE
+        )
+
+
+def _prove_provider_change_and_entry_bound(
+    reader: ClaudeNativeAuthorityReader,
+    capabilities: ClaudeCapabilities,
+    credential_path: Path,
+    payload: bytes,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Prove concurrent replacement and bounded directory scanning."""
+    original_read = (
+        sidekick_usages.persistence.platform.posix.files.read_descriptor
+    )
+
+    def replace_after_read(
+        descriptor: int,
+        directory_device: int,
+        limit: int,
+        *,
+        allow_interrupted_link: bool = True,
+    ) -> NativeFile:
+        result = original_read(
+            descriptor,
+            directory_device,
+            limit,
+            allow_interrupted_link=allow_interrupted_link,
+        )
+        credential_path.unlink()
+        credential_path.write_bytes(payload)
+        credential_path.chmod(0o600)
+        return result
+
+    with monkeypatch.context() as changes:
+        changes.setattr(
+            sidekick_usages.persistence.platform.posix.files,
+            "read_descriptor",
+            replace_after_read,
+        )
+        assert (
+            _native_failure(reader, capabilities)
+            is ClaudeProtectedStorageFailure.UNREADABLE
+        )
+
+    overflow_paths = tuple(
+        credential_path.parent / f"entry-{index:04d}"
+        for index in range(4_096)
+    )
+    for path in overflow_paths:
+        path.touch(mode=0o600)
+    assert (
+        _native_failure(reader, capabilities)
+        is ClaudeProtectedStorageFailure.MALFORMED
+    )
+    for path in overflow_paths:
+        path.unlink()
+
+
+def _prove_macos_provider_contract(
+    reader: ClaudeNativeAuthorityReader,
+    capabilities: ClaudeCapabilities,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Prove APFS and parent/file extended-ACL rejection on macOS."""
+    if sys.platform != "darwin":
+        return
+    with monkeypatch.context() as changes:
+        changes.setattr(
+            sidekick_usages.persistence.platform.macos.adapter,
+            "_filesystem_name",
+            lambda _descriptor: "not-apfs",
+        )
+        assert (
+            _native_failure(reader, capabilities)
+            is ClaudeProtectedStorageFailure.UNSAFE
+        )
+    for rejected_mode in (stat.S_IFDIR, stat.S_IFREG):
+        with monkeypatch.context() as changes:
+            changes.setattr(
+                sidekick_usages.persistence.platform.macos.adapter,
+                "has_extended_acl",
+                lambda descriptor, mode=rejected_mode: stat.S_IFMT(
+                    os.fstat(descriptor).st_mode
+                )
+                == mode,
+            )
+            assert (
+                _native_failure(reader, capabilities)
+                is ClaudeProtectedStorageFailure.UNSAFE
+            )
+
+
+def _prove_keychain_failure_contract(
+    reader: ClaudeManagedAuthorityReader,
+    capabilities: ClaudeCapabilities,
+    arguments: tuple[str, ...],
+    environment: dict[str, str],
+    profiles: PrivateCredentialTree,
+    payload: bytes,
+) -> None:
+    """Prove bounded Keychain failures and both plaintext checks."""
+    for return_code, expected_failure in (
+        (
+            _KEYCHAIN_LOCKED_EXIT,
+            ClaudeProtectedStorageFailure.KEYCHAIN_LOCKED,
+        ),
+        (
+            _KEYCHAIN_ACCESS_DENIED_EXIT,
+            ClaudeProtectedStorageFailure.KEYCHAIN_ACCESS_DENIED,
+        ),
+        (
+            _KEYCHAIN_MISSING_EXIT,
+            ClaudeProtectedStorageFailure.MISSING,
+        ),
+    ):
+        rejected_runner = ClaudeRunner(
+            {
+                arguments: ClaudeCommandResult(
+                    return_code,
+                    b"keychain-failure-secret",
+                )
+            }
+        )
+        with pytest.raises(ClaudeProtectedStorageError) as rejected:
+            reader.read(
+                capabilities,
+                REFERENCE_TIME,
+                environment=environment,
+                runner=rejected_runner,
+            )
+        assert rejected.value.code is expected_failure
+        assert "keychain-failure-secret" not in repr(rejected.value)
+
+    oversized_runner = ClaudeRunner(
+        {
+            arguments: ClaudeCommandResult(
+                0,
+                b"x" * (CLAUDE_CREDENTIAL_BYTES + 1),
+            )
+        }
+    )
+    with pytest.raises(ClaudeProtectedStorageError) as oversized:
+        reader.read(
+            capabilities,
+            REFERENCE_TIME,
+            environment=environment,
+            runner=oversized_runner,
+        )
+    assert oversized.value.code is ClaudeProtectedStorageFailure.MALFORMED
+
+    def create_plaintext_after_read(
+        actual: tuple[str, ...],
+        process_environment: dict[str, str] | None,
+        working_directory: Path | None,
+    ) -> ClaudeCommandResult:
+        del process_environment, working_directory
+        assert actual == arguments
+        profiles.write_owned_file(
+            capabilities.profile.config_directory,
+            CLAUDE_CREDENTIAL_FILE,
+            payload,
+        )
+        return ClaudeCommandResult(0, payload)
+
+    after_runner = ClaudeRunner(script=create_plaintext_after_read)
+    with pytest.raises(ClaudeProtectedStorageError) as after_fallback:
+        reader.read(
+            capabilities,
+            REFERENCE_TIME,
+            environment=environment,
+            runner=after_runner,
+        )
+    assert after_fallback.value.code is (
+        ClaudeProtectedStorageFailure.PLAINTEXT_FALLBACK
+    )
+    assert len(after_runner.calls) == 1
+
+    before_runner = ClaudeRunner(
+        {arguments: ClaudeCommandResult(0, payload)}
+    )
+    with pytest.raises(ClaudeProtectedStorageError) as before_fallback:
+        reader.read(
+            capabilities,
+            REFERENCE_TIME,
+            environment=environment,
+            runner=before_runner,
+        )
+    assert before_fallback.value.code is (
+        ClaudeProtectedStorageFailure.PLAINTEXT_FALLBACK
+    )
+    assert before_runner.calls == []
 
 
 @pytest.mark.skipif(
@@ -359,6 +700,7 @@ def test_claude_boundary_rejects_distinct_preflight_gates(
 )
 def test_file_profile_readback_is_exact_identity_bound_and_fail_closed(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     paths = make_application_paths(tmp_path / "state")
     profiles = profile_tree(paths)
@@ -443,10 +785,18 @@ def test_file_profile_readback_is_exact_identity_bound_and_fail_closed(
     native_path = native.config_directory / CLAUDE_CREDENTIAL_FILE
     native_path.write_bytes(payload_a)
     native_path.chmod(0o600)
+    native.config_directory.chmod(0o755)
     native_reader = ClaudeNativeAuthorityReader(native)
     native_capabilities = claude_capabilities(
         native,
         ClaudeManagedPlatform.LINUX_FILE,
+    )
+
+    _prove_provider_parent_contract(
+        native_reader,
+        native_capabilities,
+        native.config_directory,
+        monkeypatch,
     )
     native_snapshot = native_reader.read(
         native_capabilities,
@@ -457,15 +807,25 @@ def test_file_profile_readback_is_exact_identity_bound_and_fail_closed(
         native_snapshot.profile,
         native_snapshot.provider_identity,
     ) == (native, expected_identity)
-
-    native_path.chmod(0o644)
-    with pytest.raises(ClaudeProtectedStorageError) as native_unsafe:
-        native_reader.read(
-            native_capabilities,
-            REFERENCE_TIME,
-            expected_identity=expected_identity,
-        )
-    assert native_unsafe.value.code is ClaudeProtectedStorageFailure.UNSAFE
+    _prove_provider_file_contract(
+        native_reader,
+        native_capabilities,
+        native_path,
+        payload_a,
+        monkeypatch,
+    )
+    _prove_provider_change_and_entry_bound(
+        native_reader,
+        native_capabilities,
+        native_path,
+        payload_a,
+        monkeypatch,
+    )
+    _prove_macos_provider_contract(
+        native_reader,
+        native_capabilities,
+        monkeypatch,
+    )
 
 
 @pytest.mark.skipif(
@@ -562,7 +922,7 @@ def test_keychain_readback_is_namespaced_bounded_and_fail_closed(
         (_KEYCHAIN_EXECUTABLE, profile_b_arguments),
     ]
     assert runner.timeouts == [KEYCHAIN_READ_TIMEOUT_SECONDS] * 3
-    assert runner.output_limits == [KEYCHAIN_CREDENTIAL_BYTES + 2] * 3
+    assert runner.output_limits == [CLAUDE_CREDENTIAL_BYTES + 2] * 3
     assert (
         runner.environments
         == [{"PATH": os.defpath, "USER": "sidekick-test"}] * 3
@@ -570,42 +930,11 @@ def test_keychain_readback_is_namespaced_bounded_and_fail_closed(
     assert "keychain-a-secret" not in repr(snapshot_a)
     assert "keychain-b-secret" not in repr(snapshot_b)
 
-    locked_runner = ClaudeRunner(
-        {
-            profile_a_arguments: ClaudeCommandResult(
-                _KEYCHAIN_LOCKED_EXIT,
-                b"keychain-failure-secret",
-            )
-        }
-    )
-    with pytest.raises(ClaudeProtectedStorageError) as locked:
-        reader.read(
-            capabilities_a,
-            REFERENCE_TIME,
-            environment=environment,
-            runner=locked_runner,
-        )
-    assert locked.value.code is ClaudeProtectedStorageFailure.KEYCHAIN_LOCKED
-    assert "keychain-failure-secret" not in repr(locked.value)
-
-    profiles.write_owned_file(
-        profile_a.config_directory,
-        CLAUDE_CREDENTIAL_FILE,
+    _prove_keychain_failure_contract(
+        reader,
+        capabilities_a,
+        profile_a_arguments,
+        environment,
+        profiles,
         payload_a,
     )
-    fallback_runner = ClaudeRunner(
-        {
-            profile_a_arguments: ClaudeCommandResult(0, payload_a),
-        }
-    )
-    with pytest.raises(ClaudeProtectedStorageError) as fallback:
-        reader.read(
-            capabilities_a,
-            REFERENCE_TIME,
-            environment=environment,
-            runner=fallback_runner,
-        )
-    assert (
-        fallback.value.code is ClaudeProtectedStorageFailure.PLAINTEXT_FALLBACK
-    )
-    assert fallback_runner.calls == []
