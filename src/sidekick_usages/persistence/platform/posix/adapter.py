@@ -23,6 +23,7 @@ if sys.platform.startswith("linux"):
 else:
     mounts = None
 
+
 def _open_lock_descriptor(
     parent_descriptor: int,
     basename: str,

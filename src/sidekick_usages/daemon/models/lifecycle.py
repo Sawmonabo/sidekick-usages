@@ -106,10 +106,7 @@ class ServiceLaunchCommand:
         """Reject ambiguous programs and unsafe native arguments."""
         values = (str(self.program), *self.arguments)
         if not self.program.is_absolute() or any(
-            not value
-            or "\0" in value
-            or "\n" in value
-            or "\r" in value
+            not value or "\0" in value or "\n" in value or "\r" in value
             for value in values
         ):
             raise ValueError("Service launch command is invalid.")

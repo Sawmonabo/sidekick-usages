@@ -114,10 +114,7 @@ def read_held_file(
     if expected_identity is None:
         return None
     flags = (
-        os.O_RDONLY
-        | os.O_CLOEXEC
-        | os.O_NONBLOCK
-        | namespace.no_follow_flag()
+        os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK | namespace.no_follow_flag()
     )
     try:
         file_descriptor = os.open(
@@ -142,9 +139,7 @@ def read_held_file(
             file_metadata = os.fstat(file_descriptor)
             directory_device = os.fstat(parent_descriptor).st_dev
         except OSError:
-            raise NativeFilesystemError(
-                NativeFailureKind.UNREADABLE
-            ) from None
+            raise NativeFilesystemError(NativeFailureKind.UNREADABLE) from None
         if (
             file_metadata.st_dev,
             file_metadata.st_ino,

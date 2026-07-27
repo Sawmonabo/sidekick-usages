@@ -125,10 +125,7 @@ class PrivateFileReader:
         if native is None:
             return None
         modified_nanoseconds = native.modified_nanoseconds
-        if (
-            native.link_count != SINGLE_LINK
-            or modified_nanoseconds is None
-        ):
+        if native.link_count != SINGLE_LINK or modified_nanoseconds is None:
             raise UnsafeManagedFileError(basename)
         data = native.data
         return ProviderFileSnapshot(

@@ -11,7 +11,6 @@ from pathlib import Path
 
 import pytest
 
-import sidekick_usages.persistence.platform.macos.adapter
 import sidekick_usages.persistence.platform.posix.files
 import sidekick_usages.persistence.platform.posix.mounts
 import sidekick_usages.platform.executable
@@ -93,6 +92,9 @@ from tests.fakes.claude.managed import (
 )
 from tests.support.persistence import make_application_paths
 from tests.support.time import REFERENCE_TIME
+
+if sys.platform == "darwin":
+    import sidekick_usages.persistence.platform.macos.adapter
 
 _ACCOUNT_A = SidekickAccountId("11111111-1111-4111-8111-111111111111")
 _ACCOUNT_B = SidekickAccountId("22222222-2222-4222-8222-222222222222")
@@ -224,13 +226,12 @@ def _prove_provider_file_contract(
     assert failure() is ClaudeProtectedStorageFailure.UNSAFE
     linked_path.unlink()
 
-    alias_path = credential_path.with_name(".CREDENTIALS.JSON")
-    alias_path.write_bytes(b"alias")
-    alias_path.chmod(0o600)
-    assert failure() is ClaudeProtectedStorageFailure.UNSAFE
-    alias_path.unlink()
-
     moved_path = credential_path.with_name("credentials-real")
+    alias_path = credential_path.with_name(".CREDENTIALS.JSON")
+    credential_path.rename(moved_path).rename(alias_path)
+    assert failure() is ClaudeProtectedStorageFailure.UNSAFE
+    alias_path.rename(moved_path).rename(credential_path)
+
     credential_path.rename(moved_path)
     credential_path.symlink_to(moved_path.name)
     assert failure() is ClaudeProtectedStorageFailure.UNSAFE

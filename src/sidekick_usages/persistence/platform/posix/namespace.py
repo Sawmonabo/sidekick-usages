@@ -197,9 +197,7 @@ def require_exact_entry(
         with os.scandir(parent_descriptor) as entries:
             for count, entry in enumerate(entries, start=1):
                 if count > _MAX_PROVIDER_DIRECTORY_ENTRIES:
-                    raise NativeFilesystemError(
-                        NativeFailureKind.TOO_LARGE
-                    )
+                    raise NativeFilesystemError(NativeFailureKind.TOO_LARGE)
                 if entry.name == basename:
                     exact = True
                 elif entry.name.casefold() == requested:

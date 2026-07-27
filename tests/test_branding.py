@@ -8,6 +8,7 @@ from rich.console import Console, Group
 from rich.text import Text
 
 from sidekick_usages.branding import content, rich
+from sidekick_usages.branding.theme import CLAUDE_STYLE, CODEX_STYLE
 
 _LEFT_EYE = (4, 5)
 _RIGHT_EYE = (8, 9)
@@ -98,16 +99,20 @@ def test_robot_eyes_and_speech_arrows_use_provider_styles() -> None:
     mouth_row = renderables[4]
     assert isinstance(eye_row, Text)
     assert isinstance(mouth_row, Text)
+    expected_claude_style = rich.rich_style(CLAUDE_STYLE)
+    expected_codex_style = rich.rich_style(CODEX_STYLE)
     assert any(
-        (span.start, span.end) == _LEFT_EYE and span.style == "magenta"
+        (span.start, span.end) == _LEFT_EYE
+        and span.style == expected_claude_style
         for span in eye_row.spans
     )
     assert any(
-        (span.start, span.end) == _RIGHT_EYE and span.style == "cyan"
+        (span.start, span.end) == _RIGHT_EYE
+        and span.style == expected_codex_style
         for span in eye_row.spans
     )
-    assert any(span.style == "magenta" for span in mouth_row.spans)
-    assert any(span.style == "cyan" for span in mouth_row.spans)
+    assert any(span.style == expected_claude_style for span in mouth_row.spans)
+    assert any(span.style == expected_codex_style for span in mouth_row.spans)
 
 
 def test_readme_masthead_matches_canonical_branding() -> None:

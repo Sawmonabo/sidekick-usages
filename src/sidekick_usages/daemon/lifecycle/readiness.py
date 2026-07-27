@@ -148,9 +148,7 @@ class SupervisorReadiness:
         broker_required = _broker_required(accounts, provider_ids)
         if broker_required:
             progress(
-                ServiceLifecycleObservation(
-                    ServiceLifecyclePhase.CODEX_BROKER
-                )
+                ServiceLifecycleObservation(ServiceLifecyclePhase.CODEX_BROKER)
             )
         self._require_resident_readiness(
             state,
@@ -200,9 +198,7 @@ class SupervisorReadiness:
                 remaining = deadline - self._monotonic()
                 if remaining <= 0:
                     raise
-                self._cancelled.wait(
-                    min(_READINESS_WAIT_SECONDS, remaining)
-                )
+                self._cancelled.wait(min(_READINESS_WAIT_SECONDS, remaining))
                 continue
             break
         self._require_provider_readiness(provider_ids, progress)

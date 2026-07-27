@@ -143,9 +143,7 @@ class LaunchdBackend:
 
 def _plist_payload(command: ServiceLaunchCommand, log_root: Path) -> bytes:
     arguments = "".join(
-        "    <string>"
-        f"{html.escape(value, quote=True)}"
-        "</string>\n"
+        f"    <string>{html.escape(value, quote=True)}</string>\n"
         for value in (str(command.program), *command.arguments)
     )
     stdout = html.escape(str(log_root / "supervisor.out.log"), quote=True)
