@@ -75,6 +75,9 @@ _STORAGE_FAILURE_KINDS = {
     ClaudeProtectedStorageFailure.IDENTITY_MISMATCH: (
         CredentialAuthorityFailureKind.MISMATCH
     ),
+    ClaudeProtectedStorageFailure.PROOF_CHANGED: (
+        CredentialAuthorityFailureKind.MISMATCH
+    ),
 }
 _MAINTENANCE_FAILURE_KINDS = {
     ClaudeManagedOutcome.FIXED_LIFETIME: (

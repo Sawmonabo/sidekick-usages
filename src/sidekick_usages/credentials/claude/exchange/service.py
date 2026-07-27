@@ -34,10 +34,9 @@ from sidekick_usages.providers.claude.auth.storage.models import (
     ClaudeAuthoritySnapshot,
 )
 from sidekick_usages.providers.claude.environment import (
-    claude_native_profile_environment,
     claude_native_refresh_environment,
-    claude_private_profile_environment,
     claude_private_refresh_environment,
+    claude_profile_environment,
 )
 from sidekick_usages.providers.claude.errors import ClaudeProcessError
 from sidekick_usages.providers.claude.managed.errors import ClaudeManagedError
@@ -199,20 +198,10 @@ class ClaudeOfficialLoginExchange:
         self,
         capabilities: ClaudeCapabilities,
     ) -> dict[str, str]:
-        profile = capabilities.profile
-        if isinstance(profile, ClaudeManagedProfile):
-            return claude_private_profile_environment(
-                self._environment,
-                process_home=profile.config_directory,
-                config_directory=profile.config_directory,
-            )
-        if isinstance(profile, ClaudeNativeProfile):
-            return claude_native_profile_environment(
-                self._environment,
-                process_home=profile.config_directory.parent,
-                config_directory=profile.config_directory,
-            )
-        raise ClaudeProcessError(ClaudeProcessFailure.PROCESS_UNSAFE)
+        return claude_profile_environment(
+            self._environment,
+            capabilities.profile,
+        )
 
     def _failure_after_attempt(
         self,

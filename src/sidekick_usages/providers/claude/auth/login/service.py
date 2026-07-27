@@ -43,7 +43,7 @@ _OFFICIAL_LOGIN_TIMEOUT_SECONDS = 60.0
 _PRIVATE_PROCESS_UMASK = 0o077
 _SUBSCRIPTION_AUTH_METHOD = "claude.ai"
 _FIRST_PARTY_API_PROVIDER = "firstParty"
-_STATUS_IDENTITY_PREFIX = "claude-auth-status-sha256:"
+_STATUS_ASSOCIATION_PREFIX = "claude-status-association-sha256:"
 
 
 def run_official_claude_login(
@@ -184,24 +184,21 @@ def read_official_claude_auth_status(
     )
 
 
-def claude_status_provider_identity(
+def claude_status_association_key(
     status: ClaudeAuthStatus,
 ) -> ProviderIdentity | None:
-    """Hash provider-returned status identity for external-only tracking."""
+    """Hash one complete exact provider-returned status association."""
     if (
         status.return_code != 0
         or not status.logged_in
         or status.auth_method != _SUBSCRIPTION_AUTH_METHOD
         or status.api_provider != _FIRST_PARTY_API_PROVIDER
-        or status.email is None
+        or not status.email
+        or not status.organization_id
     ):
         return None
     email = status.email.encode("utf-8")
-    organization_id = (
-        b""
-        if status.organization_id is None
-        else status.organization_id.encode("utf-8")
-    )
+    organization_id = status.organization_id.encode("utf-8")
     material = (
         len(email).to_bytes(4, byteorder="big")
         + email
@@ -209,7 +206,7 @@ def claude_status_provider_identity(
         + organization_id
     )
     return ProviderIdentity(
-        _STATUS_IDENTITY_PREFIX + hashlib.sha256(material).hexdigest()
+        _STATUS_ASSOCIATION_PREFIX + hashlib.sha256(material).hexdigest()
     )
 
 

@@ -3,6 +3,9 @@
 from enum import StrEnum
 from typing import Protocol
 
+from sidekick_usages.providers.claude.auth.storage.models import (
+    ClaudeCredentialPayload,
+)
 from sidekick_usages.providers.claude.types import ClaudeProfile
 
 
@@ -18,6 +21,7 @@ class ClaudeProtectedStorageFailure(StrEnum):
     PLAINTEXT_FALLBACK = "plaintext_fallback"
     NAMESPACE_UNPROVEN = "namespace_unproven"
     IDENTITY_MISMATCH = "identity_mismatch"
+    PROOF_CHANGED = "proof_changed"
 
 
 class ClaudeCredentialFileSource(Protocol):
@@ -26,5 +30,8 @@ class ClaudeCredentialFileSource(Protocol):
     def present(self, profile: ClaudeProfile) -> bool:
         """Report the exact artifact without reading its contents."""
 
-    def read(self, profile: ClaudeProfile) -> bytes | None:
-        """Return qualified bounded bytes or proven absence."""
+    def read(
+        self,
+        profile: ClaudeProfile,
+    ) -> ClaudeCredentialPayload | None:
+        """Return qualified bounded payload or proven absence."""

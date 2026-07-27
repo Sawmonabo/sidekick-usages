@@ -21,9 +21,6 @@ from sidekick_usages.core.accounts.types import (
     CredentialAction,
     SidekickAccountId,
 )
-from sidekick_usages.core.models import (
-    ClaudeLoginIdentity,
-)
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.credentials.capabilities.service import (
     ProviderCapabilityService,
@@ -80,7 +77,10 @@ from tests.fakes.claude.managed import (
     CLAUDE_LOGIN_HELP_OUTPUT,
     CLAUDE_VERSION_OUTPUT,
     ClaudeRunner,
+    claude_auth_status_payload,
     claude_capabilities,
+    claude_profile_status_responses,
+    claude_status_identity,
     credential_payload,
     managed_profile,
     native_profile,
@@ -146,10 +146,11 @@ def _probe_runner(
 def _native_failure(
     reader: ClaudeNativeAuthorityReader,
     capabilities: ClaudeCapabilities,
+    runner: ClaudeRunner,
 ) -> ClaudeProtectedStorageFailure:
     """Return one safe failure from the native credential boundary."""
     with pytest.raises(ClaudeProtectedStorageError) as failure:
-        reader.read(capabilities, REFERENCE_TIME)
+        reader.read(capabilities, REFERENCE_TIME, runner=runner)
     return failure.value.code
 
 
@@ -157,15 +158,15 @@ def _prove_provider_parent_contract(
     reader: ClaudeNativeAuthorityReader,
     capabilities: ClaudeCapabilities,
     provider_directory: Path,
+    runner: ClaudeRunner,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Prove held qualification, parent policy, and no-follow identity."""
+    failure = partial(_native_failure, reader, capabilities, runner)
     qualified_paths: list[Path] = []
     if sys.platform.startswith("linux"):
-        original_qualify = (
-            sidekick_usages.persistence.platform.posix.mounts
-            .filesystem_for_descriptor
-        )
+        mount_adapter = sidekick_usages.persistence.platform.posix.mounts
+        original_qualify = mount_adapter.filesystem_for_descriptor
 
         def record_qualified_directory(
             descriptor: int,
@@ -181,14 +182,11 @@ def _prove_provider_parent_contract(
                 "filesystem_for_descriptor",
                 record_qualified_directory,
             )
-            reader.read(capabilities, REFERENCE_TIME)
-        assert qualified_paths == [provider_directory.resolve()]
+            reader.read(capabilities, REFERENCE_TIME, runner=runner)
+        assert qualified_paths == [provider_directory.resolve()] * 2
 
     provider_directory.chmod(0o775)
-    assert (
-        _native_failure(reader, capabilities)
-        is ClaudeProtectedStorageFailure.UNSAFE
-    )
+    assert failure() is ClaudeProtectedStorageFailure.UNSAFE
     provider_directory.chmod(0o755)
 
     real_directory = provider_directory.with_name(".claude-real")
@@ -197,10 +195,7 @@ def _prove_provider_parent_contract(
         real_directory.name,
         target_is_directory=True,
     )
-    assert (
-        _native_failure(reader, capabilities)
-        is ClaudeProtectedStorageFailure.UNSAFE
-    )
+    assert failure() is ClaudeProtectedStorageFailure.UNSAFE
     provider_directory.unlink()
     real_directory.rename(provider_directory)
 
@@ -210,49 +205,36 @@ def _prove_provider_file_contract(
     capabilities: ClaudeCapabilities,
     credential_path: Path,
     payload: bytes,
+    runner: ClaudeRunner,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Prove file modes, identity, size, device, and exact-name policy."""
+    failure = partial(_native_failure, reader, capabilities, runner)
     credential_path.chmod(0o644)
-    assert (
-        _native_failure(reader, capabilities)
-        is ClaudeProtectedStorageFailure.UNSAFE
-    )
+    assert failure() is ClaudeProtectedStorageFailure.UNSAFE
     credential_path.chmod(0o600)
 
     linked_path = credential_path.with_name("credential-hard-link")
     os.link(credential_path, linked_path)
-    assert (
-        _native_failure(reader, capabilities)
-        is ClaudeProtectedStorageFailure.UNSAFE
-    )
+    assert failure() is ClaudeProtectedStorageFailure.UNSAFE
     linked_path.unlink()
 
     alias_path = credential_path.with_name(".CREDENTIALS.JSON")
     alias_path.write_bytes(b"alias")
     alias_path.chmod(0o600)
-    assert (
-        _native_failure(reader, capabilities)
-        is ClaudeProtectedStorageFailure.UNSAFE
-    )
+    assert failure() is ClaudeProtectedStorageFailure.UNSAFE
     alias_path.unlink()
 
     moved_path = credential_path.with_name("credentials-real")
     credential_path.rename(moved_path)
     credential_path.symlink_to(moved_path.name)
-    assert (
-        _native_failure(reader, capabilities)
-        is ClaudeProtectedStorageFailure.UNSAFE
-    )
+    assert failure() is ClaudeProtectedStorageFailure.UNSAFE
     credential_path.unlink()
     moved_path.rename(credential_path)
 
     credential_path.write_bytes(b"x" * (CLAUDE_CREDENTIAL_BYTES + 1))
     credential_path.chmod(0o600)
-    assert (
-        _native_failure(reader, capabilities)
-        is ClaudeProtectedStorageFailure.MALFORMED
-    )
+    assert failure() is ClaudeProtectedStorageFailure.MALFORMED
     credential_path.write_bytes(payload)
     credential_path.chmod(0o600)
 
@@ -280,10 +262,7 @@ def _prove_provider_file_contract(
             "read_descriptor",
             read_with_cross_device,
         )
-        assert (
-            _native_failure(reader, capabilities)
-            is ClaudeProtectedStorageFailure.UNSAFE
-        )
+        assert failure() is ClaudeProtectedStorageFailure.UNSAFE
 
 
 def _prove_provider_change_and_entry_bound(
@@ -291,9 +270,11 @@ def _prove_provider_change_and_entry_bound(
     capabilities: ClaudeCapabilities,
     credential_path: Path,
     payload: bytes,
+    runner: ClaudeRunner,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Prove concurrent replacement and bounded directory scanning."""
+    failure = partial(_native_failure, reader, capabilities, runner)
     original_read = (
         sidekick_usages.persistence.platform.posix.files.read_descriptor
     )
@@ -322,21 +303,14 @@ def _prove_provider_change_and_entry_bound(
             "read_descriptor",
             replace_after_read,
         )
-        assert (
-            _native_failure(reader, capabilities)
-            is ClaudeProtectedStorageFailure.UNREADABLE
-        )
+        assert failure() is ClaudeProtectedStorageFailure.UNREADABLE
 
     overflow_paths = tuple(
-        credential_path.parent / f"entry-{index:04d}"
-        for index in range(4_096)
+        credential_path.parent / f"entry-{index:04d}" for index in range(4_096)
     )
     for path in overflow_paths:
         path.touch(mode=0o600)
-    assert (
-        _native_failure(reader, capabilities)
-        is ClaudeProtectedStorageFailure.MALFORMED
-    )
+    assert failure() is ClaudeProtectedStorageFailure.MALFORMED
     for path in overflow_paths:
         path.unlink()
 
@@ -344,35 +318,30 @@ def _prove_provider_change_and_entry_bound(
 def _prove_macos_provider_contract(
     reader: ClaudeNativeAuthorityReader,
     capabilities: ClaudeCapabilities,
+    runner: ClaudeRunner,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Prove APFS and parent/file extended-ACL rejection on macOS."""
     if sys.platform != "darwin":
         return
+    failure = partial(_native_failure, reader, capabilities, runner)
     with monkeypatch.context() as changes:
         changes.setattr(
             sidekick_usages.persistence.platform.macos.adapter,
             "_filesystem_name",
             lambda _descriptor: "not-apfs",
         )
-        assert (
-            _native_failure(reader, capabilities)
-            is ClaudeProtectedStorageFailure.UNSAFE
-        )
+        assert failure() is ClaudeProtectedStorageFailure.UNSAFE
     for rejected_mode in (stat.S_IFDIR, stat.S_IFREG):
         with monkeypatch.context() as changes:
             changes.setattr(
                 sidekick_usages.persistence.platform.macos.adapter,
                 "has_extended_acl",
-                lambda descriptor, mode=rejected_mode: stat.S_IFMT(
-                    os.fstat(descriptor).st_mode
-                )
-                == mode,
+                lambda descriptor, mode=rejected_mode: (
+                    stat.S_IFMT(os.fstat(descriptor).st_mode) == mode
+                ),
             )
-            assert (
-                _native_failure(reader, capabilities)
-                is ClaudeProtectedStorageFailure.UNSAFE
-            )
+            assert failure() is ClaudeProtectedStorageFailure.UNSAFE
 
 
 def _prove_keychain_failure_contract(
@@ -460,9 +429,7 @@ def _prove_keychain_failure_contract(
     )
     assert len(after_runner.calls) == 1
 
-    before_runner = ClaudeRunner(
-        {arguments: ClaudeCommandResult(0, payload)}
-    )
+    before_runner = ClaudeRunner({arguments: ClaudeCommandResult(0, payload)})
     with pytest.raises(ClaudeProtectedStorageError) as before_fallback:
         reader.read(
             capabilities,
@@ -707,24 +674,33 @@ def test_file_profile_readback_is_exact_identity_bound_and_fail_closed(
     profile_a = managed_profile(paths, _ACCOUNT_A)
     profiles.ensure_owned_directory(profile_a.config_directory)
     payload_a = credential_payload(
-        "provider-account-a",
-        "provider-organization-a",
+        None,
+        None,
         token_suffix="profile-a",
         access_expires_at=_FUTURE_EXPIRY,
+    )
+    status_a = claude_auth_status_payload(
+        "profile-a@example.test",
+        "provider-organization-a",
+    )
+    runner = ClaudeRunner(
+        {
+            ("auth", "status"): ClaudeCommandResult(0, status_a),
+        }
     )
     profiles.write_owned_file(
         profile_a.config_directory,
         CLAUDE_CREDENTIAL_FILE,
         payload_a,
     )
-    expected_identity = ClaudeLoginIdentity(
-        account_id="provider-account-a",
-        organization_id="provider-organization-a",
-    ).provider_identity
-    other_identity = ClaudeLoginIdentity(
-        account_id="provider-account-b",
-        organization_id="provider-organization-b",
-    ).provider_identity
+    expected_identity = claude_status_identity(
+        "profile-a@example.test",
+        "provider-organization-a",
+    )
+    other_identity = claude_status_identity(
+        "profile-b@example.test",
+        "provider-organization-b",
+    )
     reader = ClaudeManagedAuthorityReader(paths, profiles)
 
     snapshots = tuple(
@@ -732,6 +708,7 @@ def test_file_profile_readback_is_exact_identity_bound_and_fail_closed(
             claude_capabilities(profile_a, platform),
             REFERENCE_TIME,
             expected_identity=expected_identity,
+            runner=runner,
         )
         for platform in (
             ClaudeManagedPlatform.LINUX_FILE,
@@ -763,6 +740,7 @@ def test_file_profile_readback_is_exact_identity_bound_and_fail_closed(
             ),
             REFERENCE_TIME,
             expected_identity=other_identity,
+            runner=runner,
         )
     assert (
         mismatch.value.code is ClaudeProtectedStorageFailure.IDENTITY_MISMATCH
@@ -778,6 +756,7 @@ def test_file_profile_readback_is_exact_identity_bound_and_fail_closed(
             ),
             REFERENCE_TIME,
             expected_identity=expected_identity,
+            runner=runner,
         )
     assert unsafe.value.code is ClaudeProtectedStorageFailure.UNSAFE
 
@@ -796,12 +775,14 @@ def test_file_profile_readback_is_exact_identity_bound_and_fail_closed(
         native_reader,
         native_capabilities,
         native.config_directory,
+        runner,
         monkeypatch,
     )
     native_snapshot = native_reader.read(
         native_capabilities,
         REFERENCE_TIME,
         expected_identity=expected_identity,
+        runner=runner,
     )
     assert (
         native_snapshot.profile,
@@ -812,6 +793,7 @@ def test_file_profile_readback_is_exact_identity_bound_and_fail_closed(
         native_capabilities,
         native_path,
         payload_a,
+        runner,
         monkeypatch,
     )
     _prove_provider_change_and_entry_bound(
@@ -819,11 +801,13 @@ def test_file_profile_readback_is_exact_identity_bound_and_fail_closed(
         native_capabilities,
         native_path,
         payload_a,
+        runner,
         monkeypatch,
     )
     _prove_macos_provider_contract(
         native_reader,
         native_capabilities,
+        runner,
         monkeypatch,
     )
 
@@ -856,14 +840,14 @@ def test_keychain_readback_is_namespaced_bounded_and_fail_closed(
         ClaudeManagedPlatform.MACOS_ARM64_KEYCHAIN,
     )
     payload_a = credential_payload(
-        "provider-account-a",
-        "provider-organization-a",
+        None,
+        None,
         token_suffix="keychain-a-secret",
         access_expires_at=_FUTURE_EXPIRY,
     )
     payload_b = credential_payload(
-        "provider-account-b",
-        "provider-organization-b",
+        None,
+        None,
         token_suffix="keychain-b-secret",
         access_expires_at=_FUTURE_EXPIRY,
     )
@@ -873,12 +857,21 @@ def test_keychain_readback_is_namespaced_bounded_and_fail_closed(
     native_arguments = _keychain_arguments("Claude Code-credentials")
     profile_a_arguments = _keychain_arguments(service_a)
     profile_b_arguments = _keychain_arguments(service_b)
+    status_arguments = ("auth", "status")
+    claude_executable = Path(sys.executable).resolve()
     runner = ClaudeRunner(
         {
             native_arguments: ClaudeCommandResult(0, payload_a + b"\n"),
             profile_a_arguments: ClaudeCommandResult(0, payload_a + b"\r\n"),
             profile_b_arguments: ClaudeCommandResult(0, payload_b + b"\n"),
-        }
+        },
+        profile_responses=claude_profile_status_responses(
+            {
+                native.config_directory: "native",
+                profile_a.config_directory: "profile-a",
+                profile_b.config_directory: "profile-b",
+            }
+        ),
     )
     monkeypatch.setattr(
         sidekick_usages.providers.claude.auth.storage.keychain,
@@ -918,14 +911,27 @@ def test_keychain_readback_is_namespaced_bounded_and_fail_closed(
     assert service_a != service_b
     assert runner.calls == [
         (_KEYCHAIN_EXECUTABLE, native_arguments),
+        (claude_executable, status_arguments),
+        (_KEYCHAIN_EXECUTABLE, native_arguments),
+        (_KEYCHAIN_EXECUTABLE, profile_a_arguments),
+        (claude_executable, status_arguments),
         (_KEYCHAIN_EXECUTABLE, profile_a_arguments),
         (_KEYCHAIN_EXECUTABLE, profile_b_arguments),
+        (claude_executable, status_arguments),
+        (_KEYCHAIN_EXECUTABLE, profile_b_arguments),
     ]
-    assert runner.timeouts == [KEYCHAIN_READ_TIMEOUT_SECONDS] * 3
-    assert runner.output_limits == [CLAUDE_CREDENTIAL_BYTES + 2] * 3
+    keychain_indexes = (0, 2, 3, 5, 6, 8)
     assert (
-        runner.environments
-        == [{"PATH": os.defpath, "USER": "sidekick-test"}] * 3
+        tuple(runner.timeouts[index] for index in keychain_indexes)
+        == (KEYCHAIN_READ_TIMEOUT_SECONDS,) * 6
+    )
+    assert (
+        tuple(runner.output_limits[index] for index in keychain_indexes)
+        == (CLAUDE_CREDENTIAL_BYTES + 2,) * 6
+    )
+    assert (
+        tuple(runner.environments[index] for index in keychain_indexes)
+        == ({"PATH": os.defpath, "USER": "sidekick-test"},) * 6
     )
     assert "keychain-a-secret" not in repr(snapshot_a)
     assert "keychain-b-secret" not in repr(snapshot_b)

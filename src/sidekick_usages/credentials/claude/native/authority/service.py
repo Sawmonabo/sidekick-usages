@@ -14,6 +14,10 @@ from sidekick_usages.persistence.errors import (
 from sidekick_usages.persistence.filesystem.service import (
     PersistenceFilesystem,
 )
+from sidekick_usages.providers.claude.auth.proof.service import (
+    proven_claude_login,
+    read_proven_claude_authority,
+)
 from sidekick_usages.providers.claude.auth.storage.errors import (
     ClaudeProtectedStorageError,
 )
@@ -22,14 +26,11 @@ from sidekick_usages.providers.claude.auth.storage.keychain import (
 )
 from sidekick_usages.providers.claude.auth.storage.models import (
     ClaudeAuthoritySnapshot,
-    ClaudeCredentialObservation,
+    ClaudeCredentialPayload,
     ClaudeProtectedLogin,
 )
 from sidekick_usages.providers.claude.auth.storage.service import (
     CLAUDE_CREDENTIAL_FILE,
-    observe_protected_claude_authority,
-    protected_claude_login,
-    read_protected_claude_authority,
 )
 from sidekick_usages.providers.claude.auth.storage.types import (
     ClaudeProtectedStorageFailure,
@@ -66,7 +67,10 @@ class _ClaudeNativeCredentialFiles:
                 ClaudeProtectedStorageFailure.UNSAFE
             ) from None
 
-    def read(self, profile: ClaudeProfile) -> bytes | None:
+    def read(
+        self,
+        profile: ClaudeProfile,
+    ) -> ClaudeCredentialPayload | None:
         """Return qualified bounded native credentials or proven absence."""
         self._require_profile(profile)
         try:
@@ -85,7 +89,14 @@ class _ClaudeNativeCredentialFiles:
             raise ClaudeProtectedStorageError(
                 ClaudeProtectedStorageFailure.UNREADABLE
             ) from None
-        return None if snapshot is None else snapshot.data
+        return (
+            None
+            if snapshot is None
+            else ClaudeCredentialPayload(
+                snapshot.data,
+                snapshot.modified_nanoseconds,
+            )
+        )
 
     def present(self, profile: ClaudeProfile) -> bool:
         """Report the exact native credential file through strict read-back."""
@@ -116,28 +127,11 @@ class ClaudeNativeAuthorityReader:
         runner: ClaudeCommandRunner = run_bounded_claude_command,
     ) -> ClaudeAuthoritySnapshot:
         """Read native authority and bind its exact provider identity."""
-        return read_protected_claude_authority(
+        return read_proven_claude_authority(
             capabilities,
             self._files,
             reference_time,
             expected_identity=expected_identity,
-            environment=environment,
-            runner=runner,
-        )
-
-    def observe(
-        self,
-        capabilities: ClaudeCapabilities,
-        reference_time: datetime,
-        *,
-        environment: Mapping[str, str] | None = None,
-        runner: ClaudeCommandRunner = run_bounded_claude_command,
-    ) -> ClaudeCredentialObservation:
-        """Return real native generation even without embedded identity."""
-        return observe_protected_claude_authority(
-            capabilities,
-            self._files,
-            reference_time,
             environment=environment,
             runner=runner,
         )
@@ -152,7 +146,7 @@ class ClaudeNativeAuthorityReader:
         runner: ClaudeCommandRunner = run_bounded_claude_command,
     ) -> AbstractContextManager[ClaudeProtectedLogin]:
         """Open one short-lived native refresh credential lease."""
-        return protected_claude_login(
+        return proven_claude_login(
             capabilities,
             self._files,
             reference_time,

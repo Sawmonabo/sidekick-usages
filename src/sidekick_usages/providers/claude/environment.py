@@ -9,7 +9,14 @@ from sidekick_usages.platform.environment import (
     SAFE_PROVIDER_ENVIRONMENT_KEYS,
 )
 from sidekick_usages.providers.claude.errors import ClaudeProcessError
-from sidekick_usages.providers.claude.types import ClaudeProcessFailure
+from sidekick_usages.providers.claude.models import (
+    ClaudeManagedProfile,
+    ClaudeNativeProfile,
+)
+from sidekick_usages.providers.claude.types import (
+    ClaudeProcessFailure,
+    ClaudeProfile,
+)
 
 CLAUDE_CONFIG_DIR_ENVIRONMENT_KEY = "CLAUDE_CONFIG_DIR"
 CLAUDE_OAUTH_PROVISIONING_ENVIRONMENT_KEY = "CLAUDE_CODE_OAUTH_REFRESH_TOKEN"
@@ -68,6 +75,26 @@ def claude_native_profile_environment(
     if CLAUDE_CONFIG_DIR_ENVIRONMENT_KEY in environment:
         raise ClaudeProcessError(ClaudeProcessFailure.PROCESS_UNSAFE)
     return environment
+
+
+def claude_profile_environment(
+    source_environment: Mapping[str, str] | None,
+    profile: ClaudeProfile,
+) -> dict[str, str]:
+    """Build the credential-free environment for one exact Claude profile."""
+    if isinstance(profile, ClaudeManagedProfile):
+        return claude_private_profile_environment(
+            source_environment,
+            process_home=profile.config_directory,
+            config_directory=profile.config_directory,
+        )
+    if isinstance(profile, ClaudeNativeProfile):
+        return claude_native_profile_environment(
+            source_environment,
+            process_home=profile.config_directory.parent,
+            config_directory=profile.config_directory,
+        )
+    raise ClaudeProcessError(ClaudeProcessFailure.PROCESS_UNSAFE)
 
 
 def claude_private_refresh_environment(

@@ -1,6 +1,6 @@
 """Immutable official Claude login models and outcomes."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 
 from sidekick_usages.core.accounts.validation import (
@@ -22,12 +22,12 @@ class ClaudeAuthStatus:
 
     return_code: int
     logged_in: bool
-    auth_method: str
-    api_provider: str
-    email: str | None = None
-    organization_id: str | None = None
-    organization_name: str | None = None
-    subscription_type: str | None = None
+    auth_method: str = field(repr=False)
+    api_provider: str = field(repr=False)
+    email: str | None = field(default=None, repr=False)
+    organization_id: str | None = field(default=None, repr=False)
+    organization_name: str | None = field(default=None, repr=False)
+    subscription_type: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         """Require every provider-returned identity field to remain bounded."""

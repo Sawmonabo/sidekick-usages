@@ -2,8 +2,15 @@
 
 from dataclasses import dataclass
 
-from sidekick_usages.core.accounts.models import SavedAccount
-from sidekick_usages.core.accounts.types import SidekickAccountId
+from sidekick_usages.core.accounts.models import (
+    ClaudeAccountAuthority,
+    ClaudeManagedLoginAuthority,
+    SavedAccount,
+)
+from sidekick_usages.core.accounts.types import (
+    ProviderIdentity,
+    SidekickAccountId,
+)
 from sidekick_usages.core.types import AccountLabel, ProviderId
 from sidekick_usages.persistence.errors import InvalidSchemaError
 from sidekick_usages.persistence.limits import MAX_ACCOUNTS
@@ -21,6 +28,7 @@ class VersionThreeDocument:
             raise InvalidSchemaError
         account_ids: set[SidekickAccountId] = set()
         labels: set[tuple[ProviderId, AccountLabel]] = set()
+        claude_associations: set[ProviderIdentity] = set()
         for account in self.accounts:
             if account.account_id in account_ids:
                 raise InvalidSchemaError
@@ -29,3 +37,13 @@ class VersionThreeDocument:
                 raise InvalidSchemaError
             account_ids.add(account.account_id)
             labels.add(key)
+            authority = account.authority
+            if not isinstance(authority, ClaudeAccountAuthority):
+                continue
+            subscription = authority.subscription
+            if not isinstance(subscription, ClaudeManagedLoginAuthority):
+                continue
+            association = subscription.provider_identity
+            if association in claude_associations:
+                raise InvalidSchemaError
+            claude_associations.add(association)

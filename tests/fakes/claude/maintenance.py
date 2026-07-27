@@ -86,6 +86,8 @@ from tests.fakes.claude.managed import (
     CLAUDE_VERSION_OUTPUT,
     ClaudeManagedLoginScript,
     ClaudeRunner,
+    claude_auth_status_payload,
+    claude_auth_status_result,
     claude_capabilities,
     credential_payload,
     managed_profile,
@@ -183,6 +185,15 @@ class ManagedLoginRecord:
     umask: int
 
 
+def _profile_status(account_id: SidekickAccountId) -> bytes:
+    """Return one explicit status association for a synthetic account."""
+    value = str(account_id)
+    return claude_auth_status_payload(
+        f"{value}@example.test",
+        f"provider-organization-{value}",
+    )
+
+
 def resolver_scenario(
     root: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -196,8 +207,8 @@ def resolver_scenario(
                 AUTHORITY_A,
                 AccountLabel("claude-a"),
                 credential_payload(
-                    "provider-account-a",
-                    "provider-organization-a",
+                    None,
+                    None,
                     token_suffix="account-a-private",
                     access_expires_at=FUTURE_EXPIRY,
                 ),
@@ -207,8 +218,8 @@ def resolver_scenario(
                 AUTHORITY_B,
                 AccountLabel("claude-b"),
                 credential_payload(
-                    "provider-account-b",
-                    "provider-organization-b",
+                    None,
+                    None,
                     token_suffix="account-b-private",
                     access_expires_at=FUTURE_EXPIRY,
                 ),
@@ -216,8 +227,8 @@ def resolver_scenario(
         ),
     )
     native_payload = credential_payload(
-        "provider-account-a",
-        "provider-organization-a",
+        None,
+        None,
         token_suffix="account-a-native",
         access_expires_at=FUTURE_EXPIRY,
     )
@@ -256,7 +267,21 @@ def resolver_scenario(
                 0,
                 CLAUDE_LOGIN_HELP_OUTPUT,
             ),
-        }
+        },
+        profile_responses={
+            (
+                root / "native-home" / ".claude",
+                ("auth", "status"),
+            ): ClaudeCommandResult(0, _profile_status(ACCOUNT_A)),
+            (
+                managed_profile(paths, ACCOUNT_A).config_directory,
+                ("auth", "status"),
+            ): ClaudeCommandResult(0, _profile_status(ACCOUNT_A)),
+            (
+                managed_profile(paths, ACCOUNT_B).config_directory,
+                ("auth", "status"),
+            ): ClaudeCommandResult(0, _profile_status(ACCOUNT_B)),
+        },
     )
     environment = {
         "HOME": str(root / "native-home"),
@@ -286,26 +311,26 @@ def maintenance_scenario(
 ) -> MaintenanceScenario:
     """Build two private accounts and one selected native authority."""
     payload_a = credential_payload(
-        "provider-account-a",
-        "provider-organization-a",
+        None,
+        None,
         token_suffix="account-a-old",
         access_expires_at=INITIAL_EXPIRY,
     )
     payload_b = credential_payload(
-        "provider-account-b",
-        "provider-organization-b",
+        None,
+        None,
         token_suffix="account-b-old",
         access_expires_at=INITIAL_EXPIRY,
     )
     refreshed_private_b = credential_payload(
-        "provider-account-b",
-        "provider-organization-b",
+        None,
+        None,
         token_suffix="account-b-private-new",
         access_expires_at=FUTURE_EXPIRY,
     )
     refreshed_native_b = credential_payload(
-        "provider-account-b",
-        "provider-organization-b",
+        None,
+        None,
         token_suffix="account-b-native-new",
         access_expires_at=FUTURE_EXPIRY,
     )
@@ -351,6 +376,15 @@ def maintenance_scenario(
                 profile_b: (refreshed_private_b,),
                 native.config_directory: (refreshed_native_b,),
             },
+            profile_statuses={
+                profile_a: _profile_status(ACCOUNT_A),
+                profile_b: _profile_status(ACCOUNT_B),
+                native.config_directory: _profile_status(ACCOUNT_B),
+            },
+            refresh_statuses={
+                profile_b: (_profile_status(ACCOUNT_B),),
+                native.config_directory: (_profile_status(ACCOUNT_B),),
+            },
         )
     )
     clock = FixedClock()
@@ -388,8 +422,8 @@ def unverified_generation_scenario(
 ) -> UnverifiedGenerationScenario:
     """Build one account whose official login leaves generation unchanged."""
     payload = credential_payload(
-        "provider-account-a",
-        "provider-organization-a",
+        None,
+        None,
         token_suffix="unchanged-generation",
         access_expires_at=INITIAL_EXPIRY,
     )
@@ -421,6 +455,12 @@ def unverified_generation_scenario(
             script=ClaudeManagedLoginScript(
                 profiles,
                 {profile: (payload,)},
+                profile_statuses={
+                    profile: _profile_status(ACCOUNT_A),
+                },
+                refresh_statuses={
+                    profile: (_profile_status(ACCOUNT_A),),
+                },
             )
         ),
     )
@@ -545,6 +585,14 @@ def _seed_managed_accounts(
                 ClaudeManagedPlatform.LINUX_FILE,
             ),
             REFERENCE_TIME,
+            runner=ClaudeRunner(
+                {
+                    ("auth", "status"): claude_auth_status_result(
+                        f"{account_id}@example.test",
+                        f"provider-organization-{account_id}",
+                    )
+                }
+            ),
         )
         accounts.append(
             SavedAccount(
@@ -636,6 +684,14 @@ def _select_native_account(
             ClaudeManagedPlatform.LINUX_FILE,
         ),
         REFERENCE_TIME,
+        runner=ClaudeRunner(
+            {
+                ("auth", "status"): claude_auth_status_result(
+                    f"{account_id}@example.test",
+                    f"provider-organization-{account_id}",
+                )
+            }
+        ),
     )
     selected = SelectedStateStore(paths.selected_state).save(
         SelectedAccountState(

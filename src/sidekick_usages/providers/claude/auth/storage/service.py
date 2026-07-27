@@ -7,7 +7,6 @@ from datetime import datetime
 from sidekick_usages.core.accounts.types import (
     CredentialAction,
     CredentialHealth,
-    ProviderIdentity,
 )
 from sidekick_usages.core.expiry import (
     ExpiredExpiry,
@@ -28,9 +27,9 @@ from sidekick_usages.providers.claude.auth.storage.keychain import (
     read_keychain_payload,
 )
 from sidekick_usages.providers.claude.auth.storage.models import (
-    ClaudeAuthoritySnapshot,
-    ClaudeCredentialObservation,
-    ClaudeProtectedLogin,
+    ClaudeCredentialPayload,
+    ClaudeProtectedCredential,
+    ClaudeProtectedCredentialSnapshot,
 )
 from sidekick_usages.providers.claude.auth.storage.types import (
     ClaudeCredentialFileSource,
@@ -68,67 +67,39 @@ _KEYCHAIN_PLATFORMS = frozenset(
 )
 
 
-def read_protected_claude_authority(
+def read_protected_claude_credential(
     capabilities: ClaudeCapabilities,
     files: ClaudeCredentialFileSource,
     reference_time: datetime,
     *,
-    expected_identity: ProviderIdentity | None = None,
     environment: Mapping[str, str] | None = None,
     runner: ClaudeCommandRunner = run_bounded_claude_command,
-) -> ClaudeAuthoritySnapshot:
-    """Read and bind one exact Claude credential authority."""
-    with protected_claude_login(
+) -> ClaudeProtectedCredentialSnapshot:
+    """Read one exact protected Claude credential snapshot."""
+    with protected_claude_credential(
         capabilities,
         files,
         reference_time,
-        expected_identity=expected_identity,
         environment=environment,
         runner=runner,
     ) as protected:
         return protected.snapshot
 
 
-def observe_protected_claude_authority(
-    capabilities: ClaudeCapabilities,
-    files: ClaudeCredentialFileSource,
-    reference_time: datetime,
-    *,
-    environment: Mapping[str, str] | None = None,
-    runner: ClaudeCommandRunner = run_bounded_claude_command,
-) -> ClaudeCredentialObservation:
-    """Retain real generation without requiring embedded identity."""
-    payload = _read_protected_payload(
-        capabilities,
-        files,
-        environment,
-        runner,
-    )
-    observation, credentials = _credential_observation(
-        capabilities,
-        payload,
-        reference_time,
-    )
-    del credentials
-    return observation
-
-
 @contextmanager
-def protected_claude_login(
+def protected_claude_credential(
     capabilities: ClaudeCapabilities,
     files: ClaudeCredentialFileSource,
     reference_time: datetime,
     *,
-    expected_identity: ProviderIdentity | None = None,
     environment: Mapping[str, str] | None = None,
     runner: ClaudeCommandRunner = run_bounded_claude_command,
-) -> Iterator[ClaudeProtectedLogin]:
-    """Yield one short-lived refresh projection from protected storage."""
-    protected = _read_protected_claude_login(
+) -> Iterator[ClaudeProtectedCredential]:
+    """Yield one short-lived credential projection from protected storage."""
+    protected = _read_protected_credential(
         capabilities,
         files,
         reference_time,
-        expected_identity,
         environment,
         runner,
     )
@@ -136,38 +107,28 @@ def protected_claude_login(
         yield active
 
 
-def _read_protected_claude_login(
+def _read_protected_credential(
     capabilities: ClaudeCapabilities,
     files: ClaudeCredentialFileSource,
     reference_time: datetime,
-    expected_identity: ProviderIdentity | None,
     environment: Mapping[str, str] | None,
     runner: ClaudeCommandRunner,
-) -> ClaudeProtectedLogin:
+) -> ClaudeProtectedCredential:
     payload = _read_protected_payload(
         capabilities,
         files,
         environment,
         runner,
     )
-    observation, credentials = _credential_observation(
+    snapshot, credentials = _credential_snapshot(
         capabilities,
         payload,
         reference_time,
     )
-    snapshot = observation.snapshot
-    if snapshot is None:
-        raise ClaudeProtectedStorageError(
-            ClaudeProtectedStorageFailure.MALFORMED
-        )
-    if (
-        expected_identity is not None
-        and snapshot.provider_identity != expected_identity
-    ):
-        raise ClaudeProtectedStorageError(
-            ClaudeProtectedStorageFailure.IDENTITY_MISMATCH
-        )
-    return ClaudeProtectedLogin(snapshot=snapshot, credentials=credentials)
+    return ClaudeProtectedCredential(
+        snapshot=snapshot,
+        credentials=credentials,
+    )
 
 
 def _read_protected_payload(
@@ -175,7 +136,7 @@ def _read_protected_payload(
     files: ClaudeCredentialFileSource,
     environment: Mapping[str, str] | None,
     runner: ClaudeCommandRunner,
-) -> bytes:
+) -> ClaudeCredentialPayload:
     if capabilities.platform in _FILE_PLATFORMS:
         payload = files.read(capabilities.profile)
         if payload is None:
@@ -200,7 +161,7 @@ def _read_macos_payload(
     files: ClaudeCredentialFileSource,
     environment: Mapping[str, str] | None,
     runner: ClaudeCommandRunner,
-) -> bytes:
+) -> ClaudeCredentialPayload:
     if files.present(capabilities.profile):
         raise ClaudeProtectedStorageError(
             ClaudeProtectedStorageFailure.PLAINTEXT_FALLBACK
@@ -215,16 +176,16 @@ def _read_macos_payload(
         raise ClaudeProtectedStorageError(
             ClaudeProtectedStorageFailure.PLAINTEXT_FALLBACK
         )
-    return payload
+    return ClaudeCredentialPayload(payload)
 
 
-def _credential_observation(
+def _credential_snapshot(
     capabilities: ClaudeCapabilities,
-    payload: bytes,
+    payload: ClaudeCredentialPayload,
     reference_time: datetime,
-) -> tuple[ClaudeCredentialObservation, ClaudeLoginCredentials]:
+) -> tuple[ClaudeProtectedCredentialSnapshot, ClaudeLoginCredentials]:
     try:
-        detected = parse_credentials_blob(decode_json_object(payload))
+        detected = parse_credentials_blob(decode_json_object(payload.data))
     except InvalidPayloadError, ProviderBoundaryError:
         raise ClaudeProtectedStorageError(
             ClaudeProtectedStorageFailure.MALFORMED
@@ -242,21 +203,10 @@ def _credential_observation(
         ) from None
     health, action = _health(credentials, reference_time)
     generation = claude_access_token_generation(credentials.access_token)
-    identity = credentials.identity
-    if identity is None:
-        return (
-            ClaudeCredentialObservation(
-                generation=generation,
-                health=health,
-                action=action,
-            ),
-            credentials,
-        )
     refresh_expiry = credentials.refresh_expiry
-    snapshot = ClaudeAuthoritySnapshot(
+    snapshot = ClaudeProtectedCredentialSnapshot(
         profile=capabilities.profile,
         executable_version=str(capabilities.executable.version),
-        provider_identity=identity.provider_identity,
         generation=generation,
         plan=detected.plan,
         scopes=credentials.scopes,
@@ -268,16 +218,9 @@ def _credential_observation(
         ),
         health=health,
         action=action,
+        modified_nanoseconds=payload.modified_nanoseconds,
     )
-    return (
-        ClaudeCredentialObservation(
-            generation=generation,
-            health=health,
-            action=action,
-            snapshot=snapshot,
-        ),
-        credentials,
-    )
+    return snapshot, credentials
 
 
 def _health(

@@ -20,7 +20,6 @@ from sidekick_usages.core.accounts.types import (
     ProviderIdentity,
     SidekickAccountId,
 )
-from sidekick_usages.core.models import ClaudeLoginIdentity
 from sidekick_usages.core.selection.models import (
     DueOperation,
     SelectedAccountState,
@@ -92,6 +91,7 @@ from tests.fakes.claude.managed import (
     ClaudeCommandScript,
     ClaudeManagedLoginScript,
     ClaudeRunner,
+    claude_profile_status,
     credential_payload,
     managed_profile,
     native_profile,
@@ -114,18 +114,10 @@ _RETRY_OPERATION_ID = OperationId("77777777-7777-4777-8777-777777777777")
 _NATIVE_RECONCILIATION_OPERATION_ID = OperationId(
     "88888888-8888-4888-8888-888888888888"
 )
-_SOURCE_IDENTITY = ClaudeLoginIdentity(
-    account_id="provider-account-source",
-    organization_id="provider-organization-source",
-).provider_identity
-_TARGET_IDENTITY = ClaudeLoginIdentity(
-    account_id="provider-account-target",
-    organization_id="provider-organization-target",
-).provider_identity
-_KNOWN_IDENTITY = ClaudeLoginIdentity(
-    account_id="provider-account-known",
-    organization_id="provider-organization-known",
-).provider_identity
+_SOURCE_STATUS, _SOURCE_IDENTITY = claude_profile_status("source")
+_TARGET_STATUS, _TARGET_IDENTITY = claude_profile_status("target")
+_KNOWN_STATUS, _KNOWN_IDENTITY = claude_profile_status("known")
+_UNKNOWN_STATUS, _UNKNOWN_IDENTITY = claude_profile_status("unknown")
 _INITIAL_ACCESS_EXPIRY = REFERENCE_TIME + timedelta(hours=2)
 _RETAINED_ACCESS_EXPIRY = REFERENCE_TIME + timedelta(hours=3)
 _NATIVE_TARGET_ACCESS_EXPIRY = REFERENCE_TIME + timedelta(hours=4)
@@ -265,32 +257,32 @@ def claude_activation_scenario(
 ) -> ClaudeActivationScenario:
     """Build one healthy A-to-B official Claude activation scenario."""
     source_payload = credential_payload(
-        "provider-account-source",
-        "provider-organization-source",
+        None,
+        None,
         token_suffix="source-private",
         access_expires_at=_INITIAL_ACCESS_EXPIRY,
     )
     target_payload = credential_payload(
-        "provider-account-target",
-        "provider-organization-target",
+        None,
+        None,
         token_suffix="target-private",
         access_expires_at=_INITIAL_ACCESS_EXPIRY,
     )
     retained_source_payload = credential_payload(
-        "provider-account-source",
-        "provider-organization-source",
+        None,
+        None,
         token_suffix="source-retained",
         access_expires_at=_RETAINED_ACCESS_EXPIRY,
     )
     native_source_payload = credential_payload(
-        "provider-account-source",
-        "provider-organization-source",
+        None,
+        None,
         token_suffix="source-native",
         access_expires_at=_INITIAL_ACCESS_EXPIRY,
     )
     native_target_payload = credential_payload(
-        "provider-account-target",
-        "provider-organization-target",
+        None,
+        None,
         token_suffix="target-native",
         access_expires_at=_NATIVE_TARGET_ACCESS_EXPIRY,
     )
@@ -335,6 +327,15 @@ def claude_activation_scenario(
         {
             source_profile: (retained_source_payload,),
             native.config_directory: (native_target_payload,),
+        },
+        profile_statuses={
+            source_profile: _SOURCE_STATUS,
+            target_profile: _TARGET_STATUS,
+            native.config_directory: _SOURCE_STATUS,
+        },
+        refresh_statuses={
+            source_profile: (_SOURCE_STATUS,),
+            native.config_directory: (_TARGET_STATUS,),
         },
     )
     runtime = _runtime_fixture(
@@ -384,57 +385,57 @@ def claude_recovery_scenario(
 ) -> ClaudeRecoveryScenario:
     """Build one interrupted native mutation with a single rollback result."""
     source_payload = credential_payload(
-        "provider-account-source",
-        "provider-organization-source",
+        None,
+        None,
         token_suffix="source-private",
         access_expires_at=_INITIAL_ACCESS_EXPIRY,
     )
     target_payload = credential_payload(
-        "provider-account-target",
-        "provider-organization-target",
+        None,
+        None,
         token_suffix="target-private",
         access_expires_at=_INITIAL_ACCESS_EXPIRY,
     )
     known_payload = credential_payload(
-        "provider-account-known",
-        "provider-organization-known",
+        None,
+        None,
         token_suffix="known-private",
         access_expires_at=_INITIAL_ACCESS_EXPIRY,
     )
     retained_source_payload = credential_payload(
-        "provider-account-source",
-        "provider-organization-source",
+        None,
+        None,
         token_suffix="source-retained",
         access_expires_at=_RETAINED_ACCESS_EXPIRY,
     )
     native_source_payload = credential_payload(
-        "provider-account-source",
-        "provider-organization-source",
+        None,
+        None,
         token_suffix="source-native",
         access_expires_at=_INITIAL_ACCESS_EXPIRY,
     )
     native_target_payload = credential_payload(
-        "provider-account-target",
-        "provider-organization-target",
+        None,
+        None,
         token_suffix="target-interrupted",
         access_expires_at=_NATIVE_TARGET_ACCESS_EXPIRY,
         refresh_expires_at=_EXPIRED_REFRESH,
     )
     native_rollback_payload = credential_payload(
-        "provider-account-source",
-        "provider-organization-source",
+        None,
+        None,
         token_suffix="source-rollback",
         access_expires_at=_ROLLBACK_ACCESS_EXPIRY,
     )
     known_native_payload = credential_payload(
-        "provider-account-known",
-        "provider-organization-known",
+        None,
+        None,
         token_suffix="known-native",
         access_expires_at=_EXTERNAL_ACCESS_EXPIRY,
     )
     unknown_native_payload = credential_payload(
-        "provider-account-unknown",
-        "provider-organization-unknown",
+        None,
+        None,
         token_suffix="unknown-native",
         access_expires_at=_EXTERNAL_ACCESS_EXPIRY,
     )
@@ -490,6 +491,22 @@ def claude_recovery_scenario(
             native.config_directory: (
                 native_target_payload,
                 native_rollback_payload if rollback_succeeds else None,
+            ),
+        },
+        profile_statuses={
+            source_profile: _SOURCE_STATUS,
+            target_profile: _TARGET_STATUS,
+            managed_profile(
+                paths,
+                known.account_id,
+            ).config_directory: _KNOWN_STATUS,
+            native.config_directory: _SOURCE_STATUS,
+        },
+        refresh_statuses={
+            source_profile: (_SOURCE_STATUS,),
+            native.config_directory: (
+                _TARGET_STATUS,
+                _SOURCE_STATUS,
             ),
         },
     )

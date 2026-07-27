@@ -1,4 +1,4 @@
-"""Protected Claude storage models."""
+"""Protected Claude storage and proof models."""
 
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -24,12 +24,27 @@ class ClaudeKeychainTarget:
 
 
 @dataclass(frozen=True, slots=True)
-class ClaudeAuthoritySnapshot:
-    """Secret-free metadata for one protected credential generation."""
+class ClaudeCredentialPayload:
+    """Bounded provider credential bytes with optional file provenance."""
+
+    data: bytes = field(repr=False)
+    modified_nanoseconds: int | None = None
+
+    def __post_init__(self) -> None:
+        """Reject an invalid provider modification timestamp."""
+        if (
+            self.modified_nanoseconds is not None
+            and self.modified_nanoseconds < 0
+        ):
+            raise ValueError("Claude credential timestamp is invalid.")
+
+
+@dataclass(frozen=True, slots=True)
+class ClaudeProtectedCredentialSnapshot:
+    """Secret-free metadata from one protected credential record."""
 
     profile: ClaudeProfile
     executable_version: str
-    provider_identity: ProviderIdentity
     generation: AuthorityGeneration
     plan: str
     scopes: tuple[str, ...]
@@ -37,35 +52,43 @@ class ClaudeAuthoritySnapshot:
     refresh_expires_at: datetime | None
     health: CredentialHealth
     action: CredentialAction
+    modified_nanoseconds: int | None = None
+
+    def associated_with(
+        self,
+        provider_identity: ProviderIdentity,
+    ) -> ClaudeAuthoritySnapshot:
+        """Bind this protected evidence to one status association."""
+        return ClaudeAuthoritySnapshot(
+            profile=self.profile,
+            executable_version=self.executable_version,
+            generation=self.generation,
+            plan=self.plan,
+            scopes=self.scopes,
+            access_expires_at=self.access_expires_at,
+            refresh_expires_at=self.refresh_expires_at,
+            health=self.health,
+            action=self.action,
+            modified_nanoseconds=self.modified_nanoseconds,
+            provider_identity=provider_identity,
+        )
 
 
 @dataclass(frozen=True, slots=True)
-class ClaudeCredentialObservation:
-    """Credential generation retained without requiring provider identity."""
+class ClaudeAuthoritySnapshot(ClaudeProtectedCredentialSnapshot):
+    """One exact association bound to protected request authority."""
 
-    generation: AuthorityGeneration
-    health: CredentialHealth
-    action: CredentialAction
-    snapshot: ClaudeAuthoritySnapshot | None = None
-
-    def __post_init__(self) -> None:
-        """Require a complete snapshot to agree with retained metadata."""
-        if self.snapshot is not None and (
-            self.snapshot.generation != self.generation
-            or self.snapshot.health is not self.health
-            or self.snapshot.action is not self.action
-        ):
-            raise ValueError("Claude credential observation is inconsistent.")
+    provider_identity: ProviderIdentity = field(kw_only=True)
 
 
-class ClaudeProtectedLogin:
-    """Operation-scoped login credentials from protected Claude storage."""
+class ClaudeProtectedCredential:
+    """Operation-scoped credentials read from protected Claude storage."""
 
     __slots__ = ("_active", "_credentials", "_snapshot")
 
     def __init__(
         self,
-        snapshot: ClaudeAuthoritySnapshot,
+        snapshot: ClaudeProtectedCredentialSnapshot,
         credentials: ClaudeLoginCredentials,
     ) -> None:
         self._snapshot = snapshot
@@ -73,8 +96,8 @@ class ClaudeProtectedLogin:
         self._active = False
 
     @property
-    def snapshot(self) -> ClaudeAuthoritySnapshot:
-        """Return the validated secret-free authority snapshot."""
+    def snapshot(self) -> ClaudeProtectedCredentialSnapshot:
+        """Return the validated secret-free credential snapshot."""
         return self._snapshot
 
     @property
@@ -91,14 +114,16 @@ class ClaudeProtectedLogin:
     def credentials(self) -> ClaudeLoginCredentials:
         """Return complete credentials only while this lease is active."""
         if not self._active or self._credentials is None:
-            raise RuntimeError("Claude protected login lease is not active.")
+            raise RuntimeError(
+                "Claude protected credential lease is not active."
+            )
         return self._credentials
 
     def __enter__(self) -> Self:
-        """Open this protected login projection exactly once."""
+        """Open this protected credential projection exactly once."""
         if self._active or self._credentials is None:
             raise RuntimeError(
-                "Claude protected login lease is not available."
+                "Claude protected credential lease is not available."
             )
         self._active = True
         return self
@@ -113,6 +138,44 @@ class ClaudeProtectedLogin:
         del exception_type, exception, traceback
         self._active = False
         self._credentials = None
+
+    def __repr__(self) -> str:
+        """Return a representation without credential material."""
+        return "<ClaudeProtectedCredential redacted>"
+
+
+class ClaudeProtectedLogin:
+    """One proven association with an active protected credential lease."""
+
+    __slots__ = ("_credential", "_snapshot")
+
+    def __init__(
+        self,
+        snapshot: ClaudeAuthoritySnapshot,
+        credential: ClaudeProtectedCredential,
+    ) -> None:
+        self._snapshot = snapshot
+        self._credential = credential
+
+    @property
+    def snapshot(self) -> ClaudeAuthoritySnapshot:
+        """Return the complete secret-free authority snapshot."""
+        return self._snapshot
+
+    @property
+    def refresh_token(self) -> str:
+        """Return refresh material only while the inner lease is active."""
+        return self._credential.refresh_token
+
+    @property
+    def scopes(self) -> tuple[str, ...]:
+        """Return OAuth scopes only while the inner lease is active."""
+        return self._credential.scopes
+
+    @property
+    def credentials(self) -> ClaudeLoginCredentials:
+        """Return credentials only while the inner lease is active."""
+        return self._credential.credentials
 
     def __repr__(self) -> str:
         """Return a representation without credential material."""

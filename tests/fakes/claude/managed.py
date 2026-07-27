@@ -11,6 +11,7 @@ import pytest
 
 import sidekick_usages.platform.executable
 from sidekick_usages.core.accounts.types import (
+    ProviderIdentity,
     SidekickAccountId,
 )
 from sidekick_usages.paths import (
@@ -21,6 +22,10 @@ from sidekick_usages.persistence.private.credentials import (
     PrivateCredentialTree,
 )
 from sidekick_usages.platform.models import ExecutableProvenance
+from sidekick_usages.providers.claude.auth.login.models import ClaudeAuthStatus
+from sidekick_usages.providers.claude.auth.login.service import (
+    claude_status_association_key,
+)
 from sidekick_usages.providers.claude.auth.storage.service import (
     CLAUDE_CREDENTIAL_FILE,
 )
@@ -49,6 +54,10 @@ type ClaudeCommandScript = Callable[
         dict[str, str] | None,
         Path | None,
     ],
+    ClaudeCommandResult,
+]
+type ClaudeProfileResponses = Mapping[
+    tuple[Path, tuple[str, ...]],
     ClaudeCommandResult,
 ]
 
@@ -87,11 +96,13 @@ class ClaudeRunner:
         self,
         responses: Mapping[tuple[str, ...], ClaudeCommandResult] | None = None,
         *,
+        profile_responses: ClaudeProfileResponses | None = None,
         script: ClaudeCommandScript | None = None,
     ) -> None:
         if (responses is None) == (script is None):
             raise ValueError("Claude runner requires one response source.")
         self._responses = responses
+        self._profile_responses = dict(profile_responses or {})
         self._script = script
         self.calls: list[tuple[Path, tuple[str, ...]]] = []
         self.environments: list[dict[str, str] | None] = []
@@ -129,6 +140,11 @@ class ClaudeRunner:
                 captured_environment,
                 working_directory,
             )
+        profile = self._profile_directory(captured_environment)
+        if profile is not None:
+            response = self._profile_responses.get((profile, arguments))
+            if response is not None:
+                return response
         if self._responses is None:
             raise AssertionError("Claude responses are unavailable.")
         try:
@@ -137,6 +153,18 @@ class ClaudeRunner:
             raise AssertionError(
                 f"Unexpected Claude command: {arguments!r}"
             ) from None
+
+    @staticmethod
+    def _profile_directory(
+        environment: Mapping[str, str] | None,
+    ) -> Path | None:
+        if environment is None:
+            return None
+        configured = environment.get("CLAUDE_CONFIG_DIR")
+        if configured is not None:
+            return Path(configured)
+        home = environment.get("HOME")
+        return None if home is None else Path(home) / ".claude"
 
 
 class ClaudeManagedLoginScript:
@@ -148,6 +176,8 @@ class ClaudeManagedLoginScript:
         refresh_payloads: Mapping[Path, tuple[bytes | None, ...]],
         *,
         interactive_payloads: Mapping[Path, bytes] | None = None,
+        profile_statuses: Mapping[Path, bytes] | None = None,
+        refresh_statuses: Mapping[Path, tuple[bytes, ...]] | None = None,
     ) -> None:
         self._profiles = profiles
         self._refresh_payloads = {
@@ -155,6 +185,11 @@ class ClaudeManagedLoginScript:
             for profile, payloads in refresh_payloads.items()
         }
         self._interactive_payloads = dict(interactive_payloads or {})
+        self._profile_statuses = dict(profile_statuses or {})
+        self._refresh_statuses = {
+            profile: list(statuses)
+            for profile, statuses in (refresh_statuses or {}).items()
+        }
         self.login_profiles: list[Path] = []
         self.interactive_profiles: list[Path] = []
 
@@ -171,6 +206,9 @@ class ClaudeManagedLoginScript:
             return ClaudeCommandResult(0, CLAUDE_LOGIN_HELP_OUTPUT)
         if arguments == ("auth", "status"):
             config_directory = self._config_directory(environment)
+            configured = self._profile_statuses.get(config_directory)
+            if configured is not None:
+                return ClaudeCommandResult(0, configured)
             credential_file = config_directory / CLAUDE_CREDENTIAL_FILE
             return (
                 ClaudeCommandResult(0, CLAUDE_LOGGED_IN_STATUS)
@@ -190,6 +228,9 @@ class ClaudeManagedLoginScript:
         if payload is None:
             return ClaudeCommandResult(1, b"synthetic login rejected")
         self._write_credentials(config_directory, payload)
+        statuses = self._refresh_statuses.get(config_directory)
+        if statuses:
+            self._profile_statuses[config_directory] = statuses.pop(0)
         return ClaudeCommandResult(0, b"synthetic official login complete")
 
     def interactive(
@@ -217,6 +258,14 @@ class ClaudeManagedLoginScript:
         self._write_credentials(config_directory, payload)
         self.interactive_profiles.append(config_directory)
         return 0
+
+    def set_status(
+        self,
+        config_directory: Path,
+        payload: bytes,
+    ) -> None:
+        """Set explicit provider profile state after an external login."""
+        self._profile_statuses[config_directory] = payload
 
     def _write_credentials(
         self,
@@ -279,6 +328,82 @@ def credential_payload(
             "claudeAiOauth": oauth,
         }
     ).encode()
+
+
+def claude_auth_status_payload(
+    email: str,
+    organization_id: str,
+    *,
+    subscription_type: str = "pro",
+) -> bytes:
+    """Encode one exact synthetic official Claude status."""
+    return json.dumps(
+        {
+            "loggedIn": True,
+            "authMethod": "claude.ai",
+            "apiProvider": "firstParty",
+            "email": email,
+            "orgId": organization_id,
+            "orgName": "Synthetic Organization",
+            "subscriptionType": subscription_type,
+        }
+    ).encode()
+
+
+def claude_auth_status_result(
+    email: str,
+    organization_id: str,
+) -> ClaudeCommandResult:
+    """Return one successful exact-profile official status result."""
+    return ClaudeCommandResult(
+        0,
+        claude_auth_status_payload(email, organization_id),
+    )
+
+
+def claude_profile_status_responses(
+    profiles: Mapping[Path, str],
+) -> dict[tuple[Path, tuple[str, ...]], ClaudeCommandResult]:
+    """Return explicit auth-status responses for exact profiles."""
+    return {
+        (profile, ("auth", "status")): claude_auth_status_result(
+            f"{name}@example.test",
+            f"provider-organization-{name}",
+        )
+        for profile, name in profiles.items()
+    }
+
+
+def claude_profile_status(
+    name: str,
+) -> tuple[bytes, ProviderIdentity]:
+    """Return explicit status and association for one named profile."""
+    email = f"{name}@example.test"
+    organization_id = f"provider-organization-{name}"
+    return (
+        claude_auth_status_payload(email, organization_id),
+        claude_status_identity(email, organization_id),
+    )
+
+
+def claude_status_identity(
+    email: str,
+    organization_id: str,
+) -> ProviderIdentity:
+    """Return the production association key for synthetic status."""
+    identity = claude_status_association_key(
+        ClaudeAuthStatus(
+            return_code=0,
+            logged_in=True,
+            auth_method="claude.ai",
+            api_provider="firstParty",
+            email=email,
+            organization_id=organization_id,
+        )
+    )
+    if identity is None:
+        raise AssertionError("Synthetic Claude status must be complete.")
+    return identity
 
 
 def claude_capabilities(

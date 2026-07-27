@@ -523,7 +523,10 @@ def _storage_outcome(
 ) -> ClaudeManagedOutcome:
     if failure is ClaudeProtectedStorageFailure.MISSING:
         return ClaudeManagedOutcome.LOGIN_REQUIRED
-    if failure is ClaudeProtectedStorageFailure.IDENTITY_MISMATCH:
+    if failure in {
+        ClaudeProtectedStorageFailure.IDENTITY_MISMATCH,
+        ClaudeProtectedStorageFailure.PROOF_CHANGED,
+    }:
         return ClaudeManagedOutcome.RECONCILIATION_REQUIRED
     if failure in {
         ClaudeProtectedStorageFailure.KEYCHAIN_ACCESS_DENIED,

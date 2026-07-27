@@ -22,17 +22,20 @@ from sidekick_usages.persistence.errors import (
 from sidekick_usages.persistence.private.credentials import (
     PrivateCredentialTree,
 )
+from sidekick_usages.providers.claude.auth.proof.service import (
+    proven_claude_login,
+    read_proven_claude_authority,
+)
 from sidekick_usages.providers.claude.auth.storage.errors import (
     ClaudeProtectedStorageError,
 )
 from sidekick_usages.providers.claude.auth.storage.models import (
     ClaudeAuthoritySnapshot,
+    ClaudeCredentialPayload,
     ClaudeProtectedLogin,
 )
 from sidekick_usages.providers.claude.auth.storage.service import (
     CLAUDE_CREDENTIAL_FILE,
-    protected_claude_login,
-    read_protected_claude_authority,
 )
 from sidekick_usages.providers.claude.auth.storage.types import (
     ClaudeProtectedStorageFailure,
@@ -61,7 +64,10 @@ class _ClaudeManagedCredentialFiles:
         self._paths = paths
         self._profiles = profiles
 
-    def read(self, profile: ClaudeProfile) -> bytes | None:
+    def read(
+        self,
+        profile: ClaudeProfile,
+    ) -> ClaudeCredentialPayload | None:
         """Return qualified bounded credentials or proven absence."""
         relative = self._relative(profile)
         try:
@@ -81,7 +87,11 @@ class _ClaudeManagedCredentialFiles:
             raise ClaudeProtectedStorageError(
                 ClaudeProtectedStorageFailure.UNREADABLE
             ) from None
-        return None if snapshot is None else snapshot.data
+        return (
+            None
+            if snapshot is None
+            else ClaudeCredentialPayload(snapshot.data)
+        )
 
     def present(self, profile: ClaudeProfile) -> bool:
         """Report the exact artifact without reading its contents."""
@@ -141,7 +151,7 @@ class ClaudeManagedAuthorityReader:
         runner: ClaudeCommandRunner = run_bounded_claude_command,
     ) -> ClaudeAuthoritySnapshot:
         """Read one profile and bind its provider identity."""
-        return read_protected_claude_authority(
+        return read_proven_claude_authority(
             capabilities,
             self._files,
             reference_time,
@@ -160,7 +170,7 @@ class ClaudeManagedAuthorityReader:
         runner: ClaudeCommandRunner = run_bounded_claude_command,
     ) -> AbstractContextManager[ClaudeProtectedLogin]:
         """Open one short-lived protected refresh credential lease."""
-        return protected_claude_login(
+        return proven_claude_login(
             capabilities,
             self._files,
             reference_time,

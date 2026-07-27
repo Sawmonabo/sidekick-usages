@@ -33,6 +33,9 @@ _STORAGE_FAILURE_MESSAGES = {
     ClaudeProtectedStorageFailure.IDENTITY_MISMATCH: (
         "The Claude credential identity does not match."
     ),
+    ClaudeProtectedStorageFailure.PROOF_CHANGED: (
+        "The Claude authority changed while it was being verified."
+    ),
 }
 
 

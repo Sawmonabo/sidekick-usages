@@ -30,6 +30,8 @@ def claude_exchange_storage_failure(
         return ClaudeExchangeFailureKind.MISSING
     if failure is ClaudeProtectedStorageFailure.IDENTITY_MISMATCH:
         return ClaudeExchangeFailureKind.IDENTITY_MISMATCH
+    if failure is ClaudeProtectedStorageFailure.PROOF_CHANGED:
+        return ClaudeExchangeFailureKind.RECONCILIATION_REQUIRED
     if failure is ClaudeProtectedStorageFailure.MALFORMED:
         return ClaudeExchangeFailureKind.MALFORMED
     if failure in {
