@@ -8,10 +8,9 @@ from pathlib import Path
 from sidekick_usages.platform.errors import ExecutableQualificationError
 from sidekick_usages.platform.executable import (
     qualify_executable,
-    resolve_executable,
-    verify_executable,
+    resolve_executable_launcher,
+    verify_executable_launcher,
 )
-from sidekick_usages.platform.models import ExecutableProvenance
 from sidekick_usages.platform.types import ExecutableFailure
 from sidekick_usages.providers.claude.errors import ClaudeProcessError
 from sidekick_usages.providers.claude.managed.errors import (
@@ -30,7 +29,7 @@ from sidekick_usages.providers.claude.process import (
 )
 from sidekick_usages.providers.claude.types import ClaudeCommandRunner
 
-SUPPORTED_CLAUDE_VERSION = ClaudeVersion(2, 1, 220)
+MINIMUM_CLAUDE_VERSION = ClaudeVersion(2, 1, 220)
 _CLAUDE_COMMAND = "claude"
 _VERSION_OUTPUT_BYTES = 128
 _VERSION_TIMEOUT_SECONDS = 5.0
@@ -43,7 +42,7 @@ _VERSION_PATTERN = re.compile(
 def discover_claude_executable(
     environment: Mapping[str, str] | None = None,
     *,
-    executable_path: Path | None = None,
+    launcher: Path | None = None,
     working_directory: Path | None = None,
     runner: ClaudeCommandRunner = run_bounded_claude_command,
     cancelled: Callable[[], bool] | None = None,
@@ -51,11 +50,10 @@ def discover_claude_executable(
     """Resolve, version, and freeze one exact Claude executable."""
     source = os.environ if environment is None else environment
     try:
-        provenance = (
-            resolve_claude_executable(source)
-            if executable_path is None
-            else qualify_executable(executable_path)
+        resolved_launcher = (
+            resolve_claude_launcher(source) if launcher is None else launcher
         )
+        provenance = qualify_executable(resolved_launcher)
     except ExecutableQualificationError as error:
         failure = (
             ClaudeManagedFailure.EXECUTABLE_MISSING
@@ -80,48 +78,48 @@ def discover_claude_executable(
     if result.return_code != 0:
         raise ClaudeManagedError(ClaudeManagedFailure.VERSION_UNSUPPORTED)
     version = _parse_version(result.output)
-    if version != SUPPORTED_CLAUDE_VERSION:
+    if version < MINIMUM_CLAUDE_VERSION:
         raise ClaudeManagedError(ClaudeManagedFailure.VERSION_UNSUPPORTED)
-    _verify_provenance(provenance)
-    return ClaudeExecutable(provenance, version)
+    executable = ClaudeExecutable(resolved_launcher, provenance, version)
+    verify_claude_executable(executable)
+    return executable
 
 
-def discover_pinned_claude_executable(
-    executable_path: Path | None,
+def discover_claude_executable_from_launcher(
+    launcher: Path | None,
     environment: Mapping[str, str] | None = None,
     *,
     working_directory: Path | None = None,
     runner: ClaudeCommandRunner = run_bounded_claude_command,
     cancelled: Callable[[], bool] | None = None,
 ) -> ClaudeExecutable:
-    """Discover only the service-pinned Claude executable."""
-    if executable_path is None:
+    """Discover the current target of one service-selected launcher."""
+    if launcher is None:
         raise ClaudeManagedError(ClaudeManagedFailure.EXECUTABLE_MISSING)
     return discover_claude_executable(
         environment,
-        executable_path=executable_path,
+        launcher=launcher,
         working_directory=working_directory,
         runner=runner,
         cancelled=cancelled,
     )
 
 
-def resolve_claude_executable(
+def resolve_claude_launcher(
     environment: Mapping[str, str] | None = None,
-) -> ExecutableProvenance:
-    """Resolve one qualified Claude executable without running it."""
+) -> Path:
+    """Resolve one stable qualified Claude launcher without running it."""
     source = os.environ if environment is None else environment
-    return resolve_executable(_CLAUDE_COMMAND, source)
+    return resolve_executable_launcher(_CLAUDE_COMMAND, source)
 
 
 def verify_claude_executable(executable: ClaudeExecutable) -> None:
-    """Require the exact discovered Claude executable to remain."""
-    _verify_provenance(executable.provenance)
-
-
-def _verify_provenance(provenance: ExecutableProvenance) -> None:
+    """Require the launcher to retain the operation's qualified target."""
     try:
-        verify_executable(provenance)
+        verify_executable_launcher(
+            executable.launcher,
+            executable.provenance,
+        )
     except ExecutableQualificationError:
         raise ClaudeManagedError(
             ClaudeManagedFailure.EXECUTABLE_UNSAFE

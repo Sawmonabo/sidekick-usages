@@ -30,13 +30,13 @@ def compose_codex_managed_authority(
     clock: Clock,
     environment: Mapping[str, str],
     *,
-    executable_path: Path | None,
+    launcher: Path | None,
 ) -> CodexManagedAuthorityCoordinator:
     """Build one capability-proven managed Codex authority coordinator."""
     capabilities = probe_codex_capabilities(
         discover_codex_executable(
             environment,
-            executable_path=executable_path,
+            launcher=launcher,
             process_group=CodexProcessGroupPolicy.INHERITED,
         ),
         environment,

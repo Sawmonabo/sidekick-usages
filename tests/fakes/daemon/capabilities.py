@@ -37,6 +37,7 @@ def make_provider_capability_report(
 ) -> ProviderCapabilityReport:
     """Return deterministic secret-free provider capability evidence."""
     claude_executable = ClaudeExecutable(
+        _SYNTHETIC_EXECUTABLE_ROOT / "claude",
         ExecutableProvenance(
             _SYNTHETIC_EXECUTABLE_ROOT / "claude",
             10,
@@ -47,6 +48,7 @@ def make_provider_capability_report(
         ClaudeVersion(2, 1, 220),
     )
     codex_executable = CodexExecutable(
+        _SYNTHETIC_EXECUTABLE_ROOT / "codex",
         ExecutableProvenance(
             _SYNTHETIC_EXECUTABLE_ROOT / "codex",
             20,

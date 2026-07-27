@@ -29,8 +29,14 @@ class ClaudeVersion:
 class ClaudeExecutable:
     """One exact Claude executable and release version."""
 
+    launcher: Path
     provenance: ExecutableProvenance
     version: ClaudeVersion
+
+    def __post_init__(self) -> None:
+        """Require the stable launcher path preserved at discovery."""
+        if not self.launcher.is_absolute():
+            raise ValueError("Claude launcher path must be absolute.")
 
 
 @dataclass(frozen=True, slots=True)

@@ -49,6 +49,7 @@ from tests.support.platform import REQUIRES_MANAGED_RUNTIME
 pytestmark = REQUIRES_MANAGED_RUNTIME
 
 SCHEMA_HASH_HEX_LENGTH = 64
+_NEWER_CODEX_VERSION = "0.146.0"
 _CAPABILITY_EXECUTABLE_VERIFICATIONS = 2
 _ACCOUNT_ID = SidekickAccountId("33333333-3333-4333-8333-333333333333")
 _PROVIDER_IDENTITY = "workspace-account-alpha"
@@ -61,7 +62,7 @@ def _prepare_shared_runtime(
     native_home: Path,
     environment: dict[str, str],
     expected_user_id: int | None,
-) -> None:
+) -> CodexSharedRuntime:
     runtime = CodexSharedRuntime.create(
         executable,
         native_home,
@@ -73,6 +74,7 @@ def _prepare_shared_runtime(
         ProviderIdentity(_PROVIDER_IDENTITY),
         AuthorityGeneration(_GENERATION),
     )
+    return runtime
 
 
 def test_versioned_codex_app_server_boundary_is_complete(
@@ -81,7 +83,11 @@ def test_versioned_codex_app_server_boundary_is_complete(
 ) -> None:
     schema_root = tmp_path / "schema"
     write_codex_schema(schema_root, external_auth=True)
-    executable_path = write_fake_codex(tmp_path, schema_root)
+    executable_path = write_fake_codex(
+        tmp_path,
+        schema_root,
+        version=_NEWER_CODEX_VERSION,
+    )
     codex_home = tmp_path / "private-codex-home"
     codex_home.mkdir()
     environment = {
@@ -116,7 +122,7 @@ def test_versioned_codex_app_server_boundary_is_complete(
         notification = session.receive()
 
         assert executable.provenance.path == executable_path.resolve()
-        assert str(executable.version) == "0.145.0"
+        assert str(executable.version) == _NEWER_CODEX_VERSION
         assert verification_calls == _CAPABILITY_EXECUTABLE_VERIFICATIONS
         assert len(capabilities.schema_hash) == SCHEMA_HASH_HEX_LENGTH
         assert result["requiresOpenaiAuth"] is True
@@ -179,7 +185,7 @@ def test_codex_app_server_boundary_fails_closed_and_redacted(
         os.kill(process_id, 0)
 
 
-def test_shared_codex_runtime_rejects_each_preflight_authority(
+def test_shared_codex_runtime_self_heals_and_rejects_unsafe_authority(
     tmp_path: Path,
     short_socket_root: Path,
 ) -> None:
@@ -250,3 +256,36 @@ def test_shared_codex_runtime_rejects_each_preflight_authority(
             assert rejected.value.code is expected_failure
             assert daemon.installed_account_ids == ()
             assert native_auth.read_bytes() == _NATIVE_AUTH
+
+    root = tmp_path / "update"
+    root.mkdir()
+    schema_root = root / "schema"
+    native_home = short_socket_root / "update"
+    native_home.mkdir()
+    write_codex_schema(schema_root, external_auth=True)
+    write_fake_managed_codex(root, schema_root, native_home)
+    environment = {
+        "HOME": str(root),
+        "PATH": os.pathsep.join((str(root), os.environ["PATH"])),
+    }
+    executable = discover_codex_executable(environment)
+    with FakeCodexDaemon(native_home) as daemon:
+        lifecycle = configure_codex_daemon_lifecycle(
+            root,
+            native_home,
+            daemon.socket_path,
+            app_server_version="0.144.0",
+            cli_version="0.145.0",
+            already_running=True,
+        )
+        runtime = _prepare_shared_runtime(
+            executable,
+            native_home,
+            environment,
+            None,
+        )
+        runtime.close()
+
+    assert lifecycle.start_statuses == ("alreadyRunning",)
+    assert lifecycle.restart_count == 1
+    assert lifecycle.version_count == 1

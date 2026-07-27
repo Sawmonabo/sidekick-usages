@@ -11,18 +11,20 @@ from sidekick_usages.platform.models import ExecutableProvenance
 from sidekick_usages.platform.types import ExecutableFailure
 
 
-def resolve_executable(
+def resolve_executable_launcher(
     command: str,
     environment: Mapping[str, str],
-) -> ExecutableProvenance:
-    """Resolve and freeze one absolute regular executable."""
+) -> Path:
+    """Resolve a stable launcher and qualify its current target."""
     candidate = shutil.which(
         command,
         path=environment.get("PATH", os.defpath),
     )
     if candidate is None:
         raise ExecutableQualificationError(ExecutableFailure.MISSING)
-    return qualify_executable(Path(candidate))
+    launcher = Path(candidate)
+    qualify_executable(launcher)
+    return launcher
 
 
 def qualify_executable(path: Path) -> ExecutableProvenance:
@@ -54,4 +56,15 @@ def verify_executable(provenance: ExecutableProvenance) -> None:
         or not stat.S_ISREG(file_status.st_mode)
         or not os.access(provenance.path, os.X_OK)
     ):
+        raise ExecutableQualificationError(ExecutableFailure.UNSAFE)
+
+
+def verify_executable_launcher(
+    launcher: Path,
+    provenance: ExecutableProvenance,
+) -> None:
+    """Require a launcher to retain one qualified operation target."""
+    current = qualify_executable(launcher)
+    verify_executable(provenance)
+    if current != provenance:
         raise ExecutableQualificationError(ExecutableFailure.UNSAFE)

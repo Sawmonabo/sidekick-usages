@@ -21,6 +21,7 @@ from sidekick_usages.providers.codex.app_server.executable import (
 )
 from sidekick_usages.providers.codex.app_server.models import (
     CodexAppServerCapabilities,
+    CodexVersion,
 )
 from sidekick_usages.providers.codex.app_server.process import (
     minimal_codex_environment,
@@ -47,6 +48,7 @@ MANAGED_CODEX_COMPONENTS = ("packages", "standalone", "current", "codex")
 _CONTROL_DIRECTORY_MODE = 0o700
 _CONTROL_SOCKET_MODE = 0o600
 _DAEMON_START_TIMEOUT_SECONDS = 100.0
+_DAEMON_RESTART_TIMEOUT_SECONDS = 100.0
 _DAEMON_VERSION_TIMEOUT_SECONDS = 10.0
 _DAEMON_CONNECT_TIMEOUT_SECONDS = 5.0
 _MAXIMUM_LIFECYCLE_OUTPUT_BYTES = 4096
@@ -64,6 +66,7 @@ _LIFECYCLE_BASE_FIELDS = frozenset(
 _LIFECYCLE_FIELDS = {
     CodexDaemonStatus.STARTED: _LIFECYCLE_BASE_FIELDS | {"pid"},
     CodexDaemonStatus.ALREADY_RUNNING: _LIFECYCLE_BASE_FIELDS,
+    CodexDaemonStatus.RESTARTED: _LIFECYCLE_BASE_FIELDS | {"pid"},
     CodexDaemonStatus.RUNNING: _LIFECYCLE_BASE_FIELDS,
 }
 _ATTACHABLE_UNMANAGED_STATUSES = frozenset(
@@ -131,9 +134,13 @@ class CodexDaemonManager:
         """Return whether the owning broker requested shutdown."""
         return self._cancelled is not None and self._cancelled()
 
+    def verify_executable(self) -> None:
+        """Require the stable launcher to retain this runtime target."""
+        verify_codex_executable(self._capabilities.executable)
+
     def ensure_running(self) -> CodexDaemonAuthority:
         """Idempotently start, inspect, and qualify the official daemon."""
-        verify_codex_executable(self._capabilities.executable)
+        self.verify_executable()
         started = self._run_lifecycle(
             "start",
             timeout_seconds=_DAEMON_START_TIMEOUT_SECONDS,
@@ -143,13 +150,34 @@ class CodexDaemonManager:
             CodexDaemonStatus.ALREADY_RUNNING,
         }:
             raise CodexBrokerError(CodexBrokerFailure.LIFECYCLE_MALFORMED)
+        self._require_current_installation(started)
+        current_version = self._capabilities.executable.version
+        if started.app_server_version != current_version:
+            if not started.managed:
+                raise CodexBrokerError(CodexBrokerFailure.DAEMON_UNMANAGED)
+            if (
+                started.status is not CodexDaemonStatus.ALREADY_RUNNING
+                or started.app_server_version > current_version
+            ):
+                raise CodexBrokerError(CodexBrokerFailure.VERSION_UNSUPPORTED)
+            restarted = self._run_lifecycle(
+                "restart",
+                timeout_seconds=_DAEMON_RESTART_TIMEOUT_SECONDS,
+            )
+            if (
+                restarted.status is not CodexDaemonStatus.RESTARTED
+                or not restarted.managed
+            ):
+                raise CodexBrokerError(CodexBrokerFailure.LIFECYCLE_MALFORMED)
+            self._require_current_version(restarted)
         running = self._run_lifecycle(
             "version",
             timeout_seconds=_DAEMON_VERSION_TIMEOUT_SECONDS,
         )
         if running.status is not CodexDaemonStatus.RUNNING:
             raise CodexBrokerError(CodexBrokerFailure.LIFECYCLE_MALFORMED)
-        verify_codex_executable(self._capabilities.executable)
+        self._require_current_version(running)
+        self.verify_executable()
         control_directory, control_socket = self._qualify_socket()
         return CodexDaemonAuthority(
             lifecycle=running,
@@ -193,6 +221,7 @@ class CodexDaemonManager:
         *,
         timeout_seconds: float,
     ) -> CodexDaemonLifecycle:
+        self.verify_executable()
         try:
             output = run_bounded_codex_command(
                 (
@@ -214,6 +243,7 @@ class CodexDaemonManager:
             raise CodexBrokerError(
                 CodexBrokerFailure.LIFECYCLE_FAILED
             ) from None
+        self.verify_executable()
         return self._decode_lifecycle(output)
 
     def _decode_lifecycle(self, output: bytes) -> CodexDaemonLifecycle:
@@ -233,36 +263,69 @@ class CodexDaemonManager:
         expected_fields = _LIFECYCLE_FIELDS[status]
         actual_fields = set(payload)
         backend_missing = actual_fields == expected_fields - {"backend"}
-        if (
-            backend_missing
-            and status not in _ATTACHABLE_UNMANAGED_STATUSES
-        ):
+        if backend_missing and status not in _ATTACHABLE_UNMANAGED_STATUSES:
             raise CodexBrokerError(CodexBrokerFailure.DAEMON_UNMANAGED)
         if not backend_missing and actual_fields != expected_fields:
             raise CodexBrokerError(CodexBrokerFailure.LIFECYCLE_MALFORMED)
         if not backend_missing and payload.get("backend") != "pid":
             raise CodexBrokerError(CodexBrokerFailure.DAEMON_UNMANAGED)
-        if status is CodexDaemonStatus.STARTED and not _valid_process_id(
-            payload.get("pid")
-        ):
+        if status in {
+            CodexDaemonStatus.STARTED,
+            CodexDaemonStatus.RESTARTED,
+        } and not _valid_process_id(payload.get("pid")):
             raise CodexBrokerError(CodexBrokerFailure.LIFECYCLE_MALFORMED)
         managed_path = self._managed_path(payload)
         socket_path = self._reported_socket(payload)
-        expected_version = str(self._capabilities.executable.version)
-        if any(
-            payload.get(name) != expected_version
-            for name in (
-                "appServerVersion",
-                "cliVersion",
-                "managedCodexVersion",
-            )
-        ):
-            raise CodexBrokerError(CodexBrokerFailure.VERSION_UNSUPPORTED)
         return CodexDaemonLifecycle(
             status=status,
+            app_server_version=self._reported_version(
+                payload,
+                "appServerVersion",
+            ),
+            cli_version=self._reported_version(payload, "cliVersion"),
+            managed_version=self._reported_version(
+                payload,
+                "managedCodexVersion",
+            ),
+            managed=not backend_missing,
             managed_executable=managed_path,
             socket_path=socket_path,
         )
+
+    def _reported_version(
+        self,
+        payload: JsonObject,
+        name: str,
+    ) -> CodexVersion:
+        value = payload.get(name)
+        if not isinstance(value, str):
+            raise CodexBrokerError(CodexBrokerFailure.LIFECYCLE_MALFORMED)
+        try:
+            return CodexVersion.parse(value)
+        except ValueError:
+            raise CodexBrokerError(
+                CodexBrokerFailure.LIFECYCLE_MALFORMED
+            ) from None
+
+    def _require_current_version(
+        self,
+        lifecycle: CodexDaemonLifecycle,
+    ) -> None:
+        self._require_current_installation(lifecycle)
+        current = self._capabilities.executable.version
+        if lifecycle.app_server_version != current:
+            raise CodexBrokerError(CodexBrokerFailure.VERSION_UNSUPPORTED)
+
+    def _require_current_installation(
+        self,
+        lifecycle: CodexDaemonLifecycle,
+    ) -> None:
+        current = self._capabilities.executable.version
+        if (
+            lifecycle.cli_version != current
+            or lifecycle.managed_version != current
+        ):
+            raise CodexBrokerError(CodexBrokerFailure.VERSION_UNSUPPORTED)
 
     def _status(self, payload: JsonObject) -> CodexDaemonStatus:
         value = payload.get("status")

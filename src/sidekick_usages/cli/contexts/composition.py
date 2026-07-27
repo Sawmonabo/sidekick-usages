@@ -97,13 +97,13 @@ from sidekick_usages.providers.claude.activity import (
     discover_claude_config_dir,
 )
 from sidekick_usages.providers.claude.managed.executable import (
-    resolve_claude_executable,
+    resolve_claude_launcher,
 )
 from sidekick_usages.providers.claude.provider import ClaudeProvider
 from sidekick_usages.providers.claude.types import ClaudeSetupToken
 from sidekick_usages.providers.codex.activity import CodexActivity
 from sidekick_usages.providers.codex.app_server.executable import (
-    resolve_codex_executable,
+    resolve_codex_launcher,
 )
 from sidekick_usages.providers.registry import (
     build_heartbeat_registry,
@@ -160,8 +160,8 @@ def _build_daemon_manager(
 ) -> DaemonManager:
     """Compose lifecycle management with lazy provider qualification."""
     return build_daemon_manager(
-        claude_executable=partial(resolve_claude_executable, os.environ),
-        codex_executable=partial(resolve_codex_executable, os.environ),
+        claude_launcher=partial(resolve_claude_launcher, os.environ),
+        codex_launcher=partial(resolve_codex_launcher, os.environ),
         paths=paths,
         clock=clock,
         provider_readiness=provider_readiness,

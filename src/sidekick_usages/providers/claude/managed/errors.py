@@ -38,9 +38,6 @@ _MANAGED_FAILURE_MESSAGES = {
         "The installed Claude CLI lacks the required official-login "
         "capability."
     ),
-    ClaudeManagedFailure.REFRESH_PROVISIONING_UNPROVEN: (
-        "The installed Claude CLI refresh-token login is not proven."
-    ),
     ClaudeManagedFailure.OFFICIAL_LOGIN_TIMED_OUT: (
         "The official Claude login process timed out."
     ),

@@ -16,8 +16,8 @@ from sidekick_usages.daemon.control.client import ControlClient
 from sidekick_usages.daemon.lifecycle.artifacts import ServiceArtifactStore
 from sidekick_usages.daemon.lifecycle.commands import SystemCommandRunner
 from sidekick_usages.daemon.lifecycle.constants import (
-    CLAUDE_EXECUTABLE_OPTION,
-    CODEX_EXECUTABLE_OPTION,
+    CLAUDE_LAUNCHER_OPTION,
+    CODEX_LAUNCHER_OPTION,
     WSL_RESCUE_ABSENT,
     WSL_RESCUE_INSTALLED,
     WSL_RESCUE_TASK_NAME,
@@ -272,12 +272,16 @@ def _supervisor_executable(tmp_path: Path) -> Path:
     return executable
 
 
-def _provider_executable(tmp_path: Path, name: str) -> Path:
-    executable = tmp_path / "bin" / name
-    executable.parent.mkdir(parents=True)
-    executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    executable.chmod(0o755)
-    return executable.resolve()
+def _provider_launcher(root: Path, name: str, version: str) -> Path:
+    target = root / "versions" / version / name
+    target.parent.mkdir(parents=True)
+    target.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    target.chmod(0o755)
+    launcher = root / "bin" / name
+    launcher.parent.mkdir(parents=True, exist_ok=True)
+    launcher.unlink(missing_ok=True)
+    launcher.symlink_to(target)
+    return launcher
 
 
 def _state_tree_snapshot(
@@ -461,54 +465,47 @@ def _exercise_real_lifecycle_progress(
     )
 
 
-def _exercise_service_executable_republish(
-    tmp_path: Path,
+def _exercise_service_launcher_republish(
     manager: DaemonManager,
     platform_info: PlatformInfo,
     backend_id: ServiceBackendId,
     runner: RecordingRunner,
-    supervisor_executable: Path,
-    claude_executables: list[Path],
-    codex_executables: list[Path],
+    claude_launcher: Path,
+    codex_launcher: Path,
 ) -> None:
-    """Prove exact provider argv and platform-native artifact reload."""
+    """Prove stable launcher argv and platform-native artifact reload."""
     artifact = _service_artifact(platform_info, backend_id)
     initial = artifact.read_text(encoding="utf-8")
-    assert str(supervisor_executable) in initial
-    assert "sidekick-usages-supervisor" in initial
-    assert "maintain" not in initial
-    assert "refresh" not in initial
+    initial_targets = (
+        qualify_executable(claude_launcher).path,
+        qualify_executable(codex_launcher).path,
+    )
     assert "token" not in initial.lower()
-    assert str(claude_executables[0]) in initial
-    assert str(codex_executables[0]) in initial
+    assert str(claude_launcher) in initial
+    assert str(codex_launcher) in initial
+    assert all(str(target) not in initial for target in initial_targets)
     assert "CODEX_HOME" not in initial
     assert "OPENAI_API_KEY" not in initial
-    assert "Environment=" not in initial
-    assert "<key>EnvironmentVariables</key>" not in initial
     if backend_id in {ServiceBackendId.SYSTEMD, ServiceBackendId.WSL}:
         assert (
-            f'"{CLAUDE_EXECUTABLE_OPTION}" '
-            f'"{claude_executables[0]}" '
-            f'"{CODEX_EXECUTABLE_OPTION}" '
-            f'"{codex_executables[0]}"'
+            f'"{CLAUDE_LAUNCHER_OPTION}" '
+            f'"{claude_launcher}" '
+            f'"{CODEX_LAUNCHER_OPTION}" '
+            f'"{codex_launcher}"'
         ) in initial
     if backend_id is ServiceBackendId.LAUNCHD:
         assert (
-            f"<string>{CLAUDE_EXECUTABLE_OPTION}</string>\n"
-            f"    <string>{claude_executables[0]}</string>\n"
-            f"    <string>{CODEX_EXECUTABLE_OPTION}</string>\n"
-            f"    <string>{codex_executables[0]}</string>"
+            f"<string>{CLAUDE_LAUNCHER_OPTION}</string>\n"
+            f"    <string>{claude_launcher}</string>\n"
+            f"    <string>{CODEX_LAUNCHER_OPTION}</string>\n"
+            f"    <string>{codex_launcher}</string>"
         ) in initial
 
-    previous_claude = claude_executables[0]
-    previous_codex = codex_executables[0]
-    claude_executables[0] = _provider_executable(
-        tmp_path / "claude-v2",
-        "claude",
-    )
-    codex_executables[0] = _provider_executable(
-        tmp_path / "codex-v2",
-        "codex",
+    _provider_launcher(claude_launcher.parent.parent, "claude", "v2")
+    _provider_launcher(codex_launcher.parent.parent, "codex", "v2")
+    updated_targets = (
+        qualify_executable(claude_launcher).path,
+        qualify_executable(codex_launcher).path,
     )
     call_offset = len(runner.calls)
     restarted = manager.restart()
@@ -516,10 +513,12 @@ def _exercise_service_executable_republish(
     restart_calls = runner.calls[call_offset:]
 
     assert restarted.state is ServiceLifecycleState.READY
-    assert str(claude_executables[0]) in republished
-    assert str(codex_executables[0]) in republished
-    assert str(previous_claude) not in republished
-    assert str(previous_codex) not in republished
+    assert republished == initial
+    assert initial_targets != updated_targets
+    assert all(
+        str(target) not in republished
+        for target in initial_targets + updated_targets
+    )
     if backend_id in {ServiceBackendId.SYSTEMD, ServiceBackendId.WSL}:
         assert restart_calls[:2] == [
             ("systemctl", "--user", "daemon-reload"),
@@ -581,16 +580,18 @@ def test_service_artifacts_are_user_scoped_resident_and_secret_free(
     )
     runner = RecordingRunner()
     executable = _supervisor_executable(tmp_path).resolve()
-    claude_executables = [
-        _provider_executable(tmp_path / "claude-v1", "claude")
-    ]
-    codex_executables = [_provider_executable(tmp_path / "codex-v1", "codex")]
+    claude_launcher = _provider_launcher(
+        tmp_path / "providers" / "claude", "claude", "v1"
+    )
+    codex_launcher = _provider_launcher(
+        tmp_path / "providers" / "codex", "codex", "v1"
+    )
 
     def launch_command() -> ServiceLaunchCommand:
         return build_service_launch_command(
             lambda: executable,
-            lambda: qualify_executable(claude_executables[0]),
-            lambda: qualify_executable(codex_executables[0]),
+            lambda: claude_launcher,
+            lambda: codex_launcher,
         )
 
     backend = build_service_backend(
@@ -771,15 +772,13 @@ def test_service_artifacts_are_user_scoped_resident_and_secret_free(
         _exercise_wsl_health_failures(backend, manager, runner, paths)
         runner.rescue_output = WSL_RESCUE_INSTALLED
 
-    _exercise_service_executable_republish(
-        tmp_path,
+    _exercise_service_launcher_republish(
         manager,
         platform_info,
         backend_id,
         runner,
-        executable,
-        claude_executables,
-        codex_executables,
+        claude_launcher,
+        codex_launcher,
     )
 
 

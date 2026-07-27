@@ -18,10 +18,10 @@ from sidekick_usages.daemon.control.dispatch import (
 )
 from sidekick_usages.daemon.control.server import LocalControlServer
 from sidekick_usages.daemon.lifecycle.constants import (
-    CLAUDE_EXECUTABLE_OPTION,
-    CODEX_EXECUTABLE_OPTION,
+    CLAUDE_LAUNCHER_OPTION,
+    CODEX_LAUNCHER_OPTION,
 )
-from sidekick_usages.daemon.models.worker import ProviderExecutablePins
+from sidekick_usages.daemon.models.worker import ProviderLaunchers
 from sidekick_usages.daemon.runtime.codex import (
     DurableCodexOperationDispatcher,
 )
@@ -60,7 +60,7 @@ from sidekick_usages.persistence.supervisor.selection import (
 )
 from sidekick_usages.persistence.supervisor.service import ServiceStateStore
 from sidekick_usages.providers.codex.app_server.executable import (
-    discover_pinned_codex_executable,
+    discover_codex_executable_from_launcher,
 )
 from sidekick_usages.providers.codex.auth.home import default_codex_home
 from sidekick_usages.providers.codex.broker.responder import CodexRuntimeBroker
@@ -87,11 +87,11 @@ def _signal_stop(
 
 def _create_codex_runtime(
     native_home: Path,
-    executable_path: Path | None,
+    launcher: Path | None,
     cancelled: Callable[[], bool],
 ) -> CodexSharedRuntime:
-    executable = discover_pinned_codex_executable(
-        executable_path,
+    executable = discover_codex_executable_from_launcher(
+        launcher,
         os.environ,
         cancelled=cancelled,
     )
@@ -107,7 +107,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Compose and run one lean per-user resident supervisor."""
     arguments = tuple(sys.argv[1:] if argv is None else argv)
     try:
-        provider_executables = parse_provider_executable_pins(arguments)
+        provider_launchers = parse_provider_launchers(arguments)
     except ValueError:
         return _INVALID_INVOCATION_EXIT_CODE
     paths = discover_application_paths()
@@ -130,7 +130,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         WorkerLaunchPlanner(
             resolve_worker_executable(),
             os.environ,
-            provider_executables,
+            provider_launchers,
         ),
         wakeup.notify,
         exchanges=exchanges,
@@ -139,7 +139,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         partial(
             _create_codex_runtime,
             default_codex_home(),
-            provider_executables.codex,
+            provider_launchers.codex,
         ),
         RuntimeStateReader(
             ProviderId.CODEX,
@@ -207,13 +207,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     return _EXIT_OK
 
 
-def parse_provider_executable_pins(
+def parse_provider_launchers(
     arguments: Sequence[str],
-) -> ProviderExecutablePins:
-    """Parse the exact optional provider executable service arguments."""
+) -> ProviderLaunchers:
+    """Parse the exact optional provider launcher service arguments."""
     if len(arguments) not in _SUPPORTED_SUPERVISOR_ARGUMENT_COUNTS:
         raise ValueError("Invalid supervisor invocation.")
-    executable_paths: dict[str, Path] = {}
+    launcher_paths: dict[str, Path] = {}
     for index in range(
         0,
         len(arguments),
@@ -223,13 +223,13 @@ def parse_provider_executable_pins(
             index : index + _SUPERVISOR_ARGUMENT_PAIR_SIZE
         ]
         if (
-            option not in {CLAUDE_EXECUTABLE_OPTION, CODEX_EXECUTABLE_OPTION}
-            or option in executable_paths
+            option not in {CLAUDE_LAUNCHER_OPTION, CODEX_LAUNCHER_OPTION}
+            or option in launcher_paths
             or not raw_path
         ):
             raise ValueError("Invalid supervisor invocation.")
-        executable_paths[option] = Path(raw_path)
-    return ProviderExecutablePins(
-        claude=executable_paths.get(CLAUDE_EXECUTABLE_OPTION),
-        codex=executable_paths.get(CODEX_EXECUTABLE_OPTION),
+        launcher_paths[option] = Path(raw_path)
+    return ProviderLaunchers(
+        claude=launcher_paths.get(CLAUDE_LAUNCHER_OPTION),
+        codex=launcher_paths.get(CODEX_LAUNCHER_OPTION),
     )

@@ -57,8 +57,9 @@ from sidekick_usages.providers.claude.auth.storage.types import (
 )
 from sidekick_usages.providers.claude.managed.errors import ClaudeManagedError
 from sidekick_usages.providers.claude.managed.executable import (
-    SUPPORTED_CLAUDE_VERSION,
-    discover_pinned_claude_executable,
+    MINIMUM_CLAUDE_VERSION,
+    discover_claude_executable_from_launcher,
+    verify_claude_executable,
 )
 from sidekick_usages.providers.claude.managed.types import (
     ClaudeManagedFailure,
@@ -117,10 +118,11 @@ def _keychain_arguments(service: str) -> tuple[str, ...]:
 def _probe_runner(
     *,
     login_return_code: int = 0,
+    version_output: bytes = CLAUDE_VERSION_OUTPUT,
 ) -> ClaudeRunner:
     return ClaudeRunner(
         {
-            ("--version",): ClaudeCommandResult(0, CLAUDE_VERSION_OUTPUT),
+            ("--version",): ClaudeCommandResult(0, version_output),
             ("auth", "status"): ClaudeCommandResult(
                 1,
                 CLAUDE_LOGGED_OUT_STATUS,
@@ -147,6 +149,9 @@ def test_supported_claude_boundary_freezes_executable_and_profiles(
         account_path=paths.accounts,
     )
     executable_path = Path(sys.executable).resolve()
+    launcher = tmp_path / "bin" / "claude"
+    launcher.parent.mkdir()
+    launcher.symlink_to(executable_path)
     runner = _probe_runner()
     source_environment = {
         "ANTHROPIC_API_KEY": "synthetic-native-api-key",
@@ -160,7 +165,7 @@ def test_supported_claude_boundary_freezes_executable_and_profiles(
         path: str | None = None,
     ) -> str:
         del command, path
-        raise AssertionError("Pinned Claude discovery consulted PATH.")
+        raise AssertionError("Explicit Claude launcher consulted PATH.")
 
     monkeypatch.setattr(
         sidekick_usages.platform.executable.shutil,
@@ -175,8 +180,8 @@ def test_supported_claude_boundary_freezes_executable_and_profiles(
         host=HostPlatform.LINUX,
         runner=runner,
         executable_discovery=partial(
-            discover_pinned_claude_executable,
-            executable_path,
+            discover_claude_executable_from_launcher,
+            launcher,
         ),
     ).managed(_ACCOUNT_A)
     profile_a = capabilities.profile.config_directory
@@ -187,7 +192,8 @@ def test_supported_claude_boundary_freezes_executable_and_profiles(
             executable_path.stat(),
         )
     )
-    assert capabilities.executable.version == SUPPORTED_CLAUDE_VERSION
+    assert capabilities.executable.launcher == launcher
+    assert capabilities.executable.version == MINIMUM_CLAUDE_VERSION
     assert runner.calls == [
         (executable_path, ("--version",)),
         (executable_path, ("auth", "status")),
@@ -216,6 +222,25 @@ def test_supported_claude_boundary_freezes_executable_and_profiles(
     assert managed_claude_config_dir(paths, _ACCOUNT_B) != profile_a
     assert stat.S_IMODE(profile_a.stat().st_mode) == _PRIVATE_DIRECTORY_MODE
 
+    updated_target = tmp_path / "versions" / "2.1.221" / "claude"
+    updated_target.parent.mkdir(parents=True)
+    updated_target.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    updated_target.chmod(0o755)
+    launcher.unlink()
+    launcher.symlink_to(updated_target)
+    with pytest.raises(ClaudeManagedError) as retargeted:
+        verify_claude_executable(capabilities.executable)
+    assert retargeted.value.code is ClaudeManagedFailure.EXECUTABLE_UNSAFE
+    updated_runner = _probe_runner(version_output=b"2.1.221 (Claude Code)\n")
+    updated = discover_claude_executable_from_launcher(
+        launcher,
+        source_environment,
+        runner=updated_runner,
+    )
+    assert updated.launcher == launcher
+    assert updated.provenance.path == updated_target.resolve()
+    assert updated.version > MINIMUM_CLAUDE_VERSION
+
     cancelled_runner = _probe_runner()
     capability_service = ProviderCapabilityService(
         ClaudeProfileCapabilityFactory(
@@ -225,8 +250,8 @@ def test_supported_claude_boundary_freezes_executable_and_profiles(
             host=HostPlatform.LINUX,
             runner=cancelled_runner,
             executable_discovery=partial(
-                discover_pinned_claude_executable,
-                executable_path,
+                discover_claude_executable_from_launcher,
+                launcher,
             ),
         ),
         source_environment,

@@ -26,7 +26,7 @@ from sidekick_usages.providers.claude.auth.storage.service import (
 )
 from sidekick_usages.providers.claude.errors import ClaudeProcessError
 from sidekick_usages.providers.claude.managed.executable import (
-    SUPPORTED_CLAUDE_VERSION,
+    MINIMUM_CLAUDE_VERSION,
 )
 from sidekick_usages.providers.claude.managed.models import ClaudeCapabilities
 from sidekick_usages.providers.claude.managed.types import (
@@ -285,15 +285,16 @@ def claude_capabilities(
     profile: ClaudeProfile,
     platform: ClaudeManagedPlatform,
 ) -> ClaudeCapabilities:
-    """Return release-matched capabilities for one synthetic profile."""
+    """Return capability-matched evidence for one synthetic profile."""
     executable_path = Path(sys.executable).resolve()
     return ClaudeCapabilities(
         ClaudeExecutable(
+            executable_path,
             ExecutableProvenance.from_stat(
                 executable_path,
                 executable_path.stat(),
             ),
-            SUPPORTED_CLAUDE_VERSION,
+            MINIMUM_CLAUDE_VERSION,
         ),
         profile,
         platform,

@@ -24,7 +24,6 @@ class ClaudeManagedFailure(StrEnum):
     VERSION_UNSUPPORTED = "version_unsupported"
     STATUS_UNSUPPORTED = "status_unsupported"
     LOGIN_UNSUPPORTED = "login_unsupported"
-    REFRESH_PROVISIONING_UNPROVEN = "refresh_provisioning_unproven"
     OFFICIAL_LOGIN_TIMED_OUT = "official_login_timed_out"
     OFFICIAL_LOGIN_UNAVAILABLE = "official_login_unavailable"
     OFFICIAL_LOGIN_UNVERIFIED = "official_login_unverified"

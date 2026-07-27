@@ -10,8 +10,8 @@ from sidekick_usages.core.types import ExitCode
 from sidekick_usages.daemon.lifecycle.artifacts import ServiceArtifactStore
 from sidekick_usages.daemon.lifecycle.commands import SystemCommandRunner
 from sidekick_usages.daemon.lifecycle.constants import (
-    CLAUDE_EXECUTABLE_OPTION,
-    CODEX_EXECUTABLE_OPTION,
+    CLAUDE_LAUNCHER_OPTION,
+    CODEX_LAUNCHER_OPTION,
 )
 from sidekick_usages.daemon.lifecycle.errors import ServiceLifecycleError
 from sidekick_usages.daemon.lifecycle.platform.launchd import LaunchdBackend
@@ -52,7 +52,7 @@ from sidekick_usages.daemon.types.lifecycle import (
 from sidekick_usages.errors import UsageError
 from sidekick_usages.paths import ApplicationPaths, discover_application_paths
 from sidekick_usages.platform.errors import ExecutableQualificationError
-from sidekick_usages.platform.models import ExecutableProvenance
+from sidekick_usages.platform.executable import qualify_executable
 from sidekick_usages.platform.types import ExecutableFailure
 
 _FEATURE_DISABLED_MESSAGE = (
@@ -301,8 +301,8 @@ def build_service_backend(
 
 def build_daemon_manager(
     *,
-    claude_executable: Callable[[], ExecutableProvenance],
-    codex_executable: Callable[[], ExecutableProvenance],
+    claude_launcher: Callable[[], Path],
+    codex_launcher: Callable[[], Path],
     paths: ApplicationPaths | None = None,
     clock: Clock | None = None,
     provider_readiness: ProviderCapabilityReadiness | None = None,
@@ -322,8 +322,8 @@ def build_daemon_manager(
         partial(
             build_service_launch_command,
             resolve_supervisor_executable,
-            claude_executable,
-            codex_executable,
+            claude_launcher,
+            codex_launcher,
         ),
         resolved_paths,
         runner,
@@ -338,31 +338,32 @@ def build_daemon_manager(
 
 def build_service_launch_command(
     supervisor_executable: Callable[[], Path],
-    claude_executable: Callable[[], ExecutableProvenance],
-    codex_executable: Callable[[], ExecutableProvenance],
+    claude_launcher: Callable[[], Path],
+    codex_launcher: Callable[[], Path],
 ) -> ServiceLaunchCommand:
     """Resolve the exact secret-free command for one service publication."""
     supervisor = qualify_supervisor_executable(supervisor_executable())
     arguments = (
-        *_service_executable_arguments(
-            CLAUDE_EXECUTABLE_OPTION,
-            claude_executable,
+        *_service_launcher_arguments(
+            CLAUDE_LAUNCHER_OPTION,
+            claude_launcher,
         ),
-        *_service_executable_arguments(
-            CODEX_EXECUTABLE_OPTION,
-            codex_executable,
+        *_service_launcher_arguments(
+            CODEX_LAUNCHER_OPTION,
+            codex_launcher,
         ),
     )
     return ServiceLaunchCommand(supervisor, arguments)
 
 
-def _service_executable_arguments(
+def _service_launcher_arguments(
     option: str,
-    executable: Callable[[], ExecutableProvenance],
+    launcher: Callable[[], Path],
 ) -> tuple[str, ...]:
-    """Resolve one optional qualified provider executable argument."""
+    """Resolve one optional qualified provider launcher argument."""
     try:
-        path = executable().path
+        path = launcher()
+        qualify_executable(path)
     except ExecutableQualificationError as error:
         if error.code is ExecutableFailure.MISSING:
             return ()

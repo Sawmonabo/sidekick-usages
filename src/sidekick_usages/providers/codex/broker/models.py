@@ -15,7 +15,10 @@ from sidekick_usages.core.accounts.validation import (
     MAX_METADATA_BYTES,
     require_bounded_text,
 )
-from sidekick_usages.providers.codex.app_server.models import CodexExecutable
+from sidekick_usages.providers.codex.app_server.models import (
+    CodexExecutable,
+    CodexVersion,
+)
 from sidekick_usages.providers.codex.broker.types import (
     CodexActivationMode,
     CodexCallbackMode,
@@ -51,6 +54,10 @@ class CodexDaemonLifecycle:
     """Strictly decoded official daemon lifecycle result."""
 
     status: CodexDaemonStatus
+    app_server_version: CodexVersion
+    cli_version: CodexVersion
+    managed_version: CodexVersion
+    managed: bool
     managed_executable: Path
     socket_path: Path
 

@@ -26,9 +26,6 @@ from sidekick_usages.providers.claude.environment import (
     claude_keychain_environment,
 )
 from sidekick_usages.providers.claude.errors import ClaudeProcessError
-from sidekick_usages.providers.claude.managed.executable import (
-    SUPPORTED_CLAUDE_VERSION,
-)
 from sidekick_usages.providers.claude.managed.models import ClaudeCapabilities
 from sidekick_usages.providers.claude.managed.types import (
     ClaudeManagedPlatform,
@@ -68,7 +65,6 @@ _KEYCHAIN_SUPPORTED_PLATFORMS = frozenset(
         ClaudeManagedPlatform.MACOS_X64_KEYCHAIN,
     }
 )
-_KEYCHAIN_NAMESPACE_VERSIONS = frozenset({SUPPORTED_CLAUDE_VERSION})
 
 
 def native_keychain_target(
@@ -85,11 +81,10 @@ def protected_keychain_target(
     capabilities: ClaudeCapabilities,
     environment: Mapping[str, str] | None = None,
 ) -> ClaudeKeychainTarget:
-    """Return the release-proven Keychain target for one exact profile."""
+    """Return the capability-proven Keychain target for one exact profile."""
     source = os.environ if environment is None else environment
     if (
         capabilities.platform not in _KEYCHAIN_SUPPORTED_PLATFORMS
-        or capabilities.executable.version not in _KEYCHAIN_NAMESPACE_VERSIONS
         or CLAUDE_SECURE_STORAGE_CONFIG_DIR_ENVIRONMENT_KEY in source
     ):
         raise ClaudeProtectedStorageError(

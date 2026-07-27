@@ -24,13 +24,13 @@ from sidekick_usages.core.selection.types import (
 from sidekick_usages.core.types import AccountLabel, ProviderId
 from sidekick_usages.daemon.control.dispatch import OperationEventHub
 from sidekick_usages.daemon.lifecycle.constants import (
-    CLAUDE_EXECUTABLE_OPTION,
-    CODEX_EXECUTABLE_OPTION,
+    CLAUDE_LAUNCHER_OPTION,
+    CODEX_LAUNCHER_OPTION,
 )
 from sidekick_usages.daemon.models.worker import (
-    WORKER_CLAUDE_EXECUTABLE_ENVIRONMENT_KEY,
-    WORKER_CODEX_EXECUTABLE_ENVIRONMENT_KEY,
-    ProviderExecutablePins,
+    WORKER_CLAUDE_LAUNCHER_ENVIRONMENT_KEY,
+    WORKER_CODEX_LAUNCHER_ENVIRONMENT_KEY,
+    ProviderLaunchers,
     WorkerResult,
 )
 from sidekick_usages.daemon.runtime.recovery import (
@@ -43,7 +43,7 @@ from sidekick_usages.daemon.types.worker import WorkerOutcome
 from sidekick_usages.daemon.worker.pool import WorkerPool
 from sidekick_usages.entrypoints import worker
 from sidekick_usages.entrypoints.supervisor import (
-    parse_provider_executable_pins,
+    parse_provider_launchers,
 )
 from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
 from sidekick_usages.persistence.supervisor.results import WorkerResultStore
@@ -57,8 +57,8 @@ from tests.fakes.daemon.foundation import (
     selected,
 )
 from tests.fakes.daemon.runtime import (
-    SYNTHETIC_CLAUDE_EXECUTABLE,
-    SYNTHETIC_CODEX_EXECUTABLE,
+    SYNTHETIC_CLAUDE_LAUNCHER,
+    SYNTHETIC_CODEX_LAUNCHER,
     SYNTHETIC_WORKER_EXECUTABLE,
     FakeWorkerLauncher,
     RuntimeClock,
@@ -257,16 +257,16 @@ def test_supervisor_and_workers_isolate_failures_and_recover_durably(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Worker failures remain isolated, truthful, and restart-safe."""
-    assert parse_provider_executable_pins(
+    assert parse_provider_launchers(
         (
-            CLAUDE_EXECUTABLE_OPTION,
-            str(SYNTHETIC_CLAUDE_EXECUTABLE),
-            CODEX_EXECUTABLE_OPTION,
-            str(SYNTHETIC_CODEX_EXECUTABLE),
+            CLAUDE_LAUNCHER_OPTION,
+            str(SYNTHETIC_CLAUDE_LAUNCHER),
+            CODEX_LAUNCHER_OPTION,
+            str(SYNTHETIC_CODEX_LAUNCHER),
         )
-    ) == ProviderExecutablePins(
-        claude=SYNTHETIC_CLAUDE_EXECUTABLE,
-        codex=SYNTHETIC_CODEX_EXECUTABLE,
+    ) == ProviderLaunchers(
+        claude=SYNTHETIC_CLAUDE_LAUNCHER,
+        codex=SYNTHETIC_CODEX_LAUNCHER,
     )
     state = foundation_state(tmp_path)
     first, second, third = state.operations
@@ -352,11 +352,11 @@ def test_supervisor_and_workers_isolate_failures_and_recover_durably(
         assert spec.environment_map() == {
             "HOME": "/synthetic/home",
             "PATH": "/usr/bin",
-            WORKER_CLAUDE_EXECUTABLE_ENVIRONMENT_KEY: str(
-                SYNTHETIC_CLAUDE_EXECUTABLE
+            WORKER_CLAUDE_LAUNCHER_ENVIRONMENT_KEY: str(
+                SYNTHETIC_CLAUDE_LAUNCHER
             ),
-            WORKER_CODEX_EXECUTABLE_ENVIRONMENT_KEY: str(
-                SYNTHETIC_CODEX_EXECUTABLE
+            WORKER_CODEX_LAUNCHER_ENVIRONMENT_KEY: str(
+                SYNTHETIC_CODEX_LAUNCHER
             ),
         }
     restarted_workers = WorkerPool(

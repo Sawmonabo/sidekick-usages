@@ -8,6 +8,7 @@ class CodexDaemonStatus(StrEnum):
 
     STARTED = "started"
     ALREADY_RUNNING = "alreadyRunning"
+    RESTARTED = "restarted"
     RUNNING = "running"
 
 

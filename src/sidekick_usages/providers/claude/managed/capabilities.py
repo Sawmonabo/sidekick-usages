@@ -1,4 +1,4 @@
-"""Release-pinned managed Claude capability gate."""
+"""Managed Claude capability gate."""
 
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -13,7 +13,6 @@ from sidekick_usages.providers.claude.managed.errors import (
     raise_managed_capability_error,
 )
 from sidekick_usages.providers.claude.managed.executable import (
-    SUPPORTED_CLAUDE_VERSION,
     verify_claude_executable,
 )
 from sidekick_usages.providers.claude.managed.models import (
@@ -49,7 +48,6 @@ _REQUIRED_LOGIN_OPTIONS = (
     "--email",
     "--sso",
 )
-_REFRESH_TOKEN_PROVISIONING_VERSIONS = frozenset({SUPPORTED_CLAUDE_VERSION})
 
 
 def managed_claude_platform(
@@ -112,10 +110,6 @@ def probe_claude_runtime_capabilities(
         runner,
         cancelled,
     )
-    if executable.version not in _REFRESH_TOKEN_PROVISIONING_VERSIONS:
-        raise ClaudeManagedError(
-            ClaudeManagedFailure.REFRESH_PROVISIONING_UNPROVEN
-        )
     verify_claude_executable(executable)
     return ClaudeRuntimeCapabilities(executable, platform)
 

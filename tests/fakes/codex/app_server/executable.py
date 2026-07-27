@@ -39,6 +39,11 @@ class FakeCodexDaemonLifecycle:
         """Return the number of official version inspections."""
         return sum(event["operation"] == "version" for event in self._events())
 
+    @property
+    def restart_count(self) -> int:
+        """Return the number of official daemon restarts."""
+        return sum(event["operation"] == "restart" for event in self._events())
+
     def _events(self) -> tuple[dict[str, str], ...]:
         path = self._root / DAEMON_EVENTS_FILE
         if not path.exists():
@@ -86,9 +91,11 @@ def write_fake_managed_codex(
     root: Path,
     schema_root: Path,
     native_home: Path,
+    *,
+    version: str = "0.145.0",
 ) -> None:
     """Write a fake executable and official-shaped managed installation."""
-    executable = write_fake_codex(root, schema_root)
+    executable = write_fake_codex(root, schema_root, version=version)
     managed = native_home.joinpath(
         "packages",
         "standalone",
@@ -141,7 +148,9 @@ def configure_codex_daemon_lifecycle(
     socket_path: Path,
     *,
     app_server_version: str = "0.145.0",
+    cli_version: str | None = None,
     managed: bool = True,
+    already_running: bool = False,
 ) -> FakeCodexDaemonLifecycle:
     """Configure exact start and version responses for the fake executable."""
     managed_path = native_home.joinpath(
@@ -152,6 +161,10 @@ def configure_codex_daemon_lifecycle(
     )
     payload = {
         "app_server_version": app_server_version,
+        "already_running": already_running,
+        "cli_version": (
+            app_server_version if cli_version is None else cli_version
+        ),
         "managed": managed,
         "managed_codex_path": str(managed_path),
         "pid": os.getpid(),
@@ -164,7 +177,12 @@ def configure_codex_daemon_lifecycle(
     return FakeCodexDaemonLifecycle(root)
 
 
-def write_fake_codex(tmp_path: Path, schema_root: Path) -> Path:
+def write_fake_codex(
+    tmp_path: Path,
+    schema_root: Path,
+    *,
+    version: str = "0.145.0",
+) -> Path:
     """Write one fake supporting version, schema, stdio, and lifecycle."""
     executable = tmp_path / "codex"
     mode_path = tmp_path / "mode"
@@ -198,6 +216,7 @@ def write_fake_codex(tmp_path: Path, schema_root: Path) -> Path:
                 {json.dumps(str(tmp_path / DAEMON_EVENTS_FILE))}
             )
             EMITTED_AT_MILLISECONDS = 1_750_000_000_000
+            VERSION = {json.dumps(version)}
 
             def login_config():
                 if not LOGIN_CONFIG_FILE.exists():
@@ -225,29 +244,39 @@ def write_fake_codex(tmp_path: Path, schema_root: Path) -> Path:
                 if operation == "start":
                     status = (
                         "alreadyRunning"
-                        if any(
-                            event["operation"] == "start"
-                            for event in prior
+                        if configured["already_running"]
+                        or any(
+                            event["operation"] == "start" for event in prior
                         )
                         else "started"
+                    )
+                elif operation == "restart":
+                    status = "restarted"
+                    configured["app_server_version"] = configured[
+                        "cli_version"
+                    ]
+                    DAEMON_CONFIG_FILE.write_text(
+                        json.dumps(configured),
+                        encoding="utf-8",
                     )
                 else:
                     status = "running"
                 event = {{"operation": operation, "status": status}}
                 with DAEMON_EVENTS_FILE.open("a", encoding="utf-8") as stream:
                     stream.write(json.dumps(event) + "\\n")
-                version = configured["app_server_version"]
+                app_server_version = configured["app_server_version"]
+                cli_version = configured["cli_version"]
                 response = {{
-                    "appServerVersion": version,
-                    "cliVersion": version,
+                    "appServerVersion": app_server_version,
+                    "cliVersion": cli_version,
                     "managedCodexPath": configured["managed_codex_path"],
-                    "managedCodexVersion": version,
+                    "managedCodexVersion": cli_version,
                     "socketPath": configured["socket_path"],
                     "status": status,
                 }}
                 if configured["managed"]:
                     response["backend"] = "pid"
-                if status == "started":
+                if status in {{"started", "restarted"}}:
                     response["pid"] = configured["pid"]
                 print(json.dumps(response))
 
@@ -261,7 +290,7 @@ def write_fake_codex(tmp_path: Path, schema_root: Path) -> Path:
                 stream.write(json.dumps(event) + "\\n")
 
             if sys.argv[1:] == ["--version"]:
-                print("codex-cli 0.145.0")
+                print(f"codex-cli {{VERSION}}")
                 raise SystemExit
             if sys.argv[1:4] == [
                 "app-server",
@@ -273,6 +302,9 @@ def write_fake_codex(tmp_path: Path, schema_root: Path) -> Path:
                 raise SystemExit
             if sys.argv[1:] == ["app-server", "daemon", "start"]:
                 daemon_lifecycle("start")
+                raise SystemExit
+            if sys.argv[1:] == ["app-server", "daemon", "restart"]:
+                daemon_lifecycle("restart")
                 raise SystemExit
             if sys.argv[1:] == ["app-server", "daemon", "version"]:
                 daemon_lifecycle("version")
@@ -302,7 +334,7 @@ def write_fake_codex(tmp_path: Path, schema_root: Path) -> Path:
                         "platformFamily": "unix",
                         "platformOs": "linux",
                         "userAgent": (
-                            f"{{originator}}/0.145.0 (fake 1; x86_64)"
+                            f"{{originator}}/{{VERSION}} (fake 1; x86_64)"
                         ),
                     }}
                     print(

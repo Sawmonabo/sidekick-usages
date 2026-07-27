@@ -57,10 +57,10 @@ from sidekick_usages.credentials.codex.reconciliation import (
     CodexNativeReconciliationService,
 )
 from sidekick_usages.daemon.models.worker import (
-    WORKER_CLAUDE_EXECUTABLE_ENVIRONMENT_KEY,
-    WORKER_CODEX_EXECUTABLE_ENVIRONMENT_KEY,
+    WORKER_CLAUDE_LAUNCHER_ENVIRONMENT_KEY,
+    WORKER_CODEX_LAUNCHER_ENVIRONMENT_KEY,
     WORKER_EXCHANGE_DESCRIPTOR_ENVIRONMENT_KEY,
-    ProviderExecutablePins,
+    ProviderLaunchers,
     WorkerResult,
 )
 from sidekick_usages.daemon.types.worker import WorkerOutcome
@@ -124,7 +124,7 @@ from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
 from sidekick_usages.persistence.supervisor.results import WorkerResultStore
 from sidekick_usages.persistence.supervisor.selection import SelectedStateStore
 from sidekick_usages.providers.claude.managed.executable import (
-    discover_pinned_claude_executable,
+    discover_claude_executable_from_launcher,
 )
 from sidekick_usages.providers.codex.app_server.errors import (
     CodexAppServerError,
@@ -153,18 +153,16 @@ _ACCOUNT_OPERATION_KINDS = frozenset(
 )
 
 
-def _worker_provider_executable_pins() -> ProviderExecutablePins:
-    """Consume the supervisor-qualified provider executable paths."""
-    return ProviderExecutablePins(
-        claude=_worker_executable_path(
-            WORKER_CLAUDE_EXECUTABLE_ENVIRONMENT_KEY
-        ),
-        codex=_worker_executable_path(WORKER_CODEX_EXECUTABLE_ENVIRONMENT_KEY),
+def _worker_provider_launchers() -> ProviderLaunchers:
+    """Consume the supervisor-qualified provider launcher paths."""
+    return ProviderLaunchers(
+        claude=_worker_launcher_path(WORKER_CLAUDE_LAUNCHER_ENVIRONMENT_KEY),
+        codex=_worker_launcher_path(WORKER_CODEX_LAUNCHER_ENVIRONMENT_KEY),
     )
 
 
-def _worker_executable_path(environment_key: str) -> Path | None:
-    """Consume one optional absolute worker executable path."""
+def _worker_launcher_path(environment_key: str) -> Path | None:
+    """Consume one optional absolute worker launcher path."""
     raw_path = os.environ.pop(environment_key, None)
     if raw_path is None:
         return None
@@ -207,11 +205,11 @@ class _AccountMaintenanceExecutor:
         self,
         paths: ApplicationPaths,
         clock: Clock,
-        provider_executables: ProviderExecutablePins,
+        provider_launchers: ProviderLaunchers,
     ) -> None:
         self._paths = paths
         self._clock = clock
-        self._provider_executables = provider_executables
+        self._provider_launchers = provider_launchers
 
     def execute(
         self,
@@ -253,8 +251,8 @@ class _AccountMaintenanceExecutor:
                     profiles,
                     environment=os.environ,
                     executable_discovery=partial(
-                        discover_pinned_claude_executable,
-                        self._provider_executables.claude,
+                        discover_claude_executable_from_launcher,
+                        self._provider_launchers.claude,
                     ),
                 )
                 authorities = ClaudeActivationAuthorityCoordinator(
@@ -286,7 +284,7 @@ class _AccountMaintenanceExecutor:
                         persistence.managed_codex_profiles,
                         self._clock,
                         os.environ,
-                        executable_path=self._provider_executables.codex,
+                        launcher=self._provider_launchers.codex,
                     )
                 except CodexAppServerError as error:
                     return _codex_app_server_failure(
@@ -324,7 +322,7 @@ class _ProviderOperationExecutor:
         journals: ActivationJournalStore,
         exchange: WorkerExchangeChannel | None,
         clock: Clock,
-        provider_executables: ProviderExecutablePins,
+        provider_launchers: ProviderLaunchers,
     ) -> None:
         self._paths = paths
         self._persistence = persistence
@@ -333,7 +331,7 @@ class _ProviderOperationExecutor:
         self._journals = journals
         self._exchange = exchange
         self._clock = clock
-        self._provider_executables = provider_executables
+        self._provider_launchers = provider_launchers
 
     def execute(
         self,
@@ -371,7 +369,7 @@ class _ProviderOperationExecutor:
                     self._journals,
                     self._exchange,
                     self._clock,
-                    self._provider_executables.codex,
+                    self._provider_launchers.codex,
                 )
             except CodexAppServerError as error:
                 return _codex_app_server_failure(
@@ -389,7 +387,7 @@ class _ProviderOperationExecutor:
                 self._selected,
                 self._journals,
                 self._clock,
-                self._provider_executables.claude,
+                self._provider_launchers.claude,
             )
             return executor.execute(operation, authority)
         raise ValueError("Provider worker operation is unsupported.")
@@ -408,7 +406,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if operation is None:
             return _EXIT_STATE_UNAVAILABLE
         clock = SystemClock()
-        provider_executables = _worker_provider_executable_pins()
+        provider_launchers = _worker_provider_launchers()
         if operation.kind in _ACCOUNT_OPERATION_KINDS:
             completed = _run_account_operation(
                 operation_id,
@@ -416,7 +414,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 paths,
                 queue,
                 clock,
-                provider_executables,
+                provider_launchers,
             )
         elif operation.kind in _PROVIDER_OPERATION_KINDS:
             completed = _run_provider_operation(
@@ -425,7 +423,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 paths,
                 queue,
                 clock,
-                provider_executables,
+                provider_launchers,
             )
         else:
             if WORKER_EXCHANGE_DESCRIPTOR_ENVIRONMENT_KEY in os.environ:
@@ -460,7 +458,7 @@ def _run_account_operation(
     paths: ApplicationPaths,
     queue: OperationQueueStore,
     clock: Clock,
-    provider_executables: ProviderExecutablePins,
+    provider_launchers: ProviderLaunchers,
 ) -> bool:
     if WORKER_EXCHANGE_DESCRIPTOR_ENVIRONMENT_KEY in os.environ:
         return False
@@ -472,7 +470,7 @@ def _run_account_operation(
             paths.durable_operations,
             operation.required_account_id,
         ),
-        _AccountMaintenanceExecutor(paths, clock, provider_executables),
+        _AccountMaintenanceExecutor(paths, clock, provider_launchers),
         clock,
     )
 
@@ -483,7 +481,7 @@ def _run_provider_operation(
     paths: ApplicationPaths,
     queue: OperationQueueStore,
     clock: Clock,
-    provider_executables: ProviderExecutablePins,
+    provider_launchers: ProviderLaunchers,
 ) -> bool:
     exchange = (
         WorkerExchangeChannel.from_environment()
@@ -529,7 +527,7 @@ def _run_provider_operation(
                 journals,
                 exchange,
                 clock,
-                provider_executables,
+                provider_launchers,
             ),
             clock,
         )
@@ -547,7 +545,7 @@ def _codex_exchange_executor(
     journals: ActivationJournalStore,
     exchange: WorkerExchangeChannel | None,
     clock: Clock,
-    codex_executable: Path | None,
+    codex_launcher: Path | None,
 ) -> CodexCallbackWorkerExecutor | CodexActivationWorkerExecutor:
     if exchange is None:
         raise ValueError("Codex exchange operation has no channel.")
@@ -557,7 +555,7 @@ def _codex_exchange_executor(
         persistence.managed_codex_profiles,
         clock,
         os.environ,
-        executable_path=codex_executable,
+        launcher=codex_launcher,
     )
     if operation.kind is OperationKind.CODEX_CALLBACK:
         return CodexCallbackWorkerExecutor(
@@ -590,7 +588,7 @@ def _claude_selection_executor(
     selected: SelectedStateStore,
     journals: ActivationJournalStore,
     clock: Clock,
-    claude_executable: Path | None,
+    claude_launcher: Path | None,
 ) -> ClaudeSelectionWorkerExecutor:
     if operation.kind not in {
         OperationKind.ACTIVATE,
@@ -605,8 +603,8 @@ def _claude_selection_executor(
         profiles,
         environment=os.environ,
         executable_discovery=partial(
-            discover_pinned_claude_executable,
-            claude_executable,
+            discover_claude_executable_from_launcher,
+            claude_launcher,
         ),
     )
     authorities = ClaudeActivationAuthorityCoordinator(

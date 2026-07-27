@@ -1,6 +1,8 @@
 """Native-Windows interactive feature-disabled release gate."""
 
+import os
 import sys
+from functools import partial
 
 from dashboard_benchmark.command import (
     DASHBOARD_BENCHMARK_SUCCESS,
@@ -21,6 +23,12 @@ from sidekick_usages.paths import discover_application_paths
 from sidekick_usages.persistence.setup.store import (
     ServiceSetupAcknowledgementStore,
 )
+from sidekick_usages.providers.claude.managed.executable import (
+    resolve_claude_launcher,
+)
+from sidekick_usages.providers.codex.app_server.executable import (
+    resolve_codex_launcher,
+)
 from sidekick_usages.usage.dashboard.models import DashboardService
 
 
@@ -33,7 +41,11 @@ def main() -> int:
     paths = discover_application_paths()
     intent = RefreshDueAccountsIntent()
     result = GuidedServiceSetup(
-        build_daemon_manager(paths=paths),
+        build_daemon_manager(
+            claude_launcher=partial(resolve_claude_launcher, os.environ),
+            codex_launcher=partial(resolve_codex_launcher, os.environ),
+            paths=paths,
+        ),
         ServiceSetupAcknowledgementStore(paths.service_setup_acknowledgement),
     ).prepare(
         service=DashboardService(

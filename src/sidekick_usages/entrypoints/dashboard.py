@@ -29,10 +29,10 @@ from sidekick_usages.persistence.setup.store import (
     ServiceSetupAcknowledgementStore,
 )
 from sidekick_usages.providers.claude.managed.executable import (
-    resolve_claude_executable,
+    resolve_claude_launcher,
 )
 from sidekick_usages.providers.codex.app_server.executable import (
-    resolve_codex_executable,
+    resolve_codex_launcher,
 )
 from sidekick_usages.usage.lookup.worker.client import (
     UsageLookupModuleLaunchPlanner,
@@ -76,12 +76,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         socket_path=paths.supervisor_socket,
         setup=GuidedServiceSetup(
             build_daemon_manager(
-                claude_executable=partial(
-                    resolve_claude_executable,
+                claude_launcher=partial(
+                    resolve_claude_launcher,
                     os.environ,
                 ),
-                codex_executable=partial(
-                    resolve_codex_executable,
+                codex_launcher=partial(
+                    resolve_codex_launcher,
                     os.environ,
                 ),
                 paths=paths,

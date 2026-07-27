@@ -103,11 +103,13 @@ class CodexSharedRuntime:
     def qualified(self) -> bool:
         """Return whether the exact shared-daemon connection remains live."""
         session = self._session
-        return (
-            session is not None
-            and self._authority is not None
-            and not session.closed
-        )
+        if session is None or self._authority is None or session.closed:
+            return False
+        try:
+            self._manager.verify_executable()
+        except CodexAppServerError:
+            return False
+        return True
 
     @property
     def ready(self) -> bool:
@@ -134,7 +136,7 @@ class CodexSharedRuntime:
         return self._authority if self.qualified else None
 
     def qualify(self) -> None:
-        """Qualify the pinned daemon connection without changing auth."""
+        """Qualify the shared daemon connection without changing auth."""
         try:
             self._qualify_session()
         except CodexAppServerError as error:
@@ -357,7 +359,11 @@ class CodexSharedRuntime:
     ) -> None:
         """Fail closed when the default socket changed during an exchange."""
         try:
+            self._manager.verify_executable()
             self._manager.revalidate(authority)
+        except CodexAppServerError as error:
+            self._drop_session()
+            raise codex_broker_error(error) from None
         except CodexBrokerError:
             self._drop_session()
             raise
