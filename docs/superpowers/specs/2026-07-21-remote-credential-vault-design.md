@@ -587,8 +587,9 @@ prefix that cannot be used as an account label.
 - `unverified`: provider accepted a functional probe or the user captured the
   token through the supported command, but no supported token-scoped route
   returned stable account and organization identity;
-- `provider_verified`: a version-pinned supported provider contract returned
-  the complete immutable identity and the result passed strict validation.
+- `provider_verified`: a current-target capability-probed provider contract
+  returned the complete immutable identity and the result passed strict
+  validation.
 
 No `operator_asserted` state is treated as identity. The encrypted display
 label records what the user calls the record, not who the provider says owns
@@ -691,9 +692,9 @@ setup-token introspection or profile endpoint that returns immutable account
 and organization IDs.[^claude-auth]
 
 Therefore a new setup token is stored as a new `unverified` record unless a
-supported, version-pinned provider route proves identity. A successful model
-probe proves validity and scope at that moment; it does not prove stable
-identity.
+supported, current-target capability-probed provider route proves identity. A
+successful model probe proves validity and scope at that moment; it does not
+prove stable identity.
 
 An unverified record:
 

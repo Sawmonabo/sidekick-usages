@@ -16,7 +16,14 @@ uses Claude's config-derived Keychain service. Workers may read protected
 credential state, but only `claude auth login` writes native or private
 subscription credentials. Activation first retains the outgoing native
 generation in its private profile, officially provisions the target into the
-native authority, and commits only after identity and generation read-back.
+native authority, and commits only after matching exact-profile status and
+complete protected-authority read-back prove both of Claude's native stores.
+Linux/WSL additionally requires an observed official-login `mtimeMs` advance
+before promising existing-session propagation.
+
+The 2026-07-26
+[Claude reconciliation correction plan](2026-07-26-claude-native-reconciliation-and-association.md)
+is normative where it refines this completed baseline.
 
 **Tech Stack:** Python 3.14, the foundation authority and activation
 transactions, official Claude Code CLI, Linux/WSL protected credential files,
@@ -29,9 +36,14 @@ macOS Keychain through `/usr/bin/security`, Pydantic 2.13.4, Portalocker
 - The approved design and tracked research are normative. Revalidate the
   installed Claude binary before implementation and before each live platform
   rollout.
-- The implementation baseline is the exact official Claude Code `2.1.220`
-  executable. Revalidate the executable version and immutable file provenance
-  before every managed operation.
+- The evidence baseline is official Claude Code `2.1.220`, but runtime support
+  is not pinned to it. Resolve the stable vendor launcher, probe required
+  behavior, and freeze immutable target provenance only for one operation.
+  Compatible newer releases must work without re-associating accounts.
+- Persist no release target, exact release equality, upper bound, release
+  allowlist, or "run version X" service setting. A one-sided safety floor may
+  reject an inadequate older build but cannot reject a newer build merely
+  because its release number changed.
 - Normal `claude` remains Anthropic's installed executable. Sidekick creates
   no wrapper, alias, shell function, PATH shim, symlink replacement, or shell
   startup edit.
@@ -53,7 +65,8 @@ macOS Keychain through `/usr/bin/security`, Pydantic 2.13.4, Portalocker
   tracks and measures them but never calls their maintenance `refresh`.
 - Enter on a setup-token-only account starts official subscription-login
   migration. It never pretends the setup token can become bare `claude`
-  native auth.
+  native auth. Migration returns to the dashboard without changing native
+  Claude; a later separate Enter performs activation.
 - After migration, one logical row may retain both a managed subscription
   authority and its setup token. Usage and activity are attributed once.
 - Higher-priority API key, auth token, gateway, cloud-provider, or helper
@@ -124,7 +137,8 @@ The provider adapter exposes these typed operations:
 - classify supported platform and installed capabilities;
 - derive and validate one stable private profile;
 - derive the expected native or config-specific Keychain namespace;
-- read strict protected auth status from native or private authority;
+- bind strict protected request authority to exact-profile official auth
+  status;
 - detect higher-priority credential conflicts;
 - run official login in a target profile with browser or refresh-token input;
 - prove same identity and an acceptable generation transition;
@@ -141,7 +155,7 @@ growth in `providers/claude/provider.py`:
   classification;
 - `providers/claude/{models,types,errors,process,environment}.py` owns the
   shared Claude subprocess boundary and provider-wide contracts;
-- `providers/claude/managed/` owns exact-version capability qualification,
+- `providers/claude/managed/` owns behavioral capability qualification,
   protected authority read-back, official login, and provider runtime
   observations;
 - `providers/claude/schema/` remains the strict untrusted-data boundary;
@@ -188,9 +202,10 @@ claude auth login --help
 
 - [x] Parse the documented default JSON from `claude auth status`; do not
   depend on the artifact-accepted but undocumented `--json` option.
-- [x] Combine command probes with version-pinned installed-binary observations
-  required for config-specific storage. Keep the latter explicitly marked
-  compatibility-sensitive.
+- [x] Combine command probes with release-matched installed-binary evidence
+  required for config-specific storage. Keep internal storage observations
+  isolated behind runtime capability checks rather than an exact-version
+  account gate.
 - [x] Derive private profiles only in `paths.py` from stable Sidekick account
   IDs. A label or provider email never appears in the path.
 - [x] Create profile directories with owner-only traversal permissions and
@@ -248,8 +263,9 @@ uv run pytest \
   plaintext fallback, expired access, expired login, and identity mismatch.
 - [x] Record only provider identity, generation, expiry metadata, health, and
   sanitized action in the account index.
-- [x] Add a compatibility revalidation trigger for any Claude version whose
-  profile namespace differs from the pinned observation.
+- [x] Revalidate storage capability whenever the stable launcher resolves to a
+  new target; preserve accounts and fail only the affected storage operation
+  when its provider-internal namespace cannot be proven.
 
 ### Verify and commit
 
@@ -337,11 +353,11 @@ uv run pytest \
   connects dashboard Enter to this same boundary.
 - [x] Require user involvement only for provider-controlled browser, MFA,
   password, or consent.
-- [x] For a legacy subscription, verify the returned account and organization
-  identity against the saved logical account. A setup-token-only account has
-  no provider identity evidence, so explicit `--replace-identity` approves its
-  first subscription identity association; every later mismatch fails closed.
-  Failure leaves both the setup token and native selection unchanged.
+- [x] For a legacy subscription, verify the returned exact-profile status
+  association against the saved logical account. A setup-token-only account
+  has no established status association, so explicit identity establishment
+  approves its first private-profile association; every later mismatch fails
+  closed. Failure leaves both the setup token and native selection unchanged.
 - [x] Commit managed subscription metadata while retaining the setup-token
   authority and its fixed-lifetime tracking.
 - [x] For a legacy subscription login, use its protected migration authority
@@ -375,30 +391,46 @@ For source S and target T:
 1. preflight exact binary, platform, storage, higher-priority credentials,
    target managed authority, foreground-session approval, locks, and service
    readiness;
-2. read and verify the actual native identity;
+2. read and verify the actual native status/profile association and complete
+   protected request authority; on Linux/WSL, also record the provider-visible
+   credential `mtimeMs`;
 3. reconcile that identity to S or an external state;
 4. journal `prepared`;
 5. use official Claude to provision the latest native S generation into
    private profile S;
 6. verify private S identity and generation;
 7. journal `outgoing_retained`;
-8. use official Claude to provision private T into the native profile;
-9. verify native T identity and generation;
+8. use official Claude to provision private T into the native profile,
+   allowing only that process to update protected `claudeAiOauth` and global
+   `oauthAccount` state;
+9. verify native T through both exact-profile structured status and complete
+   protected credential semantics;
 10. verify private T remains a usable same-account authority;
-11. journal `target_activated` and `read_back_verified`; and
-12. atomically commit selected state and terminal journal outcome.
+11. repeat the complete native proof;
+12. on Linux/WSL, require official login to advance provider-visible
+    `mtimeMs`;
+13. journal `target_activated` and `read_back_verified`; and
+14. atomically commit selected state and terminal journal outcome.
 
-If the exact Claude release invalidates the source private authority during
-official target provisioning, stop before release and update the approved
-design with evidence. Never ship a switch that leaves the selected account
-without a maintainable private authority.
+Changing only one native store is not success. The transaction remains
+uncommitted and recovery may complete or roll it back only through official
+Claude login. On Linux/WSL, changed protected semantics without an `mtimeMs`
+advance is likewise uncommitted; Sidekick never manually touches the
+credential file to force invalidation.
+
+If the current qualified Claude target invalidates the source private
+authority during official target provisioning, stop before release and update
+the approved design with evidence. Ordinary compatible updates follow the
+stable launcher and do not require re-association. Never ship a switch that
+leaves the selected account without a maintainable private authority.
 
 ### Tests first
 
-- [x] Extend `tests/test_claude_managed_runtime.py` with one healthy
-  activation scenario that retains outgoing A, officially provisions B,
-  verifies native identity, commits from read-back, requires one request when
-  no foreground session is present, and leaves Codex state untouched.
+- [ ] Extend the existing healthy activation scenario to retain outgoing A,
+  officially provision B, verify matching native status/profile and protected
+  authority, commit from read-back, require the fake official Linux/WSL login
+  to advance `mtimeMs`, require one request when no foreground session is
+  present, and leave Codex state untouched.
 - [x] Keep the externally meaningful interruption and recovery in Task 6's
   single recovery scenario. Do not duplicate it in activation coverage.
 - [x] Do not force death after every internal write or enumerate equivalent
@@ -416,10 +448,15 @@ without a maintainable private authority.
   default profile with a closed refresh-token environment from target
   authority.
 - [x] Prove source private, target native, and target private states using
-  strict protected read-back.
+  matching exact-profile status and strict protected read-back.
 - [x] Publish only sanitized progress events. Credential values never leave
   the worker or enter the activation journal.
-- [x] Commit selected state only after target native identity is proven.
+- [x] Commit selected state only after both target native stores prove the
+  exact target.
+- [ ] On Linux/WSL, commit only after official login advances
+  provider-visible `mtimeMs`; route a missing advance through official
+  reconciliation without a manual file touch. Apply the same pre/post
+  requirement to an official recovery or rollback login.
 - [x] Keep metrics and maintenance state independent of activation outcome.
 
 ### Verify and commit
@@ -483,9 +520,11 @@ without a maintainable private authority.
   exact disruption approval, and refuses non-interactive activation without
   it.
 - [ ] Do not add a simulated session-boundary test. Prove vendor resolution
-  statically, and verify next-request adoption, in-flight stability, and
-  explicitly environment-authenticated exclusions against the exact installed
-  Claude binary during release acceptance.
+  statically from the installed Linux binary and release-matched official
+  macOS Arm64/x64 artifacts. During separately authorized release acceptance,
+  verify next-request adoption, in-flight stability, and explicitly
+  environment-authenticated exclusions without converting an evidence
+  release into a runtime pin.
 - [x] Do not enumerate equivalent environment combinations, confirmation
   outcomes, or unsupported session labels.
 
@@ -503,8 +542,11 @@ without a maintainable private authority.
 - [x] Require explicit confirmation when a foreground means Remote Control
   disruption cannot be ruled out. A non-interactive `use` command fails unless
   the caller supplied `--allow-remote-control-disconnect`; it never prompts.
-- [x] Keep ordinary shared-profile subscription sessions on exact
-  next-API-attempt semantics and never claim idle or mid-request retargeting.
+- [ ] Keep ordinary shared-profile subscription sessions on the proven
+  request boundary: the next Linux/WSL request after an observed
+  official-login `mtimeMs` advance, or the first healthy-macOS request after
+  Claude's 30-second Keychain cache bound. Never claim idle or mid-request
+  retargeting.
 - [x] Add support classification to doctor and sanitized dashboard state.
 
 ### Verify and commit
@@ -558,10 +600,10 @@ without a maintainable private authority.
   delete every obsolete path.
 
 The resolver consumes selected state as proof, not policy. Activation or
-reconciliation must first verify the selected native identity and generation.
-If native state drifts, the resolver fails closed with an authority mismatch;
-it does not duplicate reconciliation or silently fall back to the private
-authority.
+reconciliation must first verify the selected native status association and
+complete protected semantics. If native state drifts, the resolver fails
+closed with an authority mismatch; it does not duplicate reconciliation or
+silently fall back to the private authority.
 
 Selected accounts retain two independent generations. Maintenance first keeps
 the saved private profile fresh and persists only that private generation to
@@ -639,6 +681,11 @@ Do not begin the dashboard and rollout plan until all statements are true:
 - [ ] Target private authority remains maintainable after activation.
 - [ ] Interrupted switches recover by provider read-back and official
   rollback.
+- [ ] Native selection commits only when protected request authority and
+  separate official status/profile state both prove the exact target.
+- [ ] Linux/WSL selection also requires official login to advance
+  provider-visible `mtimeMs`; Sidekick never touches the file to manufacture
+  that signal.
 - [ ] Keychain failure and plaintext fallback fail closed.
 - [ ] Higher-priority credential modes are not overridden.
 - [ ] Remote Control confirmation occurs only when a same-user foreground

@@ -14,9 +14,9 @@ Codex's official shared daemon so normal and already-connected supported
 credential writer. Private workers perform strict JSON-RPC login, account
 read, forced refresh, and generation verification inside one stable home per
 account. The resident Sidekick supervisor capability-gates the official
-shared daemon, injects only an ephemeral selected account through the
-version-pinned `chatgptAuthTokens` method, and remains the singleton responder
-for external refresh requests.
+shared daemon, injects only an ephemeral selected account through a
+current-target capability-probed `chatgptAuthTokens` method, and remains the
+singleton responder for external refresh requests.
 
 **Tech Stack:** Python 3.14, the foundation supervisor and persistence ports,
 official Codex app-server JSON-RPC, official Codex app-server daemon Unix
@@ -31,7 +31,11 @@ Ruff, `ty`, and the release-matched Codex CLI schema.
   installed binary and current release-matched upstream source before
   implementing an unstable method.
 - At planning time the inspected executable is `~/.local/bin/codex`, version
-  `0.145.0`.
+  `0.145.0`; this identifies the evidence snapshot, not a runtime target.
+- Persist no Codex release target, exact release equality, upper bound,
+  release allowlist, or "run version X" service setting. Resolve the stable
+  vendor launcher for every operation, capability-probe its current target,
+  and accept compatible newer releases automatically.
 - Sidekick never POSTs to Codex's private OAuth endpoint.
 - Sidekick never imports, copies, edits, replaces, persists, adopts, or
   refreshes credentials from the native default `~/.codex/auth.json`.
@@ -48,8 +52,9 @@ Ruff, `ty`, and the release-matched Codex CLI schema.
   only long enough to answer the official daemon. They are never persisted,
   logged, rendered, placed in arguments, or sent over the dashboard socket.
 - `chatgptAuthTokens` and its refresh request are unstable internal Codex
-  contracts. Exact version and generated-schema capability checks must pass
-  before any shared-runtime auth mutation.
+  contracts. The current qualified CLI must generate and pass the required
+  schema and behavior probes before any shared-runtime auth mutation. Saved
+  account readiness never depends on equality with a recorded CLI version.
 - Codex 0.145.0 does not return its active ChatGPT account ID through
   `account/read` or `account/updated`. Activation therefore proves the token
   claim, auth-file identity, and saved identity agree before sending; then
@@ -163,10 +168,10 @@ Create focused modules rather than expanding the current 615-line `auth.py`,
 536-line `credentials/codex/coordinator.py`, or 427-line
 `auth_migration.py`:
 
-- `providers/codex/app_server/executable.py`: exact executable and version
-  discovery;
-- `providers/codex/app_server/capabilities.py`: generated-schema and version
-  gate;
+- `providers/codex/app_server/executable.py`: stable-launcher discovery and
+  per-operation target provenance;
+- `providers/codex/app_server/capabilities.py`: current-target
+  generated-schema and behavior gate;
 - `providers/codex/app_server/jsonrpc.py`: bounded JSON-lines framing and
   correlation;
 - `providers/codex/app_server/session.py`: private managed app-server
@@ -230,8 +235,10 @@ codex app-server generate-json-schema \
 - [x] Hash the capability schema only for local compatibility-cache
   invalidation. Never log or confuse that schema hash with a credential
   generation.
-- [x] Pin compatibility to the exact major/minor/patch and required schema
-  shapes. A new installed version is unsupported until the probe passes.
+- [x] Bind compatibility to the current operation's qualified target and
+  required generated-schema shapes. A newly installed target is accepted
+  whenever its fresh probe passes; add no exact-version or upper-version
+  allowlist.
 - [x] Implement a bounded JSON-RPC session over stdio with:
   - 1 MiB maximum line;
   - strict duplicate-key rejection;
@@ -780,7 +787,8 @@ Do not begin the Claude plan until all statements are true:
 - [x] The account index contains no Codex tokens.
 - [x] The native default `auth.json` is never copied or written.
 - [x] Direct private OAuth refresh no longer exists.
-- [x] Exact-version and schema preflight occurs before shared auth mutation.
+- [x] Current-target schema and behavior preflight occurs before shared auth
+  mutation.
 - [x] The release-gated correlated proof establishes every successful
   activation without claiming daemon account-ID read-back.
 - [x] Exactly one broker answers refresh and survives dashboard exit.

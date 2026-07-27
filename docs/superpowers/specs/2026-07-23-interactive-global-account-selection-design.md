@@ -62,8 +62,9 @@ For each provider:
 6. Sidekick verifies the provider's resulting identity before committing the
    selection.
 7. New ordinary `claude` or `codex` terminals use the selected account.
-8. Supported existing sessions adopt it on their next safe authenticated
-   request.
+8. Supported existing sessions adopt it on the next Linux/WSL request after
+   an observed official-login `mtimeMs` advance, or the first healthy-macOS
+   request after Claude's cache bound.
 
 No row-level `IN USE`, `ACTIVATING`, or `MIGRATION REQUIRED` badge is added.
 The cursor communicates the normal current state. Temporary progress belongs
@@ -627,8 +628,8 @@ OS notifications where reliable and bounded scheduled read-back elsewhere.
 
 The feature adds strict provider-neutral records for:
 
-1. **selected account state** — non-secret last verified identity and
-   generation for each provider;
+1. **selected account state** — non-secret last verified association and
+   runtime generation for each provider;
 2. **activation journal** — the current or last provider switch transaction;
 3. **due/retry queue** — account operations and safe retry metadata;
 4. **service state** — protocol version, readiness, and sanitized lifecycle
@@ -648,7 +649,8 @@ Selected state contains only:
 
 - provider;
 - stable Sidekick account identifier;
-- verified provider identity;
+- verified provider identity or explicitly established Claude status
+  association key;
 - verified provider-runtime generation;
 - verification time; and
 - sanitized activation outcome.
@@ -658,8 +660,8 @@ It contains no friendly label as authority and no credential value.
 On supervisor startup, the strongest provider-specific proof is compared with
 this record:
 
-- a matching Claude read-back or live Codex correlated receipt restores ready
-  state;
+- a matching complete Claude status/protected read-back or live Codex
+  correlated receipt restores ready state;
 - a different saved identity reconciles to the external provider choice;
 - an unknown identity becomes an external-active state;
 - no identity becomes logged-out state; and
@@ -671,8 +673,8 @@ Before a switch, Sidekick records:
 
 - provider and operation identifier;
 - source and target stable account identifiers;
-- source provider identity and generation;
-- expected target provider identity;
+- source provider association and protected runtime proof;
+- expected target provider association and protected runtime proof;
 - current transaction phase;
 - start and last-update times; and
 - sanitized failure or recovery state.
@@ -691,6 +693,12 @@ reconciliation required
 
 Exact enum names belong to implementation, but illegal phase transitions must
 be unrepresentable.
+
+For Claude, the sanitized runtime proof contains the status association key
+and complete non-secret protected semantics: generation, plan, scopes, both
+expiries, health, and action. The Linux/WSL journal also records the
+provider-visible credential `mtimeMs` required for existing-session
+invalidation. It contains no access or refresh credential.
 
 ### 8.4 Locking
 
@@ -746,8 +754,10 @@ release.
 
 Before activation, the Claude adapter verifies:
 
-- the exact installed Claude executable and version;
-- structured `claude auth status --json` behavior;
+- the stable vendor launcher's current qualified target and one-sided minimum
+  safety floor, with no exact or upper release pin;
+- documented structured `claude auth status` behavior and the
+  capability-probed fields required by this release;
 - private `CLAUDE_CONFIG_DIR` isolation;
 - documented refresh-token provisioning support;
 - the expected protected storage backend;
@@ -759,22 +769,38 @@ Before activation, the Claude adapter verifies:
 An unsupported or ambiguous result disables Claude switching before native
 credentials are changed.
 
+No account, service artifact, worker, or launcher persists a provider release
+target, exact release equality, upper bound, release allowlist, or
+`run version X` setting. The one-sided floor can exclude only an inadequate
+older build; the next operation always rediscovers and capability-probes the
+vendor launcher's current target.
+
+The status `email` and `orgId` fields are release-observed association
+evidence, not a documented immutable global identity. Sidekick uses their
+opaque digest only after explicit official login in one exact private profile,
+revalidates it on every use, and fails closed on missing, changed, or duplicate
+keys. It never merges, imports, overwrites, or replaces an account by that key
+or by a display label.
+
 ### 9.2 Private profile stability
 
 Each account receives one stable absolute normalized private profile path.
 The path cannot be renamed, respelled, or replaced after authentication
 without an explicit provider migration.
 
-This is especially important on macOS, where Claude 2.1.218 derives the
-Keychain service from the normalized path. Sidekick does not use the
-undocumented `CLAUDE_SECURESTORAGE_CONFIG_DIR` variable.
+This is especially important on macOS, where release-matched official
+artifacts derive the Keychain service from the normalized path. The observed
+release is reproducible evidence, not a runtime pin. Sidekick does not use
+the undocumented `CLAUDE_SECURESTORAGE_CONFIG_DIR` variable.
 
 ### 9.3 Healthy subscription switch
 
 The explicit switch transaction is:
 
 1. acquire the Claude activation lock;
-2. read and journal the native account identity and generation;
+2. read and journal the native status association key and complete protected
+   credential semantics; on Linux/WSL, also record the provider-visible
+   credential `mtimeMs`;
 3. detect whether Remote Control or another known disruptive state requires
    confirmation;
 4. use official Claude to retain the outgoing account's latest credential
@@ -783,11 +809,16 @@ The explicit switch transaction is:
 6. refresh and verify the target private profile through official Claude;
 7. ask official `claude auth login` to activate the target at the default
    native boundary;
-8. verify native target identity through structured auth status;
-9. verify the protected credential envelope;
-10. on macOS, prove no plaintext fallback appeared;
-11. commit the sanitized selected-account record; and
-12. notify the dashboard.
+8. verify Claude's separate account-profile state through structured auth
+   status;
+9. verify the matching protected request-credential envelope;
+10. repeat the complete status/protected observation and require both
+    observations to agree on the exact target;
+11. on Linux/WSL, require official login to advance provider-visible
+    `mtimeMs`;
+12. on macOS, prove no plaintext fallback appeared;
+13. commit the sanitized selected-account record; and
+14. notify the dashboard.
 
 The credential-bearing worker may read the protected source credential only
 for the documented official transition. It passes that credential to the
@@ -796,7 +827,13 @@ through command arguments, persistence, logs, or the supervisor socket.
 
 Sidekick does not call `security add-generic-password`, splice credential
 JSON, or copy a Keychain payload. Official Claude performs every durable
-write.
+write. Claude stores request authorization in protected `claudeAiOauth` state
+and account/profile display state in a separate global `oauthAccount` record.
+A switch is incomplete if official login changes only one store; Sidekick
+commits only after the complete two-store proof agrees. On Linux/WSL,
+protected semantics changing without an `mtimeMs` advance is also incomplete
+because an existing session would not be proven to invalidate its cache.
+Sidekick never touches the provider file merely to change its timestamp.
 
 ### 9.4 Setup-token migration
 
@@ -804,13 +841,21 @@ Enter on a setup-token-only account does not pretend to switch it globally.
 Sidekick:
 
 1. explains that the token remains tracked but cannot power bare `claude`;
-2. starts official Claude subscription login in the account's final private
+2. exits the dashboard and restores the terminal;
+3. reloads the exact account by stable account ID and asks for default-No
+   confirmation naming its current sanitized label;
+4. starts official Claude subscription login in that account's final private
    profile;
-3. waits for provider completion or cancellation;
-4. verifies the provider identity against the saved account;
-5. records the new private subscription authority;
-6. preserves the setup token as a separate fixed-lifetime credential; and
-7. continues the originally requested switch.
+5. waits for provider completion or cancellation;
+6. verifies two complete status-association and protected-authority
+   observations;
+7. records the new private subscription authority;
+8. preserves the setup token as a separate fixed-lifetime credential; and
+9. rebuilds the dashboard without changing native Claude.
+
+Association ends there. A later separate Enter performs the ordinary
+subscription switch, including the normal environment-conflict and Remote
+Control guards.
 
 A mismatch requires explicit identity-replacement handling. It is never
 accepted under the account's friendly label.
@@ -820,12 +865,18 @@ accepted under the account's friendly label.
 New ordinary Claude terminals read the default native credential and use the
 new account.
 
-Existing ordinary subscription sessions observe the provider's shared
-credential update on their next authentication resolution or provider
-request. An already in-flight request completes under its original account.
+Existing ordinary subscription sessions create a new provider client from
+current native credentials for each model request. Linux and WSL use the new
+account on the next request after Sidekick observes official login advance
+the credential file's provider-visible `mtimeMs`. On macOS Arm64 and x64,
+Claude's in-process Keychain cache can delay adoption until the first request
+after its 30-second bound, or an earlier request after the previous token is
+rejected. An already in-flight request completes under its original account.
 
 Sessions using an API key, gateway, cloud-provider mode, higher-priority
 environment token, or another isolated profile remain outside this switch.
+Different-account Remote Control disconnects by provider design and retains
+its explicit approval guard.
 
 ### 9.6 Failure and rollback
 
@@ -833,12 +884,15 @@ Before native activation, failure leaves the previous account active.
 
 After native mutation:
 
-- Sidekick first reads the actual native identity;
-- a verified target completes the switch;
+- Sidekick first reads the actual native status/profile association and
+  protected request authority;
+- a target completes the switch only when both prove that exact target;
+- Linux/WSL also requires the official transition's `mtimeMs` advance;
 - otherwise Sidekick uses official Claude to reactivate the verified outgoing
   private authority;
-- rollback is verified through structured identity and protected-state
-  read-back; and
+- rollback is verified through the same complete status/profile and
+  protected-state read-back and, on Linux/WSL, its own pre/post `mtimeMs`
+  advance; and
 - unprovable rollback blocks later switching and requests reconciliation.
 
 Potentially revoked credential bytes are never restored manually.
@@ -878,8 +932,8 @@ The Codex switch transaction is:
    target private home;
 5. require the token claim, managed auth-file account ID, and saved provider
    identity to agree;
-6. install that account ephemerally through version-gated
-   `chatgptAuthTokens`;
+6. install that account ephemerally through current-target,
+   capability-probed `chatgptAuthTokens`;
 7. require the exact correlated install response, an external-auth
    `account/updated`, and a non-null ChatGPT `account/read`;
 8. record a correlated-ready projection without claiming an independent
@@ -945,7 +999,11 @@ The first release does not claim switching for:
 ### 10.5 Compatibility failure
 
 `chatgptAuthTokens` is internal and unstable in the researched Codex release.
-The integration is therefore exact-version and capability gated.
+The integration therefore generates and validates the current qualified
+CLI's schema for each runtime target. It has no exact-version or upper-version
+pin, no release allowlist or `run version X` service setting, and recorded
+version metadata is not account identity. Every operation rediscovers the
+stable vendor launcher's current target.
 
 The official daemon transports JSON-RPC as WebSocket text messages at `/rpc`
 over its owner-only Unix socket. Sidekick adopts the pinned, maintained
@@ -985,14 +1043,16 @@ read-only default Codex auth state:
 - after credential-generation notification where available; and
 - on a bounded scheduled read-back.
 
-When an external identity matches a saved account, Sidekick:
+When an external identity—or Claude status key—matches exactly one saved
+account whose private profile was already explicitly associated, Sidekick:
 
 1. updates the verified active-account record;
 2. moves that provider's initial cursor position;
 3. cancels stale pending activation for another account; and
 4. continues maintaining every saved account.
 
-When it is unknown, Sidekick adds a temporary external row:
+When it is unknown, incomplete, duplicated, or not explicitly associated,
+Sidekick adds a temporary external row:
 
 ```text
 › ●  External Claude login
@@ -1296,7 +1356,9 @@ After every private authority is ready:
    `claude`; do not cycle accounts while the active session must remain on its
    current account;
 5. select every Codex account and verify a new bare `codex`;
-6. verify supported ongoing sessions on their next request;
+6. verify supported ongoing sessions on their proven platform boundary:
+   Linux/WSL after an observed official-login `mtimeMs` advance and healthy
+   macOS after Claude's 30-second Keychain cache bound;
 7. verify in-flight requests are not retargeted;
 8. verify all unselected accounts still receive maintenance and metrics;
 9. verify external official login reconciliation;
@@ -1325,7 +1387,9 @@ Tests must prove:
 - Tab focuses the other provider's active account;
 - movement previews without switching;
 - Esc returns to the active account;
-- Enter performs one activation;
+- Enter on an already-associated healthy row performs one activation;
+- Enter on a setup-only Claude row performs association only and requires a
+  separate later Enter for activation;
 - the cursor stays on the verified target afterward;
 - no `IN USE`, `ACTIVATING`, or `MIGRATION REQUIRED` badge appears;
 - healthy rows have no extra status text;
@@ -1372,6 +1436,10 @@ Tests must cover:
 - locked or unavailable Keychain;
 - plaintext fallback detection;
 - official login-only native writes;
+- matching protected `claudeAiOauth` and global `oauthAccount` proof after
+  native activation;
+- Linux/WSL activation requiring an official-login `mtimeMs` advance without
+  a manual provider-file touch;
 - setup-token-only migration;
 - preservation of setup-token lifetime tracking;
 - provider identity mismatch;
@@ -1391,7 +1459,7 @@ Tests must cover:
 - unchanged, regressed, null, malformed, and wrong-account post-state;
 - private app-server timeout and framing failure;
 - official daemon start, readiness, restart, and version mismatch;
-- version-gated external account installation;
+- current-target capability-probed external account installation;
 - two connected TUIs receiving one account update;
 - exactly one refresh responder;
 - broker routing by previous account identity;
@@ -1448,7 +1516,8 @@ The feature is releasable only when all of these statements are proven:
 4. Non-TTY and explicit one-shot paths remain non-blocking.
 5. Healthy rows carry no persistent selection labels.
 6. Actionable account warnings remain clear and account-specific.
-7. One healthy Enter press switches the selected provider.
+7. One Enter on an already-associated healthy row switches the selected
+   provider; setup-only Claude association never auto-switches.
 8. Claude and Codex selections remain independent.
 9. New ordinary supported provider terminals use the selected account.
 10. Supported ongoing sessions change on their next safe request.
@@ -1530,7 +1599,7 @@ Owns:
 - private-home managed app-server protocol;
 - account login, read, refresh, and generation validation;
 - official shared-daemon lifecycle and socket health;
-- version-gated external account installation;
+- current-target capability-probed external account installation;
 - broker request and response protocol;
 - daemon account-update handling; and
 - provider-specific sanitized failures.
@@ -1622,12 +1691,15 @@ The following are explicitly rejected:
 
 ### 19.1 Codex internal daemon contract
 
-The researched `chatgptAuthTokens` bridge is internal and unstable. Any Codex
-upgrade, schema change, daemon lifecycle change, refresh-request deadline
-change, or account-update behavior change requires:
+The researched `chatgptAuthTokens` bridge is internal and unstable. A normal
+Codex upgrade does not require a Sidekick release: each operation follows the
+stable launcher, regenerates the current target's schema, probes the required
+behavior, and accepts every newer compatible target. Reinspection is required
+only when a current-target probe detects an actual schema, daemon-lifecycle,
+refresh-deadline, or account-update behavior change:
 
 - source and schema reinspection;
-- exact installed-binary capability tests;
+- current-target capability tests;
 - synthetic broker integration tests; and
 - live promotion only after the fail-closed gate passes.
 
@@ -1640,12 +1712,15 @@ requires a stable upstream persistent-auth or account-switch contract.
 
 ### 19.2 Claude credential storage
 
-The config-derived macOS Keychain service is proven in the exact official
-2.1.218 arm64 and x64 binaries, but it is not a separately versioned public
-storage API. Every Claude upgrade requires:
+The config-derived macOS Keychain service is proven in release-matched
+official Arm64 and x64 artifacts, but it is not a separately versioned public
+storage API. A normal Claude upgrade follows the stable launcher and passes
+behavioral/status/login/storage probes without requiring a Sidekick release.
+Reinspection is required only when an actual capability probe or protected
+read-back changes:
 
 - documentation review;
-- exact platform package inspection or capability proof;
+- current platform package inspection or capability proof;
 - two-profile isolation testing;
 - protected-backend verification; and
 - plaintext-fallback rejection testing.
@@ -1685,7 +1760,10 @@ gates fail, optimize lazy boundaries before weakening resilience.
 ## 20. Source Matrix
 
 The exhaustive evidence, source excerpts, local binary findings, and
-comparative analysis are in the tracked [research report][research].
+comparative analysis are in the tracked [research report][research]. The
+[Claude reconciliation correction proof][claude-correction] closes the later
+filesystem, two-store activation, existing-session, and no-version-pin
+findings.
 
 | Source | Type | Used for |
 |---|---|---|
@@ -1696,15 +1774,18 @@ comparative analysis are in the tracked [research report][research].
 | [Claude IAM][claude-iam] | Official docs | Credential storage and native login behavior |
 | [Claude environment variables][claude-env] | Official docs | Private profiles and official refresh-token provisioning |
 | [Claude changelog][claude-changelog] | Release record | Shared credentials and existing-session reload |
-| Exact Claude 2.1.218 macOS packages | Official binaries | Config-derived Keychain services on arm64 and x64 |
+| [Claude reconciliation correction proof][claude-correction] | Tracked proof | Provider-owned read, exact association, two-store activation, request propagation, and update resilience |
+| Release-matched Claude 2.1.220 macOS packages | Official binaries | Reproducible Arm64/x64 Keychain namespace, cache, and request-time adoption evidence; not a runtime target |
 | [Microsoft WSL systemd][wsl-systemd] | Official docs | WSL user-service and lifetime boundary |
 | [Apple launchd guide][apple-launchd] | Official docs | Per-user LaunchAgent lifecycle |
 | Local installed binaries and state | Local evidence | Exact compatibility baseline and current migration need |
 
-Implementation must revalidate current provider versions rather than treating
-the 2026-07-23 evidence baseline as permanent.
+Implementation must rediscover the current vendor-launcher targets and
+revalidate required capabilities rather than treating an evidence release as
+a runtime target.
 
 [research]: ../research/2026-07-23-managed-authentication-and-native-account-selection.md
+[claude-correction]: ../research/2026-07-26-claude-native-reconciliation-proof.md
 [openai-auth]: https://learn.chatgpt.com/docs/auth
 [openai-ci]: https://learn.chatgpt.com/docs/auth/ci-cd-auth
 [openai-app-server]: https://learn.chatgpt.com/docs/app-server#auth-endpoints
