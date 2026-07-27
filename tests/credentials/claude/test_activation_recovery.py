@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from sidekick_usages.cli.dashboard.controller import DashboardController
 from sidekick_usages.core.accounts.types import SidekickAccountId
 from sidekick_usages.core.selection.models import DueOperation
 from sidekick_usages.core.selection.types import (
@@ -50,7 +51,10 @@ from sidekick_usages.providers.claude.managed.types import (
     ClaudeManagedPlatform,
 )
 from sidekick_usages.providers.claude.models import ClaudeCommandResult
-from sidekick_usages.usage.dashboard.models import DashboardAccount
+from sidekick_usages.usage.dashboard.models import (
+    DashboardAccount,
+    DashboardExternalRow,
+)
 from sidekick_usages.usage.dashboard.service import CachedDashboardService
 from tests.fakes.claude.activation import (
     ClaudeRecoveryScenario,
@@ -544,11 +548,17 @@ def test_external_claude_login_wins_without_importing_unknown_identity(
     )
     known_result = _recover(known, known.native_reconciliation)
 
-    assert known_result.outcome is WorkerOutcome.SUCCEEDED
     known_selected = known.selected.load(ProviderId.CLAUDE)
     assert known_selected is not None
-    assert known_selected.account_id == known.known.account_id
-    assert known_selected.outcome is ActivationOutcome.EXTERNAL_RECONCILED
+    assert (
+        known_result.outcome,
+        known_selected.account_id,
+        known_selected.outcome,
+    ) == (
+        WorkerOutcome.SUCCEEDED,
+        known.known.account_id,
+        ActivationOutcome.EXTERNAL_RECONCILED,
+    )
     assert known.native_credentials.read_bytes() == known.known_native_payload
     assert known.script.login_profiles == [
         known.source_profile,
@@ -556,6 +566,25 @@ def test_external_claude_login_wins_without_importing_unknown_identity(
     ]
     assert known.journals.load(ProviderId.CLAUDE).active is None
     assert known.selected.load(ProviderId.CODEX) == known.codex_state
+    known_dashboard = CachedDashboardService(known.paths).load(REFERENCE_TIME)
+    known_claude = known_dashboard.providers[0]
+    known_controller = DashboardController.start(known_dashboard)
+    assert (
+        known_claude.active_account_id,
+        any(
+            isinstance(row, DashboardExternalRow)
+            for row in known_claude.rows
+        ),
+        known_controller.state.focused_provider,
+        known_controller.state.account_id,
+        known_controller.state.external,
+    ) == (
+        known.known.account_id,
+        False,
+        ProviderId.CLAUDE,
+        known.known.account_id,
+        False,
+    )
 
     unknown = claude_recovery_scenario(
         tmp_path / "unknown",
