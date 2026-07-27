@@ -69,8 +69,16 @@ class UsageSnapshotStore(UsageSnapshotReader):
                     document = usage_document({}, {})
                     expected = AuthorityExpectation.ABSENT
                 else:
-                    document = decode_usage_document(observed.data)
                     expected = observed.fingerprint
+                    try:
+                        document = decode_usage_document(observed.data)
+                    except UsageSnapshotError as error:
+                        if (
+                            error.kind
+                            is not UsageSnapshotFailureKind.MALFORMED
+                        ):
+                            raise
+                        document = usage_document({}, {})
                 accounts = dict(document.accounts)
                 promotions = dict(document.identity_promotions)
                 effective: list[AccountUsageSnapshot] = []

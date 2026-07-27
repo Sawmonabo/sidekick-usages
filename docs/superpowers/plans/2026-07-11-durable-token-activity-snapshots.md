@@ -345,7 +345,7 @@ than the label.
 | Transient profile fails, snapshot exists | Snapshot total | No write | Footer plus activity warning |
 | Fresh unavailable, snapshot exists | Snapshot total | No write | Normal or explicit source warning |
 | Failure, no snapshot | No value for account | No write | Existing account/activity failure |
-| Snapshot malformed | No snapshot fallback | No overwrite | Explicit persistence failure |
+| Snapshot malformed | No snapshot fallback on passive read | Rebuild only from a nonempty validated fresh result | Typed cache failure until repair |
 | Snapshot unreadable/unsafe | No snapshot fallback | No overwrite | Explicit persistence failure |
 | Fresh total regresses | New fresh total | Replace; drop unproven old date | Explicit current authority |
 | Older concurrent result arrives | Newer stored total | Retain newer record | No regression |
@@ -403,7 +403,8 @@ Test only load-bearing behavior:
    date;
 3. newer-write, older-write, idempotent, date-preservation, and regression
    policy cannot overwrite newer truth incorrectly; and
-4. malformed state fails closed and is not overwritten.
+4. malformed state fails closed on passive reads and is rebuilt only by a
+   nonempty validated fresh-activity write.
 
 Do not retest native atomic-write mechanics already covered by persistence
 filesystem and locking suites.

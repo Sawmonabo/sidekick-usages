@@ -18,6 +18,10 @@ from sidekick_usages.core.types import (
     TokenActivityScope,
 )
 from sidekick_usages.daemon.types.service import ServicePhase
+from sidekick_usages.persistence.types.error import (
+    ActivitySnapshotFailureKind,
+    UsageSnapshotFailureKind,
+)
 
 MAX_DASHBOARD_STATUS_MESSAGE_CHARACTERS = 512
 
@@ -263,6 +267,8 @@ class DashboardSnapshot:
     providers: tuple[DashboardProvider, ...]
     service: DashboardService
     reference_time: datetime
+    activity_cache_issue: ActivitySnapshotFailureKind | None = None
+    usage_cache_issue: UsageSnapshotFailureKind | None = None
 
     def __post_init__(self) -> None:
         """Require deterministic provider order and normalize render time."""
@@ -279,15 +285,14 @@ class DashboardSnapshot:
     @property
     def all_saved_metrics_unavailable(self) -> bool:
         """Return whether saved rows exist without any retained metrics."""
-        accounts = tuple(
-            row
-            for provider in self.providers
-            for row in provider.rows
-            if isinstance(row, DashboardAccount)
-        )
-        return bool(accounts) and not any(
-            account.usage is not None or account.activity is not None
-            for account in accounts
-        ) and not any(
-            provider.activity is not None for provider in self.providers
-        )
+        has_saved_account = False
+        for provider in self.providers:
+            if provider.activity is not None:
+                return False
+            for row in provider.rows:
+                if not isinstance(row, DashboardAccount):
+                    continue
+                has_saved_account = True
+                if row.usage is not None or row.activity is not None:
+                    return False
+        return has_saved_account

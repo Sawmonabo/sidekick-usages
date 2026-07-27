@@ -37,11 +37,19 @@ from sidekick_usages.daemon.control.client import (
 )
 from sidekick_usages.daemon.types.lifecycle import ServiceLifecycleState
 from sidekick_usages.daemon.types.service import ServicePhase
+from sidekick_usages.paths import ApplicationPaths
 from sidekick_usages.persistence.accounts.reader import AccountIndexReader
 from sidekick_usages.persistence.filesystem.reader import PrivateFileReader
+from sidekick_usages.persistence.filesystem.service import (
+    PersistenceFilesystem,
+)
 from sidekick_usages.persistence.models.artifact import FileSnapshot
 from sidekick_usages.persistence.supervisor.observation import (
     RuntimeAuthObservationStore,
+)
+from sidekick_usages.persistence.types.error import (
+    ActivitySnapshotFailureKind,
+    UsageSnapshotFailureKind,
 )
 from sidekick_usages.usage.dashboard.models import (
     DashboardAccount,
@@ -49,6 +57,7 @@ from sidekick_usages.usage.dashboard.models import (
     DashboardExternalRow,
     DashboardFooter,
     DashboardNavigationKind,
+    DashboardSnapshot,
     DashboardStatus,
     DashboardStatusKind,
 )
@@ -90,6 +99,63 @@ LOOKUP_FAILED_MESSAGE = (
     "Live metrics refresh did not complete; existing dashboard data was "
     "preserved."
 )
+MALFORMED_DERIVED_CACHE = (
+    b'{"schema_version":1,"schema_version":1,"accounts":{}}\n'
+)
+
+
+def _exercise_malformed_metric_cache_isolation(
+    paths: ApplicationPaths,
+    dashboard: DashboardSnapshot,
+) -> str:
+    """Prove cache isolation and return the original secret-free rendering."""
+    claude, codex = dashboard.providers
+    current = codex.rows[0]
+    assert isinstance(current, DashboardAccount)
+
+    PersistenceFilesystem(paths.usage_snapshots).commit_opaque_private(
+        MALFORMED_DERIVED_CACHE
+    )
+    retained_activity = CachedDashboardService(paths).load(REFERENCE_TIME)
+    retained_activity_current = retained_activity.providers[1].rows[0]
+    assert isinstance(retained_activity_current, DashboardAccount)
+    assert (
+        retained_activity.usage_cache_issue,
+        retained_activity.activity_cache_issue,
+        retained_activity.providers[0].activity,
+        retained_activity_current.usage,
+        retained_activity_current.activity,
+        paths.usage_snapshots.read_bytes(),
+    ) == (
+        UsageSnapshotFailureKind.MALFORMED,
+        None,
+        claude.activity,
+        None,
+        current.activity,
+        MALFORMED_DERIVED_CACHE,
+    )
+    seed_cached_dashboard(paths, REFERENCE_TIME)
+
+    PersistenceFilesystem(paths.activity_snapshots).commit_opaque_private(
+        MALFORMED_DERIVED_CACHE
+    )
+    retained_usage = CachedDashboardService(paths).load(REFERENCE_TIME)
+    retained_usage_current = retained_usage.providers[1].rows[0]
+    assert isinstance(retained_usage_current, DashboardAccount)
+    assert (
+        retained_usage.activity_cache_issue,
+        retained_usage.usage_cache_issue,
+        retained_usage.providers[0].activity,
+        retained_usage_current.usage,
+        retained_usage_current.activity,
+    ) == (
+        ActivitySnapshotFailureKind.MALFORMED,
+        None,
+        None,
+        current.usage,
+        None,
+    )
+    return repr(dashboard)
 
 
 def test_cached_dashboard_joins_stable_ids_without_credentials(
@@ -203,7 +269,7 @@ def test_cached_dashboard_joins_stable_ids_without_credentials(
         DashboardActionState.HEALTHY,
         DashboardActionState.REPAIR_REQUIRED,
     )
-    rendered = repr(dashboard)
+    rendered = _exercise_malformed_metric_cache_isolation(paths, dashboard)
     assert EXTERNAL_PROVIDER_IDENTITY not in rendered
     assert VALID_PROVIDER_IDENTITY not in rendered
 

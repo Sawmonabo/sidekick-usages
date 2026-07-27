@@ -37,6 +37,10 @@ from sidekick_usages.daemon.types.protocol import PROTOCOL_VERSION
 from sidekick_usages.daemon.types.service import PackageVersion, ServicePhase
 from sidekick_usages.paths import ApplicationPaths
 from sidekick_usages.persistence.accounts.reader import AccountIndexReader
+from sidekick_usages.persistence.errors import (
+    ActivitySnapshotError,
+    UsageSnapshotError,
+)
 from sidekick_usages.persistence.snapshots.activity.reader import (
     ActivitySnapshotReader,
 )
@@ -51,6 +55,10 @@ from sidekick_usages.persistence.supervisor.readers.selection import (
 )
 from sidekick_usages.persistence.supervisor.readers.service import (
     ServiceStateReader,
+)
+from sidekick_usages.persistence.types.error import (
+    ActivitySnapshotFailureKind,
+    UsageSnapshotFailureKind,
 )
 from sidekick_usages.usage.dashboard.models import (
     DashboardAccount,
@@ -88,8 +96,30 @@ class CachedDashboardService:
     def load(self, reference_time: datetime) -> DashboardSnapshot:
         """Read each cached artifact once and join it by stable account ID."""
         accounts = self._accounts.load()
-        usage, usage_conflicts = self._usage.load_all(accounts)
-        account_activity, provider_activity = self._activity.load_all(accounts)
+        usage_cache_issue = None
+        try:
+            usage, usage_conflicts = self._usage.load_all(accounts)
+        except UsageSnapshotError as error:
+            if error.kind not in {
+                UsageSnapshotFailureKind.READ,
+                UsageSnapshotFailureKind.MALFORMED,
+            }:
+                raise
+            usage, usage_conflicts = (), ()
+            usage_cache_issue = error.kind
+        activity_cache_issue = None
+        try:
+            account_activity, provider_activity = self._activity.load_all(
+                accounts
+            )
+        except ActivitySnapshotError as error:
+            if error.kind not in {
+                ActivitySnapshotFailureKind.READ,
+                ActivitySnapshotFailureKind.MALFORMED,
+            }:
+                raise
+            account_activity, provider_activity = (), ()
+            activity_cache_issue = error.kind
         selected = {
             state.provider_id: state for state in self._selected.observe_all()
         }
@@ -122,6 +152,8 @@ class CachedDashboardService:
             ),
             service=service,
             reference_time=reference_time,
+            activity_cache_issue=activity_cache_issue,
+            usage_cache_issue=usage_cache_issue,
         )
 
     @staticmethod

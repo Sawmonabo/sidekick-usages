@@ -73,8 +73,20 @@ class ActivitySnapshotStore(ActivitySnapshotReader):
                     )
                     expected = AuthorityExpectation.ABSENT
                 else:
-                    document = decode_activity_document(observed.data)
                     expected = observed.fingerprint
+                    try:
+                        document = decode_activity_document(observed.data)
+                    except ActivitySnapshotError as error:
+                        if (
+                            error.kind
+                            is not ActivitySnapshotFailureKind.MALFORMED
+                        ):
+                            raise
+                        document = ActivitySnapshotDocument(
+                            schema_version=ACTIVITY_SCHEMA_VERSION,
+                            accounts={},
+                            providers={},
+                        )
                 account_records = dict(document.accounts)
                 provider_records = dict(document.providers)
                 effective_accounts = tuple(

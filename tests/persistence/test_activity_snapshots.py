@@ -36,6 +36,9 @@ from tests.support.accounts import saved_account
 _FETCHED_AT = datetime(2026, 7, 11, 4, 30, tzinfo=UTC)
 _ACCOUNT_COUNT = 2
 _SHA256_HEX_LENGTH = 64
+_MALFORMED_DERIVED_CACHE = (
+    b'{"schema_version":1,"schema_version":1,"accounts":{}}\n'
+)
 
 
 def _account(label: str, account_id: str) -> SavedAccount:
@@ -174,19 +177,23 @@ def test_snapshot_updates_cannot_regress_newer_truth_or_carry_false_dates(
     assert store.load(account) == regressed
 
 
-def test_malformed_snapshot_fails_closed_without_overwrite(
+def test_malformed_snapshot_repairs_only_with_fresh_activity(
     tmp_path: Path,
 ) -> None:
-    """Invalid durable state is reported and preserved for recovery."""
+    """Passive reads fail closed until fresh activity repairs the cache."""
     store = _store(tmp_path)
     account = _account("account", "acct_private")
-    malformed = b'{"schema_version":1,"schema_version":1,"accounts":{}}\n'
-    PersistenceFilesystem(store.path).commit_opaque_private(malformed)
+    PersistenceFilesystem(store.path).commit_opaque_private(
+        _MALFORMED_DERIVED_CACHE
+    )
 
     with pytest.raises(ActivitySnapshotError) as loaded:
         store.load(account)
     assert loaded.value.kind is ActivitySnapshotFailureKind.MALFORMED
-    with pytest.raises(ActivitySnapshotError) as saved:
-        store.save(_snapshot(account, 1, date(2026, 4, 7)))
-    assert saved.value.kind is ActivitySnapshotFailureKind.MALFORMED
-    assert store.path.read_bytes() == malformed
+    assert store.path.read_bytes() == _MALFORMED_DERIVED_CACHE
+    assert store.save_many((), ()) == ((), ())
+    assert store.path.read_bytes() == _MALFORMED_DERIVED_CACHE
+
+    fresh = _snapshot(account, 1, date(2026, 4, 7))
+    assert store.save(fresh) == fresh
+    assert store.load(account) == fresh

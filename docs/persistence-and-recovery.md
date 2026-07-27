@@ -25,7 +25,8 @@ The data root contains:
 | `accounts.json` | Secret-free schema-version-three account index |
 | `credentials/` | Protected provider credential authorities and private homes |
 | `credential-refresh/` | Recoverable credential-refresh transactions |
-| `token-activity.json` | Read-only usage activity snapshots |
+| `usage-metrics.json` | Derived last-successful account usage snapshots |
+| `token-activity.json` | Derived last-successful token-activity snapshots |
 | `selected-accounts.json` | Selected account per provider |
 | `activation-journals/` | Recoverable provider activation state |
 | `operations/` | Durable supervisor work |
@@ -50,6 +51,10 @@ without sharing locks, journals, or credentials.
 
 All persisted timestamps are canonical UTC. Unknown provider facts remain
 unknown; malformed, unreadable, incomplete, or unsafe state fails closed.
+Passive reads never change persisted state. A malformed derived
+`usage-metrics.json` or `token-activity.json` remains a typed cache issue until
+a nonempty, validated fresh-metrics write atomically rebuilds only that cache.
+This recovery never applies to account or credential authority.
 
 ## Read-only diagnosis
 
