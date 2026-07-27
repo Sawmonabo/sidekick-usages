@@ -68,8 +68,17 @@ def render_dashboard(
             *rendered_footer,
         ]
         return _finish(lines, safe_width, color)
-    if sum(row_is_selected(row, cursor) for row in rows) != 1:
-        raise ValueError("Interactive dashboard requires exactly one cursor.")
+    selected_rows = sum(row_is_selected(row, cursor) for row in rows)
+    provider_only_focus = (
+        cursor.focused_provider
+        in {provider.provider_id for provider in providers}
+        and cursor.account_id is None
+        and not cursor.external
+    )
+    if selected_rows != 1 and not (selected_rows == 0 and provider_only_focus):
+        raise ValueError(
+            "Interactive dashboard requires one row or provider focus."
+        )
 
     activities = {
         provider.provider_id: activity

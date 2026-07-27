@@ -4,6 +4,7 @@ import io
 import os
 import subprocess
 import sys
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Never
@@ -21,6 +22,7 @@ from sidekick_usages.cli.runtime.routing import (
     dashboard_candidate,
     parse_dashboard_arguments,
 )
+from sidekick_usages.core.selection.types import ProviderRuntimeState
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.platform.executable import qualify_executable
 from sidekick_usages.platform.models import ExecutableProvenance
@@ -185,6 +187,17 @@ def test_cli_routes_one_cached_frame_before_isolated_interaction(
 
     output = io.StringIO()
     snapshot = controller_snapshot(REFERENCE_TIME)
+    snapshot = replace(
+        snapshot,
+        providers=(
+            replace(
+                snapshot.providers[0],
+                runtime_state=ProviderRuntimeState.UNREADABLE,
+                active_account_id=None,
+            ),
+            snapshot.providers[1],
+        ),
+    )
     line_count = launch.present_cached_dashboard(
         output,
         snapshot,
@@ -201,8 +214,7 @@ def test_cli_routes_one_cached_frame_before_isolated_interaction(
     assert line_count > 0
     assert "CLAUDE" in frame
     assert "CODEX" in frame
-    assert len(cursor_lines) == 1
-    assert "claude-active" in cursor_lines[0]
+    assert not cursor_lines
     assert frame.endswith(f"\x1b[{line_count}A\r")
     assert parse_dashboard_arguments(()) is None
     assert parse_dashboard_arguments(("--only", "codex")) is ProviderId.CODEX
