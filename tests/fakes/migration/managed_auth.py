@@ -1,8 +1,13 @@
 """Typed no-secret boundaries for one managed-auth CLI journey."""
 
-from dataclasses import dataclass, replace
+from contextlib import ExitStack
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 
+from sidekick_usages.cli.contexts.models import Composed
+from sidekick_usages.cli.dashboard.models.controller import (
+    DashboardApplicationResult,
+)
 from sidekick_usages.clock import Clock
 from sidekick_usages.core.accounts.models import (
     ClaudeAccountAuthority,
@@ -34,6 +39,7 @@ from sidekick_usages.credentials.models import (
     CredentialLoginResult,
     CredentialLoginSuccess,
 )
+from sidekick_usages.paths import ApplicationPaths
 from sidekick_usages.providers.base import (
     ProviderFailure,
     ProviderFailureKind,
@@ -174,6 +180,8 @@ class _ClaudeMigration:
         self.accounts = accounts
         self.trace = trace
         self._return_due_authority = True
+        self._cancel_guided_association = True
+        self.guided_account_ids: list[SidekickAccountId] = []
 
     def migrate(
         self,
@@ -226,6 +234,30 @@ class _ClaudeMigration:
             )
         return CredentialLoginSuccess(label)
 
+    def migrate_account(
+        self,
+        account_id: SidekickAccountId,
+        *,
+        establish_identity: bool,
+        interactive: bool,
+    ) -> CredentialLoginResult:
+        """Record one guided stable-ID association outcome."""
+        if not establish_identity or not interactive:
+            raise AssertionError("Guided association must be interactive.")
+        self.trace.append("claude:guided")
+        self.guided_account_ids.append(account_id)
+        account = self.accounts.read_saved(account_id)
+        if account is None:
+            raise AssertionError("Guided account disappeared.")
+        if self._cancel_guided_association:
+            self._cancel_guided_association = False
+            return ProviderFailure(
+                provider_id=ProviderId.CLAUDE,
+                kind=ProviderFailureKind.REJECTED,
+                message="Official Claude login was canceled.",
+            )
+        return CredentialLoginSuccess(account.label)
+
 
 @dataclass(slots=True)
 class ManagedAuthScenario:
@@ -236,6 +268,9 @@ class ManagedAuthScenario:
     claude: _ClaudeMigration
     trace: list[str]
     setup_authority: ClaudeSetupTokenAuthority
+    dashboard_results: list[DashboardApplicationResult] = field(
+        default_factory=list
+    )
 
     def coordinator(
         self,
@@ -254,6 +289,30 @@ class ManagedAuthScenario:
     def allow_codex_retry(self) -> None:
         """Allow the previously rejected Codex account to complete."""
         self.codex.fail_labels.clear()
+
+    def compose_claude(
+        self,
+        *,
+        paths: ApplicationPaths | None = None,
+        clock: Clock | None = None,
+    ) -> Composed[_ClaudeMigration]:
+        """Compose one guided fake and retain exact cleanup counts."""
+        del paths, clock
+        self.trace.append("association:composed")
+        resources = ExitStack()
+        resources.callback(self._record_guided_close)
+        return Composed(self.claude, resources)
+
+    def _record_guided_close(self) -> None:
+        """Record one closed guided composition."""
+        self.trace.append("association:closed")
+
+    def launch_dashboard(self) -> DashboardApplicationResult:
+        """Return one result only after recording a closed dashboard."""
+        self.trace.append("dashboard:closed")
+        if not self.dashboard_results:
+            raise AssertionError("Synthetic dashboard result is unavailable.")
+        return self.dashboard_results.pop(0)
 
     @property
     def codex_login_events(self) -> tuple[str, ...]:

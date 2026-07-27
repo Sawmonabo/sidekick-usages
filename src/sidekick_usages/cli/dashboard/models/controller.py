@@ -9,6 +9,7 @@ from sidekick_usages.core.types import ProviderId
 type DashboardIntent = (
     ActivateOrRepairIntent | RefreshAccountIntent | RefreshDueAccountsIntent
 )
+type DashboardApplicationResult = int | ClaudeAssociationRequest
 
 
 class DashboardMove(StrEnum):
@@ -72,6 +73,13 @@ class ActivateOrRepairIntent:
     """Request activation or repair of one saved account."""
 
     provider_id: ProviderId
+    account_id: SidekickAccountId
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ClaudeAssociationRequest:
+    """Request private-profile association for one saved Claude account."""
+
     account_id: SidekickAccountId
 
 

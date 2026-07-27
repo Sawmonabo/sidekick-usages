@@ -151,6 +151,20 @@ class ClaudeManagedMigrationCoordinator:
                 ProviderFailureKind.MISSING,
                 f"No Claude account named '{label}'.",
             )
+        return self.migrate_account(
+            account_id,
+            establish_identity=establish_identity,
+            interactive=interactive,
+        )
+
+    def migrate_account(
+        self,
+        account_id: SidekickAccountId,
+        *,
+        establish_identity: bool,
+        interactive: bool,
+    ) -> CredentialLoginResult:
+        """Migrate or recover one stable Claude account under its lock."""
         lock = OperationAuthorityLock(
             self._paths.durable_operations,
             account_id,
@@ -159,7 +173,6 @@ class ClaudeManagedMigrationCoordinator:
             with lock.hold():
                 return self._migrate_locked(
                     account_id,
-                    label,
                     establish_identity=establish_identity,
                     interactive=interactive,
                 )
@@ -173,12 +186,11 @@ class ClaudeManagedMigrationCoordinator:
     def _migrate_locked(
         self,
         account_id: SidekickAccountId,
-        label: AccountLabel,
         *,
         establish_identity: bool,
         interactive: bool,
     ) -> CredentialLoginResult:
-        account = self._current_account(account_id, label)
+        account = self._current_account(account_id)
         if isinstance(account, ProviderFailure):
             return account
         self._commits.recover_account(account)
@@ -196,14 +208,14 @@ class ClaudeManagedMigrationCoordinator:
                 ProviderFailureKind.UNSUPPORTED,
                 "Managed Claude profiles are unavailable on this system.",
             )
-        return self._migrate_account(
+        return self._migrate_authority(
             account,
             capabilities,
             establish_identity=establish_identity,
             interactive=interactive,
         )
 
-    def _migrate_account(
+    def _migrate_authority(
         self,
         account: SavedAccount,
         capabilities: ClaudeCapabilities,
@@ -520,21 +532,12 @@ class ClaudeManagedMigrationCoordinator:
     def _current_account(
         self,
         account_id: SidekickAccountId,
-        label: AccountLabel,
     ) -> SavedAccount | ProviderFailure:
         account = self._store.read_saved(account_id)
-        current_id = self._store.resolve_account_id(
-            ProviderId.CLAUDE,
-            label,
-        )
-        if (
-            account is None
-            or current_id != account_id
-            or account.label != label
-        ):
+        if account is None or account.provider_id is not ProviderId.CLAUDE:
             return migration_failure(
                 ProviderFailureKind.MISSING,
-                f"No Claude account named '{label}'.",
+                "The saved Claude account is no longer available.",
             )
         return account
 

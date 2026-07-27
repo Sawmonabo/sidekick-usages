@@ -30,7 +30,10 @@ from sidekick_usages.credentials.accounts.lifecycle.models import (
 from sidekick_usages.credentials.accounts.lifecycle.service import (
     AccountLifecycleCoordinator,
 )
-from sidekick_usages.credentials.authorities import credential_resolver_for
+from sidekick_usages.credentials.authorities import (
+    CredentialResolver,
+    credential_resolver_for,
+)
 from sidekick_usages.credentials.capabilities.service import (
     build_provider_capability_service,
 )
@@ -63,6 +66,7 @@ from sidekick_usages.heartbeat.service import HeartbeatService
 from sidekick_usages.http.client import HttpClient
 from sidekick_usages.maintenance import TokenMaintenanceService
 from sidekick_usages.paths import ApplicationPaths, discover_application_paths
+from sidekick_usages.persistence.accounts.store import AccountStore
 from sidekick_usages.persistence.credentials.refresh.service import (
     CredentialRefreshTransactions,
 )
@@ -200,6 +204,30 @@ def _persistence(
     )
 
 
+def _maintenance_not_quiescent() -> bool:
+    """Deny maintenance-only administration in focused composition."""
+    return False
+
+
+def _claude_migration(
+    paths: ApplicationPaths,
+    persistence: PersistenceService,
+    accounts: AccountStore,
+    resolver: CredentialResolver,
+    usage_snapshots: UsageSnapshotStore,
+    clock: Clock,
+) -> ClaudeManagedMigrationCoordinator:
+    """Compose the sole Claude private-profile migration owner."""
+    return ClaudeManagedMigrationCoordinator(
+        paths,
+        accounts,
+        resolver,
+        persistence.managed_claude_profiles,
+        usage_snapshots,
+        clock,
+    )
+
+
 def _persistence_failure(
     error: PersistenceError,
     path: Path,
@@ -290,11 +318,11 @@ def compose_app_context(
                 persistence.managed_codex_profiles,
                 resolved_clock,
             ),
-            claude_auth_migration=ClaudeManagedMigrationCoordinator(
+            claude_auth_migration=_claude_migration(
                 resolved_paths,
+                persistence,
                 accounts,
                 resolver,
-                persistence.managed_claude_profiles,
                 usage_snapshots,
                 resolved_clock,
             ),
@@ -536,15 +564,51 @@ def compose_migration_context(
                     persistence.managed_codex_profiles,
                     resolved_clock,
                 ),
-                ClaudeManagedMigrationCoordinator(
+                _claude_migration(
                     resolved_paths,
+                    persistence,
                     accounts,
                     resolver,
-                    persistence.managed_claude_profiles,
                     UsageSnapshotStore(resolved_paths.usage_snapshots),
                     resolved_clock,
                 ),
             )
+        )
+
+    return _compose(build)
+
+
+def compose_claude_migration(
+    *,
+    paths: ApplicationPaths | None = None,
+    clock: Clock | None = None,
+) -> Composed[ClaudeManagedMigrationCoordinator]:
+    """Compose only one Claude private-profile migration owner."""
+
+    def build(_resources: ExitStack) -> ClaudeManagedMigrationCoordinator:
+        resolved_paths = _resolved_paths(paths)
+        resolved_clock = _resolved_clock(clock)
+        persistence = PersistenceService(
+            resolved_paths,
+            maintenance_quiescent=_maintenance_not_quiescent,
+        )
+        try:
+            accounts = persistence.open_store()
+        except PersistenceError as error:
+            raise ApplicationCompositionError(
+                _persistence_failure(error, resolved_paths.accounts)
+            ) from None
+        resolver = credential_resolver_for(
+            accounts,
+            persistence.private_credentials,
+        )
+        return _claude_migration(
+            resolved_paths,
+            persistence,
+            accounts,
+            resolver,
+            UsageSnapshotStore(resolved_paths.usage_snapshots),
+            resolved_clock,
         )
 
     return _compose(build)

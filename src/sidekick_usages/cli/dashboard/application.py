@@ -9,6 +9,9 @@ from prompt_toolkit.layout import Layout, Window
 from prompt_toolkit.layout.controls import FormattedTextControl
 
 from sidekick_usages.cli.dashboard.input import DashboardInputController
+from sidekick_usages.cli.dashboard.models.controller import (
+    DashboardApplicationResult,
+)
 from sidekick_usages.cli.dashboard.ports import DashboardSessionPort
 from sidekick_usages.cli.dashboard.session import dashboard_cursor
 from sidekick_usages.cli.dashboard.terminal import terminal_width
@@ -40,7 +43,7 @@ class InteractiveDashboardApplication:
             focusable=True,
             show_cursor=False,
         )
-        self._application: Application[int] = Application(
+        application: Application[DashboardApplicationResult] = Application(
             layout=Layout(
                 Window(
                     content=control,
@@ -52,9 +55,10 @@ class InteractiveDashboardApplication:
             full_screen=False,
             erase_when_done=False,
         )
+        self._application = application
         self._session.bind_invalidator(self._application.invalidate)
 
-    def run(self) -> int:
+    def run(self) -> DashboardApplicationResult:
         """Run with one terminal-restoring prompt-toolkit lifecycle."""
         try:
             try:

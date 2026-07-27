@@ -11,6 +11,7 @@ from sidekick_usages.cli.dashboard.actions import DashboardActionExecutor
 from sidekick_usages.cli.dashboard.controller import DashboardController
 from sidekick_usages.cli.dashboard.models.controller import (
     ActivateOrRepairIntent,
+    ClaudeAssociationRequest,
     DashboardActivationProof,
     DashboardIntent,
     DashboardMove,
@@ -236,19 +237,22 @@ class InteractiveDashboardSession:
             blocked_by_activation=True,
         )
 
-    def activate(self) -> None:
-        """Queue one account activation without blocking input."""
+    def activate(self) -> ClaudeAssociationRequest | None:
+        """Return association work or queue ordinary activation."""
         with self._view_lock:
             if self._view.action_in_flight:
-                return
+                return None
             intent = self._controller().activate_or_repair()
             if intent is None:
-                return
+                return None
+            if isinstance(intent, ClaudeAssociationRequest):
+                return intent
             if self._environment_conflict(intent):
                 invalidate = self._invalidate
             else:
                 invalidate = self._submit(intent, ACTIVATION_QUEUED_MESSAGE)
         invalidate()
+        return None
 
     def refresh_account(self) -> None:
         """Queue one account refresh without blocking input."""

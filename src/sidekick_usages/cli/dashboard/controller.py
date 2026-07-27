@@ -4,6 +4,7 @@ from dataclasses import dataclass, replace
 
 from sidekick_usages.cli.dashboard.models.controller import (
     ActivateOrRepairIntent,
+    ClaudeAssociationRequest,
     DashboardActivationProof,
     DashboardControllerState,
     DashboardMove,
@@ -20,6 +21,7 @@ from sidekick_usages.usage.dashboard.focus import (
 )
 from sidekick_usages.usage.dashboard.models import (
     DashboardAccount,
+    DashboardActionState,
     DashboardExternalRow,
     DashboardProvider,
     DashboardRow,
@@ -123,12 +125,30 @@ class DashboardController:
             )
         )
 
-    def activate_or_repair(self) -> ActivateOrRepairIntent | None:
+    def activate_or_repair(
+        self,
+    ) -> ActivateOrRepairIntent | ClaudeAssociationRequest | None:
         """Return a saved-account mutation intent when actions are enabled."""
         focused = self._focused_account()
         if focused is None:
             return None
         provider, account = focused
+        setup_association = (
+            provider.provider_id is ProviderId.CLAUDE
+            and DashboardActionState.SWITCH_SETUP_REQUIRED in account.states
+        )
+        if setup_association:
+            if (
+                not provider.actions_enabled
+                or provider.runtime_state is None
+                or provider.runtime_state
+                in {
+                    ProviderRuntimeState.UNREADABLE,
+                    ProviderRuntimeState.UNSUPPORTED,
+                }
+            ):
+                return None
+            return ClaudeAssociationRequest(account_id=account.account_id)
         if provider.provider_id is ProviderId.CLAUDE and (
             provider.runtime_state is not ProviderRuntimeState.SAVED_ACTIVE
             or provider.active_account_id is None

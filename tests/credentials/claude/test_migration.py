@@ -17,6 +17,8 @@ from sidekick_usages.core.accounts.models import (
 from sidekick_usages.core.accounts.types import (
     AuthorityId,
     CredentialHealth,
+    ProviderIdentity,
+    SidekickAccountId,
 )
 from sidekick_usages.core.expiry import KnownExpiry, UnknownExpiry
 from sidekick_usages.core.models import (
@@ -40,9 +42,6 @@ from sidekick_usages.credentials.claude.managed.migration.models import (
 from sidekick_usages.credentials.claude.managed.migration.service import (
     ClaudeManagedMigrationCoordinator,
 )
-from sidekick_usages.credentials.claude.setup.service import (
-    ClaudeSetupTokenCoordinator,
-)
 from sidekick_usages.credentials.models import CredentialLoginSuccess
 from sidekick_usages.paths import ApplicationPaths
 from sidekick_usages.persistence.accounts.store import AccountStore
@@ -56,16 +55,13 @@ from sidekick_usages.persistence.snapshots.usage.store import (
     UsageSnapshotStore,
 )
 from sidekick_usages.platform.types import HostPlatform
-from sidekick_usages.providers.base import (
-    ProviderFailure,
-    ProviderFailureKind,
-)
 from sidekick_usages.providers.claude.auth.storage.service import (
     CLAUDE_CREDENTIAL_FILE,
 )
 from tests.fakes.claude.managed import (
     ClaudeManagedLoginScript,
     ClaudeRunner,
+    claude_profile_status,
     credential_payload,
     managed_profile,
     profile_tree,
@@ -80,16 +76,10 @@ from tests.support.time import REFERENCE_TIME, FixedClock
 _OLD_ACCESS_EXPIRY = REFERENCE_TIME + timedelta(minutes=30)
 _INTERACTIVE_ACCESS_EXPIRY = REFERENCE_TIME + timedelta(hours=1)
 _NEW_ACCESS_EXPIRY = REFERENCE_TIME + timedelta(hours=2)
-_SETUP_AUTHORITY_ID = AuthorityId("33333333-3333-4333-8333-333333333333")
 
 
 class _SimulatedCrash(BaseException):
     """Stop one migration at an exact durable boundary."""
-
-
-def _setup_authority_id() -> AuthorityId:
-    """Return the deterministic setup authority used by this contract."""
-    return _SETUP_AUTHORITY_ID
 
 
 def _identity(suffix: str) -> ClaudeLoginIdentity:
@@ -130,46 +120,29 @@ def _legacy_account(
     )
 
 
-def _attach_setup_token(
-    store: AccountStore,
-    clock: FixedClock,
-    account: SavedAccount,
+def _setup_account(
+    label: str,
     suffix: str,
-) -> SavedAccount:
-    """Attach one independent setup-token authority to a saved login."""
-    return ClaudeSetupTokenCoordinator(
-        store,
-        clock,
-        authority_id_factory=_setup_authority_id,
-    ).save(
-        account,
-        ClaudeSetupTokenCredentials(
+    *,
+    heartbeat: bool = False,
+) -> Account:
+    """Build one setup-only Claude account."""
+    return Account(
+        label=AccountLabel(label),
+        credentials=ClaudeSetupTokenCredentials(
             access_token=f"sk-ant-oat01-{suffix}-setup"
         ),
+        plan="team",
+        heartbeat_enabled=heartbeat,
+        heartbeat_window_resets=(
+            {"five-hour": REFERENCE_TIME + timedelta(hours=1)}
+            if heartbeat
+            else None
+        ),
+        heartbeat_targets=("five-hour",) if heartbeat else None,
+        last_heartbeat_at=REFERENCE_TIME if heartbeat else None,
+        last_heartbeat_status=(HeartbeatStatus.WARMED if heartbeat else None),
     )
-
-
-def _dual_account(
-    store: AccountStore,
-    clock: FixedClock,
-    account: SavedAccount,
-    suffix: str,
-) -> tuple[
-    SavedAccount,
-    ClaudeAccountAuthority,
-    ClaudeStoredLoginAuthority,
-]:
-    """Return one saved account with both independent Claude authorities."""
-    saved = _attach_setup_token(store, clock, account, suffix)
-    authority = saved.authority
-    if not isinstance(authority, ClaudeAccountAuthority):
-        raise AssertionError("Expected Claude account authority.")
-    subscription = authority.subscription
-    if authority.setup_token is None or not isinstance(
-        subscription, ClaudeStoredLoginAuthority
-    ):
-        raise AssertionError("Expected dual stored Claude authorities.")
-    return saved, authority, subscription
 
 
 def _stored_subscription(account: SavedAccount) -> ClaudeStoredLoginAuthority:
@@ -183,27 +156,27 @@ def _stored_subscription(account: SavedAccount) -> ClaudeStoredLoginAuthority:
     return authority.subscription
 
 
-def _stored_payloads(
+def _setup_authority(account: SavedAccount) -> ClaudeSetupTokenAuthority:
+    """Return one required setup-token authority."""
+    authority = account.authority
+    if (
+        not isinstance(authority, ClaudeAccountAuthority)
+        or authority.setup_token is None
+    ):
+        raise AssertionError("Expected setup-only Claude authority.")
+    return authority.setup_token
+
+
+def _protected_payload(
     repository: CredentialAuthorityRepository,
     account: SavedAccount,
-    authority: ClaudeAccountAuthority,
-    subscription: ClaudeStoredLoginAuthority,
-) -> tuple[bytes, bytes]:
-    """Read exact setup and subscription payloads for one dual account."""
-    setup = authority.setup_token
-    if setup is None:
-        raise AssertionError("Expected setup-token authority.")
-    setup_payload = repository.read_payload(
-        account.account_id,
-        setup.authority_id,
-    )
-    subscription_payload = repository.read_payload(
-        account.account_id,
-        subscription.authority_id,
-    )
-    if setup_payload is None or subscription_payload is None:
-        raise AssertionError("Expected protected authority payloads.")
-    return setup_payload, subscription_payload
+    authority_id: AuthorityId,
+) -> bytes:
+    """Read one required protected test authority."""
+    payload = repository.read_payload(account.account_id, authority_id)
+    if payload is None:
+        raise AssertionError("Expected protected authority.")
+    return payload
 
 
 def _usage_snapshot(account: SavedAccount) -> AccountUsageSnapshot:
@@ -308,39 +281,32 @@ def test_two_account_migration_preserves_dual_authority_and_metrics(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """One mismatch remains intact while the other account commits."""
+    """One stable-ID association preserves its setup token and metrics."""
     use_synthetic_claude(monkeypatch)
     paths = make_application_paths(tmp_path)
     store, private = make_account_store_with_private(
         tmp_path,
         (
             _legacy_account("mismatch", "a"),
-            _legacy_account("dual", "b", heartbeat=True),
+            _setup_account("dual", "b", heartbeat=True),
         ),
     )
-    original_a, original_b = store.saved_accounts()
+    original_a, dual_before = store.saved_accounts()
     clock = FixedClock()
-    dual_before, authority_b, subscription_b = _dual_account(
-        store,
-        clock,
-        original_b,
-        "b",
-    )
     subscription_a = _stored_subscription(original_a)
     repository = CredentialAuthorityRepository(private)
     legacy_a = repository.bundle_path(
         original_a.account_id,
         subscription_a.authority_id,
     )
-    legacy_b = repository.bundle_path(
-        dual_before.account_id,
-        subscription_b.authority_id,
-    )
-    setup_authority_b = authority_b.setup_token
-    if setup_authority_b is None:
-        raise AssertionError("Expected setup-token authority.")
+    setup_authority_b = _setup_authority(dual_before)
     setup_b = repository.bundle_path(
         dual_before.account_id,
+        setup_authority_b.authority_id,
+    )
+    setup_payload_before = _protected_payload(
+        repository,
+        dual_before,
         setup_authority_b.authority_id,
     )
     snapshots = UsageSnapshotStore(paths.usage_snapshots)
@@ -354,22 +320,14 @@ def test_two_account_migration_preserves_dual_authority_and_metrics(
         paths,
         dual_before.account_id,
     ).config_directory
+    status_b, association_b = claude_profile_status("b")
     script = ClaudeManagedLoginScript(
         profiles,
         {
-            profile_a: (
-                credential_payload(
-                    "provider-account-other",
-                    "provider-organization-other",
-                    token_suffix="a-wrong",
-                    access_expires_at=_NEW_ACCESS_EXPIRY,
-                ),
-            ),
             profile_b: (
-                None,
                 credential_payload(
-                    "provider-account-b",
-                    "provider-organization-b",
+                    None,
+                    None,
                     token_suffix="b-proven",
                     access_expires_at=_NEW_ACCESS_EXPIRY,
                 ),
@@ -377,12 +335,13 @@ def test_two_account_migration_preserves_dual_authority_and_metrics(
         },
         interactive_payloads={
             profile_b: credential_payload(
-                "provider-account-b",
-                "provider-organization-b",
+                None,
+                None,
                 token_suffix="b-browser",
                 access_expires_at=_INTERACTIVE_ACCESS_EXPIRY,
             ),
         },
+        profile_statuses={profile_b: status_b},
     )
     native_profile = tmp_path / "native-claude"
     native_sentinel = _native_sentinel(native_profile)
@@ -397,19 +356,12 @@ def test_two_account_migration_preserves_dual_authority_and_metrics(
         native_profile,
     )
 
-    mismatch = coordinator.migrate(
-        original_a.label,
-        establish_identity=False,
-        interactive=False,
-    )
-    migrated = coordinator.migrate(
-        dual_before.label,
-        establish_identity=False,
+    migrated = coordinator.migrate_account(
+        dual_before.account_id,
+        establish_identity=True,
         interactive=True,
     )
 
-    assert isinstance(mismatch, ProviderFailure)
-    assert mismatch.kind is ProviderFailureKind.IDENTITY_MISMATCH
     assert isinstance(migrated, CredentialLoginSuccess)
     current_a = store.read_saved(original_a.account_id)
     current_b = store.read_saved(dual_before.account_id)
@@ -419,8 +371,7 @@ def test_two_account_migration_preserves_dual_authority_and_metrics(
     assert isinstance(current_authority, ClaudeAccountAuthority)
     managed = current_authority.subscription
     assert isinstance(managed, ClaudeManagedLoginAuthority)
-    assert current_authority.setup_token == authority_b.setup_token
-    assert managed.authority_id == subscription_b.authority_id
+    assert current_authority.setup_token == setup_authority_b
     assert (
         current_b.account_id,
         current_b.heartbeat_enabled,
@@ -440,50 +391,49 @@ def test_two_account_migration_preserves_dual_authority_and_metrics(
     )
     assert snapshots.load(current_b) == replace(
         usage_before,
-        provider_identity=_identity("b").provider_identity,
+        provider_identity=association_b,
     )
     assert {account.label for account in store.saved_accounts()} == {
         AccountLabel("mismatch"),
         AccountLabel("dual"),
     }
     assert legacy_a.is_dir()
-    assert not legacy_b.exists()
     assert setup_b.is_dir()
-    assert script.login_profiles == [profile_a, profile_b, profile_b]
+    assert (
+        repository.read_payload(
+            dual_before.account_id,
+            setup_authority_b.authority_id,
+        )
+        == setup_payload_before
+    )
+    assert not profile_a.exists()
+    assert script.login_profiles == [profile_b]
     assert script.interactive_profiles == [profile_b]
     assert native_sentinel.read_bytes() == b"native-login-must-remain"
 
 
-def test_interrupted_commit_recovers_profile_before_retiring_legacy(
+def test_interrupted_setup_association_recovers_profile_and_metrics(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Both commit gaps recover without losing authority or metrics."""
+    """Both association commit gaps preserve setup authority and metrics."""
     use_synthetic_claude(monkeypatch)
     paths = make_application_paths(tmp_path)
     store, private = make_account_store_with_private(
         tmp_path,
-        (_legacy_account("recover", "recover"),),
+        (_setup_account("recover", "recover"),),
     )
-    original, authority, subscription = _dual_account(
-        store,
-        FixedClock(),
-        store.saved_accounts()[0],
-        "recover",
-    )
-    setup_authority = authority.setup_token
-    if setup_authority is None:
-        raise AssertionError("Expected setup-token authority.")
+    original = store.saved_accounts()[0]
+    setup_authority = _setup_authority(original)
     repository = CredentialAuthorityRepository(private)
-    legacy = repository.bundle_path(
+    setup_bundle = repository.bundle_path(
         original.account_id,
-        subscription.authority_id,
+        setup_authority.authority_id,
     )
-    protected_payloads = _stored_payloads(
+    setup_payload = _protected_payload(
         repository,
         original,
-        authority,
-        subscription,
+        setup_authority.authority_id,
     )
     index_payload = paths.accounts.read_bytes()
     snapshots = UsageSnapshotStore(paths.usage_snapshots)
@@ -493,19 +443,37 @@ def test_interrupted_commit_recovers_profile_before_retiring_legacy(
         paths,
         original.account_id,
     ).config_directory
+    status, _association = claude_profile_status("recover")
     script = ClaudeManagedLoginScript(
         profiles,
         {
             profile: (
                 credential_payload(
-                    "provider-account-recover",
-                    "provider-organization-recover",
+                    None,
+                    None,
                     token_suffix="recover-new",
                     access_expires_at=_NEW_ACCESS_EXPIRY,
                 ),
+                credential_payload(
+                    None,
+                    None,
+                    token_suffix="recover-resumed",
+                    access_expires_at=_NEW_ACCESS_EXPIRY + timedelta(hours=1),
+                ),
             )
         },
+        interactive_payloads={
+            profile: credential_payload(
+                None,
+                None,
+                token_suffix="recover-browser",
+                access_expires_at=_INTERACTIVE_ACCESS_EXPIRY,
+            )
+        },
+        profile_statuses={profile: status},
     )
+    native_profile = tmp_path / "native-claude"
+    native_sentinel = _native_sentinel(native_profile)
     coordinator = _coordinator(
         paths,
         store,
@@ -514,7 +482,7 @@ def test_interrupted_commit_recovers_profile_before_retiring_legacy(
         snapshots,
         FixedClock(),
         script,
-        tmp_path / "unused-native-profile",
+        native_profile,
     )
     commit = store.migrate_stored_authority
 
@@ -532,22 +500,24 @@ def test_interrupted_commit_recovers_profile_before_retiring_legacy(
         stop_before_authority_commit,
     )
     with pytest.raises(_SimulatedCrash):
-        coordinator.migrate(
-            original.label,
-            establish_identity=False,
-            interactive=False,
+        coordinator.migrate_account(
+            original.account_id,
+            establish_identity=True,
+            interactive=True,
         )
 
-    assert paths.accounts.read_bytes() == index_payload
-    assert store.read_saved(original.account_id) == original
     assert (
-        _stored_payloads(
+        paths.accounts.read_bytes(),
+        store.read_saved(original.account_id),
+        _protected_payload(
             repository,
             original,
-            authority,
-            subscription,
-        )
-        == protected_payloads
+            setup_authority.authority_id,
+        ),
+    ) == (
+        index_payload,
+        original,
+        setup_payload,
     )
     protected_profile = profiles.read_owned_file(
         profile,
@@ -560,9 +530,9 @@ def test_interrupted_commit_recovers_profile_before_retiring_legacy(
     promote_identity = snapshots.promote_identity
 
     def stop_before_usage_promotion(
-        account_id: object,
-        provider_id: object,
-        provider_identity: object,
+        account_id: SidekickAccountId,
+        provider_id: ProviderId,
+        provider_identity: ProviderIdentity,
     ) -> None:
         del account_id, provider_id, provider_identity
         raise _SimulatedCrash
@@ -573,10 +543,10 @@ def test_interrupted_commit_recovers_profile_before_retiring_legacy(
         stop_before_usage_promotion,
     )
     with pytest.raises(_SimulatedCrash):
-        coordinator.migrate(
-            original.label,
-            establish_identity=False,
-            interactive=False,
+        coordinator.migrate_account(
+            original.account_id,
+            establish_identity=True,
+            interactive=True,
         )
 
     current = _managed_account(store, original, setup_authority)
@@ -584,21 +554,30 @@ def test_interrupted_commit_recovers_profile_before_retiring_legacy(
         repository.read_payload(
             current.account_id,
             setup_authority.authority_id,
-        )
-        == protected_payloads[0]
-    )
-    assert not legacy.exists()
+        ),
+        setup_bundle.is_dir(),
+        script.login_profiles,
+        script.interactive_profiles,
+    ) == (setup_payload, True, [profile, profile], [profile])
     expected_usage = _assert_pending_usage(snapshots, current, usage_before)
-    assert script.login_profiles == [profile]
 
     monkeypatch.setattr(snapshots, "promote_identity", promote_identity)
-    recovered = coordinator.migrate(
-        original.label,
+    recovered = coordinator.migrate_account(
+        original.account_id,
         establish_identity=False,
         interactive=False,
     )
 
-    assert isinstance(recovered, CredentialLoginSuccess)
-    assert snapshots.pending_identity_promotions(ProviderId.CLAUDE) == ()
-    assert snapshots.load(current) == expected_usage
-    assert script.login_profiles == [profile]
+    assert (
+        isinstance(recovered, CredentialLoginSuccess),
+        snapshots.pending_identity_promotions(ProviderId.CLAUDE),
+        snapshots.load(current),
+        script.login_profiles,
+        native_sentinel.read_bytes(),
+    ) == (
+        True,
+        (),
+        expected_usage,
+        [profile, profile],
+        b"native-login-must-remain",
+    )

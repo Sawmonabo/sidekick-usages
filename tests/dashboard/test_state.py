@@ -9,6 +9,7 @@ import pytest
 from sidekick_usages.cli.dashboard.controller import DashboardController
 from sidekick_usages.cli.dashboard.models.controller import (
     ActivateOrRepairIntent,
+    ClaudeAssociationRequest,
     DashboardActivationProof,
     DashboardMove,
     RefreshAccountIntent,
@@ -529,6 +530,10 @@ def test_dashboard_controller_journey_preserves_verified_truth(
         control_connect_calls=(
             (SESSION_SOCKET, CONTROL_ACTION_TIMEOUT_SECONDS),
         ),
+        association_request=ClaudeAssociationRequest(
+            account_id=CLAUDE_PREVIEW_ACCOUNT_ID
+        ),
+        association_skipped_daemon=True,
         partial_start_reaped=True,
         startup_reconciliations=(
             ProviderId.CLAUDE,

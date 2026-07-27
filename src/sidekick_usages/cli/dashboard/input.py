@@ -42,8 +42,10 @@ class DashboardInputController:
     def _restore(self, _event: KeyPressEvent) -> None:
         self._session.restore()
 
-    def _activate(self, _event: KeyPressEvent) -> None:
-        self._session.activate()
+    def _activate(self, event: KeyPressEvent) -> None:
+        request = self._session.activate()
+        if request is not None:
+            event.app.exit(result=request)
 
     def _refresh(self, _event: KeyPressEvent) -> None:
         self._session.refresh_account()

@@ -3,6 +3,7 @@
 import io
 from dataclasses import replace
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,7 @@ from sidekick_usages.cli.contexts.models import MigrationContext
 from sidekick_usages.cli.contexts.use import UseContext
 from sidekick_usages.cli.dashboard.models.controller import (
     ActivateOrRepairIntent,
+    ClaudeAssociationRequest,
     RefreshAccountIntent,
 )
 from sidekick_usages.cli.dashboard.models.setup import (
@@ -25,10 +27,14 @@ from sidekick_usages.cli.dashboard.models.setup import (
     ServiceSetupOutcome,
 )
 from sidekick_usages.cli.dashboard.models.use import UseActivationFailure
-from sidekick_usages.core.types import ExitCode, ProviderId
+from sidekick_usages.core.accounts.models import ClaudeAccountAuthority
+from sidekick_usages.core.accounts.types import CredentialHealth
+from sidekick_usages.core.types import AccountLabel, ExitCode, ProviderId
 from sidekick_usages.daemon.types.lifecycle import ServiceLifecycleState
 from sidekick_usages.daemon.types.service import ServicePhase
+from sidekick_usages.entrypoints import dashboard
 from sidekick_usages.persistence.accounts.index import AccountIndex
+from sidekick_usages.persistence.accounts.reader import AccountIndexReader
 from sidekick_usages.providers.claude.activation.types import (
     ClaudeActivationGuardFailure,
 )
@@ -56,6 +62,7 @@ from tests.fakes.migration.managed_auth import (
     managed_auth_scenario,
 )
 from tests.support.cli import CliHarness
+from tests.support.persistence import make_application_paths
 from tests.support.platform import REQUIRES_MANAGED_RUNTIME
 from tests.support.time import FixedClock
 
@@ -224,7 +231,10 @@ def test_guided_setup_resumes_once_and_preserves_blocked_actions(
     assert codex_blocked.events == ["status:codex"]
 
 
-def test_managed_auth_migration_resumes_without_exposing_secrets() -> None:
+def test_managed_auth_migration_resumes_without_exposing_secrets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """One CLI journey proves ordering, isolation, resume, and final proof."""
     scenario = managed_auth_scenario()
     daemon = SetupDaemon(ServiceLifecycleState.ABSENT)
@@ -280,6 +290,81 @@ def test_managed_auth_migration_resumes_without_exposing_secrets() -> None:
     assert "All saved accounts have verified managed authorities." in rendered
     for identity in MIGRATION_IDENTITIES:
         assert identity not in rendered
+
+    guided_account = scenario.accounts.label(
+        ProviderId.CLAUDE,
+        "claude-team",
+    )
+    guided_label = AccountLabel("claude-renamed")
+    scenario.accounts.replace(
+        replace(
+            guided_account,
+            label=guided_label,
+            authority=ClaudeAccountAuthority(
+                setup_token=scenario.setup_authority
+            ),
+            credential_health=CredentialHealth.HEALTHY,
+        )
+    )
+    request = ClaudeAssociationRequest(account_id=guided_account.account_id)
+    scenario.dashboard_results.extend((request, request, request, 0))
+    monkeypatch.setattr(
+        AccountIndexReader,
+        "load",
+        staticmethod(scenario.accounts.saved_accounts),
+    )
+    monkeypatch.setattr(
+        dashboard,
+        "compose_claude_migration",
+        scenario.compose_claude,
+    )
+    guided_output = io.StringIO()
+    guided_errors = io.StringIO()
+    daemon_events_before = tuple(daemon.events)
+    guided_trace_start = len(scenario.trace)
+    guided_exit = dashboard._run_dashboard_loop(
+        scenario.launch_dashboard,
+        partial(
+            dashboard._guide_claude_association,
+            paths=make_application_paths(tmp_path),
+            clock=clock,
+            input_stream=io.StringIO("\ny\nyes\n"),
+            output=guided_output,
+            error_output=guided_errors,
+        ),
+    )
+
+    expected_prompt = dashboard.CLAUDE_ASSOCIATION_PROMPT.format(
+        label=guided_label
+    )
+    assert (
+        guided_exit,
+        guided_output.getvalue(),
+        scenario.claude.guided_account_ids,
+        scenario.trace[guided_trace_start:],
+        tuple(daemon.events),
+    ) == (
+        0,
+        expected_prompt * 3,
+        [guided_account.account_id, guided_account.account_id],
+        [
+            "dashboard:closed",
+            "dashboard:closed",
+            "association:composed",
+            "claude:guided",
+            "association:closed",
+            "dashboard:closed",
+            "association:composed",
+            "claude:guided",
+            "association:closed",
+            "dashboard:closed",
+        ],
+        daemon_events_before,
+    )
+    guided_rendered = guided_output.getvalue() + guided_errors.getvalue()
+    assert "Official Claude login was canceled." in guided_rendered
+    for identity in MIGRATION_IDENTITIES:
+        assert identity not in guided_rendered
 
     help_result = harness.invoke(["migrate", "managed-auth", "--help"])
     assert help_result.exit_code == ExitCode.SUCCESS

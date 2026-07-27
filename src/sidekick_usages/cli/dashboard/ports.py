@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Protocol
 
 from sidekick_usages.cli.dashboard.models.controller import (
+    ClaudeAssociationRequest,
     DashboardIntent,
     DashboardMove,
 )
@@ -201,8 +202,8 @@ class DashboardSessionPort(Protocol):
         """Restore verified focus unless activation is in flight."""
         ...
 
-    def activate(self) -> None:
-        """Queue one account activation without blocking input."""
+    def activate(self) -> ClaudeAssociationRequest | None:
+        """Return association work or queue ordinary activation."""
         ...
 
     def refresh_account(self) -> None:

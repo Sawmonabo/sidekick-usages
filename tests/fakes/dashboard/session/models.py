@@ -3,6 +3,9 @@
 from dataclasses import dataclass
 from pathlib import Path
 
+from sidekick_usages.cli.dashboard.models.controller import (
+    ClaudeAssociationRequest,
+)
 from sidekick_usages.cli.dashboard.models.session import (
     DashboardConfirmationKind,
 )
@@ -49,6 +52,8 @@ class DashboardSessionProof:
     """Load-bearing states captured from one serialized session journey."""
 
     control_connect_calls: tuple[tuple[Path, float | None], ...]
+    association_request: ClaudeAssociationRequest | None
+    association_skipped_daemon: bool
     partial_start_reaped: bool
     startup_reconciliations: tuple[ProviderId, ...]
     startup_account_id: SidekickAccountId | None

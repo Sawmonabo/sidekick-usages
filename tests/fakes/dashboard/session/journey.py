@@ -1,21 +1,28 @@
 """Load-bearing dashboard-session journeys."""
 
+from dataclasses import replace
 from pathlib import Path
 from threading import Thread
 
 import pytest
 
-from sidekick_usages.cli.dashboard.models.controller import DashboardMove
+from sidekick_usages.cli.dashboard.controller import DashboardController
+from sidekick_usages.cli.dashboard.models.controller import (
+    ClaudeAssociationRequest,
+    DashboardMove,
+)
 from sidekick_usages.cli.dashboard.session import InteractiveDashboardSession
 from sidekick_usages.core.accounts.types import (
     MetricsFreshness,
     SidekickAccountId,
 )
+from sidekick_usages.core.selection.types import ProviderRuntimeState
 from sidekick_usages.daemon.control.client import ControlClient
 from sidekick_usages.daemon.types.lifecycle import ServiceLifecycleState
 from sidekick_usages.entrypoints.dashboard import _connect_dashboard_control
 from sidekick_usages.usage.dashboard.models import (
     DashboardAccount,
+    DashboardActionState,
     DashboardFooter,
     DashboardSnapshot,
     DashboardStatusKind,
@@ -42,6 +49,95 @@ from tests.fakes.dashboard.session.snapshots import (
     unavailable_session_snapshot,
 )
 from tests.fakes.dashboard.setup import guided_setup
+
+
+def _association_handoff(
+    snapshot: DashboardSnapshot,
+    account_id: SidekickAccountId,
+    state_root: Path,
+) -> tuple[ClaudeAssociationRequest | None, bool]:
+    """Return setup-only work without contacting the action owner."""
+    claude, codex = snapshot.providers
+    setup_rows = tuple(
+        (
+            replace(
+                row,
+                states=(DashboardActionState.SWITCH_SETUP_REQUIRED,),
+            )
+            if isinstance(row, DashboardAccount)
+            and row.account_id == account_id
+            else row
+        )
+        for row in claude.rows
+    )
+    setup_snapshot = replace(
+        snapshot,
+        providers=(
+            replace(
+                claude,
+                runtime_state=ProviderRuntimeState.EXTERNAL_ACTIVE,
+                active_account_id=None,
+                rows=setup_rows,
+            ),
+            codex,
+        ),
+    )
+    snapshots = SessionSnapshotSource(setup_snapshot)
+    daemon = SetupDaemon(ServiceLifecycleState.READY)
+    connector = SessionControlConnector(daemon, snapshots)
+    session = InteractiveDashboardSession(
+        setup_snapshot,
+        snapshots=snapshots,
+        only=None,
+        lookup=SessionLookupWorker(account_id),
+        connector=connector,
+        socket_path=SESSION_SOCKET,
+        setup=guided_setup(daemon, state_root / "association.json"),
+        environment={},
+    )
+    session.move(DashboardMove.DOWN)
+    request = session.activate()
+    blocked = DashboardController.start(
+        replace(
+            setup_snapshot,
+            providers=(
+                replace(claude, actions_enabled=False, rows=setup_rows),
+                codex,
+            ),
+        )
+    ).move(DashboardMove.UP)
+    unavailable = tuple(
+        replace(
+            blocked,
+            snapshot=replace(
+                blocked.snapshot,
+                providers=(
+                    replace(
+                        blocked.snapshot.providers[0],
+                        runtime_state=runtime_state,
+                        active_account_id=None,
+                        actions_enabled=True,
+                    ),
+                    codex,
+                ),
+            ),
+        )
+        for runtime_state in (
+            ProviderRuntimeState.UNREADABLE,
+            ProviderRuntimeState.UNSUPPORTED,
+        )
+    )
+    skipped_daemon = (
+        not session.view.action_in_flight
+        and not connector.activations
+        and blocked.activate_or_repair() is None
+        and all(
+            controller.activate_or_repair() is None
+            for controller in unavailable
+        )
+    )
+    session.close()
+    return request, skipped_daemon
 
 
 def _partial_start_reaped(
@@ -210,6 +306,11 @@ def exercise_dashboard_session(
         startup_account_id,
         startup_footer,
     ) = startup
+    association_request, association_skipped_daemon = _association_handoff(
+        snapshot,
+        preview_account_id,
+        state_root,
+    )
 
     unavailable = unavailable_session_snapshot(snapshot)
     partial_start_reaped = _partial_start_reaped(
@@ -315,6 +416,8 @@ def exercise_dashboard_session(
         session.close()
     return DashboardSessionProof(
         control_connect_calls=tuple(connect.calls),
+        association_request=association_request,
+        association_skipped_daemon=association_skipped_daemon,
         partial_start_reaped=partial_start_reaped,
         startup_reconciliations=startup_reconciliations,
         startup_account_id=startup_account_id,
