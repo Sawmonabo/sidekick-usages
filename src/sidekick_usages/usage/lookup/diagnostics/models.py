@@ -9,19 +9,15 @@ from sidekick_usages.core.time import as_utc
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.persistence.limits import MAX_ACCOUNTS
 from sidekick_usages.persistence.types.error import PersistenceCode
-from sidekick_usages.usage.lookup.worker.models import UsageLookupFailure
+from sidekick_usages.usage.lookup.worker.models import (
+    RECOVERABLE_METRICS_PERSISTENCE_CODES,
+    UsageLookupFailure,
+    usage_lookup_failure_is_recoverable,
+)
 from sidekick_usages.usage.models import FetchFailureKind
 
 MAX_METRICS_REFRESH_ATTEMPTS = 2
 MAX_METRICS_REFRESH_CAUSES = MAX_ACCOUNTS + 3
-RECOVERABLE_SNAPSHOT_PERSISTENCE_CODES = frozenset(
-    {
-        PersistenceCode.AUTHORITY_UNAVAILABLE,
-        PersistenceCode.SOURCE_CHANGED,
-        PersistenceCode.STORE_LOCKED,
-        PersistenceCode.UNREADABLE,
-    }
-)
 
 type MetricsRefreshCode = (
     UsageLookupFailure
@@ -204,7 +200,7 @@ def _metrics_refresh_cause_is_valid(
     code: MetricsRefreshCode,
 ) -> bool:
     if stage is MetricsRefreshStage.WORKER:
-        return isinstance(code, UsageLookupFailure)
+        return isinstance(code, UsageLookupFailure | PersistenceCode)
     if stage is MetricsRefreshStage.ACCOUNT:
         return isinstance(code, FetchFailureKind)
     if stage is MetricsRefreshStage.SNAPSHOT_RELOAD:
@@ -271,8 +267,11 @@ def _require_retry_causes(
                 MetricsRefreshStage.ACCOUNT,
                 MetricsRefreshStage.WORKER,
             }
-            and isinstance(worker_causes[0].code, UsageLookupFailure)
-            and worker_causes[0].code.recoverable
+            and isinstance(
+                worker_causes[0].code,
+                UsageLookupFailure | PersistenceCode,
+            )
+            and usage_lookup_failure_is_recoverable(worker_causes[0].code)
         ):
             return
     elif stages == {MetricsRefreshStage.CACHE_READ}:
@@ -290,7 +289,7 @@ def _require_retry_causes(
         and len(causes) == 1
         and (
             causes[0].code is MetricsRefreshFailureCode.SNAPSHOT_UNAVAILABLE
-            or causes[0].code in RECOVERABLE_SNAPSHOT_PERSISTENCE_CODES
+            or causes[0].code in RECOVERABLE_METRICS_PERSISTENCE_CODES
         )
     ):
         return

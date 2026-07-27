@@ -30,7 +30,7 @@ from sidekick_usages.usage.lookup.diagnostics.models import (
 from sidekick_usages.usage.lookup.worker.models import (
     UsageLookupEventKind,
     UsageLookupEventObserver,
-    UsageLookupFailure,
+    UsageLookupTerminalFailure,
     UsageLookupWorkerEvent,
     UsageLookupWorkerResult,
 )
@@ -155,7 +155,7 @@ class SessionLookupWorker:
         account_failure: bool = False,
         provider_id: ProviderId = ProviderId.CLAUDE,
         failure_kind: FetchFailureKind = FetchFailureKind.TRANSIENT,
-        transient_failure: UsageLookupFailure | None = None,
+        transient_failure: UsageLookupTerminalFailure | None = None,
     ) -> None:
         self._account_id = account_id
         self._block = block

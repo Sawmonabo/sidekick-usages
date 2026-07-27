@@ -77,6 +77,7 @@ from sidekick_usages.usage.lookup.worker.models import (
     UsageLookupFailure,
     UsageLookupWorkerEvent,
     UsageLookupWorkerResult,
+    usage_lookup_failure_is_recoverable,
 )
 
 ACTION_QUEUE_CAPACITY = 1
@@ -401,7 +402,7 @@ class InteractiveDashboardSession:
         if (
             not self._stopping.is_set()
             and result.failure is not None
-            and result.failure.recoverable
+            and usage_lookup_failure_is_recoverable(result.failure)
         ):
             metrics_refresh.retry_worker(
                 result.failure,

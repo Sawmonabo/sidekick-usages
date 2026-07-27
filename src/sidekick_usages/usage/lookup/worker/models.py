@@ -7,13 +7,23 @@ from pathlib import Path
 
 from sidekick_usages.core.accounts.types import SidekickAccountId
 from sidekick_usages.core.types import ProviderId
+from sidekick_usages.persistence.types.error import PersistenceCode
 from sidekick_usages.platform.environment import require_worker_environment
 from sidekick_usages.platform.types import WorkerEnvironment
 from sidekick_usages.usage.models import FetchFailureKind
 
 type UsageLookupEventObserver = Callable[[UsageLookupWorkerEvent], None]
+type UsageLookupTerminalFailure = UsageLookupFailure | PersistenceCode
 
 USAGE_LOOKUP_MODULE = "sidekick_usages.entrypoints.usage_lookup"
+RECOVERABLE_METRICS_PERSISTENCE_CODES = frozenset(
+    {
+        PersistenceCode.AUTHORITY_UNAVAILABLE,
+        PersistenceCode.SOURCE_CHANGED,
+        PersistenceCode.STORE_LOCKED,
+        PersistenceCode.UNREADABLE,
+    }
+)
 
 
 class UsageLookupEventKind(StrEnum):
@@ -54,6 +64,23 @@ class UsageLookupFailure(StrEnum):
         )
 
 
+def parse_usage_lookup_failure(value: str) -> UsageLookupTerminalFailure:
+    """Parse one safe terminal failure from its exact code."""
+    try:
+        return UsageLookupFailure(value)
+    except ValueError:
+        return PersistenceCode(value)
+
+
+def usage_lookup_failure_is_recoverable(
+    failure: UsageLookupTerminalFailure,
+) -> bool:
+    """Return whether one fresh metrics attempt may self-heal."""
+    if isinstance(failure, UsageLookupFailure):
+        return failure.recoverable
+    return failure in RECOVERABLE_METRICS_PERSISTENCE_CODES
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class UsageLookupWorkerEvent:
     """One immutable event keyed by stable account identity."""
@@ -62,7 +89,7 @@ class UsageLookupWorkerEvent:
     account_id: SidekickAccountId | None = None
     provider_id: ProviderId | None = None
     fetch_failure: FetchFailureKind | None = None
-    failure: UsageLookupFailure | None = None
+    failure: UsageLookupTerminalFailure | None = None
 
     def __post_init__(self) -> None:
         """Require exactly the fields owned by the selected event kind."""
@@ -84,7 +111,7 @@ class UsageLookupWorkerResult:
     """Completed stable IDs plus one optional terminal worker failure."""
 
     completed_account_ids: tuple[SidekickAccountId, ...]
-    failure: UsageLookupFailure | None = None
+    failure: UsageLookupTerminalFailure | None = None
 
     def __post_init__(self) -> None:
         """Reject duplicate account completions."""

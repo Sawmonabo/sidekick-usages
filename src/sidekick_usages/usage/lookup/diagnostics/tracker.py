@@ -6,7 +6,6 @@ from sidekick_usages.persistence.types.error import (
 )
 from sidekick_usages.usage.lookup.diagnostics.models import (
     MAX_METRICS_REFRESH_ATTEMPTS,
-    RECOVERABLE_SNAPSHOT_PERSISTENCE_CODES,
     MetricsRefreshCause,
     MetricsRefreshFailureCode,
     MetricsRefreshOutcome,
@@ -19,9 +18,11 @@ from sidekick_usages.usage.lookup.diagnostics.ports import (
     MetricsRefreshObservationSink,
 )
 from sidekick_usages.usage.lookup.worker.models import (
+    RECOVERABLE_METRICS_PERSISTENCE_CODES,
     UsageLookupEventKind,
-    UsageLookupFailure,
+    UsageLookupTerminalFailure,
     UsageLookupWorkerEvent,
+    usage_lookup_failure_is_recoverable,
 )
 
 _ACTIVITY_CACHE_FAILURE_CODES = {
@@ -55,11 +56,11 @@ class MetricsRefreshTracker:
 
     def retry_worker(
         self,
-        failure: UsageLookupFailure,
+        failure: UsageLookupTerminalFailure,
         account_events: tuple[UsageLookupWorkerEvent, ...],
     ) -> None:
         """Spend the single retry on a proven recoverable worker failure."""
-        if not failure.recoverable:
+        if not usage_lookup_failure_is_recoverable(failure):
             raise ValueError("Lookup worker failure is not recoverable.")
         self._consume_retry(
             (
@@ -75,7 +76,7 @@ class MetricsRefreshTracker:
         """Spend the single retry on a recoverable snapshot-load failure."""
         if (
             code is not MetricsRefreshFailureCode.SNAPSHOT_UNAVAILABLE
-            and code not in RECOVERABLE_SNAPSHOT_PERSISTENCE_CODES
+            and code not in RECOVERABLE_METRICS_PERSISTENCE_CODES
         ):
             return False
         if not self.retry_available:
@@ -109,7 +110,7 @@ class MetricsRefreshTracker:
 
     def record_worker_failure(
         self,
-        failure: UsageLookupFailure,
+        failure: UsageLookupTerminalFailure,
         account_events: tuple[UsageLookupWorkerEvent, ...],
     ) -> bool:
         """Record a terminal worker cause and completed account failures."""

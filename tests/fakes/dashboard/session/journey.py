@@ -26,6 +26,7 @@ from sidekick_usages.persistence.errors import (
 )
 from sidekick_usages.persistence.types.error import (
     ActivitySnapshotFailureKind,
+    PersistenceCode,
     UsageSnapshotFailureKind,
 )
 from sidekick_usages.usage.dashboard.models import (
@@ -38,7 +39,6 @@ from sidekick_usages.usage.dashboard.models import (
 from sidekick_usages.usage.lookup.diagnostics.models import (
     MetricsRefreshObservation,
 )
-from sidekick_usages.usage.lookup.worker.models import UsageLookupFailure
 from tests.fakes.dashboard.render import interactive_dashboard_state
 from tests.fakes.dashboard.runtime import (
     EXPECTED_SERVICE_SETUP_PROGRESS,
@@ -367,13 +367,13 @@ def _worker_retry(
     account_id: SidekickAccountId,
     state_root: Path,
 ) -> tuple[int, DashboardFooter, MetricsRefreshObservation]:
-    """Capture one self-healed worker timeout without a footer warning."""
+    """Capture one self-healed worker lock without a footer warning."""
     snapshots = SessionSnapshotSource(snapshot)
     daemon = SetupDaemon(ServiceLifecycleState.READY)
     lookup = SessionLookupWorker(
         account_id,
         account_failure=True,
-        transient_failure=UsageLookupFailure.TIMED_OUT,
+        transient_failure=PersistenceCode.STORE_LOCKED,
     )
     metrics_refresh = SessionMetricsRefreshSink(
         FixedClock(snapshot.reference_time)

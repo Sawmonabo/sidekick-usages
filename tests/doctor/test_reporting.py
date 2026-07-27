@@ -53,6 +53,7 @@ from sidekick_usages.persistence.lookup.store import (
     MetricsRefreshObservationStore,
 )
 from sidekick_usages.persistence.time_codec import canonical_timestamp
+from sidekick_usages.persistence.types.error import PersistenceCode
 from sidekick_usages.usage.dashboard.models import (
     DashboardAccount,
     DashboardActionState,
@@ -65,7 +66,6 @@ from sidekick_usages.usage.lookup.diagnostics.models import (
     MetricsRefreshStage,
     MetricsRefreshWriteState,
 )
-from sidekick_usages.usage.lookup.worker.models import UsageLookupFailure
 from tests.fakes.daemon.capabilities import (
     make_provider_capability_report,
 )
@@ -90,7 +90,7 @@ def _seed_recovered_metrics_refresh(tmp_path: Path) -> None:
         retry_causes=(
             MetricsRefreshCause(
                 stage=MetricsRefreshStage.WORKER,
-                code=UsageLookupFailure.TIMED_OUT,
+                code=PersistenceCode.STORE_LOCKED,
             ),
         ),
     )
@@ -417,7 +417,7 @@ def test_json_reports_current_auth_state_without_secrets(
             "retry_causes": [
                 {
                     "stage": "worker",
-                    "code": "timed_out",
+                    "code": "store_locked",
                     "provider": None,
                     "account_id": None,
                 }

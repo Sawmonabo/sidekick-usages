@@ -68,7 +68,6 @@ from sidekick_usages.usage.lookup.diagnostics.models import (
     MetricsRefreshOutcome,
     MetricsRefreshStage,
 )
-from sidekick_usages.usage.lookup.worker.models import UsageLookupFailure
 from sidekick_usages.usage.models import FetchFailureKind
 from tests.fakes.dashboard.render import CLAUDE_ACTIVE_ID
 from tests.fakes.dashboard.session.journey import exercise_dashboard_session
@@ -743,7 +742,7 @@ def test_dashboard_controller_journey_preserves_verified_truth(
                     ),
                     MetricsRefreshCause(
                         stage=MetricsRefreshStage.WORKER,
-                        code=UsageLookupFailure.TIMED_OUT,
+                        code=PersistenceCode.STORE_LOCKED,
                     ),
                 ),
             ),

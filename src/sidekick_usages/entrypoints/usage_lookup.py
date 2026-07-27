@@ -20,6 +20,7 @@ from sidekick_usages.paths import ApplicationPaths, discover_application_paths
 from sidekick_usages.persistence.credentials.refresh.service import (
     CredentialRefreshTransactions,
 )
+from sidekick_usages.persistence.errors import PersistenceError
 from sidekick_usages.persistence.service import PersistenceService
 from sidekick_usages.persistence.snapshots.activity.store import (
     ActivitySnapshotStore,
@@ -42,6 +43,7 @@ from sidekick_usages.usage.lookup.service import AccountCredentialAccess
 from sidekick_usages.usage.lookup.worker.models import (
     UsageLookupEventKind,
     UsageLookupFailure,
+    UsageLookupTerminalFailure,
     UsageLookupWorkerEvent,
 )
 from sidekick_usages.usage.lookup.worker.protocol import (
@@ -66,8 +68,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             SystemClock(),
             os.environ,
         )
+    except PersistenceError as error:
+        _write_failure(error.code)
+        return _EXIT_INTERNAL_FAILURE
     except Exception:
-        _write_internal_failure()
+        _write_failure(UsageLookupFailure.INTERNAL)
         return _EXIT_INTERNAL_FAILURE
     return _EXIT_OK
 
@@ -159,12 +164,12 @@ def _write_completion(completion: AccountLookupCompletion) -> None:
     )
 
 
-def _write_internal_failure() -> None:
+def _write_failure(failure: UsageLookupTerminalFailure) -> None:
     with suppress(OSError):
         _write_event(
             UsageLookupWorkerEvent(
                 kind=UsageLookupEventKind.FAILED,
-                failure=UsageLookupFailure.INTERNAL,
+                failure=failure,
             )
         )
 

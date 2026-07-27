@@ -16,12 +16,13 @@ from sidekick_usages.serialization.json import (
 )
 from sidekick_usages.usage.lookup.worker.models import (
     UsageLookupEventKind,
-    UsageLookupFailure,
+    UsageLookupTerminalFailure,
     UsageLookupWorkerEvent,
+    parse_usage_lookup_failure,
 )
 from sidekick_usages.usage.models import FetchFailureKind
 
-USAGE_LOOKUP_PROTOCOL_VERSION = 3
+USAGE_LOOKUP_PROTOCOL_VERSION = 4
 MAX_USAGE_LOOKUP_FRAME_BYTES = 512
 
 _EVENT_KEYS = frozenset(
@@ -132,7 +133,7 @@ def _optional_fetch_failure(
     return FetchFailureKind(_require_string(value))
 
 
-def _optional_failure(value: JsonValue) -> UsageLookupFailure | None:
+def _optional_failure(value: JsonValue) -> UsageLookupTerminalFailure | None:
     if value is None:
         return None
-    return UsageLookupFailure(_require_string(value))
+    return parse_usage_lookup_failure(_require_string(value))

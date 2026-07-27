@@ -29,10 +29,13 @@ from sidekick_usages.usage.lookup.diagnostics.models import (
     MetricsRefreshOutcome,
     MetricsRefreshStage,
 )
-from sidekick_usages.usage.lookup.worker.models import UsageLookupFailure
+from sidekick_usages.usage.lookup.worker.models import (
+    UsageLookupFailure,
+    parse_usage_lookup_failure,
+)
 from sidekick_usages.usage.models import FetchFailureKind
 
-METRICS_REFRESH_SCHEMA_VERSION = 2
+METRICS_REFRESH_SCHEMA_VERSION = 3
 MAX_METRICS_REFRESH_BYTES = 256 * 1024
 
 _METRICS_REFRESH_CAUSE_KEYS = frozenset(
@@ -106,7 +109,7 @@ def _failure_code(
     | MetricsRefreshFailureCode
 ):
     if stage is MetricsRefreshStage.WORKER:
-        return UsageLookupFailure(value)
+        return parse_usage_lookup_failure(value)
     if stage is MetricsRefreshStage.ACCOUNT:
         return FetchFailureKind(value)
     if stage is MetricsRefreshStage.SNAPSHOT_RELOAD:
