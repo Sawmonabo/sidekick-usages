@@ -45,10 +45,12 @@ from tests.fakes.dashboard.session.models import (
 from tests.fakes.dashboard.session.snapshots import (
     SessionInvalidationProbe,
     SessionLookupWorker,
+    SessionMetricsRefreshSink,
     SessionSnapshotSource,
     unavailable_session_snapshot,
 )
 from tests.fakes.dashboard.setup import guided_setup
+from tests.support.time import FixedClock
 
 
 def _association_handoff(
@@ -90,6 +92,9 @@ def _association_handoff(
         snapshots=snapshots,
         only=None,
         lookup=SessionLookupWorker(account_id),
+        metrics_refresh=SessionMetricsRefreshSink(
+            FixedClock(snapshot.reference_time)
+        ),
         connector=connector,
         socket_path=SESSION_SOCKET,
         setup=guided_setup(daemon, state_root / "association.json"),
@@ -155,6 +160,9 @@ def _partial_start_reaped(
         snapshots=snapshots,
         only=None,
         lookup=lookup,
+        metrics_refresh=SessionMetricsRefreshSink(
+            FixedClock(snapshot.reference_time)
+        ),
         connector=SessionControlConnector(daemon, snapshots),
         socket_path=SESSION_SOCKET,
         setup=guided_setup(daemon, state_root / "partial.json"),
@@ -331,7 +339,10 @@ def exercise_dashboard_session(
     dashboard_client.close()
 
     daemon = SetupDaemon(ServiceLifecycleState.ABSENT)
-    lookup = SessionLookupWorker(active_account_id, fail=True)
+    lookup = SessionLookupWorker(active_account_id, account_failure=True)
+    metrics_refresh = SessionMetricsRefreshSink(
+        FixedClock(snapshot.reference_time)
+    )
     connector = SessionControlConnector(daemon, snapshots)
     connector.require_remote_control_next = True
     connector.snapshot_ready = False
@@ -342,6 +353,7 @@ def exercise_dashboard_session(
         snapshots=snapshots,
         only=None,
         lookup=lookup,
+        metrics_refresh=metrics_refresh,
         connector=connector,
         socket_path=SESSION_SOCKET,
         setup=guided_setup(daemon, state_root / "setup.json"),
@@ -438,6 +450,7 @@ def exercise_dashboard_session(
         failure_footer=failure_footer,
         remote_control_scoped_to_claude=remote_control_scoped_to_claude,
         lookup_failure=lookup_failure,
+        metrics_refresh=metrics_refresh.observations[-1],
         lookup_cancelled=lookup.cancelled,
         daemon_cancelled=daemon.cancelled,
         stream_released=connector.stream_released.is_set(),

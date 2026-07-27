@@ -49,29 +49,72 @@ from sidekick_usages.core.selection.types import (
 )
 from sidekick_usages.core.types import AccountLabel, ExitCode, ProviderId
 from sidekick_usages.doctor.runtime.service import DoctorRuntimeService
+from sidekick_usages.persistence.filesystem.service import (
+    PersistenceFilesystem,
+)
+from sidekick_usages.persistence.lookup.store import (
+    MetricsRefreshObservationStore,
+)
 from sidekick_usages.persistence.time_codec import canonical_timestamp
 from sidekick_usages.usage.dashboard.models import (
     DashboardAccount,
     DashboardActionState,
     DashboardSnapshot,
 )
+from sidekick_usages.usage.lookup.models import (
+    MetricsRefreshDiagnostic,
+    MetricsRefreshDiagnosticState,
+    MetricsRefreshObservation,
+    MetricsRefreshOutcome,
+    MetricsRefreshStage,
+    MetricsRefreshWriteState,
+)
+from sidekick_usages.usage.lookup.worker.models import UsageLookupFailure
 from tests.fakes.daemon.capabilities import (
     make_provider_capability_report,
 )
 from tests.fakes.dashboard.render import interactive_dashboard_state
 from tests.fakes.doctor import doctor_harness
-from tests.support.persistence import make_account_store
+from tests.support.persistence import (
+    make_account_store,
+    make_application_paths,
+)
 from tests.support.time import REFERENCE_TIME
 
 _RETRY_ATTEMPTS = 2
 _SETUP_AUTHORITY_ID = AuthorityId("00000000-0000-4000-8000-000000000001")
 
 
-def _cached_doctor_dashboard(
+def _seed_recovered_metrics_refresh(tmp_path: Path) -> None:
+    """Persist and read one recovered global metrics observation."""
+    observation = MetricsRefreshObservation(
+        observed_at=REFERENCE_TIME,
+        outcome=MetricsRefreshOutcome.RECOVERED,
+        attempts=_RETRY_ATTEMPTS,
+        stage=MetricsRefreshStage.WORKER,
+        code=UsageLookupFailure.TIMED_OUT,
+    )
+    store = MetricsRefreshObservationStore(
+        make_application_paths(tmp_path).metrics_refresh_status
+    )
+    PersistenceFilesystem(store.path).commit_opaque_private(b"{")
+    assert store.diagnostic() == MetricsRefreshDiagnostic(
+        state=MetricsRefreshDiagnosticState.UNAVAILABLE
+    )
+    assert store.record(observation) is MetricsRefreshWriteState.SAVED
+    assert store.diagnostic() == MetricsRefreshDiagnostic(
+        state=MetricsRefreshDiagnosticState.AVAILABLE,
+        observation=observation,
+    )
+
+
+def _seed_doctor_dashboard(
+    tmp_path: Path,
     claude: SavedAccount,
     codex: SavedAccount,
 ) -> tuple[DashboardSnapshot, str]:
-    """Project the established cached fixture onto Doctor account IDs."""
+    """Seed metrics telemetry and project cached Doctor account IDs."""
+    _seed_recovered_metrics_refresh(tmp_path)
     dashboard, _cursor, _footer = interactive_dashboard_state(REFERENCE_TIME)
     claude_provider, codex_provider = dashboard.providers
     claude_row = claude_provider.rows[0]
@@ -235,7 +278,8 @@ def test_json_reports_current_auth_state_without_secrets(
         updated_at=REFERENCE_TIME - timedelta(minutes=1),
         failure_code="worker_interrupted",
     )
-    dashboard, metrics_observed_at = _cached_doctor_dashboard(
+    dashboard, metrics_observed_at = _seed_doctor_dashboard(
+        tmp_path,
         login_saved,
         saved,
     )
@@ -363,12 +407,25 @@ def test_json_reports_current_auth_state_without_secrets(
         unfinished[0]["phase"],
         unfinished[0]["failure_code"],
     ) == ("target_activated", "worker_interrupted")
-    assert payload["persistence"] == {
-        "state": "current",
-        "path": str(tmp_path / "accounts.json"),
-        "account_count": 2,
-        "credential_refresh": "clean",
-    }
+    assert (
+        payload["persistence"],
+        payload["metrics_refresh"],
+    ) == (
+        {
+            "state": "current",
+            "path": str(tmp_path / "accounts.json"),
+            "account_count": 2,
+            "credential_refresh": "clean",
+        },
+        {
+            "state": "available",
+            "observed_at": canonical_timestamp(REFERENCE_TIME),
+            "outcome": "recovered",
+            "attempts": _RETRY_ATTEMPTS,
+            "stage": "worker",
+            "code": "timed_out",
+        },
+    )
     assert "test-only-secret" not in output.getvalue()
     assert clock.calls == 1
     DoctorRuntimeService(

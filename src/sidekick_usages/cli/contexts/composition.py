@@ -74,6 +74,9 @@ from sidekick_usages.persistence.errors import (
     PersistenceError,
     PersistenceFilesystemError,
 )
+from sidekick_usages.persistence.lookup.store import (
+    MetricsRefreshObservationStore,
+)
 from sidekick_usages.persistence.models.status import (
     PersistenceFailure,
 )
@@ -439,6 +442,9 @@ def compose_doctor_context(
     def build(_resources: ExitStack) -> DoctorContext:
         resolved_paths = _resolved_paths(paths)
         resolved_clock = _resolved_clock(clock)
+        metrics_refresh = MetricsRefreshObservationStore(
+            resolved_paths.metrics_refresh_status
+        ).diagnostic()
         _provider_map, heartbeat_map = _provider_maps(
             resolved_clock,
             providers,
@@ -476,6 +482,7 @@ def compose_doctor_context(
                 ),
                 supervisor,
                 capability_service,
+                metrics_refresh,
             )
         try:
             runtime = DoctorRuntimeService(
@@ -496,6 +503,7 @@ def compose_doctor_context(
                 DoctorFailed(failure),
                 supervisor,
                 capability_service,
+                metrics_refresh,
             )
         return DoctorContext(
             DoctorReady(
@@ -511,6 +519,7 @@ def compose_doctor_context(
             ),
             supervisor,
             capability_service,
+            metrics_refresh,
         )
 
     return _compose(build)

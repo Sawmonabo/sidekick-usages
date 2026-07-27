@@ -23,6 +23,9 @@ from sidekick_usages.persistence.credentials.refresh.artifacts import (
     CredentialRefreshState,
     CredentialRefreshStateKind,
 )
+from sidekick_usages.persistence.lookup.store import (
+    MetricsRefreshObservationStore,
+)
 from sidekick_usages.persistence.models.status import PersistenceStatus
 from sidekick_usages.persistence.types.status import PersistenceState
 from sidekick_usages.providers.registry import (
@@ -36,6 +39,7 @@ from tests.fakes.daemon.capabilities import (
 )
 from tests.support.cli import CliHarness
 from tests.support.daemon import make_supervisor_health
+from tests.support.persistence import make_application_paths
 from tests.support.time import FixedClock
 
 
@@ -68,6 +72,9 @@ def doctor_harness(
         if supervisor is None
         else supervisor
     )
+    refresh_diagnostic = MetricsRefreshObservationStore(
+        make_application_paths(tmp_path).metrics_refresh_status
+    ).diagnostic()
     context = DoctorContext(
         DoctorReady(
             DoctorService(
@@ -92,6 +99,7 @@ def doctor_harness(
         ),
         active_supervisor,
         capability_service,
+        refresh_diagnostic,
     )
     return (
         CliHarness(

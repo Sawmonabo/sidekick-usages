@@ -41,6 +41,7 @@ from sidekick_usages.persistence.models.status import (
     PersistenceFailure,
     PersistenceStatus,
 )
+from sidekick_usages.usage.lookup.models import MetricsRefreshDiagnostic
 
 type DoctorResult = DoctorReadyResult | DoctorFailedResult
 
@@ -138,6 +139,7 @@ class DoctorReadyResult:
     refresh_state: CredentialRefreshState
     supervisor: SupervisorHealth
     capabilities: ProviderCapabilityReport
+    metrics_refresh: MetricsRefreshDiagnostic
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -147,3 +149,4 @@ class DoctorFailedResult:
     failure: PersistenceFailure
     supervisor: SupervisorHealth
     capabilities: ProviderCapabilityReport
+    metrics_refresh: MetricsRefreshDiagnostic

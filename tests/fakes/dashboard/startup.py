@@ -29,9 +29,11 @@ from tests.fakes.dashboard.session.models import (
 from tests.fakes.dashboard.session.snapshots import (
     SessionInvalidationProbe,
     SessionLookupWorker,
+    SessionMetricsRefreshSink,
     SessionSnapshotSource,
 )
 from tests.fakes.dashboard.setup import guided_setup
+from tests.support.time import FixedClock
 
 
 def exercise_startup_reconciliation(
@@ -50,12 +52,19 @@ def exercise_startup_reconciliation(
     connector.reconciliation_failures = {ProviderId.CLAUDE}
     connector.allow_degraded = True
     invalidation = SessionInvalidationProbe()
-    lookup = SessionLookupWorker(active_account_id, block=True, fail=True)
+    lookup = SessionLookupWorker(
+        active_account_id,
+        block=True,
+        account_failure=True,
+    )
     session = InteractiveDashboardSession(
         snapshot,
         snapshots=snapshots,
         only=None,
         lookup=lookup,
+        metrics_refresh=SessionMetricsRefreshSink(
+            FixedClock(snapshot.reference_time)
+        ),
         connector=connector,
         socket_path=SESSION_SOCKET,
         setup=guided_setup(daemon, acknowledgement_path),

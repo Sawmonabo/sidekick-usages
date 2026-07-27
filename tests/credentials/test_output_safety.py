@@ -36,6 +36,10 @@ from sidekick_usages.persistence.private.credentials import (
 )
 from sidekick_usages.persistence.types.status import PersistenceState
 from sidekick_usages.providers.claude.provider import ClaudeProvider
+from sidekick_usages.usage.lookup.models import (
+    MetricsRefreshDiagnostic,
+    MetricsRefreshDiagnosticState,
+)
 from tests.fakes.daemon.capabilities import (
     StaticProviderCapabilityService,
     make_provider_capability_report,
@@ -118,6 +122,9 @@ def test_provider_secret_never_crosses_persisted_or_doctor_error_channels(
         refresh_state=CredentialRefreshState(CredentialRefreshStateKind.CLEAN),
         supervisor=make_supervisor_health(),
         capabilities=capabilities,
+        metrics_refresh=MetricsRefreshDiagnostic(
+            state=MetricsRefreshDiagnosticState.ABSENT
+        ),
     )
     human_output = io.StringIO()
     Console(file=human_output, force_terminal=False).print(

@@ -36,6 +36,7 @@ class ApplicationPaths:
     :ivar private_codex_profiles: Stable private Codex profile root.
     :ivar activity_snapshots: Canonical token-activity snapshot file.
     :ivar usage_snapshots: Canonical account-usage snapshot file.
+    :ivar metrics_refresh_status: Latest sanitized metrics-refresh result.
     :ivar credential_refresh: Canonical private refresh-state root.
     :ivar private_claude_profiles: Stable private Claude profile root.
     :ivar selected_state: Provider selected-state authority.
@@ -55,6 +56,7 @@ class ApplicationPaths:
     private_codex_profiles: Path
     activity_snapshots: Path
     usage_snapshots: Path
+    metrics_refresh_status: Path
     credential_refresh: Path
     private_claude_profiles: Path
     selected_state: Path
@@ -149,6 +151,7 @@ def discover_application_paths() -> ApplicationPaths:
         private_codex_profiles=private_root / "codex",
         activity_snapshots=native_data_root / "token-activity.json",
         usage_snapshots=native_data_root / "usage-metrics.json",
+        metrics_refresh_status=native_data_root / "metrics-refresh.json",
         credential_refresh=native_data_root / "credential-refresh",
         private_claude_profiles=private_root / "claude",
         selected_state=native_data_root / "selected-accounts.json",

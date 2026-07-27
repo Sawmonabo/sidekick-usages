@@ -22,6 +22,7 @@ from sidekick_usages.providers.claude.activation.types import (
 from sidekick_usages.usage.dashboard.models import (
     DashboardFooter,
 )
+from sidekick_usages.usage.lookup.models import MetricsRefreshObservation
 
 SESSION_WAIT_SECONDS = 2.0
 DEFAULT_TEST_CONTROL_TIMEOUT_SECONDS = 5.0
@@ -72,6 +73,7 @@ class DashboardSessionProof:
     failure_footer: DashboardFooter
     remote_control_scoped_to_claude: bool
     lookup_failure: DashboardLookupFailureProof
+    metrics_refresh: MetricsRefreshObservation
     lookup_cancelled: bool
     daemon_cancelled: bool
     stream_released: bool

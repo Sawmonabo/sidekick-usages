@@ -6,6 +6,7 @@ from threading import Event
 from time import monotonic
 
 from sidekick_usages.cli.dashboard.session import InteractiveDashboardSession
+from sidekick_usages.clock import Clock
 from sidekick_usages.core.accounts.types import SidekickAccountId
 from sidekick_usages.core.selection.types import ProviderRuntimeState
 from sidekick_usages.core.types import ProviderId
@@ -15,6 +16,13 @@ from sidekick_usages.usage.dashboard.models import (
     DashboardService,
     DashboardSnapshot,
     DashboardStatusKind,
+)
+from sidekick_usages.usage.lookup.models import (
+    MetricsRefreshCode,
+    MetricsRefreshObservation,
+    MetricsRefreshOutcome,
+    MetricsRefreshStage,
+    MetricsRefreshWriteState,
 )
 from sidekick_usages.usage.lookup.worker.models import (
     UsageLookupEventKind,
@@ -82,6 +90,33 @@ class SessionSnapshotSource:
         )
 
 
+class SessionMetricsRefreshSink:
+    """Capture sanitized metrics-refresh observations."""
+
+    def __init__(self, clock: Clock) -> None:
+        self._clock = clock
+        self.observations: list[MetricsRefreshObservation] = []
+
+    def record(
+        self,
+        outcome: MetricsRefreshOutcome,
+        *,
+        attempts: int,
+        stage: MetricsRefreshStage | None = None,
+        code: MetricsRefreshCode | None = None,
+    ) -> MetricsRefreshWriteState:
+        """Capture one observation through the no-throw sink contract."""
+        observation = MetricsRefreshObservation(
+            observed_at=self._clock.now(),
+            outcome=outcome,
+            attempts=attempts,
+            stage=stage,
+            code=code,
+        )
+        self.observations.append(observation)
+        return MetricsRefreshWriteState.SAVED
+
+
 class SessionLookupWorker:
     """Complete one stable lookup wave and record cancellation."""
 
@@ -90,12 +125,12 @@ class SessionLookupWorker:
         account_id: SidekickAccountId,
         *,
         block: bool = False,
-        fail: bool = False,
+        account_failure: bool = False,
         transient_failure: UsageLookupFailure | None = None,
     ) -> None:
         self._account_id = account_id
         self._block = block
-        self._fail = fail
+        self._account_failure = account_failure
         self._transient_failure = transient_failure
         self._release = Event()
         self.finished = Event()
@@ -120,14 +155,12 @@ class SessionLookupWorker:
                     UsageLookupWorkerEvent(
                         (
                             UsageLookupEventKind.ACCOUNT_FAILED
-                            if self._fail
+                            if self._account_failure
                             else UsageLookupEventKind.ACCOUNT_SUCCEEDED
                         ),
                         account_id=self._account_id,
                     )
                 )
-            if self._fail:
-                raise OSError("Synthetic lookup owner failed.")
             return UsageLookupWorkerResult((self._account_id,))
         finally:
             if transient_failure is None:

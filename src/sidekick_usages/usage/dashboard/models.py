@@ -24,6 +24,18 @@ from sidekick_usages.persistence.types.error import (
 )
 
 MAX_DASHBOARD_STATUS_MESSAGE_CHARACTERS = 512
+_DASHBOARD_ACTIVITY_CACHE_ISSUES = frozenset(
+    {
+        ActivitySnapshotFailureKind.READ,
+        ActivitySnapshotFailureKind.MALFORMED,
+    }
+)
+_DASHBOARD_USAGE_CACHE_ISSUES = frozenset(
+    {
+        UsageSnapshotFailureKind.READ,
+        UsageSnapshotFailureKind.MALFORMED,
+    }
+)
 
 type DashboardRow = DashboardAccount | DashboardExternalRow
 
@@ -281,6 +293,17 @@ class DashboardSnapshot:
             ProviderId
         ):
             raise ValueError("Dashboard providers must use canonical order.")
+        if (
+            self.activity_cache_issue is not None
+            and self.activity_cache_issue
+            not in _DASHBOARD_ACTIVITY_CACHE_ISSUES
+        ):
+            raise ValueError("Dashboard activity cache issue is not readable.")
+        if (
+            self.usage_cache_issue is not None
+            and self.usage_cache_issue not in _DASHBOARD_USAGE_CACHE_ISSUES
+        ):
+            raise ValueError("Dashboard usage cache issue is not readable.")
 
     @property
     def all_saved_metrics_unavailable(self) -> bool:

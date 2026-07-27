@@ -42,6 +42,10 @@ from sidekick_usages.providers.claude.managed.models import (
 from sidekick_usages.providers.codex.app_server.models import (
     CodexAppServerCapabilities,
 )
+from sidekick_usages.usage.lookup.models import (
+    MetricsRefreshDiagnostic,
+    MetricsRefreshDiagnosticState,
+)
 
 
 def render_doctor(
@@ -67,6 +71,7 @@ def render_doctor(
         parts.append(
             Text("  credential refresh: " + result.refresh_state.kind.value)
         )
+        parts.append(_metrics_refresh_line(result.metrics_refresh))
         diagnostics = result.diagnostics
     elif isinstance(result, DoctorFailedResult):
         parts.extend(_service_lines(result.supervisor))
@@ -79,6 +84,7 @@ def render_doctor(
             )
         )
         parts.extend(_persistence_failure_lines(result.failure))
+        parts.append(_metrics_refresh_line(result.metrics_refresh))
         diagnostics = ()
     else:
         assert_never(result)
@@ -103,6 +109,29 @@ def render_doctor(
         )
         parts.append(Text("  manual action: " + action))
     return Group(*parts)
+
+
+def _metrics_refresh_line(
+    diagnostic: MetricsRefreshDiagnostic,
+) -> Text:
+    """Render one global sanitized metrics-refresh status."""
+    if diagnostic.state is MetricsRefreshDiagnosticState.ABSENT:
+        return Text("  metrics refresh: not yet observed")
+    if diagnostic.state is MetricsRefreshDiagnosticState.UNAVAILABLE:
+        return Text("  metrics refresh: unavailable")
+    observation = diagnostic.observation
+    if observation is None:
+        raise AssertionError("Available metrics refresh has no observation.")
+    detail = ""
+    if observation.stage is not None and observation.code is not None:
+        detail = f" · {observation.stage.value}/{observation.code.value}"
+    attempts = "attempt" if observation.attempts == 1 else "attempts"
+    return Text(
+        "  metrics refresh: "
+        f"{observation.outcome.value} after "
+        f"{observation.attempts} {attempts}{detail} · "
+        f"{canonical_timestamp(observation.observed_at)}"
+    )
 
 
 def _service_lines(health: SupervisorHealth) -> tuple[Text, ...]:

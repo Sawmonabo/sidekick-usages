@@ -46,6 +46,10 @@ from sidekick_usages.daemon.lifecycle.manager import build_daemon_manager
 from sidekick_usages.paths import ApplicationPaths, discover_application_paths
 from sidekick_usages.persistence.accounts.reader import AccountIndexReader
 from sidekick_usages.persistence.errors import PersistenceError
+from sidekick_usages.persistence.lookup.store import (
+    MetricsRefreshObservationRecorder,
+    MetricsRefreshObservationStore,
+)
 from sidekick_usages.persistence.private.credentials import (
     PrivateCredentialTree,
 )
@@ -64,6 +68,8 @@ from sidekick_usages.providers.codex.app_server.executable import (
     resolve_codex_launcher,
 )
 from sidekick_usages.usage.lookup.worker.client import (
+    UnavailableUsageLookupWorker,
+    UsageLookupLaunchError,
     UsageLookupModuleLaunchPlanner,
     UsageLookupWorkerClient,
     resolve_usage_lookup_interpreter,
@@ -138,17 +144,24 @@ def _run_dashboard_once(
     """Build and run one fresh dashboard session."""
     snapshots = CachedDashboardSnapshotSource(paths, clock)
     capabilities = build_provider_capability_service(paths, os.environ)
-    lookup = UsageLookupWorkerClient(
-        UsageLookupModuleLaunchPlanner(
-            resolve_usage_lookup_interpreter(),
-            os.environ,
+    try:
+        lookup = UsageLookupWorkerClient(
+            UsageLookupModuleLaunchPlanner(
+                resolve_usage_lookup_interpreter(),
+                os.environ,
+            )
         )
-    )
+    except UsageLookupLaunchError as error:
+        lookup = UnavailableUsageLookupWorker(error.failure)
     session = InteractiveDashboardSession(
         snapshots.load(only),
         snapshots=snapshots,
         only=only,
         lookup=lookup,
+        metrics_refresh=MetricsRefreshObservationRecorder(
+            MetricsRefreshObservationStore(paths.metrics_refresh_status),
+            clock,
+        ),
         connector=_connect_dashboard_control,
         socket_path=paths.supervisor_socket,
         setup=GuidedServiceSetup(

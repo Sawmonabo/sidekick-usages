@@ -45,10 +45,12 @@ from tests.fakes.dashboard.session.control import (
 )
 from tests.fakes.dashboard.session.models import SESSION_SOCKET
 from tests.fakes.dashboard.session.snapshots import (
+    SessionMetricsRefreshSink,
     SessionSnapshotSource,
     unavailable_session_snapshot,
 )
 from tests.support.pty import PtySession
+from tests.support.time import FixedClock
 
 ANSI_CONTROL_PATTERN = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|[()][0-2A-Z])")
 CURSOR_UP_PATTERN = re.compile(r"\x1b\[(\d+)A")
@@ -210,6 +212,9 @@ def _child_main() -> int:
         snapshots=snapshots,
         only=None,
         lookup=lookup,
+        metrics_refresh=SessionMetricsRefreshSink(
+            FixedClock(snapshot.reference_time)
+        ),
         connector=connector,
         socket_path=SESSION_SOCKET,
         setup=GuidedServiceSetup(

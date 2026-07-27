@@ -18,6 +18,7 @@ def benchmark_application_paths(root: Path) -> ApplicationPaths:
         private_codex_profiles=credentials / "codex",
         activity_snapshots=data / "token-activity.json",
         usage_snapshots=data / "usage-metrics.json",
+        metrics_refresh_status=data / "metrics-refresh.json",
         credential_refresh=data / "credential-refresh",
         private_claude_profiles=credentials / "claude",
         selected_state=data / "selected-accounts.json",

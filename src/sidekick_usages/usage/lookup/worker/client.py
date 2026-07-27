@@ -140,6 +140,24 @@ class UsageLookupModuleLaunchPlanner:
         )
 
 
+class UnavailableUsageLookupWorker:
+    """Return one launch failure without starting a child process."""
+
+    def __init__(self, failure: UsageLookupFailure) -> None:
+        self._failure = failure
+
+    def run(
+        self,
+        observe: UsageLookupEventObserver | None = None,
+    ) -> UsageLookupWorkerResult:
+        """Return the qualified failure without emitting account events."""
+        del observe
+        return UsageLookupWorkerResult((), self._failure)
+
+    def cancel(self) -> None:
+        """Accept idempotent cancellation without an owned process."""
+
+
 class UsageLookupWorkerClient:
     """Launch, stream, and fully reap one global lookup worker."""
 

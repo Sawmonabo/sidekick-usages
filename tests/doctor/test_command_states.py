@@ -31,6 +31,10 @@ from sidekick_usages.persistence.credentials.refresh.artifacts import (
 )
 from sidekick_usages.persistence.models.status import PersistenceFailure
 from sidekick_usages.persistence.types.error import PersistenceCode
+from sidekick_usages.usage.lookup.models import (
+    MetricsRefreshDiagnostic,
+    MetricsRefreshDiagnosticState,
+)
 from tests.fakes.daemon.capabilities import (
     StaticProviderCapabilityService,
     make_provider_capability_report,
@@ -62,6 +66,9 @@ def test_json_represents_current_store_failure(tmp_path: Path) -> None:
             DoctorFailed(failure),
             _SUPERVISOR_HEALTH,
             StaticProviderCapabilityService(make_provider_capability_report()),
+            MetricsRefreshDiagnostic(
+                state=MetricsRefreshDiagnosticState.UNAVAILABLE
+            ),
         ),
     )
 
@@ -83,9 +90,10 @@ def test_json_represents_current_store_failure(tmp_path: Path) -> None:
         "scheduled": "unavailable",
         "unfinished_activations": "unavailable",
     }
+    assert payload["metrics_refresh"]["state"] == "unavailable"
 
     healthy_supervisor = make_supervisor_health()
-    primary_harness, _primary_output, _primary_clock = doctor_harness(
+    primary_harness, primary_output, _primary_clock = doctor_harness(
         tmp_path / "primary-absent",
         (),
         supervisor=replace(
@@ -122,6 +130,10 @@ def test_json_represents_current_store_failure(tmp_path: Path) -> None:
     refresh_result = refresh_harness.invoke(["doctor", "--json"])
 
     assert primary_result.exit_code == ExitCode.MANUAL_ACTION
+    assert (
+        json.loads(primary_output.getvalue())["metrics_refresh"]["state"]
+        == "absent"
+    )
     assert downstream_result.exit_code == ExitCode.SCHEDULER_ERROR
     assert capability_result.exit_code == ExitCode.SYSTEM_ERROR
     assert refresh_result.exit_code == ExitCode.SYSTEM_ERROR

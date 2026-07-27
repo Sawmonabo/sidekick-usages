@@ -30,6 +30,7 @@ from sidekick_usages.persistence.models.status import (
 from sidekick_usages.persistence.service import PersistenceService
 from sidekick_usages.providers.claude.types import ClaudeSetupToken
 from sidekick_usages.update import UpdateService
+from sidekick_usages.usage.lookup.models import MetricsRefreshDiagnostic
 from sidekick_usages.usage.service import UsageCheckService
 
 type DoctorState = DoctorReady | DoctorFailed
@@ -94,6 +95,7 @@ class DoctorContext:
     state: DoctorState
     supervisor: SupervisorHealth
     capabilities: ProviderCapabilityEvidenceSource
+    metrics_refresh: MetricsRefreshDiagnostic
 
 
 @dataclass(frozen=True, slots=True)

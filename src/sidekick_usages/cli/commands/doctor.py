@@ -101,6 +101,7 @@ def doctor_cmd(
             failure=state.failure,
             supervisor=supervisor,
             capabilities=capabilities,
+            metrics_refresh=doctor.metrics_refresh,
         )
         _write_result(
             invocation,
@@ -142,6 +143,7 @@ def doctor_cmd(
             refresh_state=state.refresh_state,
             supervisor=supervisor,
             capabilities=capabilities,
+            metrics_refresh=doctor.metrics_refresh,
         )
         _write_result(
             invocation,

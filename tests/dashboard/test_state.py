@@ -62,6 +62,12 @@ from sidekick_usages.usage.dashboard.models import (
     DashboardStatusKind,
 )
 from sidekick_usages.usage.dashboard.service import CachedDashboardService
+from sidekick_usages.usage.lookup.models import (
+    MetricsRefreshFailureCode,
+    MetricsRefreshObservation,
+    MetricsRefreshOutcome,
+    MetricsRefreshStage,
+)
 from sidekick_usages.usage.lookup.worker.models import UsageLookupFailure
 from tests.fakes.dashboard.runtime import SetupDaemon
 from tests.fakes.dashboard.session.control import SessionControlConnector
@@ -73,6 +79,7 @@ from tests.fakes.dashboard.session.models import (
 from tests.fakes.dashboard.session.snapshots import (
     SessionInvalidationProbe,
     SessionLookupWorker,
+    SessionMetricsRefreshSink,
     SessionSnapshotSource,
 )
 from tests.fakes.dashboard.setup import guided_setup
@@ -91,6 +98,7 @@ from tests.fakes.dashboard.state import (
 from tests.fakes.migration.managed_auth import managed_auth_scenario
 from tests.support.persistence import make_application_paths
 from tests.support.platform import REQUIRES_MANAGED_RUNTIME
+from tests.support.time import FixedClock
 
 REFERENCE_TIME = datetime(2026, 7, 25, 14, tzinfo=UTC)
 OBSERVED_AT = REFERENCE_TIME - timedelta(hours=2)
@@ -427,12 +435,14 @@ def _assert_transient_lookup_recovers_with_cached_metrics(
         account.account_id,
         transient_failure=UsageLookupFailure.TIMED_OUT,
     )
+    metrics_refresh = SessionMetricsRefreshSink(FixedClock(REFERENCE_TIME))
     invalidation = SessionInvalidationProbe()
     session = InteractiveDashboardSession(
         snapshot,
         snapshots=snapshots,
         only=None,
         lookup=lookup,
+        metrics_refresh=metrics_refresh,
         connector=SessionControlConnector(daemon, snapshots),
         socket_path=SESSION_SOCKET,
         setup=guided_setup(
@@ -456,6 +466,15 @@ def _assert_transient_lookup_recovers_with_cached_metrics(
         )
         assert lookup.runs == RECOVERED_LOOKUP_RUNS
         assert session.view.footer.status is None
+        assert metrics_refresh.observations == [
+            MetricsRefreshObservation(
+                observed_at=REFERENCE_TIME,
+                outcome=MetricsRefreshOutcome.RECOVERED,
+                attempts=RECOVERED_LOOKUP_RUNS,
+                stage=MetricsRefreshStage.WORKER,
+                code=UsageLookupFailure.TIMED_OUT,
+            )
+        ]
     finally:
         session.close()
 
@@ -747,6 +766,13 @@ def test_dashboard_controller_journey_preserves_verified_truth(
         ),
         remote_control_scoped_to_claude=True,
         lookup_failure=(MetricsFreshness.UNAVAILABLE, True),
+        metrics_refresh=MetricsRefreshObservation(
+            observed_at=REFERENCE_TIME,
+            outcome=MetricsRefreshOutcome.PARTIAL,
+            attempts=1,
+            stage=MetricsRefreshStage.PROVIDER,
+            code=MetricsRefreshFailureCode.PROVIDER_FAILURE,
+        ),
         lookup_cancelled=True,
         daemon_cancelled=True,
         stream_released=True,

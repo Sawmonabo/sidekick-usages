@@ -62,6 +62,12 @@ from sidekick_usages.usage.dashboard.models import (
     DashboardStatus,
     DashboardStatusKind,
 )
+from sidekick_usages.usage.lookup.diagnostics import (
+    MetricsRefreshTracker,
+)
+from sidekick_usages.usage.lookup.ports import (
+    MetricsRefreshObservationSink,
+)
 from sidekick_usages.usage.lookup.worker.models import (
     UsageLookupEventKind,
     UsageLookupFailure,
@@ -77,6 +83,9 @@ REFRESH_ALL_QUEUED_MESSAGE = "Due-account refresh queued."
 LOOKUP_FAILED_MESSAGE = (
     "Live metrics refresh did not complete; existing dashboard data was "
     "preserved."
+)
+LOOKUP_DIAGNOSTIC_UNAVAILABLE_MESSAGE = (
+    " Diagnostic details could not be saved."
 )
 CACHE_RELOAD_ERROR_MESSAGE = (
     "The action completed, but cached state could not be reloaded."
@@ -104,6 +113,7 @@ class InteractiveDashboardSession:
         snapshots: DashboardSnapshotSource,
         only: ProviderId | None,
         lookup: DashboardLookupWorker,
+        metrics_refresh: MetricsRefreshObservationSink,
         connector: DashboardControlConnector,
         socket_path: Path,
         setup: GuidedServiceSetup,
@@ -118,6 +128,7 @@ class InteractiveDashboardSession:
         self._snapshots = snapshots
         self._only = only
         self._lookup = lookup
+        self._metrics_refresh = metrics_refresh
         self._claude_environment_conflict = claude_environment_conflict(
             dict(environment)
         )
@@ -377,21 +388,28 @@ class InteractiveDashboardSession:
         return True
 
     def _run_lookup(self) -> None:
+        metrics_refresh = MetricsRefreshTracker(self._metrics_refresh)
         result = self._run_lookup_attempt()
-        retry_available = True
         if (
             not self._stopping.is_set()
             and result.failure is not None
             and result.failure.recoverable
         ):
+            metrics_refresh.retry_worker(result.failure)
             result = self._run_lookup_attempt()
-            retry_available = False
         if self._stopping.is_set():
             return
         if not result.succeeded:
-            self._publish_lookup_failure()
+            failure = result.failure
+            if failure is None:
+                raise AssertionError("Failed lookup has no terminal cause.")
+            self._publish_lookup_failure(
+                diagnostic_unavailable=(
+                    metrics_refresh.record_worker_failure(failure)
+                )
+            )
             return
-        self._publish_successful_lookup(retry_available=retry_available)
+        self._publish_successful_lookup(metrics_refresh)
 
     def _run_lookup_attempt(self) -> UsageLookupWorkerResult:
         try:
@@ -423,49 +441,91 @@ class InteractiveDashboardSession:
 
     def _publish_successful_lookup(
         self,
-        *,
-        retry_available: bool,
+        metrics_refresh: MetricsRefreshTracker,
     ) -> None:
-        with (
-            self._serialized_snapshot() as snapshot,
-            self._view_lock,
-        ):
-            if self._closed:
-                return
-            resolved_snapshot = snapshot
-            if resolved_snapshot is None and retry_available:
-                resolved_snapshot = self._load_snapshot()
-            if resolved_snapshot is None:
-                self._publish_lookup_failure_locked()
-            else:
-                self._lookup_terminal_succeeded = True
-                outcome_snapshot = self._outcome_view(resolved_snapshot)
-                controller = self._controller().rebase(outcome_snapshot)
-                self._view = replace(
-                    self._view,
-                    snapshot=controller.snapshot,
-                    controller=controller.state,
+        with self._snapshot_lock:
+            try:
+                resolved_snapshot = self._snapshots.load(self._only)
+            except OSError:
+                if metrics_refresh.retry_available:
+                    metrics_refresh.retry_snapshot()
+                    resolved_snapshot = self._load_snapshot()
+                else:
+                    resolved_snapshot = None
+            except PersistenceError:
+                resolved_snapshot = None
+        if resolved_snapshot is None:
+            self._publish_lookup_failure(
+                diagnostic_unavailable=(
+                    metrics_refresh.record_snapshot_failure()
                 )
-                if outcome_snapshot.all_saved_metrics_unavailable:
-                    self._publish_lookup_failure_locked()
-            invalidate = self._invalidate
-        invalidate()
-
-    def _publish_lookup_failure(self) -> None:
+            )
+            return
         with self._view_lock:
             if self._closed:
                 return
-            self._publish_lookup_failure_locked()
+            failed_accounts = any(
+                outcome is UsageLookupEventKind.ACCOUNT_FAILED
+                for outcome in self._outcomes.values()
+            )
+            self._lookup_terminal_succeeded = True
+            outcome_snapshot = self._outcome_view(resolved_snapshot)
+            controller = self._controller().rebase(outcome_snapshot)
+            self._view = replace(
+                self._view,
+                snapshot=controller.snapshot,
+                controller=controller.state,
+            )
+            all_metrics_unavailable = (
+                outcome_snapshot.all_saved_metrics_unavailable
+            )
+            invalidate = self._invalidate
+        invalidate()
+        if all_metrics_unavailable:
+            self._publish_lookup_failure(
+                diagnostic_unavailable=metrics_refresh.record_result(
+                    usage_cache_issue=outcome_snapshot.usage_cache_issue,
+                    activity_cache_issue=(
+                        outcome_snapshot.activity_cache_issue
+                    ),
+                    provider_failed=failed_accounts,
+                )
+            )
+            return
+        metrics_refresh.record_result(
+            usage_cache_issue=outcome_snapshot.usage_cache_issue,
+            activity_cache_issue=outcome_snapshot.activity_cache_issue,
+            provider_failed=failed_accounts,
+        )
+
+    def _publish_lookup_failure(
+        self,
+        *,
+        diagnostic_unavailable: bool = False,
+    ) -> None:
+        with self._view_lock:
+            if self._closed:
+                return
+            self._publish_lookup_failure_locked(
+                diagnostic_unavailable=diagnostic_unavailable
+            )
             invalidate = self._invalidate
         invalidate()
 
-    def _publish_lookup_failure_locked(self) -> None:
+    def _publish_lookup_failure_locked(
+        self,
+        *,
+        diagnostic_unavailable: bool = False,
+    ) -> None:
         if not self._view.snapshot.all_saved_metrics_unavailable:
             self._deferred_lookup_status = None
             return
+        message = LOOKUP_FAILED_MESSAGE
+        if diagnostic_unavailable:
+            message += LOOKUP_DIAGNOSTIC_UNAVAILABLE_MESSAGE
         status = DashboardStatus(
             kind=DashboardStatusKind.ERROR,
-            message=LOOKUP_FAILED_MESSAGE,
+            message=message,
         )
         self._deferred_lookup_status = status
         owner_active = self._view.action_in_flight or self._startup_owns()

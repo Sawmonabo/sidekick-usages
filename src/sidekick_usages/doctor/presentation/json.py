@@ -32,6 +32,9 @@ from sidekick_usages.providers.codex.app_server.models import (
     CodexAppServerCapabilities,
 )
 from sidekick_usages.serialization.json import JsonObject, JsonValue
+from sidekick_usages.usage.lookup.models import (
+    MetricsRefreshDiagnostic,
+)
 
 
 def doctor_json(result: DoctorResult) -> JsonObject:
@@ -67,6 +70,34 @@ def doctor_json(result: DoctorResult) -> JsonObject:
             ),
         ),
         "persistence": persistence,
+        "metrics_refresh": _metrics_refresh_dict(result.metrics_refresh),
+    }
+
+
+def _metrics_refresh_dict(
+    diagnostic: MetricsRefreshDiagnostic,
+) -> JsonObject:
+    """Build one global sanitized metrics-refresh diagnostic."""
+    observation = diagnostic.observation
+    return {
+        "state": diagnostic.state.value,
+        "observed_at": (
+            None
+            if observation is None
+            else canonical_timestamp(observation.observed_at)
+        ),
+        "outcome": None if observation is None else observation.outcome.value,
+        "attempts": None if observation is None else observation.attempts,
+        "stage": (
+            None
+            if observation is None or observation.stage is None
+            else observation.stage.value
+        ),
+        "code": (
+            None
+            if observation is None or observation.code is None
+            else observation.code.value
+        ),
     }
 
 
