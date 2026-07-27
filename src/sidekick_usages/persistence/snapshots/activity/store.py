@@ -53,14 +53,14 @@ class ActivitySnapshotStore(ActivitySnapshotReader):
 
     def save_many(
         self,
-        account_snapshots: tuple[AccountTokenActivitySnapshot, ...],
-        provider_snapshots: tuple[ProviderTokenActivitySnapshot, ...],
+        accounts: tuple[AccountTokenActivitySnapshot, ...],
+        providers: tuple[ProviderTokenActivitySnapshot, ...],
     ) -> tuple[
         tuple[AccountTokenActivitySnapshot, ...],
         tuple[ProviderTokenActivitySnapshot, ...],
     ]:
         """Merge observations through one decode and at most one commit."""
-        if not account_snapshots and not provider_snapshots:
+        if not accounts and not providers:
             return (), ()
         try:
             with self._lock.hold():
@@ -75,21 +75,24 @@ class ActivitySnapshotStore(ActivitySnapshotReader):
                 else:
                     document = decode_activity_document(observed.data)
                     expected = observed.fingerprint
-                accounts = dict(document.accounts)
-                providers = dict(document.providers)
+                account_records = dict(document.accounts)
+                provider_records = dict(document.providers)
                 effective_accounts = tuple(
-                    merge_activity_snapshot(accounts, snapshot)
-                    for snapshot in account_snapshots
+                    merge_activity_snapshot(account_records, snapshot)
+                    for snapshot in accounts
                 )
                 effective_providers = tuple(
-                    merge_provider_activity_snapshot(providers, snapshot)
-                    for snapshot in provider_snapshots
+                    merge_provider_activity_snapshot(
+                        provider_records,
+                        snapshot,
+                    )
+                    for snapshot in providers
                 )
                 payload = encode_activity_snapshot_document(
                     ActivitySnapshotDocument(
                         schema_version=ACTIVITY_SCHEMA_VERSION,
-                        accounts=accounts,
-                        providers=providers,
+                        accounts=account_records,
+                        providers=provider_records,
                     )
                 )
                 effective = (effective_accounts, effective_providers)
