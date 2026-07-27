@@ -100,7 +100,6 @@ from tests.fakes.claude.managed import (
 from tests.support.persistence import make_application_paths
 from tests.support.time import REFERENCE_TIME, FixedClock
 
-_PRIVATE_FILE_MODE = 0o600
 _SOURCE_ACCOUNT_ID = SidekickAccountId("11111111-1111-4111-8111-111111111111")
 _SOURCE_AUTHORITY_ID = AuthorityId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
 _TARGET_ACCOUNT_ID = SidekickAccountId("22222222-2222-4222-8222-222222222222")
@@ -254,6 +253,8 @@ def claude_activation_scenario(
     *,
     environment: dict[str, str] | None = None,
     foreground: ClaudeForegroundState = ClaudeForegroundState.CLEAR,
+    status_only_native_login: bool = False,
+    advance_native_mtime: bool = True,
 ) -> ClaudeActivationScenario:
     """Build one healthy A-to-B official Claude activation scenario."""
     source_payload = credential_payload(
@@ -312,8 +313,6 @@ def claude_activation_scenario(
     )
     native = native_profile(root / "native-home")
     native_credentials = native.config_directory / CLAUDE_CREDENTIAL_FILE
-    native_credentials.write_bytes(native_source_payload)
-    os.chmod(native_credentials, _PRIVATE_FILE_MODE)
     source_profile = managed_profile(
         paths,
         source.account_id,
@@ -326,7 +325,13 @@ def claude_activation_scenario(
         profiles,
         {
             source_profile: (retained_source_payload,),
-            native.config_directory: (native_target_payload,),
+            native.config_directory: (
+                (
+                    native_source_payload
+                    if status_only_native_login
+                    else native_target_payload
+                ),
+            ),
         },
         profile_statuses={
             source_profile: _SOURCE_STATUS,
@@ -337,6 +342,12 @@ def claude_activation_scenario(
             source_profile: (_SOURCE_STATUS,),
             native.config_directory: (_TARGET_STATUS,),
         },
+        advance_native_mtime=advance_native_mtime,
+    )
+    script.set_authority(
+        native.config_directory,
+        native_source_payload,
+        _SOURCE_STATUS,
     )
     runtime = _runtime_fixture(
         paths,
@@ -474,8 +485,6 @@ def claude_recovery_scenario(
     )
     native = native_profile(root / "native-home")
     native_credentials = native.config_directory / CLAUDE_CREDENTIAL_FILE
-    native_credentials.write_bytes(native_source_payload)
-    os.chmod(native_credentials, _PRIVATE_FILE_MODE)
     source_profile = managed_profile(
         paths,
         source.account_id,
@@ -509,6 +518,11 @@ def claude_recovery_scenario(
                 _SOURCE_STATUS,
             ),
         },
+    )
+    script.set_authority(
+        native.config_directory,
+        native_source_payload,
+        _SOURCE_STATUS,
     )
     interrupted = _InterruptAfterNativeLogin(
         script,

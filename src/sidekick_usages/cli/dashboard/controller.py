@@ -129,6 +129,11 @@ class DashboardController:
         if focused is None:
             return None
         provider, account = focused
+        if provider.provider_id is ProviderId.CLAUDE and (
+            provider.runtime_state is not ProviderRuntimeState.SAVED_ACTIVE
+            or provider.active_account_id is None
+        ):
+            return None
         if not self._mutations_enabled(provider):
             return None
         return ActivateOrRepairIntent(

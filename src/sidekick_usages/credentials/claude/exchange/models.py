@@ -1,7 +1,8 @@
 """Secret-safe models for official Claude credential exchanges."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
+from decimal import Decimal
 
 from sidekick_usages.core.accounts.types import (
     AuthorityGeneration,
@@ -23,9 +24,11 @@ class ClaudeAuthorityExpectation:
 
     provider_identity: ProviderIdentity
     generation: AuthorityGeneration
+    plan: str
     access_expires_at: datetime
     refresh_expires_at: datetime | None
     scopes: tuple[str, ...]
+    modified_milliseconds: Decimal | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,7 +52,20 @@ def authority_expectation(
     return ClaudeAuthorityExpectation(
         provider_identity=snapshot.provider_identity,
         generation=snapshot.generation,
+        plan=snapshot.plan,
         access_expires_at=snapshot.access_expires_at,
         refresh_expires_at=snapshot.refresh_expires_at,
         scopes=snapshot.scopes,
+        modified_milliseconds=snapshot.modified_milliseconds,
+    )
+
+
+def native_authority_expectation(
+    target: ClaudeAuthoritySnapshot,
+    modified_milliseconds: Decimal | None,
+) -> ClaudeAuthorityExpectation:
+    """Bind target semantics to the current native ``mtimeMs`` baseline."""
+    return replace(
+        authority_expectation(target),
+        modified_milliseconds=modified_milliseconds,
     )

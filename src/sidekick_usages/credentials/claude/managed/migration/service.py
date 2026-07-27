@@ -259,6 +259,7 @@ class ClaudeManagedMigrationCoordinator:
                     )
                 expectation = _stored_expectation(
                     credentials,
+                    account.plan,
                     subscription.provider_identity,
                 )
                 if isinstance(expectation, ProviderFailure):
@@ -540,6 +541,7 @@ class ClaudeManagedMigrationCoordinator:
 
 def _stored_expectation(
     credentials: ClaudeLoginCredentials,
+    plan: str,
     saved_identity: ProviderIdentity | None,
 ) -> ClaudeAuthorityExpectation | ProviderFailure:
     identity = credentials.identity
@@ -558,6 +560,7 @@ def _stored_expectation(
     return ClaudeAuthorityExpectation(
         provider_identity=provider_identity,
         generation=claude_access_token_generation(credentials.access_token),
+        plan=plan,
         access_expires_at=credentials.access_expiry.at,
         refresh_expires_at=(
             refresh_expiry.at
@@ -565,4 +568,5 @@ def _stored_expectation(
             else None
         ),
         scopes=credentials.scopes,
+        modified_milliseconds=None,
     )

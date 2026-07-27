@@ -418,22 +418,10 @@ class CodexActivationService:
         record: ActivationRecord,
         error: Exception,
     ) -> None:
-        active = transaction.load().active
-        if (
-            active is None
-            or active.operation_id != record.operation_id
-            or active.phase is ActivationPhase.RECONCILIATION_REQUIRED
-            or active.phase.terminal
-        ):
-            return
         try:
-            transaction.advance(
-                active.operation_id,
-                ActivationPhase.RECONCILIATION_REQUIRED,
+            transaction.require_reconciliation(
+                record.operation_id,
                 updated_at=self._clock.now(),
-                verified_runtime_generation=(
-                    active.verified_runtime_generation
-                ),
                 failure_code="activation_interrupted",
             )
         except Exception as journal_error:

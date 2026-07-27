@@ -8,6 +8,7 @@ from sidekick_usages.core.accounts.types import (
 )
 from sidekick_usages.core.selection.models import (
     ActivationRecord,
+    ClaudeAuthObservation,
     SelectedAccountState,
 )
 from sidekick_usages.core.selection.types import (
@@ -25,6 +26,15 @@ from sidekick_usages.credentials.claude.activation.models import (
     ClaudeActivationFailure,
     ClaudeActivationRecoveryContext,
     ClaudeNativeObservation,
+    claude_auth_observation,
+)
+from sidekick_usages.credentials.claude.exchange.models import (
+    ClaudeExchangeSuccess,
+    native_authority_expectation,
+)
+from sidekick_usages.credentials.claude.exchange.service import (
+    claude_native_propagation_proven,
+    verified_claude_exchange,
 )
 from sidekick_usages.persistence.errors import SourceChangedError
 from sidekick_usages.persistence.state.files import (
@@ -47,6 +57,7 @@ _MUTATION_CAPABLE_PHASES = frozenset(
     {
         ActivationPhase.OUTGOING_RETAINED,
         ActivationPhase.TARGET_ACTIVATED,
+        ActivationPhase.PROVIDER_PROOF_VERIFIED,
     }
 )
 
@@ -106,6 +117,7 @@ class ClaudeActivationRecoveryService:
                 target_capabilities
             )
             native = self._authorities.observe_native(native_capabilities)
+            self._authorities.record_native_observation(native)
             current = transaction.load().active
             if current != record:
                 raise ClaudeActivationError(
@@ -141,15 +153,21 @@ class ClaudeActivationRecoveryService:
                 target_private=target_private,
                 native_capabilities=native_capabilities,
             )
-            return self._resolve(
+            resolved = self._resolve(
                 transaction,
                 record,
                 native,
                 context,
                 authority,
             )
+            self._authorities.record_selected_runtime(resolved)
+            return resolved
         except ClaudeActivationError as error:
-            self._require_reconciliation(transaction, record, error)
+            transaction.require_reconciliation(
+                record.operation_id,
+                updated_at=self._clock.now(),
+                failure_code=error.failure_code,
+            )
             raise
         except (
             SourceChangedError,
@@ -158,10 +176,10 @@ class ClaudeActivationRecoveryService:
             recovery_error = ClaudeActivationError(
                 ClaudeActivationFailure.STATE_CHANGED
             )
-            self._require_reconciliation(
-                transaction,
-                record,
-                recovery_error,
+            transaction.require_reconciliation(
+                record.operation_id,
+                updated_at=self._clock.now(),
+                failure_code=recovery_error.failure_code,
             )
             raise recovery_error from error
 
@@ -276,16 +294,32 @@ class ClaudeActivationRecoveryService:
             snapshot is not None
             and snapshot.health is not CredentialHealth.LOGIN_REQUIRED
         ):
-            self._authorities.require_native_current(
-                context.native_capabilities,
-                native,
-            )
-            return self._commit_rollback(
-                transaction,
-                record,
-                context.source,
-                snapshot,
-            )
+            if self._matches_journal_native(record, snapshot):
+                self._authorities.require_native_current(
+                    context.native_capabilities,
+                    native,
+                )
+                return self._commit_rollback(
+                    transaction,
+                    record,
+                    context.source,
+                    snapshot,
+                )
+            if (
+                not self._may_rollback(record)
+                and self._effective_phase(record)
+                is not ActivationPhase.RECONCILIATION_REQUIRED
+            ):
+                self._authorities.require_native_current(
+                    context.native_capabilities,
+                    native,
+                )
+                return self._commit_external_saved(
+                    transaction,
+                    record,
+                    context.source,
+                    snapshot,
+                )
         if self._may_rollback(record):
             return self._official_rollback(
                 transaction,
@@ -310,6 +344,24 @@ class ClaudeActivationRecoveryService:
         if (
             snapshot is not None
             and snapshot.health is not CredentialHealth.LOGIN_REQUIRED
+            and self._effective_phase(record) is ActivationPhase.PREPARED
+        ):
+            self._authorities.require_native_current(
+                context.native_capabilities,
+                native,
+            )
+            return self._commit_external_active(
+                transaction,
+                record,
+                native,
+                context.source_capabilities,
+                context.native_capabilities,
+                authority,
+            )
+        if (
+            snapshot is not None
+            and snapshot.health is not CredentialHealth.LOGIN_REQUIRED
+            and self._recovered_target_proven(record, context, snapshot)
         ):
             self._authorities.require_native_current(
                 context.native_capabilities,
@@ -434,11 +486,15 @@ class ClaudeActivationRecoveryService:
             if (
                 source_proof != context.source_private
                 or target_proof != context.target_private
-                or native_proof != rolled_back
             ):
                 raise ClaudeActivationError(
                     ClaudeActivationFailure.RECONCILIATION_REQUIRED
                 )
+            self._authorities.require_same_native_proof(
+                rolled_back,
+                native_proof,
+                ClaudeActivationFailure.RECONCILIATION_REQUIRED,
+            )
             return self._commit_rollback(
                 transaction,
                 record,
@@ -453,6 +509,7 @@ class ClaudeActivationRecoveryService:
             current = self._authorities.observe_native(
                 context.native_capabilities
             )
+            self._authorities.record_native_observation(current)
             return self._resolve_after_rollback(
                 transaction,
                 record,
@@ -509,21 +566,29 @@ class ClaudeActivationRecoveryService:
             snapshot.provider_identity
             == context.source_authority.provider_identity
         ):
-            return self._commit_rollback(
-                transaction,
-                record,
-                context.source,
-                snapshot,
+            if self._matches_journal_native(record, snapshot):
+                return self._commit_rollback(
+                    transaction,
+                    record,
+                    context.source,
+                    snapshot,
+                )
+            raise ClaudeActivationError(
+                ClaudeActivationFailure.RECONCILIATION_REQUIRED
             )
         if (
             snapshot.provider_identity
             == context.target_authority.provider_identity
         ):
-            return self._commit_target(
-                transaction,
-                record,
-                context.target,
-                snapshot,
+            if self._recovered_target_proven(record, context, snapshot):
+                return self._commit_target(
+                    transaction,
+                    record,
+                    context.target,
+                    snapshot,
+                )
+            raise ClaudeActivationError(
+                ClaudeActivationFailure.RECONCILIATION_REQUIRED
             )
         return self._commit_external_active(
             transaction,
@@ -651,31 +716,60 @@ class ClaudeActivationRecoveryService:
         )
         return selected
 
-    def _require_reconciliation(
+    def _recovered_target_proven(
         self,
-        transaction: ActivationJournalTransaction,
         record: ActivationRecord,
-        error: ClaudeActivationError,
-    ) -> None:
-        active = transaction.load().active
-        if (
-            active is None
-            or active.operation_id != record.operation_id
-            or active.phase is ActivationPhase.RECONCILIATION_REQUIRED
-            or active.phase.terminal
+        context: ClaudeActivationRecoveryContext,
+        native: ClaudeAuthoritySnapshot,
+    ) -> bool:
+        baseline = self._journal_native(record)
+        if not claude_native_propagation_proven(
+            context.native_capabilities,
+            baseline.modified_milliseconds,
+            native.modified_milliseconds,
         ):
-            return
-        transaction.advance(
-            active.operation_id,
-            ActivationPhase.RECONCILIATION_REQUIRED,
-            updated_at=self._clock.now(),
-            verified_runtime_generation=active.verified_runtime_generation,
-            failure_code=error.failure_code,
+            return False
+        result = verified_claude_exchange(
+            native_authority_expectation(
+                context.target_private,
+                baseline.modified_milliseconds,
+            ),
+            native,
+        )
+        return isinstance(result, ClaudeExchangeSuccess)
+
+    def _matches_journal_native(
+        self,
+        record: ActivationRecord,
+        native: ClaudeAuthoritySnapshot,
+    ) -> bool:
+        baseline = self._journal_native(record)
+        return (
+            claude_auth_observation(native, baseline.observed_at) == baseline
         )
 
     @staticmethod
+    def _journal_native(record: ActivationRecord) -> ClaudeAuthObservation:
+        baseline = record.native_auth_baseline
+        if not isinstance(baseline, ClaudeAuthObservation):
+            raise ClaudeActivationError(ClaudeActivationFailure.STATE_CHANGED)
+        return baseline
+
+    @staticmethod
     def _may_rollback(record: ActivationRecord) -> bool:
-        return record.phase in _MUTATION_CAPABLE_PHASES
+        return record.phase in _MUTATION_CAPABLE_PHASES or (
+            record.phase is ActivationPhase.RECONCILIATION_REQUIRED
+            and record.reconciliation_origin_phase in _MUTATION_CAPABLE_PHASES
+        )
+
+    @staticmethod
+    def _effective_phase(record: ActivationRecord) -> ActivationPhase:
+        if (
+            record.phase is ActivationPhase.RECONCILIATION_REQUIRED
+            and record.reconciliation_origin_phase is not None
+        ):
+            return record.reconciliation_origin_phase
+        return record.phase
 
     @staticmethod
     def _source_account_id(

@@ -1,13 +1,18 @@
 """Strict lightweight codecs for selection and durable operation state."""
 
+from decimal import Decimal, InvalidOperation
+
 from sidekick_usages.core.accounts.types import (
     AuthorityGeneration,
+    CredentialAction,
+    CredentialHealth,
     OperationId,
     ProviderIdentity,
     SidekickAccountId,
 )
 from sidekick_usages.core.selection.models import (
     ActivationRecord,
+    ClaudeAuthObservation,
     DueOperation,
     ProviderAuthObservation,
     SelectedAccountState,
@@ -51,13 +56,14 @@ from sidekick_usages.persistence.time_codec import (
 from sidekick_usages.serialization.json import JsonObject, JsonValue
 
 SELECTED_STATE_SCHEMA_VERSION = 2
-ACTIVATION_SCHEMA_VERSION = 3
+ACTIVATION_SCHEMA_VERSION = 4
 OPERATION_QUEUE_SCHEMA_VERSION = 3
 RUNTIME_OBSERVATION_SCHEMA_VERSION = 1
 MAX_SELECTED_STATE_BYTES = 256 * 1024
 MAX_ACTIVATION_JOURNAL_BYTES = 512 * 1024
 MAX_OPERATION_QUEUE_BYTES = 8 * 1024 * 1024
 MAX_RUNTIME_OBSERVATION_BYTES = 256 * 1024
+MAX_CLAUDE_MTIME_MILLISECONDS_BYTES = 32
 
 _SELECTED_KEYS = frozenset(
     {
@@ -78,12 +84,28 @@ _ACTIVATION_KEYS = frozenset(
         "outcome",
         "phase",
         "provider_id",
+        "reconciliation_origin_phase",
         "selected_baseline",
         "started_at",
         "target_authority_generation",
         "target_account_id",
         "updated_at",
         "verified_runtime_generation",
+    }
+)
+_CLAUDE_AUTH_KEYS = frozenset(
+    {
+        "access_expires_at",
+        "action",
+        "generation",
+        "health",
+        "modified_milliseconds",
+        "observed_at",
+        "plan",
+        "provider_identity",
+        "refresh_expires_at",
+        "scopes",
+        "state",
     }
 )
 _PROVIDER_AUTH_KEYS = frozenset(
@@ -353,6 +375,9 @@ def _activation_record(record: JsonObject) -> ActivationRecord:
     provider_id = ProviderId(require_string(record["provider_id"]))
     selected_value = record["selected_baseline"]
     outcome = require_optional_string(record["outcome"])
+    reconciliation_origin = require_optional_string(
+        record["reconciliation_origin_phase"]
+    )
     verified_generation = require_optional_string(
         record["verified_runtime_generation"]
     )
@@ -367,7 +392,7 @@ def _activation_record(record: JsonObject) -> ActivationRecord:
                 require_object(selected_value),
             )
         ),
-        native_auth_baseline=_provider_auth_observation(
+        native_auth_baseline=_activation_auth_observation(
             provider_id,
             require_object(record["native_auth_baseline"]),
         ),
@@ -394,6 +419,11 @@ def _activation_record(record: JsonObject) -> ActivationRecord:
         ),
         outcome=(None if outcome is None else ActivationOutcome(outcome)),
         failure_code=require_optional_string(record["failure_code"]),
+        reconciliation_origin_phase=(
+            None
+            if reconciliation_origin is None
+            else ActivationPhase(reconciliation_origin)
+        ),
     )
 
 
@@ -401,13 +431,19 @@ def _activation_object(record: ActivationRecord) -> JsonObject:
     return {
         "expected_target_identity": str(record.expected_target_identity),
         "failure_code": record.failure_code,
-        "native_auth_baseline": _provider_auth_object(
-            record.native_auth_baseline
+        "native_auth_baseline": _activation_auth_object(
+            record.provider_id,
+            record.native_auth_baseline,
         ),
         "operation_id": str(record.operation_id),
         "outcome": (None if record.outcome is None else record.outcome.value),
         "phase": record.phase.value,
         "provider_id": record.provider_id.value,
+        "reconciliation_origin_phase": (
+            None
+            if record.reconciliation_origin_phase is None
+            else record.reconciliation_origin_phase.value
+        ),
         "selected_baseline": (
             None
             if record.selected_baseline is None
@@ -423,6 +459,102 @@ def _activation_object(record: ActivationRecord) -> JsonObject:
             else str(record.verified_runtime_generation)
         ),
     }
+
+
+def _activation_auth_observation(
+    provider_id: ProviderId,
+    record: JsonObject,
+) -> ProviderAuthObservation:
+    if provider_id is not ProviderId.CLAUDE:
+        return _provider_auth_observation(provider_id, record)
+    require_exact_keys(record, _CLAUDE_AUTH_KEYS)
+    identity = require_string(record["provider_identity"])
+    generation = require_string(record["generation"])
+    scopes = require_list(record["scopes"])
+    refresh_expires_at = require_optional_string(record["refresh_expires_at"])
+    return ClaudeAuthObservation(
+        provider_id=provider_id,
+        state=ProviderAuthState(require_string(record["state"])),
+        provider_identity=ProviderIdentity(identity),
+        generation=AuthorityGeneration(generation),
+        observed_at=parse_canonical_timestamp(
+            require_string(record["observed_at"])
+        ),
+        plan=require_string(record["plan"]),
+        scopes=tuple(require_string(scope) for scope in scopes),
+        access_expires_at=parse_canonical_timestamp(
+            require_string(record["access_expires_at"])
+        ),
+        refresh_expires_at=(
+            None
+            if refresh_expires_at is None
+            else parse_canonical_timestamp(refresh_expires_at)
+        ),
+        health=CredentialHealth(require_string(record["health"])),
+        action=CredentialAction(require_string(record["action"])),
+        modified_milliseconds=_modified_milliseconds(
+            record["modified_milliseconds"]
+        ),
+    )
+
+
+def _activation_auth_object(
+    provider_id: ProviderId,
+    observation: ProviderAuthObservation,
+) -> JsonObject:
+    if provider_id is not ProviderId.CLAUDE:
+        return _provider_auth_object(observation)
+    if not isinstance(observation, ClaudeAuthObservation):
+        raise InvalidSchemaError
+    return {
+        "access_expires_at": canonical_timestamp(
+            observation.access_expires_at
+        ),
+        "action": observation.action.value,
+        "generation": str(observation.generation),
+        "health": observation.health.value,
+        "modified_milliseconds": (
+            None
+            if observation.modified_milliseconds is None
+            else _canonical_decimal(observation.modified_milliseconds)
+        ),
+        "observed_at": canonical_timestamp(observation.observed_at),
+        "plan": observation.plan,
+        "provider_identity": str(observation.provider_identity),
+        "refresh_expires_at": (
+            None
+            if observation.refresh_expires_at is None
+            else canonical_timestamp(observation.refresh_expires_at)
+        ),
+        "scopes": list(observation.scopes),
+        "state": observation.state.value,
+    }
+
+
+def _modified_milliseconds(value: JsonValue) -> Decimal | None:
+    text = require_optional_string(value)
+    if text is None:
+        return None
+    if len(text.encode("utf-8")) > MAX_CLAUDE_MTIME_MILLISECONDS_BYTES:
+        raise InvalidSchemaError
+    try:
+        modified = Decimal(text)
+    except InvalidOperation:
+        raise InvalidSchemaError from None
+    if (
+        not modified.is_finite()
+        or modified < 0
+        or _canonical_decimal(modified) != text
+    ):
+        raise InvalidSchemaError
+    return modified
+
+
+def _canonical_decimal(value: Decimal) -> str:
+    normalized = value.normalize()
+    if normalized.is_zero():
+        return "0"
+    return format(normalized, "f")
 
 
 def _provider_auth_observation(

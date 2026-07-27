@@ -133,6 +133,9 @@ def transition_activation(
     effective_outcome = outcome
     if effective_outcome is None:
         effective_outcome = defaults.get(phase)
+    reconciliation_origin = record.reconciliation_origin_phase
+    if phase is ActivationPhase.RECONCILIATION_REQUIRED:
+        reconciliation_origin = record.phase
     return replace(
         record,
         phase=phase,
@@ -140,6 +143,7 @@ def transition_activation(
         verified_runtime_generation=verified_runtime_generation,
         outcome=effective_outcome,
         failure_code=failure_code,
+        reconciliation_origin_phase=reconciliation_origin,
     )
 
 

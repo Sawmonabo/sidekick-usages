@@ -78,29 +78,39 @@ class ClaudeNativeReconciliationService:
         except ClaudeActivationError as error:
             if error.failure is not ClaudeActivationFailure.INCOMPATIBLE:
                 raise
-            candidate = self._inactive_candidate(
-                ProviderRuntimeState.UNSUPPORTED,
-                ActivationOutcome.UNSUPPORTED,
+            self._authorities.record_native_observation(
+                ClaudeNativeObservation(
+                    state=ProviderAuthState.UNSUPPORTED,
+                )
             )
-        else:
-            observed = self._authorities.observe_native(capabilities)
+            return self._unchanged_result(
+                baseline,
+                current,
+            )
+        observed = self._authorities.observe_native(capabilities)
+        self._authorities.record_native_observation(observed)
+        if self._proof_incomplete(observed):
+            return self._unchanged_result(baseline, current)
+        candidate = self._candidate(
+            observed,
+            capabilities,
+            authority,
+        )
+        confirmed = self._authorities.observe_native(capabilities)
+        self._authorities.record_native_observation(confirmed)
+        if self._proof_incomplete(confirmed):
+            return self._unchanged_result(baseline, current)
+        if confirmed != observed:
+            observed = confirmed
             candidate = self._candidate(
                 observed,
                 capabilities,
                 authority,
             )
-            confirmed = self._authorities.observe_native(capabilities)
-            if confirmed != observed:
-                observed = confirmed
-                candidate = self._candidate(
-                    observed,
-                    capabilities,
-                    authority,
-                )
-                self._authorities.require_native_current(
-                    capabilities,
-                    observed,
-                )
+            self._authorities.require_native_current(
+                capabilities,
+                observed,
+            )
         committed = self._selected.compare_and_swap(
             candidate,
             expected=current,
@@ -119,36 +129,36 @@ class ClaudeNativeReconciliationService:
         if observed.state is ProviderAuthState.ACTIVE:
             snapshot = observed.snapshot
             if snapshot is None:
-                provider_identity = observed.provider_identity
-                generation = observed.generation
-                if provider_identity is None or generation is None:
-                    raise ClaudeActivationError(
-                        ClaudeActivationFailure.RECONCILIATION_REQUIRED
-                    )
-                return self._external_candidate(
-                    provider_identity,
-                    generation,
+                raise ClaudeActivationError(
+                    ClaudeActivationFailure.RECONCILIATION_REQUIRED
                 )
             return self._active_candidate(
                 snapshot,
                 capabilities,
                 authority,
             )
-        runtime_state, outcome = {
-            ProviderAuthState.LOGGED_OUT: (
-                ProviderRuntimeState.LOGGED_OUT,
-                ActivationOutcome.LOGGED_OUT,
-            ),
-            ProviderAuthState.UNREADABLE: (
-                ProviderRuntimeState.UNREADABLE,
-                ActivationOutcome.RECONCILIATION_REQUIRED,
-            ),
-            ProviderAuthState.UNSUPPORTED: (
-                ProviderRuntimeState.UNSUPPORTED,
-                ActivationOutcome.UNSUPPORTED,
-            ),
-        }[observed.state]
-        return self._inactive_candidate(runtime_state, outcome)
+        if observed.state is not ProviderAuthState.LOGGED_OUT:
+            raise ClaudeActivationError(
+                ClaudeActivationFailure.RECONCILIATION_REQUIRED
+            )
+        return self._inactive_candidate()
+
+    @staticmethod
+    def _proof_incomplete(observed: ClaudeNativeObservation) -> bool:
+        return observed.state in {
+            ProviderAuthState.UNREADABLE,
+            ProviderAuthState.UNSUPPORTED,
+        }
+
+    @staticmethod
+    def _unchanged_result(
+        baseline: SelectedAccountState | None,
+        current: SelectedAccountState | None,
+    ) -> NativeReconciliationResult:
+        return NativeReconciliationResult(
+            current,
+            not same_selected_runtime_authority(baseline, current),
+        )
 
     def _active_candidate(
         self,
@@ -192,17 +202,13 @@ class ClaudeNativeReconciliationService:
             outcome=ActivationOutcome.EXTERNAL_RECONCILED,
         )
 
-    def _inactive_candidate(
-        self,
-        runtime_state: ProviderRuntimeState,
-        outcome: ActivationOutcome,
-    ) -> SelectedAccountState:
+    def _inactive_candidate(self) -> SelectedAccountState:
         return SelectedAccountState(
             provider_id=ProviderId.CLAUDE,
-            runtime_state=runtime_state,
+            runtime_state=ProviderRuntimeState.LOGGED_OUT,
             account_id=None,
             provider_identity=None,
             runtime_generation=None,
             verified_at=self._clock.now(),
-            outcome=outcome,
+            outcome=ActivationOutcome.LOGGED_OUT,
         )

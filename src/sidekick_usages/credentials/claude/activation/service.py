@@ -11,7 +11,7 @@ from sidekick_usages.core.accounts.types import (
 )
 from sidekick_usages.core.selection.models import (
     ActivationRecord,
-    ProviderAuthObservation,
+    ClaudeAuthObservation,
     SelectedAccountState,
     activation_account_ids,
 )
@@ -29,6 +29,7 @@ from sidekick_usages.credentials.claude.activation.models import (
     ClaudeActivationError,
     ClaudeActivationFailure,
     ClaudeNativeObservation,
+    claude_auth_observation,
 )
 from sidekick_usages.persistence.errors import SourceChangedError
 from sidekick_usages.persistence.state.files import (
@@ -205,21 +206,29 @@ class ClaudeActivationService:
                 self._selected,
                 updated_at=self._clock.now(),
             )
-        except ClaudeActivationError as error:
-            self._require_reconciliation(transaction, record, error)
-            raise
+            self._authorities.record_selected_runtime(selected)
         except (
+            ClaudeActivationError,
             SourceChangedError,
             ManagedStateConflictError,
         ) as error:
-            activation_error = ClaudeActivationError(
-                ClaudeActivationFailure.STATE_CHANGED
+            activation_error = (
+                error
+                if isinstance(error, ClaudeActivationError)
+                else ClaudeActivationError(
+                    ClaudeActivationFailure.STATE_CHANGED
+                )
             )
-            self._require_reconciliation(
-                transaction,
-                record,
-                activation_error,
+            transaction.require_reconciliation(
+                record.operation_id,
+                updated_at=self._clock.now(),
+                failure_code=activation_error.failure_code,
             )
+            self._authorities.record_native_observation(
+                self._authorities.observe_native(native_capabilities)
+            )
+            if isinstance(error, ClaudeActivationError):
+                raise
             raise activation_error from error
         return selected
 
@@ -268,14 +277,11 @@ class ClaudeActivationService:
             native_capabilities,
             expected_identity=activated_target.provider_identity,
         )
-        if (
-            native_proof.provider_identity
-            != activated_target.provider_identity
-            or native_proof.generation != activated_target.generation
-        ):
-            raise ClaudeActivationError(
-                ClaudeActivationFailure.RECONCILIATION_REQUIRED
-            )
+        self._authorities.require_same_native_proof(
+            activated_target,
+            native_proof,
+            ClaudeActivationFailure.RECONCILIATION_REQUIRED,
+        )
 
     @staticmethod
     def _source_account_id(
@@ -298,25 +304,20 @@ class ClaudeActivationService:
         source: SavedAccount,
         authority: ClaudeManagedLoginAuthority,
         native: ClaudeAuthoritySnapshot,
-    ) -> ProviderAuthObservation:
+    ) -> ClaudeAuthObservation:
         if (
             baseline is None
             or baseline.account_id != source.account_id
             or baseline.provider_identity != authority.provider_identity
             or native.provider_identity != authority.provider_identity
+            or baseline.runtime_generation != native.generation
         ):
             raise ClaudeActivationError(ClaudeActivationFailure.NATIVE_CHANGED)
         self._authorities.require_usable(
             native,
             ClaudeActivationFailure.NATIVE_UNAVAILABLE,
         )
-        return ProviderAuthObservation(
-            provider_id=ProviderId.CLAUDE,
-            state=ProviderAuthState.ACTIVE,
-            provider_identity=native.provider_identity,
-            generation=native.generation,
-            observed_at=self._clock.now(),
-        )
+        return claude_auth_observation(native, self._clock.now())
 
     def _transaction(
         self,
@@ -339,25 +340,3 @@ class ClaudeActivationService:
         if transaction.load().active is not None:
             raise ClaudeActivationError(ClaudeActivationFailure.STATE_CHANGED)
         return transaction
-
-    def _require_reconciliation(
-        self,
-        transaction: ActivationJournalTransaction,
-        record: ActivationRecord,
-        error: ClaudeActivationError,
-    ) -> None:
-        active = transaction.load().active
-        if (
-            active is None
-            or active.operation_id != record.operation_id
-            or active.phase is ActivationPhase.RECONCILIATION_REQUIRED
-            or active.phase.terminal
-        ):
-            return
-        transaction.advance(
-            active.operation_id,
-            ActivationPhase.RECONCILIATION_REQUIRED,
-            updated_at=self._clock.now(),
-            verified_runtime_generation=active.verified_runtime_generation,
-            failure_code=error.failure_code,
-        )

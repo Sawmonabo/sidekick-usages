@@ -35,6 +35,13 @@ class RuntimeAuthObservationStore:
         """Return the latest native provider observation."""
         return self._load(provider_id, _NATIVE_DIRECTORY)
 
+    def observe_native(
+        self,
+        provider_id: ProviderId,
+    ) -> ProviderAuthObservation | None:
+        """Passively read native state without locking or recovery."""
+        return self._read(self._filesystem(provider_id, _NATIVE_DIRECTORY))
+
     def save_native(
         self,
         observation: ProviderAuthObservation,
@@ -63,12 +70,18 @@ class RuntimeAuthObservationStore:
     ) -> ProviderAuthObservation | None:
         filesystem = self._filesystem(provider_id, directory)
         with PersistenceLock(filesystem).hold():
-            snapshot = filesystem.read_opaque_private()
-            return (
-                None
-                if snapshot is None
-                else decode_runtime_auth_observation(snapshot.data)
-            )
+            return self._read(filesystem)
+
+    @staticmethod
+    def _read(
+        filesystem: ManagedStateFilesystem,
+    ) -> ProviderAuthObservation | None:
+        snapshot = filesystem.read_opaque_private()
+        return (
+            None
+            if snapshot is None
+            else decode_runtime_auth_observation(snapshot.data)
+        )
 
     def _save(
         self,

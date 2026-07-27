@@ -152,6 +152,30 @@ class ActivationJournalTransaction:
             self._commit(updated, snapshot)
         return candidate
 
+    def require_reconciliation(
+        self,
+        operation_id: OperationId,
+        *,
+        updated_at: datetime,
+        failure_code: str,
+    ) -> None:
+        """Mark one matching nonterminal activation for reconciliation."""
+        active = self.load().active
+        if (
+            active is None
+            or active.operation_id != operation_id
+            or active.phase is ActivationPhase.RECONCILIATION_REQUIRED
+            or active.phase.terminal
+        ):
+            return
+        self.advance(
+            active.operation_id,
+            ActivationPhase.RECONCILIATION_REQUIRED,
+            updated_at=updated_at,
+            verified_runtime_generation=active.verified_runtime_generation,
+            failure_code=failure_code,
+        )
+
     def commit_verified(
         self,
         operation_id: OperationId,

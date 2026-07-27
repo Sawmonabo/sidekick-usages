@@ -76,6 +76,7 @@ CLAUDE_LOGGED_OUT_STATUS = (
 CLAUDE_VERSION_OUTPUT = b"2.1.220 (Claude Code)\n"
 _PRIVATE_DIRECTORY_MODE = 0o700
 _PRIVATE_FILE_MODE = 0o600
+_NANOSECONDS_PER_MILLISECOND = 1_000_000
 
 
 def use_synthetic_claude(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -178,6 +179,7 @@ class ClaudeManagedLoginScript:
         interactive_payloads: Mapping[Path, bytes] | None = None,
         profile_statuses: Mapping[Path, bytes] | None = None,
         refresh_statuses: Mapping[Path, tuple[bytes, ...]] | None = None,
+        advance_native_mtime: bool = True,
     ) -> None:
         self._profiles = profiles
         self._refresh_payloads = {
@@ -190,6 +192,7 @@ class ClaudeManagedLoginScript:
             profile: list(statuses)
             for profile, statuses in (refresh_statuses or {}).items()
         }
+        self._advance_native_mtime = advance_native_mtime
         self.login_profiles: list[Path] = []
         self.interactive_profiles: list[Path] = []
 
@@ -267,6 +270,16 @@ class ClaudeManagedLoginScript:
         """Set explicit provider profile state after an external login."""
         self._profile_statuses[config_directory] = payload
 
+    def set_authority(
+        self,
+        config_directory: Path,
+        credentials: bytes,
+        status: bytes,
+    ) -> None:
+        """Apply one complete external provider authority transition."""
+        self._write_credentials(config_directory, credentials)
+        self._profile_statuses[config_directory] = status
+
     def _write_credentials(
         self,
         config_directory: Path,
@@ -280,8 +293,24 @@ class ClaudeManagedLoginScript:
             )
             return
         credential_file = config_directory / CLAUDE_CREDENTIAL_FILE
+        previous_modified = (
+            credential_file.stat().st_mtime_ns
+            if credential_file.is_file()
+            else None
+        )
         credential_file.write_bytes(payload)
         os.chmod(credential_file, _PRIVATE_FILE_MODE)
+        if previous_modified is not None:
+            current = credential_file.stat()
+            modified = (
+                previous_modified + _NANOSECONDS_PER_MILLISECOND
+                if self._advance_native_mtime
+                else previous_modified
+            )
+            os.utime(
+                credential_file,
+                ns=(current.st_atime_ns, modified),
+            )
 
     @staticmethod
     def _config_directory(

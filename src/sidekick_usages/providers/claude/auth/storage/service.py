@@ -30,6 +30,7 @@ from sidekick_usages.providers.claude.auth.storage.models import (
     ClaudeCredentialPayload,
     ClaudeProtectedCredential,
     ClaudeProtectedCredentialSnapshot,
+    provider_mtime_milliseconds,
 )
 from sidekick_usages.providers.claude.auth.storage.types import (
     ClaudeCredentialFileSource,
@@ -218,7 +219,9 @@ def _credential_snapshot(
         ),
         health=health,
         action=action,
-        modified_nanoseconds=payload.modified_nanoseconds,
+        modified_milliseconds=provider_mtime_milliseconds(
+            payload.modified_nanoseconds
+        ),
     )
     return snapshot, credentials
 

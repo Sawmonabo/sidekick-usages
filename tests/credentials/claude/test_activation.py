@@ -10,13 +10,26 @@ from sidekick_usages.core.accounts.models import (
     ClaudeAccountAuthority,
     ClaudeManagedLoginAuthority,
 )
-from sidekick_usages.core.selection.models import DueOperation
-from sidekick_usages.core.selection.types import ActivationPhase
+from sidekick_usages.core.selection.models import (
+    ClaudeAuthObservation,
+    DueOperation,
+)
+from sidekick_usages.core.selection.types import (
+    ActivationPhase,
+    ProviderAuthState,
+    ProviderRuntimeState,
+)
 from sidekick_usages.core.types import ProviderId
+from sidekick_usages.credentials.claude.activation.models import (
+    ClaudeActivationFailure,
+)
 from sidekick_usages.daemon.models.worker import WorkerResult
 from sidekick_usages.daemon.types.worker import WorkerOutcome
 from sidekick_usages.persistence.supervisor.authority import (
     ProviderMutationLock,
+)
+from sidekick_usages.persistence.supervisor.observation import (
+    RuntimeAuthObservationStore,
 )
 from sidekick_usages.providers.claude.activation.types import (
     ClaudeActivationGuardFailure,
@@ -31,6 +44,8 @@ from sidekick_usages.providers.claude.auth.storage.service import (
 from sidekick_usages.providers.claude.environment import (
     CLAUDE_CONFIG_DIR_ENVIRONMENT_KEY,
 )
+from sidekick_usages.usage.dashboard.models import DashboardAccount
+from sidekick_usages.usage.dashboard.service import CachedDashboardService
 from tests.fakes.claude.activation import (
     ClaudeActivationScenario,
     claude_activation_scenario,
@@ -123,10 +138,7 @@ def test_native_activation_retains_source_and_commits_verified_target(
     current_source_authority = current_source.authority
     assert isinstance(current_source_authority, ClaudeAccountAuthority)
     current_source_subscription = current_source_authority.subscription
-    assert isinstance(
-        current_source_subscription,
-        ClaudeManagedLoginAuthority,
-    )
+    assert isinstance(current_source_subscription, ClaudeManagedLoginAuthority)
     assert current_source_subscription.generation == (
         claude_access_token_generation("sk-ant-oat01-source-retained")
     )
@@ -138,18 +150,15 @@ def test_native_activation_retains_source_and_commits_verified_target(
         scenario.target_profile,
         CLAUDE_CREDENTIAL_FILE,
     )
-    assert retained is not None
-    assert retained.data == scenario.retained_source_payload
-    assert unchanged_target is not None
-    assert unchanged_target.data == scenario.target_payload
     assert (
-        scenario.native_credentials.read_bytes()
-        == scenario.native_target_payload
+        None if retained is None else retained.data,
+        None if unchanged_target is None else unchanged_target.data,
+        scenario.native_credentials.read_bytes(),
+    ) == (
+        scenario.retained_source_payload,
+        scenario.target_payload,
+        scenario.native_target_payload,
     )
-    assert scenario.script.login_profiles == [
-        scenario.source_profile,
-        scenario.native.config_directory,
-    ]
     login_environments = [
         environment
         for (_executable, arguments), environment in zip(
@@ -159,26 +168,158 @@ def test_native_activation_retains_source_and_commits_verified_target(
         )
         if arguments == ("auth", "login", "--claudeai")
     ]
-    assert login_environments[0] is not None
-    assert login_environments[1] is not None
-    assert login_environments[0][CLAUDE_CONFIG_DIR_ENVIRONMENT_KEY] == str(
-        scenario.source_profile
+    assert (
+        scenario.script.login_profiles,
+        tuple(
+            (
+                None
+                if environment is None
+                else environment.get(CLAUDE_CONFIG_DIR_ENVIRONMENT_KEY)
+            )
+            for environment in login_environments
+        ),
+    ) == (
+        [
+            scenario.source_profile,
+            scenario.native.config_directory,
+        ],
+        (str(scenario.source_profile), None),
     )
-    assert CLAUDE_CONFIG_DIR_ENVIRONMENT_KEY not in login_environments[1]
     claude_state = scenario.selected.load(ProviderId.CLAUDE)
     assert claude_state is not None
-    assert claude_state.account_id == scenario.target.account_id
-    assert claude_state.provider_identity == (
-        scenario.target.provider_identity
+    assert (
+        claude_state.account_id,
+        claude_state.provider_identity,
+    ) == (
+        scenario.target.account_id,
+        scenario.target.provider_identity,
+    )
+    runtime_auth = RuntimeAuthObservationStore(
+        scenario.paths.durable_operations
+    ).load_native(ProviderId.CLAUDE)
+    assert (
+        None
+        if runtime_auth is None
+        else (
+            runtime_auth.state,
+            runtime_auth.provider_identity,
+            runtime_auth.generation,
+        )
+    ) == (
+        ProviderAuthState.ACTIVE,
+        claude_state.provider_identity,
+        claude_state.runtime_generation,
     )
     assert scenario.selected.load(ProviderId.CODEX) == scenario.codex_state
     journal = scenario.journals.load(ProviderId.CLAUDE)
-    assert journal.active is None
-    assert len(journal.history) == 1
+    assert (journal.active, len(journal.history)) == (None, 1)
     committed = journal.history[0]
-    assert committed.phase is ActivationPhase.COMMITTED
-    assert committed.target_account_id == scenario.target.account_id
     assert (
-        committed.verified_runtime_generation
-        == claude_state.runtime_generation
+        committed.phase,
+        committed.target_account_id,
+        committed.verified_runtime_generation,
+    ) == (
+        ActivationPhase.COMMITTED,
+        scenario.target.account_id,
+        claude_state.runtime_generation,
+    )
+    assert isinstance(committed.native_auth_baseline, ClaudeAuthObservation)
+    assert committed.native_auth_baseline.modified_milliseconds is not None
+
+    status_only = claude_activation_scenario(
+        tmp_path / "status-only",
+        status_only_native_login=True,
+    )
+    status_only_selected = status_only.selected.load(ProviderId.CLAUDE)
+    status_only_result = _execute_activation(
+        status_only,
+        replace(
+            status_only.operation,
+            allow_remote_control_disconnect=True,
+        ),
+    )
+    status_only_runtime = RuntimeAuthObservationStore(
+        status_only.paths.durable_operations
+    ).load_native(ProviderId.CLAUDE)
+    status_only_dashboard = CachedDashboardService(status_only.paths).load(
+        status_only.codex_state.verified_at
+    )
+    status_only_claude = status_only_dashboard.providers[0]
+
+    assert (
+        status_only_result.outcome,
+        status_only_result.failure_code,
+        status_only.selected.load(ProviderId.CLAUDE),
+        status_only.native_credentials.read_bytes()
+        == status_only.native_target_payload,
+        (
+            None
+            if status_only_runtime is None
+            else (
+                status_only_runtime.state,
+                status_only_runtime.provider_identity,
+            )
+        ),
+        status_only_claude.runtime_state,
+        status_only_claude.active_account_id,
+        any(
+            isinstance(row, DashboardAccount) and row.active
+            for row in status_only_claude.rows
+        ),
+    ) == (
+        WorkerOutcome.ACTION_REQUIRED,
+        ClaudeActivationFailure.RECONCILIATION_REQUIRED.failure_code,
+        status_only_selected,
+        False,
+        (
+            ProviderAuthState.ACTIVE,
+            status_only.target.provider_identity,
+        ),
+        ProviderRuntimeState.EXTERNAL_ACTIVE,
+        None,
+        False,
+    )
+    status_only_journal = status_only.journals.load(ProviderId.CLAUDE)
+    status_only_active = status_only_journal.active
+    assert status_only_active is not None
+    assert (
+        status_only_active.phase,
+        status_only_active.reconciliation_origin_phase,
+    ) == (
+        ActivationPhase.RECONCILIATION_REQUIRED,
+        ActivationPhase.OUTGOING_RETAINED,
+    )
+
+    unpropagated = claude_activation_scenario(
+        tmp_path / "unpropagated",
+        advance_native_mtime=False,
+    )
+    unpropagated_selected = unpropagated.selected.load(ProviderId.CLAUDE)
+    unpropagated_result = _execute_activation(
+        unpropagated,
+        replace(
+            unpropagated.operation,
+            allow_remote_control_disconnect=True,
+        ),
+    )
+    unpropagated_runtime = RuntimeAuthObservationStore(
+        unpropagated.paths.durable_operations
+    ).load_native(ProviderId.CLAUDE)
+
+    assert (
+        unpropagated_result.outcome,
+        unpropagated_result.failure_code,
+        unpropagated.selected.load(ProviderId.CLAUDE),
+        unpropagated.native_credentials.read_bytes(),
+        (
+            None
+            if unpropagated_runtime is None
+            else unpropagated_runtime.provider_identity
+        ),
+    ) == (
+        WorkerOutcome.ACTION_REQUIRED,
+        ClaudeActivationFailure.RECONCILIATION_REQUIRED.failure_code,
+        unpropagated_selected,
+        unpropagated.native_target_payload,
+        unpropagated.target.provider_identity,
     )

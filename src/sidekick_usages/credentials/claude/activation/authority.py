@@ -11,11 +11,19 @@ from sidekick_usages.core.accounts.models import (
     SavedAccount,
 )
 from sidekick_usages.core.accounts.types import (
+    AuthorityGeneration,
     CredentialHealth,
     ProviderIdentity,
     SidekickAccountId,
 )
-from sidekick_usages.core.selection.types import ProviderAuthState
+from sidekick_usages.core.selection.models import (
+    ProviderAuthObservation,
+    SelectedAccountState,
+)
+from sidekick_usages.core.selection.types import (
+    ProviderAuthState,
+    ProviderRuntimeState,
+)
 from sidekick_usages.core.types import ProviderId, RefreshStatus
 from sidekick_usages.credentials.claude.activation.models import (
     ClaudeActivationError,
@@ -30,9 +38,11 @@ from sidekick_usages.credentials.claude.exchange.models import (
     ClaudeExchangeFailure,
     ClaudeExchangeSuccess,
     authority_expectation,
+    native_authority_expectation,
 )
 from sidekick_usages.credentials.claude.exchange.service import (
     ClaudeOfficialLoginExchange,
+    claude_native_login_baseline_available,
 )
 from sidekick_usages.credentials.claude.exchange.types import (
     ClaudeExchangeFailureKind,
@@ -56,9 +66,15 @@ from sidekick_usages.persistence.private.credentials import (
 from sidekick_usages.persistence.supervisor.authority import (
     ProviderMutationAuthority,
 )
+from sidekick_usages.persistence.supervisor.observation import (
+    RuntimeAuthObservationStore,
+)
 from sidekick_usages.providers.claude.activation.service import (
     claude_environment_conflict,
     claude_native_switch_conflict,
+)
+from sidekick_usages.providers.claude.auth.proof.service import (
+    same_claude_authority_proof,
 )
 from sidekick_usages.providers.claude.auth.storage.errors import (
     ClaudeProtectedStorageError,
@@ -88,6 +104,13 @@ _INACTIVE_NATIVE_STATES = {
         ProviderAuthState.UNSUPPORTED
     ),
 }
+_RUNTIME_AUTH_STATES = {
+    ProviderRuntimeState.SAVED_ACTIVE: ProviderAuthState.ACTIVE,
+    ProviderRuntimeState.EXTERNAL_ACTIVE: ProviderAuthState.ACTIVE,
+    ProviderRuntimeState.LOGGED_OUT: ProviderAuthState.LOGGED_OUT,
+    ProviderRuntimeState.UNREADABLE: ProviderAuthState.UNREADABLE,
+    ProviderRuntimeState.UNSUPPORTED: ProviderAuthState.UNSUPPORTED,
+}
 
 
 class ClaudeActivationAuthorityCoordinator:
@@ -113,6 +136,9 @@ class ClaudeActivationAuthorityCoordinator:
         self._foreground_probe = resolved_runtime.foreground_probe
         self._capabilities = capabilities
         self._managed_reader = ClaudeManagedAuthorityReader(paths, profiles)
+        self._observations = RuntimeAuthObservationStore(
+            paths.durable_operations
+        )
 
     def saved_accounts(self) -> tuple[SavedAccount, ...]:
         """Return the current secret-free account index."""
@@ -323,13 +349,42 @@ class ClaudeActivationAuthorityCoordinator:
             snapshot=snapshot,
         )
 
+    def record_native_observation(
+        self,
+        observed: ClaudeNativeObservation,
+    ) -> None:
+        """Persist one credential-free native verification result."""
+        snapshot = observed.snapshot
+        self._save_runtime_observation(
+            observed.state,
+            (None if snapshot is None else snapshot.provider_identity),
+            None if snapshot is None else snapshot.generation,
+        )
+
+    def record_selected_runtime(
+        self,
+        selected: SelectedAccountState,
+    ) -> None:
+        """Persist one provider-verified selected runtime result."""
+        if selected.provider_id is not ProviderId.CLAUDE:
+            raise ValueError("Selected runtime is not Claude.")
+        state = _RUNTIME_AUTH_STATES[selected.runtime_state]
+        active = state is ProviderAuthState.ACTIVE
+        self._save_runtime_observation(
+            state,
+            selected.provider_identity if active else None,
+            selected.runtime_generation if active else None,
+        )
+
     def require_native_current(
         self,
         capabilities: ClaudeCapabilities,
         expected: ClaudeNativeObservation,
     ) -> None:
         """Require one native observation to remain current on read-back."""
-        if self.observe_native(capabilities) != expected:
+        observed = self.observe_native(capabilities)
+        self.record_native_observation(observed)
+        if observed != expected:
             raise ClaudeActivationError(ClaudeActivationFailure.NATIVE_CHANGED)
 
     def relate_native_account(
@@ -339,7 +394,7 @@ class ClaudeActivationAuthorityCoordinator:
         authority: ProviderMutationAuthority,
     ) -> SavedAccount | None:
         """Relate one native identity to one verified managed account."""
-        matches: list[tuple[SavedAccount, ClaudeManagedLoginAuthority]] = []
+        matches: list[tuple[SavedAccount, ClaudeAuthoritySnapshot]] = []
         for account in self.saved_accounts():
             if account.provider_id is not ProviderId.CLAUDE:
                 continue
@@ -350,24 +405,24 @@ class ClaudeActivationAuthorityCoordinator:
                 )
             except ClaudeActivationError:
                 continue
-            if managed.provider_identity == native.provider_identity:
-                matches.append((account, managed))
+            authority.account(account.account_id)
+            capabilities = self.prepare(account.account_id)
+            self.require_same_runtime(reference_capabilities, capabilities)
+            private = self.read_saved_private(
+                capabilities,
+                managed,
+                account,
+                ClaudeActivationFailure.RECONCILIATION_REQUIRED,
+            )
+            if private.provider_identity == native.provider_identity:
+                matches.append((account, private))
         if len(matches) > 1:
             raise ClaudeActivationError(
                 ClaudeActivationFailure.RECONCILIATION_REQUIRED
             )
         if not matches:
             return None
-        account, managed = matches[0]
-        authority.account(account.account_id)
-        capabilities = self.prepare(account.account_id)
-        self.require_same_runtime(reference_capabilities, capabilities)
-        private = self.read_saved_private(
-            capabilities,
-            managed,
-            account,
-            ClaudeActivationFailure.RECONCILIATION_REQUIRED,
-        )
+        account, private = matches[0]
         self.require_usable(
             private,
             ClaudeActivationFailure.RECONCILIATION_REQUIRED,
@@ -478,6 +533,19 @@ class ClaudeActivationAuthorityCoordinator:
             native_capabilities,
             expected_native,
         )
+        native_before = expected_native.snapshot
+        modified_milliseconds = (
+            None
+            if native_before is None
+            else native_before.modified_milliseconds
+        )
+        if not claude_native_login_baseline_available(
+            native_capabilities,
+            modified_milliseconds,
+        ):
+            raise ClaudeActivationError(
+                ClaudeActivationFailure.RECONCILIATION_REQUIRED
+            )
         try:
             with self._managed_reader.open_login(
                 private_capabilities,
@@ -494,7 +562,10 @@ class ClaudeActivationAuthorityCoordinator:
                     self._native_reader(native_capabilities)
                 ).provision(
                     native_capabilities,
-                    authority_expectation(private_snapshot),
+                    native_authority_expectation(
+                        private_snapshot,
+                        modified_milliseconds,
+                    ),
                     protected.refresh_token,
                 )
         except ClaudeProtectedStorageError:
@@ -521,8 +592,37 @@ class ClaudeActivationAuthorityCoordinator:
         failure = _EXCHANGE_FAILURES.get(result.kind, unavailable)
         raise ClaudeActivationError(failure)
 
+    @staticmethod
+    def require_same_native_proof(
+        first: ClaudeAuthoritySnapshot,
+        second: ClaudeAuthoritySnapshot,
+        failure: ClaudeActivationFailure,
+    ) -> None:
+        """Require stable status, protected semantics, and ``mtimeMs``."""
+        if (
+            not same_claude_authority_proof(first, second)
+            or first.modified_milliseconds != second.modified_milliseconds
+        ):
+            raise ClaudeActivationError(failure)
+
     def _source_environment(self) -> Mapping[str, str]:
         return os.environ if self._environment is None else self._environment
+
+    def _save_runtime_observation(
+        self,
+        state: ProviderAuthState,
+        provider_identity: ProviderIdentity | None,
+        generation: AuthorityGeneration | None,
+    ) -> None:
+        self._observations.save_native(
+            ProviderAuthObservation(
+                provider_id=ProviderId.CLAUDE,
+                state=state,
+                provider_identity=provider_identity,
+                generation=generation,
+                observed_at=self._clock.now(),
+            )
+        )
 
     def _native_reader(
         self,

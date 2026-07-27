@@ -24,9 +24,13 @@ from sidekick_usages.core.models import (
     UsageReport,
     UsageWindow,
 )
-from sidekick_usages.core.selection.models import SelectedAccountState
+from sidekick_usages.core.selection.models import (
+    ProviderAuthObservation,
+    SelectedAccountState,
+)
 from sidekick_usages.core.selection.types import (
     ActivationOutcome,
+    ProviderAuthState,
     ProviderRuntimeState,
 )
 from sidekick_usages.core.types import (
@@ -49,6 +53,9 @@ from sidekick_usages.persistence.snapshots.activity.store import (
 )
 from sidekick_usages.persistence.snapshots.usage.store import (
     UsageSnapshotStore,
+)
+from sidekick_usages.persistence.supervisor.observation import (
+    RuntimeAuthObservationStore,
 )
 from sidekick_usages.persistence.supervisor.selection import (
     SelectedStateStore,
@@ -153,29 +160,38 @@ def seed_cached_dashboard(
             ),
         ),
     )
+    claude_selected = SelectedAccountState(
+        provider_id=ProviderId.CLAUDE,
+        runtime_state=ProviderRuntimeState.EXTERNAL_ACTIVE,
+        account_id=None,
+        provider_identity=ProviderIdentity(EXTERNAL_PROVIDER_IDENTITY),
+        runtime_generation=AuthorityGeneration("external-generation"),
+        verified_at=observed_at,
+        outcome=ActivationOutcome.EXTERNAL_RECONCILED,
+    )
+    codex_selected = SelectedAccountState(
+        provider_id=ProviderId.CODEX,
+        runtime_state=ProviderRuntimeState.SAVED_ACTIVE,
+        account_id=renamed.account_id,
+        provider_identity=ProviderIdentity(VALID_PROVIDER_IDENTITY),
+        runtime_generation=AuthorityGeneration("active-generation"),
+        verified_at=observed_at,
+        outcome=ActivationOutcome.VERIFIED,
+    )
     selected = SelectedStateStore(paths.selected_state)
-    selected.save(
-        SelectedAccountState(
-            provider_id=ProviderId.CLAUDE,
-            runtime_state=ProviderRuntimeState.EXTERNAL_ACTIVE,
-            account_id=None,
-            provider_identity=ProviderIdentity(EXTERNAL_PROVIDER_IDENTITY),
-            runtime_generation=AuthorityGeneration("external-generation"),
-            verified_at=observed_at,
-            outcome=ActivationOutcome.EXTERNAL_RECONCILED,
+    selected.save(claude_selected)
+    selected.save(codex_selected)
+    observations = RuntimeAuthObservationStore(paths.durable_operations)
+    for state in (claude_selected, codex_selected):
+        observations.save_native(
+            ProviderAuthObservation(
+                provider_id=state.provider_id,
+                state=ProviderAuthState.ACTIVE,
+                provider_identity=state.provider_identity,
+                generation=state.runtime_generation,
+                observed_at=state.verified_at,
+            )
         )
-    )
-    selected.save(
-        SelectedAccountState(
-            provider_id=ProviderId.CODEX,
-            runtime_state=ProviderRuntimeState.SAVED_ACTIVE,
-            account_id=renamed.account_id,
-            provider_identity=ProviderIdentity(VALID_PROVIDER_IDENTITY),
-            runtime_generation=AuthorityGeneration("active-generation"),
-            verified_at=observed_at,
-            outcome=ActivationOutcome.VERIFIED,
-        )
-    )
     ServiceStateStore(paths.service_state).save(
         ServiceState(
             protocol_version=1,

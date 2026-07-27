@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from decimal import Decimal
 from types import TracebackType
 from typing import Self
 
@@ -13,6 +14,8 @@ from sidekick_usages.core.accounts.types import (
 )
 from sidekick_usages.core.models import ClaudeLoginCredentials
 from sidekick_usages.providers.claude.types import ClaudeProfile
+
+_NANOSECONDS_PER_MILLISECOND = Decimal(1_000_000)
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,7 +55,17 @@ class ClaudeProtectedCredentialSnapshot:
     refresh_expires_at: datetime | None
     health: CredentialHealth
     action: CredentialAction
-    modified_nanoseconds: int | None = None
+    modified_milliseconds: Decimal | None = None
+
+    def __post_init__(self) -> None:
+        """Reject invalid provider-visible modification evidence."""
+        modified = self.modified_milliseconds
+        if modified is not None and (
+            not isinstance(modified, Decimal)
+            or not modified.is_finite()
+            or modified < 0
+        ):
+            raise ValueError("Claude credential mtimeMs is invalid.")
 
     def associated_with(
         self,
@@ -69,7 +82,7 @@ class ClaudeProtectedCredentialSnapshot:
             refresh_expires_at=self.refresh_expires_at,
             health=self.health,
             action=self.action,
-            modified_nanoseconds=self.modified_nanoseconds,
+            modified_milliseconds=self.modified_milliseconds,
             provider_identity=provider_identity,
         )
 
@@ -180,3 +193,12 @@ class ClaudeProtectedLogin:
     def __repr__(self) -> str:
         """Return a representation without credential material."""
         return "<ClaudeProtectedLogin redacted>"
+
+
+def provider_mtime_milliseconds(
+    modified_nanoseconds: int | None,
+) -> Decimal | None:
+    """Convert descriptor-qualified nanoseconds to exact ``mtimeMs``."""
+    if modified_nanoseconds is None:
+        return None
+    return Decimal(modified_nanoseconds) / _NANOSECONDS_PER_MILLISECOND

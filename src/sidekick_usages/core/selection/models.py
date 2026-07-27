@@ -2,12 +2,19 @@
 
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 
 from sidekick_usages.core.accounts.types import (
     AuthorityGeneration,
+    CredentialAction,
+    CredentialHealth,
     OperationId,
     ProviderIdentity,
     SidekickAccountId,
+)
+from sidekick_usages.core.accounts.validation import (
+    MAX_METADATA_BYTES,
+    require_bounded_text,
 )
 from sidekick_usages.core.selection.types import (
     ActivationOutcome,
@@ -151,6 +158,66 @@ class NativeReconciliationResult:
             raise TypeError("Native reconciliation change must be boolean.")
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ClaudeAuthObservation(ProviderAuthObservation):
+    """Complete durable observation of native Claude authentication."""
+
+    plan: str
+    scopes: tuple[str, ...]
+    access_expires_at: datetime
+    refresh_expires_at: datetime | None
+    health: CredentialHealth
+    action: CredentialAction
+    modified_milliseconds: Decimal | None
+
+    def __post_init__(self) -> None:
+        """Normalize time and validate bounded protected semantics."""
+        super().__post_init__()
+        if (
+            self.provider_id is not ProviderId.CLAUDE
+            or self.state is not ProviderAuthState.ACTIVE
+        ):
+            raise ValueError(
+                "Claude authentication observation must be active Claude."
+            )
+        require_bounded_text(
+            self.plan,
+            name="Claude native plan",
+            maximum=MAX_METADATA_BYTES,
+        )
+        if not self.scopes:
+            raise ValueError("Claude native authority requires scopes.")
+        for scope in self.scopes:
+            require_bounded_text(
+                scope,
+                name="Claude native scope",
+                maximum=MAX_METADATA_BYTES,
+            )
+        if len(set(self.scopes)) != len(self.scopes):
+            raise ValueError("Claude native scopes must be unique.")
+        object.__setattr__(
+            self,
+            "access_expires_at",
+            as_utc(self.access_expires_at),
+        )
+        object.__setattr__(
+            self,
+            "refresh_expires_at",
+            (
+                None
+                if self.refresh_expires_at is None
+                else as_utc(self.refresh_expires_at)
+            ),
+        )
+        modified = self.modified_milliseconds
+        if modified is not None and (
+            not isinstance(modified, Decimal)
+            or not modified.is_finite()
+            or modified < 0
+        ):
+            raise ValueError("Claude native mtimeMs is invalid.")
+
+
 def activation_account_ids(
     selected_baseline: SelectedAccountState | None,
     target_account_id: SidekickAccountId,
@@ -181,6 +248,7 @@ class ActivationRecord:
     verified_runtime_generation: AuthorityGeneration | None = None
     outcome: ActivationOutcome | None = None
     failure_code: str | None = None
+    reconciliation_origin_phase: ActivationPhase | None = None
 
     def __post_init__(self) -> None:
         """Normalize timestamps and enforce terminal result invariants."""
@@ -199,6 +267,26 @@ class ActivationRecord:
             raise ValueError(
                 "Native authentication must match the activation provider."
             )
+        claude_baseline = isinstance(
+            self.native_auth_baseline,
+            ClaudeAuthObservation,
+        )
+        if (self.provider_id is ProviderId.CLAUDE) != claude_baseline:
+            raise ValueError(
+                "Claude activation requires a complete native observation."
+            )
+        origin = self.reconciliation_origin_phase
+        if origin in {
+            ActivationPhase.RECONCILIATION_REQUIRED,
+            ActivationPhase.COMMITTED,
+            ActivationPhase.ROLLED_BACK,
+        }:
+            raise ValueError("Reconciliation origin must be nonterminal.")
+        if (
+            self.phase is ActivationPhase.RECONCILIATION_REQUIRED
+            and origin is None
+        ):
+            raise ValueError("Reconciliation requires its origin phase.")
         _validate_activation_outcome(self.phase, self.outcome)
         _validate_activation_generation(
             self.phase,

@@ -103,6 +103,18 @@ def test_cached_dashboard_joins_stable_ids_without_credentials(
     assert reads == {
         paths.accounts: 1,
         paths.activity_snapshots: 1,
+        (
+            paths.durable_operations
+            / "runtime-observations"
+            / "native"
+            / "claude.json"
+        ): 1,
+        (
+            paths.durable_operations
+            / "runtime-observations"
+            / "native"
+            / "codex.json"
+        ): 1,
         paths.selected_state: 1,
         paths.service_state: 1,
         paths.usage_snapshots: 1,
@@ -379,9 +391,40 @@ def test_dashboard_controller_journey_preserves_verified_truth(
             service=replace(snapshot.service, ready=False),
         )
     ).move(DashboardMove.UP)
-    assert preparable.activate_or_repair() == ActivateOrRepairIntent(
-        provider_id=ProviderId.CLAUDE,
-        account_id=CLAUDE_PREVIEW_ACCOUNT_ID,
+    uncommitted = replace(
+        preparable,
+        snapshot=replace(
+            preparable.snapshot,
+            service=snapshot.service,
+            providers=(
+                replace(
+                    preparable.snapshot.providers[0],
+                    runtime_state=ProviderRuntimeState.EXTERNAL_ACTIVE,
+                    active_account_id=None,
+                    actions_enabled=True,
+                ),
+                preparable.snapshot.providers[1],
+            ),
+        ),
+    )
+    assert (
+        uncommitted.snapshot.service.ready,
+        uncommitted.snapshot.providers[0].actions_enabled,
+        preparable.activate_or_repair(),
+        uncommitted.activate_or_repair(),
+        uncommitted.refresh_account(),
+    ) == (
+        True,
+        True,
+        ActivateOrRepairIntent(
+            provider_id=ProviderId.CLAUDE,
+            account_id=CLAUDE_PREVIEW_ACCOUNT_ID,
+        ),
+        None,
+        RefreshAccountIntent(
+            provider_id=ProviderId.CLAUDE,
+            account_id=CLAUDE_PREVIEW_ACCOUNT_ID,
+        ),
     )
 
     disabled = DashboardController.start(

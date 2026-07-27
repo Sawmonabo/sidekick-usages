@@ -17,8 +17,14 @@ from sidekick_usages.core.models import (
     AccountUsageSnapshot,
     ProviderTokenActivitySnapshot,
 )
-from sidekick_usages.core.selection.models import SelectedAccountState
-from sidekick_usages.core.selection.types import ProviderRuntimeState
+from sidekick_usages.core.selection.models import (
+    ProviderAuthObservation,
+    SelectedAccountState,
+)
+from sidekick_usages.core.selection.types import (
+    ProviderAuthState,
+    ProviderRuntimeState,
+)
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.models.service import (
     ServiceState,
@@ -33,6 +39,9 @@ from sidekick_usages.persistence.snapshots.activity.reader import (
 )
 from sidekick_usages.persistence.snapshots.usage.reader import (
     UsageSnapshotReader,
+)
+from sidekick_usages.persistence.supervisor.observation import (
+    RuntimeAuthObservationStore,
 )
 from sidekick_usages.persistence.supervisor.readers.selection import (
     SelectedStateReader,
@@ -53,6 +62,11 @@ from sidekick_usages.usage.dashboard.models import (
 )
 
 _CURRENT_PACKAGE_VERSION = PackageVersion(__version__)
+_INACTIVE_RUNTIME_STATES = {
+    ProviderAuthState.LOGGED_OUT: ProviderRuntimeState.LOGGED_OUT,
+    ProviderAuthState.UNREADABLE: ProviderRuntimeState.UNREADABLE,
+    ProviderAuthState.UNSUPPORTED: ProviderRuntimeState.UNSUPPORTED,
+}
 
 
 class CachedDashboardService:
@@ -64,6 +78,9 @@ class CachedDashboardService:
         self._activity = ActivitySnapshotReader(paths.activity_snapshots)
         self._selected = SelectedStateReader(paths.selected_state)
         self._service = ServiceStateReader(paths.service_state)
+        self._runtime_auth = RuntimeAuthObservationStore(
+            paths.durable_operations
+        )
 
     def load(self, reference_time: datetime) -> DashboardSnapshot:
         """Read each cached artifact once and join it by stable account ID."""
@@ -72,6 +89,10 @@ class CachedDashboardService:
         account_activity, provider_activity = self._activity.load_all(accounts)
         selected = {
             state.provider_id: state for state in self._selected.observe_all()
+        }
+        runtime_auth = {
+            provider_id: self._runtime_auth.observe_native(provider_id)
+            for provider_id in ProviderId
         }
         service_state = self._service.observe()
         service = self._dashboard_service(service_state)
@@ -87,6 +108,7 @@ class CachedDashboardService:
                     provider_id,
                     accounts,
                     selected.get(provider_id),
+                    runtime_auth[provider_id],
                     self._provider_service_ready(
                         provider_id,
                         accounts,
@@ -139,6 +161,7 @@ class CachedDashboardService:
         provider_id: ProviderId,
         accounts: tuple[SavedAccount, ...],
         selected: SelectedAccountState | None,
+        runtime_auth: ProviderAuthObservation | None,
         service_ready: bool,
         usage: dict[SidekickAccountId, AccountUsageSnapshot],
         account_activity: dict[
@@ -148,15 +171,22 @@ class CachedDashboardService:
         provider_activity: ProviderTokenActivitySnapshot | None,
         usage_conflicts: frozenset[SidekickAccountId],
     ) -> DashboardProvider:
+        if (
+            runtime_auth is not None
+            and runtime_auth.provider_id is not provider_id
+        ):
+            raise ValueError("Runtime observation provider does not match.")
         provider_accounts = tuple(
             account
             for account in accounts
             if account.provider_id is provider_id
         )
+        runtime_state = self._runtime_state(selected, runtime_auth)
+        active_account_id = self._active_account_id(selected, runtime_auth)
         rows: list[DashboardRow] = [
             self._account(
                 account,
-                selected,
+                active_account_id,
                 service_ready,
                 usage.get(account.account_id),
                 account_activity.get(account.account_id),
@@ -164,10 +194,9 @@ class CachedDashboardService:
             )
             for account in provider_accounts
         ]
-        if (
-            selected is not None
-            and selected.runtime_state is ProviderRuntimeState.EXTERNAL_ACTIVE
-        ):
+        if runtime_state is ProviderRuntimeState.EXTERNAL_ACTIVE:
+            if runtime_auth is None:
+                raise ValueError("External runtime requires an observation.")
             external_states = [DashboardActionState.EXTERNAL_ACTIVE]
             if not service_ready:
                 external_states.append(
@@ -176,25 +205,25 @@ class CachedDashboardService:
             rows.append(
                 DashboardExternalRow(
                     provider_id=provider_id,
-                    observed_at=selected.verified_at,
+                    observed_at=runtime_auth.observed_at,
                     states=tuple(external_states),
                 )
             )
-        runtime_state = None if selected is None else selected.runtime_state
-        provider_available = runtime_state not in {
-            ProviderRuntimeState.UNREADABLE,
-            ProviderRuntimeState.UNSUPPORTED,
-        }
+        provider_available = (
+            runtime_auth is not None
+            and runtime_state
+            not in {
+                ProviderRuntimeState.UNREADABLE,
+                ProviderRuntimeState.UNSUPPORTED,
+            }
+        )
         return DashboardProvider(
             provider_id=provider_id,
             runtime_state=runtime_state,
-            active_account_id=(
-                selected.account_id
-                if selected is not None
-                and selected.runtime_state is ProviderRuntimeState.SAVED_ACTIVE
-                else None
+            active_account_id=active_account_id,
+            verified_at=(
+                runtime_auth.observed_at if runtime_auth is not None else None
             ),
-            verified_at=None if selected is None else selected.verified_at,
             actions_enabled=service_ready and provider_available,
             rows=tuple(rows),
             activity=(
@@ -207,10 +236,28 @@ class CachedDashboardService:
             ),
         )
 
+    @staticmethod
+    def _runtime_state(
+        selected: SelectedAccountState | None,
+        runtime_auth: ProviderAuthObservation | None,
+    ) -> ProviderRuntimeState | None:
+        if runtime_auth is None:
+            return None
+        if runtime_auth.state is not ProviderAuthState.ACTIVE:
+            return _INACTIVE_RUNTIME_STATES[runtime_auth.state]
+        if selected is not None and (
+            CachedDashboardService._runtime_matches_selected(
+                selected,
+                runtime_auth,
+            )
+        ):
+            return selected.runtime_state
+        return ProviderRuntimeState.EXTERNAL_ACTIVE
+
     def _account(
         self,
         account: SavedAccount,
-        selected: SelectedAccountState | None,
+        active_account_id: SidekickAccountId | None,
         service_ready: bool,
         usage: AccountUsageSnapshot | None,
         activity: AccountTokenActivitySnapshot | None,
@@ -220,14 +267,6 @@ class CachedDashboardService:
         states = list(self._credential_states(account))
         if usage_conflicted:
             states.append(DashboardActionState.REPAIR_REQUIRED)
-        if selected is not None:
-            if selected.runtime_state is ProviderRuntimeState.UNREADABLE:
-                states.append(DashboardActionState.RECONCILIATION_REQUIRED)
-            elif (
-                selected.runtime_state is ProviderRuntimeState.UNSUPPORTED
-                and account.has_managed_authority
-            ):
-                states.append(DashboardActionState.PROVIDER_UNSUPPORTED)
         if not service_ready:
             states.append(DashboardActionState.SERVICE_UNAVAILABLE)
         return DashboardAccount(
@@ -236,11 +275,7 @@ class CachedDashboardService:
             provider_id=account.provider_id,
             plan=account.plan,
             credential_health=account.credential_health,
-            active=(
-                selected is not None
-                and selected.runtime_state is ProviderRuntimeState.SAVED_ACTIVE
-                and selected.account_id == account.account_id
-            ),
+            active=active_account_id == account.account_id,
             states=tuple(dict.fromkeys(states)),
             usage=(
                 None
@@ -259,6 +294,41 @@ class CachedDashboardService:
                     observed_at=activity.fetched_at,
                 )
             ),
+        )
+
+    @staticmethod
+    def _active_account_id(
+        selected: SelectedAccountState | None,
+        runtime_auth: ProviderAuthObservation | None,
+    ) -> SidekickAccountId | None:
+        if (
+            selected is None
+            or selected.runtime_state is not ProviderRuntimeState.SAVED_ACTIVE
+            or not CachedDashboardService._runtime_matches_selected(
+                selected,
+                runtime_auth,
+            )
+        ):
+            return None
+        return selected.account_id
+
+    @staticmethod
+    def _runtime_matches_selected(
+        selected: SelectedAccountState | None,
+        runtime_auth: ProviderAuthObservation | None,
+    ) -> bool:
+        return (
+            selected is not None
+            and selected.runtime_state
+            in {
+                ProviderRuntimeState.SAVED_ACTIVE,
+                ProviderRuntimeState.EXTERNAL_ACTIVE,
+            }
+            and runtime_auth is not None
+            and runtime_auth.state is ProviderAuthState.ACTIVE
+            and runtime_auth.provider_id is selected.provider_id
+            and runtime_auth.provider_identity == selected.provider_identity
+            and runtime_auth.generation == selected.runtime_generation
         )
 
     @staticmethod
