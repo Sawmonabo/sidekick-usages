@@ -38,6 +38,7 @@ class ActivationPhase(StrEnum):
     OUTGOING_RETAINED = "outgoing_retained"
     TARGET_ACTIVATED = "target_activated"
     PROVIDER_PROOF_VERIFIED = "provider_proof_verified"
+    ROLLBACK_STARTED = "rollback_started"
     COMMITTED = "committed"
     ROLLED_BACK = "rolled_back"
     RECONCILIATION_REQUIRED = "reconciliation_required"

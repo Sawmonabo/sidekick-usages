@@ -34,6 +34,7 @@ _ACTIVATION_TRANSITIONS: dict[
     ActivationPhase.OUTGOING_RETAINED: frozenset(
         {
             ActivationPhase.TARGET_ACTIVATED,
+            ActivationPhase.ROLLBACK_STARTED,
             ActivationPhase.ROLLED_BACK,
             ActivationPhase.RECONCILIATION_REQUIRED,
         }
@@ -41,13 +42,22 @@ _ACTIVATION_TRANSITIONS: dict[
     ActivationPhase.TARGET_ACTIVATED: frozenset(
         {
             ActivationPhase.PROVIDER_PROOF_VERIFIED,
+            ActivationPhase.ROLLBACK_STARTED,
             ActivationPhase.ROLLED_BACK,
             ActivationPhase.RECONCILIATION_REQUIRED,
         }
     ),
     ActivationPhase.PROVIDER_PROOF_VERIFIED: frozenset(
         {
+            ActivationPhase.ROLLBACK_STARTED,
             ActivationPhase.COMMITTED,
+            ActivationPhase.ROLLED_BACK,
+            ActivationPhase.RECONCILIATION_REQUIRED,
+        }
+    ),
+    ActivationPhase.ROLLBACK_STARTED: frozenset(
+        {
+            ActivationPhase.TARGET_ACTIVATED,
             ActivationPhase.ROLLED_BACK,
             ActivationPhase.RECONCILIATION_REQUIRED,
         }
@@ -58,6 +68,7 @@ _ACTIVATION_TRANSITIONS: dict[
         {
             ActivationPhase.TARGET_ACTIVATED,
             ActivationPhase.PROVIDER_PROOF_VERIFIED,
+            ActivationPhase.ROLLBACK_STARTED,
             ActivationPhase.ROLLED_BACK,
         }
     ),

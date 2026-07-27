@@ -407,6 +407,7 @@ class ClaudeActivationRecoveryService:
             if active.phase in {
                 ActivationPhase.PREPARED,
                 ActivationPhase.OUTGOING_RETAINED,
+                ActivationPhase.ROLLBACK_STARTED,
                 ActivationPhase.RECONCILIATION_REQUIRED,
             }:
                 active = transaction.advance(
@@ -448,6 +449,12 @@ class ClaudeActivationRecoveryService:
         context: ClaudeActivationRecoveryContext,
         authority: ProviderMutationAuthority,
     ) -> SelectedAccountState:
+        record = transaction.advance(
+            record.operation_id,
+            ActivationPhase.ROLLBACK_STARTED,
+            updated_at=self._clock.now(),
+            verified_runtime_generation=record.verified_runtime_generation,
+        )
         try:
             rolled_back = self._authorities.provision_native(
                 context.source_capabilities,
