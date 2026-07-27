@@ -139,18 +139,22 @@ def _run_lookup(
             ),
         )
         service.check(observe=_write_completion)
-    _write_event(UsageLookupWorkerEvent(UsageLookupEventKind.SUCCEEDED))
+    _write_event(UsageLookupWorkerEvent(kind=UsageLookupEventKind.SUCCEEDED))
 
 
 def _write_completion(completion: AccountLookupCompletion) -> None:
     _write_event(
         UsageLookupWorkerEvent(
-            (
+            kind=(
                 UsageLookupEventKind.ACCOUNT_SUCCEEDED
                 if completion.failure is None
                 else UsageLookupEventKind.ACCOUNT_FAILED
             ),
-            completion.account_id,
+            account_id=completion.account_id,
+            provider_id=completion.provider_id,
+            fetch_failure=(
+                None if completion.failure is None else completion.failure.kind
+            ),
         )
     )
 
@@ -159,7 +163,7 @@ def _write_internal_failure() -> None:
     with suppress(OSError):
         _write_event(
             UsageLookupWorkerEvent(
-                UsageLookupEventKind.FAILED,
+                kind=UsageLookupEventKind.FAILED,
                 failure=UsageLookupFailure.INTERNAL,
             )
         )

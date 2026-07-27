@@ -2,26 +2,29 @@
 
 from collections.abc import Callable
 from dataclasses import replace
-from threading import Event
+from threading import Event, current_thread
 from time import monotonic
 
-from sidekick_usages.cli.dashboard.session import InteractiveDashboardSession
+from sidekick_usages.cli.dashboard.session import (
+    DASHBOARD_LOOKUP_THREAD_NAME,
+    InteractiveDashboardSession,
+)
 from sidekick_usages.clock import Clock
 from sidekick_usages.core.accounts.types import SidekickAccountId
 from sidekick_usages.core.selection.types import ProviderRuntimeState
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.types.service import ServicePhase
+from sidekick_usages.persistence.errors import PersistenceError
 from sidekick_usages.usage.dashboard.models import (
     DashboardAccount,
     DashboardService,
     DashboardSnapshot,
     DashboardStatusKind,
 )
-from sidekick_usages.usage.lookup.models import (
-    MetricsRefreshCode,
+from sidekick_usages.usage.lookup.diagnostics.models import (
+    MetricsRefreshCause,
     MetricsRefreshObservation,
     MetricsRefreshOutcome,
-    MetricsRefreshStage,
     MetricsRefreshWriteState,
 )
 from sidekick_usages.usage.lookup.worker.models import (
@@ -31,6 +34,7 @@ from sidekick_usages.usage.lookup.worker.models import (
     UsageLookupWorkerEvent,
     UsageLookupWorkerResult,
 )
+from sidekick_usages.usage.models import FetchFailureKind
 from tests.fakes.dashboard.session.models import SESSION_WAIT_SECONDS
 
 
@@ -39,13 +43,29 @@ class SessionSnapshotSource:
 
     def __init__(self, snapshot: DashboardSnapshot) -> None:
         self.snapshot = snapshot
+        self._lookup_snapshots: list[DashboardSnapshot | PersistenceError] = []
         self.loads = 0
+        self.lookup_loads = 0
 
     def load(self, only: ProviderId | None) -> DashboardSnapshot:
         """Return the latest synthetic provider-proven state."""
         del only
         self.loads += 1
+        if current_thread().name == DASHBOARD_LOOKUP_THREAD_NAME:
+            self.lookup_loads += 1
+            if self._lookup_snapshots:
+                result = self._lookup_snapshots.pop(0)
+                if isinstance(result, PersistenceError):
+                    raise result
+                return result
         return self.snapshot
+
+    def queue_lookup_snapshots(
+        self,
+        *snapshots: DashboardSnapshot | PersistenceError,
+    ) -> None:
+        """Queue deterministic lookup-owner cache reads."""
+        self._lookup_snapshots.extend(snapshots)
 
     def activate(
         self,
@@ -95,6 +115,7 @@ class SessionMetricsRefreshSink:
 
     def __init__(self, clock: Clock) -> None:
         self._clock = clock
+        self._recorded = Event()
         self.observations: list[MetricsRefreshObservation] = []
 
     def record(
@@ -102,19 +123,25 @@ class SessionMetricsRefreshSink:
         outcome: MetricsRefreshOutcome,
         *,
         attempts: int,
-        stage: MetricsRefreshStage | None = None,
-        code: MetricsRefreshCode | None = None,
+        retry_causes: tuple[MetricsRefreshCause, ...] = (),
+        causes: tuple[MetricsRefreshCause, ...] = (),
     ) -> MetricsRefreshWriteState:
         """Capture one observation through the no-throw sink contract."""
         observation = MetricsRefreshObservation(
             observed_at=self._clock.now(),
             outcome=outcome,
             attempts=attempts,
-            stage=stage,
-            code=code,
+            retry_causes=retry_causes,
+            causes=causes,
         )
         self.observations.append(observation)
+        self._recorded.set()
         return MetricsRefreshWriteState.SAVED
+
+    def wait_until_recorded(self) -> None:
+        """Wait for one bounded diagnostic recording."""
+        if not self._recorded.wait(SESSION_WAIT_SECONDS):
+            raise AssertionError("Metrics refresh was not recorded.")
 
 
 class SessionLookupWorker:
@@ -126,11 +153,15 @@ class SessionLookupWorker:
         *,
         block: bool = False,
         account_failure: bool = False,
+        provider_id: ProviderId = ProviderId.CLAUDE,
+        failure_kind: FetchFailureKind = FetchFailureKind.TRANSIENT,
         transient_failure: UsageLookupFailure | None = None,
     ) -> None:
         self._account_id = account_id
         self._block = block
         self._account_failure = account_failure
+        self._provider_id = provider_id
+        self._failure_kind = failure_kind
         self._transient_failure = transient_failure
         self._release = Event()
         self.finished = Event()
@@ -147,20 +178,31 @@ class SessionLookupWorker:
         self.runs += 1
         try:
             if transient_failure is not None:
-                return UsageLookupWorkerResult((), transient_failure)
-            if self._block and not self._release.wait(SESSION_WAIT_SECONDS):
-                raise AssertionError("Synthetic lookup was not released.")
+                account_failure = self._account_failure
+                self._account_failure = False
+            else:
+                if self._block and not self._release.wait(
+                    SESSION_WAIT_SECONDS
+                ):
+                    raise AssertionError("Synthetic lookup was not released.")
+                account_failure = self._account_failure
             if observe is not None:
                 observe(
                     UsageLookupWorkerEvent(
-                        (
+                        kind=(
                             UsageLookupEventKind.ACCOUNT_FAILED
-                            if self._account_failure
+                            if account_failure
                             else UsageLookupEventKind.ACCOUNT_SUCCEEDED
                         ),
                         account_id=self._account_id,
+                        provider_id=self._provider_id,
+                        fetch_failure=(
+                            self._failure_kind if account_failure else None
+                        ),
                     )
                 )
+            if transient_failure is not None:
+                return UsageLookupWorkerResult((), transient_failure)
             return UsageLookupWorkerResult((self._account_id,))
         finally:
             if transient_failure is None:

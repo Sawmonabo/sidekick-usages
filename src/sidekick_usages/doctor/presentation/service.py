@@ -1,13 +1,18 @@
 """Human and JSON presentation for doctor diagnostics."""
 
 import shlex
+from collections.abc import Mapping
 from typing import assert_never
 
 from rich.console import Group, RenderableType
 from rich.text import Text
 
 from sidekick_usages.branding.rich import brand_header
-from sidekick_usages.core.accounts.types import CredentialAction
+from sidekick_usages.core.accounts.types import (
+    CredentialAction,
+    SidekickAccountId,
+)
+from sidekick_usages.core.types import AccountLabel
 from sidekick_usages.credentials.capabilities.models import (
     ProviderCapabilityReport,
 )
@@ -42,7 +47,8 @@ from sidekick_usages.providers.claude.managed.models import (
 from sidekick_usages.providers.codex.app_server.models import (
     CodexAppServerCapabilities,
 )
-from sidekick_usages.usage.lookup.models import (
+from sidekick_usages.usage.lookup.diagnostics.models import (
+    MetricsRefreshCause,
     MetricsRefreshDiagnostic,
     MetricsRefreshDiagnosticState,
 )
@@ -58,6 +64,11 @@ def render_doctor(
         brand_header(width, section="doctor · account diagnostics")
     ]
     if isinstance(result, DoctorReadyResult):
+        diagnostics = result.diagnostics
+        account_labels = {
+            diagnostic.account_id: diagnostic.label
+            for diagnostic in diagnostics
+        }
         parts.extend(_service_lines(result.supervisor))
         parts.extend(_capability_lines(result.capabilities))
         parts.extend(
@@ -71,8 +82,12 @@ def render_doctor(
         parts.append(
             Text("  credential refresh: " + result.refresh_state.kind.value)
         )
-        parts.append(_metrics_refresh_line(result.metrics_refresh))
-        diagnostics = result.diagnostics
+        parts.append(
+            _metrics_refresh_line(
+                result.metrics_refresh,
+                account_labels,
+            )
+        )
     elif isinstance(result, DoctorFailedResult):
         parts.extend(_service_lines(result.supervisor))
         parts.extend(_capability_lines(result.capabilities))
@@ -84,7 +99,7 @@ def render_doctor(
             )
         )
         parts.extend(_persistence_failure_lines(result.failure))
-        parts.append(_metrics_refresh_line(result.metrics_refresh))
+        parts.append(_metrics_refresh_line(result.metrics_refresh, {}))
         diagnostics = ()
     else:
         assert_never(result)
@@ -113,6 +128,7 @@ def render_doctor(
 
 def _metrics_refresh_line(
     diagnostic: MetricsRefreshDiagnostic,
+    account_labels: Mapping[SidekickAccountId, AccountLabel],
 ) -> Text:
     """Render one global sanitized metrics-refresh status."""
     if diagnostic.state is MetricsRefreshDiagnosticState.ABSENT:
@@ -122,15 +138,43 @@ def _metrics_refresh_line(
     observation = diagnostic.observation
     if observation is None:
         raise AssertionError("Available metrics refresh has no observation.")
-    detail = ""
-    if observation.stage is not None and observation.code is not None:
-        detail = f" · {observation.stage.value}/{observation.code.value}"
+    details: list[str] = []
+    if observation.retry_causes:
+        details.append(
+            "retry "
+            + ", ".join(
+                _metrics_refresh_cause_text(cause, account_labels)
+                for cause in observation.retry_causes
+            )
+        )
+    if observation.causes:
+        details.append(
+            "cause "
+            + ", ".join(
+                _metrics_refresh_cause_text(cause, account_labels)
+                for cause in observation.causes
+            )
+        )
+    detail = "" if not details else " · " + " · ".join(details)
     attempts = "attempt" if observation.attempts == 1 else "attempts"
     return Text(
         "  metrics refresh: "
         f"{observation.outcome.value} after "
         f"{observation.attempts} {attempts}{detail} · "
         f"{canonical_timestamp(observation.observed_at)}"
+    )
+
+
+def _metrics_refresh_cause_text(
+    cause: MetricsRefreshCause,
+    account_labels: Mapping[SidekickAccountId, AccountLabel],
+) -> str:
+    if cause.provider_id is None or cause.account_id is None:
+        return f"{cause.stage.value}/{cause.code.value}"
+    account = account_labels.get(cause.account_id, cause.account_id)
+    return (
+        f"{cause.stage.value}/{cause.provider_id.value}/"
+        f"{account}/{cause.code.value}"
     )
 
 

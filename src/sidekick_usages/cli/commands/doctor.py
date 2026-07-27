@@ -101,7 +101,7 @@ def doctor_cmd(
             failure=state.failure,
             supervisor=supervisor,
             capabilities=capabilities,
-            metrics_refresh=doctor.metrics_refresh,
+            metrics_refresh=doctor.metrics_refresh.scoped(provider_filter),
         )
         _write_result(
             invocation,
@@ -135,6 +135,11 @@ def doctor_cmd(
                 "[yellow]No matching accounts.[/yellow]"
             )
             raise typer.Exit(code=ExitCode.MANUAL_ACTION)
+        account_ids = (
+            None
+            if label is None
+            else frozenset(diagnostic.account_id for diagnostic in diagnostics)
+        )
         result = DoctorReadyResult(
             diagnostics=tuple(diagnostics),
             scheduled_operations=scheduled_operations,
@@ -143,7 +148,10 @@ def doctor_cmd(
             refresh_state=state.refresh_state,
             supervisor=supervisor,
             capabilities=capabilities,
-            metrics_refresh=doctor.metrics_refresh,
+            metrics_refresh=doctor.metrics_refresh.scoped(
+                provider_filter,
+                account_ids,
+            ),
         )
         _write_result(
             invocation,

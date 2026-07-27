@@ -8,6 +8,7 @@ from sidekick_usages.core.accounts.types import (
     CredentialAction,
     CredentialHealth,
     MetricsFreshness,
+    SidekickAccountId,
 )
 from sidekick_usages.core.selection.types import (
     AuthorityGenerationRelation,
@@ -41,7 +42,9 @@ from sidekick_usages.persistence.models.status import (
     PersistenceFailure,
     PersistenceStatus,
 )
-from sidekick_usages.usage.lookup.models import MetricsRefreshDiagnostic
+from sidekick_usages.usage.lookup.diagnostics.models import (
+    MetricsRefreshDiagnostic,
+)
 
 type DoctorResult = DoctorReadyResult | DoctorFailedResult
 
@@ -101,6 +104,7 @@ class AuthorityDiagnostic:
 class AccountDiagnostic:
     """Public doctor data for one logical saved account."""
 
+    account_id: SidekickAccountId
     label: AccountLabel
     provider: ProviderId
     provider_available: bool

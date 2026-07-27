@@ -62,11 +62,15 @@ from sidekick_usages.usage.dashboard.models import (
     DashboardStatus,
     DashboardStatusKind,
 )
-from sidekick_usages.usage.lookup.diagnostics import (
-    MetricsRefreshTracker,
+from sidekick_usages.usage.lookup.diagnostics.models import (
+    MetricsRefreshFailureCode,
+    MetricsRefreshSnapshotCode,
 )
-from sidekick_usages.usage.lookup.ports import (
+from sidekick_usages.usage.lookup.diagnostics.ports import (
     MetricsRefreshObservationSink,
+)
+from sidekick_usages.usage.lookup.diagnostics.tracker import (
+    MetricsRefreshTracker,
 )
 from sidekick_usages.usage.lookup.worker.models import (
     UsageLookupEventKind,
@@ -77,12 +81,13 @@ from sidekick_usages.usage.lookup.worker.models import (
 
 ACTION_QUEUE_CAPACITY = 1
 DECISION_QUEUE_CAPACITY = 1
+DASHBOARD_LOOKUP_THREAD_NAME = "sidekick-dashboard-lookup"
+DASHBOARD_ACTION_THREAD_NAME = "sidekick-dashboard-actions"
 ACTIVATION_QUEUED_MESSAGE = "Account change queued."
 REFRESH_QUEUED_MESSAGE = "Account refresh queued."
 REFRESH_ALL_QUEUED_MESSAGE = "Due-account refresh queued."
 LOOKUP_FAILED_MESSAGE = (
-    "Live metrics refresh did not complete; existing dashboard data was "
-    "preserved."
+    "Live metrics are unavailable. Run: sidekick-usages doctor"
 )
 LOOKUP_DIAGNOSTIC_UNAVAILABLE_MESSAGE = (
     " Diagnostic details could not be saved."
@@ -146,7 +151,10 @@ class InteractiveDashboardSession:
         self._action_thread: Thread | None = None
         self._startup_reconciliation_failures: set[ProviderId] = set()
         self._startup_status: DashboardStatus | None = None
-        self._outcomes: dict[SidekickAccountId, UsageLookupEventKind] = {}
+        self._outcomes: dict[
+            SidekickAccountId,
+            UsageLookupWorkerEvent,
+        ] = {}
         self._lookup_terminal_succeeded = False
         self._deferred_lookup_status: DashboardStatus | None = None
         self._started = False
@@ -191,11 +199,11 @@ class InteractiveDashboardSession:
             self._started = True
             self._lookup_thread = Thread(
                 target=self._run_lookup,
-                name="sidekick-dashboard-lookup",
+                name=DASHBOARD_LOOKUP_THREAD_NAME,
             )
             self._action_thread = Thread(
                 target=self._run_actions,
-                name="sidekick-dashboard-actions",
+                name=DASHBOARD_ACTION_THREAD_NAME,
             )
             lookup_thread = self._lookup_thread
             action_thread = self._action_thread
@@ -395,7 +403,12 @@ class InteractiveDashboardSession:
             and result.failure is not None
             and result.failure.recoverable
         ):
-            metrics_refresh.retry_worker(result.failure)
+            metrics_refresh.retry_worker(
+                result.failure,
+                self._account_events(),
+            )
+            with self._view_lock:
+                self._outcomes.clear()
             result = self._run_lookup_attempt()
         if self._stopping.is_set():
             return
@@ -405,7 +418,10 @@ class InteractiveDashboardSession:
                 raise AssertionError("Failed lookup has no terminal cause.")
             self._publish_lookup_failure(
                 diagnostic_unavailable=(
-                    metrics_refresh.record_worker_failure(failure)
+                    metrics_refresh.record_worker_failure(
+                        failure,
+                        self._account_events(),
+                    )
                 )
             )
             return
@@ -426,48 +442,49 @@ class InteractiveDashboardSession:
         with self._view_lock:
             if self._closed or event.account_id is None:
                 return
-            self._outcomes[event.account_id] = event.kind
-            if event.kind is UsageLookupEventKind.ACCOUNT_SUCCEEDED:
-                return
-            snapshot = self._outcome_view(self._view.snapshot)
-            controller = self._controller().rebase(snapshot)
-            self._view = replace(
-                self._view,
-                snapshot=controller.snapshot,
-                controller=controller.state,
-            )
-            invalidate = self._invalidate
-        invalidate()
+            self._outcomes[event.account_id] = event
 
     def _publish_successful_lookup(
         self,
         metrics_refresh: MetricsRefreshTracker,
     ) -> None:
         with self._snapshot_lock:
-            try:
-                resolved_snapshot = self._snapshots.load(self._only)
-            except OSError:
-                if metrics_refresh.retry_available:
-                    metrics_refresh.retry_snapshot()
-                    resolved_snapshot = self._load_snapshot()
+            resolved_snapshot, snapshot_failure = self._load_lookup_snapshot()
+            if snapshot_failure is not None and metrics_refresh.retry_snapshot(
+                snapshot_failure
+            ):
+                resolved_snapshot, snapshot_failure = (
+                    self._load_lookup_snapshot()
+                )
+            if (
+                resolved_snapshot is not None
+                and metrics_refresh.retry_cache_read(
+                    usage_cache_issue=resolved_snapshot.usage_cache_issue,
+                    activity_cache_issue=(
+                        resolved_snapshot.activity_cache_issue
+                    ),
+                )
+            ):
+                retried_snapshot, retry_failure = self._load_lookup_snapshot()
+                if retried_snapshot is not None:
+                    resolved_snapshot = retried_snapshot
                 else:
-                    resolved_snapshot = None
-            except PersistenceError:
-                resolved_snapshot = None
+                    snapshot_failure = retry_failure
         if resolved_snapshot is None:
+            if snapshot_failure is None:
+                raise AssertionError("Missing snapshot has no failure cause.")
             self._publish_lookup_failure(
                 diagnostic_unavailable=(
-                    metrics_refresh.record_snapshot_failure()
+                    metrics_refresh.record_snapshot_failure(
+                        snapshot_failure, self._account_events()
+                    )
                 )
             )
             return
         with self._view_lock:
             if self._closed:
                 return
-            failed_accounts = any(
-                outcome is UsageLookupEventKind.ACCOUNT_FAILED
-                for outcome in self._outcomes.values()
-            )
+            account_events = tuple(self._outcomes.values())
             self._lookup_terminal_succeeded = True
             outcome_snapshot = self._outcome_view(resolved_snapshot)
             controller = self._controller().rebase(outcome_snapshot)
@@ -488,14 +505,16 @@ class InteractiveDashboardSession:
                     activity_cache_issue=(
                         outcome_snapshot.activity_cache_issue
                     ),
-                    provider_failed=failed_accounts,
+                    account_events=account_events,
+                    snapshot_failure=snapshot_failure,
                 )
             )
             return
         metrics_refresh.record_result(
             usage_cache_issue=outcome_snapshot.usage_cache_issue,
             activity_cache_issue=outcome_snapshot.activity_cache_issue,
-            provider_failed=failed_accounts,
+            account_events=account_events,
+            snapshot_failure=snapshot_failure,
         )
 
     def _publish_lookup_failure(
@@ -517,6 +536,13 @@ class InteractiveDashboardSession:
         *,
         diagnostic_unavailable: bool = False,
     ) -> None:
+        snapshot = self._outcome_view(self._view.snapshot)
+        controller = self._controller().rebase(snapshot)
+        self._view = replace(
+            self._view,
+            snapshot=controller.snapshot,
+            controller=controller.state,
+        )
         if not self._view.snapshot.all_saved_metrics_unavailable:
             self._deferred_lookup_status = None
             return
@@ -554,16 +580,20 @@ class InteractiveDashboardSession:
     def _overlay_lookup_row(self, row: DashboardRow) -> DashboardRow:
         if not isinstance(row, DashboardAccount):
             return row
-        outcome = self._outcomes.get(row.account_id)
+        event = self._outcomes.get(row.account_id)
         has_observation = row.usage is not None or row.activity is not None
-        if outcome is UsageLookupEventKind.ACCOUNT_FAILED:
+        if (
+            event is not None
+            and event.kind is UsageLookupEventKind.ACCOUNT_FAILED
+        ):
             freshness = (
                 MetricsFreshness.STALE
                 if has_observation
                 else MetricsFreshness.UNAVAILABLE
             )
         elif (
-            outcome is not UsageLookupEventKind.ACCOUNT_SUCCEEDED
+            event is None
+            or event.kind is not UsageLookupEventKind.ACCOUNT_SUCCEEDED
             or not self._lookup_terminal_succeeded
             or not has_observation
         ):
@@ -571,6 +601,10 @@ class InteractiveDashboardSession:
         else:
             freshness = MetricsFreshness.FRESH
         return replace(row, metrics_freshness=freshness)
+
+    def _account_events(self) -> tuple[UsageLookupWorkerEvent, ...]:
+        with self._view_lock:
+            return tuple(self._outcomes.values())
 
     def _startup_owns(self) -> bool:
         return (
@@ -589,6 +623,19 @@ class InteractiveDashboardSession:
             return self._snapshots.load(self._only)
         except OSError, PersistenceError:
             return None
+
+    def _load_lookup_snapshot(
+        self,
+    ) -> tuple[
+        DashboardSnapshot | None,
+        MetricsRefreshSnapshotCode | None,
+    ]:
+        try:
+            return self._snapshots.load(self._only), None
+        except OSError:
+            return None, MetricsRefreshFailureCode.SNAPSHOT_UNAVAILABLE
+        except PersistenceError as error:
+            return None, error.code
 
     def _run_actions(self) -> None:
         self._action_executor.reconcile_startup(

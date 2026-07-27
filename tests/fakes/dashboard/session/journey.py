@@ -20,6 +20,14 @@ from sidekick_usages.core.selection.types import ProviderRuntimeState
 from sidekick_usages.daemon.control.client import ControlClient
 from sidekick_usages.daemon.types.lifecycle import ServiceLifecycleState
 from sidekick_usages.entrypoints.dashboard import _connect_dashboard_control
+from sidekick_usages.persistence.errors import (
+    ManagedFileReadError,
+    PersistenceError,
+)
+from sidekick_usages.persistence.types.error import (
+    ActivitySnapshotFailureKind,
+    UsageSnapshotFailureKind,
+)
 from sidekick_usages.usage.dashboard.models import (
     DashboardAccount,
     DashboardActionState,
@@ -27,6 +35,11 @@ from sidekick_usages.usage.dashboard.models import (
     DashboardSnapshot,
     DashboardStatusKind,
 )
+from sidekick_usages.usage.lookup.diagnostics.models import (
+    MetricsRefreshObservation,
+)
+from sidekick_usages.usage.lookup.worker.models import UsageLookupFailure
+from tests.fakes.dashboard.render import interactive_dashboard_state
 from tests.fakes.dashboard.runtime import (
     EXPECTED_SERVICE_SETUP_PROGRESS,
     SetupDaemon,
@@ -38,7 +51,9 @@ from tests.fakes.dashboard.session.control import (
 )
 from tests.fakes.dashboard.session.models import (
     SESSION_SOCKET,
+    DashboardCacheRetryProof,
     DashboardConfirmationProof,
+    DashboardMetricsRetryProof,
     DashboardSessionProof,
     DashboardStartupProof,
 )
@@ -299,6 +314,130 @@ def _reject_codex_remote_control_code(
     )
 
 
+def _cache_read_retry(
+    snapshot: DashboardSnapshot,
+    account_id: SidekickAccountId,
+    state_root: Path,
+    second_result: DashboardSnapshot | PersistenceError,
+    artifact_name: str,
+) -> DashboardCacheRetryProof:
+    """Capture one cache-only retry without repeating provider work."""
+    snapshots = SessionSnapshotSource(snapshot)
+    snapshots.queue_lookup_snapshots(
+        replace(
+            snapshot,
+            activity_cache_issue=ActivitySnapshotFailureKind.MALFORMED,
+            usage_cache_issue=UsageSnapshotFailureKind.READ,
+        ),
+        second_result,
+    )
+    daemon = SetupDaemon(ServiceLifecycleState.READY)
+    lookup = SessionLookupWorker(account_id)
+    metrics_refresh = SessionMetricsRefreshSink(
+        FixedClock(snapshot.reference_time)
+    )
+    session = InteractiveDashboardSession(
+        snapshot,
+        snapshots=snapshots,
+        only=None,
+        lookup=lookup,
+        metrics_refresh=metrics_refresh,
+        connector=SessionControlConnector(daemon, snapshots),
+        socket_path=SESSION_SOCKET,
+        setup=guided_setup(daemon, state_root / artifact_name),
+        environment={},
+    )
+    session.start()
+    try:
+        metrics_refresh.wait_until_recorded()
+        footer = session.view.footer
+        observation = metrics_refresh.observations[-1]
+    finally:
+        session.close()
+    return DashboardCacheRetryProof(
+        lookup_runs=lookup.runs,
+        snapshot_loads=snapshots.lookup_loads,
+        footer=footer,
+        observation=observation,
+    )
+
+
+def _worker_retry(
+    snapshot: DashboardSnapshot,
+    account_id: SidekickAccountId,
+    state_root: Path,
+) -> tuple[int, DashboardFooter, MetricsRefreshObservation]:
+    """Capture one self-healed worker timeout without a footer warning."""
+    snapshots = SessionSnapshotSource(snapshot)
+    daemon = SetupDaemon(ServiceLifecycleState.READY)
+    lookup = SessionLookupWorker(
+        account_id,
+        account_failure=True,
+        transient_failure=UsageLookupFailure.TIMED_OUT,
+    )
+    metrics_refresh = SessionMetricsRefreshSink(
+        FixedClock(snapshot.reference_time)
+    )
+    session = InteractiveDashboardSession(
+        snapshot,
+        snapshots=snapshots,
+        only=None,
+        lookup=lookup,
+        metrics_refresh=metrics_refresh,
+        connector=SessionControlConnector(daemon, snapshots),
+        socket_path=SESSION_SOCKET,
+        setup=guided_setup(daemon, state_root / "worker-retry.json"),
+        environment={},
+    )
+    session.start()
+    try:
+        metrics_refresh.wait_until_recorded()
+        footer = session.view.footer
+        observation = metrics_refresh.observations[-1]
+    finally:
+        session.close()
+    return lookup.runs, footer, observation
+
+
+def _metrics_retry_proof(
+    snapshot: DashboardSnapshot,
+    state_root: Path,
+) -> DashboardMetricsRetryProof:
+    """Capture the two bounded retry paths against saved metrics."""
+    metrics_snapshot, _cursor, _footer = interactive_dashboard_state(
+        snapshot.reference_time
+    )
+    account_id = metrics_snapshot.providers[0].active_account_id
+    if account_id is None:
+        raise AssertionError("Metrics retry snapshot has no active account.")
+    recovered_cache = _cache_read_retry(
+        metrics_snapshot,
+        account_id,
+        state_root,
+        metrics_snapshot,
+        "cache-retry.json",
+    )
+    failed_cache = _cache_read_retry(
+        metrics_snapshot,
+        account_id,
+        state_root,
+        ManagedFileReadError("usage-metrics.json"),
+        "cache-retry-failure.json",
+    )
+    worker_runs, worker_footer, worker_observation = _worker_retry(
+        metrics_snapshot,
+        account_id,
+        state_root,
+    )
+    return DashboardMetricsRetryProof(
+        worker_runs=worker_runs,
+        worker_footer=worker_footer,
+        worker_observation=worker_observation,
+        recovered_cache=recovered_cache,
+        failed_cache=failed_cache,
+    )
+
+
 def exercise_dashboard_session(
     snapshot: DashboardSnapshot,
     *,
@@ -319,12 +458,18 @@ def exercise_dashboard_session(
         preview_account_id,
         state_root,
     )
+    metrics_retry = _metrics_retry_proof(snapshot, state_root)
 
     unavailable = unavailable_session_snapshot(snapshot)
     partial_start_reaped = _partial_start_reaped(
         unavailable, active_account_id, state_root, monkeypatch
     )
-    snapshots = SessionSnapshotSource(unavailable)
+    snapshots = SessionSnapshotSource(
+        replace(
+            unavailable,
+            activity_cache_issue=ActivitySnapshotFailureKind.MALFORMED,
+        )
+    )
     option_connector = SessionControlConnector(
         SetupDaemon(ServiceLifecycleState.READY),
         snapshots,
@@ -365,6 +510,7 @@ def exercise_dashboard_session(
     session.start()
     try:
         lookup.wait_until_finished()
+        metrics_refresh.wait_until_recorded()
         failed_account = next(
             row
             for provider in session.view.snapshot.providers
@@ -451,6 +597,7 @@ def exercise_dashboard_session(
         remote_control_scoped_to_claude=remote_control_scoped_to_claude,
         lookup_failure=lookup_failure,
         metrics_refresh=metrics_refresh.observations[-1],
+        metrics_retry=metrics_retry,
         lookup_cancelled=lookup.cancelled,
         daemon_cancelled=daemon.cancelled,
         stream_released=connector.stream_released.is_set(),

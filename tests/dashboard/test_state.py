@@ -18,7 +18,6 @@ from sidekick_usages.cli.dashboard.models.controller import (
 from sidekick_usages.cli.dashboard.models.session import (
     DashboardConfirmationKind,
 )
-from sidekick_usages.cli.dashboard.session import InteractiveDashboardSession
 from sidekick_usages.core.accounts.models import (
     ClaudeAccountAuthority,
     SavedAccount,
@@ -35,7 +34,6 @@ from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.control.client import (
     CONTROL_ACTION_TIMEOUT_SECONDS,
 )
-from sidekick_usages.daemon.types.lifecycle import ServiceLifecycleState
 from sidekick_usages.daemon.types.service import ServicePhase
 from sidekick_usages.paths import ApplicationPaths
 from sidekick_usages.persistence.accounts.reader import AccountIndexReader
@@ -49,6 +47,7 @@ from sidekick_usages.persistence.supervisor.observation import (
 )
 from sidekick_usages.persistence.types.error import (
     ActivitySnapshotFailureKind,
+    PersistenceCode,
     UsageSnapshotFailureKind,
 )
 from sidekick_usages.usage.dashboard.models import (
@@ -62,27 +61,23 @@ from sidekick_usages.usage.dashboard.models import (
     DashboardStatusKind,
 )
 from sidekick_usages.usage.dashboard.service import CachedDashboardService
-from sidekick_usages.usage.lookup.models import (
+from sidekick_usages.usage.lookup.diagnostics.models import (
+    MetricsRefreshCause,
     MetricsRefreshFailureCode,
     MetricsRefreshObservation,
     MetricsRefreshOutcome,
     MetricsRefreshStage,
 )
 from sidekick_usages.usage.lookup.worker.models import UsageLookupFailure
-from tests.fakes.dashboard.runtime import SetupDaemon
-from tests.fakes.dashboard.session.control import SessionControlConnector
+from sidekick_usages.usage.models import FetchFailureKind
+from tests.fakes.dashboard.render import CLAUDE_ACTIVE_ID
 from tests.fakes.dashboard.session.journey import exercise_dashboard_session
 from tests.fakes.dashboard.session.models import (
     SESSION_SOCKET,
+    DashboardCacheRetryProof,
+    DashboardMetricsRetryProof,
     DashboardSessionProof,
 )
-from tests.fakes.dashboard.session.snapshots import (
-    SessionInvalidationProbe,
-    SessionLookupWorker,
-    SessionMetricsRefreshSink,
-    SessionSnapshotSource,
-)
-from tests.fakes.dashboard.setup import guided_setup
 from tests.fakes.dashboard.startup import exercise_startup_reconciliation
 from tests.fakes.dashboard.state import (
     CLAUDE_ACTIVE_ACCOUNT_ID,
@@ -98,17 +93,24 @@ from tests.fakes.dashboard.state import (
 from tests.fakes.migration.managed_auth import managed_auth_scenario
 from tests.support.persistence import make_application_paths
 from tests.support.platform import REQUIRES_MANAGED_RUNTIME
-from tests.support.time import FixedClock
 
 REFERENCE_TIME = datetime(2026, 7, 25, 14, tzinfo=UTC)
 OBSERVED_AT = REFERENCE_TIME - timedelta(hours=2)
-RECOVERED_LOOKUP_RUNS = 2
 LOOKUP_FAILED_MESSAGE = (
-    "Live metrics refresh did not complete; existing dashboard data was "
-    "preserved."
+    "Live metrics are unavailable. Run: sidekick-usages doctor"
 )
 MALFORMED_DERIVED_CACHE = (
     b'{"schema_version":1,"schema_version":1,"accounts":{}}\n'
+)
+CACHE_RETRY_CAUSES = (
+    MetricsRefreshCause(
+        stage=MetricsRefreshStage.CACHE_READ,
+        code=MetricsRefreshFailureCode.ACTIVITY_MALFORMED,
+    ),
+    MetricsRefreshCause(
+        stage=MetricsRefreshStage.CACHE_READ,
+        code=MetricsRefreshFailureCode.USAGE_READ,
+    ),
 )
 
 
@@ -422,72 +424,12 @@ def test_cached_dashboard_scopes_codex_broker_degradation(
     )
 
 
-def _assert_transient_lookup_recovers_with_cached_metrics(
-    state_root: Path,
-) -> None:
-    """Prove one worker retry preserves cached data without a warning."""
-    paths = make_application_paths(state_root)
-    account, _conflicted = seed_cached_dashboard(paths, REFERENCE_TIME)
-    snapshot = CachedDashboardService(paths).load(REFERENCE_TIME)
-    snapshots = SessionSnapshotSource(snapshot)
-    daemon = SetupDaemon(ServiceLifecycleState.READY)
-    lookup = SessionLookupWorker(
-        account.account_id,
-        transient_failure=UsageLookupFailure.TIMED_OUT,
-    )
-    metrics_refresh = SessionMetricsRefreshSink(FixedClock(REFERENCE_TIME))
-    invalidation = SessionInvalidationProbe()
-    session = InteractiveDashboardSession(
-        snapshot,
-        snapshots=snapshots,
-        only=None,
-        lookup=lookup,
-        metrics_refresh=metrics_refresh,
-        connector=SessionControlConnector(daemon, snapshots),
-        socket_path=SESSION_SOCKET,
-        setup=guided_setup(
-            daemon,
-            state_root / "setup-acknowledgement.json",
-        ),
-        environment={},
-    )
-    invalidation.bind_session(session)
-    session.bind_invalidator(invalidation)
-    session.start()
-    try:
-        invalidation.wait_for(
-            lambda: any(
-                isinstance(row, DashboardAccount)
-                and row.account_id == account.account_id
-                and row.metrics_freshness is MetricsFreshness.FRESH
-                for provider in session.view.snapshot.providers
-                for row in provider.rows
-            )
-        )
-        assert lookup.runs == RECOVERED_LOOKUP_RUNS
-        assert session.view.footer.status is None
-        assert metrics_refresh.observations == [
-            MetricsRefreshObservation(
-                observed_at=REFERENCE_TIME,
-                outcome=MetricsRefreshOutcome.RECOVERED,
-                attempts=RECOVERED_LOOKUP_RUNS,
-                stage=MetricsRefreshStage.WORKER,
-                code=UsageLookupFailure.TIMED_OUT,
-            )
-        ]
-    finally:
-        session.close()
-
-
 @REQUIRES_MANAGED_RUNTIME
 def test_dashboard_controller_journey_preserves_verified_truth(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """One journey proves pure transitions and serialized live activation."""
-    _assert_transient_lookup_recovers_with_cached_metrics(
-        tmp_path / "lookup-recovery"
-    )
     snapshot = controller_snapshot(REFERENCE_TIME)
     controller = DashboardController.start(snapshot)
 
@@ -770,8 +712,74 @@ def test_dashboard_controller_journey_preserves_verified_truth(
             observed_at=REFERENCE_TIME,
             outcome=MetricsRefreshOutcome.PARTIAL,
             attempts=1,
-            stage=MetricsRefreshStage.PROVIDER,
-            code=MetricsRefreshFailureCode.PROVIDER_FAILURE,
+            causes=(
+                MetricsRefreshCause(
+                    stage=MetricsRefreshStage.ACCOUNT,
+                    code=FetchFailureKind.TRANSIENT,
+                    provider_id=ProviderId.CLAUDE,
+                    account_id=CLAUDE_ACTIVE_ACCOUNT_ID,
+                ),
+                MetricsRefreshCause(
+                    stage=MetricsRefreshStage.CACHE_READ,
+                    code=MetricsRefreshFailureCode.ACTIVITY_MALFORMED,
+                ),
+            ),
+        ),
+        metrics_retry=DashboardMetricsRetryProof(
+            worker_runs=2,
+            worker_footer=DashboardFooter(
+                navigation=DashboardNavigationKind.KEYS
+            ),
+            worker_observation=MetricsRefreshObservation(
+                observed_at=REFERENCE_TIME,
+                outcome=MetricsRefreshOutcome.RECOVERED,
+                attempts=2,
+                retry_causes=(
+                    MetricsRefreshCause(
+                        stage=MetricsRefreshStage.ACCOUNT,
+                        code=FetchFailureKind.TRANSIENT,
+                        provider_id=ProviderId.CLAUDE,
+                        account_id=CLAUDE_ACTIVE_ID,
+                    ),
+                    MetricsRefreshCause(
+                        stage=MetricsRefreshStage.WORKER,
+                        code=UsageLookupFailure.TIMED_OUT,
+                    ),
+                ),
+            ),
+            recovered_cache=DashboardCacheRetryProof(
+                lookup_runs=1,
+                snapshot_loads=2,
+                footer=DashboardFooter(
+                    navigation=DashboardNavigationKind.KEYS
+                ),
+                observation=MetricsRefreshObservation(
+                    observed_at=REFERENCE_TIME,
+                    outcome=MetricsRefreshOutcome.RECOVERED,
+                    attempts=2,
+                    retry_causes=CACHE_RETRY_CAUSES,
+                ),
+            ),
+            failed_cache=DashboardCacheRetryProof(
+                lookup_runs=1,
+                snapshot_loads=2,
+                footer=DashboardFooter(
+                    navigation=DashboardNavigationKind.KEYS
+                ),
+                observation=MetricsRefreshObservation(
+                    observed_at=REFERENCE_TIME,
+                    outcome=MetricsRefreshOutcome.FAILED,
+                    attempts=2,
+                    retry_causes=CACHE_RETRY_CAUSES,
+                    causes=(
+                        *CACHE_RETRY_CAUSES,
+                        MetricsRefreshCause(
+                            stage=MetricsRefreshStage.SNAPSHOT_RELOAD,
+                            code=PersistenceCode.UNREADABLE,
+                        ),
+                    ),
+                ),
+            ),
         ),
         lookup_cancelled=True,
         daemon_cancelled=True,

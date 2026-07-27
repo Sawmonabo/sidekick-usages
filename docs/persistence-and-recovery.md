@@ -27,6 +27,7 @@ The data root contains:
 | `credential-refresh/` | Recoverable credential-refresh transactions |
 | `usage-metrics.json` | Derived last-successful account usage snapshots |
 | `token-activity.json` | Derived last-successful token-activity snapshots |
+| `metrics-refresh.json` | Secret-free latest dashboard refresh diagnostic |
 | `selected-accounts.json` | Selected account per provider |
 | `activation-journals/` | Recoverable provider activation state |
 | `operations/` | Durable supervisor work |
@@ -66,9 +67,13 @@ sidekick-usages doctor --json
 sidekick-usages daemon status
 ```
 
-`doctor` reports current store, credential, refresh, and heartbeat state
-without exposing credentials or provider identities. A malformed or unsafe
-authority is not treated as an empty store.
+`doctor` reports current store, credential, refresh, heartbeat, and dashboard
+metrics-refresh state without exposing credentials or raw provider identities.
+Metrics diagnostics distinguish worker, cache, and account failures and retain
+every bounded simultaneous cause. Provider and label filters retain global
+causes plus only the requested accounts; the human view uses saved labels,
+while JSON keeps stable account IDs. A malformed or unsafe authority is not
+treated as an empty store.
 
 ## Account recovery
 

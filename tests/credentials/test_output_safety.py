@@ -36,7 +36,7 @@ from sidekick_usages.persistence.private.credentials import (
 )
 from sidekick_usages.persistence.types.status import PersistenceState
 from sidekick_usages.providers.claude.provider import ClaudeProvider
-from sidekick_usages.usage.lookup.models import (
+from sidekick_usages.usage.lookup.diagnostics.models import (
     MetricsRefreshDiagnostic,
     MetricsRefreshDiagnosticState,
 )

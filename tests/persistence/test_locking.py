@@ -92,9 +92,14 @@ def test_hold_is_side_effect_free_until_context_entry(
     assert sidecar.closed
 
 
+@pytest.mark.parametrize(
+    "timeout_seconds",
+    [LOCK_TIMEOUT_SECONDS, 0.0],
+)
 def test_timeout_uses_exact_policy_and_closes_the_sidecar(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    timeout_seconds: float,
 ) -> None:
     filesystem = _filesystem(tmp_path)
     sidecar = io.BytesIO()
@@ -112,14 +117,18 @@ def test_timeout_uses_exact_policy_and_closes_the_sidecar(
             filesystem,
             monotonic=clock.monotonic,
             sleep=clock.sleep,
+            timeout_seconds=timeout_seconds,
         ).hold(),
     ):
         raise AssertionError("timeout must happen before context entry")
 
     assert exc_info.value.code is PersistenceCode.STORE_LOCKED
-    assert clock.now == LOCK_TIMEOUT_SECONDS
-    assert clock.waits
-    assert max(clock.waits) <= LOCK_CHECK_INTERVAL_SECONDS
+    assert clock.now == timeout_seconds
+    if timeout_seconds == 0.0:
+        assert clock.waits == []
+    else:
+        assert clock.waits
+        assert max(clock.waits) <= LOCK_CHECK_INTERVAL_SECONDS
     assert sidecar.closed
 
 

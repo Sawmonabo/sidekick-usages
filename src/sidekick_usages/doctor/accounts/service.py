@@ -210,6 +210,7 @@ class DoctorService:
             warning,
         )
         return AccountDiagnostic(
+            account_id=account.account_id,
             label=account.label,
             provider=account.provider_id,
             provider_available=provider_available,

@@ -22,7 +22,9 @@ from sidekick_usages.providers.claude.activation.types import (
 from sidekick_usages.usage.dashboard.models import (
     DashboardFooter,
 )
-from sidekick_usages.usage.lookup.models import MetricsRefreshObservation
+from sidekick_usages.usage.lookup.diagnostics.models import (
+    MetricsRefreshObservation,
+)
 
 SESSION_WAIT_SECONDS = 2.0
 DEFAULT_TEST_CONTROL_TIMEOUT_SECONDS = 5.0
@@ -46,6 +48,27 @@ type DashboardLookupFailureProof = tuple[
     MetricsFreshness,
     bool,
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class DashboardCacheRetryProof:
+    """One bounded cache-only retry result."""
+
+    lookup_runs: int
+    snapshot_loads: int
+    footer: DashboardFooter
+    observation: MetricsRefreshObservation
+
+
+@dataclass(frozen=True, slots=True)
+class DashboardMetricsRetryProof:
+    """Worker and cache retry behavior from isolated session owners."""
+
+    worker_runs: int
+    worker_footer: DashboardFooter
+    worker_observation: MetricsRefreshObservation
+    recovered_cache: DashboardCacheRetryProof
+    failed_cache: DashboardCacheRetryProof
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +97,7 @@ class DashboardSessionProof:
     remote_control_scoped_to_claude: bool
     lookup_failure: DashboardLookupFailureProof
     metrics_refresh: MetricsRefreshObservation
+    metrics_retry: DashboardMetricsRetryProof
     lookup_cancelled: bool
     daemon_cancelled: bool
     stream_released: bool

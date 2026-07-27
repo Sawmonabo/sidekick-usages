@@ -49,9 +49,6 @@ from sidekick_usages.core.selection.types import (
 )
 from sidekick_usages.core.types import AccountLabel, ExitCode, ProviderId
 from sidekick_usages.doctor.runtime.service import DoctorRuntimeService
-from sidekick_usages.persistence.filesystem.service import (
-    PersistenceFilesystem,
-)
 from sidekick_usages.persistence.lookup.store import (
     MetricsRefreshObservationStore,
 )
@@ -61,9 +58,8 @@ from sidekick_usages.usage.dashboard.models import (
     DashboardActionState,
     DashboardSnapshot,
 )
-from sidekick_usages.usage.lookup.models import (
-    MetricsRefreshDiagnostic,
-    MetricsRefreshDiagnosticState,
+from sidekick_usages.usage.lookup.diagnostics.models import (
+    MetricsRefreshCause,
     MetricsRefreshObservation,
     MetricsRefreshOutcome,
     MetricsRefreshStage,
@@ -91,21 +87,17 @@ def _seed_recovered_metrics_refresh(tmp_path: Path) -> None:
         observed_at=REFERENCE_TIME,
         outcome=MetricsRefreshOutcome.RECOVERED,
         attempts=_RETRY_ATTEMPTS,
-        stage=MetricsRefreshStage.WORKER,
-        code=UsageLookupFailure.TIMED_OUT,
+        retry_causes=(
+            MetricsRefreshCause(
+                stage=MetricsRefreshStage.WORKER,
+                code=UsageLookupFailure.TIMED_OUT,
+            ),
+        ),
     )
     store = MetricsRefreshObservationStore(
         make_application_paths(tmp_path).metrics_refresh_status
     )
-    PersistenceFilesystem(store.path).commit_opaque_private(b"{")
-    assert store.diagnostic() == MetricsRefreshDiagnostic(
-        state=MetricsRefreshDiagnosticState.UNAVAILABLE
-    )
     assert store.record(observation) is MetricsRefreshWriteState.SAVED
-    assert store.diagnostic() == MetricsRefreshDiagnostic(
-        state=MetricsRefreshDiagnosticState.AVAILABLE,
-        observation=observation,
-    )
 
 
 def _seed_doctor_dashboard(
@@ -422,8 +414,15 @@ def test_json_reports_current_auth_state_without_secrets(
             "observed_at": canonical_timestamp(REFERENCE_TIME),
             "outcome": "recovered",
             "attempts": _RETRY_ATTEMPTS,
-            "stage": "worker",
-            "code": "timed_out",
+            "retry_causes": [
+                {
+                    "stage": "worker",
+                    "code": "timed_out",
+                    "provider": None,
+                    "account_id": None,
+                }
+            ],
+            "causes": [],
         },
     )
     assert "test-only-secret" not in output.getvalue()

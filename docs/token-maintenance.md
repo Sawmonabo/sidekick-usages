@@ -107,6 +107,8 @@ sidekick-usages doctor --label <label>
 - whether the account can auto-refresh
 - whether manual action is required
 - latest refresh status and error, if sidekick has attempted a refresh
+- latest dashboard metrics-refresh result, retry history, and bounded
+  account/cache failures
 - heartbeat support, enablement, cached 5-hour reset, and last
   heartbeat result
 

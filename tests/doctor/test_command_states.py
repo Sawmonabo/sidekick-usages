@@ -8,6 +8,7 @@ from pathlib import Path
 from rich.console import Console
 
 from sidekick_usages.cli.contexts.models import DoctorContext, DoctorFailed
+from sidekick_usages.core.accounts.models import SavedAccount
 from sidekick_usages.core.accounts.types import OperationId
 from sidekick_usages.core.models import (
     Account,
@@ -29,12 +30,22 @@ from sidekick_usages.daemon.types.lifecycle import ServiceComponentState
 from sidekick_usages.persistence.credentials.refresh.artifacts import (
     CredentialRefreshStateKind,
 )
+from sidekick_usages.persistence.lookup.store import (
+    MetricsRefreshObservationStore,
+)
 from sidekick_usages.persistence.models.status import PersistenceFailure
 from sidekick_usages.persistence.types.error import PersistenceCode
-from sidekick_usages.usage.lookup.models import (
+from sidekick_usages.usage.lookup.diagnostics.models import (
+    MetricsRefreshCause,
     MetricsRefreshDiagnostic,
     MetricsRefreshDiagnosticState,
+    MetricsRefreshObservation,
+    MetricsRefreshOutcome,
+    MetricsRefreshStage,
+    MetricsRefreshWriteState,
+    canonical_metrics_refresh_causes,
 )
+from sidekick_usages.usage.models import FetchFailureKind
 from tests.fakes.daemon.capabilities import (
     StaticProviderCapabilityService,
     make_provider_capability_report,
@@ -42,12 +53,98 @@ from tests.fakes.daemon.capabilities import (
 from tests.fakes.doctor import doctor_harness
 from tests.support.cli import CliHarness
 from tests.support.daemon import make_supervisor_health
-from tests.support.persistence import make_account_store
+from tests.support.persistence import (
+    make_account_store,
+    make_application_paths,
+)
 from tests.support.time import REFERENCE_TIME
 
 _SUPERVISOR_HEALTH = make_supervisor_health(
     queue=ServiceComponentState.UNHEALTHY,
 )
+
+
+def _seed_filter_scope(
+    tmp_path: Path,
+) -> tuple[tuple[SavedAccount, ...], SavedAccount, SavedAccount]:
+    """Seed accounts and exact provider- and account-scoped failures."""
+    store = make_account_store(
+        tmp_path,
+        (
+            Account(
+                label=AccountLabel("claude-team"),
+                credentials=ClaudeSetupTokenCredentials(
+                    access_token="test-only-claude"
+                ),
+            ),
+            Account(
+                label=AccountLabel("codex-pro"),
+                credentials=CodexCredentials(
+                    access_token="test-only-codex",
+                    refresh_token="test-only-codex-refresh",
+                ),
+            ),
+            Account(
+                label=AccountLabel("codex-other"),
+                credentials=CodexCredentials(
+                    access_token="test-only-other-codex",
+                    refresh_token="test-only-other-codex-refresh",
+                ),
+            ),
+        ),
+    )
+    accounts = store.saved_accounts()
+    claude = next(
+        account
+        for account in accounts
+        if account.provider_id is ProviderId.CLAUDE
+    )
+    codex = next(
+        account for account in accounts if account.label == "codex-pro"
+    )
+    other_codex = next(
+        account for account in accounts if account.label == "codex-other"
+    )
+    refresh_store = MetricsRefreshObservationStore(
+        make_application_paths(tmp_path).metrics_refresh_status
+    )
+    assert (
+        refresh_store.record(
+            MetricsRefreshObservation(
+                observed_at=REFERENCE_TIME,
+                outcome=MetricsRefreshOutcome.FAILED,
+                attempts=1,
+                causes=canonical_metrics_refresh_causes(
+                    (
+                        MetricsRefreshCause(
+                            stage=MetricsRefreshStage.ACCOUNT,
+                            code=FetchFailureKind.AUTHENTICATION,
+                            provider_id=ProviderId.CLAUDE,
+                            account_id=claude.account_id,
+                        ),
+                        MetricsRefreshCause(
+                            stage=MetricsRefreshStage.ACCOUNT,
+                            code=FetchFailureKind.RATE_LIMITED,
+                            provider_id=ProviderId.CODEX,
+                            account_id=codex.account_id,
+                        ),
+                        MetricsRefreshCause(
+                            stage=MetricsRefreshStage.ACCOUNT,
+                            code=FetchFailureKind.FORBIDDEN,
+                            provider_id=ProviderId.CODEX,
+                            account_id=other_codex.account_id,
+                        ),
+                        MetricsRefreshCause(
+                            stage=MetricsRefreshStage.SNAPSHOT_RELOAD,
+                            code=PersistenceCode.UNREADABLE,
+                        ),
+                    ),
+                ),
+            )
+        )
+        is MetricsRefreshWriteState.SAVED
+    )
+    return accounts, claude, other_codex
 
 
 def test_json_represents_current_store_failure(tmp_path: Path) -> None:
@@ -140,23 +237,12 @@ def test_json_represents_current_store_failure(tmp_path: Path) -> None:
 
 
 def test_filters_are_composable(tmp_path: Path) -> None:
-    claude = Account(
-        label=AccountLabel("claude-team"),
-        credentials=ClaudeSetupTokenCredentials(
-            access_token="test-only-claude"
-        ),
+    saved_accounts, claude_saved, other_codex_saved = _seed_filter_scope(
+        tmp_path
     )
-    codex = Account(
-        label=AccountLabel("codex-pro"),
-        credentials=CodexCredentials(
-            access_token="test-only-codex",
-            refresh_token="test-only-codex-refresh",
-        ),
-    )
-    store = make_account_store(tmp_path, (claude, codex))
     harness, output, _clock = doctor_harness(
         tmp_path,
-        store.saved_accounts(),
+        saved_accounts,
     )
 
     result = harness.invoke(
@@ -170,6 +256,11 @@ def test_filters_are_composable(tmp_path: Path) -> None:
     assert "provider capabilities\n  codex:" in rendered
     assert "  claude:" not in rendered
     assert "manual action: sidekick-usages migrate managed-auth" in rendered
+    assert "account/codex/codex-pro/rate_limited" in rendered
+    assert str(other_codex_saved.account_id) not in rendered
+    assert "account/codex/codex-other/forbidden" not in rendered
+    assert "account/claude/claude-team/authentication" not in rendered
+    assert "snapshot_reload/unreadable" in rendered
     doctor_context = harness.doctor
     assert doctor_context is not None
     capability_service = doctor_context.capabilities
@@ -192,7 +283,7 @@ def test_filters_are_composable(tmp_path: Path) -> None:
     )
     operation_harness, operation_output, _operation_clock = doctor_harness(
         tmp_path / "provider-operation",
-        (store.saved_accounts()[0],),
+        (saved_accounts[0],),
         operations=(provider_operation,),
     )
 
@@ -208,11 +299,6 @@ def test_filters_are_composable(tmp_path: Path) -> None:
         is None
     )
 
-    claude_saved = next(
-        account
-        for account in store.saved_accounts()
-        if account.provider_id is ProviderId.CLAUDE
-    )
     claude_harness, claude_output, _claude_clock = doctor_harness(
         tmp_path / "claude-scope",
         (claude_saved,),

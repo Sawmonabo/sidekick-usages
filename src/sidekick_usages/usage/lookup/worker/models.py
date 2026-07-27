@@ -6,8 +6,10 @@ from enum import StrEnum
 from pathlib import Path
 
 from sidekick_usages.core.accounts.types import SidekickAccountId
+from sidekick_usages.core.types import ProviderId
 from sidekick_usages.platform.environment import require_worker_environment
 from sidekick_usages.platform.types import WorkerEnvironment
+from sidekick_usages.usage.models import FetchFailureKind
 
 type UsageLookupEventObserver = Callable[[UsageLookupWorkerEvent], None]
 
@@ -52,20 +54,27 @@ class UsageLookupFailure(StrEnum):
         )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class UsageLookupWorkerEvent:
     """One immutable event keyed by stable account identity."""
 
     kind: UsageLookupEventKind
     account_id: SidekickAccountId | None = None
+    provider_id: ProviderId | None = None
+    fetch_failure: FetchFailureKind | None = None
     failure: UsageLookupFailure | None = None
 
     def __post_init__(self) -> None:
         """Require exactly the fields owned by the selected event kind."""
         account_event = self.kind.is_account_completion
+        account_failed = self.kind is UsageLookupEventKind.ACCOUNT_FAILED
         failure_event = self.kind is UsageLookupEventKind.FAILED
         if (self.account_id is not None) is not account_event:
             raise ValueError("Lookup event account identity is invalid.")
+        if (self.provider_id is not None) is not account_event:
+            raise ValueError("Lookup event provider identity is invalid.")
+        if (self.fetch_failure is not None) is not account_failed:
+            raise ValueError("Lookup event account failure is invalid.")
         if (self.failure is not None) is not failure_event:
             raise ValueError("Lookup event failure is invalid.")
 

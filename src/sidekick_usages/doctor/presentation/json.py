@@ -32,7 +32,8 @@ from sidekick_usages.providers.codex.app_server.models import (
     CodexAppServerCapabilities,
 )
 from sidekick_usages.serialization.json import JsonObject, JsonValue
-from sidekick_usages.usage.lookup.models import (
+from sidekick_usages.usage.lookup.diagnostics.models import (
+    MetricsRefreshCause,
     MetricsRefreshDiagnostic,
 )
 
@@ -88,15 +89,37 @@ def _metrics_refresh_dict(
         ),
         "outcome": None if observation is None else observation.outcome.value,
         "attempts": None if observation is None else observation.attempts,
-        "stage": (
-            None
-            if observation is None or observation.stage is None
-            else observation.stage.value
+        "retry_causes": (
+            []
+            if observation is None
+            else [
+                _metrics_refresh_cause_dict(cause)
+                for cause in observation.retry_causes
+            ]
         ),
-        "code": (
-            None
-            if observation is None or observation.code is None
-            else observation.code.value
+        "causes": (
+            []
+            if observation is None
+            else [
+                _metrics_refresh_cause_dict(cause)
+                for cause in observation.causes
+            ]
+        ),
+    }
+
+
+def _metrics_refresh_cause_dict(
+    cause: MetricsRefreshCause,
+) -> JsonObject:
+    """Build one bounded metrics-refresh cause."""
+    return {
+        "stage": cause.stage.value,
+        "code": cause.code.value,
+        "provider": (
+            None if cause.provider_id is None else cause.provider_id.value
+        ),
+        "account_id": (
+            None if cause.account_id is None else str(cause.account_id)
         ),
     }
 

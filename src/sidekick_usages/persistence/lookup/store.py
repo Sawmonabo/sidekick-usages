@@ -19,16 +19,16 @@ from sidekick_usages.persistence.state.filesystem import (
     ManagedStateFilesystem,
 )
 from sidekick_usages.persistence.types.artifact import AuthorityExpectation
-from sidekick_usages.usage.lookup.models import (
-    MetricsRefreshCode,
+from sidekick_usages.usage.lookup.diagnostics.models import (
+    MetricsRefreshCause,
     MetricsRefreshDiagnostic,
     MetricsRefreshDiagnosticState,
     MetricsRefreshObservation,
     MetricsRefreshOutcome,
-    MetricsRefreshStage,
     MetricsRefreshWriteState,
 )
 
+METRICS_REFRESH_LOCK_TIMEOUT_SECONDS = 0.0
 METRICS_REFRESH_PATH_ERROR = (
     "Metrics-refresh observation path must be absolute."
 )
@@ -50,8 +50,8 @@ class MetricsRefreshObservationRecorder:
         outcome: MetricsRefreshOutcome,
         *,
         attempts: int,
-        stage: MetricsRefreshStage | None = None,
-        code: MetricsRefreshCode | None = None,
+        retry_causes: tuple[MetricsRefreshCause, ...] = (),
+        causes: tuple[MetricsRefreshCause, ...] = (),
     ) -> MetricsRefreshWriteState:
         """Record one safe outcome without raising persistence failures."""
         return self._store.record(
@@ -59,8 +59,8 @@ class MetricsRefreshObservationRecorder:
                 observed_at=self._clock.now(),
                 outcome=outcome,
                 attempts=attempts,
-                stage=stage,
-                code=code,
+                retry_causes=retry_causes,
+                causes=causes,
             )
         )
 
@@ -76,7 +76,10 @@ class MetricsRefreshObservationStore:
             path,
             decode_metrics_refresh_observation,
         )
-        self._lock = PersistenceLock(self._filesystem)
+        self._lock = PersistenceLock(
+            self._filesystem,
+            timeout_seconds=METRICS_REFRESH_LOCK_TIMEOUT_SECONDS,
+        )
 
     def _observe(self) -> MetricsRefreshObservation | None:
         """Passively read the latest observation without lock mutation."""

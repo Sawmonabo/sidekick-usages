@@ -1,6 +1,7 @@
 """Strict stable-ID-only global lookup-worker protocol."""
 
 from sidekick_usages.core.accounts.types import SidekickAccountId
+from sidekick_usages.core.types import ProviderId
 from sidekick_usages.serialization.framing import (
     FramingError,
     encode_bounded_frame,
@@ -18,15 +19,18 @@ from sidekick_usages.usage.lookup.worker.models import (
     UsageLookupFailure,
     UsageLookupWorkerEvent,
 )
+from sidekick_usages.usage.models import FetchFailureKind
 
-USAGE_LOOKUP_PROTOCOL_VERSION = 2
+USAGE_LOOKUP_PROTOCOL_VERSION = 3
 MAX_USAGE_LOOKUP_FRAME_BYTES = 512
 
 _EVENT_KEYS = frozenset(
     {
         "account_id",
+        "fetch_failure",
         "failure",
         "kind",
+        "provider_id",
         "protocol_version",
     }
 )
@@ -42,8 +46,14 @@ def encode_usage_lookup_event(event: UsageLookupWorkerEvent) -> bytearray:
         "account_id": (
             None if event.account_id is None else str(event.account_id)
         ),
+        "fetch_failure": (
+            None if event.fetch_failure is None else event.fetch_failure.value
+        ),
         "failure": None if event.failure is None else event.failure.value,
         "kind": event.kind.value,
+        "provider_id": (
+            None if event.provider_id is None else event.provider_id.value
+        ),
         "protocol_version": USAGE_LOOKUP_PROTOCOL_VERSION,
     }
     try:
@@ -71,8 +81,16 @@ def decode_usage_lookup_event(
             raise UsageLookupProtocolError
         kind = UsageLookupEventKind(_require_string(root["kind"]))
         account_id = _optional_account_id(root["account_id"])
+        provider_id = _optional_provider_id(root["provider_id"])
+        fetch_failure = _optional_fetch_failure(root["fetch_failure"])
         failure = _optional_failure(root["failure"])
-        return UsageLookupWorkerEvent(kind, account_id, failure)
+        return UsageLookupWorkerEvent(
+            kind=kind,
+            account_id=account_id,
+            provider_id=provider_id,
+            fetch_failure=fetch_failure,
+            failure=failure,
+        )
     except (
         JsonDecodeError,
         KeyError,
@@ -98,6 +116,20 @@ def _optional_account_id(value: JsonValue) -> SidekickAccountId | None:
     if value is None:
         return None
     return SidekickAccountId(_require_string(value))
+
+
+def _optional_provider_id(value: JsonValue) -> ProviderId | None:
+    if value is None:
+        return None
+    return ProviderId(_require_string(value))
+
+
+def _optional_fetch_failure(
+    value: JsonValue,
+) -> FetchFailureKind | None:
+    if value is None:
+        return None
+    return FetchFailureKind(_require_string(value))
 
 
 def _optional_failure(value: JsonValue) -> UsageLookupFailure | None:
