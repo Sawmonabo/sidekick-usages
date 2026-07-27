@@ -21,6 +21,9 @@ from sidekick_usages.core.selection.models import (
     ProviderAuthObservation,
     SelectedAccountState,
 )
+from sidekick_usages.core.selection.policy import (
+    same_provider_auth_authority,
+)
 from sidekick_usages.core.selection.types import (
     ProviderAuthState,
     ProviderRuntimeState,
@@ -90,10 +93,6 @@ class CachedDashboardService:
         selected = {
             state.provider_id: state for state in self._selected.observe_all()
         }
-        runtime_auth = {
-            provider_id: self._runtime_auth.observe_native(provider_id)
-            for provider_id in ProviderId
-        }
         service_state = self._service.observe()
         service = self._dashboard_service(service_state)
         usage_by_id = {snapshot.account_id: snapshot for snapshot in usage}
@@ -108,7 +107,6 @@ class CachedDashboardService:
                     provider_id,
                     accounts,
                     selected.get(provider_id),
-                    runtime_auth[provider_id],
                     self._provider_service_ready(
                         provider_id,
                         accounts,
@@ -161,7 +159,6 @@ class CachedDashboardService:
         provider_id: ProviderId,
         accounts: tuple[SavedAccount, ...],
         selected: SelectedAccountState | None,
-        runtime_auth: ProviderAuthObservation | None,
         service_ready: bool,
         usage: dict[SidekickAccountId, AccountUsageSnapshot],
         account_activity: dict[
@@ -171,18 +168,37 @@ class CachedDashboardService:
         provider_activity: ProviderTokenActivitySnapshot | None,
         usage_conflicts: frozenset[SidekickAccountId],
     ) -> DashboardProvider:
+        runtime_auth = self._runtime_auth.observe_native(provider_id)
+        runtime_projection = (
+            self._runtime_auth.observe_projection(provider_id)
+            if provider_id is ProviderId.CODEX
+            else None
+        )
         if (
             runtime_auth is not None
             and runtime_auth.provider_id is not provider_id
         ):
             raise ValueError("Runtime observation provider does not match.")
+        if (
+            runtime_projection is not None
+            and runtime_projection.provider_id is not provider_id
+        ):
+            raise ValueError("Runtime projection provider does not match.")
         provider_accounts = tuple(
             account
             for account in accounts
             if account.provider_id is provider_id
         )
-        runtime_state = self._runtime_state(selected, runtime_auth)
-        active_account_id = self._active_account_id(selected, runtime_auth)
+        runtime_state = self._runtime_state(
+            selected,
+            runtime_auth,
+            runtime_projection,
+        )
+        active_account_id = self._active_account_id(
+            selected,
+            runtime_auth,
+            runtime_projection,
+        )
         rows: list[DashboardRow] = [
             self._account(
                 account,
@@ -240,6 +256,7 @@ class CachedDashboardService:
     def _runtime_state(
         selected: SelectedAccountState | None,
         runtime_auth: ProviderAuthObservation | None,
+        runtime_projection: ProviderAuthObservation | None,
     ) -> ProviderRuntimeState | None:
         if runtime_auth is None:
             return None
@@ -249,6 +266,7 @@ class CachedDashboardService:
             CachedDashboardService._runtime_matches_selected(
                 selected,
                 runtime_auth,
+                runtime_projection,
             )
         ):
             return selected.runtime_state
@@ -300,6 +318,7 @@ class CachedDashboardService:
     def _active_account_id(
         selected: SelectedAccountState | None,
         runtime_auth: ProviderAuthObservation | None,
+        runtime_projection: ProviderAuthObservation | None,
     ) -> SidekickAccountId | None:
         if (
             selected is None
@@ -307,6 +326,7 @@ class CachedDashboardService:
             or not CachedDashboardService._runtime_matches_selected(
                 selected,
                 runtime_auth,
+                runtime_projection,
             )
         ):
             return None
@@ -316,8 +336,9 @@ class CachedDashboardService:
     def _runtime_matches_selected(
         selected: SelectedAccountState | None,
         runtime_auth: ProviderAuthObservation | None,
+        runtime_projection: ProviderAuthObservation | None,
     ) -> bool:
-        return (
+        identity_matches = (
             selected is not None
             and selected.runtime_state
             in {
@@ -328,8 +349,23 @@ class CachedDashboardService:
             and runtime_auth.state is ProviderAuthState.ACTIVE
             and runtime_auth.provider_id is selected.provider_id
             and runtime_auth.provider_identity == selected.provider_identity
-            and runtime_auth.generation == selected.runtime_generation
         )
+        if not identity_matches or selected is None or runtime_auth is None:
+            return False
+        if (
+            selected.provider_id is ProviderId.CODEX
+            and selected.runtime_state is ProviderRuntimeState.SAVED_ACTIVE
+        ):
+            return (
+                runtime_projection is not None
+                and runtime_projection.provider_identity
+                == selected.provider_identity
+                and same_provider_auth_authority(
+                    runtime_auth,
+                    runtime_projection,
+                )
+            )
+        return runtime_auth.generation == selected.runtime_generation
 
     @staticmethod
     def _credential_states(

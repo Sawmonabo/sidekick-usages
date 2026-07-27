@@ -56,6 +56,13 @@ class RuntimeAuthObservationStore:
         """Return the latest Sidekick projection observation."""
         return self._load(provider_id, _PROJECTION_DIRECTORY)
 
+    def observe_projection(
+        self,
+        provider_id: ProviderId,
+    ) -> ProviderAuthObservation | None:
+        """Passively read the latest Sidekick projection observation."""
+        return self._read(self._filesystem(provider_id, _PROJECTION_DIRECTORY))
+
     def save_projection(
         self,
         observation: ProviderAuthObservation,

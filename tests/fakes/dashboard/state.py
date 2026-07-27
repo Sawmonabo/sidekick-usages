@@ -89,6 +89,9 @@ _CONFLICT_ACCOUNT_ID = SidekickAccountId(
 _VALID_AUTHORITY_ID = AuthorityId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
 _CONFLICT_AUTHORITY_ID = AuthorityId("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
 _CONFLICT_PROVIDER_IDENTITY = "synthetic-codex-conflict"
+_CODEX_RUNTIME_GENERATION = AuthorityGeneration(
+    "synthetic-codex-runtime-generation"
+)
 
 
 def seed_cached_dashboard(
@@ -182,16 +185,24 @@ def seed_cached_dashboard(
     selected.save(claude_selected)
     selected.save(codex_selected)
     observations = RuntimeAuthObservationStore(paths.durable_operations)
-    for state in (claude_selected, codex_selected):
-        observations.save_native(
-            ProviderAuthObservation(
-                provider_id=state.provider_id,
-                state=ProviderAuthState.ACTIVE,
-                provider_identity=state.provider_identity,
-                generation=state.runtime_generation,
-                observed_at=state.verified_at,
-            )
+    observations.save_native(
+        ProviderAuthObservation(
+            provider_id=ProviderId.CLAUDE,
+            state=ProviderAuthState.ACTIVE,
+            provider_identity=claude_selected.provider_identity,
+            generation=claude_selected.runtime_generation,
+            observed_at=claude_selected.verified_at,
         )
+    )
+    codex_observation = ProviderAuthObservation(
+        provider_id=ProviderId.CODEX,
+        state=ProviderAuthState.ACTIVE,
+        provider_identity=codex_selected.provider_identity,
+        generation=_CODEX_RUNTIME_GENERATION,
+        observed_at=codex_selected.verified_at,
+    )
+    observations.save_native(codex_observation)
+    observations.save_projection(codex_observation)
     ServiceStateStore(paths.service_state).save(
         ServiceState(
             protocol_version=1,

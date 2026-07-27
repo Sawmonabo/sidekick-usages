@@ -122,6 +122,12 @@ def test_cached_dashboard_joins_stable_ids_without_credentials(
             / "native"
             / "codex.json"
         ): 1,
+        (
+            paths.durable_operations
+            / "runtime-observations"
+            / "projection"
+            / "codex.json"
+        ): 1,
         paths.selected_state: 1,
         paths.service_state: 1,
         paths.usage_snapshots: 1,

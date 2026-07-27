@@ -36,7 +36,7 @@ from sidekick_usages.providers.claude.types import (
 from sidekick_usages.serialization.json import decode_json_object
 
 _AUTH_STATUS_OUTPUT_BYTES = 4096
-_AUTH_STATUS_TIMEOUT_SECONDS = 5.0
+_AUTH_STATUS_TIMEOUT_SECONDS = 15.0
 _MAXIMUM_LOGIN_OUTPUT_BYTES = 1024 * 1024
 _INTERACTIVE_LOGIN_TIMEOUT_SECONDS = 600.0
 _OFFICIAL_LOGIN_TIMEOUT_SECONDS = 60.0
