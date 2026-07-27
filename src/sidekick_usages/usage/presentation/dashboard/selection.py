@@ -45,7 +45,6 @@ FAILURE_STATE_DETAILS = {
     ),
 }
 EXTERNAL_LOGIN_DETAIL = "This external login is not saved in Sidekick."
-SWITCH_SETUP_DETAIL = "Enter to connect this account for Claude switching."
 
 
 def provider_detail(provider: DashboardProvider) -> str | None:
@@ -84,10 +83,7 @@ def row_plan(row: DashboardRow) -> str:
 
 def row_detail(
     row: DashboardRow,
-    cursor: DashboardCursor,
     reference_time: datetime,
-    *,
-    actions_enabled: bool,
 ) -> str | None:
     """Return the highest-priority actionable or degraded row detail."""
     for state in row.states:
@@ -98,12 +94,6 @@ def row_detail(
             return _credential_detail(row.provider_id, state)
         if state in FAILURE_STATE_DETAILS:
             return FAILURE_STATE_DETAILS[state]
-    if (
-        DashboardActionState.SWITCH_SETUP_REQUIRED in row.states
-        and actions_enabled
-        and row_is_selected(row, cursor)
-    ):
-        return SWITCH_SETUP_DETAIL
     if DashboardActionState.EXTERNAL_ACTIVE in row.states:
         return EXTERNAL_LOGIN_DETAIL
     return _metrics_detail(row, reference_time)

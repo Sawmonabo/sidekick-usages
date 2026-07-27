@@ -203,7 +203,7 @@ def test_interactive_wide_render_preserves_dashboard_contract() -> None:
         unavailable.count(_SETUP_DETAIL),
         setup.count(_SETUP_DETAIL),
         setup.count(_UNAVAILABLE_DETAIL),
-    ) == (1, 0, 1, 0)
+    ) == (1, 0, 0, 1)
     assert all(
         copy in out
         for copy in (
@@ -362,7 +362,7 @@ def test_interactive_narrow_render_preserves_dashboard_contract() -> None:
         unavailable.count(_SETUP_DETAIL),
         setup.count(_SETUP_DETAIL),
         setup.count(_UNAVAILABLE_DETAIL),
-    ) == (1, 0, 1, 0)
+    ) == (1, 0, 0, 1)
     assert "903.46M tokens" in out
     assert "7.449B tokens" in out
     assert "since Dec 28, 2025" in out

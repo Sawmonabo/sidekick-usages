@@ -181,9 +181,7 @@ def _provider_content_lines(
         )
         detail = row_detail(
             row,
-            cursor,
             reference_time,
-            actions_enabled=provider.actions_enabled,
         )
         if detail is not None:
             lines.extend(

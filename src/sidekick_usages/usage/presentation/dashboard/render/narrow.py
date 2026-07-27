@@ -80,9 +80,7 @@ def render_narrow(
                 )
             detail = row_detail(
                 row,
-                cursor,
                 snapshot.reference_time,
-                actions_enabled=provider.actions_enabled,
             )
             if detail is not None:
                 lines.extend(_warning_lines(detail, width))
