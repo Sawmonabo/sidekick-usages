@@ -25,7 +25,10 @@ from sidekick_usages.core.accounts.types import (
     CredentialHealth,
     MetricsFreshness,
 )
-from sidekick_usages.core.selection.types import ProviderRuntimeState
+from sidekick_usages.core.selection.types import (
+    ProviderAuthState,
+    ProviderRuntimeState,
+)
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.control.client import (
     CONTROL_ACTION_TIMEOUT_SECONDS,
@@ -34,6 +37,9 @@ from sidekick_usages.daemon.types.service import ServicePhase
 from sidekick_usages.persistence.accounts.reader import AccountIndexReader
 from sidekick_usages.persistence.filesystem.reader import PrivateFileReader
 from sidekick_usages.persistence.models.artifact import FileSnapshot
+from sidekick_usages.persistence.supervisor.observation import (
+    RuntimeAuthObservationStore,
+)
 from sidekick_usages.usage.dashboard.models import (
     DashboardAccount,
     DashboardActionState,
@@ -219,6 +225,39 @@ def test_cached_dashboard_scopes_codex_broker_degradation(
         and DashboardActionState.SERVICE_UNAVAILABLE in row.states
         for row in managed_codex.rows
     )
+    selected_before = PrivateFileReader(
+        paths.selected_state
+    ).read_opaque_private()
+    runtime_store = RuntimeAuthObservationStore(paths.durable_operations)
+    runtime_before = runtime_store.observe_native(ProviderId.CODEX)
+    assert runtime_before is not None
+    runtime_store.save_native(
+        replace(
+            runtime_before,
+            state=ProviderAuthState.UNREADABLE,
+            provider_identity=None,
+            generation=None,
+            observed_at=REFERENCE_TIME,
+        )
+    )
+    provider = CachedDashboardService(paths).load(REFERENCE_TIME).providers[1]
+    assert (
+        provider.runtime_state,
+        provider.active_account_id,
+        provider.actions_enabled,
+    ) == (ProviderRuntimeState.UNREADABLE, None, False)
+    assert tuple(row.states for row in provider.rows) == tuple(
+        row.states for row in managed_codex.rows
+    )
+    assert all(
+        isinstance(row, DashboardAccount) and not row.active
+        for row in provider.rows
+    )
+    assert (
+        PrivateFileReader(paths.selected_state).read_opaque_private()
+        == selected_before
+    )
+    runtime_store.save_native(runtime_before)
     repair = DashboardController.start(managed).focus_next_provider()
     assert repair.activate_or_repair() == ActivateOrRepairIntent(
         provider_id=ProviderId.CODEX,

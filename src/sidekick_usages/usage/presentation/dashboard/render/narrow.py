@@ -25,6 +25,7 @@ from sidekick_usages.usage.presentation.dashboard.render.text import (
 )
 from sidekick_usages.usage.presentation.dashboard.selection import (
     CURSOR_GLYPH,
+    provider_detail,
     row_detail,
     row_is_selected,
     row_label,
@@ -60,6 +61,12 @@ def render_narrow(
     for provider in snapshot.providers:
         if not provider.rows:
             continue
+        detail = provider_detail(provider)
+        if detail is not None:
+            if has_block:
+                lines.append(DashboardLine())
+            lines.extend(_warning_lines(detail, width))
+            has_block = True
         for row in provider.rows:
             if has_block:
                 lines.append(DashboardLine())

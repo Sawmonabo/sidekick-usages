@@ -3,12 +3,14 @@
 from datetime import datetime
 
 from sidekick_usages.core.accounts.types import MetricsFreshness
+from sidekick_usages.core.selection.types import ProviderRuntimeState
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.usage.dashboard.models import (
     DashboardAccount,
     DashboardActionState,
     DashboardCursor,
     DashboardExternalRow,
+    DashboardProvider,
     DashboardRow,
 )
 
@@ -20,6 +22,14 @@ CURSOR_GLYPH = "\N{SINGLE RIGHT-POINTING ANGLE QUOTATION MARK}"
 PROVIDER_NAMES = {
     ProviderId.CLAUDE: "Claude Code",
     ProviderId.CODEX: "Codex CLI",
+}
+_PROVIDER_STATE_DETAILS = {
+    ProviderRuntimeState.UNREADABLE: (
+        "login could not be verified; account switching is paused."
+    ),
+    ProviderRuntimeState.UNSUPPORTED: (
+        "account verification is unavailable; saved metrics remain visible."
+    ),
 }
 MINUTES_PER_HOUR = 60
 HOURS_PER_DAY = 24
@@ -39,6 +49,16 @@ FAILURE_STATE_DETAILS = {
 }
 EXTERNAL_LOGIN_DETAIL = "This external login is not saved in Sidekick."
 SWITCH_SETUP_DETAIL = "Enter to connect this account for Claude switching."
+
+
+def provider_detail(provider: DashboardProvider) -> str | None:
+    """Return one provider-scoped runtime advisory."""
+    if provider.runtime_state is None:
+        return None
+    detail = _PROVIDER_STATE_DETAILS.get(provider.runtime_state)
+    if detail is None:
+        return None
+    return f"{PROVIDER_NAMES[provider.provider_id]} {detail}"
 
 
 def row_is_selected(

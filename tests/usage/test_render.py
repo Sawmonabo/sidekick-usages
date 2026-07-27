@@ -20,6 +20,7 @@ from sidekick_usages.core.models import (
     UsageReport,
     UsageWindow,
 )
+from sidekick_usages.core.selection.types import ProviderRuntimeState
 from sidekick_usages.core.types import (
     AccountLabel,
     ProviderId,
@@ -90,7 +91,6 @@ _ACTIVITIES = (
         ),
     ),
 )
-_PANEL_FLOOR = 85
 _NARROW_TEST_WIDTH = 40
 _INTERACTIVE_WIDE_WIDTH = 200
 _INTERACTIVE_NARROW_WIDTH = 70
@@ -102,6 +102,13 @@ _SETUP_DETAIL = "Enter to connect this account for Claude switching."
 _STALE_DETAIL = "Live metrics refresh failed; showing data from 2h 14m ago."
 _UNAVAILABLE_DETAIL = (
     "Live metrics refresh failed; no saved metrics available."
+)
+_CLAUDE_UNREADABLE_DETAIL = (
+    "Claude Code login could not be verified; account switching is paused."
+)
+_CLAUDE_UNSUPPORTED_DETAIL = (
+    "Claude Code account verification is unavailable; saved metrics remain "
+    "visible."
 )
 _EXPECTED_THEME_COLORS = {
     UsageTextRole.HEAT_ZERO: ("#cdd3d8", "#353a40"),
@@ -278,7 +285,10 @@ def _result(
     )
 
 
-def _render_interactive(width: int) -> tuple[str, str, str]:
+def _render_interactive(
+    width: int,
+    runtime_state: ProviderRuntimeState,
+) -> tuple[str, str, str, str]:
     snapshot, cursor, footer = interactive_dashboard_state(REFERENCE_TIME)
     provider = snapshot.providers[0]
     warning_account = provider.rows[1]
@@ -313,6 +323,23 @@ def _render_interactive(width: int) -> tuple[str, str, str]:
             *priority_snapshot.providers[1:],
         ),
     )
+    degraded_snapshot = replace(
+        snapshot,
+        providers=(
+            replace(
+                provider,
+                runtime_state=runtime_state,
+                active_account_id=None,
+                actions_enabled=False,
+                rows=tuple(
+                    replace(row, active=False)
+                    for row in provider.rows
+                    if isinstance(row, DashboardAccount)
+                ),
+            ),
+            *snapshot.providers[1:],
+        ),
+    )
     return (
         render_dashboard(
             snapshot,
@@ -332,6 +359,13 @@ def _render_interactive(width: int) -> tuple[str, str, str]:
             priority_snapshot,
             width=width,
             cursor=warning_cursor,
+            footer=DashboardFooter(),
+            color=False,
+        ),
+        render_dashboard(
+            degraded_snapshot,
+            width=width,
+            cursor=replace(cursor, account_id=None),
             footer=DashboardFooter(),
             color=False,
         ),
@@ -387,8 +421,14 @@ def test_panels_share_one_width() -> None:
 
 
 def test_interactive_wide_render_preserves_dashboard_contract() -> None:
-    out, unavailable, setup = _render_interactive(_INTERACTIVE_WIDE_WIDTH)
+    out, unavailable, setup, degraded = _render_interactive(
+        _INTERACTIVE_WIDE_WIDTH,
+        ProviderRuntimeState.UNREADABLE,
+    )
     cursor = "\N{SINGLE RIGHT-POINTING ANGLE QUOTATION MARK}"
+    semantic_degraded = " ".join(
+        line.strip("│ ") for line in degraded.splitlines()
+    )
 
     assert "      o" in out
     assert "╭─ CLAUDE · 2 accounts ─" in out
@@ -414,10 +454,15 @@ def test_interactive_wide_render_preserves_dashboard_contract() -> None:
         setup.count(_SETUP_DETAIL),
         setup.count(_UNAVAILABLE_DETAIL),
     ) == (1, 0, 1, 0)
-    assert "903,464,085 tokens" in out
-    assert "7,449,473,297 tokens" in out
-    assert "since Dec 28, 2025" in out
-    assert "since Apr 7, 2026" in out
+    assert all(
+        copy in out
+        for copy in (
+            "903,464,085 tokens",
+            "7,449,473,297 tokens",
+            "since Dec 28, 2025",
+            "since Apr 7, 2026",
+        )
+    )
     assert "3h 50m" in out
     assert not any(label in out for label in FORBIDDEN_SELECTION_LABELS)
     lines = out.splitlines()
@@ -440,6 +485,16 @@ def test_interactive_wide_render_preserves_dashboard_contract() -> None:
         position
         for position, rendered in enumerate(lines)
         if _LOGIN_DETAIL in rendered
+    )
+    assert (
+        semantic_degraded.count(_CLAUDE_UNREADABLE_DETAIL),
+        degraded.count(_LOGIN_DETAIL),
+        degraded.count(_STALE_DETAIL),
+    ) == (1, 1, 1)
+    assert (
+        semantic_degraded.index("5h")
+        < semantic_degraded.index(_CLAUDE_UNREADABLE_DETAIL)
+        < semantic_degraded.index("work@example.test")
     )
     assert work_row < work_warning < personal_row < personal_warning
     assert max(len(line) for line in out.splitlines()) <= (
@@ -599,8 +654,14 @@ def test_provider_title_uses_singular_account_count() -> None:
 
 
 def test_interactive_narrow_render_preserves_dashboard_contract() -> None:
-    out, unavailable, setup = _render_interactive(_INTERACTIVE_NARROW_WIDTH)
+    out, unavailable, setup, degraded = _render_interactive(
+        _INTERACTIVE_NARROW_WIDTH,
+        ProviderRuntimeState.UNSUPPORTED,
+    )
     cursor = "\N{SINGLE RIGHT-POINTING ANGLE QUOTATION MARK}"
+    semantic_degraded = " ".join(
+        line.strip() for line in degraded.splitlines()
+    )
 
     assert "╭─ CLAUDE" not in out
     assert ".--┴-┴--.  sidekick usages" in out
@@ -633,6 +694,14 @@ def test_interactive_narrow_render_preserves_dashboard_contract() -> None:
     assert "since Apr 7, 2026" in out
     assert "(in 3h 50m)" in out
     assert not any(label in out for label in FORBIDDEN_SELECTION_LABELS)
+    assert (
+        semantic_degraded.count(_CLAUDE_UNSUPPORTED_DETAIL),
+        degraded.count("Complete the official Claude Code login"),
+        degraded.count(_STALE_DETAIL),
+    ) == (1, 1, 1)
+    assert semantic_degraded.index(
+        _CLAUDE_UNSUPPORTED_DETAIL
+    ) < semantic_degraded.index("work@example.test")
     assert max(len(line) for line in out.splitlines()) <= (
         _INTERACTIVE_NARROW_WIDTH
     )

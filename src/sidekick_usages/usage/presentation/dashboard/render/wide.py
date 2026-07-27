@@ -31,6 +31,7 @@ from sidekick_usages.usage.presentation.dashboard.render.text import (
 )
 from sidekick_usages.usage.presentation.dashboard.selection import (
     CURSOR_GLYPH,
+    provider_detail,
     row_detail,
     row_is_selected,
     row_label,
@@ -160,6 +161,10 @@ def _provider_content_lines(
     primary, grouped = panel_columns(reports)
     widths, alignments = _table_layout(name_width, primary, grouped)
     lines = _table_header_lines(primary, grouped, widths, alignments)
+    detail = provider_detail(provider)
+    if detail is not None:
+        lines.extend(_advisory_lines(detail, widths, content_width))
+        lines.append(DashboardLine())
     for position, row in enumerate(provider.rows):
         if position:
             lines.append(DashboardLine())
@@ -182,7 +187,7 @@ def _provider_content_lines(
         )
         if detail is not None:
             lines.extend(
-                _account_warning_lines(
+                _advisory_lines(
                     detail,
                     widths,
                     content_width,
@@ -344,7 +349,7 @@ def _reset_row(
     return _join_cells(cells, widths, alignments)
 
 
-def _account_warning_lines(
+def _advisory_lines(
     detail: str,
     widths: list[int],
     content_width: int,
