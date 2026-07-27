@@ -57,7 +57,9 @@ CLAUDE_LOGIN_HELP_OUTPUT = (
     b"[--claudeai] [--console] [--email <email>] [--sso]\n"
 )
 CLAUDE_LOGGED_IN_STATUS = (
-    b'{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty"}\n'
+    b'{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty",'
+    b'"email":"external@example.test","orgId":"provider-organization-external",'
+    b'"orgName":"External Organization","subscriptionType":"team"}\n'
 )
 CLAUDE_LOGGED_OUT_STATUS = (
     b'{"loggedIn":false,"authMethod":"none","apiProvider":"firstParty"}\n'
@@ -245,8 +247,8 @@ class ClaudeManagedLoginScript:
 
 
 def credential_payload(
-    account_id: str,
-    organization_id: str,
+    account_id: str | None,
+    organization_id: str | None,
     *,
     token_suffix: str,
     access_expires_at: datetime,
@@ -254,17 +256,20 @@ def credential_payload(
     scopes: tuple[str, ...] = ("user:profile", "user:inference"),
 ) -> bytes:
     """Encode one complete synthetic Claude credential envelope."""
+    if (account_id is None) != (organization_id is None):
+        raise ValueError("Synthetic Claude identity must be complete.")
     oauth: dict[str, object] = {
         "accessToken": f"sk-ant-oat01-{token_suffix}",
         "refreshToken": f"refresh-{token_suffix}",
         "expiresAt": int(access_expires_at.timestamp() * 1000),
         "subscriptionType": "pro",
         "scopes": list(scopes),
-        "tokenAccount": {
+    }
+    if account_id is not None and organization_id is not None:
+        oauth["tokenAccount"] = {
             "accountUuid": account_id,
             "organizationUuid": organization_id,
-        },
-    }
+        }
     if refresh_expires_at is not None:
         oauth["refreshTokenExpiresAt"] = int(
             refresh_expires_at.timestamp() * 1000

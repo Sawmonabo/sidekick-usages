@@ -62,6 +62,13 @@ class DashboardController:
         provider = self._focused_provider()
         if provider is None:
             return self
+        if self.state.account_id is None and not self.state.external:
+            target = (
+                provider.rows[-1]
+                if direction is DashboardMove.UP
+                else provider.rows[0]
+            )
+            return self._focus(target)
         current_index = _focused_index(provider, self.state)
         if direction is DashboardMove.UP:
             target_index = max(0, current_index - 1)

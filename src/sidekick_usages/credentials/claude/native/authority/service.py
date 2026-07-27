@@ -19,10 +19,12 @@ from sidekick_usages.providers.claude.auth.storage.errors import (
 )
 from sidekick_usages.providers.claude.auth.storage.models import (
     ClaudeAuthoritySnapshot,
+    ClaudeCredentialObservation,
     ClaudeProtectedLogin,
 )
 from sidekick_usages.providers.claude.auth.storage.service import (
     CLAUDE_CREDENTIAL_FILE,
+    observe_protected_claude_authority,
     protected_claude_login,
     read_protected_claude_authority,
 )
@@ -114,6 +116,23 @@ class ClaudeNativeAuthorityReader:
             self._files,
             reference_time,
             expected_identity=expected_identity,
+            environment=environment,
+            runner=runner,
+        )
+
+    def observe(
+        self,
+        capabilities: ClaudeCapabilities,
+        reference_time: datetime,
+        *,
+        environment: Mapping[str, str] | None = None,
+        runner: ClaudeCommandRunner = run_bounded_claude_command,
+    ) -> ClaudeCredentialObservation:
+        """Return real native generation even without embedded identity."""
+        return observe_protected_claude_authority(
+            capabilities,
+            self._files,
+            reference_time,
             environment=environment,
             runner=runner,
         )

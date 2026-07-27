@@ -1,6 +1,10 @@
 """Steady-state Claude native-account reconciliation."""
 
 from sidekick_usages.clock import Clock
+from sidekick_usages.core.accounts.types import (
+    AuthorityGeneration,
+    ProviderIdentity,
+)
 from sidekick_usages.core.selection.models import (
     NativeReconciliationResult,
     SelectedAccountState,
@@ -115,8 +119,15 @@ class ClaudeNativeReconciliationService:
         if observed.state is ProviderAuthState.ACTIVE:
             snapshot = observed.snapshot
             if snapshot is None:
-                raise ClaudeActivationError(
-                    ClaudeActivationFailure.RECONCILIATION_REQUIRED
+                provider_identity = observed.provider_identity
+                generation = observed.generation
+                if provider_identity is None or generation is None:
+                    raise ClaudeActivationError(
+                        ClaudeActivationFailure.RECONCILIATION_REQUIRED
+                    )
+                return self._external_candidate(
+                    provider_identity,
+                    generation,
                 )
             return self._active_candidate(
                 snapshot,
@@ -150,16 +161,33 @@ class ClaudeNativeReconciliationService:
             capabilities,
             authority,
         )
+        if account is None:
+            return self._external_candidate(
+                snapshot.provider_identity,
+                snapshot.generation,
+            )
         return SelectedAccountState(
             provider_id=ProviderId.CLAUDE,
-            runtime_state=(
-                ProviderRuntimeState.EXTERNAL_ACTIVE
-                if account is None
-                else ProviderRuntimeState.SAVED_ACTIVE
-            ),
-            account_id=None if account is None else account.account_id,
+            runtime_state=ProviderRuntimeState.SAVED_ACTIVE,
+            account_id=account.account_id,
             provider_identity=snapshot.provider_identity,
             runtime_generation=snapshot.generation,
+            verified_at=self._clock.now(),
+            outcome=ActivationOutcome.EXTERNAL_RECONCILED,
+        )
+
+    def _external_candidate(
+        self,
+        provider_identity: ProviderIdentity,
+        generation: AuthorityGeneration,
+    ) -> SelectedAccountState:
+        """Return one unassociated native login without label inference."""
+        return SelectedAccountState(
+            provider_id=ProviderId.CLAUDE,
+            runtime_state=ProviderRuntimeState.EXTERNAL_ACTIVE,
+            account_id=None,
+            provider_identity=provider_identity,
+            runtime_generation=generation,
             verified_at=self._clock.now(),
             outcome=ActivationOutcome.EXTERNAL_RECONCILED,
         )

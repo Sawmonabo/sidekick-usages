@@ -39,6 +39,25 @@ class ClaudeAuthoritySnapshot:
     action: CredentialAction
 
 
+@dataclass(frozen=True, slots=True)
+class ClaudeCredentialObservation:
+    """Credential generation retained without requiring provider identity."""
+
+    generation: AuthorityGeneration
+    health: CredentialHealth
+    action: CredentialAction
+    snapshot: ClaudeAuthoritySnapshot | None = None
+
+    def __post_init__(self) -> None:
+        """Require a complete snapshot to agree with retained metadata."""
+        if self.snapshot is not None and (
+            self.snapshot.generation != self.generation
+            or self.snapshot.health is not self.health
+            or self.snapshot.action is not self.action
+        ):
+            raise ValueError("Claude credential observation is inconsistent.")
+
+
 class ClaudeProtectedLogin:
     """Operation-scoped login credentials from protected Claude storage."""
 

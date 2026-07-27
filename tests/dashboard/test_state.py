@@ -395,7 +395,12 @@ def test_dashboard_controller_journey_preserves_verified_truth(
                 for provider in preparable.snapshot.providers
             ),
         )
-    ).move(DashboardMove.UP)
+    )
+    assert (
+        disabled.state.focused_provider,
+        disabled.state.account_id,
+        disabled.state.external,
+    ) == (ProviderId.CLAUDE, None, False)
     assert (
         disabled.activate_or_repair(),
         disabled.refresh_account(),
@@ -423,7 +428,7 @@ def test_dashboard_controller_journey_preserves_verified_truth(
         )
     )
     assert fallback.state.focused_provider is ProviderId.CODEX
-    assert fallback.state.account_id == CODEX_SAVED_ACCOUNT_ID
+    assert fallback.state.account_id is None
     assert not fallback.state.external
     startup = exercise_startup_reconciliation(
         snapshot,

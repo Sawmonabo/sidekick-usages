@@ -60,6 +60,10 @@ from sidekick_usages.providers.claude.activation.service import (
     claude_environment_conflict,
     claude_native_switch_conflict,
 )
+from sidekick_usages.providers.claude.auth.login.service import (
+    claude_status_provider_identity,
+    read_official_claude_auth_status,
+)
 from sidekick_usages.providers.claude.auth.storage.errors import (
     ClaudeProtectedStorageError,
 )
@@ -69,6 +73,10 @@ from sidekick_usages.providers.claude.auth.storage.models import (
 from sidekick_usages.providers.claude.auth.storage.types import (
     ClaudeProtectedStorageFailure,
 )
+from sidekick_usages.providers.claude.environment import (
+    claude_native_profile_environment,
+)
+from sidekick_usages.providers.claude.errors import ClaudeProcessError
 from sidekick_usages.providers.claude.managed.errors import ClaudeManagedError
 from sidekick_usages.providers.claude.managed.models import ClaudeCapabilities
 from sidekick_usages.providers.claude.models import ClaudeNativeProfile
@@ -305,7 +313,7 @@ class ClaudeActivationAuthorityCoordinator:
     ) -> ClaudeNativeObservation:
         """Return one strict active or inactive native observation."""
         try:
-            snapshot = self._native_reader(capabilities).read(
+            credential = self._native_reader(capabilities).observe(
                 capabilities,
                 self._clock.now(),
                 environment=self._environment,
@@ -317,6 +325,21 @@ class ClaudeActivationAuthorityCoordinator:
                     error.code,
                     ProviderAuthState.UNREADABLE,
                 ),
+            )
+        snapshot = credential.snapshot
+        if snapshot is None:
+            provider_identity = self._external_native_identity(capabilities)
+            if (
+                provider_identity is None
+                or credential.health is CredentialHealth.LOGIN_REQUIRED
+            ):
+                return ClaudeNativeObservation(
+                    state=ProviderAuthState.UNREADABLE
+                )
+            return ClaudeNativeObservation(
+                state=ProviderAuthState.ACTIVE,
+                external_provider_identity=provider_identity,
+                external_generation=credential.generation,
             )
         return ClaudeNativeObservation(
             state=ProviderAuthState.ACTIVE,
@@ -523,6 +546,32 @@ class ClaudeActivationAuthorityCoordinator:
 
     def _source_environment(self) -> Mapping[str, str]:
         return os.environ if self._environment is None else self._environment
+
+    def _external_native_identity(
+        self,
+        capabilities: ClaudeCapabilities,
+    ) -> ProviderIdentity | None:
+        profile = self._require_native_profile(capabilities)
+        environment: dict[str, str] = {}
+        try:
+            environment.update(
+                claude_native_profile_environment(
+                    self._environment,
+                    process_home=profile.config_directory.parent,
+                    config_directory=profile.config_directory,
+                )
+            )
+            status = read_official_claude_auth_status(
+                capabilities.executable,
+                environment,
+                profile.config_directory,
+                runner=self._runner,
+            )
+            return claude_status_provider_identity(status)
+        except ClaudeManagedError, ClaudeProcessError:
+            return None
+        finally:
+            environment.clear()
 
     def _native_reader(
         self,

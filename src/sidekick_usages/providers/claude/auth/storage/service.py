@@ -29,6 +29,7 @@ from sidekick_usages.providers.claude.auth.storage.keychain import (
 )
 from sidekick_usages.providers.claude.auth.storage.models import (
     ClaudeAuthoritySnapshot,
+    ClaudeCredentialObservation,
     ClaudeProtectedLogin,
 )
 from sidekick_usages.providers.claude.auth.storage.types import (
@@ -88,6 +89,30 @@ def read_protected_claude_authority(
         return protected.snapshot
 
 
+def observe_protected_claude_authority(
+    capabilities: ClaudeCapabilities,
+    files: ClaudeCredentialFileSource,
+    reference_time: datetime,
+    *,
+    environment: Mapping[str, str] | None = None,
+    runner: ClaudeCommandRunner = run_bounded_claude_command,
+) -> ClaudeCredentialObservation:
+    """Retain real generation without requiring embedded identity."""
+    payload = _read_protected_payload(
+        capabilities,
+        files,
+        environment,
+        runner,
+    )
+    observation, credentials = _credential_observation(
+        capabilities,
+        payload,
+        reference_time,
+    )
+    del credentials
+    return observation
+
+
 @contextmanager
 def protected_claude_login(
     capabilities: ClaudeCapabilities,
@@ -119,28 +144,54 @@ def _read_protected_claude_login(
     environment: Mapping[str, str] | None,
     runner: ClaudeCommandRunner,
 ) -> ClaudeProtectedLogin:
+    payload = _read_protected_payload(
+        capabilities,
+        files,
+        environment,
+        runner,
+    )
+    observation, credentials = _credential_observation(
+        capabilities,
+        payload,
+        reference_time,
+    )
+    snapshot = observation.snapshot
+    if snapshot is None:
+        raise ClaudeProtectedStorageError(
+            ClaudeProtectedStorageFailure.MALFORMED
+        )
+    if (
+        expected_identity is not None
+        and snapshot.provider_identity != expected_identity
+    ):
+        raise ClaudeProtectedStorageError(
+            ClaudeProtectedStorageFailure.IDENTITY_MISMATCH
+        )
+    return ClaudeProtectedLogin(snapshot=snapshot, credentials=credentials)
+
+
+def _read_protected_payload(
+    capabilities: ClaudeCapabilities,
+    files: ClaudeCredentialFileSource,
+    environment: Mapping[str, str] | None,
+    runner: ClaudeCommandRunner,
+) -> bytes:
     if capabilities.platform in _FILE_PLATFORMS:
         payload = files.read(capabilities.profile)
         if payload is None:
             raise ClaudeProtectedStorageError(
                 ClaudeProtectedStorageFailure.MISSING
             )
-    elif capabilities.platform in _KEYCHAIN_PLATFORMS:
-        payload = _read_macos_payload(
+        return payload
+    if capabilities.platform in _KEYCHAIN_PLATFORMS:
+        return _read_macos_payload(
             capabilities,
             files,
             environment,
             runner,
         )
-    else:
-        raise ClaudeProtectedStorageError(
-            ClaudeProtectedStorageFailure.NAMESPACE_UNPROVEN
-        )
-    return _protected_login(
-        capabilities,
-        payload,
-        reference_time,
-        expected_identity,
+    raise ClaudeProtectedStorageError(
+        ClaudeProtectedStorageFailure.NAMESPACE_UNPROVEN
     )
 
 
@@ -167,12 +218,11 @@ def _read_macos_payload(
     return payload
 
 
-def _protected_login(
+def _credential_observation(
     capabilities: ClaudeCapabilities,
     payload: bytes,
     reference_time: datetime,
-    expected_identity: ProviderIdentity | None,
-) -> ClaudeProtectedLogin:
+) -> tuple[ClaudeCredentialObservation, ClaudeLoginCredentials]:
     try:
         detected = parse_credentials_blob(decode_json_object(payload))
     except InvalidPayloadError, ProviderBoundaryError:
@@ -184,19 +234,6 @@ def _protected_login(
         raise ClaudeProtectedStorageError(
             ClaudeProtectedStorageFailure.MALFORMED
         )
-    identity = credentials.identity
-    if identity is None:
-        raise ClaudeProtectedStorageError(
-            ClaudeProtectedStorageFailure.MALFORMED
-        )
-    provider_identity = identity.provider_identity
-    if (
-        expected_identity is not None
-        and provider_identity != expected_identity
-    ):
-        raise ClaudeProtectedStorageError(
-            ClaudeProtectedStorageFailure.IDENTITY_MISMATCH
-        )
     try:
         encode_claude_refresh_scopes(credentials.scopes)
     except ClaudeProcessError:
@@ -204,12 +241,23 @@ def _protected_login(
             ClaudeProtectedStorageFailure.MALFORMED
         ) from None
     health, action = _health(credentials, reference_time)
+    generation = claude_access_token_generation(credentials.access_token)
+    identity = credentials.identity
+    if identity is None:
+        return (
+            ClaudeCredentialObservation(
+                generation=generation,
+                health=health,
+                action=action,
+            ),
+            credentials,
+        )
     refresh_expiry = credentials.refresh_expiry
     snapshot = ClaudeAuthoritySnapshot(
         profile=capabilities.profile,
         executable_version=str(capabilities.executable.version),
-        provider_identity=provider_identity,
-        generation=claude_access_token_generation(credentials.access_token),
+        provider_identity=identity.provider_identity,
+        generation=generation,
         plan=detected.plan,
         scopes=credentials.scopes,
         access_expires_at=credentials.access_expiry.at,
@@ -221,9 +269,14 @@ def _protected_login(
         health=health,
         action=action,
     )
-    return ClaudeProtectedLogin(
-        snapshot=snapshot,
-        credentials=credentials,
+    return (
+        ClaudeCredentialObservation(
+            generation=generation,
+            health=health,
+            action=action,
+            snapshot=snapshot,
+        ),
+        credentials,
     )
 
 

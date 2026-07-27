@@ -55,7 +55,7 @@ class DashboardStatusKind(StrEnum):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class DashboardCursor:
-    """One focused provider row without provider-owned identity."""
+    """One provider focus with an optional verified or previewed row."""
 
     focused_provider: ProviderId | None
     account_id: SidekickAccountId | None

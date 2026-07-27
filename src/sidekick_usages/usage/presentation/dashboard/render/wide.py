@@ -174,7 +174,12 @@ def _provider_content_lines(
                 reference_time,
             )
         )
-        detail = row_detail(row, cursor, reference_time)
+        detail = row_detail(
+            row,
+            cursor,
+            reference_time,
+            actions_enabled=provider.actions_enabled,
+        )
         if detail is not None:
             lines.extend(
                 _account_warning_lines(

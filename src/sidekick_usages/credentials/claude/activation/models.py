@@ -8,6 +8,10 @@ from sidekick_usages.core.accounts.models import (
     ClaudeManagedLoginAuthority,
     SavedAccount,
 )
+from sidekick_usages.core.accounts.types import (
+    AuthorityGeneration,
+    ProviderIdentity,
+)
 from sidekick_usages.core.selection.types import ProviderAuthState
 from sidekick_usages.platform.types import HostPlatform
 from sidekick_usages.providers.claude.activation.foreground import (
@@ -100,12 +104,47 @@ class ClaudeNativeObservation:
 
     state: ProviderAuthState
     snapshot: ClaudeAuthoritySnapshot | None = None
+    external_provider_identity: ProviderIdentity | None = None
+    external_generation: AuthorityGeneration | None = None
 
     def __post_init__(self) -> None:
-        """Require one snapshot exactly for active native state."""
-        active = self.state is ProviderAuthState.ACTIVE
-        if active != (self.snapshot is not None):
+        """Require strict or external-only proof exactly for active state."""
+        if self.state is not ProviderAuthState.ACTIVE:
+            if (
+                self.snapshot is not None
+                or self.external_provider_identity is not None
+                or self.external_generation is not None
+            ):
+                raise ValueError(
+                    "Inactive Claude observation claims identity."
+                )
+            return
+        strict = self.snapshot is not None
+        external = (
+            self.external_provider_identity is not None
+            and self.external_generation is not None
+        )
+        if strict == external:
             raise ValueError("Native Claude observation is incomplete.")
+        if strict and (
+            self.external_provider_identity is not None
+            or self.external_generation is not None
+        ):
+            raise ValueError("Native Claude observation has mixed authority.")
+
+    @property
+    def provider_identity(self) -> ProviderIdentity | None:
+        """Return strict or external-only native provider identity."""
+        if self.snapshot is not None:
+            return self.snapshot.provider_identity
+        return self.external_provider_identity
+
+    @property
+    def generation(self) -> AuthorityGeneration | None:
+        """Return the protected native credential generation."""
+        if self.snapshot is not None:
+            return self.snapshot.generation
+        return self.external_generation
 
 
 @dataclass(frozen=True, slots=True)

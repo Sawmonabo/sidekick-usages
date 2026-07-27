@@ -20,17 +20,17 @@ class DashboardMove(StrEnum):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class DashboardProviderAnchor:
-    """One provider's verified-active or first-row restore target."""
+    """One provider's verified-active or provider-only restore target."""
 
     provider_id: ProviderId
     account_id: SidekickAccountId | None
     external: bool
 
     def __post_init__(self) -> None:
-        """Require exactly one saved-account or external row reference."""
-        if self.external == (self.account_id is not None):
+        """Reject a focus that claims saved and external identity together."""
+        if self.external and self.account_id is not None:
             raise ValueError(
-                "Dashboard anchor must identify one saved or external row."
+                "Dashboard anchor cannot identify saved and external rows."
             )
 
 
@@ -45,15 +45,15 @@ class DashboardControllerState:
     help_visible: bool = False
 
     def __post_init__(self) -> None:
-        """Require one valid focused row and unique provider anchors."""
+        """Require valid provider focus and unique provider anchors."""
         if self.focused_provider is None:
             if self.account_id is not None or self.external:
                 raise ValueError(
                     "An empty dashboard cannot identify a focused row."
                 )
-        elif self.external == (self.account_id is not None):
+        elif self.external and self.account_id is not None:
             raise ValueError(
-                "Dashboard focus must identify one saved or external row."
+                "Dashboard focus cannot identify saved and external rows."
             )
         provider_ids = tuple(anchor.provider_id for anchor in self.anchors)
         if len(provider_ids) != len(set(provider_ids)):

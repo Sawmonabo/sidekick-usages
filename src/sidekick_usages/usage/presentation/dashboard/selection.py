@@ -69,6 +69,8 @@ def row_detail(
     row: DashboardRow,
     cursor: DashboardCursor,
     reference_time: datetime,
+    *,
+    actions_enabled: bool,
 ) -> str | None:
     """Return the highest-priority actionable or degraded row detail."""
     for state in row.states:
@@ -81,6 +83,7 @@ def row_detail(
             return FAILURE_STATE_DETAILS[state]
     if (
         DashboardActionState.SWITCH_SETUP_REQUIRED in row.states
+        and actions_enabled
         and row_is_selected(row, cursor)
     ):
         return SWITCH_SETUP_DETAIL

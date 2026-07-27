@@ -23,6 +23,9 @@ from sidekick_usages.persistence.models.artifact import FileSnapshot
 from sidekick_usages.persistence.supervisor.authority import (
     ProviderMutationLock,
 )
+from sidekick_usages.providers.claude.auth.generation import (
+    claude_access_token_generation,
+)
 from sidekick_usages.providers.claude.auth.storage.service import (
     CLAUDE_CREDENTIAL_FILE,
 )
@@ -30,11 +33,16 @@ from tests.fakes.claude.activation import (
     ClaudeRecoveryScenario,
     claude_recovery_scenario,
 )
-from tests.fakes.claude.managed import use_synthetic_claude
+from tests.fakes.claude.managed import (
+    credential_payload,
+    use_synthetic_claude,
+)
 from tests.support.platform import REQUIRES_MANAGED_RUNTIME
+from tests.support.time import REFERENCE_TIME
 
 pytestmark = REQUIRES_MANAGED_RUNTIME
 _EXPECTED_NATIVE_LOGINS = 2
+_STATUS_ONLY_TOKEN_SUFFIX = "status-only-native"
 
 
 class _SimulatedCrash(BaseException):
@@ -297,6 +305,50 @@ def test_external_claude_login_wins_without_importing_unknown_identity(
     )
     assert unknown.journals.load(ProviderId.CLAUDE).active is None
     assert unknown.selected.load(ProviderId.CODEX) == unknown.codex_state
+
+    status_only = claude_recovery_scenario(
+        tmp_path / "status-only",
+        _SimulatedCrash(),
+        rollback_succeeds=True,
+    )
+    status_only_payload = credential_payload(
+        None,
+        None,
+        token_suffix=_STATUS_ONLY_TOKEN_SUFFIX,
+        access_expires_at=REFERENCE_TIME + timedelta(hours=6),
+    )
+    status_only.native_credentials.write_bytes(status_only_payload)
+    status_saved_ids = tuple(
+        account.account_id for account in status_only.store.saved_accounts()
+    )
+    status_login_profiles = list(status_only.script.login_profiles)
+
+    status_result = _recover(
+        status_only,
+        status_only.native_reconciliation,
+    )
+    status_selected = status_only.selected.load(ProviderId.CLAUDE)
+
+    assert status_result.outcome is WorkerOutcome.SUCCEEDED
+    assert status_selected is not None
+    assert status_selected.runtime_state is (
+        ProviderRuntimeState.EXTERNAL_ACTIVE
+    )
+    assert status_selected.account_id is None
+    assert status_selected.runtime_generation == (
+        claude_access_token_generation(
+            f"sk-ant-oat01-{_STATUS_ONLY_TOKEN_SUFFIX}"
+        )
+    )
+    assert status_only.native_credentials.read_bytes() == status_only_payload
+    assert status_only.script.login_profiles == status_login_profiles
+    assert (
+        tuple(
+            account.account_id
+            for account in status_only.store.saved_accounts()
+        )
+        == status_saved_ids
+    )
 
     _assert_steady_native_reconciliation(
         unknown,

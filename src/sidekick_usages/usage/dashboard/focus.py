@@ -12,10 +12,13 @@ from sidekick_usages.usage.dashboard.models import (
 
 
 def provider_focus(provider: DashboardProvider) -> DashboardCursor:
-    """Return one provider's verified-active or first-row focus."""
+    """Return verified-active focus without implying an unverified account."""
     if not provider.rows:
         raise ValueError("Dashboard focus requires one provider row.")
-    if provider.active_account_id is not None:
+    if (
+        provider.runtime_state is ProviderRuntimeState.SAVED_ACTIVE
+        and provider.active_account_id is not None
+    ):
         active = next(
             (
                 row
@@ -45,13 +48,9 @@ def provider_focus(provider: DashboardProvider) -> DashboardCursor:
                 account_id=None,
                 external=True,
             )
-    first = provider.rows[0]
     return DashboardCursor(
         focused_provider=provider.provider_id,
-        account_id=(
-            first.account_id if isinstance(first, DashboardAccount) else None
-        ),
-        external=isinstance(first, DashboardExternalRow),
+        account_id=None,
     )
 
 

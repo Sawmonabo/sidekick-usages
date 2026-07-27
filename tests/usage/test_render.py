@@ -299,6 +299,20 @@ def _render_interactive(width: int) -> tuple[str, str, str]:
             *snapshot.providers[1:],
         ),
     )
+    warning_cursor = replace(
+        cursor,
+        account_id=warning_account.account_id,
+    )
+    unavailable_snapshot = replace(
+        priority_snapshot,
+        providers=(
+            replace(
+                priority_snapshot.providers[0],
+                actions_enabled=False,
+            ),
+            *priority_snapshot.providers[1:],
+        ),
+    )
     return (
         render_dashboard(
             snapshot,
@@ -308,19 +322,16 @@ def _render_interactive(width: int) -> tuple[str, str, str]:
             color=False,
         ),
         render_dashboard(
-            priority_snapshot,
+            unavailable_snapshot,
             width=width,
-            cursor=cursor,
+            cursor=warning_cursor,
             footer=DashboardFooter(),
             color=False,
         ),
         render_dashboard(
             priority_snapshot,
             width=width,
-            cursor=replace(
-                cursor,
-                account_id=warning_account.account_id,
-            ),
+            cursor=warning_cursor,
             footer=DashboardFooter(),
             color=False,
         ),

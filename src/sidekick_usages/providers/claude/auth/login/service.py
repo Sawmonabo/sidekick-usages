@@ -1,9 +1,11 @@
 """Official Claude login process boundary."""
 
+import hashlib
 import os
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
+from sidekick_usages.core.accounts.types import ProviderIdentity
 from sidekick_usages.errors import InvalidPayloadError
 from sidekick_usages.providers.claude.auth.login.models import (
     ClaudeAuthStatus,
@@ -40,6 +42,8 @@ _INTERACTIVE_LOGIN_TIMEOUT_SECONDS = 600.0
 _OFFICIAL_LOGIN_TIMEOUT_SECONDS = 60.0
 _PRIVATE_PROCESS_UMASK = 0o077
 _SUBSCRIPTION_AUTH_METHOD = "claude.ai"
+_FIRST_PARTY_API_PROVIDER = "firstParty"
+_STATUS_IDENTITY_PREFIX = "claude-auth-status-sha256:"
 
 
 def run_official_claude_login(
@@ -132,7 +136,7 @@ def verify_logged_out_claude_status(
         status.return_code != 1
         or status.logged_in
         or status.auth_method != "none"
-        or status.api_provider != "firstParty"
+        or status.api_provider != _FIRST_PARTY_API_PROVIDER
     ):
         raise ClaudeManagedError(ClaudeManagedFailure.STATUS_UNSUPPORTED)
 
@@ -156,11 +160,57 @@ def verify_official_claude_login_status(
         status.return_code != 0
         or not status.logged_in
         or status.auth_method != _SUBSCRIPTION_AUTH_METHOD
-        or status.api_provider != "firstParty"
+        or status.api_provider != _FIRST_PARTY_API_PROVIDER
     ):
         raise ClaudeManagedError(
             ClaudeManagedFailure.OFFICIAL_LOGIN_UNVERIFIED
         )
+
+
+def read_official_claude_auth_status(
+    executable: ClaudeExecutable,
+    environment: Mapping[str, str],
+    working_directory: Path,
+    *,
+    runner: ClaudeCommandRunner = run_bounded_claude_command,
+) -> ClaudeAuthStatus:
+    """Return bounded non-secret native status from the official Claude CLI."""
+    return _read_auth_status(
+        executable,
+        environment,
+        working_directory,
+        ClaudeManagedFailure.OFFICIAL_LOGIN_UNVERIFIED,
+        runner,
+    )
+
+
+def claude_status_provider_identity(
+    status: ClaudeAuthStatus,
+) -> ProviderIdentity | None:
+    """Hash provider-returned status identity for external-only tracking."""
+    if (
+        status.return_code != 0
+        or not status.logged_in
+        or status.auth_method != _SUBSCRIPTION_AUTH_METHOD
+        or status.api_provider != _FIRST_PARTY_API_PROVIDER
+        or status.email is None
+    ):
+        return None
+    email = status.email.encode("utf-8")
+    organization_id = (
+        b""
+        if status.organization_id is None
+        else status.organization_id.encode("utf-8")
+    )
+    material = (
+        len(email).to_bytes(4, byteorder="big")
+        + email
+        + len(organization_id).to_bytes(4, byteorder="big")
+        + organization_id
+    )
+    return ProviderIdentity(
+        _STATUS_IDENTITY_PREFIX + hashlib.sha256(material).hexdigest()
+    )
 
 
 def _read_auth_status(
@@ -217,15 +267,39 @@ def _decode_auth_status(
     logged_in = payload.get("loggedIn")
     auth_method = payload.get("authMethod")
     api_provider = payload.get("apiProvider")
+    email = payload.get("email")
+    organization_id = payload.get("orgId")
+    organization_name = payload.get("orgName")
+    subscription_type = payload.get("subscriptionType")
     if (
         not isinstance(logged_in, bool)
         or not isinstance(auth_method, str)
         or not isinstance(api_provider, str)
+        or (email is not None and not isinstance(email, str))
+        or (
+            organization_id is not None
+            and not isinstance(organization_id, str)
+        )
+        or (
+            organization_name is not None
+            and not isinstance(organization_name, str)
+        )
+        or (
+            subscription_type is not None
+            and not isinstance(subscription_type, str)
+        )
     ):
         raise ClaudeManagedError(failure)
-    return ClaudeAuthStatus(
-        return_code=result.return_code,
-        logged_in=logged_in,
-        auth_method=auth_method,
-        api_provider=api_provider,
-    )
+    try:
+        return ClaudeAuthStatus(
+            return_code=result.return_code,
+            logged_in=logged_in,
+            auth_method=auth_method,
+            api_provider=api_provider,
+            email=email,
+            organization_id=organization_id,
+            organization_name=organization_name,
+            subscription_type=subscription_type,
+        )
+    except TypeError, ValueError:
+        raise ClaudeManagedError(failure) from None
