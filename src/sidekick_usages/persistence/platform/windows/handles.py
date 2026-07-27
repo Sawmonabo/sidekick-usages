@@ -103,6 +103,16 @@ if sys.platform == "win32":
         except OSError:
             raise NativeFilesystemError(failure_kind) from None
 
+    def descriptor_handle(
+        descriptor: int,
+        failure_kind: NativeFailureKind,
+    ) -> int:
+        """Return a descriptor's OS handle or one owned native failure."""
+        try:
+            return msvcrt.get_osfhandle(descriptor)
+        except OSError:
+            raise NativeFilesystemError(failure_kind) from None
+
     def close_handle(
         handle: _win32typing.PyHANDLE,
         primary: BaseException | None = None,
@@ -228,10 +238,10 @@ if sys.platform == "win32":
         if len(data) > limit:
             raise NativeFilesystemError(NativeFailureKind.TOO_LARGE)
         after = metadata(descriptor, NativeFailureKind.UNREADABLE)
-        try:
-            handle = msvcrt.get_osfhandle(descriptor)
-        except OSError:
-            raise NativeFilesystemError(NativeFailureKind.UNREADABLE) from None
+        handle = descriptor_handle(
+            descriptor,
+            NativeFailureKind.UNREADABLE,
+        )
         validate_security(handle, directory=False)
         validate_stat(
             after,

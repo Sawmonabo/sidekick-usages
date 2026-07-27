@@ -22,8 +22,6 @@ from sidekick_usages.persistence.private.bundles.paths import (
 )
 
 if sys.platform == "win32":
-    import msvcrt
-
     import pywintypes
     import win32file
 
@@ -35,6 +33,7 @@ if sys.platform == "win32":
         remove_validated,
     )
     from sidekick_usages.persistence.platform.windows.handles import (
+        descriptor_handle,
         open_mutation_source,
         owned_descriptor,
     )
@@ -54,15 +53,6 @@ if sys.platform == "win32":
 
 
 if sys.platform == "win32":
-
-    def _descriptor_handle(
-        descriptor: int,
-        kind: NativeFailureKind,
-    ) -> int:
-        try:
-            return msvcrt.get_osfhandle(descriptor)
-        except OSError:
-            raise NativeFilesystemError(kind) from None
 
     def _install_staged_file(
         opened: OpenedTree,
@@ -112,7 +102,7 @@ if sys.platform == "win32":
                 ) from None
             validate_membership(
                 target.descriptors[-1],
-                _descriptor_handle(
+                descriptor_handle(
                     source_descriptor,
                     NativeFailureKind.CHANGED,
                 ),

@@ -19,8 +19,6 @@ from sidekick_usages.persistence.platform.windows.private.models import (
 )
 
 if sys.platform == "win32":
-    import msvcrt
-
     import pywintypes
     import win32con
     import win32file
@@ -45,15 +43,6 @@ if sys.platform == "win32":
     ) -> int:
         try:
             return os.dup(descriptor)
-        except OSError:
-            raise NativeFilesystemError(kind) from None
-
-    def _descriptor_handle(
-        descriptor: int,
-        kind: NativeFailureKind,
-    ) -> int:
-        try:
-            return msvcrt.get_osfhandle(descriptor)
         except OSError:
             raise NativeFilesystemError(kind) from None
 
@@ -202,9 +191,12 @@ if sys.platform == "win32":
 
     def _security_is_valid(descriptor: int, *, directory: bool) -> bool:
         try:
-            handle = msvcrt.get_osfhandle(descriptor)
+            handle = handles.descriptor_handle(
+                descriptor,
+                NativeFailureKind.UNSAFE,
+            )
             security.validate_security(handle, directory=directory)
-        except OSError, NativeFilesystemError:
+        except NativeFilesystemError:
             return False
         return True
 
@@ -225,7 +217,7 @@ if sys.platform == "win32":
         )
         if not root_security_valid:
             security.validate_external_source_directory(
-                _descriptor_handle(
+                handles.descriptor_handle(
                     opened.root_descriptor,
                     NativeFailureKind.UNSAFE,
                 )
@@ -281,7 +273,7 @@ if sys.platform == "win32":
                             directory=directory,
                         )
                         if not security_valid:
-                            handle = _descriptor_handle(
+                            handle = handles.descriptor_handle(
                                 child,
                                 NativeFailureKind.UNSAFE,
                             )
@@ -347,7 +339,7 @@ if sys.platform == "win32":
                 )
                 if (metadata.st_dev, metadata.st_ino) != entry.identity:
                     raise NativeFilesystemError(NativeFailureKind.CHANGED)
-                handle = _descriptor_handle(
+                handle = handles.descriptor_handle(
                     descriptor,
                     NativeFailureKind.UNSAFE,
                 )

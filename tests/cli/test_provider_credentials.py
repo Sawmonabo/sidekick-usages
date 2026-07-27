@@ -98,15 +98,6 @@ class _CodexProvider(Provider):
         )
 
 
-@pytest.fixture(autouse=True)
-def _isolate_default_codex_home(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Prevent tests from reading the developer's native Codex login."""
-    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "native-codex"))
-
-
 def _codex_account(
     *,
     access_token: str,
