@@ -287,6 +287,11 @@ class ActivationRecord:
             and origin is None
         ):
             raise ValueError("Reconciliation requires its origin phase.")
+        if self.provider_id is not ProviderId.CLAUDE and (
+            self.phase is ActivationPhase.NATIVE_REPAIR_STARTED
+            or origin is ActivationPhase.NATIVE_REPAIR_STARTED
+        ):
+            raise ValueError("Native repair phase requires Claude.")
         _validate_activation_outcome(self.phase, self.outcome)
         _validate_activation_generation(
             self.phase,

@@ -407,7 +407,7 @@ class ClaudeActivationRecoveryService:
             if active.phase in {
                 ActivationPhase.PREPARED,
                 ActivationPhase.OUTGOING_RETAINED,
-                ActivationPhase.ROLLBACK_STARTED,
+                ActivationPhase.NATIVE_REPAIR_STARTED,
                 ActivationPhase.RECONCILIATION_REQUIRED,
             }:
                 active = transaction.advance(
@@ -451,7 +451,7 @@ class ClaudeActivationRecoveryService:
     ) -> SelectedAccountState:
         record = transaction.advance(
             record.operation_id,
-            ActivationPhase.ROLLBACK_STARTED,
+            ActivationPhase.NATIVE_REPAIR_STARTED,
             updated_at=self._clock.now(),
             verified_runtime_generation=record.verified_runtime_generation,
         )
