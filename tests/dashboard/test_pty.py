@@ -220,7 +220,12 @@ def _child_main() -> int:
         ),
         environment={},
     )
-    exit_code = InteractiveDashboardApplication(session).run()
+    result = InteractiveDashboardApplication(session).run()
+    if not isinstance(result, int):
+        raise AssertionError(
+            "PTY dashboard unexpectedly requested Claude association."
+        )
+    exit_code = result
     _write_trace(
         Path(os.environ[TRACE_ENVIRONMENT_KEY]),
         exit_code,
