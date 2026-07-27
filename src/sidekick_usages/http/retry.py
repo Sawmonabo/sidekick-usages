@@ -55,6 +55,7 @@ _POLICIES = {
         ambiguous_transport=False,
         rate_limit=True,
         server_status=True,
+        capture_rate_limit=True,
     ),
     HttpOperation.CLAUDE_HEARTBEAT: RetryPolicy(
         ambiguous_transport=False,
@@ -127,6 +128,11 @@ class RetryExecutor:
                     last_valid_retry_after,
                 )
                 if delay is None:
+                    if (
+                        outcome is TerminalOutcome.RATE_LIMIT
+                        and policy.capture_rate_limit
+                    ):
+                        return result
                     _raise_terminal(
                         terminal,
                         attempt_number,

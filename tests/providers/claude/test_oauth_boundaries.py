@@ -12,6 +12,7 @@ lack ``user:profile`` (so ``/api/oauth/usage`` returns 403).
 from collections.abc import Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
+from http import HTTPStatus
 
 import pytest
 
@@ -23,6 +24,7 @@ from sidekick_usages.core.models import (
 )
 from sidekick_usages.core.types import AccountLabel, HeartbeatStatus
 from sidekick_usages.http.client import HttpClient
+from sidekick_usages.http.models import HttpHeaderResponse
 from sidekick_usages.http.types import HttpOperation
 from sidekick_usages.providers.base import (
     ProviderBoundaryError,
@@ -76,6 +78,7 @@ class _FakeHttp(HttpClient):
         self,
         response_headers: dict[str, str] | None = None,
         response_json: JsonObject | None = None,
+        response_status: int = HTTPStatus.OK,
     ) -> None:
         """:param response_headers: Canned headers for POST mock.
 
@@ -84,6 +87,7 @@ class _FakeHttp(HttpClient):
         super().__init__()
         self.response_headers = response_headers or {}
         self.response_json: JsonObject = response_json or {}
+        self.response_status = response_status
         self.calls: list[tuple[str, str]] = []
         self.last_post_body: JsonObject | None = None
         self.last_post_headers: dict[str, str] | None = None
@@ -95,7 +99,7 @@ class _FakeHttp(HttpClient):
         headers: Mapping[str, str],
         *,
         operation: HttpOperation,
-    ) -> dict[str, str]:
+    ) -> HttpHeaderResponse:
         """Stand-in for :meth:`HttpClient.post_capture_headers`."""
         assert operation in {
             HttpOperation.CLAUDE_PROBE,
@@ -104,7 +108,7 @@ class _FakeHttp(HttpClient):
         self.calls.append(("POST", url))
         self.last_post_body = json_body
         self.last_post_headers = dict(headers)
-        return self.response_headers
+        return HttpHeaderResponse(self.response_status, self.response_headers)
 
     def get_json(
         self,
@@ -188,7 +192,10 @@ def test_fetch_via_headers_sends_one_token_probe_body() -> None:
 # -- public header route: response conversion --------------------
 def test_fetch_via_headers_parses_5h_and_7d_windows() -> None:
     """Header-path fractions are normalized to display percentages."""
-    http = _FakeHttp(response_headers=_LIVE_HEADERS)
+    http = _FakeHttp(
+        response_headers=_LIVE_HEADERS,
+        response_status=HTTPStatus.TOO_MANY_REQUESTS,
+    )
     report = _provider().validate_credentials(_acct(()), http)
     names = {w.name: w for w in report.windows}
     assert set(names) == {"5h", "7d"}

@@ -28,6 +28,7 @@ from sidekick_usages.heartbeat.models import (
 )
 from sidekick_usages.heartbeat.ports import HeartbeatProvider
 from sidekick_usages.http.client import HttpClient
+from sidekick_usages.http.models import HttpHeaderResponse
 from sidekick_usages.http.types import HttpOperation
 from sidekick_usages.persistence.accounts.store import AccountStore
 from sidekick_usages.providers.base import (
@@ -131,11 +132,11 @@ class FakeCodexHttp(HttpClient):
         headers: Mapping[str, str],
         *,
         operation: HttpOperation,
-    ) -> dict[str, str]:
+    ) -> HttpHeaderResponse:
         """Record one heartbeat request without network access."""
         assert operation is HttpOperation.CODEX_HEARTBEAT
         self.post_calls.append((url, json_body, dict(headers)))
-        return {}
+        return HttpHeaderResponse(200, {})
 
 
 def heartbeat_account(

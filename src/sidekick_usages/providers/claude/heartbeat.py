@@ -121,7 +121,7 @@ class ClaudeHeartbeat(HeartbeatProvider):
     ) -> HeartbeatProbeResult:
         """Send one tiny Claude request and parse its reset header."""
         runtime = runtime_account(account)
-        headers = http.post_capture_headers(
+        response = http.post_capture_headers(
             MESSAGES_URL,
             {
                 "model": PROBE_MODEL,
@@ -137,6 +137,6 @@ class ClaudeHeartbeat(HeartbeatProvider):
             operation=HttpOperation.CLAUDE_HEARTBEAT,
         )
         return warmed(
-            header_reset(headers, FIVE_HOUR_HEADER_PREFIX),
+            header_reset(response.headers, FIVE_HOUR_HEADER_PREFIX),
             target,
         )

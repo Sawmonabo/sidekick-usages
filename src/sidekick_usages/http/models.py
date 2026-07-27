@@ -15,12 +15,21 @@ class HttpAttempt:
 
 
 @dataclass(frozen=True, slots=True)
+class HttpHeaderResponse:
+    """Bounded status and headers from one provider probe."""
+
+    status_code: int
+    headers: dict[str, str]
+
+
+@dataclass(frozen=True, slots=True)
 class RetryPolicy:
     """Retry permissions for one closed operation class."""
 
     ambiguous_transport: bool
     rate_limit: bool
     server_status: bool
+    capture_rate_limit: bool = False
 
 
 @dataclass(frozen=True, slots=True)

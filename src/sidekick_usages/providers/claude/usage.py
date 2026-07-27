@@ -1,5 +1,6 @@
 """Claude usage routes, scope policy, and response conversion."""
 
+from http import HTTPStatus
 from typing import assert_never
 
 from sidekick_usages.core.models import (
@@ -8,6 +9,7 @@ from sidekick_usages.core.models import (
     ClaudeSetupTokenCredentials,
     UsageReport,
 )
+from sidekick_usages.errors import RateLimitError
 from sidekick_usages.http.client import HttpClient
 from sidekick_usages.http.types import HttpOperation
 from sidekick_usages.providers.claude.credentials import (
@@ -66,7 +68,7 @@ def fetch_via_headers(
     http: HttpClient,
 ) -> UsageReport:
     """Probe messages and convert unified rate-limit response headers."""
-    response_headers = http.post_capture_headers(
+    response = http.post_capture_headers(
         MESSAGES_URL,
         {
             "model": PROBE_MODEL,
@@ -84,7 +86,11 @@ def fetch_via_headers(
     windows = tuple(
         window
         for prefix, label in HEADER_BUCKETS
-        if (window := header_usage_window(prefix, label, response_headers))
+        if (window := header_usage_window(prefix, label, response.headers))
         is not None
     )
+    if response.status_code == HTTPStatus.TOO_MANY_REQUESTS and not windows:
+        raise RateLimitError(
+            "Claude rate limited the usage probe without usage meters."
+        )
     return UsageReport(windows=windows, plan=account.plan)

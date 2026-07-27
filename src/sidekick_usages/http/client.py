@@ -24,7 +24,7 @@ from sidekick_usages.errors import (
     InvalidPayloadError,
     TransientError,
 )
-from sidekick_usages.http.models import HttpAttempt
+from sidekick_usages.http.models import HttpAttempt, HttpHeaderResponse
 from sidekick_usages.http.retry import (
     CONNECT_TIMEOUT_SECONDS,
     READ_TIMEOUT_SECONDS,
@@ -123,8 +123,8 @@ class HttpClient(AbstractContextManager["HttpClient"]):
         headers: Mapping[str, str],
         *,
         operation: HttpOperation,
-    ) -> dict[str, str]:
-        """POST JSON and return normalized response headers."""
+    ) -> HttpHeaderResponse:
+        """POST JSON and return one bounded status and normalized headers."""
         _require_operation(
             operation,
             HttpOperation.CLAUDE_PROBE,
@@ -142,7 +142,7 @@ class HttpClient(AbstractContextManager["HttpClient"]):
             response_limit=DISCARD_BODY_LIMIT,
             discard_oversized=True,
         )
-        return result.headers
+        return HttpHeaderResponse(result.status_code, result.headers)
 
     def _request(
         self,
@@ -172,6 +172,11 @@ class HttpClient(AbstractContextManager["HttpClient"]):
         result = self._retry.execute(operation, attempt)
         status = result.status_code
         if HTTPStatus.OK <= status < HTTPStatus.MULTIPLE_CHOICES:
+            return result
+        if (
+            status == HTTPStatus.TOO_MANY_REQUESTS
+            and operation is HttpOperation.CLAUDE_PROBE
+        ):
             return result
         if status == HTTPStatus.UNAUTHORIZED:
             raise AuthError("Token expired or invalid (HTTP 401).") from None

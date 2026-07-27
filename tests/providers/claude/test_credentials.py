@@ -16,6 +16,7 @@ from sidekick_usages.core.models import (
 )
 from sidekick_usages.core.types import AccountLabel
 from sidekick_usages.http.client import HttpClient
+from sidekick_usages.http.models import HttpHeaderResponse
 from sidekick_usages.http.types import HttpOperation
 from sidekick_usages.providers.base import (
     ProviderBoundaryError,
@@ -61,11 +62,11 @@ class _RouteHttp(HttpClient):
         headers: Mapping[str, str],
         *,
         operation: HttpOperation,
-    ) -> dict[str, str]:
+    ) -> HttpHeaderResponse:
         del json_body, headers
         assert operation is HttpOperation.CLAUDE_PROBE
         self.calls.append(("POST", url))
-        return {}
+        return HttpHeaderResponse(200, {})
 
 
 def _setup_credentials() -> ClaudeSetupTokenCredentials:

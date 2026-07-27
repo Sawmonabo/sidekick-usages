@@ -187,21 +187,28 @@ def test_post_probe_encodes_and_returns_sidekick_values(
 ) -> None:
     """The reviewed provider probe preserves its concrete contract."""
     header_response = _Response(
-        HTTPStatus.OK,
+        HTTPStatus.TOO_MANY_REQUESTS,
         b"x" * (DISCARD_BODY_LIMIT + 1),
-        {"X-Usage": "ready"},
+        {
+            "Retry-After": "21600",
+            "X-Usage": "ready",
+        },
     )
     manager = _Manager([header_response])
     client = HttpClient()
     _install_manager(monkeypatch, client, manager)
 
-    returned_headers = client.post_capture_headers(
+    returned = client.post_capture_headers(
         "https://example.test/probe",
         {"prompt": "quota"},
         {"Authorization": "Bearer sentinel"},
         operation=HttpOperation.CLAUDE_PROBE,
     )
-    assert returned_headers == {"x-usage": "ready"}
+    assert returned.status_code == HTTPStatus.TOO_MANY_REQUESTS
+    assert returned.headers == {
+        "retry-after": "21600",
+        "x-usage": "ready",
+    }
     assert manager.bodies == [b'{"prompt":"quota"}']
     assert [call[0] for call in manager.calls] == [HTTPMethod.POST]
     assert all(
