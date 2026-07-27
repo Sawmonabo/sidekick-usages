@@ -572,8 +572,7 @@ def test_external_claude_login_wins_without_importing_unknown_identity(
     assert (
         known_claude.active_account_id,
         any(
-            isinstance(row, DashboardExternalRow)
-            for row in known_claude.rows
+            isinstance(row, DashboardExternalRow) for row in known_claude.rows
         ),
         known_controller.state.focused_provider,
         known_controller.state.account_id,

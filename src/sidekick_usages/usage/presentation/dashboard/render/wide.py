@@ -499,9 +499,7 @@ def _panel_required_width(
 
 
 def _provider_title(provider: DashboardProvider) -> DashboardLine:
-    count = sum(
-        isinstance(row, DashboardAccount) for row in provider.rows
-    )
+    count = sum(isinstance(row, DashboardAccount) for row in provider.rows)
     noun = "account" if count == 1 else "accounts"
     return line(
         segment(
