@@ -16,6 +16,7 @@ from sidekick_usages.daemon.control.client import ControlClient
 from sidekick_usages.daemon.lifecycle.artifacts import ServiceArtifactStore
 from sidekick_usages.daemon.lifecycle.commands import SystemCommandRunner
 from sidekick_usages.daemon.lifecycle.constants import (
+    CLAUDE_EXECUTABLE_OPTION,
     CODEX_EXECUTABLE_OPTION,
     WSL_RESCUE_ABSENT,
     WSL_RESCUE_INSTALLED,
@@ -25,6 +26,7 @@ from sidekick_usages.daemon.lifecycle.errors import ServiceLifecycleError
 from sidekick_usages.daemon.lifecycle.manager import (
     DaemonManager,
     build_service_backend,
+    build_service_launch_command,
 )
 from sidekick_usages.daemon.lifecycle.ports import (
     ServiceBackend,
@@ -64,6 +66,7 @@ from sidekick_usages.daemon.types.protocol import (
 from sidekick_usages.daemon.types.service import PackageVersion, ServicePhase
 from sidekick_usages.paths import ApplicationPaths
 from sidekick_usages.persistence.supervisor.service import ServiceStateStore
+from sidekick_usages.platform.executable import qualify_executable
 from tests.fakes.daemon.lifecycle import (
     LifecycleCancellationProof,
     exercise_lifecycle_command_cancellation,
@@ -269,8 +272,8 @@ def _supervisor_executable(tmp_path: Path) -> Path:
     return executable
 
 
-def _codex_executable(tmp_path: Path) -> Path:
-    executable = tmp_path / "bin" / "codex"
+def _provider_executable(tmp_path: Path, name: str) -> Path:
+    executable = tmp_path / "bin" / name
     executable.parent.mkdir(parents=True)
     executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     executable.chmod(0o755)
@@ -465,6 +468,7 @@ def _exercise_service_executable_republish(
     backend_id: ServiceBackendId,
     runner: RecordingRunner,
     supervisor_executable: Path,
+    claude_executables: list[Path],
     codex_executables: list[Path],
 ) -> None:
     """Prove exact provider argv and platform-native artifact reload."""
@@ -475,6 +479,7 @@ def _exercise_service_executable_republish(
     assert "maintain" not in initial
     assert "refresh" not in initial
     assert "token" not in initial.lower()
+    assert str(claude_executables[0]) in initial
     assert str(codex_executables[0]) in initial
     assert "CODEX_HOME" not in initial
     assert "OPENAI_API_KEY" not in initial
@@ -482,24 +487,38 @@ def _exercise_service_executable_republish(
     assert "<key>EnvironmentVariables</key>" not in initial
     if backend_id in {ServiceBackendId.SYSTEMD, ServiceBackendId.WSL}:
         assert (
+            f'"{CLAUDE_EXECUTABLE_OPTION}" '
+            f'"{claude_executables[0]}" '
             f'"{CODEX_EXECUTABLE_OPTION}" '
             f'"{codex_executables[0]}"'
         ) in initial
     if backend_id is ServiceBackendId.LAUNCHD:
         assert (
-            f"<string>{CODEX_EXECUTABLE_OPTION}</string>\n"
+            f"<string>{CLAUDE_EXECUTABLE_OPTION}</string>\n"
+            f"    <string>{claude_executables[0]}</string>\n"
+            f"    <string>{CODEX_EXECUTABLE_OPTION}</string>\n"
             f"    <string>{codex_executables[0]}</string>"
         ) in initial
 
+    previous_claude = claude_executables[0]
     previous_codex = codex_executables[0]
-    codex_executables[0] = _codex_executable(tmp_path / "codex-v2")
+    claude_executables[0] = _provider_executable(
+        tmp_path / "claude-v2",
+        "claude",
+    )
+    codex_executables[0] = _provider_executable(
+        tmp_path / "codex-v2",
+        "codex",
+    )
     call_offset = len(runner.calls)
     restarted = manager.restart()
     republished = artifact.read_text(encoding="utf-8")
     restart_calls = runner.calls[call_offset:]
 
     assert restarted.state is ServiceLifecycleState.READY
+    assert str(claude_executables[0]) in republished
     assert str(codex_executables[0]) in republished
+    assert str(previous_claude) not in republished
     assert str(previous_codex) not in republished
     if backend_id in {ServiceBackendId.SYSTEMD, ServiceBackendId.WSL}:
         assert restart_calls[:2] == [
@@ -562,15 +581,16 @@ def test_service_artifacts_are_user_scoped_resident_and_secret_free(
     )
     runner = RecordingRunner()
     executable = _supervisor_executable(tmp_path).resolve()
-    codex_executables = [_codex_executable(tmp_path / "codex-v1")]
+    claude_executables = [
+        _provider_executable(tmp_path / "claude-v1", "claude")
+    ]
+    codex_executables = [_provider_executable(tmp_path / "codex-v1", "codex")]
 
     def launch_command() -> ServiceLaunchCommand:
-        return ServiceLaunchCommand(
-            executable,
-            (
-                CODEX_EXECUTABLE_OPTION,
-                str(codex_executables[0]),
-            ),
+        return build_service_launch_command(
+            lambda: executable,
+            lambda: qualify_executable(claude_executables[0]),
+            lambda: qualify_executable(codex_executables[0]),
         )
 
     backend = build_service_backend(
@@ -758,6 +778,7 @@ def test_service_artifacts_are_user_scoped_resident_and_secret_free(
         backend_id,
         runner,
         executable,
+        claude_executables,
         codex_executables,
     )
 

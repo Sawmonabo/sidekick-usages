@@ -23,8 +23,14 @@ from sidekick_usages.core.selection.types import (
 )
 from sidekick_usages.core.types import AccountLabel, ProviderId
 from sidekick_usages.daemon.control.dispatch import OperationEventHub
+from sidekick_usages.daemon.lifecycle.constants import (
+    CLAUDE_EXECUTABLE_OPTION,
+    CODEX_EXECUTABLE_OPTION,
+)
 from sidekick_usages.daemon.models.worker import (
+    WORKER_CLAUDE_EXECUTABLE_ENVIRONMENT_KEY,
     WORKER_CODEX_EXECUTABLE_ENVIRONMENT_KEY,
+    ProviderExecutablePins,
     WorkerResult,
 )
 from sidekick_usages.daemon.runtime.recovery import (
@@ -36,6 +42,9 @@ from sidekick_usages.daemon.types.service import ServicePhase
 from sidekick_usages.daemon.types.worker import WorkerOutcome
 from sidekick_usages.daemon.worker.pool import WorkerPool
 from sidekick_usages.entrypoints import worker
+from sidekick_usages.entrypoints.supervisor import (
+    parse_provider_executable_pins,
+)
 from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
 from sidekick_usages.persistence.supervisor.results import WorkerResultStore
 from sidekick_usages.persistence.supervisor.service import ServiceStateStore
@@ -48,6 +57,7 @@ from tests.fakes.daemon.foundation import (
     selected,
 )
 from tests.fakes.daemon.runtime import (
+    SYNTHETIC_CLAUDE_EXECUTABLE,
     SYNTHETIC_CODEX_EXECUTABLE,
     SYNTHETIC_WORKER_EXECUTABLE,
     FakeWorkerLauncher,
@@ -247,6 +257,17 @@ def test_supervisor_and_workers_isolate_failures_and_recover_durably(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Worker failures remain isolated, truthful, and restart-safe."""
+    assert parse_provider_executable_pins(
+        (
+            CLAUDE_EXECUTABLE_OPTION,
+            str(SYNTHETIC_CLAUDE_EXECUTABLE),
+            CODEX_EXECUTABLE_OPTION,
+            str(SYNTHETIC_CODEX_EXECUTABLE),
+        )
+    ) == ProviderExecutablePins(
+        claude=SYNTHETIC_CLAUDE_EXECUTABLE,
+        codex=SYNTHETIC_CODEX_EXECUTABLE,
+    )
     state = foundation_state(tmp_path)
     first, second, third = state.operations
     assert state.queue.remove_account(first.required_account_id) == 1
@@ -331,6 +352,9 @@ def test_supervisor_and_workers_isolate_failures_and_recover_durably(
         assert spec.environment_map() == {
             "HOME": "/synthetic/home",
             "PATH": "/usr/bin",
+            WORKER_CLAUDE_EXECUTABLE_ENVIRONMENT_KEY: str(
+                SYNTHETIC_CLAUDE_EXECUTABLE
+            ),
             WORKER_CODEX_EXECUTABLE_ENVIRONMENT_KEY: str(
                 SYNTHETIC_CODEX_EXECUTABLE
             ),

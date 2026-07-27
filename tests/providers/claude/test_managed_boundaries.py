@@ -6,6 +6,7 @@ import stat
 import sys
 from dataclasses import replace
 from datetime import timedelta
+from functools import partial
 from pathlib import Path
 
 import pytest
@@ -57,6 +58,7 @@ from sidekick_usages.providers.claude.auth.storage.types import (
 from sidekick_usages.providers.claude.managed.errors import ClaudeManagedError
 from sidekick_usages.providers.claude.managed.executable import (
     SUPPORTED_CLAUDE_VERSION,
+    discover_pinned_claude_executable,
 )
 from sidekick_usages.providers.claude.managed.types import (
     ClaudeManagedFailure,
@@ -145,37 +147,40 @@ def test_supported_claude_boundary_freezes_executable_and_profiles(
         account_path=paths.accounts,
     )
     executable_path = Path(sys.executable).resolve()
-    which_calls: list[str] = []
     runner = _probe_runner()
     source_environment = {
         "ANTHROPIC_API_KEY": "synthetic-native-api-key",
         "CLAUDE_CODE_OAUTH_TOKEN": "synthetic-native-oauth",
         "CLAUDE_CONFIG_DIR": str(tmp_path / "native-config"),
-        "PATH": os.environ["PATH"],
+        "PATH": "/synthetic/empty-bin",
     }
 
-    def resolve(command: str, path: str | None = None) -> str:
-        del path
-        which_calls.append(command)
-        return str(executable_path)
+    def reject_path_resolution(
+        command: str,
+        path: str | None = None,
+    ) -> str:
+        del command, path
+        raise AssertionError("Pinned Claude discovery consulted PATH.")
 
     monkeypatch.setattr(
         sidekick_usages.platform.executable.shutil,
         "which",
-        resolve,
+        reject_path_resolution,
     )
 
-    capabilities = prepare_claude_managed_profile(
+    capabilities = ClaudeProfileCapabilityFactory(
         paths,
         profiles,
-        _ACCOUNT_A,
         environment=source_environment,
         host=HostPlatform.LINUX,
         runner=runner,
-    )
+        executable_discovery=partial(
+            discover_pinned_claude_executable,
+            executable_path,
+        ),
+    ).managed(_ACCOUNT_A)
     profile_a = capabilities.profile.config_directory
 
-    assert which_calls == ["claude"]
     assert capabilities.executable.provenance == (
         ExecutableProvenance.from_stat(
             executable_path,
@@ -219,6 +224,10 @@ def test_supported_claude_boundary_freezes_executable_and_profiles(
             environment=source_environment,
             host=HostPlatform.LINUX,
             runner=cancelled_runner,
+            executable_discovery=partial(
+                discover_pinned_claude_executable,
+                executable_path,
+            ),
         ),
         source_environment,
     )

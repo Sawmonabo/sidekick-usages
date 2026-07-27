@@ -1,7 +1,8 @@
 """Canonical names shared by resident-service integrations."""
 
-SERVICE_ARTIFACT_VERSION = 2
+SERVICE_ARTIFACT_VERSION = 3
 SUPERVISOR_ENTRY_POINT = "sidekick-usages-supervisor"
+CLAUDE_EXECUTABLE_OPTION = "--claude-executable"
 CODEX_EXECUTABLE_OPTION = "--codex-executable"
 SYSTEMD_SERVICE_NAME = "sidekick-usages.service"
 LAUNCH_AGENT_LABEL = "com.sidekick-usages.supervisor"

@@ -7,6 +7,7 @@ from pathlib import Path
 
 from sidekick_usages.platform.errors import ExecutableQualificationError
 from sidekick_usages.platform.executable import (
+    qualify_executable,
     resolve_executable,
     verify_executable,
 )
@@ -42,6 +43,7 @@ _VERSION_PATTERN = re.compile(
 def discover_claude_executable(
     environment: Mapping[str, str] | None = None,
     *,
+    executable_path: Path | None = None,
     working_directory: Path | None = None,
     runner: ClaudeCommandRunner = run_bounded_claude_command,
     cancelled: Callable[[], bool] | None = None,
@@ -49,7 +51,11 @@ def discover_claude_executable(
     """Resolve, version, and freeze one exact Claude executable."""
     source = os.environ if environment is None else environment
     try:
-        provenance = resolve_executable(_CLAUDE_COMMAND, source)
+        provenance = (
+            resolve_claude_executable(source)
+            if executable_path is None
+            else qualify_executable(executable_path)
+        )
     except ExecutableQualificationError as error:
         failure = (
             ClaudeManagedFailure.EXECUTABLE_MISSING
@@ -78,6 +84,34 @@ def discover_claude_executable(
         raise ClaudeManagedError(ClaudeManagedFailure.VERSION_UNSUPPORTED)
     _verify_provenance(provenance)
     return ClaudeExecutable(provenance, version)
+
+
+def discover_pinned_claude_executable(
+    executable_path: Path | None,
+    environment: Mapping[str, str] | None = None,
+    *,
+    working_directory: Path | None = None,
+    runner: ClaudeCommandRunner = run_bounded_claude_command,
+    cancelled: Callable[[], bool] | None = None,
+) -> ClaudeExecutable:
+    """Discover only the service-pinned Claude executable."""
+    if executable_path is None:
+        raise ClaudeManagedError(ClaudeManagedFailure.EXECUTABLE_MISSING)
+    return discover_claude_executable(
+        environment,
+        executable_path=executable_path,
+        working_directory=working_directory,
+        runner=runner,
+        cancelled=cancelled,
+    )
+
+
+def resolve_claude_executable(
+    environment: Mapping[str, str] | None = None,
+) -> ExecutableProvenance:
+    """Resolve one qualified Claude executable without running it."""
+    source = os.environ if environment is None else environment
+    return resolve_executable(_CLAUDE_COMMAND, source)
 
 
 def verify_claude_executable(executable: ClaudeExecutable) -> None:

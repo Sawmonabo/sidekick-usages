@@ -17,7 +17,11 @@ from sidekick_usages.daemon.control.dispatch import (
     SupervisorDispatcher,
 )
 from sidekick_usages.daemon.control.server import LocalControlServer
-from sidekick_usages.daemon.lifecycle.constants import CODEX_EXECUTABLE_OPTION
+from sidekick_usages.daemon.lifecycle.constants import (
+    CLAUDE_EXECUTABLE_OPTION,
+    CODEX_EXECUTABLE_OPTION,
+)
+from sidekick_usages.daemon.models.worker import ProviderExecutablePins
 from sidekick_usages.daemon.runtime.codex import (
     DurableCodexOperationDispatcher,
 )
@@ -64,7 +68,8 @@ from sidekick_usages.providers.codex.broker.service import CodexSharedRuntime
 
 _EXIT_OK = 0
 _INVALID_INVOCATION_EXIT_CODE = 2
-_SUPERVISOR_ARGUMENT_COUNT = 2
+_SUPERVISOR_ARGUMENT_PAIR_SIZE = 2
+_SUPPORTED_SUPERVISOR_ARGUMENT_COUNTS = frozenset({0, 2, 4})
 
 
 def _request_stop(stop: Event, wakeup: WakeupChannel) -> None:
@@ -102,7 +107,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Compose and run one lean per-user resident supervisor."""
     arguments = tuple(sys.argv[1:] if argv is None else argv)
     try:
-        codex_executable = _parse_codex_executable(arguments)
+        provider_executables = parse_provider_executable_pins(arguments)
     except ValueError:
         return _INVALID_INVOCATION_EXIT_CODE
     paths = discover_application_paths()
@@ -125,7 +130,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         WorkerLaunchPlanner(
             resolve_worker_executable(),
             os.environ,
-            codex_executable,
+            provider_executables,
         ),
         wakeup.notify,
         exchanges=exchanges,
@@ -134,7 +139,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         partial(
             _create_codex_runtime,
             default_codex_home(),
-            codex_executable,
+            provider_executables.codex,
         ),
         RuntimeStateReader(
             ProviderId.CODEX,
@@ -202,17 +207,29 @@ def main(argv: Sequence[str] | None = None) -> int:
     return _EXIT_OK
 
 
-def _parse_codex_executable(arguments: Sequence[str]) -> Path | None:
-    """Parse the exact optional provider executable service argument."""
-    if not arguments:
-        return None
-    if (
-        len(arguments) != _SUPERVISOR_ARGUMENT_COUNT
-        or arguments[0] != CODEX_EXECUTABLE_OPTION
-        or not arguments[1]
-    ):
+def parse_provider_executable_pins(
+    arguments: Sequence[str],
+) -> ProviderExecutablePins:
+    """Parse the exact optional provider executable service arguments."""
+    if len(arguments) not in _SUPPORTED_SUPERVISOR_ARGUMENT_COUNTS:
         raise ValueError("Invalid supervisor invocation.")
-    executable = Path(arguments[1])
-    if not executable.is_absolute():
-        raise ValueError("Codex executable path must be absolute.")
-    return executable
+    executable_paths: dict[str, Path] = {}
+    for index in range(
+        0,
+        len(arguments),
+        _SUPERVISOR_ARGUMENT_PAIR_SIZE,
+    ):
+        option, raw_path = arguments[
+            index : index + _SUPERVISOR_ARGUMENT_PAIR_SIZE
+        ]
+        if (
+            option not in {CLAUDE_EXECUTABLE_OPTION, CODEX_EXECUTABLE_OPTION}
+            or option in executable_paths
+            or not raw_path
+        ):
+            raise ValueError("Invalid supervisor invocation.")
+        executable_paths[option] = Path(raw_path)
+    return ProviderExecutablePins(
+        claude=executable_paths.get(CLAUDE_EXECUTABLE_OPTION),
+        codex=executable_paths.get(CODEX_EXECUTABLE_OPTION),
+    )

@@ -96,6 +96,9 @@ from sidekick_usages.providers.claude.activity import (
     ClaudeActivity,
     discover_claude_config_dir,
 )
+from sidekick_usages.providers.claude.managed.executable import (
+    resolve_claude_executable,
+)
 from sidekick_usages.providers.claude.provider import ClaudeProvider
 from sidekick_usages.providers.claude.types import ClaudeSetupToken
 from sidekick_usages.providers.codex.activity import CodexActivity
@@ -155,8 +158,9 @@ def _build_daemon_manager(
     clock: Clock | None = None,
     provider_readiness: ProviderCapabilityReadiness | None = None,
 ) -> DaemonManager:
-    """Compose lifecycle management with lazy Codex path qualification."""
+    """Compose lifecycle management with lazy provider qualification."""
     return build_daemon_manager(
+        claude_executable=partial(resolve_claude_executable, os.environ),
         codex_executable=partial(resolve_codex_executable, os.environ),
         paths=paths,
         clock=clock,

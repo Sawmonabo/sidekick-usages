@@ -21,8 +21,25 @@ from sidekick_usages.platform.environment import (
 WORKER_EXCHANGE_DESCRIPTOR_ENVIRONMENT_KEY = (
     "SIDEKICK_WORKER_EXCHANGE_DESCRIPTOR"
 )
+WORKER_CLAUDE_EXECUTABLE_ENVIRONMENT_KEY = "SIDEKICK_WORKER_CLAUDE_EXECUTABLE"
 WORKER_CODEX_EXECUTABLE_ENVIRONMENT_KEY = "SIDEKICK_WORKER_CODEX_EXECUTABLE"
 MINIMUM_WORKER_EXCHANGE_DESCRIPTOR = 3
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ProviderExecutablePins:
+    """Absolute provider executables frozen by service setup."""
+
+    claude: Path | None
+    codex: Path | None
+
+    def __post_init__(self) -> None:
+        """Reject inherited or relative provider executable paths."""
+        if any(
+            executable is not None and not executable.is_absolute()
+            for executable in (self.claude, self.codex)
+        ):
+            raise ValueError("Provider executable pins must be absolute.")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -56,7 +73,7 @@ class WorkerLaunchSpec:
     operation_id: OperationId
     argv: tuple[str, str]
     environment: tuple[tuple[str, str], ...] = field(repr=False)
-    codex_executable: Path | None = field(repr=False)
+    provider_executables: ProviderExecutablePins = field(repr=False)
     exchange_descriptor: int | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
@@ -69,11 +86,6 @@ class WorkerLaunchSpec:
                 "Worker arguments must contain only operation ID."
             )
         require_worker_environment(self.environment)
-        if (
-            self.codex_executable is not None
-            and not self.codex_executable.is_absolute()
-        ):
-            raise ValueError("Worker Codex executable must be absolute.")
         descriptor = self.exchange_descriptor
         if descriptor is not None and (
             type(descriptor) is not int
@@ -88,10 +100,18 @@ class WorkerLaunchSpec:
             environment[WORKER_EXCHANGE_DESCRIPTOR_ENVIRONMENT_KEY] = str(
                 self.exchange_descriptor
             )
-        if self.codex_executable is not None:
-            environment[WORKER_CODEX_EXECUTABLE_ENVIRONMENT_KEY] = str(
-                self.codex_executable
-            )
+        for key, executable in (
+            (
+                WORKER_CLAUDE_EXECUTABLE_ENVIRONMENT_KEY,
+                self.provider_executables.claude,
+            ),
+            (
+                WORKER_CODEX_EXECUTABLE_ENVIRONMENT_KEY,
+                self.provider_executables.codex,
+            ),
+        ):
+            if executable is not None:
+                environment[key] = str(executable)
         return environment
 
     def inherited_descriptors(self) -> tuple[int, ...]:

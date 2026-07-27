@@ -16,6 +16,7 @@ from sidekick_usages.daemon.models.protocol import (
     ControlRequest,
 )
 from sidekick_usages.daemon.models.worker import (
+    ProviderExecutablePins,
     WorkerLaunchSpec,
     WorkerResult,
 )
@@ -42,6 +43,7 @@ from tests.support.time import REFERENCE_TIME
 SYNTHETIC_WORKER_EXECUTABLE = (
     Path(sys.executable).resolve().parent / "sidekick-usages-worker"
 )
+SYNTHETIC_CLAUDE_EXECUTABLE = Path("/synthetic/bin/claude")
 SYNTHETIC_CODEX_EXECUTABLE = Path("/synthetic/bin/codex")
 _MONOTONIC_START = 100.0
 
@@ -219,7 +221,10 @@ def worker_planner() -> WorkerLaunchPlanner:
             "HOME": "/synthetic/home",
             "PATH": "/usr/bin",
         },
-        SYNTHETIC_CODEX_EXECUTABLE,
+        ProviderExecutablePins(
+            claude=SYNTHETIC_CLAUDE_EXECUTABLE,
+            codex=SYNTHETIC_CODEX_EXECUTABLE,
+        ),
     )
 
 

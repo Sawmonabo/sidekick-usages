@@ -9,7 +9,10 @@ from sidekick_usages.clock import Clock, SystemClock
 from sidekick_usages.core.types import ExitCode
 from sidekick_usages.daemon.lifecycle.artifacts import ServiceArtifactStore
 from sidekick_usages.daemon.lifecycle.commands import SystemCommandRunner
-from sidekick_usages.daemon.lifecycle.constants import CODEX_EXECUTABLE_OPTION
+from sidekick_usages.daemon.lifecycle.constants import (
+    CLAUDE_EXECUTABLE_OPTION,
+    CODEX_EXECUTABLE_OPTION,
+)
 from sidekick_usages.daemon.lifecycle.errors import ServiceLifecycleError
 from sidekick_usages.daemon.lifecycle.platform.launchd import LaunchdBackend
 from sidekick_usages.daemon.lifecycle.platform.selection import (
@@ -298,6 +301,7 @@ def build_service_backend(
 
 def build_daemon_manager(
     *,
+    claude_executable: Callable[[], ExecutableProvenance],
     codex_executable: Callable[[], ExecutableProvenance],
     paths: ApplicationPaths | None = None,
     clock: Clock | None = None,
@@ -316,8 +320,9 @@ def build_daemon_manager(
     backend = build_service_backend(
         platform_info,
         partial(
-            _service_launch_command,
+            build_service_launch_command,
             resolve_supervisor_executable,
+            claude_executable,
             codex_executable,
         ),
         resolved_paths,
@@ -331,21 +336,37 @@ def build_daemon_manager(
     )
 
 
-def _service_launch_command(
+def build_service_launch_command(
     supervisor_executable: Callable[[], Path],
+    claude_executable: Callable[[], ExecutableProvenance],
     codex_executable: Callable[[], ExecutableProvenance],
 ) -> ServiceLaunchCommand:
     """Resolve the exact secret-free command for one service publication."""
     supervisor = qualify_supervisor_executable(supervisor_executable())
+    arguments = (
+        *_service_executable_arguments(
+            CLAUDE_EXECUTABLE_OPTION,
+            claude_executable,
+        ),
+        *_service_executable_arguments(
+            CODEX_EXECUTABLE_OPTION,
+            codex_executable,
+        ),
+    )
+    return ServiceLaunchCommand(supervisor, arguments)
+
+
+def _service_executable_arguments(
+    option: str,
+    executable: Callable[[], ExecutableProvenance],
+) -> tuple[str, ...]:
+    """Resolve one optional qualified provider executable argument."""
     try:
-        codex = codex_executable().path
+        path = executable().path
     except ExecutableQualificationError as error:
         if error.code is ExecutableFailure.MISSING:
-            return ServiceLaunchCommand(supervisor, ())
+            return ()
         raise ServiceLifecycleError(
             ServiceFailureCode.EXECUTABLE_UNAVAILABLE
         ) from None
-    return ServiceLaunchCommand(
-        supervisor,
-        (CODEX_EXECUTABLE_OPTION, str(codex)),
-    )
+    return option, str(path)

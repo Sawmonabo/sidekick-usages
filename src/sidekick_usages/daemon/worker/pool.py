@@ -18,6 +18,7 @@ from sidekick_usages.core.selection.types import (
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.models.worker import (
     ActiveWorker,
+    ProviderExecutablePins,
     QuarantinedWorker,
     WorkerExit,
     WorkerLaunchSpec,
@@ -74,15 +75,13 @@ class WorkerLaunchPlanner:
         self,
         executable: Path,
         source_environment: Mapping[str, str],
-        codex_executable: Path | None,
+        provider_executables: ProviderExecutablePins,
     ) -> None:
         if not executable.is_absolute():
             raise ValueError("Worker executable must be absolute.")
-        if codex_executable is not None and not codex_executable.is_absolute():
-            raise ValueError("Codex executable must be absolute.")
         self._executable = executable
         self._environment = minimal_worker_environment(source_environment)
-        self._codex_executable = codex_executable
+        self._provider_executables = provider_executables
 
     def plan(
         self,
@@ -95,7 +94,7 @@ class WorkerLaunchPlanner:
             operation_id=operation_id,
             argv=(str(self._executable), str(operation_id)),
             environment=self._environment,
-            codex_executable=self._codex_executable,
+            provider_executables=self._provider_executables,
             exchange_descriptor=exchange_descriptor,
         )
 

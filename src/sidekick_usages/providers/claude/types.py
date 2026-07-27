@@ -7,6 +7,7 @@ from typing import Protocol
 
 from sidekick_usages.providers.claude.models import (
     ClaudeCommandResult,
+    ClaudeExecutable,
     ClaudeManagedProfile,
     ClaudeNativeProfile,
     SetupTokenMissing,
@@ -52,6 +53,20 @@ class ClaudeCommandRunner(Protocol):
         cancelled: Callable[[], bool] | None = None,
     ) -> ClaudeCommandResult:
         """Return one bounded process result or raise a typed failure."""
+
+
+class ClaudeExecutableDiscovery(Protocol):
+    """Resolve one exact Claude executable for a capability proof."""
+
+    def __call__(
+        self,
+        environment: Mapping[str, str] | None,
+        *,
+        working_directory: Path | None,
+        runner: ClaudeCommandRunner,
+        cancelled: Callable[[], bool] | None,
+    ) -> ClaudeExecutable:
+        """Return the qualified executable or raise a typed failure."""
 
 
 class ClaudeInteractiveCommandRunner(Protocol):

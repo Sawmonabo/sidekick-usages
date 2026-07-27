@@ -51,7 +51,10 @@ from sidekick_usages.providers.claude.models import (
 from sidekick_usages.providers.claude.process import (
     run_bounded_claude_command,
 )
-from sidekick_usages.providers.claude.types import ClaudeCommandRunner
+from sidekick_usages.providers.claude.types import (
+    ClaudeCommandRunner,
+    ClaudeExecutableDiscovery,
+)
 
 _PRIVATE_DIRECTORY_MODE = 0o700
 
@@ -67,6 +70,9 @@ class ClaudeProfileCapabilityFactory:
         environment: Mapping[str, str] | None = None,
         host: HostPlatform | None = None,
         runner: ClaudeCommandRunner = run_bounded_claude_command,
+        executable_discovery: ClaudeExecutableDiscovery = (
+            discover_claude_executable
+        ),
     ) -> None:
         _require_profile_tree(paths, profiles)
         source = os.environ if environment is None else environment
@@ -77,6 +83,7 @@ class ClaudeProfileCapabilityFactory:
             detect_host_platform(environment=source) if host is None else host
         )
         self._runner = runner
+        self._executable_discovery = executable_discovery
         self._cancelled = Event()
         self._result: ProviderCapabilityResult | None = None
         self._proof_lock = Lock()
@@ -129,6 +136,7 @@ class ClaudeProfileCapabilityFactory:
                     self._environment,
                     self._runner,
                     self._cancelled.is_set,
+                    executable_discovery=self._executable_discovery,
                 )
             return self._result
 
@@ -138,6 +146,10 @@ def probe_claude_runtime_result(
     environment: Mapping[str, str],
     runner: ClaudeCommandRunner,
     cancelled: Callable[[], bool] | None = None,
+    *,
+    executable_discovery: ClaudeExecutableDiscovery = (
+        discover_claude_executable
+    ),
 ) -> ProviderCapabilityResult:
     """Prove Claude capabilities in an isolated credential-free profile."""
     executable: ClaudeExecutable | None = None
@@ -155,7 +167,7 @@ def probe_claude_runtime_result(
                 process_home=probe_home,
                 config_directory=probe_config,
             )
-            executable = discover_claude_executable(
+            executable = executable_discovery(
                 probe_environment,
                 working_directory=probe_home,
                 runner=runner,

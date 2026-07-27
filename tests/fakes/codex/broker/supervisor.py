@@ -15,6 +15,7 @@ from sidekick_usages.daemon.control.dispatch import (
     SupervisorDispatcher,
 )
 from sidekick_usages.daemon.control.server import LocalControlServer
+from sidekick_usages.daemon.models.worker import ProviderExecutablePins
 from sidekick_usages.daemon.runtime.codex import (
     DurableCodexOperationDispatcher,
 )
@@ -91,7 +92,10 @@ class FakeCodexSupervisor:
             WorkerLaunchPlanner(
                 worker_executable,
                 worker_environment,
-                executable.provenance.path,
+                ProviderExecutablePins(
+                    claude=None,
+                    codex=executable.provenance.path,
+                ),
             ),
             self._wakeup.notify,
             exchanges=exchanges,

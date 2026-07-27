@@ -28,6 +28,9 @@ from sidekick_usages.paths import discover_application_paths
 from sidekick_usages.persistence.setup.store import (
     ServiceSetupAcknowledgementStore,
 )
+from sidekick_usages.providers.claude.managed.executable import (
+    resolve_claude_executable,
+)
 from sidekick_usages.providers.codex.app_server.executable import (
     resolve_codex_executable,
 )
@@ -73,6 +76,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         socket_path=paths.supervisor_socket,
         setup=GuidedServiceSetup(
             build_daemon_manager(
+                claude_executable=partial(
+                    resolve_claude_executable,
+                    os.environ,
+                ),
                 codex_executable=partial(
                     resolve_codex_executable,
                     os.environ,
