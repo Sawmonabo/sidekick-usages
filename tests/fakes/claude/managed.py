@@ -61,10 +61,7 @@ type ClaudeProfileResponses = Mapping[
     ClaudeCommandResult,
 ]
 
-CLAUDE_LOGIN_HELP_OUTPUT = (
-    b"Usage: claude auth login "
-    b"[--claudeai] [--console] [--email <email>] [--sso]\n"
-)
+CLAUDE_LOGIN_HELP_OUTPUT = b"Usage: claude auth login [--claudeai]\n"
 CLAUDE_LOGGED_IN_STATUS = (
     b'{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty",'
     b'"email":"external@example.test","orgId":"provider-organization-external",'
@@ -177,6 +174,7 @@ class ClaudeManagedLoginScript:
         refresh_payloads: Mapping[Path, tuple[bytes | None, ...]],
         *,
         interactive_payloads: Mapping[Path, bytes] | None = None,
+        interactive_statuses: Mapping[Path, tuple[bytes, ...]] | None = None,
         profile_statuses: Mapping[Path, bytes] | None = None,
         refresh_statuses: Mapping[Path, tuple[bytes, ...]] | None = None,
         advance_native_mtime: bool = True,
@@ -187,6 +185,10 @@ class ClaudeManagedLoginScript:
             for profile, payloads in refresh_payloads.items()
         }
         self._interactive_payloads = dict(interactive_payloads or {})
+        self._interactive_statuses = {
+            profile: list(statuses)
+            for profile, statuses in (interactive_statuses or {}).items()
+        }
         self._profile_statuses = dict(profile_statuses or {})
         self._refresh_statuses = {
             profile: list(statuses)
@@ -259,6 +261,9 @@ class ClaudeManagedLoginScript:
                 "Interactive login targeted an unexpected profile."
             ) from None
         self._write_credentials(config_directory, payload)
+        statuses = self._interactive_statuses.get(config_directory)
+        if statuses:
+            self._profile_statuses[config_directory] = statuses.pop(0)
         self.interactive_profiles.append(config_directory)
         return 0
 

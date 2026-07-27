@@ -42,7 +42,10 @@ from sidekick_usages.credentials.claude.managed.migration.models import (
 from sidekick_usages.credentials.claude.managed.migration.service import (
     ClaudeManagedMigrationCoordinator,
 )
-from sidekick_usages.credentials.models import CredentialLoginSuccess
+from sidekick_usages.credentials.models import (
+    CredentialLoginResult,
+    CredentialLoginSuccess,
+)
 from sidekick_usages.paths import ApplicationPaths
 from sidekick_usages.persistence.accounts.store import AccountStore
 from sidekick_usages.persistence.credentials.repository import (
@@ -55,6 +58,10 @@ from sidekick_usages.persistence.snapshots.usage.store import (
     UsageSnapshotStore,
 )
 from sidekick_usages.platform.types import HostPlatform
+from sidekick_usages.providers.base import (
+    ProviderFailure,
+    ProviderFailureKind,
+)
 from sidekick_usages.providers.claude.auth.storage.service import (
     CLAUDE_CREDENTIAL_FILE,
 )
@@ -76,6 +83,8 @@ from tests.support.time import REFERENCE_TIME, FixedClock
 _OLD_ACCESS_EXPIRY = REFERENCE_TIME + timedelta(minutes=30)
 _INTERACTIVE_ACCESS_EXPIRY = REFERENCE_TIME + timedelta(hours=1)
 _NEW_ACCESS_EXPIRY = REFERENCE_TIME + timedelta(hours=2)
+_PRIVATE_DIRECTORY_MODE = 0o700
+_PRIVATE_FILE_MODE = 0o600
 
 
 class _SimulatedCrash(BaseException):
@@ -246,7 +255,7 @@ def _coordinator(
     snapshots: UsageSnapshotStore,
     clock: FixedClock,
     script: ClaudeManagedLoginScript,
-    native_profile: Path,
+    native_home: Path,
 ) -> ClaudeManagedMigrationCoordinator:
     """Compose one migration service around isolated test boundaries."""
     return ClaudeManagedMigrationCoordinator(
@@ -258,7 +267,7 @@ def _coordinator(
         clock,
         runtime=ClaudeMigrationRuntime(
             environment={
-                "CLAUDE_CONFIG_DIR": str(native_profile),
+                "HOME": str(native_home),
                 "PATH": os.defpath,
                 "USER": "sidekick-test",
             },
@@ -269,12 +278,28 @@ def _coordinator(
     )
 
 
-def _native_sentinel(root: Path) -> Path:
+def _native_sentinel(
+    root: Path,
+    credentials: bytes | None = None,
+) -> Path:
     """Create one native-login marker outside managed profiles."""
-    root.mkdir()
+    root.mkdir(mode=_PRIVATE_DIRECTORY_MODE)
+    config_directory = root / ".claude"
+    config_directory.mkdir(mode=_PRIVATE_DIRECTORY_MODE)
+    if credentials is not None:
+        credential_file = config_directory / CLAUDE_CREDENTIAL_FILE
+        credential_file.write_bytes(credentials)
+        credential_file.chmod(_PRIVATE_FILE_MODE)
     sentinel = root / "native-login"
     sentinel.write_bytes(b"native-login-must-remain")
     return sentinel
+
+
+def _failure_kind(
+    result: CredentialLoginResult,
+) -> ProviderFailureKind | None:
+    """Return one provider failure kind without weakening result typing."""
+    return result.kind if isinstance(result, ProviderFailure) else None
 
 
 def test_two_account_migration_preserves_dual_authority_and_metrics(
@@ -320,7 +345,19 @@ def test_two_account_migration_preserves_dual_authority_and_metrics(
         paths,
         dual_before.account_id,
     ).config_directory
+    status_a, _association_a = claude_profile_status("a")
     status_b, association_b = claude_profile_status("b")
+    native_home = tmp_path / "native-claude"
+    native_config = native_home / ".claude"
+    native_sentinel = _native_sentinel(
+        native_home,
+        credential_payload(
+            None,
+            None,
+            token_suffix="native-b",
+            access_expires_at=_NEW_ACCESS_EXPIRY,
+        ),
+    )
     script = ClaudeManagedLoginScript(
         profiles,
         {
@@ -328,8 +365,14 @@ def test_two_account_migration_preserves_dual_authority_and_metrics(
                 credential_payload(
                     None,
                     None,
-                    token_suffix="b-proven",
+                    token_suffix="b-first-refresh",
                     access_expires_at=_NEW_ACCESS_EXPIRY,
+                ),
+                credential_payload(
+                    None,
+                    None,
+                    token_suffix="b-second-refresh",
+                    access_expires_at=_NEW_ACCESS_EXPIRY + timedelta(hours=1),
                 ),
             ),
         },
@@ -341,10 +384,9 @@ def test_two_account_migration_preserves_dual_authority_and_metrics(
                 access_expires_at=_INTERACTIVE_ACCESS_EXPIRY,
             ),
         },
-        profile_statuses={profile_b: status_b},
+        interactive_statuses={profile_b: (status_a, status_b)},
+        profile_statuses={native_config: status_b},
     )
-    native_profile = tmp_path / "native-claude"
-    native_sentinel = _native_sentinel(native_profile)
     coordinator = _coordinator(
         paths,
         store,
@@ -353,16 +395,49 @@ def test_two_account_migration_preserves_dual_authority_and_metrics(
         snapshots,
         clock,
         script,
-        native_profile,
+        native_home,
     )
 
-    migrated = coordinator.migrate_account(
+    mismatched_private = coordinator.associate_account(
         dual_before.account_id,
-        establish_identity=True,
-        interactive=True,
+        expected_identity=association_b,
+    )
+    mismatched_state = (
+        _failure_kind(mismatched_private),
+        store.read_saved(dual_before.account_id),
+        snapshots.load(dual_before),
+    )
+
+    script.set_status(native_config, status_a)
+    changed_native = coordinator.associate_account(
+        dual_before.account_id,
+        expected_identity=association_b,
+    )
+    changed_state = (
+        _failure_kind(changed_native),
+        store.read_saved(dual_before.account_id),
+        snapshots.load(dual_before),
+    )
+
+    script.set_status(native_config, status_b)
+    migrated = coordinator.associate_account(
+        dual_before.account_id,
+        expected_identity=association_b,
     )
 
     assert isinstance(migrated, CredentialLoginSuccess)
+    assert (mismatched_state, changed_state) == (
+        (
+            ProviderFailureKind.IDENTITY_MISMATCH,
+            dual_before,
+            usage_before,
+        ),
+        (
+            ProviderFailureKind.IDENTITY_MISMATCH,
+            dual_before,
+            usage_before,
+        ),
+    )
     current_a = store.read_saved(original_a.account_id)
     current_b = store.read_saved(dual_before.account_id)
     assert current_a == original_a
@@ -406,10 +481,17 @@ def test_two_account_migration_preserves_dual_authority_and_metrics(
         )
         == setup_payload_before
     )
-    assert not profile_a.exists()
-    assert script.login_profiles == [profile_b]
-    assert script.interactive_profiles == [profile_b]
-    assert native_sentinel.read_bytes() == b"native-login-must-remain"
+    assert (
+        profile_a.exists(),
+        script.login_profiles,
+        script.interactive_profiles,
+        native_sentinel.read_bytes(),
+    ) == (
+        False,
+        [profile_b, profile_b],
+        [profile_b, profile_b],
+        b"native-login-must-remain",
+    )
 
 
 def test_interrupted_setup_association_recovers_profile_and_metrics(

@@ -5,6 +5,9 @@ from contextlib import AbstractContextManager
 from datetime import datetime
 
 from sidekick_usages.core.accounts.types import ProviderIdentity
+from sidekick_usages.credentials.claude.managed.profile import (
+    ClaudeProfileCapabilityFactory,
+)
 from sidekick_usages.persistence.errors import (
     InvalidManagedArtifactError,
     PersistenceFilesystemError,
@@ -43,6 +46,13 @@ from sidekick_usages.providers.claude.process import (
 from sidekick_usages.providers.claude.types import (
     ClaudeCommandRunner,
     ClaudeProfile,
+)
+
+CLAUDE_NATIVE_VERIFICATION_FAILED = (
+    "Current Claude Code account could not be verified."
+)
+CLAUDE_NATIVE_VERIFICATION_UNAVAILABLE = (
+    "Current Claude Code account verification is unavailable."
 )
 
 
@@ -154,3 +164,29 @@ class ClaudeNativeAuthorityReader:
             environment=environment,
             runner=runner,
         )
+
+
+def prove_native_claude_identity(
+    capabilities: ClaudeProfileCapabilityFactory,
+    reference_time: datetime,
+    *,
+    expected_identity: ProviderIdentity | None = None,
+    environment: Mapping[str, str] | None = None,
+    runner: ClaudeCommandRunner = run_bounded_claude_command,
+) -> ProviderIdentity:
+    """Return one protected exact identity from native Claude state."""
+    native = capabilities.native(environment=environment)
+    profile = native.profile
+    if not isinstance(profile, ClaudeNativeProfile):
+        raise AssertionError("Native Claude profile is inconsistent.")
+    return (
+        ClaudeNativeAuthorityReader(profile)
+        .read(
+            native,
+            reference_time,
+            expected_identity=expected_identity,
+            environment=environment,
+            runner=runner,
+        )
+        .provider_identity
+    )

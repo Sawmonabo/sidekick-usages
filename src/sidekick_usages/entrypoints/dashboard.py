@@ -28,19 +28,35 @@ from sidekick_usages.cli.dashboard.setup import GuidedServiceSetup
 from sidekick_usages.cli.runtime.routing import parse_dashboard_arguments
 from sidekick_usages.clock import Clock, SystemClock
 from sidekick_usages.core.accounts.models import ClaudeAccountAuthority
+from sidekick_usages.core.accounts.types import ProviderIdentity
 from sidekick_usages.core.types import ExitCode, ProviderId
 from sidekick_usages.credentials.capabilities.service import (
     build_provider_capability_service,
+)
+from sidekick_usages.credentials.claude.managed.profile import (
+    ClaudeProfileCapabilityFactory,
+)
+from sidekick_usages.credentials.claude.native.authority.service import (
+    CLAUDE_NATIVE_VERIFICATION_FAILED,
+    CLAUDE_NATIVE_VERIFICATION_UNAVAILABLE,
+    prove_native_claude_identity,
 )
 from sidekick_usages.daemon.control.client import ControlClient
 from sidekick_usages.daemon.lifecycle.manager import build_daemon_manager
 from sidekick_usages.paths import ApplicationPaths, discover_application_paths
 from sidekick_usages.persistence.accounts.reader import AccountIndexReader
 from sidekick_usages.persistence.errors import PersistenceError
+from sidekick_usages.persistence.private.credentials import (
+    PrivateCredentialTree,
+)
 from sidekick_usages.persistence.setup.store import (
     ServiceSetupAcknowledgementStore,
 )
-from sidekick_usages.providers.base import ProviderFailure
+from sidekick_usages.providers.base import ProviderFailure, ProviderFailureKind
+from sidekick_usages.providers.claude.auth.storage.errors import (
+    ClaudeProtectedStorageError,
+)
+from sidekick_usages.providers.claude.managed.errors import ClaudeManagedError
 from sidekick_usages.providers.claude.managed.executable import (
     resolve_claude_launcher,
 )
@@ -90,6 +106,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             _guide_claude_association,
             paths=paths,
             clock=clock,
+            prove_identity=partial(
+                _prove_native_claude_identity,
+                paths,
+                clock,
+            ),
             input_stream=sys.stdin,
             output=sys.stdout,
             error_output=sys.stderr,
@@ -158,6 +179,7 @@ def _guide_claude_association(
     *,
     paths: ApplicationPaths,
     clock: Clock,
+    prove_identity: Callable[[], ProviderIdentity | ProviderFailure],
     input_stream: TextIO,
     output: TextIO,
     error_output: TextIO,
@@ -184,6 +206,11 @@ def _guide_claude_association(
     authority = account.authority
     if authority.setup_token is None or authority.subscription is not None:
         return
+    expected_identity = prove_identity()
+    if isinstance(expected_identity, ProviderFailure):
+        error_output.write(f"{expected_identity.message}\n")
+        error_output.flush()
+        return
     output.write(
         CLAUDE_ASSOCIATION_PROMPT.format(
             label=sanitize_terminal_text(account.label)
@@ -200,16 +227,49 @@ def _guide_claude_association(
         error_output.flush()
         return
     try:
-        result = owner.value.migrate_account(
+        result = owner.value.associate_account(
             request.account_id,
-            establish_identity=True,
-            interactive=True,
+            expected_identity=expected_identity,
         )
     finally:
         owner.close()
     if isinstance(result, ProviderFailure):
         error_output.write(f"{result.message}\n")
         error_output.flush()
+
+
+def _prove_native_claude_identity(
+    paths: ApplicationPaths,
+    clock: Clock,
+) -> ProviderIdentity | ProviderFailure:
+    """Read native Claude identity without opening mutable Sidekick state."""
+    try:
+        profiles = PrivateCredentialTree(
+            paths.private_claude_profiles,
+            account_path=paths.accounts,
+        )
+        capabilities = ClaudeProfileCapabilityFactory(
+            paths,
+            profiles,
+            environment=os.environ,
+        )
+        return prove_native_claude_identity(
+            capabilities,
+            clock.now(),
+            environment=os.environ,
+        )
+    except ClaudeManagedError:
+        return ProviderFailure(
+            provider_id=ProviderId.CLAUDE,
+            kind=ProviderFailureKind.UNSUPPORTED,
+            message=CLAUDE_NATIVE_VERIFICATION_UNAVAILABLE,
+        )
+    except ClaudeProtectedStorageError, PersistenceError, ValueError:
+        return ProviderFailure(
+            provider_id=ProviderId.CLAUDE,
+            kind=ProviderFailureKind.UNREADABLE,
+            message=CLAUDE_NATIVE_VERIFICATION_FAILED,
+        )
 
 
 if __name__ == "__main__":

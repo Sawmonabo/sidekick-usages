@@ -100,6 +100,7 @@ _FUTURE_EXPIRY = REFERENCE_TIME + timedelta(hours=1)
 def _probe_runner(
     *,
     login_return_code: int = 0,
+    login_help_output: bytes = CLAUDE_LOGIN_HELP_OUTPUT,
     version_output: bytes = CLAUDE_VERSION_OUTPUT,
 ) -> ClaudeRunner:
     return ClaudeRunner(
@@ -111,7 +112,7 @@ def _probe_runner(
             ),
             ("auth", "login", "--help"): ClaudeCommandResult(
                 login_return_code,
-                CLAUDE_LOGIN_HELP_OUTPUT,
+                login_help_output,
             ),
         }
     )
@@ -498,6 +499,7 @@ def test_supported_claude_boundary_freezes_executable_and_profiles(
     (
         "escaped_root",
         "login_return_code",
+        "login_help_output",
         "host",
         "expected_failure",
         "expected_arguments",
@@ -506,13 +508,15 @@ def test_supported_claude_boundary_freezes_executable_and_profiles(
         (
             True,
             0,
+            CLAUDE_LOGIN_HELP_OUTPUT,
             HostPlatform.LINUX,
             ClaudeManagedFailure.PROFILE_UNSAFE,
             (),
         ),
         (
             False,
-            2,
+            0,
+            b"Usage: claude auth login [--console]\n",
             HostPlatform.LINUX,
             ClaudeManagedFailure.LOGIN_UNSUPPORTED,
             (
@@ -524,6 +528,7 @@ def test_supported_claude_boundary_freezes_executable_and_profiles(
         (
             False,
             0,
+            CLAUDE_LOGIN_HELP_OUTPUT,
             HostPlatform.WINDOWS,
             ClaudeManagedFailure.FEATURE_DISABLED,
             (),
@@ -534,6 +539,7 @@ def test_supported_claude_boundary_freezes_executable_and_profiles(
 def test_claude_boundary_rejects_distinct_preflight_gates(
     escaped_root: bool,
     login_return_code: int,
+    login_help_output: bytes,
     host: HostPlatform,
     expected_failure: ClaudeManagedFailure,
     expected_arguments: tuple[tuple[str, ...], ...],
@@ -553,7 +559,10 @@ def test_claude_boundary_rejects_distinct_preflight_gates(
         account_path=paths.accounts,
     )
     which_calls: list[str] = []
-    runner = _probe_runner(login_return_code=login_return_code)
+    runner = _probe_runner(
+        login_return_code=login_return_code,
+        login_help_output=login_help_output,
+    )
 
     def resolve(command: str, path: str | None = None) -> str:
         del path

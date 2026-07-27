@@ -5,6 +5,7 @@ from pathlib import Path
 
 from sidekick_usages.platform.types import HostPlatform
 from sidekick_usages.providers.claude.auth.login.service import (
+    CLAUDE_SUBSCRIPTION_LOGIN_OPTION,
     verify_logged_out_claude_status,
 )
 from sidekick_usages.providers.claude.errors import ClaudeProcessError
@@ -42,12 +43,6 @@ _MANAGED_PLATFORMS = {
     HostPlatform.MACOS_ARM64: ClaudeManagedPlatform.MACOS_ARM64_KEYCHAIN,
     HostPlatform.MACOS_X64: ClaudeManagedPlatform.MACOS_X64_KEYCHAIN,
 }
-_REQUIRED_LOGIN_OPTIONS = (
-    "--claudeai",
-    "--console",
-    "--email",
-    "--sso",
-)
 
 
 def managed_claude_platform(
@@ -162,7 +157,8 @@ def _probe_login(
         raise ClaudeManagedError(
             ClaudeManagedFailure.LOGIN_UNSUPPORTED
         ) from None
-    if result.return_code != 0 or any(
-        option not in help_text for option in _REQUIRED_LOGIN_OPTIONS
+    if (
+        result.return_code != 0
+        or CLAUDE_SUBSCRIPTION_LOGIN_OPTION not in help_text
     ):
         raise ClaudeManagedError(ClaudeManagedFailure.LOGIN_UNSUPPORTED)

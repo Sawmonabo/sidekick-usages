@@ -182,6 +182,7 @@ class _ClaudeMigration:
         self._return_due_authority = True
         self._cancel_guided_association = True
         self.guided_account_ids: list[SidekickAccountId] = []
+        self.guided_expected_identities: list[ProviderIdentity] = []
 
     def migrate(
         self,
@@ -257,6 +258,25 @@ class _ClaudeMigration:
                 message="Official Claude login was canceled.",
             )
         return CredentialLoginSuccess(account.label)
+
+    def prove_native_identity(self) -> ProviderIdentity:
+        """Return one fresh synthetic native identity proof."""
+        self.trace.append("claude:native-proof")
+        return ProviderIdentity(MIGRATION_IDENTITIES[2])
+
+    def associate_account(
+        self,
+        account_id: SidekickAccountId,
+        *,
+        expected_identity: ProviderIdentity,
+    ) -> CredentialLoginResult:
+        """Bind guided migration to the exact synthetic native proof."""
+        self.guided_expected_identities.append(expected_identity)
+        return self.migrate_account(
+            account_id,
+            establish_identity=True,
+            interactive=True,
+        )
 
 
 @dataclass(slots=True)

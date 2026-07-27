@@ -50,7 +50,12 @@ from sidekick_usages.credentials.claude.managed.migration.models import (
     ClaudeMigrationRuntime,
 )
 from sidekick_usages.credentials.claude.managed.profile import (
-    prepare_claude_managed_profile,
+    ClaudeProfileCapabilityFactory,
+)
+from sidekick_usages.credentials.claude.native.authority.service import (
+    CLAUDE_NATIVE_VERIFICATION_FAILED,
+    CLAUDE_NATIVE_VERIFICATION_UNAVAILABLE,
+    prove_native_claude_identity,
 )
 from sidekick_usages.credentials.models import (
     CredentialLoginResult,
@@ -84,6 +89,9 @@ from sidekick_usages.providers.claude.auth.storage.errors import (
 )
 from sidekick_usages.providers.claude.auth.storage.models import (
     ClaudeAuthoritySnapshot,
+)
+from sidekick_usages.providers.claude.auth.storage.types import (
+    ClaudeProtectedStorageFailure,
 )
 from sidekick_usages.providers.claude.environment import (
     claude_private_profile_environment,
@@ -119,6 +127,7 @@ class ClaudeManagedMigrationCoordinator:
         self._runner = resolved_runtime.runner
         self._interactive_runner = resolved_runtime.interactive_runner
         self._authority_id_factory = resolved_runtime.authority_id_factory
+        self._capabilities: ClaudeProfileCapabilityFactory | None = None
         self._reader = ClaudeManagedAuthorityReader(paths, profiles)
         self._exchange = ClaudeOfficialLoginExchange(
             self._reader,
@@ -165,6 +174,36 @@ class ClaudeManagedMigrationCoordinator:
         interactive: bool,
     ) -> CredentialLoginResult:
         """Migrate or recover one stable Claude account under its lock."""
+        return self._migrate_account(
+            account_id,
+            establish_identity=establish_identity,
+            interactive=interactive,
+            expected_native_identity=None,
+        )
+
+    def associate_account(
+        self,
+        account_id: SidekickAccountId,
+        *,
+        expected_identity: ProviderIdentity,
+    ) -> CredentialLoginResult:
+        """Associate one setup account with the proven native identity."""
+        return self._migrate_account(
+            account_id,
+            establish_identity=True,
+            interactive=True,
+            expected_native_identity=expected_identity,
+        )
+
+    def _migrate_account(
+        self,
+        account_id: SidekickAccountId,
+        *,
+        establish_identity: bool,
+        interactive: bool,
+        expected_native_identity: ProviderIdentity | None,
+    ) -> CredentialLoginResult:
+        """Run one stable-ID migration with an optional native baseline."""
         lock = OperationAuthorityLock(
             self._paths.durable_operations,
             account_id,
@@ -175,6 +214,7 @@ class ClaudeManagedMigrationCoordinator:
                     account_id,
                     establish_identity=establish_identity,
                     interactive=interactive,
+                    expected_native_identity=expected_native_identity,
                 )
         except PersistenceError:
             return migration_failure(
@@ -182,6 +222,8 @@ class ClaudeManagedMigrationCoordinator:
                 "Managed Claude migration is unavailable; retry shortly.",
                 action_required=False,
             )
+        finally:
+            self._capabilities = None
 
     def _migrate_locked(
         self,
@@ -189,19 +231,15 @@ class ClaudeManagedMigrationCoordinator:
         *,
         establish_identity: bool,
         interactive: bool,
+        expected_native_identity: ProviderIdentity | None,
     ) -> CredentialLoginResult:
         account = self._current_account(account_id)
         if isinstance(account, ProviderFailure):
             return account
         self._commits.recover_account(account)
         try:
-            capabilities = prepare_claude_managed_profile(
-                self._paths,
-                self._profiles,
-                account.account_id,
-                environment=self._environment,
-                host=self._host,
-                runner=self._runner,
+            capabilities = self._capability_factory().managed(
+                account.account_id
             )
         except ClaudeManagedError:
             return migration_failure(
@@ -213,6 +251,7 @@ class ClaudeManagedMigrationCoordinator:
             capabilities,
             establish_identity=establish_identity,
             interactive=interactive,
+            expected_native_identity=expected_native_identity,
         )
 
     def _migrate_authority(
@@ -222,6 +261,7 @@ class ClaudeManagedMigrationCoordinator:
         *,
         establish_identity: bool,
         interactive: bool,
+        expected_native_identity: ProviderIdentity | None,
     ) -> CredentialLoginResult:
         """Dispatch one saved authority to its exact migration path."""
         authority = account.authority
@@ -231,6 +271,16 @@ class ClaudeManagedMigrationCoordinator:
                 "The saved label does not belong to Claude.",
             )
         subscription = authority.subscription
+        if (
+            expected_native_identity is not None
+            and subscription is not None
+            and subscription.provider_identity != expected_native_identity
+        ):
+            return migration_failure(
+                ProviderFailureKind.IDENTITY_MISMATCH,
+                "The saved Claude account does not match the current "
+                "Claude Code account.",
+            )
         if isinstance(subscription, ClaudeManagedLoginAuthority):
             return self._verify_managed(account, subscription, capabilities)
         if isinstance(subscription, ClaudeStoredLoginAuthority):
@@ -250,6 +300,7 @@ class ClaudeManagedMigrationCoordinator:
             capabilities,
             establish_identity=establish_identity,
             interactive=interactive,
+            expected_native_identity=expected_native_identity,
         )
 
     def _migrate_stored(
@@ -350,6 +401,7 @@ class ClaudeManagedMigrationCoordinator:
         *,
         establish_identity: bool,
         interactive: bool,
+        expected_native_identity: ProviderIdentity | None,
     ) -> CredentialLoginResult:
         if not establish_identity:
             return migration_failure(
@@ -362,7 +414,10 @@ class ClaudeManagedMigrationCoordinator:
                 "Setup-token account enrollment requires an interactive "
                 "terminal.",
             )
-        initial = self._setup_enrollment_profile(capabilities)
+        initial = self._setup_enrollment_profile(
+            capabilities,
+            expected_identity=expected_native_identity,
+        )
         if isinstance(initial, ProviderFailure):
             return initial
         exchanged = self._refresh_existing_profile(
@@ -371,6 +426,12 @@ class ClaudeManagedMigrationCoordinator:
         )
         if isinstance(exchanged, ClaudeExchangeFailure):
             return exchange_failure(exchanged.kind)
+        if expected_native_identity is not None:
+            native = self._read_native_identity(
+                expected_identity=expected_native_identity,
+            )
+            if isinstance(native, ProviderFailure):
+                return native
         return self._commits.commit(
             account,
             self._authority_id_factory(),
@@ -394,22 +455,77 @@ class ClaudeManagedMigrationCoordinator:
     def _setup_enrollment_profile(
         self,
         capabilities: ClaudeCapabilities,
+        *,
+        expected_identity: ProviderIdentity | None,
     ) -> ClaudeAuthoritySnapshot | ProviderFailure:
         """Read or create the first private subscription profile."""
-        initial = self._read_profile(capabilities, expected_identity=None)
+        initial = self._read_profile(
+            capabilities,
+            expected_identity=expected_identity,
+        )
         if isinstance(initial, ClaudeExchangeFailure):
-            if initial.kind is not ClaudeExchangeFailureKind.MISSING:
+            if initial.kind not in {
+                ClaudeExchangeFailureKind.IDENTITY_MISMATCH,
+                ClaudeExchangeFailureKind.MISSING,
+            }:
                 return exchange_failure(initial.kind)
             logged_in = self._interactive_login(capabilities)
             if isinstance(logged_in, ProviderFailure):
                 return logged_in
             initial = self._read_profile(
                 capabilities,
-                expected_identity=None,
+                expected_identity=expected_identity,
             )
         if isinstance(initial, ClaudeExchangeFailure):
             return exchange_failure(initial.kind)
         return initial
+
+    def _read_native_identity(
+        self,
+        *,
+        expected_identity: ProviderIdentity | None,
+    ) -> ProviderIdentity | ProviderFailure:
+        """Read native Claude through the existing protected proof owner."""
+        try:
+            return prove_native_claude_identity(
+                self._capability_factory(),
+                self._clock.now(),
+                expected_identity=expected_identity,
+                environment=self._environment,
+                runner=self._runner,
+            )
+        except ClaudeManagedError:
+            return migration_failure(
+                ProviderFailureKind.UNSUPPORTED,
+                CLAUDE_NATIVE_VERIFICATION_UNAVAILABLE,
+            )
+        except ClaudeProtectedStorageError as error:
+            if (
+                expected_identity is not None
+                and error.code
+                is ClaudeProtectedStorageFailure.IDENTITY_MISMATCH
+            ):
+                return migration_failure(
+                    ProviderFailureKind.IDENTITY_MISMATCH,
+                    "The active Claude Code account changed before the "
+                    "connection completed.",
+                )
+            return migration_failure(
+                ProviderFailureKind.UNREADABLE,
+                CLAUDE_NATIVE_VERIFICATION_FAILED,
+            )
+
+    def _capability_factory(self) -> ClaudeProfileCapabilityFactory:
+        """Return one invocation-scoped runtime proof and profile factory."""
+        if self._capabilities is None:
+            self._capabilities = ClaudeProfileCapabilityFactory(
+                self._paths,
+                self._profiles,
+                environment=self._environment,
+                host=self._host,
+                runner=self._runner,
+            )
+        return self._capabilities
 
     def _interactive_login(
         self,

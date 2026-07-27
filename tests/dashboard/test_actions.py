@@ -28,7 +28,10 @@ from sidekick_usages.cli.dashboard.models.setup import (
 )
 from sidekick_usages.cli.dashboard.models.use import UseActivationFailure
 from sidekick_usages.core.accounts.models import ClaudeAccountAuthority
-from sidekick_usages.core.accounts.types import CredentialHealth
+from sidekick_usages.core.accounts.types import (
+    CredentialHealth,
+    ProviderIdentity,
+)
 from sidekick_usages.core.types import AccountLabel, ExitCode, ProviderId
 from sidekick_usages.daemon.types.lifecycle import ServiceLifecycleState
 from sidekick_usages.daemon.types.service import ServicePhase
@@ -328,6 +331,7 @@ def test_managed_auth_migration_resumes_without_exposing_secrets(
             dashboard._guide_claude_association,
             paths=make_application_paths(tmp_path),
             clock=clock,
+            prove_identity=scenario.claude.prove_native_identity,
             input_stream=io.StringIO("\ny\nyes\n"),
             output=guided_output,
             error_output=guided_errors,
@@ -341,6 +345,7 @@ def test_managed_auth_migration_resumes_without_exposing_secrets(
         guided_exit,
         guided_output.getvalue(),
         scenario.claude.guided_account_ids,
+        scenario.claude.guided_expected_identities,
         scenario.trace[guided_trace_start:],
         tuple(daemon.events),
     ) == (
@@ -348,12 +353,19 @@ def test_managed_auth_migration_resumes_without_exposing_secrets(
         expected_prompt * 3,
         [guided_account.account_id, guided_account.account_id],
         [
+            ProviderIdentity(MIGRATION_IDENTITIES[2]),
+            ProviderIdentity(MIGRATION_IDENTITIES[2]),
+        ],
+        [
             "dashboard:closed",
+            "claude:native-proof",
             "dashboard:closed",
+            "claude:native-proof",
             "association:composed",
             "claude:guided",
             "association:closed",
             "dashboard:closed",
+            "claude:native-proof",
             "association:composed",
             "claude:guided",
             "association:closed",

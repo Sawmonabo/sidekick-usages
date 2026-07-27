@@ -35,6 +35,7 @@ from sidekick_usages.providers.claude.types import (
 )
 from sidekick_usages.serialization.json import decode_json_object
 
+CLAUDE_SUBSCRIPTION_LOGIN_OPTION = "--claudeai"
 _AUTH_STATUS_OUTPUT_BYTES = 4096
 _AUTH_STATUS_TIMEOUT_SECONDS = 15.0
 _MAXIMUM_LOGIN_OUTPUT_BYTES = 1024 * 1024
@@ -249,7 +250,7 @@ def _official_login_command(
         str(executable.provenance.path),
         "auth",
         "login",
-        "--claudeai",
+        CLAUDE_SUBSCRIPTION_LOGIN_OPTION,
     )
 
 
