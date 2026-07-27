@@ -16,17 +16,22 @@ import sidekick_usages.persistence.platform.posix.files
 import sidekick_usages.persistence.platform.posix.mounts
 import sidekick_usages.platform.executable
 import sidekick_usages.providers.claude.auth.storage.keychain
+from sidekick_usages.core.accounts.models import (
+    ClaudeAccountAuthority,
+    SavedAccount,
+)
 from sidekick_usages.core.accounts.types import (
     AuthorityId,
     CredentialAction,
     SidekickAccountId,
 )
-from sidekick_usages.core.types import ProviderId
+from sidekick_usages.core.types import AccountLabel, ProviderId
 from sidekick_usages.credentials.capabilities.service import (
     ProviderCapabilityService,
 )
 from sidekick_usages.credentials.claude.managed.authority.service import (
     ClaudeManagedAuthorityReader,
+    managed_authority_matches,
     managed_login_authority,
 )
 from sidekick_usages.credentials.claude.managed.profile import (
@@ -36,7 +41,6 @@ from sidekick_usages.credentials.claude.managed.profile import (
 from sidekick_usages.credentials.claude.native.authority.service import (
     ClaudeNativeAuthorityReader,
 )
-from sidekick_usages.paths import managed_claude_config_dir
 from sidekick_usages.persistence.platform.models import NativeFile
 from sidekick_usages.persistence.platform.types import FilesystemFamily
 from sidekick_usages.persistence.private.credentials import (
@@ -78,6 +82,7 @@ from tests.fakes.claude.managed import (
     CLAUDE_VERSION_OUTPUT,
     ClaudeRunner,
     claude_auth_status_payload,
+    claude_auth_status_result,
     claude_capabilities,
     claude_profile_status_responses,
     claude_status_identity,
@@ -494,14 +499,15 @@ def test_supported_claude_boundary_freezes_executable_and_profiles(
     ).managed(_ACCOUNT_A)
     profile_a = capabilities.profile.config_directory
 
-    assert capabilities.executable.provenance == (
-        ExecutableProvenance.from_stat(
-            executable_path,
-            executable_path.stat(),
-        )
+    expected_provenance = ExecutableProvenance.from_stat(
+        executable_path,
+        executable_path.stat(),
     )
-    assert capabilities.executable.launcher == launcher
-    assert capabilities.executable.version == MINIMUM_CLAUDE_VERSION
+    assert (
+        capabilities.executable.provenance,
+        capabilities.executable.launcher,
+        capabilities.executable.version,
+    ) == (expected_provenance, launcher, MINIMUM_CLAUDE_VERSION)
     assert runner.calls == [
         (executable_path, ("--version",)),
         (executable_path, ("auth", "status")),
@@ -526,9 +532,40 @@ def test_supported_claude_boundary_freezes_executable_and_profiles(
         assert working_directory == probe_home
     assert capabilities.platform is ClaudeManagedPlatform.LINUX_FILE
     assert profile_a == (paths.private_claude_profiles / str(_ACCOUNT_A))
-    assert managed_claude_config_dir(paths, _ACCOUNT_A) == profile_a
-    assert managed_claude_config_dir(paths, _ACCOUNT_B) != profile_a
     assert stat.S_IMODE(profile_a.stat().st_mode) == _PRIVATE_DIRECTORY_MODE
+
+    profiles.write_owned_file(
+        profile_a,
+        CLAUDE_CREDENTIAL_FILE,
+        credential_payload(
+            None,
+            None,
+            token_suffix="version",
+            access_expires_at=_FUTURE_EXPIRY,
+        ),
+    )
+    status = claude_auth_status_result(
+        "profile-a@example.test",
+        "provider-organization-a",
+    )
+    original = ClaudeManagedAuthorityReader(paths, profiles).read(
+        capabilities,
+        REFERENCE_TIME,
+        runner=ClaudeRunner({("auth", "status"): status}),
+    )
+    saved_authority = managed_login_authority(
+        original,
+        _AUTHORITY_ID,
+        REFERENCE_TIME,
+    )
+    saved_account = SavedAccount(
+        account_id=_ACCOUNT_A,
+        label=AccountLabel("synthetic-account"),
+        provider_id=ProviderId.CLAUDE,
+        plan=original.plan,
+        authority=ClaudeAccountAuthority(subscription=saved_authority),
+        credential_health=original.health,
+    )
 
     updated_target = tmp_path / "versions" / "2.1.221" / "claude"
     updated_target.parent.mkdir(parents=True)
@@ -545,9 +582,25 @@ def test_supported_claude_boundary_freezes_executable_and_profiles(
         source_environment,
         runner=updated_runner,
     )
-    assert updated.launcher == launcher
-    assert updated.provenance.path == updated_target.resolve()
-    assert updated.version > MINIMUM_CLAUDE_VERSION
+    assert (
+        updated.launcher,
+        updated.provenance.path,
+        updated.version > MINIMUM_CLAUDE_VERSION,
+    ) == (launcher, updated_target.resolve(), True)
+    updated_snapshot = replace(
+        original,
+        executable_version=str(updated.version),
+    )
+    assert managed_authority_matches(
+        saved_account,
+        saved_authority,
+        updated_snapshot,
+    )
+    assert managed_login_authority(
+        updated_snapshot,
+        _AUTHORITY_ID,
+        REFERENCE_TIME,
+    ).executable_version == str(updated.version)
 
     cancelled_runner = _probe_runner()
     capability_service = ProviderCapabilityService(

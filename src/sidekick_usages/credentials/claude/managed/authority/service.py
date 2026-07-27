@@ -211,5 +211,4 @@ def managed_authority_matches(
         and authority.generation == snapshot.generation
         and authority.access_expires_at == snapshot.access_expires_at
         and authority.refresh_expires_at == snapshot.refresh_expires_at
-        and authority.executable_version == snapshot.executable_version
     )
