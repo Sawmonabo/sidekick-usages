@@ -275,3 +275,19 @@ class DashboardSnapshot:
             ProviderId
         ):
             raise ValueError("Dashboard providers must use canonical order.")
+
+    @property
+    def all_saved_metrics_unavailable(self) -> bool:
+        """Return whether saved rows exist without any retained metrics."""
+        accounts = tuple(
+            row
+            for provider in self.providers
+            for row in provider.rows
+            if isinstance(row, DashboardAccount)
+        )
+        return bool(accounts) and not any(
+            account.usage is not None or account.activity is not None
+            for account in accounts
+        ) and not any(
+            provider.activity is not None for provider in self.providers
+        )

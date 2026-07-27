@@ -43,6 +43,14 @@ class UsageLookupFailure(StrEnum):
     INTERNAL = "internal"
     TERMINATION_FAILED = "termination_failed"
 
+    @property
+    def recoverable(self) -> bool:
+        """Return whether one fresh worker attempt may self-heal."""
+        return (
+            self is UsageLookupFailure.LAUNCH_FAILED
+            or self is UsageLookupFailure.TIMED_OUT
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class UsageLookupWorkerEvent:

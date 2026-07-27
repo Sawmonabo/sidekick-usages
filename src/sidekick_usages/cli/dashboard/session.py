@@ -64,7 +64,9 @@ from sidekick_usages.usage.dashboard.models import (
 )
 from sidekick_usages.usage.lookup.worker.models import (
     UsageLookupEventKind,
+    UsageLookupFailure,
     UsageLookupWorkerEvent,
+    UsageLookupWorkerResult,
 )
 
 ACTION_QUEUE_CAPACITY = 1
@@ -375,16 +377,30 @@ class InteractiveDashboardSession:
         return True
 
     def _run_lookup(self) -> None:
-        try:
-            result = self._lookup.run(self._observe_lookup)
-        except OSError:
-            result = None
+        result = self._run_lookup_attempt()
+        retry_available = True
+        if (
+            not self._stopping.is_set()
+            and result.failure is not None
+            and result.failure.recoverable
+        ):
+            result = self._run_lookup_attempt()
+            retry_available = False
         if self._stopping.is_set():
             return
-        if result is None or not result.succeeded:
+        if not result.succeeded:
             self._publish_lookup_failure()
-        else:
-            self._publish_successful_lookup()
+            return
+        self._publish_successful_lookup(retry_available=retry_available)
+
+    def _run_lookup_attempt(self) -> UsageLookupWorkerResult:
+        try:
+            return self._lookup.run(self._observe_lookup)
+        except OSError:
+            return UsageLookupWorkerResult(
+                (),
+                UsageLookupFailure.LAUNCH_FAILED,
+            )
 
     def _observe_lookup(self, event: UsageLookupWorkerEvent) -> None:
         if self._stopping.is_set() or not event.kind.is_account_completion:
@@ -405,24 +421,33 @@ class InteractiveDashboardSession:
             invalidate = self._invalidate
         invalidate()
 
-    def _publish_successful_lookup(self) -> None:
+    def _publish_successful_lookup(
+        self,
+        *,
+        retry_available: bool,
+    ) -> None:
         with (
             self._serialized_snapshot() as snapshot,
             self._view_lock,
         ):
             if self._closed:
                 return
-            if snapshot is None:
+            resolved_snapshot = snapshot
+            if resolved_snapshot is None and retry_available:
+                resolved_snapshot = self._load_snapshot()
+            if resolved_snapshot is None:
                 self._publish_lookup_failure_locked()
             else:
                 self._lookup_terminal_succeeded = True
-                outcome_snapshot = self._outcome_view(snapshot)
+                outcome_snapshot = self._outcome_view(resolved_snapshot)
                 controller = self._controller().rebase(outcome_snapshot)
                 self._view = replace(
                     self._view,
                     snapshot=controller.snapshot,
                     controller=controller.state,
                 )
+                if outcome_snapshot.all_saved_metrics_unavailable:
+                    self._publish_lookup_failure_locked()
             invalidate = self._invalidate
         invalidate()
 
@@ -435,6 +460,9 @@ class InteractiveDashboardSession:
         invalidate()
 
     def _publish_lookup_failure_locked(self) -> None:
+        if not self._view.snapshot.all_saved_metrics_unavailable:
+            self._deferred_lookup_status = None
+            return
         status = DashboardStatus(
             kind=DashboardStatusKind.ERROR,
             message=LOOKUP_FAILED_MESSAGE,

@@ -19,6 +19,7 @@ from sidekick_usages.usage.dashboard.models import (
 from sidekick_usages.usage.lookup.worker.models import (
     UsageLookupEventKind,
     UsageLookupEventObserver,
+    UsageLookupFailure,
     UsageLookupWorkerEvent,
     UsageLookupWorkerResult,
 )
@@ -90,20 +91,28 @@ class SessionLookupWorker:
         *,
         block: bool = False,
         fail: bool = False,
+        transient_failure: UsageLookupFailure | None = None,
     ) -> None:
         self._account_id = account_id
         self._block = block
         self._fail = fail
+        self._transient_failure = transient_failure
         self._release = Event()
         self.finished = Event()
         self.cancelled = False
+        self.runs = 0
 
     def run(
         self,
         observe: UsageLookupEventObserver | None = None,
     ) -> UsageLookupWorkerResult:
         """Publish one stable-ID completion without provider work."""
+        transient_failure = self._transient_failure
+        self._transient_failure = None
+        self.runs += 1
         try:
+            if transient_failure is not None:
+                return UsageLookupWorkerResult((), transient_failure)
             if self._block and not self._release.wait(SESSION_WAIT_SECONDS):
                 raise AssertionError("Synthetic lookup was not released.")
             if observe is not None:
@@ -121,7 +130,8 @@ class SessionLookupWorker:
                 raise OSError("Synthetic lookup owner failed.")
             return UsageLookupWorkerResult((self._account_id,))
         finally:
-            self.finished.set()
+            if transient_failure is None:
+                self.finished.set()
 
     def cancel(self) -> None:
         """Record one idempotent session cleanup request."""
