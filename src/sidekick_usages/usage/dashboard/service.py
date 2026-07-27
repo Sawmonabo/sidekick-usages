@@ -203,7 +203,6 @@ class CachedDashboardService:
             self._account(
                 account,
                 active_account_id,
-                service_ready,
                 usage.get(account.account_id),
                 account_activity.get(account.account_id),
                 usage_conflicted=account.account_id in usage_conflicts,
@@ -213,16 +212,11 @@ class CachedDashboardService:
         if runtime_state is ProviderRuntimeState.EXTERNAL_ACTIVE:
             if runtime_auth is None:
                 raise ValueError("External runtime requires an observation.")
-            external_states = [DashboardActionState.EXTERNAL_ACTIVE]
-            if not service_ready:
-                external_states.append(
-                    DashboardActionState.SERVICE_UNAVAILABLE
-                )
             rows.append(
                 DashboardExternalRow(
                     provider_id=provider_id,
                     observed_at=runtime_auth.observed_at,
-                    states=tuple(external_states),
+                    states=(DashboardActionState.EXTERNAL_ACTIVE,),
                 )
             )
         provider_available = (
@@ -276,7 +270,6 @@ class CachedDashboardService:
         self,
         account: SavedAccount,
         active_account_id: SidekickAccountId | None,
-        service_ready: bool,
         usage: AccountUsageSnapshot | None,
         activity: AccountTokenActivitySnapshot | None,
         *,
@@ -285,8 +278,6 @@ class CachedDashboardService:
         states = list(self._credential_states(account))
         if usage_conflicted:
             states.append(DashboardActionState.REPAIR_REQUIRED)
-        if not service_ready:
-            states.append(DashboardActionState.SERVICE_UNAVAILABLE)
         return DashboardAccount(
             account_id=account.account_id,
             label=account.label,

@@ -140,10 +140,7 @@ def test_cached_dashboard_joins_stable_ids_without_credentials(
     assert claude.runtime_state is ProviderRuntimeState.EXTERNAL_ACTIVE
     assert not claude.actions_enabled
     assert isinstance(claude.rows[0], DashboardExternalRow)
-    assert claude.rows[0].states == (
-        DashboardActionState.EXTERNAL_ACTIVE,
-        DashboardActionState.SERVICE_UNAVAILABLE,
-    )
+    assert claude.rows[0].states == (DashboardActionState.EXTERNAL_ACTIVE,)
     assert claude.activity is not None
     assert claude.activity.summary.total_tokens == CLAUDE_ACTIVITY_TOTAL
     assert claude.activity.observed_at == OBSERVED_AT
@@ -166,10 +163,7 @@ def test_cached_dashboard_joins_stable_ids_without_credentials(
     assert current.activity is not None
     assert current.activity.observed_at == OBSERVED_AT
     assert current.metrics_freshness is None
-    assert current.states == (
-        DashboardActionState.HEALTHY,
-        DashboardActionState.SERVICE_UNAVAILABLE,
-    )
+    assert current.states == (DashboardActionState.HEALTHY,)
     assert (
         replace(
             current, metrics_freshness=MetricsFreshness.FRESH
@@ -196,7 +190,6 @@ def test_cached_dashboard_joins_stable_ids_without_credentials(
     assert failed.states == (
         DashboardActionState.HEALTHY,
         DashboardActionState.REPAIR_REQUIRED,
-        DashboardActionState.SERVICE_UNAVAILABLE,
     )
     rendered = repr(dashboard)
     assert EXTERNAL_PROVIDER_IDENTITY not in rendered
@@ -227,10 +220,13 @@ def test_cached_dashboard_scopes_codex_broker_degradation(
     assert managed_claude.rows[0].states == (
         DashboardActionState.EXTERNAL_ACTIVE,
     )
-    assert all(
-        isinstance(row, DashboardAccount)
-        and DashboardActionState.SERVICE_UNAVAILABLE in row.states
-        for row in managed_codex.rows
+    assert all(isinstance(row, DashboardAccount) for row in managed_codex.rows)
+    assert tuple(row.states for row in managed_codex.rows) == (
+        (DashboardActionState.HEALTHY,),
+        (
+            DashboardActionState.HEALTHY,
+            DashboardActionState.REPAIR_REQUIRED,
+        ),
     )
     selected_before = PrivateFileReader(
         paths.selected_state
@@ -296,7 +292,6 @@ def test_cached_dashboard_scopes_codex_broker_degradation(
     assert all(
         isinstance(row, DashboardAccount)
         and row.states[0] is DashboardActionState.LOGIN_REQUIRED
-        and DashboardActionState.SERVICE_UNAVAILABLE not in row.states
         for row in unmanaged_codex.rows
     )
 

@@ -43,9 +43,6 @@ FAILURE_STATE_DETAILS = {
     DashboardActionState.PROVIDER_UNSUPPORTED: (
         "Update the provider CLI before using account switching."
     ),
-    DashboardActionState.SERVICE_UNAVAILABLE: (
-        "Account actions are unavailable until Sidekick is ready."
-    ),
 }
 EXTERNAL_LOGIN_DETAIL = "This external login is not saved in Sidekick."
 SWITCH_SETUP_DETAIL = "Enter to connect this account for Claude switching."

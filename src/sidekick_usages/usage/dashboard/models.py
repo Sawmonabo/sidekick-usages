@@ -35,7 +35,6 @@ class DashboardActionState(StrEnum):
     EXTERNAL_ACTIVE = "external_active"
     RECONCILIATION_REQUIRED = "reconciliation_required"
     PROVIDER_UNSUPPORTED = "provider_unsupported"
-    SERVICE_UNAVAILABLE = "service_unavailable"
 
 
 class DashboardNavigationKind(StrEnum):
