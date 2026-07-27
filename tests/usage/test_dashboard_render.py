@@ -182,7 +182,7 @@ def test_interactive_wide_render_preserves_dashboard_contract() -> None:
 
     assert "      o" in out
     assert "╭─ CLAUDE · 2 accounts ─" in out
-    assert "╭─ CODEX · 2 accounts ─" in out
+    assert "╭─ CODEX · 1 account ─" in out
     assert out.count(cursor) == 1
     assert f"{cursor} ●" in out
     assert "work@example.test" in out
