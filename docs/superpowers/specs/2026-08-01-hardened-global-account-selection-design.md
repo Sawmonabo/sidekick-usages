@@ -1192,9 +1192,11 @@ setup-token override keeps an integrated process on A.
 ### 9.8 Ambient setup-token sessions
 
 The operating system cannot rewrite another running process's inherited
-environment. A pre-existing setup-token Claude process launched outside the
-Sidekick structured boundary cannot be retrofitted without replacement, which
-the requirements prohibit.
+environment. The [POSIX `exec` contract][posix-exec] defines the environment
+supplied at process-image creation; it supplies no mechanism for another
+ordinary process to mutate that environment later. A pre-existing setup-token
+Claude process launched outside the Sidekick structured boundary cannot be
+retrofitted without replacement, which the requirements prohibit.
 
 Sidekick therefore makes its launch/shell integration the enrollment boundary
 for setup-token seamless switching. An unmanaged legacy process:
@@ -1500,7 +1502,11 @@ for application shutdown, never because one account fails.
 The existing strict persistence layer remains the sole application-data file
 owner. New records use strict versioned schemas, qualified paths, owner-only
 permissions, atomic write/replace, directory durability, and current recovery
-transactions.
+transactions. The filesystem contract is grounded in POSIX
+[`rename()`][posix-rename] atomic name replacement and [`fsync()`][posix-fsync]
+synchronization; the implementation must retain the repository's stricter
+platform-qualified transaction instead of assuming `rename()` alone proves
+durability.
 
 Persisted data contains only:
 
@@ -1721,6 +1727,12 @@ cloud providers and places restrictions on routing consumer subscription
 credentials. The selected structured-host design keeps the official Claude
 engine as the model transport, but the release still requires legal/product
 review of how Sidekick presents and controls saved setup tokens.
+
+The OAuth boundary also follows [OAuth 2.0 Security Best Current Practice][rfc9700]
+and [OAuth for Native Apps][rfc8252]: Sidekick delegates interactive login,
+PKCE, refresh, and durable credential writes to official provider processes.
+[OAuth token revocation][rfc7009] remains a provider/user credential-lifecycle
+operation; selecting or rolling back an account is not token revocation.
 
 OpenAI labels Codex external auth experimental. Sidekick must describe it as a
 version-gated local integration, not a stable public compatibility promise.
@@ -2462,6 +2474,7 @@ publisher and current canonical URL.
 11. [Claude Code Action security guidance](https://github.com/anthropics/claude-code-action/blob/main/docs/security.md)
 12. [Claude Agent SDK Python types](https://github.com/anthropics/claude-agent-sdk-python/blob/main/src/claude_agent_sdk/types.py)
 13. [Claude Agent SDK Python client](https://github.com/anthropics/claude-agent-sdk-python/blob/main/src/claude_agent_sdk/client.py)
+14. [Claude Code documentation changelog](https://code.claude.com/docs/en/changelog)
 
 #### OpenAI official documentation
 
@@ -2486,6 +2499,19 @@ publisher and current canonical URL.
 1. [Hermes Agent issue 15080](https://github.com/NousResearch/hermes-agent/issues/15080)
 2. [Claude Code status-line guide discussion](https://gist.github.com/jtbr/4f99671d1cee06b44106456958caba8b?permalink_comment_id=6007492)
 3. [Claude status-line Messages probe](https://gist.github.com/hangox/09cdf644683f7301973d4b48b63a329d)
+
+#### Protocol endpoints and standards
+
+1. [Anthropic OAuth usage endpoint](https://api.anthropic.com/api/oauth/usage)
+2. [Anthropic Messages endpoint](https://api.anthropic.com/v1/messages)
+3. [ChatGPT Codex Responses base](https://chatgpt.com/backend-api/codex)
+4. [OAuth 2.0 Security Best Current Practice](https://datatracker.ietf.org/doc/html/rfc9700)
+5. [OAuth 2.0 for Native Apps](https://datatracker.ietf.org/doc/html/rfc8252)
+6. [OAuth 2.0 Token Revocation](https://datatracker.ietf.org/doc/html/rfc7009)
+7. [POSIX `rename()`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/rename.html)
+8. [POSIX `fsync()`](https://pubs.opengroup.org/onlinepubs/009695399/functions/fsync.html)
+9. [POSIX `exec`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/exec.html)
+10. [POSIX general concepts](https://pubs.opengroup.org/onlinepubs/9799919799/basedefs/V1_chap04.html)
 
 #### Pinned multi-account project bibliography
 
@@ -2543,6 +2569,23 @@ publisher and current canonical URL.
 52. [`codex-multi-auth` same-conversation test](https://github.com/ndycode/codex-multi-auth/blob/89ca9696d0f46cce48b28fdaa64a62d4bb521874/test/issue-474-pin-end-to-end.test.ts#L215-L307)
 53. [`codex-multi-auth` refresh guardian](https://github.com/ndycode/codex-multi-auth/blob/89ca9696d0f46cce48b28fdaa64a62d4bb521874/lib/refresh-guardian.ts#L260-L310)
 54. [`codex-multi-auth` direct refresh/forwarding](https://github.com/ndycode/codex-multi-auth/blob/89ca9696d0f46cce48b28fdaa64a62d4bb521874/lib/runtime-rotation-proxy.ts#L1063-L1150)
+55. [`ccswitch` daemon scheduling](https://github.com/GG-Santos/ccswitch/blob/b5a2dd64da30f891cf82e1f1cf595f09f03de9b0/ccswitch/daemon.py#L1-L13)
+56. [`codex-multi-auth` documented limits](https://github.com/ndycode/codex-multi-auth/blob/89ca9696d0f46cce48b28fdaa64a62d4bb521874/README.md#L342-L347)
+57. [`codex-multi-auth` proactive refresh](https://github.com/ndycode/codex-multi-auth/blob/89ca9696d0f46cce48b28fdaa64a62d4bb521874/lib/proactive-refresh.ts#L141-L199)
+58. [`codex-multi-auth` runtime refresh guardian](https://github.com/ndycode/codex-multi-auth/blob/89ca9696d0f46cce48b28fdaa64a62d4bb521874/lib/runtime/refresh-guardian.ts#L28-L58)
+59. [`codex-multi-auth` affinity metadata](https://github.com/ndycode/codex-multi-auth/blob/89ca9696d0f46cce48b28fdaa64a62d4bb521874/lib/runtime/rotation-storage-meta.ts#L6-L31)
+60. [`meridian` profile CLI](https://github.com/rynfar/meridian/blob/be10fc36b9b0a3c0011843aefb40bbee56baf478/src/proxy/profileCli.ts#L439-L463)
+61. [`meridian` account query](https://github.com/rynfar/meridian/blob/be10fc36b9b0a3c0011843aefb40bbee56baf478/src/proxy/query.ts#L342-L375)
+62. [`CodexBar` Claude account projection](https://github.com/steipete/CodexBar/blob/78523f4ad890893851219c5f5d41139a60a3139a/Sources/CodexBarCore/Providers/Claude/ClaudeSwap/ClaudeSwapAccountProjection.swift#L3-L35)
+
+#### Additional official Codex sources used by protocol analysis
+
+1. [Current app-server README](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md)
+2. [Current hosted app-server documentation](https://learn.chatgpt.com/docs/app-server)
+3. [Release commit auth storage](https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/login/src/auth/storage.rs)
+4. [Release commit auth manager](https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/login/src/auth/manager.rs)
+5. [Release commit personal access token](https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/login/src/auth/personal_access_token.rs)
+6. [Release commit login server](https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/login/src/server.rs)
 
 The pinned project source links used in the comparison are included both in
 the table above and in the reference definitions at the end of this document.
@@ -2694,6 +2737,12 @@ daemon change, controlled provider-live test, commit push, or deployment.
 [wsl-about]: https://learn.microsoft.com/windows/wsl/about
 [wsl-basic]: https://learn.microsoft.com/windows/wsl/basic-commands
 [apple-launchd]: https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html
+[rfc9700]: https://datatracker.ietf.org/doc/html/rfc9700
+[rfc8252]: https://datatracker.ietf.org/doc/html/rfc8252
+[rfc7009]: https://datatracker.ietf.org/doc/html/rfc7009
+[posix-rename]: https://pubs.opengroup.org/onlinepubs/9799919799/functions/rename.html
+[posix-fsync]: https://pubs.opengroup.org/onlinepubs/009695399/functions/fsync.html
+[posix-exec]: https://pubs.opengroup.org/onlinepubs/9799919799/functions/exec.html
 [claude-swap-tree]: https://github.com/realiti4/claude-swap/tree/9f35426af3846763e79a304dd53d4ce2f40a07a6
 [claude-swap-enroll]: https://github.com/realiti4/claude-swap/blob/9f35426af3846763e79a304dd53d4ce2f40a07a6/src/claude_swap/switcher.py#L2429-L2508
 [claude-swap-usage]: https://github.com/realiti4/claude-swap/blob/9f35426af3846763e79a304dd53d4ce2f40a07a6/src/claude_swap/oauth.py#L330-L340
