@@ -2,14 +2,19 @@
 
 import os
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from sidekick_usages.core.accounts.types import (
+    AuthorityGeneration,
     OperationId,
 )
-from sidekick_usages.core.selection.models import DueOperation
+from sidekick_usages.core.selection.models import (
+    DueOperation,
+    FinalizedSelection,
+)
 from sidekick_usages.core.selection.types import (
     OperationKind,
     OperationPriority,
@@ -20,7 +25,12 @@ from sidekick_usages.credentials.codex.managed.service import (
     CodexManagedAuthorityCoordinator,
 )
 from sidekick_usages.daemon.control.client import ControlClient
+from sidekick_usages.paths import ApplicationPaths
+from sidekick_usages.persistence.supervisor.authority import (
+    ProviderMutationLock,
+)
 from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
+from sidekick_usages.persistence.supervisor.selection import SelectedStateStore
 from sidekick_usages.providers.codex.app_server.capabilities import (
     probe_codex_capabilities,
 )
@@ -48,13 +58,14 @@ from tests.fakes.codex.broker.runtime import (
     NEXT_GENERATION,
     PROVIDER_IDENTITY,
     RECOVERY_GENERATION,
-    broker_fixture,
+    broker_finalized_fixture,
+    projection_matches_account,
     real_worker_executable,
     saved_generation,
     stage_provider_ahead,
     wait_for_file,
     wait_for_operation_state,
-    wait_for_selected_generation,
+    wait_for_projected_generation,
 )
 from tests.fakes.codex.broker.supervisor import FakeCodexSupervisor
 from tests.fakes.codex.managed import (
@@ -74,6 +85,38 @@ _INITIAL_LIFECYCLE_CALLS = 2
 _RECOVERED_LIFECYCLE_CALLS = 3
 _INITIAL_READY_READS = 1
 _REHYDRATED_READY_READS = 2
+
+
+def _finalized_codex_selection(
+    paths: ApplicationPaths,
+) -> FinalizedSelection:
+    """Return the required finalized Codex fixture pointer."""
+    finalized = SelectedStateStore(paths.selected_state).load(ProviderId.CODEX)
+    assert finalized is not None
+    return finalized
+
+
+def _finalize_projected_generation(
+    paths: ApplicationPaths,
+    generation: str,
+) -> FinalizedSelection:
+    """Emulate Task 4 finalization after exact broker projection proof."""
+    selected = SelectedStateStore(paths.selected_state)
+    initial = _finalized_codex_selection(paths)
+    with ProviderMutationLock(
+        paths.durable_operations,
+        ProviderId.CODEX,
+        (initial.account_id,),
+        timeout_seconds=1.0,
+    ).hold():
+        assert selected.load(ProviderId.CODEX) == initial
+        finalized = replace(
+            initial,
+            epoch=initial.epoch.next(),
+            generation=AuthorityGeneration(generation),
+        )
+        selected.compare_and_swap(finalized, expected=initial)
+    return finalized
 
 
 def test_shared_codex_runtime_is_idempotent_and_rehydrates(
@@ -188,8 +231,13 @@ def test_resident_broker_refreshes_and_recovers_provider_ahead_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The resident broker refreshes B and repairs a provider-ahead restart."""
-    fixture = broker_fixture(tmp_path, short_socket_root, monkeypatch)
+    fixture = broker_finalized_fixture(
+        tmp_path,
+        short_socket_root,
+        monkeypatch,
+    )
     paths = fixture.paths
+    finalized_before = _finalized_codex_selection(paths)
 
     with FakeCodexDaemon(fixture.native_home) as daemon:
         lifecycle = configure_codex_daemon_lifecycle(
@@ -216,8 +264,10 @@ def test_resident_broker_refreshes_and_recovers_provider_ahead_state(
                 managed=False,
             )
             supervisor.wait_until_ready()
-            assert supervisor.broker_available
-            assert supervisor.broker_failure_code is None
+            assert (
+                supervisor.broker_available,
+                supervisor.broker_failure_code,
+            ) == (True, None)
             observer_a.wait_for_account_update()
             observer_b.wait_for_account_update()
             dashboard = ControlClient.connect(paths.supervisor_socket)
@@ -227,14 +277,26 @@ def test_resident_broker_refreshes_and_recovers_provider_ahead_state(
                 dashboard.close()
 
             rejected = daemon.request_refresh("unknown-provider-account")
-            assert rejected.responder == "sidekick_usages"
-            assert rejected.error_code == CODEX_REFRESH_ERROR_CODE
+            assert (rejected.responder, rejected.error_code) == (
+                "sidekick_usages",
+                CODEX_REFRESH_ERROR_CODE,
+            )
             refreshed = daemon.request_refresh(PROVIDER_IDENTITY)
             assert refreshed.responder == "sidekick_usages"
             assert refreshed.account_id == PROVIDER_IDENTITY
-            wait_for_selected_generation(paths, NEXT_GENERATION)
+            wait_for_projected_generation(
+                paths,
+                MANAGED_ACCOUNT_ID,
+                PROVIDER_IDENTITY,
+                NEXT_GENERATION,
+            )
             assert (
-                saved_generation(paths, MANAGED_ACCOUNT_ID) == NEXT_GENERATION
+                saved_generation(paths, MANAGED_ACCOUNT_ID),
+                _finalized_codex_selection(paths),
+            ) == (NEXT_GENERATION, finalized_before)
+            finalized_next = _finalize_projected_generation(
+                paths,
+                NEXT_GENERATION,
             )
             assert saved_generation(paths, ACCOUNT_A_ID) == GENERATION
             initial_starts = lifecycle.start_statuses
@@ -245,11 +307,20 @@ def test_resident_broker_refreshes_and_recovers_provider_ahead_state(
 
         stage_provider_ahead(fixture)
         assert (
-            managed_generation(fixture.private, MANAGED_ACCOUNT_ID)
-            == RECOVERY_GENERATION
+            managed_generation(fixture.private, MANAGED_ACCOUNT_ID),
+            saved_generation(paths, MANAGED_ACCOUNT_ID),
+            projection_matches_account(
+                paths,
+                MANAGED_ACCOUNT_ID,
+                PROVIDER_IDENTITY,
+            ),
+            _finalized_codex_selection(paths),
+        ) == (
+            RECOVERY_GENERATION,
+            NEXT_GENERATION,
+            False,
+            finalized_next,
         )
-        assert saved_generation(paths, MANAGED_ACCOUNT_ID) == NEXT_GENERATION
-        wait_for_selected_generation(paths, NEXT_GENERATION)
 
         with FakeCodexSupervisor(
             paths,
@@ -258,12 +329,25 @@ def test_resident_broker_refreshes_and_recovers_provider_ahead_state(
             fixture.environment,
             real_worker_executable(),
         ) as restarted:
-            restarted.wait_until_ready()
-            wait_for_selected_generation(paths, RECOVERY_GENERATION)
-            assert (
-                saved_generation(paths, MANAGED_ACCOUNT_ID)
-                == RECOVERY_GENERATION
+            wait_for_projected_generation(
+                paths,
+                MANAGED_ACCOUNT_ID,
+                PROVIDER_IDENTITY,
+                RECOVERY_GENERATION,
             )
+            assert (
+                saved_generation(paths, MANAGED_ACCOUNT_ID),
+                _finalized_codex_selection(paths),
+            ) == (RECOVERY_GENERATION, finalized_next)
+            finalized_recovery = _finalize_projected_generation(
+                paths,
+                RECOVERY_GENERATION,
+            )
+            restarted.wait_until_ready()
+            assert (
+                _finalized_codex_selection(paths),
+                daemon.installed_account_ids[-1],
+            ) == (finalized_recovery, PROVIDER_IDENTITY)
             assert saved_generation(paths, ACCOUNT_A_ID) == GENERATION
             observer_a.wait_for_account_update()
             observer_b.wait_for_account_update()
@@ -279,8 +363,13 @@ def test_callback_preempts_stubborn_same_home_maintenance(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A stubborn same-home worker cannot consume the callback deadline."""
-    fixture = broker_fixture(tmp_path, short_socket_root, monkeypatch)
+    fixture = broker_finalized_fixture(
+        tmp_path,
+        short_socket_root,
+        monkeypatch,
+    )
     paths = fixture.paths
+    finalized_before = _finalized_codex_selection(paths)
     route = write_worker_router(
         fixture.provider_root,
         _MAINTENANCE_OPERATION_ID,
@@ -329,7 +418,12 @@ def test_callback_preempts_stubborn_same_home_maintenance(
             started = time.monotonic()
             refreshed = daemon.request_refresh(PROVIDER_IDENTITY)
             elapsed = time.monotonic() - started
-            wait_for_selected_generation(paths, NEXT_GENERATION)
+            wait_for_projected_generation(
+                paths,
+                MANAGED_ACCOUNT_ID,
+                PROVIDER_IDENTITY,
+                NEXT_GENERATION,
+            )
             maintenance = wait_for_operation_state(
                 queue,
                 _MAINTENANCE_OPERATION_ID,
@@ -340,6 +434,7 @@ def test_callback_preempts_stubborn_same_home_maintenance(
             assert refreshed.account_id == PROVIDER_IDENTITY
             assert elapsed < _CALLBACK_RESPONSE_BOUND_SECONDS
             assert maintenance.failure_code == "worker_preempted"
+            assert _finalized_codex_selection(paths) == finalized_before
             process_id = int(route.started.read_text(encoding="utf-8"))
             with pytest.raises(ProcessLookupError):
                 os.kill(process_id, 0)

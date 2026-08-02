@@ -27,6 +27,7 @@ from sidekick_usages.persistence.state.fields import (
     require_integer,
     require_list,
     require_object,
+    require_optional_string,
     require_schema_version,
     require_string,
 )
@@ -40,14 +41,18 @@ from sidekick_usages.persistence.time_codec import (
 )
 from sidekick_usages.serialization.json import JsonObject, JsonValue
 
-SELECTION_OPERATION_SCHEMA_VERSION = 1
+SELECTION_OPERATION_SCHEMA_VERSION = 2
 MAX_SELECTION_OPERATION_BYTES = 2 * 1024 * 1024
 
 _OPEN_KEYS = frozenset(
     {
-        "adopted_participant_ids",
+        "baseline_account_id",
         "baseline_epoch",
+        "confirmed_dead_before_commit_code",
+        "confirmed_dead_before_commit_count",
+        "lost_after_commit_participant_ids",
         "operation_id",
+        "outcome_code",
         "pending_epoch",
         "phase",
         "provider_id",
@@ -131,11 +136,22 @@ def _open_operation(record: JsonObject) -> OpenSelectionOperation:
     return OpenSelectionOperation(
         operation_id=OperationId(require_string(record["operation_id"])),
         provider_id=ProviderId(require_string(record["provider_id"])),
+        baseline_account_id=(
+            None
+            if (
+                value := require_optional_string(record["baseline_account_id"])
+            )
+            is None
+            else SidekickAccountId(value)
+        ),
         target_account_id=SidekickAccountId(
             require_string(record["target_account_id"])
         ),
-        target_generation=AuthorityGeneration(
-            require_string(record["target_generation"])
+        target_generation=(
+            None
+            if (value := require_optional_string(record["target_generation"]))
+            is None
+            else AuthorityGeneration(value)
         ),
         baseline_epoch=SelectionEpoch(
             require_integer(record["baseline_epoch"])
@@ -148,8 +164,27 @@ def _open_operation(record: JsonObject) -> OpenSelectionOperation:
         ready_participant_ids=_participant_ids(
             record["ready_participant_ids"]
         ),
-        adopted_participant_ids=_participant_ids(
-            record["adopted_participant_ids"]
+        lost_after_commit_participant_ids=_participant_ids(
+            record["lost_after_commit_participant_ids"]
+        ),
+        confirmed_dead_before_commit_count=require_integer(
+            record["confirmed_dead_before_commit_count"]
+        ),
+        confirmed_dead_before_commit_code=(
+            None
+            if (
+                value := require_optional_string(
+                    record["confirmed_dead_before_commit_code"]
+                )
+            )
+            is None
+            else SelectionCode(value)
+        ),
+        outcome_code=(
+            None
+            if (value := require_optional_string(record["outcome_code"]))
+            is None
+            else SelectionCode(value)
         ),
         started_at=parse_canonical_timestamp(
             require_string(record["started_at"])
@@ -168,8 +203,11 @@ def _selection_result(record: JsonObject) -> SelectionResult:
         target_account_id=SidekickAccountId(
             require_string(record["target_account_id"])
         ),
-        target_generation=AuthorityGeneration(
-            require_string(record["target_generation"])
+        target_generation=(
+            None
+            if (value := require_optional_string(record["target_generation"]))
+            is None
+            else AuthorityGeneration(value)
         ),
         epoch=SelectionEpoch(require_integer(record["epoch"])),
         outcome=SelectionOutcome(require_string(record["outcome"])),
@@ -195,12 +233,30 @@ def _participant_ids(value: JsonValue) -> tuple[ParticipantId, ...]:
 
 def _open_object(operation: OpenSelectionOperation) -> JsonObject:
     return {
-        "adopted_participant_ids": [
-            str(participant_id)
-            for participant_id in operation.adopted_participant_ids
-        ],
+        "baseline_account_id": (
+            None
+            if operation.baseline_account_id is None
+            else str(operation.baseline_account_id)
+        ),
         "baseline_epoch": operation.baseline_epoch.value,
+        "confirmed_dead_before_commit_code": (
+            None
+            if operation.confirmed_dead_before_commit_code is None
+            else operation.confirmed_dead_before_commit_code.value
+        ),
+        "confirmed_dead_before_commit_count": (
+            operation.confirmed_dead_before_commit_count
+        ),
+        "lost_after_commit_participant_ids": [
+            str(participant_id)
+            for participant_id in (operation.lost_after_commit_participant_ids)
+        ],
         "operation_id": str(operation.operation_id),
+        "outcome_code": (
+            None
+            if operation.outcome_code is None
+            else operation.outcome_code.value
+        ),
         "pending_epoch": operation.pending_epoch.value,
         "phase": operation.phase.value,
         "provider_id": operation.provider_id.value,
@@ -214,7 +270,11 @@ def _open_object(operation: OpenSelectionOperation) -> JsonObject:
         ],
         "started_at": canonical_timestamp(operation.started_at),
         "target_account_id": str(operation.target_account_id),
-        "target_generation": str(operation.target_generation),
+        "target_generation": (
+            None
+            if operation.target_generation is None
+            else str(operation.target_generation)
+        ),
         "updated_at": canonical_timestamp(operation.updated_at),
     }
 
@@ -233,7 +293,11 @@ def _result_object(result: SelectionResult) -> JsonObject:
         "safe_code": result.safe_code.value,
         "started_at": canonical_timestamp(result.started_at),
         "target_account_id": str(result.target_account_id),
-        "target_generation": str(result.target_generation),
+        "target_generation": (
+            None
+            if result.target_generation is None
+            else str(result.target_generation)
+        ),
     }
 
 

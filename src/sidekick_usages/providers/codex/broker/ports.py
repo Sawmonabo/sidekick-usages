@@ -2,6 +2,7 @@
 
 from typing import Protocol
 
+from sidekick_usages.core.accounts.models import SavedAccount
 from sidekick_usages.core.accounts.types import (
     AuthorityGeneration,
     OperationId,
@@ -10,10 +11,24 @@ from sidekick_usages.core.accounts.types import (
 )
 from sidekick_usages.core.selection.models import (
     DueOperation,
+    FinalizedSelection,
     ProviderAuthObservation,
     ProviderRuntimeSnapshot,
 )
 from sidekick_usages.core.selection.types import OperationPriority
+from sidekick_usages.providers.codex.broker.models import (
+    CodexProjectionExpectation,
+)
+
+
+class CodexSavedAccountReader(Protocol):
+    """Read current secret-free account metadata by stable identifier."""
+
+    def read_saved(
+        self,
+        account_id: SidekickAccountId,
+    ) -> SavedAccount | None:
+        """Return one current saved account when it exists."""
 
 
 class CodexProjection(Protocol):
@@ -38,6 +53,30 @@ class CodexProjection(Protocol):
     @property
     def access_token(self) -> str:
         """Return the credential only while the projection is active."""
+
+
+class CodexSavedAuthorityRelation(Protocol):
+    """Relate runtime facts through current secret-free saved metadata."""
+
+    def expectation(
+        self,
+        selected: FinalizedSelection,
+    ) -> CodexProjectionExpectation | None:
+        """Resolve one finalized pointer through saved authority metadata."""
+
+    def matches(
+        self,
+        selected: FinalizedSelection,
+        observation: ProviderAuthObservation,
+    ) -> bool:
+        """Return whether both facts name one exact managed Codex login."""
+
+    def matches_account(
+        self,
+        account_id: SidekickAccountId,
+        observation: ProviderAuthObservation,
+    ) -> bool:
+        """Return whether an observation proves one saved Codex account."""
 
 
 class CodexWorkerExchange(Protocol):

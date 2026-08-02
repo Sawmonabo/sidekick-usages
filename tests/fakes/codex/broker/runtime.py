@@ -16,16 +16,19 @@ from sidekick_usages.core.accounts.types import (
 )
 from sidekick_usages.core.selection.models import (
     DueOperation,
-    SelectedAccountState,
+    FinalizedSelection,
+    ProviderAuthObservation,
+    SelectionEpoch,
 )
 from sidekick_usages.core.selection.types import (
-    ActivationOutcome,
     OperationKind,
     OperationPriority,
     OperationState,
-    ProviderRuntimeState,
 )
 from sidekick_usages.core.types import ProviderId
+from sidekick_usages.credentials.codex.managed.home import (
+    CodexManagedAuthReader,
+)
 from sidekick_usages.credentials.codex.managed.service import (
     CodexManagedAuthorityCoordinator,
 )
@@ -38,14 +41,17 @@ from sidekick_usages.paths import (
     managed_codex_home,
 )
 from sidekick_usages.persistence.accounts.store import AccountStore
+from sidekick_usages.persistence.errors import PersistenceError
 from sidekick_usages.persistence.private.credentials import (
     PrivateCredentialTree,
 )
 from sidekick_usages.persistence.supervisor.authority import (
     OperationAuthorityLock,
 )
+from sidekick_usages.persistence.supervisor.observation import (
+    RuntimeAuthObservationStore,
+)
 from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
-from sidekick_usages.persistence.supervisor.selection import SelectedStateStore
 from sidekick_usages.providers.codex.app_server.capabilities import (
     probe_codex_capabilities,
 )
@@ -66,6 +72,7 @@ from tests.fakes.codex.managed import (
     managed_subscription,
     seed_managed_accounts,
 )
+from tests.support.persistence import seed_finalized_selections
 from tests.support.time import REFERENCE_TIME, FixedClock
 
 ACCOUNT_A_ID = SidekickAccountId("11111111-1111-4111-8111-111111111111")
@@ -92,23 +99,59 @@ def selected_account(
     account_id: SidekickAccountId,
     provider_identity: str,
     generation: str,
-) -> SelectedAccountState:
-    """Build one verified saved-active Codex selection."""
-    return SelectedAccountState(
+) -> FinalizedSelection:
+    """Build one finalized Codex selection fixture."""
+    del provider_identity
+    return FinalizedSelection(
         provider_id=ProviderId.CODEX,
-        runtime_state=ProviderRuntimeState.SAVED_ACTIVE,
         account_id=account_id,
-        provider_identity=ProviderIdentity(provider_identity),
-        runtime_generation=AuthorityGeneration(generation),
-        verified_at=REFERENCE_TIME,
-        outcome=ActivationOutcome.VERIFIED,
+        epoch=SelectionEpoch(0),
+        generation=AuthorityGeneration(generation),
+        finalized_at=REFERENCE_TIME,
     )
 
 
-def broker_fixture(
+def activation_source_fixture(
     tmp_path: Path,
     short_socket_root: Path,
     monkeypatch: pytest.MonkeyPatch,
+) -> FakeCodexBrokerFixture:
+    """Build a runtime finalized at the matching native account A."""
+    return _broker_fixture(
+        tmp_path,
+        short_socket_root,
+        monkeypatch,
+        selected_account(
+            ACCOUNT_A_ID,
+            ACCOUNT_A_PROVIDER_IDENTITY,
+            GENERATION,
+        ),
+    )
+
+
+def broker_finalized_fixture(
+    tmp_path: Path,
+    short_socket_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> FakeCodexBrokerFixture:
+    """Build a runtime finalized at broker-managed account B."""
+    return _broker_fixture(
+        tmp_path,
+        short_socket_root,
+        monkeypatch,
+        selected_account(
+            MANAGED_ACCOUNT_ID,
+            PROVIDER_IDENTITY,
+            GENERATION,
+        ),
+    )
+
+
+def _broker_fixture(
+    tmp_path: Path,
+    short_socket_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    finalized: FinalizedSelection,
 ) -> FakeCodexBrokerFixture:
     """Build two managed accounts and an isolated resident-broker runtime."""
     provider_root = tmp_path / "provider"
@@ -172,12 +215,9 @@ def broker_fixture(
     )
     if seeded_paths.accounts != paths.accounts:
         raise AssertionError("Discovered and synthetic paths disagree.")
-    SelectedStateStore(paths.selected_state).save(
-        selected_account(
-            MANAGED_ACCOUNT_ID,
-            PROVIDER_IDENTITY,
-            GENERATION,
-        )
+    seed_finalized_selections(
+        paths,
+        finalized,
     )
     return FakeCodexBrokerFixture(
         paths,
@@ -210,44 +250,76 @@ def saved_generation(
     return str(managed_subscription(account).generation)
 
 
-def wait_for_selected_generation(
+def wait_for_projected_generation(
     paths: ApplicationPaths,
+    account_id: SidekickAccountId,
+    provider_identity: str,
     generation: str,
 ) -> None:
-    """Wait for the selected Codex generation to advance."""
+    """Wait for exact protected and projected Codex authority proof."""
     deadline = time.monotonic() + _WAIT_TIMEOUT_SECONDS
-    selected = SelectedStateStore(paths.selected_state)
     while True:
-        state = selected.load(ProviderId.CODEX)
-        if (
-            state is not None
-            and state.runtime_generation == AuthorityGeneration(generation)
-        ):
-            return
+        try:
+            if (
+                projection_matches_account(
+                    paths,
+                    account_id,
+                    provider_identity,
+                )
+                and saved_generation(paths, account_id) == generation
+            ):
+                return
+        except PersistenceError:
+            pass
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise AssertionError("Selected Codex generation did not advance.")
+            raise AssertionError("Codex projected authority did not advance.")
         time.sleep(min(_WAIT_INTERVAL_SECONDS, remaining))
+
+
+def projection_matches_account(
+    paths: ApplicationPaths,
+    account_id: SidekickAccountId,
+    provider_identity: str,
+) -> bool:
+    """Return whether projection proof matches one exact private account."""
+    observation = RuntimeAuthObservationStore(
+        paths.durable_operations
+    ).observe_projection(ProviderId.CODEX)
+    if (
+        observation is None
+        or observation.provider_identity != ProviderIdentity(provider_identity)
+    ):
+        return False
+    private = PrivateCredentialTree(
+        paths.private_codex_profiles,
+        account_path=paths.accounts,
+    )
+    matched = CodexManagedAuthReader(paths, private).matches_observation(
+        account_id,
+        observation,
+    )
+    return matched is True
 
 
 def wait_for_external_selection(
     paths: ApplicationPaths,
     provider_identity: str,
-) -> SelectedAccountState:
-    """Wait for an external Codex login to become selected."""
+) -> ProviderAuthObservation:
+    """Wait for an external Codex login to become observed."""
     deadline = time.monotonic() + _WAIT_TIMEOUT_SECONDS
-    selected = SelectedStateStore(paths.selected_state)
+    observations = RuntimeAuthObservationStore(paths.durable_operations)
     while True:
-        state = selected.load(ProviderId.CODEX)
-        if (
-            state is not None
-            and state.runtime_state is ProviderRuntimeState.EXTERNAL_ACTIVE
-            and state.provider_identity == ProviderIdentity(provider_identity)
+        state = observations.observe_native(ProviderId.CODEX)
+        if state is not None and state.provider_identity == ProviderIdentity(
+            provider_identity
         ):
             return state
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise AssertionError("External Codex selection was not related.")
+            raise AssertionError(
+                "External Codex observation was not recorded."
+            )
         time.sleep(min(_WAIT_INTERVAL_SECONDS, remaining))
 
 
@@ -349,7 +421,16 @@ def interrupt_activation_at_install(
         )
     )
     supervisor.notify()
-    daemon.wait_for_paused_install()
+    try:
+        daemon.wait_for_paused_install()
+    except AssertionError as error:
+        operation = OperationQueueStore(paths.durable_operations).find(
+            operation_id
+        )
+        failure_code = None if operation is None else operation.failure_code
+        raise AssertionError(
+            f"Fake Codex activation did not reach install: {failure_code}."
+        ) from error
     supervisor.request_stop()
     try:
         supervisor.close()

@@ -23,13 +23,12 @@ from sidekick_usages.cli.contexts.models import (
 )
 from sidekick_usages.core.accounts.types import (
     AuthorityGeneration,
-    ProviderIdentity,
+    SidekickAccountId,
 )
 from sidekick_usages.core.models import Account, ClaudeSetupTokenCredentials
-from sidekick_usages.core.selection.models import SelectedAccountState
-from sidekick_usages.core.selection.types import (
-    ActivationOutcome,
-    ProviderRuntimeState,
+from sidekick_usages.core.selection.models import (
+    FinalizedSelection,
+    SelectionEpoch,
 )
 from sidekick_usages.core.types import AccountLabel, ProviderId
 from sidekick_usages.doctor.accounts.models import HeartbeatSupport
@@ -56,6 +55,7 @@ from tests.support.persistence import (
     make_account_store,
     make_account_store_with_private,
     make_application_paths,
+    seed_finalized_selections,
 )
 from tests.support.time import REFERENCE_TIME
 
@@ -231,17 +231,14 @@ def test_doctor_fails_closed_for_untrusted_persisted_state(
     )
     store, private = make_account_store_with_private(tmp_path, (account,))
     saved = store.saved_accounts()[0]
-    SelectedStateStore(paths.selected_state).save(
-        SelectedAccountState(
-            provider_id=ProviderId.CLAUDE,
-            runtime_state=ProviderRuntimeState.SAVED_ACTIVE,
-            account_id=saved.account_id,
-            provider_identity=ProviderIdentity("unrelated-identity"),
-            runtime_generation=AuthorityGeneration("unrelated-generation"),
-            verified_at=REFERENCE_TIME,
-            outcome=ActivationOutcome.VERIFIED,
-        )
+    unrelated = FinalizedSelection(
+        provider_id=ProviderId.CLAUDE,
+        account_id=SidekickAccountId("99999999-9999-4999-8999-999999999999"),
+        epoch=SelectionEpoch(0),
+        generation=AuthorityGeneration("unrelated-generation"),
+        finalized_at=REFERENCE_TIME,
     )
+    seed_finalized_selections(paths, unrelated)
 
     mismatched = compose_doctor_context(
         paths=paths,
@@ -257,6 +254,16 @@ def test_doctor_fails_closed_for_untrusted_persisted_state(
         )
     finally:
         mismatched.close()
+    SelectedStateStore(paths.selected_state).compare_and_swap(
+        FinalizedSelection(
+            provider_id=ProviderId.CLAUDE,
+            account_id=saved.account_id,
+            epoch=SelectionEpoch(1),
+            generation=AuthorityGeneration("saved-generation"),
+            finalized_at=REFERENCE_TIME,
+        ),
+        expected=unrelated,
+    )
     repository = CredentialAuthorityRepository(private)
     private.destroy_owned_directory(
         repository.bundle_path(

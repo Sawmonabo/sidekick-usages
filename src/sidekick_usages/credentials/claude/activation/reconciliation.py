@@ -1,16 +1,17 @@
 """Steady-state Claude native-account reconciliation."""
 
+from datetime import datetime
+
 from sidekick_usages.clock import Clock
 from sidekick_usages.core.accounts.types import (
     AuthorityGeneration,
     ProviderIdentity,
 )
 from sidekick_usages.core.selection.models import (
+    FinalizedSelection,
     NativeReconciliationResult,
+    RelatedRuntimeAuthority,
     SelectedAccountState,
-)
-from sidekick_usages.core.selection.policy import (
-    same_selected_runtime_authority,
 )
 from sidekick_usages.core.selection.types import (
     ActivationOutcome,
@@ -83,41 +84,32 @@ class ClaudeNativeReconciliationService:
                     state=ProviderAuthState.UNSUPPORTED,
                 )
             )
-            return self._unchanged_result(
-                baseline,
-                current,
-            )
+            return NativeReconciliationResult(None, baseline != current)
         observed = self._authorities.observe_native(capabilities)
         self._authorities.record_native_observation(observed)
         if self._proof_incomplete(observed):
-            return self._unchanged_result(baseline, current)
-        candidate = self._candidate(
-            observed,
-            capabilities,
-            authority,
-        )
+            return NativeReconciliationResult(None, baseline != current)
         confirmed = self._authorities.observe_native(capabilities)
-        self._authorities.record_native_observation(confirmed)
+        confirmed_proof = self._authorities.record_native_observation(
+            confirmed
+        )
         if self._proof_incomplete(confirmed):
-            return self._unchanged_result(baseline, current)
+            return NativeReconciliationResult(None, baseline != current)
         if confirmed != observed:
-            observed = confirmed
-            candidate = self._candidate(
-                observed,
-                capabilities,
-                authority,
-            )
             self._authorities.require_native_current(
                 capabilities,
-                observed,
+                confirmed,
             )
-        committed = self._selected.compare_and_swap(
-            candidate,
-            expected=current,
+        candidate = self._candidate(
+            confirmed,
+            capabilities,
+            authority,
+            confirmed_proof.observed_at,
         )
         return NativeReconciliationResult(
-            committed,
-            not same_selected_runtime_authority(baseline, committed),
+            candidate,
+            not _finalized_matches_runtime(current, candidate),
+            _related_runtime_authority(candidate),
         )
 
     def _candidate(
@@ -125,6 +117,7 @@ class ClaudeNativeReconciliationService:
         observed: ClaudeNativeObservation,
         capabilities: ClaudeCapabilities,
         authority: ProviderMutationAuthority,
+        observed_at: datetime,
     ) -> SelectedAccountState:
         if observed.state is ProviderAuthState.ACTIVE:
             snapshot = observed.snapshot
@@ -136,12 +129,13 @@ class ClaudeNativeReconciliationService:
                 snapshot,
                 capabilities,
                 authority,
+                observed_at,
             )
         if observed.state is not ProviderAuthState.LOGGED_OUT:
             raise ClaudeActivationError(
                 ClaudeActivationFailure.RECONCILIATION_REQUIRED
             )
-        return self._inactive_candidate()
+        return self._inactive_candidate(observed_at)
 
     @staticmethod
     def _proof_incomplete(observed: ClaudeNativeObservation) -> bool:
@@ -150,21 +144,12 @@ class ClaudeNativeReconciliationService:
             ProviderAuthState.UNSUPPORTED,
         }
 
-    @staticmethod
-    def _unchanged_result(
-        baseline: SelectedAccountState | None,
-        current: SelectedAccountState | None,
-    ) -> NativeReconciliationResult:
-        return NativeReconciliationResult(
-            current,
-            not same_selected_runtime_authority(baseline, current),
-        )
-
     def _active_candidate(
         self,
         snapshot: ClaudeAuthoritySnapshot,
         capabilities: ClaudeCapabilities,
         authority: ProviderMutationAuthority,
+        observed_at: datetime,
     ) -> SelectedAccountState:
         account = self._authorities.relate_native_account(
             snapshot,
@@ -175,6 +160,7 @@ class ClaudeNativeReconciliationService:
             return self._external_candidate(
                 snapshot.provider_identity,
                 snapshot.generation,
+                observed_at,
             )
         return SelectedAccountState(
             provider_id=ProviderId.CLAUDE,
@@ -182,7 +168,7 @@ class ClaudeNativeReconciliationService:
             account_id=account.account_id,
             provider_identity=snapshot.provider_identity,
             runtime_generation=snapshot.generation,
-            verified_at=self._clock.now(),
+            verified_at=observed_at,
             outcome=ActivationOutcome.EXTERNAL_RECONCILED,
         )
 
@@ -190,6 +176,7 @@ class ClaudeNativeReconciliationService:
         self,
         provider_identity: ProviderIdentity,
         generation: AuthorityGeneration,
+        observed_at: datetime,
     ) -> SelectedAccountState:
         """Return one unassociated native login without label inference."""
         return SelectedAccountState(
@@ -198,17 +185,51 @@ class ClaudeNativeReconciliationService:
             account_id=None,
             provider_identity=provider_identity,
             runtime_generation=generation,
-            verified_at=self._clock.now(),
+            verified_at=observed_at,
             outcome=ActivationOutcome.EXTERNAL_RECONCILED,
         )
 
-    def _inactive_candidate(self) -> SelectedAccountState:
+    def _inactive_candidate(
+        self,
+        observed_at: datetime,
+    ) -> SelectedAccountState:
         return SelectedAccountState(
             provider_id=ProviderId.CLAUDE,
             runtime_state=ProviderRuntimeState.LOGGED_OUT,
             account_id=None,
             provider_identity=None,
             runtime_generation=None,
-            verified_at=self._clock.now(),
+            verified_at=observed_at,
             outcome=ActivationOutcome.LOGGED_OUT,
         )
+
+
+def _finalized_matches_runtime(
+    finalized: FinalizedSelection | None,
+    runtime: SelectedAccountState,
+) -> bool:
+    """Return whether finalized and provider-proven runtime facts agree."""
+    return (
+        runtime.runtime_state is ProviderRuntimeState.SAVED_ACTIVE
+        and finalized is not None
+        and finalized.account_id == runtime.account_id
+        and finalized.generation == runtime.runtime_generation
+    )
+
+
+def _related_runtime_authority(
+    runtime: SelectedAccountState,
+) -> RelatedRuntimeAuthority | None:
+    """Return the safe relation only for strong saved-runtime proof."""
+    if (
+        runtime.runtime_state is not ProviderRuntimeState.SAVED_ACTIVE
+        or runtime.account_id is None
+        or runtime.runtime_generation is None
+    ):
+        return None
+    return RelatedRuntimeAuthority(
+        provider_id=runtime.provider_id,
+        account_id=runtime.account_id,
+        generation=runtime.runtime_generation,
+        observed_at=runtime.verified_at,
+    )

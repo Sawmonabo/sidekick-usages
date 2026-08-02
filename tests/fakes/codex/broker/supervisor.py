@@ -33,6 +33,10 @@ from sidekick_usages.daemon.worker.pool import (
     WorkerPool,
 )
 from sidekick_usages.paths import ApplicationPaths
+from sidekick_usages.persistence.accounts.store import AccountStore
+from sidekick_usages.persistence.private.credentials import (
+    PrivateCredentialTree,
+)
 from sidekick_usages.persistence.supervisor.activation import (
     ActivationJournalStore,
 )
@@ -83,6 +87,13 @@ class FakeCodexSupervisor:
         )
         selected = SelectedStateStore(paths.selected_state)
         observations = RuntimeAuthObservationStore(paths.durable_operations)
+        accounts = AccountStore(
+            paths.accounts,
+            PrivateCredentialTree(
+                paths.private_credentials,
+                account_path=paths.accounts,
+            ),
+        ).load()
         recovery = ActivationRecoveryScheduler(journals, queue)
         events = OperationEventHub()
         exchanges = WorkerExchangeRegistry(time.monotonic)
@@ -111,6 +122,7 @@ class FakeCodexSupervisor:
                 observations,
                 clock,
             ),
+            accounts,
             DurableCodexOperationDispatcher(
                 queue,
                 observations,
@@ -126,7 +138,6 @@ class FakeCodexSupervisor:
         scheduler = DurableScheduler(
             queue,
             results,
-            selected,
             workers,
             clock,
             events=events,

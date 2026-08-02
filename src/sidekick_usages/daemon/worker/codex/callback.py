@@ -2,18 +2,15 @@
 
 import time
 from collections.abc import Callable
-from dataclasses import replace
 
 from sidekick_usages.clock import Clock
 from sidekick_usages.core.selection.models import (
     DueOperation,
-    SelectedAccountState,
+    FinalizedSelection,
 )
 from sidekick_usages.core.selection.types import (
-    ActivationOutcome,
     OperationKind,
     OperationPriority,
-    ProviderRuntimeState,
 )
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.credentials.codex.managed.service import (
@@ -35,7 +32,6 @@ from sidekick_usages.daemon.worker.runtime import (
     worker_failure,
     worker_success,
 )
-from sidekick_usages.persistence.state.files import ManagedStateConflictError
 from sidekick_usages.persistence.supervisor.authority import (
     OperationAuthority,
     ProviderMutationAuthority,
@@ -129,7 +125,7 @@ class CodexCallbackWorkerExecutor:
         self,
         operation: DueOperation,
         instruction: CodexCallbackInstruction,
-        selected: SelectedAccountState,
+        selected: FinalizedSelection,
         authority: OperationAuthority,
     ) -> WorkerResult:
         expected = _expectation(instruction)
@@ -172,7 +168,7 @@ class CodexCallbackWorkerExecutor:
             )
         finally:
             clear_mutable_buffer(acknowledgement)
-        if not self._commit_selected(selected, committed):
+        if not self._commit_correlated(selected, committed, instruction):
             return worker_failure(
                 operation,
                 WorkerOutcome.TRANSIENT_FAILURE,
@@ -185,7 +181,7 @@ class CodexCallbackWorkerExecutor:
         self,
         operation: DueOperation,
         instruction: CodexCallbackInstruction,
-        selected: SelectedAccountState,
+        selected: FinalizedSelection,
         authority: OperationAuthority,
     ) -> WorkerResult:
         staged = self._coordinator.stage_rehydration_with_authority(
@@ -227,7 +223,7 @@ class CodexCallbackWorkerExecutor:
             )
         finally:
             clear_mutable_buffer(acknowledgement)
-        if not self._commit_selected(selected, committed):
+        if not self._commit_correlated(selected, committed, instruction):
             return worker_failure(
                 operation,
                 WorkerOutcome.TRANSIENT_FAILURE,
@@ -240,42 +236,33 @@ class CodexCallbackWorkerExecutor:
         self,
         instruction: CodexCallbackInstruction,
         *,
-        expected: SelectedAccountState | None = None,
-    ) -> SelectedAccountState:
+        expected: FinalizedSelection | None = None,
+    ) -> FinalizedSelection:
         selected = self._selected.load(ProviderId.CODEX)
         if (
             selected is None
-            or selected.runtime_state is not ProviderRuntimeState.SAVED_ACTIVE
             or selected.account_id != instruction.account_id
-            or selected.provider_identity != instruction.provider_identity
-            or selected.runtime_generation != instruction.source_generation
+            or selected.generation != instruction.source_generation
             or (expected is not None and selected != expected)
         ):
             raise ValueError("Selected Codex authority changed.")
         return selected
 
-    def _commit_selected(
+    def _commit_correlated(
         self,
-        selected: SelectedAccountState,
+        selected: FinalizedSelection,
         committed: CodexManagedAuthorityResult,
+        instruction: CodexCallbackInstruction,
     ) -> bool:
         try:
             managed = require_managed_codex_authority(committed.account)
         except ValueError:
             return False
-        candidate = replace(
-            selected,
-            runtime_generation=managed.generation,
-            verified_at=managed.verified_at,
-            outcome=ActivationOutcome.VERIFIED,
+        return (
+            committed.account.account_id == selected.account_id
+            and managed.provider_identity == instruction.provider_identity
+            and self._selected.load(ProviderId.CODEX) == selected
         )
-        if candidate == selected:
-            return True
-        try:
-            self._selected.compare_and_swap(candidate, expected=selected)
-        except ManagedStateConflictError:
-            return False
-        return True
 
     def _managed_failure(
         self,

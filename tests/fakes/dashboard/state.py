@@ -25,11 +25,11 @@ from sidekick_usages.core.models import (
     UsageWindow,
 )
 from sidekick_usages.core.selection.models import (
+    FinalizedSelection,
     ProviderAuthObservation,
-    SelectedAccountState,
+    SelectionEpoch,
 )
 from sidekick_usages.core.selection.types import (
-    ActivationOutcome,
     ProviderAuthState,
     ProviderRuntimeState,
 )
@@ -68,6 +68,7 @@ from sidekick_usages.usage.dashboard.models import (
     DashboardService,
     DashboardSnapshot,
 )
+from tests.support.persistence import seed_finalized_selections
 
 CLAUDE_PREVIEW_ACCOUNT_ID = SidekickAccountId(
     "33333333-3333-4333-8333-333333333333"
@@ -174,43 +175,35 @@ def seed_cached_dashboard(
             ),
         ),
     )
-    claude_selected = SelectedAccountState(
+    claude_observation = ProviderAuthObservation(
         provider_id=ProviderId.CLAUDE,
-        runtime_state=ProviderRuntimeState.EXTERNAL_ACTIVE,
-        account_id=None,
+        state=ProviderAuthState.ACTIVE,
         provider_identity=ProviderIdentity(EXTERNAL_PROVIDER_IDENTITY),
-        runtime_generation=AuthorityGeneration("external-generation"),
-        verified_at=observed_at,
-        outcome=ActivationOutcome.EXTERNAL_RECONCILED,
+        generation=AuthorityGeneration("external-generation"),
+        observed_at=observed_at,
     )
-    codex_selected = SelectedAccountState(
+    codex_selected = FinalizedSelection(
         provider_id=ProviderId.CODEX,
-        runtime_state=ProviderRuntimeState.SAVED_ACTIVE,
         account_id=renamed.account_id,
-        provider_identity=ProviderIdentity(VALID_PROVIDER_IDENTITY),
-        runtime_generation=CODEX_NEWER_GENERATION,
-        verified_at=observed_at,
-        outcome=ActivationOutcome.VERIFIED,
+        epoch=SelectionEpoch(0),
+        generation=CODEX_NEWER_GENERATION,
+        finalized_at=observed_at,
     )
-    selected = SelectedStateStore(paths.selected_state)
-    selected.save(claude_selected)
-    selected.save(codex_selected)
+    current_selection = SelectedStateStore(paths.selected_state).load(
+        ProviderId.CODEX
+    )
+    if current_selection is None:
+        seed_finalized_selections(paths, codex_selected)
+    elif current_selection != codex_selected:
+        raise AssertionError("Synthetic Codex selection changed.")
     observations = RuntimeAuthObservationStore(paths.durable_operations)
-    observations.save_native(
-        ProviderAuthObservation(
-            provider_id=ProviderId.CLAUDE,
-            state=ProviderAuthState.ACTIVE,
-            provider_identity=claude_selected.provider_identity,
-            generation=claude_selected.runtime_generation,
-            observed_at=claude_selected.verified_at,
-        )
-    )
+    observations.save_native(claude_observation)
     codex_observation = ProviderAuthObservation(
         provider_id=ProviderId.CODEX,
         state=ProviderAuthState.ACTIVE,
-        provider_identity=codex_selected.provider_identity,
+        provider_identity=ProviderIdentity(VALID_PROVIDER_IDENTITY),
         generation=CODEX_NEWER_GENERATION,
-        observed_at=codex_selected.verified_at,
+        observed_at=codex_selected.finalized_at,
     )
     observations.save_native(codex_observation)
     observations.save_projection(codex_observation)

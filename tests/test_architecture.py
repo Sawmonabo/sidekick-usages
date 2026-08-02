@@ -11,9 +11,7 @@ import check_architecture
 from sidekick_usages.cli.app import create_app
 
 REPO_ROOT = Path(__file__).parents[1]
-_RICH_FREE_STARTUP_PATH = (
-    "src/sidekick_usages/usage/presentation/dashboard/render/frame.py"
-)
+_RICH_FREE_STARTUP_PATH = "src/sidekick_usages/cli/runtime/routing.py"
 
 
 _MUTATIONS = (
@@ -189,12 +187,8 @@ _MUTATIONS = (
     architecture.models.SourceMutation(
         "CLI001",
         _RICH_FREE_STARTUP_PATH,
-        "from sidekick_usages.branding.content import FULL_HEADER_MIN_WIDTH\n",
-        (
-            "import rich\n\n"
-            "from sidekick_usages.branding.content "
-            "import FULL_HEADER_MIN_WIDTH\n"
-        ),
+        "from collections.abc import Sequence\n",
+        ("import rich\n\nfrom collections.abc import Sequence\n"),
     ),
     architecture.models.SourceMutation(
         "CLI001",
@@ -349,6 +343,24 @@ def test_near_limit_module_emits_a_cohesion_warning() -> None:
     )
     assert not any(
         violation.path.name == "architecture_warning_fixture.py"
+        for violation in report.violations
+    )
+
+
+def test_selection_schema_flat_namespace_exception_is_exact() -> None:
+    """A third selection schema sibling remains an architecture failure."""
+    path = "src/sidekick_usages/persistence/schema/selection_extra.py"
+    report = check_architecture.check_repository(
+        REPO_ROOT,
+        source_overrides={path: '"""Deliberate selection sibling."""\n'},
+    )
+
+    assert any(
+        violation.rule_id == "PKG002"
+        and violation.path.as_posix()
+        == "src/sidekick_usages/persistence/schema/selection.py"
+        and "selection_operation.py" in violation.message
+        and "selection_extra.py" in violation.message
         for violation in report.violations
     )
 

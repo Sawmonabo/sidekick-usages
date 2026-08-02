@@ -25,6 +25,7 @@ from sidekick_usages.providers.codex.broker.models import CodexDaemonAuthority
 from sidekick_usages.providers.codex.broker.ports import (
     CodexOperationDispatcher,
     CodexRuntimeStateReader,
+    CodexSavedAuthorityRelation,
 )
 from sidekick_usages.providers.codex.broker.service import CodexSharedRuntime
 from sidekick_usages.providers.codex.broker.types import CodexBrokerFailure
@@ -39,11 +40,13 @@ class CodexNativeAuthReconciler:
     def __init__(
         self,
         runtime_state: CodexRuntimeStateReader,
+        saved_authority: CodexSavedAuthorityRelation,
         operations: CodexOperationDispatcher,
         wall_time: Callable[[], datetime],
         monotonic: Callable[[], float],
     ) -> None:
         self._runtime_state = runtime_state
+        self._saved_authority = saved_authority
         self._operations = operations
         self._wall_time = wall_time
         self._monotonic = monotonic
@@ -144,7 +147,11 @@ class CodexNativeAuthReconciler:
             not force
             and projection is not None
             and same_provider_auth_authority(observation, projection)
-            and _selected_matches_projection(selected, projection)
+            and _selected_matches_projection(
+                selected,
+                projection,
+                self._saved_authority,
+            )
         )
         if retained_projection:
             return None
@@ -152,7 +159,9 @@ class CodexNativeAuthReconciler:
             observation, baseline
         )
         uninitialized = baseline is None and not _selected_matches_observation(
-            selected, observation
+            selected,
+            observation,
+            self._saved_authority,
         )
         if force or changed or uninitialized:
             return self._operations.reconcile_native(observation, priority)
@@ -248,22 +257,24 @@ def _authority(runtime: CodexSharedRuntime) -> CodexDaemonAuthority:
 def _selected_matches_observation(
     selected: FinalizedSelection | None,
     observation: ProviderAuthObservation,
+    saved_authority: CodexSavedAuthorityRelation,
 ) -> bool:
     return (
         selected is not None
         and selected.provider_id is observation.provider_id
         and observation.state is ProviderAuthState.ACTIVE
-        and selected.generation == observation.generation
+        and saved_authority.matches(selected, observation)
     )
 
 
 def _selected_matches_projection(
     selected: FinalizedSelection | None,
     projection: ProviderAuthObservation,
+    saved_authority: CodexSavedAuthorityRelation,
 ) -> bool:
     return (
         selected is not None
         and selected.provider_id is projection.provider_id
         and projection.state is ProviderAuthState.ACTIVE
-        and selected.generation == projection.generation
+        and saved_authority.matches(selected, projection)
     )

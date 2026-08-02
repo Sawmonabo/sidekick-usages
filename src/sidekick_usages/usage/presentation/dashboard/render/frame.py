@@ -127,7 +127,9 @@ def render_dashboard_layout(
         masthead=_finish(rendered_masthead, width, color),
         body=_finish(body_lines, width, color),
         status=(
-            "" if not rendered_status else _finish(
+            ""
+            if not rendered_status
+            else _finish(
                 rendered_status,
                 width,
                 color,

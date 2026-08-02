@@ -677,7 +677,19 @@ def _provider_account_ids(
         active = journals.load(operation.provider_id).active
         if active is None or active.target_account_id != account_id:
             raise ValueError("Provider reconciliation journal is unavailable.")
-        baseline = active.selected_baseline
-    else:
-        baseline = selected.load(operation.provider_id)
-    return tuple(sorted(activation_account_ids(baseline, account_id)))
+        return tuple(
+            sorted(
+                activation_account_ids(
+                    active.selected_baseline,
+                    account_id,
+                )
+            )
+        )
+    finalized = selected.load(operation.provider_id)
+    return tuple(
+        sorted(
+            {account_id}
+            if finalized is None
+            else {finalized.account_id, account_id}
+        )
+    )

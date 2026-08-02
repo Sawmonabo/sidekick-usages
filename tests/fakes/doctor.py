@@ -10,7 +10,7 @@ from sidekick_usages.core.accounts.models import SavedAccount
 from sidekick_usages.core.selection.models import (
     ActivationRecord,
     DueOperation,
-    SelectedAccountState,
+    FinalizedSelection,
 )
 from sidekick_usages.credentials.capabilities.models import (
     ProviderCapabilityReport,
@@ -47,7 +47,7 @@ def doctor_harness(
     tmp_path: Path,
     accounts: tuple[SavedAccount, ...],
     dashboard: DashboardSnapshot | None = None,
-    selected_states: tuple[SelectedAccountState, ...] = (),
+    selected_states: tuple[FinalizedSelection, ...] = (),
     operations: tuple[DueOperation, ...] = (),
     activations: tuple[ActivationRecord, ...] = (),
     capabilities: ProviderCapabilityReport | None = None,

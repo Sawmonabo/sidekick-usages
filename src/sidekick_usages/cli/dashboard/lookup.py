@@ -223,9 +223,7 @@ class DashboardLookupCoordinator:
         metrics_refresh: MetricsRefreshTracker,
     ) -> None:
         with self._snapshot_lock:
-            resolved_snapshot, snapshot_failure = (
-                self._load_lookup_snapshot()
-            )
+            resolved_snapshot, snapshot_failure = self._load_lookup_snapshot()
             if snapshot_failure is not None and metrics_refresh.retry_snapshot(
                 snapshot_failure
             ):
@@ -241,9 +239,7 @@ class DashboardLookupCoordinator:
                     ),
                 )
             ):
-                retried_snapshot, retry_failure = (
-                    self._load_lookup_snapshot()
-                )
+                retried_snapshot, retry_failure = self._load_lookup_snapshot()
                 if retried_snapshot is not None:
                     resolved_snapshot = retried_snapshot
                 else:

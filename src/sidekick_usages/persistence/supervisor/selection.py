@@ -1,5 +1,6 @@
 """Durable provider selection keyed by stable account ID."""
 
+from dataclasses import replace
 from pathlib import Path
 
 from sidekick_usages.core.accounts.types import SidekickAccountId
@@ -11,7 +12,11 @@ from sidekick_usages.core.selection.models import (
 from sidekick_usages.core.selection.policy import (
     require_selection_transition,
 )
-from sidekick_usages.core.selection.types import SelectionPhase
+from sidekick_usages.core.selection.types import (
+    SelectionCode,
+    SelectionOutcome,
+    SelectionPhase,
+)
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.persistence.errors import InvalidSchemaError
 from sidekick_usages.persistence.filesystem.transaction import (
@@ -93,49 +98,31 @@ class SelectedStateStore(SelectedStateReader):
             _snapshot, document = self._load_current(transaction)
             return document.states
 
-    def save(self, state: FinalizedSelection) -> FinalizedSelection:
-        """Atomically replace one provider without changing others."""
-        return self._save(state)
-
     def compare_and_swap(
         self,
         state: FinalizedSelection,
         *,
         expected: FinalizedSelection | None,
     ) -> FinalizedSelection:
-        """Replace one provider only if its exact state or absence remains."""
+        """Publish exactly one coordinator-owned forward epoch."""
         if (
             expected is not None
             and state.provider_id is not expected.provider_id
         ):
             raise ValueError("Selected-state providers must match.")
-        return self._save(
-            state,
-            expected=expected,
-            compare=True,
-        )
-
-    def _save(
-        self,
-        state: FinalizedSelection,
-        *,
-        expected: FinalizedSelection | None = None,
-        compare: bool = False,
-    ) -> FinalizedSelection:
         with self._lock.hold() as transaction:
             snapshot, document = self._load_current(transaction)
-            if compare and document.get(state.provider_id) != expected:
+            if document.get(state.provider_id) != expected:
                 raise ManagedStateConflictError(
                     ManagedStateConflictKind.CONCURRENT_CHANGE
                 )
-            if compare:
-                required_epoch = (
-                    0 if expected is None else expected.epoch.next().value
+            required_epoch = (
+                1 if expected is None else expected.epoch.next().value
+            )
+            if state.epoch.value != required_epoch:
+                raise ManagedStateConflictError(
+                    ManagedStateConflictKind.CONCURRENT_CHANGE
                 )
-                if state.epoch.value != required_epoch:
-                    raise ManagedStateConflictError(
-                        ManagedStateConflictKind.CONCURRENT_CHANGE
-                    )
             states = {
                 current.provider_id: current for current in document.states
             }
@@ -287,7 +274,7 @@ class SelectionOperationStore:
         return replacement
 
     def complete(self, result: SelectionResult) -> SelectionResult:
-        """Close one matching operation into bounded terminal history."""
+        """Close a proven result or retain ambiguous recovery authority."""
         filesystem = self._provider_filesystem(result.provider_id)
         with PersistenceLock(filesystem).hold() as transaction:
             recover_state_file(filesystem, transaction)
@@ -295,15 +282,34 @@ class SelectionOperationStore:
             active = document.active
             if active is None and result in document.history:
                 return result
-            if (
-                active is None
-                or active.phase
-                not in {
-                    SelectionPhase.AWAITING_READY,
-                    SelectionPhase.RECOVERING,
-                }
-                or not _selection_result_matches(active, result)
-            ):
+            if active is None or not _selection_result_matches(active, result):
+                raise ManagedStateConflictError(
+                    ManagedStateConflictKind.CONCURRENT_CHANGE
+                )
+            if result.outcome is SelectionOutcome.RECOVERY_REQUIRED:
+                recovering = replace(
+                    active,
+                    phase=SelectionPhase.RECOVERING,
+                    outcome_code=SelectionCode.SELECTION_RECOVERY_REQUIRED,
+                    updated_at=max(active.updated_at, result.completed_at),
+                )
+                try:
+                    require_selection_transition(active, recovering)
+                except ValueError:
+                    raise ManagedStateConflictError(
+                        ManagedStateConflictKind.CONCURRENT_CHANGE
+                    ) from None
+                self._commit(
+                    filesystem,
+                    snapshot,
+                    SelectionOperationDocument(
+                        provider_id=result.provider_id,
+                        active=recovering,
+                        history=document.history,
+                    ),
+                )
+                return result
+            if not _selection_result_may_close(active, result):
                 raise ManagedStateConflictError(
                     ManagedStateConflictKind.CONCURRENT_CHANGE
                 )
@@ -382,9 +388,39 @@ def _selection_result_matches(
         and operation.provider_id is result.provider_id
         and operation.target_account_id == result.target_account_id
         and operation.target_generation == result.target_generation
-        and operation.pending_epoch == result.epoch
         and operation.started_at == result.started_at
         and result.required_count == len(operation.required_participant_ids)
         and result.ready_count == len(operation.ready_participant_ids)
-        and result.adopted_count == len(operation.adopted_participant_ids)
+        and result.adopted_count == 0
+        and result.lost_count
+        == len(operation.lost_after_commit_participant_ids)
+        and result.epoch
+        == (
+            operation.baseline_epoch
+            if result.outcome is SelectionOutcome.FAILED_OLD_EPOCH
+            else operation.pending_epoch
+        )
+    )
+
+
+def _selection_result_may_close(
+    operation: OpenSelectionOperation,
+    result: SelectionResult,
+) -> bool:
+    """Return whether an exact active phase may close to this outcome."""
+    if result.outcome is SelectionOutcome.FAILED_OLD_EPOCH:
+        return operation.phase in {
+            SelectionPhase.PREVALIDATING,
+            SelectionPhase.PREPARING,
+            SelectionPhase.WAITING_OLD_TURNS,
+            SelectionPhase.RECOVERING,
+        }
+    if operation.phase is not SelectionPhase.AWAITING_READY:
+        return False
+    if result.outcome is SelectionOutcome.READY:
+        return operation.outcome_code is None
+    return (
+        result.outcome is SelectionOutcome.PARTICIPANT_LOST_AFTER_COMMIT
+        and operation.outcome_code
+        is SelectionCode.PARTICIPANT_LOST_AFTER_COMMIT
     )

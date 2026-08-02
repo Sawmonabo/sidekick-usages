@@ -18,11 +18,12 @@ from sidekick_usages.core.accounts.types import (
     SidekickAccountId,
 )
 from sidekick_usages.core.models import ClaudeSetupTokenCredentials
-from sidekick_usages.core.selection.models import SelectedAccountState
+from sidekick_usages.core.selection.models import (
+    FinalizedSelection,
+    SelectionEpoch,
+)
 from sidekick_usages.core.selection.types import (
-    ActivationOutcome,
     OperationKind,
-    ProviderRuntimeState,
 )
 from sidekick_usages.core.types import AccountLabel, ProviderId
 from sidekick_usages.credentials.claude.activation.authority import (
@@ -94,7 +95,10 @@ from tests.fakes.claude.managed import (
     native_profile,
     profile_tree,
 )
-from tests.support.persistence import make_application_paths
+from tests.support.persistence import (
+    make_application_paths,
+    seed_finalized_selections,
+)
 from tests.support.time import REFERENCE_TIME, FixedClock
 
 ACCOUNT_A = SidekickAccountId("11111111-1111-4111-8111-111111111111")
@@ -154,7 +158,7 @@ class MaintenanceScenario:
     profile_b: Path
     native_profile: ClaudeNativeProfile
     native_file: Path
-    selected_before: SelectedAccountState
+    selected_before: FinalizedSelection
     payload_a: bytes
     refreshed_private_b: bytes
     refreshed_native_b: bytes
@@ -673,7 +677,7 @@ def _select_native_account(
     root: Path,
     payload: bytes,
     account_id: SidekickAccountId,
-) -> tuple[ClaudeNativeProfile, Path, SelectedAccountState]:
+) -> tuple[ClaudeNativeProfile, Path, FinalizedSelection]:
     native = native_profile(root)
     credential_file = native.config_directory / CLAUDE_CREDENTIAL_FILE
     credential_file.write_bytes(payload)
@@ -693,17 +697,14 @@ def _select_native_account(
             }
         ),
     )
-    selected = SelectedStateStore(paths.selected_state).save(
-        SelectedAccountState(
-            provider_id=ProviderId.CLAUDE,
-            runtime_state=ProviderRuntimeState.SAVED_ACTIVE,
-            account_id=account_id,
-            provider_identity=snapshot.provider_identity,
-            runtime_generation=snapshot.generation,
-            verified_at=REFERENCE_TIME,
-            outcome=ActivationOutcome.VERIFIED,
-        )
+    selected = FinalizedSelection(
+        provider_id=ProviderId.CLAUDE,
+        account_id=account_id,
+        epoch=SelectionEpoch(0),
+        generation=snapshot.generation,
+        finalized_at=REFERENCE_TIME,
     )
+    seed_finalized_selections(paths, selected)
     return native, credential_file, selected
 
 

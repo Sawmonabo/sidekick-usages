@@ -6,7 +6,10 @@ from contextlib import suppress
 from datetime import datetime, timedelta
 
 from sidekick_usages.clock import Clock
-from sidekick_usages.core.selection.models import DueOperation
+from sidekick_usages.core.selection.models import (
+    DueOperation,
+    RelatedRuntimeAuthority,
+)
 from sidekick_usages.core.selection.types import (
     OperationKind,
     OperationPriority,
@@ -31,7 +34,6 @@ from sidekick_usages.daemon.worker.pool import (
 from sidekick_usages.persistence.state.files import ManagedStateConflictError
 from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
 from sidekick_usages.persistence.supervisor.results import WorkerResultStore
-from sidekick_usages.persistence.supervisor.selection import SelectedStateStore
 
 _SCHEDULE_INTERVAL = timedelta(minutes=5)
 _MINIMUM_RETRY = timedelta(minutes=1)
@@ -59,7 +61,6 @@ class DurableScheduler:
         self,
         queue: OperationQueueStore,
         results: WorkerResultStore,
-        selected: SelectedStateStore,
         workers: WorkerPool,
         clock: Clock,
         *,
@@ -69,7 +70,6 @@ class DurableScheduler:
     ) -> None:
         self._queue = queue
         self._results = results
-        self._selected = selected
         self._workers = workers
         self._clock = clock
         self._events = events or NullOperationEventSink()
@@ -346,7 +346,10 @@ class DurableScheduler:
             WorkerOutcome.NO_CHANGE,
         }:
             if operation.kind is OperationKind.RECONCILE_NATIVE:
-                self._discard_stale_activations(operation.provider_id)
+                self._discard_stale_activations(
+                    operation.provider_id,
+                    result.related_runtime_authority,
+                )
             if (
                 operation.kind is OperationKind.RECONCILE_NATIVE
                 or operation.priority is OperationPriority.SCHEDULED
@@ -400,14 +403,14 @@ class DurableScheduler:
     def _discard_stale_activations(
         self,
         provider_id: ProviderId,
+        authority: RelatedRuntimeAuthority | None,
     ) -> None:
-        selected = self._selected.load(provider_id)
-        if selected is None:
+        if authority is None or authority.provider_id is not provider_id:
             return
         stale = self._queue.discard_stale_activations(
             provider_id,
-            selected.account_id,
-            selected.verified_at,
+            authority.account_id,
+            authority.observed_at,
         )
         for superseded in stale:
             self._events.completed(

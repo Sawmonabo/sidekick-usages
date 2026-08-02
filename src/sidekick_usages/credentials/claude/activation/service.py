@@ -12,6 +12,7 @@ from sidekick_usages.core.accounts.types import (
 from sidekick_usages.core.selection.models import (
     ActivationRecord,
     ClaudeAuthObservation,
+    FinalizedSelection,
     SelectedAccountState,
     activation_account_ids,
 )
@@ -75,9 +76,9 @@ class ClaudeActivationService:
         """Retain the native source, activate the target, and commit proof."""
         authority.require(ProviderId.CLAUDE)
         self._authorities.require_activation_environment()
-        baseline = self._selected.load(ProviderId.CLAUDE)
+        finalized = self._selected.load(ProviderId.CLAUDE)
         source_account_id = self._source_account_id(
-            baseline,
+            finalized,
             target_account_id,
         )
         authority.account(source_account_id)
@@ -120,14 +121,14 @@ class ClaudeActivationService:
             ClaudeActivationFailure.TARGET_UNAVAILABLE,
         )
         native_source = self._authorities.read_native(native_capabilities)
-        native_baseline = self._relate_source(
-            baseline,
+        native_baseline, selected_baseline = self._relate_source(
+            finalized,
             source,
             source_authority,
             native_source,
         )
         transaction = self._transaction(
-            baseline,
+            selected_baseline,
             target_account_id,
             authority,
         )
@@ -136,7 +137,7 @@ class ClaudeActivationService:
             ActivationRecord(
                 provider_id=ProviderId.CLAUDE,
                 operation_id=operation_id,
-                selected_baseline=baseline,
+                selected_baseline=selected_baseline,
                 native_auth_baseline=native_baseline,
                 target_account_id=target_account_id,
                 expected_target_identity=(target_authority.provider_identity),
@@ -284,14 +285,12 @@ class ClaudeActivationService:
 
     @staticmethod
     def _source_account_id(
-        baseline: SelectedAccountState | None,
+        baseline: FinalizedSelection | None,
         target_account_id: SidekickAccountId,
     ) -> SidekickAccountId:
         if (
             baseline is None
             or baseline.provider_id is not ProviderId.CLAUDE
-            or baseline.runtime_state is not ProviderRuntimeState.SAVED_ACTIVE
-            or baseline.account_id is None
             or baseline.account_id == target_account_id
         ):
             raise ClaudeActivationError(ClaudeActivationFailure.STATE_CHANGED)
@@ -299,24 +298,35 @@ class ClaudeActivationService:
 
     def _relate_source(
         self,
-        baseline: SelectedAccountState | None,
+        baseline: FinalizedSelection | None,
         source: SavedAccount,
         authority: ClaudeManagedLoginAuthority,
         native: ClaudeAuthoritySnapshot,
-    ) -> ClaudeAuthObservation:
+    ) -> tuple[ClaudeAuthObservation, SelectedAccountState]:
         if (
             baseline is None
             or baseline.account_id != source.account_id
-            or baseline.provider_identity != authority.provider_identity
             or native.provider_identity != authority.provider_identity
-            or baseline.runtime_generation != native.generation
+            or baseline.generation != native.generation
         ):
             raise ClaudeActivationError(ClaudeActivationFailure.NATIVE_CHANGED)
         self._authorities.require_usable(
             native,
             ClaudeActivationFailure.NATIVE_UNAVAILABLE,
         )
-        return claude_auth_observation(native, self._clock.now())
+        observed_at = self._clock.now()
+        return (
+            claude_auth_observation(native, observed_at),
+            SelectedAccountState(
+                provider_id=ProviderId.CLAUDE,
+                runtime_state=ProviderRuntimeState.SAVED_ACTIVE,
+                account_id=source.account_id,
+                provider_identity=authority.provider_identity,
+                runtime_generation=native.generation,
+                verified_at=observed_at,
+                outcome=ActivationOutcome.VERIFIED,
+            ),
+        )
 
     def _transaction(
         self,

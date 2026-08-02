@@ -16,7 +16,7 @@ from sidekick_usages.core.accounts.types import (
 from sidekick_usages.core.selection.models import (
     ActivationRecord,
     DueOperation,
-    SelectedAccountState,
+    FinalizedSelection,
 )
 from sidekick_usages.core.selection.types import (
     AuthorityGenerationRelation,
@@ -41,16 +41,6 @@ from sidekick_usages.usage.dashboard.models import (
     DashboardSnapshot,
 )
 
-_NATIVE_RELATIONS = {
-    ProviderRuntimeState.SAVED_ACTIVE: NativeAccountRelation.INACTIVE,
-    ProviderRuntimeState.EXTERNAL_ACTIVE: NativeAccountRelation.EXTERNAL,
-    ProviderRuntimeState.LOGGED_OUT: NativeAccountRelation.LOGGED_OUT,
-    ProviderRuntimeState.UNREADABLE: (
-        NativeAccountRelation.RECONCILIATION_REQUIRED
-    ),
-    ProviderRuntimeState.UNSUPPORTED: NativeAccountRelation.UNSUPPORTED,
-}
-
 
 class DoctorRuntimeService:
     """Provide one cached runtime diagnostic per saved account."""
@@ -59,7 +49,7 @@ class DoctorRuntimeService:
         self,
         accounts: tuple[SavedAccount, ...],
         snapshot: DashboardSnapshot | None,
-        selected_states: tuple[SelectedAccountState, ...],
+        selected_states: tuple[FinalizedSelection, ...],
         operations: tuple[DueOperation, ...],
         activations: tuple[ActivationRecord, ...],
     ) -> None:
@@ -73,23 +63,12 @@ class DoctorRuntimeService:
             raise ValueError("Doctor runtime accounts do not match.")
         account_map = {account.account_id: account for account in accounts}
         for state in selected_states:
-            if state.runtime_state is not ProviderRuntimeState.SAVED_ACTIVE:
-                continue
-            selected_account_id = state.account_id
-            if selected_account_id is None:
-                raise ValueError(
-                    "Doctor selected account identity is incomplete."
-                )
-            selected_account = account_map.get(selected_account_id)
+            selected_account = account_map.get(state.account_id)
             if selected_account is None:
                 raise ValueError("Doctor selected account does not exist.")
             if selected_account.provider_id is not state.provider_id:
                 raise ValueError(
                     "Doctor selected provider does not match its account."
-                )
-            if selected_account.provider_identity != state.provider_identity:
-                raise ValueError(
-                    "Doctor selected identity does not match its account."
                 )
         selected = {state.provider_id: state for state in selected_states}
         self._diagnostics = {
@@ -233,7 +212,7 @@ def _snapshot_metrics(
 
 def _diagnostic(
     account: SavedAccount,
-    selected: SelectedAccountState | None,
+    selected: FinalizedSelection | None,
     metrics: tuple[MetricsFreshness, datetime | None],
 ) -> AccountRuntimeDiagnostic:
     metrics_freshness, metrics_observed_at = metrics
@@ -267,38 +246,30 @@ def _metric_observation(
 
 def _native_relation(
     account: SavedAccount,
-    selected: SelectedAccountState | None,
+    selected: FinalizedSelection | None,
 ) -> NativeAccountRelation:
     if selected is None:
         return NativeAccountRelation.UNKNOWN
-    if (
-        selected.runtime_state is ProviderRuntimeState.SAVED_ACTIVE
-        and selected.account_id == account.account_id
-    ):
+    if selected.account_id == account.account_id:
         return NativeAccountRelation.ACTIVE
-    return _NATIVE_RELATIONS.get(
-        selected.runtime_state,
-        NativeAccountRelation.UNKNOWN,
-    )
+    return NativeAccountRelation.INACTIVE
 
 
 def _generation_relation(
     account: SavedAccount,
-    selected: SelectedAccountState | None,
+    selected: FinalizedSelection | None,
 ) -> AuthorityGenerationRelation:
     saved = _authority_generation(account)
     if (
         selected is None
-        or selected.runtime_state is not ProviderRuntimeState.SAVED_ACTIVE
         or selected.account_id != account.account_id
-        or selected.runtime_generation is None
         or saved is None
     ):
         return AuthorityGenerationRelation.NOT_SAFELY_COMPARABLE
     if isinstance(account.authority, ClaudeAccountAuthority):
-        return claude_generation_relation(saved, selected.runtime_generation)
+        return claude_generation_relation(saved, selected.generation)
     try:
-        return codex_generation_relation(saved, selected.runtime_generation)
+        return codex_generation_relation(saved, selected.generation)
     except ValueError:
         return AuthorityGenerationRelation.NOT_SAFELY_COMPARABLE
 

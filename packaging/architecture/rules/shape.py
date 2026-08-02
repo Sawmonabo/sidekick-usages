@@ -9,15 +9,13 @@ from architecture.source import finding
 
 MIN_NAMESPACE_FAMILY_SIZE = 2
 # The approved selection contract requires this one schema sibling.
-_APPROVED_FLAT_NAMESPACE_FAMILIES = frozenset(
-    {
-        (
-            PurePosixPath("src/sidekick_usages/persistence/schema"),
-            "prefix",
-            "selection",
-        ),
-    }
-)
+_APPROVED_FLAT_NAMESPACE_FAMILIES = {
+    (
+        PurePosixPath("src/sidekick_usages/persistence/schema"),
+        "prefix",
+        "selection",
+    ): frozenset({"selection.py", "selection_operation.py"}),
+}
 _STALE_SOURCE_FILES = frozenset(
     {
         "src/sidekick_usages/cli.py",
@@ -293,7 +291,8 @@ def _check_flat_namespaces(
         families.items(),
         key=lambda item: tuple(str(value) for value in item[0]),
     ):
-        if (parent, kind, token) in _APPROVED_FLAT_NAMESPACE_FAMILIES:
+        approved = _APPROVED_FLAT_NAMESPACE_FAMILIES.get((parent, kind, token))
+        if approved == frozenset(unit.path.name for unit in members):
             continue
         if len(members) < MIN_NAMESPACE_FAMILY_SIZE:
             continue

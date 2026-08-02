@@ -11,7 +11,6 @@ from sidekick_usages.core.selection.models import DueOperation
 from sidekick_usages.core.selection.types import (
     OperationKind,
     OperationPriority,
-    ProviderAuthState,
 )
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.providers.codex.account.types import CodexAuthMode
@@ -28,6 +27,9 @@ from sidekick_usages.providers.codex.app_server.methods import (
 )
 from sidekick_usages.providers.codex.app_server.types import (
     CodexAppServerFailure,
+)
+from sidekick_usages.providers.codex.broker.authority import (
+    CodexSavedAuthorityResolver,
 )
 from sidekick_usages.providers.codex.broker.errors import CodexBrokerError
 from sidekick_usages.providers.codex.broker.external_auth.activation import (
@@ -59,6 +61,8 @@ from sidekick_usages.providers.codex.broker.native_auth import (
 from sidekick_usages.providers.codex.broker.ports import (
     CodexOperationDispatcher,
     CodexRuntimeStateReader,
+    CodexSavedAccountReader,
+    CodexSavedAuthorityRelation,
     CodexWorkerExchange,
     CodexWorkerExchangeFactory,
 )
@@ -92,6 +96,7 @@ class CodexRuntimeBroker:
             CodexSharedRuntime,
         ],
         runtime_state: CodexRuntimeStateReader,
+        saved_accounts: CodexSavedAccountReader,
         operations: CodexOperationDispatcher,
         exchanges: CodexWorkerExchangeFactory,
         *,
@@ -101,6 +106,9 @@ class CodexRuntimeBroker:
     ) -> None:
         self._runtime_factory = runtime_factory
         self._runtime_state = runtime_state
+        self._saved_authority: CodexSavedAuthorityRelation = (
+            CodexSavedAuthorityResolver(saved_accounts)
+        )
         self._operations = operations
         self._exchanges = exchanges
         self._wall_time = wall_time
@@ -117,6 +125,7 @@ class CodexRuntimeBroker:
         self._activation_exchange: CodexWorkerExchange | None = None
         self._native_auth = CodexNativeAuthReconciler(
             runtime_state,
+            self._saved_authority,
             operations,
             wall_time,
             monotonic,
@@ -351,9 +360,9 @@ class CodexRuntimeBroker:
             self._set_ready(False)
             self._stop.wait(_BROKER_RECEIVE_SECONDS)
             return runtime
-        expectation = self._expectation()
+        expectation, finalization_pending = self._expectation_state()
         if expectation is None:
-            self._set_ready(True)
+            self._set_ready(not finalization_pending)
             self._stop.wait(_BROKER_RECEIVE_SECONDS)
             return runtime
         receipt = runtime.receipt
@@ -473,14 +482,8 @@ class CodexRuntimeBroker:
             )
             if not exchange.wait_for_completion():
                 raise RuntimeError("Codex activation did not commit.")
-            if self._expectation() != CodexProjectionExpectation(
-                receipt.account_id,
-                receipt.provider_identity,
-                receipt.generation,
-            ):
-                raise RuntimeError("Codex activation state is inconsistent.")
+            self._record_verified_projection(runtime, receipt)
             completed = True
-            self._record_projection(runtime)
         finally:
             self._finish_activation(
                 instruction.operation_id,
@@ -614,14 +617,8 @@ class CodexRuntimeBroker:
             )
             if not exchange.wait_for_completion():
                 raise RuntimeError("Codex rehydration did not commit.")
-            if self._expectation() != CodexProjectionExpectation(
-                reply.account_id,
-                reply.provider_identity,
-                reply.generation,
-            ):
-                raise RuntimeError("Codex rehydration state is inconsistent.")
+            self._record_verified_projection(runtime, receipt)
             completed = True
-            self._record_projection(runtime)
             return receipt
         finally:
             self._finish_dispatch(instruction.operation_id, completed)
@@ -656,7 +653,7 @@ class CodexRuntimeBroker:
                     CodexAppServerFailure.PROTOCOL_TIMEOUT
                 )
             with reply:
-                runtime.respond_refresh(
+                receipt = runtime.respond_refresh(
                     request.request_id,
                     reply,
                     instruction.source_generation,
@@ -674,14 +671,8 @@ class CodexRuntimeBroker:
             )
             if not exchange.wait_for_completion():
                 raise RuntimeError("Codex refresh did not commit.")
-            if self._expectation() != CodexProjectionExpectation(
-                reply.account_id,
-                reply.provider_identity,
-                reply.generation,
-            ):
-                raise RuntimeError("Codex refresh state is inconsistent.")
+            self._record_verified_projection(runtime, receipt)
             completed = True
-            self._record_projection(runtime)
         except (
             CodexAppServerError,
             CodexBrokerError,
@@ -748,10 +739,22 @@ class CodexRuntimeBroker:
         finally:
             clear_mutable_buffer(payload)
 
-    def _record_projection(self, runtime: CodexSharedRuntime) -> None:
-        self._operations.record_projection(
-            runtime.projection_observation(self._wall_time())
-        )
+    def _record_verified_projection(
+        self,
+        runtime: CodexSharedRuntime,
+        receipt: CodexProjectionReceipt,
+    ) -> None:
+        """Persist projection proof only after strong saved-auth relation."""
+        observation = runtime.projection_observation(self._wall_time())
+        if (
+            observation.provider_identity != receipt.provider_identity
+            or not self._saved_authority.matches_account(
+                receipt.account_id,
+                observation,
+            )
+        ):
+            raise RuntimeError("Codex projection identity is inconsistent.")
+        self._operations.record_projection(observation)
 
     def _finish_dispatch(
         self,
@@ -770,24 +773,29 @@ class CodexRuntimeBroker:
                 self._active_operation = None
 
     def _expectation(self) -> CodexProjectionExpectation | None:
+        expectation, _finalization_pending = self._expectation_state()
+        return expectation
+
+    def _expectation_state(
+        self,
+    ) -> tuple[CodexProjectionExpectation | None, bool]:
+        """Resolve readiness without reverting unfinalized provider proof."""
         snapshot = self._runtime_state.current()
         selected = snapshot.finalized_selection
         projection = snapshot.projection_auth
+        if snapshot.activation_in_progress:
+            return None, False
+        if selected is None or selected.provider_id is not ProviderId.CODEX:
+            return None, projection is not None
+        expectation = self._saved_authority.expectation(selected)
+        if expectation is None:
+            return None, projection is not None
         if (
-            snapshot.activation_in_progress
-            or selected is None
-            or selected.provider_id is not ProviderId.CODEX
-            or projection is None
-            or projection.state is not ProviderAuthState.ACTIVE
-            or projection.provider_identity is None
-            or projection.generation != selected.generation
+            projection is not None
+            and projection.provider_identity != expectation.provider_identity
         ):
-            return None
-        return CodexProjectionExpectation(
-            selected.account_id,
-            projection.provider_identity,
-            selected.generation,
-        )
+            return None, True
+        return expectation, False
 
     def _reject(
         self,

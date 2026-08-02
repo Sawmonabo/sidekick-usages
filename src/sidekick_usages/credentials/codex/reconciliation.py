@@ -8,13 +8,14 @@ from sidekick_usages.core.accounts.models import (
     SavedAccount,
 )
 from sidekick_usages.core.selection.models import (
+    FinalizedSelection,
     NativeReconciliationResult,
     ProviderAuthObservation,
+    RelatedRuntimeAuthority,
     SelectedAccountState,
 )
 from sidekick_usages.core.selection.policy import (
     same_provider_auth_authority,
-    same_selected_runtime_authority,
 )
 from sidekick_usages.core.selection.types import (
     ActivationOutcome,
@@ -73,17 +74,17 @@ class CodexNativeReconciliationService:
         """Persist the newest observed native selection under provider lock."""
         authority.require(ProviderId.CODEX)
         baseline = self._selected.load(ProviderId.CODEX)
-        selected = self._reconcile(observation, authority, baseline)
+        selected = self._reconcile(observation, authority)
         return NativeReconciliationResult(
             selected,
-            not same_selected_runtime_authority(baseline, selected),
+            not _finalized_matches_runtime(baseline, selected),
+            _related_runtime_authority(selected),
         )
 
     def _reconcile(
         self,
         observation: ProviderAuthObservation,
         authority: ProviderMutationAuthority,
-        baseline: SelectedAccountState | None,
     ) -> SelectedAccountState | None:
         """Apply one native relation after capturing its selected baseline."""
         candidate = self._candidate(observation, authority)
@@ -93,12 +94,12 @@ class CodexNativeReconciliationService:
                 observation,
                 journal.native_auth_baseline,
             ):
-                return baseline
+                return candidate
             if (
                 candidate.runtime_state is ProviderRuntimeState.SAVED_ACTIVE
                 and candidate.account_id == journal.target_account_id
             ):
-                return baseline
+                return candidate
             if candidate.runtime_state is ProviderRuntimeState.UNREADABLE:
                 raise CodexNativeReconciliationError(
                     "native_auth_unreadable",
@@ -137,7 +138,7 @@ class CodexNativeReconciliationService:
                 updated_at=self._clock.now(),
             )
             return candidate
-        return self._selected.compare_and_swap(candidate, expected=baseline)
+        return candidate
 
     def _candidate(
         self,
@@ -247,3 +248,39 @@ class CodexNativeReconciliationService:
             verified_at=observation.observed_at,
             outcome=ActivationOutcome.EXTERNAL_RECONCILED,
         )
+
+
+def _finalized_matches_runtime(
+    finalized: FinalizedSelection | None,
+    runtime: SelectedAccountState | None,
+) -> bool:
+    """Return whether finalized and provider-proven runtime facts agree."""
+    return (
+        finalized is None
+        if runtime is None
+        else (
+            runtime.runtime_state is ProviderRuntimeState.SAVED_ACTIVE
+            and finalized is not None
+            and finalized.account_id == runtime.account_id
+            and finalized.generation == runtime.runtime_generation
+        )
+    )
+
+
+def _related_runtime_authority(
+    runtime: SelectedAccountState | None,
+) -> RelatedRuntimeAuthority | None:
+    """Return the safe relation only for strong saved-runtime proof."""
+    if (
+        runtime is None
+        or runtime.runtime_state is not ProviderRuntimeState.SAVED_ACTIVE
+        or runtime.account_id is None
+        or runtime.runtime_generation is None
+    ):
+        return None
+    return RelatedRuntimeAuthority(
+        provider_id=runtime.provider_id,
+        account_id=runtime.account_id,
+        generation=runtime.runtime_generation,
+        observed_at=runtime.verified_at,
+    )

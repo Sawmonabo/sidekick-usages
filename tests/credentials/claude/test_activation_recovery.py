@@ -1,7 +1,6 @@
 """Load-bearing Claude activation recovery scenarios."""
 
 import os
-from dataclasses import replace
 from datetime import timedelta
 from itertools import cycle
 from pathlib import Path
@@ -10,10 +9,14 @@ import pytest
 
 from sidekick_usages.cli.dashboard.controller import DashboardController
 from sidekick_usages.core.accounts.types import SidekickAccountId
-from sidekick_usages.core.selection.models import DueOperation
+from sidekick_usages.core.selection.models import (
+    DueOperation,
+    FinalizedSelection,
+)
 from sidekick_usages.core.selection.types import (
     ActivationOutcome,
     ActivationPhase,
+    ProviderAuthState,
     ProviderRuntimeState,
 )
 from sidekick_usages.core.types import ProviderId
@@ -33,6 +36,9 @@ from sidekick_usages.persistence.locking import PersistenceLock
 from sidekick_usages.persistence.models.artifact import ProviderFileSnapshot
 from sidekick_usages.persistence.supervisor.authority import (
     ProviderMutationLock,
+)
+from sidekick_usages.persistence.supervisor.observation import (
+    RuntimeAuthObservationStore,
 )
 from sidekick_usages.providers.claude.auth.generation import (
     claude_access_token_generation,
@@ -123,55 +129,13 @@ def _recover(
         return scenario.executor.execute(operation, authority)
 
 
-def _assert_steady_native_reconciliation(
+def _assert_raced_native_reconciliation(
     scenario: ClaudeRecoveryScenario,
-    saved_ids: tuple[SidekickAccountId, ...],
+    observations: RuntimeAuthObservationStore,
+    selected_baseline: FinalizedSelection,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Prove known, unknown, unchanged, and one raced native read-back."""
-    login_profiles = list(scenario.script.login_profiles)
-    scenario.script.set_authority(
-        scenario.native.config_directory,
-        scenario.known_native_payload,
-        _KNOWN_STATUS,
-    )
-    steady_known = _recover(scenario, scenario.native_reconciliation)
-    selected_known = scenario.selected.load(ProviderId.CLAUDE)
-    assert steady_known.outcome is WorkerOutcome.SUCCEEDED
-    assert selected_known is not None
-    assert selected_known.account_id == scenario.known.account_id
-
-    scenario.script.set_authority(
-        scenario.native.config_directory,
-        scenario.unknown_native_payload,
-        _UNKNOWN_STATUS,
-    )
-    steady_unknown = _recover(scenario, scenario.native_reconciliation)
-    selected_unknown = scenario.selected.load(ProviderId.CLAUDE)
-    assert steady_unknown.outcome is WorkerOutcome.SUCCEEDED
-    assert selected_unknown is not None
-    assert selected_unknown.runtime_state is (
-        ProviderRuntimeState.EXTERNAL_ACTIVE
-    )
-    assert selected_unknown.account_id is None
-    assert scenario.script.login_profiles == login_profiles
-    assert (
-        tuple(
-            account.account_id for account in scenario.store.saved_accounts()
-        )
-        == saved_ids
-    )
-    stale_selected = replace(
-        selected_unknown,
-        verified_at=selected_unknown.verified_at - timedelta(seconds=1),
-    )
-    scenario.selected.save(stale_selected)
-    unchanged = _recover(scenario, scenario.native_reconciliation)
-    refreshed_selected = scenario.selected.load(ProviderId.CLAUDE)
-    assert unchanged.outcome is WorkerOutcome.NO_CHANGE
-    assert refreshed_selected is not None
-    assert refreshed_selected.verified_at > stale_selected.verified_at
-
+    """Prove a raced read converges and relation failure stays external."""
     original_read = PersistenceFilesystem.read_provider_owned
     native_reads = 0
 
@@ -202,15 +166,16 @@ def _assert_steady_native_reconciliation(
     selected_after_race = scenario.selected.load(ProviderId.CLAUDE)
     assert raced.outcome is WorkerOutcome.NO_CHANGE
     assert native_reads == 1
-    assert selected_after_race == refreshed_selected
+    assert selected_after_race == selected_baseline
 
     converged = _recover(scenario, scenario.native_reconciliation)
     settled = _recover(scenario, scenario.native_reconciliation)
     selected_after_convergence = scenario.selected.load(ProviderId.CLAUDE)
     assert converged.outcome is WorkerOutcome.SUCCEEDED
-    assert settled.outcome is WorkerOutcome.NO_CHANGE
-    assert selected_after_convergence is not None
-    assert selected_after_convergence.account_id == scenario.known.account_id
+    assert settled.outcome is WorkerOutcome.SUCCEEDED
+    assert converged.related_runtime_authority is not None
+    assert settled.related_runtime_authority is not None
+    assert selected_after_convergence == selected_baseline
 
     scenario.script.set_authority(
         scenario.target_profile,
@@ -238,6 +203,72 @@ def _assert_steady_native_reconciliation(
         selected_after_convergence,
         ProviderRuntimeState.EXTERNAL_ACTIVE,
         None,
+    )
+
+
+def _assert_steady_native_reconciliation(
+    scenario: ClaudeRecoveryScenario,
+    saved_ids: tuple[SidekickAccountId, ...],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Prove known, unknown, unchanged, and one raced native read-back."""
+    login_profiles = list(scenario.script.login_profiles)
+    selected_baseline = scenario.selected.load(ProviderId.CLAUDE)
+    assert selected_baseline is not None
+    observations = RuntimeAuthObservationStore(
+        scenario.paths.durable_operations
+    )
+    scenario.script.set_authority(
+        scenario.native.config_directory,
+        scenario.known_native_payload,
+        _KNOWN_STATUS,
+    )
+    steady_known = _recover(scenario, scenario.native_reconciliation)
+    selected_known = scenario.selected.load(ProviderId.CLAUDE)
+    assert steady_known.outcome is WorkerOutcome.SUCCEEDED
+    assert steady_known.related_runtime_authority is not None
+    assert steady_known.related_runtime_authority.account_id == (
+        scenario.known.account_id
+    )
+    assert selected_known == selected_baseline
+    known_observation = observations.observe_native(ProviderId.CLAUDE)
+    assert known_observation is not None
+    assert known_observation.state is ProviderAuthState.ACTIVE
+
+    scenario.script.set_authority(
+        scenario.native.config_directory,
+        scenario.unknown_native_payload,
+        _UNKNOWN_STATUS,
+    )
+    steady_unknown = _recover(scenario, scenario.native_reconciliation)
+    selected_unknown = scenario.selected.load(ProviderId.CLAUDE)
+    assert steady_unknown.outcome is WorkerOutcome.SUCCEEDED
+    assert steady_unknown.related_runtime_authority is None
+    assert selected_unknown == selected_baseline
+    unknown_observation = observations.observe_native(ProviderId.CLAUDE)
+    assert unknown_observation is not None
+    assert unknown_observation.state is ProviderAuthState.ACTIVE
+    assert unknown_observation != known_observation
+    assert scenario.script.login_profiles == login_profiles
+    assert (
+        tuple(
+            account.account_id for account in scenario.store.saved_accounts()
+        )
+        == saved_ids
+    )
+    unchanged = _recover(scenario, scenario.native_reconciliation)
+    refreshed_selected = scenario.selected.load(ProviderId.CLAUDE)
+    refreshed_observation = observations.observe_native(ProviderId.CLAUDE)
+    assert unchanged.outcome is WorkerOutcome.SUCCEEDED
+    assert unchanged.related_runtime_authority is None
+    assert refreshed_selected == selected_baseline
+    assert refreshed_observation == unknown_observation
+
+    _assert_raced_native_reconciliation(
+        scenario,
+        observations,
+        selected_baseline,
+        monkeypatch,
     )
 
 
@@ -318,20 +349,25 @@ def _assert_exact_profile_proof_boundary(
     )
     result = _recover(scenario, scenario.native_reconciliation)
     selected = scenario.selected.load(ProviderId.CLAUDE)
+    observation = RuntimeAuthObservationStore(
+        scenario.paths.durable_operations
+    ).observe_native(ProviderId.CLAUDE)
 
-    assert selected is not None
+    assert observation is not None
     assert (
         result.outcome,
-        selected.runtime_state,
-        selected.account_id,
-        selected.runtime_generation,
+        result.related_runtime_authority,
+        selected,
+        observation.state,
+        observation.generation,
         scenario.native_credentials.read_bytes(),
         scenario.script.login_profiles,
         tuple(scenario.store.saved_accounts()),
     ) == (
         WorkerOutcome.SUCCEEDED,
-        ProviderRuntimeState.EXTERNAL_ACTIVE,
         None,
+        selected_before,
+        ProviderAuthState.ACTIVE,
         claude_access_token_generation(
             f"sk-ant-oat01-{_STATUS_ONLY_TOKEN_SUFFIX}"
         ),
@@ -396,6 +432,8 @@ def test_interrupted_native_activation_rolls_back_once_or_requires_repair(
         _SimulatedCrash(),
         rollback_succeeds=True,
     )
+    recovered_baseline = recovered.selected.load(ProviderId.CLAUDE)
+    assert recovered_baseline is not None
     _interrupt(recovered)
     interrupted = recovered.journals.load(ProviderId.CLAUDE)
     assert interrupted.active is not None
@@ -407,9 +445,7 @@ def test_interrupted_native_activation_rolls_back_once_or_requires_repair(
     assert result.outcome is WorkerOutcome.SUCCEEDED
     assert retry.outcome is WorkerOutcome.SUCCEEDED
     selected = recovered.selected.load(ProviderId.CLAUDE)
-    assert selected is not None
-    assert selected.account_id == recovered.source.account_id
-    assert selected.outcome is ActivationOutcome.ROLLED_BACK
+    assert selected == recovered_baseline
     assert (
         recovered.native_credentials.read_bytes()
         == recovered.native_rollback_payload
@@ -435,7 +471,11 @@ def test_interrupted_native_activation_rolls_back_once_or_requires_repair(
         )
         == _EXPECTED_NATIVE_LOGINS
     )
-    assert recovered.journals.load(ProviderId.CLAUDE).active is None
+    recovered_journal = recovered.journals.load(ProviderId.CLAUDE)
+    assert recovered_journal.active is None
+    assert recovered_journal.history[-1].outcome is (
+        ActivationOutcome.ROLLED_BACK
+    )
     assert recovered.selected.load(ProviderId.CODEX) == recovered.codex_state
 
     blocked = claude_recovery_scenario(
@@ -480,14 +520,10 @@ def test_interrupted_native_activation_rolls_back_once_or_requires_repair(
     assert blocked.selected.load(ProviderId.CODEX) == blocked.codex_state
 
 
-def test_external_claude_login_wins_without_importing_unknown_identity(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Known external login is related; unknown login remains unsaved."""
-    use_synthetic_claude(monkeypatch)
+def _assert_repairable_external_recovery(root: Path) -> None:
+    """Require interrupted outgoing retention to roll back exactly."""
     repairable = claude_recovery_scenario(
-        tmp_path / "repairable",
+        root,
         ClaudeActivationError(ClaudeActivationFailure.RECONCILIATION_REQUIRED),
         rollback_succeeds=True,
     )
@@ -520,11 +556,12 @@ def test_external_claude_login_wins_without_importing_unknown_identity(
     repaired = _recover(repairable, repairable.recovery)
     repaired_selected = repairable.selected.load(ProviderId.CLAUDE)
     assert repaired_selected is not None
+    repaired_journal = repairable.journals.load(ProviderId.CLAUDE)
     assert (
         repaired.outcome,
         repaired_selected.account_id,
-        repaired_selected.outcome,
-        repairable.journals.load(ProviderId.CLAUDE).active,
+        repaired_journal.history[-1].outcome,
+        repaired_journal.active,
     ) == (
         WorkerOutcome.SUCCEEDED,
         repairable.source.account_id,
@@ -532,11 +569,16 @@ def test_external_claude_login_wins_without_importing_unknown_identity(
         None,
     )
 
+
+def _assert_known_external_login(root: Path) -> None:
+    """Require a known native login to produce saved-account relation."""
     known = claude_recovery_scenario(
-        tmp_path / "known",
+        root,
         _SimulatedCrash(),
         rollback_succeeds=True,
     )
+    known_baseline = known.selected.load(ProviderId.CLAUDE)
+    assert known_baseline is not None
     _interrupt(known)
     known.script.set_authority(
         known.native.config_directory,
@@ -546,15 +588,15 @@ def test_external_claude_login_wins_without_importing_unknown_identity(
     known_result = _recover(known, known.native_reconciliation)
 
     known_selected = known.selected.load(ProviderId.CLAUDE)
-    assert known_selected is not None
+    assert known_result.related_runtime_authority is not None
     assert (
         known_result.outcome,
-        known_selected.account_id,
-        known_selected.outcome,
+        known_selected,
+        known_result.related_runtime_authority.account_id,
     ) == (
         WorkerOutcome.SUCCEEDED,
+        known_baseline,
         known.known.account_id,
-        ActivationOutcome.EXTERNAL_RECONCILED,
     )
     assert known.native_credentials.read_bytes() == known.known_native_payload
     assert known.script.login_profiles == [
@@ -572,17 +614,24 @@ def test_external_claude_login_wins_without_importing_unknown_identity(
         known_controller.state.focused_provider,
         known_controller.state.account_id,
     ) == (
-        known.known.account_id,
-        0,
+        None,
+        1,
         ProviderId.CLAUDE,
-        known.known.account_id,
+        known.source.account_id,
     )
 
+
+def _assert_unknown_external_login(
+    root: Path,
+) -> tuple[ClaudeRecoveryScenario, tuple[SidekickAccountId, ...]]:
+    """Require unknown native identity to remain observed but unsaved."""
     unknown = claude_recovery_scenario(
-        tmp_path / "unknown",
+        root,
         _SimulatedCrash(),
         rollback_succeeds=True,
     )
+    unknown_baseline = unknown.selected.load(ProviderId.CLAUDE)
+    assert unknown_baseline is not None
     saved_ids = tuple(
         account.account_id for account in unknown.store.saved_accounts()
     )
@@ -596,12 +645,13 @@ def test_external_claude_login_wins_without_importing_unknown_identity(
 
     assert unknown_result.outcome is WorkerOutcome.SUCCEEDED
     unknown_selected = unknown.selected.load(ProviderId.CLAUDE)
-    assert unknown_selected is not None
-    assert unknown_selected.runtime_state is (
-        ProviderRuntimeState.EXTERNAL_ACTIVE
-    )
-    assert unknown_selected.account_id is None
-    assert unknown_selected.outcome is ActivationOutcome.EXTERNAL_RECONCILED
+    assert unknown_selected == unknown_baseline
+    unknown_observation = RuntimeAuthObservationStore(
+        unknown.paths.durable_operations
+    ).observe_native(ProviderId.CLAUDE)
+    assert unknown_observation is not None
+    assert unknown_observation.state is ProviderAuthState.ACTIVE
+    assert unknown_result.related_runtime_authority is None
     assert (
         tuple(account.account_id for account in unknown.store.saved_accounts())
         == saved_ids
@@ -610,8 +660,24 @@ def test_external_claude_login_wins_without_importing_unknown_identity(
         unknown.native_credentials.read_bytes()
         == unknown.unknown_native_payload
     )
-    assert unknown.journals.load(ProviderId.CLAUDE).active is None
+    unknown_journal = unknown.journals.load(ProviderId.CLAUDE)
+    assert unknown_journal.active is None
+    assert unknown_journal.history[-1].outcome is (
+        ActivationOutcome.EXTERNAL_RECONCILED
+    )
     assert unknown.selected.load(ProviderId.CODEX) == unknown.codex_state
+    return unknown, saved_ids
+
+
+def test_external_claude_login_wins_without_importing_unknown_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Known external login is related; unknown login remains unsaved."""
+    use_synthetic_claude(monkeypatch)
+    _assert_repairable_external_recovery(tmp_path / "repairable")
+    _assert_known_external_login(tmp_path / "known")
+    unknown, saved_ids = _assert_unknown_external_login(tmp_path / "unknown")
 
     status_only = claude_recovery_scenario(
         tmp_path / "status-only",

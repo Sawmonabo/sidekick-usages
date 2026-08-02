@@ -9,13 +9,19 @@ from sidekick_usages.core.accounts.identifiers import (
     new_operation_id,
     new_request_id,
 )
-from sidekick_usages.core.accounts.types import OperationId
+from sidekick_usages.core.accounts.types import (
+    AuthorityGeneration,
+    OperationId,
+)
 from sidekick_usages.core.models import (
     Account,
     ClaudeSetupTokenCredentials,
     CodexCredentials,
 )
-from sidekick_usages.core.selection.models import DueOperation
+from sidekick_usages.core.selection.models import (
+    DueOperation,
+    RelatedRuntimeAuthority,
+)
 from sidekick_usages.core.selection.types import (
     OperationKind,
     OperationPriority,
@@ -54,7 +60,6 @@ from tests.fakes.daemon.foundation import (
     FoundationState,
     foundation_state,
     operation,
-    selected,
 )
 from tests.fakes.daemon.runtime import (
     SYNTHETIC_CLAUDE_LAUNCHER,
@@ -89,15 +94,7 @@ def _assert_native_login_cancels_stale_activation(
     stale_activation = state.operations[0]
     target = tuple(state.accounts)[1]
     clock.advance(1)
-    state.selected.save(
-        selected(
-            ProviderId.CLAUDE,
-            target.account_id,
-            "claude-target-generation",
-            epoch=1,
-            verified_in=7,
-        )
-    )
+    observed_at = clock.now()
     native = DueOperation(
         operation_id=CLAUDE_NATIVE_OPERATION_ID,
         provider_id=ProviderId.CLAUDE,
@@ -114,13 +111,19 @@ def _assert_native_login_cancels_stale_activation(
         OperationState.RUNNING,
         updated_at=clock.now(),
     )
-    results.save(
-        WorkerResult(
-            operation_id=native.operation_id,
-            outcome=WorkerOutcome.NO_CHANGE,
-            finished_at=clock.now(),
-        )
+    result = WorkerResult(
+        operation_id=native.operation_id,
+        outcome=WorkerOutcome.NO_CHANGE,
+        finished_at=clock.now(),
+        related_runtime_authority=RelatedRuntimeAuthority(
+            provider_id=ProviderId.CLAUDE,
+            account_id=target.account_id,
+            generation=AuthorityGeneration("claude-target-generation"),
+            observed_at=observed_at,
+        ),
     )
+    results.save(result)
+    assert results.load(native.operation_id) == result
     completions = scheduler.recover()
     update = next(
         events.follow_operation(
@@ -306,7 +309,6 @@ def test_supervisor_and_workers_isolate_failures_and_recover_durably(
     scheduler = DurableScheduler(
         state.queue,
         results,
-        state.selected,
         workers,
         clock,
         monotonic=clock.monotonic,
@@ -368,7 +370,6 @@ def test_supervisor_and_workers_isolate_failures_and_recover_durably(
     restarted = DurableScheduler(
         OperationQueueStore(state.paths.durable_operations),
         results,
-        state.selected,
         restarted_workers,
         clock,
         events=restarted_events,

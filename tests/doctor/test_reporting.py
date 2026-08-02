@@ -35,8 +35,10 @@ from sidekick_usages.core.models import (
 from sidekick_usages.core.selection.models import (
     ActivationRecord,
     DueOperation,
+    FinalizedSelection,
     ProviderAuthObservation,
     SelectedAccountState,
+    SelectionEpoch,
 )
 from sidekick_usages.core.selection.types import (
     ActivationOutcome,
@@ -230,14 +232,12 @@ def test_json_reports_current_auth_state_without_secrets(
         ),
         credential_health=CredentialHealth.RECONCILIATION_REQUIRED,
     )
-    selected = SelectedAccountState(
+    selected = FinalizedSelection(
         provider_id=ProviderId.CODEX,
-        runtime_state=ProviderRuntimeState.SAVED_ACTIVE,
         account_id=saved.account_id,
-        provider_identity=provider_identity,
-        runtime_generation=selected_generation,
-        verified_at=REFERENCE_TIME,
-        outcome=ActivationOutcome.VERIFIED,
+        epoch=SelectionEpoch(4),
+        generation=selected_generation,
+        finalized_at=REFERENCE_TIME,
     )
     operation = DueOperation(
         operation_id=OperationId("ee805413-ef89-4380-920c-31ba5a4c948b"),

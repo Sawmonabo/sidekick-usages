@@ -4,7 +4,10 @@ from collections.abc import Callable
 
 from sidekick_usages.clock import Clock
 from sidekick_usages.core.accounts.types import OperationId
-from sidekick_usages.core.selection.models import DueOperation
+from sidekick_usages.core.selection.models import (
+    DueOperation,
+    RelatedRuntimeAuthority,
+)
 from sidekick_usages.core.selection.types import OperationState
 from sidekick_usages.daemon.models.worker import WorkerResult
 from sidekick_usages.daemon.types.ports import (
@@ -69,24 +72,28 @@ def managed_worker_result(
 def worker_success(
     operation: DueOperation,
     clock: Clock,
+    related_runtime_authority: RelatedRuntimeAuthority | None = None,
 ) -> WorkerResult:
     """Return one sanitized successful worker result."""
     return WorkerResult(
         operation_id=operation.operation_id,
         outcome=WorkerOutcome.SUCCEEDED,
         finished_at=clock.now(),
+        related_runtime_authority=related_runtime_authority,
     )
 
 
 def worker_no_change(
     operation: DueOperation,
     clock: Clock,
+    related_runtime_authority: RelatedRuntimeAuthority | None = None,
 ) -> WorkerResult:
     """Return one successful worker result with unchanged authority."""
     return WorkerResult(
         operation_id=operation.operation_id,
         outcome=WorkerOutcome.NO_CHANGE,
         finished_at=clock.now(),
+        related_runtime_authority=related_runtime_authority,
     )
 
 

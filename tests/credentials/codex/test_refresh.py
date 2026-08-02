@@ -20,11 +20,12 @@ from sidekick_usages.core.models import (
     UsageReport,
     UsageWindow,
 )
-from sidekick_usages.core.selection.models import SelectedAccountState
+from sidekick_usages.core.selection.models import (
+    FinalizedSelection,
+    SelectionEpoch,
+)
 from sidekick_usages.core.selection.types import (
-    ActivationOutcome,
     OperationKind,
-    ProviderRuntimeState,
 )
 from sidekick_usages.core.types import (
     HeartbeatStatus,
@@ -64,6 +65,7 @@ from tests.fakes.codex.managed import (
     managed_subscription,
     seed_managed_accounts,
 )
+from tests.support.persistence import seed_finalized_selections
 from tests.support.platform import REQUIRES_MANAGED_RUNTIME
 from tests.support.time import REFERENCE_TIME, FixedClock
 
@@ -186,17 +188,14 @@ def test_managed_codex_maintenance_continues_across_account_failure(
         )
     )
     selected = SelectedStateStore(paths.selected_state)
-    selected_before = selected.save(
-        SelectedAccountState(
-            provider_id=ProviderId.CODEX,
-            runtime_state=ProviderRuntimeState.SAVED_ACTIVE,
-            account_id=_MANAGED_ACCOUNT_A,
-            provider_identity=ProviderIdentity("acct-managed-a"),
-            runtime_generation=AuthorityGeneration(_OLD_GENERATION),
-            verified_at=REFERENCE_TIME,
-            outcome=ActivationOutcome.VERIFIED,
-        )
+    selected_before = FinalizedSelection(
+        provider_id=ProviderId.CODEX,
+        account_id=_MANAGED_ACCOUNT_A,
+        epoch=SelectionEpoch(0),
+        generation=AuthorityGeneration(_OLD_GENERATION),
+        finalized_at=REFERENCE_TIME,
     )
+    seed_finalized_selections(paths, selected_before)
     executor = CodexManagedMaintenanceWorkerExecutor(
         coordinator,
         CodexManagedAccountService(

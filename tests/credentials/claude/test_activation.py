@@ -187,28 +187,19 @@ def test_native_activation_retains_source_and_commits_verified_target(
     )
     claude_state = scenario.selected.load(ProviderId.CLAUDE)
     assert claude_state is not None
-    assert (
-        claude_state.account_id,
-        claude_state.provider_identity,
-    ) == (
-        scenario.target.account_id,
-        scenario.target.provider_identity,
-    )
+    assert claude_state.account_id == scenario.source.account_id
     runtime_auth = RuntimeAuthObservationStore(
         scenario.paths.durable_operations
     ).load_native(ProviderId.CLAUDE)
+    assert runtime_auth is not None
     assert (
-        None
-        if runtime_auth is None
-        else (
-            runtime_auth.state,
-            runtime_auth.provider_identity,
-            runtime_auth.generation,
-        )
+        runtime_auth.state,
+        runtime_auth.provider_identity,
+        runtime_auth.generation,
     ) == (
         ProviderAuthState.ACTIVE,
-        claude_state.provider_identity,
-        claude_state.runtime_generation,
+        scenario.target.provider_identity,
+        claude_access_token_generation("sk-ant-oat01-target-native"),
     )
     assert scenario.selected.load(ProviderId.CODEX) == scenario.codex_state
     journal = scenario.journals.load(ProviderId.CLAUDE)
@@ -221,7 +212,7 @@ def test_native_activation_retains_source_and_commits_verified_target(
     ) == (
         ActivationPhase.COMMITTED,
         scenario.target.account_id,
-        claude_state.runtime_generation,
+        runtime_auth.generation,
     )
     assert isinstance(committed.native_auth_baseline, ClaudeAuthObservation)
     assert committed.native_auth_baseline.modified_milliseconds is not None
@@ -242,7 +233,7 @@ def test_native_activation_retains_source_and_commits_verified_target(
         status_only.paths.durable_operations
     ).load_native(ProviderId.CLAUDE)
     status_only_dashboard = CachedDashboardService(status_only.paths).load(
-        status_only.codex_state.verified_at
+        status_only.codex_state.finalized_at
     )
     status_only_claude = status_only_dashboard.providers[0]
 

@@ -352,10 +352,10 @@ class ClaudeActivationAuthorityCoordinator:
     def record_native_observation(
         self,
         observed: ClaudeNativeObservation,
-    ) -> None:
+    ) -> ProviderAuthObservation:
         """Persist one credential-free native verification result."""
         snapshot = observed.snapshot
-        self._save_runtime_observation(
+        return self._save_runtime_observation(
             observed.state,
             (None if snapshot is None else snapshot.provider_identity),
             None if snapshot is None else snapshot.generation,
@@ -613,16 +613,16 @@ class ClaudeActivationAuthorityCoordinator:
         state: ProviderAuthState,
         provider_identity: ProviderIdentity | None,
         generation: AuthorityGeneration | None,
-    ) -> None:
-        self._observations.save_native(
-            ProviderAuthObservation(
-                provider_id=ProviderId.CLAUDE,
-                state=state,
-                provider_identity=provider_identity,
-                generation=generation,
-                observed_at=self._clock.now(),
-            )
+    ) -> ProviderAuthObservation:
+        observation = ProviderAuthObservation(
+            provider_id=ProviderId.CLAUDE,
+            state=state,
+            provider_identity=provider_identity,
+            generation=generation,
+            observed_at=self._clock.now(),
         )
+        self._observations.save_native(observation)
+        return observation
 
     def _native_reader(
         self,

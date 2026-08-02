@@ -21,6 +21,9 @@ from sidekick_usages.persistence.service import PersistenceService
 from sidekick_usages.persistence.supervisor.authority import (
     OperationAuthorityLock,
 )
+from sidekick_usages.persistence.supervisor.observation import (
+    RuntimeAuthObservationStore,
+)
 from sidekick_usages.persistence.supervisor.selection import SelectedStateStore
 from sidekick_usages.providers.claude.auth.storage.service import (
     CLAUDE_CREDENTIAL_FILE,
@@ -105,15 +108,11 @@ def test_managed_claude_maintenance_isolated_per_account_and_continues(
         ProviderId.CLAUDE
     )
     assert selected is not None
-    assert selected.account_id == scenario.selected_before.account_id
-    assert (
-        selected.provider_identity
-        == scenario.selected_before.provider_identity
-    )
-    assert (
-        selected.runtime_generation
-        != scenario.selected_before.runtime_generation
-    )
+    assert selected == scenario.selected_before
+    observation = RuntimeAuthObservationStore(
+        scenario.paths.durable_operations
+    ).observe_native(ProviderId.CLAUDE)
+    assert observation is not None
 
     records = managed_login_records(scenario.runner)
     profiles = (
@@ -183,7 +182,8 @@ def test_managed_claude_maintenance_isolated_per_account_and_continues(
     previous = require_managed_claude_authority(original[ACCOUNT_B])
     assert private.provider_identity == previous.provider_identity
     assert private.generation != previous.generation
-    assert private.generation != selected.runtime_generation
+    assert private.provider_identity == observation.provider_identity
+    assert private.generation != observation.generation
 
     protected_a = scenario.profiles.read_relative_authority_file(
         str(ACCOUNT_A),

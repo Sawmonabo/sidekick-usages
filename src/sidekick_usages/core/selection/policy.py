@@ -92,14 +92,31 @@ _OPERATION_TRANSITIONS: dict[
     ),
     OperationState.ACTION_REQUIRED: frozenset({OperationState.SCHEDULED}),
 }
-_SELECTION_PHASE_ORDER = (
-    SelectionPhase.PREVALIDATING,
-    SelectionPhase.PREPARING,
-    SelectionPhase.WAITING_OLD_TURNS,
-    SelectionPhase.COMMITTING,
-    SelectionPhase.AWAITING_READY,
-    SelectionPhase.RECOVERING,
-)
+_SELECTION_TRANSITIONS: dict[
+    SelectionPhase,
+    frozenset[SelectionPhase],
+] = {
+    SelectionPhase.PREVALIDATING: frozenset({SelectionPhase.PREPARING}),
+    SelectionPhase.PREPARING: frozenset(
+        {SelectionPhase.PREPARING, SelectionPhase.WAITING_OLD_TURNS}
+    ),
+    SelectionPhase.WAITING_OLD_TURNS: frozenset(
+        {SelectionPhase.WAITING_OLD_TURNS, SelectionPhase.COMMITTING}
+    ),
+    SelectionPhase.COMMITTING: frozenset(
+        {
+            SelectionPhase.COMMITTING,
+            SelectionPhase.AWAITING_READY,
+            SelectionPhase.RECOVERING,
+        }
+    ),
+    SelectionPhase.AWAITING_READY: frozenset(
+        {SelectionPhase.AWAITING_READY, SelectionPhase.RECOVERING}
+    ),
+    SelectionPhase.RECOVERING: frozenset(
+        {SelectionPhase.RECOVERING, SelectionPhase.AWAITING_READY}
+    ),
+}
 
 
 def require_selection_transition(
@@ -110,32 +127,92 @@ def require_selection_transition(
     if (
         replacement.operation_id != expected.operation_id
         or replacement.provider_id is not expected.provider_id
+        or replacement.baseline_account_id != expected.baseline_account_id
         or replacement.target_account_id != expected.target_account_id
-        or replacement.target_generation != expected.target_generation
         or replacement.baseline_epoch != expected.baseline_epoch
         or replacement.pending_epoch != expected.pending_epoch
         or replacement.started_at != expected.started_at
-        or replacement.required_participant_ids
-        != expected.required_participant_ids
         or not set(expected.ready_participant_ids).issubset(
             replacement.ready_participant_ids
         )
-        or not set(expected.adopted_participant_ids).issubset(
-            replacement.adopted_participant_ids
+        or not set(expected.lost_after_commit_participant_ids).issubset(
+            replacement.lost_after_commit_participant_ids
         )
         or replacement.updated_at < expected.updated_at
-        or (
-            expected.phase is not SelectionPhase.RECOVERING
-            and _SELECTION_PHASE_ORDER.index(replacement.phase)
-            <= _SELECTION_PHASE_ORDER.index(expected.phase)
-        )
-        or (
-            expected.phase is SelectionPhase.RECOVERING
-            and replacement.phase is not SelectionPhase.AWAITING_READY
-        )
+        or replacement.phase not in _SELECTION_TRANSITIONS[expected.phase]
+        or not _selection_generation_transition(expected, replacement)
+        or not _selection_required_transition(expected, replacement)
+        or not _selection_ready_transition(expected, replacement)
+        or not _selection_lost_transition(expected, replacement)
     ):
         raise ValueError("Illegal global selection transition.")
     return replacement
+
+
+def _selection_generation_transition(
+    expected: OpenSelectionOperation,
+    replacement: OpenSelectionOperation,
+) -> bool:
+    """Allow target generation to be learned exactly once."""
+    if expected.phase is SelectionPhase.PREVALIDATING:
+        return (
+            expected.target_generation is None
+            and replacement.phase is SelectionPhase.PREPARING
+            and replacement.target_generation is not None
+        )
+    return replacement.target_generation == expected.target_generation
+
+
+def _selection_required_transition(
+    expected: OpenSelectionOperation,
+    replacement: OpenSelectionOperation,
+) -> bool:
+    """Allow late additions and only proven precommit removals."""
+    before = set(expected.required_participant_ids)
+    after = set(replacement.required_participant_ids)
+    removed = before - after
+    if removed and expected.phase not in {
+        SelectionPhase.PREPARING,
+        SelectionPhase.WAITING_OLD_TURNS,
+    }:
+        return False
+    expected_count = expected.confirmed_dead_before_commit_count + len(removed)
+    if replacement.confirmed_dead_before_commit_count != expected_count:
+        return False
+    return bool(removed) or (
+        replacement.confirmed_dead_before_commit_code
+        == expected.confirmed_dead_before_commit_code
+    )
+
+
+def _selection_ready_transition(
+    expected: OpenSelectionOperation,
+    replacement: OpenSelectionOperation,
+) -> bool:
+    """Allow readiness only after a provider commit is proven."""
+    if replacement.ready_participant_ids == expected.ready_participant_ids:
+        return True
+    return replacement.phase in {
+        SelectionPhase.AWAITING_READY,
+        SelectionPhase.RECOVERING,
+    }
+
+
+def _selection_lost_transition(
+    expected: OpenSelectionOperation,
+    replacement: OpenSelectionOperation,
+) -> bool:
+    """Allow durable loss only during or after provider commit."""
+    if (
+        replacement.lost_after_commit_participant_ids
+        == expected.lost_after_commit_participant_ids
+    ):
+        return True
+    return expected.phase in {
+        SelectionPhase.COMMITTING,
+        SelectionPhase.AWAITING_READY,
+        SelectionPhase.RECOVERING,
+    }
 
 
 def same_provider_auth_authority(

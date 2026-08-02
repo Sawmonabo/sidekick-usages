@@ -22,14 +22,13 @@ from sidekick_usages.core.accounts.types import (
 )
 from sidekick_usages.core.selection.models import (
     DueOperation,
-    SelectedAccountState,
+    FinalizedSelection,
+    SelectionEpoch,
 )
 from sidekick_usages.core.selection.types import (
-    ActivationOutcome,
     OperationKind,
     OperationPriority,
     OperationState,
-    ProviderRuntimeState,
 )
 from sidekick_usages.core.types import AccountLabel, ProviderId
 from sidekick_usages.credentials.claude.activation.authority import (
@@ -97,7 +96,10 @@ from tests.fakes.claude.managed import (
     native_profile,
     profile_tree,
 )
-from tests.support.persistence import make_application_paths
+from tests.support.persistence import (
+    make_application_paths,
+    seed_finalized_selections,
+)
 from tests.support.time import REFERENCE_TIME, FixedClock
 
 _SOURCE_ACCOUNT_ID = SidekickAccountId("11111111-1111-4111-8111-111111111111")
@@ -160,7 +162,7 @@ class ClaudeActivationScenario:
     script: ClaudeManagedLoginScript
     runner: ClaudeRunner
     selected: SelectedStateStore
-    codex_state: SelectedAccountState
+    codex_state: FinalizedSelection
     journals: ActivationJournalStore
     executor: ClaudeSelectionWorkerExecutor
     operation: DueOperation
@@ -190,7 +192,7 @@ class ClaudeRecoveryScenario:
     script: ClaudeManagedLoginScript
     runner: ClaudeRunner
     selected: SelectedStateStore
-    codex_state: SelectedAccountState
+    codex_state: FinalizedSelection
     journals: ActivationJournalStore
     executor: ClaudeSelectionWorkerExecutor
     activation: DueOperation
@@ -206,7 +208,7 @@ class _ClaudeRuntimeFixture:
 
     runner: ClaudeRunner
     selected: SelectedStateStore
-    codex_state: SelectedAccountState
+    codex_state: FinalizedSelection
     journals: ActivationJournalStore
     executor: ClaudeSelectionWorkerExecutor
     environment: Mapping[str, str]
@@ -621,29 +623,23 @@ def _runtime_fixture(
     if source_environment.get("HOME") != str(native.config_directory.parent):
         raise ValueError("Synthetic native Claude home is inconsistent.")
     selected = SelectedStateStore(paths.selected_state)
-    selected.save(
-        SelectedAccountState(
-            provider_id=ProviderId.CLAUDE,
-            runtime_state=ProviderRuntimeState.SAVED_ACTIVE,
-            account_id=source.account_id,
-            provider_identity=_SOURCE_IDENTITY,
-            runtime_generation=claude_access_token_generation(
-                "sk-ant-oat01-source-native"
-            ),
-            verified_at=REFERENCE_TIME,
-            outcome=ActivationOutcome.VERIFIED,
-        )
+    claude_state = FinalizedSelection(
+        provider_id=ProviderId.CLAUDE,
+        account_id=source.account_id,
+        epoch=SelectionEpoch(0),
+        generation=claude_access_token_generation(
+            "sk-ant-oat01-source-native"
+        ),
+        finalized_at=REFERENCE_TIME,
     )
-    codex_state = SelectedAccountState(
+    codex_state = FinalizedSelection(
         provider_id=ProviderId.CODEX,
-        runtime_state=ProviderRuntimeState.SAVED_ACTIVE,
         account_id=_CODEX_ACCOUNT_ID,
-        provider_identity=ProviderIdentity("codex-account"),
-        runtime_generation=AuthorityGeneration("codex-generation"),
-        verified_at=REFERENCE_TIME,
-        outcome=ActivationOutcome.VERIFIED,
+        epoch=SelectionEpoch(0),
+        generation=AuthorityGeneration("codex-generation"),
+        finalized_at=REFERENCE_TIME,
     )
-    selected.save(codex_state)
+    seed_finalized_selections(paths, claude_state, codex_state)
     journals = ActivationJournalStore(
         paths.activation_journals,
         paths.durable_operations,

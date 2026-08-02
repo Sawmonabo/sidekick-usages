@@ -9,6 +9,7 @@ from sidekick_usages.core.accounts.types import (
 )
 from sidekick_usages.core.selection.models import (
     ActivationRecord,
+    FinalizedSelection,
     ProviderAuthObservation,
     SelectedAccountState,
     activation_account_ids,
@@ -104,7 +105,7 @@ class CodexActivationService:
     ) -> SelectedAccountState:
         """Refresh, install, and return one journaled provider proof."""
         authority.require(ProviderId.CODEX)
-        baseline = self._selected.load(ProviderId.CODEX)
+        finalized = self._selected.load(ProviderId.CODEX)
         target_authority = authority.account(target_account_id)
         expectation = self._projection_expectation(
             target_account_id,
@@ -112,6 +113,11 @@ class CodexActivationService:
         )
         native_baseline = self._native_auth.observe()
         self._require_trusted_native(native_baseline)
+        baseline = self._selected_baseline(
+            finalized,
+            native_baseline,
+            authority,
+        )
         account_ids = tuple(
             sorted(activation_account_ids(baseline, target_account_id))
         )
@@ -363,6 +369,35 @@ class CodexActivationService:
                 CodexActivationFailure.TARGET_UNAVAILABLE
             )
         return result
+
+    def _selected_baseline(
+        self,
+        finalized: FinalizedSelection | None,
+        native: ProviderAuthObservation,
+        authority: ProviderMutationAuthority,
+    ) -> SelectedAccountState | None:
+        """Relate finalized selection through managed and native identity."""
+        if finalized is None:
+            return None
+        expectation = self._projection_expectation(
+            finalized.account_id,
+            authority.account(finalized.account_id),
+        )
+        if (
+            native.state is not ProviderAuthState.ACTIVE
+            or native.provider_identity != expectation.provider_identity
+            or finalized.generation != expectation.generation
+        ):
+            raise CodexActivationError(CodexActivationFailure.STATE_CHANGED)
+        return SelectedAccountState(
+            provider_id=ProviderId.CODEX,
+            runtime_state=ProviderRuntimeState.SAVED_ACTIVE,
+            account_id=finalized.account_id,
+            provider_identity=expectation.provider_identity,
+            runtime_generation=native.generation,
+            verified_at=native.observed_at,
+            outcome=ActivationOutcome.VERIFIED,
+        )
 
     def _install_current(
         self,

@@ -10,8 +10,7 @@ from sidekick_usages.core.accounts.models import (
     ClaudeManagedLoginAuthority,
     SavedAccount,
 )
-from sidekick_usages.core.selection.models import SelectedAccountState
-from sidekick_usages.core.selection.types import ProviderRuntimeState
+from sidekick_usages.core.selection.models import FinalizedSelection
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.credentials.authorities import (
     AuthenticatedSavedAccount,
@@ -197,7 +196,7 @@ class ClaudeManagedCredentialResolver:
     def _authority_source(
         self,
         account: SavedAccount,
-        selected: SelectedAccountState | None,
+        selected: FinalizedSelection | None,
     ) -> tuple[ClaudeAuthorityReader, ClaudeCapabilities]:
         if not _is_selected_account(account, selected):
             return (
@@ -218,15 +217,14 @@ class ClaudeManagedCredentialResolver:
     def _require_projection(
         account: SavedAccount,
         subscription: ClaudeManagedLoginAuthority,
-        selected: SelectedAccountState | None,
+        selected: FinalizedSelection | None,
         snapshot: ClaudeAuthoritySnapshot,
     ) -> None:
         if _is_selected_account(account, selected):
             if (
                 selected is None
-                or selected.provider_identity != subscription.provider_identity
-                or selected.provider_identity != snapshot.provider_identity
-                or selected.runtime_generation != snapshot.generation
+                or subscription.provider_identity != snapshot.provider_identity
+                or selected.generation != snapshot.generation
             ):
                 raise ClaudeManagedCredentialError(
                     CredentialAuthorityFailureKind.MISMATCH
@@ -240,14 +238,10 @@ class ClaudeManagedCredentialResolver:
 
 def _is_selected_account(
     account: SavedAccount,
-    selected: SelectedAccountState | None,
+    selected: FinalizedSelection | None,
 ) -> bool:
     """Return whether verified selected state names this saved account."""
-    return (
-        selected is not None
-        and selected.runtime_state is ProviderRuntimeState.SAVED_ACTIVE
-        and selected.account_id == account.account_id
-    )
+    return selected is not None and selected.account_id == account.account_id
 
 
 def _maintained_account(

@@ -122,5 +122,13 @@ class CodexNativeReconciliationWorkerExecutor:
                 self._clock,
             )
         if not reconciled.changed:
-            return worker_no_change(operation, self._clock)
-        return worker_success(operation, self._clock)
+            return worker_no_change(
+                operation,
+                self._clock,
+                reconciled.related_runtime_authority,
+            )
+        return worker_success(
+            operation,
+            self._clock,
+            reconciled.related_runtime_authority,
+        )

@@ -74,6 +74,7 @@ class ClaudeSelectionWorkerExecutor:
             or not supported_priority
         ):
             raise ValueError("Worker operation is not Claude selection.")
+        related = None
         try:
             if operation.kind is OperationKind.ACTIVATE:
                 self._activation.activate(
@@ -91,8 +92,13 @@ class ClaudeSelectionWorkerExecutor:
                 )
             else:
                 reconciled = self._native_reconciliation.reconcile(authority)
+                related = reconciled.related_runtime_authority
                 if not reconciled.changed:
-                    return worker_no_change(operation, self._clock)
+                    return worker_no_change(
+                        operation,
+                        self._clock,
+                        reconciled.related_runtime_authority,
+                    )
         except ClaudeActivationError as error:
             return managed_worker_result(
                 operation,
@@ -109,4 +115,8 @@ class ClaudeSelectionWorkerExecutor:
                 timed_out=error.timed_out,
                 failure_code=error.failure_code,
             )
-        return worker_success(operation, self._clock)
+        return worker_success(
+            operation,
+            self._clock,
+            related,
+        )

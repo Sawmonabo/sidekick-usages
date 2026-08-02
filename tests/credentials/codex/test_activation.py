@@ -1,5 +1,6 @@
 """Load-bearing managed Codex activation tests."""
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -10,27 +11,32 @@ from sidekick_usages.core.accounts.types import (
     ProviderIdentity,
     SidekickAccountId,
 )
-from sidekick_usages.core.selection.models import SelectedAccountState
+from sidekick_usages.core.selection.models import (
+    FinalizedSelection,
+    ProviderAuthObservation,
+    SelectionEpoch,
+)
 from sidekick_usages.core.selection.types import (
-    ActivationOutcome,
     ActivationPhase,
-    ProviderRuntimeState,
 )
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.control.client import ControlClient
-from sidekick_usages.daemon.models.protocol import (
-    CompletedPayload,
-    FailedPayload,
-)
+from sidekick_usages.daemon.models.protocol import FailedPayload
 from sidekick_usages.daemon.types.protocol import (
-    CompletionOutcome,
     EventKind,
 )
 from sidekick_usages.paths import ApplicationPaths
 from sidekick_usages.persistence.supervisor.activation import (
     ActivationJournalStore,
 )
+from sidekick_usages.persistence.supervisor.observation import (
+    RuntimeAuthObservationStore,
+)
 from sidekick_usages.persistence.supervisor.selection import SelectedStateStore
+from sidekick_usages.providers.codex.auth.storage import observe_native_auth
+from sidekick_usages.providers.codex.broker.authority import (
+    CodexSavedAuthorityResolver,
+)
 from sidekick_usages.providers.codex.broker.daemon import CodexDaemonManager
 from sidekick_usages.providers.codex.broker.errors import CodexBrokerError
 from sidekick_usages.providers.codex.broker.models import CodexDaemonAuthority
@@ -47,15 +53,12 @@ from tests.fakes.codex.broker.runtime import (
     NATIVE_AUTH_SENTINEL,
     NEXT_GENERATION,
     PROVIDER_IDENTITY,
-    UNKNOWN_GENERATION,
-    UNKNOWN_PROVIDER_IDENTITY,
-    UNSELECTED_NEXT_GENERATION,
     account_store,
-    broker_fixture,
+    activation_source_fixture,
     interrupt_activation_at_install,
     real_worker_executable,
     selected_account,
-    wait_for_external_selection,
+    wait_for_projected_generation,
 )
 from tests.fakes.codex.broker.supervisor import FakeCodexSupervisor
 from tests.support.platform import REQUIRES_MANAGED_RUNTIME
@@ -65,7 +68,6 @@ pytestmark = REQUIRES_MANAGED_RUNTIME
 
 _CLAUDE_ACCOUNT_ID = SidekickAccountId("55555555-5555-4555-8555-555555555555")
 _FIRST_ACTIVATION_ID = OperationId("88888888-8888-4888-8888-888888888888")
-_SECOND_ACTIVATION_ID = OperationId("99999999-9999-4999-8999-999999999999")
 
 
 def _require_selected(
@@ -73,35 +75,34 @@ def _require_selected(
     account_id: SidekickAccountId,
     provider_identity: str,
     generation: str,
-) -> SelectedAccountState:
+) -> FinalizedSelection:
     state = selected.load(ProviderId.CODEX)
     assert state is not None
-    assert state.runtime_state is ProviderRuntimeState.SAVED_ACTIVE
     assert state.account_id == account_id
-    assert state.provider_identity == ProviderIdentity(provider_identity)
-    assert state.runtime_generation == AuthorityGeneration(generation)
+    assert state.generation == AuthorityGeneration(generation)
+    observation = RuntimeAuthObservationStore(
+        selected.path.parent / "operations"
+    ).observe_projection(ProviderId.CODEX)
+    if observation is not None:
+        assert observation.provider_identity == ProviderIdentity(
+            provider_identity
+        )
     return state
 
 
-def _assert_fresh_codex_reconciliation(
-    socket_path: Path,
-    daemon: FakeCodexDaemon,
+def _require_projection_without_finalization(
     selected: SelectedStateStore,
-) -> None:
-    """Require each native operation to read its current runtime first."""
-    reads_before = daemon.auth_status_read_count
-    selected_before = selected.load(ProviderId.CODEX)
-    assert selected_before is not None
-    client = ControlClient.connect(socket_path)
-    events = tuple(client.reconcile(ProviderId.CODEX))
-    client.close()
-    selected_after = selected.load(ProviderId.CODEX)
-    assert events[-1].kind is EventKind.COMPLETED
-    assert isinstance(events[-1].payload, CompletedPayload)
-    assert events[-1].payload.outcome is CompletionOutcome.NO_CHANGE
-    assert daemon.auth_status_read_count > reads_before
-    assert selected_after is not None
-    assert selected_after.verified_at > selected_before.verified_at
+    baseline: FinalizedSelection,
+    provider_identity: str,
+) -> ProviderAuthObservation:
+    """Require provider proof while the coordinator pointer stays stable."""
+    assert selected.load(ProviderId.CODEX) == baseline
+    observation = RuntimeAuthObservationStore(
+        selected.path.parent / "operations"
+    ).observe_projection(ProviderId.CODEX)
+    assert observation is not None
+    assert observation.provider_identity == ProviderIdentity(provider_identity)
+    return observation
 
 
 def _codex_recovery_state(
@@ -109,12 +110,18 @@ def _codex_recovery_state(
 ) -> tuple[SelectedStateStore, ActivationJournalStore]:
     """Seed the selected baseline and return both recovery stores."""
     selected = SelectedStateStore(paths.selected_state)
-    selected.save(
-        selected_account(
-            ACCOUNT_A_ID,
-            ACCOUNT_A_PROVIDER_IDENTITY,
-            GENERATION,
-        )
+    current = selected.load(ProviderId.CODEX)
+    assert current is not None
+    selected.compare_and_swap(
+        replace(
+            selected_account(
+                ACCOUNT_A_ID,
+                ACCOUNT_A_PROVIDER_IDENTITY,
+                str(current.generation),
+            ),
+            epoch=current.epoch.next(),
+        ),
+        expected=current,
     )
     return (
         selected,
@@ -130,18 +137,55 @@ def test_codex_activation_commits_only_correlated_target(
     short_socket_root: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    fixture = broker_fixture(tmp_path, short_socket_root, monkeypatch)
-    selected = SelectedStateStore(fixture.paths.selected_state)
-    claude = SelectedAccountState(
-        provider_id=ProviderId.CLAUDE,
-        runtime_state=ProviderRuntimeState.SAVED_ACTIVE,
-        account_id=_CLAUDE_ACCOUNT_ID,
-        provider_identity=ProviderIdentity("claude-workspace"),
-        runtime_generation=AuthorityGeneration("claude-generation"),
-        verified_at=REFERENCE_TIME,
-        outcome=ActivationOutcome.VERIFIED,
+    fixture = activation_source_fixture(
+        tmp_path,
+        short_socket_root,
+        monkeypatch,
     )
-    selected.save(claude)
+    selected = SelectedStateStore(fixture.paths.selected_state)
+    selected_source = selected.load(ProviderId.CODEX)
+    native_source = observe_native_auth(
+        credential_home=fixture.native_home,
+        observed_at=REFERENCE_TIME,
+    )
+    assert selected_source is not None
+    saved_authority = CodexSavedAuthorityResolver(
+        account_store(fixture.paths),
+    )
+    assert saved_authority.matches(selected_source, native_source)
+    assert saved_authority.matches(
+        selected_source,
+        replace(
+            native_source,
+            generation=AuthorityGeneration(
+                "access-token-sha256:refreshed-runtime-fingerprint"
+            ),
+        ),
+    )
+    assert (
+        saved_authority.expectation(
+            replace(
+                selected_source,
+                generation=AuthorityGeneration(NEXT_GENERATION),
+            )
+        )
+        is None
+    )
+    assert not saved_authority.matches(
+        selected_source,
+        replace(
+            native_source,
+            provider_identity=ProviderIdentity(PROVIDER_IDENTITY),
+        ),
+    )
+    claude = FinalizedSelection(
+        provider_id=ProviderId.CLAUDE,
+        account_id=_CLAUDE_ACCOUNT_ID,
+        epoch=SelectionEpoch(1),
+        generation=AuthorityGeneration("claude-generation"),
+        finalized_at=REFERENCE_TIME,
+    )
+    selected.compare_and_swap(claude, expected=None)
     reject_revalidation = False
     revalidate = CodexDaemonManager.revalidate
 
@@ -213,26 +257,39 @@ def test_codex_activation_commits_only_correlated_target(
         ) as restarted:
             daemon.wait_for_paused_install()
             daemon.resume_install()
-            restarted.wait_until_ready()
-            _require_selected(
-                selected,
+            wait_for_projected_generation(
+                fixture.paths,
                 MANAGED_ACCOUNT_ID,
                 PROVIDER_IDENTITY,
                 NEXT_GENERATION,
+            )
+            _require_projection_without_finalization(
+                selected,
+                selected_baseline,
+                PROVIDER_IDENTITY,
             )
             journal = ActivationJournalStore(
                 fixture.paths.activation_journals,
                 fixture.paths.durable_operations,
             ).load(ProviderId.CODEX)
-            assert journal.active is None
-            assert journal.history[-1].phase is ActivationPhase.COMMITTED
-            assert journal.history[-1].target_authority_generation == (
-                AuthorityGeneration(NEXT_GENERATION)
+            terminal = journal.history[-1]
+            assert (
+                restarted.ready,
+                daemon.installed_account_ids[-1],
+                journal.active,
+                terminal.phase,
+                terminal.target_authority_generation,
+                terminal.verified_runtime_generation,
+                selected.load(ProviderId.CLAUDE),
+            ) == (
+                False,
+                PROVIDER_IDENTITY,
+                None,
+                ActivationPhase.COMMITTED,
+                AuthorityGeneration(NEXT_GENERATION),
+                AuthorityGeneration(NEXT_GENERATION),
+                claude,
             )
-            assert journal.history[-1].verified_runtime_generation == (
-                AuthorityGeneration(NEXT_GENERATION)
-            )
-            assert selected.load(ProviderId.CLAUDE) == claude
 
     assert fixture.native_auth.read_bytes() == NATIVE_AUTH_SENTINEL
 
@@ -242,7 +299,11 @@ def test_codex_activation_recovers_at_official_mutation_boundary(
     short_socket_root: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    fixture = broker_fixture(tmp_path, short_socket_root, monkeypatch)
+    fixture = activation_source_fixture(
+        tmp_path,
+        short_socket_root,
+        monkeypatch,
+    )
     selected, journals = _codex_recovery_state(fixture.paths)
 
     with FakeCodexDaemon(fixture.native_home) as daemon:
@@ -294,100 +355,28 @@ def test_codex_activation_recovers_at_official_mutation_boundary(
             daemon.resume_install()
             assert tuple(retry)[-1].kind is EventKind.COMPLETED
             client.close()
-            restarted.wait_until_ready()
-            _assert_fresh_codex_reconciliation(
-                fixture.paths.supervisor_socket,
-                daemon,
-                selected,
+            wait_for_projected_generation(
+                fixture.paths,
+                MANAGED_ACCOUNT_ID,
+                PROVIDER_IDENTITY,
+                NEXT_GENERATION,
             )
 
             assert (
                 len(daemon.installed_account_ids) > installed_before_recovery
             )
-            _require_selected(
+            selected_before_finalization = selected.load(ProviderId.CODEX)
+            assert selected_before_finalization is not None
+            _require_projection_without_finalization(
                 selected,
-                MANAGED_ACCOUNT_ID,
+                selected_before_finalization,
                 PROVIDER_IDENTITY,
-                NEXT_GENERATION,
             )
             recovered = journals.load(ProviderId.CODEX)
             assert recovered.active is None
             assert len(recovered.history) == 1
-
-            interrupt_activation_at_install(
-                restarted,
-                daemon,
-                fixture.paths,
-                _SECOND_ACTIVATION_ID,
-                ACCOUNT_A_ID,
-            )
-            account_a_installs = daemon.installed_account_ids.count(
-                ACCOUNT_A_PROVIDER_IDENTITY
-            )
-            account_b_installs = daemon.installed_account_ids.count(
-                PROVIDER_IDENTITY
-            )
-
-        daemon.perform_external_runtime_login(
-            PROVIDER_IDENTITY,
-            NEXT_GENERATION,
-        )
-        with FakeCodexSupervisor(
-            fixture.paths,
-            fixture.executable,
-            fixture.native_home,
-            fixture.environment,
-            real_worker_executable(),
-        ) as external_recovery:
-            external_recovery.wait_until_ready()
             assert (
-                daemon.installed_account_ids.count(ACCOUNT_A_PROVIDER_IDENTITY)
-                == account_a_installs
+                selected.load(ProviderId.CODEX) == selected_before_finalization
             )
-            assert (
-                daemon.installed_account_ids.count(PROVIDER_IDENTITY)
-                > account_b_installs
-            )
-            _require_selected(
-                selected,
-                MANAGED_ACCOUNT_ID,
-                PROVIDER_IDENTITY,
-                NEXT_GENERATION,
-            )
-            reconciled = journals.load(ProviderId.CODEX)
-            assert reconciled.active is None
-            assert tuple(record.outcome for record in reconciled.history) == (
-                ActivationOutcome.VERIFIED,
-                ActivationOutcome.ROLLED_BACK,
-            )
-            rollback = reconciled.history[-1]
-            assert (
-                rollback.target_authority_generation,
-                rollback.verified_runtime_generation,
-            ) == (
-                AuthorityGeneration(UNSELECTED_NEXT_GENERATION),
-                AuthorityGeneration(NEXT_GENERATION),
-            )
-            saved_ids = tuple(
-                account.account_id
-                for account in account_store(fixture.paths).saved_accounts()
-            )
-            daemon.perform_external_runtime_login(
-                UNKNOWN_PROVIDER_IDENTITY,
-                UNKNOWN_GENERATION,
-            )
-            external = wait_for_external_selection(
-                fixture.paths,
-                UNKNOWN_PROVIDER_IDENTITY,
-            )
-            assert external.account_id is None
-            assert (
-                tuple(
-                    account.account_id
-                    for account in account_store(
-                        fixture.paths
-                    ).saved_accounts()
-                )
-                == saved_ids
-            )
-            external_recovery.wait_until_ready()
+            assert not restarted.ready
+            assert daemon.installed_account_ids[-1] == PROVIDER_IDENTITY

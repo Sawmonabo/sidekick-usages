@@ -7,6 +7,7 @@ from pathlib import Path
 from sidekick_usages.core.accounts.types import OperationId
 from sidekick_usages.core.selection.models import (
     DueOperation,
+    RelatedRuntimeAuthority,
     safe_outcome_code,
 )
 from sidekick_usages.core.time import as_utc
@@ -50,6 +51,7 @@ class WorkerResult:
     outcome: WorkerOutcome
     finished_at: datetime
     failure_code: str | None = None
+    related_runtime_authority: RelatedRuntimeAuthority | None = None
 
     def __post_init__(self) -> None:
         """Normalize time and require truthful safe failure metadata."""
@@ -63,6 +65,8 @@ class WorkerResult:
             raise ValueError("Successful worker results cannot carry errors.")
         if not succeeded and code is None:
             raise ValueError("Failed worker results require a safe code.")
+        if not succeeded and self.related_runtime_authority is not None:
+            raise ValueError("Failed worker results cannot carry authority.")
         object.__setattr__(self, "failure_code", code)
 
 

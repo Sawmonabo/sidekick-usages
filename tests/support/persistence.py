@@ -4,15 +4,20 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from sidekick_usages.core.models import Account
+from sidekick_usages.core.selection.models import FinalizedSelection
 from sidekick_usages.core.types import AccountLabel
 from sidekick_usages.paths import ApplicationPaths
 from sidekick_usages.persistence.accounts.store import AccountStore
 from sidekick_usages.persistence.filesystem.service import (
     PersistenceFilesystem,
 )
+from sidekick_usages.persistence.models.selection import SelectedStateDocument
 from sidekick_usages.persistence.private.credentials import (
     PrivateCredentialTree,
 )
+from sidekick_usages.persistence.private.filesystem import PrivateFilesystem
+from sidekick_usages.persistence.schema.selection import encode_selected_state
+from sidekick_usages.persistence.types.artifact import AuthorityExpectation
 
 
 def make_application_paths(root: Path) -> ApplicationPaths:
@@ -89,3 +94,14 @@ def remove_saved_account(
     if len(matches) != 1:
         raise AssertionError("Expected one saved test account.")
     store.remove_saved(matches[0].account_id, expected=matches[0])
+
+
+def seed_finalized_selections(
+    paths: ApplicationPaths,
+    *states: FinalizedSelection,
+) -> None:
+    """Publish one validated absent-only finalized-selection fixture."""
+    PrivateFilesystem(paths.selected_state).commit_opaque_private(
+        encode_selected_state(SelectedStateDocument(states)),
+        expected_source=AuthorityExpectation.ABSENT,
+    )

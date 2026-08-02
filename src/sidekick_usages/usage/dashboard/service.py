@@ -18,8 +18,8 @@ from sidekick_usages.core.models import (
     ProviderTokenActivitySnapshot,
 )
 from sidekick_usages.core.selection.models import (
+    FinalizedSelection,
     ProviderAuthObservation,
-    SelectedAccountState,
 )
 from sidekick_usages.core.selection.policy import (
     same_provider_auth_authority,
@@ -189,7 +189,7 @@ class CachedDashboardService:
         self,
         provider_id: ProviderId,
         accounts: tuple[SavedAccount, ...],
-        selected: SelectedAccountState | None,
+        selected: FinalizedSelection | None,
         service_ready: bool,
         usage: dict[SidekickAccountId, AccountUsageSnapshot],
         account_activity: dict[
@@ -220,13 +220,24 @@ class CachedDashboardService:
             for account in accounts
             if account.provider_id is provider_id
         )
+        selected_account = next(
+            (
+                account
+                for account in provider_accounts
+                if selected is not None
+                and account.account_id == selected.account_id
+            ),
+            None,
+        )
         runtime_state = self._runtime_state(
             selected,
+            selected_account,
             runtime_auth,
             runtime_projection,
         )
         active_account_id = self._active_account_id(
             selected,
+            selected_account,
             runtime_auth,
             runtime_projection,
         )
@@ -269,7 +280,8 @@ class CachedDashboardService:
 
     @staticmethod
     def _runtime_state(
-        selected: SelectedAccountState | None,
+        selected: FinalizedSelection | None,
+        selected_account: SavedAccount | None,
         runtime_auth: ProviderAuthObservation | None,
         runtime_projection: ProviderAuthObservation | None,
     ) -> ProviderRuntimeState | None:
@@ -280,11 +292,12 @@ class CachedDashboardService:
         if selected is not None and (
             CachedDashboardService._runtime_matches_selected(
                 selected,
+                selected_account,
                 runtime_auth,
                 runtime_projection,
             )
         ):
-            return selected.runtime_state
+            return ProviderRuntimeState.SAVED_ACTIVE
         return ProviderRuntimeState.EXTERNAL_ACTIVE
 
     def _account(
@@ -328,15 +341,16 @@ class CachedDashboardService:
 
     @staticmethod
     def _active_account_id(
-        selected: SelectedAccountState | None,
+        selected: FinalizedSelection | None,
+        selected_account: SavedAccount | None,
         runtime_auth: ProviderAuthObservation | None,
         runtime_projection: ProviderAuthObservation | None,
     ) -> SidekickAccountId | None:
         if (
             selected is None
-            or selected.runtime_state is not ProviderRuntimeState.SAVED_ACTIVE
             or not CachedDashboardService._runtime_matches_selected(
                 selected,
+                selected_account,
                 runtime_auth,
                 runtime_projection,
             )
@@ -346,38 +360,35 @@ class CachedDashboardService:
 
     @staticmethod
     def _runtime_matches_selected(
-        selected: SelectedAccountState | None,
+        selected: FinalizedSelection | None,
+        selected_account: SavedAccount | None,
         runtime_auth: ProviderAuthObservation | None,
         runtime_projection: ProviderAuthObservation | None,
     ) -> bool:
         identity_matches = (
             selected is not None
-            and selected.runtime_state
-            in {
-                ProviderRuntimeState.SAVED_ACTIVE,
-                ProviderRuntimeState.EXTERNAL_ACTIVE,
-            }
+            and selected_account is not None
             and runtime_auth is not None
             and runtime_auth.state is ProviderAuthState.ACTIVE
             and runtime_auth.provider_id is selected.provider_id
-            and runtime_auth.provider_identity == selected.provider_identity
+            and runtime_auth.provider_identity
+            == selected_account.provider_identity
+            and runtime_auth.generation == selected.generation
         )
         if not identity_matches or selected is None or runtime_auth is None:
             return False
-        if (
-            selected.provider_id is ProviderId.CODEX
-            and selected.runtime_state is ProviderRuntimeState.SAVED_ACTIVE
-        ):
+        if selected.provider_id is ProviderId.CODEX:
             return (
                 runtime_projection is not None
                 and runtime_projection.provider_identity
-                == selected.provider_identity
+                == selected_account.provider_identity
+                and runtime_projection.generation == selected.generation
                 and same_provider_auth_authority(
                     runtime_auth,
                     runtime_projection,
                 )
             )
-        return runtime_auth.generation == selected.runtime_generation
+        return True
 
     @staticmethod
     def _credential_states(

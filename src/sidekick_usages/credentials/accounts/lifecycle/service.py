@@ -4,7 +4,6 @@ from sidekick_usages.core.accounts.models import SavedAccount
 from sidekick_usages.core.accounts.types import SidekickAccountId
 from sidekick_usages.core.selection.types import (
     OperationState,
-    ProviderRuntimeState,
 )
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.credentials.accounts.lifecycle.models import (
@@ -487,11 +486,7 @@ class AccountLifecycleCoordinator:
         account: SavedAccount,
     ) -> AccountRemovalFailure | None:
         selected = self._persistence.selected.load(account.provider_id)
-        if (
-            selected is not None
-            and selected.runtime_state is ProviderRuntimeState.SAVED_ACTIVE
-            and selected.account_id == account.account_id
-        ):
+        if selected is not None and selected.account_id == account.account_id:
             return _failure(
                 account.account_id,
                 AccountRemovalFailureKind.SELECTED,

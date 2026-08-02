@@ -44,6 +44,10 @@ from sidekick_usages.daemon.worker.pool import (
     resolve_worker_executable,
 )
 from sidekick_usages.paths import discover_application_paths
+from sidekick_usages.persistence.accounts.store import AccountStore
+from sidekick_usages.persistence.private.credentials import (
+    PrivateCredentialTree,
+)
 from sidekick_usages.persistence.supervisor.activation import (
     ActivationJournalStore,
 )
@@ -123,6 +127,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     selected = SelectedStateStore(paths.selected_state)
     observations = RuntimeAuthObservationStore(paths.durable_operations)
+    accounts = AccountStore(
+        paths.accounts,
+        PrivateCredentialTree(
+            paths.private_credentials,
+            account_path=paths.accounts,
+        ),
+    ).load()
     recovery = ActivationRecoveryScheduler(journals, queue)
     events = OperationEventHub()
     exchanges = WorkerExchangeRegistry(time.monotonic)
@@ -150,6 +161,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             observations,
             clock,
         ),
+        accounts,
         DurableCodexOperationDispatcher(
             queue,
             observations,
@@ -165,7 +177,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     scheduler = DurableScheduler(
         queue,
         results,
-        selected,
         workers,
         clock,
         events=CompositeOperationSink(

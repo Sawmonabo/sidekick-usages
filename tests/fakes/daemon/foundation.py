@@ -36,7 +36,10 @@ from sidekick_usages.persistence.supervisor.activation import (
 from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
 from sidekick_usages.persistence.supervisor.selection import SelectedStateStore
 from tests.support.accounts import saved_account
-from tests.support.persistence import make_application_paths
+from tests.support.persistence import (
+    make_application_paths,
+    seed_finalized_selections,
+)
 from tests.support.time import REFERENCE_TIME
 
 CLAUDE_NATIVE_OPERATION_ID = OperationId(
@@ -134,19 +137,17 @@ def foundation_state(tmp_path: Path) -> FoundationState:
     saved_accounts = accounts()
     source, target, codex = tuple(saved_accounts)
     selected_store = SelectedStateStore(paths.selected_state)
-    selected_store.save(
-        selected(
-            ProviderId.CLAUDE,
-            source.account_id,
-            "claude-source-generation",
-        )
+    claude_state = selected(
+        ProviderId.CLAUDE,
+        source.account_id,
+        "claude-source-generation",
     )
     codex_state = selected(
         ProviderId.CODEX,
         codex.account_id,
         "codex-generation",
     )
-    selected_store.save(codex_state)
+    seed_finalized_selections(paths, claude_state, codex_state)
     operations = (
         operation(
             source.account_id,

@@ -20,8 +20,8 @@ from sidekick_usages.core.expiry import (
     classify_expiry,
     refresh_due,
 )
-from sidekick_usages.core.selection.models import SelectedAccountState
-from sidekick_usages.core.selection.types import ProviderRuntimeState
+from sidekick_usages.core.selection.models import FinalizedSelection
+from sidekick_usages.core.selection.types import ProviderAuthState
 from sidekick_usages.core.types import ProviderId, RefreshStatus
 from sidekick_usages.credentials.claude.activation.authority import (
     ClaudeActivationAuthorityCoordinator,
@@ -29,6 +29,7 @@ from sidekick_usages.credentials.claude.activation.authority import (
 from sidekick_usages.credentials.claude.activation.models import (
     ClaudeActivationError,
     ClaudeActivationFailure,
+    ClaudeNativeObservation,
 )
 from sidekick_usages.credentials.claude.exchange.models import (
     ClaudeExchangeFailure,
@@ -66,7 +67,6 @@ from sidekick_usages.persistence.errors import SourceChangedError
 from sidekick_usages.persistence.private.credentials import (
     PrivateCredentialTree,
 )
-from sidekick_usages.persistence.state.files import ManagedStateConflictError
 from sidekick_usages.persistence.supervisor.authority import (
     OperationAuthority,
     OperationAuthorityLock,
@@ -266,7 +266,7 @@ class ClaudeManagedAuthorityCoordinator:
         self,
         account: SavedAccount,
         subscription: ClaudeManagedLoginAuthority,
-        selected: SelectedAccountState,
+        selected: FinalizedSelection,
         private: ClaudeManagedAuthorityResult,
         *,
         forced: bool,
@@ -308,7 +308,7 @@ class ClaudeManagedAuthorityCoordinator:
         self,
         account: SavedAccount,
         subscription: ClaudeManagedLoginAuthority,
-        selected: SelectedAccountState,
+        selected: FinalizedSelection,
     ) -> (
         tuple[ClaudeCapabilities, ClaudeAuthoritySnapshot]
         | ClaudeManagedAuthorityResult
@@ -332,7 +332,7 @@ class ClaudeManagedAuthorityCoordinator:
             else:
                 if (
                     before.provider_identity != subscription.provider_identity
-                    or before.generation != selected.runtime_generation
+                    or before.generation != selected.generation
                 ):
                     outcome = ClaudeManagedOutcome.RECONCILIATION_REQUIRED
                 elif before.health is CredentialHealth.LOGIN_REQUIRED:
@@ -426,23 +426,20 @@ class ClaudeManagedAuthorityCoordinator:
     def _persist_selected_proof(
         self,
         private: ClaudeManagedAuthorityResult,
-        selected: SelectedAccountState,
+        selected: FinalizedSelection,
         snapshot: ClaudeAuthoritySnapshot,
     ) -> ClaudeManagedAuthorityResult:
-        completed_at = self._clock.now()
-        updated = replace(
-            selected,
-            provider_identity=snapshot.provider_identity,
-            runtime_generation=snapshot.generation,
-            verified_at=completed_at,
-        )
-        try:
-            self._selected.compare_and_swap(updated, expected=selected)
-        except ManagedStateConflictError:
+        if self._selected.load(ProviderId.CLAUDE) != selected:
             return self._result(
                 private.account,
                 ClaudeManagedOutcome.STATE_CHANGED,
             )
+        self._activation.record_native_observation(
+            ClaudeNativeObservation(
+                state=ProviderAuthState.ACTIVE,
+                snapshot=snapshot,
+            )
+        )
         return private
 
     @staticmethod
@@ -551,14 +548,13 @@ def _activation_outcome(
 def _selected_authority_matches(
     account: SavedAccount,
     authority: ClaudeManagedLoginAuthority,
-    selected: SelectedAccountState,
+    selected: FinalizedSelection,
 ) -> bool:
     """Require selected state to name this exact saved identity."""
     return (
         selected.provider_id is ProviderId.CLAUDE
-        and selected.runtime_state is ProviderRuntimeState.SAVED_ACTIVE
         and selected.account_id == account.account_id
-        and selected.provider_identity == authority.provider_identity
+        and account.provider_identity == authority.provider_identity
     )
 
 

@@ -86,7 +86,7 @@ class ClaudeActivationRecoveryService:
         authority.require(ProviderId.CLAUDE)
         record = self._journals.load(ProviderId.CLAUDE).active
         if record is None:
-            return self._selected.load(ProviderId.CLAUDE)
+            return None
         source_account_id = self._source_account_id(
             record,
             target_account_id,
