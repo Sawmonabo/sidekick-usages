@@ -10,12 +10,15 @@ import pytest
 from sidekick_usages.core.accounts.types import (
     AuthorityGeneration,
     OperationId,
+    ProviderIdentity,
 )
 from sidekick_usages.core.selection.models import (
+    ActivationRecord,
     DueOperation,
     FinalizedSelection,
 )
 from sidekick_usages.core.selection.types import (
+    ActivationPhase,
     OperationKind,
     OperationPriority,
     OperationState,
@@ -26,8 +29,14 @@ from sidekick_usages.credentials.codex.managed.service import (
 )
 from sidekick_usages.daemon.control.client import ControlClient
 from sidekick_usages.paths import ApplicationPaths
+from sidekick_usages.persistence.supervisor.activation import (
+    ActivationJournalStore,
+)
 from sidekick_usages.persistence.supervisor.authority import (
     ProviderMutationLock,
+)
+from sidekick_usages.persistence.supervisor.observation import (
+    RuntimeAuthObservationStore,
 )
 from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
 from sidekick_usages.persistence.supervisor.selection import SelectedStateStore
@@ -37,6 +46,7 @@ from sidekick_usages.providers.codex.app_server.capabilities import (
 from sidekick_usages.providers.codex.app_server.executable import (
     discover_codex_executable,
 )
+from sidekick_usages.providers.codex.auth.storage import observe_native_auth
 from sidekick_usages.providers.codex.broker.external_auth.refresh import (
     CODEX_REFRESH_ERROR_CODE,
 )
@@ -58,6 +68,7 @@ from tests.fakes.codex.broker.runtime import (
     NEXT_GENERATION,
     PROVIDER_IDENTITY,
     RECOVERY_GENERATION,
+    UNKNOWN_GENERATION,
     broker_finalized_fixture,
     projection_matches_account,
     real_worker_executable,
@@ -67,7 +78,10 @@ from tests.fakes.codex.broker.runtime import (
     wait_for_operation_state,
     wait_for_projected_generation,
 )
-from tests.fakes.codex.broker.supervisor import FakeCodexSupervisor
+from tests.fakes.codex.broker.supervisor import (
+    FakeCodexBroker,
+    FakeCodexSupervisor,
+)
 from tests.fakes.codex.managed import (
     managed_generation,
     managed_saved_account,
@@ -85,6 +99,7 @@ _INITIAL_LIFECYCLE_CALLS = 2
 _RECOVERED_LIFECYCLE_CALLS = 3
 _INITIAL_READY_READS = 1
 _REHYDRATED_READY_READS = 2
+_GATED_ACTIVATION_ID = OperationId("99999999-9999-4999-8999-999999999999")
 
 
 def _finalized_codex_selection(
@@ -117,6 +132,100 @@ def _finalize_projected_generation(
         )
         selected.compare_and_swap(finalized, expected=initial)
     return finalized
+
+
+def _persist_broker_gate(
+    paths: ApplicationPaths,
+    native_home: Path,
+    gate: str,
+) -> None:
+    """Persist one exact reason the broker cannot resolve readiness."""
+    native = observe_native_auth(
+        credential_home=native_home,
+        observed_at=REFERENCE_TIME,
+    )
+    RuntimeAuthObservationStore(paths.durable_operations).save_native(native)
+    if gate == "unresolvable_selection":
+        selected = SelectedStateStore(paths.selected_state)
+        current = _finalized_codex_selection(paths)
+        selected.compare_and_swap(
+            replace(
+                current,
+                epoch=current.epoch.next(),
+                generation=AuthorityGeneration(UNKNOWN_GENERATION),
+            ),
+            expected=current,
+        )
+        return
+    journals = ActivationJournalStore(
+        paths.activation_journals,
+        paths.durable_operations,
+    )
+    with ProviderMutationLock(
+        paths.durable_operations,
+        ProviderId.CODEX,
+        (MANAGED_ACCOUNT_ID,),
+        timeout_seconds=1.0,
+    ).hold() as authority:
+        journals.transaction(
+            ProviderId.CODEX,
+            (MANAGED_ACCOUNT_ID,),
+            authority,
+        ).begin(
+            ActivationRecord(
+                provider_id=ProviderId.CODEX,
+                operation_id=_GATED_ACTIVATION_ID,
+                selected_baseline=None,
+                native_auth_baseline=native,
+                target_account_id=MANAGED_ACCOUNT_ID,
+                expected_target_identity=ProviderIdentity(PROVIDER_IDENTITY),
+                target_authority_generation=AuthorityGeneration(GENERATION),
+                phase=ActivationPhase.PREPARED,
+                started_at=REFERENCE_TIME,
+                updated_at=REFERENCE_TIME,
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "gate",
+    ["active_transition", "unresolvable_selection"],
+)
+def test_resident_broker_fails_closed_without_resolvable_authority(
+    tmp_path: Path,
+    short_socket_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    gate: str,
+) -> None:
+    """Durable transition or missing authority proof keeps admission gated."""
+    fixture = broker_finalized_fixture(
+        tmp_path,
+        short_socket_root,
+        monkeypatch,
+    )
+    paths = fixture.paths
+    _persist_broker_gate(paths, fixture.native_home, gate)
+
+    with FakeCodexDaemon(fixture.native_home) as daemon:
+        configure_codex_daemon_lifecycle(
+            fixture.provider_root,
+            fixture.native_home,
+            daemon.socket_path,
+        )
+        with FakeCodexBroker(
+            paths,
+            fixture.executable,
+            fixture.native_home,
+            fixture.environment,
+        ) as broker:
+            broker.wait_until_available()
+            time.sleep(_IDLE_BROKER_OBSERVATION_SECONDS)
+            assert (
+                broker.available,
+                broker.ready,
+                broker.failure_code,
+                daemon.installed_account_ids,
+            ) == (True, False, None, ())
 
 
 def test_shared_codex_runtime_is_idempotent_and_rehydrates(
@@ -346,8 +455,8 @@ def test_resident_broker_refreshes_and_recovers_provider_ahead_state(
             restarted.wait_until_ready()
             assert (
                 _finalized_codex_selection(paths),
-                daemon.installed_account_ids[-1],
-            ) == (finalized_recovery, PROVIDER_IDENTITY)
+                set(daemon.installed_account_ids),
+            ) == (finalized_recovery, {PROVIDER_IDENTITY})
             assert saved_generation(paths, ACCOUNT_A_ID) == GENERATION
             observer_a.wait_for_account_update()
             observer_b.wait_for_account_update()

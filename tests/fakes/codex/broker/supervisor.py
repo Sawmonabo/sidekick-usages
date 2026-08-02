@@ -59,6 +59,140 @@ _SUPERVISOR_JOIN_SECONDS = 10.0
 _WAIT_INTERVAL_SECONDS = 0.01
 
 
+def _runtime_factory(
+    executable: CodexExecutable,
+    native_home: Path,
+    environment: Mapping[str, str],
+) -> Callable[[Callable[[], bool]], CodexSharedRuntime]:
+    """Build the shared-runtime factory used by resident test harnesses."""
+    runtime_environment = dict(environment)
+
+    def create(cancelled: Callable[[], bool]) -> CodexSharedRuntime:
+        return CodexSharedRuntime.create(
+            executable,
+            native_home,
+            environment=runtime_environment,
+            cancelled=cancelled,
+        )
+
+    return create
+
+
+def _compose_broker(
+    paths: ApplicationPaths,
+    runtime_factory: Callable[[Callable[[], bool]], CodexSharedRuntime],
+    clock: SystemClock,
+    queue: OperationQueueStore,
+    journals: ActivationJournalStore,
+    observations: RuntimeAuthObservationStore,
+    exchanges: WorkerExchangeRegistry,
+    status_changed: Callable[[], None] | None = None,
+) -> CodexRuntimeBroker:
+    """Compose one production broker around reusable synthetic boundaries."""
+    wakeup = status_changed if status_changed is not None else lambda: None
+    accounts = AccountStore(
+        paths.accounts,
+        PrivateCredentialTree(
+            paths.private_credentials,
+            account_path=paths.accounts,
+        ),
+    ).load()
+    return CodexRuntimeBroker(
+        runtime_factory,
+        RuntimeStateReader(
+            ProviderId.CODEX,
+            SelectedStateStore(paths.selected_state),
+            journals,
+            queue,
+            observations,
+            clock,
+        ),
+        accounts,
+        DurableCodexOperationDispatcher(
+            queue,
+            observations,
+            exchanges,
+            clock.now,
+            time.monotonic,
+            wakeup,
+        ),
+        exchanges,
+        wall_time=clock.now,
+        status_changed=status_changed,
+    )
+
+
+class FakeCodexBroker:
+    """Run only the resident production broker around synthetic boundaries."""
+
+    def __init__(
+        self,
+        paths: ApplicationPaths,
+        executable: CodexExecutable,
+        native_home: Path,
+        environment: Mapping[str, str],
+    ) -> None:
+        clock = SystemClock()
+        queue = OperationQueueStore(paths.durable_operations)
+        observations = RuntimeAuthObservationStore(paths.durable_operations)
+        self._broker = _compose_broker(
+            paths,
+            _runtime_factory(executable, native_home, environment),
+            clock,
+            queue,
+            ActivationJournalStore(
+                paths.activation_journals,
+                paths.durable_operations,
+            ),
+            observations,
+            WorkerExchangeRegistry(time.monotonic),
+        )
+
+    @property
+    def available(self) -> bool:
+        """Return the broker's live shared-runtime qualification."""
+        return self._broker.available
+
+    @property
+    def ready(self) -> bool:
+        """Return whether the broker has proven projection readiness."""
+        return self._broker.ready
+
+    @property
+    def failure_code(self) -> str | None:
+        """Return the broker's retained safe typed failure."""
+        return self._broker.failure_code
+
+    def wait_until_available(self) -> None:
+        """Wait for one qualified shared runtime or a typed failure."""
+        deadline = time.monotonic() + _READINESS_TIMEOUT_SECONDS
+        while not self.available:
+            if self.failure_code is not None:
+                raise AssertionError(
+                    "Fake broker reported a qualification failure: "
+                    f"{self.failure_code}."
+                )
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise AssertionError("Fake broker did not qualify.")
+            time.sleep(min(_WAIT_INTERVAL_SECONDS, remaining))
+
+    def __enter__(self) -> Self:
+        """Start and return this harness."""
+        self._broker.start()
+        return self
+
+    def __exit__(
+        self,
+        exception_type: type[BaseException] | None,
+        exception: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        """Stop the harness."""
+        del exception_type, exception, traceback
+        self._broker.close()
+
+
 class FakeCodexSupervisor:
     """Run the production supervisor, scheduler, broker, and worker process."""
 
@@ -70,9 +204,6 @@ class FakeCodexSupervisor:
         environment: Mapping[str, str],
         worker_executable: Path,
     ) -> None:
-        self._executable = executable
-        self._native_home = native_home
-        self._environment = dict(environment)
         self._stop = Event()
         self._wakeup = WakeupChannel()
         self._failures: list[BaseException] = []
@@ -85,15 +216,7 @@ class FakeCodexSupervisor:
             paths.activation_journals,
             paths.durable_operations,
         )
-        selected = SelectedStateStore(paths.selected_state)
         observations = RuntimeAuthObservationStore(paths.durable_operations)
-        accounts = AccountStore(
-            paths.accounts,
-            PrivateCredentialTree(
-                paths.private_credentials,
-                account_path=paths.accounts,
-            ),
-        ).load()
         recovery = ActivationRecoveryScheduler(journals, queue)
         events = OperationEventHub()
         exchanges = WorkerExchangeRegistry(time.monotonic)
@@ -112,28 +235,15 @@ class FakeCodexSupervisor:
             self._wakeup.notify,
             exchanges=exchanges,
         )
-        broker = CodexRuntimeBroker(
-            self._create_runtime,
-            RuntimeStateReader(
-                ProviderId.CODEX,
-                selected,
-                journals,
-                queue,
-                observations,
-                clock,
-            ),
-            accounts,
-            DurableCodexOperationDispatcher(
-                queue,
-                observations,
-                exchanges,
-                clock.now,
-                time.monotonic,
-                self._wakeup.notify,
-            ),
+        broker = _compose_broker(
+            paths,
+            _runtime_factory(executable, native_home, environment),
+            clock,
+            queue,
+            journals,
+            observations,
             exchanges,
-            wall_time=clock.now,
-            status_changed=self._wakeup.notify,
+            self._wakeup.notify,
         )
         scheduler = DurableScheduler(
             queue,
@@ -269,17 +379,6 @@ class FakeCodexSupervisor:
         """Stop the harness."""
         del exception_type, exception, traceback
         self.close()
-
-    def _create_runtime(
-        self,
-        cancelled: Callable[[], bool],
-    ) -> CodexSharedRuntime:
-        return CodexSharedRuntime.create(
-            self._executable,
-            self._native_home,
-            environment=self._environment,
-            cancelled=cancelled,
-        )
 
     def _run(self) -> None:
         try:

@@ -784,12 +784,12 @@ class CodexRuntimeBroker:
         selected = snapshot.finalized_selection
         projection = snapshot.projection_auth
         if snapshot.activation_in_progress:
-            return None, False
+            return None, True
         if selected is None or selected.provider_id is not ProviderId.CODEX:
             return None, projection is not None
         expectation = self._saved_authority.expectation(selected)
         if expectation is None:
-            return None, projection is not None
+            return None, True
         if (
             projection is not None
             and projection.provider_identity != expectation.provider_identity
