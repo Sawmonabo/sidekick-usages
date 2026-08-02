@@ -402,6 +402,7 @@ class InteractiveDashboardSession:
         *,
         diagnostic_unavailable: bool = False,
     ) -> None:
+        """Rebase lookup outcomes and publish one terminal failure."""
         with self._view_lock:
             if self._closed:
                 return

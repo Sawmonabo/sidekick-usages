@@ -18,7 +18,6 @@ from sidekick_usages.usage.presentation.dashboard.render.models import (
 )
 from sidekick_usages.usage.presentation.dashboard.render.text import (
     activity_summary_line,
-    brand_lines,
     concat_lines,
     fit_line,
     line,
@@ -82,10 +81,9 @@ def render_wide(
     activities: dict[ProviderId, TokenActivitySummary],
     name_width: int,
     width: int,
-    rendered_footer: list[DashboardLine],
 ) -> list[DashboardLine]:
     """Render one fixed-width panel layout."""
-    lines = [DashboardLine(), *brand_lines(width), DashboardLine()]
+    lines: list[DashboardLine] = []
     for provider in snapshot.providers:
         if not provider.rows:
             continue
@@ -100,9 +98,7 @@ def render_wide(
             )
         )
         lines.append(DashboardLine())
-    lines.extend(
-        (_legend(), DashboardLine(), *rendered_footer, DashboardLine())
-    )
+    lines.append(_legend())
     return lines
 
 

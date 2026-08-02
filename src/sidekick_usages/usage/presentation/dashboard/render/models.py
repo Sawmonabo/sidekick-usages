@@ -31,3 +31,32 @@ class DashboardLine:
     def plain(self) -> str:
         """Return the exact unstyled terminal text."""
         return "".join(segment.value for segment in self.segments)
+
+
+@dataclass(frozen=True, slots=True)
+class TerminalDimensions:
+    """One positive terminal viewport measured in rows and columns."""
+
+    columns: int
+    rows: int
+
+    def __post_init__(self) -> None:
+        """Reject dimensions that cannot represent a terminal viewport."""
+        if self.columns < 1 or self.rows < 1:
+            raise ValueError("Terminal dimensions must be positive.")
+
+
+@dataclass(frozen=True, slots=True)
+class DashboardRenderLayout:
+    """Independent dashboard fragments for one terminal viewport."""
+
+    masthead: str
+    body: str
+    status: str
+    keys: str
+    focused_body_line: int | None
+
+    def __post_init__(self) -> None:
+        """Reject a focused cursor outside the rendered body."""
+        if self.focused_body_line is not None and self.focused_body_line < 0:
+            raise ValueError("Focused dashboard body line cannot be negative.")

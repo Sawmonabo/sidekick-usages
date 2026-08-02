@@ -90,10 +90,16 @@ FULL_HEADER_MIN_WIDTH = max(len(line.plain) for line in FULL_BRAND_LAYOUT)
 NARROW_HEADER_MIN_WIDTH = max(len(line.plain) for line in NARROW_BRAND_LAYOUT)
 
 
-def brand_layout(width: int) -> tuple[BrandLine, ...]:
+def brand_layout(
+    width: int,
+    *,
+    compact: bool = False,
+) -> tuple[BrandLine, ...]:
     """Return one canonical responsive semantic masthead layout."""
     safe_width = max(1, width)
-    if safe_width >= FULL_HEADER_MIN_WIDTH:
+    if compact:
+        rows = (_clip_line(MINIMAL_BRAND_LAYOUT, safe_width),)
+    elif safe_width >= FULL_HEADER_MIN_WIDTH:
         rows = FULL_BRAND_LAYOUT
     elif safe_width >= NARROW_HEADER_MIN_WIDTH:
         rows = NARROW_BRAND_LAYOUT

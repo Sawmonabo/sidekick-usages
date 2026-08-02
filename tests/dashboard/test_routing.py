@@ -1,11 +1,9 @@
-"""Cached dashboard routing behavior."""
+"""Dashboard routing and process-image behavior."""
 
 import io
 import os
 import subprocess
 import sys
-from dataclasses import replace
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Never
 
@@ -15,23 +13,19 @@ from typer.testing import CliRunner
 from sidekick_usages.cli.app import create_app
 from sidekick_usages.cli.commands import usage
 from sidekick_usages.cli.context import InvocationContext
-from sidekick_usages.cli.dashboard import application, launch, terminal
+from sidekick_usages.cli.dashboard import application, terminal
 from sidekick_usages.cli.runtime import bootstrap
 from sidekick_usages.cli.runtime.routing import (
     dashboard_arguments,
     dashboard_candidate,
     parse_dashboard_arguments,
 )
-from sidekick_usages.core.selection.types import ProviderRuntimeState
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.platform.executable import qualify_executable
 from sidekick_usages.platform.models import ExecutableProvenance
 from sidekick_usages.usage.lookup.worker.models import (
     UsageLookupFailure,
     UsageLookupWorkerResult,
-)
-from sidekick_usages.usage.presentation.dashboard.selection import (
-    CURSOR_GLYPH,
 )
 from tests.fakes.dashboard.lookup_worker import (
     LookupCancellationProof,
@@ -42,13 +36,12 @@ from tests.fakes.dashboard.runtime import (
     interactive_terminal,
     redirected_terminal,
 )
-from tests.fakes.dashboard.state import controller_snapshot
 from tests.support.platform import MANAGED_RUNTIME_SUPPORTED
 
-REFERENCE_TIME = datetime(2026, 7, 25, 14, tzinfo=UTC)
 ONE_SHOT_ROUTE_COUNT = 3
 WINDOWS_CHILD_EXIT_CODE = 7
 ACTUAL_TEST_TERMINAL_WIDTH = 37
+ACTUAL_TEST_TERMINAL_ROWS = 24
 
 
 def _assert_execve_process_boundary(
@@ -57,6 +50,7 @@ def _assert_execve_process_boundary(
     """Prove closed routes use one qualified no-shell replacement."""
     replacements: list[tuple[Path, tuple[str, ...], dict[str, str]]] = []
     qualifications: list[Path] = []
+    error_output = io.StringIO()
 
     def record_qualification(path: Path) -> ExecutableProvenance:
         qualifications.append(path)
@@ -70,19 +64,10 @@ def _assert_execve_process_boundary(
         replacements.append((executable, arguments, environment))
         raise OSError("Synthetic no-shell replacement failure.")
 
-    def run_cached_dashboard(only: ProviderId | None) -> int:
-        return bootstrap.execute_interactive_dashboard(
-            dashboard_arguments(only)
-        )
-
     with monkeypatch.context() as replacement_boundary:
         replacement_boundary.setattr(bootstrap.sys, "platform", "linux")
+        replacement_boundary.setattr(bootstrap.sys, "stderr", error_output)
         replacement_boundary.setattr(bootstrap.os, "execve", record_execve)
-        replacement_boundary.setattr(
-            bootstrap,
-            "_run_cached_dashboard",
-            run_cached_dashboard,
-        )
         replacement_boundary.setattr(
             bootstrap,
             "qualify_executable",
@@ -123,6 +108,10 @@ def _assert_execve_process_boundary(
     assert all(
         environment is not os.environ for *_, environment in replacements
     )
+    assert error_output.getvalue() == (
+        f"{bootstrap.PROCESS_LAUNCH_FAILURE_MESSAGE}\n" * 6
+    )
+    assert "\x1b" not in error_output.getvalue()
 
     windows_calls: list[tuple[tuple[str, ...], bool, dict[str, str]]] = []
 
@@ -171,51 +160,22 @@ def _assert_execve_process_boundary(
     assert environment is not os.environ
 
 
-def test_cli_routes_one_cached_frame_before_isolated_interaction(
+def test_cli_routes_immediately_to_isolated_interaction(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """One routing journey preserves TTY and one-shot process boundaries."""
-    monkeypatch.setenv("COLUMNS", "999")
-    monkeypatch.setattr(
-        terminal.os,
-        "get_terminal_size",
-        lambda _descriptor: os.terminal_size((ACTUAL_TEST_TERMINAL_WIDTH, 24)),
-    )
-    assert bootstrap.terminal_width is terminal.terminal_width
-    assert application.terminal_width is terminal.terminal_width
-    assert terminal.terminal_width(sys.stdout) == ACTUAL_TEST_TERMINAL_WIDTH
-
-    output = io.StringIO()
-    snapshot = controller_snapshot(REFERENCE_TIME)
-    snapshot = replace(
-        snapshot,
-        providers=(
-            replace(
-                snapshot.providers[0],
-                runtime_state=ProviderRuntimeState.UNREADABLE,
-                active_account_id=None,
-            ),
-            snapshot.providers[1],
-        ),
-    )
-    line_count = launch.present_cached_dashboard(
-        output,
-        snapshot,
-        width=100,
-        color=False,
+    """One journey preserves geometry, routing, and one-shot boundaries."""
+    dimensions = terminal.terminal_dimensions(
+        ACTUAL_TEST_TERMINAL_WIDTH,
+        ACTUAL_TEST_TERMINAL_ROWS,
     )
     cli = create_app()
     runner = CliRunner()
-    frame = output.getvalue()
-    cursor_lines = [
-        line for line in frame.splitlines() if CURSOR_GLYPH in line
-    ]
 
-    assert line_count > 0
-    assert "CLAUDE" in frame
-    assert "CODEX" in frame
-    assert len(cursor_lines) == 1
-    assert frame.endswith(f"\x1b[{line_count}A\r")
+    assert application.terminal_dimensions is terminal.terminal_dimensions
+    assert (dimensions.columns, dimensions.rows) == (
+        ACTUAL_TEST_TERMINAL_WIDTH,
+        ACTUAL_TEST_TERMINAL_ROWS,
+    )
     assert parse_dashboard_arguments(()) is None
     assert parse_dashboard_arguments(("--only", "codex")) is ProviderId.CODEX
     assert parse_dashboard_arguments(("--only=claude",)) is ProviderId.CLAUDE

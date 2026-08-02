@@ -150,6 +150,7 @@ class DashboardLookupCoordinator:
 
     @staticmethod
     def _join_owner(thread: Thread | None) -> None:
+        """Join a launched owner and ignore only a never-started thread."""
         if thread is None:
             return
         try:

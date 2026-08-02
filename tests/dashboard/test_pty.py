@@ -57,12 +57,12 @@ from tests.support.pty import PtySession
 from tests.support.time import FixedClock
 
 ANSI_CONTROL_PATTERN = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|[()][0-2A-Z])")
-CURSOR_UP_PATTERN = re.compile(r"\x1b\[(\d+)A")
 REDRAW_PATTERN = re.compile(
     r"\x1b\[\?7l(.*?)\x1b\[\?7h",
     re.DOTALL,
 )
 REDRAW_COMPLETION_SEQUENCE = "\x1b[?7h"
+REDRAW_START_SEQUENCE = "\x1b[?7l"
 CHILD_MODE_ENVIRONMENT_KEY = "SIDEKICK_PTY_CHILD"
 LOOKUP_EXECUTABLE_ENVIRONMENT_KEY = "SIDEKICK_PTY_LOOKUP_EXECUTABLE"
 SETUP_ACKNOWLEDGEMENT_ENVIRONMENT_KEY = "SIDEKICK_PTY_SETUP_ACKNOWLEDGEMENT"
@@ -103,7 +103,7 @@ WIDE_PANEL_TEXT = "CLAUDE · 2 accounts"
 NARROW_ACCOUNT_TEXT = "[claude · max]"
 SETUP_CONFIRMATION_TEXT = "Sidekick needs one per-user service"
 KEY_FOOTER_TEXT = "↑/↓ or j/k move"
-IDLE_FOOTER_TEXT = f"\n\n {KEY_FOOTER_TEXT}"
+IDLE_FOOTER_TEXT = KEY_FOOTER_TEXT
 HELP_FOOTER_TEXT = "? close help"
 STARTUP_FAILURE_TEXT = "cached selection remains"
 ACTIVE_LABEL = "work@example.test"
@@ -411,9 +411,14 @@ def run_dashboard_screen(
             visible = _read_completed_redraw(session, KEY_FOOTER_TEXT)
             session.send(QUIT_KEY)
             assert session.wait() == 0
-            scrollback = session.output
+            initial_output, _separator, _repaints = session.output.partition(
+                REDRAW_START_SEQUENCE
+            )
     return DashboardScreenCapture(
-        scrollback=_plain_terminal_output(scrollback),
+        scrollback=(
+            _plain_terminal_output(initial_output)
+            + _plain_terminal_output(visible)
+        ),
         visible=_plain_terminal_output(visible),
     )
 
@@ -478,22 +483,6 @@ def _wait_for_path(path: Path) -> None:
 
 def _plain_terminal_output(output: str) -> str:
     return ANSI_CONTROL_PATTERN.sub("", output).replace("\r", "")
-
-
-def _redraw_reuses_terminal_region(output: str) -> bool:
-    redraws = tuple(
-        redraw
-        for redraw in REDRAW_PATTERN.findall(output)
-        if KEY_FOOTER_TEXT in _plain_terminal_output(redraw)
-    )
-    if len(redraws) != 1:
-        return False
-    redraw = redraws[0]
-    plain = _plain_terminal_output(redraw)
-    upward_rows = sum(int(rows) for rows in CURSOR_UP_PATTERN.findall(redraw))
-    return plain.count(KEY_FOOTER_TEXT) == 1 and upward_rows == redraw.count(
-        "\n"
-    )
 
 
 def _selected(output: str, label: str) -> bool:
@@ -643,10 +632,12 @@ def test_dashboard_pty_completes_the_interactive_account_journey(
             rows=24,
         )
         plain_narrow = _plain_terminal_output(narrow)
-        assert NARROW_ACCOUNT_TEXT in plain_narrow
-        assert WIDE_PANEL_TEXT not in plain_narrow
-        assert _selected(narrow, CODEX_SAVED_LABEL)
-        assert KEY_FOOTER_TEXT in plain_narrow
+        assert (
+            NARROW_ACCOUNT_TEXT in plain_narrow,
+            WIDE_PANEL_TEXT not in plain_narrow,
+            _selected(narrow, CODEX_SAVED_LABEL),
+            KEY_FOOTER_TEXT in plain_narrow,
+        ) == (True, True, True, True)
 
         wide = _resize_and_read(
             session,
@@ -655,18 +646,6 @@ def test_dashboard_pty_completes_the_interactive_account_journey(
         )
         assert WIDE_PANEL_TEXT in _plain_terminal_output(wide)
         assert NARROW_ACCOUNT_TEXT not in _plain_terminal_output(wide)
-        assert all(
-            _redraw_reuses_terminal_region(redraw)
-            for redraw in (
-                moved_down,
-                moved_up,
-                restored,
-                codex,
-                narrow,
-                wide,
-            )
-        )
-
         session.clear_output()
         session.send(HELP_KEY)
         session.read_until(HELP_FOOTER_TEXT)

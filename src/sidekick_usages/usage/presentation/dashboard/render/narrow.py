@@ -13,7 +13,6 @@ from sidekick_usages.usage.presentation.dashboard.render.models import (
     DashboardLine,
 )
 from sidekick_usages.usage.presentation.dashboard.render.text import (
-    brand_lines,
     concat_lines,
     fit_line,
     line,
@@ -52,10 +51,9 @@ def render_narrow(
     cursor: DashboardCursor,
     activities: dict[ProviderId, TokenActivitySummary],
     width: int,
-    rendered_footer: list[DashboardLine],
 ) -> list[DashboardLine]:
     """Render stacked account blocks within one terminal width."""
-    lines = [*brand_lines(width), DashboardLine()]
+    lines: list[DashboardLine] = []
     has_block = False
     for provider in snapshot.providers:
         if not provider.rows:
@@ -88,7 +86,6 @@ def render_narrow(
         if activity is not None:
             lines.append(DashboardLine())
             lines.extend(_activity_lines(provider.provider_id, activity))
-    lines.extend((DashboardLine(), *rendered_footer))
     return lines
 
 

@@ -1,4 +1,6 @@
-"""Canonical dashboard-frame orchestration."""
+"""Canonical semantic dashboard-layout orchestration."""
+
+from dataclasses import replace
 
 from sidekick_usages.branding.content import FULL_HEADER_MIN_WIDTH
 from sidekick_usages.core.models import TokenActivitySummary
@@ -9,9 +11,13 @@ from sidekick_usages.usage.dashboard.models import (
     DashboardFooter,
     DashboardProvider,
     DashboardSnapshot,
+    DashboardStatus,
+    DashboardStatusKind,
 )
 from sidekick_usages.usage.presentation.dashboard.render.models import (
     DashboardLine,
+    DashboardRenderLayout,
+    TerminalDimensions,
 )
 from sidekick_usages.usage.presentation.dashboard.render.narrow import (
     render_narrow,
@@ -22,9 +28,10 @@ from sidekick_usages.usage.presentation.dashboard.render.style import (
 from sidekick_usages.usage.presentation.dashboard.render.text import (
     brand_lines,
     clip_line,
-    footer_lines,
+    key_lines,
     line_width,
     plain_line,
+    status_lines,
 )
 from sidekick_usages.usage.presentation.dashboard.render.wide import (
     dashboard_required_width,
@@ -40,6 +47,14 @@ from sidekick_usages.usage.presentation.formatting import (
 )
 from sidekick_usages.usage.presentation.theme import UsageTextRole
 
+MINIMUM_SUPPORTED_ROWS = 24
+MINIMUM_USEFUL_BODY_ROWS = 16
+ONE_SHOT_ROWS = 60
+TERMINAL_TOO_SHORT = DashboardStatus(
+    kind=DashboardStatusKind.ERROR,
+    message="Terminal too short; scroll to view saved accounts.",
+)
+
 
 def render_dashboard(
     snapshot: DashboardSnapshot,
@@ -49,25 +64,96 @@ def render_dashboard(
     footer: DashboardFooter,
     color: bool,
 ) -> str:
-    """Render one complete cached or interactive dashboard frame."""
-    safe_width = max(1, width)
+    """Join semantic fragments into one finite noninteractive frame."""
+    layout = render_dashboard_layout(
+        snapshot,
+        dimensions=TerminalDimensions(
+            columns=max(1, width),
+            rows=ONE_SHOT_ROWS,
+        ),
+        cursor=cursor,
+        footer=footer,
+        color=color,
+    )
+    parts = [
+        layout.masthead.rstrip("\n"),
+        "",
+        layout.body.rstrip("\n"),
+        "",
+    ]
+    if layout.status:
+        parts.extend((layout.status.rstrip("\n"), ""))
+    parts.append(layout.keys.rstrip("\n"))
+    return "\n".join(parts) + "\n"
+
+
+def render_dashboard_layout(
+    snapshot: DashboardSnapshot,
+    *,
+    dimensions: TerminalDimensions,
+    cursor: DashboardCursor,
+    footer: DashboardFooter,
+    color: bool,
+) -> DashboardRenderLayout:
+    """Render independent fragments for one exact terminal viewport."""
+    width = dimensions.columns
+    body_lines = _body_lines(snapshot, cursor, width)
+    resolved_footer = (
+        replace(footer, status=TERMINAL_TOO_SHORT)
+        if dimensions.rows < MINIMUM_SUPPORTED_ROWS
+        else footer
+    )
+    rendered_status = status_lines(resolved_footer, width)
+    rendered_keys = key_lines(resolved_footer, width)
+    full_masthead = brand_lines(width)
+    fixed_rows = max(1, len(rendered_status)) + len(rendered_keys)
+    compact = (
+        dimensions.rows - len(full_masthead) - fixed_rows
+        < MINIMUM_USEFUL_BODY_ROWS
+    )
+    rendered_masthead = brand_lines(width, compact=compact)
+    focused_line = next(
+        (
+            position
+            for position, rendered in enumerate(body_lines)
+            if any(
+                segment.style is UsageTextRole.CURSOR
+                for segment in rendered.segments
+            )
+        ),
+        None,
+    )
+    return DashboardRenderLayout(
+        masthead=_finish(rendered_masthead, width, color),
+        body=_finish(body_lines, width, color),
+        status=(
+            "" if not rendered_status else _finish(
+                rendered_status,
+                width,
+                color,
+            )
+        ),
+        keys=_finish(rendered_keys, width, color),
+        focused_body_line=focused_line,
+    )
+
+
+def _body_lines(
+    snapshot: DashboardSnapshot,
+    cursor: DashboardCursor,
+    width: int,
+) -> list[DashboardLine]:
     providers = tuple(
         provider for provider in snapshot.providers if provider.rows
     )
     rows = tuple(row for provider in providers for row in provider.rows)
-    rendered_footer = footer_lines(footer, safe_width)
     if not rows:
-        lines = [
-            *brand_lines(safe_width),
-            DashboardLine(),
+        return [
             plain_line(
                 "No accounts to display.",
                 UsageTextRole.DIM,
             ),
-            DashboardLine(),
-            *rendered_footer,
         ]
-        return _finish(lines, safe_width, color)
     selected_rows = sum(row_is_selected(row, cursor) for row in rows)
     provider_only_focus = (
         cursor.focused_provider
@@ -95,24 +181,20 @@ def render_dashboard(
             activities,
         ),
     )
-    if safe_width < required_width:
-        lines = render_narrow(
+    if width < required_width:
+        return render_narrow(
             snapshot,
             cursor,
             activities,
-            safe_width,
-            rendered_footer,
+            width,
         )
-    else:
-        lines = render_wide(
-            snapshot,
-            cursor,
-            activities,
-            name_width,
-            required_width,
-            rendered_footer,
-        )
-    return _finish(lines, safe_width, color)
+    return render_wide(
+        snapshot,
+        cursor,
+        activities,
+        name_width,
+        required_width,
+    )
 
 
 def _finish(

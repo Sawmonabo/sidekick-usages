@@ -193,21 +193,26 @@ def activity_summary_line(
     return line(*parts)
 
 
-def footer_lines(
+def status_lines(
     footer: DashboardFooter,
     width: int,
 ) -> list[DashboardLine]:
-    """Render optional status above one unconditional navigation footer."""
-    lines: list[DashboardLine] = []
-    if footer.status is not None:
-        lines.extend(
-            wrap_text(
-                footer.status.message,
-                width,
-                _status_style(footer.status.kind),
-                initial_prefix=" ",
-            )
-        )
+    """Render the optional status independently from navigation keys."""
+    if footer.status is None:
+        return []
+    return wrap_text(
+        footer.status.message,
+        width,
+        _status_style(footer.status.kind),
+        initial_prefix=" ",
+    )
+
+
+def key_lines(
+    footer: DashboardFooter,
+    width: int,
+) -> list[DashboardLine]:
+    """Render unconditional navigation keys independently from status."""
     match footer.navigation:
         case DashboardNavigationKind.KEYS:
             value = KEY_FOOTER
@@ -215,14 +220,11 @@ def footer_lines(
             value = HELP_FOOTER
         case _ as unreachable:
             assert_never(unreachable)
-    lines.extend(
-        wrap_text(
-            value,
-            width,
-            _navigation_style(footer.navigation),
-        )
+    return wrap_text(
+        value,
+        width,
+        _navigation_style(footer.navigation),
     )
-    return lines
 
 
 def visible_plan(plan: str) -> str:
@@ -231,7 +233,11 @@ def visible_plan(plan: str) -> str:
     return "" if not safe_plan or safe_plan == "unknown" else safe_plan
 
 
-def brand_lines(width: int) -> list[DashboardLine]:
+def brand_lines(
+    width: int,
+    *,
+    compact: bool = False,
+) -> list[DashboardLine]:
     """Adapt the canonical masthead layout to dashboard text."""
     return [
         line(
@@ -240,7 +246,7 @@ def brand_lines(width: int) -> list[DashboardLine]:
                 for item in brand_line.segments
             )
         )
-        for brand_line in brand_layout(width)
+        for brand_line in brand_layout(width, compact=compact)
     ]
 
 

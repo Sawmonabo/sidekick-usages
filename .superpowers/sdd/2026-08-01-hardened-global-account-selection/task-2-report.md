@@ -1,201 +1,206 @@
-# Task 2 WIP Restart Checkpoint
+# Task 2 Completion Report
 
-Status: paused for the host restart requested on 2026-08-02. This is not a
-Task 2 completion report, and the final planned commit subject has not been
-used.
+Status: complete on 2026-08-02.
 
-## Scope and baseline
+## Scope and safety
 
 - Worktree:
   `/home/sabossedgh/dev/.worktrees/sidekick-usages-hardened-global-selection`
 - Branch: `feat/hardened-global-account-selection`
 - Task 2 base: `1ecb80617d9dabf1b0ff67f198f4266a31bd5da3`
-- Task 1 saved-only `DashboardSnapshot` and `DashboardCursor` contracts remain
-  the consumed contracts. No external pseudo-row compatibility was added.
-- No live Sidekick or provider state was accessed. The public PTY matrix used
-  isolated temporary `HOME` and XDG roots. The installed reporter was not
-  changed.
+- Task 1's saved-only `DashboardSnapshot` and `DashboardCursor` contracts remain
+  the consumed contracts. No external pseudo-row compatibility was restored.
+- No live Sidekick or provider state was accessed. PTY coverage used isolated
+  temporary `HOME` and XDG roots with synthetic accounts.
+- The installed reporter was neither invoked nor changed.
+- CodeRabbit and Atlassian, Jira, and GitLab tooling were not used.
 
-## Completed WIP changes
+## Outcome
 
-### Test-first coverage
+The interactive dashboard now has one terminal owner and a height-aware
+semantic layout:
 
-- Added the required five-size public-route PTY matrix for `(52, 24)`,
-  `(79, 40)`, `(80, 48)`, `(100, 49)`, and `(120, 60)`.
-- Extended the existing interactive journey to resize the saved Codex focus
-  from `(100, 49)` to `(52, 24)` and require the same selected label plus the
-  visible key footer.
-- Added the planned semantic too-short-layout test scaffold and finite,
-  escape-free one-shot assertions. It intentionally references the remaining
-  `TerminalDimensions`, `TERMINAL_TOO_SHORT`, and
-  `render_dashboard_layout()` implementation.
+- `bootstrap.main()` immediately replaces the process image for interactive
+  dashboard routes; it no longer paints a cached dashboard before
+  prompt-toolkit starts.
+- The obsolete cached-frame and cursor-repositioning owner
+  `cli/dashboard/launch.py` is deleted.
+- Prompt-toolkit owns one `HSplit` containing fixed masthead, status, and key
+  regions around a filling, scrollable account body.
+- The body exposes the focused saved-account line as a hidden semantic cursor,
+  so prompt-toolkit keeps the same selected account visible through terminal
+  resizes.
+- Each render reads rows and columns from prompt-toolkit's current output size,
+  takes one atomic session view, and produces all layout fragments from that
+  same view.
+- Terminals below 24 rows use the compact canonical masthead and typed
+  `TERMINAL_TOO_SHORT` status while preserving the key footer and access to
+  saved accounts by scrolling.
+- `render_dashboard()` remains a finite, escape-free, one-shot renderer by
+  joining the same semantic fragments used by the interactive application.
 
-### Interactive terminal ownership
+## Cohesion changes
 
-- Removed cached dashboard painting from `bootstrap.main()`.
-- Removed `present_cached_dashboard()`, frame cursor-up, and failed-replace
-  cursor-down ownership by deleting `cli/dashboard/launch.py`.
-- Interactive routing now immediately executes the isolated dashboard process
-  image. The dashboard entrypoint remains the cached-state loader before the
-  first prompt-toolkit render.
+`DashboardLookupCoordinator` now owns lookup worker execution, recoverable
+retry, diagnostics, snapshot retry/read handling, and immutable outcome
+overlays. `InteractiveDashboardSession` retains navigation, actions, startup
+reconciliation, footer state, and result presentation.
 
-### Lookup cohesion boundary
+Final relevant module sizes:
 
-- Added `cli/dashboard/lookup.py` with
-  `DashboardLookupCoordinator.start()`, `close()`, and `apply()`.
-- Moved lookup worker execution, recoverable retry, diagnostic recording,
-  snapshot retry/read handling, and immutable account-outcome overlay state
-  out of `InteractiveDashboardSession`.
-- Kept navigation, action submission, startup reconciliation, footer state,
-  and lookup-result presentation in `InteractiveDashboardSession`.
-- Updated the session fake to import the lookup thread owner name from its new
-  cohesive module.
-- Current module sizes are 732 lines for `session.py` and 335 lines for
-  `lookup.py`, both below the repository cohesion threshold.
+- `cli/dashboard/application.py`: 149 lines
+- `cli/dashboard/lookup.py`: 336 lines
+- `cli/dashboard/session.py`: 733 lines
+- `render/frame.py`: 242 lines
+- `render/models.py`: 62 lines
 
-## Preserved RED evidence
+All Task 2 modules remain below the repository's approximately 800-line
+cohesion-review threshold.
 
-Command:
+## TDD evidence
 
-```bash
-uv run pytest tests/dashboard/test_pty.py -q
-```
-
-Result before implementation changes:
+The required public-route PTY tests were written before the height-aware
+implementation. The corrected synthetic WSL fixture produced this intended
+RED result:
 
 ```text
+$ uv run pytest tests/dashboard/test_pty.py -q
 collected 7 items
 tests/dashboard/test_pty.py FFFFFF. [100%]
 6 failed, 1 passed in 10.38s
 ```
 
-All five public-route matrix cases failed because complete captured output had
-three occurrences of `sidekick usages` instead of one. The existing journey
-failed after the `(100, 49)` to `(52, 24)` resize because the stable saved
-Codex row was not visible/selected. This is the expected evidence for duplicate
-bootstrap/prompt-toolkit painting plus one full-frame Window clipping at short
-height.
+All five required terminal sizes, `(52, 24)`, `(79, 40)`, `(80, 48)`,
+`(100, 49)`, and `(120, 60)`, observed three `sidekick usages` mastheads
+instead of one. The resize journey also lost the selected saved Codex account
+when moving from `(100, 49)` to `(52, 24)`. This proved both duplicate
+bootstrap/prompt-toolkit ownership and full-frame clipping at short height.
 
-An earlier invalid fixture attempt exited the public child with status 1
-because the isolated WSL fixture omitted `WSL_DISTRO_NAME`. The fixture was
-corrected to the synthetic value `Ubuntu`, then the exact RED command above
-produced the intended behavioral failures rather than a setup error.
+The finalized logical PTY capture preserves output before prompt-toolkit's
+first redraw, then combines it with the last completed visible redraw. It
+therefore still detects a duplicate bootstrap painter while correctly treating
+prompt-toolkit invalidations as replacement paints rather than scrollback.
 
-## Current GREEN evidence
+## GREEN verification
 
-Lookup/session behavior after extraction:
-
-```bash
-uv run pytest tests/dashboard/test_state.py -q
-```
+Focused behavioral verification after the final edits:
 
 ```text
-collected 3 items
-tests/dashboard/test_state.py ... [100%]
-3 passed in 0.61s
+$ uv run pytest tests/dashboard/test_pty.py \
+    tests/usage/test_dashboard_render.py \
+    tests/dashboard/test_state.py \
+    tests/dashboard/test_routing.py -q
+collected 14 items
+tests/dashboard/test_pty.py .......                                      [ 50%]
+tests/usage/test_dashboard_render.py ...                                 [ 71%]
+tests/dashboard/test_state.py ...                                        [ 92%]
+tests/dashboard/test_routing.py .                                        [100%]
+14 passed in 12.12s
 ```
 
-Focused static checks after extraction:
+The PTY matrix proves exactly one masthead in logical output, one visible key
+footer, a zero exit status, and bounded output at all five required sizes. The
+interactive journey proves saved Codex focus remains selected and visible
+after the short-height resize. Existing normal-exit and interrupt terminal
+restoration proofs remain green. Routing additionally proves six synthetic
+failed Unix replacements emit the exact plain launch error with no terminal
+escape sequences.
 
-```bash
-uv run ruff check src/sidekick_usages/cli/dashboard/lookup.py \
-  src/sidekick_usages/cli/dashboard/session.py
-uv run ty check src/sidekick_usages/cli/dashboard/lookup.py \
-  src/sidekick_usages/cli/dashboard/session.py
+Exact Task 2 lint scope:
+
+```text
+$ uv run ruff check src/sidekick_usages/cli/runtime/bootstrap.py \
+    src/sidekick_usages/cli/dashboard \
+    src/sidekick_usages/usage/presentation/dashboard \
+    src/sidekick_usages/branding tests/dashboard tests/usage
+All checks passed!
 ```
 
-Both commands reported `All checks passed!`.
+Full static type scope:
 
-Restart checkpoint hygiene:
-
-```bash
-git diff --check
+```text
+$ uv run ty check src/ tests/ packaging/
+All checks passed!
 ```
 
-Exited with status 0 and no output.
+Architecture and hygiene:
 
-The process check found no remaining synthetic lookup, PTY child, dashboard,
-or pytest process. It matched only the short-lived `ps`/`rg` diagnostic itself.
+```text
+$ uv run python packaging/check_architecture.py
+Architecture check passed with 3 cohesion warning(s).
+warning: src/sidekick_usages/providers/codex/broker/responder.py:1: SIZE002
+  module has 826 lines; review cohesion
+warning: tests/daemon/test_lifecycle.py:1: SIZE002 module has 990 lines;
+  review cohesion
+warning: tests/dashboard/test_state.py:1: SIZE002 module has 842 lines;
+  review cohesion
 
-## Exact remaining implementation
-
-1. Add `TerminalDimensions` and `DashboardRenderLayout` in the semantic render
-   model boundary with explicit validation.
-2. Extend `brand_layout(width, *, compact=False)` and adapt `brand_lines()` so
-   short-height rendering uses the canonical one-line brand plus divider.
-3. Implement `render_dashboard_layout()` to return separate masthead, body,
-   status, and key fragments, plus the focused saved-row body line. Add the
-   typed `TERMINAL_TOO_SHORT` status below the supported 24-row height.
-4. Refactor the narrow and wide dashboard builders so account/panel content is
-   a scrollable body rather than a frame containing masthead and footer.
-5. Keep `render_dashboard()` as the finite one-shot join of those same semantic
-   fragments with no cursor/alternate-screen control sequences.
-6. Replace the one full-frame prompt-toolkit Window with one `HSplit`: fixed
-   preferred-height masthead, status, and keys around one filling body Window.
-   Read rows and columns from `get_app().output.get_size()` during render and
-   expose the hidden focused-row cursor through
-   `FormattedTextControl(get_cursor_position=...)`.
-7. Update `tests/dashboard/test_routing.py` to remove the deleted cached-paint
-   contract/import and assert immediate interactive process replacement plus
-   two-dimensional terminal acquisition. Do not add a compatibility re-export.
-8. Re-run the PTY proof. The matrix capture currently counts the raw PTY
-   transcript, so after bootstrap painting is removed it may still count more
-   than one prompt-toolkit invalidation. If so, make `run_dashboard_screen()`
-   represent the logical visible screen/scrollback after cursor rewrites; do
-   not weaken the one-masthead assertion or ignore duplicate cached paint.
-9. Run the exact focused test and Ruff commands from the Task 2 brief, then run
-   focused `ty`, architecture, and diff checks proportional to the changed
-   ownership boundary.
-10. Self-review every changed file, replace this WIP report with the complete
-    RED/GREEN/verification report, and create the final planned commit with
-    subject `fix(dashboard): make interactive layout height aware` only after
-    all Task 2 requirements are green.
-
-## Files included in the WIP checkpoint
-
-- Deleted: `src/sidekick_usages/cli/dashboard/launch.py`
-- Added: `src/sidekick_usages/cli/dashboard/lookup.py`
-- Modified: `src/sidekick_usages/cli/dashboard/session.py`
-- Modified: `src/sidekick_usages/cli/runtime/bootstrap.py`
-- Modified: `tests/dashboard/test_pty.py`
-- Modified: `tests/fakes/dashboard/session/snapshots.py`
-- Modified: `tests/usage/test_dashboard_render.py`
-- Added/updated: this checkpoint report
-
-## Resume commands
-
-```bash
-cd /home/sabossedgh/dev/.worktrees/sidekick-usages-hardened-global-selection
-git status --short --branch
-git log -2 --oneline
-sed -n '1,260p' \
-  .superpowers/sdd/2026-08-01-hardened-global-account-selection/task-2-report.md
-uv run pytest tests/dashboard/test_state.py -q
+$ git diff --check
+# exited 0 with no output
 ```
 
-After the remaining implementation:
+The three architecture warnings pre-existed Task 2. No Task 2 module is named
+by them.
 
-```bash
-uv run pytest tests/dashboard/test_pty.py \
-  tests/usage/test_dashboard_render.py tests/dashboard/test_state.py -q
-uv run ruff check src/sidekick_usages/cli/runtime/bootstrap.py \
-  src/sidekick_usages/cli/dashboard \
-  src/sidekick_usages/usage/presentation/dashboard \
-  src/sidekick_usages/branding tests/dashboard tests/usage
-uv run ty check src/ tests/ packaging/
-uv run python packaging/check_architecture.py
-git diff --check
+## Benchmark compatibility
+
+Deleting `cli/dashboard/launch.py` and retaining Task 1's saved-only cursor
+contract required the synthetic packaging benchmark to stop importing the
+deleted cached-frame painter and stop passing the removed `external` field. It
+now measures the finite canonical `render_dashboard()` output directly. This
+is a compatibility repair to the existing benchmark, not a new benchmark or
+runtime behavior.
+
+The top-level installed-console benchmark was intentionally not run through an
+installed reporter. Its guard reported:
+
+```text
+dashboard benchmark failed: Unix dashboard benchmark requires one installed
+console script.
 ```
 
-## Concerns at pause
+The renderer portion was instead exercised directly with the repository code
+and a synthetic snapshot:
 
-- Task 2 is deliberately incomplete: `test_dashboard_render.py` imports the
-  not-yet-created semantic layout API, and `test_routing.py` still imports the
-  deleted `launch.py`. Do not run or report the combined Task 2 suite as green
-  until those remaining steps are implemented.
-- The WIP lookup extraction passed the existing state suite and focused static
-  checks, but must still be exercised through the PTY and full focused Task 2
-  suite after the HSplit integration.
-- The raw-transcript screen helper concern described in remaining step 8 must
-  be resolved by accurate terminal-screen semantics, not by loosening the
-  required assertion.
+```text
+rendered_bytes=3521
+cursor_p95_ns=1681910
+```
+
+## Changed ownership surfaces
+
+- Bootstrap routing and deletion of cached terminal painting.
+- Prompt-toolkit application layout and terminal-dimension normalization.
+- Semantic render models, compact branding, separate body/status/key
+  fragments, narrow/wide body rendering, and finite one-shot joining.
+- Extracted lookup coordinator and reduced interactive session owner.
+- Public PTY, semantic renderer, state, routing, and test-fake coverage.
+- Synthetic packaging benchmark compatibility.
+
+## Checkpoint history
+
+A host restart was requested during implementation, so recoverable WIP was
+preserved in:
+
+```text
+862016fb7dd492179761a08100abb48888454003
+chore(dashboard): checkpoint height-aware terminal WIP
+```
+
+The final implementation is committed separately with the planned subject:
+
+```text
+fix(dashboard): make interactive layout height aware
+```
+
+## Self-review and concerns
+
+- Reviewed every Task 2 diff after the final test repairs.
+- The semantic focus lookup relies on the existing unique cursor-role
+  invariant; the existing controller and renderer tests cover that invariant.
+- The one-shot renderer uses a fixed 60-row semantic viewport only to select
+  the non-compact presentation; it does not emit terminal control sequences or
+  own interactive geometry.
+- No functional concern remains. The installed-console benchmark was not run
+  because this task explicitly prohibits using or modifying the installed
+  reporter; focused renderer evidence is recorded above.
