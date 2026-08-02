@@ -97,8 +97,8 @@ _CONFLICT_ACCOUNT_ID = SidekickAccountId(
 _VALID_AUTHORITY_ID = AuthorityId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
 _CONFLICT_AUTHORITY_ID = AuthorityId("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
 _CONFLICT_PROVIDER_IDENTITY = "synthetic-codex-conflict"
-_SAVED_CODEX_GENERATION = AuthorityGeneration("2026-07-25T10:00:00Z")
-_CODEX_RUNTIME_GENERATION = AuthorityGeneration("2026-07-25T10:00:01Z")
+CODEX_SAVED_GENERATION = AuthorityGeneration("2026-07-25T10:00:00Z")
+CODEX_NEWER_GENERATION = AuthorityGeneration("2026-07-25T10:00:01Z")
 
 
 def seed_cached_dashboard(
@@ -188,7 +188,7 @@ def seed_cached_dashboard(
         runtime_state=ProviderRuntimeState.SAVED_ACTIVE,
         account_id=renamed.account_id,
         provider_identity=ProviderIdentity(VALID_PROVIDER_IDENTITY),
-        runtime_generation=_CODEX_RUNTIME_GENERATION,
+        runtime_generation=CODEX_NEWER_GENERATION,
         verified_at=observed_at,
         outcome=ActivationOutcome.VERIFIED,
     )
@@ -209,7 +209,7 @@ def seed_cached_dashboard(
         provider_id=ProviderId.CODEX,
         state=ProviderAuthState.ACTIVE,
         provider_identity=codex_selected.provider_identity,
-        generation=_CODEX_RUNTIME_GENERATION,
+        generation=CODEX_NEWER_GENERATION,
         observed_at=codex_selected.verified_at,
     )
     observations.save_native(codex_observation)
@@ -362,7 +362,7 @@ def saved_codex_account(
             subscription=CodexManagedAuthority(
                 authority_id=authority_id,
                 provider_identity=ProviderIdentity(identity),
-                generation=_SAVED_CODEX_GENERATION,
+                generation=CODEX_SAVED_GENERATION,
                 verified_at=observed_at,
                 executable_version="0.145.0",
                 health=CredentialHealth.HEALTHY,

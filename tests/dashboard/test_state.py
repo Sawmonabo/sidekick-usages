@@ -28,6 +28,7 @@ from sidekick_usages.core.accounts.types import (
     MetricsFreshness,
 )
 from sidekick_usages.core.selection.types import (
+    AuthorityGenerationRelation,
     ProviderAuthState,
     ProviderRuntimeState,
     SelectionCode,
@@ -51,6 +52,9 @@ from sidekick_usages.persistence.types.error import (
     ActivitySnapshotFailureKind,
     PersistenceCode,
     UsageSnapshotFailureKind,
+)
+from sidekick_usages.providers.codex.auth.generation import (
+    codex_generation_relation,
 )
 from sidekick_usages.usage.dashboard.models import (
     DashboardAccount,
@@ -85,8 +89,10 @@ from tests.fakes.dashboard.state import (
     CLAUDE_PREVIEW_ACCOUNT_ID,
     CLAUDE_REPAIR_ACCOUNT_ID,
     CLAUDE_SAVED_ACCOUNT_ID,
+    CODEX_NEWER_GENERATION,
     CODEX_RECONCILIATION_ACCOUNT_ID,
     CODEX_SAVED_ACCOUNT_ID,
+    CODEX_SAVED_GENERATION,
     EXTERNAL_PROVIDER_IDENTITY,
     VALID_PROVIDER_IDENTITY,
     controller_snapshot,
@@ -241,7 +247,20 @@ def test_cached_dashboard_joins_stable_ids_without_credentials(
     assert dashboard.service.phase is ServicePhase.READY
     assert dashboard.service.observed_at == OBSERVED_AT
     assert dashboard.service.failure_code is None
-    assert codex.active_account_id == renamed.account_id
+    assert (
+        codex.active_account_id,
+        codex_generation_relation(
+            CODEX_SAVED_GENERATION,
+            CODEX_NEWER_GENERATION,
+        ),
+        codex.status.unmanaged_sessions,
+        tuple(row.account_id for row in codex.rows),
+    ) == (
+        renamed.account_id,
+        AuthorityGenerationRelation.NEWER,
+        0,
+        (renamed.account_id, conflicted.account_id),
+    )
     assert not codex.actions_enabled
     assert all(isinstance(row, DashboardAccount) for row in codex.rows)
     current, failed = codex.rows
@@ -649,6 +668,16 @@ def test_dashboard_controller_journey_preserves_verified_truth(
             account_id=CLAUDE_PREVIEW_ACCOUNT_ID
         ),
         association_skipped_daemon=True,
+        selection_refusal_footer=DashboardFooter(
+            navigation=DashboardNavigationKind.KEYS,
+            status=DashboardStatus(
+                kind=DashboardStatusKind.ERROR,
+                message=(
+                    "Saved account selection is unavailable: "
+                    "provider_unavailable."
+                ),
+            ),
+        ),
         partial_start_reaped=True,
         startup_reconciliations=(
             ProviderId.CLAUDE,

@@ -78,6 +78,7 @@ class DashboardSessionProof:
     control_connect_calls: tuple[tuple[Path, float | None], ...]
     association_request: ClaudeAssociationRequest | None
     association_skipped_daemon: bool
+    selection_refusal_footer: DashboardFooter
     partial_start_reaped: bool
     startup_reconciliations: tuple[ProviderId, ...]
     startup_account_id: SidekickAccountId | None

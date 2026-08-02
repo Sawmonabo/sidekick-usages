@@ -73,7 +73,7 @@ def _association_handoff(
     snapshot: DashboardSnapshot,
     account_id: SidekickAccountId,
     state_root: Path,
-) -> tuple[ClaudeAssociationRequest | None, bool]:
+) -> tuple[ClaudeAssociationRequest | None, bool, DashboardFooter]:
     """Return setup-only work without contacting the action owner."""
     claude, codex = snapshot.providers
     setup_rows = tuple(
@@ -117,15 +117,16 @@ def _association_handoff(
         environment={},
     )
     request = session.activate()
-    blocked = DashboardController.start(
-        replace(
-            setup_snapshot,
-            providers=(
-                replace(claude, actions_enabled=False, rows=setup_rows),
-                codex,
-            ),
-        )
-    ).move(DashboardMove.UP)
+    blocked_snapshot = replace(
+        setup_snapshot,
+        providers=(
+            replace(claude, actions_enabled=False, rows=setup_rows),
+            codex,
+        ),
+    )
+    blocked = DashboardController.start(blocked_snapshot).move(
+        DashboardMove.UP
+    )
     unavailable = tuple(
         replace(
             blocked,
@@ -162,8 +163,26 @@ def _association_handoff(
             for controller in unavailable
         )
     )
+    refusal_snapshots = SessionSnapshotSource(blocked_snapshot)
+    refusal_session = InteractiveDashboardSession(
+        blocked_snapshot,
+        snapshots=refusal_snapshots,
+        only=None,
+        lookup=SessionLookupWorker(account_id),
+        metrics_refresh=SessionMetricsRefreshSink(
+            FixedClock(snapshot.reference_time)
+        ),
+        connector=SessionControlConnector(daemon, refusal_snapshots),
+        socket_path=SESSION_SOCKET,
+        setup=guided_setup(daemon, state_root / "selection-refusal.json"),
+        environment={},
+    )
+    refusal_session.move(DashboardMove.UP)
+    refusal_session.activate()
+    selection_refusal_footer = refusal_session.view.footer
+    refusal_session.close()
     session.close()
-    return request, skipped_daemon
+    return request, skipped_daemon, selection_refusal_footer
 
 
 def _partial_start_reaped(
@@ -459,7 +478,11 @@ def exercise_dashboard_session(
         startup_account_id,
         startup_footer,
     ) = startup
-    association_request, association_skipped_daemon = _association_handoff(
+    (
+        association_request,
+        association_skipped_daemon,
+        selection_refusal_footer,
+    ) = _association_handoff(
         snapshot,
         preview_account_id,
         state_root,
@@ -582,6 +605,7 @@ def exercise_dashboard_session(
         control_connect_calls=tuple(connect.calls),
         association_request=association_request,
         association_skipped_daemon=association_skipped_daemon,
+        selection_refusal_footer=selection_refusal_footer,
         partial_start_reaped=partial_start_reaped,
         startup_reconciliations=startup_reconciliations,
         startup_account_id=startup_account_id,
