@@ -50,8 +50,8 @@ def test_selection_and_queue_preserve_stable_independent_state(
         selected(
             ProviderId.CLAUDE,
             target.account_id,
-            "claude-target-id",
             "claude-target-generation",
+            epoch=1,
             verified_in=3,
         ),
         expected=current,

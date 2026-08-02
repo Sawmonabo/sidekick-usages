@@ -93,8 +93,8 @@ def _assert_native_login_cancels_stale_activation(
         selected(
             ProviderId.CLAUDE,
             target.account_id,
-            "claude-target-id",
             "claude-target-generation",
+            epoch=1,
             verified_in=7,
         )
     )

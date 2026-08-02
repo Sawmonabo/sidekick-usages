@@ -2,6 +2,20 @@
 
 from enum import StrEnum
 
+from sidekick_usages.core.identifiers import CanonicalUuid
+
+
+class ParticipantId(CanonicalUuid):
+    """Stable identifier for one integrated local participant."""
+
+    _name = "Participant ID"
+
+
+class TurnId(CanonicalUuid):
+    """Stable identifier for one admitted participant turn."""
+
+    _name = "Turn ID"
+
 
 class ProviderRuntimeState(StrEnum):
     """Closed provider-native authentication observations."""
@@ -27,9 +41,7 @@ class SelectionCode(StrEnum):
 
     ALREADY_SELECTED = "already_selected"
     SELECTION_SUCCEEDED = "selection_succeeded"
-    SELECTION_READY_ADOPTION_PENDING = (
-        "selection_ready_adoption_pending"
-    )
+    SELECTION_READY_ADOPTION_PENDING = "selection_ready_adoption_pending"
     TARGET_REFRESH_REQUIRED = "target_refresh_required"
     TARGET_EXPIRED = "target_expired"
     TARGET_REJECTED = "target_rejected"
@@ -40,9 +52,7 @@ class SelectionCode(StrEnum):
     UNSUPPORTED_SESSION_CAPABILITY = "unsupported_session_capability"
     SESSION_CONFIGURATION_REQUIRED = "session_configuration_required"
     UNCOORDINATED_AUTH_MUTATION = "uncoordinated_auth_mutation"
-    REMOTE_CONTROL_STATE_INCOMPATIBLE = (
-        "remote_control_state_incompatible"
-    )
+    REMOTE_CONTROL_STATE_INCOMPATIBLE = "remote_control_state_incompatible"
     PARTICIPANT_UNREACHABLE = "participant_unreachable"
     PARTICIPANT_CONFIRMED_DEAD = "participant_confirmed_dead"
     PARTICIPANT_LOST_AFTER_COMMIT = "participant_lost_after_commit"
@@ -51,6 +61,26 @@ class SelectionCode(StrEnum):
     AUTHORITY_PROOF_FAILED = "authority_proof_failed"
     SELECTION_ROLLED_BACK = "selection_rolled_back"
     SELECTION_RECOVERY_REQUIRED = "selection_recovery_required"
+
+
+class SelectionPhase(StrEnum):
+    """Closed durable phases for one global provider selection."""
+
+    PREVALIDATING = "prevalidating"
+    PREPARING = "preparing"
+    WAITING_OLD_TURNS = "waiting_old_turns"
+    COMMITTING = "committing"
+    AWAITING_READY = "awaiting_ready"
+    RECOVERING = "recovering"
+
+
+class SelectionOutcome(StrEnum):
+    """Closed terminal outcomes for one global provider selection."""
+
+    READY = "ready"
+    FAILED_OLD_EPOCH = "failed_old_epoch"
+    PARTICIPANT_LOST_AFTER_COMMIT = "participant_lost_after_commit"
+    RECOVERY_REQUIRED = "recovery_required"
 
 
 class AuthorityGenerationRelation(StrEnum):

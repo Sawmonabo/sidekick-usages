@@ -7,7 +7,6 @@ from pathlib import Path
 from sidekick_usages.core.accounts.types import (
     AuthorityGeneration,
     OperationId,
-    ProviderIdentity,
     SidekickAccountId,
 )
 from sidekick_usages.core.models import (
@@ -17,14 +16,13 @@ from sidekick_usages.core.models import (
 )
 from sidekick_usages.core.selection.models import (
     DueOperation,
-    SelectedAccountState,
+    FinalizedSelection,
+    SelectionEpoch,
 )
 from sidekick_usages.core.selection.types import (
-    ActivationOutcome,
     OperationKind,
     OperationPriority,
     OperationState,
-    ProviderRuntimeState,
 )
 from sidekick_usages.core.types import AccountLabel, ProviderId
 from sidekick_usages.paths import ApplicationPaths
@@ -81,21 +79,18 @@ def accounts() -> AccountIndex:
 def selected(
     provider_id: ProviderId,
     account_id: SidekickAccountId,
-    identity: str,
     generation: str,
     *,
-    outcome: ActivationOutcome = ActivationOutcome.VERIFIED,
+    epoch: int = 0,
     verified_in: int = 0,
-) -> SelectedAccountState:
-    """Build a verified provider selection."""
-    return SelectedAccountState(
+) -> FinalizedSelection:
+    """Build a finalized provider selection."""
+    return FinalizedSelection(
         provider_id=provider_id,
-        runtime_state=ProviderRuntimeState.SAVED_ACTIVE,
         account_id=account_id,
-        provider_identity=ProviderIdentity(identity),
-        runtime_generation=AuthorityGeneration(generation),
-        verified_at=REFERENCE_TIME + timedelta(seconds=verified_in),
-        outcome=outcome,
+        epoch=SelectionEpoch(epoch),
+        generation=AuthorityGeneration(generation),
+        finalized_at=REFERENCE_TIME + timedelta(seconds=verified_in),
     )
 
 
@@ -129,7 +124,7 @@ class FoundationState:
     journals: ActivationJournalStore
     queue: OperationQueueStore
     operations: tuple[DueOperation, ...]
-    codex_state: SelectedAccountState
+    codex_state: FinalizedSelection
 
 
 def foundation_state(tmp_path: Path) -> FoundationState:
@@ -143,14 +138,12 @@ def foundation_state(tmp_path: Path) -> FoundationState:
         selected(
             ProviderId.CLAUDE,
             source.account_id,
-            "claude-source-id",
             "claude-source-generation",
         )
     )
     codex_state = selected(
         ProviderId.CODEX,
         codex.account_id,
-        "codex-account-id",
         "codex-generation",
     )
     selected_store.save(codex_state)

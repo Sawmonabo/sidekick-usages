@@ -7,6 +7,7 @@ from sidekick_usages.core.accounts.types import AuthorityGeneration
 from sidekick_usages.core.selection.models import (
     ActivationRecord,
     DueOperation,
+    OpenSelectionOperation,
     ProviderAuthObservation,
     SelectedAccountState,
 )
@@ -16,6 +17,7 @@ from sidekick_usages.core.selection.types import (
     OperationKind,
     OperationPriority,
     OperationState,
+    SelectionPhase,
 )
 from sidekick_usages.core.time import as_utc
 
@@ -90,6 +92,50 @@ _OPERATION_TRANSITIONS: dict[
     ),
     OperationState.ACTION_REQUIRED: frozenset({OperationState.SCHEDULED}),
 }
+_SELECTION_PHASE_ORDER = (
+    SelectionPhase.PREVALIDATING,
+    SelectionPhase.PREPARING,
+    SelectionPhase.WAITING_OLD_TURNS,
+    SelectionPhase.COMMITTING,
+    SelectionPhase.AWAITING_READY,
+    SelectionPhase.RECOVERING,
+)
+
+
+def require_selection_transition(
+    expected: OpenSelectionOperation,
+    replacement: OpenSelectionOperation,
+) -> OpenSelectionOperation:
+    """Validate one identity-stable forward-only selection transition."""
+    if (
+        replacement.operation_id != expected.operation_id
+        or replacement.provider_id is not expected.provider_id
+        or replacement.target_account_id != expected.target_account_id
+        or replacement.target_generation != expected.target_generation
+        or replacement.baseline_epoch != expected.baseline_epoch
+        or replacement.pending_epoch != expected.pending_epoch
+        or replacement.started_at != expected.started_at
+        or replacement.required_participant_ids
+        != expected.required_participant_ids
+        or not set(expected.ready_participant_ids).issubset(
+            replacement.ready_participant_ids
+        )
+        or not set(expected.adopted_participant_ids).issubset(
+            replacement.adopted_participant_ids
+        )
+        or replacement.updated_at < expected.updated_at
+        or (
+            expected.phase is not SelectionPhase.RECOVERING
+            and _SELECTION_PHASE_ORDER.index(replacement.phase)
+            <= _SELECTION_PHASE_ORDER.index(expected.phase)
+        )
+        or (
+            expected.phase is SelectionPhase.RECOVERING
+            and replacement.phase is not SelectionPhase.AWAITING_READY
+        )
+    ):
+        raise ValueError("Illegal global selection transition.")
+    return replacement
 
 
 def same_provider_auth_authority(

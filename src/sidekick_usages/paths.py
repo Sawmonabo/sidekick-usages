@@ -41,12 +41,16 @@ class ApplicationPaths:
     :ivar private_claude_profiles: Stable private Claude profile root.
     :ivar selected_state: Provider selected-state authority.
     :ivar activation_journals: Provider activation journal root.
+    :ivar selection_journals: Global selection operation journal root.
     :ivar durable_operations: Durable due and retry operation root.
+    :ivar codex_session_home: Non-secret coordinated Codex session home.
+    :ivar shell_integration: Generated POSIX shell integration source.
     :ivar service_state: Supervisor readiness state authority.
     :ivar service_setup_acknowledgement: Approved control protocol generation.
     :ivar service_logs: Sanitized supervisor diagnostic root.
     :ivar runtime_directory: Owner-only local control runtime root.
     :ivar supervisor_socket: Local supervisor control socket.
+    :ivar participant_sockets: Owner-only participant socket root.
     :ivar systemd_user_service: Linux user-service definition.
     :ivar launch_agent: macOS per-user LaunchAgent definition.
     """
@@ -61,12 +65,16 @@ class ApplicationPaths:
     private_claude_profiles: Path
     selected_state: Path
     activation_journals: Path
+    selection_journals: Path
     durable_operations: Path
+    codex_session_home: Path
+    shell_integration: Path
     service_state: Path
     service_setup_acknowledgement: Path
     service_logs: Path
     runtime_directory: Path
     supervisor_socket: Path
+    participant_sockets: Path
     systemd_user_service: Path
     launch_agent: Path
 
@@ -156,7 +164,10 @@ def discover_application_paths() -> ApplicationPaths:
         private_claude_profiles=private_root / "claude",
         selected_state=native_data_root / "selected-accounts.json",
         activation_journals=native_data_root / "activation-journals",
+        selection_journals=native_data_root / "selection-journals",
         durable_operations=native_data_root / "operations",
+        codex_session_home=native_data_root / "sessions" / "codex",
+        shell_integration=native_data_root / "shell-integration.sh",
         service_state=native_data_root / "service-state.json",
         service_setup_acknowledgement=(
             native_data_root / "service-setup-acknowledgement.json"
@@ -164,6 +175,7 @@ def discover_application_paths() -> ApplicationPaths:
         service_logs=native.user_log_path,
         runtime_directory=runtime_directory,
         supervisor_socket=runtime_directory / "supervisor.sock",
+        participant_sockets=runtime_directory / "participants",
         systemd_user_service=(
             Path.home()
             / ".config"

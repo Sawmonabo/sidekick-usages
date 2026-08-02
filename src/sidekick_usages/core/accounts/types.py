@@ -3,57 +3,36 @@
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import ClassVar, Self
-from uuid import UUID
 
 from sidekick_usages.core.accounts.validation import (
     MAX_OPAQUE_BYTES,
     require_bounded_text,
 )
+from sidekick_usages.core.identifiers import CanonicalUuid
 
 type AccountIdFactory = Callable[[], SidekickAccountId]
 type AuthorityIdFactory = Callable[[], AuthorityId]
 
 
-class _CanonicalUuid(str):
-    """Canonical lower-case UUID identifier."""
-
-    _name: ClassVar[str]
-
-    def __new__(cls, value: str) -> Self:
-        """Validate and construct one canonical UUID string."""
-        if not isinstance(value, str):
-            raise TypeError(f"{cls._name} must be a string.")
-        try:
-            parsed = UUID(value)
-        except ValueError, AttributeError, TypeError:
-            raise ValueError(
-                f"{cls._name} must be a canonical UUID."
-            ) from None
-        if str(parsed) != value:
-            raise ValueError(f"{cls._name} must be a canonical UUID.")
-        return super().__new__(cls, value)
-
-
-class SidekickAccountId(_CanonicalUuid):
+class SidekickAccountId(CanonicalUuid):
     """Stable Sidekick-owned account identifier."""
 
     _name = "Sidekick account ID"
 
 
-class AuthorityId(_CanonicalUuid):
+class AuthorityId(CanonicalUuid):
     """Stable Sidekick-owned credential-authority identifier."""
 
     _name = "Authority ID"
 
 
-class OperationId(_CanonicalUuid):
+class OperationId(CanonicalUuid):
     """Stable identifier for one durable Sidekick operation."""
 
     _name = "Operation ID"
 
 
-class RequestId(_CanonicalUuid):
+class RequestId(CanonicalUuid):
     """Correlation identifier for one local control request."""
 
     _name = "Request ID"

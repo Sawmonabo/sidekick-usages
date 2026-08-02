@@ -23,7 +23,10 @@ def benchmark_application_paths(root: Path) -> ApplicationPaths:
         private_claude_profiles=credentials / "claude",
         selected_state=data / "selected-accounts.json",
         activation_journals=data / "activation-journals",
+        selection_journals=data / "selection-journals",
         durable_operations=data / "operations",
+        codex_session_home=data / "sessions" / "codex",
+        shell_integration=data / "shell-integration.sh",
         service_state=data / "service-state.json",
         service_setup_acknowledgement=(
             data / "service-setup-acknowledgement.json"
@@ -31,6 +34,7 @@ def benchmark_application_paths(root: Path) -> ApplicationPaths:
         service_logs=root / "logs",
         runtime_directory=runtime,
         supervisor_socket=runtime / "supervisor.sock",
+        participant_sockets=runtime / "participants",
         systemd_user_service=root / "service" / "sidekick-usages.service",
         launch_agent=root / "service" / "sidekick-usages.plist",
     )

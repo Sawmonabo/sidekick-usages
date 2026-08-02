@@ -5,7 +5,9 @@ from dataclasses import dataclass
 from sidekick_usages.core.selection.models import (
     ActivationRecord,
     DueOperation,
-    SelectedAccountState,
+    FinalizedSelection,
+    OpenSelectionOperation,
+    SelectionResult,
 )
 from sidekick_usages.core.selection.types import OperationKind
 from sidekick_usages.core.types import ProviderId
@@ -13,6 +15,7 @@ from sidekick_usages.persistence.errors import InvalidSchemaError
 from sidekick_usages.persistence.limits import MAX_ACCOUNTS
 
 MAX_ACTIVATION_HISTORY = 32
+MAX_SELECTION_HISTORY = 32
 MAX_OPERATION_RECORDS = MAX_ACCOUNTS * (len(OperationKind) - 1) + len(
     ProviderId
 )
@@ -20,9 +23,9 @@ MAX_OPERATION_RECORDS = MAX_ACCOUNTS * (len(OperationKind) - 1) + len(
 
 @dataclass(frozen=True, slots=True)
 class SelectedStateDocument:
-    """Validated selected states in deterministic provider order."""
+    """Validated finalized selections in deterministic provider order."""
 
-    states: tuple[SelectedAccountState, ...] = ()
+    states: tuple[FinalizedSelection, ...] = ()
 
     def __post_init__(self) -> None:
         """Reject duplicate providers and normalize ordering."""
@@ -40,7 +43,7 @@ class SelectedStateDocument:
             ),
         )
 
-    def get(self, provider_id: ProviderId) -> SelectedAccountState | None:
+    def get(self, provider_id: ProviderId) -> FinalizedSelection | None:
         """Return one provider state when present."""
         return next(
             (
@@ -79,6 +82,32 @@ class ActivationJournalDocument:
         if self.active is not None and self.active.phase.terminal:
             raise InvalidSchemaError
         if any(not record.phase.terminal for record in self.history):
+            raise InvalidSchemaError
+
+
+@dataclass(frozen=True, slots=True)
+class SelectionOperationDocument:
+    """One active global selection plus bounded terminal history."""
+
+    provider_id: ProviderId
+    active: OpenSelectionOperation | None = None
+    history: tuple[SelectionResult, ...] = ()
+
+    def __post_init__(self) -> None:
+        """Require provider ownership and unique operation identities."""
+        if len(self.history) > MAX_SELECTION_HISTORY:
+            raise InvalidSchemaError
+        records = (
+            self.history
+            if self.active is None
+            else (*self.history, self.active)
+        )
+        if any(
+            record.provider_id is not self.provider_id for record in records
+        ):
+            raise InvalidSchemaError
+        operation_ids = {record.operation_id for record in records}
+        if len(operation_ids) != len(records):
             raise InvalidSchemaError
 
 

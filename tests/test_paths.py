@@ -82,13 +82,17 @@ def test_discovery_maps_platform_roots_to_one_current_layout(
     assert paths.credential_refresh == root / "credential-refresh"
     assert paths.selected_state == root / "selected-accounts.json"
     assert paths.activation_journals == root / "activation-journals"
+    assert paths.selection_journals == root / "selection-journals"
     assert paths.durable_operations == root / "operations"
+    assert paths.codex_session_home == root / "sessions" / "codex"
+    assert paths.shell_integration == root / "shell-integration.sh"
     assert paths.service_state == root / "service-state.json"
     assert paths.service_setup_acknowledgement == (
         root / "service-setup-acknowledgement.json"
     )
     assert paths.service_logs == root / "logs"
     assert paths.supervisor_socket == root / "runtime" / "supervisor.sock"
+    assert paths.participant_sockets == root / "runtime" / "participants"
     assert paths.systemd_user_service == (
         Path.home()
         / ".config"

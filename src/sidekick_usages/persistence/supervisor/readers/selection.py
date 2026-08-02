@@ -1,6 +1,6 @@
 """Passive provider-selection state reader."""
 
-from sidekick_usages.core.selection.models import SelectedAccountState
+from sidekick_usages.core.selection.models import FinalizedSelection
 from sidekick_usages.persistence.filesystem.reader import PrivateDocumentReader
 from sidekick_usages.persistence.models.selection import SelectedStateDocument
 from sidekick_usages.persistence.schema.selection import decode_selected_state
@@ -13,7 +13,7 @@ class SelectedStateReader(PrivateDocumentReader):
 
     absolute_path_error = SELECTED_STATE_PATH_ERROR
 
-    def observe_all(self) -> tuple[SelectedAccountState, ...]:
+    def observe_all(self) -> tuple[FinalizedSelection, ...]:
         """Passively read every provider state without lock-sidecar writes."""
         return self._load_document().states
 

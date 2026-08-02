@@ -30,7 +30,10 @@ def make_application_paths(root: Path) -> ApplicationPaths:
         private_claude_profiles=private_root / "claude",
         selected_state=root / "selected-accounts.json",
         activation_journals=root / "activation-journals",
+        selection_journals=root / "selection-journals",
         durable_operations=root / "operations",
+        codex_session_home=root / "sessions" / "codex",
+        shell_integration=root / "shell-integration.sh",
         service_state=root / "service-state.json",
         service_setup_acknowledgement=(
             root / "service-setup-acknowledgement.json"
@@ -38,6 +41,7 @@ def make_application_paths(root: Path) -> ApplicationPaths:
         service_logs=root / "logs",
         runtime_directory=root / "runtime",
         supervisor_socket=root / "runtime" / "supervisor.sock",
+        participant_sockets=root / "runtime" / "participants",
         systemd_user_service=root / "home/systemd/sidekick-usages.service",
         launch_agent=(
             root

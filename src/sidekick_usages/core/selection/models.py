@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
+from typing import Self
 
 from sidekick_usages.core.accounts.types import (
     AuthorityGeneration,
@@ -22,14 +23,20 @@ from sidekick_usages.core.selection.types import (
     OperationKind,
     OperationPriority,
     OperationState,
+    ParticipantId,
     ProviderAuthState,
     ProviderRuntimeState,
+    SelectionCode,
+    SelectionOutcome,
+    SelectionPhase,
 )
 from sidekick_usages.core.time import as_utc
 from sidekick_usages.core.types import ProviderId
 
 _MAX_ATTEMPTS = 1_000_000
 _MAX_SAFE_CODE_BYTES = 128
+_MAX_SELECTION_EPOCH = 2**63 - 1
+_MAX_SELECTION_PARTICIPANTS = 512
 
 
 def safe_outcome_code(value: str | None) -> str | None:
@@ -57,6 +64,187 @@ def safe_outcome_code(value: str | None) -> str | None:
             "Safe outcome code must use bounded lowercase ASCII identifiers."
         )
     return value
+
+
+@dataclass(frozen=True, slots=True, order=True)
+class SelectionEpoch:
+    """Monotonic non-secret generation of selected provider authority."""
+
+    value: int
+
+    def __post_init__(self) -> None:
+        """Require one signed 64-bit non-negative epoch."""
+        if (
+            type(self.value) is not int
+            or self.value < 0
+            or self.value > _MAX_SELECTION_EPOCH
+        ):
+            raise ValueError("Selection epoch is outside the supported bound.")
+
+    def next(self) -> Self:
+        """Return the next epoch or fail closed at the upper bound."""
+        if self.value == _MAX_SELECTION_EPOCH:
+            raise ValueError("Selection epoch cannot advance past its bound.")
+        return type(self)(self.value + 1)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class FinalizedSelection:
+    """Last globally finalized saved account for one provider."""
+
+    provider_id: ProviderId
+    account_id: SidekickAccountId
+    epoch: SelectionEpoch
+    generation: AuthorityGeneration
+    finalized_at: datetime
+
+    def __post_init__(self) -> None:
+        """Normalize the trusted finalization timestamp to UTC."""
+        object.__setattr__(
+            self,
+            "finalized_at",
+            as_utc(self.finalized_at),
+        )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class PreparedSelection:
+    """Provider-validated target bound to coordinator-owned epochs."""
+
+    operation_id: OperationId
+    provider_id: ProviderId
+    target_account_id: SidekickAccountId
+    target_generation: AuthorityGeneration
+    baseline_epoch: SelectionEpoch
+    pending_epoch: SelectionEpoch
+
+    def __post_init__(self) -> None:
+        """Require exactly one forward epoch transition."""
+        if self.pending_epoch != self.baseline_epoch.next():
+            raise ValueError("Prepared selection must advance one epoch.")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class AuthorityReadyProof:
+    """Sanitized provider proof for one committed selected authority."""
+
+    provider_id: ProviderId
+    account_id: SidekickAccountId
+    generation: AuthorityGeneration
+    epoch: SelectionEpoch
+    safe_code: SelectionCode
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class OpenSelectionOperation:
+    """One bounded secret-free global selection still in progress."""
+
+    operation_id: OperationId
+    provider_id: ProviderId
+    target_account_id: SidekickAccountId
+    target_generation: AuthorityGeneration
+    baseline_epoch: SelectionEpoch
+    pending_epoch: SelectionEpoch
+    phase: SelectionPhase
+    required_participant_ids: tuple[ParticipantId, ...]
+    ready_participant_ids: tuple[ParticipantId, ...]
+    adopted_participant_ids: tuple[ParticipantId, ...]
+    started_at: datetime
+    updated_at: datetime
+
+    def __post_init__(self) -> None:
+        """Normalize time and participant sets for durable comparison."""
+        if self.pending_epoch != self.baseline_epoch.next():
+            raise ValueError("Open selection must advance one epoch.")
+        required = _selection_participant_ids(
+            self.required_participant_ids,
+            name="Required participants",
+        )
+        ready = _selection_participant_ids(
+            self.ready_participant_ids,
+            name="Ready participants",
+        )
+        adopted = _selection_participant_ids(
+            self.adopted_participant_ids,
+            name="Adopted participants",
+        )
+        if not set(ready).issubset(required):
+            raise ValueError("Ready participants must be required.")
+        if not set(adopted).issubset(ready):
+            raise ValueError("Adopted participants must be ready.")
+        started_at = as_utc(self.started_at)
+        updated_at = as_utc(self.updated_at)
+        if updated_at < started_at:
+            raise ValueError("Selection update cannot predate its start.")
+        object.__setattr__(self, "required_participant_ids", required)
+        object.__setattr__(self, "ready_participant_ids", ready)
+        object.__setattr__(self, "adopted_participant_ids", adopted)
+        object.__setattr__(self, "started_at", started_at)
+        object.__setattr__(self, "updated_at", updated_at)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SelectionResult:
+    """Bounded terminal selection result without participant identities."""
+
+    operation_id: OperationId
+    provider_id: ProviderId
+    target_account_id: SidekickAccountId
+    target_generation: AuthorityGeneration
+    epoch: SelectionEpoch
+    outcome: SelectionOutcome
+    safe_code: SelectionCode
+    required_count: int
+    ready_count: int
+    adopted_count: int
+    lost_count: int
+    started_at: datetime
+    completed_at: datetime
+
+    def __post_init__(self) -> None:
+        """Normalize time and enforce bounded coherent result counts."""
+        counts = (
+            self.required_count,
+            self.ready_count,
+            self.adopted_count,
+            self.lost_count,
+        )
+        if any(
+            type(count) is not int
+            or count < 0
+            or count > _MAX_SELECTION_PARTICIPANTS
+            for count in counts
+        ):
+            raise ValueError("Selection participant count is invalid.")
+        if (
+            self.ready_count + self.lost_count > self.required_count
+            or self.adopted_count > self.ready_count
+        ):
+            raise ValueError("Selection participant counts are incoherent.")
+        started_at = as_utc(self.started_at)
+        completed_at = as_utc(self.completed_at)
+        if completed_at < started_at:
+            raise ValueError("Selection completion cannot predate its start.")
+        object.__setattr__(self, "started_at", started_at)
+        object.__setattr__(self, "completed_at", completed_at)
+
+
+def _selection_participant_ids(
+    participant_ids: tuple[ParticipantId, ...],
+    *,
+    name: str,
+) -> tuple[ParticipantId, ...]:
+    """Validate and sort one bounded participant identity set."""
+    if not isinstance(participant_ids, tuple) or any(
+        not isinstance(participant_id, ParticipantId)
+        for participant_id in participant_ids
+    ):
+        raise TypeError(f"{name} must be participant IDs.")
+    if len(participant_ids) > _MAX_SELECTION_PARTICIPANTS or len(
+        set(participant_ids)
+    ) != len(participant_ids):
+        raise ValueError(f"{name} must be bounded and unique.")
+    return tuple(sorted(participant_ids))
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

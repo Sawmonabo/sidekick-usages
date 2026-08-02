@@ -14,8 +14,10 @@ from sidekick_usages.core.selection.models import (
     ActivationRecord,
     ClaudeAuthObservation,
     DueOperation,
+    FinalizedSelection,
     ProviderAuthObservation,
     SelectedAccountState,
+    SelectionEpoch,
 )
 from sidekick_usages.core.selection.types import (
     ActivationOutcome,
@@ -55,7 +57,8 @@ from sidekick_usages.persistence.time_codec import (
 )
 from sidekick_usages.serialization.json import JsonObject, JsonValue
 
-SELECTED_STATE_SCHEMA_VERSION = 2
+SELECTED_STATE_SCHEMA_VERSION = 3
+_LEGACY_SELECTED_STATE_SCHEMA_VERSION = 2
 ACTIVATION_SCHEMA_VERSION = 4
 OPERATION_QUEUE_SCHEMA_VERSION = 3
 RUNTIME_OBSERVATION_SCHEMA_VERSION = 1
@@ -73,6 +76,14 @@ _SELECTED_KEYS = frozenset(
         "runtime_generation",
         "runtime_state",
         "verified_at",
+    }
+)
+_FINALIZED_SELECTION_KEYS = frozenset(
+    {
+        "account_id",
+        "epoch",
+        "finalized_at",
+        "generation",
     }
 )
 _ACTIVATION_KEYS = frozenset(
@@ -146,7 +157,7 @@ def decode_selected_state(payload: bytes) -> SelectedStateDocument:
         raise InvalidSchemaError
     try:
         states = tuple(
-            _selected_state(ProviderId(name), require_object(value))
+            _finalized_selection(ProviderId(name), require_object(value))
             for name, value in providers.items()
         )
         document = SelectedStateDocument(states)
@@ -155,6 +166,46 @@ def decode_selected_state(payload: bytes) -> SelectedStateDocument:
     if _selected_payload(document) != payload:
         raise InvalidSchemaError
     return document
+
+
+def migrate_selected_state_version_two(
+    payload: bytes,
+) -> SelectedStateDocument:
+    """Validate v2 and retain only saved-active selections at epoch zero."""
+    root = decode_state_object(payload, MAX_SELECTED_STATE_BYTES)
+    require_exact_keys(root, {"providers", "schema_version"})
+    require_schema_version(
+        root["schema_version"],
+        _LEGACY_SELECTED_STATE_SCHEMA_VERSION,
+    )
+    providers = require_object(root["providers"])
+    if len(providers) > len(ProviderId):
+        raise InvalidSchemaError
+    try:
+        legacy_states = tuple(
+            _selected_state(ProviderId(name), require_object(value))
+            for name, value in providers.items()
+        )
+        migrated = SelectedStateDocument(
+            tuple(
+                FinalizedSelection(
+                    provider_id=state.provider_id,
+                    account_id=state.account_id,
+                    epoch=SelectionEpoch(0),
+                    generation=state.runtime_generation,
+                    finalized_at=state.verified_at,
+                )
+                for state in legacy_states
+                if state.runtime_state is ProviderRuntimeState.SAVED_ACTIVE
+                and state.account_id is not None
+                and state.runtime_generation is not None
+            )
+        )
+    except TypeError, ValueError:
+        raise InvalidSchemaError from None
+    if _legacy_selected_payload(legacy_states) != payload:
+        raise InvalidSchemaError
+    return migrated
 
 
 def encode_selected_state(document: SelectedStateDocument) -> bytes:
@@ -356,15 +407,55 @@ def _selected_object(state: SelectedAccountState) -> JsonObject:
     }
 
 
+def _finalized_selection(
+    provider_id: ProviderId,
+    record: JsonObject,
+) -> FinalizedSelection:
+    require_exact_keys(record, _FINALIZED_SELECTION_KEYS)
+    return FinalizedSelection(
+        provider_id=provider_id,
+        account_id=SidekickAccountId(require_string(record["account_id"])),
+        epoch=SelectionEpoch(require_integer(record["epoch"])),
+        generation=AuthorityGeneration(require_string(record["generation"])),
+        finalized_at=parse_canonical_timestamp(
+            require_string(record["finalized_at"])
+        ),
+    )
+
+
+def _finalized_object(selection: FinalizedSelection) -> JsonObject:
+    return {
+        "account_id": str(selection.account_id),
+        "epoch": selection.epoch.value,
+        "finalized_at": canonical_timestamp(selection.finalized_at),
+        "generation": str(selection.generation),
+    }
+
+
 def _selected_payload(document: SelectedStateDocument) -> bytes:
     providers: JsonObject = {
-        state.provider_id.value: _selected_object(state)
+        state.provider_id.value: _finalized_object(state)
         for state in document.states
     }
     return encode_state_object(
         {
             "providers": providers,
             "schema_version": SELECTED_STATE_SCHEMA_VERSION,
+        },
+        MAX_SELECTED_STATE_BYTES,
+    )
+
+
+def _legacy_selected_payload(
+    states: tuple[SelectedAccountState, ...],
+) -> bytes:
+    providers: JsonObject = {
+        state.provider_id.value: _selected_object(state) for state in states
+    }
+    return encode_state_object(
+        {
+            "providers": providers,
+            "schema_version": _LEGACY_SELECTED_STATE_SCHEMA_VERSION,
         },
         MAX_SELECTED_STATE_BYTES,
     )
