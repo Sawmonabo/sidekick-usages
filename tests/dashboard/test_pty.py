@@ -620,7 +620,7 @@ def test_dashboard_pty_completes_the_interactive_account_journey(
         codex = _send_resize_and_read(
             session,
             TAB_KEY,
-            WIDE_COLUMNS + 4,
+            WIDE_COLUMNS,
             WIDE_PANEL_TEXT,
         )
         assert _selected(codex, CODEX_SAVED_LABEL)
