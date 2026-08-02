@@ -11,7 +11,7 @@ from sidekick_usages.core.selection.models import DueOperation
 from sidekick_usages.core.selection.types import (
     OperationKind,
     OperationPriority,
-    ProviderRuntimeState,
+    ProviderAuthState,
 )
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.providers.codex.account.types import CodexAuthMode
@@ -770,20 +770,23 @@ class CodexRuntimeBroker:
                 self._active_operation = None
 
     def _expectation(self) -> CodexProjectionExpectation | None:
-        selected = self._runtime_state.current()
+        snapshot = self._runtime_state.current()
+        selected = snapshot.finalized_selection
+        projection = snapshot.projection_auth
         if (
-            selected is None
+            snapshot.activation_in_progress
+            or selected is None
             or selected.provider_id is not ProviderId.CODEX
-            or selected.runtime_state is not ProviderRuntimeState.SAVED_ACTIVE
-            or selected.account_id is None
-            or selected.provider_identity is None
-            or selected.runtime_generation is None
+            or projection is None
+            or projection.state is not ProviderAuthState.ACTIVE
+            or projection.provider_identity is None
+            or projection.generation != selected.generation
         ):
             return None
         return CodexProjectionExpectation(
             selected.account_id,
-            selected.provider_identity,
-            selected.runtime_generation,
+            projection.provider_identity,
+            selected.generation,
         )
 
     def _reject(

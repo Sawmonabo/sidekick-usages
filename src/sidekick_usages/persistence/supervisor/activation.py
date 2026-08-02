@@ -14,10 +14,7 @@ from sidekick_usages.core.selection.models import (
     ActivationRecord,
     SelectedAccountState,
 )
-from sidekick_usages.core.selection.policy import (
-    same_selected_runtime_authority,
-    transition_activation,
-)
+from sidekick_usages.core.selection.policy import transition_activation
 from sidekick_usages.core.selection.types import (
     ActivationOutcome,
     ActivationPhase,
@@ -51,7 +48,6 @@ from sidekick_usages.persistence.supervisor.authority import (
     ProviderMutationAuthority,
     ProviderMutationLock,
 )
-from sidekick_usages.persistence.supervisor.selection import SelectedStateStore
 from sidekick_usages.persistence.types.activation import StateLockFactory
 from sidekick_usages.persistence.types.artifact import AuthorityExpectation
 
@@ -179,52 +175,38 @@ class ActivationJournalTransaction:
     def commit_verified(
         self,
         operation_id: OperationId,
-        state: SelectedAccountState,
-        selected: SelectedStateStore,
+        proof: SelectedAccountState,
         *,
         updated_at: datetime,
     ) -> ActivationRecord:
-        """CAS the exact baseline, then close a provider-proven activation."""
+        """Close provider-proven activation without finalizing selection."""
         document = self.load()
         active = document.active
         if (
             active is None
             or active.operation_id != operation_id
             or active.phase is not ActivationPhase.PROVIDER_PROOF_VERIFIED
-            or state.provider_id is not self.provider_id
-            or state.runtime_state is not ProviderRuntimeState.SAVED_ACTIVE
-            or state.account_id != active.target_account_id
-            or state.provider_identity != active.expected_target_identity
-            or state.runtime_generation != active.verified_runtime_generation
-            or state.outcome is not ActivationOutcome.VERIFIED
+            or proof.provider_id is not self.provider_id
+            or proof.runtime_state is not ProviderRuntimeState.SAVED_ACTIVE
+            or proof.account_id != active.target_account_id
+            or proof.provider_identity != active.expected_target_identity
+            or proof.runtime_generation != active.verified_runtime_generation
+            or proof.outcome is not ActivationOutcome.VERIFIED
         ):
             raise ManagedStateConflictError(
                 ManagedStateConflictKind.CONCURRENT_CHANGE
             )
-        current = selected.load(self.provider_id)
-        if same_selected_runtime_authority(
-            current,
-            state,
-        ) or _matches_activation_target(current, active):
-            expected = current
-        else:
-            expected = active.selected_baseline
-        selected.compare_and_swap(
-            state,
-            expected=expected,
-        )
         return self.advance(
             operation_id,
             ActivationPhase.COMMITTED,
             updated_at=updated_at,
-            verified_runtime_generation=state.runtime_generation,
+            verified_runtime_generation=proof.runtime_generation,
         )
 
     def commit_rollback(
         self,
         operation_id: OperationId,
-        state: SelectedAccountState,
-        selected: SelectedStateStore,
+        proof: SelectedAccountState,
         *,
         updated_at: datetime,
     ) -> ActivationRecord:
@@ -237,53 +219,39 @@ class ActivationJournalTransaction:
             or active.operation_id != operation_id
             or baseline is None
             or baseline.runtime_state is not ProviderRuntimeState.SAVED_ACTIVE
-            or state.provider_id is not self.provider_id
-            or state.runtime_state is not ProviderRuntimeState.SAVED_ACTIVE
-            or state.account_id != baseline.account_id
-            or state.provider_identity != baseline.provider_identity
-            or state.runtime_generation is None
-            or state.outcome is not ActivationOutcome.ROLLED_BACK
+            or proof.provider_id is not self.provider_id
+            or proof.runtime_state is not ProviderRuntimeState.SAVED_ACTIVE
+            or proof.account_id != baseline.account_id
+            or proof.provider_identity != baseline.provider_identity
+            or proof.runtime_generation is None
+            or proof.outcome is not ActivationOutcome.ROLLED_BACK
         ):
             raise ManagedStateConflictError(
                 ManagedStateConflictKind.CONCURRENT_CHANGE
             )
-        current = selected.load(self.provider_id)
-        if same_selected_runtime_authority(current, state):
-            expected = current
-        elif current == baseline:
-            expected = baseline
-        elif _matches_activation_target(current, active):
-            expected = current
-        else:
-            raise ManagedStateConflictError(
-                ManagedStateConflictKind.CONCURRENT_CHANGE
-            )
-        selected.compare_and_swap(state, expected=expected)
         return self.advance(
             operation_id,
             ActivationPhase.ROLLED_BACK,
             updated_at=updated_at,
-            verified_runtime_generation=state.runtime_generation,
+            verified_runtime_generation=proof.runtime_generation,
             outcome=ActivationOutcome.ROLLED_BACK,
         )
 
     def commit_external(
         self,
         operation_id: OperationId,
-        state: SelectedAccountState,
-        selected: SelectedStateStore,
+        proof: SelectedAccountState,
         *,
         updated_at: datetime,
     ) -> ActivationRecord:
         """Let one proven external choice win and close the journal."""
         document = self.load()
         active = document.active
-        baseline = None if active is None else active.selected_baseline
         if (
             active is None
             or active.operation_id != operation_id
-            or state.provider_id is not self.provider_id
-            or state.runtime_state
+            or proof.provider_id is not self.provider_id
+            or proof.runtime_state
             not in {
                 ProviderRuntimeState.SAVED_ACTIVE,
                 ProviderRuntimeState.EXTERNAL_ACTIVE,
@@ -291,33 +259,21 @@ class ActivationJournalTransaction:
                 ProviderRuntimeState.UNSUPPORTED,
             }
             or (
-                state.runtime_state is ProviderRuntimeState.SAVED_ACTIVE
-                and state.outcome is not ActivationOutcome.EXTERNAL_RECONCILED
+                proof.runtime_state is ProviderRuntimeState.SAVED_ACTIVE
+                and proof.outcome is not ActivationOutcome.EXTERNAL_RECONCILED
             )
         ):
             raise ManagedStateConflictError(
                 ManagedStateConflictKind.CONCURRENT_CHANGE
             )
-        if state.account_id is not None:
-            self._provider_authority.account(state.account_id)
-        current = selected.load(self.provider_id)
-        if same_selected_runtime_authority(current, state):
-            expected = current
-        elif current == baseline:
-            expected = baseline
-        elif _matches_activation_target(current, active):
-            expected = current
-        else:
-            raise ManagedStateConflictError(
-                ManagedStateConflictKind.CONCURRENT_CHANGE
-            )
-        selected.compare_and_swap(state, expected=expected)
+        if proof.account_id is not None:
+            self._provider_authority.account(proof.account_id)
         return self.advance(
             operation_id,
             ActivationPhase.ROLLED_BACK,
             updated_at=updated_at,
-            verified_runtime_generation=state.runtime_generation,
-            outcome=state.outcome,
+            verified_runtime_generation=proof.runtime_generation,
+            outcome=proof.outcome,
         )
 
     @contextmanager
@@ -508,18 +464,3 @@ def _journal_document(
             ManagedStateConflictKind.CONCURRENT_CHANGE
         )
     return document
-
-
-def _matches_activation_target(
-    state: SelectedAccountState | None,
-    activation: ActivationRecord,
-) -> bool:
-    return (
-        state is not None
-        and state.provider_id is activation.provider_id
-        and state.runtime_state is ProviderRuntimeState.SAVED_ACTIVE
-        and state.account_id == activation.target_account_id
-        and state.provider_identity == activation.expected_target_identity
-        and state.runtime_generation == activation.verified_runtime_generation
-        and state.outcome is ActivationOutcome.VERIFIED
-    )

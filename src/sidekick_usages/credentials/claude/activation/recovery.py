@@ -436,7 +436,6 @@ class ClaudeActivationRecoveryService:
         transaction.commit_verified(
             active.operation_id,
             selected,
-            self._selected,
             updated_at=self._clock.now(),
         )
         return selected
@@ -642,7 +641,6 @@ class ClaudeActivationRecoveryService:
             transaction.commit_external(
                 record.operation_id,
                 selected,
-                self._selected,
                 updated_at=self._clock.now(),
             )
             return selected
@@ -672,7 +670,6 @@ class ClaudeActivationRecoveryService:
         transaction.commit_rollback(
             record.operation_id,
             selected,
-            self._selected,
             updated_at=self._clock.now(),
         )
         return selected
@@ -696,7 +693,6 @@ class ClaudeActivationRecoveryService:
         transaction.commit_external(
             record.operation_id,
             selected,
-            self._selected,
             updated_at=self._clock.now(),
         )
         return selected
@@ -718,7 +714,6 @@ class ClaudeActivationRecoveryService:
         transaction.commit_external(
             record.operation_id,
             selected,
-            self._selected,
             updated_at=self._clock.now(),
         )
         return selected

@@ -5,7 +5,7 @@ from sidekick_usages.core.accounts.types import SidekickAccountId
 from sidekick_usages.core.selection.models import (
     ActivationRecord,
     ProviderAuthObservation,
-    SelectedAccountState,
+    ProviderRuntimeSnapshot,
 )
 from sidekick_usages.core.selection.types import (
     OperationKind,
@@ -20,6 +20,9 @@ from sidekick_usages.persistence.supervisor.activation import (
 )
 from sidekick_usages.persistence.supervisor.authority import (
     ProviderMutationLock,
+)
+from sidekick_usages.persistence.supervisor.observation import (
+    RuntimeAuthObservationStore,
 )
 from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
 from sidekick_usages.persistence.supervisor.selection import SelectedStateStore
@@ -36,25 +39,27 @@ class RuntimeStateReader:
         selected: SelectedStateStore,
         journals: ActivationJournalStore,
         queue: OperationQueueStore,
+        observations: RuntimeAuthObservationStore,
         clock: Clock,
     ) -> None:
         self._provider_id = provider_id
         self._selected = selected
         self._journals = journals
         self._queue = queue
+        self._observations = observations
         self._clock = clock
 
-    def current(self) -> SelectedAccountState | None:
-        """Return the current state when no transition owns the provider."""
-        selected, activation = self._snapshot()
-        return None if activation is not None else selected
+    def current(self) -> ProviderRuntimeSnapshot:
+        """Return exact selected and observed facts under one provider lock."""
+        snapshot, _activation = self._snapshot()
+        return snapshot
 
     def rollback_account_id(
         self,
         target_account_id: SidekickAccountId,
     ) -> SidekickAccountId | None:
         """Return the saved baseline account for one active transition."""
-        _selected, activation = self._snapshot()
+        _snapshot, activation = self._snapshot()
         if (
             activation is None
             or activation.target_account_id != target_account_id
@@ -88,12 +93,12 @@ class RuntimeStateReader:
 
     def native_auth_baseline(self) -> ProviderAuthObservation | None:
         """Return the active transition's exact native baseline."""
-        _selected, activation = self._snapshot()
+        _snapshot, activation = self._snapshot()
         return None if activation is None else activation.native_auth_baseline
 
     def _snapshot(
         self,
-    ) -> tuple[SelectedAccountState | None, ActivationRecord | None]:
+    ) -> tuple[ProviderRuntimeSnapshot, ActivationRecord | None]:
         try:
             with ProviderMutationLock(
                 self._queue.root,
@@ -102,8 +107,18 @@ class RuntimeStateReader:
                 timeout_seconds=_SELECTION_READ_LOCK_TIMEOUT_SECONDS,
             ).hold():
                 activation = self._journals.load(self._provider_id).active
-                selected = self._selected.load(self._provider_id)
-                return selected, activation
+                snapshot = ProviderRuntimeSnapshot(
+                    provider_id=self._provider_id,
+                    finalized_selection=self._selected.load(self._provider_id),
+                    native_auth=self._observations.load_native(
+                        self._provider_id
+                    ),
+                    projection_auth=self._observations.load_projection(
+                        self._provider_id
+                    ),
+                    activation_in_progress=activation is not None,
+                )
+                return snapshot, activation
         except StoreLockedError:
             raise RuntimeError("Selected runtime is changing.") from None
         except PersistenceError:

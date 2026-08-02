@@ -7,8 +7,8 @@ from threading import Lock
 from sidekick_usages.core.accounts.types import OperationId
 from sidekick_usages.core.selection.models import (
     DueOperation,
+    FinalizedSelection,
     ProviderAuthObservation,
-    SelectedAccountState,
 )
 from sidekick_usages.core.selection.policy import (
     same_provider_auth_authority,
@@ -18,7 +18,6 @@ from sidekick_usages.core.selection.types import (
     OperationPriority,
     OperationState,
     ProviderAuthState,
-    ProviderRuntimeState,
 )
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.providers.codex.broker.errors import CodexBrokerError
@@ -134,8 +133,13 @@ class CodexNativeAuthReconciler:
         baseline = self._runtime_state.native_auth_baseline()
         if baseline is None:
             baseline = self._operations.native_observation()
-        projection = self._operations.projection_observation()
-        selected = self._runtime_state.current()
+        snapshot = self._runtime_state.current()
+        projection = snapshot.projection_auth
+        selected = (
+            None
+            if snapshot.activation_in_progress
+            else snapshot.finalized_selection
+        )
         retained_projection = (
             not force
             and projection is not None
@@ -242,34 +246,24 @@ def _authority(runtime: CodexSharedRuntime) -> CodexDaemonAuthority:
 
 
 def _selected_matches_observation(
-    selected: SelectedAccountState | None,
+    selected: FinalizedSelection | None,
     observation: ProviderAuthObservation,
 ) -> bool:
-    if selected is None or selected.provider_id is not observation.provider_id:
-        return False
-    if selected.runtime_state is ProviderRuntimeState.SAVED_ACTIVE:
-        return True
-    if observation.state is ProviderAuthState.ACTIVE:
-        return (
-            selected.runtime_state is ProviderRuntimeState.EXTERNAL_ACTIVE
-            and selected.provider_identity == observation.provider_identity
-            and selected.runtime_generation == observation.generation
-        )
-    expected = {
-        ProviderAuthState.LOGGED_OUT: ProviderRuntimeState.LOGGED_OUT,
-        ProviderAuthState.UNREADABLE: ProviderRuntimeState.UNREADABLE,
-        ProviderAuthState.UNSUPPORTED: ProviderRuntimeState.UNSUPPORTED,
-    }[observation.state]
-    return selected.runtime_state is expected
+    return (
+        selected is not None
+        and selected.provider_id is observation.provider_id
+        and observation.state is ProviderAuthState.ACTIVE
+        and selected.generation == observation.generation
+    )
 
 
 def _selected_matches_projection(
-    selected: SelectedAccountState | None,
+    selected: FinalizedSelection | None,
     projection: ProviderAuthObservation,
 ) -> bool:
     return (
         selected is not None
         and selected.provider_id is projection.provider_id
-        and selected.runtime_state is ProviderRuntimeState.SAVED_ACTIVE
-        and selected.provider_identity == projection.provider_identity
+        and projection.state is ProviderAuthState.ACTIVE
+        and selected.generation == projection.generation
     )

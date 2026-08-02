@@ -11,7 +11,7 @@ from sidekick_usages.core.accounts.types import (
 from sidekick_usages.core.selection.models import (
     DueOperation,
     ProviderAuthObservation,
-    SelectedAccountState,
+    ProviderRuntimeSnapshot,
 )
 from sidekick_usages.core.selection.types import OperationPriority
 
@@ -121,8 +121,8 @@ class CodexWorkerExchangeFactory(Protocol):
 class CodexRuntimeStateReader(Protocol):
     """Read credential-free Codex selection and recovery authority."""
 
-    def current(self) -> SelectedAccountState | None:
-        """Return the selected saved authority when callback-safe."""
+    def current(self) -> ProviderRuntimeSnapshot:
+        """Return exact selected and observed provider runtime facts."""
 
     def native_reconciliation_pending(self) -> bool:
         """Return whether native-auth truth blocks selected rehydration."""

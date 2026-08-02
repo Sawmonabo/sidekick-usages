@@ -122,6 +122,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         paths.durable_operations,
     )
     selected = SelectedStateStore(paths.selected_state)
+    observations = RuntimeAuthObservationStore(paths.durable_operations)
     recovery = ActivationRecoveryScheduler(journals, queue)
     events = OperationEventHub()
     exchanges = WorkerExchangeRegistry(time.monotonic)
@@ -146,11 +147,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             selected,
             journals,
             queue,
+            observations,
             clock,
         ),
         DurableCodexOperationDispatcher(
             queue,
-            RuntimeAuthObservationStore(paths.durable_operations),
+            observations,
             exchanges,
             clock.now,
             time.monotonic,

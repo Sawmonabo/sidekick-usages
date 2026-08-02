@@ -102,7 +102,7 @@ class CodexActivationService:
         authority: ProviderMutationAuthority,
         installer: CodexProjectionInstaller,
     ) -> SelectedAccountState:
-        """Refresh, install, prove, and commit one new global selection."""
+        """Refresh, install, and return one journaled provider proof."""
         authority.require(ProviderId.CODEX)
         baseline = self._selected.load(ProviderId.CODEX)
         target_authority = authority.account(target_account_id)
@@ -312,7 +312,6 @@ class CodexActivationService:
         transaction.commit_verified(
             active.operation_id,
             selected,
-            self._selected,
             updated_at=self._clock.now(),
         )
         return selected
@@ -345,7 +344,6 @@ class CodexActivationService:
         transaction.commit_rollback(
             record.operation_id,
             selected,
-            self._selected,
             updated_at=self._clock.now(),
         )
         return selected

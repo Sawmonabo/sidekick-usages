@@ -203,7 +203,6 @@ class ClaudeActivationService:
             transaction.commit_verified(
                 record.operation_id,
                 selected,
-                self._selected,
                 updated_at=self._clock.now(),
             )
             self._authorities.record_selected_runtime(selected)

@@ -273,6 +273,32 @@ class ProviderAuthObservation:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class ProviderRuntimeSnapshot:
+    """Exact selected and observed facts for one provider runtime."""
+
+    provider_id: ProviderId
+    finalized_selection: FinalizedSelection | None
+    native_auth: ProviderAuthObservation | None
+    projection_auth: ProviderAuthObservation | None
+    activation_in_progress: bool
+
+    def __post_init__(self) -> None:
+        """Require every available fact to match the snapshot provider."""
+        if type(self.activation_in_progress) is not bool:
+            raise TypeError("Activation progress must be boolean.")
+        facts = (
+            self.finalized_selection,
+            self.native_auth,
+            self.projection_auth,
+        )
+        if any(
+            fact is not None and fact.provider_id is not self.provider_id
+            for fact in facts
+        ):
+            raise ValueError("Runtime snapshot facts must match its provider.")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class SelectedAccountState:
     """Last provider-verified runtime authentication state."""
 

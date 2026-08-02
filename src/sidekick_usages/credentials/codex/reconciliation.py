@@ -128,14 +128,12 @@ class CodexNativeReconciliationService:
                 transaction.commit_rollback(
                     journal.operation_id,
                     rollback,
-                    self._selected,
                     updated_at=self._clock.now(),
                 )
                 return rollback
             transaction.commit_external(
                 journal.operation_id,
                 candidate,
-                self._selected,
                 updated_at=self._clock.now(),
             )
             return candidate

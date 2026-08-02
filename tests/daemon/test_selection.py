@@ -9,16 +9,25 @@ import pytest
 from sidekick_usages.core.accounts.types import (
     AuthorityGeneration,
     OperationId,
+    ProviderIdentity,
     SidekickAccountId,
 )
 from sidekick_usages.core.selection.models import (
+    ActivationRecord,
     FinalizedSelection,
     OpenSelectionOperation,
+    ProviderAuthObservation,
+    ProviderRuntimeSnapshot,
+    SelectedAccountState,
     SelectionEpoch,
     SelectionResult,
 )
 from sidekick_usages.core.selection.types import (
+    ActivationOutcome,
+    ActivationPhase,
     ParticipantId,
+    ProviderAuthState,
+    ProviderRuntimeState,
     SelectionCode,
     SelectionOutcome,
     SelectionPhase,
@@ -35,12 +44,23 @@ from sidekick_usages.persistence.state.files import (
 from sidekick_usages.persistence.state.filesystem import (
     ManagedStateFilesystem,
 )
+from sidekick_usages.persistence.supervisor.activation import (
+    ActivationJournalStore,
+)
+from sidekick_usages.persistence.supervisor.authority import (
+    ProviderMutationLock,
+)
+from sidekick_usages.persistence.supervisor.observation import (
+    RuntimeAuthObservationStore,
+)
+from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
+from sidekick_usages.persistence.supervisor.runtime import RuntimeStateReader
 from sidekick_usages.persistence.supervisor.selection import (
     SelectedStateStore,
     SelectionOperationStore,
 )
 from tests.support.persistence import make_application_paths
-from tests.support.time import REFERENCE_TIME
+from tests.support.time import REFERENCE_TIME, FixedClock
 
 PROVIDER_ID = ProviderId.CLAUDE
 OPERATION_ID = OperationId("52bbb5ad-b457-41ce-90ca-c52919051f8e")
@@ -303,4 +323,142 @@ def test_selected_state_v2_migrates_only_saved_authority(
             )
         )
         == 1
+    )
+
+
+def test_activation_journal_closes_proof_without_finalizing_selection(
+    tmp_path: Path,
+) -> None:
+    """Provider proof closes its journal but cannot allocate an epoch."""
+    paths = make_application_paths(tmp_path)
+    provider_id = ProviderId.CODEX
+    selected = SelectedStateStore(paths.selected_state)
+    baseline = FinalizedSelection(
+        provider_id=provider_id,
+        account_id=TARGET_ACCOUNT_ID,
+        epoch=SelectionEpoch(7),
+        generation=AuthorityGeneration("generation-source-7"),
+        finalized_at=REFERENCE_TIME,
+    )
+    selected.save(baseline)
+    journals = ActivationJournalStore(
+        paths.activation_journals,
+        paths.durable_operations,
+    )
+    target_identity = ProviderIdentity("provider-target")
+    target_generation = AuthorityGeneration("generation-target-8")
+    observation = ProviderAuthObservation(
+        provider_id=provider_id,
+        state=ProviderAuthState.ACTIVE,
+        provider_identity=ProviderIdentity("provider-source"),
+        generation=AuthorityGeneration("generation-source-7"),
+        observed_at=REFERENCE_TIME,
+    )
+    with ProviderMutationLock(
+        paths.durable_operations,
+        provider_id,
+        (TARGET_ACCOUNT_ID,),
+        timeout_seconds=1.0,
+    ).hold() as authority:
+        transaction = journals.transaction(
+            provider_id,
+            (TARGET_ACCOUNT_ID,),
+            authority,
+        )
+        record = transaction.begin(
+            ActivationRecord(
+                provider_id=provider_id,
+                operation_id=OPERATION_ID,
+                selected_baseline=None,
+                native_auth_baseline=observation,
+                target_account_id=TARGET_ACCOUNT_ID,
+                expected_target_identity=target_identity,
+                target_authority_generation=target_generation,
+                phase=ActivationPhase.PREPARED,
+                started_at=REFERENCE_TIME,
+                updated_at=REFERENCE_TIME,
+            )
+        )
+        record = transaction.advance(
+            record.operation_id,
+            ActivationPhase.TARGET_ACTIVATED,
+            updated_at=REFERENCE_TIME,
+        )
+        record = transaction.advance(
+            record.operation_id,
+            ActivationPhase.PROVIDER_PROOF_VERIFIED,
+            updated_at=REFERENCE_TIME,
+            verified_runtime_generation=target_generation,
+        )
+        proof = SelectedAccountState(
+            provider_id=provider_id,
+            runtime_state=ProviderRuntimeState.SAVED_ACTIVE,
+            account_id=TARGET_ACCOUNT_ID,
+            provider_identity=target_identity,
+            runtime_generation=target_generation,
+            verified_at=REFERENCE_TIME,
+            outcome=ActivationOutcome.VERIFIED,
+        )
+        transaction.commit_verified(
+            record.operation_id,
+            proof,
+            updated_at=REFERENCE_TIME,
+        )
+
+    assert selected.load(provider_id) == baseline
+    document = journals.load(provider_id)
+    assert document.active is None
+    assert document.history[-1].phase is ActivationPhase.COMMITTED
+
+
+def test_runtime_snapshot_keeps_selection_and_observations_distinct(
+    tmp_path: Path,
+) -> None:
+    """Runtime reads expose exact facts without inventing their relation."""
+    paths = make_application_paths(tmp_path)
+    provider_id = ProviderId.CODEX
+    finalized = FinalizedSelection(
+        provider_id=provider_id,
+        account_id=TARGET_ACCOUNT_ID,
+        epoch=SelectionEpoch(7),
+        generation=AuthorityGeneration("finalized-generation"),
+        finalized_at=REFERENCE_TIME,
+    )
+    native = ProviderAuthObservation(
+        provider_id=provider_id,
+        state=ProviderAuthState.ACTIVE,
+        provider_identity=ProviderIdentity("native-provider-identity"),
+        generation=AuthorityGeneration("ambient-generation"),
+        observed_at=REFERENCE_TIME,
+    )
+    projection = ProviderAuthObservation(
+        provider_id=provider_id,
+        state=ProviderAuthState.ACTIVE,
+        provider_identity=ProviderIdentity("projection-provider-identity"),
+        generation=AuthorityGeneration("projection-generation"),
+        observed_at=REFERENCE_TIME,
+    )
+    selected = SelectedStateStore(paths.selected_state)
+    selected.save(finalized)
+    observations = RuntimeAuthObservationStore(paths.durable_operations)
+    observations.save_native(native)
+    observations.save_projection(projection)
+    reader = RuntimeStateReader(
+        provider_id,
+        selected,
+        ActivationJournalStore(
+            paths.activation_journals,
+            paths.durable_operations,
+        ),
+        OperationQueueStore(paths.durable_operations),
+        observations,
+        FixedClock(),
+    )
+
+    assert reader.current() == ProviderRuntimeSnapshot(
+        provider_id=provider_id,
+        finalized_selection=finalized,
+        native_auth=native,
+        projection_auth=projection,
+        activation_in_progress=False,
     )
