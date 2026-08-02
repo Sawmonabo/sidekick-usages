@@ -8,9 +8,13 @@ import sys
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from threading import Thread
+
+import pytest
 
 from sidekick_usages.cli.dashboard.application import (
     InteractiveDashboardApplication,
@@ -76,7 +80,14 @@ PROCESS_ABSENCE_TIMEOUT_SECONDS = 2.0
 REFERENCE_TIME = datetime(2026, 7, 26, 12, 0, tzinfo=UTC)
 WIDE_COLUMNS = 100
 NARROW_COLUMNS = 52
-TERMINAL_ROWS = 60
+TERMINAL_ROWS = 49
+TERMINAL_SIZES = (
+    (52, 24),
+    (79, 40),
+    (80, 48),
+    (100, 49),
+    (120, 60),
+)
 UP_KEY = b"\x1b[A"
 DOWN_KEY = b"\x1b[B"
 ENTER_KEY = b"\r"
@@ -100,6 +111,15 @@ PREVIEW_LABEL = "personal@example.test"
 CODEX_SAVED_LABEL = "codex@example.test"
 GREEN_BACKGROUND_CONTROL = "48;2;29;94;53"
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+PUBLIC_BOOTSTRAP_MODULE = "sidekick_usages.cli.runtime.bootstrap"
+
+
+@dataclass(frozen=True, slots=True)
+class DashboardScreenCapture:
+    """One public-dashboard transcript and its last complete repaint."""
+
+    scrollback: str
+    visible: str
 
 
 class TracingLookupWorker:
@@ -305,6 +325,7 @@ def _isolated_environment(
         "PYTHONUTF8": "1",
         "TERM": "xterm-256color",
         "TMPDIR": str(temporary),
+        "WSL_DISTRO_NAME": "Ubuntu",
         "XDG_CONFIG_HOME": str(config),
         "XDG_DATA_HOME": str(data),
         "XDG_RUNTIME_DIR": str(runtime),
@@ -364,6 +385,37 @@ def _start_dashboard(
         rows=TERMINAL_ROWS,
     )
     return session, lookup_process_id, trace_path
+
+
+def run_dashboard_screen(
+    *,
+    columns: int,
+    rows: int,
+) -> DashboardScreenCapture:
+    """Capture one isolated public dashboard screen at exact dimensions."""
+    with TemporaryDirectory(prefix="sidekick-dashboard-pty-") as directory:
+        root = Path(directory)
+        environment = _isolated_environment(
+            root,
+            root / "unused-lookup",
+            root / "unused-trace",
+        )
+        session = PtySession.start(
+            (sys.executable, "-m", PUBLIC_BOOTSTRAP_MODULE),
+            cwd=REPOSITORY_ROOT,
+            environment=environment,
+            columns=columns,
+            rows=rows,
+        )
+        with session:
+            visible = _read_completed_redraw(session, KEY_FOOTER_TEXT)
+            session.send(QUIT_KEY)
+            assert session.wait() == 0
+            scrollback = session.output
+    return DashboardScreenCapture(
+        scrollback=_plain_terminal_output(scrollback),
+        visible=_plain_terminal_output(visible),
+    )
 
 
 @contextmanager
@@ -478,9 +530,11 @@ def _resize_and_read(
     session: PtySession,
     columns: int,
     expected_layout: str,
+    *,
+    rows: int = TERMINAL_ROWS,
 ) -> str:
     session.clear_output()
-    session.resize(columns, TERMINAL_ROWS)
+    session.resize(columns, rows)
     return _read_completed_redraw(session, expected_layout)
 
 
@@ -498,6 +552,19 @@ def _send_key(session: PtySession, key: bytes) -> None:
     session.clear_output()
     session.send(key)
     _read_completed_redraw(session, CURSOR_GLYPH)
+
+
+@pytest.mark.parametrize(("columns", "rows"), TERMINAL_SIZES)
+def test_dashboard_has_one_masthead_and_a_visible_key_footer(
+    columns: int,
+    rows: int,
+) -> None:
+    capture = run_dashboard_screen(columns=columns, rows=rows)
+
+    assert capture.scrollback.count("sidekick usages") == 1
+    assert KEY_FOOTER_TEXT in capture.visible
+    assert "External Claude Code login" not in capture.visible
+    assert "External Codex CLI login" not in capture.visible
 
 
 def test_dashboard_pty_completes_the_interactive_account_journey(
@@ -573,9 +640,13 @@ def test_dashboard_pty_completes_the_interactive_account_journey(
             session,
             NARROW_COLUMNS,
             NARROW_ACCOUNT_TEXT,
+            rows=24,
         )
-        assert NARROW_ACCOUNT_TEXT in _plain_terminal_output(narrow)
-        assert WIDE_PANEL_TEXT not in _plain_terminal_output(narrow)
+        plain_narrow = _plain_terminal_output(narrow)
+        assert NARROW_ACCOUNT_TEXT in plain_narrow
+        assert WIDE_PANEL_TEXT not in plain_narrow
+        assert _selected(narrow, CODEX_SAVED_LABEL)
+        assert KEY_FOOTER_TEXT in plain_narrow
 
         wide = _resize_and_read(
             session,

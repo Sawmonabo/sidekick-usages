@@ -5,8 +5,8 @@ from dataclasses import replace
 from threading import Event, current_thread
 from time import monotonic
 
+from sidekick_usages.cli.dashboard.lookup import DASHBOARD_LOOKUP_THREAD_NAME
 from sidekick_usages.cli.dashboard.session import (
-    DASHBOARD_LOOKUP_THREAD_NAME,
     InteractiveDashboardSession,
 )
 from sidekick_usages.clock import Clock

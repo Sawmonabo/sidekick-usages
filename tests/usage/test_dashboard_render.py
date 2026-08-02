@@ -19,7 +19,12 @@ from sidekick_usages.usage.dashboard.models import (
     DashboardStatusKind,
 )
 from sidekick_usages.usage.presentation.dashboard.render.frame import (
+    TERMINAL_TOO_SHORT,
     render_dashboard,
+    render_dashboard_layout,
+)
+from sidekick_usages.usage.presentation.dashboard.render.models import (
+    TerminalDimensions,
 )
 from sidekick_usages.usage.presentation.dashboard.render.style import (
     ANSI_RESET,
@@ -417,3 +422,28 @@ def test_interactive_narrow_render_preserves_dashboard_contract() -> None:
         color=False,
     )
     assert all(cell_width(line) <= width for line in narrow.splitlines())
+
+
+def test_too_short_layout_keeps_typed_status_and_keys_visible() -> None:
+    snapshot, cursor, footer = interactive_dashboard_state(REFERENCE_TIME)
+
+    layout = render_dashboard_layout(
+        snapshot,
+        dimensions=TerminalDimensions(columns=52, rows=23),
+        cursor=cursor,
+        footer=footer,
+        color=False,
+    )
+    one_shot = render_dashboard(
+        snapshot,
+        width=52,
+        cursor=cursor,
+        footer=footer,
+        color=False,
+    )
+
+    assert TERMINAL_TOO_SHORT.message in layout.status
+    assert _KEY_FOOTER_TEXT in layout.keys
+    assert "work@example.test" in layout.body
+    assert "\x1b[" not in one_shot
+    assert "\x1b[?1049" not in one_shot
