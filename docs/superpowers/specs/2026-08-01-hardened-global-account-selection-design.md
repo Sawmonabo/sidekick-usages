@@ -77,8 +77,14 @@ Global selection will use one non-secret provider epoch protocol:
 
 ```text
 PREVALIDATE -> PREPARE -> WAIT_OLD_TURNS -> COMMIT_AUTHORITY
-            -> READY_ACK -> NEXT_TURN_PROOF -> FINALIZE
+            -> READY_ACK -> FINALIZE_READY -> OPEN_ADMISSION
+            -> asynchronous NEXT_TURN_PROOF per participant
 ```
+
+`FINALIZE_READY` means that every required live integrated participant can
+bind its next admitted request to the new epoch; it does not pretend that an
+idle participant has already sent that request. `NEXT_TURN_PROOF` is later
+adoption evidence and never spends quota merely to close selection.
 
 Claude and Codex implement that protocol differently:
 
@@ -98,6 +104,13 @@ Claude and Codex implement that protocol differently:
   account-A authenticated Responses WebSocket from surviving into account B,
   while preserving the same app server, TUI, thread, conversation, tools, and
   background terminals.
+
+The canonical enrollment commands are `sidekick-usages session claude -- ...`
+and `sidekick-usages session codex -- ...`. Optional, explicit, reversible
+shell integration makes ordinary `claude` and `codex` commands enter those
+launchers. Sidekick never replaces either provider binary. A direct absolute-
+path launch or a process that predates enrollment remains alive and is
+reported as unmanaged; it is never counted as globally converged.
 
 Selection never controls whether an account is maintained. All saved accounts
 remain independently fresh and reportable. The official provider process is
@@ -126,7 +139,8 @@ The design is based on:
 - current `develop` source at the evidence commit above;
 - installed Sidekick 0.7.0 working-tree behavior;
 - installed Claude Code 2.1.220 behavior and static control-flow inspection;
-- installed and exact-tag Codex CLI 0.146.0 source inspection;
+- installed and exact-tag Codex CLI 0.146.0 source inspection at release
+  commit `e363b08c9175ac1cbe5893615dd2cb9ddf95043b`;
 - redacted classification of four saved Claude authorities and two saved
   Codex private authorities;
 - synthetic PTY, terminal-height, and tmux reproduction;
@@ -136,6 +150,23 @@ The design is based on:
 The local evidence was collected without reading or printing credential
 values, running provider login, changing a live account, refreshing a saved
 credential, stopping a provider process, or changing daemon state.
+
+The exact Claude artifact inspected was:
+
+| Field | Value |
+| --- | --- |
+| Stable launcher | `/home/sabossedgh/.local/bin/claude` |
+| Resolved executable | `/home/sabossedgh/.local/share/claude/versions/2.1.220` |
+| Format | x86-64 ELF |
+| Size | `275,012,592` bytes |
+| SHA-256 | `674f61f20ff306f3100cf9200e4c36c4b70278b5bef2884549819b942a89c863` |
+| Embedded build time | `2026-07-24T22:17:45Z` |
+| Embedded Git SHA | `4073f59596e272f39393db4f96abc5f4b10eff21` |
+
+Static inspection was bounded to help text, constants, authentication/control
+strings, and local control flow. It did not read provider credentials or dump
+the process environment. These exact identifiers are a compatibility input,
+not a general claim about other Claude builds.
 
 The complete scratch evidence available when this design was written is:
 
@@ -153,6 +184,20 @@ Those scratch artifacts total 10,455 persisted lines, are mode `0600`, and
 were structurally and secret-pattern checked. This tracked specification does
 not require those ignored files to remain present: all controlling decisions,
 contracts, risks, and primary sources are reproduced here.
+
+For provenance, the two primary ignored artifacts were:
+
+- `current-develop-dashboard-qa-2026-08-01.md`: SHA-256
+  `d1d9742215f746bb35f64211057f15c44dd518ecee81e497c0b0760b5f979068`;
+- `final-report.md`: SHA-256
+  `e28ed55f226afd79bf748c8d4dfb628882bf1da308f734bf2e3e3f99c45f2897`.
+
+A read-only documentation audit froze the first complete draft at commit
+`a0feba1122c3ab622688caa211ba1ded40ba0fef`. It found and this revision
+corrects: readiness/adoption phase ordering, Codex proof wording, repository
+ownership, participant-loss recovery, integrated-session enrollment, Codex
+realtime behavior, and exact evidence metadata. The corrected normative text
+below supersedes any shorter protocol shorthand in the scratch corpus.
 
 ### 2.2 Evidence classes
 
@@ -338,7 +383,8 @@ The completed product must:
 - support refreshable and setup-token Claude accounts;
 - support every saved Codex private authority;
 - maintain selected and unselected accounts independently;
-- expose honest unmanaged, stale, rejected, and unsupported states;
+- expose honest unmanaged, unreachable, dead, rejected, and unsupported
+  states;
 - keep credentials out of control and presentation state; and
 - fail closed without making a working old session unusable.
 
@@ -374,7 +420,8 @@ The design does not:
 12. Success requires every live integrated participant to be ready.
 13. Idle readiness proof consumes no provider quota.
 14. Actual adoption is proven by the first later real turn.
-15. Unreachable or unmanaged sessions produce visible degraded status.
+15. Live-unreachable or unmanaged sessions produce visible degraded status;
+    confirmed-dead participants follow the phase-specific recovery contract.
 16. Every focused visible row has a typed Enter result.
 17. Prompt-toolkit is the sole interactive terminal output owner.
 18. Width and height both participate in layout.
@@ -423,7 +470,8 @@ The provider-neutral protocol answers:
 
 - which saved account is desired;
 - which epoch admits each turn;
-- which participants are busy, ready, adopted, stale, or unmanaged;
+- which participants are busy, ready, adopted, unreachable, confirmed dead,
+  or unmanaged;
 - whether a switch can finalize; and
 - what non-secret result the dashboard renders.
 
@@ -487,13 +535,146 @@ same-user boundary. A participant joining during a transition receives the
 pending epoch and begins behind the same admission gate. It cannot sneak a new
 turn through the old epoch.
 
-### 5.4 Integrated and unmanaged sessions
+### 5.4 Session enrollment and command resolution
+
+The seamless guarantee needs a real process-launch boundary. The normative
+public entrypoints are:
+
+```text
+sidekick-usages session claude -- [CLAUDE_ARGUMENTS...]
+sidekick-usages session codex -- [CODEX_ARGUMENTS...]
+sidekick-usages session shell install
+sidekick-usages session shell uninstall
+sidekick-usages session shell status
+```
+
+The first two commands are always available and require no shell-file change.
+`session shell install` is an explicit, idempotent opt-in that adds a bounded,
+marked source block for the detected supported shell. The sourced Sidekick
+file defines forwarding functions so ordinary `claude` and `codex` invocations
+enter the corresponding `session` command with the original argument vector.
+It does not put a fake provider binary on `PATH`, replace a provider launcher,
+or modify Claude/Codex credential or settings files. Uninstall removes only
+the exact Sidekick-owned source block and generated integration file; a changed
+or ambiguous shell file fails closed and prints the manual removal range.
+
+Initial automatic shell integration supports Bash, Zsh, and Fish on Linux,
+WSL, and macOS. Bash and Zsh use one marked source line in the exact resolved
+interactive startup file; Fish uses one owner-only file beneath its `conf.d`
+directory. `--shell bash|zsh|fish` resolves ambiguity, and `--dry-run` prints
+the exact files and edits. Other shells and IDEs use the explicit provider
+session commands until a separately qualified adapter exists. Native Windows
+PowerShell remains outside the initial platform scope.
+
+Each launcher:
+
+1. resolves the real official provider executable from the filesystem without
+   consulting the calling shell function, rejects recursion into Sidekick, and
+   resolves the stable provider launcher to the exact build being qualified;
+2. preserves the argument vector, current directory, terminal file
+   descriptors, terminal size, signal semantics, and final exit status;
+3. rejects, with a typed explanation, user arguments or environment/config
+   layers that would override selection, auth, endpoint, or transport
+   correctness; it never silently drops or reorders an unsafe argument;
+4. authenticates to the same-user supervisor, registers the process-start
+   identity and exact capability manifest, and begins behind any pending
+   provider gate; and
+5. releases the provider process only after the finalized account, generation,
+   epoch, and launch policy are proven.
+
+For Claude, every integrated launch uses the exact-version structured host,
+even when the selected authority is refreshable. That common host is what
+makes later mixed refreshable/setup-token transitions deterministic without
+restarting the Claude engine. The host invokes only the official resolved
+engine, reproduces the complete interactive terminal contract, and obtains a
+protected inference lease only at the process boundary that consumes it.
+Higher-precedence Claude auth sources, a conflicting base URL, `--bare`, or a
+user credential helper cause a prelaunch refusal unless a separately designed
+mode has explicitly qualified them. Sidekick does not edit native Claude
+credentials as a side effect of launching a session.
+
+For Codex, the launcher uses a Sidekick-owned neutral session `CODEX_HOME`
+that contains no refresh token and starts or attaches to the one resident
+shared app-server. It starts the official stock TUI once with Codex 0.146.0's
+`--remote` mode against a stable, owner-only per-participant control relay.
+The relay forwards the app-server protocol to the same resident server for the
+entire TUI lifetime; it gates only new account-bearing requests and observes
+terminal events needed for turn leases. It never replaces the backend, acts as
+a Responses/model proxy, logs protocol bodies, or persists queued prompts.
+The relay exists because an unmediated stock TUI can issue `turn/start` during
+the auth boundary and offers Sidekick no participant-ready acknowledgement.
+Those are its only product responsibilities, plus refusing uncoordinated auth
+mutation. If a qualified future Codex release provides a native global
+admission/revision gate, Sidekick adopts that maintained surface and removes
+the relay rather than preserving duplicate machinery.
+
+The Codex session server receives Sidekick-owned CLI overrides at its initial
+launch. Official precedence puts CLI overrides above user/profile/project
+layers, and current official scope rules prevent project-local config from
+overriding `model_provider` or `model_providers`
+([configuration precedence][codex-config-precedence],
+[config scope][codex-config-scope]). Sidekick rejects user-supplied CLI
+overrides of the neutral home, provider, auth, base URL, wire API, or WebSocket
+keys and then supplies the complete protected provider definition. Exact
+0.146.0 tests must still prove the effective result; current documentation is
+not substituted for exact-release behavior.
+
+The neutral session home is the canonical interactive state/config home for
+integrated Codex sessions and contains no provider refresh token. Existing
+unrelated settings already in that home, plus allowed project config, remain
+effective. Moving native/default-home settings into it is a separate explicit,
+user-reviewed preparation operation, not account selection. This feature does
+not build a generic config copier, duplicate inline secrets, or silently import
+native auth. Until preparation succeeds, the launcher returns a typed
+`SESSION_CONFIGURATION_REQUIRED` result and leaves the ordinary Codex command
+available as an unmanaged bypass. Launch fails before provider execution when
+effective-config proof does not match the protected definition.
+
+These three transports are distinct:
+
+| Transport | Lifetime and selection rule |
+| --- | --- |
+| TUI to participant relay to app-server | Remains connected for the complete Codex TUI; selection never closes it |
+| App-server Responses model transport | Direct HTTP only; a new attempt resolves current shared auth |
+| Codex realtime model transport | May remain on its admitted epoch until it ends naturally; it is never migrated or closed by selection |
+
+Shell installation affects new launches in already-open shells after their
+configured source file has been loaded; it cannot retroactively wrap a
+provider process that already exists. Supported IDE terminal profiles use the
+same explicit launcher command. `session shell status` reports each shell/IDE
+path as integrated, not loaded, bypassed, ambiguous, or unsupported without
+reading provider credentials.
+
+An already-open idle terminal that has loaded the integration reads the newest
+finalized selection when its next `claude` or `codex` command begins. No parent
+shell environment rewrite is required. A provider session already running
+through the launcher participates in the live epoch transition and adopts at
+its next real request.
+
+Provider-local credential commands cannot bypass the global transaction. In a
+Sidekick-integrated Claude host, `/login` opens the saved-Claude-account chooser
+and submits the same typed epoch selection as the dashboard; selecting a
+refreshable row then uses the official native login transaction and the proven
+next-request reread. Creating or renewing an authority remains an explicit
+`sidekick-usages claude setup-token` or managed-login/migration operation.
+`/logout` and unsaved-login requests show the applicable explicit credential
+command, such as `sidekick-usages migrate managed-auth`, instead of mutating
+native auth behind the coordinator.
+
+The Codex participant relay rejects account login/logout mutation methods from
+an interactive session with typed guidance to `sidekick-usages codex login`
+or the saved-account chooser. The neutral session never becomes a durable
+refresh authority. Unmanaged provider binaries retain their ordinary native
+login commands, but any resulting auth is ambient status until an explicit
+Sidekick save/reconciliation operation relates it.
+
+### 5.5 Integrated and unmanaged sessions
 
 The product distinguishes these session classes:
 
 | Class | Claude refreshable | Claude setup token | Codex |
 | --- | --- | --- | --- |
-| Integrated | Registered; native and/or structured epoch proof | Registered structured host with correlated updates | Registered client of resident shared app-server |
+| Integrated | Registered structured host plus native/epoch proof | Registered structured host with correlated updates | Registered stock TUI through participant relay to resident shared app-server |
 | Ambient but provider-observable | Native reread may converge, but readiness is not claimed without registration | Cannot be retrofitted externally | Cannot be proven coordinated without shared runtime enrollment |
 | Unmanaged | Kept alive; visible degraded status | Kept alive; visible degraded status | Kept alive; visible degraded status |
 
@@ -502,11 +683,17 @@ session. Provider-observed native Claude behavior may additionally update an
 ambient refreshable session, but Sidekick must not count an unregistered
 process in the all-participant proof.
 
+An invocation of an official provider binary by absolute path, a shell
+`command` bypass, a shell that has not loaded the opt-in integration, another
+user/container/host, or a process that predates enrollment is unmanaged. This
+is an explicit escape hatch, not an account-selection mechanism. Sidekick does
+not block, attach to, signal, or replace it.
+
 An unmanaged session is not an “external account.” It is session status. The
 dashboard may report, for example, “1 unmanaged Claude session may not follow
 setup-token changes,” but that message is outside account navigation.
 
-### 5.5 Chosen alternatives
+### 5.6 Chosen alternatives
 
 Three architecture families were compared:
 
@@ -591,6 +778,9 @@ SelectionJournalEntry
   baseline_epoch
   target_account_id
   target_generation
+  required_participant_ids
+  ready_participant_ids
+  lost_after_commit_participant_ids
   phase
   outcome_code
   started_at
@@ -637,8 +827,10 @@ TurnLease
 Process ID alone is unsafe because it can be reused. A live participant is
 bound to its authenticated IPC connection plus process-start identity.
 Ephemeral records live only as long as the authenticated participant or its
-bounded recovery window. Durable journals store aggregate participant results,
-not OS process details or secrets.
+bounded recovery window. An open durable journal may store bounded opaque
+participant IDs so crash recovery knows which registrations must return; it
+never stores their PID, process-start value, connection credential, socket, or
+secrets. Closed journal history retains only aggregate participant results.
 
 ### 6.5 Typed transition outcomes
 
@@ -656,8 +848,13 @@ free-form provider errors. At minimum it distinguishes:
 - `PROVIDER_UNAVAILABLE`;
 - `UNSUPPORTED_PROVIDER_VERSION`;
 - `UNSUPPORTED_SESSION_CAPABILITY`;
+- `SESSION_CONFIGURATION_REQUIRED`;
+- `UNCOORDINATED_AUTH_MUTATION`;
 - `REMOTE_CONTROL_STATE_INCOMPATIBLE`;
-- `PARTICIPANT_STALE`;
+- `PARTICIPANT_UNREACHABLE`;
+- `PARTICIPANT_CONFIRMED_DEAD`;
+- `PARTICIPANT_LOST_AFTER_COMMIT`;
+- `REALTIME_SESSION_ACTIVE`;
 - `ACTIVE_OPERATION_TIMEOUT`;
 - `AUTHORITY_PROOF_FAILED`;
 - `SELECTION_ROLLED_BACK`; and
@@ -813,18 +1010,25 @@ stateDiagram-v2
     WaitingOldTurns --> FailedOldEpoch: bounded wait fails
     Committing --> AwaitingReady: authority committed
     Committing --> Recovering: proof ambiguous
-    AwaitingReady --> Ready: all live participants ack
-    AwaitingReady --> Degraded: participant stale
-    Ready --> Finalized: selection persisted
-    Finalized --> Adopting: admission opens
-    Adopting --> Idle: adoption tracked asynchronously
-    Degraded --> Recovering: operator or participant recovery
-    Recovering --> Idle: old epoch restored safely
+    AwaitingReady --> ReadyFinalized: all required live participants ack
+    AwaitingReady --> Recovering: live participant unreachable
+    AwaitingReady --> DegradedTarget: participant confirmed dead after commit
+    ReadyFinalized --> Idle: open admission
+    DegradedTarget --> Idle: target proven; degraded outcome persisted
+    Recovering --> AwaitingReady: target and participants reconciled forward
+    Recovering --> FailedOldEpoch: baseline proven; no observer saw target
     FailedOldEpoch --> Idle
 ```
 
 The state names are semantic contracts. Planning may align exact enum names
 with current repository vocabulary without weakening a transition.
+
+First-real-turn adoption is participant state, not a phase that keeps the
+selection transaction open. After `ReadyFinalized` opens admission, each
+participant independently advances `ready_epoch` to `adopted_epoch` on its
+next real request. A later selection may supersede an unconsumed ready epoch;
+the participant must bind to the newest finalized epoch and never send a stale
+queued request.
 
 ### 8.2 Phase contract
 
@@ -870,8 +1074,8 @@ does not open admission yet. A lease is exposed only at the last responsible
 boundary and remains memory-only.
 
 The commit point is not merely “an API call returned success.” It requires the
-provider-specific identity, generation, notification, correlation, and native
-propagation proof defined below.
+applicable provider-specific identity, generation, ordered-notification or
+serialized-operation, and native-propagation evidence defined below.
 
 #### READY_ACK
 
@@ -882,21 +1086,39 @@ readback plus the HTTP-only transport capability.
 
 No synthetic inference request is sent. Idle sessions consume no quota.
 
-#### NEXT_TURN_PROOF
+#### FINALIZE_READY
+
+“Selected and ready” is atomically persisted only after every required live
+participant acknowledges N+1. The target becomes the crash-recovery baseline,
+the journal closes with a typed success or degraded result, and admission may
+then open. The in-memory readiness snapshot records full participant state.
+The open journal records only bounded opaque IDs; its closed result retains
+only counts and contains no process identity or secret.
+
+A participant confirmed dead after provider commit cannot be silently deleted
+from the operation to manufacture success. After target readback and readiness
+from every remaining live participant, the target may become the safe active
+baseline with `PARTICIPANT_LOST_AFTER_COMMIT`; the dashboard must call that
+result degraded, not `SELECTION_SUCCEEDED`.
+
+#### OPEN_ADMISSION
+
+The coordinator releases N+1 to all ready participants as one logical barrier.
+Participant relays drain locally queued prompts in original order. A prompt is
+checked against the current finalized epoch again immediately before its first
+provider transmission, so an intervening N+2 selection cannot release stale
+N+1 work.
+
+#### asynchronous NEXT_TURN_PROOF
 
 After the gate opens, each participant binds its first real turn to the target
 stable account, target generation, and N+1 before provider transmission. It
 emits a secret-free local adoption receipt. The receipt proves routing metadata
 and correlation, not the token value.
 
-#### FINALIZE
-
-“Selected and ready” may be persisted once every required live participant
-acknowledges N+1. Actual adoption remains a separately visible count because
-idle participants may not send a turn for hours.
-
-The finalized selection becomes the crash-recovery baseline. The journal is
-closed with a typed outcome and no credential material.
+Actual adoption remains a separately visible count because idle participants
+may not send a turn for hours. Adoption proof never controls whether the ready
+selection is durable and never triggers a synthetic model request.
 
 ### 8.3 Sequence during an active turn
 
@@ -921,7 +1143,8 @@ sequenceDiagram
     A-->>C: B ready proof
     C->>P: ready N+1
     P-->>C: next turn will bind N+1
-    C->>P: open admission
+    C->>C: finalize ready N+1
+    C->>P: open admission N+1
     P->>R: queued prompt under B, epoch N+1
     P-->>C: first-real-turn adoption proof
 ```
@@ -956,6 +1179,28 @@ or provider credential generations never move backward. A previously issued
 but unused access lease is released/zeroized according to its owner; it is not
 persisted for retry.
 
+Participant loss is phase-sensitive:
+
+| Observation | Before provider commit | During or after provider commit |
+| --- | --- | --- |
+| Confirmed dead by authenticated peer/process-start proof | Remove from the required set, journal the reason, and continue only if no replacement is registering | Do not erase it from the operation; prove provider state forward and finish at best with `PARTICIPANT_LOST_AFTER_COMMIT` |
+| Live but unreachable | Keep it required; bounded timeout aborts and reopens N | Keep prompts gated and selection pending; no success or baseline rollback while its observation is unknown |
+| Same process reconnects | Require the same participant ID, process-start identity, and a newer authenticated connection generation | Restore the same pending epoch and require its readiness proof |
+| Different/new process registers | Treat it as a late participant behind the current gate | Add it to the target-ready set; it cannot impersonate the lost participant |
+
+If failure occurs before provider commit, the operation aborts and all
+participants reopen on N. If a disconnect occurs during or after commit, the
+coordinator reads the provider and every reachable participant. When any
+provider or participant has observed B, recovery is forward-only toward B;
+credentials are never rolled backward. Only when A is proven and no observer
+has seen B may N reopen. Ambiguity keeps admission gated and exposes
+`SELECTION_RECOVERY_REQUIRED`.
+
+An unmanaged process never enters the required set and never supplies a
+convergence acknowledgement. An externally killed/crashed participant is
+reported truthfully; Sidekick selection itself emits no kill, signal, EOF,
+close, cancel, or stop action.
+
 ### 8.6 Liveness bounds
 
 Every phase has a typed bounded timeout. A timeout does not imply process
@@ -963,8 +1208,8 @@ termination:
 
 - a legitimately active old turn remains alive and selection reports waiting
   or degraded;
-- an unreachable registered participant is marked stale after authenticated
-  heartbeat and process-start checks;
+- a live unreachable registered participant remains required after heartbeat
+  failure; only exact process-start/peer proof can classify it as dead;
 - a user can continue using epoch N when failure occurred before commit; and
 - after ambiguous commit, recovery protects against mixed routing by keeping
   new prompts gated until exact readback resolves the state.
@@ -1120,6 +1365,8 @@ behavior in the same process and conversation:
 - MCP requests, notifications, resource updates, and authentication prompts;
 - background terminals, tasks, and child-process lifecycle;
 - dialogs, notices, plan-mode transitions, and provider errors;
+- slash-command parity, with credential lifecycle commands deliberately routed
+  through the global saved-account/credential workflows in Section 5.4;
 - session identity, continuation, compaction, and context;
 - terminal restoration after normal exit and failure;
 - current working directory and environment policy; and
@@ -1265,13 +1512,18 @@ Current Sidekick already has most of the correct Codex authority plane:
 - provider account, quota, usage, and token-activity reads;
 - a resident shared interactive app-server;
 - experimental external `chatgptAuthTokens` installation;
-- correlated `account/login/completed` and `account/updated` notifications;
+- strictly ordered `account/login/completed` and `account/updated`
+  notifications;
 - `account/read` readback;
 - refresh-callback routing to the corresponding private authority; and
 - secret-free projection receipts.
 
 The design extends those boundaries. It does not replace them with copied auth
 files, a Sidekick OAuth client, or one app server per selected account.
+The current broker/authority foundation does not mean existing ordinary Codex
+TUIs are already enrolled in the target neutral session plane. The launcher,
+participant control relay, new-turn gate, and effective-config proof in this
+design are required target work.
 
 OpenAI documents the app-server authentication endpoints, including external
 auth and its experimental status, in the
@@ -1331,11 +1583,18 @@ flowchart LR
     B[Private CODEX_HOME B] -->|official refresh| L
     C[Selection coordinator] -->|target and epoch| X[External auth install]
     L --> X
-    X --> M[Shared AuthManager]
+    X --> S[Resident neutral app-server]
+    S --> M[Shared AuthManager]
     M --> H[Direct HTTP Responses attempts]
-    T1[TUI and thread 1] --> H
-    T2[TUI and thread 2] --> H
-    T3[TUI and thread 3] --> H
+    T1[Stock TUI 1] --> R1[Participant relay 1]
+    T2[Stock TUI 2] --> R2[Participant relay 2]
+    T3[Stock TUI 3] --> R3[Participant relay 3]
+    R1 --> S
+    R2 --> S
+    R3 --> S
+    C -->|turn gates| R1
+    C -->|turn gates| R2
+    C -->|turn gates| R3
 ```
 
 The app-server endpoint, process, connections, thread store, loaded threads,
@@ -1355,10 +1614,10 @@ At the provider commit boundary:
 4. prove B's provider identity and stable credential generation;
 5. acquire a bounded B access lease in memory;
 6. install B through the same resident app-server's external-auth flow;
-7. wait for correlated login completion, `account/updated`, and
-   `account/read` proving B;
+7. verify the combined external-auth installation proof defined below;
 8. prove the resident model provider is the qualified HTTP-only definition;
-9. commit epoch N+1 and release queued turns; and
+9. collect every required participant readiness acknowledgement, finalize
+   readiness for epoch N+1, and release queued turns; and
 10. bind the first post-switch HTTP attempt to B/N+1 and record secret-free
     adoption proof.
 
@@ -1366,6 +1625,38 @@ The external-auth source and notification behavior are visible in exact
 [0.146.0 account-processor source][codex-account-processor]. External auth
 remains experimental, so schema/capability mismatch fails closed while keeping
 the old runtime alive.
+
+The exact installation proof is deliberately narrower than “the provider read
+back account B.” Codex 0.146.0 external auth sends
+`account/login/completed` with `loginId: null`, and current `account/read`
+provides a non-null ChatGPT account and plan but does not echo the provider's
+`chatgptAccountId`. Sidekick therefore requires all of this evidence inside
+one serialized outer selection operation:
+
+1. the protected projection is already bound to target saved account B,
+   provider identity, credential generation, plan, and pending epoch;
+2. Sidekick locally decodes the bounded access token's provider-identity claim
+   and requires exact equality with B's stored provider identity before the
+   secret enters the request;
+3. the one in-flight `account/login/start` request returns exactly external
+   `chatgptAuthTokens` mode;
+4. a strict successful null-`loginId` completion is observed before an
+   `account/updated` notification with external-auth mode and B's expected
+   plan;
+5. `account/read` returns a non-null ChatGPT account with the expected plan;
+   and
+6. the resulting secret-free receipt carries B's locally proven saved ID,
+   provider identity, generation, and qualified resident socket identity.
+
+The operation/epoch correlation comes from Sidekick's serialized transaction
+and authenticated resident connection, not from Codex's null `loginId`.
+The resident mutation lock excludes another login or external-auth install
+until this operation reaches readback or failure; an unexpected extra login
+event is a protocol failure.
+Notification order plus readback proves that the resident manager accepted a
+usable external-auth projection; the locally validated lease proves which
+target was supplied. No component may describe plan or email readback as an
+independent provider-account-ID proof.
 
 ### 10.6 Plugin, skill, and MCP invalidation
 
@@ -1380,6 +1671,10 @@ The hardened contract is:
   operations to finish before installing B;
 - idle account-scoped caches may be invalidated only through Codex's own
   normal account-update behavior;
+- participant readiness remains closed until account-update invalidation is
+  observably quiescent through an exact-version-qualified signal;
+- if the exact build exposes no safe readiness signal, selection stays blocked
+  before admission release rather than inferring readiness from elapsed time;
 - the app server, client connection, thread, and conversation remain alive;
 - idle runtime reinitialization must be transparent on next use;
 - an account-scoped runtime refresh failure produces typed degraded status;
@@ -1387,7 +1682,29 @@ The hardened contract is:
 - selection is not called seamless until controlled tests prove subsequent
   tool/MCP use works without reconnect or lost protocol state.
 
-### 10.7 Refresh callbacks
+### 10.7 Realtime and other long-lived transports
+
+Disabling the Responses model WebSocket solves ordinary Responses-turn auth
+reuse. It does not migrate Codex 0.146.0 realtime conversations, whose audio/
+text channels, tasks, active state, and cancellation state live inside the
+resident process and have no resume/reattach operation.
+
+An active realtime session is a turn lease under the epoch that admitted it.
+It remains connected to that authority until it reaches its natural terminal
+event. New realtime starts and ordinary turns queue behind the provider gate.
+Selection never sends `realtime/conversation/stop`, cancellation, EOF, a
+socket close, or a process signal. If the session does not finish within the
+bounded wait policy, the dashboard remains visibly waiting/degraded on A; it
+does not commit B and does not call selection successful.
+
+The exact-version capability manifest must prove that every realtime start and
+terminal event is observable by the participant gate. Until that controlled
+test passes, a participant with realtime enabled advertises
+`UNSUPPORTED_SESSION_CAPABILITY`; prevalidation fails before any provider
+mutation. Background terminals are not model transports and remain alive in
+the unchanged resident app-server throughout the switch.
+
+### 10.8 Refresh callbacks
 
 A callback is correlated to the current selected saved account, authority
 generation, and epoch. It is routed only to that account's qualified private
@@ -1398,7 +1715,7 @@ A stale callback from epoch N cannot install authority after N+1. A callback
 for an unrelated account cannot read or mutate another private home. Sidekick
 never performs the OpenAI refresh-token exchange directly.
 
-### 10.8 Codex version gate
+### 10.9 Codex version gate
 
 The qualified manifest includes:
 
@@ -1408,6 +1725,10 @@ The qualified manifest includes:
 - custom-provider schema;
 - `supports_websockets = false` behavior;
 - per-attempt `current_client_setup()` behavior;
+- participant-relay handling of every account-bearing request and terminal
+  event;
+- participant-relay refusal of uncoordinated account login/logout mutation;
+- realtime admission and natural-terminal detection;
 - refresh-callback correlation; and
 - transparent account-scoped cache/MCP invalidation behavior.
 
@@ -1534,8 +1855,9 @@ The safe ordering is:
 7. read back and prove exact provider state;
 8. collect required participant readiness acknowledgements;
 9. atomically replace the finalized selection with epoch N+1;
-10. durably close the journal with the typed result; and
-11. release admission and track actual adoption ephemerally.
+10. durably close the journal with the typed ready/degraded result;
+11. release admission; and
+12. track actual next-real-turn adoption ephemerally.
 
 The provider transition and filesystem write cannot be one atomic operation.
 Recovery therefore trusts provider readback rather than journal phase alone.
@@ -1550,13 +1872,18 @@ Recovery therefore trusts provider readback rather than journal phase alone.
 | Commit-intent phase | Target proven | Resume readiness/finalization forward |
 | Commit-intent phase | Baseline proven | Mark rolled back and reopen baseline |
 | Commit-intent phase | Neither proven | Gate new turns; expose recovery-required |
+| Target proven; required live participant absent | Reconnect/readiness unknown | Keep admission gated; do not finalize success |
+| Target proven; participant proven dead after commit | Remaining live participants ready | Finalize target only with degraded lost-participant outcome |
 | Finalized target | Target proven | Rebuild live registry and serve target epoch |
 | Finalized target | Unmatched ambient identity | Show runtime drift; do not change saved rows |
 
 On supervisor restart, clients reauthenticate and register against the
 finalized epoch. A client holding an old connection generation cannot submit a
-turn. Participant readiness is reconstructed from live connections, not from
-stale durable process records.
+turn. For an open journal, bounded opaque required-participant IDs tell
+recovery which clients must return; authenticated reconnection reconstructs
+their process/capability state. A missing ID is not assumed dead. For a closed
+journal, readiness is reconstructed from live connections, never stale durable
+process records.
 
 ### 12.4 Optimistic concurrency and locks
 
@@ -1671,6 +1998,14 @@ Sidekick launched. The Codex external-auth channel is the authenticated
 resident app-server relationship. Neither accepts an account ID supplied by an
 untrusted tool child as authority to fetch a token.
 
+The Codex participant relay is a local app-server control-plane boundary, not
+a model endpoint. It necessarily sees forwarded JSON-RPC frames and may hold a
+queued `turn/start` in memory, so it is same-user, owner-only, size-bounded,
+version-gated, and body-log-free. It forwards message IDs and ordering without
+semantic rewriting except for the typed admission gate. The Responses request
+and bearer travel from the official resident app-server directly to OpenAI;
+the relay never constructs either.
+
 ### 13.5 Child process isolation
 
 Setup-token or leased access authority must not flow into Bash, hook, or MCP
@@ -1681,6 +2016,13 @@ provider's account update and secret-isolation contract.
 A child receives only the minimum non-secret context required for its work.
 The coordinator socket and protected credential paths are not deliberately
 exported to child environments.
+
+The generated shell integration is owner-only, contains no token/account
+selection, and invokes only the absolute qualified Sidekick command. Status
+verifies its exact managed marker/hash and shell source relationship. The
+provider launcher builds a bounded environment: it rejects higher-precedence
+credential or endpoint sources that could defeat the selected authority and
+does not leak a credential into generic subprocess environment inheritance.
 
 ### 13.6 Logging and diagnostics
 
@@ -1716,8 +2058,10 @@ vocabulary before persistence or display.
 | Credential file race | Official sole writer, qualified locks, stable double reads |
 | Wrong saved account receives callback | Provider/account/generation/epoch correlation |
 | Mixed-account stream | Turn lease binds entire stream and retries to one epoch |
+| Shell hook or PATH recursion invokes the wrong binary | Exact managed source, absolute Sidekick path, provider realpath and recursion rejection |
+| Project/CLI config re-enables Codex WebSockets | Immutable qualified overlay, unsafe-override refusal, effective-config proof |
+| Relay leaks a queued prompt | Owner-only process, memory-only bounded queue, no body logging, canary tests |
 | Unknown provider update frame | Exact version/hash/schema gate, fail closed |
-| Compromised local route injects auth | Strip inbound auth and inject only protected selection lease |
 | Journal replays commit | Operation ID, baseline epoch compare-and-swap, provider readback |
 
 ### 13.8 Provider legal and support boundary
@@ -1747,8 +2091,13 @@ credential copy, hidden restart, or false success.
 Every selection attempt has one visible lifecycle in the fixed status area:
 
 ```text
-validating -> waiting for active work -> switching -> ready -> adopted
+validating -> waiting for active work -> switching -> selected and ready
+                                                        |
+                                                        +-> later adopted
 ```
+
+The first line is the bounded selection operation. “Later adopted” is
+asynchronous participant evidence and does not hold an idle selection open.
 
 or a typed terminal state with an exact recovery action. The dashboard does
 not clear the previous proven selection merely because a target fails.
@@ -1761,7 +2110,9 @@ Examples:
 | Codex private home unreadable | Account remains visible; repair permissions/state; no external row |
 | Provider version unsupported | Switching disabled with installed/required capability reason |
 | Participant still active | Show waiting/degraded; never stop its turn |
-| Participant stale | Show live/ready/stale counts and recovery command |
+| Participant unreachable | Keep it required; show waiting and liveness evidence |
+| Participant died after commit | Show target plus degraded lost-participant result; never claim full success |
+| Codex realtime active | Show selection waiting for natural completion; do not offer forced stop |
 | Ambiguous provider commit | Gate new turns and show recovery-required; never guess |
 | WSL supervisor unavailable | Show platform/control-plane failure after UI intent dispatches |
 
@@ -1772,7 +2123,9 @@ Read-only diagnostics must report, per provider:
 - finalized saved account ID in redacted/stable form and epoch;
 - provider runtime relation: matching, generation drift, unmatched ambient,
   unavailable, or unsupported;
-- live integrated, ready, adopted, stale, and unmanaged participant counts;
+- live integrated, ready, adopted, unreachable, confirmed-dead-after-commit,
+  and unmanaged participant counts;
+- session enrollment and protected effective-config status;
 - current transition phase and redacted outcome;
 - provider capability/version-gate result;
 - maintenance scheduler and last per-account result; and
@@ -1856,14 +2209,16 @@ deletion, or automatic process termination path.
 
 | Concern | Repository owner | Design responsibility |
 | --- | --- | --- |
-| Provider-neutral identifiers and phase models | `src/sidekick_usages/core/` | Infrastructure-free IDs, epochs, phases, typed outcomes, UTC invariants |
-| Provider-neutral transition orchestration | `src/sidekick_usages/credentials/` | Serialized prepare/commit/restore policy, participant/turn contracts, protected leases |
+| Provider-neutral identifiers and phase models | `src/sidekick_usages/core/selection/` | Infrastructure-free IDs, epochs, phases, turn states, typed outcomes, UTC invariants |
+| Resident selection coordination | `src/sidekick_usages/daemon/selection/` | Participant registry, new-turn gates, queued admission, live transaction, reconnection lifecycle |
+| Protected authority transition policy | `src/sidekick_usages/credentials/` | Authority prevalidation, serialized provider commit/restore policy, protected leases |
 | Claude schemas and runtime capability | `src/sidekick_usages/providers/claude/` | Native propagation proof, Remote Control evidence, structured protocol and version gate |
 | Codex schemas and runtime capability | `src/sidekick_usages/providers/codex/` | Private homes, app-server auth, HTTP-only provider proof, callbacks and cache behavior |
 | Durable schemas and transactions | `src/sidekick_usages/persistence/` | Selection/journal schemas, atomic writes, recovery, migration, qualified paths |
-| Resident coordination and platform service | `src/sidekick_usages/daemon.py`, `daemon/`, `maintenance.py` | Same-user endpoint, live registry, admission gates, lifecycle, due work |
+| Resident platform service and maintenance | `src/sidekick_usages/daemon.py`, `daemon/`, `maintenance.py` | Same-user endpoint, lifecycle, worker supervision, due work |
 | Semantic dashboard read model | `src/sidekick_usages/usage/dashboard/` | Saved rows, provider/session status, deterministic projection |
 | Interactive terminal composition | `src/sidekick_usages/cli/dashboard/` | Prompt-toolkit containers, focus, keys, fixed footer, typed rendering |
+| Session command and shell integration | `src/sidekick_usages/cli/` | Public launch commands, reversible integration UX, TTY/signal/argv boundary |
 | Bootstrap routing | `src/sidekick_usages/cli/runtime/` | Interactive versus one-shot selection; no interactive painting |
 | Usage/activity | `src/sidekick_usages/usage/` | Cached-first isolated collection and totals |
 | App path discovery | `src/sidekick_usages/paths.py` | Sole qualified application/runtime path authority |
@@ -1873,8 +2228,10 @@ deletion, or automatic process termination path.
 
 - `core/` cannot import CLI, provider, persistence, HTTP, filesystem, settings,
   process, or OS path discovery.
-- Provider-neutral orchestration depends on typed provider ports, not concrete
-  Claude/Codex modules.
+- Daemon selection coordination depends on typed credential/provider/session
+  ports, not concrete Claude/Codex modules.
+- `credentials/` cannot own participant connections, prompt queues, terminal
+  lifecycle, or turn admission.
 - Provider-specific protocol and schema remain inside their provider package.
 - CLI renders typed results; it does not acquire credentials or execute
   provider login.
@@ -1900,6 +2257,33 @@ clock, path owner, or compatibility layer is a design violation. Shared
 machinery is extracted only after at least three concrete uses or an existing
 repository boundary already owns it.
 
+### 15.4 Implementation discipline
+
+The later implementation must match existing neighboring syntax, naming,
+module shape, typed error vocabulary, and concise Sphinx-style docstrings.
+Production, test, comment, and docstring lines remain at most 79 characters.
+Public callables have explicit parameter and return types; the implementation
+does not add `Any`, unjustified casts/suppressions, speculative hooks, duplicate
+compatibility layers, dead code, or generic helpers without a current owner.
+
+Stateful lifecycle behavior belongs in small cohesive classes when object
+identity and invariants make that clearer: the participant registry,
+transaction coordinator, structured host, participant relay, and terminal
+application are natural object owners. Pure validation/projection remains a
+function when no durable state or lifecycle exists. “Use OOP” does not justify
+inheritance hierarchies, service locators, factories, or interfaces with only
+one speculative implementation.
+
+Before creating a helper, model, constant, protocol, service, or dependency,
+the implementation must search its owning package and read neighboring files.
+Existing repository functionality is extended when it owns the same concept.
+A maintained library is adopted when it materially reduces local protocol,
+terminal, persistence, or platform code and fits the security/type/license
+boundary. Local code is justified only when no maintained dependency satisfies
+the exact provider, no-interruption, or secret-handling contract. The
+build-versus-adopt result for consequential infrastructure is recorded in
+tracked documentation.
+
 ## 16. Verification and Acceptance Gates
 
 ### 16.1 Verification strategy
@@ -1909,7 +2293,19 @@ temporary qualified paths, fake subprocesses, and local protocol fixtures.
 Automated tests never require real credentials, mutate a provider login, call
 public provider networks, or read the user's application-data locations.
 
-Verification proceeds from the narrow owning boundary to the public command:
+The suite contains the fewest load-bearing tests that prove the acceptance
+contracts. A test must fail for a meaningful user-visible, state, security, or
+provider-boundary regression. Parameterization and model/schedule exploration
+cover equivalent cases without copy-paste. Tests that repeat a stronger public
+boundary test, assert private implementation trivia, exist only for coverage,
+or exercise irrelevant enum/getter/constructor behavior are not added. When a
+new public test supersedes an old one, the redundant test is removed in the
+same change. Exact output assertions are reserved for deliberate product
+contracts such as account counts, typed outcomes, and terminal ownership.
+
+Verification uses the narrowest sufficient set of these layers; the numbered
+list is a coverage map, not a requirement to create a separate test at every
+layer for every behavior:
 
 1. infrastructure-free state and invariant tests;
 2. provider adapter and exact-schema contract tests;
@@ -1928,17 +2324,16 @@ session/process identity, test account class, and redacted proof.
 
 ### 16.2 Terminal and rendering acceptance
 
-The public `sidekick-usages` route is exercised at columns:
+One parameterized public-PTY test exercises these critical viewport pairs,
+not the Cartesian product of widths and heights:
 
 ```text
-52, 79, 80, 100, 120
+(52, 24), (79, 40), (80, 48), (100, 49), (120, 60)
 ```
 
-and rows:
-
-```text
-24, 40, 48, 49, 60
-```
+One case resizes in place across the compact/full threshold. These pairs cover
+the minimum, narrow-wrap boundary, reproduced short-terminal boundary, and a
+large terminal without adding redundant viewport cases.
 
 Every supported combination must prove:
 
@@ -1991,8 +2386,13 @@ transition. They prove:
 - stale acknowledgement/callback/receipt cannot finalize;
 - queue order and at-most-once submission survive selection;
 - readiness and actual adoption remain distinct;
+- ready finalization precedes admission and later real-turn adoption;
 - an idle participant consumes no quota for readiness;
-- one stale participant produces degraded rather than false success;
+- a confirmed-dead participant may be pruned only before provider commit;
+- a live unreachable participant blocks commit or success;
+- a same-process reconnect must match participant/process-start identity;
+- participant loss after commit produces forward recovery and at best a typed
+  degraded target, never fabricated success;
 - failure before commit reopens N;
 - ambiguous commit gates new turns until readback; and
 - recovery never rolls a credential generation backward.
@@ -2001,7 +2401,34 @@ Property or schedule-exploration tests cover meaningful interleavings among
 turn completion, prompt submission, provider callback, participant disconnect,
 coordinator crash, and participant re-registration.
 
-### 16.5 Global continuity acceptance
+### 16.5 Session enrollment acceptance
+
+One concise public-command/PTY matrix proves both provider launchers and shell
+integration:
+
+- explicit `session claude` and `session codex` preserve argv, CWD, TTY size,
+  signals, process lifetime, and exit status;
+- install/status/uninstall are idempotent and touch only marked Sidekick shell
+  content; provider binaries and provider settings remain byte-identical;
+- ordinary shell functions route to the explicit launchers, while an explicit
+  provider-binary bypass stays alive and appears as unmanaged;
+- recursion, unsafe auth/endpoint/provider overrides, unsupported builds, and
+  ambiguous shell edits fail before provider execution with typed guidance;
+- Claude starts one qualified structured engine and registers before its first
+  account-bearing request;
+- Codex starts one stock remote TUI through a stable participant relay and the
+  qualified neutral shared app-server;
+- integrated Claude `/login` selects a saved row through the epoch protocol,
+  while uncoordinated Claude/Codex login/logout mutation is refused before
+  changing shared runtime auth; and
+- project/user configuration cannot override the protected Codex provider,
+  auth, neutral-home, or HTTP-only keys, while existing neutral-home and
+  allowed project settings survive.
+
+These are load-bearing boundary scenarios, not a request for one test per
+argument, shell, config key, or internal helper.
+
+### 16.6 Global continuity acceptance
 
 Controlled end-to-end qualification opens three Claude sessions and three
 Codex sessions in different terminals and current working directories. Across
@@ -2020,7 +2447,7 @@ each supported switch it proves:
 11. inactive integrated sessions are ready without spending quota; and
 12. their first later real turn records B/N+1 adoption.
 
-### 16.6 Claude acceptance
+### 16.7 Claude acceptance
 
 Refreshable cases:
 
@@ -2050,7 +2477,7 @@ sessions use B on their next real request, matching the observed `/login`
 behavior. It also proves that structured setup-token switching retains the
 same official Claude engine and conversation.
 
-### 16.7 Codex acceptance
+### 16.8 Codex acceptance
 
 The exact supported build must prove:
 
@@ -2059,7 +2486,12 @@ The exact supported build must prove:
 - `responses_websocket_enabled()` is false;
 - no Responses WebSocket opens during qualified interactive turns;
 - account B installs through the existing external-auth path;
-- correlated login completion, `account/updated`, and `account/read` prove B;
+- local lease claims prove B's provider identity/generation inside one
+  serialized operation;
+- strict null-`loginId` completion precedes an external-auth
+  `account/updated` with B's expected plan;
+- `account/read` proves a non-null usable ChatGPT account and expected plan,
+  but is never asserted to echo B's provider account ID;
 - the first later HTTP attempt calls current auth resolution and uses B;
 - all retries for an old turn finish under A before commit;
 - no `turn/start` races the authority boundary;
@@ -2067,11 +2499,15 @@ The exact supported build must prove:
   tools, and background terminals remain valid;
 - active MCP/tool work drains before commit;
 - provider-triggered idle plugin/skill/MCP invalidation is transparent;
+- an active realtime conversation completes naturally under A while selection
+  remains pending and receives no stop/cancel/close action;
+- a new realtime conversation cannot start through the closed gate;
+- an unqualified realtime capability blocks prevalidation before auth mutation;
 - a stale refresh callback cannot install an older epoch;
 - the matching private `CODEX_HOME` alone answers B's callback; and
 - unknown/changed app-server schemas fail closed with sessions alive.
 
-### 16.8 Freshness and usage acceptance
+### 16.9 Freshness and usage acceptance
 
 - Selected and unselected refreshable accounts both receive due maintenance.
 - The official provider process remains the only durable credential writer.
@@ -2084,7 +2520,7 @@ The exact supported build must prove:
 - Maintaining an unselected account never adopts it into the shared runtime.
 - Selecting an account never disables maintenance of the outgoing account.
 
-### 16.9 Persistence and security acceptance
+### 16.10 Persistence and security acceptance
 
 - Every write is owner-only, strict-schema, atomic, and recoverable.
 - Crash injection at every durable step reaches the recovery decision table.
@@ -2093,12 +2529,13 @@ The exact supported build must prove:
   closed.
 - Peer identity and connection generation prevent cross-user/stale clients.
 - Process-ID reuse cannot impersonate a participant.
+- crash recovery does not assume a missing required participant is dead.
 - Authority lease scope rejects wrong provider/account/generation/epoch.
 - Lock-order tests detect inversions; timeouts do not delete live owners.
 - Provider error bodies are redacted before crossing adapter boundaries.
 - Synthetic secret canaries never appear in representations or failure text.
 
-### 16.10 Platform acceptance
+### 16.11 Platform acceptance
 
 - Native Linux systemd user install/start/status/stop/uninstall fixtures pass.
 - WSL Linux-side status works without an unnecessary distribution argument.
@@ -2109,13 +2546,14 @@ The exact supported build must prove:
 - Account selection itself triggers no service or provider restart on any
   platform.
 
-### 16.11 Repository quality gates
+### 16.12 Repository quality gates
 
 The later implementation is not complete until all relevant commands pass:
 
 ```text
 uv run pytest tests/<owner>/test_<behavior>.py
 uv run pytest --cov=sidekick_usages
+uv run ruff format --check src/ tests/ packaging/
 uv run ruff check src/ tests/ packaging/
 uv run ty check src/ tests/ packaging/
 uv run python packaging/check_architecture.py
@@ -2143,12 +2581,14 @@ flowchart TD
     C --> D
     E[Non-secret epoch and recovery schemas] --> F[Turn admission coordinator]
     D --> F
-    F --> G[Claude native adapter correction]
-    F --> H[Codex HTTP-only adapter]
-    F --> I[Claude structured-host qualification]
+    F --> N[Integrated session launchers and relays]
+    N --> G[Claude native adapter correction]
+    N --> H[Codex HTTP-only adapter]
+    N --> I[Claude structured-host qualification]
     G --> J[Mixed Claude transitions]
     I --> J
-    H --> K[Cross-terminal continuity]
+    H --> R[Codex realtime and config gates]
+    R --> K[Cross-terminal continuity]
     J --> K
     L[Independent all-account maintenance] --> K
     K --> M[Platform and provider-live release gates]
@@ -2163,18 +2603,23 @@ The later plan must preserve these dependency constraints:
    coordination.
 5. Build turn admission and synthetic concurrency proof before provider
    mutation adapters.
-6. Reuse and narrow Claude native activation before adding the private
+6. Add explicit session launchers, the reversible shell integration, and the
+   Codex participant relay before claiming any ordinary terminal is integrated.
+7. Reuse and narrow Claude native activation before adding the private
    structured path.
-7. Reuse Codex external auth and disable provider WebSockets before calling
+8. Reuse Codex external auth and disable Responses model WebSockets before
+   calling
    the next-turn proof sufficient.
-8. Complete each provider's exact-version gate before mixed/provider-live
+9. Qualify Codex realtime admission/natural completion before universal
+   continuity claims.
+10. Complete each provider's exact-version gate before mixed/provider-live
    tests.
-9. Reprove independent maintenance and usage after selection integration.
-10. Migrate current state only after schema, recovery, and rollback fixtures
+11. Reprove independent maintenance and usage after selection integration.
+12. Migrate current state only after schema, recovery, and rollback fixtures
     pass.
-11. Run controlled provider-live tests only with explicit authority and
+13. Run controlled provider-live tests only with explicit authority and
     disposable accounts.
-12. Update operator docs and completion evidence only after every release gate
+14. Update operator docs and completion evidence only after every release gate
     passes.
 
 ### 17.1 Current-machine migration acceptance
@@ -2192,6 +2637,11 @@ The migration must prove before and after, using redacted metadata only:
 - rollback can restore the previous Sidekick schema/presentation state without
   rolling provider credentials backward.
 
+Shell enrollment is a separate explicit migration. Its dry run lists exact
+files and marked edits; installation and removal prove provider binaries,
+provider settings, protected authorities, and unrelated shell content are
+unchanged.
+
 ### 17.2 Compatibility rollout
 
 The capability gate is per provider and mechanism:
@@ -2200,8 +2650,10 @@ The capability gate is per provider and mechanism:
 - Claude refreshable selection enables only after native propagation tests;
 - Claude setup-token selection enables only after structured-host parity and
   exact-build tests;
-- Codex selection enables only after HTTP-only transport, external-auth, and
-  MCP/cache tests; and
+- ordinary-command seamless guarantees enable only for shells/IDEs whose
+  explicit enrollment status is proven;
+- Codex selection enables only after HTTP-only model transport, external-auth,
+  participant-relay, realtime, and MCP/cache tests; and
 - unsupported switching never hides usage/maintenance that remains safe.
 
 The UI shows an account's exact selection capability. It does not hide the
@@ -2217,6 +2669,9 @@ account, add an external stand-in, or let Enter silently do nothing.
   stable-read, restore, and native-proof transactions.
 - Reuse current Sidekick Codex private homes, official refresh ownership,
   resident app-server, external auth, callbacks, and projection receipts.
+- Reuse the existing pinned `websockets` transport and strict app-server
+  JSON-RPC codec/schema owners for the participant relay; do not implement
+  WebSocket framing or a second JSON protocol stack.
 - Reuse strict persistence, serialization, HTTP, lock, path, and clock owners.
 - Reuse cached-first concurrent usage loading and deterministic ordering.
 
@@ -2224,6 +2679,9 @@ account, add an external stand-in, or let Enter silently do nothing.
 
 - Provider-neutral epoch, turn admission, participant readiness, and recovery
   orchestration, because it is Sidekick product policy.
+- Explicit session commands, reversible shell integration, and the narrow
+  Codex participant control relay, because they are the enrollment/admission
+  boundary and are not model-routing replacements.
 - Claude structured interactive hosting and private update qualification,
   because no reviewed dependency meets the exact continuity and security
   contract.
@@ -2327,10 +2785,30 @@ Rejected as the primary path because it expands Sidekick into a full
 credential-bearing streaming proxy and has provider-contract risk. The
 structured official-engine host is the narrower preferred setup-token path.
 
-### 19.14 Kill stale or incompatible participants
+### 19.14 Kill unreachable or incompatible participants
 
-Rejected. A stale or unmanaged participant yields degraded truthful status.
-Selection does not terminate it to manufacture convergence.
+Rejected. An unreachable or unmanaged participant yields degraded truthful
+status. Selection does not terminate it to manufacture convergence.
+
+### 19.15 Assume ordinary provider launches are integrated
+
+Rejected. A dashboard cannot retroactively change a parent shell or attach a
+private control protocol to an arbitrary existing process. Explicit session
+entrypoints and opt-in shell/IDE integration define enrollment; bypasses remain
+alive and are reported as unmanaged.
+
+### 19.16 Let user or project config override Codex transport keys
+
+Rejected. A project-local `model_provider` or CLI override could re-enable a
+cached account-A Responses WebSocket or redirect credentials. A qualified
+Sidekick-owned effective overlay pins only correctness-critical session keys
+and preserves unrelated settings.
+
+### 19.17 Stop or reconnect Codex realtime during selection
+
+Rejected. Realtime process state has no 0.146.0 resume/reattach contract.
+Existing realtime work completes naturally under its admitted epoch; selection
+waits visibly or fails before provider commit.
 
 ## 20. Risks and Revalidation Triggers
 
@@ -2344,8 +2822,11 @@ Selection does not terminate it to manufacture convergence.
 | Codex external auth schema changes | Auth installation/readback may fail | Exact schema gate; retain old session/auth |
 | Codex re-enables WS or caches HTTP auth | Next turn can use stale account | Capability/source test; disable selection |
 | Codex account update invalidates active runtime work | Tool/MCP operation could be disrupted | Drain active work and qualify idle refresh |
+| Project/CLI config shadows Codex session provider | Stale or redirected auth transport | Protected launch overlay, override rejection, effective-config proof |
+| Codex realtime cannot reach a terminal boundary | Selection cannot commit without interruption | Keep A active and show typed pending/degraded status |
 | Access lease outlives selection | Stale callback/update can install old auth | Account/generation/epoch scope and expiry |
 | Participant disconnects mid-commit | Global proof becomes incomplete | Readback plus degraded recovery; never kill/restart |
+| Shell integration is absent, stale, or bypassed | Some provider processes are unmanaged | Explicit status, reversible enrollment, no false convergence |
 | Coordinator crashes after provider write | Journal and provider may disagree | Provider-first recovery decision table |
 | Terminal becomes extremely small | Content can be unreachable | Compact header, scroll body, fixed typed footer |
 | Saved identity is absent/ambiguous | Wrong row could be selected | Fail closed; never match by display label |
@@ -2359,6 +2840,10 @@ The following events require re-review of this design, not merely a patch:
 - Codex cannot disable Responses WebSockets while using current OpenAI auth;
 - preserving interactive behavior requires Sidekick to terminate or reconnect
   sessions;
+- supported shells/IDEs cannot enter the explicit launcher without replacing
+  a provider binary or weakening argument/config isolation;
+- Codex introduces an auth-bearing transport whose natural terminal boundary
+  cannot be gated without stopping it;
 - provider terms prohibit the chosen local use;
 - a new supported platform changes the same-user/credential boundary; or
 - persistence would need a token or provider payload in selection state.
@@ -2397,6 +2882,15 @@ silently reopen or weaken one.
 | D-020 | WSL readiness is a separate platform gate | Read-only daemon status failure after independent UI root cause |
 | D-021 | Private/experimental provider mechanisms are exact-version gated | Claude installed private control and experimental Codex external auth |
 | D-022 | No proxy, restart, reconnect, file swap, or silent fallback | Continuity, security, provider-source, and complexity analysis |
+| D-023 | Explicit session commands plus reversible shell hooks define enrollment | OS parent-environment boundary and launcher research |
+| D-024 | Codex stock TUIs use stable participant relays to one resident app-server | Remote endpoint immutability and global turn-gate requirement |
+| D-025 | Codex installation proof combines local lease identity, serialized operation, ordered events, and usable account readback | Current strict broker source and 0.146 null `loginId`/account schema |
+| D-026 | Ready finalization precedes asynchronous real-turn adoption | Idle sessions spend no quota and adoption can occur hours later |
+| D-027 | Participant recovery distinguishes dead, live-unreachable, and post-commit loss | Global-success invariant and forward-only credential recovery |
+| D-028 | Codex realtime finishes on its admitted epoch and blocks commit while active | Exact 0.146 in-process realtime state and no resume/reattach API |
+| D-029 | Tests are the smallest load-bearing public/state/security set | Repository test policy and maintenance requirement |
+| D-030 | Existing owners and maintained dependencies precede new abstractions | Repository reuse policy and maintenance requirement |
+| D-031 | Integrated provider login/logout commands cannot bypass global selection | Shared-runtime consistency, saved-only rows, and provider credential ownership |
 
 ### 21.2 Current repository evidence
 
@@ -2414,7 +2908,8 @@ silently reopen or weaken one.
 | Claude official exchange | `src/sidekick_usages/credentials/claude/exchange/` | Existing provider-owned native login foundation |
 | Claude activation transaction | `src/sidekick_usages/credentials/claude/activation/` | Existing identity/generation/native propagation proof |
 | Codex resident broker | `src/sidekick_usages/providers/codex/broker/` | Shared app-server and refresh callback foundation |
-| Codex external auth | `src/sidekick_usages/providers/codex/broker/external_auth/` | Existing login/update/readback and receipt foundation |
+| Codex external auth | `src/sidekick_usages/providers/codex/broker/external_auth/installation.py` | Local token-claim identity check, serialized request, ordered null-`loginId` completion/update, plan readback, and locally bound receipt |
+| Codex account observation | `src/sidekick_usages/providers/codex/account/service.py` | Readback proves non-null ChatGPT mode and plan, not provider account ID |
 | Current selection | `src/sidekick_usages/core/selection/` and `persistence/supervisor/` | Selected-runtime proof exists but not full epoch/participant convergence |
 | Prior design | [2026-07-23 design][old-design] | Historical design now superseded where listed at the top |
 | Prior completion | [2026-07-23 completion][old-completion] | Historical implementation claim; current QA controls actual behavior |
@@ -2433,9 +2928,12 @@ silently reopen or weaken one.
 | Codex auth and private homes | [Codex auth][codex-auth], [environment variables][codex-env], and exact source | One private `CODEX_HOME` can remain provider-owned per saved account |
 | Codex app-server auth | [Codex app-server][codex-app-server] | External token installation/readback/refresh callback exist but are experimental |
 | Codex shared auth | [Thread manager][codex-thread-manager] | Loaded threads share a process-wide `AuthManager` |
+| Codex remote TUI connection | [Remote client][codex-remote-client] | One endpoint is fixed for the TUI connection lifetime; selection must keep it open |
 | Codex WebSocket reuse | [WebSocket path][codex-websocket] | Open socket reuse does not compare selection/auth generation |
 | Codex HTTP provider | [Configuration reference][codex-config], [provider source][codex-provider-source], and [HTTP path][codex-http-client] | Direct Responses HTTP can resolve current auth per attempt with WebSockets disabled |
+| Codex config precedence | [Precedence][codex-config-precedence] and [scope][codex-config-scope] | CLI overrides are highest; project config cannot own provider/auth keys; exact 0.146 behavior still requires qualification |
 | Codex cache/MCP impact | [Account invalidation source][codex-account-invalidation] | Active account-scoped work must drain; idle invalidation must be transparent |
+| Codex realtime | [Realtime state][codex-realtime] | Process-owned state has no resume/reattach path and must finish naturally on its admitted epoch |
 
 ### 21.4 Pinned-project research
 
@@ -2486,6 +2984,8 @@ publisher and current canonical URL.
 6. [Codex app server](https://developers.openai.com/codex/app-server)
 7. [Codex configuration reference](https://developers.openai.com/codex/config-reference)
 8. [Codex access tokens](https://learn.chatgpt.com/docs/enterprise/access-tokens)
+9. [Codex configuration precedence](https://learn.chatgpt.com/docs/config-file/config-basic#configuration-precedence)
+10. [Codex configuration scope](https://learn.chatgpt.com/docs/config-file/config-reference#configtoml)
 
 #### Platform documentation
 
@@ -2665,15 +3165,19 @@ the table above and in the reference definitions at the end of this document.
 | Explain the two ownership questions | Sections 3.2 and 5.2 |
 | Preserve Claude setup-token and native accounts | Sections 9 and 11 |
 | Reuse native Claude cross-terminal convergence | Sections 9.2-9.3 |
+| Preserve `/login`-style global saved-account selection | Sections 5.4 and 9.2 |
 | Switch setup-token Claude without process replacement | Sections 9.4-9.8 |
 | Handle mixed Claude account types | Section 9.7 |
 | Preserve all Codex sessions without restart | Section 10 |
 | Prevent stale Codex WebSocket auth | Sections 10.2-10.3 |
 | Keep every account fresh and reportable | Section 11 |
-| Update every integrated open terminal/session | Sections 5.4 and 8 |
-| Never interrupt or crash a session | Sections 1, 4.3, 8, 16.5 |
+| Define real terminal/session enrollment | Sections 5.4 and 16.5 |
+| Update every integrated open terminal/session | Sections 5.4-5.5 and 8 |
+| Never interrupt or crash a session | Sections 1, 4.3, 8, 10.7, 16.6 |
 | Persist non-secret state and recover safely | Sections 6 and 12 |
 | Harden security and lease handling | Section 13 |
+| Keep tests concise, critical, and nonredundant | Sections 15.4 and 16.1 |
+| Preserve style, types, docstrings, reuse, and 79 columns | Section 15.4 |
 | Address independent WSL failure | Sections 3.8 and 14.3 |
 | Include Mermaid architecture and flows | Sections 3, 5, 6, 7, 8, 9, 10, 13, 17 |
 | Provide decisions, risks, alternatives, and gates | Sections 18-21 |
@@ -2688,12 +3192,21 @@ The design is internally consistent only when all of these remain true:
 - Claude native selection is not blocked by ordinary open terminals;
 - setup-token selection never claims refresh or full profile state;
 - a structured setup-token participant is enrolled from process launch;
+- an ordinary provider process is integrated only through an explicit session
+  launcher or proven shell/IDE forwarding path;
 - mixed Claude transitions cannot leave a stale environment override;
 - Codex external-auth notification is not sufficient with WebSockets enabled;
+- Codex account readback does not independently prove provider account ID;
 - Codex direct HTTP uses the current shared auth for every attempt;
+- Codex model Responses WebSockets are disabled while the TUI control
+  connection stays open;
+- active Codex realtime remains on its admitted epoch and is never stopped by
+  selection;
 - active work drains without being cancelled;
 - readiness does not require a quota-consuming inference;
+- readiness finalizes before asynchronous first-real-turn adoption;
 - actual first-turn adoption remains observable after readiness;
+- live-unreachable participants cannot be pruned into false success;
 - maintenance includes selected and unselected accounts;
 - rollback never copies or restores an older credential generation;
 - unsupported versions fail closed with the session alive; and
@@ -2727,12 +3240,16 @@ daemon change, controlled provider-live test, commit push, or deployment.
 [codex-env]: https://learn.chatgpt.com/docs/config-file/environment-variables
 [codex-app-server]: https://developers.openai.com/codex/app-server#auth-endpoints
 [codex-config]: https://developers.openai.com/codex/config-reference
+[codex-config-precedence]: https://learn.chatgpt.com/docs/config-file/config-basic#configuration-precedence
+[codex-config-scope]: https://learn.chatgpt.com/docs/config-file/config-reference#configtoml
 [codex-thread-manager]: https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/core/src/thread_manager.rs#L273-L414
+[codex-remote-client]: https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/app-server-client/src/remote.rs#L150-L205
 [codex-websocket]: https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/core/src/client.rs#L1297-L1365
 [codex-provider-source]: https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/model-provider-info/src/lib.rs#L86-L367
 [codex-http-client]: https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/core/src/client.rs#L1395-L1458
 [codex-account-processor]: https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/app-server/src/request_processors/account_processor.rs#L691-L839
 [codex-account-invalidation]: https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/app-server/src/request_processors/account_processor.rs#L211-L265
+[codex-realtime]: https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/core/src/realtime_conversation.rs#L448-L518
 [wsl-systemd]: https://learn.microsoft.com/windows/wsl/systemd
 [wsl-about]: https://learn.microsoft.com/windows/wsl/about
 [wsl-basic]: https://learn.microsoft.com/windows/wsl/basic-commands
