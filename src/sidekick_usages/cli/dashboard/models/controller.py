@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from sidekick_usages.core.accounts.types import SidekickAccountId
+from sidekick_usages.core.selection.types import SelectionCode
 from sidekick_usages.core.types import ProviderId
 
 type DashboardIntent = (
@@ -21,18 +22,10 @@ class DashboardMove(StrEnum):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class DashboardProviderAnchor:
-    """One provider's verified-active or provider-only restore target."""
+    """One provider's saved-account restore target."""
 
     provider_id: ProviderId
-    account_id: SidekickAccountId | None
-    external: bool
-
-    def __post_init__(self) -> None:
-        """Reject a focus that claims saved and external identity together."""
-        if self.external and self.account_id is not None:
-            raise ValueError(
-                "Dashboard anchor cannot identify saved and external rows."
-            )
+    account_id: SidekickAccountId
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -41,20 +34,14 @@ class DashboardControllerState:
 
     focused_provider: ProviderId | None
     account_id: SidekickAccountId | None
-    external: bool
     anchors: tuple[DashboardProviderAnchor, ...]
     help_visible: bool = False
 
     def __post_init__(self) -> None:
         """Require valid provider focus and unique provider anchors."""
-        if self.focused_provider is None:
-            if self.account_id is not None or self.external:
-                raise ValueError(
-                    "An empty dashboard cannot identify a focused row."
-                )
-        elif self.external and self.account_id is not None:
+        if self.focused_provider is None and self.account_id is not None:
             raise ValueError(
-                "Dashboard focus cannot identify saved and external rows."
+                "An empty dashboard cannot identify a focused row."
             )
         provider_ids = tuple(anchor.provider_id for anchor in self.anchors)
         if len(provider_ids) != len(set(provider_ids)):
@@ -81,6 +68,15 @@ class ClaudeAssociationRequest:
     """Request private-profile association for one saved Claude account."""
 
     account_id: SidekickAccountId
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class DashboardSelectionRefusal:
+    """Explain why a focused saved account cannot be selected."""
+
+    provider_id: ProviderId
+    account_id: SidekickAccountId
+    code: SelectionCode
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

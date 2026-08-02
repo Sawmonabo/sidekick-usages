@@ -192,7 +192,7 @@ def test_interactive_wide_render_preserves_dashboard_contract() -> None:
         out.count(_STALE_DETAIL),
         out.count(_UNAVAILABLE_DETAIL),
     ) == (1, 1, 0)
-    assert "This external login is not saved in Sidekick." in out
+    assert "This external login is not saved in Sidekick." not in out
     assert (
         out.count(PROGRESS_COPY),
         out.count(_KEY_FOOTER_TEXT),
@@ -350,8 +350,8 @@ def test_interactive_narrow_render_preserves_dashboard_contract() -> None:
         out.count(_STALE_DETAIL),
         out.count(_UNAVAILABLE_DETAIL),
     ) == (1, 1, 0)
-    assert "External Codex CLI login" in out
-    assert "This external login is not saved in Sidekick." in out
+    assert "External Codex CLI login" not in out
+    assert "This external login is not saved in Sidekick." not in out
     assert (
         out.count(PROGRESS_COPY),
         out.count(_KEY_FOOTER_TEXT),

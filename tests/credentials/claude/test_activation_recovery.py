@@ -51,10 +51,7 @@ from sidekick_usages.providers.claude.managed.types import (
     ClaudeManagedPlatform,
 )
 from sidekick_usages.providers.claude.models import ClaudeCommandResult
-from sidekick_usages.usage.dashboard.models import (
-    DashboardAccount,
-    DashboardExternalRow,
-)
+from sidekick_usages.usage.dashboard.models import DashboardAccount
 from sidekick_usages.usage.dashboard.service import CachedDashboardService
 from tests.fakes.claude.activation import (
     ClaudeRecoveryScenario,
@@ -571,18 +568,14 @@ def test_external_claude_login_wins_without_importing_unknown_identity(
     known_controller = DashboardController.start(known_dashboard)
     assert (
         known_claude.active_account_id,
-        any(
-            isinstance(row, DashboardExternalRow) for row in known_claude.rows
-        ),
+        known_claude.status.unmanaged_sessions,
         known_controller.state.focused_provider,
         known_controller.state.account_id,
-        known_controller.state.external,
     ) == (
         known.known.account_id,
-        False,
+        0,
         ProviderId.CLAUDE,
         known.known.account_id,
-        False,
     )
 
     unknown = claude_recovery_scenario(

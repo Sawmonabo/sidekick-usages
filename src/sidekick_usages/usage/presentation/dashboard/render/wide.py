@@ -10,7 +10,6 @@ from sidekick_usages.core.types import ProviderId
 from sidekick_usages.usage.dashboard.models import (
     DashboardAccount,
     DashboardCursor,
-    DashboardExternalRow,
     DashboardProvider,
     DashboardSnapshot,
 )
@@ -248,7 +247,7 @@ def _table_header_lines(
 
 
 def _account_table_lines(
-    row: DashboardAccount | DashboardExternalRow,
+    row: DashboardAccount,
     cursor: DashboardCursor,
     primary: list[str],
     grouped: list[tuple[str, list[str]]],
@@ -256,11 +255,7 @@ def _account_table_lines(
     alignments: list[str],
     reference_time: datetime,
 ) -> list[DashboardLine]:
-    report = (
-        row.usage.report
-        if isinstance(row, DashboardAccount) and row.usage is not None
-        else None
-    )
+    report = None if row.usage is None else row.usage.report
     windows = {} if report is None else window_index(report)
     safe_plan = visible_plan(row_plan(row))
     usage_cells = [
@@ -302,7 +297,7 @@ def _account_table_lines(
 
 
 def _marker(
-    row: DashboardAccount | DashboardExternalRow,
+    row: DashboardAccount,
     cursor: DashboardCursor,
 ) -> DashboardLine:
     selected = row_is_selected(row, cursor)

@@ -7,7 +7,6 @@ from sidekick_usages.core.types import ProviderId
 from sidekick_usages.usage.dashboard.models import (
     DashboardAccount,
     DashboardCursor,
-    DashboardExternalRow,
     DashboardSnapshot,
 )
 from sidekick_usages.usage.presentation.dashboard.render.models import (
@@ -94,7 +93,7 @@ def render_narrow(
 
 
 def _account_header_line(
-    row: DashboardAccount | DashboardExternalRow,
+    row: DashboardAccount,
     cursor: DashboardCursor,
 ) -> DashboardLine:
     selected = row_is_selected(row, cursor)

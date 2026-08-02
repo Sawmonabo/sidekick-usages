@@ -64,7 +64,6 @@ from sidekick_usages.usage.dashboard.models import (
     DashboardAccount,
     DashboardActionState,
     DashboardActivity,
-    DashboardExternalRow,
     DashboardProvider,
     DashboardRow,
     DashboardService,
@@ -241,16 +240,6 @@ class CachedDashboardService:
             )
             for account in provider_accounts
         ]
-        if runtime_state is ProviderRuntimeState.EXTERNAL_ACTIVE:
-            if runtime_auth is None:
-                raise ValueError("External runtime requires an observation.")
-            rows.append(
-                DashboardExternalRow(
-                    provider_id=provider_id,
-                    observed_at=runtime_auth.observed_at,
-                    states=(DashboardActionState.EXTERNAL_ACTIVE,),
-                )
-            )
         provider_available = (
             runtime_auth is not None
             and runtime_state

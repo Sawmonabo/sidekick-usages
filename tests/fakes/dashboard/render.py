@@ -24,7 +24,6 @@ from sidekick_usages.usage.dashboard.models import (
     DashboardActionState,
     DashboardActivity,
     DashboardCursor,
-    DashboardExternalRow,
     DashboardFooter,
     DashboardNavigationKind,
     DashboardProvider,
@@ -125,11 +124,6 @@ def interactive_dashboard_state(
                     ),
                     observed_at=observed_at,
                 ),
-            ),
-            DashboardExternalRow(
-                provider_id=ProviderId.CODEX,
-                observed_at=observed_at,
-                states=(DashboardActionState.EXTERNAL_ACTIVE,),
             ),
         ),
     )

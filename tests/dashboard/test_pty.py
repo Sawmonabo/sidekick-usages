@@ -97,7 +97,7 @@ HELP_FOOTER_TEXT = "? close help"
 STARTUP_FAILURE_TEXT = "cached selection remains"
 ACTIVE_LABEL = "work@example.test"
 PREVIEW_LABEL = "personal@example.test"
-CODEX_EXTERNAL_LABEL = "External Codex CLI login"
+CODEX_SAVED_LABEL = "codex@example.test"
 GREEN_BACKGROUND_CONTROL = "48;2;29;94;53"
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
@@ -567,7 +567,7 @@ def test_dashboard_pty_completes_the_interactive_account_journey(
             WIDE_COLUMNS + 4,
             WIDE_PANEL_TEXT,
         )
-        assert _selected(codex, CODEX_EXTERNAL_LABEL)
+        assert _selected(codex, CODEX_SAVED_LABEL)
 
         narrow = _resize_and_read(
             session,

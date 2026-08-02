@@ -10,6 +10,7 @@ from sidekick_usages.cli.dashboard.controller import DashboardController
 from sidekick_usages.cli.dashboard.models.controller import (
     ClaudeAssociationRequest,
     DashboardMove,
+    DashboardSelectionRefusal,
 )
 from sidekick_usages.cli.dashboard.session import InteractiveDashboardSession
 from sidekick_usages.core.accounts.types import (
@@ -115,7 +116,6 @@ def _association_handoff(
         setup=guided_setup(daemon, state_root / "association.json"),
         environment={},
     )
-    session.move(DashboardMove.DOWN)
     request = session.activate()
     blocked = DashboardController.start(
         replace(
@@ -150,9 +150,15 @@ def _association_handoff(
     skipped_daemon = (
         not session.view.action_in_flight
         and not connector.activations
-        and blocked.activate_or_repair() is None
+        and isinstance(
+            blocked.activate_or_repair(),
+            DashboardSelectionRefusal,
+        )
         and all(
-            controller.activate_or_repair() is None
+            isinstance(
+                controller.activate_or_repair(),
+                DashboardSelectionRefusal,
+            )
             for controller in unavailable
         )
     )

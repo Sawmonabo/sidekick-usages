@@ -22,6 +22,37 @@ class ProviderAuthState(StrEnum):
     UNSUPPORTED = "unsupported"
 
 
+class SelectionCode(StrEnum):
+    """Closed sanitized outcomes for selection and selection refusal."""
+
+    ALREADY_SELECTED = "already_selected"
+    SELECTION_SUCCEEDED = "selection_succeeded"
+    SELECTION_READY_ADOPTION_PENDING = (
+        "selection_ready_adoption_pending"
+    )
+    TARGET_REFRESH_REQUIRED = "target_refresh_required"
+    TARGET_EXPIRED = "target_expired"
+    TARGET_REJECTED = "target_rejected"
+    TARGET_MALFORMED = "target_malformed"
+    TARGET_UNREADABLE = "target_unreadable"
+    PROVIDER_UNAVAILABLE = "provider_unavailable"
+    UNSUPPORTED_PROVIDER_VERSION = "unsupported_provider_version"
+    UNSUPPORTED_SESSION_CAPABILITY = "unsupported_session_capability"
+    SESSION_CONFIGURATION_REQUIRED = "session_configuration_required"
+    UNCOORDINATED_AUTH_MUTATION = "uncoordinated_auth_mutation"
+    REMOTE_CONTROL_STATE_INCOMPATIBLE = (
+        "remote_control_state_incompatible"
+    )
+    PARTICIPANT_UNREACHABLE = "participant_unreachable"
+    PARTICIPANT_CONFIRMED_DEAD = "participant_confirmed_dead"
+    PARTICIPANT_LOST_AFTER_COMMIT = "participant_lost_after_commit"
+    REALTIME_SESSION_ACTIVE = "realtime_session_active"
+    ACTIVE_OPERATION_TIMEOUT = "active_operation_timeout"
+    AUTHORITY_PROOF_FAILED = "authority_proof_failed"
+    SELECTION_ROLLED_BACK = "selection_rolled_back"
+    SELECTION_RECOVERY_REQUIRED = "selection_recovery_required"
+
+
 class AuthorityGenerationRelation(StrEnum):
     """Selected runtime generation relative to saved authority truth."""
 

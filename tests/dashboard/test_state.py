@@ -12,6 +12,7 @@ from sidekick_usages.cli.dashboard.models.controller import (
     ClaudeAssociationRequest,
     DashboardActivationProof,
     DashboardMove,
+    DashboardSelectionRefusal,
     RefreshAccountIntent,
     RefreshDueAccountsIntent,
 )
@@ -29,6 +30,7 @@ from sidekick_usages.core.accounts.types import (
 from sidekick_usages.core.selection.types import (
     ProviderAuthState,
     ProviderRuntimeState,
+    SelectionCode,
 )
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.control.client import (
@@ -53,7 +55,6 @@ from sidekick_usages.persistence.types.error import (
 from sidekick_usages.usage.dashboard.models import (
     DashboardAccount,
     DashboardActionState,
-    DashboardExternalRow,
     DashboardFooter,
     DashboardNavigationKind,
     DashboardSnapshot,
@@ -82,6 +83,9 @@ from tests.fakes.dashboard.state import (
     CLAUDE_ACTIVE_ACCOUNT_ID,
     CLAUDE_ACTIVITY_TOTAL,
     CLAUDE_PREVIEW_ACCOUNT_ID,
+    CLAUDE_REPAIR_ACCOUNT_ID,
+    CLAUDE_SAVED_ACCOUNT_ID,
+    CODEX_RECONCILIATION_ACCOUNT_ID,
     CODEX_SAVED_ACCOUNT_ID,
     EXTERNAL_PROVIDER_IDENTITY,
     VALID_PROVIDER_IDENTITY,
@@ -225,9 +229,9 @@ def test_cached_dashboard_joins_stable_ids_without_credentials(
     )
     claude, codex = dashboard.providers
     assert claude.runtime_state is ProviderRuntimeState.EXTERNAL_ACTIVE
+    assert claude.status.unmanaged_sessions == 1
     assert not claude.actions_enabled
-    assert isinstance(claude.rows[0], DashboardExternalRow)
-    assert claude.rows[0].states == (DashboardActionState.EXTERNAL_ACTIVE,)
+    assert claude.rows == ()
     assert claude.activity is not None
     assert claude.activity.summary.total_tokens == CLAUDE_ACTIVITY_TOTAL
     assert claude.activity.observed_at == OBSERVED_AT
@@ -250,7 +254,7 @@ def test_cached_dashboard_joins_stable_ids_without_credentials(
     assert current.activity is not None
     assert current.activity.observed_at == OBSERVED_AT
     assert current.metrics_freshness is None
-    assert current.states == (DashboardActionState.HEALTHY,)
+    assert current.states == (DashboardActionState.RECONCILIATION_REQUIRED,)
     assert (
         replace(
             current, metrics_freshness=MetricsFreshness.FRESH
@@ -303,13 +307,10 @@ def test_cached_dashboard_scopes_codex_broker_degradation(
         managed_claude.actions_enabled,
         managed_codex.actions_enabled,
     ) == (False, True, True, False)
-    assert isinstance(managed_claude.rows[0], DashboardExternalRow)
-    assert managed_claude.rows[0].states == (
-        DashboardActionState.EXTERNAL_ACTIVE,
-    )
+    assert managed_claude.rows == ()
     assert all(isinstance(row, DashboardAccount) for row in managed_codex.rows)
     assert tuple(row.states for row in managed_codex.rows) == (
-        (DashboardActionState.HEALTHY,),
+        (DashboardActionState.RECONCILIATION_REQUIRED,),
         (
             DashboardActionState.HEALTHY,
             DashboardActionState.REPAIR_REQUIRED,
@@ -432,14 +433,30 @@ def test_dashboard_controller_journey_preserves_verified_truth(
     snapshot = controller_snapshot(REFERENCE_TIME)
     controller = DashboardController.start(snapshot)
 
+    rows = tuple(
+        row for provider in snapshot.providers for row in provider.rows
+    )
+    assert [row.account_id for row in rows] == [
+        CLAUDE_PREVIEW_ACCOUNT_ID,
+        CLAUDE_ACTIVE_ACCOUNT_ID,
+        CLAUDE_REPAIR_ACCOUNT_ID,
+        CLAUDE_SAVED_ACCOUNT_ID,
+        CODEX_SAVED_ACCOUNT_ID,
+        CODEX_RECONCILIATION_ACCOUNT_ID,
+    ]
+    assert [len(provider.rows) for provider in snapshot.providers] == [4, 2]
+    assert controller.state.account_id == CLAUDE_ACTIVE_ACCOUNT_ID
+    assert controller.activate_or_repair() == ActivateOrRepairIntent(
+        provider_id=ProviderId.CLAUDE,
+        account_id=CLAUDE_ACTIVE_ACCOUNT_ID,
+    )
+
     assert (
         controller.state.focused_provider,
         controller.state.account_id,
-        controller.state.external,
     ) == (
         ProviderId.CLAUDE,
         CLAUDE_ACTIVE_ACCOUNT_ID,
-        False,
     )
     verified_anchors = controller.state.anchors
 
@@ -461,18 +478,17 @@ def test_dashboard_controller_journey_preserves_verified_truth(
     controller = controller.restore()
     assert controller.state.account_id == CLAUDE_ACTIVE_ACCOUNT_ID
     controller = controller.move(DashboardMove.DOWN)
-    assert controller.state.account_id == CLAUDE_ACTIVE_ACCOUNT_ID
+    assert controller.state.account_id == CLAUDE_REPAIR_ACCOUNT_ID
 
     controller = controller.focus_next_provider()
-    assert controller.state.focused_provider is ProviderId.CODEX
-    assert controller.state.external
-    assert controller.state.account_id is None
-    assert controller.activate_or_repair() is None
-    assert controller.refresh_account() is None
-
-    controller = controller.move(DashboardMove.UP)
-    assert controller.state.account_id == CODEX_SAVED_ACCOUNT_ID
-    assert not controller.state.external
+    assert (
+        controller.state.focused_provider,
+        controller.state.account_id,
+    ) == (ProviderId.CODEX, CODEX_SAVED_ACCOUNT_ID)
+    assert controller.activate_or_repair() == ActivateOrRepairIntent(
+        provider_id=ProviderId.CODEX,
+        account_id=CODEX_SAVED_ACCOUNT_ID,
+    )
     with pytest.raises(ValueError, match="contradicts provider read-back"):
         controller.activation_succeeded(
             DashboardActivationProof(
@@ -480,14 +496,14 @@ def test_dashboard_controller_journey_preserves_verified_truth(
                 account_id=CODEX_SAVED_ACCOUNT_ID,
             )
         )
-    assert controller.restore().state.external
+    assert controller.restore().state.account_id == CODEX_SAVED_ACCOUNT_ID
 
     controller = controller.toggle_help()
     assert controller.state.help_visible
     assert not controller.toggle_help().state.help_visible
 
     claude, codex = snapshot.providers
-    due_account, active_account = claude.rows
+    due_account = claude.rows[0]
     assert isinstance(due_account, DashboardAccount)
     all_healthy = DashboardController.start(
         replace(
@@ -500,7 +516,7 @@ def test_dashboard_controller_journey_preserves_verified_truth(
                             due_account,
                             credential_health=CredentialHealth.HEALTHY,
                         ),
-                        active_account,
+                        *claude.rows[1:],
                     ),
                 ),
                 codex,
@@ -548,7 +564,10 @@ def test_dashboard_controller_journey_preserves_verified_truth(
             provider_id=ProviderId.CLAUDE,
             account_id=CLAUDE_PREVIEW_ACCOUNT_ID,
         ),
-        None,
+        ActivateOrRepairIntent(
+            provider_id=ProviderId.CLAUDE,
+            account_id=CLAUDE_PREVIEW_ACCOUNT_ID,
+        ),
         RefreshAccountIntent(
             provider_id=ProviderId.CLAUDE,
             account_id=CLAUDE_PREVIEW_ACCOUNT_ID,
@@ -570,13 +589,20 @@ def test_dashboard_controller_journey_preserves_verified_truth(
     assert (
         disabled.state.focused_provider,
         disabled.state.account_id,
-        disabled.state.external,
-    ) == (ProviderId.CLAUDE, None, False)
+    ) == (ProviderId.CLAUDE, CLAUDE_PREVIEW_ACCOUNT_ID)
     assert (
         disabled.activate_or_repair(),
         disabled.refresh_account(),
         disabled.refresh_due_accounts(),
-    ) == (None, None, None)
+    ) == (
+        DashboardSelectionRefusal(
+            provider_id=ProviderId.CLAUDE,
+            account_id=CLAUDE_PREVIEW_ACCOUNT_ID,
+            code=SelectionCode.UNSUPPORTED_PROVIDER_VERSION,
+        ),
+        None,
+        None,
+    )
 
     codex_saved = codex.rows[0]
     fallback = DashboardController.start(
@@ -601,8 +627,7 @@ def test_dashboard_controller_journey_preserves_verified_truth(
     assert (
         fallback.state.focused_provider,
         fallback.state.account_id,
-        fallback.state.external,
-    ) == (ProviderId.CODEX, None, False)
+    ) == (ProviderId.CODEX, CODEX_SAVED_ACCOUNT_ID)
     startup = exercise_startup_reconciliation(
         snapshot,
         CLAUDE_ACTIVE_ACCOUNT_ID,

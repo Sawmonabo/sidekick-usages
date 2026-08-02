@@ -9,15 +9,10 @@ from sidekick_usages.usage.dashboard.models import (
     DashboardAccount,
     DashboardActionState,
     DashboardCursor,
-    DashboardExternalRow,
     DashboardProvider,
     DashboardRow,
 )
 
-EXTERNAL_ROW_LABELS = {
-    ProviderId.CLAUDE: "External Claude Code login",
-    ProviderId.CODEX: "External Codex CLI login",
-}
 CURSOR_GLYPH = "\N{SINGLE RIGHT-POINTING ANGLE QUOTATION MARK}"
 PROVIDER_NAMES = {
     ProviderId.CLAUDE: "Claude Code",
@@ -44,15 +39,21 @@ FAILURE_STATE_DETAILS = {
         "Update the provider CLI before using account switching."
     ),
 }
-EXTERNAL_LOGIN_DETAIL = "This external login is not saved in Sidekick."
 
 
 def provider_detail(provider: DashboardProvider) -> str | None:
     """Return one provider-scoped runtime advisory."""
-    if provider.runtime_state is None:
+    runtime_state = provider.status.runtime_state
+    if runtime_state is None:
         return None
-    detail = _PROVIDER_STATE_DETAILS.get(provider.runtime_state)
+    detail = _PROVIDER_STATE_DETAILS.get(runtime_state)
     if detail is None:
+        if provider.status.unmanaged_sessions:
+            return (
+                f"{PROVIDER_NAMES[provider.provider_id]} has "
+                "an unmanaged active session; saved accounts remain "
+                "selectable."
+            )
         return None
     return f"{PROVIDER_NAMES[provider.provider_id]} {detail}"
 
@@ -64,21 +65,17 @@ def row_is_selected(
     """Return whether one row owns the sole visible cursor."""
     if row.provider_id is not cursor.focused_provider:
         return False
-    if isinstance(row, DashboardExternalRow):
-        return cursor.external
-    return not cursor.external and row.account_id == cursor.account_id
+    return row.account_id == cursor.account_id
 
 
 def row_label(row: DashboardRow) -> str:
     """Return local display copy without exposing provider identity."""
-    if isinstance(row, DashboardAccount):
-        return row.label
-    return EXTERNAL_ROW_LABELS[row.provider_id]
+    return row.label
 
 
 def row_plan(row: DashboardRow) -> str:
-    """Return a saved plan or suppress it for an external login."""
-    return row.plan if isinstance(row, DashboardAccount) else "unknown"
+    """Return the saved account plan."""
+    return row.plan
 
 
 def row_detail(
@@ -94,8 +91,6 @@ def row_detail(
             return _credential_detail(row.provider_id, state)
         if state in FAILURE_STATE_DETAILS:
             return FAILURE_STATE_DETAILS[state]
-    if DashboardActionState.EXTERNAL_ACTIVE in row.states:
-        return EXTERNAL_LOGIN_DETAIL
     return _metrics_detail(row, reference_time)
 
 
@@ -116,11 +111,9 @@ def _credential_detail(
 
 
 def _metrics_detail(
-    row: DashboardRow,
+    row: DashboardAccount,
     reference_time: datetime,
 ) -> str | None:
-    if not isinstance(row, DashboardAccount):
-        return None
     if row.metrics_freshness is MetricsFreshness.UNAVAILABLE:
         return "Live metrics refresh failed; no saved metrics available."
     if row.metrics_freshness is not MetricsFreshness.STALE:

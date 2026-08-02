@@ -9,11 +9,15 @@ from sidekick_usages.cli.dashboard.models.controller import (
     DashboardControllerState,
     DashboardMove,
     DashboardProviderAnchor,
+    DashboardSelectionRefusal,
     RefreshAccountIntent,
     RefreshDueAccountsIntent,
 )
 from sidekick_usages.core.accounts.types import CredentialHealth
-from sidekick_usages.core.selection.types import ProviderRuntimeState
+from sidekick_usages.core.selection.types import (
+    ProviderRuntimeState,
+    SelectionCode,
+)
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.usage.dashboard.focus import (
     initial_dashboard_cursor,
@@ -22,7 +26,6 @@ from sidekick_usages.usage.dashboard.focus import (
 from sidekick_usages.usage.dashboard.models import (
     DashboardAccount,
     DashboardActionState,
-    DashboardExternalRow,
     DashboardProvider,
     DashboardRow,
     DashboardSnapshot,
@@ -49,7 +52,6 @@ class DashboardController:
             state = DashboardControllerState(
                 focused_provider=None,
                 account_id=None,
-                external=False,
                 anchors=anchors,
             )
         else:
@@ -64,7 +66,7 @@ class DashboardController:
         provider = self._focused_provider()
         if provider is None:
             return self
-        if self.state.account_id is None and not self.state.external:
+        if self.state.account_id is None:
             target = (
                 provider.rows[-1]
                 if direction is DashboardMove.UP
@@ -127,8 +129,13 @@ class DashboardController:
 
     def activate_or_repair(
         self,
-    ) -> ActivateOrRepairIntent | ClaudeAssociationRequest | None:
-        """Return a saved-account mutation intent when actions are enabled."""
+    ) -> (
+        ActivateOrRepairIntent
+        | ClaudeAssociationRequest
+        | DashboardSelectionRefusal
+        | None
+    ):
+        """Return selection work or a visible saved-account refusal."""
         focused = self._focused_account()
         if focused is None:
             return None
@@ -147,15 +154,10 @@ class DashboardController:
                     ProviderRuntimeState.UNSUPPORTED,
                 }
             ):
-                return None
+                return _selection_refusal(provider, account)
             return ClaudeAssociationRequest(account_id=account.account_id)
-        if provider.provider_id is ProviderId.CLAUDE and (
-            provider.runtime_state is not ProviderRuntimeState.SAVED_ACTIVE
-            or provider.active_account_id is None
-        ):
-            return None
         if not self._mutations_enabled(provider):
-            return None
+            return _selection_refusal(provider, account)
         return ActivateOrRepairIntent(
             provider_id=provider.provider_id,
             account_id=account.account_id,
@@ -216,7 +218,6 @@ class DashboardController:
         proven_anchor = DashboardProviderAnchor(
             provider_id=proof.provider_id,
             account_id=proof.account_id,
-            external=False,
         )
         anchors = tuple(
             (
@@ -283,12 +284,7 @@ class DashboardController:
         if focused is not None:
             state = DashboardControllerState(
                 focused_provider=focused.provider_id,
-                account_id=(
-                    focused.account_id
-                    if isinstance(focused, DashboardAccount)
-                    else None
-                ),
-                external=isinstance(focused, DashboardExternalRow),
+                account_id=focused.account_id,
                 anchors=anchors,
                 help_visible=self.state.help_visible,
             )
@@ -306,12 +302,7 @@ class DashboardController:
         return self._with_state(
             DashboardControllerState(
                 focused_provider=provider_id,
-                account_id=(
-                    row.account_id
-                    if isinstance(row, DashboardAccount)
-                    else None
-                ),
-                external=isinstance(row, DashboardExternalRow),
+                account_id=row.account_id,
                 anchors=self.state.anchors,
                 help_visible=self.state.help_visible,
             )
@@ -321,18 +312,13 @@ class DashboardController:
         self,
     ) -> tuple[DashboardProvider, DashboardAccount] | None:
         provider = self._focused_provider()
-        if (
-            provider is None
-            or self.state.account_id is None
-            or self.state.external
-        ):
+        if provider is None or self.state.account_id is None:
             return None
         account = next(
             (
                 row
                 for row in provider.rows
-                if isinstance(row, DashboardAccount)
-                and row.account_id == self.state.account_id
+                if row.account_id == self.state.account_id
             ),
             None,
         )
@@ -375,10 +361,11 @@ def _provider_anchor(
     provider: DashboardProvider,
 ) -> DashboardProviderAnchor:
     focus = provider_focus(provider)
+    if focus.account_id is None:
+        raise AssertionError("Saved dashboard focus lost its account ID.")
     return DashboardProviderAnchor(
         provider_id=provider.provider_id,
         account_id=focus.account_id,
-        external=focus.external,
     )
 
 
@@ -399,16 +386,7 @@ def _matching_row(
     if provider is None:
         return None
     return next(
-        (
-            row
-            for row in provider.rows
-            if (isinstance(row, DashboardExternalRow) and state.external)
-            or (
-                isinstance(row, DashboardAccount)
-                and not state.external
-                and row.account_id == state.account_id
-            )
-        ),
+        (row for row in provider.rows if row.account_id == state.account_id),
         None,
     )
 
@@ -431,7 +409,6 @@ def _state_at_anchor(
     return DashboardControllerState(
         focused_provider=anchor.provider_id,
         account_id=anchor.account_id,
-        external=anchor.external,
         anchors=anchors,
         help_visible=help_visible,
     )
@@ -442,10 +419,7 @@ def _focused_index(
     state: DashboardControllerState,
 ) -> int:
     for index, row in enumerate(provider.rows):
-        if isinstance(row, DashboardAccount):
-            if row.account_id == state.account_id and not state.external:
-                return index
-        elif state.external:
+        if row.account_id == state.account_id:
             return index
     return 0
 
@@ -462,8 +436,21 @@ def _focused_at_anchor(state: DashboardControllerState) -> bool:
         ),
         None,
     )
-    return (
-        anchor is not None
-        and anchor.account_id == state.account_id
-        and anchor.external == state.external
+    return anchor is not None and anchor.account_id == state.account_id
+
+
+def _selection_refusal(
+    provider: DashboardProvider,
+    account: DashboardAccount,
+) -> DashboardSelectionRefusal:
+    """Map unavailable saved-account selection to one closed refusal."""
+    code = (
+        SelectionCode.UNSUPPORTED_PROVIDER_VERSION
+        if provider.runtime_state is ProviderRuntimeState.UNSUPPORTED
+        else SelectionCode.PROVIDER_UNAVAILABLE
+    )
+    return DashboardSelectionRefusal(
+        provider_id=provider.provider_id,
+        account_id=account.account_id,
+        code=code,
     )

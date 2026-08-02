@@ -73,7 +73,6 @@ def render_dashboard(
         cursor.focused_provider
         in {provider.provider_id for provider in providers}
         and cursor.account_id is None
-        and not cursor.external
     )
     if selected_rows != 1 and not (selected_rows == 0 and provider_only_focus):
         raise ValueError(

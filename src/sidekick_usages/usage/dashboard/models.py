@@ -1,6 +1,6 @@
 """Immutable secret-free cached dashboard models."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 
@@ -37,7 +37,7 @@ _DASHBOARD_USAGE_CACHE_ISSUES = frozenset(
     }
 )
 
-type DashboardRow = DashboardAccount | DashboardExternalRow
+type DashboardRow = DashboardAccount
 
 
 class DashboardActionState(StrEnum):
@@ -48,7 +48,6 @@ class DashboardActionState(StrEnum):
     SWITCH_SETUP_REQUIRED = "switch_setup_required"
     REPAIR_REQUIRED = "repair_required"
     SETUP_REGENERATION_REQUIRED = "setup_regeneration_required"
-    EXTERNAL_ACTIVE = "external_active"
     RECONCILIATION_REQUIRED = "reconciliation_required"
     PROVIDER_UNSUPPORTED = "provider_unsupported"
 
@@ -70,20 +69,15 @@ class DashboardStatusKind(StrEnum):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class DashboardCursor:
-    """One provider focus with an optional verified or previewed row."""
+    """One provider focus with an optional saved row."""
 
     focused_provider: ProviderId | None
     account_id: SidekickAccountId | None
-    external: bool = False
 
     def __post_init__(self) -> None:
-        """Require external focus to remain distinct from saved accounts."""
-        if self.focused_provider is None and (
-            self.account_id is not None or self.external
-        ):
+        """Require an empty dashboard to remain unfocused."""
+        if self.focused_provider is None and self.account_id is not None:
             raise ValueError("An empty dashboard cursor cannot select a row.")
-        if self.external and self.account_id is not None:
-            raise ValueError("External dashboard focus cannot use an account.")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -179,22 +173,21 @@ class DashboardAccount:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class DashboardExternalRow:
-    """One anonymous provider login not owned by a saved account."""
+class DashboardProviderStatus:
+    """One nonfocusable provider-runtime observation."""
 
-    provider_id: ProviderId
-    observed_at: datetime
-    states: tuple[DashboardActionState, ...]
+    runtime_state: ProviderRuntimeState | None
+    observed_at: datetime | None
+    unmanaged_sessions: int = 0
 
     def __post_init__(self) -> None:
-        """Normalize observation time and require external truth."""
-        object.__setattr__(self, "observed_at", as_utc(self.observed_at))
-        if (
-            not self.states
-            or self.states[0] is not DashboardActionState.EXTERNAL_ACTIVE
-            or len(self.states) != len(set(self.states))
-        ):
-            raise ValueError("External rows require unique external state.")
+        """Normalize observation time and validate the session count."""
+        if self.observed_at is not None:
+            object.__setattr__(self, "observed_at", as_utc(self.observed_at))
+        if self.unmanaged_sessions < 0:
+            raise ValueError(
+                "Dashboard unmanaged sessions cannot be negative."
+            )
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -208,6 +201,7 @@ class DashboardProvider:
     actions_enabled: bool
     rows: tuple[DashboardRow, ...]
     activity: DashboardActivity | None = None
+    status: DashboardProviderStatus = field(init=False)
 
     def __post_init__(self) -> None:
         """Validate row ownership and normalize provider observation time."""
@@ -219,18 +213,20 @@ class DashboardProvider:
             )
         if any(row.provider_id is not self.provider_id for row in self.rows):
             raise ValueError("Dashboard row provider does not match.")
-        account_ids = tuple(
-            row.account_id
-            for row in self.rows
-            if isinstance(row, DashboardAccount)
-        )
+        account_ids = tuple(row.account_id for row in self.rows)
         if len(account_ids) != len(set(account_ids)):
             raise ValueError("Dashboard provider has duplicate accounts.")
-        external_count = sum(
-            isinstance(row, DashboardExternalRow) for row in self.rows
+        object.__setattr__(
+            self,
+            "status",
+            DashboardProviderStatus(
+                runtime_state=self.runtime_state,
+                observed_at=self.verified_at,
+                unmanaged_sessions=int(
+                    self.runtime_state is ProviderRuntimeState.EXTERNAL_ACTIVE
+                ),
+            ),
         )
-        if external_count > 1:
-            raise ValueError("Dashboard provider has multiple external rows.")
         if (
             self.activity is not None
             and self.activity.summary.scope
@@ -240,8 +236,7 @@ class DashboardProvider:
                 "Dashboard provider activity must be installation-scoped."
             )
         if self.activity is not None and any(
-            isinstance(row, DashboardAccount) and row.activity is not None
-            for row in self.rows
+            row.activity is not None for row in self.rows
         ):
             raise ValueError(
                 "Dashboard provider and account activity cannot coexist."

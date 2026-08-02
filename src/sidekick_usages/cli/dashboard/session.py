@@ -15,6 +15,7 @@ from sidekick_usages.cli.dashboard.models.controller import (
     DashboardActivationProof,
     DashboardIntent,
     DashboardMove,
+    DashboardSelectionRefusal,
     RefreshAccountIntent,
 )
 from sidekick_usages.cli.dashboard.models.session import (
@@ -269,7 +270,16 @@ class InteractiveDashboardSession:
                 return None
             if isinstance(intent, ClaudeAssociationRequest):
                 return intent
-            if self._environment_conflict(intent):
+            if isinstance(intent, DashboardSelectionRefusal):
+                self._view = replace(
+                    self._view,
+                    footer=self._status_footer(
+                        DashboardStatusKind.ERROR,
+                        _selection_refusal_message(intent),
+                    ),
+                )
+                invalidate = self._invalidate
+            elif self._environment_conflict(intent):
                 invalidate = self._invalidate
             else:
                 invalidate = self._submit(intent, ACTIVATION_QUEUED_MESSAGE)
@@ -901,5 +911,9 @@ def dashboard_cursor(view: DashboardSessionView) -> DashboardCursor:
     return DashboardCursor(
         focused_provider=state.focused_provider,
         account_id=state.account_id,
-        external=state.external,
     )
+
+
+def _selection_refusal_message(intent: DashboardSelectionRefusal) -> str:
+    """Render one sanitized refusal without hiding the focused account."""
+    return f"Saved account selection is unavailable: {intent.code.value}."

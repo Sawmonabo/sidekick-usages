@@ -214,7 +214,7 @@ def test_cli_routes_one_cached_frame_before_isolated_interaction(
     assert line_count > 0
     assert "CLAUDE" in frame
     assert "CODEX" in frame
-    assert not cursor_lines
+    assert len(cursor_lines) == 1
     assert frame.endswith(f"\x1b[{line_count}A\r")
     assert parse_dashboard_arguments(()) is None
     assert parse_dashboard_arguments(("--only", "codex")) is ProviderId.CODEX

@@ -64,7 +64,6 @@ from sidekick_usages.persistence.supervisor.service import ServiceStateStore
 from sidekick_usages.usage.dashboard.models import (
     DashboardAccount,
     DashboardActionState,
-    DashboardExternalRow,
     DashboardProvider,
     DashboardService,
     DashboardSnapshot,
@@ -76,9 +75,18 @@ CLAUDE_PREVIEW_ACCOUNT_ID = SidekickAccountId(
 CLAUDE_ACTIVE_ACCOUNT_ID = SidekickAccountId(
     "44444444-4444-4444-8444-444444444444"
 )
+CLAUDE_REPAIR_ACCOUNT_ID = SidekickAccountId(
+    "66666666-6666-4666-8666-666666666666"
+)
+CLAUDE_SAVED_ACCOUNT_ID = SidekickAccountId(
+    "77777777-7777-4777-8777-777777777777"
+)
 CLAUDE_ACTIVITY_TOTAL = 1_076_418_075
 CODEX_SAVED_ACCOUNT_ID = SidekickAccountId(
     "55555555-5555-4555-8555-555555555555"
+)
+CODEX_RECONCILIATION_ACCOUNT_ID = SidekickAccountId(
+    "88888888-8888-4888-8888-888888888888"
 )
 VALID_PROVIDER_IDENTITY = "synthetic-codex-valid"
 EXTERNAL_PROVIDER_IDENTITY = "synthetic-claude-external"
@@ -89,9 +97,8 @@ _CONFLICT_ACCOUNT_ID = SidekickAccountId(
 _VALID_AUTHORITY_ID = AuthorityId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
 _CONFLICT_AUTHORITY_ID = AuthorityId("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
 _CONFLICT_PROVIDER_IDENTITY = "synthetic-codex-conflict"
-_CODEX_RUNTIME_GENERATION = AuthorityGeneration(
-    "synthetic-codex-runtime-generation"
-)
+_SAVED_CODEX_GENERATION = AuthorityGeneration("2026-07-25T10:00:00Z")
+_CODEX_RUNTIME_GENERATION = AuthorityGeneration("2026-07-25T10:00:01Z")
 
 
 def seed_cached_dashboard(
@@ -109,7 +116,11 @@ def seed_cached_dashboard(
         VALID_PROVIDER_IDENTITY,
         observed_at,
     )
-    renamed = replace(original, label=AccountLabel("after-rename"))
+    renamed = replace(
+        original,
+        label=AccountLabel("after-rename"),
+        credential_health=CredentialHealth.RECONCILIATION_REQUIRED,
+    )
     conflicted = saved_codex_account(
         _CONFLICT_ACCOUNT_ID,
         _CONFLICT_AUTHORITY_ID,
@@ -177,7 +188,7 @@ def seed_cached_dashboard(
         runtime_state=ProviderRuntimeState.SAVED_ACTIVE,
         account_id=renamed.account_id,
         provider_identity=ProviderIdentity(VALID_PROVIDER_IDENTITY),
-        runtime_generation=AuthorityGeneration("active-generation"),
+        runtime_generation=_CODEX_RUNTIME_GENERATION,
         verified_at=observed_at,
         outcome=ActivationOutcome.VERIFIED,
     )
@@ -242,7 +253,7 @@ def seed_broker_degraded_dashboard(
 
 
 def controller_snapshot(reference_time: datetime) -> DashboardSnapshot:
-    """Build the controller's saved, repair, and external account state."""
+    """Build saved rows with repair and runtime-mismatch states."""
     observed_at = reference_time - timedelta(hours=2)
     claude_rows = (
         DashboardAccount(
@@ -263,6 +274,24 @@ def controller_snapshot(reference_time: datetime) -> DashboardSnapshot:
             active=True,
             states=(DashboardActionState.HEALTHY,),
         ),
+        DashboardAccount(
+            account_id=CLAUDE_REPAIR_ACCOUNT_ID,
+            label=AccountLabel("claude-repair"),
+            provider_id=ProviderId.CLAUDE,
+            plan="max",
+            credential_health=CredentialHealth.LOGIN_REQUIRED,
+            active=False,
+            states=(DashboardActionState.LOGIN_REQUIRED,),
+        ),
+        DashboardAccount(
+            account_id=CLAUDE_SAVED_ACCOUNT_ID,
+            label=AccountLabel("claude-saved"),
+            provider_id=ProviderId.CLAUDE,
+            plan="max",
+            credential_health=CredentialHealth.HEALTHY,
+            active=False,
+            states=(DashboardActionState.HEALTHY,),
+        ),
     )
     codex_rows = (
         DashboardAccount(
@@ -274,10 +303,14 @@ def controller_snapshot(reference_time: datetime) -> DashboardSnapshot:
             active=False,
             states=(DashboardActionState.HEALTHY,),
         ),
-        DashboardExternalRow(
+        DashboardAccount(
+            account_id=CODEX_RECONCILIATION_ACCOUNT_ID,
+            label=AccountLabel("codex-reconciliation"),
             provider_id=ProviderId.CODEX,
-            observed_at=observed_at,
-            states=(DashboardActionState.EXTERNAL_ACTIVE,),
+            plan="pro",
+            credential_health=CredentialHealth.RECONCILIATION_REQUIRED,
+            active=False,
+            states=(DashboardActionState.RECONCILIATION_REQUIRED,),
         ),
     )
     return DashboardSnapshot(
@@ -329,7 +362,7 @@ def saved_codex_account(
             subscription=CodexManagedAuthority(
                 authority_id=authority_id,
                 provider_identity=ProviderIdentity(identity),
-                generation=AuthorityGeneration("generation-private"),
+                generation=_SAVED_CODEX_GENERATION,
                 verified_at=observed_at,
                 executable_version="0.145.0",
                 health=CredentialHealth.HEALTHY,
