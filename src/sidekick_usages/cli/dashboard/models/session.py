@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from sidekick_usages.cli.dashboard.models.controller import (
-    ActivateOrRepairIntent,
     DashboardControllerState,
     DashboardIntent,
 )
@@ -19,7 +18,6 @@ class DashboardConfirmationKind(StrEnum):
     """Closed approvals accepted by the interactive dashboard."""
 
     SERVICE_SETUP = "service_setup"
-    REMOTE_CONTROL = "remote_control"
 
 
 class DashboardStartupReconciliationState(StrEnum):
@@ -62,30 +60,10 @@ class DashboardSessionView:
             raise ValueError("Activation requires an in-flight action.")
         if self.confirmation is not None and not self.action_in_flight:
             raise ValueError("Confirmation requires an in-flight action.")
-        if (
-            self.confirmation is not None
-            and self.confirmation.kind
-            is DashboardConfirmationKind.REMOTE_CONTROL
-            and not self.activation_in_flight
-        ):
-            raise ValueError(
-                "Remote Control confirmation requires an activation."
-            )
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class DashboardActionRequest:
-    """One queued mutation plus its explicit disruption approval."""
+    """One queued dashboard mutation."""
 
     intent: DashboardIntent
-    allow_remote_control_disconnect: bool = False
-
-    def __post_init__(self) -> None:
-        """Restrict disruption approval to an exact Claude activation."""
-        if self.allow_remote_control_disconnect and (
-            not isinstance(self.intent, ActivateOrRepairIntent)
-            or self.intent.provider_id is not ProviderId.CLAUDE
-        ):
-            raise ValueError(
-                "Remote Control approval requires Claude activation."
-            )

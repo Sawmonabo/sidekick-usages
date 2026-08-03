@@ -83,23 +83,10 @@ class EmptyPayload:
 
 @dataclass(frozen=True, slots=True)
 class ActivationPayload:
-    """One stable account target and its explicit activation approval."""
+    """One stable saved-account activation target."""
 
     provider_id: ProviderId
     account_id: SidekickAccountId
-    allow_remote_control_disconnect: bool = False
-
-    def __post_init__(self) -> None:
-        """Restrict Remote Control approval to Claude activation."""
-        if type(self.allow_remote_control_disconnect) is not bool:
-            raise ValueError("Remote Control approval must be boolean.")
-        if (
-            self.allow_remote_control_disconnect
-            and self.provider_id is not ProviderId.CLAUDE
-        ):
-            raise ValueError(
-                "Remote Control approval is only valid for Claude activation."
-            )
 
 
 @dataclass(frozen=True, slots=True)

@@ -157,6 +157,7 @@ def _open_selection_operation() -> OpenSelectionOperation:
         provider_id=PROVIDER_ID,
         baseline_account_id=None,
         target_account_id=TARGET_ACCOUNT_ID,
+        prepared_generation=None,
         target_generation=None,
         baseline_epoch=SelectionEpoch(7),
         pending_epoch=SelectionEpoch(8),
@@ -175,11 +176,11 @@ def _open_selection_operation() -> OpenSelectionOperation:
 def _preparing(
     operation: OpenSelectionOperation,
 ) -> OpenSelectionOperation:
-    """Learn the target generation and capture initial participants."""
+    """Learn the prepared source generation and capture participants."""
     return replace(
         operation,
         phase=SelectionPhase.PREPARING,
-        target_generation=AuthorityGeneration("generation-target-7"),
+        prepared_generation=AuthorityGeneration("generation-source-7"),
         required_participant_ids=(PARTICIPANT_B, PARTICIPANT_A),
     )
 
@@ -214,6 +215,11 @@ def _operation_at_phase(
     return replace(
         _preparing(_open_selection_operation()),
         phase=phase,
+        target_generation=(
+            AuthorityGeneration("generation-runtime-8")
+            if phase is SelectionPhase.AWAITING_READY
+            else None
+        ),
         outcome_code=(
             SelectionCode.SELECTION_RECOVERY_REQUIRED
             if phase is SelectionPhase.RECOVERING
@@ -244,7 +250,7 @@ def _assert_selection_safety_guards(
     illegal = replace(
         operation,
         phase=SelectionPhase.COMMITTING,
-        target_generation=AuthorityGeneration("generation-target-7"),
+        prepared_generation=AuthorityGeneration("generation-source-7"),
     )
     illegal_store = SelectionOperationStore(
         selection_journals / "illegal-transition"
@@ -318,7 +324,16 @@ def _assert_selection_safety_guards(
     recovery_store.compare_and_swap(operation, preparing)
     recovery_store.compare_and_swap(preparing, waiting)
     recovery_store.compare_and_swap(waiting, committing)
-    recovery_store.compare_and_swap(committing, recovering)
+    awaiting = replace(
+        lost,
+        phase=SelectionPhase.AWAITING_READY,
+        ready_participant_ids=(),
+        lost_after_commit_participant_ids=(),
+        outcome_code=None,
+    )
+    recovery_store.compare_and_swap(committing, awaiting)
+    recovery_store.compare_and_swap(awaiting, lost)
+    recovery_store.compare_and_swap(lost, recovering)
     recovery_store.complete(recovery_required)
     assert recovery_store.load(PROVIDER_ID).active == recovering
 
@@ -369,7 +384,11 @@ def test_selection_journal_is_forward_only_and_secret_free(
         phase=SelectionPhase.WAITING_OLD_TURNS,
     )
     committing = replace(waiting, phase=SelectionPhase.COMMITTING)
-    awaiting = replace(committing, phase=SelectionPhase.AWAITING_READY)
+    awaiting = replace(
+        committing,
+        phase=SelectionPhase.AWAITING_READY,
+        target_generation=AuthorityGeneration("generation-runtime-8"),
+    )
     lost = replace(
         awaiting,
         ready_participant_ids=(PARTICIPANT_A,),
@@ -477,6 +496,11 @@ def test_selection_transition_graph_has_only_exact_legal_edges(
     allowed = LEGAL_SELECTION_EDGES[expected_phase]
     for replacement_phase in allowed:
         replacement = _operation_at_phase(replacement_phase)
+        if expected_phase is SelectionPhase.AWAITING_READY:
+            replacement = replace(
+                replacement,
+                target_generation=expected.target_generation,
+            )
         assert (
             require_selection_transition(expected, replacement) == replacement
         )

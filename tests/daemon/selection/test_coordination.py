@@ -1,5 +1,6 @@
 """Concurrent participant selection coordination tests."""
 
+from collections.abc import Generator
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -18,10 +19,12 @@ from sidekick_usages.core.selection.models import (
     FinalizedSelection,
     OpenSelectionOperation,
     PreparedSelection,
+    SelectionAuthorityObservation,
     SelectionEpoch,
     SelectionResult,
 )
 from sidekick_usages.core.selection.types import (
+    OperationState,
     ParticipantId,
     SelectionCode,
     SelectionOutcome,
@@ -29,28 +32,37 @@ from sidekick_usages.core.selection.types import (
     TurnId,
 )
 from sidekick_usages.core.types import ProviderId
+from sidekick_usages.daemon.models.scheduler import SchedulerCompletion
+from sidekick_usages.daemon.models.worker import SelectionWorkerMetadata
 from sidekick_usages.daemon.selection.coordinator import (
     SelectionCoordinator,
-    SelectionRequestError,
 )
 from sidekick_usages.daemon.selection.models import (
     ParticipantAdoptionProof,
     ParticipantClientKind,
     ParticipantConnectionRequest,
     ParticipantManifest,
+    ParticipantNotice,
     ParticipantNoticeKind,
     ParticipantReadyProof,
     ParticipantReadyRequest,
     ParticipantRegistration,
+    SelectionRequestError,
     TurnAdmissionState,
     TurnBeginRequest,
     TurnEndRequest,
 )
 from sidekick_usages.daemon.selection.recovery import SelectionRecovery
-from sidekick_usages.daemon.selection.registry import ParticipantRegistry
+from sidekick_usages.daemon.selection.registry import (
+    MAX_RETAINED_PARTICIPANT_NOTICES,
+    ParticipantRegistry,
+)
+from sidekick_usages.daemon.selection.worker import SelectionWorkerGateway
+from sidekick_usages.daemon.types.worker import WorkerOutcome
 from sidekick_usages.persistence.models.selection import (
     SelectionOperationDocument,
 )
+from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
 from sidekick_usages.persistence.supervisor.selection import (
     SelectedStateStore,
     SelectionOperationStore,
@@ -76,6 +88,7 @@ PARTICIPANT_D = ParticipantId("ed416c76-24b3-4934-9486-f910376e3a71")
 TURN_A = TurnId("a99915d0-5d3a-497a-9696-c227d0903709")
 TURN_B = TurnId("0168fe43-5c83-46f4-b8ef-6cc047293957")
 INITIAL_PARTICIPANT_COUNT = 2
+DISCONNECTED_PARTICIPANT_COUNT = 3
 TEST_SELECTION_TIMEOUT_SECONDS = 0.05
 
 
@@ -101,7 +114,7 @@ class _SelectionAdapter:
             operation_id=operation.operation_id,
             provider_id=operation.provider_id,
             target_account_id=operation.target_account_id,
-            target_generation=AuthorityGeneration("generation-target-8"),
+            target_generation=AuthorityGeneration("generation-source-8"),
             baseline_epoch=operation.baseline_epoch,
             pending_epoch=operation.pending_epoch,
         )
@@ -114,15 +127,20 @@ class _SelectionAdapter:
     def readback(
         self,
         prepared: PreparedSelection,
-    ) -> AuthorityReadyProof | None:
-        return self._proof(prepared)
+    ) -> SelectionAuthorityObservation:
+        proof = self._proof(prepared)
+        return SelectionAuthorityObservation(
+            provider_id=proof.provider_id,
+            account_id=proof.account_id,
+            generation=proof.generation,
+        )
 
     @staticmethod
     def _proof(prepared: PreparedSelection) -> AuthorityReadyProof:
         return AuthorityReadyProof(
             provider_id=prepared.provider_id,
             account_id=prepared.target_account_id,
-            generation=prepared.target_generation,
+            generation=AuthorityGeneration("generation-target-8"),
             epoch=prepared.pending_epoch,
             safe_code=SelectionCode.SELECTION_SUCCEEDED,
         )
@@ -136,6 +154,10 @@ class _ObservedOperationStore:
         self.preparing = Event()
         self.awaiting_ready = Event()
         self.reject_required_once = False
+        self.crash_after_complete_once = False
+        self.block_complete_once = False
+        self.complete_started = Event()
+        self.allow_complete = Event()
 
     def begin(
         self,
@@ -171,7 +193,16 @@ class _ObservedOperationStore:
         return result
 
     def complete(self, result: SelectionResult) -> SelectionResult:
-        return self._store.complete(result)
+        completed = self._store.complete(result)
+        if self.block_complete_once:
+            self.block_complete_once = False
+            self.complete_started.set()
+            if not self.allow_complete.wait(1):
+                raise RuntimeError("Synthetic completion gate timed out.")
+        if self.crash_after_complete_once:
+            self.crash_after_complete_once = False
+            raise RuntimeError("Synthetic crash after durable completion.")
+        return completed
 
     def add_required(
         self,
@@ -225,6 +256,7 @@ class _Journey:
     recovery_handoffs: list[ProviderId]
     coordinator: SelectionCoordinator
     first: ParticipantRegistration
+    subscriptions: tuple[Generator[ParticipantNotice], ...]
 
 
 def _build_journey(tmp_path: Path) -> _Journey:
@@ -252,7 +284,29 @@ def _build_journey(tmp_path: Path) -> _Journey:
     first = registry.register(_manifest(PARTICIPANT_A), _process(1))
     registry.register(_manifest(PARTICIPANT_B), _process(2))
     registry.register(_manifest(PARTICIPANT_D), _process(4))
+    subscriptions = tuple(
+        registry.subscribe(
+            new_request_id(),
+            ParticipantConnectionRequest(participant_id, 1),
+        )
+        for participant_id in (PARTICIPANT_A, PARTICIPANT_B, PARTICIPANT_D)
+    )
+    for subscription in subscriptions:
+        assert next(subscription).kind is ParticipantNoticeKind.OPEN
+    for _index in range(MAX_RETAINED_PARTICIPANT_NOTICES + 1):
+        registry.publish_status(
+            PROVIDER_ID,
+            SelectionEpoch(7),
+            SelectionCode.SELECTION_RECOVERY_REQUIRED,
+        )
+    assert next(subscriptions[0]).kind is ParticipantNoticeKind.OPEN
     registry.disconnect(PARTICIPANT_D, 1)
+    subscriptions[-1].close()
+    assert (
+        registry.registered_count(PROVIDER_ID)
+        == DISCONNECTED_PARTICIPANT_COUNT
+    )
+    registry.confirm_dead(PARTICIPANT_D, _process(4))
     assert registry.registered_count(PROVIDER_ID) == INITIAL_PARTICIPANT_COUNT
     first_turn = registry.begin_turn(
         TurnBeginRequest(PARTICIPANT_A, 1, TURN_A)
@@ -286,6 +340,7 @@ def _build_journey(tmp_path: Path) -> _Journey:
         recovery_handoffs,
         coordinator,
         first,
+        subscriptions[:-1],
     )
 
 
@@ -311,6 +366,8 @@ def _assert_journey_result(
     expected_participant_count: int,
 ) -> None:
     assert result.outcome is expected_outcome
+    journey.registry.disconnect(PARTICIPANT_B, 1)
+    journey.subscriptions[1].close()
     next_turn = journey.registry.begin_turn(
         TurnBeginRequest(PARTICIPANT_B, 1, TURN_B)
     )
@@ -400,6 +457,37 @@ def _register_late(journey: _Journey) -> ParticipantRegistration:
     assert next(notices).kind is ParticipantNoticeKind.PREPARE
     notices.close()
     return registration
+
+
+def _arm_postcommit_loss(journey: _Journey, loss_state: str) -> None:
+    """Arm durable-close failure only for the final-seal schedule."""
+    if loss_state != "dead_after_commit":
+        return
+    journey.operations.block_complete_once = True
+    journey.operations.crash_after_complete_once = True
+    journey.process_inspector.dead.add(_process(3))
+
+
+def _disconnect_during_final_seal(
+    journey: _Journey,
+    loss_state: str,
+) -> tuple[Thread, Event] | None:
+    """Prove reachability mutation waits until final publication opens."""
+    if loss_state != "dead_after_commit":
+        return None
+    operations = journey.operations
+    assert operations.complete_started.wait(1)
+    disconnected = Event()
+
+    def disconnect() -> None:
+        journey.registry.disconnect(PARTICIPANT_B, 1)
+        disconnected.set()
+
+    thread = Thread(target=disconnect, daemon=True)
+    thread.start()
+    assert not disconnected.wait(TEST_SELECTION_TIMEOUT_SECONDS)
+    operations.allow_complete.set()
+    return thread, disconnected
 
 
 @pytest.mark.parametrize(
@@ -496,8 +584,7 @@ def test_three_participants_switch_without_interrupting_turns(
 
     if loss_state == "live_unreachable":
         registry.disconnect(PARTICIPANT_C, 1)
-    if loss_state == "dead_after_commit":
-        journey.process_inspector.dead.add(_process(3))
+    _arm_postcommit_loss(journey, loss_state)
     ready_participants = (
         (PARTICIPANT_B, PARTICIPANT_C)
         if loss_state == "dead_before_commit"
@@ -521,7 +608,13 @@ def test_three_participants_switch_without_interrupting_turns(
             ),
             _process(process_index),
         )
+    disconnect_probe = _disconnect_during_final_seal(journey, loss_state)
     selector.join(timeout=2)
+    if disconnect_probe is not None:
+        disconnect, disconnected = disconnect_probe
+        disconnect.join(timeout=2)
+        assert not disconnect.is_alive()
+        assert disconnected.is_set()
     if replay is not None:
         replay.join(timeout=2)
         assert not replay.is_alive()
@@ -538,29 +631,40 @@ def test_three_participants_switch_without_interrupting_turns(
     )
 
 
+@pytest.mark.parametrize("baseline_exists", [False, True])
 def test_recovery_finalizes_forward_from_target_provider_proof(
     tmp_path: Path,
+    baseline_exists: bool,
 ) -> None:
     """Restart recovery gates admission and never restores baseline auth."""
     paths = make_application_paths(tmp_path)
-    baseline = FinalizedSelection(
-        provider_id=PROVIDER_ID,
-        account_id=SidekickAccountId("4d95b1fb-1ba4-4837-b6b7-452cd8aff462"),
-        epoch=SelectionEpoch(7),
-        generation=AuthorityGeneration("generation-baseline-7"),
-        finalized_at=REFERENCE_TIME,
+    baseline = (
+        FinalizedSelection(
+            provider_id=PROVIDER_ID,
+            account_id=SidekickAccountId(
+                "4d95b1fb-1ba4-4837-b6b7-452cd8aff462"
+            ),
+            epoch=SelectionEpoch(7),
+            generation=AuthorityGeneration("generation-baseline-7"),
+            finalized_at=REFERENCE_TIME,
+        )
+        if baseline_exists
+        else None
     )
-    seed_finalized_selections(paths, baseline)
+    if baseline is not None:
+        seed_finalized_selections(paths, baseline)
+    baseline_epoch = SelectionEpoch(0) if baseline is None else baseline.epoch
     selected = SelectedStateStore(paths.selected_state)
     journal = SelectionOperationStore(paths.selection_journals)
     operation = OpenSelectionOperation(
         operation_id=OPERATION_ID,
         provider_id=PROVIDER_ID,
-        baseline_account_id=baseline.account_id,
+        baseline_account_id=None if baseline is None else baseline.account_id,
         target_account_id=TARGET_ACCOUNT_ID,
+        prepared_generation=None,
         target_generation=None,
-        baseline_epoch=baseline.epoch,
-        pending_epoch=baseline.epoch.next(),
+        baseline_epoch=baseline_epoch,
+        pending_epoch=baseline_epoch.next(),
         phase=SelectionPhase.PREVALIDATING,
         required_participant_ids=(),
         ready_participant_ids=(),
@@ -581,7 +685,7 @@ def test_recovery_finalizes_forward_from_target_provider_proof(
         replacement = replace(
             operation,
             phase=phase,
-            target_generation=AuthorityGeneration("generation-target-8"),
+            prepared_generation=(AuthorityGeneration("generation-source-8")),
             outcome_code=(
                 SelectionCode.SELECTION_RECOVERY_REQUIRED
                 if phase is SelectionPhase.RECOVERING
@@ -591,29 +695,50 @@ def test_recovery_finalizes_forward_from_target_provider_proof(
         journal.compare_and_swap(operation, replacement)
         operation = replacement
 
-    adapter = _SelectionAdapter()
     registry = ParticipantRegistry(selected)
-    result = SelectionRecovery(
+    queue = OperationQueueStore(paths.durable_operations)
+    gateway = SelectionWorkerGateway(queue, FixedClock(), lambda: None)
+    recovery = SelectionRecovery(
         selected,
         journal,
         registry,
-        adapter,
+        gateway,
         FixedClock(),
-    ).recover(PROVIDER_ID)
+    )
+    assert recovery.restore(PROVIDER_ID)
+    (readback,) = recovery.enqueue_restored_readbacks()
+    queue.remove(
+        readback.operation_id,
+        expected_state=OperationState.SCHEDULED,
+    )
+    recovery.complete_readback(
+        SchedulerCompletion(
+            operation_id=readback.operation_id,
+            operation_kind=readback.kind,
+            state=None,
+            outcome=WorkerOutcome.SUCCEEDED,
+            failure_code=None,
+            selection=SelectionWorkerMetadata(
+                operation_id=readback.operation_id,
+                provider_id=PROVIDER_ID,
+                kind=readback.kind,
+                pending_epoch=operation.pending_epoch,
+                observed_account_id=TARGET_ACCOUNT_ID,
+                observed_generation=AuthorityGeneration("generation-target-8"),
+            ),
+        )
+    )
 
-    assert result is not None
-    assert result.outcome is SelectionOutcome.READY
     finalized = selected.load(PROVIDER_ID)
     assert finalized is not None
     assert finalized.account_id == TARGET_ACCOUNT_ID
-    assert finalized.epoch == SelectionEpoch(8)
+    assert finalized.epoch == baseline_epoch.next()
     assert journal.load(PROVIDER_ID).active is None
-    assert adapter.commit_count == 0
     registration = registry.register(_manifest(PARTICIPANT_A), _process(1))
-    assert registration.registered_epoch == SelectionEpoch(8)
+    assert registration.registered_epoch == baseline_epoch.next()
     assert registration.pending_epoch is None
     registry.register(_manifest(PARTICIPANT_B), _process(2))
-    registry.close_admission(PROVIDER_ID, SelectionEpoch(9))
+    registry.close_admission(PROVIDER_ID, baseline_epoch.next().next())
     registry.confirm_dead(PARTICIPANT_A, _process(1))
     registry.reopen_baseline(PROVIDER_ID)
     assert registry.registered_count(PROVIDER_ID) == 1

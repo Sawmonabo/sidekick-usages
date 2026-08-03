@@ -237,6 +237,7 @@ def foundation_runtime(
     recovery: ActivationRecoveryScheduler,
     clock: RuntimeClock,
     wakeup: WakeupChannel,
+    stop_requested: Event | None = None,
 ) -> SupervisorRuntime:
     """Build one direct-cycle supervisor around typed daemon fakes."""
     return SupervisorRuntime(
@@ -251,6 +252,6 @@ def foundation_runtime(
         ServiceStateStore(paths.service_state),
         clock,
         wakeup,
-        Event(),
+        Event() if stop_requested is None else stop_requested,
         ResidentState(),
     )

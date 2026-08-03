@@ -6,7 +6,7 @@ from typing import Protocol
 
 from sidekick_usages.core.accounts.identifiers import new_operation_id
 from sidekick_usages.core.accounts.types import OperationId
-from sidekick_usages.core.selection.models import DueOperation, SelectionResult
+from sidekick_usages.core.selection.models import DueOperation
 from sidekick_usages.core.selection.types import (
     OperationKind,
     OperationPriority,
@@ -23,11 +23,17 @@ from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
 class GlobalSelectionRecovery(Protocol):
     """Nonblocking provider-neutral selection-journal recovery."""
 
-    def recover_all(self) -> tuple[SelectionResult, ...]:
-        """Restore every gate and finalize only immediately proven work."""
+    def restore_all(self) -> tuple[ProviderId, ...]:
+        """Restore active gates without provider work."""
+
+    def enqueue_restored_readbacks(self) -> tuple[DueOperation, ...]:
+        """Enqueue restored provider readbacks without provider I/O."""
 
     def reconciled(self) -> bool:
         """Return whether no selection journal remains active."""
+
+    def close(self) -> None:
+        """Release live selection waiters without cancelling work."""
 
 
 class ActivationRecoveryScheduler:
@@ -46,11 +52,22 @@ class ActivationRecoveryScheduler:
         self._operation_id_factory = operation_id_factory
         self._selection_recovery = selection_recovery
 
-    def recover_selection(self) -> tuple[SelectionResult, ...]:
-        """Restore global selection gates without awaiting participants."""
+    def restore_selection(self) -> tuple[ProviderId, ...]:
+        """Restore global selection gates without provider readback."""
         if self._selection_recovery is None:
             return ()
-        return self._selection_recovery.recover_all()
+        return self._selection_recovery.restore_all()
+
+    def enqueue_selection_readbacks(self) -> tuple[DueOperation, ...]:
+        """Enqueue restored selection readbacks after socket acceptance."""
+        if self._selection_recovery is None:
+            return ()
+        return self._selection_recovery.enqueue_restored_readbacks()
+
+    def close_selection(self) -> None:
+        """Release selection waiters during supervisor shutdown."""
+        if self._selection_recovery is not None:
+            self._selection_recovery.close()
 
     def enroll(self, now: datetime) -> tuple[DueOperation, ...]:
         """Match durable recovery slots exactly to unfinished journals."""

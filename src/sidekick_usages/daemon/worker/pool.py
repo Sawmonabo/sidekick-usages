@@ -56,6 +56,9 @@ _SELECTION_OPERATION_KINDS = frozenset(
         OperationKind.ACTIVATE,
         OperationKind.RECONCILE,
         OperationKind.RECONCILE_NATIVE,
+        OperationKind.SELECTION_PREVALIDATE,
+        OperationKind.SELECTION_COMMIT,
+        OperationKind.SELECTION_READBACK,
     }
 )
 

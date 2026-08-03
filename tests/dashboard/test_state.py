@@ -709,26 +709,11 @@ def test_dashboard_controller_journey_preserves_verified_truth(
                     ),
                 ),
             ),
-            (
-                DashboardConfirmationKind.REMOTE_CONTROL,
-                DashboardFooter(
-                    navigation=DashboardNavigationKind.KEYS,
-                    status=DashboardStatus(
-                        kind=DashboardStatusKind.CONFIRMATION,
-                        message=(
-                            "Claude Remote Control may disconnect during "
-                            "this switch. Continue? y yes / n no"
-                        ),
-                    ),
-                ),
-            ),
         ),
         activations=(
-            (ProviderId.CLAUDE, CLAUDE_PREVIEW_ACCOUNT_ID, False),
-            (ProviderId.CLAUDE, CLAUDE_PREVIEW_ACCOUNT_ID, True),
-            (ProviderId.CLAUDE, CLAUDE_ACTIVE_ACCOUNT_ID, False),
-            (ProviderId.CODEX, CODEX_SAVED_ACCOUNT_ID, False),
-            (ProviderId.CLAUDE, CLAUDE_ACTIVE_ACCOUNT_ID, False),
+            (ProviderId.CLAUDE, CLAUDE_PREVIEW_ACCOUNT_ID),
+            (ProviderId.CLAUDE, CLAUDE_ACTIVE_ACCOUNT_ID),
+            (ProviderId.CODEX, CODEX_RECONCILIATION_ACCOUNT_ID),
         ),
         setup_events=(
             "status:claude",
@@ -759,7 +744,6 @@ def test_dashboard_controller_journey_preserves_verified_truth(
                 ),
             ),
         ),
-        remote_control_scoped_to_claude=True,
         lookup_failure=(MetricsFreshness.UNAVAILABLE, True),
         metrics_refresh=MetricsRefreshObservation(
             observed_at=REFERENCE_TIME,
@@ -837,6 +821,6 @@ def test_dashboard_controller_journey_preserves_verified_truth(
         lookup_cancelled=True,
         daemon_cancelled=True,
         stream_released=True,
-        closed_clients=5,
+        closed_clients=3,
         post_close_invalidations=0,
     )

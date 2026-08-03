@@ -21,6 +21,7 @@ from sidekick_usages.core.selection.operation import (
     FinalizedSelection,
     OpenSelectionOperation,
     PreparedSelection,
+    SelectionAuthorityObservation,
     SelectionEpoch,
     SelectionResult,
 )
@@ -52,6 +53,7 @@ __all__ = (
     "ProviderRuntimeSnapshot",
     "RelatedRuntimeAuthority",
     "SelectedAccountState",
+    "SelectionAuthorityObservation",
     "SelectionEpoch",
     "SelectionResult",
     "activation_account_ids",
@@ -406,7 +408,6 @@ class DueOperation:
     updated_at: datetime
     attempts: int = 0
     failure_code: str | None = None
-    allow_remote_control_disconnect: bool = False
 
     def __post_init__(self) -> None:
         """Normalize wall time and validate retry state."""
@@ -419,15 +420,6 @@ class DueOperation:
             or self.attempts > _MAX_ATTEMPTS
         ):
             raise ValueError("Operation attempts are outside the bound.")
-        if type(self.allow_remote_control_disconnect) is not bool:
-            raise ValueError("Remote Control approval must be boolean.")
-        if self.allow_remote_control_disconnect and (
-            self.provider_id is not ProviderId.CLAUDE
-            or self.kind is not OperationKind.ACTIVATE
-        ):
-            raise ValueError(
-                "Remote Control approval is only valid for Claude activation."
-            )
         due_at = as_utc(self.due_at)
         updated_at = as_utc(self.updated_at)
         failure_code = safe_outcome_code(self.failure_code)

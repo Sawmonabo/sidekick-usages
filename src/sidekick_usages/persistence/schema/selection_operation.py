@@ -55,6 +55,7 @@ _OPEN_KEYS = frozenset(
         "outcome_code",
         "pending_epoch",
         "phase",
+        "prepared_generation",
         "provider_id",
         "ready_participant_ids",
         "required_participant_ids",
@@ -146,6 +147,14 @@ def _open_operation(record: JsonObject) -> OpenSelectionOperation:
         ),
         target_account_id=SidekickAccountId(
             require_string(record["target_account_id"])
+        ),
+        prepared_generation=(
+            None
+            if (
+                value := require_optional_string(record["prepared_generation"])
+            )
+            is None
+            else AuthorityGeneration(value)
         ),
         target_generation=(
             None
@@ -259,6 +268,11 @@ def _open_object(operation: OpenSelectionOperation) -> JsonObject:
         ),
         "pending_epoch": operation.pending_epoch.value,
         "phase": operation.phase.value,
+        "prepared_generation": (
+            None
+            if operation.prepared_generation is None
+            else str(operation.prepared_generation)
+        ),
         "provider_id": operation.provider_id.value,
         "ready_participant_ids": [
             str(participant_id)

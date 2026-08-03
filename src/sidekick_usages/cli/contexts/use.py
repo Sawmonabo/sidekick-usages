@@ -49,7 +49,6 @@ class _SupervisorAccountActivation:
         self,
         provider_id: ProviderId,
         account_id: SidekickAccountId,
-        allow_remote_control_disconnect: bool,
     ) -> UseActivationResult:
         client = ControlClient.connect(self._socket_path)
         try:
@@ -57,9 +56,6 @@ class _SupervisorAccountActivation:
                 client.activate(
                     provider_id,
                     account_id,
-                    allow_remote_control_disconnect=(
-                        allow_remote_control_disconnect
-                    ),
                 ),
                 identity=ControlOperationIdentity.ACCOUNT,
             )

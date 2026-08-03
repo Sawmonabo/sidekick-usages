@@ -232,6 +232,8 @@ def encode_selection_event(payload: EventPayload) -> JsonValue:
         }
     if isinstance(payload, SelectionStatus):
         return {
+            "active_turn_count": payload.active_turn_count,
+            "adopted_count": payload.adopted_count,
             "code": None if payload.code is None else payload.code.value,
             "finalized_account_id": _optional_account(
                 payload.finalized_account_id
@@ -241,7 +243,13 @@ def encode_selection_event(payload: EventPayload) -> JsonValue:
             "pending_epoch": _optional_epoch(payload.pending_epoch),
             "phase": None if payload.phase is None else payload.phase.value,
             "provider": payload.provider_id.value,
+            "queued_turn_count": payload.queued_turn_count,
+            "reachable_count": payload.reachable_count,
+            "ready_count": payload.ready_count,
+            "registered_count": payload.registered_count,
+            "required_count": payload.required_count,
             "target_account_id": _optional_account(payload.target_account_id),
+            "unreachable_count": payload.unreachable_count,
         }
     raise TypeError("Event payload is not selection-owned.")
 
@@ -372,6 +380,8 @@ def _decode_status(root: JsonObject) -> SelectionStatus:
     require_exact_keys(
         root,
         {
+            "active_turn_count",
+            "adopted_count",
             "code",
             "finalized_account_id",
             "finalized_epoch",
@@ -379,7 +389,13 @@ def _decode_status(root: JsonObject) -> SelectionStatus:
             "pending_epoch",
             "phase",
             "provider",
+            "queued_turn_count",
+            "reachable_count",
+            "ready_count",
+            "registered_count",
+            "required_count",
             "target_account_id",
+            "unreachable_count",
         },
     )
     return SelectionStatus(
@@ -393,6 +409,14 @@ def _decode_status(root: JsonObject) -> SelectionStatus:
         pending_epoch=_decode_optional_epoch(root["pending_epoch"]),
         phase=_decode_optional_phase(root["phase"]),
         code=_decode_optional_code(root["code"]),
+        registered_count=require_integer(root["registered_count"]),
+        reachable_count=require_integer(root["reachable_count"]),
+        required_count=require_integer(root["required_count"]),
+        ready_count=require_integer(root["ready_count"]),
+        adopted_count=require_integer(root["adopted_count"]),
+        unreachable_count=require_integer(root["unreachable_count"]),
+        active_turn_count=require_integer(root["active_turn_count"]),
+        queued_turn_count=require_integer(root["queued_turn_count"]),
     )
 
 

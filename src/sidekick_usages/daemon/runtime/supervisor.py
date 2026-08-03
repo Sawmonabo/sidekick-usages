@@ -14,7 +14,10 @@ from threading import (
 
 from sidekick_usages import __version__
 from sidekick_usages.clock import Clock
-from sidekick_usages.daemon.control.server import LocalControlServer
+from sidekick_usages.daemon.control.server import (
+    MAX_CONTROL_CONNECTIONS,
+    LocalControlServer,
+)
 from sidekick_usages.daemon.models.service import ServiceState
 from sidekick_usages.daemon.runtime.recovery import ActivationRecoveryScheduler
 from sidekick_usages.daemon.runtime.scheduler import DurableScheduler
@@ -27,8 +30,6 @@ from sidekick_usages.daemon.types.service import (
 )
 from sidekick_usages.persistence.supervisor.service import ServiceStateStore
 
-# Two streams for each of 16 participants per provider, plus four operators.
-MAX_CONTROL_CONNECTIONS = 68
 _CONNECTION_JOIN_SECONDS = 1.0
 _WAKE_BYTE = b"\x00"
 _WAKE_READ_BYTES = 4096
@@ -83,24 +84,22 @@ class _ConnectionGroup:
         self._connections: set[socket.socket] = set()
         self._threads: set[Thread] = set()
 
-    def accept_ready(self) -> None:
-        """Accept one selector-ready peer or reject excess capacity."""
-        connection = self._server.accept_connection()
-        if connection is None:
-            return
-        if not self._capacity.acquire(blocking=False):
-            connection.close()
-            return
-        thread = Thread(
-            target=self._serve,
-            args=(connection,),
-            daemon=True,
-            name="sidekick-control",
-        )
-        with self._lock:
-            self._connections.add(connection)
-            self._threads.add(thread)
-        thread.start()
+    def accept_all_ready(self) -> None:
+        """Drain every currently ready peer without blocking the selector."""
+        while (connection := self._server.accept_connection()) is not None:
+            if not self._capacity.acquire(blocking=False):
+                connection.close()
+                continue
+            thread = Thread(
+                target=self._serve,
+                args=(connection,),
+                daemon=True,
+                name="sidekick-control",
+            )
+            with self._lock:
+                self._connections.add(connection)
+                self._threads.add(thread)
+            thread.start()
 
     def close(self) -> None:
         """Close active streams and join their bounded handler threads."""
@@ -156,6 +155,7 @@ class SupervisorRuntime:
         connections = _ConnectionGroup(self._server)
         self._publish(ServicePhase.STARTING)
         self._server.open()
+        self._server.set_nonblocking()
         selector = selectors.DefaultSelector()
         selector.register(self._server, selectors.EVENT_READ, "control")
         selector.register(self._wakeup, selectors.EVENT_READ, "wakeup")
@@ -163,34 +163,40 @@ class SupervisorRuntime:
             self.recover()
             self._resident.start()
             self.run_cycle()
+            connections.accept_all_ready()
+            self._recovery.enqueue_selection_readbacks()
+            self.run_cycle()
             while not self._stop_requested.is_set():
                 timeout = self._scheduler.next_wait_seconds()
                 for key, _mask in selector.select(timeout):
                     if key.data == "control":
-                        connections.accept_ready()
+                        connections.accept_all_ready()
                     else:
                         self._wakeup.drain()
                 self.run_cycle()
         finally:
             self._publish(ServicePhase.STOPPING)
             try:
-                self._resident.request_stop()
+                self._recovery.close_selection()
             finally:
                 try:
-                    self._scheduler.shutdown()
+                    self._resident.request_stop()
                 finally:
                     try:
-                        self._resident.close()
+                        self._scheduler.shutdown()
                     finally:
-                        connections.close()
-                        selector.close()
-                        self._server.close()
-                        self._wakeup.close()
+                        try:
+                            self._resident.close()
+                        finally:
+                            connections.close()
+                            selector.close()
+                            self._server.close()
+                            self._wakeup.close()
 
     def recover(self) -> None:
         """Recover durable queue and journal work before readiness."""
         self._scheduler.recover()
-        self._recovery.recover_selection()
+        self._recovery.restore_selection()
         self._queue_recovered = True
         self._recovery.enroll(self._clock.now())
 

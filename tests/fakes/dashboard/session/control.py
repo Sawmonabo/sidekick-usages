@@ -28,7 +28,6 @@ from sidekick_usages.daemon.types.protocol import (
 from tests.fakes.dashboard.runtime import SetupDaemon
 from tests.fakes.dashboard.session.models import (
     DEFAULT_TEST_CONTROL_TIMEOUT_SECONDS,
-    REMOTE_CONTROL_REQUIRED_CODE,
     SESSION_OPERATION_ID,
     SESSION_REQUEST_ID,
     SESSION_WAIT_SECONDS,
@@ -52,10 +51,9 @@ class SessionControlConnector:
         ] = {}
         self.reconciliations: list[ProviderId] = []
         self.reconciliation_failures: set[ProviderId] = set()
-        self.activations: list[tuple[ProviderId, SidekickAccountId, bool]] = []
+        self.activations: list[tuple[ProviderId, SidekickAccountId]] = []
         self.closed_clients = 0
         self.skip_readback_next = False
-        self.require_remote_control_next = False
         self.snapshot_ready = True
         self.pause_next = False
         self.allow_degraded = False
@@ -100,17 +98,9 @@ class SessionControlClient:
         self,
         provider_id: ProviderId,
         account_id: SidekickAccountId,
-        *,
-        allow_remote_control_disconnect: bool = False,
     ) -> Iterator[ControlEvent]:
         """Complete or fail one correlated synthetic activation."""
-        self._owner.activations.append(
-            (
-                provider_id,
-                account_id,
-                allow_remote_control_disconnect,
-            )
-        )
+        self._owner.activations.append((provider_id, account_id))
         yield _event(
             EventKind.ACCEPTED,
             AcceptedPayload(SESSION_OPERATION_ID),
@@ -132,19 +122,6 @@ class SessionControlClient:
                 ProgressPhase.VERIFYING,
             ),
         )
-        if (
-            self._owner.require_remote_control_next
-            and not allow_remote_control_disconnect
-        ):
-            self._owner.require_remote_control_next = False
-            yield _event(
-                EventKind.FAILED,
-                FailedPayload(
-                    SESSION_OPERATION_ID,
-                    REMOTE_CONTROL_REQUIRED_CODE,
-                ),
-            )
-            return
         if self._owner.skip_readback_next:
             self._owner.skip_readback_next = False
         else:

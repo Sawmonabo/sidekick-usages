@@ -16,9 +16,6 @@ from sidekick_usages.core.accounts.types import (
     SidekickAccountId,
 )
 from sidekick_usages.core.types import ProviderId
-from sidekick_usages.providers.claude.activation.types import (
-    ClaudeActivationGuardFailure,
-)
 from sidekick_usages.usage.dashboard.models import (
     DashboardFooter,
 )
@@ -31,10 +28,6 @@ DEFAULT_TEST_CONTROL_TIMEOUT_SECONDS = 5.0
 SESSION_SOCKET = Path("/synthetic/sidekick-supervisor.sock")
 SESSION_REQUEST_ID = RequestId("66666666-6666-4666-8666-666666666666")
 SESSION_OPERATION_ID = OperationId("77777777-7777-4777-8777-777777777777")
-REMOTE_CONTROL_REQUIRED_CODE = (
-    ClaudeActivationGuardFailure.REMOTE_CONTROL_DISCONNECT_REQUIRED
-).failure_code
-
 type DashboardConfirmationProof = tuple[
     DashboardConfirmationKind | None,
     DashboardFooter,
@@ -85,7 +78,7 @@ class DashboardSessionProof:
     startup_footer: DashboardFooter
     activation_locked: bool
     confirmations: tuple[DashboardConfirmationProof, ...]
-    activations: tuple[tuple[ProviderId, SidekickAccountId, bool], ...]
+    activations: tuple[tuple[ProviderId, SidekickAccountId], ...]
     setup_events: tuple[str, ...]
     setup_progress_sanitized: bool
     setup_refusal_restored: bool
@@ -95,7 +88,6 @@ class DashboardSessionProof:
     setup_not_repeated: bool
     restored_account_id: SidekickAccountId | None
     failure_footer: DashboardFooter
-    remote_control_scoped_to_claude: bool
     lookup_failure: DashboardLookupFailureProof
     metrics_refresh: MetricsRefreshObservation
     metrics_retry: DashboardMetricsRetryProof

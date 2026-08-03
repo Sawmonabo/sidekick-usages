@@ -81,9 +81,6 @@ class ClaudeSelectionWorkerExecutor:
                     operation.operation_id,
                     operation.required_account_id,
                     authority,
-                    allow_remote_control_disconnect=(
-                        operation.allow_remote_control_disconnect
-                    ),
                 )
             elif operation.kind is OperationKind.RECONCILE:
                 self._recovery.recover(

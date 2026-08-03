@@ -81,6 +81,20 @@ class PreparedSelection:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class SelectionAuthorityObservation:
+    """One provider authority observed during recovery readback."""
+
+    provider_id: ProviderId
+    account_id: SidekickAccountId | None
+    generation: AuthorityGeneration | None
+
+    def __post_init__(self) -> None:
+        """Require observed identity and generation to remain atomic."""
+        if (self.account_id is None) != (self.generation is None):
+            raise ValueError("Selection authority observation is incomplete.")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class AuthorityReadyProof:
     """Sanitized provider proof for one committed selected authority."""
 
@@ -99,6 +113,7 @@ class OpenSelectionOperation:
     provider_id: ProviderId
     baseline_account_id: SidekickAccountId | None
     target_account_id: SidekickAccountId
+    prepared_generation: AuthorityGeneration | None
     target_generation: AuthorityGeneration | None
     baseline_epoch: SelectionEpoch
     pending_epoch: SelectionEpoch
@@ -248,6 +263,14 @@ def _require_selection_result_outcome(result: SelectionResult) -> None:
         if result.ready_count or result.lost_count:
             raise ValueError("Old-epoch failure cannot claim readiness.")
         return
+    if result.outcome is SelectionOutcome.RECOVERY_REQUIRED:
+        if result.target_generation is None and (
+            result.ready_count or result.lost_count
+        ):
+            raise ValueError(
+                "Unproven runtime cannot claim participant readiness."
+            )
+        return
     if result.target_generation is None:
         raise ValueError("Postvalidation result requires target generation.")
     if result.outcome is SelectionOutcome.READY:
@@ -300,7 +323,8 @@ def _require_open_selection_phase(
     """Require generation and participant facts owned by the phase."""
     if operation.phase is SelectionPhase.PREVALIDATING:
         if (
-            operation.target_generation is not None
+            operation.prepared_generation is not None
+            or operation.target_generation is not None
             or required
             or ready
             or lost
@@ -310,8 +334,14 @@ def _require_open_selection_phase(
             raise ValueError(
                 "Prevalidation cannot claim target or participant proof."
             )
-    elif operation.target_generation is None:
-        raise ValueError("Prepared selection requires target generation.")
+        return
+    if operation.prepared_generation is None:
+        raise ValueError("Prepared selection requires source generation.")
+    if (
+        operation.phase is SelectionPhase.AWAITING_READY
+        and operation.target_generation is None
+    ):
+        raise ValueError("Awaiting selection requires runtime generation.")
 
 
 def _selection_participant_ids(

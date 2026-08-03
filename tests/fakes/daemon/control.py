@@ -8,7 +8,10 @@ from threading import Event, Thread
 from sidekick_usages import __version__
 from sidekick_usages.core.accounts.types import OperationId, RequestId
 from sidekick_usages.daemon.control.client import ControlClient
-from sidekick_usages.daemon.control.server import ControlConnection
+from sidekick_usages.daemon.control.server import (
+    ControlConnection,
+    ControlSubscriptionMonitor,
+)
 from sidekick_usages.daemon.models.control import VerifiedControlRequest
 from sidekick_usages.daemon.models.protocol import (
     AcceptedPayload,
@@ -172,6 +175,7 @@ class RecordingDispatcher:
     def cancel(self, context: VerifiedControlRequest) -> None:
         """Record one cancelled stream request."""
         self.cancellations.append(context.request.request_id)
+        self.release_subscription.set()
 
 
 def _service_event(
@@ -194,7 +198,17 @@ def serve_protocol_connection(
     dispatcher: ControlDispatcher,
 ) -> None:
     """Serve one synchronous control connection."""
-    ControlConnection(connection, verifier, dispatcher).serve()
+    monitor = ControlSubscriptionMonitor(dispatcher)
+    monitor.start()
+    try:
+        ControlConnection(
+            connection,
+            verifier,
+            dispatcher,
+            subscription_monitor=monitor,
+        ).serve()
+    finally:
+        monitor.close()
 
 
 def rejected_protocol_response(

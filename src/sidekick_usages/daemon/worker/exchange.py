@@ -44,6 +44,9 @@ def operation_requires_worker_exchange(operation: DueOperation) -> bool:
         in {
             OperationKind.ACTIVATE,
             OperationKind.RECONCILE,
+            OperationKind.SELECTION_PREVALIDATE,
+            OperationKind.SELECTION_COMMIT,
+            OperationKind.SELECTION_READBACK,
         }
     )
 

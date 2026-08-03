@@ -14,6 +14,7 @@ from sidekick_usages.core.selection.models import (
     FinalizedSelection,
     OpenSelectionOperation,
     PreparedSelection,
+    SelectionAuthorityObservation,
     SelectionEpoch,
     SelectionResult,
 )
@@ -53,7 +54,7 @@ class SelectionAuthorityAdapter(Protocol):
     def readback(
         self,
         prepared: PreparedSelection,
-    ) -> AuthorityReadyProof | None:
+    ) -> SelectionAuthorityObservation:
         """Read exact provider state without mutating it."""
 
 

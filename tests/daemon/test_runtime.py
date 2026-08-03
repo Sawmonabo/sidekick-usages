@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 from pathlib import Path
+from threading import Event, Thread
 
 import pytest
 
@@ -12,6 +13,7 @@ from sidekick_usages.core.accounts.identifiers import (
 from sidekick_usages.core.accounts.types import (
     AuthorityGeneration,
     OperationId,
+    SidekickAccountId,
 )
 from sidekick_usages.core.models import (
     Account,
@@ -20,13 +22,17 @@ from sidekick_usages.core.models import (
 )
 from sidekick_usages.core.selection.models import (
     DueOperation,
+    OpenSelectionOperation,
     RelatedRuntimeAuthority,
-    SelectionResult,
+    SelectionAuthorityObservation,
+    SelectionEpoch,
 )
 from sidekick_usages.core.selection.types import (
     OperationKind,
     OperationPriority,
     OperationState,
+    SelectionCode,
+    SelectionPhase,
 )
 from sidekick_usages.core.types import AccountLabel, ProviderId
 from sidekick_usages.daemon.control.dispatch import OperationEventHub
@@ -34,10 +40,12 @@ from sidekick_usages.daemon.lifecycle.constants import (
     CLAUDE_LAUNCHER_OPTION,
     CODEX_LAUNCHER_OPTION,
 )
+from sidekick_usages.daemon.models.scheduler import SchedulerCompletion
 from sidekick_usages.daemon.models.worker import (
     WORKER_CLAUDE_LAUNCHER_ENVIRONMENT_KEY,
     WORKER_CODEX_LAUNCHER_ENVIRONMENT_KEY,
     ProviderLaunchers,
+    SelectionWorkerMetadata,
     WorkerResult,
 )
 from sidekick_usages.daemon.runtime.recovery import (
@@ -49,9 +57,12 @@ from sidekick_usages.daemon.runtime.supervisor import (
     SupervisorRuntime,
     WakeupChannel,
 )
+from sidekick_usages.daemon.selection.models import SelectionRequestError
+from sidekick_usages.daemon.selection.worker import SelectionWorkerGateway
 from sidekick_usages.daemon.types.service import ServicePhase
 from sidekick_usages.daemon.types.worker import WorkerOutcome
 from sidekick_usages.daemon.worker.pool import WorkerPool
+from sidekick_usages.daemon.worker.runtime import selection_worker_success
 from sidekick_usages.entrypoints import worker
 from sidekick_usages.entrypoints.supervisor import (
     parse_provider_launchers,
@@ -79,6 +90,7 @@ from tests.support.persistence import (
     make_account_store,
     make_application_paths,
 )
+from tests.support.time import REFERENCE_TIME, FixedClock
 
 EXPECTED_WORKER_COUNT = 2
 EXPECTED_CONTROL_CONNECTIONS = 68
@@ -93,14 +105,23 @@ class _GlobalSelectionRecovery:
     """Record pre-readiness selection recovery without provider work."""
 
     def __init__(self) -> None:
-        self.calls = 0
+        self.restore_calls = 0
+        self.enqueue_calls = 0
+        self.close_calls = 0
 
-    def recover_all(self) -> tuple[SelectionResult, ...]:
-        self.calls += 1
+    def restore_all(self) -> tuple[ProviderId, ...]:
+        self.restore_calls += 1
+        return ()
+
+    def enqueue_restored_readbacks(self) -> tuple[DueOperation, ...]:
+        self.enqueue_calls += 1
         return ()
 
     def reconciled(self) -> bool:
         return True
+
+    def close(self) -> None:
+        self.close_calls += 1
 
 
 def _recover_runtime_selection(
@@ -110,9 +131,62 @@ def _recover_runtime_selection(
     """Prove runtime recovery invokes selection before later cycles."""
     runtime.recover()
     assert (
-        selection_recovery.calls,
+        selection_recovery.restore_calls,
+        selection_recovery.enqueue_calls,
         MAX_CONTROL_CONNECTIONS,
-    ) == (1, EXPECTED_CONTROL_CONNECTIONS)
+    ) == (1, 0, EXPECTED_CONTROL_CONNECTIONS)
+
+
+def test_runtime_enqueues_restored_selection_without_a_client(
+    tmp_path: Path,
+) -> None:
+    """Schedule restored readback once after the first accept drain."""
+    state = foundation_state(tmp_path)
+    for queued in state.operations:
+        state.queue.remove(
+            queued.operation_id,
+            expected_state=OperationState.SCHEDULED,
+        )
+    clock = RuntimeClock()
+    wakeup = WakeupChannel()
+    scheduler = DurableScheduler(
+        state.queue,
+        WorkerResultStore(state.paths.durable_operations),
+        WorkerPool(
+            FakeWorkerLauncher(
+                WorkerResultStore(state.paths.durable_operations),
+                clock,
+                frozenset(),
+            ),
+            worker_planner(),
+            wakeup.notify,
+        ),
+        clock,
+        monotonic=clock.monotonic,
+    )
+    selection = _GlobalSelectionRecovery()
+    stop_requested = Event()
+    stop_requested.set()
+    runtime = foundation_runtime(
+        state.paths,
+        scheduler,
+        ActivationRecoveryScheduler(
+            state.journals,
+            state.queue,
+            selection_recovery=selection,
+        ),
+        clock,
+        wakeup,
+        stop_requested,
+    )
+
+    runtime.run()
+
+    assert (
+        selection.restore_calls,
+        selection.enqueue_calls,
+        selection.close_calls,
+    ) == (1, 1, 1)
 
 
 def _assert_native_login_cancels_stale_activation(
@@ -285,6 +359,257 @@ def test_provider_operations_use_independent_durable_slots(
     assert tuple(operation.provider_id for operation in queue.load()) == tuple(
         ProviderId
     )
+
+
+@pytest.mark.parametrize(
+    ("outcome", "failure_code"),
+    [
+        (WorkerOutcome.SUCCEEDED, None),
+        (WorkerOutcome.TRANSIENT_FAILURE, "provider_unavailable"),
+    ],
+)
+def test_selection_workers_are_one_shot_and_retain_safe_proof(
+    tmp_path: Path,
+    outcome: WorkerOutcome,
+    failure_code: str | None,
+) -> None:
+    """Remove every terminal phase after copying its safe observation."""
+    state = foundation_state(tmp_path)
+    target = tuple(state.accounts)[1]
+    for existing in state.operations:
+        state.queue.remove(
+            existing.operation_id,
+            expected_state=OperationState.SCHEDULED,
+        )
+    pending_epoch = SelectionEpoch(1)
+    phase = DueOperation(
+        operation_id=new_operation_id(),
+        provider_id=ProviderId.CLAUDE,
+        account_id=target.account_id,
+        kind=OperationKind.SELECTION_PREVALIDATE,
+        priority=OperationPriority.INTERACTIVE,
+        state=OperationState.SCHEDULED,
+        due_at=REFERENCE_TIME,
+        updated_at=REFERENCE_TIME,
+    )
+    state.queue.enqueue(phase)
+    results = WorkerResultStore(state.paths.durable_operations)
+    clock = RuntimeClock()
+    launcher = FakeWorkerLauncher(results, clock, frozenset())
+    scheduler = DurableScheduler(
+        state.queue,
+        results,
+        WorkerPool(launcher, worker_planner(), lambda: None),
+        clock,
+        monotonic=clock.monotonic,
+    )
+
+    assert scheduler.dispatch_due() == (
+        replace(phase, state=OperationState.RUNNING, attempts=1),
+    )
+    selection = (
+        SelectionWorkerMetadata(
+            operation_id=phase.operation_id,
+            provider_id=phase.provider_id,
+            kind=phase.kind,
+            pending_epoch=pending_epoch,
+            observed_account_id=target.account_id,
+            observed_generation=AuthorityGeneration("generation-source-1"),
+        )
+        if outcome is WorkerOutcome.SUCCEEDED
+        else None
+    )
+    results.save(
+        WorkerResult(
+            operation_id=phase.operation_id,
+            outcome=outcome,
+            finished_at=clock.now(),
+            failure_code=failure_code,
+            selection=selection,
+        )
+    )
+    launcher.handles[phase.operation_id].initial_exit_code = 0
+
+    (completion,) = scheduler.collect()
+
+    assert completion.operation_kind is phase.kind
+    assert completion.state is None
+    assert completion.selection == selection
+    assert state.queue.find(phase.operation_id) is None
+    assert results.load(phase.operation_id) is None
+
+
+def test_selection_worker_result_retains_only_safe_authority_relation(
+    tmp_path: Path,
+) -> None:
+    """Sanitize related and unrelated provider selection observations."""
+    state = foundation_state(tmp_path)
+    target = tuple(state.accounts)[1]
+    phase = replace(
+        state.operations[0],
+        account_id=target.account_id,
+        kind=OperationKind.SELECTION_PREVALIDATE,
+    )
+    pending_epoch = SelectionEpoch(1)
+    related = selection_worker_success(
+        phase,
+        pending_epoch,
+        SelectionAuthorityObservation(
+            provider_id=phase.provider_id,
+            account_id=target.account_id,
+            generation=AuthorityGeneration("generation-source-1"),
+        ),
+        RuntimeClock(),
+    )
+    unrelated = selection_worker_success(
+        replace(phase, kind=OperationKind.SELECTION_READBACK),
+        pending_epoch,
+        SelectionAuthorityObservation(
+            provider_id=phase.provider_id,
+            account_id=None,
+            generation=None,
+        ),
+        RuntimeClock(),
+    )
+
+    assert related.selection is not None
+    assert (
+        related.selection.observed_account_id,
+        related.selection.observed_generation,
+        unrelated.selection,
+    ) == (
+        target.account_id,
+        AuthorityGeneration("generation-source-1"),
+        SelectionWorkerMetadata(
+            operation_id=phase.operation_id,
+            provider_id=phase.provider_id,
+            kind=OperationKind.SELECTION_READBACK,
+            pending_epoch=pending_epoch,
+            observed_account_id=None,
+            observed_generation=None,
+        ),
+    )
+
+
+def test_selection_worker_gateway_correlates_safe_prevalidation(
+    tmp_path: Path,
+) -> None:
+    """Correlate one success and preserve one typed worker refusal."""
+    paths = make_application_paths(tmp_path)
+    queue = OperationQueueStore(paths.durable_operations)
+    wake = Event()
+    gateway = SelectionWorkerGateway(queue, FixedClock(), wake.set)
+    target_id = SidekickAccountId("87509774-e459-4ab1-8857-09665af84eaa")
+    operation = OpenSelectionOperation(
+        operation_id=new_operation_id(),
+        provider_id=ProviderId.CLAUDE,
+        baseline_account_id=None,
+        target_account_id=target_id,
+        prepared_generation=None,
+        target_generation=None,
+        baseline_epoch=SelectionEpoch(0),
+        pending_epoch=SelectionEpoch(1),
+        phase=SelectionPhase.PREVALIDATING,
+        required_participant_ids=(),
+        ready_participant_ids=(),
+        lost_after_commit_participant_ids=(),
+        confirmed_dead_before_commit_count=0,
+        confirmed_dead_before_commit_code=None,
+        outcome_code=None,
+        started_at=REFERENCE_TIME,
+        updated_at=REFERENCE_TIME,
+    )
+    generations: list[AuthorityGeneration] = []
+    failures: list[SelectionRequestError] = []
+
+    def prevalidate(current: OpenSelectionOperation) -> None:
+        try:
+            prepared = gateway.prevalidate(current, None)
+            generations.append(prepared.target_generation)
+        except SelectionRequestError as error:
+            failures.append(error)
+
+    thread = Thread(target=prevalidate, args=(operation,), daemon=True)
+    thread.start()
+    assert wake.wait(1)
+    due = queue.find(operation.operation_id)
+    assert due is not None
+    queue.remove(due.operation_id, expected_state=OperationState.SCHEDULED)
+    generation = AuthorityGeneration("generation-source-1")
+    assert gateway.complete_waiter(
+        SchedulerCompletion(
+            operation_id=due.operation_id,
+            operation_kind=due.kind,
+            state=None,
+            outcome=WorkerOutcome.SUCCEEDED,
+            failure_code=None,
+            selection=SelectionWorkerMetadata(
+                operation_id=due.operation_id,
+                provider_id=due.provider_id,
+                kind=due.kind,
+                pending_epoch=operation.pending_epoch,
+                observed_account_id=target_id,
+                observed_generation=generation,
+            ),
+        )
+    )
+    thread.join(timeout=1)
+
+    refused = replace(operation, operation_id=new_operation_id())
+    wake.clear()
+    thread = Thread(target=prevalidate, args=(refused,), daemon=True)
+    thread.start()
+    assert wake.wait(1)
+    due = queue.find(refused.operation_id)
+    assert due is not None
+    queue.remove(due.operation_id, expected_state=OperationState.SCHEDULED)
+    assert gateway.fail_waiter(due, SelectionCode.TARGET_EXPIRED.value)
+    thread.join(timeout=1)
+
+    assert not thread.is_alive()
+    assert generations == [generation]
+    assert [error.code for error in failures] == [SelectionCode.TARGET_EXPIRED]
+
+
+def test_restart_discards_orphan_selection_worker_phase(
+    tmp_path: Path,
+) -> None:
+    """Let the durable selection journal alone choose restart recovery."""
+    state = foundation_state(tmp_path)
+    phase = replace(
+        state.operations[0],
+        kind=OperationKind.SELECTION_COMMIT,
+    )
+    state.queue.remove(
+        state.operations[0].operation_id,
+        expected_state=OperationState.SCHEDULED,
+    )
+    state.queue.enqueue(phase)
+    results = WorkerResultStore(state.paths.durable_operations)
+    results.save(
+        WorkerResult(
+            operation_id=phase.operation_id,
+            outcome=WorkerOutcome.TRANSIENT_FAILURE,
+            finished_at=REFERENCE_TIME,
+            failure_code="worker_interrupted",
+        )
+    )
+    clock = RuntimeClock()
+    scheduler = DurableScheduler(
+        state.queue,
+        results,
+        WorkerPool(
+            FakeWorkerLauncher(results, clock, frozenset()),
+            worker_planner(),
+            lambda: None,
+        ),
+        clock,
+        monotonic=clock.monotonic,
+    )
+
+    assert scheduler.recover() == ()
+    assert state.queue.find(phase.operation_id) is None
+    assert results.load(phase.operation_id) is None
 
 
 def test_supervisor_and_workers_isolate_failures_and_recover_durably(

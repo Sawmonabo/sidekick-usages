@@ -260,9 +260,6 @@ def _request_payload_to_json(payload: RequestPayload) -> JsonValue:
     if isinstance(payload, ActivationPayload):
         return {
             "account_id": str(payload.account_id),
-            "allow_remote_control_disconnect": (
-                payload.allow_remote_control_disconnect
-            ),
             "provider": payload.provider_id.value,
         }
     if isinstance(payload, AccountPayload):
@@ -311,20 +308,10 @@ def _decode_request_payload(
 ) -> RequestPayload:
     root = _require_object(value)
     if kind is RequestKind.ACTIVATE:
-        _require_exact_keys(
-            root,
-            {
-                "account_id",
-                "allow_remote_control_disconnect",
-                "provider",
-            },
-        )
+        _require_exact_keys(root, {"account_id", "provider"})
         return ActivationPayload(
             provider_id=ProviderId(_require_string(root["provider"])),
             account_id=SidekickAccountId(_require_string(root["account_id"])),
-            allow_remote_control_disconnect=_require_boolean(
-                root["allow_remote_control_disconnect"]
-            ),
         )
     if kind in {RequestKind.REFRESH_ACCOUNT, RequestKind.SELECT_ACCOUNT}:
         _require_exact_keys(root, {"account_id", "provider"})

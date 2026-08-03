@@ -13,6 +13,8 @@ from sidekick_usages.core.selection.types import (
     OperationState,
 )
 from sidekick_usages.core.types import AccountLabel, ProviderId
+from sidekick_usages.persistence.errors import InvalidSchemaError
+from sidekick_usages.persistence.schema.selection import decode_operation_queue
 from tests.fakes.daemon.foundation import (
     foundation_state,
     operation,
@@ -116,17 +118,14 @@ def test_selection_and_queue_preserve_stable_independent_state(
     approved_switch = replace(
         pending_switch,
         operation_id=APPROVED_SWITCH_OPERATION_ID,
-        allow_remote_control_disconnect=True,
     )
     coalesced = state.queue.enqueue(approved_switch)
     assert coalesced.operation_id == pending_switch.operation_id
-    assert coalesced.allow_remote_control_disconnect
     assert state.queue.find(coalesced.operation_id) == coalesced
-    with pytest.raises(
-        ValueError,
-        match="only valid for Claude activation",
-    ):
-        replace(
-            approved_switch,
-            provider_id=ProviderId.CODEX,
+    payload = state.queue.path.read_bytes()
+    legacy_field = b'"allow_remote_control_disconnect":false,'
+    assert b"allow_remote_control_disconnect" not in payload
+    with pytest.raises(InvalidSchemaError):
+        decode_operation_queue(
+            payload.replace(b'"attempts":', legacy_field + b'"attempts":', 1)
         )

@@ -3,7 +3,11 @@
 from dataclasses import dataclass
 
 from sidekick_usages.core.accounts.types import OperationId
-from sidekick_usages.core.selection.types import OperationState
+from sidekick_usages.core.selection.types import (
+    OperationKind,
+    OperationState,
+)
+from sidekick_usages.daemon.models.worker import SelectionWorkerMetadata
 from sidekick_usages.daemon.types.protocol import ProgressPhase
 from sidekick_usages.daemon.types.worker import WorkerOutcome
 
@@ -13,9 +17,19 @@ class SchedulerCompletion:
     """One durable post-worker queue outcome."""
 
     operation_id: OperationId
+    operation_kind: OperationKind
     state: OperationState | None
     outcome: WorkerOutcome
     failure_code: str | None
+    selection: SelectionWorkerMetadata | None = None
+
+    def __post_init__(self) -> None:
+        """Require selection metadata to match its exact phase."""
+        if self.selection is not None and (
+            self.selection.operation_id != self.operation_id
+            or self.selection.kind is not self.operation_kind
+        ):
+            raise ValueError("Scheduler selection completion is unrelated.")
 
 
 @dataclass(frozen=True, slots=True)

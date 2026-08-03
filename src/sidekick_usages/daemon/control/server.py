@@ -2,11 +2,15 @@
 
 import errno
 import os
+import selectors
 import socket
 import stat
 import sys
+from collections import deque
 from contextlib import suppress
+from dataclasses import dataclass, field
 from pathlib import Path
+from threading import Event, Lock, Thread
 
 from sidekick_usages import __version__
 from sidekick_usages.core.accounts.types import RequestId
@@ -52,7 +56,156 @@ from sidekick_usages.platform.peer import (
 )
 from sidekick_usages.platform.types import PeerVerifier
 
-_LISTEN_BACKLOG = 16
+# Two streams for each of 16 participants per provider, plus four operators.
+MAX_CONTROL_CONNECTIONS = 68
+_MONITOR_WAKE = b"\x00"
+_MONITOR_WAKE_BYTES = 4096
+_STREAM_REQUEST_KINDS = frozenset(
+    {RequestKind.SUBSCRIBE, RequestKind.PARTICIPANT_SUBSCRIBE}
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ControlSubscription:
+    """One authenticated stream watched for client-side closure."""
+
+    connection: socket.socket
+    context: VerifiedControlRequest
+    cancelled: Event = field(default_factory=Event)
+
+
+@dataclass(frozen=True, slots=True)
+class _SubscriptionCommand:
+    subscription: ControlSubscription
+    register: bool
+
+
+class ControlSubscriptionMonitor:
+    """Wake blocked streams from one bounded selector-owned monitor."""
+
+    def __init__(self, dispatcher: ControlDispatcher) -> None:
+        self._dispatcher = dispatcher
+        self._reader, self._writer = socket.socketpair()
+        self._reader.setblocking(False)
+        self._writer.setblocking(False)
+        self._commands: deque[_SubscriptionCommand] = deque()
+        self._lock = Lock()
+        self._closing = False
+        self._thread = Thread(
+            target=self._run,
+            daemon=True,
+            name="sidekick-subscriptions",
+        )
+
+    def start(self) -> None:
+        """Start the one shared selector thread."""
+        self._thread.start()
+
+    def register(self, subscription: ControlSubscription) -> None:
+        """Watch one accepted stream without consuming protocol bytes."""
+        self._enqueue(_SubscriptionCommand(subscription, True))
+
+    def unregister(self, subscription: ControlSubscription) -> None:
+        """Stop watching one stream that already completed."""
+        self._enqueue(_SubscriptionCommand(subscription, False))
+
+    def close(self) -> None:
+        """Cancel watched streams and close the shared wake channel."""
+        with self._lock:
+            if self._closing:
+                return
+            self._closing = True
+        self._notify()
+        self._thread.join()
+        self._reader.close()
+        self._writer.close()
+
+    def _enqueue(self, command: _SubscriptionCommand) -> None:
+        with self._lock:
+            if self._closing:
+                return
+            self._commands.append(command)
+        self._notify()
+
+    def _notify(self) -> None:
+        with suppress(BlockingIOError, OSError):
+            self._writer.send(_MONITOR_WAKE)
+
+    def _run(self) -> None:
+        selector = selectors.DefaultSelector()
+        subscriptions: dict[socket.socket, ControlSubscription] = {}
+        selector.register(self._reader, selectors.EVENT_READ)
+        try:
+            while True:
+                for key, _mask in selector.select():
+                    if key.fileobj is self._reader:
+                        self._drain_wake()
+                        self._apply_commands(selector, subscriptions)
+                    else:
+                        connection = key.fileobj
+                        if isinstance(connection, socket.socket):
+                            self._cancel(
+                                selector,
+                                subscriptions,
+                                connection,
+                            )
+                with self._lock:
+                    if self._closing:
+                        break
+        finally:
+            for subscription in tuple(subscriptions.values()):
+                self._cancel_subscription(subscription)
+            selector.close()
+
+    def _apply_commands(
+        self,
+        selector: selectors.BaseSelector,
+        subscriptions: dict[socket.socket, ControlSubscription],
+    ) -> None:
+        with self._lock:
+            commands = tuple(self._commands)
+            self._commands.clear()
+        for command in commands:
+            connection = command.subscription.connection
+            if command.register:
+                if connection not in subscriptions:
+                    subscriptions[connection] = command.subscription
+                    with suppress(OSError):
+                        selector.register(connection, selectors.EVENT_READ)
+                continue
+            if connection in subscriptions:
+                subscriptions.pop(connection)
+                with suppress(KeyError, OSError):
+                    selector.unregister(connection)
+
+    def _cancel(
+        self,
+        selector: selectors.BaseSelector,
+        subscriptions: dict[socket.socket, ControlSubscription],
+        connection: socket.socket,
+    ) -> None:
+        subscription = subscriptions.pop(connection, None)
+        with suppress(KeyError, OSError):
+            selector.unregister(connection)
+        if subscription is not None:
+            self._cancel_subscription(subscription)
+
+    def _cancel_subscription(
+        self,
+        subscription: ControlSubscription,
+    ) -> None:
+        if subscription.cancelled.is_set():
+            return
+        subscription.cancelled.set()
+        self._dispatcher.cancel(subscription.context)
+
+    def _drain_wake(self) -> None:
+        while True:
+            try:
+                if not self._reader.recv(_MONITOR_WAKE_BYTES):
+                    return
+            except BlockingIOError:
+                return
 
 
 class EndpointError(OSError):
@@ -61,6 +214,10 @@ class EndpointError(OSError):
     def __init__(self, code: EndpointFailureCode) -> None:
         self.code = code
         super().__init__(code.value)
+
+
+class _InvalidDispatchEventError(RuntimeError):
+    """Stop one stream after emitting its safe protocol failure."""
 
 
 def cleanup_control_endpoint(
@@ -100,11 +257,13 @@ class ControlConnection:
         peer_verifier: PeerVerifier,
         dispatcher: ControlDispatcher,
         *,
+        subscription_monitor: ControlSubscriptionMonitor | None = None,
         package_version: str = __version__,
     ) -> None:
         self._connection = connection
         self._peer_verifier = peer_verifier
         self._dispatcher = dispatcher
+        self._subscription_monitor = subscription_monitor
         self._package_version = package_version
 
     def serve(self) -> None:
@@ -220,41 +379,33 @@ class ControlConnection:
         request: ControlRequest,
         peer: PeerIdentity,
     ) -> bool:
-        terminal = False
+        context = VerifiedControlRequest(request, peer)
+        subscription: ControlSubscription | None = None
         try:
-            for event in self._dispatcher.dispatch(
-                VerifiedControlRequest(request, peer)
-            ):
-                if not self._valid_dispatch_event(request, event):
-                    self._send_failure(
-                        transport,
-                        request.request_id,
-                        ProtocolErrorCode.DISPATCH_FAILED,
-                    )
-                    return False
-                transport.send_event(event)
-                terminal = event.kind in {
-                    EventKind.COMPLETED,
-                    EventKind.FAILED,
-                    EventKind.INCOMPATIBLE,
-                    EventKind.SERVICE_STOPPING,
-                    EventKind.SNAPSHOT,
-                    EventKind.PARTICIPANT_REGISTERED,
-                    EventKind.TURN_ADMISSION,
-                    EventKind.SELECTION_RESULT,
-                    EventKind.SELECTION_STATUS,
-                }
+            for event in self._dispatcher.dispatch(context):
+                terminal, accepted = self._send_dispatch_event(
+                    transport,
+                    request,
+                    context,
+                    event,
+                )
+                if accepted is not None:
+                    subscription = accepted
                 if terminal:
                     return True
-            if not terminal:
-                self._send_failure(
-                    transport,
-                    request.request_id,
-                    ProtocolErrorCode.DISPATCH_FAILED,
-                )
-                return False
+            self._send_failure(
+                transport,
+                request.request_id,
+                ProtocolErrorCode.DISPATCH_FAILED,
+            )
+            return False
+        except _InvalidDispatchEventError:
+            return False
         except BrokenPipeError, ConnectionResetError:
-            self._dispatcher.cancel(VerifiedControlRequest(request, peer))
+            if subscription is None or not subscription.cancelled.is_set():
+                if subscription is not None:
+                    subscription.cancelled.set()
+                self._dispatcher.cancel(context)
             return False
         except Exception:
             with suppress(OSError):
@@ -264,6 +415,63 @@ class ControlConnection:
                     ProtocolErrorCode.DISPATCH_FAILED,
                 )
             return False
+        finally:
+            if (
+                subscription is not None
+                and self._subscription_monitor is not None
+            ):
+                self._subscription_monitor.unregister(subscription)
+
+    def _send_dispatch_event(
+        self,
+        transport: FramedTransport,
+        request: ControlRequest,
+        context: VerifiedControlRequest,
+        event: ControlEvent,
+    ) -> tuple[bool, ControlSubscription | None]:
+        """Validate, send, and classify one dispatcher event."""
+        if not self._valid_dispatch_event(request, event):
+            self._send_failure(
+                transport,
+                request.request_id,
+                ProtocolErrorCode.DISPATCH_FAILED,
+            )
+            raise _InvalidDispatchEventError
+        transport.send_event(event)
+        subscription = self._accepted_subscription(
+            request,
+            context,
+            event,
+        )
+        terminal = event.kind in {
+            EventKind.COMPLETED,
+            EventKind.FAILED,
+            EventKind.INCOMPATIBLE,
+            EventKind.SERVICE_STOPPING,
+            EventKind.SNAPSHOT,
+            EventKind.PARTICIPANT_REGISTERED,
+            EventKind.TURN_ADMISSION,
+            EventKind.SELECTION_RESULT,
+            EventKind.SELECTION_STATUS,
+        }
+        return terminal, subscription
+
+    def _accepted_subscription(
+        self,
+        request: ControlRequest,
+        context: VerifiedControlRequest,
+        event: ControlEvent,
+    ) -> ControlSubscription | None:
+        monitor = self._subscription_monitor
+        if (
+            event.kind is not EventKind.ACCEPTED
+            or request.kind not in _STREAM_REQUEST_KINDS
+            or monitor is None
+        ):
+            return None
+        subscription = ControlSubscription(self._connection, context)
+        monitor.register(subscription)
+        return subscription
 
     def _valid_dispatch_event(
         self,
@@ -338,6 +546,7 @@ class LocalControlServer:
         self._package_version = package_version
         self._listener: socket.socket | None = None
         self._socket_identity: SocketIdentity | None = None
+        self._subscription_monitor: ControlSubscriptionMonitor | None = None
 
     def open(self) -> None:
         """Create and listen on one qualified owner-only Unix socket."""
@@ -357,7 +566,7 @@ class LocalControlServer:
             )
             if not socket_owned(metadata):
                 raise EndpointError(EndpointFailureCode.UNSAFE_SOCKET_PATH)
-            listener.listen(_LISTEN_BACKLOG)
+            listener.listen(MAX_CONTROL_CONNECTIONS)
         except OSError as error:
             listener.close()
             if bound_identity is not None:
@@ -367,6 +576,9 @@ class LocalControlServer:
             raise EndpointError(EndpointFailureCode.CREATE_FAILED) from error
         self._listener = listener
         self._socket_identity = bound_identity
+        monitor = ControlSubscriptionMonitor(self._dispatcher)
+        monitor.start()
+        self._subscription_monitor = monitor
 
     def serve_once(self) -> None:
         """Accept and fully serve one local connection."""
@@ -381,6 +593,7 @@ class LocalControlServer:
             connection,
             self._peer_verifier,
             self._dispatcher,
+            subscription_monitor=self._subscription_monitor,
             package_version=self._package_version,
         ).serve()
 
@@ -390,6 +603,13 @@ class LocalControlServer:
         if listener is None:
             raise RuntimeError("The local control server is not open.")
         return listener.fileno()
+
+    def set_nonblocking(self) -> None:
+        """Qualify the open listener for selector-owned accept drains."""
+        listener = self._listener
+        if listener is None:
+            raise RuntimeError("The local control server is not open.")
+        listener.setblocking(False)
 
     def accept_connection(self) -> socket.socket | None:
         """Accept one ready connection without decoding it."""
@@ -404,6 +624,10 @@ class LocalControlServer:
 
     def close(self) -> None:
         """Close the listener and remove only its exact socket inode."""
+        monitor = self._subscription_monitor
+        self._subscription_monitor = None
+        if monitor is not None:
+            monitor.close()
         listener = self._listener
         self._listener = None
         if listener is not None:

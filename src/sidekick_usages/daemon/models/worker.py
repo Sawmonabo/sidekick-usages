@@ -4,13 +4,20 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from sidekick_usages.core.accounts.types import OperationId
+from sidekick_usages.core.accounts.types import (
+    AuthorityGeneration,
+    OperationId,
+    SidekickAccountId,
+)
 from sidekick_usages.core.selection.models import (
     DueOperation,
     RelatedRuntimeAuthority,
+    SelectionEpoch,
     safe_outcome_code,
 )
+from sidekick_usages.core.selection.types import OperationKind
 from sidekick_usages.core.time import as_utc
+from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.types.worker import (
     WorkerExchangePhase,
     WorkerOutcome,
@@ -25,6 +32,32 @@ WORKER_EXCHANGE_DESCRIPTOR_ENVIRONMENT_KEY = (
 WORKER_CLAUDE_LAUNCHER_ENVIRONMENT_KEY = "SIDEKICK_WORKER_CLAUDE_LAUNCHER"
 WORKER_CODEX_LAUNCHER_ENVIRONMENT_KEY = "SIDEKICK_WORKER_CODEX_LAUNCHER"
 MINIMUM_WORKER_EXCHANGE_DESCRIPTOR = 3
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SelectionWorkerMetadata:
+    """Safe correlated result of one provider selection worker phase."""
+
+    operation_id: OperationId
+    provider_id: ProviderId
+    kind: OperationKind
+    pending_epoch: SelectionEpoch
+    observed_account_id: SidekickAccountId | None
+    observed_generation: AuthorityGeneration | None
+
+    def __post_init__(self) -> None:
+        """Require complete observations for every mutating phase."""
+        if not self.kind.is_selection_worker:
+            raise ValueError("Worker metadata kind is not selection work.")
+        if (self.observed_account_id is None) != (
+            self.observed_generation is None
+        ):
+            raise ValueError("Selection worker observation is incomplete.")
+        if (
+            self.kind is not OperationKind.SELECTION_READBACK
+            and self.observed_account_id is None
+        ):
+            raise ValueError("Selection worker phase requires authority.")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -52,6 +85,7 @@ class WorkerResult:
     finished_at: datetime
     failure_code: str | None = None
     related_runtime_authority: RelatedRuntimeAuthority | None = None
+    selection: SelectionWorkerMetadata | None = None
 
     def __post_init__(self) -> None:
         """Normalize time and require truthful safe failure metadata."""
@@ -67,6 +101,18 @@ class WorkerResult:
             raise ValueError("Failed worker results require a safe code.")
         if not succeeded and self.related_runtime_authority is not None:
             raise ValueError("Failed worker results cannot carry authority.")
+        if not succeeded and self.selection is not None:
+            raise ValueError("Failed worker results cannot carry selection.")
+        if (
+            self.selection is not None
+            and self.selection.operation_id != self.operation_id
+        ):
+            raise ValueError("Worker result selection identity changed.")
+        if (
+            self.related_runtime_authority is not None
+            and self.selection is not None
+        ):
+            raise ValueError("Worker result authority owners overlap.")
         object.__setattr__(self, "failure_code", code)
 
 

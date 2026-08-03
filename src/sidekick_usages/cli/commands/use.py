@@ -22,16 +22,10 @@ from sidekick_usages.providers.claude.activation.service import (
     claude_environment_conflict,
     claude_environment_conflict_keys,
 )
-from sidekick_usages.providers.claude.activation.types import (
-    ClaudeActivationGuardFailure,
-)
 
 _SERVICE_PREPARATION_FAILURE_CODES = frozenset(
     {"service_incompatible", "service_stopping"}
 )
-_REMOTE_CONTROL_REQUIRED_FAILURE_CODE = (
-    ClaudeActivationGuardFailure.REMOTE_CONTROL_DISCONNECT_REQUIRED
-).failure_code
 
 
 def _command(*arguments: str) -> str:
@@ -72,8 +66,6 @@ def _preparation_command(account: SavedAccount) -> str | None:
 def _use_command(
     provider_id: ProviderId,
     label: str,
-    *,
-    allow_remote_control_disconnect: bool = False,
 ) -> str:
     arguments = [
         "sidekick-usages",
@@ -81,8 +73,6 @@ def _use_command(
         provider_id.value,
         label,
     ]
-    if allow_remote_control_disconnect:
-        arguments.append("--allow-remote-control-disconnect")
     return _command(*arguments)
 
 
@@ -96,25 +86,9 @@ def use_cmd(
         str,
         typer.Argument(help="Exact saved-account label."),
     ],
-    allow_remote_control_disconnect: Annotated[
-        bool,
-        typer.Option(
-            "--allow-remote-control-disconnect",
-            help="Allow a proven Claude Remote Control disruption.",
-        ),
-    ] = False,
 ) -> None:
     """Select one saved account without prompting or installing services."""
     provider_id = validated_provider(ctx, provider)
-    if (
-        allow_remote_control_disconnect
-        and provider_id is not ProviderId.CLAUDE
-    ):
-        _fail(
-            ctx,
-            "Remote Control disconnect approval applies only to Claude.",
-            _use_command(provider_id, label),
-        )
     account_label = validated_label(ctx, label)
     use = invocation_context(ctx).require_use()
     account = use.accounts.resolve(provider_id, account_label)
@@ -146,7 +120,6 @@ def use_cmd(
         result = use.activate(
             provider_id,
             account.account_id,
-            allow_remote_control_disconnect,
         )
     except OSError, ProtocolFailureError:
         _fail(
@@ -155,16 +128,7 @@ def use_cmd(
             _command("sidekick-usages", "daemon", "install"),
         )
     if isinstance(result, UseActivationFailure):
-        if (
-            provider_id is ProviderId.CLAUDE
-            and result.code == _REMOTE_CONTROL_REQUIRED_FAILURE_CODE
-        ):
-            action = _use_command(
-                provider_id,
-                str(account.label),
-                allow_remote_control_disconnect=True,
-            )
-        elif result.code in _SERVICE_PREPARATION_FAILURE_CODES:
+        if result.code in _SERVICE_PREPARATION_FAILURE_CODES:
             action = _command("sidekick-usages", "daemon", "install")
         else:
             action = _command(

@@ -60,7 +60,8 @@ from sidekick_usages.serialization.json import JsonObject, JsonValue
 SELECTED_STATE_SCHEMA_VERSION = 3
 _LEGACY_SELECTED_STATE_SCHEMA_VERSION = 2
 ACTIVATION_SCHEMA_VERSION = 4
-OPERATION_QUEUE_SCHEMA_VERSION = 3
+OPERATION_QUEUE_SCHEMA_VERSION = 4
+_LEGACY_OPERATION_QUEUE_SCHEMA_VERSION = 3
 RUNTIME_OBSERVATION_SCHEMA_VERSION = 1
 MAX_SELECTED_STATE_BYTES = 256 * 1024
 MAX_ACTIVATION_JOURNAL_BYTES = 512 * 1024
@@ -130,7 +131,6 @@ _PROVIDER_AUTH_KEYS = frozenset(
 _OPERATION_KEYS = frozenset(
     {
         "account_id",
-        "allow_remote_control_disconnect",
         "attempts",
         "due_at",
         "failure_code",
@@ -142,6 +142,7 @@ _OPERATION_KEYS = frozenset(
         "updated_at",
     }
 )
+_LEGACY_OPERATION_KEYS = _OPERATION_KEYS | {"allow_remote_control_disconnect"}
 
 
 def decode_selected_state(payload: bytes) -> SelectedStateDocument:
@@ -283,9 +284,15 @@ def decode_operation_queue(payload: bytes) -> OperationQueueDocument:
     """Decode one canonical durable operation queue."""
     root = decode_state_object(payload, MAX_OPERATION_QUEUE_BYTES)
     require_exact_keys(root, {"operations", "schema_version"})
+    version = require_integer(root["schema_version"])
+    legacy = version == _LEGACY_OPERATION_QUEUE_SCHEMA_VERSION
     require_schema_version(
-        root["schema_version"],
-        OPERATION_QUEUE_SCHEMA_VERSION,
+        version,
+        (
+            _LEGACY_OPERATION_QUEUE_SCHEMA_VERSION
+            if legacy
+            else OPERATION_QUEUE_SCHEMA_VERSION
+        ),
     )
     records = require_object(root["operations"])
     if len(records) > MAX_OPERATION_RECORDS:
@@ -293,7 +300,10 @@ def decode_operation_queue(payload: bytes) -> OperationQueueDocument:
     try:
         operations: list[DueOperation] = []
         for slot, value in records.items():
-            operation = _due_operation(require_object(value))
+            operation = _due_operation(
+                require_object(value),
+                legacy=legacy,
+            )
             if slot != operation_slot(
                 operation.provider_id,
                 operation.account_id,
@@ -304,7 +314,12 @@ def decode_operation_queue(payload: bytes) -> OperationQueueDocument:
         document = OperationQueueDocument(tuple(operations))
     except TypeError, ValueError:
         raise InvalidSchemaError from None
-    if _operation_payload(document) != payload:
+    expected = (
+        encode_state_object(root, MAX_OPERATION_QUEUE_BYTES)
+        if legacy
+        else _operation_payload(document)
+    )
+    if expected != payload:
         raise InvalidSchemaError
     return document
 
@@ -708,8 +723,17 @@ def _activation_payload(document: ActivationJournalDocument) -> bytes:
     )
 
 
-def _due_operation(record: JsonObject) -> DueOperation:
-    require_exact_keys(record, _OPERATION_KEYS)
+def _due_operation(
+    record: JsonObject,
+    *,
+    legacy: bool,
+) -> DueOperation:
+    require_exact_keys(
+        record,
+        _LEGACY_OPERATION_KEYS if legacy else _OPERATION_KEYS,
+    )
+    if legacy:
+        require_boolean(record["allow_remote_control_disconnect"])
     return DueOperation(
         operation_id=OperationId(require_string(record["operation_id"])),
         provider_id=ProviderId(require_string(record["provider_id"])),
@@ -723,9 +747,6 @@ def _due_operation(record: JsonObject) -> DueOperation:
         ),
         attempts=require_integer(record["attempts"]),
         failure_code=require_optional_string(record["failure_code"]),
-        allow_remote_control_disconnect=require_boolean(
-            record["allow_remote_control_disconnect"]
-        ),
     )
 
 
@@ -738,9 +759,6 @@ def _operation_object(operation: DueOperation) -> JsonObject:
     return {
         "account_id": (
             None if operation.account_id is None else str(operation.account_id)
-        ),
-        "allow_remote_control_disconnect": (
-            operation.allow_remote_control_disconnect
         ),
         "attempts": operation.attempts,
         "due_at": canonical_timestamp(operation.due_at),

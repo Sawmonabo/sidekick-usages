@@ -502,7 +502,10 @@ def _selection_result_matches(
         and operation.operation_id == result.operation_id
         and operation.provider_id is result.provider_id
         and operation.target_account_id == result.target_account_id
-        and operation.target_generation == result.target_generation
+        and (
+            result.outcome is SelectionOutcome.FAILED_OLD_EPOCH
+            or operation.target_generation == result.target_generation
+        )
         and operation.started_at == result.started_at
         and result.required_count == len(operation.required_participant_ids)
         and result.ready_count == len(operation.ready_participant_ids)

@@ -216,8 +216,8 @@ class OperationQueueStore:
             self._commit(recovered, snapshot)
             return recovered
 
-    def discard_callbacks(self) -> tuple[DueOperation, ...]:
-        """Remove callback work whose in-memory daemon request is gone."""
+    def discard_orphan_workers(self) -> tuple[DueOperation, ...]:
+        """Remove work whose in-memory callback or phase owner is gone."""
         with self._lock.hold() as transaction:
             recover_state_file(self._filesystem, transaction)
             snapshot = self._filesystem.read_opaque_private()
@@ -226,13 +226,14 @@ class OperationQueueStore:
                 operation
                 for operation in document.operations
                 if operation.kind is OperationKind.CODEX_CALLBACK
+                or operation.kind.is_selection_worker
             )
             if not discarded:
                 return ()
             retained = tuple(
                 operation
                 for operation in document.operations
-                if operation.kind is not OperationKind.CODEX_CALLBACK
+                if operation not in discarded
             )
             self._commit(retained, snapshot)
             return discarded

@@ -37,11 +37,12 @@ from sidekick_usages.daemon.runtime.supervisor import (
     WakeupChannel,
 )
 from sidekick_usages.daemon.selection.coordinator import SelectionCoordinator
-from sidekick_usages.daemon.selection.deferred import (
-    DeferredSelectionAuthority,
-)
 from sidekick_usages.daemon.selection.recovery import SelectionRecovery
 from sidekick_usages.daemon.selection.registry import ParticipantRegistry
+from sidekick_usages.daemon.selection.worker import (
+    SelectionSchedulerSink,
+    SelectionWorkerGateway,
+)
 from sidekick_usages.daemon.worker.exchange import WorkerExchangeRegistry
 from sidekick_usages.daemon.worker.pool import (
     SubprocessWorkerLauncher,
@@ -143,21 +144,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     ).load()
     selection_journals = SelectionOperationStore(paths.selection_journals)
     participants = ParticipantRegistry(selected)
-    selection_authority = DeferredSelectionAuthority()
+    selection_workers = SelectionWorkerGateway(queue, clock, wakeup.notify)
     selection_recovery = SelectionRecovery(
         selected,
         selection_journals,
         participants,
-        selection_authority,
+        selection_workers,
         clock,
     )
     selection = SelectionCoordinator(
         selected,
         selection_journals,
         participants,
-        selection_authority,
+        selection_workers,
         clock,
-        resume_recovery=selection_recovery.recover,
+        resume_recovery=selection_recovery.resume,
     )
     recovery = ActivationRecoveryScheduler(
         journals,
@@ -208,13 +209,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         results,
         workers,
         clock,
-        events=CompositeOperationSink(
-            events,
-            DiagnosticOperationSink(
-                SanitizedDiagnosticLog(paths.service_logs),
-                clock,
-                time.monotonic,
+        events=SelectionSchedulerSink(
+            CompositeOperationSink(
+                events,
+                DiagnosticOperationSink(
+                    SanitizedDiagnosticLog(paths.service_logs),
+                    clock,
+                    time.monotonic,
+                ),
             ),
+            selection_workers,
+            selection_recovery,
         ),
         exchange_preparer=broker,
     )

@@ -20,6 +20,8 @@ _LINUX_PEER_CREDENTIALS = struct.Struct("3i")
 _MAX_PROCESS_STAT_BYTES = 4096
 _MACOS_PROCESS_INFO = struct.Struct("=12I16s32s6Iqq")
 _MACOS_PROCESS_INFO_FLAVOR = 3
+_DARWIN_SOL_LOCAL = 0
+_DARWIN_LOCAL_PEERPID = 0x002
 
 
 class PeerVerificationError(PermissionError):
@@ -189,14 +191,10 @@ def _linux_process_start(process_id: int) -> int:
 
 def _macos_peer_process_id(connection: PeerSocket) -> int:
     """Read the kernel-owned local peer PID socket option."""
-    local_level = getattr(socket, "SOL_LOCAL", None)
-    peer_option = getattr(socket, "LOCAL_PEERPID", None)
-    if local_level is None or peer_option is None:
-        raise PeerVerificationError(PeerFailureCode.PROOF_UNAVAILABLE)
     try:
         payload = connection.getsockopt(
-            local_level,
-            peer_option,
+            _DARWIN_SOL_LOCAL,
+            _DARWIN_LOCAL_PEERPID,
             struct.calcsize("i"),
         )
         process_id = struct.unpack("i", payload)[0]

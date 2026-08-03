@@ -84,8 +84,8 @@ class DurableScheduler:
     def recover(self) -> tuple[SchedulerCompletion, ...]:
         """Recover committed results before retrying interrupted workers."""
         self._queue.recover()
-        for callback in self._queue.discard_callbacks():
-            self._results.delete(callback.operation_id)
+        for orphan in self._queue.discard_orphan_workers():
+            self._results.delete(orphan.operation_id)
         recovered: list[SchedulerCompletion] = []
         now = self._clock.now()
         for operation in self._queue.load():
@@ -147,7 +147,10 @@ class DurableScheduler:
                     monotonic_now=monotonic_now,
                 )
             except WorkerLaunchError:
-                if running.kind is OperationKind.CODEX_CALLBACK:
+                if (
+                    running.kind is OperationKind.CODEX_CALLBACK
+                    or running.kind.is_selection_worker
+                ):
                     with suppress(ManagedStateConflictError):
                         self._queue.remove(
                             running.operation_id,
@@ -335,7 +338,10 @@ class DurableScheduler:
         result: WorkerResult,
         now: datetime,
     ) -> SchedulerCompletion:
-        if operation.kind is OperationKind.CODEX_CALLBACK:
+        if (
+            operation.kind is OperationKind.CODEX_CALLBACK
+            or operation.kind.is_selection_worker
+        ):
             self._queue.remove(
                 operation.operation_id,
                 expected_state=OperationState.RUNNING,
@@ -395,9 +401,11 @@ class DurableScheduler:
         self._results.delete(operation.operation_id)
         return SchedulerCompletion(
             operation_id=operation.operation_id,
+            operation_kind=operation.kind,
             state=state,
             outcome=result.outcome,
             failure_code=result.failure_code,
+            selection=result.selection,
         )
 
     def _discard_stale_activations(
@@ -416,6 +424,7 @@ class DurableScheduler:
             self._events.completed(
                 SchedulerCompletion(
                     operation_id=superseded.operation_id,
+                    operation_kind=superseded.kind,
                     state=None,
                     outcome=WorkerOutcome.CANCELLED,
                     failure_code=_NATIVE_SUPERSEDED_CODE,

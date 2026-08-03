@@ -26,7 +26,6 @@ from sidekick_usages.cli.dashboard.models.setup import (
     ServiceSetupMessage,
     ServiceSetupOutcome,
 )
-from sidekick_usages.cli.dashboard.models.use import UseActivationFailure
 from sidekick_usages.core.accounts.models import ClaudeAccountAuthority
 from sidekick_usages.core.accounts.types import (
     CredentialHealth,
@@ -38,9 +37,6 @@ from sidekick_usages.daemon.types.service import ServicePhase
 from sidekick_usages.entrypoints import dashboard
 from sidekick_usages.persistence.accounts.index import AccountIndex
 from sidekick_usages.persistence.accounts.reader import AccountIndexReader
-from sidekick_usages.providers.claude.activation.types import (
-    ClaudeActivationGuardFailure,
-)
 from sidekick_usages.usage.dashboard.models import (
     DashboardService,
 )
@@ -386,7 +382,7 @@ def test_managed_auth_migration_resumes_without_exposing_secrets(
 def test_scriptable_use_dispatches_only_stable_selection_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """One command journey proves exact lookup, preparation, and approval."""
+    """One command journey proves exact lookup and preparation."""
     environment: dict[str, str] = {}
     monkeypatch.setattr(use.os, "environ", environment)
     activation = RecordingUseActivation()
@@ -403,18 +399,11 @@ def test_scriptable_use_dispatches_only_stable_selection_contract(
     )
 
     codex_result = harness.invoke(["use", "codex", "shared"])
-    claude_result = harness.invoke(
+    claude_result = harness.invoke(["use", "claude", "shared"])
+    removed_override = harness.invoke(
         [
             "use",
             "claude",
-            "shared",
-            "--allow-remote-control-disconnect",
-        ]
-    )
-    invalid_override = harness.invoke(
-        [
-            "use",
-            "codex",
             "shared",
             "--allow-remote-control-disconnect",
         ]
@@ -424,24 +413,12 @@ def test_scriptable_use_dispatches_only_stable_selection_contract(
     environment["ANTHROPIC_API_KEY"] = "synthetic-parent-secret"
     blocked = harness.invoke(["use", "claude", "shared"])
     environment.clear()
-    activation.result = UseActivationFailure(
-        ClaudeActivationGuardFailure.REMOTE_CONTROL_DISCONNECT_REQUIRED.failure_code
-    )
-    remote_required = harness.invoke(["use", "claude", "shared"])
-
     assert codex_result.exit_code == claude_result.exit_code == 0
-    assert (
-        invalid_override.exit_code
-        == missing.exit_code
-        == preparation.exit_code
-        == blocked.exit_code
-        == remote_required.exit_code
-        == 1
-    )
+    assert missing.exit_code == preparation.exit_code == blocked.exit_code == 1
+    assert removed_override.exit_code != 0
     assert activation.calls == [
-        (ProviderId.CODEX, CODEX_SAVED_ACCOUNT_ID, False),
-        (ProviderId.CLAUDE, CLAUDE_ACTIVE_ACCOUNT_ID, True),
-        (ProviderId.CLAUDE, CLAUDE_ACTIVE_ACCOUNT_ID, False),
+        (ProviderId.CODEX, CODEX_SAVED_ACCOUNT_ID),
+        (ProviderId.CLAUDE, CLAUDE_ACTIVE_ACCOUNT_ID),
     ]
     assert environment == {}
     rendered = output.getvalue() + errors.getvalue()
@@ -449,16 +426,9 @@ def test_scriptable_use_dispatches_only_stable_selection_contract(
     assert "Next: sidekick-usages\n" in rendered
     assert "Account 'needs-login' needs interactive preparation." in rendered
     assert "Next: sidekick-usages codex login needs-login" in rendered
-    assert (
-        "Remote Control disconnect approval applies only to Claude."
-        in rendered
-    )
     assert "This shell overrides Claude account selection." in rendered
     assert "Next: unset ANTHROPIC_API_KEY" in rendered
-    assert (
-        "Next: sidekick-usages use claude shared "
-        "--allow-remote-control-disconnect"
-    ) in rendered
+    assert "--allow-remote-control-disconnect" not in rendered
     assert "synthetic-parent-secret" not in rendered
     assert "Continue?" not in rendered
     assert "daemon install" not in rendered

@@ -41,7 +41,7 @@ _CLAUDE_AUTHORITY_ID = AuthorityId("cccccccc-cccc-4ccc-8ccc-cccccccccccc")
 class RecordingUseActivation:
     """Record only the sanitized supervisor activation contract."""
 
-    calls: list[tuple[ProviderId, SidekickAccountId, bool]] = field(
+    calls: list[tuple[ProviderId, SidekickAccountId]] = field(
         default_factory=list
     )
     result: UseActivationResult = field(default_factory=UseActivationSuccess)
@@ -50,15 +50,8 @@ class RecordingUseActivation:
         self,
         provider_id: ProviderId,
         account_id: SidekickAccountId,
-        allow_remote_control_disconnect: bool,
     ) -> UseActivationResult:
-        self.calls.append(
-            (
-                provider_id,
-                account_id,
-                allow_remote_control_disconnect,
-            )
-        )
+        self.calls.append((provider_id, account_id))
         return self.result
 
 

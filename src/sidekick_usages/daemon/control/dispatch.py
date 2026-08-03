@@ -38,12 +38,13 @@ from sidekick_usages.daemon.models.scheduler import (
     OperationUpdate,
     SchedulerCompletion,
 )
-from sidekick_usages.daemon.selection.coordinator import SelectionRequestError
 from sidekick_usages.daemon.selection.models import (
     ParticipantAdoptionRequest,
     ParticipantConnectionRequest,
     ParticipantManifest,
     ParticipantReadyRequest,
+    ParticipantRequestError,
+    SelectionRequestError,
     TurnBeginRequest,
     TurnEndRequest,
 )
@@ -111,9 +112,11 @@ class OperationEventHub(OperationEventSink):
         self.completed(
             SchedulerCompletion(
                 operation_id=operation.operation_id,
+                operation_kind=operation.kind,
                 state=(
                     None
                     if operation.kind is OperationKind.CODEX_CALLBACK
+                    or operation.kind.is_selection_worker
                     else OperationState.RETRY_WAIT
                 ),
                 outcome=WorkerOutcome.TRANSIENT_FAILURE,
@@ -238,7 +241,7 @@ class SupervisorDispatcher:
         request_stop: Callable[[], None],
         *,
         selection: SelectionSupervisorPort | None = None,
-        package_version: str = __version__,
+        operation_id_factory: Callable[[], OperationId] = new_operation_id,
     ) -> None:
         self._queue = queue
         self._service_state = service_state
@@ -248,7 +251,8 @@ class SupervisorDispatcher:
         self._wake = wake
         self._request_stop = request_stop
         self._selection = selection
-        self._package_version = package_version
+        self._operation_id_factory = operation_id_factory
+        self._package_version = __version__
 
     def dispatch(
         self,
@@ -335,7 +339,7 @@ class SupervisorDispatcher:
                     payload,
                     peer,
                 )
-            except PermissionError, ValueError:
+            except ParticipantRequestError, PermissionError, ValueError:
                 return
             return
         self._events.cancel(request.request_id)
@@ -373,9 +377,11 @@ class SupervisorDispatcher:
                     peer,
                 )
             else:
-                yield self._selection_operator_event(request, selection)
+                yield from self._selection_operator_events(request, selection)
             return
         except SelectionRequestError as error:
+            code = error.code.value
+        except ParticipantRequestError as error:
             code = error.code.value
         except PermissionError:
             code = SelectionCode.PARTICIPANT_UNREACHABLE.value
@@ -447,28 +453,36 @@ class SupervisorDispatcher:
             raise ValueError("Participant request payload is unrelated.")
         return self._selection_completed(request)
 
-    def _selection_operator_event(
+    def _selection_operator_events(
         self,
         request: ControlRequest,
         selection: SelectionSupervisorPort,
-    ) -> ControlEvent:
+    ) -> Iterator[ControlEvent]:
         payload = request.payload
         if isinstance(payload, AccountPayload):
-            return self._event(
+            operation_id = self._operation_id_factory()
+            yield self._event(
+                request,
+                EventKind.ACCEPTED,
+                AcceptedPayload(operation_id),
+            )
+            yield self._event(
                 request,
                 EventKind.SELECTION_RESULT,
                 selection.select(
-                    new_operation_id(),
+                    operation_id,
                     payload.provider_id,
                     payload.account_id,
                 ),
             )
+            return
         if isinstance(payload, ProviderPayload):
-            return self._event(
+            yield self._event(
                 request,
                 EventKind.SELECTION_STATUS,
                 selection.status(payload.provider_id),
             )
+            return
         raise ValueError("Selection request payload is unrelated.")
 
     def _selection_completed(self, request: ControlRequest) -> ControlEvent:
@@ -485,12 +499,8 @@ class SupervisorDispatcher:
         payload = request.payload
         if isinstance(payload, ActivationPayload):
             kind = OperationKind.ACTIVATE
-            allow_remote_control_disconnect = (
-                payload.allow_remote_control_disconnect
-            )
         elif isinstance(payload, AccountPayload):
             kind = OperationKind.REFRESH
-            allow_remote_control_disconnect = False
         else:
             yield self._event(
                 request,
@@ -517,7 +527,7 @@ class SupervisorDispatcher:
         event_sequence = self._events.current_sequence()
         effective = self._queue.enqueue(
             DueOperation(
-                operation_id=new_operation_id(),
+                operation_id=self._operation_id_factory(),
                 provider_id=payload.provider_id,
                 account_id=payload.account_id,
                 kind=kind,
@@ -525,9 +535,6 @@ class SupervisorDispatcher:
                 state=OperationState.SCHEDULED,
                 due_at=now,
                 updated_at=now,
-                allow_remote_control_disconnect=(
-                    allow_remote_control_disconnect
-                ),
             )
         )
         self._wake()
@@ -556,7 +563,7 @@ class SupervisorDispatcher:
         for operation in maintenance:
             self._queue.enqueue(
                 DueOperation(
-                    operation_id=new_operation_id(),
+                    operation_id=self._operation_id_factory(),
                     provider_id=operation.provider_id,
                     account_id=operation.required_account_id,
                     kind=OperationKind.MAINTAIN,
@@ -601,7 +608,7 @@ class SupervisorDispatcher:
         event_sequence = self._events.current_sequence()
         operation = self._queue.enqueue(
             DueOperation(
-                operation_id=new_operation_id(),
+                operation_id=self._operation_id_factory(),
                 provider_id=payload.provider_id,
                 account_id=None,
                 kind=OperationKind.RECONCILE_NATIVE,

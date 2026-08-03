@@ -33,6 +33,10 @@ from sidekick_usages.daemon.models.protocol import (
     RequestPayload,
     ServiceStoppingPayload,
 )
+from sidekick_usages.daemon.selection.coordinator import (
+    OLD_TURN_DRAIN_TIMEOUT_SECONDS,
+    PARTICIPANT_READY_TIMEOUT_SECONDS,
+)
 from sidekick_usages.daemon.selection.models import (
     ParticipantAdoptionProof,
     ParticipantAdoptionRequest,
@@ -53,10 +57,16 @@ from sidekick_usages.daemon.types.protocol import (
     ProtocolErrorCode,
     RequestKind,
 )
+from sidekick_usages.daemon.worker.pool import GENERAL_WORKER_TIMEOUT_SECONDS
 from sidekick_usages.platform.peer import OperatingSystemPeerVerifier
 
-CONTROL_ACTION_TIMEOUT_SECONDS = 125.0
 _LOCAL_RESPONSE_TIMEOUT_SECONDS = 5.0
+CONTROL_ACTION_TIMEOUT_SECONDS = (
+    OLD_TURN_DRAIN_TIMEOUT_SECONDS
+    + PARTICIPANT_READY_TIMEOUT_SECONDS
+    + (2 * GENERAL_WORKER_TIMEOUT_SECONDS)
+    + _LOCAL_RESPONSE_TIMEOUT_SECONDS
+)
 _LONG_ACTION_REQUEST_KINDS = frozenset(
     {
         RequestKind.ACTIVATE,
@@ -67,6 +77,7 @@ _LONG_ACTION_REQUEST_KINDS = frozenset(
 _EXTENDED_STREAM_REQUEST_KINDS = _LONG_ACTION_REQUEST_KINDS | {
     RequestKind.SUBSCRIBE,
     RequestKind.PARTICIPANT_SUBSCRIBE,
+    RequestKind.SELECT_ACCOUNT,
 }
 
 
@@ -276,17 +287,11 @@ class ControlClient:
         self,
         provider_id: ProviderId,
         account_id: SidekickAccountId,
-        *,
-        allow_remote_control_disconnect: bool = False,
     ) -> Generator[ControlEvent]:
         """Activate one stable saved account after compatibility proof."""
         return self.request(
             RequestKind.ACTIVATE,
-            ActivationPayload(
-                provider_id,
-                account_id,
-                allow_remote_control_disconnect,
-            ),
+            ActivationPayload(provider_id, account_id),
         )
 
     def refresh_account(
@@ -441,13 +446,7 @@ class ControlClient:
         if kind is RequestKind.HANDSHAKE:
             raise ValueError("Use handshake() for protocol negotiation.")
         self.handshake()
-        initial_timeout = self._response_timeout_seconds
-        if (
-            kind is RequestKind.SELECT_ACCOUNT
-            and self._action_timeout_seconds is not None
-        ):
-            initial_timeout = self._action_timeout_seconds
-        self._connection.settimeout(initial_timeout)
+        self._connection.settimeout(self._response_timeout_seconds)
         request = self._new_request(kind, payload)
         self._transport.send_request(request)
         return self._event_stream(request)

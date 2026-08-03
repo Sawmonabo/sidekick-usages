@@ -137,6 +137,18 @@ class OperationKind(StrEnum):
     REPAIR = "repair"
     RECONCILE = "reconcile"
     RECONCILE_NATIVE = "reconcile_native"
+    SELECTION_PREVALIDATE = "selection_prevalidate"
+    SELECTION_COMMIT = "selection_commit"
+    SELECTION_READBACK = "selection_readback"
+
+    @property
+    def is_selection_worker(self) -> bool:
+        """Return whether this is one global-selection worker phase."""
+        return self in {
+            OperationKind.SELECTION_PREVALIDATE,
+            OperationKind.SELECTION_COMMIT,
+            OperationKind.SELECTION_READBACK,
+        }
 
 
 class OperationPriority(StrEnum):

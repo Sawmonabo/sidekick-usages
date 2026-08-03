@@ -7,9 +7,14 @@ from sidekick_usages.core.accounts.types import OperationId
 from sidekick_usages.core.selection.models import (
     DueOperation,
     RelatedRuntimeAuthority,
+    SelectionAuthorityObservation,
+    SelectionEpoch,
 )
-from sidekick_usages.core.selection.types import OperationState
-from sidekick_usages.daemon.models.worker import WorkerResult
+from sidekick_usages.core.selection.types import OperationKind, OperationState
+from sidekick_usages.daemon.models.worker import (
+    SelectionWorkerMetadata,
+    WorkerResult,
+)
 from sidekick_usages.daemon.types.ports import (
     ProviderWorkerExecutor,
     WorkerExecutor,
@@ -109,6 +114,37 @@ def worker_failure(
         outcome=outcome,
         finished_at=clock.now(),
         failure_code=failure_code,
+    )
+
+
+def selection_worker_success(
+    operation: DueOperation,
+    pending_epoch: SelectionEpoch,
+    observation: SelectionAuthorityObservation,
+    clock: Clock,
+) -> WorkerResult:
+    """Retain only one safe provider selection authority relation."""
+    if (
+        not operation.kind.is_selection_worker
+        or observation.provider_id is not operation.provider_id
+        or (
+            operation.kind is not OperationKind.SELECTION_READBACK
+            and observation.account_id != operation.required_account_id
+        )
+    ):
+        raise ValueError("Selection worker observation is unrelated.")
+    return WorkerResult(
+        operation_id=operation.operation_id,
+        outcome=WorkerOutcome.SUCCEEDED,
+        finished_at=clock.now(),
+        selection=SelectionWorkerMetadata(
+            operation_id=operation.operation_id,
+            provider_id=operation.provider_id,
+            kind=operation.kind,
+            pending_epoch=pending_epoch,
+            observed_account_id=observation.account_id,
+            observed_generation=observation.generation,
+        ),
     )
 
 

@@ -6,6 +6,7 @@ from threading import Event, Lock
 
 from sidekick_usages.clock import Clock
 from sidekick_usages.core.accounts.types import (
+    AuthorityGeneration,
     OperationId,
     RequestId,
     SidekickAccountId,
@@ -32,6 +33,7 @@ from sidekick_usages.daemon.selection.models import (
     ParticipantNotice,
     ParticipantReadyRequest,
     ParticipantRegistration,
+    SelectionRequestError,
     SelectionStatus,
     TurnAdmission,
     TurnBeginRequest,
@@ -52,14 +54,6 @@ from sidekick_usages.platform.types import (
 
 OLD_TURN_DRAIN_TIMEOUT_SECONDS = 120.0
 PARTICIPANT_READY_TIMEOUT_SECONDS = 30.0
-
-
-class SelectionRequestError(RuntimeError):
-    """Typed refusal before a new selection transaction begins."""
-
-    def __init__(self, code: SelectionCode) -> None:
-        self.code = code
-        super().__init__(code.value)
 
 
 @dataclass(slots=True)
@@ -85,7 +79,7 @@ class SelectionCoordinator:
         process_inspector: ProcessIdentityInspector | None = None,
         old_turn_timeout_seconds: float = OLD_TURN_DRAIN_TIMEOUT_SECONDS,
         ready_timeout_seconds: float = PARTICIPANT_READY_TIMEOUT_SECONDS,
-        resume_recovery: Callable[[ProviderId], object] | None = None,
+        resume_recovery: Callable[[ProviderId], None] | None = None,
     ) -> None:
         if min(old_turn_timeout_seconds, ready_timeout_seconds) <= 0:
             raise ValueError("Selection deadlines must be positive.")
@@ -225,6 +219,7 @@ class SelectionCoordinator:
         """Return finalized and active selection state for one provider."""
         finalized = self._selected.load(provider_id)
         active = self._journal.load(provider_id).active
+        snapshot = self._participants.snapshot(provider_id)
         return SelectionStatus(
             provider_id=provider_id,
             operation_id=None if active is None else active.operation_id,
@@ -238,6 +233,14 @@ class SelectionCoordinator:
             pending_epoch=None if active is None else active.pending_epoch,
             phase=None if active is None else active.phase,
             code=None if active is None else active.outcome_code,
+            registered_count=snapshot.registered_count,
+            reachable_count=snapshot.reachable_count,
+            required_count=len(snapshot.required_participant_ids),
+            ready_count=len(snapshot.ready_participant_ids),
+            adopted_count=snapshot.adopted_count,
+            unreachable_count=len(snapshot.unreachable_participant_ids),
+            active_turn_count=snapshot.active_turn_count,
+            queued_turn_count=snapshot.queued_turn_count,
         )
 
     def select(
@@ -256,18 +259,11 @@ class SelectionCoordinator:
                 flight.failure_code or SelectionCode.PROVIDER_UNAVAILABLE
             )
         try:
-            baseline = self._selected.load(provider_id)
-            if (
-                baseline is not None
-                and baseline.account_id == target_account_id
-            ):
-                raise SelectionRequestError(SelectionCode.ALREADY_SELECTED)
-            result = self._select(
+            flight.result = self._select_or_resume(
                 operation_id,
                 provider_id,
                 target_account_id,
             )
-            flight.result = result
         except SelectionRequestError as error:
             flight.failure_code = error.code
             raise
@@ -275,49 +271,60 @@ class SelectionCoordinator:
             flight.failure_code = SelectionCode.PROVIDER_UNAVAILABLE
             raise
         finally:
-            released = False
-            with self._flight_lock:
-                if self._flights.get(provider_id) is flight:
-                    self._flights.pop(provider_id)
-                    released = True
             try:
-                if released:
-                    self._handoff_recovery(
-                        flight,
-                        provider_id,
-                        target_account_id,
-                    )
+                self._handoff_recovery(
+                    flight,
+                    provider_id,
+                )
             finally:
+                with self._flight_lock:
+                    if self._flights.get(provider_id) is flight:
+                        self._flights.pop(provider_id)
                 flight.completed.set()
         if flight.result is None:
             raise RuntimeError("Selection flight completed without a result.")
         return flight.result
 
+    def _select_or_resume(
+        self,
+        operation_id: OperationId,
+        provider_id: ProviderId,
+        target_account_id: SidekickAccountId,
+    ) -> SelectionResult:
+        """Run a new selection or resume its exact durable replay."""
+        active = self._journal.load(provider_id).active
+        if active is not None:
+            if active.target_account_id != target_account_id:
+                raise SelectionRequestError(
+                    SelectionCode.UNCOORDINATED_AUTH_MUTATION
+                )
+            if self._resume_recovery is not None:
+                self._resume_recovery(provider_id)
+            raise SelectionRequestError(
+                SelectionCode.SELECTION_RECOVERY_REQUIRED
+            )
+        baseline = self._selected.load(provider_id)
+        if baseline is not None and baseline.account_id == target_account_id:
+            raise SelectionRequestError(SelectionCode.ALREADY_SELECTED)
+        return self._select(operation_id, provider_id, target_account_id)
+
     def _handoff_recovery(
         self,
         flight: _SelectionFlight,
         provider_id: ProviderId,
-        target_account_id: SidekickAccountId,
     ) -> None:
         """Consume one participant event suppressed by a live flight."""
         if (
-            not flight.recovery_pending
-            or flight.result is None
+            flight.result is None
             or flight.result.outcome is not SelectionOutcome.RECOVERY_REQUIRED
             or self._resume_recovery is None
         ):
             return
         try:
-            recovered = self._resume_recovery(provider_id)
+            self._resume_recovery(provider_id)
         except Exception:
             # Durable recovery-required truth remains the control result.
             return
-        if (
-            isinstance(recovered, SelectionResult)
-            and recovered.provider_id is provider_id
-            and recovered.target_account_id == target_account_id
-        ):
-            flight.result = recovered
 
     def _join_flight(
         self,
@@ -364,6 +371,7 @@ class SelectionCoordinator:
                     None if baseline is None else baseline.account_id
                 ),
                 target_account_id=target_account_id,
+                prepared_generation=None,
                 target_generation=None,
                 baseline_epoch=baseline_epoch,
                 pending_epoch=baseline_epoch.next(),
@@ -386,44 +394,12 @@ class SelectionCoordinator:
             raise
         except Exception:
             return self._fail_old_epoch(operation)
-        snapshot = self._participants.close_admission(
-            provider_id,
-            prepared.pending_epoch,
-        )
-        operation = self._persist(
-            operation,
-            replace(
-                operation,
-                phase=SelectionPhase.PREPARING,
-                target_generation=prepared.target_generation,
-                required_participant_ids=snapshot.required_participant_ids,
-                updated_at=self._clock.now(),
-            ),
-        )
-        operation = self._persist(
-            operation,
-            replace(
-                operation,
-                phase=SelectionPhase.WAITING_OLD_TURNS,
-                updated_at=self._clock.now(),
-            ),
-        )
-        if not self._participants.wait_for_old_turns(
-            provider_id,
-            self._old_turn_timeout,
-        ):
-            self._reconcile_unresolved(provider_id)
-            if self._participants.snapshot(provider_id).active_turn_count:
-                return self._fail_old_epoch(operation)
-        operation = self._capture_precommit_participants(operation)
-        operation = self._persist(
-            operation,
-            replace(
-                operation,
-                phase=SelectionPhase.COMMITTING,
-                updated_at=self._clock.now(),
-            ),
-        )
+        operation = self._prepare_gate(operation, prepared)
+        commit_state = self._enter_commit(operation)
+        if isinstance(commit_state, SelectionResult):
+            return commit_state
+        operation = commit_state
+
         try:
             proof = self._adapter.commit(prepared)
             self._require_proof(prepared, proof)
@@ -436,10 +412,87 @@ class SelectionCoordinator:
             replace(
                 operation,
                 phase=SelectionPhase.AWAITING_READY,
+                target_generation=proof.generation,
                 required_participant_ids=snapshot.required_participant_ids,
                 updated_at=self._clock.now(),
             ),
         )
+        return self._finalize_ready(operation, prepared, baseline)
+
+    def _prepare_gate(
+        self,
+        operation: OpenSelectionOperation,
+        prepared: PreparedSelection,
+    ) -> OpenSelectionOperation:
+        operation = self._persist(
+            operation,
+            replace(
+                operation,
+                phase=SelectionPhase.PREPARING,
+                prepared_generation=prepared.target_generation,
+                updated_at=self._clock.now(),
+            ),
+        )
+        snapshot = self._participants.close_admission(
+            operation.provider_id,
+            prepared.pending_epoch,
+        )
+        operation = self._persist(
+            operation,
+            replace(
+                operation,
+                required_participant_ids=snapshot.required_participant_ids,
+                updated_at=self._clock.now(),
+            ),
+        )
+        return self._persist(
+            operation,
+            replace(
+                operation,
+                phase=SelectionPhase.WAITING_OLD_TURNS,
+                updated_at=self._clock.now(),
+            ),
+        )
+
+    def _enter_commit(
+        self,
+        operation: OpenSelectionOperation,
+    ) -> OpenSelectionOperation | SelectionResult:
+        provider_id = operation.provider_id
+        if not self._participants.wait_for_old_turns(
+            provider_id,
+            self._old_turn_timeout,
+        ):
+            self._reconcile_unresolved(provider_id)
+            if self._participants.snapshot(provider_id).active_turn_count:
+                return self._fail_old_epoch(operation)
+        self.reconcile_disconnected(provider_id)
+        if self._participants.snapshot(
+            provider_id
+        ).unreachable_participant_ids:
+            return self._fail_old_epoch(operation)
+        self._participants.seal_precommit(provider_id)
+        try:
+            operation = self._capture_precommit_participants(operation)
+            operation = self._persist(
+                operation,
+                replace(
+                    operation,
+                    phase=SelectionPhase.COMMITTING,
+                    updated_at=self._clock.now(),
+                ),
+            )
+        finally:
+            self._participants.unseal(provider_id)
+        return operation
+
+    def _finalize_ready(
+        self,
+        operation: OpenSelectionOperation,
+        prepared: PreparedSelection,
+        baseline: FinalizedSelection | None,
+    ) -> SelectionResult:
+        provider_id = operation.provider_id
         if not self._participants.wait_for_ready(
             provider_id,
             self._ready_timeout,
@@ -470,14 +523,14 @@ class SelectionCoordinator:
             provider_id=provider_id,
             account_id=prepared.target_account_id,
             epoch=prepared.pending_epoch,
-            generation=prepared.target_generation,
+            generation=self._require_target_generation(operation),
             finalized_at=self._clock.now(),
         )
         try:
             self._selected.compare_and_swap(finalized, expected=baseline)
         except Exception:
             self._participants.unseal(provider_id)
-            raise
+            return self._recovering(operation)
         outcome = (
             SelectionOutcome.READY
             if not snapshot.confirmed_dead_participant_ids
@@ -487,8 +540,9 @@ class SelectionCoordinator:
         try:
             self._journal.complete(result)
         except Exception:
-            self._participants.unseal(provider_id)
-            raise
+            if not self._completion_is_durable(result):
+                self._participants.unseal(provider_id)
+                return self._recovering(operation)
         self._participants.prune_confirmed_dead(
             provider_id,
             snapshot.confirmed_dead_participant_ids,
@@ -503,6 +557,7 @@ class SelectionCoordinator:
         self,
         operation: OpenSelectionOperation,
     ) -> OpenSelectionOperation:
+        operation = self._latest(operation)
         snapshot = self._participants.snapshot(operation.provider_id)
         confirmed_dead = set(snapshot.confirmed_dead_participant_ids)
         required = tuple(
@@ -525,7 +580,7 @@ class SelectionCoordinator:
             updated_at=self._clock.now(),
         )
         if replacement != operation:
-            operation = self._persist(
+            operation = self._journal.compare_and_swap(
                 operation,
                 replacement,
             )
@@ -594,13 +649,24 @@ class SelectionCoordinator:
                 ),
             )
         result = self._result(operation, SelectionOutcome.RECOVERY_REQUIRED)
-        self._journal.complete(result)
+        try:
+            self._journal.complete(result)
+        except Exception:
+            operation = self._latest(operation)
+            result = self._result(
+                operation,
+                SelectionOutcome.RECOVERY_REQUIRED,
+            )
         self._participants.publish_status(
             operation.provider_id,
             operation.pending_epoch,
             SelectionCode.SELECTION_RECOVERY_REQUIRED,
         )
         return result
+
+    def _completion_is_durable(self, result: SelectionResult) -> bool:
+        document = self._journal.load(result.provider_id)
+        return document.active is None and result in document.history
 
     def _latest(
         self,
@@ -684,7 +750,15 @@ class SelectionCoordinator:
         if (
             proof.provider_id is not prepared.provider_id
             or proof.account_id != prepared.target_account_id
-            or proof.generation != prepared.target_generation
             or proof.epoch != prepared.pending_epoch
         ):
             raise ValueError("Authority proof is unrelated.")
+
+    @staticmethod
+    def _require_target_generation(
+        operation: OpenSelectionOperation,
+    ) -> AuthorityGeneration:
+        generation = operation.target_generation
+        if generation is None:
+            raise RuntimeError("Runtime authority generation is unavailable.")
+        return generation

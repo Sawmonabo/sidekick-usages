@@ -140,7 +140,14 @@ def require_selection_transition(
         )
         or replacement.updated_at < expected.updated_at
         or replacement.phase not in _SELECTION_TRANSITIONS[expected.phase]
-        or not _selection_generation_transition(expected, replacement)
+        or not _selection_prepared_generation_transition(
+            expected,
+            replacement,
+        )
+        or not _selection_target_generation_transition(
+            expected,
+            replacement,
+        )
         or not _selection_required_transition(expected, replacement)
         or not _selection_ready_transition(expected, replacement)
         or not _selection_lost_transition(expected, replacement)
@@ -149,15 +156,30 @@ def require_selection_transition(
     return replacement
 
 
-def _selection_generation_transition(
+def _selection_prepared_generation_transition(
     expected: OpenSelectionOperation,
     replacement: OpenSelectionOperation,
 ) -> bool:
-    """Allow target generation to be learned exactly once."""
+    """Allow prepared source generation to be learned exactly once."""
     if expected.phase is SelectionPhase.PREVALIDATING:
         return (
-            expected.target_generation is None
+            expected.prepared_generation is None
             and replacement.phase is SelectionPhase.PREPARING
+            and replacement.prepared_generation is not None
+        )
+    return replacement.prepared_generation == expected.prepared_generation
+
+
+def _selection_target_generation_transition(
+    expected: OpenSelectionOperation,
+    replacement: OpenSelectionOperation,
+) -> bool:
+    """Allow exact runtime generation to be learned once after commit."""
+    if expected.target_generation is None:
+        return replacement.target_generation is None or (
+            expected.phase
+            in {SelectionPhase.COMMITTING, SelectionPhase.RECOVERING}
+            and replacement.phase is SelectionPhase.AWAITING_READY
             and replacement.target_generation is not None
         )
     return replacement.target_generation == expected.target_generation
@@ -379,8 +401,4 @@ def coalesce_due_operation(
         due_at=min(current.due_at, incoming.due_at),
         updated_at=max(current.updated_at, incoming.updated_at),
         failure_code=None,
-        allow_remote_control_disconnect=(
-            current.allow_remote_control_disconnect
-            or incoming.allow_remote_control_disconnect
-        ),
     )

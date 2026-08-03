@@ -57,6 +57,7 @@ from sidekick_usages.daemon.lifecycle.readiness import SupervisorReadiness
 from sidekick_usages.daemon.models.control import VerifiedControlRequest
 from sidekick_usages.daemon.models.lifecycle import ServiceBackendStatus
 from sidekick_usages.daemon.models.protocol import (
+    AcceptedPayload,
     AccountPayload,
     ActivationPayload,
     ControlEvent,
@@ -85,6 +86,7 @@ from sidekick_usages.daemon.selection.models import (
     TurnBeginRequest,
     TurnEndRequest,
 )
+from sidekick_usages.daemon.selection.ports import SelectionSupervisorPort
 from sidekick_usages.daemon.types.lifecycle import (
     ServiceBackendId,
     ServiceComponentState,
@@ -103,8 +105,11 @@ from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
 from sidekick_usages.persistence.supervisor.service import ServiceStateStore
 from sidekick_usages.platform.models import PeerIdentity
 from sidekick_usages.platform.peer import (
+    _DARWIN_LOCAL_PEERPID,
+    _DARWIN_SOL_LOCAL,
     OperatingSystemPeerVerifier,
     PeerVerificationError,
+    _macos_peer_process_id,
 )
 from sidekick_usages.platform.types import PeerFailureCode, PeerVerifier
 from tests.fakes.daemon.control import (
@@ -125,6 +130,37 @@ from tests.fakes.daemon.runtime import ResidentState, RuntimeClock
 from tests.support.persistence import make_application_paths
 from tests.support.platform import REQUIRES_MANAGED_RUNTIME
 from tests.support.time import REFERENCE_TIME, FixedClock
+
+
+class _OperatorSelection(SelectionSupervisorPort):
+    """Return one immediate result through the operator control surface."""
+
+    def __init__(self) -> None:
+        self.operation_id: OperationId | None = None
+
+    def select(
+        self,
+        operation_id: OperationId,
+        provider_id: ProviderId,
+        target_account_id: SidekickAccountId,
+    ) -> SelectionResult:
+        """Record and complete one exact synthetic selection."""
+        self.operation_id = operation_id
+        return SelectionResult(
+            operation_id=operation_id,
+            provider_id=provider_id,
+            target_account_id=target_account_id,
+            target_generation=AuthorityGeneration("generation-target-1"),
+            epoch=SelectionEpoch(1),
+            outcome=SelectionOutcome.READY,
+            safe_code=SelectionCode.SELECTION_SUCCEEDED,
+            required_count=0,
+            ready_count=0,
+            adopted_count=0,
+            lost_count=0,
+            started_at=REFERENCE_TIME,
+            completed_at=REFERENCE_TIME,
+        )
 
 
 def _verified(request: ControlRequest) -> VerifiedControlRequest:
@@ -155,6 +191,7 @@ def _assert_reused_operation_follows_current_events(
     events = OperationEventHub()
     completion = SchedulerCompletion(
         operation_id=native.operation_id,
+        operation_kind=native.kind,
         state=OperationState.SCHEDULED,
         outcome=WorkerOutcome.SUCCEEDED,
         failure_code=None,
@@ -196,7 +233,6 @@ def test_authenticated_control_stream_frames_completes_and_cancels(
     """One peer-proven stream frames, completes, and cancels safely."""
     account_id = SidekickAccountId("69b33871-dcd9-4e47-8ef8-f77d9944a956")
     default_payload = ActivationPayload(ProviderId.CLAUDE, account_id)
-    assert not default_payload.allow_remote_control_disconnect
     fragmented_request = ControlRequest(
         protocol_version=PROTOCOL_VERSION,
         request_id=new_request_id(),
@@ -205,6 +241,7 @@ def test_authenticated_control_stream_frames_completes_and_cancels(
         package_version=__version__,
     )
     frame = encode_request(fragmented_request)
+    assert b"allow_remote_control_disconnect" not in frame
     decoder = FrameDecoder()
     decoded_frames: list[bytes] = []
     for byte in frame:
@@ -224,13 +261,7 @@ def test_authenticated_control_stream_frames_completes_and_cancels(
     fragmented_client: ConnectedSocket = fragmented_socket
     client = ControlClient(fragmented_client)
 
-    activation = tuple(
-        client.activate(
-            ProviderId.CLAUDE,
-            account_id,
-            allow_remote_control_disconnect=True,
-        )
-    )
+    activation = tuple(client.activate(ProviderId.CLAUDE, account_id))
     assert tuple(event.kind for event in activation) == (
         EventKind.ACCEPTED,
         EventKind.PROGRESS,
@@ -244,7 +275,6 @@ def test_authenticated_control_stream_frames_completes_and_cancels(
         subscription,
         fragmented_socket,
     )
-    dispatcher.release_subscription.set()
     server.join(timeout=2)
 
     assert isinstance(cancellation_failure, ConnectionError)
@@ -255,7 +285,6 @@ def test_authenticated_control_stream_frames_completes_and_cancels(
     )
     recorded_payload = dispatcher.requests[0].payload
     assert isinstance(recorded_payload, ActivationPayload)
-    assert recorded_payload.allow_remote_control_disconnect
     assert dispatcher.cancellations == [accepted.request_id]
 
     state = foundation_state(tmp_path)
@@ -282,7 +311,6 @@ def test_authenticated_control_stream_frames_completes_and_cancels(
         OperationKind.ACTIVATE,
     )
     assert persisted is not None
-    assert persisted.allow_remote_control_disconnect
     resident.available = False
     resident.failure_code = "version_unsupported"
     rejected_request = replace(
@@ -448,6 +476,58 @@ def _verified_peer_pair(
     return peer, operator
 
 
+def test_darwin_peer_pid_socket_constants_are_portable() -> None:
+    """Use Darwin ABI constants even when Python omits their names."""
+    assert (_DARWIN_SOL_LOCAL, _DARWIN_LOCAL_PEERPID) == (0, 0x002)
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="requires Darwin")
+def test_darwin_socketpair_proves_the_real_peer_process() -> None:
+    """Read the kernel-owned peer PID from a real Darwin socketpair."""
+    server_socket, client_socket = socket.socketpair()
+    try:
+        assert _macos_peer_process_id(server_socket) == os.getpid()
+    finally:
+        server_socket.close()
+        client_socket.close()
+
+
+def test_select_accepts_with_the_correlated_operation_id(
+    tmp_path: Path,
+) -> None:
+    """Acknowledge selection before returning its correlated result."""
+    operation_id = OperationId("9265897c-7881-47af-b69e-575823b33c3f")
+    target = SidekickAccountId("2999e642-0299-4f73-9187-01b3d240e3d8")
+    selection = _OperatorSelection()
+    state = foundation_state(tmp_path)
+    dispatcher = SupervisorDispatcher(
+        state.queue,
+        ServiceStateStore(state.paths.service_state),
+        OperationEventHub(),
+        ResidentState(),
+        RuntimeClock(),
+        Event().set,
+        Event().set,
+        selection=selection,
+        operation_id_factory=lambda: operation_id,
+    )
+    request = ControlRequest(
+        PROTOCOL_VERSION,
+        new_request_id(),
+        RequestKind.SELECT_ACCOUNT,
+        AccountPayload(ProviderId.CLAUDE, target),
+        __version__,
+    )
+
+    accepted, completed = tuple(dispatcher.dispatch(_verified(request)))
+
+    assert isinstance(accepted.payload, AcceptedPayload)
+    assert accepted.payload.operation_id == operation_id
+    assert isinstance(completed.payload, SelectionResult)
+    assert completed.payload.operation_id == operation_id
+    assert selection.operation_id == operation_id
+
+
 def _dispatch_failure_code(
     root: Path,
     request: ControlRequest,
@@ -495,6 +575,8 @@ def test_participant_codec_uses_only_kernel_process_identity(
         capability_version=1,
         connection_generation=1,
     )
+    with pytest.raises(ValueError, match="capability version"):
+        replace(manifest, capability_version=2)
     ready = ParticipantReadyProof(
         account_id=account_id,
         generation=generation,
@@ -566,6 +648,14 @@ def test_participant_codec_uses_only_kernel_process_identity(
         pending_epoch=epoch,
         phase=SelectionPhase.AWAITING_READY,
         code=None,
+        registered_count=3,
+        reachable_count=2,
+        required_count=3,
+        ready_count=2,
+        adopted_count=1,
+        unreachable_count=1,
+        active_turn_count=1,
+        queued_turn_count=1,
     )
     event_payloads: tuple[tuple[EventKind, EventPayload], ...] = (
         (

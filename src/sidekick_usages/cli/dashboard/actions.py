@@ -1,6 +1,5 @@
 """Serialized local-supervisor actions for the interactive dashboard."""
 
-from dataclasses import replace
 from pathlib import Path
 from threading import Lock
 from typing import assert_never
@@ -40,7 +39,6 @@ from sidekick_usages.daemon.models.lifecycle import (
 from sidekick_usages.daemon.models.protocol import (
     CompletedPayload,
     ControlActionTerminalPayload,
-    FailedPayload,
     SnapshotPayload,
 )
 from sidekick_usages.daemon.types.lifecycle import ServiceLifecyclePhase
@@ -50,19 +48,8 @@ from sidekick_usages.daemon.types.protocol import (
     EventKind,
     ProgressPhase,
 )
-from sidekick_usages.providers.claude.activation.types import (
-    ClaudeActivationGuardFailure,
-)
 
 CONFIRMATION_RESPONSE_HINT = "y yes / n no"
-REMOTE_CONTROL_CONFIRMATION_MESSAGE = (
-    "Claude Remote Control may disconnect during this switch. "
-    "Continue? y yes / n no"
-)
-REMOTE_CONTROL_REFUSED_MESSAGE = "Claude Remote Control approval was refused."
-REMOTE_CONTROL_FAILURE_CODE = (
-    ClaudeActivationGuardFailure.REMOTE_CONTROL_DISCONNECT_REQUIRED
-).failure_code
 CONTROL_PROGRESS_MESSAGES = {
     ProgressPhase.QUEUED: "Account action queued.",
     ProgressPhase.STARTING: "Starting account action.",
@@ -99,37 +86,6 @@ class DashboardActionExecutor:
         terminal = self._dispatch_ready(client, request)
         if terminal is None:
             return
-        if self._remote_control_confirmation_required(request, terminal):
-            decision = self._sink.request_confirmation(
-                DashboardConfirmationKind.REMOTE_CONTROL,
-                REMOTE_CONTROL_CONFIRMATION_MESSAGE,
-            )
-            if (
-                decision is not ServiceSetupDecision.APPROVED
-                or self._sink.stopping
-            ):
-                if not self._sink.stopping:
-                    self._sink.action_error(
-                        request.intent,
-                        REMOTE_CONTROL_REFUSED_MESSAGE,
-                    )
-                return
-            client = self._connect_after_readiness()
-            if client is None:
-                self._setup_failed(
-                    ServiceSetupResult(
-                        intent=request.intent,
-                        outcome=ServiceSetupOutcome.FAILED,
-                    )
-                )
-                return
-            approved = replace(
-                request,
-                allow_remote_control_disconnect=True,
-            )
-            terminal = self._dispatch_ready(client, approved)
-            if terminal is None:
-                return
         self._sink.action_completed(request.intent, terminal)
 
     def reconcile_startup(
@@ -276,9 +232,6 @@ class DashboardActionExecutor:
             events = client.activate(
                 intent.provider_id,
                 intent.account_id,
-                allow_remote_control_disconnect=(
-                    request.allow_remote_control_disconnect
-                ),
             )
         elif isinstance(intent, RefreshAccountIntent):
             events = client.refresh_account(
@@ -317,19 +270,6 @@ class DashboardActionExecutor:
 
     def _publish_progress(self, phase: ProgressPhase) -> None:
         self._sink.publish_progress(CONTROL_PROGRESS_MESSAGES[phase])
-
-    @staticmethod
-    def _remote_control_confirmation_required(
-        request: DashboardActionRequest,
-        terminal: ControlActionTerminalPayload,
-    ) -> bool:
-        return (
-            isinstance(request.intent, ActivateOrRepairIntent)
-            and request.intent.provider_id is ProviderId.CLAUDE
-            and not request.allow_remote_control_disconnect
-            and isinstance(terminal, FailedPayload)
-            and terminal.code == REMOTE_CONTROL_FAILURE_CODE
-        )
 
     def _setup_progress(
         self,
