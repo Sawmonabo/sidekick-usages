@@ -113,10 +113,12 @@ def test_permission_repair_preserves_credential_bytes(
 ) -> None:
     app_root = tmp_path / "sidekick"
     app_root.mkdir(mode=RELEASED_DIRECTORY_MODE)
+    app_root.chmod(RELEASED_DIRECTORY_MODE)
     accounts = app_root / "accounts.json"
     _private_file(accounts, b"test-only-account-authority")
     root = app_root / "credentials"
     root.mkdir(mode=RELEASED_DIRECTORY_MODE)
+    root.chmod(RELEASED_DIRECTORY_MODE)
     bundle = root / "primary"
     bundle.mkdir(mode=PRIVATE_DIRECTORY_MODE)
     auth = bundle / "auth.json"
