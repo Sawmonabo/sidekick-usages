@@ -345,6 +345,8 @@ def _run() -> int:
                     f"{installed_console_first_paint_ms:.3f}"
                 ),
                 "installed_console_paths_isolated=true",
+                "installed_console_natural_exit=true",
+                "installed_console_terminal_restored=true",
                 "installed_console_process_group_reaped=true",
                 (f"synthetic_first_paint_ms={result.first_paint_ms:.3f}"),
                 (

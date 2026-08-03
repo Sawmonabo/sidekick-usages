@@ -47,6 +47,7 @@ FIRST_PAINT_DEADLINE_SECONDS = (
 FIRST_PAINT_DIAGNOSTIC_TIMEOUT_SECONDS = (
     FIRST_PAINT_DIAGNOSTIC_TIMEOUT_MILLISECONDS / MILLISECONDS_PER_SECOND
 )
+NATURAL_EXIT_TIMEOUT_SECONDS = 5.0
 PROCESS_GROUP_CLEANUP_SECONDS = 1.0
 PTY_COLUMNS = 120
 PTY_ROWS = 48
@@ -282,12 +283,14 @@ def measure_installed_console_first_paint(
     cwd: Path,
     environment: Mapping[str, str],
 ) -> float:
-    """Measure one complete cached frame from the installed public command."""
+    """Measure first paint and require one naturally restored quit."""
     master_descriptor, slave_descriptor = os.openpty()
     process: subprocess.Popen[bytes] | None = None
+    completed_naturally = False
     cleanup_succeeded = True
     try:
         _set_terminal_size(slave_descriptor)
+        initial_terminal_attributes = termios.tcgetattr(slave_descriptor)
         os.set_blocking(master_descriptor, False)
         started_at = time.perf_counter()
         process = subprocess.Popen(
@@ -300,16 +303,49 @@ def measure_installed_console_first_paint(
             close_fds=True,
             start_new_session=True,
         )
-        os.close(slave_descriptor)
-        slave_descriptor = -1
-        return _completed_frame(
+        first_paint_ms = _completed_frame(
             process,
             master_descriptor,
             started_at,
         )
+        try:
+            os.write(master_descriptor, b"q")
+            status = process.wait(timeout=NATURAL_EXIT_TIMEOUT_SECONDS)
+        except OSError as error:
+            raise DashboardBenchmarkError(
+                "Installed console did not accept its quit key."
+            ) from error
+        except subprocess.TimeoutExpired:
+            raise DashboardBenchmarkError(
+                "Installed console did not exit naturally after its quit key."
+            ) from None
+        if status != 0:
+            raise DashboardBenchmarkError(
+                "Installed console returned a nonzero status after its "
+                f"quit key: {status}."
+            )
+        try:
+            restored = (
+                termios.tcgetattr(slave_descriptor)
+                == initial_terminal_attributes
+            )
+        except OSError as error:
+            raise DashboardBenchmarkError(
+                "Installed-console terminal restoration could not be read."
+            ) from error
+        if not restored:
+            raise DashboardBenchmarkError(
+                "Installed console did not restore its terminal after quit."
+            )
+        if SubprocessProcessGroup(process).group_alive():
+            raise DashboardBenchmarkError(
+                "Installed-console process group survived its natural exit."
+            )
+        completed_naturally = True
+        return first_paint_ms
     finally:
         try:
-            if process is not None:
+            if process is not None and not completed_naturally:
                 cleanup_succeeded = (
                     terminate_process_group(
                         SubprocessProcessGroup(process),
@@ -318,8 +354,7 @@ def measure_installed_console_first_paint(
                     is not None
                 )
         finally:
-            if slave_descriptor >= 0:
-                os.close(slave_descriptor)
+            os.close(slave_descriptor)
             os.close(master_descriptor)
         if not cleanup_succeeded:
             raise DashboardBenchmarkError(

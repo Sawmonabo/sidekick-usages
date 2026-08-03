@@ -26,8 +26,9 @@ DASHBOARD_BENCHMARK_RELATIVE_PATH = (
 DASHBOARD_BENCHMARK_HOME_PREFIX = "sidekick-dashboard-benchmark-home-"
 PUBLIC_ROOT_USAGE = "Usage: sidekick-usages"
 PRIVATE_ROOT_USAGE = "sidekick_usages.cli.runtime.application"
-CLAUDE_SESSION_DISABLED = "claude session integration is not available"
-CLAUDE_SESSION_NOT_STARTED = "provider process was not started"
+SESSION_NOT_STARTED = "provider process was not started"
+DASHBOARD_NORMAL_EXIT = "installed_console_natural_exit=true"
+DASHBOARD_TERMINAL_RESTORED = "installed_console_terminal_restored=true"
 SYNTHETIC_PROVIDER_SECTIONS = (
     "CLAUDE · 4 accounts",
     "CODEX · 2 accounts",
@@ -179,6 +180,22 @@ def _dashboard_benchmark_env(
     )
 
 
+def _require_disabled_session(
+    provider: str,
+    completed: subprocess.CompletedProcess[str],
+) -> None:
+    """Require one synthetic provider session to fail before launch."""
+    output = completed.stdout + completed.stderr
+    required = (
+        f"{provider} session integration is not available",
+        SESSION_NOT_STARTED,
+    )
+    if any(fragment not in output for fragment in required):
+        raise WheelVerificationError(
+            f"Installed-wheel {provider.title()} session did not fail closed."
+        )
+
+
 def _verify_dashboard_benchmark(
     contract: ProjectContract,
     python: Path,
@@ -267,17 +284,30 @@ def _verify_dashboard_benchmark(
             env=env,
             expected_exit_code=1,
         )
-        claude_output = claude.stdout + claude.stderr
-        if (
-            CLAUDE_SESSION_DISABLED not in claude_output
-            or CLAUDE_SESSION_NOT_STARTED not in claude_output
-        ):
-            raise WheelVerificationError(
-                "Installed-wheel Claude session did not fail closed."
-            )
+        _require_disabled_session("claude", claude)
+        codex = run_command(
+            [
+                str(public_script),
+                "session",
+                "codex",
+                "--",
+                "synthetic",
+            ],
+            cwd=run_dir,
+            env=env,
+            expected_exit_code=1,
+        )
+        _require_disabled_session("codex", codex)
     if DASHBOARD_BENCHMARK_SUCCESS not in result.stdout:
         raise WheelVerificationError(
             "Installed-wheel dashboard benchmark omitted its success proof."
+        )
+    if (
+        DASHBOARD_NORMAL_EXIT not in result.stdout
+        or DASHBOARD_TERMINAL_RESTORED not in result.stdout
+    ):
+        raise WheelVerificationError(
+            "Installed-wheel dashboard omitted its normal-exit proof."
         )
     return result.stdout
 
