@@ -4,7 +4,10 @@ from enum import StrEnum
 from typing import Protocol
 
 from sidekick_usages.core.accounts.models import SavedAccount
-from sidekick_usages.core.accounts.types import SidekickAccountId
+from sidekick_usages.core.accounts.types import (
+    ProviderIdentity,
+    SidekickAccountId,
+)
 from sidekick_usages.core.types import AccountLabel, ProviderId
 from sidekick_usages.credentials.codex.types import CodexLoginEventSink
 from sidekick_usages.credentials.migration.models.service import (
@@ -81,3 +84,11 @@ class ClaudeManagedMigration(Protocol):
         interactive: bool,
     ) -> CredentialLoginResult:
         """Migrate or verify one final private Claude profile."""
+
+    def restore_setup_only(
+        self,
+        account_id: SidekickAccountId,
+        *,
+        expected_identity: ProviderIdentity,
+    ) -> CredentialLoginResult:
+        """Remove one explicitly rejected managed association."""

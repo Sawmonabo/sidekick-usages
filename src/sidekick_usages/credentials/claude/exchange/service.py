@@ -94,6 +94,41 @@ class ClaudeOfficialLoginExchange:
         native_absent_before: bool = False,
     ) -> ClaudeExchangeResult:
         """Exchange one leased refresh token and verify the final profile."""
+        return self._provision(
+            capabilities,
+            expectation,
+            refresh_token,
+            native_absent_before=native_absent_before,
+            require_access_expiry_advance=False,
+        )
+
+    def provision_native(
+        self,
+        capabilities: ClaudeCapabilities,
+        expectation: ClaudeAuthorityExpectation,
+        refresh_token: str,
+        *,
+        native_absent_before: bool = False,
+    ) -> ClaudeExchangeResult:
+        """Provision native Claude with strict credential propagation."""
+        return self._provision(
+            capabilities,
+            expectation,
+            refresh_token,
+            native_absent_before=native_absent_before,
+            require_access_expiry_advance=True,
+        )
+
+    def _provision(
+        self,
+        capabilities: ClaudeCapabilities,
+        expectation: ClaudeAuthorityExpectation,
+        refresh_token: str,
+        *,
+        native_absent_before: bool,
+        require_access_expiry_advance: bool,
+    ) -> ClaudeExchangeResult:
+        """Run one official exchange under its exact proof policy."""
         result = self._run_login(
             capabilities,
             expectation,
@@ -114,6 +149,7 @@ class ClaudeOfficialLoginExchange:
             capabilities,
             expectation,
             native_absent_before=native_absent_before,
+            require_access_expiry_advance=require_access_expiry_advance,
         )
 
     def _stable_post_login(
@@ -122,6 +158,7 @@ class ClaudeOfficialLoginExchange:
         expectation: ClaudeAuthorityExpectation,
         *,
         native_absent_before: bool,
+        require_access_expiry_advance: bool,
     ) -> ClaudeExchangeResult:
         """Require two complete stable proofs after official login."""
         observed = self._read(capabilities, expectation)
@@ -147,6 +184,8 @@ class ClaudeOfficialLoginExchange:
             return ClaudeExchangeFailure(
                 ClaudeExchangeFailureKind.RECONCILIATION_REQUIRED
             )
+        if require_access_expiry_advance:
+            return verified_claude_native_exchange(expectation, confirmed)
         return verified_claude_exchange(expectation, confirmed)
 
     def _run_login(
@@ -290,6 +329,8 @@ class ClaudeOfficialLoginExchange:
 def _invalid_exchange(
     expected: ClaudeAuthorityExpectation,
     observed: ClaudeAuthoritySnapshot,
+    *,
+    require_access_expiry_advance: bool,
 ) -> ClaudeExchangeFailureKind | None:
     if observed.generation == expected.generation:
         return ClaudeExchangeFailureKind.UNCHANGED
@@ -297,7 +338,11 @@ def _invalid_exchange(
         observed.provider_identity != expected.provider_identity
         or observed.plan != expected.plan
         or frozenset(observed.scopes) != frozenset(expected.scopes)
-        or observed.access_expires_at <= expected.access_expires_at
+        or (
+            observed.access_expires_at < expected.access_expires_at
+            if not require_access_expiry_advance
+            else observed.access_expires_at <= expected.access_expires_at
+        )
         or (
             expected.refresh_expires_at is not None
             and (
@@ -317,7 +362,26 @@ def verified_claude_exchange(
     observed: ClaudeAuthoritySnapshot,
 ) -> ClaudeExchangeResult:
     """Return one verified advanced generation or its exact failure."""
-    invalid = _invalid_exchange(expected, observed)
+    invalid = _invalid_exchange(
+        expected,
+        observed,
+        require_access_expiry_advance=False,
+    )
+    if invalid is not None:
+        return ClaudeExchangeFailure(invalid)
+    return ClaudeExchangeSuccess(observed)
+
+
+def verified_claude_native_exchange(
+    expected: ClaudeAuthorityExpectation,
+    observed: ClaudeAuthoritySnapshot,
+) -> ClaudeExchangeResult:
+    """Return a native exchange only after strict credential propagation."""
+    invalid = _invalid_exchange(
+        expected,
+        observed,
+        require_access_expiry_advance=True,
+    )
     if invalid is not None:
         return ClaudeExchangeFailure(invalid)
     return ClaudeExchangeSuccess(observed)

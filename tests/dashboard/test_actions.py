@@ -279,6 +279,14 @@ def test_managed_auth_migration_resumes_without_exposing_secrets(
     for identity in MIGRATION_IDENTITIES:
         assert identity not in rendered
 
+    scenario.restore_claude_setup_only()
+    guided_before = tuple(scenario.claude.guided_account_ids)
+    claude_calls_before = scenario.trace.count("claude:claude-team")
+    unattended = harness.invoke(["migrate", "managed-auth", "--yes"])
+    assert unattended.exit_code == ExitCode.MANUAL_ACTION
+    assert tuple(scenario.claude.guided_account_ids) == guided_before
+    assert scenario.trace.count("claude:claude-team") == claude_calls_before
+
     help_result = harness.invoke(["migrate", "managed-auth", "--help"])
     assert help_result.exit_code == ExitCode.SUCCESS
     assert "--token" not in help_result.output

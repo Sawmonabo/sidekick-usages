@@ -195,6 +195,34 @@ class ClaudeManagedMigrationCoordinator:
             expected_native_identity=expected_identity,
         )
 
+    def restore_setup_only(
+        self,
+        account_id: SidekickAccountId,
+        *,
+        expected_identity: ProviderIdentity,
+    ) -> CredentialLoginResult:
+        """Restore one setup authority after a false association."""
+        lock = OperationAuthorityLock(
+            self._paths.durable_operations,
+            account_id,
+        )
+        try:
+            with lock.hold():
+                account = self._current_account(account_id)
+                if isinstance(account, ProviderFailure):
+                    return account
+                self._commits.recover_account(account)
+                return self._commits.restore_setup_only(
+                    account,
+                    expected_identity=expected_identity,
+                )
+        except PersistenceError:
+            return migration_failure(
+                ProviderFailureKind.UNREADABLE,
+                "Claude setup-authority repair is unavailable; retry shortly.",
+                action_required=False,
+            )
+
     def _migrate_account(
         self,
         account_id: SidekickAccountId,

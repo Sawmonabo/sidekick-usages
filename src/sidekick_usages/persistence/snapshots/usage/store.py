@@ -148,6 +148,47 @@ class UsageSnapshotStore(UsageSnapshotReader):
         except PersistenceError:
             raise UsageSnapshotError(UsageSnapshotFailureKind.WRITE) from None
 
+    def begin_identity_reconciliation(
+        self,
+        account_id: SidekickAccountId,
+        provider_id: ProviderId,
+        provider_identity: ProviderIdentity,
+    ) -> None:
+        """Stage rollback of one incorrectly bound usage identity."""
+        key = str(account_id)
+        try:
+            with self._lock.hold():
+                observed = self._filesystem.read_opaque_private()
+                if observed is None:
+                    return
+                document = decode_usage_document(observed.data)
+                record = document.accounts.get(key)
+                if record is None:
+                    return
+                current = account_usage_snapshot(account_id, record)
+                if (
+                    current.provider_id is not provider_id
+                    or current.provider_identity != provider_identity
+                ):
+                    raise UsageSnapshotError(UsageSnapshotFailureKind.CONFLICT)
+                promotions = begin_usage_promotions(
+                    document,
+                    key,
+                    provider_id,
+                    None,
+                    provider_identity,
+                )
+                self._filesystem.commit_opaque_private(
+                    encode_usage_snapshot_document(
+                        usage_document(dict(document.accounts), promotions)
+                    ),
+                    expected_source=observed.fingerprint,
+                )
+        except UsageSnapshotError:
+            raise
+        except PersistenceError:
+            raise UsageSnapshotError(UsageSnapshotFailureKind.WRITE) from None
+
     def abort_identity_promotion(
         self,
         account_id: SidekickAccountId,

@@ -37,7 +37,7 @@ from sidekick_usages.credentials.claude.exchange.models import (
 )
 from sidekick_usages.credentials.claude.exchange.service import (
     claude_native_propagation_proven,
-    verified_claude_exchange,
+    verified_claude_native_exchange,
 )
 from sidekick_usages.persistence.errors import SourceChangedError
 from sidekick_usages.persistence.state.files import (
@@ -750,7 +750,7 @@ class ClaudeActivationRecoveryService:
             native.modified_milliseconds,
         ):
             return False
-        result = verified_claude_exchange(
+        result = verified_claude_native_exchange(
             native_authority_expectation(
                 context.target_private,
                 baseline.modified_milliseconds,

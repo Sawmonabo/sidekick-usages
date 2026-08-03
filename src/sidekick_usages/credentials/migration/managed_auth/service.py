@@ -42,7 +42,10 @@ from sidekick_usages.credentials.migration.types.managed_auth import (
 from sidekick_usages.credentials.migration.types.service import (
     ManagedAuthServiceState,
 )
-from sidekick_usages.credentials.models import CredentialLoginSuccess
+from sidekick_usages.credentials.models import (
+    CredentialLoginResult,
+    CredentialLoginSuccess,
+)
 from sidekick_usages.providers.base import (
     ProviderFailure,
     ProviderFailureKind,
@@ -69,6 +72,49 @@ class ManagedAuthMigrationCoordinator:
     def plan(self) -> ManagedAuthPlan:
         """Build a secret-safe preview from the durable account index."""
         return self._plan(self._accounts.saved_accounts())
+
+    def restore_claude_setup_only(
+        self,
+        label: AccountLabel,
+    ) -> CredentialLoginResult:
+        """Restore one explicitly selected Claude setup-only authority."""
+        account = next(
+            (
+                candidate
+                for candidate in self._accounts.saved_accounts()
+                if candidate.provider_id is ProviderId.CLAUDE
+                and candidate.label == label
+            ),
+            None,
+        )
+        if account is None:
+            return ProviderFailure(
+                provider_id=ProviderId.CLAUDE,
+                kind=ProviderFailureKind.MISSING,
+                message=f"No Claude account named '{label}'.",
+                action_required=True,
+            )
+        authority = account.authority
+        if (
+            not isinstance(authority, ClaudeAccountAuthority)
+            or authority.setup_token is None
+            or not isinstance(
+                authority.subscription,
+                ClaudeManagedLoginAuthority,
+            )
+        ):
+            return ProviderFailure(
+                provider_id=ProviderId.CLAUDE,
+                kind=ProviderFailureKind.REJECTED,
+                message=(
+                    "The Claude account has no managed association to remove."
+                ),
+                action_required=True,
+            )
+        return self._claude.restore_setup_only(
+            account.account_id,
+            expected_identity=authority.subscription.provider_identity,
+        )
 
     def _plan(self, accounts: tuple[SavedAccount, ...]) -> ManagedAuthPlan:
         """Order one validated account snapshot for migration."""

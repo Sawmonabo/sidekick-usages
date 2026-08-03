@@ -107,7 +107,22 @@ sidekick-usages codex login <codex-label>
 
 A setup-token-only Claude account requires `--replace-identity` once to approve
 its first subscription association. Do not use it to bypass an established
-identity mismatch.
+identity mismatch. `migrate managed-auth --yes` never approves this identity
+decision; setup-only associations remain explicitly interactive.
+
+If a failed cutover attached a managed identity to the wrong saved account,
+restore that exact account to its existing setup-token authority first:
+
+```bash
+sidekick-usages migrate managed-auth \
+  --restore-setup-only <claude-label>
+```
+
+This explicit repair preserves the stable account ID, setup token, metrics,
+and heartbeat state while removing only the rejected managed association. It
+does not log out, replace, or modify the native Claude session. Do not use it
+for an ordinary refresh failure: the account becomes setup-token-only and has
+no refreshable subscription authority until a later explicit association.
 
 Saved-account refresh recovery is local and transaction-aware. A complete safe
 stage can finish without another provider request. Unsafe, incomplete, linked,

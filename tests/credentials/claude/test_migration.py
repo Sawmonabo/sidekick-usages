@@ -302,11 +302,11 @@ def _failure_kind(
     return result.kind if isinstance(result, ProviderFailure) else None
 
 
-def test_two_account_migration_preserves_dual_authority_and_metrics(
+def test_setup_association_reconciles_without_losing_token_or_metrics(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """One stable-ID association preserves its setup token and metrics."""
+    """Association rollback preserves the setup token and cached metrics."""
     use_synthetic_claude(monkeypatch)
     paths = make_application_paths(tmp_path)
     store, private = make_account_store_with_private(
@@ -372,7 +372,7 @@ def test_two_account_migration_preserves_dual_authority_and_metrics(
                     None,
                     None,
                     token_suffix="b-second-refresh",
-                    access_expires_at=_NEW_ACCESS_EXPIRY + timedelta(hours=1),
+                    access_expires_at=_NEW_ACCESS_EXPIRY,
                 ),
             ),
         },
@@ -491,6 +491,29 @@ def test_two_account_migration_preserves_dual_authority_and_metrics(
         [profile_b, profile_b],
         [profile_b, profile_b],
         b"native-login-must-remain",
+    )
+
+    assert (
+        coordinator.restore_setup_only(
+            dual_before.account_id,
+            expected_identity=association_b,
+        ),
+        store.read_saved(dual_before.account_id),
+        snapshots.load(dual_before),
+    ) == (
+        CredentialLoginSuccess(dual_before.label),
+        replace(
+            current_b,
+            authority=ClaudeAccountAuthority(
+                setup_token=setup_authority_b,
+                subscription=None,
+            ),
+            credential_health=setup_authority_b.health,
+            last_refresh_at=None,
+            last_refresh_status=None,
+            last_refresh_error_code=None,
+        ),
+        usage_before,
     )
 
 

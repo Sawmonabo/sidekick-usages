@@ -278,6 +278,42 @@ class _ClaudeMigration:
             interactive=True,
         )
 
+    def restore_setup_only(
+        self,
+        account_id: SidekickAccountId,
+        *,
+        expected_identity: ProviderIdentity,
+    ) -> CredentialLoginResult:
+        """Restore one synthetic setup-only authority."""
+        account = self.accounts.read_saved(account_id)
+        if account is None or not isinstance(
+            account.authority,
+            ClaudeAccountAuthority,
+        ):
+            raise AssertionError("Expected synthetic Claude account.")
+        authority = account.authority
+        subscription = authority.subscription
+        if (
+            authority.setup_token is None
+            or not isinstance(subscription, ClaudeManagedLoginAuthority)
+            or subscription.provider_identity != expected_identity
+        ):
+            raise AssertionError("Synthetic association did not match.")
+        self.accounts.replace(
+            replace(
+                account,
+                authority=ClaudeAccountAuthority(
+                    setup_token=authority.setup_token,
+                    subscription=None,
+                ),
+                credential_health=authority.setup_token.health,
+                last_refresh_at=None,
+                last_refresh_status=None,
+                last_refresh_error_code=None,
+            )
+        )
+        return CredentialLoginSuccess(account.label)
+
 
 @dataclass(slots=True)
 class ManagedAuthScenario:
@@ -309,6 +345,16 @@ class ManagedAuthScenario:
     def allow_codex_retry(self) -> None:
         """Allow the previously rejected Codex account to complete."""
         self.codex.fail_labels.clear()
+
+    def restore_claude_setup_only(self) -> None:
+        """Return the synthetic Claude account to setup-only authority."""
+        account = self.accounts.label(ProviderId.CLAUDE, "claude-team")
+        result = self.claude.restore_setup_only(
+            account.account_id,
+            expected_identity=ProviderIdentity(MIGRATION_IDENTITIES[2]),
+        )
+        if not isinstance(result, CredentialLoginSuccess):
+            raise AssertionError("Synthetic setup authority was not restored.")
 
     def compose_claude(
         self,

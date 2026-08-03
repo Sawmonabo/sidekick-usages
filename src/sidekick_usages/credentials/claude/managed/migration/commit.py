@@ -91,6 +91,55 @@ class ClaudeMigrationCommitCoordinator:
             provider_identity,
         )
 
+    def restore_setup_only(
+        self,
+        current: SavedAccount,
+        *,
+        expected_identity: ProviderIdentity,
+    ) -> CredentialLoginResult:
+        """Remove one false managed association with forward recovery."""
+        authority = current.authority
+        if (
+            not isinstance(authority, ClaudeAccountAuthority)
+            or authority.setup_token is None
+            or authority.subscription is None
+            or authority.subscription.provider_identity != expected_identity
+        ):
+            return migration_failure(
+                ProviderFailureKind.IDENTITY_MISMATCH,
+                "The saved Claude association changed before repair.",
+            )
+        candidate = replace(
+            current,
+            authority=ClaudeAccountAuthority(
+                setup_token=authority.setup_token,
+                subscription=None,
+            ),
+            credential_health=authority.setup_token.health,
+            last_refresh_at=None,
+            last_refresh_status=None,
+            last_refresh_error_code=None,
+        )
+        try:
+            self._usage_snapshots.begin_identity_reconciliation(
+                current.account_id,
+                ProviderId.CLAUDE,
+                expected_identity,
+            )
+            self._store.restore_claude_setup_authority(
+                candidate,
+                expected=current,
+            )
+        except PersistenceError:
+            self._recover_setup_identity(current.account_id)
+            return migration_failure(
+                ProviderFailureKind.UNREADABLE,
+                "The Claude setup authority was not restored; retry safely.",
+                action_required=False,
+            )
+        self._recover_setup_identity(current.account_id)
+        return CredentialLoginSuccess(current.label)
+
     def commit(
         self,
         current: SavedAccount,
@@ -227,6 +276,16 @@ class ClaudeMigrationCommitCoordinator:
                 account_id,
                 ProviderId.CLAUDE,
                 provider_identity,
+            )
+        except PersistenceError:
+            return
+
+    def _recover_setup_identity(self, account_id: SidekickAccountId) -> None:
+        """Resolve staged usage identity from current account authority."""
+        try:
+            self._usage_snapshots.recover_identity_promotion(
+                account_id,
+                self._store.read_saved(account_id),
             )
         except PersistenceError:
             return

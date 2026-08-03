@@ -124,6 +124,38 @@ def stored_claude_transition_matches(
     )
 
 
+def reconciled_claude_setup_transition_matches(
+    current: SavedAccount,
+    candidate: SavedAccount,
+) -> bool:
+    """Return whether a managed association returned to its setup token."""
+    current_authority = current.authority
+    candidate_authority = candidate.authority
+    if (
+        not isinstance(current_authority, ClaudeAccountAuthority)
+        or not isinstance(candidate_authority, ClaudeAccountAuthority)
+        or current_authority.setup_token is None
+        or not isinstance(
+            current_authority.subscription,
+            ClaudeManagedLoginAuthority,
+        )
+        or candidate_authority
+        != ClaudeAccountAuthority(
+            setup_token=current_authority.setup_token,
+            subscription=None,
+        )
+    ):
+        return False
+    return candidate == replace(
+        current,
+        authority=candidate_authority,
+        credential_health=current_authority.setup_token.health,
+        last_refresh_at=None,
+        last_refresh_status=None,
+        last_refresh_error_code=None,
+    )
+
+
 def stored_claude_setup_transition_matches(
     current: SavedAccount,
     candidate: SavedAccount,

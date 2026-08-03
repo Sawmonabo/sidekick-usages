@@ -60,6 +60,7 @@ from sidekick_usages.persistence.credentials.transactions.transaction import (
 )
 from sidekick_usages.persistence.credentials.transitions.claude import (
     managed_claude_transition_matches,
+    reconciled_claude_setup_transition_matches,
     stored_claude_setup_transition_matches,
     stored_claude_transition_matches,
 )
@@ -321,6 +322,36 @@ class AccountStore:
                 or not (
                     stored_codex_transition_matches(current, account)
                     or stored_claude_transition_matches(current, account)
+                )
+            ):
+                raise SourceChangedError
+            index = AccountIndex(tuple(self._state.index))
+            index.replace(account)
+            runtime = dict(self._state.runtime)
+            runtime.pop(account.account_id, None)
+            self._state = transaction.commit(
+                index,
+                runtime,
+                (),
+            )
+
+    def restore_claude_setup_authority(
+        self,
+        account: SavedAccount,
+        *,
+        expected: SavedAccount,
+    ) -> None:
+        """Atomically remove one false managed Claude association."""
+        self._require_loaded()
+        with self._transactions.transaction() as transaction:
+            self._state = transaction.state
+            current = self._state.index.get(account.account_id)
+            if (
+                current != expected
+                or current is None
+                or not reconciled_claude_setup_transition_matches(
+                    current,
+                    account,
                 )
             ):
                 raise SourceChangedError

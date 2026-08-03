@@ -612,7 +612,7 @@ class ClaudeActivationAuthorityCoordinator:
                     )
                 exchanged = self._official_exchange(
                     self._native_reader(native_capabilities)
-                ).provision(
+                ).provision_native(
                     native_capabilities,
                     native_authority_expectation(
                         private_snapshot,
