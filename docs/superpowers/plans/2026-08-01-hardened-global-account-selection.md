@@ -1536,6 +1536,7 @@ git commit -m "feat(claude): qualify structured oauth updates"
 - Modify: `src/sidekick_usages/daemon/worker/selection.py`
 - Modify: `src/sidekick_usages/daemon/worker/claude/selection.py`
 - Modify: `src/sidekick_usages/daemon/runtime/scheduler.py`
+- Modify: `src/sidekick_usages/daemon/types/ports.py`
 - Modify: `src/sidekick_usages/entrypoints/worker.py`
 - Modify: `src/sidekick_usages/entrypoints/supervisor.py`
 - Modify: `src/sidekick_usages/cli/commands/session.py`
@@ -1563,6 +1564,10 @@ host remains the already-approved public command owner.
   `ClaudeAccessLease`, `ClaudeParticipantChannelRegistry`,
   `ClaudeProtectedCommitRelay`, and the bounded
   `CLAUDE_PARTICIPANT_BIND` operation.
+- Extends: the existing `OperationExchangePreparer` composition with one
+  child-aware `SelectionWorkerExchangeOwner` injected into
+  `SelectionWorkerGateway`. The composite selects Claude or Codex ownership by
+  provider and kind; it does not make `CodexRuntimeBroker` a generic broker.
 - Preserves: `ParticipantReadyRequest` and adoption as separate secret-free
   control messages. Neither schema contains a protected value.
 - Release result: the protected plane and host remain disabled. Public
@@ -1632,11 +1637,23 @@ generation, and kernel-proven process-start identity. Reject missing,
 duplicate, truncated, wrong-type, stale, or replayed descriptors before
 membership commit.
 
+`SelectionCoordinator.register()` is the single attachment transaction owner.
+It first validates both `ParticipantRegistry` membership and the staged
+`ClaudeParticipantChannelRegistry` endpoint. It then commits both or neither.
+`SupervisorDispatcher` closes the received descriptor on every strict control
+decode or peer failure before handoff. The coordinator transaction owns it
+after handoff and closes it on every registry, persistence, or commit failure.
+The control schema carries only participant ID, connection generation, client
+kind, and capability version; it never carries a credential.
+
 The serialized attachment remains secret-free. Detach the endpoint from the
 generic control transport immediately. `ClaudeParticipantChannelRegistry`
 owns at most the existing 16 Claude participants and closes only the exact old
-endpoint on proved disconnect/reconnect. Add no public listener, thread,
-executor, or poller.
+endpoint on proved disconnect/reconnect. `SelectionCoordinator` removes or
+replaces membership and channel in the same transaction. A disconnected
+obligation remains selection-blocking until reconnect or proved death, but no
+required live participant remains without its exact protected channel and no
+orphan channel survives. Add no public listener, thread, executor, or poller.
 
 - [ ] **Step 5: Reuse the worker exchange for one protected projection.**
 
@@ -1646,6 +1663,28 @@ opens one bounded mutable lease, writes one operation/account/generation/
 epoch/nonce-bound projection, persists only safe completion, releases all
 provider/account authorities, and exits. Only then may the resident Claude
 relay fan out separately encoded mutable copies and await install receipts.
+
+`SelectionWorkerGateway._operation()` creates the durable child operation ID.
+Before `_submit()` enqueues that child, the gateway calls its injected
+`SelectionWorkerExchangeOwner` with the exact child operation ID, parent
+selection operation ID, provider, and kind. The composite dispatcher selects:
+
+- `ClaudeProtectedCommitRelay` for Claude selection commit,
+  recovery-forward, and `CLAUDE_PARTICIPANT_BIND`; or
+- the existing Codex preparation owner for only its explicit Codex kinds,
+  delegating those matches to `CodexRuntimeBroker.prepare_operation()`.
+
+Claude work never reaches `CodexRuntimeBroker`. Keep
+`operation_requires_provider_preparation()` explicit for the Codex-owned
+prelaunch cases; exchange presence alone is not a dispatch predicate.
+
+After enqueue, the calling relay may read the one-way protected reply, but it
+must wait for scheduler-confirmed successful completion before fan-out.
+`DurableScheduler` and `WorkerPool` remain the sole scheduler/executor lane.
+`WorkerPool.complete_exchange()` or `WorkerPool.cancel_exchange()` closes the
+exact child exchange, and the gateway hook aborts that same child on enqueue,
+wakeup, relay, waiter, cancellation, or failure paths. Do not add an executor,
+thread, polling loop, worker lane, or generic broker.
 
 Worker results, operation records, journals, control messages, and event state
 remain credential-free. Clear the worker, relay, host, and child-encoder
@@ -1707,9 +1746,14 @@ Until then, dashboard Enter and scripted selection return a visible typed
 unavailable or degraded result without native or structured mutation. Usage,
 maintenance, and saved-account visibility remain available.
 
-- [ ] **Step 9: Run the focused static and architecture gates.**
+- [ ] **Step 9: Run the two green journeys, then the static gates.**
 
 ```bash
+uv run pytest \
+  tests/daemon/selection/test_coordination.py::\
+test_three_participants_switch_without_interrupting_turns \
+  tests/providers/claude/test_managed_boundaries.py::\
+test_structured_session_updates_oauth_only_at_an_idle_turn_boundary -q
 uv run ruff check src/sidekick_usages/credentials/claude \
   src/sidekick_usages/providers/claude \
   src/sidekick_usages/daemon src/sidekick_usages/cli tests
@@ -1718,6 +1762,11 @@ uv run ty check src/sidekick_usages/credentials/claude \
   src/sidekick_usages/daemon src/sidekick_usages/cli tests
 uv run python packaging/check_architecture.py
 ```
+
+Both exact nodes must pass after implementation and before static gates or
+commit. The security journey includes the atomic registration/unwind and exact
+child-exchange cleanup assertions. Add no test, matrix, snapshot, helper, fake,
+or duplicate journey for these seams.
 
 - [ ] **Step 10: Commit the release-disabled protected plane.**
 

@@ -533,6 +533,22 @@ Provider-heavy refresh and usage tasks remain bounded workers or provider
 adapters. The supervisor does not become a credential database, prompt log,
 or model-response proxy.
 
+`SelectionWorkerGateway` creates each durable child operation ID before
+enqueue. For an exchange-bearing selection child, it calls one injected
+provider exchange owner with the exact child operation ID, parent selection
+operation ID, provider, and kind before publishing the child to the queue.
+One composite dispatcher selects the provider owner by provider and kind. It
+delegates only explicit Codex operations to
+`CodexRuntimeBroker.prepare_operation()` and never sends Claude work through
+`CodexRuntimeBroker`; Claude commit, recovery-forward, and participant-bind
+work belongs to `ClaudeProtectedCommitRelay`.
+
+`DurableScheduler` and its existing `WorkerPool` remain the only scheduler and
+executor. Scheduler completion, cancellation, or failure closes the exchange
+for that exact child ID. The gateway also aborts the same exchange if enqueue,
+wakeup, relay, or waiter handling fails. No second executor, thread, polling
+loop, or provider-generic broker is added.
+
 Claude adds one provider-owned protected data plane beside the secret-free
 control plane. The isolated worker opens one operation-scoped lease, sends it
 through the existing bounded worker exchange, and releases all credential
@@ -552,6 +568,22 @@ It transfers the supervisor endpoint as one ancillary descriptor during the
 kernel-proven attachment transaction. The host endpoint stays in the same
 event loop that owns terminal input and structured-engine I/O. There is no
 filesystem listener, provider thread, executor, or polling loop.
+
+`SelectionCoordinator.register()` owns one composite attachment transaction
+across `ParticipantRegistry` and `ClaudeParticipantChannelRegistry`. Both
+registries validate first; then membership and the exact peer-bound channel
+commit together or neither commits. The received descriptor is transaction-
+owned after handoff and closes on every registry, persistence, or commit
+failure. `SupervisorDispatcher` closes it on any strict decode or peer failure
+before handoff. The serialized control request remains credential-free.
+
+Disconnect and proved reconnect use the same coordinator-owned transaction.
+They remove or replace the exact live membership and channel together and
+close only the displaced endpoint. A disconnected obligation continues to
+block selection until reconnect or proved death, but it is not represented as
+a required live participant without a protected channel. Thus no orphan
+channel survives and no live required Claude participant exists without its
+exact connection-generation and process-identity binding.
 
 ### 5.4 Session enrollment and command resolution
 
@@ -1406,6 +1438,23 @@ capability sockets. It never enters generic control JSON, CLI composition,
 persistence, worker results, logs, or diagnostics. The host's provider-owned
 decoder passes a mutable lease directly to the protected child encoder and
 clears every mutable copy after write or failure.
+
+The worker-exchange lifecycle is ordered and child-specific:
+
+1. `SelectionWorkerGateway._operation()` allocates the durable child ID;
+2. the composite exchange owner prepares the provider exchange for the exact
+   child ID, parent selection operation ID, and operation kind;
+3. `SelectionWorkerGateway._submit()` enqueues and wakes the existing
+   `DurableScheduler`;
+4. the Claude relay reads the one-way protected reply but does not fan out;
+5. `WorkerPool.complete_exchange()` publishes successful durable worker
+   completion after provider authority release;
+6. only then does `ClaudeProtectedCommitRelay` fan out and clear its reply; and
+7. completion, cancellation, or failure closes the exact exchange once.
+
+The existing `operation_requires_provider_preparation()` predicate remains
+explicit for Codex-owned preparation. Exchange presence alone never routes an
+operation to `CodexRuntimeBroker`, and Claude never reaches that broker.
 
 Each install receipt binds the participant and connection generation,
 operation, selected stable account, authority generation, epoch, nonce, and
@@ -2595,7 +2644,11 @@ Claude uses exactly three consolidated load-bearing journeys:
    and one partial target acknowledgement prove no secret in control,
    persistence, argv, files, logs, diagnostics, exceptions, or CLI-owned
    immutable strings; no old credential is sent; and recovery moves forward or
-   remains visibly gated without interrupting any work.
+   remains visibly gated without interrupting any work. The same journey proves
+   participant/channel registration commits both registries or neither, every
+   failed attachment closes its received descriptor, and disconnect/reconnect
+   leaves neither a live required participant without its exact channel nor an
+   orphan channel.
 3. **Exact-build host qualification.** One release harness exercises
    representative streaming, permission/question, tool/hook/MCP/background
    state, queued input, resize, restoration, positive and negative private
