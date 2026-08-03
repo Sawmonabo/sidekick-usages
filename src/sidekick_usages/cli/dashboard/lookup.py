@@ -2,9 +2,9 @@
 
 from dataclasses import dataclass, replace
 from threading import Event, Lock, Thread
-from typing import Protocol
 
 from sidekick_usages.cli.dashboard.ports import (
+    DashboardLookupSink,
     DashboardLookupWorker,
     DashboardSnapshotSource,
 )
@@ -38,25 +38,6 @@ from sidekick_usages.usage.lookup.worker.models import (
 )
 
 DASHBOARD_LOOKUP_THREAD_NAME = "sidekick-dashboard-lookup"
-
-
-class DashboardLookupSink(Protocol):
-    """Publish lookup results without owning interactive presentation."""
-
-    def publish_lookup_snapshot(
-        self,
-        snapshot: DashboardSnapshot,
-    ) -> bool:
-        """Publish one resolved snapshot and report whether it was accepted."""
-        ...
-
-    def publish_lookup_failure(
-        self,
-        *,
-        diagnostic_unavailable: bool = False,
-    ) -> None:
-        """Publish one terminal lookup failure."""
-        ...
 
 
 @dataclass(frozen=True, slots=True)

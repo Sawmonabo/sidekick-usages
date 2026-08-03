@@ -2,6 +2,7 @@
 
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from threading import Lock
 from typing import Protocol
 
 from sidekick_usages.cli.dashboard.models.controller import (
@@ -9,6 +10,7 @@ from sidekick_usages.cli.dashboard.models.controller import (
     DashboardMove,
 )
 from sidekick_usages.cli.dashboard.models.session import (
+    DashboardActionRequest,
     DashboardConfirmationKind,
     DashboardSessionView,
     DashboardStartupReconciliation,
@@ -65,6 +67,25 @@ class DashboardLookupWorker(Protocol):
 
     def cancel(self) -> None:
         """Request bounded process-group termination and reaping."""
+        ...
+
+
+class DashboardLookupSink(Protocol):
+    """Publish lookup outcomes into one interactive session."""
+
+    def publish_lookup_snapshot(
+        self,
+        snapshot: DashboardSnapshot,
+    ) -> bool:
+        """Publish one resolved snapshot and report whether it was accepted."""
+        ...
+
+    def publish_lookup_failure(
+        self,
+        *,
+        diagnostic_unavailable: bool = False,
+    ) -> None:
+        """Publish one terminal lookup failure."""
         ...
 
 
@@ -172,6 +193,55 @@ class DashboardActionSink(Protocol):
         result: DashboardStartupReconciliation,
     ) -> None:
         """Publish one provider's passive startup read-back result."""
+        ...
+
+
+class DashboardActionOwner(Protocol):
+    """Own serialized supervisor actions after the first dashboard frame."""
+
+    def close(self) -> None:
+        """Stop observation without cancelling durable supervisor work."""
+        ...
+
+    def execute(self, request: DashboardActionRequest) -> None:
+        """Execute one exact queued dashboard action."""
+        ...
+
+    def reconcile_startup(
+        self,
+        provider_ids: tuple[ProviderId, ...],
+    ) -> None:
+        """Reconcile displayed providers without blocking dashboard input."""
+        ...
+
+
+class DashboardLookupOwner(Protocol):
+    """Own lookup execution and immutable cached-state overlays."""
+
+    def start(self) -> None:
+        """Start exactly one isolated lookup owner."""
+        ...
+
+    def close(self) -> None:
+        """Cancel and join the lookup owner exactly once."""
+        ...
+
+    def apply(self, snapshot: DashboardSnapshot) -> DashboardSnapshot:
+        """Apply completed lookup outcomes to cached state."""
+        ...
+
+
+class DashboardSessionRuntimeFactory(Protocol):
+    """Build both dashboard runtime owners after the cached first frame."""
+
+    def __call__(
+        self,
+        *,
+        action_sink: DashboardActionSink,
+        lookup_sink: DashboardLookupSink,
+        snapshot_lock: Lock,
+    ) -> tuple[DashboardActionOwner, DashboardLookupOwner]:
+        """Return both owners bound to one session."""
         ...
 
 

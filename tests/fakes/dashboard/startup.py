@@ -32,7 +32,7 @@ from tests.fakes.dashboard.session.snapshots import (
     SessionMetricsRefreshSink,
     SessionSnapshotSource,
 )
-from tests.fakes.dashboard.setup import guided_setup
+from tests.fakes.dashboard.setup import dashboard_runtime, guided_setup
 from tests.support.time import FixedClock
 
 
@@ -61,13 +61,15 @@ def exercise_startup_reconciliation(
         snapshot,
         snapshots=snapshots,
         only=None,
-        lookup=lookup,
-        metrics_refresh=SessionMetricsRefreshSink(
-            FixedClock(snapshot.reference_time)
+        runtime=dashboard_runtime(
+            snapshots,
+            None,
+            lookup,
+            SessionMetricsRefreshSink(FixedClock(snapshot.reference_time)),
+            connector,
+            SESSION_SOCKET,
+            guided_setup(daemon, acknowledgement_path),
         ),
-        connector=connector,
-        socket_path=SESSION_SOCKET,
-        setup=guided_setup(daemon, acknowledgement_path),
     )
     session.bind_invalidator(invalidation)
     session.start()

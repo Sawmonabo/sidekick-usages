@@ -27,9 +27,7 @@ from sidekick_usages.cli.dashboard.ports import (
     DashboardControlConnector,
 )
 from sidekick_usages.cli.dashboard.setup import GuidedServiceSetup
-from sidekick_usages.core.selection.models import SelectionResult
 from sidekick_usages.core.selection.types import (
-    SelectionCode,
     SelectionPhase,
 )
 from sidekick_usages.core.types import ProviderId
@@ -375,28 +373,3 @@ def _selection_progress(status: SelectionStatus) -> str:
     if status.phase is SelectionPhase.RECOVERING:
         return "Account change requires recovery."
     return "Preparing account change…"
-
-
-def selection_code_message(code: str) -> str:
-    """Render one sanitized coordinator refusal code visibly."""
-    if code == SelectionCode.ALREADY_SELECTED.value:
-        return "This saved account is already selected."
-    return f"Saved account selection is unavailable: {code}."
-
-
-def selection_ready_message(result: SelectionResult | None) -> str:
-    """Render truthful participant readiness without claiming adoption."""
-    if result is None:
-        return selection_code_message(SelectionCode.ALREADY_SELECTED.value)
-    if result.lost_count:
-        return (
-            f"Account changed; {result.ready_count} ready, "
-            f"{result.lost_count} lost of {result.required_count} sessions."
-        )
-    if result.ready_count == 0:
-        return "Account ready; next requests use it."
-    suffix = "session" if result.ready_count == 1 else "sessions"
-    return (
-        f"Account ready in {result.ready_count} {suffix}; "
-        "next requests use it."
-    )

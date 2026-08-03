@@ -121,6 +121,10 @@ select = [
 [tool.ruff.lint.pylint]
 max-args = 9
 
+# The 250 ms release contract requires this exact post-first-flush import.
+[tool.ruff.lint.per-file-ignores]
+"src/sidekick_usages/entrypoints/dashboard.py" = ["PLC0415"]
+
 [tool.ruff.lint.pycodestyle]
 max-doc-length = 79
 

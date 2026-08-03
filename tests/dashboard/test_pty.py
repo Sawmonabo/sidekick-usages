@@ -57,6 +57,7 @@ from tests.fakes.dashboard.session.snapshots import (
     SessionSnapshotSource,
     unavailable_session_snapshot,
 )
+from tests.fakes.dashboard.setup import dashboard_runtime
 from tests.support.pty import PtySession
 from tests.support.time import FixedClock
 
@@ -250,16 +251,18 @@ def _child_main() -> int:
         unavailable,
         snapshots=snapshots,
         only=None,
-        lookup=lookup,
-        metrics_refresh=SessionMetricsRefreshSink(
-            FixedClock(snapshot.reference_time)
-        ),
-        connector=connector,
-        socket_path=SESSION_SOCKET,
-        setup=GuidedServiceSetup(
-            daemon,
-            ServiceSetupAcknowledgementStore(
-                Path(os.environ[SETUP_ACKNOWLEDGEMENT_ENVIRONMENT_KEY])
+        runtime=dashboard_runtime(
+            snapshots,
+            None,
+            lookup,
+            SessionMetricsRefreshSink(FixedClock(snapshot.reference_time)),
+            connector,
+            SESSION_SOCKET,
+            GuidedServiceSetup(
+                daemon,
+                ServiceSetupAcknowledgementStore(
+                    Path(os.environ[SETUP_ACKNOWLEDGEMENT_ENVIRONMENT_KEY])
+                ),
             ),
         ),
     )
@@ -577,19 +580,21 @@ def test_dashboard_pty_completes_the_interactive_account_journey(
         lookup_process_id_path,
         trace_path,
     ):
+        cached = _read_completed_redraw(session, WIDE_PANEL_TEXT)
         initial = _read_completed_redraw(session, STARTUP_FAILURE_TEXT)
         lookup_process_id = _read_process_id(lookup_process_id_path)
+        plain_cached = _plain_terminal_output(cached)
         plain_initial = _plain_terminal_output(initial)
         assert (
             plain_initial.count(STARTUP_FAILURE_TEXT),
             plain_initial.count(KEY_FOOTER_TEXT),
             plain_initial.index(STARTUP_FAILURE_TEXT)
             < plain_initial.index(KEY_FOOTER_TEXT),
-            WIDE_PANEL_TEXT in plain_initial,
-            ACTIVE_LABEL in plain_initial,
-            PREVIEW_LABEL in plain_initial,
-            _selected(initial, ACTIVE_LABEL),
-            GREEN_BACKGROUND_CONTROL in initial,
+            WIDE_PANEL_TEXT in plain_cached,
+            ACTIVE_LABEL in plain_cached,
+            PREVIEW_LABEL in plain_cached,
+            _selected(cached, ACTIVE_LABEL),
+            GREEN_BACKGROUND_CONTROL in cached,
         ) == (1, 1, True, True, True, True, True, True)
 
         moved_down = _send_resize_and_read(
@@ -672,15 +677,17 @@ def test_dashboard_pty_completes_the_interactive_account_journey(
         ) == (True, True, True)
         assert session.wait_for_process_group_exit()
     _wait_for_process_absence(lookup_process_id)
-    trace = _trace_lines(trace_path)
-    assert "exit=0" in trace
-    assert "lookup_cancel_calls=1" in trace
-    assert "lookup_failure=canceled" in trace
-    assert "daemon_cancelled=true" in trace
-    assert "setup=status:claude" in trace
-    assert "setup=install:claude" in trace
-    assert f"selection=claude:{CLAUDE_WARNING_ID}" in trace
-    assert f"refresh=claude:{CLAUDE_WARNING_ID}" in trace
+    trace = frozenset(_trace_lines(trace_path))
+    assert {
+        "exit=0",
+        "lookup_cancel_calls=1",
+        "lookup_failure=canceled",
+        "daemon_cancelled=true",
+        "setup=status:claude",
+        "setup=install:claude",
+        f"selection=claude:{CLAUDE_WARNING_ID}",
+        f"refresh=claude:{CLAUDE_WARNING_ID}",
+    } <= trace
 
 
 def test_dashboard_pty_interrupt_restores_terminal_and_reaps_lookup(

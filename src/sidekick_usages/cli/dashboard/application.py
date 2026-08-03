@@ -51,6 +51,7 @@ class InteractiveDashboardApplication:
             keys="",
             focused_body_line=None,
         )
+        self._session_started = False
         masthead = FormattedTextControl(
             text=lambda: ANSI(self._rendered.masthead),
         )
@@ -109,6 +110,7 @@ class InteractiveDashboardApplication:
                 else ColorDepth.DEPTH_1_BIT
             ),
             before_render=self._prepare_render,
+            after_render=self._start_session_after_render,
         )
         self._application = application
         self._session.bind_invalidator(self._application.invalidate)
@@ -117,7 +119,7 @@ class InteractiveDashboardApplication:
         """Run with one terminal-restoring prompt-toolkit lifecycle."""
         try:
             try:
-                return self._application.run(pre_run=self._session.start)
+                return self._application.run()
             finally:
                 self._session.close()
         except KeyboardInterrupt:
@@ -137,6 +139,16 @@ class InteractiveDashboardApplication:
             footer=view.footer,
             color=self._color,
         )
+
+    def _start_session_after_render(
+        self,
+        _application: Application[DashboardApplicationResult],
+    ) -> None:
+        """Start runtime owners once after the cached frame is flushed."""
+        if self._session_started:
+            return
+        self._session_started = True
+        self._session.start()
 
     def _body_cursor_position(self) -> Point | None:
         """Expose one hidden body cursor for prompt-toolkit scrolling."""

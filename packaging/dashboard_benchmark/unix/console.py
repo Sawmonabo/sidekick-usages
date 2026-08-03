@@ -36,7 +36,7 @@ from sidekick_usages.usage.presentation.dashboard.render.text import (
     KEY_FOOTER,
 )
 
-COMPLETED_FRAME_REWIND = re.compile(rb"\x1b\[\d+A\r")
+COMPLETED_FRAME_REWIND = re.compile(rb"\x1b\[\d+D\x1b\[\d+A")
 MAXIMUM_FRAME_BYTES = 1_048_576
 MILLISECONDS_PER_SECOND = 1_000
 FIRST_PAINT_DEADLINE_MILLISECONDS = 250

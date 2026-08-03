@@ -19,7 +19,6 @@ from sidekick_usages.core.accounts.types import (
 from sidekick_usages.core.selection.types import ProviderRuntimeState
 from sidekick_usages.daemon.control.client import ControlClient
 from sidekick_usages.daemon.types.lifecycle import ServiceLifecycleState
-from sidekick_usages.entrypoints.dashboard import _connect_dashboard_control
 from sidekick_usages.persistence.errors import (
     ManagedFileReadError,
     PersistenceError,
@@ -63,7 +62,7 @@ from tests.fakes.dashboard.session.snapshots import (
     SessionSnapshotSource,
     unavailable_session_snapshot,
 )
-from tests.fakes.dashboard.setup import guided_setup
+from tests.fakes.dashboard.setup import dashboard_runtime, guided_setup
 from tests.support.time import FixedClock
 
 
@@ -146,13 +145,15 @@ def _selection_refusal(
         blocked_snapshot,
         snapshots=refusal_snapshots,
         only=None,
-        lookup=SessionLookupWorker(account_id),
-        metrics_refresh=SessionMetricsRefreshSink(
-            FixedClock(snapshot.reference_time)
+        runtime=dashboard_runtime(
+            refusal_snapshots,
+            None,
+            SessionLookupWorker(account_id),
+            SessionMetricsRefreshSink(FixedClock(snapshot.reference_time)),
+            SessionControlConnector(daemon, refusal_snapshots),
+            SESSION_SOCKET,
+            guided_setup(daemon, state_root / "selection-refusal.json"),
         ),
-        connector=SessionControlConnector(daemon, refusal_snapshots),
-        socket_path=SESSION_SOCKET,
-        setup=guided_setup(daemon, state_root / "selection-refusal.json"),
     )
     refusal_session.move(DashboardMove.UP)
     refusal_session.select_account()
@@ -175,13 +176,15 @@ def _partial_start_reaped(
         snapshot,
         snapshots=snapshots,
         only=None,
-        lookup=lookup,
-        metrics_refresh=SessionMetricsRefreshSink(
-            FixedClock(snapshot.reference_time)
+        runtime=dashboard_runtime(
+            snapshots,
+            None,
+            lookup,
+            SessionMetricsRefreshSink(FixedClock(snapshot.reference_time)),
+            SessionControlConnector(daemon, snapshots),
+            SESSION_SOCKET,
+            guided_setup(daemon, state_root / "partial.json"),
         ),
-        connector=SessionControlConnector(daemon, snapshots),
-        socket_path=SESSION_SOCKET,
-        setup=guided_setup(daemon, state_root / "partial.json"),
     )
     start_thread = Thread.start
 
@@ -315,11 +318,15 @@ def _cache_read_retry(
         snapshot,
         snapshots=snapshots,
         only=None,
-        lookup=lookup,
-        metrics_refresh=metrics_refresh,
-        connector=SessionControlConnector(daemon, snapshots),
-        socket_path=SESSION_SOCKET,
-        setup=guided_setup(daemon, state_root / artifact_name),
+        runtime=dashboard_runtime(
+            snapshots,
+            None,
+            lookup,
+            metrics_refresh,
+            SessionControlConnector(daemon, snapshots),
+            SESSION_SOCKET,
+            guided_setup(daemon, state_root / artifact_name),
+        ),
     )
     session.start()
     try:
@@ -356,11 +363,15 @@ def _worker_retry(
         snapshot,
         snapshots=snapshots,
         only=None,
-        lookup=lookup,
-        metrics_refresh=metrics_refresh,
-        connector=SessionControlConnector(daemon, snapshots),
-        socket_path=SESSION_SOCKET,
-        setup=guided_setup(daemon, state_root / "worker-retry.json"),
+        runtime=dashboard_runtime(
+            snapshots,
+            None,
+            lookup,
+            metrics_refresh,
+            SessionControlConnector(daemon, snapshots),
+            SESSION_SOCKET,
+            guided_setup(daemon, state_root / "worker-retry.json"),
+        ),
     )
     session.start()
     try:
@@ -453,7 +464,7 @@ def exercise_dashboard_session(
         "connect",
         staticmethod(connect.connect),
     )
-    dashboard_client = _connect_dashboard_control(SESSION_SOCKET)
+    dashboard_client = ControlClient.connect(SESSION_SOCKET)
     dashboard_client.close()
 
     daemon = SetupDaemon(ServiceLifecycleState.ABSENT)
@@ -468,11 +479,15 @@ def exercise_dashboard_session(
         unavailable,
         snapshots=snapshots,
         only=None,
-        lookup=lookup,
-        metrics_refresh=metrics_refresh,
-        connector=connector,
-        socket_path=SESSION_SOCKET,
-        setup=guided_setup(daemon, state_root / "setup.json"),
+        runtime=dashboard_runtime(
+            snapshots,
+            None,
+            lookup,
+            metrics_refresh,
+            connector,
+            SESSION_SOCKET,
+            guided_setup(daemon, state_root / "setup.json"),
+        ),
     )
     invalidation.bind_session(session)
     session.bind_invalidator(invalidation)

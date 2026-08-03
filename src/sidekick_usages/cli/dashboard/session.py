@@ -3,17 +3,10 @@
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import replace
-from pathlib import Path
 from queue import Full, Queue
 from threading import Event, Lock, Thread
 
-from sidekick_usages.cli.dashboard.actions import (
-    DashboardActionExecutor,
-    selection_code_message,
-    selection_ready_message,
-)
 from sidekick_usages.cli.dashboard.controller import DashboardController
-from sidekick_usages.cli.dashboard.lookup import DashboardLookupCoordinator
 from sidekick_usages.cli.dashboard.models.controller import (
     DashboardIntent,
     DashboardMove,
@@ -34,11 +27,11 @@ from sidekick_usages.cli.dashboard.models.setup import (
     ServiceSetupDecision,
 )
 from sidekick_usages.cli.dashboard.ports import (
-    DashboardControlConnector,
-    DashboardLookupWorker,
+    DashboardActionOwner,
+    DashboardLookupOwner,
+    DashboardSessionRuntimeFactory,
     DashboardSnapshotSource,
 )
-from sidekick_usages.cli.dashboard.setup import GuidedServiceSetup
 from sidekick_usages.core.selection.models import SelectionResult
 from sidekick_usages.core.selection.types import (
     SelectionCode,
@@ -61,9 +54,6 @@ from sidekick_usages.usage.dashboard.models import (
     DashboardSnapshot,
     DashboardStatus,
     DashboardStatusKind,
-)
-from sidekick_usages.usage.lookup.diagnostics.ports import (
-    MetricsRefreshObservationSink,
 )
 
 ACTION_QUEUE_CAPACITY = 1
@@ -103,11 +93,7 @@ class InteractiveDashboardSession:
         *,
         snapshots: DashboardSnapshotSource,
         only: ProviderId | None,
-        lookup: DashboardLookupWorker,
-        metrics_refresh: MetricsRefreshObservationSink,
-        connector: DashboardControlConnector,
-        socket_path: Path,
-        setup: GuidedServiceSetup,
+        runtime: DashboardSessionRuntimeFactory,
     ) -> None:
         controller = DashboardController.start(snapshot)
         self._view = DashboardSessionView(
@@ -118,6 +104,7 @@ class InteractiveDashboardSession:
         self._snapshots = snapshots
         self._only = only
         self._view_lock = Lock()
+        self._lifecycle_lock = Lock()
         self._snapshot_lock = Lock()
         self._actions: Queue[DashboardActionRequest | None] = Queue(
             ACTION_QUEUE_CAPACITY
@@ -133,20 +120,9 @@ class InteractiveDashboardSession:
         self._deferred_lookup_status: DashboardStatus | None = None
         self._started = False
         self._closed = False
-        self._action_executor = DashboardActionExecutor(
-            connector=connector,
-            socket_path=socket_path,
-            setup=setup,
-            sink=self,
-        )
-        self._lookup_coordinator = DashboardLookupCoordinator(
-            snapshots=snapshots,
-            only=only,
-            worker=lookup,
-            metrics_refresh=metrics_refresh,
-            snapshot_lock=self._snapshot_lock,
-            sink=self,
-        )
+        self._runtime_factory = runtime
+        self._action_owner: DashboardActionOwner | None = None
+        self._lookup_owner: DashboardLookupOwner | None = None
 
     @property
     def view(self) -> DashboardSessionView:
@@ -173,39 +149,52 @@ class InteractiveDashboardSession:
 
     def start(self) -> None:
         """Start exactly one lookup owner and one action owner."""
-        with self._view_lock:
-            if self._closed:
-                raise RuntimeError("The dashboard session is closed.")
-            if self._started:
-                return
-            self._started = True
-            self._action_thread = Thread(
-                target=self._run_actions,
-                name=DASHBOARD_ACTION_THREAD_NAME,
-            )
-            action_thread = self._action_thread
         try:
-            self._lookup_coordinator.start()
-            action_thread.start()
+            with self._lifecycle_lock:
+                with self._view_lock:
+                    if self._closed:
+                        raise RuntimeError("The dashboard session is closed.")
+                    if self._started:
+                        return
+                    self._started = True
+                    action_owner, lookup_owner = self._runtime_factory(
+                        action_sink=self,
+                        lookup_sink=self,
+                        snapshot_lock=self._snapshot_lock,
+                    )
+                    self._action_owner = action_owner
+                    self._lookup_owner = lookup_owner
+                    self._action_thread = Thread(
+                        target=self._run_actions,
+                        name=DASHBOARD_ACTION_THREAD_NAME,
+                    )
+                    action_thread = self._action_thread
+                lookup_owner.start()
+                action_thread.start()
         except BaseException:
             self.close()
             raise
 
     def close(self) -> None:
         """Cancel lookup work, stop observation, and join both owners."""
-        with self._view_lock:
-            if self._closed:
-                return
-            self._closed = True
-            self._stopping.set()
-            action_thread = self._action_thread
-        self._lookup_coordinator.close()
-        self._action_executor.close()
-        with suppress(Full):
-            self._decisions.put_nowait(ServiceSetupDecision.REFUSED)
-        with suppress(Full):
-            self._actions.put_nowait(None)
-        self._join_owner(action_thread)
+        with self._lifecycle_lock:
+            with self._view_lock:
+                if self._closed:
+                    return
+                self._closed = True
+                self._stopping.set()
+                action_owner = self._action_owner
+                lookup_owner = self._lookup_owner
+                action_thread = self._action_thread
+            if lookup_owner is not None:
+                lookup_owner.close()
+            if action_owner is not None:
+                action_owner.close()
+            with suppress(Full):
+                self._decisions.put_nowait(ServiceSetupDecision.REFUSED)
+            with suppress(Full):
+                self._actions.put_nowait(None)
+            self._join_owner(action_thread)
 
     @staticmethod
     def _join_owner(thread: Thread | None) -> None:
@@ -394,7 +383,7 @@ class InteractiveDashboardSession:
         *,
         diagnostic_unavailable: bool = False,
     ) -> None:
-        snapshot = self._lookup_coordinator.apply(self._view.snapshot)
+        snapshot = self._apply_lookup(self._view.snapshot)
         controller = self._controller().rebase(snapshot)
         self._view = replace(
             self._view,
@@ -437,15 +426,25 @@ class InteractiveDashboardSession:
         except OSError, PersistenceError:
             return None
 
+    def _apply_lookup(self, snapshot: DashboardSnapshot) -> DashboardSnapshot:
+        """Apply post-start lookup outcomes when the owner is available."""
+        owner = self._lookup_owner
+        if owner is None:
+            raise RuntimeError("The dashboard lookup owner was not started.")
+        return owner.apply(snapshot)
+
     def _run_actions(self) -> None:
-        self._action_executor.reconcile_startup(
+        action_owner = self._action_owner
+        if action_owner is None:
+            raise RuntimeError("The dashboard action owner was not started.")
+        action_owner.reconcile_startup(
             tuple(ProviderId) if self._only is None else (self._only,)
         )
         while not self._stopping.is_set():
             request = self._actions.get()
             if request is None or self._stopping.is_set():
                 return
-            self._action_executor.execute(request)
+            action_owner.execute(request)
 
     def startup_reconciled(
         self,
@@ -461,7 +460,7 @@ class InteractiveDashboardSession:
             controller = self._controller()
             if snapshot is not None:
                 controller = controller.rebase(
-                    self._lookup_coordinator.apply(snapshot),
+                    self._apply_lookup(snapshot),
                     restore_provider=(
                         result.provider_id
                         if result.state
@@ -569,7 +568,7 @@ class InteractiveDashboardSession:
                 with self._view_lock:
                     if self._closed:
                         return
-                    outcome_snapshot = self._lookup_coordinator.apply(snapshot)
+                    outcome_snapshot = self._apply_lookup(snapshot)
                     controller = self._controller().rebase(outcome_snapshot)
                     if isinstance(intent, SelectAccountIntent):
                         try:
@@ -651,7 +650,7 @@ class InteractiveDashboardSession:
             source = (
                 controller.snapshot
                 if snapshot is None
-                else self._lookup_coordinator.apply(snapshot)
+                else self._apply_lookup(snapshot)
             )
             restore_provider = (
                 intent.provider_id
@@ -784,6 +783,31 @@ def dashboard_cursor(view: DashboardSessionView) -> DashboardCursor:
     return DashboardCursor(
         focused_provider=state.focused_provider,
         account_id=state.account_id,
+    )
+
+
+def selection_code_message(code: str) -> str:
+    """Render one sanitized coordinator refusal code visibly."""
+    if code == SelectionCode.ALREADY_SELECTED.value:
+        return "This saved account is already selected."
+    return f"Saved account selection is unavailable: {code}."
+
+
+def selection_ready_message(result: SelectionResult | None) -> str:
+    """Render truthful participant readiness without claiming adoption."""
+    if result is None:
+        return selection_code_message(SelectionCode.ALREADY_SELECTED.value)
+    if result.lost_count:
+        return (
+            f"Account changed; {result.ready_count} ready, "
+            f"{result.lost_count} lost of {result.required_count} sessions."
+        )
+    if result.ready_count == 0:
+        return "Account ready; next requests use it."
+    suffix = "session" if result.ready_count == 1 else "sessions"
+    return (
+        f"Account ready in {result.ready_count} {suffix}; "
+        "next requests use it."
     )
 
 

@@ -14,6 +14,11 @@ _SUPPRESSION = re.compile(
     r"#\s*(?:noqa(?:\s*:)?|type:\s*ignore|nosec)(?:\b|$)",
     re.IGNORECASE,
 )
+# The 250 ms release contract requires this exact post-first-flush import.
+_POST_PAINT_IMPORT_FILE = "src/sidekick_usages/entrypoints/dashboard.py"
+_POST_PAINT_IMPORT_FUNCTION = "_build_dashboard_runtime"
+_POST_PAINT_IMPORT_MODULE = "sidekick_usages.cli.dashboard"
+_POST_PAINT_IMPORT_NAME = "composition"
 
 
 def check_hygiene(
@@ -24,8 +29,14 @@ def check_hygiene(
     for unit in units:
         _check_suppressions(unit, violations)
         scoped_imports = _scoped_imports(unit.tree)
+        approved_scoped_imports = _approved_scoped_imports(unit)
         for node in ast.walk(unit.tree):
-            violation = _node_violation(unit, node, scoped_imports)
+            violation = _node_violation(
+                unit,
+                node,
+                scoped_imports,
+                approved_scoped_imports,
+            )
             if violation is not None:
                 violations.append(violation)
         for node in _late_module_declarations(unit.tree):
@@ -77,10 +88,30 @@ def _scoped_imports(tree: ast.Module) -> frozenset[int]:
     )
 
 
+def _approved_scoped_imports(unit: SourceUnit) -> frozenset[int]:
+    """Allow only the approved post-first-flush dashboard composition."""
+    if str(unit.path) != _POST_PAINT_IMPORT_FILE:
+        return frozenset()
+    return frozenset(
+        id(node)
+        for scope in unit.tree.body
+        if isinstance(scope, ast.FunctionDef)
+        and scope.name == _POST_PAINT_IMPORT_FUNCTION
+        for node in ast.walk(scope)
+        if isinstance(node, ast.ImportFrom)
+        and node.level == 0
+        and node.module == _POST_PAINT_IMPORT_MODULE
+        and tuple(alias.name for alias in node.names)
+        == (_POST_PAINT_IMPORT_NAME,)
+        and all(alias.asname is None for alias in node.names)
+    )
+
+
 def _node_violation(
     unit: SourceUnit,
     node: ast.AST,
     scoped_imports: frozenset[int],
+    approved_scoped_imports: frozenset[int],
 ) -> ArchitectureFinding | None:
     if _is_any(node) or (
         isinstance(node, ast.Call)
@@ -108,6 +139,7 @@ def _node_violation(
     if (
         isinstance(node, (ast.Import, ast.ImportFrom))
         and id(node) in scoped_imports
+        and id(node) not in approved_scoped_imports
     ) or (
         isinstance(node, ast.Call)
         and dotted_name(node.func) in {"__import__", "importlib.import_module"}
