@@ -100,6 +100,9 @@ _CONFLICT_AUTHORITY_ID = AuthorityId("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
 _CONFLICT_PROVIDER_IDENTITY = "synthetic-codex-conflict"
 CODEX_SAVED_GENERATION = AuthorityGeneration("2026-07-25T10:00:00Z")
 CODEX_NEWER_GENERATION = AuthorityGeneration("2026-07-25T10:00:01Z")
+_CODEX_RUNTIME_GENERATION = AuthorityGeneration(
+    "synthetic-codex-access-fingerprint"
+)
 
 
 def seed_cached_dashboard(
@@ -202,7 +205,7 @@ def seed_cached_dashboard(
         provider_id=ProviderId.CODEX,
         state=ProviderAuthState.ACTIVE,
         provider_identity=ProviderIdentity(VALID_PROVIDER_IDENTITY),
-        generation=CODEX_NEWER_GENERATION,
+        generation=_CODEX_RUNTIME_GENERATION,
         observed_at=codex_selected.finalized_at,
     )
     observations.save_native(codex_observation)

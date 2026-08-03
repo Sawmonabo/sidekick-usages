@@ -374,22 +374,22 @@ class CachedDashboardService:
             and runtime_auth.provider_id is selected.provider_id
             and runtime_auth.provider_identity
             == selected_account.provider_identity
-            and runtime_auth.generation == selected.generation
         )
         if not identity_matches or selected is None or runtime_auth is None:
             return False
         if selected.provider_id is ProviderId.CODEX:
+            if not selected_account.has_managed_authority:
+                return False
             return (
                 runtime_projection is not None
                 and runtime_projection.provider_identity
                 == selected_account.provider_identity
-                and runtime_projection.generation == selected.generation
                 and same_provider_auth_authority(
                     runtime_auth,
                     runtime_projection,
                 )
             )
-        return True
+        return runtime_auth.generation == selected.generation
 
     @staticmethod
     def _credential_states(
