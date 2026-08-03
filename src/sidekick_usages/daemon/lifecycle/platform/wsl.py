@@ -1,4 +1,4 @@
-"""WSL logon rescue layered over the Linux user service."""
+"""Windows-host WSL logon rescue layered over a Linux user service."""
 
 import subprocess
 
@@ -35,7 +35,7 @@ _WSL_RESCUE_TASK_PATH = "\\"
 
 
 class WslBackend:
-    """One Linux user service plus one non-maintenance Windows rescue."""
+    """One explicit-distribution Windows rescue for a Linux user service."""
 
     id = ServiceBackendId.WSL
 
@@ -46,7 +46,9 @@ class WslBackend:
         runner: SystemCommandRunner,
     ) -> None:
         if not platform_info.is_wsl or platform_info.wsl_distro is None:
-            raise ValueError("WSL backend requires an explicit distribution.")
+            raise ValueError(
+                "Windows WSL rescue requires an explicit distribution."
+            )
         self._systemd = systemd
         self._platform = platform_info
         self._runner = runner

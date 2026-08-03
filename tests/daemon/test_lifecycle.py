@@ -18,9 +18,6 @@ from sidekick_usages.daemon.lifecycle.commands import SystemCommandRunner
 from sidekick_usages.daemon.lifecycle.constants import (
     CLAUDE_LAUNCHER_OPTION,
     CODEX_LAUNCHER_OPTION,
-    WSL_RESCUE_ABSENT,
-    WSL_RESCUE_INSTALLED,
-    WSL_RESCUE_TASK_NAME,
 )
 from sidekick_usages.daemon.lifecycle.errors import ServiceLifecycleError
 from sidekick_usages.daemon.lifecycle.manager import (
@@ -28,8 +25,9 @@ from sidekick_usages.daemon.lifecycle.manager import (
     build_service_backend,
     build_service_launch_command,
 )
+from sidekick_usages.daemon.lifecycle.platform.systemd import SystemdBackend
+from sidekick_usages.daemon.lifecycle.platform.wsl import WslBackend
 from sidekick_usages.daemon.lifecycle.ports import (
-    ServiceBackend,
     ServiceLifecycleObserver,
 )
 from sidekick_usages.daemon.lifecycle.readiness import (
@@ -92,15 +90,10 @@ class RecordingRunner(SystemCommandRunner):
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, ...]] = []
-        self.rescue_output = WSL_RESCUE_INSTALLED
-        self.rescue_status_failure: ServiceFailureCode | None = None
-        self.systemd_status_failure: ServiceFailureCode | None = None
 
     def run(self, argv: tuple[str, ...]) -> CommandResult:
         self.calls.append(argv)
         if argv[:3] == ("systemctl", "--user", "show"):
-            if self.systemd_status_failure is not None:
-                raise ServiceLifecycleError(self.systemd_status_failure)
             return CommandResult(
                 0,
                 (
@@ -113,10 +106,6 @@ class RecordingRunner(SystemCommandRunner):
             )
         if argv[:2] == ("launchctl", "print"):
             return CommandResult(0, "state = running\n", "")
-        if argv[0] == "powershell.exe" and "Get-ScheduledTask" in argv[-1]:
-            if self.rescue_status_failure is not None:
-                raise ServiceLifecycleError(self.rescue_status_failure)
-            return CommandResult(0, self.rescue_output + "\n", "")
         return CommandResult(0, "", "")
 
 
@@ -252,6 +241,7 @@ def _platform(
     *,
     system: str,
     is_wsl: bool = False,
+    wsl_distro: str | None = None,
 ) -> PlatformInfo:
     return PlatformInfo(
         system=system,
@@ -259,7 +249,7 @@ def _platform(
         uid=tmp_path.parent.stat().st_uid,
         user_name="sidekick-user",
         is_wsl=is_wsl,
-        wsl_distro="Sidekick-Distro" if is_wsl else None,
+        wsl_distro=wsl_distro,
         has_user_systemd=system == "Linux",
     )
 
@@ -295,48 +285,6 @@ def _state_tree_snapshot(
             path.stat().st_mtime_ns,
         )
         for path in (root, *sorted(root.rglob("*")))
-    )
-
-
-def _exercise_wsl_health_failures(
-    backend: ServiceBackend,
-    manager: DaemonManager,
-    runner: RecordingRunner,
-    paths: ApplicationPaths,
-) -> None:
-    """Prove truthful WSL components and cancellation propagation."""
-    failed_health = DaemonManager(
-        RecordingBackend(
-            [],
-            backend_id=ServiceBackendId.WSL,
-            status_failure=ServiceFailureCode.COMMAND_FAILED,
-        ),
-        ReadyLifecycle([]),
-        RuntimeCleanup(paths),
-    ).health()
-    with pytest.raises(ValueError, match="explicit rescue state"):
-        ServiceBackendStatus.single(
-            ServiceBackendId.WSL,
-            ServiceLifecycleState.UNHEALTHY,
-        )
-    runner.systemd_status_failure = ServiceFailureCode.CANCELLED
-    with pytest.raises(ServiceLifecycleError) as systemd_cancelled:
-        manager.health()
-    runner.systemd_status_failure = None
-    runner.rescue_status_failure = ServiceFailureCode.CANCELLED
-    with pytest.raises(ServiceLifecycleError) as rescue_cancelled:
-        backend.status()
-    runner.rescue_status_failure = None
-    assert (
-        failed_health.process,
-        failed_health.rescue,
-        systemd_cancelled.value.code,
-        rescue_cancelled.value.code,
-    ) == (
-        ServiceComponentState.UNHEALTHY,
-        ServiceComponentState.UNHEALTHY,
-        ServiceFailureCode.CANCELLED,
-        ServiceFailureCode.CANCELLED,
     )
 
 
@@ -541,11 +489,11 @@ def _exercise_service_launcher_republish(
     ("system", "is_wsl", "backend_id"),
     [
         ("Linux", False, ServiceBackendId.SYSTEMD),
-        ("Linux", True, ServiceBackendId.WSL),
+        ("Linux", True, ServiceBackendId.SYSTEMD),
         ("Darwin", False, ServiceBackendId.LAUNCHD),
         ("Windows", False, ServiceBackendId.FEATURE_DISABLED),
     ],
-    ids=("linux", "wsl", "macos", "native-windows"),
+    ids=("linux", "wsl-without-distro", "macos", "native-windows"),
 )
 def test_service_artifacts_are_user_scoped_resident_and_secret_free(
     tmp_path: Path,
@@ -601,6 +549,13 @@ def test_service_artifacts_are_user_scoped_resident_and_secret_free(
         runner,
         ServiceArtifactStore(platform_info.home, platform_info.uid),
     )
+    if is_wsl:
+        assert isinstance(backend, SystemdBackend)
+        with pytest.raises(
+            ValueError,
+            match="Windows WSL rescue requires an explicit distribution",
+        ):
+            WslBackend(backend, platform_info, runner)
     manager = DaemonManager(
         backend,
         ReadyLifecycle([]),
@@ -623,11 +578,7 @@ def test_service_artifacts_are_user_scoped_resident_and_secret_free(
     status = backend.status()
     assert (status.process, status.rescue) == (
         ServiceComponentState.HEALTHY,
-        (
-            ServiceComponentState.HEALTHY
-            if backend_id is ServiceBackendId.WSL
-            else ServiceComponentState.NOT_REQUIRED
-        ),
+        ServiceComponentState.NOT_REQUIRED,
     )
     artifact_text = _service_artifact(platform_info, backend_id).read_text(
         encoding="utf-8"
@@ -639,7 +590,7 @@ def test_service_artifacts_are_user_scoped_resident_and_secret_free(
         == _OWNER_FILE_MODE
     )
 
-    if backend_id in {ServiceBackendId.SYSTEMD, ServiceBackendId.WSL}:
+    if backend_id is ServiceBackendId.SYSTEMD:
         assert "Restart=on-failure" in artifact_text
         assert "WantedBy=default.target" in artifact_text
         assert (
@@ -655,122 +606,8 @@ def test_service_artifacts_are_user_scoped_resident_and_secret_free(
         assert "<key>SuccessfulExit</key>" in artifact_text
         assert "<false/>" in artifact_text
         assert "StartInterval" not in artifact_text
-    if backend_id is ServiceBackendId.WSL:
-        runner.systemd_status_failure = ServiceFailureCode.COMMAND_FAILED
-        systemd_degraded = backend.status()
-        runner.systemd_status_failure = None
-        runner.rescue_status_failure = ServiceFailureCode.COMMAND_FAILED
-        rescue_degraded = backend.status()
-        runner.rescue_status_failure = None
-        runner.rescue_output = WSL_RESCUE_ABSENT
-        degraded = backend.status()
-        assert (
-            systemd_degraded,
-            rescue_degraded,
-            degraded,
-        ) == (
-            ServiceBackendStatus(
-                ServiceBackendId.WSL,
-                ServiceLifecycleState.UNHEALTHY,
-                ServiceComponentState.UNHEALTHY,
-                ServiceComponentState.HEALTHY,
-            ),
-            ServiceBackendStatus(
-                ServiceBackendId.WSL,
-                ServiceLifecycleState.UNHEALTHY,
-                ServiceComponentState.HEALTHY,
-                ServiceComponentState.UNHEALTHY,
-            ),
-            ServiceBackendStatus(
-                ServiceBackendId.WSL,
-                ServiceLifecycleState.UNHEALTHY,
-                ServiceComponentState.HEALTHY,
-                ServiceComponentState.ABSENT,
-            ),
-        )
-        rescue, rescue_status = (
-            next(
-                argv[-1]
-                for argv in runner.calls
-                if argv[0] == "powershell.exe"
-                and "Register-ScheduledTask" in argv[-1]
-            ),
-            next(
-                argv[-1]
-                for argv in runner.calls
-                if argv[0] == "powershell.exe"
-                and "Get-ScheduledTask" in argv[-1]
-            ),
-        )
-        assert all(
-            contract in rescue
-            for contract in (
-                "New-ScheduledTaskTrigger -AtLogOn -User $currentUser",
-                "New-ScheduledTaskPrincipal -UserId $currentUser",
-                "-LogonType Interactive",
-                "-RunLevel Limited",
-                "$trigger.Enabled = $true",
-                "$settings.Enabled = $true",
-                "-TaskPath '\\'",
-                "-Principal $principal",
-                "Sidekick-Distro",
-                "sidekick-user",
-                "systemctl",
-                "--user",
-                "start",
-            )
-        )
-        assert all(
-            forbidden not in rescue.lower()
-            for forbidden in ("maintain", "refresh", "token")
-        )
-        assert all(
-            (contract in rescue_status) is expected
-            for contract, expected in (
-                ("$tasks.Count -ne 1", True),
-                (f"$task.TaskName -ceq '{WSL_RESCUE_TASK_NAME}'", True),
-                ("$task.TaskPath -ceq '\\'", True),
-                ("$triggers[0].Enabled -eq $true", True),
-                ("function Resolve-AccountSid", True),
-                ("SecurityIdentifier]::new($accountIdentity)", True),
-                (
-                    "[System.Security.Principal.NTAccount]$accountIdentity",
-                    True,
-                ),
-                ("catch [System.ArgumentException]", True),
-                ("$accountIdentity.Contains('\\')", True),
-                ("$accountIdentity.Contains('@')", True),
-                ("::GetCurrent().User.Value", True),
-                ("$scheduler.GetFolder('\\').GetTask(", True),
-                ("$definition.Task.Triggers.LogonTrigger.UserId", True),
-                ("$definition.Task.Principals.Principal.UserId", True),
-                ("$triggerSid -ceq $currentSid", True),
-                ("$principals.Count -eq 1", True),
-                ("$principalSid -ceq $currentSid", True),
-                (
-                    "[string]$principals[0].LogonType -ceq 'Interactive'",
-                    True,
-                ),
-                (
-                    "[string]$principals[0].RunLevel -ceq 'Limited'",
-                    True,
-                ),
-                ("$settings.Count -eq 1", True),
-                ("$settings[0].Enabled -eq $true", True),
-                ("$settings[0].StartWhenAvailable -eq $true", True),
-                (
-                    "[string]$settings[0].MultipleInstances -ceq 'IgnoreNew'",
-                    True,
-                ),
-                ("$settings[0].Hidden -eq $true", True),
-                ("$settings[0].ExecutionTimeLimit -ceq 'PT2M'", True),
-                ("$currentUser", False),
-                (".UserId -ieq", False),
-                ("catch {", False),
-            )
-        )
-        _exercise_wsl_health_failures(backend, manager, runner, paths)
-        runner.rescue_output = WSL_RESCUE_INSTALLED
+    if is_wsl:
+        assert all(call[0] != "powershell.exe" for call in runner.calls)
 
     _exercise_service_launcher_republish(
         manager,

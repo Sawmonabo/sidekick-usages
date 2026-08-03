@@ -68,11 +68,10 @@ class PlatformInfo:
         _require_identity(self.system, "Platform system")
         _require_identity(self.user_name, "Platform user name")
         if self.is_wsl:
-            if self.system != "Linux" or self.wsl_distro is None:
-                raise ValueError(
-                    "WSL requires Linux and an explicit distribution."
-                )
-            _require_identity(self.wsl_distro, "WSL distribution")
+            if self.system != "Linux":
+                raise ValueError("WSL requires Linux.")
+            if self.wsl_distro is not None:
+                _require_identity(self.wsl_distro, "WSL distribution")
         elif self.wsl_distro is not None:
             raise ValueError("Non-WSL platforms cannot name a distribution.")
 

@@ -66,7 +66,7 @@ def detect_platform_info() -> PlatformInfo:
         user_name=_user_name(system, uid),
         is_wsl=is_wsl_host,
         wsl_distro=(
-            os.environ.get("WSL_DISTRO_NAME") if is_wsl_host else None
+            os.environ.get("WSL_DISTRO_NAME") or None if is_wsl_host else None
         ),
         has_user_systemd=(
             system == "Linux"
