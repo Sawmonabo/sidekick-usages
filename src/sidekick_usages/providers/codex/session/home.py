@@ -107,6 +107,7 @@ class _CodexSessionHome:
 
     def prepare(self) -> Path:
         """Create and qualify the token-free neutral session home."""
+        reason_type = CodexSessionConfigurationReason
         try:
             tree = self._storage_factory(self._home.parent)
             self._require_canonical_separation()
@@ -131,9 +132,7 @@ class _CodexSessionHome:
             for basename in self._forbidden_entries:
                 if tree.relative_entry_present(self._home.name, basename):
                     self._refuse(
-                        (
-                            CodexSessionConfigurationReason.CREDENTIAL_STATE_PRESENT
-                        ),
+                        reason_type.CREDENTIAL_STATE_PRESENT,
                         _STATE_RECOVERY,
                     )
         except CodexSessionConfigurationError:
@@ -146,11 +145,13 @@ class _CodexSessionHome:
         return self._home
 
     def _require_canonical_separation(self) -> None:
+        reason_type = CodexSessionConfigurationReason
+        collision = reason_type.PRIVATE_AUTHORITY_COLLISION
         try:
             native_home = self._native_home.resolve(strict=False)
         except OSError, RuntimeError:
             self._refuse(
-                CodexSessionConfigurationReason.PRIVATE_AUTHORITY_COLLISION,
+                collision,
                 _COLLISION_RECOVERY,
             )
         if (
@@ -159,7 +160,7 @@ class _CodexSessionHome:
             or native_home.is_relative_to(self._home)
         ):
             self._refuse(
-                CodexSessionConfigurationReason.PRIVATE_AUTHORITY_COLLISION,
+                collision,
                 _COLLISION_RECOVERY,
             )
         private_root = self._paths.private_codex_profiles
@@ -169,7 +170,7 @@ class _CodexSessionHome:
             or private_root.is_relative_to(self._home)
         ):
             self._refuse(
-                CodexSessionConfigurationReason.PRIVATE_AUTHORITY_COLLISION,
+                collision,
                 _COLLISION_RECOVERY,
             )
         for account in self._account_reader():
@@ -179,7 +180,7 @@ class _CodexSessionHome:
                 == self._home
             ):
                 self._refuse(
-                    CodexSessionConfigurationReason.PRIVATE_AUTHORITY_COLLISION,
+                    collision,
                     _COLLISION_RECOVERY,
                 )
 
