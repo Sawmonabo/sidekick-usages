@@ -2,6 +2,7 @@
 
 import json
 import os
+import socket
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -13,6 +14,8 @@ from sidekick_usages.core.accounts.types import (
     ProviderIdentity,
     SidekickAccountId,
 )
+from sidekick_usages.core.selection.models import SelectionEpoch
+from sidekick_usages.core.selection.types import SelectionCode, TurnId
 from sidekick_usages.providers.codex.app_server.capabilities import (
     probe_codex_capabilities,
 )
@@ -22,6 +25,9 @@ from sidekick_usages.providers.codex.app_server.errors import (
 from sidekick_usages.providers.codex.app_server.executable import (
     discover_codex_executable,
     verify_codex_executable,
+)
+from sidekick_usages.providers.codex.app_server.jsonrpc.codec import (
+    decode_json_rpc_routing,
 )
 from sidekick_usages.providers.codex.app_server.jsonrpc.models import (
     JsonRpcNotification,
@@ -38,11 +44,18 @@ from sidekick_usages.providers.codex.broker.service import CodexSharedRuntime
 from sidekick_usages.providers.codex.broker.types import CodexBrokerFailure
 from sidekick_usages.providers.codex.session.models import (
     CODEX_SESSION_OPERATOR_PRECONDITION,
+    CodexRelayAdmission,
+    CodexRelayAdmissionState,
+    CodexRelayAuthority,
     CodexSessionCapability,
     CodexSessionConfigurationReason,
 )
+from sidekick_usages.providers.codex.session.relay import CodexAdmissionRelay
 from sidekick_usages.serialization.json import JsonObject
-from tests.fakes.codex.app_server.daemon import FakeCodexDaemon
+from tests.fakes.codex.app_server.daemon import (
+    FakeCodexDaemon,
+    FakeCodexTuiObserver,
+)
 from tests.fakes.codex.app_server.executable import (
     RAW_PROVIDER_SECRET,
     configure_codex_daemon_lifecycle,
@@ -83,6 +96,8 @@ _SESSION_SCHEMA_MANIFEST = (
     "v2/ListMcpServerStatusResponse.json",
     "v2/McpServerStatusUpdatedNotification.json",
 )
+_TURN_A = TurnId("bbfa6548-9236-45d9-9af6-fae767d9e7bc")
+_ROUTING_REQUEST_ID = 7
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +112,186 @@ class _SessionCase:
     configuration_required: bool = False
     protocol_unsupported: bool = False
     supported: bool = False
+
+
+class _RelayControl:
+    """Typed fake for provider-local admission and readiness ports."""
+
+    def __init__(self) -> None:
+        self.begun: list[TurnId] = []
+
+    def begin(self, turn_id: TurnId) -> CodexRelayAdmission:
+        """Retain one stable queued turn identifier."""
+        self.begun.append(turn_id)
+        return CodexRelayAdmission(
+            turn_id=turn_id,
+            state=CodexRelayAdmissionState.QUEUED,
+            authority=None,
+        )
+
+    def recheck(self, admission: CodexRelayAdmission) -> None:
+        """Reject transmission from this closed fake gate."""
+        raise AssertionError("Queued fake admission was transmitted.")
+
+    def end(self, turn_id: TurnId) -> None:
+        """Reject a terminal event for a never-forwarded fake turn."""
+        raise AssertionError("Queued fake admission ended.")
+
+    def ready(self, target: CodexRelayAuthority) -> None:
+        """Reject readiness from this routing-only fake."""
+        raise AssertionError("Routing-only fake became ready.")
+
+    def adopted(
+        self,
+        turn_id: TurnId,
+        target: CodexRelayAuthority,
+    ) -> None:
+        """Reject adoption from this routing-only fake."""
+        raise AssertionError("Routing-only fake adopted a turn.")
+
+
+def _receive_response(
+    tui: FakeCodexTuiObserver,
+    request_id: int,
+) -> JsonObject:
+    """Receive through notifications until one response is correlated."""
+    for _message_index in range(16):
+        message = tui.receive()
+        if message.get("id") == request_id:
+            return message
+    raise AssertionError("Fake Codex TUI saw no correlated response.")
+
+
+def _prove_relay_routing_codec() -> None:
+    """Prove only relay-owned identifiers and raw bytes are observed."""
+    raw_turn = (
+        b'{"id":7,"method":"turn/start","params":'
+        b'{"input":[],"threadId":"thread-alpha"}}'
+    )
+    routing = decode_json_rpc_routing(raw_turn, from_client=True)
+    assert (
+        routing.request_id,
+        routing.method,
+        routing.thread_id,
+        routing.turn_id,
+        routing.raw,
+    ) == (
+        _ROUTING_REQUEST_ID,
+        "turn/start",
+        "thread-alpha",
+        None,
+        raw_turn,
+    )
+    routing_cases = (
+        (
+            b'{"id":7,"result":{"turn":{"id":"turn-alpha"}}}',
+            None,
+            None,
+            "turn-alpha",
+        ),
+        (
+            b'{"id":8,"result":{"thread":{"id":"thread-gamma"}}}',
+            None,
+            "thread-gamma",
+            None,
+        ),
+        (
+            b'{"emittedAtMs":1,"method":"turn/completed",'
+            b'"params":{"threadId":"thread-alpha",'
+            b'"turn":{"id":"turn-alpha"}}}',
+            "turn/completed",
+            "thread-alpha",
+            "turn-alpha",
+        ),
+        (
+            b'{"emittedAtMs":2,"method":"thread/realtime/closed",'
+            b'"params":{"threadId":"thread-beta"}}',
+            "thread/realtime/closed",
+            "thread-beta",
+            None,
+        ),
+    )
+    for raw, method, thread_id, turn_id in routing_cases:
+        observed = decode_json_rpc_routing(raw, from_client=False)
+        assert (observed.method, observed.thread_id, observed.turn_id) == (
+            method,
+            thread_id,
+            turn_id,
+        )
+        assert observed.raw == raw
+
+
+def _prove_versioned_relay_journey(short_socket_root: Path) -> None:
+    """Prove raw routing, local queuing, and mutation refusal."""
+    daemon_home = short_socket_root / "relay-daemon"
+    relay_root = short_socket_root / "relay"
+    daemon_home.mkdir(mode=0o700)
+    relay_root.mkdir(mode=0o700)
+    relay_path = relay_root / "participant.sock"
+    control = _RelayControl()
+
+    def next_turn_id() -> TurnId:
+        return _TURN_A
+
+    with FakeCodexDaemon(
+        daemon_home,
+        app_server_version=_NEWER_CODEX_VERSION,
+    ) as daemon:
+        upstream_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        upstream_socket.connect(str(daemon.socket_path))
+        relay = CodexAdmissionRelay.open(
+            relay_path,
+            upstream_socket,
+            control,
+            control,
+            turn_id_factory=next_turn_id,
+        )
+        try:
+            tui = daemon.connect_tui(relay.socket_path)
+            try:
+                tui.send_request(
+                    2,
+                    "account/read",
+                    {"refreshToken": False},
+                )
+                result = _receive_response(tui, 2).get("result")
+                assert isinstance(result, dict)
+                assert result.get("requiresOpenaiAuth") is True
+                tui.send_request(
+                    3,
+                    "turn/start",
+                    {
+                        "input": [],
+                        "threadId": "thread-alpha",
+                    },
+                )
+                assert tui.receive_optional(0.1) is None
+                assert control.begun == [_TURN_A]
+                assert relay.loaded_thread_ids == ("thread-alpha",)
+
+                for request_id, method in enumerate(
+                    (
+                        "account/login/start",
+                        "account/login/cancel",
+                        "account/logout",
+                    ),
+                    start=4,
+                ):
+                    tui.send_request(request_id, method, {})
+                    response = _receive_response(tui, request_id)
+                    error = response.get("error")
+                    assert isinstance(error, dict)
+                    assert error.get("data") == {
+                        "code": (
+                            SelectionCode.UNCOORDINATED_AUTH_MUTATION.value
+                        )
+                    }
+
+            finally:
+                tui.close()
+        finally:
+            relay.close()
+            upstream_socket.close()
 
 
 def _prove_synthetic_current_auth_http(
@@ -144,6 +339,7 @@ def _prepare_shared_runtime(
 
 def test_versioned_codex_app_server_boundary_is_complete(
     tmp_path: Path,
+    short_socket_root: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     schema_root = tmp_path / "schema"
@@ -196,6 +392,20 @@ def test_versioned_codex_app_server_boundary_is_complete(
         assert result["requiresOpenaiAuth"] is True
         assert isinstance(notification, JsonRpcNotification)
         assert notification.method == "account/updated"
+
+        _prove_relay_routing_codec()
+
+        target = CodexRelayAuthority(
+            account_id=_ACCOUNT_ID,
+            generation=AuthorityGeneration(_GENERATION),
+            epoch=SelectionEpoch(2),
+        )
+        admission = CodexRelayAdmission(
+            turn_id=TurnId("f8cbbd03-cc60-4634-a613-4952ac4bdf79"),
+            state=CodexRelayAdmissionState.ADMITTED,
+            authority=target,
+        )
+        assert admission.authority == target
     assert session.closed
 
     events = [
@@ -220,6 +430,7 @@ def test_versioned_codex_app_server_boundary_is_complete(
     assert not Path(events[3]["codex_home"]).exists()
     assert all(event.get("openai_api_key") is None for event in events)
     assert events[-1]["codex_home"] == str(codex_home)
+    _prove_versioned_relay_journey(short_socket_root)
 
 
 def test_codex_app_server_boundary_fails_closed_and_redacted(

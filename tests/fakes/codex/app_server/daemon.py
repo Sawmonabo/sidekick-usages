@@ -212,9 +212,14 @@ class FakeCodexDaemon:
             raise AssertionError("Fake Codex daemon has no current auth.")
         return ProviderIdentity(active)
 
-    def connect_tui(self) -> FakeCodexTuiObserver:
+    def connect_tui(
+        self,
+        socket_path: Path | None = None,
+    ) -> FakeCodexTuiObserver:
         """Connect one initialized official-shaped TUI observer."""
-        observer = FakeCodexTuiObserver(self.socket_path)
+        observer = FakeCodexTuiObserver(
+            self.socket_path if socket_path is None else socket_path
+        )
         observer.open()
         return observer
 
@@ -744,6 +749,38 @@ class FakeCodexTuiObserver:
                 return
         raise AssertionError("Fake Codex observer saw no account update.")
 
+    def send_request(
+        self,
+        request_id: int,
+        method: str,
+        params: JsonObject,
+    ) -> None:
+        """Send one official-shaped request through the active connection."""
+        connection = self._connection
+        if connection is None:
+            raise AssertionError("Fake Codex observer is not open.")
+        _send(
+            connection,
+            {"id": request_id, "method": method, "params": params},
+        )
+
+    def receive(self) -> JsonObject:
+        """Receive one complete fake TUI frame."""
+        connection = self._connection
+        if connection is None:
+            raise AssertionError("Fake Codex observer is not open.")
+        return _receive(connection)
+
+    def receive_optional(self, timeout_seconds: float) -> JsonObject | None:
+        """Return a frame when available within one bounded wait."""
+        connection = self._connection
+        if connection is None:
+            raise AssertionError("Fake Codex observer is not open.")
+        try:
+            return _receive(connection, timeout_seconds=timeout_seconds)
+        except TimeoutError:
+            return None
+
     def close(self) -> None:
         """Close this observer."""
         connection = self._connection
@@ -759,8 +796,12 @@ def _send(
     connection.send(json.dumps(message))
 
 
-def _receive(connection: ClientConnection) -> JsonObject:
-    message = connection.recv(timeout=_CLIENT_TIMEOUT_SECONDS)
+def _receive(
+    connection: ClientConnection,
+    *,
+    timeout_seconds: float = _CLIENT_TIMEOUT_SECONDS,
+) -> JsonObject:
+    message = connection.recv(timeout=timeout_seconds)
     if not isinstance(message, str):
         raise AssertionError("Fake Codex observer received binary data.")
     try:

@@ -19,8 +19,10 @@ from sidekick_usages.providers.codex.app_server.executable import (
 )
 from sidekick_usages.providers.codex.app_server.methods import (
     ACCOUNT_CHATGPT_AUTH_REFRESH_METHOD,
+    ACCOUNT_LOGIN_CANCEL_METHOD,
     ACCOUNT_LOGIN_COMPLETED_METHOD,
     ACCOUNT_LOGIN_START_METHOD,
+    ACCOUNT_LOGOUT_METHOD,
     ACCOUNT_READ_METHOD,
     ACCOUNT_UPDATED_METHOD,
     CONFIG_READ_METHOD,
@@ -468,11 +470,13 @@ def _validate_session_mcp_schemas(
 def _validate_session_methods(schemas: dict[str, JsonObject]) -> None:
     """Require every correlated session method in its method union."""
     for method in (
+        ACCOUNT_LOGIN_CANCEL_METHOD,
         CONFIG_READ_METHOD,
         MODEL_PROVIDER_CAPABILITIES_READ_METHOD,
         TURN_START_METHOD,
         THREAD_REALTIME_START_METHOD,
         MCP_SERVER_STATUS_LIST_METHOD,
+        ACCOUNT_LOGOUT_METHOD,
     ):
         _require_method(schemas["ClientRequest.json"], method)
     for method in (

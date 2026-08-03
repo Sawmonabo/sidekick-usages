@@ -1,18 +1,23 @@
 """Bounded WebSocket JSON-RPC over the official Codex Unix socket."""
 
 import logging
+import os
 import selectors
 import socket
+import stat
 import time
 from collections.abc import Callable
 from contextlib import suppress
 from contextvars import ContextVar
+from pathlib import Path
+from threading import RLock, Thread, current_thread
 from types import TracebackType
 
 from websockets.client import ClientProtocol
 from websockets.exceptions import ConnectionClosed, WebSocketException
 from websockets.protocol import State
 from websockets.sync.client import ClientConnection, connect
+from websockets.sync.server import Server, ServerConnection, unix_serve
 
 from sidekick_usages.providers.codex.app_server.errors import (
     CodexAppServerError,
@@ -47,6 +52,8 @@ _CLOSE_TIMEOUT_SECONDS = 1.0
 _PING_INTERVAL_SECONDS = 20.0
 _PING_TIMEOUT_SECONDS = 20.0
 _MAX_QUEUED_FRAMES = 16
+_RELAY_DIRECTORY_MODE = 0o700
+_RELAY_SOCKET_MODE = 0o600
 _AUTOMATIC_WRITE_TIMEOUT_SECONDS = 5.0
 _CANCELLATION_POLL_SECONDS = 0.1
 _WRITE_DEADLINE: ContextVar[float | None] = ContextVar(
@@ -256,6 +263,220 @@ class UnixWebSocketJsonRpcTransport:
             self._connection.close()
         except OSError, WebSocketException:
             self._connection.socket.close()
+
+
+class CodexRelayFrameConnection:
+    """Exchange unchanged bounded text frames on one relay connection."""
+
+    def __init__(
+        self,
+        connection: ClientConnection | ServerConnection,
+    ) -> None:
+        self._connection = connection
+        self._send_lock = RLock()
+        self._closed = False
+
+    @classmethod
+    def open_upstream(
+        cls,
+        connected_socket: socket.socket,
+    ) -> CodexRelayFrameConnection:
+        """Upgrade one already qualified official daemon socket."""
+        try:
+            connection = connect(
+                DAEMON_WEBSOCKET_URI,
+                sock=connected_socket,
+                unix=True,
+                compression=None,
+                proxy=None,
+                open_timeout=_OPEN_TIMEOUT_SECONDS,
+                ping_interval=_PING_INTERVAL_SECONDS,
+                ping_timeout=_PING_TIMEOUT_SECONDS,
+                close_timeout=_CLOSE_TIMEOUT_SECONDS,
+                max_size=MAX_JSON_RPC_MESSAGE_BYTES,
+                max_queue=_MAX_QUEUED_FRAMES,
+                user_agent_header=None,
+                logger=_WEBSOCKET_LOGGER,
+                create_connection=DeadlineBoundClientConnection,
+            )
+        except OSError, TimeoutError, WebSocketException:
+            connected_socket.close()
+            raise CodexBrokerError(
+                CodexBrokerFailure.CONNECTION_FAILED
+            ) from None
+        return cls(connection)
+
+    @property
+    def closed(self) -> bool:
+        """Return whether this relay connection can no longer exchange."""
+        return self._closed or self._connection.state is State.CLOSED
+
+    def send(self, payload: bytes) -> None:
+        """Send one unchanged bounded UTF-8 text frame."""
+        if self.closed:
+            raise CodexAppServerError(CodexAppServerFailure.PROTOCOL_CLOSED)
+        text = _bounded_relay_text(payload)
+        try:
+            with self._send_lock:
+                self._connection.send(text)
+        except TimeoutError:
+            self._closed = True
+            raise CodexAppServerError(
+                CodexAppServerFailure.PROTOCOL_TIMEOUT
+            ) from None
+        except ConnectionClosed, OSError, WebSocketException:
+            self._closed = True
+            raise CodexAppServerError(
+                CodexAppServerFailure.PROTOCOL_CLOSED
+            ) from None
+
+    def receive(self, timeout_seconds: float) -> bytes | None:
+        """Receive one bounded text frame or report a polling timeout."""
+        if timeout_seconds <= 0:
+            raise ValueError("Relay receive timeout must be positive.")
+        try:
+            message = self._connection.recv(timeout=timeout_seconds)
+        except TimeoutError:
+            return None
+        except ConnectionClosed, OSError, WebSocketException:
+            self._closed = True
+            raise CodexAppServerError(
+                CodexAppServerFailure.PROTOCOL_CLOSED
+            ) from None
+        if not isinstance(message, str):
+            raise CodexAppServerError(CodexAppServerFailure.PROTOCOL_MALFORMED)
+        try:
+            payload = message.encode("utf-8")
+        except UnicodeEncodeError:
+            raise CodexAppServerError(
+                CodexAppServerFailure.PROTOCOL_MALFORMED
+            ) from None
+        _bounded_relay_text(payload)
+        return payload
+
+    def close(self) -> None:
+        """Close this session-owned relay connection."""
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._connection.close()
+        except OSError, TimeoutError, WebSocketException:
+            self._connection.socket.close()
+
+
+class CodexRelayServer:
+    """Serve exactly one owner-only local relay WebSocket endpoint."""
+
+    def __init__(self, path: Path, server: Server, thread: Thread) -> None:
+        self._path = path
+        self._server = server
+        self._thread = thread
+        self._closed = False
+
+    @classmethod
+    def start(
+        cls,
+        path: Path,
+        handler: Callable[[CodexRelayFrameConnection], None],
+    ) -> CodexRelayServer:
+        """Bind one qualified socket and return after it is listening."""
+        _require_relay_socket_target(path)
+
+        def handle(connection: ServerConnection) -> None:
+            request = connection.request
+            if request is None or request.path != "/rpc":
+                connection.close()
+                return
+            handler(CodexRelayFrameConnection(connection))
+
+        try:
+            server = unix_serve(
+                handle,
+                path=str(path),
+                compression=None,
+                max_size=MAX_JSON_RPC_MESSAGE_BYTES,
+                max_queue=_MAX_QUEUED_FRAMES,
+                logger=_WEBSOCKET_LOGGER,
+            )
+            os.chmod(path, _RELAY_SOCKET_MODE)
+            _require_relay_socket(path)
+        except CodexBrokerError:
+            with suppress(FileNotFoundError):
+                path.unlink()
+            raise
+        except OSError, WebSocketException:
+            with suppress(FileNotFoundError):
+                path.unlink()
+            raise CodexBrokerError(
+                CodexBrokerFailure.CONNECTION_FAILED
+            ) from None
+        thread = Thread(
+            target=server.serve_forever,
+            daemon=True,
+            name="codex-participant-relay",
+        )
+        relay_server = cls(path, server, thread)
+        thread.start()
+        return relay_server
+
+    @property
+    def path(self) -> Path:
+        """Return the absolute owner-only relay socket path."""
+        return self._path
+
+    def close(self) -> None:
+        """Stop accepting clients and remove the session-owned socket."""
+        if self._closed:
+            return
+        self._closed = True
+        self._server.shutdown()
+        if self._thread is not current_thread():
+            self._thread.join(timeout=_CLOSE_TIMEOUT_SECONDS)
+        with suppress(FileNotFoundError):
+            self._path.unlink()
+
+
+def _bounded_relay_text(payload: bytes) -> str:
+    if not payload or len(payload) > MAX_JSON_RPC_MESSAGE_BYTES:
+        raise CodexAppServerError(CodexAppServerFailure.PROTOCOL_MALFORMED)
+    try:
+        return payload.decode("utf-8")
+    except UnicodeDecodeError:
+        raise CodexAppServerError(
+            CodexAppServerFailure.PROTOCOL_MALFORMED
+        ) from None
+
+
+def _require_relay_socket_target(path: Path) -> None:
+    if not path.is_absolute():
+        raise CodexBrokerError(CodexBrokerFailure.RUNTIME_UNSAFE)
+    try:
+        parent = path.parent
+        parent_status = parent.lstat()
+        if (
+            not stat.S_ISDIR(parent_status.st_mode)
+            or parent_status.st_uid != os.geteuid()
+            or stat.S_IMODE(parent_status.st_mode) != _RELAY_DIRECTORY_MODE
+            or path.exists()
+            or path.is_symlink()
+        ):
+            raise CodexBrokerError(CodexBrokerFailure.RUNTIME_UNSAFE)
+    except OSError:
+        raise CodexBrokerError(CodexBrokerFailure.RUNTIME_UNSAFE) from None
+
+
+def _require_relay_socket(path: Path) -> None:
+    try:
+        socket_status = path.lstat()
+    except OSError:
+        raise CodexBrokerError(CodexBrokerFailure.RUNTIME_UNSAFE) from None
+    if (
+        not stat.S_ISSOCK(socket_status.st_mode)
+        or socket_status.st_uid != os.geteuid()
+        or stat.S_IMODE(socket_status.st_mode) != _RELAY_SOCKET_MODE
+    ):
+        raise CodexBrokerError(CodexBrokerFailure.RUNTIME_UNSAFE)
 
 
 class CodexDaemonSession:
