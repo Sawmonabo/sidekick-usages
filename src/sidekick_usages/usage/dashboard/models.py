@@ -50,7 +50,6 @@ class DashboardActionState(StrEnum):
 
     HEALTHY = "healthy"
     LOGIN_REQUIRED = "login_required"
-    SWITCH_SETUP_REQUIRED = "switch_setup_required"
     REPAIR_REQUIRED = "repair_required"
     SETUP_REGENERATION_REQUIRED = "setup_regeneration_required"
     RECONCILIATION_REQUIRED = "reconciliation_required"

@@ -402,14 +402,15 @@ class CachedDashboardService:
             and authority.setup_token is not None
         )
         setup_only = (
-            isinstance(authority, ClaudeAccountAuthority)
+            setup_bearing
+            and isinstance(authority, ClaudeAccountAuthority)
             and authority.subscription is None
         )
         if setup_bearing and health in {
             CredentialHealth.HEALTHY,
             CredentialHealth.UNKNOWN,
         }:
-            state = DashboardActionState.SWITCH_SETUP_REQUIRED
+            state = DashboardActionState.HEALTHY
         elif not account.has_managed_authority and health in {
             CredentialHealth.HEALTHY,
             CredentialHealth.UNKNOWN,
@@ -443,10 +444,4 @@ class CachedDashboardService:
             state = None
         else:
             assert_never(health)
-        states = () if state is None else (state,)
-        if (
-            setup_bearing
-            and DashboardActionState.SWITCH_SETUP_REQUIRED not in states
-        ):
-            return (*states, DashboardActionState.SWITCH_SETUP_REQUIRED)
-        return states
+        return () if state is None else (state,)

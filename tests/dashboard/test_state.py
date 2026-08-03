@@ -444,23 +444,25 @@ def test_cached_dashboard_scopes_codex_broker_degradation(
 
     monkeypatch.setattr(AccountIndexReader, "load", load_setup_only)
     setup_only = CachedDashboardService(paths).load(REFERENCE_TIME)
-    setup_rows = tuple(
-        row
-        for row in setup_only.providers[0].rows
-        if isinstance(row, DashboardAccount)
+    setup_controller = DashboardController.start(setup_only)
+    assert setup_controller.select_account() == SelectAccountIntent(
+        provider_id=ProviderId.CLAUDE,
+        account_id=CLAUDE_REPAIR_ACCOUNT_ID,
     )
-    assert tuple(row.states for row in setup_rows) == (
-        (DashboardActionState.SWITCH_SETUP_REQUIRED,),
-        (DashboardActionState.SWITCH_SETUP_REQUIRED,),
-        (DashboardActionState.SWITCH_SETUP_REQUIRED,),
-        (
-            DashboardActionState.SETUP_REGENERATION_REQUIRED,
-            DashboardActionState.SWITCH_SETUP_REQUIRED,
-        ),
+    setup_controller = setup_controller.move(DashboardMove.DOWN)
+    assert setup_controller.select_account() == SelectAccountIntent(
+        provider_id=ProviderId.CLAUDE,
+        account_id=CLAUDE_PREVIEW_ACCOUNT_ID,
     )
-    refusal = DashboardController.start(setup_only).select_account()
+    setup_controller = setup_controller.move(DashboardMove.DOWN)
+    assert setup_controller.select_account() == SelectAccountIntent(
+        provider_id=ProviderId.CLAUDE,
+        account_id=CLAUDE_ACTIVE_ACCOUNT_ID,
+    )
+    setup_controller = setup_controller.move(DashboardMove.DOWN)
+    refusal = setup_controller.select_account()
     assert isinstance(refusal, DashboardSelectionRefusal)
-    assert refusal.code is SelectionCode.UNSUPPORTED_SESSION_CAPABILITY
+    assert refusal.code is SelectionCode.TARGET_EXPIRED
 
 
 @REQUIRES_MANAGED_RUNTIME

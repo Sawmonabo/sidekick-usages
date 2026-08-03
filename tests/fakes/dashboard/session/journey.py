@@ -30,7 +30,6 @@ from sidekick_usages.persistence.types.error import (
 )
 from sidekick_usages.usage.dashboard.models import (
     DashboardAccount,
-    DashboardActionState,
     DashboardFooter,
     DashboardSnapshot,
 )
@@ -73,34 +72,10 @@ def _selection_refusal(
 ) -> DashboardFooter:
     """Return one visible refusal without contacting the action owner."""
     claude, codex = snapshot.providers
-    setup_rows = tuple(
-        (
-            replace(
-                row,
-                states=(DashboardActionState.SWITCH_SETUP_REQUIRED,),
-            )
-            if isinstance(row, DashboardAccount)
-            and row.account_id == account_id
-            else row
-        )
-        for row in claude.rows
-    )
-    setup_snapshot = replace(
+    blocked_snapshot = replace(
         snapshot,
         providers=(
-            replace(
-                claude,
-                runtime_state=ProviderRuntimeState.EXTERNAL_ACTIVE,
-                active_account_id=None,
-                rows=setup_rows,
-            ),
-            codex,
-        ),
-    )
-    blocked_snapshot = replace(
-        setup_snapshot,
-        providers=(
-            replace(claude, actions_enabled=False, rows=setup_rows),
+            replace(claude, actions_enabled=False),
             codex,
         ),
     )

@@ -145,10 +145,7 @@ def _render_interactive(
                 ),
                 rows=(
                     provider.rows[0],
-                    replace(
-                        warning_account,
-                        states=(DashboardActionState.SWITCH_SETUP_REQUIRED,),
-                    ),
+                    replace(warning_account, states=()),
                 ),
             ),
             *snapshot.providers[1:],
