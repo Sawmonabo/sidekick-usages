@@ -129,12 +129,15 @@ def write_atomic(
                 destination_exists=expected is not None,
             )
             os.fsync(descriptor)
-        except BaseException:
-            _remove_temporary(
-                descriptor,
-                temporary_basename,
-                temporary_identity,
-            )
+        except BaseException as error:
+            try:
+                _remove_temporary(
+                    descriptor,
+                    temporary_basename,
+                    temporary_identity,
+                )
+            except BaseException:
+                error.add_note("Temporary shell cleanup also failed.")
             raise
         published = files.read_held_shell_file(
             descriptor,
@@ -186,12 +189,15 @@ def _create_temporary(
             ):
                 raise NativeFilesystemError(NativeFailureKind.CHANGED)
             return temporary_basename, identity
-    except BaseException:
-        _remove_temporary(
-            parent_descriptor,
-            temporary_basename,
-            identity,
-        )
+    except BaseException as error:
+        try:
+            _remove_temporary(
+                parent_descriptor,
+                temporary_basename,
+                identity,
+            )
+        except BaseException:
+            error.add_note("Temporary shell cleanup also failed.")
         raise
 
 

@@ -3,6 +3,7 @@
 import errno
 import os
 from pathlib import Path
+from typing import Never
 
 import click
 import pytest
@@ -26,7 +27,9 @@ from sidekick_usages.cli.session.shell import (
     ShellStartupResolver,
 )
 from sidekick_usages.core.types import ExitCode, ProviderId
+from sidekick_usages.persistence.platform.errors import NativeFilesystemError
 from sidekick_usages.persistence.platform.posix.adapter import PosixPlatform
+from sidekick_usages.persistence.platform.types import NativeFailureKind
 from sidekick_usages.persistence.shell import (
     ShellFileStore,
     ShellPersistenceError,
@@ -61,8 +64,6 @@ def _run_planned_session_in_child(
     launcher: ProviderSessionLauncher,
     spec: SessionLaunchSpec,
 ) -> int:
-    if not hasattr(os, "fork"):
-        pytest.skip("Descriptor execution requires a POSIX process.")
     process_id = os.fork()
     if process_id == 0:
         try:
@@ -147,10 +148,25 @@ def test_launcher_executes_exact_descriptor_from_requested_directory(
     spec = launcher.plan(ProviderId.CLAUDE, ("prompt with spaces",))
     original_directory = Path.cwd()
 
-    assert _run_planned_session_in_child(launcher, spec) == _PROVIDER_EXIT_CODE
-    assert (working_directory / "observed.txt").read_text() == (
-        "prompt with spaces\npreserved\n"
+    if hasattr(os, "fork") and os.execve in os.supports_fd:
+        assert (
+            _run_planned_session_in_child(launcher, spec)
+            == _PROVIDER_EXIT_CODE
+        )
+        assert (working_directory / "observed.txt").read_text() == (
+            "prompt with spaces\npreserved\n"
+        )
+
+    monkeypatch.setattr(
+        "sidekick_usages.cli.session.launcher._DESCRIPTOR_EXEC_SUPPORTED",
+        False,
     )
+    with pytest.raises(SessionLaunchError) as unsupported:
+        launcher.run(spec)
+
+    assert unsupported.value.code is SessionLaunchFailure.UNSUPPORTED
+    if os.name != "posix":
+        return
 
     calls: list[
         tuple[int, os.stat_result, tuple[str, ...], dict[str, str], Path]
@@ -176,6 +192,10 @@ def test_launcher_executes_exact_descriptor_from_requested_directory(
         "sidekick_usages.cli.session.launcher.os.execve",
         reject_after_observation,
     )
+    monkeypatch.setattr(
+        "sidekick_usages.cli.session.launcher._DESCRIPTOR_EXEC_SUPPORTED",
+        True,
+    )
 
     with pytest.raises(SessionLaunchError) as failure:
         launcher.run(spec)
@@ -193,19 +213,6 @@ def test_launcher_executes_exact_descriptor_from_requested_directory(
     with pytest.raises(OSError, match=os.strerror(errno.EBADF)):
         os.fstat(descriptor)
 
-    monkeypatch.setattr(
-        "sidekick_usages.cli.session.launcher._DESCRIPTOR_EXEC_SUPPORTED",
-        False,
-    )
-    with pytest.raises(SessionLaunchError) as unsupported:
-        launcher.run(spec)
-
-    assert unsupported.value.code is SessionLaunchFailure.UNSUPPORTED
-
-    monkeypatch.setattr(
-        "sidekick_usages.cli.session.launcher._DESCRIPTOR_EXEC_SUPPORTED",
-        True,
-    )
     replacement = binaries / "replacement-claude"
     _executable(replacement)
     replacement.replace(claude)
@@ -481,6 +488,52 @@ def test_shell_remove_refuses_replacement_before_native_validation(
 
     assert target.read_text() == "function replacement\nend\n"
     assert survivor.read_text() == _FISH_FUNCTIONS
+
+
+@pytest.mark.parametrize(
+    ("failure_target", "primary_kind"),
+    [
+        ("_write_temporary", NativeFailureKind.WRITE),
+        ("_publish_temporary", NativeFailureKind.CHANGED),
+    ],
+)
+def test_shell_write_preserves_primary_when_cleanup_also_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_target: str,
+    primary_kind: NativeFailureKind,
+) -> None:
+    """Temporary cleanup must not replace a meaningful write failure."""
+
+    def fail_primary(
+        *_arguments: object,
+        **_keywords: object,
+    ) -> Never:
+        raise NativeFilesystemError(primary_kind)
+
+    def fail_cleanup(
+        *_arguments: object,
+        **_keywords: object,
+    ) -> Never:
+        raise NativeFilesystemError(NativeFailureKind.REMOVE)
+
+    owner = "sidekick_usages.persistence.platform.posix.shell"
+    monkeypatch.setattr(f"{owner}.{failure_target}", fail_primary)
+    monkeypatch.setattr(f"{owner}._remove_temporary", fail_cleanup)
+    store = ShellFileStore(tmp_path, os.geteuid())
+
+    with pytest.raises(ShellPersistenceError) as failure:
+        store.write(
+            tmp_path / "session.sh",
+            None,
+            _POSIX_FUNCTIONS.encode(),
+            owner_only=True,
+        )
+
+    primary = failure.value.__cause__
+    assert isinstance(primary, NativeFilesystemError)
+    assert primary.kind is primary_kind
+    assert primary.__notes__ == ["Temporary shell cleanup also failed."]
 
 
 def test_public_shell_dry_run_reports_exact_targets_without_writing(
