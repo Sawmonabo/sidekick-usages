@@ -43,6 +43,9 @@ from sidekick_usages.providers.codex.broker.external_auth.refresh import (
     encode_codex_callback_acknowledgement,
     encode_codex_callback_instruction,
 )
+from sidekick_usages.providers.codex.broker.external_auth.selection import (
+    CodexSelectionBroker,
+)
 from sidekick_usages.providers.codex.broker.models import (
     CodexActivationAcknowledgement,
     CodexActivationInstruction,
@@ -65,9 +68,6 @@ from sidekick_usages.providers.codex.broker.ports import (
     CodexSavedAuthorityRelation,
     CodexWorkerExchange,
     CodexWorkerExchangeFactory,
-)
-from sidekick_usages.providers.codex.broker.selection import (
-    CodexSelectionBroker,
 )
 from sidekick_usages.providers.codex.broker.service import CodexSharedRuntime
 from sidekick_usages.providers.codex.broker.types import (
