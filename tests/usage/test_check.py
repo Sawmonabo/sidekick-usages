@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from datetime import date
 from pathlib import Path
 
+import pytest
 from rich.console import Console
 
 from sidekick_usages.cli.contexts.composition import compose_app_context
@@ -220,8 +221,10 @@ def _install_ctx(
 @REQUIRES_MANAGED_RUNTIME
 def test_no_interactive_check_reads_managed_codex_authority(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """One-shot usage opens one managed Codex home under its account lock."""
+    monkeypatch.delenv("WSL_DISTRO_NAME", raising=False)
     account = managed_saved_account(
         _MANAGED_ACCOUNT_ID,
         _MANAGED_AUTHORITY_ID,

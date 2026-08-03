@@ -22,7 +22,6 @@ from sidekick_usages.daemon.lifecycle.platform.selection import (
     resolve_supervisor_executable,
 )
 from sidekick_usages.daemon.lifecycle.platform.systemd import SystemdBackend
-from sidekick_usages.daemon.lifecycle.platform.wsl import WslBackend
 from sidekick_usages.daemon.lifecycle.ports import (
     ProviderCapabilityReadiness,
     ServiceBackend,
@@ -288,15 +287,12 @@ def build_service_backend(
         )
     if platform_info.system != "Linux" or not platform_info.has_user_systemd:
         return FeatureDisabledBackend()
-    systemd = SystemdBackend(
+    return SystemdBackend(
         paths.systemd_user_service,
         launch_command,
         runner,
         artifacts,
     )
-    if platform_info.is_wsl:
-        return WslBackend(systemd, platform_info, runner)
-    return systemd
 
 
 def build_daemon_manager(
