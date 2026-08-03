@@ -27,7 +27,8 @@ from sidekick_usages.daemon.types.service import (
 )
 from sidekick_usages.persistence.supervisor.service import ServiceStateStore
 
-_MAX_CONTROL_CONNECTIONS = 4
+# Two streams for each of 16 participants per provider, plus four operators.
+MAX_CONTROL_CONNECTIONS = 68
 _CONNECTION_JOIN_SECONDS = 1.0
 _WAKE_BYTE = b"\x00"
 _WAKE_READ_BYTES = 4096
@@ -77,7 +78,7 @@ class _ConnectionGroup:
 
     def __init__(self, server: LocalControlServer) -> None:
         self._server = server
-        self._capacity = BoundedSemaphore(_MAX_CONTROL_CONNECTIONS)
+        self._capacity = BoundedSemaphore(MAX_CONTROL_CONNECTIONS)
         self._lock = Lock()
         self._connections: set[socket.socket] = set()
         self._threads: set[Thread] = set()
@@ -189,6 +190,7 @@ class SupervisorRuntime:
     def recover(self) -> None:
         """Recover durable queue and journal work before readiness."""
         self._scheduler.recover()
+        self._recovery.recover_selection()
         self._queue_recovered = True
         self._recovery.enroll(self._clock.now())
 

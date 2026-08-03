@@ -36,6 +36,12 @@ from sidekick_usages.daemon.runtime.supervisor import (
     SupervisorRuntime,
     WakeupChannel,
 )
+from sidekick_usages.daemon.selection.coordinator import SelectionCoordinator
+from sidekick_usages.daemon.selection.deferred import (
+    DeferredSelectionAuthority,
+)
+from sidekick_usages.daemon.selection.recovery import SelectionRecovery
+from sidekick_usages.daemon.selection.registry import ParticipantRegistry
 from sidekick_usages.daemon.worker.exchange import WorkerExchangeRegistry
 from sidekick_usages.daemon.worker.pool import (
     SubprocessWorkerLauncher,
@@ -61,6 +67,7 @@ from sidekick_usages.persistence.supervisor.runtime import (
 )
 from sidekick_usages.persistence.supervisor.selection import (
     SelectedStateStore,
+    SelectionOperationStore,
 )
 from sidekick_usages.persistence.supervisor.service import ServiceStateStore
 from sidekick_usages.providers.codex.app_server.executable import (
@@ -134,7 +141,29 @@ def main(argv: Sequence[str] | None = None) -> int:
             account_path=paths.accounts,
         ),
     ).load()
-    recovery = ActivationRecoveryScheduler(journals, queue)
+    selection_journals = SelectionOperationStore(paths.selection_journals)
+    participants = ParticipantRegistry(selected)
+    selection_authority = DeferredSelectionAuthority()
+    selection_recovery = SelectionRecovery(
+        selected,
+        selection_journals,
+        participants,
+        selection_authority,
+        clock,
+    )
+    selection = SelectionCoordinator(
+        selected,
+        selection_journals,
+        participants,
+        selection_authority,
+        clock,
+        resume_recovery=selection_recovery.recover,
+    )
+    recovery = ActivationRecoveryScheduler(
+        journals,
+        queue,
+        selection_recovery=selection_recovery,
+    )
     events = OperationEventHub()
     exchanges = WorkerExchangeRegistry(time.monotonic)
     workers = WorkerPool(
@@ -198,6 +227,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         clock,
         wakeup.notify,
         request_stop,
+        selection=selection,
     )
     server = LocalControlServer(
         paths.runtime_directory,

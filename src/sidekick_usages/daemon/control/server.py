@@ -23,7 +23,10 @@ from sidekick_usages.daemon.control.protocol import (
     FramedTransport,
     ProtocolFailureError,
 )
-from sidekick_usages.daemon.models.control import SocketIdentity
+from sidekick_usages.daemon.models.control import (
+    SocketIdentity,
+    VerifiedControlRequest,
+)
 from sidekick_usages.daemon.models.protocol import (
     AcceptedPayload,
     ControlEvent,
@@ -42,6 +45,7 @@ from sidekick_usages.daemon.types.protocol import (
     ProtocolErrorCode,
     RequestKind,
 )
+from sidekick_usages.platform.models import PeerIdentity
 from sidekick_usages.platform.peer import (
     OperatingSystemPeerVerifier,
     PeerVerificationError,
@@ -106,7 +110,7 @@ class ControlConnection:
     def serve(self) -> None:
         """Authenticate first, negotiate versions, then dispatch actions."""
         try:
-            self._peer_verifier.verify(self._connection)
+            peer = self._peer_verifier.verify(self._connection)
         except PeerVerificationError:
             self._connection.close()
             return
@@ -138,7 +142,7 @@ class ControlConnection:
                     AcceptedPayload(operation_id=None),
                 )
             )
-            self._serve_actions(transport)
+            self._serve_actions(transport, peer)
         except BrokenPipeError, ConnectionClosedError, ConnectionResetError:
             return
         finally:
@@ -159,7 +163,11 @@ class ControlConnection:
             package_version=self._package_version,
         )
 
-    def _serve_actions(self, transport: FramedTransport) -> None:
+    def _serve_actions(
+        self,
+        transport: FramedTransport,
+        peer: PeerIdentity,
+    ) -> None:
         request_count = 1
         while True:
             request = self._receive_request(transport)
@@ -188,7 +196,7 @@ class ControlConnection:
                     incompatibility,
                 )
                 return
-            if not self._dispatch(transport, request):
+            if not self._dispatch(transport, request, peer):
                 return
 
     def _receive_request(
@@ -210,10 +218,13 @@ class ControlConnection:
         self,
         transport: FramedTransport,
         request: ControlRequest,
+        peer: PeerIdentity,
     ) -> bool:
         terminal = False
         try:
-            for event in self._dispatcher.dispatch(request):
+            for event in self._dispatcher.dispatch(
+                VerifiedControlRequest(request, peer)
+            ):
                 if not self._valid_dispatch_event(request, event):
                     self._send_failure(
                         transport,
@@ -228,6 +239,10 @@ class ControlConnection:
                     EventKind.INCOMPATIBLE,
                     EventKind.SERVICE_STOPPING,
                     EventKind.SNAPSHOT,
+                    EventKind.PARTICIPANT_REGISTERED,
+                    EventKind.TURN_ADMISSION,
+                    EventKind.SELECTION_RESULT,
+                    EventKind.SELECTION_STATUS,
                 }
                 if terminal:
                     return True
@@ -239,7 +254,7 @@ class ControlConnection:
                 )
                 return False
         except BrokenPipeError, ConnectionResetError:
-            self._dispatcher.cancel(request.request_id)
+            self._dispatcher.cancel(VerifiedControlRequest(request, peer))
             return False
         except Exception:
             with suppress(OSError):

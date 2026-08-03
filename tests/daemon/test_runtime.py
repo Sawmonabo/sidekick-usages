@@ -21,6 +21,7 @@ from sidekick_usages.core.models import (
 from sidekick_usages.core.selection.models import (
     DueOperation,
     RelatedRuntimeAuthority,
+    SelectionResult,
 )
 from sidekick_usages.core.selection.types import (
     OperationKind,
@@ -43,7 +44,11 @@ from sidekick_usages.daemon.runtime.recovery import (
     ActivationRecoveryScheduler,
 )
 from sidekick_usages.daemon.runtime.scheduler import DurableScheduler
-from sidekick_usages.daemon.runtime.supervisor import WakeupChannel
+from sidekick_usages.daemon.runtime.supervisor import (
+    MAX_CONTROL_CONNECTIONS,
+    SupervisorRuntime,
+    WakeupChannel,
+)
 from sidekick_usages.daemon.types.service import ServicePhase
 from sidekick_usages.daemon.types.worker import WorkerOutcome
 from sidekick_usages.daemon.worker.pool import WorkerPool
@@ -76,11 +81,38 @@ from tests.support.persistence import (
 )
 
 EXPECTED_WORKER_COUNT = 2
+EXPECTED_CONTROL_CONNECTIONS = 68
 CLAUDE_RECOVERY_OPERATION_ID = OperationId(
     "cc413f38-2b11-418a-a4a7-b0e45666067e"
 )
 NATIVE_SUPERSEDED_CODE = "superseded_by_native_login"
 MANAGED_AUTH_MIGRATION_REQUIRED_CODE = "managed_auth_migration_required"
+
+
+class _GlobalSelectionRecovery:
+    """Record pre-readiness selection recovery without provider work."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def recover_all(self) -> tuple[SelectionResult, ...]:
+        self.calls += 1
+        return ()
+
+    def reconciled(self) -> bool:
+        return True
+
+
+def _recover_runtime_selection(
+    runtime: SupervisorRuntime,
+    selection_recovery: _GlobalSelectionRecovery,
+) -> None:
+    """Prove runtime recovery invokes selection before later cycles."""
+    runtime.recover()
+    assert (
+        selection_recovery.calls,
+        MAX_CONTROL_CONNECTIONS,
+    ) == (1, EXPECTED_CONTROL_CONNECTIONS)
 
 
 def _assert_native_login_cancels_stale_activation(
@@ -313,9 +345,11 @@ def test_supervisor_and_workers_isolate_failures_and_recover_durably(
         clock,
         monotonic=clock.monotonic,
     )
+    selection_recovery = _GlobalSelectionRecovery()
     recovery = ActivationRecoveryScheduler(
         state.journals,
         state.queue,
+        selection_recovery=selection_recovery,
     )
     runtime = foundation_runtime(
         state.paths,
@@ -325,7 +359,7 @@ def test_supervisor_and_workers_isolate_failures_and_recover_durably(
         wakeup,
     )
 
-    runtime.recover()
+    _recover_runtime_selection(runtime, selection_recovery)
     runtime.run_cycle()
     runtime.run_cycle()
     assert workers.has_capacity_for(codex_selection)

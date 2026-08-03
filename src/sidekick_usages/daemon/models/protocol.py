@@ -7,8 +7,23 @@ from sidekick_usages.core.accounts.types import (
     RequestId,
     SidekickAccountId,
 )
-from sidekick_usages.core.selection.models import safe_outcome_code
+from sidekick_usages.core.selection.models import (
+    SelectionResult,
+    safe_outcome_code,
+)
 from sidekick_usages.core.types import ProviderId
+from sidekick_usages.daemon.selection.models import (
+    ParticipantAdoptionRequest,
+    ParticipantConnectionRequest,
+    ParticipantManifest,
+    ParticipantNotice,
+    ParticipantReadyRequest,
+    ParticipantRegistration,
+    SelectionStatus,
+    TurnAdmission,
+    TurnBeginRequest,
+    TurnEndRequest,
+)
 from sidekick_usages.daemon.types.protocol import (
     MAX_PROTOCOL_VERSION,
     CompletionOutcome,
@@ -23,13 +38,27 @@ from sidekick_usages.daemon.types.service import PackageVersion
 _MAX_INTEGER = (1 << 63) - 1
 
 type RequestPayload = (
-    EmptyPayload | ActivationPayload | AccountPayload | ProviderPayload
+    EmptyPayload
+    | ActivationPayload
+    | AccountPayload
+    | ProviderPayload
+    | ParticipantManifest
+    | ParticipantConnectionRequest
+    | TurnBeginRequest
+    | TurnEndRequest
+    | ParticipantReadyRequest
+    | ParticipantAdoptionRequest
 )
 type ControlActionTerminalPayload = (
     CompletedPayload
     | FailedPayload
     | IncompatiblePayload
     | ServiceStoppingPayload
+    | ParticipantRegistration
+    | TurnAdmission
+    | ParticipantNotice
+    | SelectionResult
+    | SelectionStatus
 )
 type EventPayload = (
     AcceptedPayload
@@ -39,6 +68,11 @@ type EventPayload = (
     | FailedPayload
     | IncompatiblePayload
     | ServiceStoppingPayload
+    | ParticipantRegistration
+    | TurnAdmission
+    | ParticipantNotice
+    | SelectionResult
+    | SelectionStatus
 )
 
 
@@ -210,15 +244,20 @@ def _require_request_payload(
     kind: RequestKind,
     payload: RequestPayload,
 ) -> None:
-    if kind is RequestKind.ACTIVATE:
-        valid = isinstance(payload, ActivationPayload)
-    elif kind is RequestKind.REFRESH_ACCOUNT:
-        valid = isinstance(payload, AccountPayload)
-    elif kind is RequestKind.RECONCILE:
-        valid = isinstance(payload, ProviderPayload)
-    else:
-        valid = isinstance(payload, EmptyPayload)
-    if valid:
+    expected: dict[RequestKind, type[RequestPayload]] = {
+        RequestKind.ACTIVATE: ActivationPayload,
+        RequestKind.REFRESH_ACCOUNT: AccountPayload,
+        RequestKind.RECONCILE: ProviderPayload,
+        RequestKind.PARTICIPANT_REGISTER: ParticipantManifest,
+        RequestKind.PARTICIPANT_SUBSCRIBE: ParticipantConnectionRequest,
+        RequestKind.TURN_BEGIN: TurnBeginRequest,
+        RequestKind.TURN_END: TurnEndRequest,
+        RequestKind.PARTICIPANT_READY: ParticipantReadyRequest,
+        RequestKind.PARTICIPANT_ADOPT: ParticipantAdoptionRequest,
+        RequestKind.SELECT_ACCOUNT: AccountPayload,
+        RequestKind.SELECTION_STATUS: ProviderPayload,
+    }
+    if isinstance(payload, expected.get(kind, EmptyPayload)):
         return
     raise ValueError("Request kind and payload do not match.")
 
@@ -235,6 +274,11 @@ def _require_event_payload(
         EventKind.FAILED: FailedPayload,
         EventKind.INCOMPATIBLE: IncompatiblePayload,
         EventKind.SERVICE_STOPPING: ServiceStoppingPayload,
+        EventKind.PARTICIPANT_REGISTERED: ParticipantRegistration,
+        EventKind.TURN_ADMISSION: TurnAdmission,
+        EventKind.PARTICIPANT_NOTICE: ParticipantNotice,
+        EventKind.SELECTION_RESULT: SelectionResult,
+        EventKind.SELECTION_STATUS: SelectionStatus,
     }
     if not isinstance(payload, expected[kind]):
         raise ValueError("Event kind and payload do not match.")

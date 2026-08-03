@@ -9,11 +9,11 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from threading import Event
 
-from sidekick_usages.core.accounts.types import OperationId, RequestId
+from sidekick_usages.core.accounts.types import OperationId
 from sidekick_usages.daemon.control.server import LocalControlServer
+from sidekick_usages.daemon.models.control import VerifiedControlRequest
 from sidekick_usages.daemon.models.protocol import (
     ControlEvent,
-    ControlRequest,
 )
 from sidekick_usages.daemon.models.worker import (
     ProviderLaunchers,
@@ -186,12 +186,15 @@ class FakeWorkerLauncher:
 class _NoopControlDispatcher:
     """Expose an unused control boundary for direct runtime cycles."""
 
-    def dispatch(self, request: ControlRequest) -> Iterator[ControlEvent]:
-        del request
+    def dispatch(
+        self,
+        context: VerifiedControlRequest,
+    ) -> Iterator[ControlEvent]:
+        del context
         return iter(())
 
-    def cancel(self, request_id: RequestId) -> None:
-        del request_id
+    def cancel(self, context: VerifiedControlRequest) -> None:
+        del context
 
 
 @dataclass(slots=True)

@@ -11,6 +11,7 @@ from sidekick_usages.core.accounts.types import (
     OperationId,
     SidekickAccountId,
 )
+from sidekick_usages.core.selection.types import ParticipantId, TurnId
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.control.endpoint import control_endpoint_state
 from sidekick_usages.daemon.control.protocol import (
@@ -31,6 +32,16 @@ from sidekick_usages.daemon.models.protocol import (
     ProviderPayload,
     RequestPayload,
     ServiceStoppingPayload,
+)
+from sidekick_usages.daemon.selection.models import (
+    ParticipantAdoptionProof,
+    ParticipantAdoptionRequest,
+    ParticipantConnectionRequest,
+    ParticipantManifest,
+    ParticipantReadyProof,
+    ParticipantReadyRequest,
+    TurnBeginRequest,
+    TurnEndRequest,
 )
 from sidekick_usages.daemon.types.lifecycle import ServiceComponentState
 from sidekick_usages.daemon.types.protocol import (
@@ -54,7 +65,8 @@ _LONG_ACTION_REQUEST_KINDS = frozenset(
     }
 )
 _EXTENDED_STREAM_REQUEST_KINDS = _LONG_ACTION_REQUEST_KINDS | {
-    RequestKind.SUBSCRIBE
+    RequestKind.SUBSCRIBE,
+    RequestKind.PARTICIPANT_SUBSCRIBE,
 }
 
 
@@ -300,6 +312,112 @@ class ControlClient:
         """Subscribe to sanitized service events until cancellation."""
         return self.request(RequestKind.SUBSCRIBE, EmptyPayload())
 
+    def register_participant(
+        self,
+        manifest: ParticipantManifest,
+    ) -> Generator[ControlEvent]:
+        """Register one client using only kernel-owned peer identity."""
+        return self.request(RequestKind.PARTICIPANT_REGISTER, manifest)
+
+    def subscribe_participant(
+        self,
+        participant_id: ParticipantId,
+        connection_generation: int,
+    ) -> Generator[ControlEvent]:
+        """Subscribe one registered participant to admission notices."""
+        return self.request(
+            RequestKind.PARTICIPANT_SUBSCRIBE,
+            ParticipantConnectionRequest(
+                participant_id,
+                connection_generation,
+            ),
+        )
+
+    def begin_turn(
+        self,
+        participant_id: ParticipantId,
+        connection_generation: int,
+        turn_id: TurnId,
+    ) -> Generator[ControlEvent]:
+        """Request one exact turn admission boundary."""
+        return self.request(
+            RequestKind.TURN_BEGIN,
+            TurnBeginRequest(
+                participant_id,
+                connection_generation,
+                turn_id,
+            ),
+        )
+
+    def end_turn(
+        self,
+        participant_id: ParticipantId,
+        connection_generation: int,
+        turn_id: TurnId,
+    ) -> Generator[ControlEvent]:
+        """Close one exact admitted turn lease."""
+        return self.request(
+            RequestKind.TURN_END,
+            TurnEndRequest(
+                participant_id,
+                connection_generation,
+                turn_id,
+            ),
+        )
+
+    def participant_ready(
+        self,
+        participant_id: ParticipantId,
+        connection_generation: int,
+        proof: ParticipantReadyProof,
+    ) -> Generator[ControlEvent]:
+        """Acknowledge exact next-turn authority readiness."""
+        return self.request(
+            RequestKind.PARTICIPANT_READY,
+            ParticipantReadyRequest(
+                participant_id=participant_id,
+                connection_generation=connection_generation,
+                proof=proof,
+            ),
+        )
+
+    def participant_adopted(
+        self,
+        participant_id: ParticipantId,
+        connection_generation: int,
+        proof: ParticipantAdoptionProof,
+    ) -> Generator[ControlEvent]:
+        """Report first-real-turn adoption of an exact authority."""
+        return self.request(
+            RequestKind.PARTICIPANT_ADOPT,
+            ParticipantAdoptionRequest(
+                participant_id=participant_id,
+                connection_generation=connection_generation,
+                proof=proof,
+            ),
+        )
+
+    def select_account(
+        self,
+        provider_id: ProviderId,
+        account_id: SidekickAccountId,
+    ) -> Generator[ControlEvent]:
+        """Select one saved account through global coordination."""
+        return self.request(
+            RequestKind.SELECT_ACCOUNT,
+            AccountPayload(provider_id, account_id),
+        )
+
+    def selection_status(
+        self,
+        provider_id: ProviderId,
+    ) -> Generator[ControlEvent]:
+        """Read one provider's secret-free selection snapshot."""
+        return self.request(
+            RequestKind.SELECTION_STATUS,
+            ProviderPayload(provider_id),
+        )
+
     def reconcile(
         self,
         provider_id: ProviderId,
@@ -323,7 +441,13 @@ class ControlClient:
         if kind is RequestKind.HANDSHAKE:
             raise ValueError("Use handshake() for protocol negotiation.")
         self.handshake()
-        self._connection.settimeout(self._response_timeout_seconds)
+        initial_timeout = self._response_timeout_seconds
+        if (
+            kind is RequestKind.SELECT_ACCOUNT
+            and self._action_timeout_seconds is not None
+        ):
+            initial_timeout = self._action_timeout_seconds
+        self._connection.settimeout(initial_timeout)
         request = self._new_request(kind, payload)
         self._transport.send_request(request)
         return self._event_stream(request)
@@ -349,7 +473,10 @@ class ControlClient:
         )
 
     def _accepted_stream_timeout(self, kind: RequestKind) -> float | None:
-        if kind is RequestKind.SUBSCRIBE:
+        if kind in {
+            RequestKind.SUBSCRIBE,
+            RequestKind.PARTICIPANT_SUBSCRIBE,
+        }:
             return None
         return self._action_timeout_seconds
 
@@ -379,6 +506,10 @@ class ControlClient:
                     EventKind.INCOMPATIBLE,
                     EventKind.SERVICE_STOPPING,
                     EventKind.SNAPSHOT,
+                    EventKind.PARTICIPANT_REGISTERED,
+                    EventKind.TURN_ADMISSION,
+                    EventKind.SELECTION_RESULT,
+                    EventKind.SELECTION_STATUS,
                 }:
                     terminal = True
                     return

@@ -16,8 +16,10 @@ from sidekick_usages.core.selection.types import (
     OperationKind,
     OperationPriority,
     OperationState,
+    SelectionCode,
 )
 from sidekick_usages.core.types import ProviderId
+from sidekick_usages.daemon.models.control import VerifiedControlRequest
 from sidekick_usages.daemon.models.protocol import (
     AcceptedPayload,
     AccountPayload,
@@ -25,6 +27,7 @@ from sidekick_usages.daemon.models.protocol import (
     CompletedPayload,
     ControlEvent,
     ControlRequest,
+    EventPayload,
     FailedPayload,
     ProgressPayload,
     ProviderPayload,
@@ -35,6 +38,16 @@ from sidekick_usages.daemon.models.scheduler import (
     OperationUpdate,
     SchedulerCompletion,
 )
+from sidekick_usages.daemon.selection.coordinator import SelectionRequestError
+from sidekick_usages.daemon.selection.models import (
+    ParticipantAdoptionRequest,
+    ParticipantConnectionRequest,
+    ParticipantManifest,
+    ParticipantReadyRequest,
+    TurnBeginRequest,
+    TurnEndRequest,
+)
+from sidekick_usages.daemon.selection.ports import SelectionSupervisorPort
 from sidekick_usages.daemon.types.lifecycle import ServiceFailureCode
 from sidekick_usages.daemon.types.ports import (
     OperationEventSink,
@@ -45,6 +58,7 @@ from sidekick_usages.daemon.types.protocol import (
     CompletionOutcome,
     EventKind,
     ProgressPhase,
+    ProtocolErrorCode,
     RequestKind,
     ServiceStopReason,
 )
@@ -52,8 +66,19 @@ from sidekick_usages.daemon.types.service import ServicePhase
 from sidekick_usages.daemon.types.worker import WorkerOutcome
 from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
 from sidekick_usages.persistence.supervisor.service import ServiceStateStore
+from sidekick_usages.platform.models import ProcessIdentity
 
 _MAX_RETAINED_UPDATES = 512
+_PARTICIPANT_REQUEST_KINDS = frozenset(
+    {
+        RequestKind.PARTICIPANT_REGISTER,
+        RequestKind.PARTICIPANT_SUBSCRIBE,
+        RequestKind.TURN_BEGIN,
+        RequestKind.TURN_END,
+        RequestKind.PARTICIPANT_READY,
+        RequestKind.PARTICIPANT_ADOPT,
+    }
+)
 
 
 class OperationEventHub(OperationEventSink):
@@ -212,7 +237,7 @@ class SupervisorDispatcher:
         wake: Callable[[], None],
         request_stop: Callable[[], None],
         *,
-        operation_id_factory: Callable[[], OperationId] = new_operation_id,
+        selection: SelectionSupervisorPort | None = None,
         package_version: str = __version__,
     ) -> None:
         self._queue = queue
@@ -222,11 +247,34 @@ class SupervisorDispatcher:
         self._clock = clock
         self._wake = wake
         self._request_stop = request_stop
-        self._operation_id_factory = operation_id_factory
+        self._selection = selection
         self._package_version = package_version
 
-    def dispatch(self, request: ControlRequest) -> Iterator[ControlEvent]:
+    def dispatch(
+        self,
+        context: VerifiedControlRequest,
+    ) -> Iterator[ControlEvent]:
         """Yield events for one already-authenticated closed request."""
+        request = context.request
+        if request.kind in {
+            RequestKind.PARTICIPANT_REGISTER,
+            RequestKind.PARTICIPANT_SUBSCRIBE,
+            RequestKind.TURN_BEGIN,
+            RequestKind.TURN_END,
+            RequestKind.PARTICIPANT_READY,
+            RequestKind.PARTICIPANT_ADOPT,
+            RequestKind.SELECT_ACCOUNT,
+            RequestKind.SELECTION_STATUS,
+        }:
+            yield from self._dispatch_selection(context)
+            return
+        yield from self._dispatch_legacy(request)
+
+    def _dispatch_legacy(
+        self,
+        request: ControlRequest,
+    ) -> Iterator[ControlEvent]:
+        """Dispatch one non-selection control request."""
         if request.kind in {
             RequestKind.ACTIVATE,
             RequestKind.REFRESH_ACCOUNT,
@@ -270,9 +318,165 @@ class SupervisorDispatcher:
             FailedPayload(None, "dispatch_failed"),
         )
 
-    def cancel(self, request_id: RequestId) -> None:
+    def cancel(self, context: VerifiedControlRequest) -> None:
         """Cancel one disconnected stream without cancelling durable work."""
-        self._events.cancel(request_id)
+        request = context.request
+        payload = request.payload
+        peer = context.peer.process_identity
+        if (
+            request.kind is RequestKind.PARTICIPANT_SUBSCRIBE
+            and isinstance(payload, ParticipantConnectionRequest)
+            and self._selection is not None
+            and peer is not None
+        ):
+            try:
+                self._selection.cancel_subscription(
+                    request.request_id,
+                    payload,
+                    peer,
+                )
+            except PermissionError, ValueError:
+                return
+            return
+        self._events.cancel(request.request_id)
+
+    def _dispatch_selection(
+        self,
+        context: VerifiedControlRequest,
+    ) -> Iterator[ControlEvent]:
+        request = context.request
+        peer = context.peer.process_identity
+        if request.kind in _PARTICIPANT_REQUEST_KINDS and peer is None:
+            yield self._event(
+                request,
+                EventKind.FAILED,
+                FailedPayload(
+                    None,
+                    SelectionCode.UNSUPPORTED_SESSION_CAPABILITY.value,
+                ),
+            )
+            return
+        selection = self._selection
+        if selection is None:
+            yield self._event(
+                request,
+                EventKind.FAILED,
+                FailedPayload(None, ProtocolErrorCode.FEATURE_DISABLED.value),
+            )
+            return
+        code = "dispatch_failed"
+        try:
+            if request.kind in _PARTICIPANT_REQUEST_KINDS and peer is not None:
+                yield from self._participant_events(
+                    request,
+                    selection,
+                    peer,
+                )
+            else:
+                yield self._selection_operator_event(request, selection)
+            return
+        except SelectionRequestError as error:
+            code = error.code.value
+        except PermissionError:
+            code = SelectionCode.PARTICIPANT_UNREACHABLE.value
+        except BufferError, RuntimeError, ValueError:
+            code = SelectionCode.SELECTION_RECOVERY_REQUIRED.value
+        yield self._event(
+            request,
+            EventKind.FAILED,
+            FailedPayload(None, code),
+        )
+
+    def _participant_events(
+        self,
+        request: ControlRequest,
+        selection: SelectionSupervisorPort,
+        peer: ProcessIdentity,
+    ) -> Iterator[ControlEvent]:
+        payload = request.payload
+        if isinstance(payload, ParticipantManifest):
+            yield self._event(
+                request,
+                EventKind.PARTICIPANT_REGISTERED,
+                selection.register(payload, peer),
+            )
+            return
+        if isinstance(payload, ParticipantConnectionRequest):
+            yield self._event(
+                request,
+                EventKind.ACCEPTED,
+                AcceptedPayload(None),
+            )
+            for notice in selection.subscribe(
+                request.request_id,
+                payload,
+                peer,
+            ):
+                yield self._event(
+                    request,
+                    EventKind.PARTICIPANT_NOTICE,
+                    notice,
+                )
+            return
+        yield self._participant_action_event(
+            request,
+            selection,
+            peer,
+        )
+
+    def _participant_action_event(
+        self,
+        request: ControlRequest,
+        selection: SelectionSupervisorPort,
+        peer: ProcessIdentity,
+    ) -> ControlEvent:
+        payload = request.payload
+        if isinstance(payload, TurnBeginRequest):
+            return self._event(
+                request,
+                EventKind.TURN_ADMISSION,
+                selection.begin_turn(payload, peer),
+            )
+        if isinstance(payload, TurnEndRequest):
+            selection.end_turn(payload, peer)
+        elif isinstance(payload, ParticipantReadyRequest):
+            selection.ready_request(payload, peer)
+        elif isinstance(payload, ParticipantAdoptionRequest):
+            selection.adopt_request(payload, peer)
+        else:
+            raise ValueError("Participant request payload is unrelated.")
+        return self._selection_completed(request)
+
+    def _selection_operator_event(
+        self,
+        request: ControlRequest,
+        selection: SelectionSupervisorPort,
+    ) -> ControlEvent:
+        payload = request.payload
+        if isinstance(payload, AccountPayload):
+            return self._event(
+                request,
+                EventKind.SELECTION_RESULT,
+                selection.select(
+                    new_operation_id(),
+                    payload.provider_id,
+                    payload.account_id,
+                ),
+            )
+        if isinstance(payload, ProviderPayload):
+            return self._event(
+                request,
+                EventKind.SELECTION_STATUS,
+                selection.status(payload.provider_id),
+            )
+        raise ValueError("Selection request payload is unrelated.")
+
+    def _selection_completed(self, request: ControlRequest) -> ControlEvent:
+        return self._event(
+            request,
+            EventKind.COMPLETED,
+            CompletedPayload(None, CompletionOutcome.SUCCEEDED),
+        )
 
     def _dispatch_account(
         self,
@@ -313,7 +517,7 @@ class SupervisorDispatcher:
         event_sequence = self._events.current_sequence()
         effective = self._queue.enqueue(
             DueOperation(
-                operation_id=self._operation_id_factory(),
+                operation_id=new_operation_id(),
                 provider_id=payload.provider_id,
                 account_id=payload.account_id,
                 kind=kind,
@@ -352,7 +556,7 @@ class SupervisorDispatcher:
         for operation in maintenance:
             self._queue.enqueue(
                 DueOperation(
-                    operation_id=self._operation_id_factory(),
+                    operation_id=new_operation_id(),
                     provider_id=operation.provider_id,
                     account_id=operation.required_account_id,
                     kind=OperationKind.MAINTAIN,
@@ -397,7 +601,7 @@ class SupervisorDispatcher:
         event_sequence = self._events.current_sequence()
         operation = self._queue.enqueue(
             DueOperation(
-                operation_id=self._operation_id_factory(),
+                operation_id=new_operation_id(),
                 provider_id=payload.provider_id,
                 account_id=None,
                 kind=OperationKind.RECONCILE_NATIVE,
@@ -485,14 +689,7 @@ class SupervisorDispatcher:
         self,
         request: ControlRequest,
         kind: EventKind,
-        payload: (
-            AcceptedPayload
-            | CompletedPayload
-            | FailedPayload
-            | ProgressPayload
-            | ServiceStoppingPayload
-            | SnapshotPayload
-        ),
+        payload: EventPayload,
     ) -> ControlEvent:
         return ControlEvent(
             protocol_version=PROTOCOL_VERSION,

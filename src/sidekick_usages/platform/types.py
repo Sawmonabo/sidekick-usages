@@ -3,7 +3,7 @@
 from enum import StrEnum
 from typing import Protocol
 
-from sidekick_usages.platform.models import PeerIdentity
+from sidekick_usages.platform.models import PeerIdentity, ProcessIdentity
 
 type WorkerEnvironment = tuple[tuple[str, str], ...]
 
@@ -14,6 +14,14 @@ class PeerFailureCode(StrEnum):
     DIFFERENT_USER = "different_user"
     FEATURE_DISABLED = "feature_disabled"
     PROOF_UNAVAILABLE = "proof_unavailable"
+
+
+class ProcessLiveness(StrEnum):
+    """Exact process-start identity observation."""
+
+    ALIVE = "alive"
+    DEAD = "dead"
+    UNKNOWN = "unknown"
 
 
 class ExecutableFailure(StrEnum):
@@ -55,6 +63,13 @@ class PeerVerifier(Protocol):
 
     def verify(self, connection: PeerSocket) -> PeerIdentity:
         """Return a verified identity or fail closed."""
+
+
+class ProcessIdentityInspector(Protocol):
+    """Inspect exact process-start identity without sending a signal."""
+
+    def inspect(self, identity: ProcessIdentity) -> ProcessLiveness:
+        """Return exact liveness or unknown when proof is unavailable."""
 
 
 class ProcessGroup(Protocol):

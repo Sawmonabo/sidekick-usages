@@ -9,6 +9,7 @@ from sidekick_usages import __version__
 from sidekick_usages.core.accounts.types import OperationId, RequestId
 from sidekick_usages.daemon.control.client import ControlClient
 from sidekick_usages.daemon.control.server import ControlConnection
+from sidekick_usages.daemon.models.control import VerifiedControlRequest
 from sidekick_usages.daemon.models.protocol import (
     AcceptedPayload,
     CompletedPayload,
@@ -122,8 +123,12 @@ class RecordingDispatcher:
     cancellations: list[RequestId]
     release_subscription: Event
 
-    def dispatch(self, request: ControlRequest) -> Iterator[ControlEvent]:
+    def dispatch(
+        self,
+        context: VerifiedControlRequest,
+    ) -> Iterator[ControlEvent]:
         """Yield the closed synthetic stream for one request."""
+        request = context.request
         self.requests.append(request)
         if request.kind is RequestKind.ACTIVATE:
             operation_id = OperationId("f619cb29-9f6e-40dd-b35d-cf6a6ed93f79")
@@ -164,9 +169,9 @@ class RecordingDispatcher:
             return
         raise AssertionError("Unexpected synthetic dispatch request.")
 
-    def cancel(self, request_id: RequestId) -> None:
+    def cancel(self, context: VerifiedControlRequest) -> None:
         """Record one cancelled stream request."""
-        self.cancellations.append(request_id)
+        self.cancellations.append(context.request.request_id)
 
 
 def _service_event(

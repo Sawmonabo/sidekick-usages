@@ -3,11 +3,10 @@
 from collections.abc import Iterator
 from typing import Protocol
 
-from sidekick_usages.core.accounts.types import RequestId
 from sidekick_usages.core.selection.models import DueOperation
+from sidekick_usages.daemon.models.control import VerifiedControlRequest
 from sidekick_usages.daemon.models.protocol import (
     ControlEvent,
-    ControlRequest,
 )
 from sidekick_usages.daemon.models.scheduler import SchedulerCompletion
 from sidekick_usages.daemon.models.worker import (
@@ -46,11 +45,14 @@ class ResidentService(Protocol):
 class ControlDispatcher(Protocol):
     """Dispatch already-authenticated closed control requests."""
 
-    def dispatch(self, request: ControlRequest) -> Iterator[ControlEvent]:
+    def dispatch(
+        self,
+        context: VerifiedControlRequest,
+    ) -> Iterator[ControlEvent]:
         """Yield sanitized events for one accepted request."""
 
-    def cancel(self, request_id: RequestId) -> None:
-        """Cancel work whose event stream disconnected."""
+    def cancel(self, context: VerifiedControlRequest) -> None:
+        """Cancel the exact authenticated stream that disconnected."""
 
 
 class WorkerHandle(ProcessGroup, Protocol):

@@ -4,7 +4,7 @@ from enum import StrEnum
 from typing import Protocol
 
 MAX_PROTOCOL_VERSION = 65_535
-PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 3
 
 
 class RequestKind(StrEnum):
@@ -18,6 +18,14 @@ class RequestKind(StrEnum):
     REFRESH_ALL = "refresh_all"
     RECONCILE = "reconcile"
     SHUTDOWN = "shutdown"
+    PARTICIPANT_REGISTER = "participant_register"
+    PARTICIPANT_SUBSCRIBE = "participant_subscribe"
+    TURN_BEGIN = "turn_begin"
+    TURN_END = "turn_end"
+    PARTICIPANT_READY = "participant_ready"
+    PARTICIPANT_ADOPT = "participant_adopt"
+    SELECT_ACCOUNT = "select_account"
+    SELECTION_STATUS = "selection_status"
 
 
 class EventKind(StrEnum):
@@ -30,6 +38,11 @@ class EventKind(StrEnum):
     FAILED = "failed"
     INCOMPATIBLE = "incompatible"
     SERVICE_STOPPING = "service_stopping"
+    PARTICIPANT_REGISTERED = "participant_registered"
+    TURN_ADMISSION = "turn_admission"
+    PARTICIPANT_NOTICE = "participant_notice"
+    SELECTION_RESULT = "selection_result"
+    SELECTION_STATUS = "selection_status"
 
 
 class ProgressPhase(StrEnum):

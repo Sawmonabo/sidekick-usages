@@ -29,6 +29,12 @@ from sidekick_usages.daemon.models.protocol import (
     ServiceStoppingPayload,
     SnapshotPayload,
 )
+from sidekick_usages.daemon.selection.protocol import (
+    decode_selection_event,
+    decode_selection_request,
+    encode_selection_event,
+    encode_selection_request,
+)
 from sidekick_usages.daemon.types.protocol import (
     CompletionOutcome,
     ConnectedSocket,
@@ -264,7 +270,9 @@ def _request_payload_to_json(payload: RequestPayload) -> JsonValue:
             "account_id": str(payload.account_id),
             "provider": payload.provider_id.value,
         }
-    return {"provider": payload.provider_id.value}
+    if isinstance(payload, ProviderPayload):
+        return {"provider": payload.provider_id.value}
+    return encode_selection_request(payload)
 
 
 def _event_payload_to_json(payload: EventPayload) -> JsonValue:
@@ -290,8 +298,10 @@ def _event_payload_to_json(payload: EventPayload) -> JsonValue:
         }
     elif isinstance(payload, IncompatiblePayload):
         result = {"code": payload.code.value}
-    else:
+    elif isinstance(payload, ServiceStoppingPayload):
         result = {"reason": payload.reason.value}
+    else:
+        return encode_selection_event(payload)
     return result
 
 
@@ -316,17 +326,26 @@ def _decode_request_payload(
                 root["allow_remote_control_disconnect"]
             ),
         )
-    if kind is RequestKind.REFRESH_ACCOUNT:
+    if kind in {RequestKind.REFRESH_ACCOUNT, RequestKind.SELECT_ACCOUNT}:
         _require_exact_keys(root, {"account_id", "provider"})
         return AccountPayload(
             provider_id=ProviderId(_require_string(root["provider"])),
             account_id=SidekickAccountId(_require_string(root["account_id"])),
         )
-    if kind is RequestKind.RECONCILE:
+    if kind in {RequestKind.RECONCILE, RequestKind.SELECTION_STATUS}:
         _require_exact_keys(root, {"provider"})
         return ProviderPayload(
             provider_id=ProviderId(_require_string(root["provider"]))
         )
+    if kind in {
+        RequestKind.PARTICIPANT_REGISTER,
+        RequestKind.PARTICIPANT_SUBSCRIBE,
+        RequestKind.TURN_BEGIN,
+        RequestKind.TURN_END,
+        RequestKind.PARTICIPANT_READY,
+        RequestKind.PARTICIPANT_ADOPT,
+    }:
+        return decode_selection_request(kind, value)
     _require_exact_keys(root, set())
     return EmptyPayload()
 
@@ -335,6 +354,14 @@ def _decode_event_payload(
     kind: EventKind,
     value: JsonValue,
 ) -> EventPayload:
+    if kind in {
+        EventKind.PARTICIPANT_REGISTERED,
+        EventKind.TURN_ADMISSION,
+        EventKind.PARTICIPANT_NOTICE,
+        EventKind.SELECTION_RESULT,
+        EventKind.SELECTION_STATUS,
+    }:
+        return decode_selection_event(kind, value)
     root = _require_object(value)
     if kind is EventKind.ACCEPTED:
         _require_exact_keys(root, {"operation_id"})

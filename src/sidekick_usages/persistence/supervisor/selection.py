@@ -1,18 +1,21 @@
 """Durable provider selection keyed by stable account ID."""
 
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 
-from sidekick_usages.core.accounts.types import SidekickAccountId
+from sidekick_usages.core.accounts.types import OperationId, SidekickAccountId
 from sidekick_usages.core.selection.models import (
     FinalizedSelection,
     OpenSelectionOperation,
+    SelectionEpoch,
     SelectionResult,
 )
 from sidekick_usages.core.selection.policy import (
     require_selection_transition,
 )
 from sidekick_usages.core.selection.types import (
+    ParticipantId,
     SelectionCode,
     SelectionOutcome,
     SelectionPhase,
@@ -248,20 +251,83 @@ class SelectionOperationStore:
         replacement: OpenSelectionOperation,
     ) -> OpenSelectionOperation:
         """Advance one exact active operation through a forward phase."""
-        try:
-            require_selection_transition(expected, replacement)
-        except ValueError:
-            raise ManagedStateConflictError(
-                ManagedStateConflictKind.CONCURRENT_CHANGE
-            ) from None
+        return self._advance(
+            expected,
+            replacement,
+            merge_required_additions=False,
+        )
+
+    def advance_with_required_additions(
+        self,
+        expected: OpenSelectionOperation,
+        replacement: OpenSelectionOperation,
+    ) -> OpenSelectionOperation:
+        """Advance while atomically preserving late required additions."""
+        return self._advance(
+            expected,
+            replacement,
+            merge_required_additions=True,
+        )
+
+    def _advance(
+        self,
+        expected: OpenSelectionOperation,
+        replacement: OpenSelectionOperation,
+        *,
+        merge_required_additions: bool,
+    ) -> OpenSelectionOperation:
+        """Commit one qualified forward transition under the file lock."""
         filesystem = self._provider_filesystem(expected.provider_id)
         with PersistenceLock(filesystem).hold() as transaction:
             recover_state_file(filesystem, transaction)
             snapshot, document = self._document(filesystem)
-            if document.active != expected:
+            current = document.active
+            if current is None:
                 raise ManagedStateConflictError(
                     ManagedStateConflictKind.CONCURRENT_CHANGE
                 )
+            if current != expected and merge_required_additions:
+                expected_required = set(expected.required_participant_ids)
+                current_required = set(current.required_participant_ids)
+                expected_shape = replace(
+                    current,
+                    required_participant_ids=(
+                        expected.required_participant_ids
+                    ),
+                    updated_at=expected.updated_at,
+                )
+                if (
+                    expected_shape != expected
+                    or not expected_required <= current_required
+                    or current.updated_at < expected.updated_at
+                ):
+                    raise ManagedStateConflictError(
+                        ManagedStateConflictKind.CONCURRENT_CHANGE
+                    )
+                additions = current_required - expected_required
+                replacement = replace(
+                    replacement,
+                    required_participant_ids=tuple(
+                        sorted(
+                            set(replacement.required_participant_ids)
+                            | additions
+                        )
+                    ),
+                    updated_at=max(
+                        replacement.updated_at,
+                        current.updated_at,
+                    ),
+                )
+            elif current != expected:
+                raise ManagedStateConflictError(
+                    ManagedStateConflictKind.CONCURRENT_CHANGE
+                )
+            try:
+                require_selection_transition(current, replacement)
+            except ValueError:
+                raise ManagedStateConflictError(
+                    ManagedStateConflictKind.CONCURRENT_CHANGE
+                ) from None
             self._commit(
                 filesystem,
                 snapshot,
@@ -323,6 +389,55 @@ class SelectionOperationStore:
                 ),
             )
         return result
+
+    def add_required(
+        self,
+        provider_id: ProviderId,
+        operation_id: OperationId,
+        pending_epoch: SelectionEpoch,
+        participant_id: ParticipantId,
+        *,
+        updated_at: datetime,
+    ) -> OpenSelectionOperation:
+        """Atomically add one late participant to the active operation."""
+        filesystem = self._provider_filesystem(provider_id)
+        with PersistenceLock(filesystem).hold() as transaction:
+            recover_state_file(filesystem, transaction)
+            snapshot, document = self._document(filesystem)
+            active = document.active
+            if (
+                active is None
+                or active.operation_id != operation_id
+                or active.pending_epoch != pending_epoch
+            ):
+                raise ManagedStateConflictError(
+                    ManagedStateConflictKind.CONCURRENT_CHANGE
+                )
+            if participant_id in active.required_participant_ids:
+                return active
+            replacement = replace(
+                active,
+                required_participant_ids=tuple(
+                    sorted((*active.required_participant_ids, participant_id))
+                ),
+                updated_at=max(active.updated_at, updated_at),
+            )
+            try:
+                require_selection_transition(active, replacement)
+            except ValueError:
+                raise ManagedStateConflictError(
+                    ManagedStateConflictKind.CONCURRENT_CHANGE
+                ) from None
+            self._commit(
+                filesystem,
+                snapshot,
+                SelectionOperationDocument(
+                    provider_id=provider_id,
+                    active=replacement,
+                    history=document.history,
+                ),
+            )
+            return replacement
 
     def load(
         self,

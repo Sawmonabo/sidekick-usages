@@ -1,0 +1,1 @@
+"""Participant-selection daemon tests."""
