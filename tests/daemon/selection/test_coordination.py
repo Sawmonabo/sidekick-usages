@@ -775,6 +775,8 @@ def test_three_participants_switch_without_interrupting_turns(
     assert late.pending_epoch == SelectionEpoch(8)
     if loss_state == "dead_before_commit":
         journey.process_inspector.dead.add(_process(1))
+        registry.disconnect(PARTICIPANT_A, 1)
+        coordinator.reconcile_disconnected(PROVIDER_ID)
     else:
         registry.end_turn(TurnEndRequest(PARTICIPANT_A, 1, TURN_A))
     assert adapter.committed.wait(1)
