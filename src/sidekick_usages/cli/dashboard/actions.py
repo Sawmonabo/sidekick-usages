@@ -328,16 +328,18 @@ class DashboardActionExecutor:
                     "The service returned unrelated selection status."
                 )
             self._sink.publish_selection_status(provider_id, status)
-            self._sink.publish_progress(_selection_progress(status))
+            if terminal is None:
+                self._sink.publish_progress(_selection_progress(status))
         except (
             UnexpectedServiceEventError,
             OSError,
             ProtocolFailureError,
         ):
             self._sink.publish_selection_status(provider_id, None)
-            self._sink.publish_progress(
-                "Account change accepted; current phase is unavailable."
-            )
+            if terminal is None:
+                self._sink.publish_progress(
+                    "Account change accepted; current phase is unavailable."
+                )
         finally:
             if client is not None:
                 client.close()
