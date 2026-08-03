@@ -32,7 +32,7 @@ from sidekick_usages.serialization.json import (
     encode_compact_json_buffer,
 )
 
-CLAUDE_OAUTH_TOKEN_VARIABLE = "CLAUDE_CODE_OAUTH_TOKEN"
+CLAUDE_AUTH_ENVIRONMENT_KEY = "CLAUDE_CODE_OAUTH_TOKEN"
 MAX_CLAUDE_PROTECTED_FRAME_BYTES = 512 * 1024
 _RESPONSE_KEYS = frozenset({"response", "type"})
 _SUCCESS_KEYS = frozenset({"request_id", "subtype"})
@@ -225,7 +225,7 @@ def decode_protected_projection(
     except ClaudeProtectedChannelError:
         clear_secret_buffer(oauth)
         raise
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         clear_secret_buffer(oauth)
         _malformed_protected()
 
@@ -325,7 +325,7 @@ def _split_protected_projection(
 def _decode_protected_metadata(payload: bytes | bytearray) -> JsonObject:
     try:
         return decode_json_object(payload)
-    except (InvalidPayloadError, ValueError):
+    except InvalidPayloadError, ValueError:
         _malformed_protected()
 
 
@@ -377,7 +377,7 @@ def encode_oauth_update(
             {
                 "request_id": str(request_id),
                 "type": "update_environment_variables",
-                "variables": {CLAUDE_OAUTH_TOKEN_VARIABLE: ""},
+                "variables": {CLAUDE_AUTH_ENVIRONMENT_KEY: ""},
             }
         )
         for value in oauth:
@@ -408,7 +408,7 @@ def encode_invalid_oauth_probe(request_id: RequestId) -> bytearray:
             {
                 "request_id": str(request_id),
                 "type": "update_environment_variables",
-                "variables": {CLAUDE_OAUTH_TOKEN_VARIABLE: 7},
+                "variables": {CLAUDE_AUTH_ENVIRONMENT_KEY: 7},
             }
         )
     except JsonEncodeError:

@@ -189,8 +189,7 @@ class SelectionRecovery:
             if (
                 completion.operation_kind
                 is OperationKind.CLAUDE_PARTICIPANT_BIND
-                and completion.worker_operation_id
-                == completion.operation_id
+                and completion.worker_operation_id == completion.operation_id
             ):
                 self._prepare_finalized_binding(completion)
                 return
@@ -210,7 +209,8 @@ class SelectionRecovery:
             elif (
                 completion.operation_kind
                 is OperationKind.CLAUDE_PARTICIPANT_BIND
-                and completion.outcome in {
+                and completion.outcome
+                in {
                     WorkerOutcome.SUCCEEDED,
                     WorkerOutcome.NO_CHANGE,
                 }

@@ -194,9 +194,7 @@ class SelectionCoordinator:
             self._resume_if_recovered(provider_id)
         elif self._participants.requires_finalized_attachment(
             provider_id
-        ) and isinstance(
-            binder, SelectionParticipantBinder
-        ):
+        ) and isinstance(binder, SelectionParticipantBinder):
             finalized = self._selected.load(provider_id)
             if finalized is not None:
                 binder.bind_finalized(finalized)

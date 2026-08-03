@@ -40,24 +40,27 @@ _CANCELLATION_POLL_SECONDS = 0.1
 def operation_requires_worker_exchange(operation: DueOperation) -> bool:
     """Return whether one exact provider operation requires an exchange."""
     return (
-        protected_selection_enabled(ProviderId.CLAUDE)
-        and
-        operation.provider_id is ProviderId.CLAUDE
-        and operation.kind
-        in {
-            OperationKind.SELECTION_COMMIT,
-            OperationKind.CLAUDE_PARTICIPANT_BIND,
-        }
-    ) or operation.kind is OperationKind.CODEX_CALLBACK or (
-        operation.provider_id is ProviderId.CODEX
-        and operation.kind
-        in {
-            OperationKind.ACTIVATE,
-            OperationKind.RECONCILE,
-            OperationKind.SELECTION_PREVALIDATE,
-            OperationKind.SELECTION_COMMIT,
-            OperationKind.SELECTION_READBACK,
-        }
+        (
+            protected_selection_enabled(ProviderId.CLAUDE)
+            and operation.provider_id is ProviderId.CLAUDE
+            and operation.kind
+            in {
+                OperationKind.SELECTION_COMMIT,
+                OperationKind.CLAUDE_PARTICIPANT_BIND,
+            }
+        )
+        or operation.kind is OperationKind.CODEX_CALLBACK
+        or (
+            operation.provider_id is ProviderId.CODEX
+            and operation.kind
+            in {
+                OperationKind.ACTIVATE,
+                OperationKind.RECONCILE,
+                OperationKind.SELECTION_PREVALIDATE,
+                OperationKind.SELECTION_COMMIT,
+                OperationKind.SELECTION_READBACK,
+            }
+        )
     )
 
 

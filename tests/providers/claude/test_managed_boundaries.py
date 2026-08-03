@@ -777,10 +777,9 @@ def test_structured_session_updates_oauth_only_at_an_idle_turn_boundary(
     session = fixture.session
     engine = fixture.engine
     process_id = session.process_id
-    selection_enabled = (
-        not protected_selection_enabled(ProviderId.CLAUDE)
-        and protected_selection_enabled(ProviderId.CODEX)
-    )
+    selection_enabled = not protected_selection_enabled(
+        ProviderId.CLAUDE
+    ) and protected_selection_enabled(ProviderId.CODEX)
     binding_b = fixture.binding_b
     binding_c = fixture.binding_c
     turn_id = fixture.turn_id
@@ -817,7 +816,9 @@ def test_structured_session_updates_oauth_only_at_an_idle_turn_boundary(
         session.end_turn(turn_id)
         assert ready_c.binding == adoption.binding == binding_c
         assert engine.events == [
-            ("adoption", "8"), ("prompt", "8"), ("adoption", "9"),
+            ("adoption", "8"),
+            ("prompt", "8"),
+            ("adoption", "9"),
             ("prompt", "9"),
         ]
     else:

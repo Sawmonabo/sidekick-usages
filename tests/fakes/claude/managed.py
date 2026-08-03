@@ -305,6 +305,8 @@ def _duplicate_response(encoded: bytes, request_id: RequestId) -> bytes:
         transport._receive(request_id, 1.0)
     assert duplicate.value.code is ClaudeStructuredFailure.PROTOCOL_MALFORMED
     return encoded + b"\n" + encoded
+
+
 class ClaudeStructuredEngineFactoryFake:
     """Open isolated structured probe children without provider access."""
 

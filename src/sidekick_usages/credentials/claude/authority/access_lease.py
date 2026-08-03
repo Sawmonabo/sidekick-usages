@@ -93,9 +93,7 @@ class ClaudeAccessLease:
             raise ClaudeSelectedAccessError(
                 "The selected Claude access lease is closed."
             )
-        credentials = require_claude_credentials(
-            self._account.lease.account
-        )
+        credentials = require_claude_credentials(self._account.lease.account)
         return bytearray(credentials.access_token, "utf-8")
 
     def close(self) -> None:

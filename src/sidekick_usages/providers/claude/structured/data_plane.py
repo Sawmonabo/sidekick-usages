@@ -237,8 +237,7 @@ class ClaudeParticipantChannelRegistry:
                     )
                 if (
                     current is None
-                    and len(self._channels)
-                    >= MAX_CLAUDE_PARTICIPANT_CHANNELS
+                    and len(self._channels) >= MAX_CLAUDE_PARTICIPANT_CHANNELS
                 ):
                     raise ClaudeProtectedChannelError(
                         "The protected participant capacity was reached."
@@ -385,7 +384,7 @@ class ClaudeParticipantChannelRegistry:
                         "The protected participant reconnected during install."
                     )
                 current.binding = binding
-        except (OSError, ValueError):
+        except OSError, ValueError:
             raise ClaudeProtectedChannelError(
                 "The protected Claude install was not acknowledged."
             ) from None
@@ -681,8 +680,7 @@ class ClaudeProtectedCommitRelay:
             metadata, oauth = decode_protected_projection(payload)
             if (
                 metadata.child_operation_id != child_operation_id
-                or metadata.binding.operation_id
-                != pending.parent_operation_id
+                or metadata.binding.operation_id != pending.parent_operation_id
                 or metadata.nonce != pending.nonce
             ):
                 raise ClaudeProtectedChannelError(

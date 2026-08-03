@@ -324,9 +324,7 @@ class ClaudeStructuredProcess:
     def receive_event(self, timeout_seconds: float) -> bytes:
         """Receive one bounded non-control event from the owned output pipe."""
         if timeout_seconds <= 0 or self._process.poll() is not None:
-            raise ClaudeStructuredError(
-                ClaudeStructuredFailure.PROCESS_EXITED
-            )
+            raise ClaudeStructuredError(ClaudeStructuredFailure.PROCESS_EXITED)
         deadline = self._monotonic() + timeout_seconds
         while not self._event_frames:
             self._consume_pending_frames(None)

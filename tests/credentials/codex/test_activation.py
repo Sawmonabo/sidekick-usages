@@ -223,8 +223,7 @@ def test_legacy_codex_activation_is_refused_before_provider_mutation(
             refusal = failed[0].payload
             assert isinstance(refusal, FailedPayload)
             assert (
-                refusal.code
-                == SelectionCode.UNCOORDINATED_AUTH_MUTATION.value
+                refusal.code == SelectionCode.UNCOORDINATED_AUTH_MUTATION.value
             )
             assert len(daemon.installed_account_ids) == install_count
             assert selected.load(ProviderId.CODEX) == selected_baseline

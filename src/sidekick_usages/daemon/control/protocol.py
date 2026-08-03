@@ -238,9 +238,7 @@ class FramedTransport:
             ((socket.SOL_SOCKET, socket.SCM_RIGHTS, rights),),
         )
         if sent <= 0:
-            raise ConnectionClosedError(
-                "The local control connection closed."
-            )
+            raise ConnectionClosedError("The local control connection closed.")
         if sent < len(frame):
             self._connection.sendall(frame[sent:])
 
