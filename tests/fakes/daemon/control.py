@@ -320,7 +320,11 @@ class RegistryMonitorScenario:
             participant,
             process,
         )
-        registry.close_admission(ProviderId.CLAUDE, SelectionEpoch(1))
+        registry.close_admission(
+            ProviderId.CLAUDE,
+            OperationId("52bbb5ad-b457-41ce-90ca-c52919051f8e"),
+            SelectionEpoch(1),
+        )
         stream = dispatcher.dispatch(failed_registration.context)
         accepted = next(stream)
         activated = registry.snapshot(ProviderId.CLAUDE)

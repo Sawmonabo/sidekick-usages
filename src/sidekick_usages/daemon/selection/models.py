@@ -58,6 +58,7 @@ class ParticipantNoticeKind(StrEnum):
     """Closed admission notices delivered to participant subscribers."""
 
     PREPARE = "prepare"
+    READY = "ready"
     OPEN = "open"
     STATUS = "status"
 
@@ -224,13 +225,26 @@ class ParticipantNotice:
     kind: ParticipantNoticeKind
     epoch: SelectionEpoch
     code: SelectionCode | None = None
+    operation_id: OperationId | None = None
+    target_account_id: SidekickAccountId | None = None
+    target_generation: AuthorityGeneration | None = None
 
     def __post_init__(self) -> None:
-        """Require status codes only on typed status notices."""
+        """Require fields owned only by status and ready notices."""
         if (self.kind is ParticipantNoticeKind.STATUS) != (
             self.code is not None
         ):
             raise ValueError("Participant notice kind and code disagree.")
+        target = (
+            self.operation_id,
+            self.target_account_id,
+            self.target_generation,
+        )
+        if self.kind is ParticipantNoticeKind.READY:
+            if any(value is None for value in target):
+                raise ValueError("Ready participant notice is incomplete.")
+        elif any(value is not None for value in target):
+            raise ValueError("Only ready notices carry target authority.")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

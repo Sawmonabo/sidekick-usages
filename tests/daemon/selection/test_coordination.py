@@ -3,6 +3,7 @@
 from collections.abc import Generator
 from dataclasses import dataclass, replace
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 from threading import Event, Thread
 
@@ -505,7 +506,7 @@ def _prove_initial_unselected_subscription(
     assert snapshot.registered_count == 1
     assert snapshot.reachable_count == snapshot.adopted_count == 0
     assert snapshot.unreachable_participant_ids == (PARTICIPANT_A,)
-    registry.close_admission(PROVIDER_ID, SelectionEpoch(1))
+    registry.close_admission(PROVIDER_ID, OPERATION_ID, SelectionEpoch(1))
     retry = registry.subscribe(new_request_id(), request)
     assert next(retry).kind is ParticipantNoticeKind.PREPARE
     retry.close()
@@ -771,10 +772,10 @@ def test_recovery_finalizes_forward_from_target_provider_proof(
     assert result.operation_id == OPERATION_ID
     assert result.outcome is SelectionOutcome.READY
     assert journal.load(PROVIDER_ID).active is None
-    restore = registry.restore_admission
+    restore = partial(registry.restore_admission, PROVIDER_ID, OPERATION_ID)
     with pytest.raises(ParticipantRequestError):
-        restore(PROVIDER_ID, finalized.epoch, CONFLICT_ACCOUNT_ID, ())
-    restore(PROVIDER_ID, finalized.epoch, TARGET_ACCOUNT_ID, (PARTICIPANT_A,))
+        restore(finalized.epoch, CONFLICT_ACCOUNT_ID, ())
+    restore(finalized.epoch, TARGET_ACCOUNT_ID, (PARTICIPANT_A,))
     missing = registry.snapshot(PROVIDER_ID)
     assert missing.registered_count == 1
     assert missing.reachable_count == 0
@@ -790,7 +791,7 @@ def test_recovery_finalizes_forward_from_target_provider_proof(
     assert persisted_epochs == [registration.registered_epoch]
     registry.reopen_baseline(PROVIDER_ID)
     registry.register(_manifest(PARTICIPANT_B), _process(2))
-    registry.close_admission(PROVIDER_ID, baseline_epoch.next().next())
+    registry.close_admission(PROVIDER_ID, OPERATION_ID, finalized.epoch.next())
     registry.confirm_dead(PARTICIPANT_A, _process(1))
     registry.reopen_baseline(PROVIDER_ID)
     assert registry.registered_count(PROVIDER_ID) == 1

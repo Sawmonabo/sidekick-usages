@@ -70,6 +70,7 @@ class SelectionRecovery:
             return False
         self._participants.restore_admission(
             provider_id,
+            operation.operation_id,
             operation.pending_epoch,
             operation.target_account_id,
             operation.required_participant_ids,
@@ -95,6 +96,7 @@ class SelectionRecovery:
             return None
         self._participants.restore_admission(
             provider_id,
+            operation.operation_id,
             operation.pending_epoch,
             operation.target_account_id,
             operation.required_participant_ids,
@@ -213,7 +215,7 @@ class SelectionRecovery:
         prepared: PreparedSelection,
         proof: AuthorityReadyProof,
     ) -> SelectionResult:
-        self._participants.prepare_target(proof)
+        self._participants.prepare_target(operation.operation_id, proof)
         if operation.phase is SelectionPhase.RECOVERING:
             operation = self._journal.advance_with_required_additions(
                 operation,

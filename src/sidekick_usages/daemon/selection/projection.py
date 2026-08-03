@@ -4,9 +4,11 @@ from dataclasses import dataclass, field
 
 from sidekick_usages.core.accounts.types import (
     AuthorityGeneration,
+    OperationId,
     SidekickAccountId,
 )
 from sidekick_usages.core.selection.models import (
+    AuthorityReadyProof,
     FinalizedSelection,
     SelectionEpoch,
 )
@@ -46,6 +48,7 @@ class ParticipantRecord:
 class ProviderGate:
     """Passive admission data owned by the condition-owning registry."""
 
+    operation_id: OperationId
     pending_epoch: SelectionEpoch
     required: set[ParticipantId]
     account_id: SidekickAccountId | None = None
@@ -53,6 +56,73 @@ class ProviderGate:
     queued: dict[TurnId, TurnBeginRequest] = field(default_factory=dict)
     sealed: bool = False
     status_code: SelectionCode | None = None
+
+
+def new_gate(
+    operation_id: OperationId,
+    pending_epoch: SelectionEpoch,
+    required: set[ParticipantId],
+) -> ProviderGate:
+    """Construct one operation-bound participant admission gate."""
+    return ProviderGate(operation_id, pending_epoch, required)
+
+
+def require_gate_binding(
+    gate: ProviderGate,
+    operation_id: OperationId,
+    pending_epoch: SelectionEpoch,
+) -> None:
+    """Require one restored gate to belong to the exact operation."""
+    if (gate.operation_id, gate.pending_epoch) != (
+        operation_id,
+        pending_epoch,
+    ):
+        raise ParticipantRequestError(
+            SelectionCode.SELECTION_RECOVERY_REQUIRED
+        )
+
+
+def require_selected(
+    finalized: FinalizedSelection | None,
+) -> FinalizedSelection:
+    """Return one finalized authority or raise a typed refusal."""
+    if finalized is None:
+        raise ParticipantRequestError(
+            SelectionCode.SESSION_CONFIGURATION_REQUIRED
+        )
+    return finalized
+
+
+def project_ready_notices(
+    operation_id: OperationId,
+    proof: AuthorityReadyProof,
+    gate: ProviderGate,
+    participants: dict[ParticipantId, ParticipantRecord],
+) -> tuple[ParticipantNotice, ...]:
+    """Validate and project target binding for reachable required clients."""
+    target = (gate.account_id, gate.generation)
+    expected = (proof.account_id, proof.generation)
+    if (
+        gate.operation_id != operation_id
+        or gate.pending_epoch != proof.epoch
+        or (any(value is not None for value in target) and target != expected)
+    ):
+        raise ParticipantRequestError(SelectionCode.AUTHORITY_PROOF_FAILED)
+    return tuple(
+        participant_notice(
+            participant_id,
+            participant,
+            kind=ParticipantNoticeKind.READY,
+            epoch=proof.epoch,
+            operation_id=operation_id,
+            target_account_id=proof.account_id,
+            target_generation=proof.generation,
+        )
+        for participant_id in sorted(gate.required)
+        if (participant := participants.get(participant_id)) is not None
+        and participant.connected
+        and not participant.confirmed_dead
+    )
 
 
 def require_gate_epoch(
@@ -238,26 +308,69 @@ def project_notice(
     finalized: FinalizedSelection | None,
 ) -> ParticipantNotice:
     """Project the current admission state for one authenticated stream."""
-    provider_id = participant.manifest.provider_id
     if gate is None:
         if finalized is None:
             raise ParticipantRequestError(
                 SelectionCode.SESSION_CONFIGURATION_REQUIRED
             )
-        return ParticipantNotice(
-            participant_id=participant_id,
-            provider_id=provider_id,
+        return participant_notice(
+            participant_id,
+            participant,
             kind=ParticipantNoticeKind.OPEN,
             epoch=finalized.epoch,
         )
+    target = (gate.account_id, gate.generation)
+    if any(value is None for value in target) and any(
+        value is not None for value in target
+    ):
+        raise ParticipantRequestError(
+            SelectionCode.SELECTION_RECOVERY_REQUIRED
+        )
+    if gate.status_code is not None:
+        return participant_notice(
+            participant_id,
+            participant,
+            kind=ParticipantNoticeKind.STATUS,
+            epoch=gate.pending_epoch,
+            code=gate.status_code,
+        )
+    if gate.account_id is not None and gate.generation is not None:
+        return participant_notice(
+            participant_id,
+            participant,
+            kind=ParticipantNoticeKind.READY,
+            epoch=gate.pending_epoch,
+            operation_id=gate.operation_id,
+            target_account_id=gate.account_id,
+            target_generation=gate.generation,
+        )
+    return participant_notice(
+        participant_id,
+        participant,
+        kind=ParticipantNoticeKind.PREPARE,
+        epoch=gate.pending_epoch,
+    )
+
+
+def participant_notice(
+    participant_id: ParticipantId,
+    participant: ParticipantRecord,
+    *,
+    kind: ParticipantNoticeKind,
+    epoch: SelectionEpoch,
+    code: SelectionCode | None = None,
+    operation_id: OperationId | None = None,
+    target_account_id: SidekickAccountId | None = None,
+    target_generation: AuthorityGeneration | None = None,
+) -> ParticipantNotice:
+    """Construct one secret-free notice for a registered participant."""
     return ParticipantNotice(
         participant_id=participant_id,
-        provider_id=provider_id,
-        kind=(
-            ParticipantNoticeKind.PREPARE
-            if gate.status_code is None
-            else ParticipantNoticeKind.STATUS
-        ),
-        epoch=gate.pending_epoch,
-        code=gate.status_code,
+        provider_id=participant.manifest.provider_id,
+        kind=kind,
+        epoch=epoch,
+        code=code,
+        operation_id=operation_id,
+        target_account_id=target_account_id,
+        target_generation=target_generation,
     )
