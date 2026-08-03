@@ -431,11 +431,16 @@ def test_cached_dashboard_scopes_codex_broker_degradation(
             (CODEX_SAVED_ACCOUNT_ID, CredentialHealth.LOGIN_REQUIRED),
         )
     )
+    mixed = replace(
+        setup_source,
+        account_id=CLAUDE_REPAIR_ACCOUNT_ID,
+        credential_health=CredentialHealth.HEALTHY,
+    )
 
     def load_setup_only(
         _reader: AccountIndexReader,
     ) -> tuple[SavedAccount, ...]:
-        return setup_only_accounts
+        return (mixed, *setup_only_accounts)
 
     monkeypatch.setattr(AccountIndexReader, "load", load_setup_only)
     setup_only = CachedDashboardService(paths).load(REFERENCE_TIME)
@@ -444,11 +449,18 @@ def test_cached_dashboard_scopes_codex_broker_degradation(
         for row in setup_only.providers[0].rows
         if isinstance(row, DashboardAccount)
     )
-    assert tuple(row.states[0] for row in setup_rows) == (
-        DashboardActionState.SWITCH_SETUP_REQUIRED,
-        DashboardActionState.SWITCH_SETUP_REQUIRED,
-        DashboardActionState.SETUP_REGENERATION_REQUIRED,
+    assert tuple(row.states for row in setup_rows) == (
+        (DashboardActionState.SWITCH_SETUP_REQUIRED,),
+        (DashboardActionState.SWITCH_SETUP_REQUIRED,),
+        (DashboardActionState.SWITCH_SETUP_REQUIRED,),
+        (
+            DashboardActionState.SETUP_REGENERATION_REQUIRED,
+            DashboardActionState.SWITCH_SETUP_REQUIRED,
+        ),
     )
+    refusal = DashboardController.start(setup_only).select_account()
+    assert isinstance(refusal, DashboardSelectionRefusal)
+    assert refusal.code is SelectionCode.UNSUPPORTED_SESSION_CAPABILITY
 
 
 @REQUIRES_MANAGED_RUNTIME

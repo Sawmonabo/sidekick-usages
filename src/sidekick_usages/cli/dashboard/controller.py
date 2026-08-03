@@ -496,6 +496,8 @@ def _account_refusal(
         code = SelectionCode.TARGET_EXPIRED
     elif DashboardActionState.PROVIDER_UNSUPPORTED in account.states:
         code = SelectionCode.UNSUPPORTED_PROVIDER_VERSION
+    elif DashboardActionState.SWITCH_SETUP_REQUIRED in account.states:
+        code = SelectionCode.UNSUPPORTED_SESSION_CAPABILITY
     if code is None:
         return None
     return DashboardSelectionRefusal(

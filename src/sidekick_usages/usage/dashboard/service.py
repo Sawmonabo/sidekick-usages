@@ -396,11 +396,16 @@ class CachedDashboardService:
         account: SavedAccount,
     ) -> tuple[DashboardActionState, ...]:
         health = account.credential_health
-        setup_only = (
-            isinstance(account.authority, ClaudeAccountAuthority)
-            and account.authority.subscription is None
+        authority = account.authority
+        setup_bearing = (
+            isinstance(authority, ClaudeAccountAuthority)
+            and authority.setup_token is not None
         )
-        if setup_only and health in {
+        setup_only = (
+            isinstance(authority, ClaudeAccountAuthority)
+            and authority.subscription is None
+        )
+        if setup_bearing and health in {
             CredentialHealth.HEALTHY,
             CredentialHealth.UNKNOWN,
         }:
@@ -412,17 +417,18 @@ class CachedDashboardService:
             state = DashboardActionState.LOGIN_REQUIRED
         elif health is CredentialHealth.HEALTHY:
             state = DashboardActionState.HEALTHY
-        elif health is CredentialHealth.REFRESH_DUE:
+        elif health in {
+            CredentialHealth.REFRESH_DUE,
+            CredentialHealth.LOGIN_REQUIRED,
+        }:
             state = (
                 DashboardActionState.SETUP_REGENERATION_REQUIRED
                 if setup_only
-                else DashboardActionState.REPAIR_REQUIRED
-            )
-        elif health is CredentialHealth.LOGIN_REQUIRED:
-            state = (
-                DashboardActionState.SETUP_REGENERATION_REQUIRED
-                if setup_only
-                else DashboardActionState.LOGIN_REQUIRED
+                else (
+                    DashboardActionState.REPAIR_REQUIRED
+                    if health is CredentialHealth.REFRESH_DUE
+                    else DashboardActionState.LOGIN_REQUIRED
+                )
             )
         elif health in {
             CredentialHealth.UNREADABLE,
@@ -437,4 +443,10 @@ class CachedDashboardService:
             state = None
         else:
             assert_never(health)
-        return () if state is None else (state,)
+        states = () if state is None else (state,)
+        if (
+            setup_bearing
+            and DashboardActionState.SWITCH_SETUP_REQUIRED not in states
+        ):
+            return (*states, DashboardActionState.SWITCH_SETUP_REQUIRED)
+        return states
