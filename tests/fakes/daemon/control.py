@@ -1,7 +1,7 @@
 """Typed control-protocol boundaries for daemon tests."""
 
 import socket
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from threading import Event, Thread
 
@@ -35,14 +35,15 @@ from sidekick_usages.daemon.runtime.diagnostics import (
     ControlFailureDiagnosticSink,
     SanitizedDiagnosticLog,
 )
+from sidekick_usages.daemon.selection.coordinator import SelectionCoordinator
 from sidekick_usages.daemon.selection.models import (
     ParticipantClientKind,
     ParticipantConnectionRequest,
     ParticipantManifest,
-    ParticipantNotice,
 )
-from sidekick_usages.daemon.selection.ports import SelectionSupervisorPort
 from sidekick_usages.daemon.selection.registry import ParticipantRegistry
+from sidekick_usages.daemon.selection.worker import SelectionWorkerGateway
+from sidekick_usages.daemon.types.control import ControlFailurePhase
 from sidekick_usages.daemon.types.ports import (
     ControlDispatcher,
     ResidentService,
@@ -54,6 +55,9 @@ from sidekick_usages.daemon.types.protocol import (
     ProgressPhase,
     RequestKind,
 )
+from sidekick_usages.persistence.supervisor.selection import (
+    SelectionOperationStore,
+)
 from sidekick_usages.persistence.supervisor.service import ServiceStateStore
 from sidekick_usages.platform.models import PeerIdentity, ProcessIdentity
 from sidekick_usages.platform.peer import PeerVerificationError
@@ -61,6 +65,7 @@ from sidekick_usages.platform.types import (
     PeerFailureCode,
     PeerSocket,
     PeerVerifier,
+    ProcessLiveness,
 )
 from tests.fakes.daemon.foundation import FoundationState
 from tests.support.time import FixedClock
@@ -206,32 +211,33 @@ class RecordingDispatcher:
         self.release_subscription.set()
 
 
-class FailingRegistrySelection(SelectionSupervisorPort):
-    """Fail one cancellation after retaining registry disconnect truth."""
+class FailingProcessInspector:
+    """Fail exact liveness inspection after coordinator disconnect."""
 
-    def __init__(self, registry: ParticipantRegistry) -> None:
-        self._registry = registry
+    def __init__(self) -> None:
         self.attempted = Event()
 
-    def cancel_subscription(
-        self,
-        request_id: RequestId,
-        request: ParticipantConnectionRequest,
-        peer: ProcessIdentity,
-    ) -> None:
-        """Disconnect exactly, then fail the downstream step."""
-        self._registry.require_peer(
-            request.participant_id,
-            request.connection_generation,
-            peer,
-        )
-        self._registry.cancel_subscription(request_id)
-        self._registry.disconnect(
-            request.participant_id,
-            request.connection_generation,
-        )
+    def inspect(self, identity: ProcessIdentity) -> ProcessLiveness:
+        """Expose one synthetic downstream inspection failure."""
+        del identity
         self.attempted.set()
         raise RuntimeError("synthetic cancellation failure")
+
+
+class FailingControlReporter:
+    """Raise after an optional sanitized diagnostic projection."""
+
+    def __init__(
+        self,
+        persist: Callable[[ControlFailurePhase], None] | None = None,
+    ) -> None:
+        self._persist = persist
+
+    def __call__(self, phase: ControlFailurePhase) -> None:
+        """Project once, then expose a synthetic diagnostic I/O failure."""
+        if self._persist is not None:
+            self._persist(phase)
+        raise OSError("synthetic diagnostic failure")
 
 
 @dataclass(frozen=True, slots=True)
@@ -241,10 +247,12 @@ class RegistryMonitorResult:
     participant_id: ParticipantId
     registry_state: tuple[
         int,
+        int,
         tuple[ParticipantId, ...],
-        tuple[ParticipantNotice, ...],
+        int,
+        int,
     ]
-    cancellation_states: tuple[bool, bool, bool, bool, bool, bool]
+    states: tuple[bool, bool, bool, bool, bool, bool, bool, bool]
     diagnostics: str
 
 
@@ -275,18 +283,19 @@ class RegistryMonitorScenario:
             process,
         )
         participant = ParticipantConnectionRequest(participant_id, 1)
-        first, first_peer = _subscription_pair(
-            RequestKind.PARTICIPANT_SUBSCRIBE,
-            participant,
-            process,
+        inspector = FailingProcessInspector()
+        selection = SelectionCoordinator(
+            self._state.selected,
+            SelectionOperationStore(self._state.paths.selection_journals),
+            registry,
+            SelectionWorkerGateway(
+                self._state.queue,
+                FixedClock(),
+                Event().set,
+            ),
+            FixedClock(),
+            process_inspector=inspector,
         )
-        notices = registry.subscribe(
-            first.context.request.request_id,
-            participant,
-        )
-        next(notices)
-        registry.close_admission(ProviderId.CLAUDE, SelectionEpoch(1))
-        selection = FailingRegistrySelection(registry)
         diagnostic = ControlFailureDiagnosticSink(
             SanitizedDiagnosticLog(self._state.paths.service_logs),
             FixedClock(),
@@ -301,34 +310,36 @@ class RegistryMonitorScenario:
             Event().set,
             selection=selection,
         )
+        reporter = FailingControlReporter(diagnostic.failed)
         monitor = ControlSubscriptionMonitor(
             dispatcher,
-            failure_reporter=diagnostic.failed,
+            failure_reporter=reporter,
         )
         failed_registration, failed_peer = _subscription_pair(
-            RequestKind.SUBSCRIBE,
-            EmptyPayload(),
+            RequestKind.PARTICIPANT_SUBSCRIBE,
+            participant,
+            process,
         )
+        registry.close_admission(ProviderId.CLAUDE, SelectionEpoch(1))
+        stream = dispatcher.dispatch(failed_registration.context)
+        accepted = next(stream)
+        activated = registry.snapshot(ProviderId.CLAUDE)
         later, later_peer = _subscription_pair(
-            RequestKind.SUBSCRIBE,
-            EmptyPayload(),
+            RequestKind.SUBSCRIBE, EmptyPayload()
         )
         failed_registration.connection.close()
         monitor.start()
         try:
             monitor.register(failed_registration)
-            registration_cancelled = failed_registration.cancelled.wait(2)
-            first_peer.close()
-            monitor.register(first)
-            cancellation_attempted = selection.attempted.wait(2)
-            observed_notices = tuple(notices) if cancellation_attempted else ()
+            cancellation_attempted = inspector.attempted.wait(2)
+            before_drain = registry.snapshot(ProviderId.CLAUDE)
+            drained_count = len(tuple(stream)) if cancellation_attempted else 0
             later_peer.close()
             monitor.register(later)
             later_cancelled = later.cancelled.wait(2)
         finally:
             monitor.close()
             for subscription, peer in (
-                (first, first_peer),
                 (failed_registration, failed_peer),
                 (later, later_peer),
             ):
@@ -338,17 +349,21 @@ class RegistryMonitorScenario:
         return RegistryMonitorResult(
             participant_id=participant_id,
             registry_state=(
-                snapshot.reachable_count,
+                activated.reachable_count,
+                before_drain.reachable_count,
                 snapshot.unreachable_participant_ids,
-                observed_notices,
+                snapshot.reachable_count,
+                drained_count,
             ),
-            cancellation_states=(
-                registration_cancelled,
+            states=(
+                accepted.kind is EventKind.ACCEPTED,
                 cancellation_attempted,
-                first.cancelled.is_set(),
-                first.cancellation_failed.is_set(),
+                failed_registration.cancelled.is_set(),
+                failed_registration.cancellation_failed.is_set(),
+                failed_registration.diagnostic_degraded.is_set(),
                 later_cancelled,
                 later.cancellation_failed.is_set(),
+                later.diagnostic_degraded.is_set(),
             ),
             diagnostics=(
                 self._state.paths.service_logs / "supervisor.jsonl"

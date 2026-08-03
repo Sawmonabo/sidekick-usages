@@ -97,11 +97,24 @@ class OperationEventHub(OperationEventSink):
         self._sequence = 0
         self._cancelled: set[RequestId] = set()
         self._failure_reporter = failure_reporter
+        self._diagnostic_failures: set[ControlFailurePhase] = set()
 
     def control_failed(self, phase: ControlFailurePhase) -> None:
         """Report one sanitized unexpected control failure."""
-        if self._failure_reporter is not None:
-            self._failure_reporter(phase)
+        reporter = self._failure_reporter
+        if reporter is None:
+            return
+        try:
+            reporter(phase)
+        except Exception:
+            with self._condition:
+                self._diagnostic_failures.add(phase)
+
+    @property
+    def degraded_phases(self) -> tuple[ControlFailurePhase, ...]:
+        """Return bounded phases whose diagnostic projection failed."""
+        with self._condition:
+            return tuple(sorted(self._diagnostic_failures))
 
     def started(self, operation: DueOperation) -> None:
         """Publish one safe running notification."""

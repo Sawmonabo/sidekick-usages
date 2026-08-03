@@ -78,6 +78,7 @@ class ControlSubscription:
     cancellation_started: Event = field(default_factory=Event)
     cancelled: Event = field(default_factory=Event)
     cancellation_failed: Event = field(default_factory=Event)
+    diagnostic_degraded: Event = field(default_factory=Event)
     cancellation_lock: Lock = field(
         default_factory=Lock,
         compare=False,
@@ -231,10 +232,12 @@ class ControlSubscriptionMonitor:
             self._dispatcher.cancel(subscription.context)
         except Exception:
             subscription.cancellation_failed.set()
-            if self._failure_reporter is not None:
-                self._failure_reporter(
-                    ControlFailurePhase.SUBSCRIPTION_CANCELLATION
-                )
+            reporter = self._failure_reporter
+            if reporter is not None:
+                try:
+                    reporter(ControlFailurePhase.SUBSCRIPTION_CANCELLATION)
+                except Exception:
+                    subscription.diagnostic_degraded.set()
         else:
             subscription.cancelled.set()
 

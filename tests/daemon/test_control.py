@@ -114,6 +114,7 @@ from sidekick_usages.platform.peer import (
 )
 from sidekick_usages.platform.types import PeerFailureCode, PeerVerifier
 from tests.fakes.daemon.control import (
+    FailingControlReporter,
     FragmentingSocket,
     RecordingDispatcher,
     RegistryMonitorScenario,
@@ -177,8 +178,8 @@ def _verified(request: ControlRequest) -> VerifiedControlRequest:
 def _assert_monitor(state: FoundationState, resident: ResidentState) -> None:
     """Assert the complete transactional cancellation contract."""
     result = RegistryMonitorScenario(state, resident).exercise()
-    assert result.cancellation_states == (True, True, False, True, True, False)
-    assert result.registry_state == (0, (result.participant_id,), ())
+    assert result.states == (True, True, False, True, True, True, False, False)
+    assert result.registry_state == (0, 0, (result.participant_id,), 0, 0)
     assert result.diagnostics.count("subscription_cancellation_failed") == 1
     assert "synthetic cancellation failure" not in result.diagnostics
 
@@ -510,12 +511,12 @@ def test_select_accepts_with_the_correlated_operation_id(
     operation_id = OperationId("9265897c-7881-47af-b69e-575823b33c3f")
     target = SidekickAccountId("2999e642-0299-4f73-9187-01b3d240e3d8")
     selection = _OperatorSelection()
-    control_failures: list[ControlFailurePhase] = []
+    events = OperationEventHub(FailingControlReporter())
     state = foundation_state(tmp_path)
     dispatcher = SupervisorDispatcher(
         state.queue,
         ServiceStateStore(state.paths.service_state),
-        OperationEventHub(control_failures.append),
+        events,
         ResidentState(),
         RuntimeClock(),
         Event().set,
@@ -541,7 +542,7 @@ def test_select_accepts_with_the_correlated_operation_id(
     failed = tuple(dispatcher.dispatch(_verified(request)))[-1]
     assert isinstance(failed.payload, FailedPayload)
     assert failed.payload.code == ProtocolErrorCode.DISPATCH_FAILED.value
-    assert control_failures == [ControlFailurePhase.DISPATCH]
+    assert events.degraded_phases == (ControlFailurePhase.DISPATCH,)
 
 
 def _dispatch_failure_code(
