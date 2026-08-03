@@ -29,6 +29,9 @@ from sidekick_usages.providers.codex.app_server.errors import (
 from sidekick_usages.providers.codex.app_server.jsonrpc.types import (
     JsonRpcMessage,
 )
+from sidekick_usages.providers.codex.app_server.methods import (
+    MCP_SERVER_STATUS_LIST_METHOD,
+)
 from sidekick_usages.providers.codex.app_server.models import CodexExecutable
 from sidekick_usages.providers.codex.auth.generation import (
     codex_generation_order,
@@ -68,10 +71,20 @@ from sidekick_usages.providers.codex.session.home import (
     qualify_codex_session_home,
 )
 from sidekick_usages.providers.codex.session.models import (
+    CodexLoadedThreadSnapshot,
     CodexSessionCapability,
 )
 
-__all__ = ("CodexSharedRuntime", "prepare_codex_session_home")
+__all__ = (
+    "CodexSharedRuntime",
+    "empty_codex_loaded_threads",
+    "prepare_codex_session_home",
+)
+
+
+def empty_codex_loaded_threads() -> CodexLoadedThreadSnapshot:
+    """Return the broker-safe snapshot before a relay is composed."""
+    return CodexLoadedThreadSnapshot(revision=0, thread_ids=())
 
 
 def prepare_codex_session_home(
@@ -264,6 +277,34 @@ class CodexSharedRuntime:
             self._drop_session()
             raise CodexBrokerError(CodexBrokerFailure.RUNTIME_CHANGED)
         self._revalidate_authority(authority)
+
+    def require_mcp_quiescent(
+        self,
+        loaded_threads: CodexLoadedThreadSnapshot,
+    ) -> None:
+        """Prove every relay-loaded thread has no resident MCP work."""
+        session = self._session
+        capability = self._session_capability
+        if (
+            session is None
+            or session.closed
+            or capability is None
+            or not capability.supported
+        ):
+            raise CodexBrokerError(CodexBrokerFailure.PROTOCOL_UNSUPPORTED)
+        try:
+            for thread_id in loaded_threads.thread_ids:
+                result = session.request(
+                    MCP_SERVER_STATUS_LIST_METHOD,
+                    {"threadId": thread_id},
+                )
+                if set(result) != {"data"} or result.get("data") != []:
+                    raise CodexBrokerError(
+                        CodexBrokerFailure.PROTOCOL_UNSUPPORTED
+                    )
+        except CodexAppServerError as error:
+            self._drop_session()
+            raise codex_broker_error(error) from None
 
     def observe_auth(
         self,

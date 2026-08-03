@@ -80,6 +80,9 @@ from sidekick_usages.providers.codex.broker.external_auth.selection import (
 )
 from sidekick_usages.providers.codex.broker.responder import CodexRuntimeBroker
 from sidekick_usages.providers.codex.broker.service import CodexSharedRuntime
+from sidekick_usages.providers.codex.session.models import (
+    CodexLoadedThreadSnapshot,
+)
 
 _READINESS_TIMEOUT_SECONDS = 10.0
 _SUPERVISOR_JOIN_SECONDS = 10.0
@@ -196,6 +199,9 @@ def _compose_broker(
     journals: ActivationJournalStore,
     observations: RuntimeAuthObservationStore,
     exchanges: WorkerExchangeRegistry,
+    loaded_threads: Callable[[], CodexLoadedThreadSnapshot] = lambda: (
+        CodexLoadedThreadSnapshot(revision=0, thread_ids=())
+    ),
     status_changed: Callable[[], None] | None = None,
 ) -> CodexRuntimeBroker:
     """Compose one production broker around reusable synthetic boundaries."""
@@ -227,6 +233,7 @@ def _compose_broker(
             wakeup,
         ),
         exchanges,
+        loaded_threads,
         wall_time=clock.now,
         status_changed=status_changed,
     )
@@ -396,6 +403,10 @@ class FakeCodexSupervisor:
             journals,
             observations,
             exchanges,
+            lambda: CodexLoadedThreadSnapshot(
+                revision=1,
+                thread_ids=("thread-alpha",),
+            ),
             self._wakeup.notify,
         )
         scheduler = DurableScheduler(

@@ -127,6 +127,10 @@ class FakeCodexDaemon:
             return self._model_auth_read_count
 
     @property
+    def mcp_status_thread_ids(self) -> tuple[str, ...]:
+        return self._session.mcp_status_thread_ids
+
+    @property
     def config_read_count(self) -> int:
         """Return effective resident-config readbacks."""
         return self._session.config_read_count
@@ -276,7 +280,6 @@ class FakeCodexDaemon:
         self._start()
 
     def replace_socket_listener(self) -> None:
-        """Replace only the pathname while existing peers remain live."""
         server = self._server
         thread = self._thread
         if server is None or thread is None:
@@ -313,7 +316,6 @@ class FakeCodexDaemon:
         self._start_listener()
 
     def _start_listener(self) -> None:
-        """Start one listener at the official control-socket pathname."""
         server = unix_serve(
             self._handle,
             path=str(self.socket_path),
@@ -520,6 +522,18 @@ class FakeCodexDaemon:
             return True
         if method == "modelProvider/capabilities/read":
             self._read_model_capabilities(connection, request)
+            return True
+        if method == "mcpServerStatus/list":
+            params = request.get("params")
+            if not isinstance(params, dict):
+                raise AssertionError("Fake Codex MCP status read is invalid.")
+            _send(
+                connection,
+                {
+                    "id": _request_id(request),
+                    "result": self._session.read_mcp_status(params),
+                },
+            )
             return True
         return False
 

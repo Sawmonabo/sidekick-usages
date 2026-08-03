@@ -682,6 +682,10 @@ def test_selection_worker_binds_codex_broker_journey(
                 ACCOUNT_A_PROVIDER_IDENTITY,
                 PROVIDER_IDENTITY,
             )
+            assert daemon.mcp_status_thread_ids == (
+                "thread-alpha",
+                "thread-alpha",
+            )
             supervisor.wait_until_selection_workers_collected()
             _assert_callback_rejection(
                 supervisor,

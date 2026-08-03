@@ -84,6 +84,7 @@ from sidekick_usages.providers.codex.auth.storage import codex_auth_basename
 from sidekick_usages.providers.codex.broker.responder import CodexRuntimeBroker
 from sidekick_usages.providers.codex.broker.service import (
     CodexSharedRuntime,
+    empty_codex_loaded_threads,
     prepare_codex_session_home,
 )
 
@@ -225,6 +226,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             wakeup.notify,
         ),
         exchanges,
+        empty_codex_loaded_threads,
         wall_time=clock.now,
         status_changed=wakeup.notify,
     )

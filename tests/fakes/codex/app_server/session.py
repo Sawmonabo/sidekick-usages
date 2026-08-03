@@ -35,12 +35,30 @@ class FakeCodexSession:
         self._project_config = project_config
         self._lock = RLock()
         self._config_read_count = 0
+        self._mcp_status_thread_ids: list[str] = []
 
     @property
     def config_read_count(self) -> int:
         """Return effective resident-config readbacks."""
         with self._lock:
             return self._config_read_count
+
+    @property
+    def mcp_status_thread_ids(self) -> tuple[str, ...]:
+        """Return threads subjected to resident MCP readback."""
+        with self._lock:
+            return tuple(self._mcp_status_thread_ids)
+
+    def read_mcp_status(self, params: JsonObject) -> JsonObject:
+        """Validate one thread-scoped request and return quiescence."""
+        if set(params) != {"threadId"}:
+            raise AssertionError("Fake Codex MCP status read is invalid.")
+        thread_id = params.get("threadId")
+        if not isinstance(thread_id, str):
+            raise AssertionError("Fake Codex MCP status read is invalid.")
+        with self._lock:
+            self._mcp_status_thread_ids.append(thread_id)
+        return {"data": []}
 
     def read_config(self) -> JsonObject:
         """Return exact resident config layers and record their read."""
