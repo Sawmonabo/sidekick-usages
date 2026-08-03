@@ -28,6 +28,7 @@ from sidekick_usages.core.types import (
 )
 from sidekick_usages.daemon.models.service import ServicePreparationReport
 from sidekick_usages.daemon.types.lifecycle import ServiceComponentState
+from sidekick_usages.doctor.runtime.service import DoctorRuntimeService
 from sidekick_usages.persistence.credentials.refresh.artifacts import (
     CredentialRefreshStateKind,
 )
@@ -303,7 +304,13 @@ def test_filters_are_composable(tmp_path: Path) -> None:
     operation_harness, operation_output, _operation_clock = doctor_harness(
         tmp_path / "provider-operation",
         (saved_accounts[0],),
-        operations=(provider_operation,),
+        DoctorRuntimeService(
+            (saved_accounts[0],),
+            None,
+            (),
+            (provider_operation,),
+            (),
+        ),
     )
 
     operation_result = operation_harness.invoke(

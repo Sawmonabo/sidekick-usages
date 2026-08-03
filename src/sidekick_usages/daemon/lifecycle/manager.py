@@ -6,7 +6,11 @@ from pathlib import Path
 from typing import assert_never
 
 from sidekick_usages.clock import Clock, SystemClock
-from sidekick_usages.core.types import ExitCode
+from sidekick_usages.core.types import ExitCode, ProviderId
+from sidekick_usages.daemon.control.client import (
+    ControlClient,
+    ServiceCompatibilityError,
+)
 from sidekick_usages.daemon.lifecycle.artifacts import ServiceArtifactStore
 from sidekick_usages.daemon.lifecycle.commands import SystemCommandRunner
 from sidekick_usages.daemon.lifecycle.constants import (
@@ -41,12 +45,18 @@ from sidekick_usages.daemon.models.lifecycle import (
     ServiceLaunchCommand,
     SupervisorHealth,
 )
+from sidekick_usages.daemon.selection.models import SelectionStatus
 from sidekick_usages.daemon.types.lifecycle import (
     DaemonOperation,
     ProviderReadinessScope,
     ServiceBackendId,
+    ServiceComponentState,
     ServiceFailureCode,
     ServiceLifecycleState,
+)
+from sidekick_usages.daemon.types.protocol import (
+    EventKind,
+    ProtocolErrorCode,
 )
 from sidekick_usages.errors import UsageError
 from sidekick_usages.paths import ApplicationPaths, discover_application_paths
@@ -70,10 +80,12 @@ class DaemonManager:
         backend: ServiceBackend,
         readiness: ServiceReadiness,
         cleanup: ServiceCleanup,
+        selection_socket: Path | None = None,
     ) -> None:
         self._backend = backend
         self._readiness = readiness
         self._cleanup = cleanup
+        self._selection_socket = selection_socket
 
     def cancel(self) -> None:
         """Interrupt lifecycle observation without provider mutation."""
@@ -229,6 +241,36 @@ class DaemonManager:
             )
         return self._readiness.health(status)
 
+    def selection_statuses(
+        self,
+    ) -> tuple[SelectionStatus, ...] | ServiceComponentState:
+        """Read canonical live selection status without provider mutation."""
+        if self._feature_disabled:
+            return ServiceComponentState.FEATURE_DISABLED
+        socket_path = self._selection_socket
+        if socket_path is None:
+            return ServiceComponentState.UNAVAILABLE
+        try:
+            client = ControlClient.connect(socket_path)
+            try:
+                return tuple(
+                    _selection_status(client, provider_id)
+                    for provider_id in ProviderId
+                )
+            finally:
+                client.close()
+        except ServiceCompatibilityError as error:
+            state = (
+                ServiceComponentState.FEATURE_DISABLED
+                if error.code is ProtocolErrorCode.FEATURE_DISABLED
+                else ServiceComponentState.UNHEALTHY
+            )
+        except ConnectionError, ValueError:
+            state = ServiceComponentState.UNHEALTHY
+        except OSError:
+            state = ServiceComponentState.UNAVAILABLE
+        return state
+
     def quiescent(self) -> bool:
         """Return whether no supported Sidekick user service is installed."""
         try:
@@ -329,7 +371,22 @@ def build_daemon_manager(
         backend,
         readiness,
         RuntimeCleanup(resolved_paths),
+        resolved_paths.supervisor_socket,
     )
+
+
+def _selection_status(
+    client: ControlClient,
+    provider_id: ProviderId,
+) -> SelectionStatus:
+    """Require one exact selection-status terminal event."""
+    events = tuple(client.selection_status(provider_id))
+    if len(events) != 1 or events[0].kind is not EventKind.SELECTION_STATUS:
+        raise ValueError("Selection status response is invalid.")
+    payload = events[0].payload
+    if not isinstance(payload, SelectionStatus):
+        raise ValueError("Selection status payload is invalid.")
+    return payload
 
 
 def build_service_launch_command(

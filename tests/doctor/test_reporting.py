@@ -48,8 +48,11 @@ from sidekick_usages.core.selection.types import (
     OperationState,
     ProviderAuthState,
     ProviderRuntimeState,
+    SelectionCode,
+    SelectionPhase,
 )
 from sidekick_usages.core.types import AccountLabel, ExitCode, ProviderId
+from sidekick_usages.daemon.selection.models import SelectionStatus
 from sidekick_usages.doctor.runtime.service import DoctorRuntimeService
 from sidekick_usages.persistence.lookup.store import (
     MetricsRefreshObservationStore,
@@ -123,7 +126,7 @@ def _seed_doctor_dashboard(
             providers=(
                 replace(
                     claude_provider,
-                    runtime_state=None,
+                    runtime_state=ProviderRuntimeState.EXTERNAL_ACTIVE,
                     active_account_id=None,
                     verified_at=None,
                     actions_enabled=False,
@@ -275,13 +278,50 @@ def test_json_reports_current_auth_state_without_secrets(
         login_saved,
         saved,
     )
+    runtime = DoctorRuntimeService(
+        (login_saved, saved),
+        dashboard,
+        (selected,),
+        (operation,),
+        (activation,),
+        selection_statuses=(
+            SelectionStatus(
+                provider_id=ProviderId.CLAUDE,
+                operation_id=None,
+                finalized_account_id=None,
+                finalized_epoch=None,
+                target_account_id=None,
+                pending_epoch=None,
+                phase=None,
+                code=None,
+                registered_count=1,
+                reachable_count=1,
+            ),
+            SelectionStatus(
+                provider_id=ProviderId.CODEX,
+                operation_id=activation.operation_id,
+                finalized_account_id=saved.account_id,
+                finalized_epoch=SelectionEpoch(4),
+                target_account_id=saved.account_id,
+                pending_epoch=SelectionEpoch(4),
+                phase=SelectionPhase.RECOVERING,
+                code=SelectionCode.SELECTION_RECOVERY_REQUIRED,
+                registered_count=3,
+                reachable_count=2,
+                required_count=3,
+                ready_count=2,
+                adopted_count=1,
+                unreachable_count=1,
+                active_turn_count=1,
+                queued_turn_count=1,
+            ),
+        ),
+        shell_integration_code="integrated",
+    )
     harness, output, clock = doctor_harness(
         tmp_path,
         (login_saved, saved),
-        dashboard,
-        selected_states=(selected,),
-        operations=(operation,),
-        activations=(activation,),
+        runtime,
         capabilities=make_provider_capability_report(codex_ready=False),
     )
 
@@ -291,8 +331,10 @@ def test_json_reports_current_auth_state_without_secrets(
     diagnostics = {
         diagnostic["label"]: diagnostic for diagnostic in payload["accounts"]
     }
-    diagnostic = diagnostics["codex-reconcile"]
-    login_diagnostic = diagnostics["team"]
+    diagnostic, login_diagnostic = (
+        diagnostics["codex-reconcile"],
+        diagnostics["team"],
+    )
     assert result.exit_code == ExitCode.SCHEDULER_ERROR
     assert set(diagnostics) == {"team", "codex-reconcile"}
     assert (
@@ -343,7 +385,11 @@ def test_json_reports_current_auth_state_without_secrets(
         "codex",
         "codex-reconcile",
     ]
-    service = payload["service"]
+    service, sessions, (claude_session, codex_session) = (
+        payload["service"],
+        payload["sessions"],
+        payload["sessions"]["providers"],
+    )
     assert (
         service["backend"],
         service["platform"],
@@ -360,6 +406,58 @@ def test_json_reports_current_auth_state_without_secrets(
         "healthy",
         "healthy",
         "healthy",
+    )
+    assert (
+        service["protocol_version"],
+        sessions["selection_status"],
+        sessions["shell_integration"],
+        claude_session["provider"],
+        claude_session["unmanaged"],
+        claude_session["session_enrollment"],
+        claude_session["claude_structured_host"],
+    ) == (
+        3,
+        "healthy",
+        "integrated",
+        "claude",
+        1,
+        "observed",
+        "unavailable",
+    )
+    assert (
+        codex_session["provider"],
+        codex_session["finalized_account_id"],
+        codex_session["finalized_epoch"],
+        codex_session["phase"],
+        codex_session["code"],
+        codex_session["registered"],
+        codex_session["reachable"],
+        codex_session["required"],
+        codex_session["ready"],
+        codex_session["adopted"],
+        codex_session["unreachable"],
+        codex_session["confirmed_dead_after_commit"],
+        codex_session["active_turns"],
+        codex_session["queued_turns"],
+        codex_session["session_enrollment"],
+        codex_session["codex_effective_config"],
+    ) == (
+        "codex",
+        str(saved.account_id),
+        4,
+        "recovering",
+        "selection_recovery_required",
+        3,
+        2,
+        3,
+        2,
+        1,
+        1,
+        0,
+        1,
+        1,
+        "observed",
+        "unavailable",
     )
     capabilities = {
         result["provider"]: result
@@ -378,12 +476,16 @@ def test_json_reports_current_auth_state_without_secrets(
         "capability_unsupported",
         "0.145.0",
     )
-    scheduled = payload["operations"]["scheduled"]
+    scheduled, unfinished = (
+        payload["operations"]["scheduled"],
+        payload["operations"]["unfinished_activations"],
+    )
     assert (
         payload["operations"]["queue"],
         payload["operations"]["journal"],
-    ) == ("unhealthy", "healthy")
-    assert len(scheduled) == 1
+        len(scheduled),
+        len(unfinished),
+    ) == ("unhealthy", "healthy", 1, 1)
     assert (
         scheduled[0]["state"],
         scheduled[0]["attempts"],
@@ -393,8 +495,6 @@ def test_json_reports_current_auth_state_without_secrets(
         _RETRY_ATTEMPTS,
         "network_unavailable",
     )
-    unfinished = payload["operations"]["unfinished_activations"]
-    assert len(unfinished) == 1
     assert (
         unfinished[0]["phase"],
         unfinished[0]["failure_code"],
@@ -528,16 +628,72 @@ def test_human_view_explains_login_renewal_action(
             ),
         ),
     )
-    harness, output, _clock = doctor_harness(tmp_path, (saved,))
+    runtime = DoctorRuntimeService(
+        (saved,),
+        None,
+        (),
+        (),
+        (),
+        selection_statuses=(
+            SelectionStatus(
+                provider_id=ProviderId.CLAUDE,
+                operation_id=OperationId(
+                    "a0b071e0-c34f-41e7-9122-753dc90eef20"
+                ),
+                finalized_account_id=saved.account_id,
+                finalized_epoch=SelectionEpoch(7),
+                target_account_id=saved.account_id,
+                pending_epoch=SelectionEpoch(8),
+                phase=SelectionPhase.AWAITING_READY,
+                code=SelectionCode.PARTICIPANT_LOST_AFTER_COMMIT,
+                registered_count=2,
+                reachable_count=1,
+                required_count=2,
+                ready_count=1,
+                adopted_count=1,
+                unreachable_count=1,
+                active_turn_count=1,
+                queued_turn_count=1,
+            ),
+            SelectionStatus(
+                provider_id=ProviderId.CODEX,
+                operation_id=None,
+                finalized_account_id=None,
+                finalized_epoch=None,
+                target_account_id=None,
+                pending_epoch=None,
+                phase=None,
+                code=None,
+                registered_count=0,
+                reachable_count=0,
+            ),
+        ),
+        shell_integration_code="integrated",
+    )
+    harness, output, _clock = doctor_harness(
+        tmp_path,
+        (saved,),
+        runtime,
+    )
 
     result = harness.invoke(["doctor"])
 
     rendered = output.getvalue()
+    normalized = " ".join(rendered.split())
     assert result.exit_code == ExitCode.SCHEDULER_ERROR
     assert "authentication: subscription login" in rendered
     assert "access token expires: in 6h" in rendered
     assert "login renewal: required within five days" in rendered
     assert (
         "manual action: sidekick-usages refresh login --provider claude"
-    ) in rendered
+    ) in normalized
+    assert (
+        f"claude: finalized {saved.account_id}@7 · target "
+        f"{saved.account_id}@8 · awaiting_ready/"
+        "participant_lost_after_commit · participants "
+        "2 registered, 1 reachable, 2 required, 1 ready, 1 adopted, "
+        "1 unreachable, unknown confirmed dead after commit · turns 1 active, "
+        "1 queued · unmanaged unavailable · enrollment observed · "
+        "structured host unavailable"
+    ) in normalized
     assert "test-only-login" not in rendered

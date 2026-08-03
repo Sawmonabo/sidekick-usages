@@ -568,6 +568,10 @@ def test_service_artifacts_are_user_scoped_resident_and_secret_free(
     if backend_id is ServiceBackendId.FEATURE_DISABLED:
         assert result.state is ServiceLifecycleState.FEATURE_DISABLED
         assert result.exit_code is ExitCode.MANUAL_ACTION
+        assert (
+            manager.selection_statuses()
+            is ServiceComponentState.FEATURE_DISABLED
+        )
         assert runner.calls == []
         return
 

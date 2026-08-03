@@ -22,8 +22,13 @@ from sidekick_usages.core.selection.types import (
     AuthorityGenerationRelation,
     ProviderRuntimeState,
 )
+from sidekick_usages.core.types import ProviderId
+from sidekick_usages.daemon.selection.models import SelectionStatus
+from sidekick_usages.daemon.types.lifecycle import ServiceComponentState
 from sidekick_usages.doctor.runtime.models import (
     AccountRuntimeDiagnostic,
+    InteractiveRuntimeDiagnostic,
+    ProviderSessionDiagnostic,
     ScheduledOperationDiagnostic,
     UnfinishedActivationDiagnostic,
 )
@@ -52,6 +57,11 @@ class DoctorRuntimeService:
         selected_states: tuple[FinalizedSelection, ...],
         operations: tuple[DueOperation, ...],
         activations: tuple[ActivationRecord, ...],
+        *,
+        selection_statuses: (
+            tuple[SelectionStatus, ...] | ServiceComponentState | None
+        ) = None,
+        shell_integration_code: str = "unavailable",
     ) -> None:
         metrics = (
             _unobserved_metrics(accounts)
@@ -87,6 +97,11 @@ class DoctorRuntimeService:
             _activation_diagnostic(activation, account_map)
             for activation in activations
         )
+        self.interactive = build_interactive_runtime_diagnostic(
+            snapshot,
+            selection_statuses,
+            shell_integration_code,
+        )
 
     def diagnostic(
         self,
@@ -103,6 +118,69 @@ def _unobserved_metrics(
         account.account_id: (MetricsFreshness.UNAVAILABLE, None)
         for account in accounts
     }
+
+
+def build_interactive_runtime_diagnostic(
+    snapshot: DashboardSnapshot | None,
+    statuses: tuple[SelectionStatus, ...] | ServiceComponentState | None,
+    shell_integration_code: str,
+) -> InteractiveRuntimeDiagnostic:
+    """Project safe live session state without participant identity."""
+    if statuses is None:
+        statuses = ServiceComponentState.UNAVAILABLE
+    if isinstance(statuses, ServiceComponentState):
+        return InteractiveRuntimeDiagnostic(
+            selection_status=statuses,
+            shell_integration_code=shell_integration_code,
+            providers=(),
+        )
+    provider_ids = tuple(status.provider_id for status in statuses)
+    if provider_ids != tuple(ProviderId):
+        raise ValueError("Doctor selection statuses must be canonical.")
+    unmanaged = (
+        {}
+        if snapshot is None
+        else {
+            provider.provider_id: provider.status.unmanaged_sessions
+            for provider in snapshot.providers
+        }
+    )
+    return InteractiveRuntimeDiagnostic(
+        selection_status=ServiceComponentState.HEALTHY,
+        shell_integration_code=shell_integration_code,
+        providers=tuple(
+            _provider_session_diagnostic(
+                status,
+                unmanaged.get(status.provider_id),
+            )
+            for status in statuses
+        ),
+    )
+
+
+def _provider_session_diagnostic(
+    status: SelectionStatus,
+    unmanaged_count: int | None,
+) -> ProviderSessionDiagnostic:
+    """Copy one already-validated control snapshot into Doctor state."""
+    return ProviderSessionDiagnostic(
+        provider_id=status.provider_id,
+        finalized_account_id=status.finalized_account_id,
+        finalized_epoch=status.finalized_epoch,
+        target_account_id=status.target_account_id,
+        pending_epoch=status.pending_epoch,
+        phase=status.phase,
+        code=status.code,
+        registered_count=status.registered_count,
+        reachable_count=status.reachable_count,
+        required_count=status.required_count,
+        ready_count=status.ready_count,
+        adopted_count=status.adopted_count,
+        unreachable_count=status.unreachable_count,
+        active_turn_count=status.active_turn_count,
+        queued_turn_count=status.queued_turn_count,
+        unmanaged_count=unmanaged_count,
+    )
 
 
 def _operation_diagnostic(

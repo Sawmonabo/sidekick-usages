@@ -24,6 +24,7 @@ from sidekick_usages.doctor.accounts.models import (
 from sidekick_usages.doctor.accounts.service import doctor_exit_code
 from sidekick_usages.doctor.presentation.json import doctor_json
 from sidekick_usages.doctor.presentation.service import render_doctor
+from sidekick_usages.doctor.runtime.models import InteractiveRuntimeDiagnostic
 
 
 def _write_result(
@@ -31,18 +32,23 @@ def _write_result(
     result: DoctorResult,
     *,
     json_output: bool,
+    runtime: InteractiveRuntimeDiagnostic,
 ) -> None:
     """Write one completed result through the selected presentation."""
     if json_output:
         invocation.console.print(
-            json.dumps(doctor_json(result), indent=2),
+            json.dumps(doctor_json(result, runtime=runtime), indent=2),
             markup=False,
             highlight=False,
             soft_wrap=True,
         )
         return
     invocation.console.print(
-        render_doctor(result, width=invocation.console.size.width)
+        render_doctor(
+            result,
+            width=invocation.console.size.width,
+            runtime=runtime,
+        )
     )
 
 
@@ -108,6 +114,7 @@ def doctor_cmd(
             invocation,
             result,
             json_output=json_output,
+            runtime=state.runtime.scoped(provider_filter),
         )
         code = doctor_exit_code(result)
         if code:
@@ -158,6 +165,7 @@ def doctor_cmd(
             invocation,
             result,
             json_output=json_output,
+            runtime=state.runtime.scoped(provider_filter),
         )
         code = doctor_exit_code(result)
         if code:

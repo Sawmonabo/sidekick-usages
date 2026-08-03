@@ -3,12 +3,14 @@
 from datetime import datetime
 from typing import assert_never
 
+from sidekick_usages.core.types import ProviderId
 from sidekick_usages.credentials.capabilities.models import (
     ProviderCapabilityReport,
     ProviderCapabilityResult,
 )
 from sidekick_usages.daemon.models.lifecycle import SupervisorHealth
 from sidekick_usages.daemon.types.lifecycle import ServiceComponentState
+from sidekick_usages.daemon.types.protocol import PROTOCOL_VERSION
 from sidekick_usages.doctor.accounts.models import (
     AccountDiagnostic,
     AuthorityDiagnostic,
@@ -17,6 +19,8 @@ from sidekick_usages.doctor.accounts.models import (
     DoctorResult,
 )
 from sidekick_usages.doctor.runtime.models import (
+    InteractiveRuntimeDiagnostic,
+    ProviderSessionDiagnostic,
     ScheduledOperationDiagnostic,
     UnfinishedActivationDiagnostic,
 )
@@ -38,8 +42,17 @@ from sidekick_usages.usage.lookup.diagnostics.models import (
 )
 
 
-def doctor_json(result: DoctorResult) -> JsonObject:
+def doctor_json(
+    result: DoctorResult,
+    *,
+    runtime: InteractiveRuntimeDiagnostic | None = None,
+) -> JsonObject:
     """Build recursively typed Doctor JSON from one completed result."""
+    runtime = (
+        InteractiveRuntimeDiagnostic.unavailable()
+        if runtime is None
+        else runtime
+    )
     accounts: JsonValue
     persistence: JsonObject
     if isinstance(result, DoctorReadyResult):
@@ -57,6 +70,7 @@ def doctor_json(result: DoctorResult) -> JsonObject:
         "accounts": accounts,
         "provider_capabilities": _capability_dicts(result.capabilities),
         "service": _service_dict(result.supervisor),
+        "sessions": _session_dict(runtime),
         "operations": _operation_dict(
             result.supervisor,
             (
@@ -141,6 +155,7 @@ def _service_dict(health: SupervisorHealth) -> JsonObject:
         "socket_ownership": health.socket.value,
         "peer_verification": health.peer.value,
         "protocol": health.protocol.value,
+        "protocol_version": PROTOCOL_VERSION,
         "broker": health.broker.value,
         "broker_failure_code": health.broker_failure_code,
         "broker_preparation_report": (
@@ -151,6 +166,71 @@ def _service_dict(health: SupervisorHealth) -> JsonObject:
                 "operator_steps": list(preparation.operator_steps),
                 "reason": preparation.reason,
             }
+        ),
+    }
+
+
+def _session_dict(runtime: InteractiveRuntimeDiagnostic) -> JsonObject:
+    """Build safe shell and provider-session diagnostics."""
+    return {
+        "selection_status": runtime.selection_status.value,
+        "shell_integration": runtime.shell_integration_code,
+        "providers": [
+            _provider_session_dict(provider) for provider in runtime.providers
+        ],
+    }
+
+
+def _provider_session_dict(
+    diagnostic: ProviderSessionDiagnostic,
+) -> JsonObject:
+    """Build one participant-free provider session diagnostic."""
+    return {
+        "provider": diagnostic.provider_id.value,
+        "finalized_account_id": (
+            None
+            if diagnostic.finalized_account_id is None
+            else str(diagnostic.finalized_account_id)
+        ),
+        "finalized_epoch": (
+            None
+            if diagnostic.finalized_epoch is None
+            else diagnostic.finalized_epoch.value
+        ),
+        "target_account_id": (
+            None
+            if diagnostic.target_account_id is None
+            else str(diagnostic.target_account_id)
+        ),
+        "pending_epoch": (
+            None
+            if diagnostic.pending_epoch is None
+            else diagnostic.pending_epoch.value
+        ),
+        "phase": None if diagnostic.phase is None else diagnostic.phase.value,
+        "code": None if diagnostic.code is None else diagnostic.code.value,
+        "registered": diagnostic.registered_count,
+        "reachable": diagnostic.reachable_count,
+        "required": diagnostic.required_count,
+        "ready": diagnostic.ready_count,
+        "adopted": diagnostic.adopted_count,
+        "unreachable": diagnostic.unreachable_count,
+        "confirmed_dead_after_commit": (
+            diagnostic.confirmed_dead_after_commit_count
+        ),
+        "active_turns": diagnostic.active_turn_count,
+        "queued_turns": diagnostic.queued_turn_count,
+        "unmanaged": diagnostic.unmanaged_count,
+        "session_enrollment": diagnostic.session_enrollment,
+        "codex_effective_config": (
+            diagnostic.protected_session_state
+            if diagnostic.provider_id is ProviderId.CODEX
+            else None
+        ),
+        "claude_structured_host": (
+            diagnostic.protected_session_state
+            if diagnostic.provider_id is ProviderId.CLAUDE
+            else None
         ),
     }
 
@@ -210,7 +290,12 @@ def _capability_dict(result: ProviderCapabilityResult) -> JsonObject:
     if isinstance(result.capabilities, ClaudeRuntimeCapabilities):
         capabilities = {"platform": result.capabilities.platform.value}
     elif isinstance(result.capabilities, CodexAppServerCapabilities):
-        capabilities = {"schema_hash": result.capabilities.schema_hash}
+        capabilities = {
+            "schema_hash": result.capabilities.schema_hash,
+            "session_schema_supported": (
+                result.capabilities.session_schema_supported
+            ),
+        }
     return {
         "provider": result.provider_id.value,
         "ready": result.ready,

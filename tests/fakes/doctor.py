@@ -7,11 +7,6 @@ from rich.console import Console
 
 from sidekick_usages.cli.contexts.models import DoctorContext, DoctorReady
 from sidekick_usages.core.accounts.models import SavedAccount
-from sidekick_usages.core.selection.models import (
-    ActivationRecord,
-    DueOperation,
-    FinalizedSelection,
-)
 from sidekick_usages.credentials.capabilities.models import (
     ProviderCapabilityReport,
 )
@@ -32,7 +27,6 @@ from sidekick_usages.providers.registry import (
     build_heartbeat_registry,
     build_provider_registry,
 )
-from sidekick_usages.usage.dashboard.models import DashboardSnapshot
 from tests.fakes.daemon.capabilities import (
     StaticProviderCapabilityService,
     make_provider_capability_report,
@@ -46,10 +40,7 @@ from tests.support.time import FixedClock
 def doctor_harness(
     tmp_path: Path,
     accounts: tuple[SavedAccount, ...],
-    dashboard: DashboardSnapshot | None = None,
-    selected_states: tuple[FinalizedSelection, ...] = (),
-    operations: tuple[DueOperation, ...] = (),
-    activations: tuple[ActivationRecord, ...] = (),
+    runtime: DoctorRuntimeService | None = None,
     capabilities: ProviderCapabilityReport | None = None,
     supervisor: SupervisorHealth | None = None,
     refresh_state: CredentialRefreshStateKind = (
@@ -75,6 +66,11 @@ def doctor_harness(
     refresh_diagnostic = MetricsRefreshObservationStore(
         make_application_paths(tmp_path).metrics_refresh_status
     ).diagnostic()
+    active_runtime = (
+        DoctorRuntimeService(accounts, None, (), (), ())
+        if runtime is None
+        else runtime
+    )
     context = DoctorContext(
         DoctorReady(
             DoctorService(
@@ -82,13 +78,7 @@ def doctor_harness(
                 capability_service,
                 heartbeat_providers.keys(),
                 clock,
-                DoctorRuntimeService(
-                    accounts,
-                    dashboard,
-                    selected_states,
-                    operations,
-                    activations,
-                ),
+                active_runtime,
             ),
             PersistenceStatus(
                 PersistenceState.CURRENT,
@@ -96,6 +86,7 @@ def doctor_harness(
                 len(accounts),
             ),
             CredentialRefreshState(refresh_state),
+            active_runtime.interactive,
         ),
         active_supervisor,
         capability_service,

@@ -4,7 +4,7 @@ import io
 import os
 import re
 from collections.abc import Mapping
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -12,17 +12,24 @@ from rich.console import Console
 
 from sidekick_usages.cli.contexts.composition import compose_app_context
 from sidekick_usages.core.accounts.types import (
+    AuthorityGeneration,
     AuthorityId,
     SidekickAccountId,
 )
+from sidekick_usages.core.expiry import KnownExpiry
 from sidekick_usages.core.models import (
     Account,
+    ClaudeLoginCredentials,
     ClaudeSetupTokenCredentials,
     CodexCredentials,
     TokenActivityReading,
     TokenActivitySummary,
     UsageReport,
     UsageWindow,
+)
+from sidekick_usages.core.selection.models import (
+    FinalizedSelection,
+    SelectionEpoch,
 )
 from sidekick_usages.core.types import (
     AccountLabel,
@@ -55,9 +62,13 @@ from tests.fakes.codex.managed import (
 )
 from tests.support.application import make_app_context
 from tests.support.cli import CliHarness
-from tests.support.persistence import make_account_store_with_private
+from tests.support.persistence import (
+    make_account_store_with_private,
+    make_application_paths,
+    seed_finalized_selections,
+)
 from tests.support.platform import REQUIRES_MANAGED_RUNTIME
-from tests.support.time import FixedClock
+from tests.support.time import REFERENCE_TIME, FixedClock
 
 _MANAGED_ACCOUNT_ID = SidekickAccountId("33333333-3333-4333-8333-333333333333")
 _MANAGED_AUTHORITY_ID = AuthorityId("cccccccc-cccc-4ccc-8ccc-cccccccccccc")
@@ -85,6 +96,7 @@ class _FakeProvider(Provider):
         self.fetch_results = dict(fetch_results or {})
         self.refresh_ok = refresh_ok
         self.fetch_calls = 0
+        self.refresh_calls: list[AccountLabel] = []
 
     def detect_credentials(
         self,
@@ -128,6 +140,7 @@ class _FakeProvider(Provider):
         http: HttpClient,
     ) -> RefreshResult:
         del http
+        self.refresh_calls.append(account.label)
         if not self.refresh_ok:
             return ProviderFailure(
                 provider_id=self.id,
@@ -281,7 +294,10 @@ def test_check_renders_partial_success_and_typed_auth_recovery(
     tmp_path: Path,
 ) -> None:
     """Success and failure remain visible in their provider panels."""
-    claude = _FakeProvider(provider_id="claude")
+    claude = _FakeProvider(
+        fetch_results={"claude-account": AuthError("Token expired")},
+        provider_id="claude",
+    )
     report = UsageReport(
         windows=(UsageWindow("5h", 0.0, None),),
         plan="pro",
@@ -302,15 +318,56 @@ def test_check_renders_partial_success_and_typed_auth_recovery(
             )
         }
     )
-    harness, _, stdout, _ = _install_ctx(
+    harness, store, stdout, _ = _install_ctx(
         tmp_path,
         (claude, codex),
         (
-            _acct("claude-account", "claude"),
+            Account(
+                label=AccountLabel("claude-account"),
+                credentials=ClaudeLoginCredentials(
+                    access_token="tok-claude-account",
+                    refresh_token="refresh-claude-account",
+                    access_expiry=KnownExpiry(
+                        REFERENCE_TIME + timedelta(hours=1)
+                    ),
+                    refresh_expiry=KnownExpiry(
+                        REFERENCE_TIME + timedelta(days=30)
+                    ),
+                    scopes=("user:profile",),
+                ),
+                plan="pro",
+            ),
             _acct("codex-ok"),
-            _acct("my work account"),
+            Account(
+                label=AccountLabel("my work account"),
+                credentials=CodexCredentials(
+                    access_token="tok-my-work-account",
+                    refresh_token="refresh-my-work-account",
+                ),
+                plan="pro",
+            ),
         ),
         account_activity_source=activity,
+    )
+    selected = next(
+        account
+        for account in store.saved_accounts()
+        if account.label == "codex-ok"
+    )
+    paths = make_application_paths(tmp_path)
+    seed_finalized_selections(
+        paths,
+        FinalizedSelection(
+            provider_id=ProviderId.CODEX,
+            account_id=selected.account_id,
+            epoch=SelectionEpoch(1),
+            generation=AuthorityGeneration("selected-b-generation"),
+            finalized_at=REFERENCE_TIME,
+        ),
+    )
+    selected_before = (
+        paths.selected_state.read_bytes(),
+        paths.selected_state.stat().st_mtime_ns,
     )
 
     result = harness.invoke(["check"])
@@ -326,6 +383,18 @@ def test_check_renders_partial_success_and_typed_auth_recovery(
     assert "Run official managed Codex login:" in out
     assert "sidekick-usages codex login 'my work account'" in out
     assert activity.calls == ["codex-ok"]
+    assert claude.refresh_calls == [AccountLabel("claude-account")]
+    assert codex.refresh_calls == [AccountLabel("my work account")]
+    assert tuple(account.label for account in store.saved_accounts()) == (
+        AccountLabel("claude-account"),
+        AccountLabel("codex-ok"),
+        AccountLabel("my work account"),
+    )
+    assert out.index("codex-ok") < out.index("my work account")
+    assert (
+        paths.selected_state.read_bytes(),
+        paths.selected_state.stat().st_mtime_ns,
+    ) == selected_before
 
 
 def test_check_provider_filter_uses_only_selected_accounts(

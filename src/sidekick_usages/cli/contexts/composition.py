@@ -22,6 +22,7 @@ from sidekick_usages.cli.contexts.models import (
     PersistenceContext,
     UpdateContext,
 )
+from sidekick_usages.cli.contexts.session import compose_session_context
 from sidekick_usages.clock import Clock, SystemClock
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.credentials.accounts.lifecycle.models import (
@@ -60,7 +61,10 @@ from sidekick_usages.daemon.lifecycle.manager import (
 )
 from sidekick_usages.daemon.lifecycle.ports import ProviderCapabilityReadiness
 from sidekick_usages.doctor.accounts.service import DoctorService
-from sidekick_usages.doctor.runtime.service import DoctorRuntimeService
+from sidekick_usages.doctor.runtime.service import (
+    DoctorRuntimeService,
+    build_interactive_runtime_diagnostic,
+)
 from sidekick_usages.heartbeat.ports import HeartbeatProvider
 from sidekick_usages.heartbeat.service import HeartbeatService
 from sidekick_usages.http.client import HttpClient
@@ -457,6 +461,12 @@ def compose_doctor_context(
             provider_readiness=capability_service,
         )
         supervisor = daemon.health()
+        selection_statuses = daemon.selection_statuses()
+        shell_integration_code = (
+            compose_session_context(paths=resolved_paths)
+            .shell.status(None)
+            .state.value
+        )
         persistence = _persistence(resolved_paths, daemon)
         try:
             status, saved_accounts = persistence.observe_accounts()
@@ -478,7 +488,12 @@ def compose_doctor_context(
         except PersistenceError as error:
             return DoctorContext(
                 DoctorFailed(
-                    _persistence_failure(error, resolved_paths.accounts)
+                    _persistence_failure(error, resolved_paths.accounts),
+                    build_interactive_runtime_diagnostic(
+                        None,
+                        selection_statuses,
+                        shell_integration_code,
+                    ),
                 ),
                 supervisor,
                 capability_service,
@@ -491,6 +506,8 @@ def compose_doctor_context(
                 selected_states,
                 operations,
                 activations,
+                selection_statuses=selection_statuses,
+                shell_integration_code=shell_integration_code,
             )
         except ValueError:
             failure = PersistenceFailure(
@@ -500,7 +517,14 @@ def compose_doctor_context(
                 None,
             )
             return DoctorContext(
-                DoctorFailed(failure),
+                DoctorFailed(
+                    failure,
+                    build_interactive_runtime_diagnostic(
+                        dashboard,
+                        selection_statuses,
+                        shell_integration_code,
+                    ),
+                ),
                 supervisor,
                 capability_service,
                 metrics_refresh,
@@ -516,6 +540,7 @@ def compose_doctor_context(
                 ),
                 status,
                 refresh_status,
+                runtime.interactive,
             ),
             supervisor,
             capability_service,

@@ -17,6 +17,7 @@ from sidekick_usages.credentials.service import CredentialService
 from sidekick_usages.daemon.lifecycle.manager import DaemonManager
 from sidekick_usages.daemon.models.lifecycle import SupervisorHealth
 from sidekick_usages.doctor.accounts.service import DoctorService
+from sidekick_usages.doctor.runtime.models import InteractiveRuntimeDiagnostic
 from sidekick_usages.heartbeat.service import HeartbeatService
 from sidekick_usages.maintenance import TokenMaintenanceService
 from sidekick_usages.persistence.accounts.store import AccountStore
@@ -81,6 +82,9 @@ class DoctorReady:
     service: DoctorService
     persistence: PersistenceStatus
     refresh_state: CredentialRefreshState
+    runtime: InteractiveRuntimeDiagnostic = field(
+        default_factory=InteractiveRuntimeDiagnostic.unavailable
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +92,9 @@ class DoctorFailed:
     """Doctor can render one bounded persistence failure."""
 
     failure: PersistenceFailure
+    runtime: InteractiveRuntimeDiagnostic = field(
+        default_factory=InteractiveRuntimeDiagnostic.unavailable
+    )
 
 
 @dataclass(frozen=True, slots=True)

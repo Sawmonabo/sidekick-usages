@@ -7,6 +7,7 @@ from sidekick_usages.cli.context import invocation_context
 from sidekick_usages.cli.help import BrandedTyperGroup, branded_command
 from sidekick_usages.core.types import ExitCode
 from sidekick_usages.daemon.types.lifecycle import DaemonOperation
+from sidekick_usages.daemon.types.protocol import PROTOCOL_VERSION
 from sidekick_usages.errors import UsageError
 
 
@@ -34,6 +35,11 @@ def _run(
     invocation.console.print(
         f"[{style}]{result.backend}: {result.message}[/{style}]"
     )
+    if (
+        operation is DaemonOperation.STATUS
+        and result.exit_code is ExitCode.SUCCESS
+    ):
+        invocation.console.print(f"protocol: v{PROTOCOL_VERSION}")
     if result.exit_code:
         raise typer.Exit(code=result.exit_code)
 

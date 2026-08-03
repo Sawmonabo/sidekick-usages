@@ -12,7 +12,7 @@ from sidekick_usages.core.accounts.types import (
     CredentialAction,
     SidekickAccountId,
 )
-from sidekick_usages.core.types import AccountLabel
+from sidekick_usages.core.types import AccountLabel, ProviderId
 from sidekick_usages.credentials.capabilities.models import (
     ProviderCapabilityReport,
 )
@@ -32,6 +32,8 @@ from sidekick_usages.doctor.accounts.models import (
     IdentityState,
 )
 from sidekick_usages.doctor.runtime.models import (
+    InteractiveRuntimeDiagnostic,
+    ProviderSessionDiagnostic,
     ScheduledOperationDiagnostic,
     UnfinishedActivationDiagnostic,
 )
@@ -58,8 +60,14 @@ def render_doctor(
     result: DoctorResult,
     *,
     width: int,
+    runtime: InteractiveRuntimeDiagnostic | None = None,
 ) -> RenderableType:
     """Build the human doctor view without printing."""
+    runtime = (
+        InteractiveRuntimeDiagnostic.unavailable()
+        if runtime is None
+        else runtime
+    )
     parts: list[RenderableType] = [
         brand_header(width, section="doctor · account diagnostics")
     ]
@@ -70,6 +78,7 @@ def render_doctor(
             for diagnostic in diagnostics
         }
         parts.extend(_service_lines(result.supervisor))
+        parts.extend(_session_lines(runtime))
         parts.extend(_capability_lines(result.capabilities))
         parts.extend(
             _operation_lines(
@@ -90,6 +99,7 @@ def render_doctor(
         )
     elif isinstance(result, DoctorFailedResult):
         parts.extend(_service_lines(result.supervisor))
+        parts.extend(_session_lines(runtime))
         parts.extend(_capability_lines(result.capabilities))
         parts.extend(
             _operation_lines(
@@ -208,6 +218,79 @@ def _service_lines(health: SupervisorHealth) -> tuple[Text, ...]:
             for step in preparation.operator_steps
         )
     return tuple(lines)
+
+
+def _session_lines(
+    runtime: InteractiveRuntimeDiagnostic,
+) -> tuple[Text, ...]:
+    """Build participant-free shell and provider session state."""
+    lines = [
+        Text("sessions"),
+        Text(f"  selection status: {runtime.selection_status}"),
+        Text(f"  shell integration: {runtime.shell_integration_code}"),
+    ]
+    lines.extend(
+        _provider_session_line(provider) for provider in runtime.providers
+    )
+    return tuple(lines)
+
+
+def _provider_session_line(diagnostic: ProviderSessionDiagnostic) -> Text:
+    """Build one compact provider selection and participant summary."""
+    finalized_account = (
+        "none"
+        if diagnostic.finalized_account_id is None
+        else str(diagnostic.finalized_account_id)
+    )
+    epoch = (
+        "none"
+        if diagnostic.finalized_epoch is None
+        else str(diagnostic.finalized_epoch.value)
+    )
+    target_account = (
+        "none"
+        if diagnostic.target_account_id is None
+        else str(diagnostic.target_account_id)
+    )
+    pending_epoch = (
+        "none"
+        if diagnostic.pending_epoch is None
+        else str(diagnostic.pending_epoch.value)
+    )
+    phase = "idle" if diagnostic.phase is None else diagnostic.phase.value
+    code = "none" if diagnostic.code is None else diagnostic.code.value
+    confirmed_dead_count = diagnostic.confirmed_dead_after_commit_count
+    confirmed_dead = (
+        "unknown"
+        if confirmed_dead_count is None
+        else str(confirmed_dead_count)
+    )
+    unmanaged = (
+        "unavailable"
+        if diagnostic.unmanaged_count is None
+        else str(diagnostic.unmanaged_count)
+    )
+    protected_session = (
+        "effective config"
+        if diagnostic.provider_id is ProviderId.CODEX
+        else "structured host"
+    )
+    return Text(
+        f"  {diagnostic.provider_id}: finalized "
+        f"{finalized_account}@{epoch} · target "
+        f"{target_account}@{pending_epoch} · {phase}/{code} · "
+        f"participants {diagnostic.registered_count} registered, "
+        f"{diagnostic.reachable_count} reachable, "
+        f"{diagnostic.required_count} required, "
+        f"{diagnostic.ready_count} ready, "
+        f"{diagnostic.adopted_count} adopted, "
+        f"{diagnostic.unreachable_count} unreachable, "
+        f"{confirmed_dead} confirmed dead after commit · "
+        f"turns {diagnostic.active_turn_count} active, "
+        f"{diagnostic.queued_turn_count} queued · unmanaged {unmanaged} · "
+        f"enrollment {diagnostic.session_enrollment} · "
+        f"{protected_session} {diagnostic.protected_session_state}"
+    )
 
 
 def _operation_lines(
