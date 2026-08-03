@@ -20,7 +20,9 @@ from sidekick_usages.core.selection.models import (
     SelectedAccountState,
 )
 from sidekick_usages.core.selection.types import (
+    ActivationOutcome,
     ActivationPhase,
+    OperationKind,
     ProviderAuthState,
     ProviderRuntimeState,
     SelectionCode,
@@ -33,11 +35,16 @@ from sidekick_usages.credentials.claude.activation.models import (
 )
 from sidekick_usages.daemon.models.worker import WorkerResult
 from sidekick_usages.daemon.types.worker import WorkerOutcome
+from sidekick_usages.daemon.worker.claude.selection import (
+    claude_selection_failure,
+)
 from sidekick_usages.persistence.filesystem.service import (
     PersistenceFilesystem,
 )
 from sidekick_usages.persistence.models.account import VersionThreeDocument
+from sidekick_usages.persistence.models.selection import SelectedStateDocument
 from sidekick_usages.persistence.schema.account import encode_version_three
+from sidekick_usages.persistence.schema.selection import encode_selected_state
 from sidekick_usages.persistence.supervisor.authority import (
     ProviderMutationLock,
 )
@@ -69,6 +76,7 @@ from tests.fakes.claude.managed import (
     use_synthetic_claude,
 )
 from tests.support.platform import REQUIRES_MANAGED_RUNTIME
+from tests.support.time import FixedClock
 
 pytestmark = REQUIRES_MANAGED_RUNTIME
 
@@ -158,6 +166,40 @@ def _rotate_target_authority(scenario: ClaudeActivationScenario) -> None:
     )
     PersistenceFilesystem(scenario.paths.accounts).commit_opaque_private(
         encode_version_three(VersionThreeDocument((scenario.source, rotated)))
+    )
+
+
+def _clear_claude_selection(scenario: ClaudeActivationScenario) -> None:
+    """Leave only the unrelated synthetic Codex finalized selection."""
+    PersistenceFilesystem(scenario.paths.selected_state).commit_opaque_private(
+        encode_selected_state(SelectedStateDocument((scenario.codex_state,)))
+    )
+
+
+def _set_first_recovery_native(
+    scenario: ClaudeActivationScenario,
+    recovery_state: str,
+) -> None:
+    """Set exact post-interruption native truth for recovery."""
+    if recovery_state == "logged_out":
+        scenario.native_credentials.unlink()
+        return
+    if recovery_state != "unrelated":
+        return
+    external_status, _ = claude_profile_status("external")
+    target_authority = scenario.target.authority
+    assert isinstance(target_authority, ClaudeAccountAuthority)
+    target_subscription = target_authority.subscription
+    assert isinstance(target_subscription, ClaudeManagedLoginAuthority)
+    scenario.script.set_authority(
+        scenario.native.config_directory,
+        credential_payload(
+            None,
+            None,
+            token_suffix="external-first-selection",
+            access_expires_at=target_subscription.access_expires_at,
+        ),
+        external_status,
     )
 
 
@@ -520,47 +562,148 @@ def test_selection_prevalidation_does_not_create_missing_profile(
     assert scenario.journals.load(ProviderId.CLAUDE).active is None
 
 
-def test_selection_prevalidation_accepts_only_exact_unselected_baseline(
+@pytest.mark.parametrize(
+    ("native_start", "recovery_state", "expected"),
+    [
+        ("target", None, "target"),
+        ("logged_out", None, "target"),
+        ("unrelated", None, "refused"),
+        ("logged_out", "target", "target"),
+        ("logged_out", "logged_out", "logged_out"),
+        ("logged_out", "unrelated", "reconciliation"),
+    ],
+)
+def test_first_selection_lifecycle_uses_no_manufactured_source(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    native_start: str,
+    recovery_state: str | None,
+    expected: str,
 ) -> None:
-    """Only journal epoch zero can represent no finalized selection."""
+    """First selection commits or recovers only from exact native truth."""
     use_synthetic_claude(monkeypatch)
-    scenario = claude_activation_scenario(tmp_path)
+    interruption = (
+        None
+        if recovery_state is None
+        else KeyboardInterrupt("synthetic first-selection interruption")
+    )
+    scenario = claude_activation_scenario(
+        tmp_path,
+        native_logged_out=native_start == "logged_out",
+        interrupt_after_native_login=interruption,
+    )
     operation = replace(
         _open_selection(scenario),
         baseline_account_id=None,
     )
+    if native_start == "target":
+        target_status, _ = claude_profile_status("target")
+        scenario.script.set_authority(
+            scenario.native.config_directory,
+            scenario.native_target_payload,
+            target_status,
+        )
+    _clear_claude_selection(scenario)
+    assert scenario.selected.load(ProviderId.CLAUDE) is None
+
+    if expected == "refused":
+        with pytest.raises(ClaudeActivationError) as refused:
+            _prevalidate_selection(scenario, operation, None)
+        worker_result = claude_selection_failure(
+            scenario.operation,
+            refused.value,
+            FixedClock(),
+        )
+        assert (
+            refused.value.failure,
+            worker_result.outcome,
+            worker_result.failure_code,
+        ) == (
+            ClaudeActivationFailure.RECONCILIATION_REQUIRED,
+            WorkerOutcome.ACTION_REQUIRED,
+            SelectionCode.UNCOORDINATED_AUTH_MUTATION.value,
+        )
+        assert scenario.script.login_profiles == []
+        assert scenario.journals.load(ProviderId.CLAUDE).active is None
+        return
 
     prepared = _prevalidate_selection(scenario, operation, None)
+    if recovery_state is None:
+        proof = _commit_selection(scenario, prepared)
+        assert (
+            proof.account_id,
+            proof.epoch,
+            proof.safe_code,
+        ) == (
+            scenario.target.account_id,
+            operation.pending_epoch,
+            SelectionCode.SELECTION_SUCCEEDED,
+        )
+    else:
+        with pytest.raises(KeyboardInterrupt):
+            _commit_selection(scenario, prepared)
+        assert recovery_state is not None
+        _set_first_recovery_native(scenario, recovery_state)
+        recovery = replace(
+            scenario.operation,
+            kind=OperationKind.RECONCILE,
+        )
+        result = _execute_activation(scenario, recovery)
+        assert result.outcome is (
+            WorkerOutcome.ACTION_REQUIRED
+            if expected == "reconciliation"
+            else WorkerOutcome.SUCCEEDED
+        )
 
-    assert prepared.baseline_epoch == operation.baseline_epoch
-    with pytest.raises(ClaudeActivationError) as related_account:
-        _prevalidate_selection(
-            scenario,
-            replace(
-                operation,
-                baseline_account_id=scenario.source.account_id,
-            ),
-            None,
-        )
-    with pytest.raises(ClaudeActivationError) as nonzero_epoch:
-        _prevalidate_selection(
-            scenario,
-            replace(
-                operation,
-                baseline_epoch=operation.pending_epoch,
-                pending_epoch=operation.pending_epoch.next(),
-            ),
-            None,
-        )
-    assert (
-        related_account.value.failure,
-        nonzero_epoch.value.failure,
-    ) == (
-        ClaudeActivationFailure.STATE_CHANGED,
-        ClaudeActivationFailure.STATE_CHANGED,
+    journal = scenario.journals.load(ProviderId.CLAUDE)
+    record = journal.active or (
+        journal.history[-1] if journal.history else None
     )
+    if native_start == "target":
+        assert record is None
+    else:
+        assert record is not None
+        assert record.selected_baseline is None
+        assert (
+            record.native_auth_baseline.state is ProviderAuthState.LOGGED_OUT
+        )
+
+    observed = _observe_selection(scenario, operation)
+    assert observed is not None
+    assert scenario.selected.load(ProviderId.CLAUDE) is None
+    assert scenario.source_profile not in scenario.script.login_profiles
+    if expected == "target":
+        assert (
+            observed.runtime_state,
+            observed.account_id,
+            None if record is None else record.phase,
+        ) == (
+            ProviderRuntimeState.SAVED_ACTIVE,
+            scenario.target.account_id,
+            None if native_start == "target" else ActivationPhase.COMMITTED,
+        )
+    elif expected == "logged_out":
+        assert record is not None
+        assert (
+            observed.runtime_state,
+            record.phase,
+            record.outcome,
+        ) == (
+            ProviderRuntimeState.LOGGED_OUT,
+            ActivationPhase.ROLLED_BACK,
+            ActivationOutcome.LOGGED_OUT,
+        )
+    else:
+        assert record is not None
+        assert (
+            observed.runtime_state,
+            record.phase,
+            record.failure_code,
+        ) == (
+            ProviderRuntimeState.EXTERNAL_ACTIVE,
+            ActivationPhase.RECONCILIATION_REQUIRED,
+            ClaudeActivationFailure.RECONCILIATION_REQUIRED.failure_code,
+        )
 
 
 def test_selection_readback_observes_baseline_target_or_unrelated_runtime(

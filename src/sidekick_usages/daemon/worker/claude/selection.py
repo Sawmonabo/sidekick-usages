@@ -13,6 +13,7 @@ from sidekick_usages.core.selection.models import (
 from sidekick_usages.core.selection.types import (
     OperationKind,
     OperationPriority,
+    ProviderRuntimeState,
     SelectionCode,
 )
 from sidekick_usages.core.types import ProviderId
@@ -30,6 +31,7 @@ from sidekick_usages.credentials.claude.activation.service import (
     ClaudeActivationService,
 )
 from sidekick_usages.daemon.models.worker import WorkerResult
+from sidekick_usages.daemon.types.worker import WorkerOutcome
 from sidekick_usages.daemon.worker.runtime import (
     managed_worker_result,
     worker_no_change,
@@ -37,6 +39,9 @@ from sidekick_usages.daemon.worker.runtime import (
 )
 from sidekick_usages.persistence.supervisor.authority import (
     ProviderMutationAuthority,
+)
+from sidekick_usages.providers.claude.activation.types import (
+    ClaudeActivationGuardFailure,
 )
 
 _CLAUDE_SELECTION_KINDS = frozenset(
@@ -46,6 +51,70 @@ _CLAUDE_SELECTION_KINDS = frozenset(
         OperationKind.RECONCILE_NATIVE,
     }
 )
+
+_CLAUDE_ACTIVATION_SELECTION_FAILURES = {
+    ClaudeActivationFailure.INCOMPATIBLE: (
+        WorkerOutcome.UNSUPPORTED,
+        SelectionCode.UNSUPPORTED_PROVIDER_VERSION,
+    ),
+    ClaudeActivationFailure.NATIVE_CHANGED: (
+        WorkerOutcome.ACTION_REQUIRED,
+        SelectionCode.UNCOORDINATED_AUTH_MUTATION,
+    ),
+    ClaudeActivationFailure.NATIVE_UNAVAILABLE: (
+        WorkerOutcome.TRANSIENT_FAILURE,
+        SelectionCode.PROVIDER_UNAVAILABLE,
+    ),
+    ClaudeActivationFailure.RECONCILIATION_REQUIRED: (
+        WorkerOutcome.ACTION_REQUIRED,
+        SelectionCode.UNCOORDINATED_AUTH_MUTATION,
+    ),
+    ClaudeActivationFailure.SOURCE_UNAVAILABLE: (
+        WorkerOutcome.ACTION_REQUIRED,
+        SelectionCode.AUTHORITY_PROOF_FAILED,
+    ),
+    ClaudeActivationFailure.STATE_CHANGED: (
+        WorkerOutcome.TRANSIENT_FAILURE,
+        SelectionCode.AUTHORITY_PROOF_FAILED,
+    ),
+    ClaudeActivationFailure.TARGET_UNAVAILABLE: (
+        WorkerOutcome.ACTION_REQUIRED,
+        SelectionCode.TARGET_REFRESH_REQUIRED,
+    ),
+    ClaudeActivationFailure.TIMED_OUT: (
+        WorkerOutcome.TIMED_OUT,
+        SelectionCode.ACTIVE_OPERATION_TIMEOUT,
+    ),
+}
+
+
+def claude_selection_failure(
+    operation: DueOperation,
+    error: ClaudeActivationError,
+    clock: Clock,
+    *,
+    recovery_required: bool = False,
+) -> WorkerResult:
+    """Map every Claude refusal into one closed selection worker result."""
+    if recovery_required:
+        outcome = WorkerOutcome.TRANSIENT_FAILURE
+        code = SelectionCode.SELECTION_RECOVERY_REQUIRED
+    elif isinstance(error.failure, ClaudeActivationGuardFailure):
+        outcome = WorkerOutcome.ACTION_REQUIRED
+        code = (
+            SelectionCode.REMOTE_CONTROL_STATE_INCOMPATIBLE
+            if error.failure
+            is ClaudeActivationGuardFailure.REMOTE_CONTROL_INCOMPATIBLE
+            else SelectionCode.SESSION_CONFIGURATION_REQUIRED
+        )
+    else:
+        outcome, code = _CLAUDE_ACTIVATION_SELECTION_FAILURES[error.failure]
+    return WorkerResult(
+        operation_id=operation.operation_id,
+        outcome=outcome,
+        finished_at=clock.now(),
+        failure_code=code.value,
+    )
 
 
 class ClaudeSelectionWorkerExecutor:
@@ -139,6 +208,22 @@ class ClaudeSelectionWorkerExecutor:
             operation.target_account_id,
             authority,
         )
+        if baseline is None:
+            native = self._native_reconciliation.observe_selection(
+                (operation.target_account_id,),
+                authority,
+            )
+            admissible = native is not None and (
+                native.runtime_state is ProviderRuntimeState.LOGGED_OUT
+                or (
+                    native.runtime_state is ProviderRuntimeState.SAVED_ACTIVE
+                    and native.account_id == operation.target_account_id
+                )
+            )
+            if not admissible:
+                raise ClaudeActivationError(
+                    ClaudeActivationFailure.RECONCILIATION_REQUIRED
+                )
         return PreparedSelection(
             operation_id=operation.operation_id,
             provider_id=ProviderId.CLAUDE,

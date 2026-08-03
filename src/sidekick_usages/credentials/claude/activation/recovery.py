@@ -21,6 +21,9 @@ from sidekick_usages.core.types import ProviderId
 from sidekick_usages.credentials.claude.activation.authority import (
     ClaudeActivationAuthorityCoordinator,
 )
+from sidekick_usages.credentials.claude.activation.initial_recovery import (
+    recover_initial_activation,
+)
 from sidekick_usages.credentials.claude.activation.models import (
     ClaudeActivationError,
     ClaudeActivationFailure,
@@ -87,6 +90,22 @@ class ClaudeActivationRecoveryService:
         record = self._journals.load(ProviderId.CLAUDE).active
         if record is None:
             return None
+        if (
+            record.provider_id is not ProviderId.CLAUDE
+            or record.target_account_id != target_account_id
+        ):
+            raise ClaudeActivationError(ClaudeActivationFailure.STATE_CHANGED)
+        if record.selected_baseline is None:
+            return recover_initial_activation(
+                self._authorities,
+                self._journals,
+                self._clock,
+                record,
+                target_account_id,
+                authority,
+                self._commit_target,
+                self._commit_inactive,
+            )
         source_account_id = self._source_account_id(
             record,
             target_account_id,

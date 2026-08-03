@@ -14,6 +14,7 @@ from sidekick_usages.core.selection.models import (
     ActivationRecord,
     ClaudeAuthObservation,
     FinalizedSelection,
+    ProviderAuthObservation,
     SelectedAccountState,
     activation_account_ids,
 )
@@ -78,6 +79,13 @@ class ClaudeActivationService:
         authority.require(ProviderId.CLAUDE)
         self._authorities.require_activation_environment()
         finalized = self._selected.load(ProviderId.CLAUDE)
+        if finalized is None:
+            return self._activate_initial(
+                operation_id,
+                target_account_id,
+                authority,
+                expected_target_generation,
+            )
         source_account_id = self._source_account_id(
             finalized,
             target_account_id,
@@ -215,12 +223,8 @@ class ClaudeActivationService:
             SourceChangedError,
             ManagedStateConflictError,
         ) as error:
-            activation_error = (
-                error
-                if isinstance(error, ClaudeActivationError)
-                else ClaudeActivationError(
-                    ClaudeActivationFailure.STATE_CHANGED
-                )
+            activation_error = ClaudeActivationError(
+                ClaudeActivationFailure.RECONCILIATION_REQUIRED
             )
             transaction.require_reconciliation(
                 record.operation_id,
@@ -230,10 +234,182 @@ class ClaudeActivationService:
             self._authorities.record_native_observation(
                 self._authorities.observe_native(native_capabilities)
             )
-            if isinstance(error, ClaudeActivationError):
-                raise
             raise activation_error from error
         return selected
+
+    def _activate_initial(
+        self,
+        operation_id: OperationId,
+        target_account_id: SidekickAccountId,
+        authority: ProviderMutationAuthority,
+        expected_target_generation: AuthorityGeneration | None,
+    ) -> SelectedAccountState:
+        """Activate a first target from exact logged-out native truth."""
+        if expected_target_generation is None:
+            raise ClaudeActivationError(ClaudeActivationFailure.STATE_CHANGED)
+        authority.account(target_account_id)
+        target, target_authority = self._authorities.managed_account(
+            target_account_id,
+            ClaudeActivationFailure.TARGET_UNAVAILABLE,
+        )
+        target_capabilities = self._authorities.prepare_existing(
+            target_account_id
+        )
+        native_capabilities = self._authorities.native_capabilities(
+            target_capabilities
+        )
+        self._authorities.require_native_switch(native_capabilities)
+        target_private = self._authorities.read_saved_private(
+            target_capabilities,
+            target_authority,
+            target,
+            ClaudeActivationFailure.TARGET_UNAVAILABLE,
+        )
+        if target_private.generation != expected_target_generation:
+            raise ClaudeActivationError(ClaudeActivationFailure.STATE_CHANGED)
+        self._authorities.require_usable(
+            target_private,
+            ClaudeActivationFailure.TARGET_UNAVAILABLE,
+        )
+        native = self._authorities.observe_native(native_capabilities)
+        if native.state is ProviderAuthState.ACTIVE:
+            return self._adopt_initial_target(
+                target,
+                target_authority,
+                native_capabilities,
+                native,
+            )
+        if native.state is not ProviderAuthState.LOGGED_OUT:
+            raise ClaudeActivationError(
+                ClaudeActivationFailure.RECONCILIATION_REQUIRED
+            )
+        self._authorities.require_native_current(native_capabilities, native)
+        baseline = self._authorities.record_native_observation(native)
+        if (
+            type(baseline) is not ProviderAuthObservation
+            or baseline.state is not ProviderAuthState.LOGGED_OUT
+        ):
+            raise ClaudeActivationError(ClaudeActivationFailure.STATE_CHANGED)
+        transaction = self._transaction(None, target_account_id, authority)
+        now = self._clock.now()
+        record = transaction.begin(
+            ActivationRecord(
+                provider_id=ProviderId.CLAUDE,
+                operation_id=operation_id,
+                selected_baseline=None,
+                native_auth_baseline=baseline,
+                target_account_id=target_account_id,
+                expected_target_identity=target_authority.provider_identity,
+                target_authority_generation=target_private.generation,
+                phase=ActivationPhase.PREPARED,
+                started_at=now,
+                updated_at=now,
+            )
+        )
+        try:
+            activated = self._authorities.provision_native(
+                target_capabilities,
+                target_private,
+                native_capabilities,
+                native,
+                ClaudeActivationFailure.TARGET_UNAVAILABLE,
+            )
+            record = transaction.advance(
+                record.operation_id,
+                ActivationPhase.TARGET_ACTIVATED,
+                updated_at=self._clock.now(),
+            )
+            target_proof = self._authorities.read_saved_private(
+                target_capabilities,
+                target_authority,
+                target,
+                ClaudeActivationFailure.TARGET_UNAVAILABLE,
+            )
+            native_proof = self._authorities.read_native(
+                native_capabilities,
+                expected_identity=target_authority.provider_identity,
+            )
+            if target_proof != target_private:
+                raise ClaudeActivationError(
+                    ClaudeActivationFailure.RECONCILIATION_REQUIRED
+                )
+            self._authorities.require_same_native_proof(
+                activated,
+                native_proof,
+                ClaudeActivationFailure.RECONCILIATION_REQUIRED,
+            )
+            record = transaction.advance(
+                record.operation_id,
+                ActivationPhase.PROVIDER_PROOF_VERIFIED,
+                updated_at=self._clock.now(),
+                verified_runtime_generation=activated.generation,
+            )
+            selected = self._selected_target(target, activated)
+            transaction.commit_verified(
+                record.operation_id,
+                selected,
+                updated_at=self._clock.now(),
+            )
+            self._authorities.record_selected_runtime(selected)
+            return selected
+        except (
+            ClaudeActivationError,
+            SourceChangedError,
+            ManagedStateConflictError,
+        ) as error:
+            activation_error = ClaudeActivationError(
+                ClaudeActivationFailure.RECONCILIATION_REQUIRED
+            )
+            transaction.require_reconciliation(
+                record.operation_id,
+                updated_at=self._clock.now(),
+                failure_code=activation_error.failure_code,
+            )
+            self._authorities.record_native_observation(
+                self._authorities.observe_native(native_capabilities)
+            )
+            raise activation_error from error
+
+    def _adopt_initial_target(
+        self,
+        target: SavedAccount,
+        target_authority: ClaudeManagedLoginAuthority,
+        native_capabilities: ClaudeCapabilities,
+        native: ClaudeNativeObservation,
+    ) -> SelectedAccountState:
+        """Return stable exact target proof without native mutation."""
+        snapshot = native.snapshot
+        if (
+            snapshot is None
+            or snapshot.provider_identity != target_authority.provider_identity
+        ):
+            raise ClaudeActivationError(
+                ClaudeActivationFailure.RECONCILIATION_REQUIRED
+            )
+        self._authorities.require_usable(
+            snapshot,
+            ClaudeActivationFailure.TARGET_UNAVAILABLE,
+        )
+        self._authorities.require_native_current(native_capabilities, native)
+        selected = self._selected_target(target, snapshot)
+        self._authorities.record_selected_runtime(selected)
+        return selected
+
+    def _selected_target(
+        self,
+        target: SavedAccount,
+        native: ClaudeAuthoritySnapshot,
+    ) -> SelectedAccountState:
+        """Project one exact active target into runtime proof."""
+        return SelectedAccountState(
+            provider_id=ProviderId.CLAUDE,
+            runtime_state=ProviderRuntimeState.SAVED_ACTIVE,
+            account_id=target.account_id,
+            provider_identity=native.provider_identity,
+            runtime_generation=native.generation,
+            verified_at=self._clock.now(),
+            outcome=ActivationOutcome.VERIFIED,
+        )
 
     def prevalidate(
         self,

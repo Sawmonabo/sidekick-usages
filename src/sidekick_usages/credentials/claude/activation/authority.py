@@ -587,9 +587,13 @@ class ClaudeActivationAuthorityCoordinator:
             if native_before is None
             else native_before.modified_milliseconds
         )
+        native_absent_before = (
+            expected_native.state is ProviderAuthState.LOGGED_OUT
+        )
         if not claude_native_login_baseline_available(
             native_capabilities,
             modified_milliseconds,
+            native_absent_before=native_absent_before,
         ):
             raise ClaudeActivationError(
                 ClaudeActivationFailure.RECONCILIATION_REQUIRED
@@ -615,6 +619,7 @@ class ClaudeActivationAuthorityCoordinator:
                         modified_milliseconds,
                     ),
                     protected.refresh_token,
+                    native_absent_before=native_absent_before,
                 )
         except ClaudeProtectedStorageError:
             raise ClaudeActivationError(failure) from None

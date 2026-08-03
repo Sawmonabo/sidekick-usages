@@ -558,6 +558,9 @@ def _activation_auth_observation(
 ) -> ProviderAuthObservation:
     if provider_id is not ProviderId.CLAUDE:
         return _provider_auth_observation(provider_id, record)
+    state = ProviderAuthState(require_string(record["state"]))
+    if state is ProviderAuthState.LOGGED_OUT:
+        return _provider_auth_observation(provider_id, record)
     require_exact_keys(record, _CLAUDE_AUTH_KEYS)
     identity = require_string(record["provider_identity"])
     generation = require_string(record["generation"])
@@ -565,7 +568,7 @@ def _activation_auth_observation(
     refresh_expires_at = require_optional_string(record["refresh_expires_at"])
     return ClaudeAuthObservation(
         provider_id=provider_id,
-        state=ProviderAuthState(require_string(record["state"])),
+        state=state,
         provider_identity=ProviderIdentity(identity),
         generation=AuthorityGeneration(generation),
         observed_at=parse_canonical_timestamp(
@@ -594,6 +597,11 @@ def _activation_auth_object(
     observation: ProviderAuthObservation,
 ) -> JsonObject:
     if provider_id is not ProviderId.CLAUDE:
+        return _provider_auth_object(observation)
+    if (
+        type(observation) is ProviderAuthObservation
+        and observation.state is ProviderAuthState.LOGGED_OUT
+    ):
         return _provider_auth_object(observation)
     if not isinstance(observation, ClaudeAuthObservation):
         raise InvalidSchemaError

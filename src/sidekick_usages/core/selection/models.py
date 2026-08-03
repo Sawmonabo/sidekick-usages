@@ -348,9 +348,24 @@ class ActivationRecord:
             self.native_auth_baseline,
             ClaudeAuthObservation,
         )
-        if (self.provider_id is ProviderId.CLAUDE) != claude_baseline:
+        claude_logged_out = (
+            self.provider_id is ProviderId.CLAUDE
+            and self.selected_baseline is None
+            and type(self.native_auth_baseline) is ProviderAuthObservation
+            and self.native_auth_baseline.state is ProviderAuthState.LOGGED_OUT
+        )
+        valid_claude_baseline = (
+            claude_logged_out
+            if self.selected_baseline is None
+            else claude_baseline
+        )
+        if self.provider_id is ProviderId.CLAUDE and not valid_claude_baseline:
             raise ValueError(
                 "Claude activation requires a complete native observation."
+            )
+        if self.provider_id is not ProviderId.CLAUDE and claude_baseline:
+            raise ValueError(
+                "Claude authentication cannot describe another provider."
             )
         origin = self.reconciliation_origin_phase
         if origin in {

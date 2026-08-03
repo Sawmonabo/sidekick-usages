@@ -234,6 +234,8 @@ def claude_activation_scenario(
     root: Path,
     *,
     environment: dict[str, str] | None = None,
+    native_logged_out: bool = False,
+    interrupt_after_native_login: BaseException | None = None,
     remote_control: ClaudeRemoteControlState = (
         ClaudeRemoteControlState.PROOF_UNAVAILABLE
     ),
@@ -328,18 +330,26 @@ def claude_activation_scenario(
         },
         advance_native_mtime=advance_native_mtime,
     )
-    script.set_authority(
-        native.config_directory,
-        native_source_payload,
-        _SOURCE_STATUS,
-    )
+    if not native_logged_out:
+        script.set_authority(
+            native.config_directory,
+            native_source_payload,
+            _SOURCE_STATUS,
+        )
+    runtime_script: ClaudeCommandScript = script
+    if interrupt_after_native_login is not None:
+        runtime_script = _InterruptAfterNativeLogin(
+            script,
+            native.config_directory,
+            interrupt_after_native_login,
+        )
     runtime = _runtime_fixture(
         paths,
         store,
         profiles,
         native,
         source,
-        script,
+        runtime_script,
         environment=environment,
         remote_control=remote_control,
     )
