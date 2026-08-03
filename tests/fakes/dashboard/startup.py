@@ -68,7 +68,6 @@ def exercise_startup_reconciliation(
         connector=connector,
         socket_path=SESSION_SOCKET,
         setup=guided_setup(daemon, acknowledgement_path),
-        environment={},
     )
     session.bind_invalidator(invalidation)
     session.start()

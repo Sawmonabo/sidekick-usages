@@ -8,7 +8,6 @@ import pytest
 
 from sidekick_usages.cli.dashboard.controller import DashboardController
 from sidekick_usages.cli.dashboard.models.controller import (
-    ClaudeAssociationRequest,
     DashboardMove,
     DashboardSelectionRefusal,
 )
@@ -68,12 +67,12 @@ from tests.fakes.dashboard.setup import guided_setup
 from tests.support.time import FixedClock
 
 
-def _association_handoff(
+def _selection_refusal(
     snapshot: DashboardSnapshot,
     account_id: SidekickAccountId,
     state_root: Path,
-) -> tuple[ClaudeAssociationRequest | None, bool, DashboardFooter]:
-    """Return setup-only work without contacting the action owner."""
+) -> DashboardFooter:
+    """Return one visible refusal without contacting the action owner."""
     claude, codex = snapshot.providers
     setup_rows = tuple(
         (
@@ -99,23 +98,6 @@ def _association_handoff(
             codex,
         ),
     )
-    snapshots = SessionSnapshotSource(setup_snapshot)
-    daemon = SetupDaemon(ServiceLifecycleState.READY)
-    connector = SessionControlConnector(daemon, snapshots)
-    session = InteractiveDashboardSession(
-        setup_snapshot,
-        snapshots=snapshots,
-        only=None,
-        lookup=SessionLookupWorker(account_id),
-        metrics_refresh=SessionMetricsRefreshSink(
-            FixedClock(snapshot.reference_time)
-        ),
-        connector=connector,
-        socket_path=SESSION_SOCKET,
-        setup=guided_setup(daemon, state_root / "association.json"),
-        environment={},
-    )
-    request = session.activate()
     blocked_snapshot = replace(
         setup_snapshot,
         providers=(
@@ -147,21 +129,18 @@ def _association_handoff(
             ProviderRuntimeState.UNSUPPORTED,
         )
     )
-    skipped_daemon = (
-        not session.view.action_in_flight
-        and not connector.activations
-        and isinstance(
-            blocked.activate_or_repair(),
+    assert isinstance(
+        blocked.select_account(),
+        DashboardSelectionRefusal,
+    )
+    assert all(
+        isinstance(
+            controller.select_account(),
             DashboardSelectionRefusal,
         )
-        and all(
-            isinstance(
-                controller.activate_or_repair(),
-                DashboardSelectionRefusal,
-            )
-            for controller in unavailable
-        )
+        for controller in unavailable
     )
+    daemon = SetupDaemon(ServiceLifecycleState.READY)
     refusal_snapshots = SessionSnapshotSource(blocked_snapshot)
     refusal_session = InteractiveDashboardSession(
         blocked_snapshot,
@@ -174,14 +153,12 @@ def _association_handoff(
         connector=SessionControlConnector(daemon, refusal_snapshots),
         socket_path=SESSION_SOCKET,
         setup=guided_setup(daemon, state_root / "selection-refusal.json"),
-        environment={},
     )
     refusal_session.move(DashboardMove.UP)
-    refusal_session.activate()
+    refusal_session.select_account()
     selection_refusal_footer = refusal_session.view.footer
     refusal_session.close()
-    session.close()
-    return request, skipped_daemon, selection_refusal_footer
+    return selection_refusal_footer
 
 
 def _partial_start_reaped(
@@ -205,7 +182,6 @@ def _partial_start_reaped(
         connector=SessionControlConnector(daemon, snapshots),
         socket_path=SESSION_SOCKET,
         setup=guided_setup(daemon, state_root / "partial.json"),
-        environment={},
     )
     start_thread = Thread.start
 
@@ -247,12 +223,12 @@ def _refuse_setup(
 ) -> tuple[bool, bool, str | None, DashboardConfirmationProof]:
     """Refuse setup and return provider-read-back restoration proof."""
     session.move(DashboardMove.UP)
-    session.activate()
-    session.activate()
+    session.select_account()
+    session.select_account()
     session.restore()
     view = session.view
-    activation_locked = (
-        view.activation_in_flight
+    selection_locked = (
+        view.selection_in_flight
         and view.controller.account_id == preview_account_id
     )
     invalidation.wait_for(lambda: session.view.confirmation is not None)
@@ -262,7 +238,7 @@ def _refuse_setup(
     view = session.view
     status = view.footer.status
     return (
-        activation_locked,
+        selection_locked,
         view.controller.account_id == active_account_id,
         None if status is None else status.message,
         confirmation,
@@ -280,7 +256,7 @@ def _approve_setup(
 ]:
     """Approve setup and capture the verified selection result."""
     session.move(DashboardMove.UP)
-    session.activate()
+    session.select_account()
     invalidation.wait_for(lambda: session.view.confirmation is not None)
     session.confirm(True)
     invalidation.wait_for(lambda: not session.view.action_in_flight)
@@ -302,7 +278,7 @@ def _reject_contradictory_completion(
     """Reject terminal success that provider read-back contradicts."""
     connector.skip_readback_next = True
     session.move(DashboardMove.DOWN)
-    session.activate()
+    session.select_account()
     invalidation.wait_for(lambda: not session.view.action_in_flight)
     view = session.view
     return (
@@ -344,7 +320,6 @@ def _cache_read_retry(
         connector=SessionControlConnector(daemon, snapshots),
         socket_path=SESSION_SOCKET,
         setup=guided_setup(daemon, state_root / artifact_name),
-        environment={},
     )
     session.start()
     try:
@@ -386,7 +361,6 @@ def _worker_retry(
         connector=SessionControlConnector(daemon, snapshots),
         socket_path=SESSION_SOCKET,
         setup=guided_setup(daemon, state_root / "worker-retry.json"),
-        environment={},
     )
     session.start()
     try:
@@ -446,17 +420,13 @@ def exercise_dashboard_session(
     state_root: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> DashboardSessionProof:
-    """Exercise setup, serialized activation, failure, and bounded close."""
+    """Exercise setup, serialized selection, failure, and bounded close."""
     (
         startup_reconciliations,
         startup_account_id,
         startup_footer,
     ) = startup
-    (
-        association_request,
-        association_skipped_daemon,
-        selection_refusal_footer,
-    ) = _association_handoff(
+    selection_refusal_footer = _selection_refusal(
         snapshot,
         preview_account_id,
         state_root,
@@ -494,7 +464,6 @@ def exercise_dashboard_session(
     connector = SessionControlConnector(daemon, snapshots)
     connector.snapshot_ready = False
     invalidation = SessionInvalidationProbe()
-    environment: dict[str, str] = {}
     session = InteractiveDashboardSession(
         unavailable,
         snapshots=snapshots,
@@ -504,9 +473,7 @@ def exercise_dashboard_session(
         connector=connector,
         socket_path=SESSION_SOCKET,
         setup=guided_setup(daemon, state_root / "setup.json"),
-        environment=environment,
     )
-    environment["ANTHROPIC_API_KEY"] = "synthetic-late-secret"
     invalidation.bind_session(session)
     session.bind_invalidator(invalidation)
     session.start()
@@ -530,7 +497,7 @@ def exercise_dashboard_session(
             }.intersection(invalidation.progress_messages),
         )
         (
-            activation_locked,
+            selection_locked,
             setup_refusal_restored,
             setup_refusal_message,
             service_confirmation,
@@ -549,6 +516,9 @@ def exercise_dashboard_session(
             invalidation,
             daemon,
         )
+        session.select_account()
+        invalidation.wait_for(lambda: not session.view.action_in_flight)
+        already_selected_footer = session.view.footer
         setup_not_repeated, restored_account_id, failure_footer = (
             _reject_contradictory_completion(
                 session,
@@ -559,26 +529,29 @@ def exercise_dashboard_session(
             )
         )
         connector.pause_next = True
+        connector.selection_status_unavailable = True
         session.focus_next_provider()
         session.move(DashboardMove.DOWN)
-        session.activate()
+        session.select_account()
         connector.wait_for_stream()
+        assert (
+            "Account change accepted; current phase is unavailable."
+            in invalidation.progress_messages
+        )
         invalidations_before_close = invalidation.count
     finally:
         session.close()
         session.close()
     return DashboardSessionProof(
         control_connect_calls=tuple(connect.calls),
-        association_request=association_request,
-        association_skipped_daemon=association_skipped_daemon,
         selection_refusal_footer=selection_refusal_footer,
         partial_start_reaped=partial_start_reaped,
         startup_reconciliations=startup_reconciliations,
         startup_account_id=startup_account_id,
         startup_footer=startup_footer,
-        activation_locked=activation_locked,
+        selection_locked=selection_locked,
         confirmations=(service_confirmation,),
-        activations=tuple(connector.activations),
+        selections=tuple(connector.selections),
         setup_events=setup_events,
         setup_progress_sanitized=EXPECTED_SERVICE_SETUP_PROGRESS.issubset(
             invalidation.progress_messages
@@ -587,6 +560,7 @@ def exercise_dashboard_session(
         setup_refusal_message=setup_refusal_message,
         verified_account_id=verified_account_id,
         success_footer=success_footer,
+        already_selected_footer=already_selected_footer,
         setup_not_repeated=setup_not_repeated,
         restored_account_id=restored_account_id,
         failure_footer=failure_footer,

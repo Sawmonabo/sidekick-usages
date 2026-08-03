@@ -3,15 +3,14 @@
 from dataclasses import dataclass, replace
 
 from sidekick_usages.cli.dashboard.models.controller import (
-    ActivateOrRepairIntent,
-    ClaudeAssociationRequest,
-    DashboardActivationProof,
     DashboardControllerState,
     DashboardMove,
     DashboardProviderAnchor,
+    DashboardSelectionProof,
     DashboardSelectionRefusal,
     RefreshAccountIntent,
     RefreshDueAccountsIntent,
+    SelectAccountIntent,
 )
 from sidekick_usages.core.accounts.types import CredentialHealth
 from sidekick_usages.core.selection.types import (
@@ -127,38 +126,20 @@ class DashboardController:
             )
         )
 
-    def activate_or_repair(
+    def select_account(
         self,
-    ) -> (
-        ActivateOrRepairIntent
-        | ClaudeAssociationRequest
-        | DashboardSelectionRefusal
-        | None
-    ):
+    ) -> SelectAccountIntent | DashboardSelectionRefusal | None:
         """Return selection work or a visible saved-account refusal."""
         focused = self._focused_account()
         if focused is None:
             return None
         provider, account = focused
-        setup_association = (
-            provider.provider_id is ProviderId.CLAUDE
-            and DashboardActionState.SWITCH_SETUP_REQUIRED in account.states
-        )
-        if setup_association:
-            if (
-                not provider.actions_enabled
-                or provider.runtime_state is None
-                or provider.runtime_state
-                in {
-                    ProviderRuntimeState.UNREADABLE,
-                    ProviderRuntimeState.UNSUPPORTED,
-                }
-            ):
-                return _selection_refusal(provider, account)
-            return ClaudeAssociationRequest(account_id=account.account_id)
         if not self._mutations_enabled(provider):
             return _selection_refusal(provider, account)
-        return ActivateOrRepairIntent(
+        refusal = _account_refusal(account)
+        if refusal is not None:
+            return refusal
+        return SelectAccountIntent(
             provider_id=provider.provider_id,
             account_id=account.account_id,
         )
@@ -189,14 +170,14 @@ class DashboardController:
         )
         return RefreshDueAccountsIntent() if actionable else None
 
-    def activation_succeeded(
+    def selection_succeeded(
         self,
-        proof: DashboardActivationProof,
+        proof: DashboardSelectionProof,
     ) -> DashboardController:
         """Adopt only a service-proven saved account as the restore target."""
         provider = self._provider(proof.provider_id)
         if provider is None:
-            raise ValueError("Activation proof provider is not displayed.")
+            raise ValueError("Selection proof provider is not displayed.")
         account = next(
             (
                 row
@@ -207,14 +188,12 @@ class DashboardController:
             None,
         )
         if account is None:
-            raise ValueError("Activation proof account is not displayed.")
+            raise ValueError("Selection proof account is not displayed.")
         if (
             provider.active_account_id != proof.account_id
             or not account.active
         ):
-            raise ValueError(
-                "Activation proof contradicts provider read-back."
-            )
+            raise ValueError("Selection proof contradicts provider read-back.")
         proven_anchor = DashboardProviderAnchor(
             provider_id=proof.provider_id,
             account_id=proof.account_id,
@@ -250,24 +229,6 @@ class DashboardController:
                     candidate
                     for candidate in anchors
                     if candidate.provider_id is restore_provider
-                ),
-                None,
-            )
-            if anchor is not None:
-                return DashboardController(
-                    snapshot=snapshot,
-                    state=_state_at_anchor(
-                        anchors,
-                        anchor,
-                        help_visible=self.state.help_visible,
-                    ),
-                )
-        if _focused_at_anchor(self.state):
-            anchor = next(
-                (
-                    candidate
-                    for candidate in anchors
-                    if candidate.provider_id is self.state.focused_provider
                 ),
                 None,
             )
@@ -339,16 +300,14 @@ class DashboardController:
         )
 
     def _mutations_enabled(self, provider: DashboardProvider) -> bool:
+        if provider.runtime_state in {
+            ProviderRuntimeState.UNREADABLE,
+            ProviderRuntimeState.UNSUPPORTED,
+        }:
+            return False
         if provider.actions_enabled:
             return True
-        return (
-            not self.snapshot.service.ready
-            and provider.runtime_state
-            not in {
-                ProviderRuntimeState.UNREADABLE,
-                ProviderRuntimeState.UNSUPPORTED,
-            }
-        )
+        return not self.snapshot.service.ready
 
     def _with_state(
         self,
@@ -424,21 +383,6 @@ def _focused_index(
     return 0
 
 
-def _focused_at_anchor(state: DashboardControllerState) -> bool:
-    provider_id = state.focused_provider
-    if provider_id is None:
-        return False
-    anchor = next(
-        (
-            candidate
-            for candidate in state.anchors
-            if candidate.provider_id is provider_id
-        ),
-        None,
-    )
-    return anchor is not None and anchor.account_id == state.account_id
-
-
 def _selection_refusal(
     provider: DashboardProvider,
     account: DashboardAccount,
@@ -451,6 +395,26 @@ def _selection_refusal(
     )
     return DashboardSelectionRefusal(
         provider_id=provider.provider_id,
+        account_id=account.account_id,
+        code=code,
+    )
+
+
+def _account_refusal(
+    account: DashboardAccount,
+) -> DashboardSelectionRefusal | None:
+    """Return one exact saved-authority refusal before coordination."""
+    code: SelectionCode | None = None
+    if DashboardActionState.LOGIN_REQUIRED in account.states:
+        code = SelectionCode.TARGET_REFRESH_REQUIRED
+    elif DashboardActionState.SETUP_REGENERATION_REQUIRED in account.states:
+        code = SelectionCode.TARGET_EXPIRED
+    elif DashboardActionState.PROVIDER_UNSUPPORTED in account.states:
+        code = SelectionCode.UNSUPPORTED_PROVIDER_VERSION
+    if code is None:
+        return None
+    return DashboardSelectionRefusal(
+        provider_id=account.provider_id,
         account_id=account.account_id,
         code=code,
     )

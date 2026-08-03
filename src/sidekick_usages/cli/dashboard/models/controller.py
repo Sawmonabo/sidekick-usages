@@ -8,9 +8,9 @@ from sidekick_usages.core.selection.types import SelectionCode
 from sidekick_usages.core.types import ProviderId
 
 type DashboardIntent = (
-    ActivateOrRepairIntent | RefreshAccountIntent | RefreshDueAccountsIntent
+    SelectAccountIntent | RefreshAccountIntent | RefreshDueAccountsIntent
 )
-type DashboardApplicationResult = int | ClaudeAssociationRequest
+type DashboardApplicationResult = int
 
 
 class DashboardMove(StrEnum):
@@ -56,17 +56,10 @@ class DashboardControllerState:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class ActivateOrRepairIntent:
-    """Request activation or repair of one saved account."""
+class SelectAccountIntent:
+    """Request coordinated selection of one saved account."""
 
     provider_id: ProviderId
-    account_id: SidekickAccountId
-
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class ClaudeAssociationRequest:
-    """Request private-profile association for one saved Claude account."""
-
     account_id: SidekickAccountId
 
 
@@ -93,8 +86,8 @@ class RefreshDueAccountsIntent:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class DashboardActivationProof:
-    """Verified successful activation returned by the service boundary."""
+class DashboardSelectionProof:
+    """Verified successful selection returned by the service boundary."""
 
     provider_id: ProviderId
     account_id: SidekickAccountId

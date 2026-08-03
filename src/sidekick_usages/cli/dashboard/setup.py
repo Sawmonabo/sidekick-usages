@@ -4,10 +4,10 @@ from threading import Event, Lock
 from typing import assert_never
 
 from sidekick_usages.cli.dashboard.models.controller import (
-    ActivateOrRepairIntent,
     DashboardIntent,
     RefreshAccountIntent,
     RefreshDueAccountsIntent,
+    SelectAccountIntent,
 )
 from sidekick_usages.cli.dashboard.models.setup import (
     ServiceSetupDecision,
@@ -201,7 +201,7 @@ class GuidedServiceSetup:
 
 def _provider_ids(intent: DashboardIntent) -> ProviderReadinessScope:
     """Return every provider whose capability the intent requires."""
-    if isinstance(intent, ActivateOrRepairIntent | RefreshAccountIntent):
+    if isinstance(intent, SelectAccountIntent | RefreshAccountIntent):
         return (intent.provider_id,)
     if isinstance(intent, RefreshDueAccountsIntent):
         return _ALL_PROVIDER_IDS

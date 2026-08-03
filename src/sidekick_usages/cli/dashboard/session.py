@@ -1,6 +1,6 @@
 """Two-owner orchestration for one interactive dashboard process."""
 
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import replace
 from pathlib import Path
@@ -11,13 +11,12 @@ from sidekick_usages.cli.dashboard.actions import DashboardActionExecutor
 from sidekick_usages.cli.dashboard.controller import DashboardController
 from sidekick_usages.cli.dashboard.lookup import DashboardLookupCoordinator
 from sidekick_usages.cli.dashboard.models.controller import (
-    ActivateOrRepairIntent,
-    ClaudeAssociationRequest,
-    DashboardActivationProof,
     DashboardIntent,
     DashboardMove,
+    DashboardSelectionProof,
     DashboardSelectionRefusal,
     RefreshAccountIntent,
+    SelectAccountIntent,
 )
 from sidekick_usages.cli.dashboard.models.session import (
     DashboardActionRequest,
@@ -36,19 +35,21 @@ from sidekick_usages.cli.dashboard.ports import (
     DashboardSnapshotSource,
 )
 from sidekick_usages.cli.dashboard.setup import GuidedServiceSetup
+from sidekick_usages.core.selection.models import SelectionResult
+from sidekick_usages.core.selection.types import (
+    SelectionCode,
+    SelectionOutcome,
+)
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.models.protocol import (
     CompletedPayload,
     ControlActionTerminalPayload,
+    FailedPayload,
 )
 from sidekick_usages.daemon.types.protocol import (
     CompletionOutcome,
 )
 from sidekick_usages.persistence.errors import PersistenceError
-from sidekick_usages.providers.claude.activation.service import (
-    claude_environment_conflict,
-    claude_environment_conflict_keys,
-)
 from sidekick_usages.usage.dashboard.models import (
     DashboardCursor,
     DashboardFooter,
@@ -65,7 +66,7 @@ from sidekick_usages.usage.lookup.diagnostics.ports import (
 ACTION_QUEUE_CAPACITY = 1
 DECISION_QUEUE_CAPACITY = 1
 DASHBOARD_ACTION_THREAD_NAME = "sidekick-dashboard-actions"
-ACTIVATION_QUEUED_MESSAGE = "Account change queued."
+SELECTION_QUEUED_MESSAGE = "Preparing account change…"
 REFRESH_QUEUED_MESSAGE = "Account refresh queued."
 REFRESH_ALL_QUEUED_MESSAGE = "Due-account refresh queued."
 LOOKUP_FAILED_MESSAGE = (
@@ -104,7 +105,6 @@ class InteractiveDashboardSession:
         connector: DashboardControlConnector,
         socket_path: Path,
         setup: GuidedServiceSetup,
-        environment: Mapping[str, str],
     ) -> None:
         controller = DashboardController.start(snapshot)
         self._view = DashboardSessionView(
@@ -114,9 +114,6 @@ class InteractiveDashboardSession:
         )
         self._snapshots = snapshots
         self._only = only
-        self._claude_environment_conflict = claude_environment_conflict(
-            dict(environment)
-        )
         self._view_lock = Lock()
         self._snapshot_lock = Lock()
         self._actions: Queue[DashboardActionRequest | None] = Queue(
@@ -227,22 +224,20 @@ class InteractiveDashboardSession:
         self._navigate(DashboardController.focus_next_provider)
 
     def restore(self) -> None:
-        """Restore verified focus unless activation is in flight."""
+        """Restore verified focus unless selection is in flight."""
         self._navigate(
             DashboardController.restore,
-            blocked_by_activation=True,
+            blocked_by_selection=True,
         )
 
-    def activate(self) -> ClaudeAssociationRequest | None:
-        """Return association work or queue ordinary activation."""
+    def select_account(self) -> None:
+        """Queue coordinated selection or publish one typed refusal."""
         with self._view_lock:
             if self._view.action_in_flight:
-                return None
-            intent = self._controller().activate_or_repair()
+                return
+            intent = self._controller().select_account()
             if intent is None:
-                return None
-            if isinstance(intent, ClaudeAssociationRequest):
-                return intent
+                return
             if isinstance(intent, DashboardSelectionRefusal):
                 self._view = replace(
                     self._view,
@@ -252,12 +247,9 @@ class InteractiveDashboardSession:
                     ),
                 )
                 invalidate = self._invalidate
-            elif self._environment_conflict(intent):
-                invalidate = self._invalidate
             else:
-                invalidate = self._submit(intent, ACTIVATION_QUEUED_MESSAGE)
+                invalidate = self._submit(intent, SELECTION_QUEUED_MESSAGE)
         invalidate()
-        return None
 
     def refresh_account(self) -> None:
         """Queue one account refresh without blocking input."""
@@ -289,10 +281,10 @@ class InteractiveDashboardSession:
         self,
         transition: Callable[[DashboardController], DashboardController],
         *,
-        blocked_by_activation: bool = False,
+        blocked_by_selection: bool = False,
     ) -> None:
         with self._view_lock:
-            if blocked_by_activation and self._view.activation_in_flight:
+            if blocked_by_selection and self._view.selection_in_flight:
                 return
             controller = transition(self._controller())
             self._view = replace(
@@ -354,30 +346,12 @@ class InteractiveDashboardSession:
                 message,
             ),
             action_in_flight=True,
-            activation_in_flight=isinstance(
+            selection_in_flight=isinstance(
                 intent,
-                ActivateOrRepairIntent,
+                SelectAccountIntent,
             ),
         )
         return self._invalidate
-
-    def _environment_conflict(self, intent: ActivateOrRepairIntent) -> bool:
-        if intent.provider_id is not ProviderId.CLAUDE:
-            return False
-        conflict = self._claude_environment_conflict
-        if conflict is None:
-            return False
-        self._deferred_lookup_status = None
-        keys = " ".join(claude_environment_conflict_keys(conflict))
-        self._view = replace(
-            self._view,
-            footer=self._status_footer(
-                DashboardStatusKind.ERROR,
-                "This shell overrides Claude account selection. "
-                f"Run: unset {keys}",
-            ),
-        )
-        return True
 
     def publish_lookup_snapshot(
         self,
@@ -484,7 +458,13 @@ class InteractiveDashboardSession:
             controller = self._controller()
             if snapshot is not None:
                 controller = controller.rebase(
-                    self._lookup_coordinator.apply(snapshot)
+                    self._lookup_coordinator.apply(snapshot),
+                    restore_provider=(
+                        result.provider_id
+                        if result.state
+                        is DashboardStartupReconciliationState.VERIFIED
+                        else None
+                    ),
                 )
             footer = self._view.footer
             if result.state is DashboardStartupReconciliationState.VERIFIED:
@@ -538,7 +518,32 @@ class InteractiveDashboardSession:
     ) -> None:
         if self._stopping.is_set():
             return
-        if (
+        selection_result = (
+            terminal if isinstance(terminal, SelectionResult) else None
+        )
+        already_selected = (
+            isinstance(terminal, FailedPayload)
+            and terminal.code == SelectionCode.ALREADY_SELECTED.value
+        )
+        selection_terminal = selection_result is not None or already_selected
+        if isinstance(intent, SelectAccountIntent) and isinstance(
+            terminal,
+            FailedPayload,
+        ) and not already_selected:
+            self.action_error(
+                intent,
+                _selection_code_message(terminal.code),
+            )
+            return
+        if selection_result is not None and (
+            selection_result.outcome is not SelectionOutcome.READY
+        ):
+            self.action_error(
+                intent,
+                _selection_code_message(selection_result.safe_code.value),
+            )
+            return
+        if not selection_terminal and (
             not isinstance(terminal, CompletedPayload)
             or terminal.outcome is CompletionOutcome.CANCELLED
         ):
@@ -558,10 +563,10 @@ class InteractiveDashboardSession:
                         return
                     outcome_snapshot = self._lookup_coordinator.apply(snapshot)
                     controller = self._controller().rebase(outcome_snapshot)
-                    if isinstance(intent, ActivateOrRepairIntent):
+                    if isinstance(intent, SelectAccountIntent):
                         try:
-                            controller = controller.activation_succeeded(
-                                DashboardActivationProof(
+                            controller = controller.selection_succeeded(
+                                DashboardSelectionProof(
                                     provider_id=intent.provider_id,
                                     account_id=intent.account_id,
                                 )
@@ -574,24 +579,29 @@ class InteractiveDashboardSession:
                             failed = True
                     if failed:
                         self._deferred_lookup_status = None
-                    footer = (
-                        self._status_footer(
+                        footer = self._status_footer(
                             DashboardStatusKind.ERROR,
                             self._action_failure_message(intent),
                         )
-                        if failed
-                        else self._navigation_footer(
-                            controller,
-                            reveal_lookup=True,
+                    else:
+                        footer = (
+                            self._status_footer(
+                                DashboardStatusKind.PROGRESS,
+                                _selection_ready_message(selection_result),
+                            )
+                            if selection_terminal
+                            else self._navigation_footer(
+                                controller,
+                                reveal_lookup=True,
+                            )
                         )
-                    )
                     self._view = replace(
                         self._view,
                         snapshot=controller.snapshot,
                         controller=controller.state,
                         footer=footer,
                         action_in_flight=False,
-                        activation_in_flight=False,
+                        selection_in_flight=False,
                         confirmation=None,
                     )
                     invalidate = self._invalidate
@@ -614,7 +624,7 @@ class InteractiveDashboardSession:
     @staticmethod
     def _action_failure_message(intent: DashboardIntent) -> str:
         message = "Account action failed. Run sidekick-usages doctor"
-        if isinstance(intent, ActivateOrRepairIntent | RefreshAccountIntent):
+        if isinstance(intent, SelectAccountIntent | RefreshAccountIntent):
             return f"{message} --provider {intent.provider_id.value}"
         return message
 
@@ -636,7 +646,7 @@ class InteractiveDashboardSession:
             )
             restore_provider = (
                 intent.provider_id
-                if isinstance(intent, ActivateOrRepairIntent)
+                if isinstance(intent, SelectAccountIntent)
                 else None
             )
             controller = controller.rebase(
@@ -652,7 +662,7 @@ class InteractiveDashboardSession:
                     message,
                 ),
                 action_in_flight=False,
-                activation_in_flight=False,
+                selection_in_flight=False,
                 confirmation=None,
             )
             return self._invalidate
@@ -731,3 +741,25 @@ def dashboard_cursor(view: DashboardSessionView) -> DashboardCursor:
 def _selection_refusal_message(intent: DashboardSelectionRefusal) -> str:
     """Render one sanitized refusal without hiding the focused account."""
     return f"Saved account selection is unavailable: {intent.code.value}."
+
+
+def _selection_code_message(code: str) -> str:
+    """Render one sanitized coordinator refusal code visibly."""
+    if code == "already_selected":
+        return "This saved account is already selected."
+    return f"Saved account selection is unavailable: {code}."
+
+
+def _selection_ready_message(result: SelectionResult | None) -> str:
+    """Render truthful participant readiness without claiming adoption."""
+    if result is None:
+        return _selection_code_message(
+            SelectionCode.ALREADY_SELECTED.value
+        )
+    if result.ready_count == 0:
+        return "Account ready; next requests use it."
+    suffix = "session" if result.ready_count == 1 else "sessions"
+    return (
+        f"Account ready in {result.ready_count} {suffix}; "
+        "next requests use it."
+    )

@@ -8,7 +8,7 @@ import sys
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -23,13 +23,17 @@ from sidekick_usages.cli.dashboard.session import (
     InteractiveDashboardSession,
 )
 from sidekick_usages.cli.dashboard.setup import GuidedServiceSetup
-from sidekick_usages.core.accounts.types import SidekickAccountId
+from sidekick_usages.core.accounts.types import (
+    CredentialHealth,
+    SidekickAccountId,
+)
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.models.protocol import ControlEvent
 from sidekick_usages.daemon.types.lifecycle import ServiceLifecycleState
 from sidekick_usages.persistence.setup.store import (
     ServiceSetupAcknowledgementStore,
 )
+from sidekick_usages.usage.dashboard.models import DashboardActionState
 from sidekick_usages.usage.lookup.worker.client import (
     UsageLookupModuleLaunchPlanner,
     UsageLookupWorkerClient,
@@ -106,6 +110,8 @@ KEY_FOOTER_TEXT = "↑/↓ or j/k move"
 IDLE_FOOTER_TEXT = KEY_FOOTER_TEXT
 HELP_FOOTER_TEXT = "? close help"
 STARTUP_FAILURE_TEXT = "cached selection remains"
+SELECTION_WAITING_TEXT = "Waiting for 1 active turn…"
+SELECTION_READY_TEXT = "Account ready in 3 sessions"
 ACTIVE_LABEL = "work@example.test"
 PREVIEW_LABEL = "personal@example.test"
 CODEX_SAVED_LABEL = "codex@example.test"
@@ -145,7 +151,7 @@ class TracingLookupWorker:
 
 
 class TracingSessionControlConnector(SessionControlConnector):
-    """Record account refreshes in addition to existing fake activations."""
+    """Record account refreshes in addition to fake selections."""
 
     def __init__(
         self,
@@ -179,7 +185,7 @@ class TracingSessionControlClient(SessionControlClient):
         self._tracing_owner.refreshes.append((provider_id, account_id))
         return super().refresh_account(provider_id, account_id)
 
-    def activate(
+    def select_account(
         self,
         provider_id: ProviderId,
         account_id: SidekickAccountId,
@@ -195,7 +201,7 @@ class TracingSessionControlClient(SessionControlClient):
                 args=(owner, paused_action_path),
                 name="sidekick-pty-paused-action",
             ).start()
-        return super().activate(
+        return super().select_account(
             provider_id,
             account_id,
         )
@@ -203,6 +209,21 @@ class TracingSessionControlClient(SessionControlClient):
 
 def _child_main() -> int:
     snapshot, _cursor, _footer = interactive_dashboard_state(REFERENCE_TIME)
+    claude, codex = snapshot.providers
+    selectable_claude = replace(
+        claude,
+        rows=tuple(
+            replace(
+                row,
+                credential_health=CredentialHealth.REFRESH_DUE,
+                states=(DashboardActionState.REPAIR_REQUIRED,),
+            )
+            if row.account_id == CLAUDE_WARNING_ID
+            else row
+            for row in claude.rows
+        ),
+    )
+    snapshot = replace(snapshot, providers=(selectable_claude, codex))
     unavailable = unavailable_session_snapshot(snapshot)
     snapshots = SessionSnapshotSource(unavailable)
     daemon = SetupDaemon(ServiceLifecycleState.ABSENT)
@@ -241,13 +262,8 @@ def _child_main() -> int:
                 Path(os.environ[SETUP_ACKNOWLEDGEMENT_ENVIRONMENT_KEY])
             ),
         ),
-        environment={},
     )
     result = InteractiveDashboardApplication(session).run()
-    if not isinstance(result, int):
-        raise AssertionError(
-            "PTY dashboard unexpectedly requested Claude association."
-        )
     exit_code = result
     _write_trace(
         Path(os.environ[TRACE_ENVIRONMENT_KEY]),
@@ -293,8 +309,8 @@ def _write_trace(
     ]
     trace.extend(f"setup={event}" for event in daemon.events)
     trace.extend(
-        f"activation={provider_id.value}:{account_id}"
-        for provider_id, account_id in connector.activations
+        f"selection={provider_id.value}:{account_id}"
+        for provider_id, account_id in connector.selections
     )
     trace.extend(
         f"refresh={provider_id.value}:{account_id}"
@@ -608,7 +624,8 @@ def test_dashboard_pty_completes_the_interactive_account_journey(
         session.read_until(SETUP_CONFIRMATION_TEXT)
         session.clear_output()
         session.send(APPROVE_KEY)
-        _read_completed_redraw(session, IDLE_FOOTER_TEXT)
+        ready = _read_completed_redraw(session, SELECTION_READY_TEXT)
+        assert KEY_FOOTER_TEXT in _plain_terminal_output(ready)
 
         session.clear_output()
         session.send(REFRESH_KEY)
@@ -662,7 +679,7 @@ def test_dashboard_pty_completes_the_interactive_account_journey(
     assert "daemon_cancelled=true" in trace
     assert "setup=status:claude" in trace
     assert "setup=install:claude" in trace
-    assert f"activation=claude:{CLAUDE_WARNING_ID}" in trace
+    assert f"selection=claude:{CLAUDE_WARNING_ID}" in trace
     assert f"refresh=claude:{CLAUDE_WARNING_ID}" in trace
 
 
@@ -681,6 +698,7 @@ def test_dashboard_pty_interrupt_restores_terminal_and_reaps_lookup(
         session.read_until(SETUP_CONFIRMATION_TEXT)
         session.clear_output()
         session.send(APPROVE_KEY)
+        session.read_until(SELECTION_WAITING_TEXT)
         _wait_for_path(tmp_path / PAUSED_ACTION_MARKER_FILENAME)
         session.send(INTERRUPT_KEY)
         assert session.wait() == INTERRUPTED_EXIT_CODE
@@ -696,9 +714,9 @@ def test_dashboard_pty_interrupt_restores_terminal_and_reaps_lookup(
     assert "lookup_cancel_calls=1" in trace
     assert "lookup_failure=canceled" in trace
     assert "daemon_cancelled=true" in trace
-    assert "closed_clients=1" in trace
+    assert "closed_clients=2" in trace
     assert "action_stream_released=true" in trace
-    assert f"activation=claude:{CLAUDE_WARNING_ID}" in trace
+    assert f"selection=claude:{CLAUDE_WARNING_ID}" in trace
 
 
 if (

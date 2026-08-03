@@ -2,15 +2,10 @@
 
 import os
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from functools import partial
 from pathlib import Path
-from typing import TextIO
 
-from sidekick_usages.cli.contexts.composition import (
-    ApplicationCompositionError,
-    compose_claude_migration,
-)
 from sidekick_usages.cli.contexts.dashboard.snapshot import (
     CachedDashboardSnapshotSource,
 )
@@ -18,7 +13,6 @@ from sidekick_usages.cli.dashboard.application import (
     InteractiveDashboardApplication,
 )
 from sidekick_usages.cli.dashboard.models.controller import (
-    ClaudeAssociationRequest,
     DashboardApplicationResult,
 )
 from sidekick_usages.cli.dashboard.session import (
@@ -27,40 +21,20 @@ from sidekick_usages.cli.dashboard.session import (
 from sidekick_usages.cli.dashboard.setup import GuidedServiceSetup
 from sidekick_usages.cli.runtime.routing import parse_dashboard_arguments
 from sidekick_usages.clock import Clock, SystemClock
-from sidekick_usages.core.accounts.models import ClaudeAccountAuthority
-from sidekick_usages.core.accounts.types import ProviderIdentity
 from sidekick_usages.core.types import ExitCode, ProviderId
 from sidekick_usages.credentials.capabilities.service import (
     build_provider_capability_service,
 )
-from sidekick_usages.credentials.claude.managed.profile import (
-    ClaudeProfileCapabilityFactory,
-)
-from sidekick_usages.credentials.claude.native.authority.service import (
-    CLAUDE_NATIVE_VERIFICATION_FAILED,
-    CLAUDE_NATIVE_VERIFICATION_UNAVAILABLE,
-    prove_native_claude_identity,
-)
 from sidekick_usages.daemon.control.client import ControlClient
 from sidekick_usages.daemon.lifecycle.manager import build_daemon_manager
 from sidekick_usages.paths import ApplicationPaths, discover_application_paths
-from sidekick_usages.persistence.accounts.reader import AccountIndexReader
-from sidekick_usages.persistence.errors import PersistenceError
 from sidekick_usages.persistence.lookup.store import (
     MetricsRefreshObservationRecorder,
     MetricsRefreshObservationStore,
 )
-from sidekick_usages.persistence.private.credentials import (
-    PrivateCredentialTree,
-)
 from sidekick_usages.persistence.setup.store import (
     ServiceSetupAcknowledgementStore,
 )
-from sidekick_usages.providers.base import ProviderFailure, ProviderFailureKind
-from sidekick_usages.providers.claude.auth.storage.errors import (
-    ClaudeProtectedStorageError,
-)
-from sidekick_usages.providers.claude.managed.errors import ClaudeManagedError
 from sidekick_usages.providers.claude.managed.executable import (
     resolve_claude_launcher,
 )
@@ -74,20 +48,8 @@ from sidekick_usages.usage.lookup.worker.client import (
     UsageLookupWorkerClient,
     resolve_usage_lookup_interpreter,
 )
-from sidekick_usages.usage.presentation.formatting import (
-    sanitize_terminal_text,
-)
 
 INVALID_INVOCATION_EXIT_CODE = 2
-CLAUDE_ASSOCIATION_PROMPT = (
-    "Connect '{label}' for future Claude switching?\n"
-    "This keeps its setup token and does not change the active Claude "
-    "account. [y/N]"
-)
-CLAUDE_ASSOCIATION_APPROVALS = frozenset({"y", "yes"})
-CLAUDE_ASSOCIATION_READ_FAILURE = (
-    "Saved Claude account metadata could not be read."
-)
 
 
 def _connect_dashboard_control(socket_path: Path) -> ControlClient:
@@ -106,34 +68,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return INVALID_INVOCATION_EXIT_CODE
     paths = discover_application_paths()
     clock = SystemClock()
-    return _run_dashboard_loop(
-        partial(_run_dashboard_once, paths, clock, only),
-        partial(
-            _guide_claude_association,
-            paths=paths,
-            clock=clock,
-            prove_identity=partial(
-                _prove_native_claude_identity,
-                paths,
-                clock,
-            ),
-            input_stream=sys.stdin,
-            output=sys.stdout,
-            error_output=sys.stderr,
-        ),
-    )
-
-
-def _run_dashboard_loop(
-    launch: Callable[[], DashboardApplicationResult],
-    associate: Callable[[ClaudeAssociationRequest], None],
-) -> int:
-    """Rebuild a closed dashboard after each guided association result."""
-    while True:
-        result = launch()
-        if isinstance(result, int):
-            return result
-        associate(result)
+    return _run_dashboard_once(paths, clock, only)
 
 
 def _run_dashboard_once(
@@ -182,107 +117,8 @@ def _run_dashboard_once(
                 paths.service_setup_acknowledgement
             ),
         ),
-        environment=os.environ,
     )
     return InteractiveDashboardApplication(session).run()
-
-
-def _guide_claude_association(
-    request: ClaudeAssociationRequest,
-    *,
-    paths: ApplicationPaths,
-    clock: Clock,
-    prove_identity: Callable[[], ProviderIdentity | ProviderFailure],
-    input_stream: TextIO,
-    output: TextIO,
-    error_output: TextIO,
-) -> None:
-    """Confirm and run one stable-ID private Claude association."""
-    try:
-        account = next(
-            (
-                candidate
-                for candidate in AccountIndexReader(paths.accounts).load()
-                if candidate.account_id == request.account_id
-            ),
-            None,
-        )
-    except PersistenceError:
-        error_output.write(f"{CLAUDE_ASSOCIATION_READ_FAILURE}\n")
-        error_output.flush()
-        return
-    if account is None or not isinstance(
-        account.authority,
-        ClaudeAccountAuthority,
-    ):
-        return
-    authority = account.authority
-    if authority.setup_token is None or authority.subscription is not None:
-        return
-    expected_identity = prove_identity()
-    if isinstance(expected_identity, ProviderFailure):
-        error_output.write(f"{expected_identity.message}\n")
-        error_output.flush()
-        return
-    output.write(
-        CLAUDE_ASSOCIATION_PROMPT.format(
-            label=sanitize_terminal_text(account.label)
-        )
-    )
-    output.flush()
-    answer = input_stream.readline()
-    if answer.strip().casefold() not in CLAUDE_ASSOCIATION_APPROVALS:
-        return
-    try:
-        owner = compose_claude_migration(paths=paths, clock=clock)
-    except ApplicationCompositionError as error:
-        error_output.write(f"{error.failure.message}\n")
-        error_output.flush()
-        return
-    try:
-        result = owner.value.associate_account(
-            request.account_id,
-            expected_identity=expected_identity,
-        )
-    finally:
-        owner.close()
-    if isinstance(result, ProviderFailure):
-        error_output.write(f"{result.message}\n")
-        error_output.flush()
-
-
-def _prove_native_claude_identity(
-    paths: ApplicationPaths,
-    clock: Clock,
-) -> ProviderIdentity | ProviderFailure:
-    """Read native Claude identity without opening mutable Sidekick state."""
-    try:
-        profiles = PrivateCredentialTree(
-            paths.private_claude_profiles,
-            account_path=paths.accounts,
-        )
-        capabilities = ClaudeProfileCapabilityFactory(
-            paths,
-            profiles,
-            environment=os.environ,
-        )
-        return prove_native_claude_identity(
-            capabilities,
-            clock.now(),
-            environment=os.environ,
-        )
-    except ClaudeManagedError:
-        return ProviderFailure(
-            provider_id=ProviderId.CLAUDE,
-            kind=ProviderFailureKind.UNSUPPORTED,
-            message=CLAUDE_NATIVE_VERIFICATION_UNAVAILABLE,
-        )
-    except ClaudeProtectedStorageError, PersistenceError, ValueError:
-        return ProviderFailure(
-            provider_id=ProviderId.CLAUDE,
-            kind=ProviderFailureKind.UNREADABLE,
-            message=CLAUDE_NATIVE_VERIFICATION_FAILED,
-        )
 
 
 if __name__ == "__main__":

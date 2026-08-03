@@ -3,22 +3,19 @@
 import io
 from dataclasses import replace
 from datetime import UTC, datetime
-from functools import partial
 from pathlib import Path
 
 import pytest
 from rich.console import Console
 
-from sidekick_usages.cli.commands import use
 from sidekick_usages.cli.contexts.migration import (
     ManagedAuthDaemonLifecycle,
 )
 from sidekick_usages.cli.contexts.models import MigrationContext
 from sidekick_usages.cli.contexts.use import UseContext
 from sidekick_usages.cli.dashboard.models.controller import (
-    ActivateOrRepairIntent,
-    ClaudeAssociationRequest,
     RefreshAccountIntent,
+    SelectAccountIntent,
 )
 from sidekick_usages.cli.dashboard.models.setup import (
     ServiceSetupAction,
@@ -26,17 +23,10 @@ from sidekick_usages.cli.dashboard.models.setup import (
     ServiceSetupMessage,
     ServiceSetupOutcome,
 )
-from sidekick_usages.core.accounts.models import ClaudeAccountAuthority
-from sidekick_usages.core.accounts.types import (
-    CredentialHealth,
-    ProviderIdentity,
-)
-from sidekick_usages.core.types import AccountLabel, ExitCode, ProviderId
+from sidekick_usages.core.types import ExitCode, ProviderId
 from sidekick_usages.daemon.types.lifecycle import ServiceLifecycleState
 from sidekick_usages.daemon.types.service import ServicePhase
-from sidekick_usages.entrypoints import dashboard
 from sidekick_usages.persistence.accounts.index import AccountIndex
-from sidekick_usages.persistence.accounts.reader import AccountIndexReader
 from sidekick_usages.usage.dashboard.models import (
     DashboardService,
 )
@@ -53,7 +43,7 @@ from tests.fakes.dashboard.state import (
     CODEX_SAVED_ACCOUNT_ID,
 )
 from tests.fakes.dashboard.use import (
-    RecordingUseActivation,
+    RecordingUseSelection,
     scriptable_use_accounts,
 )
 from tests.fakes.migration.managed_auth import (
@@ -61,7 +51,6 @@ from tests.fakes.migration.managed_auth import (
     managed_auth_scenario,
 )
 from tests.support.cli import CliHarness
-from tests.support.persistence import make_application_paths
 from tests.support.platform import REQUIRES_MANAGED_RUNTIME
 from tests.support.time import FixedClock
 
@@ -85,7 +74,7 @@ def test_guided_setup_resumes_once_and_preserves_blocked_actions(
         compatible=True,
         phase=ServicePhase.DEGRADED,
     )
-    intent = ActivateOrRepairIntent(
+    intent = SelectAccountIntent(
         provider_id=ProviderId.CLAUDE,
         account_id=CLAUDE_PREVIEW_ACCOUNT_ID,
     )
@@ -290,102 +279,14 @@ def test_managed_auth_migration_resumes_without_exposing_secrets(
     for identity in MIGRATION_IDENTITIES:
         assert identity not in rendered
 
-    guided_account = scenario.accounts.label(
-        ProviderId.CLAUDE,
-        "claude-team",
-    )
-    guided_label = AccountLabel("claude-renamed")
-    scenario.accounts.replace(
-        replace(
-            guided_account,
-            label=guided_label,
-            authority=ClaudeAccountAuthority(
-                setup_token=scenario.setup_authority
-            ),
-            credential_health=CredentialHealth.HEALTHY,
-        )
-    )
-    request = ClaudeAssociationRequest(account_id=guided_account.account_id)
-    scenario.dashboard_results.extend((request, request, request, 0))
-    monkeypatch.setattr(
-        AccountIndexReader,
-        "load",
-        staticmethod(scenario.accounts.saved_accounts),
-    )
-    monkeypatch.setattr(
-        dashboard,
-        "compose_claude_migration",
-        scenario.compose_claude,
-    )
-    guided_output = io.StringIO()
-    guided_errors = io.StringIO()
-    daemon_events_before = tuple(daemon.events)
-    guided_trace_start = len(scenario.trace)
-    guided_exit = dashboard._run_dashboard_loop(
-        scenario.launch_dashboard,
-        partial(
-            dashboard._guide_claude_association,
-            paths=make_application_paths(tmp_path),
-            clock=clock,
-            prove_identity=scenario.claude.prove_native_identity,
-            input_stream=io.StringIO("\ny\nyes\n"),
-            output=guided_output,
-            error_output=guided_errors,
-        ),
-    )
-
-    expected_prompt = dashboard.CLAUDE_ASSOCIATION_PROMPT.format(
-        label=guided_label
-    )
-    assert (
-        guided_exit,
-        guided_output.getvalue(),
-        scenario.claude.guided_account_ids,
-        scenario.claude.guided_expected_identities,
-        scenario.trace[guided_trace_start:],
-        tuple(daemon.events),
-    ) == (
-        0,
-        expected_prompt * 3,
-        [guided_account.account_id, guided_account.account_id],
-        [
-            ProviderIdentity(MIGRATION_IDENTITIES[2]),
-            ProviderIdentity(MIGRATION_IDENTITIES[2]),
-        ],
-        [
-            "dashboard:closed",
-            "claude:native-proof",
-            "dashboard:closed",
-            "claude:native-proof",
-            "association:composed",
-            "claude:guided",
-            "association:closed",
-            "dashboard:closed",
-            "claude:native-proof",
-            "association:composed",
-            "claude:guided",
-            "association:closed",
-            "dashboard:closed",
-        ],
-        daemon_events_before,
-    )
-    guided_rendered = guided_output.getvalue() + guided_errors.getvalue()
-    assert "Official Claude login was canceled." in guided_rendered
-    for identity in MIGRATION_IDENTITIES:
-        assert identity not in guided_rendered
-
     help_result = harness.invoke(["migrate", "managed-auth", "--help"])
     assert help_result.exit_code == ExitCode.SUCCESS
     assert "--token" not in help_result.output
 
 
-def test_scriptable_use_dispatches_only_stable_selection_contract(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_scriptable_use_dispatches_only_stable_selection_contract() -> None:
     """One command journey proves exact lookup and preparation."""
-    environment: dict[str, str] = {}
-    monkeypatch.setattr(use.os, "environ", environment)
-    activation = RecordingUseActivation()
+    selection = RecordingUseSelection()
     codex, claude, needs_login = scriptable_use_accounts(REFERENCE_TIME)
     output = io.StringIO()
     errors = io.StringIO()
@@ -394,7 +295,7 @@ def test_scriptable_use_dispatches_only_stable_selection_contract(
         Console(file=errors, width=100),
         use=UseContext(
             AccountIndex((codex, claude, needs_login)),
-            activation,
+            selection,
         ),
     )
 
@@ -410,25 +311,18 @@ def test_scriptable_use_dispatches_only_stable_selection_contract(
     )
     missing = harness.invoke(["use", "claude", "missing"])
     preparation = harness.invoke(["use", "codex", "needs-login"])
-    environment["ANTHROPIC_API_KEY"] = "synthetic-parent-secret"
-    blocked = harness.invoke(["use", "claude", "shared"])
-    environment.clear()
     assert codex_result.exit_code == claude_result.exit_code == 0
-    assert missing.exit_code == preparation.exit_code == blocked.exit_code == 1
+    assert missing.exit_code == preparation.exit_code == 1
     assert removed_override.exit_code != 0
-    assert activation.calls == [
+    assert selection.calls == [
         (ProviderId.CODEX, CODEX_SAVED_ACCOUNT_ID),
         (ProviderId.CLAUDE, CLAUDE_ACTIVE_ACCOUNT_ID),
     ]
-    assert environment == {}
     rendered = output.getvalue() + errors.getvalue()
     assert "No saved claude account labeled 'missing'." in rendered
     assert "Next: sidekick-usages\n" in rendered
     assert "Account 'needs-login' needs interactive preparation." in rendered
     assert "Next: sidekick-usages codex login needs-login" in rendered
-    assert "This shell overrides Claude account selection." in rendered
-    assert "Next: unset ANTHROPIC_API_KEY" in rendered
     assert "--allow-remote-control-disconnect" not in rendered
-    assert "synthetic-parent-secret" not in rendered
     assert "Continue?" not in rendered
     assert "daemon install" not in rendered

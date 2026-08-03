@@ -32,10 +32,7 @@ from sidekick_usages.core.selection.types import (
     TurnId,
 )
 from sidekick_usages.core.types import ProviderId
-from sidekick_usages.daemon.control.client import (
-    ControlClient,
-    consume_control_action,
-)
+from sidekick_usages.daemon.control.client import ControlClient
 from sidekick_usages.daemon.control.dispatch import (
     OperationEventHub,
     SupervisorDispatcher,
@@ -97,7 +94,6 @@ from sidekick_usages.daemon.types.lifecycle import (
 from sidekick_usages.daemon.types.protocol import (
     PROTOCOL_VERSION,
     ConnectedSocket,
-    ControlOperationIdentity,
     EventKind,
     ProtocolErrorCode,
     RequestKind,
@@ -224,7 +220,6 @@ def _assert_reused_operation_follows_current_events(
         state.queue,
         ServiceStateStore(state.paths.service_state),
         events,
-        ResidentState(),
         RuntimeClock(),
         Event().set,
         Event().set,
@@ -255,11 +250,11 @@ def test_authenticated_control_stream_frames_completes_and_cancels(
 ) -> None:
     """One peer-proven stream frames, completes, and cancels safely."""
     account_id = SidekickAccountId("69b33871-dcd9-4e47-8ef8-f77d9944a956")
-    default_payload = ActivationPayload(ProviderId.CLAUDE, account_id)
+    default_payload = AccountPayload(ProviderId.CLAUDE, account_id)
     fragmented_request = ControlRequest(
         protocol_version=PROTOCOL_VERSION,
         request_id=new_request_id(),
-        kind=RequestKind.ACTIVATE,
+        kind=RequestKind.REFRESH_ACCOUNT,
         payload=default_payload,
         package_version=__version__,
     )
@@ -284,8 +279,8 @@ def test_authenticated_control_stream_frames_completes_and_cancels(
     fragmented_client: ConnectedSocket = fragmented_socket
     client = ControlClient(fragmented_client)
 
-    activation = tuple(client.activate(ProviderId.CLAUDE, account_id))
-    assert tuple(event.kind for event in activation) == (
+    refresh = tuple(client.refresh_account(ProviderId.CLAUDE, account_id))
+    assert tuple(event.kind for event in refresh) == (
         EventKind.ACCEPTED,
         EventKind.PROGRESS,
         EventKind.COMPLETED,
@@ -303,11 +298,11 @@ def test_authenticated_control_stream_frames_completes_and_cancels(
     assert isinstance(cancellation_failure, ConnectionError)
     assert not server.is_alive()
     assert tuple(request.kind for request in dispatcher.requests) == (
-        RequestKind.ACTIVATE,
+        RequestKind.REFRESH_ACCOUNT,
         RequestKind.SUBSCRIBE,
     )
     recorded_payload = dispatcher.requests[0].payload
-    assert isinstance(recorded_payload, ActivationPayload)
+    assert isinstance(recorded_payload, AccountPayload)
     assert dispatcher.cancellations == [accepted.request_id]
     exercise_closed_subscription_monitor(
         dispatcher,
@@ -315,7 +310,7 @@ def test_authenticated_control_stream_frames_completes_and_cancels(
     )
     assert dispatcher.cancellations == [accepted.request_id]
     state, resident = foundation_state(tmp_path), ResidentState()
-    durable_dispatcher = foundation_dispatcher(state, resident)
+    durable_dispatcher = foundation_dispatcher(state)
     _assert_monitor(state, resident)
     approved_request = replace(
         fragmented_request,
@@ -327,24 +322,26 @@ def test_authenticated_control_stream_frames_completes_and_cancels(
     persisted = restarted_queue.get(
         ProviderId.CLAUDE,
         account_id,
-        OperationKind.ACTIVATE,
+        OperationKind.REFRESH,
     )
     assert persisted is not None
-    resident.available = False
-    resident.failure_code = "version_unsupported"
-    rejected_request = replace(
+    uncoordinated_request = replace(
         fragmented_request,
         request_id=new_request_id(),
-        payload=ActivationPayload(ProviderId.CODEX, account_id),
+        kind=RequestKind.ACTIVATE,
+        payload=ActivationPayload(ProviderId.CLAUDE, account_id),
     )
-    rejected = consume_control_action(
-        durable_dispatcher.dispatch(_verified(rejected_request)),
-        identity=ControlOperationIdentity.ACCOUNT,
+    rejected = next(
+        durable_dispatcher.dispatch(_verified(uncoordinated_request))
     )
-    assert rejected == FailedPayload(None, "version_unsupported")
+    assert rejected.kind is EventKind.FAILED
+    assert rejected.payload == FailedPayload(
+        None,
+        SelectionCode.UNCOORDINATED_AUTH_MUTATION.value,
+    )
     assert (
         restarted_queue.get(
-            ProviderId.CODEX,
+            ProviderId.CLAUDE,
             account_id,
             OperationKind.ACTIVATE,
         )
@@ -524,7 +521,6 @@ def test_select_accepts_with_the_correlated_operation_id(
         state.queue,
         ServiceStateStore(state.paths.service_state),
         events,
-        ResidentState(),
         RuntimeClock(),
         Event().set,
         Event().set,
@@ -575,7 +571,7 @@ def _dispatch_failure_code(
 ) -> str:
     """Return one safe dispatcher refusal without a selection adapter."""
     state = foundation_state(root)
-    dispatcher = foundation_dispatcher(state, ResidentState())
+    dispatcher = foundation_dispatcher(state)
     events = tuple(dispatcher.dispatch(VerifiedControlRequest(request, peer)))
     event = events[-1]
     assert isinstance(event.payload, FailedPayload)

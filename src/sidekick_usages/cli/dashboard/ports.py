@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import Protocol
 
 from sidekick_usages.cli.dashboard.models.controller import (
-    ClaudeAssociationRequest,
     DashboardIntent,
     DashboardMove,
 )
@@ -15,7 +14,7 @@ from sidekick_usages.cli.dashboard.models.session import (
     DashboardStartupReconciliation,
 )
 from sidekick_usages.cli.dashboard.models.setup import ServiceSetupDecision
-from sidekick_usages.cli.dashboard.models.use import UseActivationResult
+from sidekick_usages.cli.dashboard.models.use import UseSelectionResult
 from sidekick_usages.core.accounts.types import SidekickAccountId
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.models.protocol import (
@@ -40,15 +39,15 @@ class DashboardSnapshotSource(Protocol):
         ...
 
 
-class AccountActivation(Protocol):
-    """Activate one exact saved account through the local supervisor."""
+class AccountSelection(Protocol):
+    """Select one exact saved account through global coordination."""
 
     def __call__(
         self,
         provider_id: ProviderId,
         account_id: SidekickAccountId,
-    ) -> UseActivationResult:
-        """Return the supervisor's sanitized activation outcome."""
+    ) -> UseSelectionResult:
+        """Return the supervisor's sanitized selection outcome."""
         ...
 
 
@@ -74,12 +73,18 @@ class DashboardControlClient(Protocol):
         """Return one current sanitized service snapshot."""
         ...
 
-    def activate(
+    def select_account(
         self,
         provider_id: ProviderId,
         account_id: SidekickAccountId,
     ) -> Iterator[ControlEvent]:
-        """Activate one stable account."""
+        """Select one stable account through global coordination."""
+
+    def selection_status(
+        self,
+        provider_id: ProviderId,
+    ) -> Iterator[ControlEvent]:
+        """Read one provider's secret-free selection status."""
         ...
 
     def refresh_account(
@@ -196,11 +201,11 @@ class DashboardSessionPort(Protocol):
         ...
 
     def restore(self) -> None:
-        """Restore verified focus unless activation is in flight."""
+        """Restore verified focus unless selection is in flight."""
         ...
 
-    def activate(self) -> ClaudeAssociationRequest | None:
-        """Return association work or queue ordinary activation."""
+    def select_account(self) -> None:
+        """Queue selection or publish one typed refusal."""
         ...
 
     def refresh_account(self) -> None:

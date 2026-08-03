@@ -499,7 +499,6 @@ class FakeCodexSupervisor:
             queue,
             service_state,
             events,
-            broker,
             clock,
             self._wakeup.notify,
             self._request_stop,

@@ -4,8 +4,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
 from sidekick_usages.cli.dashboard.models.use import (
-    UseActivationResult,
-    UseActivationSuccess,
+    UseSelectionResult,
+    UseSelectionSuccess,
 )
 from sidekick_usages.core.accounts.models import (
     ClaudeAccountAuthority,
@@ -38,19 +38,19 @@ _CLAUDE_AUTHORITY_ID = AuthorityId("cccccccc-cccc-4ccc-8ccc-cccccccccccc")
 
 
 @dataclass(slots=True)
-class RecordingUseActivation:
-    """Record only the sanitized supervisor activation contract."""
+class RecordingUseSelection:
+    """Record only the sanitized supervisor selection contract."""
 
     calls: list[tuple[ProviderId, SidekickAccountId]] = field(
         default_factory=list
     )
-    result: UseActivationResult = field(default_factory=UseActivationSuccess)
+    result: UseSelectionResult = field(default_factory=UseSelectionSuccess)
 
     def __call__(
         self,
         provider_id: ProviderId,
         account_id: SidekickAccountId,
-    ) -> UseActivationResult:
+    ) -> UseSelectionResult:
         self.calls.append((provider_id, account_id))
         return self.result
 

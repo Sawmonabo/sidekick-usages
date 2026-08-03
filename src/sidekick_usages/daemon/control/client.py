@@ -11,6 +11,7 @@ from sidekick_usages.core.accounts.types import (
     OperationId,
     SidekickAccountId,
 )
+from sidekick_usages.core.selection.models import SelectionResult
 from sidekick_usages.core.selection.types import ParticipantId, TurnId
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.control.endpoint import control_endpoint_state
@@ -20,7 +21,6 @@ from sidekick_usages.daemon.control.protocol import (
 from sidekick_usages.daemon.models.protocol import (
     AcceptedPayload,
     AccountPayload,
-    ActivationPayload,
     CompletedPayload,
     ControlActionTerminalPayload,
     ControlEvent,
@@ -69,7 +69,6 @@ CONTROL_ACTION_TIMEOUT_SECONDS = (
 )
 _LONG_ACTION_REQUEST_KINDS = frozenset(
     {
-        RequestKind.ACTIVATE,
         RequestKind.RECONCILE,
         RequestKind.REFRESH_ACCOUNT,
     }
@@ -126,6 +125,105 @@ def consume_control_action(
         return _terminal_payload(event, operation_id)
     raise UnexpectedServiceEventError(
         "The service returned no terminal action event."
+    )
+
+
+def consume_selection_action(
+    events: Iterator[ControlEvent],
+    *,
+    provider_id: ProviderId,
+    account_id: SidekickAccountId,
+    accepted: Callable[[OperationId], None] | None = None,
+) -> (
+    SelectionResult
+    | FailedPayload
+    | IncompatiblePayload
+    | ServiceStoppingPayload
+):
+    """Validate one accepted, correlated global-selection stream."""
+    try:
+        first = next(events)
+    except StopIteration:
+        raise UnexpectedServiceEventError(
+            "The service returned no selection event."
+        ) from None
+    if first.kind is not EventKind.ACCEPTED:
+        return _unaccepted_selection(first)
+    operation_id = _selection_operation(first)
+    if accepted is not None:
+        accepted(operation_id)
+    try:
+        terminal = next(events)
+    except StopIteration:
+        raise UnexpectedServiceEventError(
+            "The service returned no selection result."
+        ) from None
+    return _selection_terminal(
+        terminal,
+        operation_id=operation_id,
+        provider_id=provider_id,
+        account_id=account_id,
+    )
+
+
+def _unaccepted_selection(
+    event: ControlEvent,
+) -> FailedPayload | IncompatiblePayload | ServiceStoppingPayload:
+    """Return one typed refusal that preceded durable acceptance."""
+    payload = event.payload
+    if isinstance(
+        payload,
+        FailedPayload | IncompatiblePayload | ServiceStoppingPayload,
+    ):
+        return payload
+    raise UnexpectedServiceEventError(
+        "The service did not accept account selection."
+    )
+
+
+def _selection_operation(event: ControlEvent) -> OperationId:
+    """Return the exact durable operation accepted for selection."""
+    payload = event.payload
+    if (
+        isinstance(payload, AcceptedPayload)
+        and payload.operation_id is not None
+    ):
+        return payload.operation_id
+    raise UnexpectedServiceEventError(
+        "The service returned an invalid selection acceptance."
+    )
+
+
+def _selection_terminal(
+    event: ControlEvent,
+    *,
+    operation_id: OperationId,
+    provider_id: ProviderId,
+    account_id: SidekickAccountId,
+) -> (
+    SelectionResult
+    | FailedPayload
+    | IncompatiblePayload
+    | ServiceStoppingPayload
+):
+    """Return one terminal result bound to the accepted selection."""
+    result = event.payload
+    if isinstance(result, SelectionResult):
+        if (
+            result.operation_id != operation_id
+            or result.provider_id is not provider_id
+            or result.target_account_id != account_id
+        ):
+            raise UnexpectedServiceEventError(
+                "The service returned an unrelated selection result."
+            )
+        return result
+    if isinstance(result, FailedPayload) and result.operation_id is None:
+        return result
+    if isinstance(result, IncompatiblePayload | ServiceStoppingPayload):
+        return result
+    raise UnexpectedServiceEventError(
+        "The service returned an invalid selection result."
     )
 
 
@@ -282,17 +380,6 @@ class ControlClient:
             )
         self._handshaken = True
         return payload
-
-    def activate(
-        self,
-        provider_id: ProviderId,
-        account_id: SidekickAccountId,
-    ) -> Generator[ControlEvent]:
-        """Activate one stable saved account after compatibility proof."""
-        return self.request(
-            RequestKind.ACTIVATE,
-            ActivationPayload(provider_id, account_id),
-        )
 
     def refresh_account(
         self,

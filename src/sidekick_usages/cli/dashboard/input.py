@@ -21,7 +21,7 @@ class DashboardInputController:
         self.bindings.add("j")(self._move_down)
         self.bindings.add("tab")(self._next_provider)
         self.bindings.add("escape")(self._restore)
-        self.bindings.add("enter")(self._activate)
+        self.bindings.add("enter")(self._select_account)
         self.bindings.add("r")(self._refresh)
         self.bindings.add("R")(self._refresh_all)
         self.bindings.add("?")(self._toggle_help)
@@ -42,10 +42,8 @@ class DashboardInputController:
     def _restore(self, _event: KeyPressEvent) -> None:
         self._session.restore()
 
-    def _activate(self, event: KeyPressEvent) -> None:
-        request = self._session.activate()
-        if request is not None:
-            event.app.exit(result=request)
+    def _select_account(self, _event: KeyPressEvent) -> None:
+        self._session.select_account()
 
     def _refresh(self, _event: KeyPressEvent) -> None:
         self._session.refresh_account()

@@ -18,12 +18,10 @@ from sidekick_usages.core.selection.types import (
     OperationState,
     SelectionCode,
 )
-from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.models.control import VerifiedControlRequest
 from sidekick_usages.daemon.models.protocol import (
     AcceptedPayload,
     AccountPayload,
-    ActivationPayload,
     CompletedPayload,
     ControlEvent,
     ControlRequest,
@@ -50,10 +48,8 @@ from sidekick_usages.daemon.selection.models import (
 )
 from sidekick_usages.daemon.selection.ports import SelectionSupervisorPort
 from sidekick_usages.daemon.types.control import ControlFailurePhase
-from sidekick_usages.daemon.types.lifecycle import ServiceFailureCode
 from sidekick_usages.daemon.types.ports import (
     OperationEventSink,
-    ResidentService,
 )
 from sidekick_usages.daemon.types.protocol import (
     PROTOCOL_VERSION,
@@ -259,7 +255,6 @@ class SupervisorDispatcher:
         queue: OperationQueueStore,
         service_state: ServiceStateStore,
         events: OperationEventHub,
-        resident: ResidentService,
         clock: Clock,
         wake: Callable[[], None],
         request_stop: Callable[[], None],
@@ -270,7 +265,6 @@ class SupervisorDispatcher:
         self._queue = queue
         self._service_state = service_state
         self._events = events
-        self._resident = resident
         self._clock = clock
         self._wake = wake
         self._request_stop = request_stop
@@ -303,16 +297,20 @@ class SupervisorDispatcher:
         request: ControlRequest,
     ) -> Iterator[ControlEvent]:
         """Dispatch one non-selection control request."""
-        if request.kind in {
-            RequestKind.ACTIVATE,
-            RequestKind.REFRESH_ACCOUNT,
-        }:
+        if request.kind is RequestKind.ACTIVATE:
+            yield self._event(
+                request,
+                EventKind.FAILED,
+                FailedPayload(
+                    None,
+                    SelectionCode.UNCOORDINATED_AUTH_MUTATION.value,
+                ),
+            )
+        elif request.kind is RequestKind.REFRESH_ACCOUNT:
             yield from self._dispatch_account(request)
-            return
-        if request.kind is RequestKind.SNAPSHOT:
+        elif request.kind is RequestKind.SNAPSHOT:
             yield self._snapshot(request)
-            return
-        if request.kind is RequestKind.SUBSCRIBE:
+        elif request.kind is RequestKind.SUBSCRIBE:
             yield self._event(
                 request,
                 EventKind.ACCEPTED,
@@ -320,14 +318,11 @@ class SupervisorDispatcher:
             )
             for update in self._events.subscribe(request.request_id):
                 yield self._update_event(request, update)
-            return
-        if request.kind is RequestKind.REFRESH_ALL:
+        elif request.kind is RequestKind.REFRESH_ALL:
             yield from self._dispatch_refresh_all(request)
-            return
-        if request.kind is RequestKind.RECONCILE:
+        elif request.kind is RequestKind.RECONCILE:
             yield from self._dispatch_reconcile(request)
-            return
-        if request.kind is RequestKind.SHUTDOWN:
+        elif request.kind is RequestKind.SHUTDOWN:
             yield self._event(
                 request,
                 EventKind.ACCEPTED,
@@ -339,12 +334,12 @@ class SupervisorDispatcher:
                 EventKind.SERVICE_STOPPING,
                 ServiceStoppingPayload(ServiceStopReason.REQUESTED),
             )
-            return
-        yield self._event(
-            request,
-            EventKind.FAILED,
-            FailedPayload(None, "dispatch_failed"),
-        )
+        else:
+            yield self._event(
+                request,
+                EventKind.FAILED,
+                FailedPayload(None, "dispatch_failed"),
+            )
 
     def cancel(self, context: VerifiedControlRequest) -> None:
         """Cancel one disconnected stream without cancelling durable work."""
@@ -523,30 +518,11 @@ class SupervisorDispatcher:
         request: ControlRequest,
     ) -> Iterator[ControlEvent]:
         payload = request.payload
-        if isinstance(payload, ActivationPayload):
-            kind = OperationKind.ACTIVATE
-        elif isinstance(payload, AccountPayload):
-            kind = OperationKind.REFRESH
-        else:
+        if not isinstance(payload, AccountPayload):
             yield self._event(
                 request,
                 EventKind.FAILED,
                 FailedPayload(None, "dispatch_failed"),
-            )
-            return
-        if (
-            kind is OperationKind.ACTIVATE
-            and payload.provider_id is ProviderId.CODEX
-            and not self._resident.available
-        ):
-            yield self._event(
-                request,
-                EventKind.FAILED,
-                FailedPayload(
-                    None,
-                    self._resident.failure_code
-                    or ServiceFailureCode.CODEX_BROKER_UNAVAILABLE.value,
-                ),
             )
             return
         now = self._clock.now()
@@ -556,7 +532,7 @@ class SupervisorDispatcher:
                 operation_id=self._operation_id_factory(),
                 provider_id=payload.provider_id,
                 account_id=payload.account_id,
-                kind=kind,
+                kind=OperationKind.REFRESH,
                 priority=OperationPriority.INTERACTIVE,
                 state=OperationState.SCHEDULED,
                 due_at=now,

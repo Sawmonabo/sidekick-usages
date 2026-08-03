@@ -1,6 +1,5 @@
 """Noninteractive saved-account selection command."""
 
-import os
 import shlex
 from typing import Annotated, Never
 
@@ -8,7 +7,7 @@ import typer
 from rich.text import Text
 
 from sidekick_usages.cli.context import invocation_context
-from sidekick_usages.cli.dashboard.models.use import UseActivationFailure
+from sidekick_usages.cli.dashboard.models.use import UseSelectionFailure
 from sidekick_usages.cli.help import branded_command
 from sidekick_usages.cli.validation import (
     validated_label,
@@ -18,10 +17,6 @@ from sidekick_usages.core.accounts.models import SavedAccount
 from sidekick_usages.core.accounts.types import CredentialHealth
 from sidekick_usages.core.types import ExitCode, ProviderId
 from sidekick_usages.daemon.control.protocol import ProtocolFailureError
-from sidekick_usages.providers.claude.activation.service import (
-    claude_environment_conflict,
-    claude_environment_conflict_keys,
-)
 
 _SERVICE_PREPARATION_FAILURE_CODES = frozenset(
     {"service_incompatible", "service_stopping"}
@@ -105,19 +100,8 @@ def use_cmd(
             f"Account '{account.label}' needs interactive preparation.",
             preparation,
         )
-    if provider_id is ProviderId.CLAUDE:
-        environment_conflict = claude_environment_conflict(os.environ)
-        if environment_conflict is not None:
-            _fail(
-                ctx,
-                "This shell overrides Claude account selection.",
-                _command(
-                    "unset",
-                    *claude_environment_conflict_keys(environment_conflict),
-                ),
-            )
     try:
-        result = use.activate(
+        result = use.select(
             provider_id,
             account.account_id,
         )
@@ -127,7 +111,7 @@ def use_cmd(
             "The Sidekick supervisor is unavailable or incompatible.",
             _command("sidekick-usages", "daemon", "install"),
         )
-    if isinstance(result, UseActivationFailure):
+    if isinstance(result, UseSelectionFailure):
         if result.code in _SERVICE_PREPARATION_FAILURE_CODES:
             action = _command("sidekick-usages", "daemon", "install")
         else:
@@ -139,7 +123,7 @@ def use_cmd(
             )
         _fail(
             ctx,
-            f"Sidekick could not verify the {provider_id.value} activation.",
+            f"Sidekick could not select the {provider_id.value} account.",
             action,
         )
     message = Text("Now using ", style="green")

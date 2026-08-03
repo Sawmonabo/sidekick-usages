@@ -1,11 +1,24 @@
 """Synthetic dashboard control connection and event streams."""
 
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from pathlib import Path
 from threading import Event
 
 from sidekick_usages import __version__
-from sidekick_usages.core.accounts.types import SidekickAccountId
+from sidekick_usages.core.accounts.types import (
+    AuthorityGeneration,
+    SidekickAccountId,
+)
+from sidekick_usages.core.selection.models import (
+    SelectionEpoch,
+    SelectionResult,
+)
+from sidekick_usages.core.selection.types import (
+    SelectionCode,
+    SelectionOutcome,
+    SelectionPhase,
+)
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.control.client import (
     CONTROL_ACTION_TIMEOUT_SECONDS,
@@ -18,12 +31,12 @@ from sidekick_usages.daemon.models.protocol import (
     ProgressPayload,
     SnapshotPayload,
 )
+from sidekick_usages.daemon.selection.models import SelectionStatus
 from sidekick_usages.daemon.types.lifecycle import ServiceLifecycleState
 from sidekick_usages.daemon.types.protocol import (
     PROTOCOL_VERSION,
     CompletionOutcome,
     EventKind,
-    ProgressPhase,
 )
 from tests.fakes.dashboard.runtime import SetupDaemon
 from tests.fakes.dashboard.session.models import (
@@ -51,9 +64,19 @@ class SessionControlConnector:
         ] = {}
         self.reconciliations: list[ProviderId] = []
         self.reconciliation_failures: set[ProviderId] = set()
-        self.activations: list[tuple[ProviderId, SidekickAccountId]] = []
+        self.selections: list[tuple[ProviderId, SidekickAccountId]] = []
+        self.selection_target: (
+            tuple[
+                ProviderId,
+                SidekickAccountId,
+            ]
+            | None
+        ) = None
+        self.selection_baseline: SidekickAccountId | None = None
+        self.selection_epoch: SelectionEpoch | None = None
         self.closed_clients = 0
         self.skip_readback_next = False
+        self.selection_status_unavailable = False
         self.snapshot_ready = True
         self.pause_next = False
         self.allow_degraded = False
@@ -94,13 +117,23 @@ class SessionControlClient:
             ),
         )
 
-    def activate(
+    def select_account(
         self,
         provider_id: ProviderId,
         account_id: SidekickAccountId,
     ) -> Iterator[ControlEvent]:
-        """Complete or fail one correlated synthetic activation."""
-        self._owner.activations.append((provider_id, account_id))
+        """Complete one correlated synthetic coordinated selection."""
+        self._owner.selections.append((provider_id, account_id))
+        self._owner.selection_target = (provider_id, account_id)
+        provider = next(
+            candidate
+            for candidate in self._owner.snapshots.snapshot.providers
+            if candidate.provider_id is provider_id
+        )
+        self._owner.selection_baseline = provider.active_account_id
+        self._owner.selection_epoch = SelectionEpoch(
+            1 if provider.active_account_id is None else 2
+        )
         yield _event(
             EventKind.ACCEPTED,
             AcceptedPayload(SESSION_OPERATION_ID),
@@ -115,22 +148,69 @@ class SessionControlClient:
                 )
             if self._closed:
                 return
-        yield _event(
-            EventKind.PROGRESS,
-            ProgressPayload(
-                SESSION_OPERATION_ID,
-                ProgressPhase.VERIFYING,
-            ),
-        )
+        if provider.active_account_id == account_id:
+            yield _event(
+                EventKind.FAILED,
+                FailedPayload(
+                    None,
+                    SelectionCode.ALREADY_SELECTED.value,
+                ),
+            )
+            return
         if self._owner.skip_readback_next:
             self._owner.skip_readback_next = False
         else:
-            self._owner.snapshots.activate(provider_id, account_id)
+            self._owner.snapshots.select_account(provider_id, account_id)
         yield _event(
-            EventKind.COMPLETED,
-            CompletedPayload(
-                SESSION_OPERATION_ID,
-                CompletionOutcome.SUCCEEDED,
+            EventKind.SELECTION_RESULT,
+            SelectionResult(
+                operation_id=SESSION_OPERATION_ID,
+                provider_id=provider_id,
+                target_account_id=account_id,
+                target_generation=AuthorityGeneration(
+                    "synthetic-selection-generation"
+                ),
+                epoch=_required_selection_epoch(self._owner),
+                outcome=SelectionOutcome.READY,
+                safe_code=SelectionCode.SELECTION_SUCCEEDED,
+                required_count=3,
+                ready_count=3,
+                adopted_count=0,
+                lost_count=0,
+                started_at=datetime(2026, 8, 1, tzinfo=UTC),
+                completed_at=datetime(2026, 8, 1, tzinfo=UTC),
+            ),
+        )
+
+    def selection_status(
+        self,
+        provider_id: ProviderId,
+    ) -> Iterator[ControlEvent]:
+        """Return one active-turn wait snapshot for accepted selection."""
+        if self._owner.selection_status_unavailable:
+            self._owner.selection_status_unavailable = False
+            raise OSError("Synthetic selection status failed.")
+        target = self._owner.selection_target
+        if target is None or target[0] is not provider_id:
+            raise AssertionError("Synthetic selection was not accepted.")
+        baseline = self._owner.selection_baseline
+        yield _event(
+            EventKind.SELECTION_STATUS,
+            SelectionStatus(
+                provider_id=provider_id,
+                operation_id=SESSION_OPERATION_ID,
+                finalized_account_id=baseline,
+                finalized_epoch=(
+                    None if baseline is None else SelectionEpoch(1)
+                ),
+                target_account_id=target[1],
+                pending_epoch=_required_selection_epoch(self._owner),
+                phase=SelectionPhase.WAITING_OLD_TURNS,
+                code=None,
+                registered_count=3,
+                reachable_count=3,
+                required_count=3,
+                active_turn_count=0 if baseline is None else 1,
             ),
         )
 
@@ -176,7 +256,7 @@ class SessionControlClient:
             raise OSError("Synthetic provider read-back failed.")
         target = self._owner.reconciliation_targets.get(provider_id)
         if target is not None:
-            self._owner.snapshots.activate(provider_id, target)
+            self._owner.snapshots.select_account(provider_id, target)
         yield _event(
             EventKind.COMPLETED,
             CompletedPayload(
@@ -230,6 +310,8 @@ def _event(
         | CompletedPayload
         | FailedPayload
         | ProgressPayload
+        | SelectionResult
+        | SelectionStatus
         | SnapshotPayload
     ),
 ) -> ControlEvent:
@@ -240,3 +322,12 @@ def _event(
         payload=payload,
         package_version=__version__,
     )
+
+
+def _required_selection_epoch(
+    owner: SessionControlConnector,
+) -> SelectionEpoch:
+    """Return the accepted synthetic selection epoch."""
+    if owner.selection_epoch is None:
+        raise AssertionError("Synthetic selection epoch is unavailable.")
+    return owner.selection_epoch

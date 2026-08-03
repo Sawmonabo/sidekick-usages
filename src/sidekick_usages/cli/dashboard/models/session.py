@@ -51,13 +51,13 @@ class DashboardSessionView:
     controller: DashboardControllerState
     footer: DashboardFooter
     action_in_flight: bool = False
-    activation_in_flight: bool = False
+    selection_in_flight: bool = False
     confirmation: DashboardConfirmation | None = None
 
     def __post_init__(self) -> None:
-        """Require activation and confirmation to belong to one action."""
-        if self.activation_in_flight and not self.action_in_flight:
-            raise ValueError("Activation requires an in-flight action.")
+        """Require selection and confirmation to belong to one action."""
+        if self.selection_in_flight and not self.action_in_flight:
+            raise ValueError("Selection requires an in-flight action.")
         if self.confirmation is not None and not self.action_in_flight:
             raise ValueError("Confirmation requires an in-flight action.")
 

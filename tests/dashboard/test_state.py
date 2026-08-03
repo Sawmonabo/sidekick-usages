@@ -8,13 +8,12 @@ import pytest
 
 from sidekick_usages.cli.dashboard.controller import DashboardController
 from sidekick_usages.cli.dashboard.models.controller import (
-    ActivateOrRepairIntent,
-    ClaudeAssociationRequest,
-    DashboardActivationProof,
     DashboardMove,
+    DashboardSelectionProof,
     DashboardSelectionRefusal,
     RefreshAccountIntent,
     RefreshDueAccountsIntent,
+    SelectAccountIntent,
 )
 from sidekick_usages.cli.dashboard.models.session import (
     DashboardConfirmationKind,
@@ -369,7 +368,7 @@ def test_cached_dashboard_scopes_codex_broker_degradation(
     )
     runtime_store.save_native(runtime_before)
     repair = DashboardController.start(managed).focus_next_provider()
-    assert repair.activate_or_repair() == ActivateOrRepairIntent(
+    assert repair.select_account() == SelectAccountIntent(
         provider_id=ProviderId.CODEX,
         account_id=managed_accounts[0].account_id,
     )
@@ -448,9 +447,10 @@ def test_dashboard_controller_journey_preserves_verified_truth(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """One journey proves pure transitions and serialized live activation."""
+    """One journey proves pure transitions and serialized live selection."""
     snapshot = controller_snapshot(REFERENCE_TIME)
     controller = DashboardController.start(snapshot)
+    claude, codex = snapshot.providers
 
     rows = tuple(
         row for provider in snapshot.providers for row in provider.rows
@@ -465,10 +465,33 @@ def test_dashboard_controller_journey_preserves_verified_truth(
     ]
     assert [len(provider.rows) for provider in snapshot.providers] == [4, 2]
     assert controller.state.account_id == CLAUDE_ACTIVE_ACCOUNT_ID
-    assert controller.activate_or_repair() == ActivateOrRepairIntent(
+    assert controller.select_account() == SelectAccountIntent(
         provider_id=ProviderId.CLAUDE,
         account_id=CLAUDE_ACTIVE_ACCOUNT_ID,
     )
+    changed_anchor = controller.rebase(
+        replace(
+            snapshot,
+            providers=(
+                replace(
+                    claude,
+                    active_account_id=CLAUDE_PREVIEW_ACCOUNT_ID,
+                    rows=tuple(
+                        replace(
+                            row,
+                            active=(
+                                row.account_id
+                                == CLAUDE_PREVIEW_ACCOUNT_ID
+                            ),
+                        )
+                        for row in claude.rows
+                    ),
+                ),
+                codex,
+            ),
+        )
+    )
+    assert changed_anchor.state.account_id == CLAUDE_ACTIVE_ACCOUNT_ID
 
     assert (
         controller.state.focused_provider,
@@ -482,7 +505,7 @@ def test_dashboard_controller_journey_preserves_verified_truth(
     controller = controller.move(DashboardMove.UP)
     assert controller.state.account_id == CLAUDE_PREVIEW_ACCOUNT_ID
     assert controller.state.anchors == verified_anchors
-    assert controller.activate_or_repair() == ActivateOrRepairIntent(
+    assert controller.select_account() == SelectAccountIntent(
         provider_id=ProviderId.CLAUDE,
         account_id=CLAUDE_PREVIEW_ACCOUNT_ID,
     )
@@ -504,13 +527,13 @@ def test_dashboard_controller_journey_preserves_verified_truth(
         controller.state.focused_provider,
         controller.state.account_id,
     ) == (ProviderId.CODEX, CODEX_SAVED_ACCOUNT_ID)
-    assert controller.activate_or_repair() == ActivateOrRepairIntent(
+    assert controller.select_account() == SelectAccountIntent(
         provider_id=ProviderId.CODEX,
         account_id=CODEX_SAVED_ACCOUNT_ID,
     )
     with pytest.raises(ValueError, match="contradicts provider read-back"):
-        controller.activation_succeeded(
-            DashboardActivationProof(
+        controller.selection_succeeded(
+            DashboardSelectionProof(
                 provider_id=ProviderId.CODEX,
                 account_id=CODEX_SAVED_ACCOUNT_ID,
             )
@@ -521,7 +544,6 @@ def test_dashboard_controller_journey_preserves_verified_truth(
     assert controller.state.help_visible
     assert not controller.toggle_help().state.help_visible
 
-    claude, codex = snapshot.providers
     due_account = claude.rows[0]
     assert isinstance(due_account, DashboardAccount)
     all_healthy = DashboardController.start(
@@ -573,17 +595,17 @@ def test_dashboard_controller_journey_preserves_verified_truth(
     assert (
         uncommitted.snapshot.service.ready,
         uncommitted.snapshot.providers[0].actions_enabled,
-        preparable.activate_or_repair(),
-        uncommitted.activate_or_repair(),
+        preparable.select_account(),
+        uncommitted.select_account(),
         uncommitted.refresh_account(),
     ) == (
         True,
         True,
-        ActivateOrRepairIntent(
+        SelectAccountIntent(
             provider_id=ProviderId.CLAUDE,
             account_id=CLAUDE_PREVIEW_ACCOUNT_ID,
         ),
-        ActivateOrRepairIntent(
+        SelectAccountIntent(
             provider_id=ProviderId.CLAUDE,
             account_id=CLAUDE_PREVIEW_ACCOUNT_ID,
         ),
@@ -610,7 +632,7 @@ def test_dashboard_controller_journey_preserves_verified_truth(
         disabled.state.account_id,
     ) == (ProviderId.CLAUDE, CLAUDE_PREVIEW_ACCOUNT_ID)
     assert (
-        disabled.activate_or_repair(),
+        disabled.select_account(),
         disabled.refresh_account(),
         disabled.refresh_due_accounts(),
     ) == (
@@ -664,10 +686,6 @@ def test_dashboard_controller_journey_preserves_verified_truth(
         control_connect_calls=(
             (SESSION_SOCKET, CONTROL_ACTION_TIMEOUT_SECONDS),
         ),
-        association_request=ClaudeAssociationRequest(
-            account_id=CLAUDE_PREVIEW_ACCOUNT_ID
-        ),
-        association_skipped_daemon=True,
         selection_refusal_footer=DashboardFooter(
             navigation=DashboardNavigationKind.KEYS,
             status=DashboardStatus(
@@ -692,7 +710,7 @@ def test_dashboard_controller_journey_preserves_verified_truth(
                 message=LOOKUP_FAILED_MESSAGE,
             ),
         ),
-        activation_locked=True,
+        selection_locked=True,
         confirmations=(
             (
                 DashboardConfirmationKind.SERVICE_SETUP,
@@ -710,7 +728,8 @@ def test_dashboard_controller_journey_preserves_verified_truth(
                 ),
             ),
         ),
-        activations=(
+        selections=(
+            (ProviderId.CLAUDE, CLAUDE_PREVIEW_ACCOUNT_ID),
             (ProviderId.CLAUDE, CLAUDE_PREVIEW_ACCOUNT_ID),
             (ProviderId.CLAUDE, CLAUDE_ACTIVE_ACCOUNT_ID),
             (ProviderId.CODEX, CODEX_RECONCILIATION_ACCOUNT_ID),
@@ -730,7 +749,18 @@ def test_dashboard_controller_journey_preserves_verified_truth(
         ),
         verified_account_id=CLAUDE_PREVIEW_ACCOUNT_ID,
         success_footer=DashboardFooter(
-            navigation=DashboardNavigationKind.KEYS
+            navigation=DashboardNavigationKind.KEYS,
+            status=DashboardStatus(
+                kind=DashboardStatusKind.PROGRESS,
+                message=("Account ready in 3 sessions; next requests use it."),
+            ),
+        ),
+        already_selected_footer=DashboardFooter(
+            navigation=DashboardNavigationKind.KEYS,
+            status=DashboardStatus(
+                kind=DashboardStatusKind.PROGRESS,
+                message="This saved account is already selected.",
+            ),
         ),
         setup_not_repeated=True,
         restored_account_id=CLAUDE_PREVIEW_ACCOUNT_ID,
@@ -821,6 +851,6 @@ def test_dashboard_controller_journey_preserves_verified_truth(
         lookup_cancelled=True,
         daemon_cancelled=True,
         stream_released=True,
-        closed_clients=3,
+        closed_clients=8,
         post_close_invalidations=0,
     )

@@ -67,12 +67,12 @@ class SessionSnapshotSource:
         """Queue deterministic lookup-owner cache reads."""
         self._lookup_snapshots.extend(snapshots)
 
-    def activate(
+    def select_account(
         self,
         provider_id: ProviderId,
         account_id: SidekickAccountId,
     ) -> None:
-        """Publish one provider-verified active account."""
+        """Publish one provider-verified selected account."""
         providers = tuple(
             (
                 replace(provider, actions_enabled=True)

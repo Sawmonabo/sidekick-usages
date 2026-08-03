@@ -65,7 +65,6 @@ from tests.fakes.codex.app_server.executable import (
 )
 from tests.fakes.codex.app_server.schema import write_codex_schema
 from tests.fakes.daemon.foundation import foundation_state
-from tests.fakes.daemon.runtime import ResidentState
 from tests.support.time import FixedClock
 
 _ORIGINAL_BASH = "# user alias\nalias ll='ls -l'\n"
@@ -880,7 +879,6 @@ def test_codex_session_runs_one_coordinated_stock_tui(
             state.queue,
             ServiceStateStore(state.paths.service_state),
             dispatch.OperationEventHub(),
-            ResidentState(),
             clock,
             Event().set,
             Event().set,

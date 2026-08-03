@@ -166,7 +166,7 @@ class RecordingDispatcher:
         """Yield the closed synthetic stream for one request."""
         request = context.request
         self.requests.append(request)
-        if request.kind is RequestKind.ACTIVATE:
+        if request.kind is RequestKind.REFRESH_ACCOUNT:
             operation_id = OperationId("f619cb29-9f6e-40dd-b35d-cf6a6ed93f79")
             yield _service_event(
                 request,
@@ -304,7 +304,6 @@ class RegistryMonitorScenario:
             self._state.queue,
             ServiceStateStore(self._state.paths.service_state),
             OperationEventHub(diagnostic.failed),
-            self._resident,
             FixedClock(),
             Event().set,
             Event().set,
@@ -413,14 +412,12 @@ def _service_event(
 
 def foundation_dispatcher(
     state: FoundationState,
-    resident: ResidentService,
 ) -> SupervisorDispatcher:
     """Compose the default dispatcher for one foundation state graph."""
     return SupervisorDispatcher(
         state.queue,
         ServiceStateStore(state.paths.service_state),
         OperationEventHub(),
-        resident,
         FixedClock(),
         Event().set,
         Event().set,

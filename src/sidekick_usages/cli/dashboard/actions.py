@@ -5,10 +5,10 @@ from threading import Lock
 from typing import assert_never
 
 from sidekick_usages.cli.dashboard.models.controller import (
-    ActivateOrRepairIntent,
     DashboardIntent,
     RefreshAccountIntent,
     RefreshDueAccountsIntent,
+    SelectAccountIntent,
 )
 from sidekick_usages.cli.dashboard.models.session import (
     DashboardActionRequest,
@@ -27,10 +27,16 @@ from sidekick_usages.cli.dashboard.ports import (
     DashboardControlConnector,
 )
 from sidekick_usages.cli.dashboard.setup import GuidedServiceSetup
+from sidekick_usages.core.accounts.types import (
+    OperationId,
+    SidekickAccountId,
+)
+from sidekick_usages.core.selection.types import SelectionPhase
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.control.client import (
     UnexpectedServiceEventError,
     consume_control_action,
+    consume_selection_action,
 )
 from sidekick_usages.daemon.control.protocol import ProtocolFailureError
 from sidekick_usages.daemon.models.lifecycle import (
@@ -41,6 +47,7 @@ from sidekick_usages.daemon.models.protocol import (
     ControlActionTerminalPayload,
     SnapshotPayload,
 )
+from sidekick_usages.daemon.selection.models import SelectionStatus
 from sidekick_usages.daemon.types.lifecycle import ServiceLifecyclePhase
 from sidekick_usages.daemon.types.protocol import (
     CompletionOutcome,
@@ -77,6 +84,7 @@ class DashboardActionExecutor:
         self._sink = sink
         self._client_lock = Lock()
         self._active_client: DashboardControlClient | None = None
+        self._status_client: DashboardControlClient | None = None
 
     def execute(self, request: DashboardActionRequest) -> None:
         """Prepare and dispatch one exact request at most once per approval."""
@@ -151,9 +159,13 @@ class DashboardActionExecutor:
         self._setup.close()
         with self._client_lock:
             client = self._active_client
+            status_client = self._status_client
             self._active_client = None
+            self._status_client = None
         if client is not None:
             client.close()
+        if status_client is not None:
+            status_client.close()
 
     def _prepare_service(
         self,
@@ -228,12 +240,21 @@ class DashboardActionExecutor:
         request: DashboardActionRequest,
     ) -> ControlActionTerminalPayload:
         intent = request.intent
-        if isinstance(intent, ActivateOrRepairIntent):
-            events = client.activate(
-                intent.provider_id,
-                intent.account_id,
+        if isinstance(intent, SelectAccountIntent):
+            return consume_selection_action(
+                client.select_account(
+                    intent.provider_id,
+                    intent.account_id,
+                ),
+                provider_id=intent.provider_id,
+                account_id=intent.account_id,
+                accepted=lambda operation_id: self._observe_selection(
+                    operation_id,
+                    intent.provider_id,
+                    intent.account_id,
+                ),
             )
-        elif isinstance(intent, RefreshAccountIntent):
+        if isinstance(intent, RefreshAccountIntent):
             events = client.refresh_account(
                 intent.provider_id,
                 intent.account_id,
@@ -249,6 +270,54 @@ class DashboardActionExecutor:
             ),
             progress=self._publish_progress,
         )
+
+    def _observe_selection(
+        self,
+        operation_id: OperationId,
+        provider_id: ProviderId,
+        account_id: SidekickAccountId,
+    ) -> None:
+        """Publish one truthful phase snapshot after durable acceptance."""
+        client: DashboardControlClient | None = None
+        try:
+            client = self._connector(self._socket_path)
+            with self._client_lock:
+                if self._sink.stopping:
+                    client.close()
+                    return
+                self._status_client = client
+            events = tuple(client.selection_status(provider_id))
+            if len(events) != 1:
+                raise UnexpectedServiceEventError(
+                    "The service returned an invalid selection status."
+                )
+            event = events[0]
+            status = event.payload
+            if (
+                event.kind is not EventKind.SELECTION_STATUS
+                or not isinstance(status, SelectionStatus)
+                or status.operation_id != operation_id
+                or status.provider_id is not provider_id
+                or status.target_account_id != account_id
+            ):
+                raise UnexpectedServiceEventError(
+                    "The service returned unrelated selection status."
+                )
+            self._sink.publish_progress(_selection_progress(status))
+        except (
+            UnexpectedServiceEventError,
+            OSError,
+            ProtocolFailureError,
+        ):
+            self._sink.publish_progress(
+                "Account change accepted; current phase is unavailable."
+            )
+        finally:
+            if client is not None:
+                client.close()
+                with self._client_lock:
+                    if self._status_client is client:
+                        self._status_client = None
 
     def _dispatch_ready(
         self,
@@ -333,3 +402,21 @@ def _service_setup_progress_message(
         case _:
             assert_never(observation.phase)
     return message
+
+
+def _selection_progress(status: SelectionStatus) -> str:
+    """Render one truthful provider selection phase and bounded count."""
+    if status.phase is SelectionPhase.WAITING_OLD_TURNS:
+        count = status.active_turn_count
+        suffix = "turn" if count == 1 else "turns"
+        return f"Waiting for {count} active {suffix}…"
+    if status.phase is SelectionPhase.AWAITING_READY:
+        return (
+            f"Account ready in {status.ready_count} of "
+            f"{status.required_count} sessions…"
+        )
+    if status.phase is SelectionPhase.COMMITTING:
+        return "Changing provider account…"
+    if status.phase is SelectionPhase.RECOVERING:
+        return "Account change requires recovery."
+    return "Preparing account change…"

@@ -17,13 +17,17 @@ from sidekick_usages.core.selection.models import (
     SelectionEpoch,
 )
 from sidekick_usages.core.selection.types import (
-    ActivationPhase,
+    SelectionCode,
 )
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.control.client import ControlClient
-from sidekick_usages.daemon.models.protocol import FailedPayload
+from sidekick_usages.daemon.models.protocol import (
+    ActivationPayload,
+    FailedPayload,
+)
 from sidekick_usages.daemon.types.protocol import (
     EventKind,
+    RequestKind,
 )
 from sidekick_usages.paths import ApplicationPaths
 from sidekick_usages.persistence.supervisor.activation import (
@@ -37,10 +41,6 @@ from sidekick_usages.providers.codex.auth.storage import observe_native_auth
 from sidekick_usages.providers.codex.broker.authority import (
     CodexSavedAuthorityResolver,
 )
-from sidekick_usages.providers.codex.broker.daemon import CodexDaemonManager
-from sidekick_usages.providers.codex.broker.errors import CodexBrokerError
-from sidekick_usages.providers.codex.broker.models import CodexDaemonAuthority
-from sidekick_usages.providers.codex.broker.types import CodexBrokerFailure
 from tests.fakes.codex.app_server.daemon import FakeCodexDaemon
 from tests.fakes.codex.app_server.executable import (
     configure_codex_daemon_lifecycle,
@@ -132,7 +132,7 @@ def _codex_recovery_state(
     )
 
 
-def test_codex_activation_commits_only_correlated_target(
+def test_legacy_codex_activation_is_refused_before_provider_mutation(
     tmp_path: Path,
     short_socket_root: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -186,23 +186,6 @@ def test_codex_activation_commits_only_correlated_target(
         finalized_at=REFERENCE_TIME,
     )
     selected.compare_and_swap(claude, expected=None)
-    reject_revalidation = False
-    revalidate = CodexDaemonManager.revalidate
-
-    def revalidate_current_socket(
-        manager: CodexDaemonManager,
-        authority: CodexDaemonAuthority,
-    ) -> None:
-        if reject_revalidation:
-            raise CodexBrokerError(CodexBrokerFailure.RUNTIME_CHANGED)
-        revalidate(manager, authority)
-
-    monkeypatch.setattr(
-        CodexDaemonManager,
-        "revalidate",
-        revalidate_current_socket,
-    )
-
     with FakeCodexDaemon(
         fixture.session_home,
         app_server_version="0.146.0",
@@ -224,77 +207,33 @@ def test_codex_activation_commits_only_correlated_target(
             selected_baseline = selected.load(ProviderId.CODEX)
             assert selected_baseline is not None
             install_count = len(daemon.installed_account_ids)
-            reject_revalidation = True
             client = ControlClient.connect(fixture.paths.supervisor_socket)
             failed = tuple(
-                client.activate(ProviderId.CODEX, MANAGED_ACCOUNT_ID)
+                client.request(
+                    RequestKind.ACTIVATE,
+                    ActivationPayload(
+                        ProviderId.CODEX,
+                        MANAGED_ACCOUNT_ID,
+                    ),
+                )
             )
             client.close()
 
-            assert [event.kind for event in failed] == [
-                EventKind.ACCEPTED,
-                EventKind.PROGRESS,
-                EventKind.FAILED,
-            ]
-            assert isinstance(failed[-1].payload, FailedPayload)
-            assert len(daemon.installed_account_ids) > install_count
+            assert [event.kind for event in failed] == [EventKind.FAILED]
+            refusal = failed[0].payload
+            assert isinstance(refusal, FailedPayload)
+            assert (
+                refusal.code
+                == SelectionCode.UNCOORDINATED_AUTH_MUTATION.value
+            )
+            assert len(daemon.installed_account_ids) == install_count
             assert selected.load(ProviderId.CODEX) == selected_baseline
             assert selected.load(ProviderId.CLAUDE) == claude
-            interrupted = ActivationJournalStore(
-                fixture.paths.activation_journals,
-                fixture.paths.durable_operations,
-            ).load(ProviderId.CODEX)
-            assert interrupted.active is not None
-            assert (
-                interrupted.active.phase
-                is ActivationPhase.RECONCILIATION_REQUIRED
-            )
-
-        reject_revalidation = False
-        daemon.pause_next_install()
-        with FakeCodexSupervisor(
-            fixture.paths,
-            fixture.executable,
-            fixture.session_home,
-            fixture.environment,
-            real_worker_executable(),
-        ) as restarted:
-            restarted.wait_until_broker_available()
-            daemon.wait_for_paused_install()
-            daemon.resume_install()
-            wait_for_projected_generation(
-                fixture.paths,
-                MANAGED_ACCOUNT_ID,
-                PROVIDER_IDENTITY,
-                NEXT_GENERATION,
-            )
-            _require_projection_without_finalization(
-                selected,
-                selected_baseline,
-                PROVIDER_IDENTITY,
-            )
             journal = ActivationJournalStore(
                 fixture.paths.activation_journals,
                 fixture.paths.durable_operations,
             ).load(ProviderId.CODEX)
-            terminal = journal.history[-1]
-            assert (
-                restarted.ready,
-                daemon.installed_account_ids[-1],
-                journal.active,
-                terminal.phase,
-                terminal.target_authority_generation,
-                terminal.verified_runtime_generation,
-                selected.load(ProviderId.CLAUDE),
-            ) == (
-                False,
-                PROVIDER_IDENTITY,
-                None,
-                ActivationPhase.COMMITTED,
-                AuthorityGeneration(NEXT_GENERATION),
-                AuthorityGeneration(NEXT_GENERATION),
-                claude,
-            )
+            assert journal.active is None
 
     assert fixture.native_auth.read_bytes() == NATIVE_AUTH_SENTINEL
 
