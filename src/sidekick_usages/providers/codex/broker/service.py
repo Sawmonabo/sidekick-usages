@@ -1,6 +1,8 @@
 """Release-gated shared Codex runtime and projection readiness."""
 
+import socket
 from collections.abc import Callable, Mapping
+from contextlib import ExitStack
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -216,6 +218,19 @@ class CodexSharedRuntime:
         if not capability.supported:
             self._drop_session()
             raise CodexBrokerError(CodexBrokerFailure.PROTOCOL_UNSUPPORTED)
+
+    def open_participant_socket(self) -> socket.socket:
+        """Transfer one peer-verified connection to a participant relay."""
+        self.qualify()
+        authority = self.authority
+        if authority is None:
+            raise CodexBrokerError(CodexBrokerFailure.RUNTIME_CHANGED)
+        connection = self._manager.connect(authority)
+        with ExitStack() as cleanup:
+            cleanup.callback(connection.close)
+            self._manager.revalidate(authority)
+            cleanup.pop_all()
+        return connection
 
     def prepare(
         self,

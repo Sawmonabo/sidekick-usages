@@ -15,6 +15,7 @@ from sidekick_usages.core.accounts.validation import (
     MAX_METADATA_BYTES,
     require_bounded_text,
 )
+from sidekick_usages.core.selection.models import SelectionEpoch
 from sidekick_usages.providers.codex.app_server.models import (
     CodexExecutable,
     CodexVersion,
@@ -171,7 +172,18 @@ class CodexCallbackInstruction:
     account_id: SidekickAccountId
     provider_identity: ProviderIdentity
     source_generation: AuthorityGeneration
+    selection_epoch: SelectionEpoch
+    request_id: int | None
     deadlines: CodexExchangeDeadlines
+
+    def __post_init__(self) -> None:
+        """Bind provider callbacks only to their phase-owned request."""
+        refresh = self.mode is CodexCallbackMode.REFRESH
+        if refresh != (self.request_id is not None) or (
+            self.request_id is not None
+            and (isinstance(self.request_id, bool) or self.request_id < 0)
+        ):
+            raise ValueError("Codex callback request identity is invalid.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,6 +193,8 @@ class CodexCallbackAcknowledgement:
     operation_id: OperationId
     mode: CodexCallbackMode
     generation: AuthorityGeneration
+    selection_epoch: SelectionEpoch
+    request_id: int | None
 
 
 @dataclass(frozen=True, slots=True)

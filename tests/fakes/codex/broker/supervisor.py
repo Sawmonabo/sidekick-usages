@@ -26,6 +26,13 @@ from sidekick_usages.daemon.runtime.supervisor import (
     SupervisorRuntime,
     WakeupChannel,
 )
+from sidekick_usages.daemon.selection.coordinator import SelectionCoordinator
+from sidekick_usages.daemon.selection.recovery import SelectionRecovery
+from sidekick_usages.daemon.selection.registry import ParticipantRegistry
+from sidekick_usages.daemon.selection.worker import (
+    SelectionSchedulerSink,
+    SelectionWorkerGateway,
+)
 from sidekick_usages.daemon.types.service import ServicePhase
 from sidekick_usages.daemon.worker.exchange import WorkerExchangeRegistry
 from sidekick_usages.daemon.worker.pool import (
@@ -49,7 +56,10 @@ from sidekick_usages.persistence.supervisor.results import WorkerResultStore
 from sidekick_usages.persistence.supervisor.runtime import (
     RuntimeStateReader,
 )
-from sidekick_usages.persistence.supervisor.selection import SelectedStateStore
+from sidekick_usages.persistence.supervisor.selection import (
+    SelectedStateStore,
+    SelectionOperationStore,
+)
 from sidekick_usages.persistence.supervisor.service import ServiceStateStore
 from sidekick_usages.providers.codex.app_server.models import CodexExecutable
 from sidekick_usages.providers.codex.broker.responder import CodexRuntimeBroker
@@ -231,7 +241,34 @@ class FakeCodexSupervisor:
             paths.durable_operations,
         )
         observations = RuntimeAuthObservationStore(paths.durable_operations)
-        recovery = ActivationRecoveryScheduler(journals, queue)
+        selected = SelectedStateStore(paths.selected_state)
+        selection_journals = SelectionOperationStore(paths.selection_journals)
+        participants = ParticipantRegistry(selected)
+        selection_workers = SelectionWorkerGateway(
+            queue,
+            clock,
+            self._wakeup.notify,
+        )
+        selection_recovery = SelectionRecovery(
+            selected,
+            selection_journals,
+            participants,
+            selection_workers,
+            clock,
+        )
+        selection = SelectionCoordinator(
+            selected,
+            selection_journals,
+            participants,
+            selection_workers,
+            clock,
+            resume_recovery=selection_recovery.resume,
+        )
+        recovery = ActivationRecoveryScheduler(
+            journals,
+            queue,
+            selection_recovery=selection_recovery,
+        )
         events = OperationEventHub()
         exchanges = WorkerExchangeRegistry(time.monotonic)
         worker_environment = dict(environment)
@@ -264,7 +301,11 @@ class FakeCodexSupervisor:
             results,
             workers,
             clock,
-            events=events,
+            events=SelectionSchedulerSink(
+                events,
+                selection_workers,
+                selection_recovery,
+            ),
             exchange_preparer=broker,
         )
         dispatcher = SupervisorDispatcher(
@@ -275,6 +316,7 @@ class FakeCodexSupervisor:
             clock,
             self._wakeup.notify,
             self._request_stop,
+            selection=selection,
         )
         self._broker = broker
         self._service_state = service_state

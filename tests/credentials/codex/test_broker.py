@@ -16,18 +16,22 @@ from sidekick_usages.core.selection.models import (
     ActivationRecord,
     DueOperation,
     FinalizedSelection,
+    SelectionResult,
 )
 from sidekick_usages.core.selection.types import (
     ActivationPhase,
     OperationKind,
     OperationPriority,
     OperationState,
+    SelectionCode,
+    SelectionOutcome,
 )
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.credentials.codex.managed.service import (
     CodexManagedAuthorityCoordinator,
 )
 from sidekick_usages.daemon.control.client import ControlClient
+from sidekick_usages.daemon.types.protocol import EventKind
 from sidekick_usages.paths import ApplicationPaths
 from sidekick_usages.persistence.supervisor.activation import (
     ActivationJournalStore,
@@ -67,6 +71,7 @@ from tests.fakes.codex.app_server.schema import write_codex_schema
 from tests.fakes.codex.auth import managed_auth
 from tests.fakes.codex.broker.runtime import (
     ACCOUNT_A_ID,
+    ACCOUNT_A_PROVIDER_IDENTITY,
     GENERATION,
     MANAGED_ACCOUNT_ID,
     MANAGED_AUTHORITY_ID,
@@ -75,6 +80,7 @@ from tests.fakes.codex.broker.runtime import (
     PROVIDER_IDENTITY,
     RECOVERY_GENERATION,
     UNKNOWN_GENERATION,
+    activation_source_fixture,
     broker_finalized_fixture,
     projection_matches_account,
     real_worker_executable,
@@ -555,6 +561,113 @@ def test_resident_broker_refreshes_and_recovers_provider_ahead_state(
 
         observer_a.close()
         observer_b.close()
+    assert fixture.native_auth.read_bytes() == NATIVE_AUTH_SENTINEL
+
+
+def test_selection_worker_binds_codex_broker_journey(
+    tmp_path: Path,
+    short_socket_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex selection uses one epoch-bound resident broker journey."""
+    fixture = activation_source_fixture(
+        tmp_path,
+        short_socket_root,
+        monkeypatch,
+    )
+    paths = fixture.paths
+    initial = _finalized_codex_selection(paths)
+
+    with FakeCodexDaemon(
+        fixture.session_home,
+        app_server_version="0.146.0",
+    ) as daemon:
+        configure_codex_daemon_lifecycle(
+            fixture.provider_root,
+            fixture.session_home,
+            daemon.socket_path,
+            app_server_version="0.146.0",
+        )
+        observer = daemon.connect_tui()
+        with FakeCodexSupervisor(
+            paths,
+            fixture.executable,
+            fixture.session_home,
+            fixture.environment,
+            real_worker_executable(),
+        ) as supervisor:
+            supervisor.wait_until_ready()
+            observer.wait_for_account_update()
+            client = ControlClient.connect(
+                paths.supervisor_socket,
+                action_timeout_seconds=15.0,
+            )
+            try:
+                client.handshake()
+                try:
+                    events = tuple(
+                        client.select_account(
+                            ProviderId.CODEX,
+                            MANAGED_ACCOUNT_ID,
+                        )
+                    )
+                except TimeoutError:
+                    pytest.fail("Codex selection worker was not dispatched.")
+            finally:
+                client.close()
+
+            assert tuple(event.kind for event in events) == (
+                EventKind.ACCEPTED,
+                EventKind.SELECTION_RESULT,
+            )
+            result = events[-1].payload
+            assert isinstance(result, SelectionResult)
+            assert (
+                result.outcome,
+                result.safe_code,
+                result.target_account_id,
+                result.target_generation,
+                result.epoch,
+            ) == (
+                SelectionOutcome.READY,
+                SelectionCode.SELECTION_SUCCEEDED,
+                MANAGED_ACCOUNT_ID,
+                AuthorityGeneration(NEXT_GENERATION),
+                initial.epoch.next(),
+            )
+            observer.wait_for_account_update()
+            finalized = _finalized_codex_selection(paths)
+            assert (
+                finalized.provider_id,
+                finalized.account_id,
+                finalized.epoch,
+                finalized.generation,
+            ) == (
+                ProviderId.CODEX,
+                MANAGED_ACCOUNT_ID,
+                initial.epoch.next(),
+                AuthorityGeneration(NEXT_GENERATION),
+            )
+            assert initial.finalized_at < finalized.finalized_at
+            assert finalized.finalized_at <= result.completed_at
+            assert daemon.installed_account_ids == (
+                ACCOUNT_A_PROVIDER_IDENTITY,
+                PROVIDER_IDENTITY,
+            )
+            stale = daemon.request_refresh(ACCOUNT_A_PROVIDER_IDENTITY)
+            assert (stale.responder, stale.error_code) == (
+                "sidekick_usages",
+                CODEX_REFRESH_ERROR_CODE,
+            )
+            assert daemon.read_current_external_auth() == ProviderIdentity(
+                PROVIDER_IDENTITY
+            )
+            assert daemon.installed_account_ids == (
+                ACCOUNT_A_PROVIDER_IDENTITY,
+                PROVIDER_IDENTITY,
+            )
+
+        observer.close()
     assert fixture.native_auth.read_bytes() == NATIVE_AUTH_SENTINEL
 
 

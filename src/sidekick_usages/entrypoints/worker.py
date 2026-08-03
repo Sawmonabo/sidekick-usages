@@ -85,6 +85,9 @@ from sidekick_usages.daemon.worker.codex.maintenance import (
 from sidekick_usages.daemon.worker.codex.reconciliation import (
     CodexNativeReconciliationWorkerExecutor,
 )
+from sidekick_usages.daemon.worker.codex.selection import (
+    CodexSelectionWorkerExecutor,
+)
 from sidekick_usages.daemon.worker.exchange import (
     WorkerExchangeChannel,
     WorkerExchangeError,
@@ -411,24 +414,48 @@ class _ProviderOperationExecutor:
         """Run one journal-bound provider selection phase."""
         self._selection.release_orphans(operation, authority)
         active, baseline = self._selection.context(operation)
-        if operation.provider_id is not ProviderId.CLAUDE:
+        if operation.provider_id is ProviderId.CLAUDE:
+            executor = _claude_selection_executor(
+                operation,
+                self._paths,
+                self._persistence,
+                self._store,
+                self._selected,
+                self._journals,
+                self._clock,
+                self._provider_launchers.claude,
+            )
+            result = executor.execute_selection(
+                operation,
+                active,
+                baseline,
+                authority,
+            )
+        elif operation.provider_id is ProviderId.CODEX:
+            try:
+                executor = _codex_selection_executor(
+                    self._paths,
+                    self._persistence,
+                    self._store,
+                    self._exchange,
+                    self._clock,
+                    self._provider_launchers.codex,
+                )
+            except CodexAppServerError as error:
+                result = _codex_app_server_failure(
+                    operation,
+                    error,
+                    self._clock,
+                )
+            else:
+                result = executor.execute_selection(
+                    operation,
+                    active,
+                    baseline,
+                    authority,
+                )
+        else:
             raise ValueError("Selection worker provider is unsupported.")
-        executor = _claude_selection_executor(
-            operation,
-            self._paths,
-            self._persistence,
-            self._store,
-            self._selected,
-            self._journals,
-            self._clock,
-            self._provider_launchers.claude,
-        )
-        result = executor.execute_selection(
-            operation,
-            active,
-            baseline,
-            authority,
-        )
         return self._selection.finish(operation, active, result)
 
 
@@ -702,6 +729,31 @@ def _claude_selection_executor(
             selected,
             clock,
         ),
+        clock,
+    )
+
+
+def _codex_selection_executor(
+    paths: ApplicationPaths,
+    persistence: PersistenceService,
+    store: AccountStore,
+    exchange: WorkerExchangeChannel | None,
+    clock: Clock,
+    codex_launcher: Path | None,
+) -> CodexSelectionWorkerExecutor:
+    """Compose one exact Codex selection exchange executor."""
+    if exchange is None:
+        raise ValueError("Codex selection operation has no channel.")
+    return CodexSelectionWorkerExecutor(
+        compose_codex_managed_authority(
+            paths,
+            store,
+            persistence.managed_codex_profiles,
+            clock,
+            os.environ,
+            launcher=codex_launcher,
+        ),
+        exchange,
         clock,
     )
 

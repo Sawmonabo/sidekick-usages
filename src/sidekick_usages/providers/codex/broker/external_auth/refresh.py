@@ -6,6 +6,7 @@ from sidekick_usages.core.accounts.types import (
     ProviderIdentity,
     SidekickAccountId,
 )
+from sidekick_usages.core.selection.models import SelectionEpoch
 from sidekick_usages.providers.codex.app_server.jsonrpc.codec import (
     MAX_JSON_RPC_INTEGER,
 )
@@ -46,7 +47,7 @@ from sidekick_usages.serialization.json import (
     encode_compact_json_buffer,
 )
 
-CODEX_CALLBACK_PROTOCOL_VERSION = 1
+CODEX_CALLBACK_PROTOCOL_VERSION = 2
 CODEX_REFRESH_REASON = "unauthorized"
 CODEX_REFRESH_ERROR_CODE = -32000
 CODEX_REFRESH_ERROR_MESSAGE = "external auth refresh unavailable"
@@ -59,7 +60,9 @@ _INSTRUCTION_KEYS = frozenset(
         "operation_id",
         "protocol_version",
         "provider_identity",
+        "request_id",
         "response_deadline_nanoseconds",
+        "selection_epoch",
         "source_generation",
     }
 )
@@ -73,6 +76,8 @@ _REPLY_KEYS = frozenset(
         "plan",
         "protocol_version",
         "provider_identity",
+        "request_id",
+        "selection_epoch",
         "source_generation",
     }
 )
@@ -83,6 +88,8 @@ _ACKNOWLEDGEMENT_KEYS = frozenset(
         "operation_id",
         "outcome",
         "protocol_version",
+        "request_id",
+        "selection_epoch",
     }
 )
 
@@ -124,10 +131,12 @@ def encode_codex_callback_instruction(
             "operation_id": str(instruction.operation_id),
             "protocol_version": CODEX_CALLBACK_PROTOCOL_VERSION,
             "provider_identity": str(instruction.provider_identity),
+            "request_id": instruction.request_id,
             "response_deadline_nanoseconds": (
                 instruction.deadlines.response_deadline_nanoseconds
             ),
             "source_generation": str(instruction.source_generation),
+            "selection_epoch": instruction.selection_epoch.value,
         }
     )
 
@@ -156,6 +165,10 @@ def decode_codex_callback_instruction(
             source_generation=AuthorityGeneration(
                 worker_message_text(root, "source_generation")
             ),
+            selection_epoch=SelectionEpoch(
+                worker_message_integer(root, "selection_epoch")
+            ),
+            request_id=_callback_request_id(root),
             deadlines=CodexExchangeDeadlines(
                 response_deadline_nanoseconds=worker_message_integer(
                     root,
@@ -197,6 +210,8 @@ def encode_codex_refresh_reply(
                 "plan": projection.plan,
                 "protocol_version": CODEX_CALLBACK_PROTOCOL_VERSION,
                 "provider_identity": str(projection.provider_identity),
+                "request_id": instruction.request_id,
+                "selection_epoch": instruction.selection_epoch.value,
                 "source_generation": str(instruction.source_generation),
             }
         )
@@ -225,6 +240,10 @@ def decode_codex_refresh_reply(
         source_generation = AuthorityGeneration(
             worker_message_text(root, "source_generation")
         )
+        selection_epoch = SelectionEpoch(
+            worker_message_integer(root, "selection_epoch")
+        )
+        request_id = _callback_request_id(root)
         generation = AuthorityGeneration(
             worker_message_text(root, "generation")
         )
@@ -240,6 +259,8 @@ def decode_codex_refresh_reply(
         or account_id != instruction.account_id
         or provider_identity != instruction.provider_identity
         or source_generation != instruction.source_generation
+        or selection_epoch != instruction.selection_epoch
+        or request_id != instruction.request_id
         or not _generation_matches(
             mode,
             source_generation,
@@ -269,6 +290,8 @@ def encode_codex_callback_acknowledgement(
             "operation_id": str(acknowledgement.operation_id),
             "outcome": CODEX_CALLBACK_DISPATCHED,
             "protocol_version": CODEX_CALLBACK_PROTOCOL_VERSION,
+            "request_id": acknowledgement.request_id,
+            "selection_epoch": acknowledgement.selection_epoch.value,
         }
     )
 
@@ -293,6 +316,10 @@ def decode_codex_callback_acknowledgement(
             generation=AuthorityGeneration(
                 worker_message_text(root, "generation")
             ),
+            selection_epoch=SelectionEpoch(
+                worker_message_integer(root, "selection_epoch")
+            ),
+            request_id=_callback_request_id(root),
         )
     except TypeError, ValueError:
         raise CodexBrokerError(CodexBrokerFailure.PROTOCOL_FAILED) from None
@@ -301,6 +328,8 @@ def decode_codex_callback_acknowledgement(
         or acknowledgement.operation_id != instruction.operation_id
         or acknowledgement.mode is not instruction.mode
         or acknowledgement.generation != generation
+        or acknowledgement.selection_epoch != instruction.selection_epoch
+        or acknowledgement.request_id != instruction.request_id
     ):
         raise CodexBrokerError(CodexBrokerFailure.IDENTITY_MISMATCH)
     return acknowledgement
@@ -328,3 +357,17 @@ def _generation_matches(
     if mode is CodexCallbackMode.REFRESH:
         return candidate_order > source_order
     return candidate_order >= source_order
+
+
+def _callback_request_id(root: JsonObject) -> int | None:
+    value = root.get("request_id")
+    if value is None:
+        return None
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value < 0
+        or value > MAX_JSON_RPC_INTEGER
+    ):
+        raise CodexBrokerError(CodexBrokerFailure.PROTOCOL_FAILED)
+    return value

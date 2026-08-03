@@ -66,6 +66,9 @@ from sidekick_usages.providers.codex.broker.ports import (
     CodexWorkerExchange,
     CodexWorkerExchangeFactory,
 )
+from sidekick_usages.providers.codex.broker.selection import (
+    CodexSelectionBroker,
+)
 from sidekick_usages.providers.codex.broker.service import CodexSharedRuntime
 from sidekick_usages.providers.codex.broker.types import (
     CodexActivationMode,
@@ -127,6 +130,13 @@ class CodexRuntimeBroker:
         self._active_operation: OperationId | None = None
         self._activation_instruction: CodexActivationInstruction | None = None
         self._activation_exchange: CodexWorkerExchange | None = None
+        self._selection = CodexSelectionBroker(
+            exchanges,
+            self._saved_authority,
+            runtime_state,
+            wall_time=wall_time,
+            monotonic=monotonic,
+        )
         self._native_auth = CodexNativeAuthReconciler(
             runtime_state,
             self._saved_authority,
@@ -164,6 +174,11 @@ class CodexRuntimeBroker:
 
     def prepare_operation(self, operation: DueOperation) -> bool:
         """Prepare an exchange only after resident runtime qualification."""
+        if operation.kind.is_selection_worker:
+            prepared = self._selection.prepare(operation)
+            if prepared and self._status_changed is not None:
+                self._status_changed()
+            return prepared
         if (
             operation.provider_id is ProviderId.CODEX
             and operation.kind is OperationKind.RECONCILE_NATIVE
@@ -263,6 +278,7 @@ class CodexRuntimeBroker:
             self._operations.cancel(operation_id)
         if activation is not None:
             self._exchanges.cancel(activation.operation_id)
+        self._selection.cancel()
         self._native_preparation.reset()
 
     def close(self) -> None:
@@ -316,16 +332,18 @@ class CodexRuntimeBroker:
         self,
         runtime: CodexSharedRuntime | None,
     ) -> CodexSharedRuntime | None:
-        if runtime is None:
-            self._set_qualified(False)
-            self._set_ready(False)
-            runtime = self._runtime_factory(self._stop.is_set)
-            runtime.qualify()
-        elif not runtime.qualified:
-            self._set_qualified(False)
-            self._set_ready(False)
-            runtime.qualify()
+        runtime = self._qualified_runtime(runtime)
+        self._selection.set_authority(runtime.authority)
         self._set_qualified(True)
+        if self._selection.serve_pending(
+            runtime,
+            self._record_verified_projection,
+            self._set_ready,
+            self._stop.wait,
+            self._status_changed,
+            wait_seconds=_BROKER_RECEIVE_SECONDS,
+        ):
+            return runtime
         activation = self._pending_activation()
         if activation is not None:
             instruction, exchange = activation
@@ -357,6 +375,22 @@ class CodexRuntimeBroker:
         ):
             self._set_ready(False)
         return self._serve_current(runtime)
+
+    def _qualified_runtime(
+        self,
+        runtime: CodexSharedRuntime | None,
+    ) -> CodexSharedRuntime:
+        """Return one live qualified runtime, creating it when absent."""
+        if runtime is None:
+            self._set_qualified(False)
+            self._set_ready(False)
+            runtime = self._runtime_factory(self._stop.is_set)
+            runtime.qualify()
+        elif not runtime.qualified:
+            self._set_qualified(False)
+            self._set_ready(False)
+            runtime.qualify()
+        return runtime
 
     def _serve_current(
         self,
@@ -431,6 +465,8 @@ class CodexRuntimeBroker:
                 self._qualified.clear()
             self._failure_code = next_failure
             self._preparation_report = next_report
+        if not qualified:
+            self._selection.set_authority(None)
         if self._status_changed is not None:
             self._status_changed()
 
@@ -620,6 +656,7 @@ class CodexRuntimeBroker:
             CodexCallbackMode.REHYDRATE,
             response_deadline,
             completion_deadline,
+            request_id=None,
         )
         completed = False
         try:
@@ -635,9 +672,11 @@ class CodexRuntimeBroker:
             exchange.acknowledge(
                 encode_codex_callback_acknowledgement(
                     CodexCallbackAcknowledgement(
-                        instruction.operation_id,
-                        instruction.mode,
-                        reply.generation,
+                        operation_id=instruction.operation_id,
+                        mode=instruction.mode,
+                        generation=reply.generation,
+                        selection_epoch=instruction.selection_epoch,
+                        request_id=instruction.request_id,
                     )
                 )
             )
@@ -667,6 +706,7 @@ class CodexRuntimeBroker:
                 CodexCallbackMode.REFRESH,
                 response_deadline,
                 completion_deadline,
+                request_id=request.request_id,
             )
             reply = self._reply(exchange, instruction)
             if runtime.receipt is None or not runtime.receipt.matches(
@@ -689,9 +729,11 @@ class CodexRuntimeBroker:
             exchange.acknowledge(
                 encode_codex_callback_acknowledgement(
                     CodexCallbackAcknowledgement(
-                        instruction.operation_id,
-                        instruction.mode,
-                        reply.generation,
+                        operation_id=instruction.operation_id,
+                        mode=instruction.mode,
+                        generation=reply.generation,
+                        selection_epoch=instruction.selection_epoch,
+                        request_id=instruction.request_id,
                     )
                 )
             )
@@ -721,15 +763,20 @@ class CodexRuntimeBroker:
         mode: CodexCallbackMode,
         response_deadline: float,
         completion_deadline: float,
+        *,
+        request_id: int | None,
     ) -> tuple[CodexCallbackInstruction, CodexWorkerExchange]:
         operation_id = new_operation_id()
+        selected = self._selection.callback_selection(expectation)
         instruction = CodexCallbackInstruction(
-            operation_id,
-            mode,
-            expectation.account_id,
-            expectation.provider_identity,
-            expectation.generation,
-            CodexExchangeDeadlines(
+            operation_id=operation_id,
+            mode=mode,
+            account_id=expectation.account_id,
+            provider_identity=expectation.provider_identity,
+            source_generation=expectation.generation,
+            selection_epoch=selected.epoch,
+            request_id=request_id,
+            deadlines=CodexExchangeDeadlines(
                 int(response_deadline * _NANOSECONDS_PER_SECOND),
                 int(completion_deadline * _NANOSECONDS_PER_SECOND),
             ),

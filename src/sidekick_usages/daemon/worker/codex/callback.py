@@ -243,6 +243,7 @@ class CodexCallbackWorkerExecutor:
             selected is None
             or selected.account_id != instruction.account_id
             or selected.generation != instruction.source_generation
+            or selected.epoch != instruction.selection_epoch
             or (expected is not None and selected != expected)
         ):
             raise ValueError("Selected Codex authority changed.")
