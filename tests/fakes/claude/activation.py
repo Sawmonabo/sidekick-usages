@@ -9,6 +9,7 @@ from pathlib import Path
 from sidekick_usages.core.accounts.models import (
     ClaudeAccountAuthority,
     ClaudeManagedLoginAuthority,
+    ClaudeSetupTokenAuthority,
     SavedAccount,
 )
 from sidekick_usages.core.accounts.types import (
@@ -20,6 +21,7 @@ from sidekick_usages.core.accounts.types import (
     ProviderIdentity,
     SidekickAccountId,
 )
+from sidekick_usages.core.models import Account, ClaudeSetupTokenCredentials
 from sidekick_usages.core.selection.models import (
     DueOperation,
     FinalizedSelection,
@@ -31,6 +33,7 @@ from sidekick_usages.core.selection.types import (
     OperationState,
 )
 from sidekick_usages.core.types import AccountLabel, ProviderId
+from sidekick_usages.credentials.authorities import credential_resolver_for
 from sidekick_usages.credentials.claude.activation.authority import (
     ClaudeActivationAuthorityCoordinator,
 )
@@ -46,6 +49,15 @@ from sidekick_usages.credentials.claude.activation.recovery import (
 from sidekick_usages.credentials.claude.activation.service import (
     ClaudeActivationService,
 )
+from sidekick_usages.credentials.claude.authority.access_lease import (
+    ClaudeSelectedAccessLeaseService,
+)
+from sidekick_usages.credentials.claude.authority.resolver import (
+    ClaudeManagedCredentialResolver,
+)
+from sidekick_usages.credentials.claude.managed.maintenance.service import (
+    ClaudeManagedAuthorityCoordinator,
+)
 from sidekick_usages.credentials.claude.managed.profile import (
     ClaudeProfileCapabilityFactory,
 )
@@ -54,6 +66,10 @@ from sidekick_usages.daemon.worker.claude.selection import (
 )
 from sidekick_usages.paths import ApplicationPaths
 from sidekick_usages.persistence.accounts.store import AccountStore
+from sidekick_usages.persistence.credentials.repository import (
+    CredentialAuthorityRepository,
+    authority_for_account,
+)
 from sidekick_usages.persistence.filesystem.service import (
     PersistenceFilesystem,
 )
@@ -102,6 +118,9 @@ _SOURCE_ACCOUNT_ID = SidekickAccountId("11111111-1111-4111-8111-111111111111")
 _SOURCE_AUTHORITY_ID = AuthorityId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
 _TARGET_ACCOUNT_ID = SidekickAccountId("22222222-2222-4222-8222-222222222222")
 _TARGET_AUTHORITY_ID = AuthorityId("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+_TARGET_SETUP_AUTHORITY_ID = AuthorityId(
+    "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+)
 _KNOWN_ACCOUNT_ID = SidekickAccountId("33333333-3333-4333-8333-333333333333")
 _KNOWN_AUTHORITY_ID = AuthorityId("cccccccc-cccc-4ccc-8ccc-cccccccccccc")
 _CODEX_ACCOUNT_ID = SidekickAccountId("44444444-4444-4444-8444-444444444444")
@@ -241,6 +260,7 @@ def claude_activation_scenario(
     ),
     status_only_native_login: bool = False,
     advance_native_mtime: bool = True,
+    target_setup_token: bool = False,
 ) -> ClaudeActivationScenario:
     """Build one healthy A-to-B official Claude activation scenario."""
     source_payload = credential_payload(
@@ -288,6 +308,9 @@ def claude_activation_scenario(
         _TARGET_IDENTITY,
         "target-private",
         _INITIAL_ACCESS_EXPIRY,
+        setup_authority_id=(
+            _TARGET_SETUP_AUTHORITY_ID if target_setup_token else None
+        ),
     )
     paths, store, profiles = _seed_managed_accounts(
         root,
@@ -671,13 +694,47 @@ def _runtime_fixture(
         selected,
         clock,
     )
-    executor = ClaudeSelectionWorkerExecutor(
-        ClaudeActivationService(
-            authorities,
-            journals,
-            selected,
-            clock,
+    activation = ClaudeActivationService(
+        authorities,
+        journals,
+        selected,
+        clock,
+    )
+    maintainer = ClaudeManagedAuthorityCoordinator(
+        paths,
+        store,
+        profiles,
+        selected,
+        authorities,
+        capabilities,
+        clock,
+        environment=source_environment,
+        runner=runner,
+    )
+    access = ClaudeSelectedAccessLeaseService(
+        store,
+        credential_resolver_for(
+            store,
+            PrivateCredentialTree(
+                paths.private_credentials,
+                account_path=paths.accounts,
+            ),
         ),
+        ClaudeManagedCredentialResolver(
+            paths,
+            profiles,
+            selected,
+            maintainer,
+            capabilities,
+            clock,
+            environment=source_environment,
+            runner=runner,
+        ),
+        activation,
+        clock,
+    )
+    executor = ClaudeSelectionWorkerExecutor(
+        activation,
         recovery,
         ClaudeNativeReconciliationService(
             authorities,
@@ -687,6 +744,7 @@ def _runtime_fixture(
             clock,
         ),
         clock,
+        access,
     )
     return _ClaudeRuntimeFixture(
         runner,
@@ -723,6 +781,8 @@ def _managed_saved_account(
     provider_identity: ProviderIdentity,
     token_suffix: str,
     access_expires_at: datetime,
+    *,
+    setup_authority_id: AuthorityId | None = None,
 ) -> SavedAccount:
     """Build one secret-free managed Claude account."""
     return SavedAccount(
@@ -731,6 +791,16 @@ def _managed_saved_account(
         provider_id=ProviderId.CLAUDE,
         plan="pro",
         authority=ClaudeAccountAuthority(
+            setup_token=(
+                ClaudeSetupTokenAuthority(
+                    authority_id=setup_authority_id,
+                    expires_at=REFERENCE_TIME + timedelta(days=365),
+                    health=CredentialHealth.HEALTHY,
+                    observed_at=REFERENCE_TIME,
+                )
+                if setup_authority_id is not None
+                else None
+            ),
             subscription=ClaudeManagedLoginAuthority(
                 authority_id=authority_id,
                 provider_identity=provider_identity,
@@ -776,4 +846,30 @@ def _seed_managed_accounts(
         paths.private_credentials,
         account_path=paths.accounts,
     )
+    repository = CredentialAuthorityRepository(credentials)
+    for account in accounts:
+        authority = account.authority
+        if not isinstance(authority, ClaudeAccountAuthority):
+            continue
+        setup = authority.setup_token
+        if setup is None:
+            continue
+        stored = authority_for_account(
+            Account(
+                label=account.label,
+                credentials=ClaudeSetupTokenCredentials(
+                    access_token=f"sk-ant-oat01-{account.label}-setup"
+                ),
+                plan=account.plan,
+            ),
+            account_id=account.account_id,
+            authority_id=setup.authority_id,
+        )
+        prepared = repository.prepare_write(stored)
+        credentials.write_bundle(
+            prepared.path,
+            prepared.files,
+            expected_bundle_present=prepared.expected_bundle_present,
+            expected_files=prepared.expected_files,
+        )
     return paths, AccountStore(paths.accounts, credentials).load(), profiles

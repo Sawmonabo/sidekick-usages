@@ -136,21 +136,9 @@ class ClaudeSelectedAccessLeaseService:
             raise ClaudeSelectedAccessError(
                 "The selected Claude authority is invalid."
             )
-        setup = claude.setup_token
-        if setup is not None and not protected_selection_enabled(
-            ProviderId.CLAUDE
-        ):
-            raise ClaudeSelectedAccessError(
-                "Protected Claude selection remains disabled.",
-                SelectionCode.UNSUPPORTED_SESSION_CAPABILITY,
-            )
         operation_authority = authority.account(account_id)
-        if setup is None:
-            subscription = claude.subscription
-            if not isinstance(subscription, ClaudeManagedLoginAuthority):
-                raise ClaudeSelectedAccessError(
-                    "The selected Claude authority is unsupported."
-                )
+        subscription = claude.subscription
+        if isinstance(subscription, ClaudeManagedLoginAuthority):
             generation = self._activation.prevalidate(
                 account_id,
                 authority,
@@ -160,6 +148,16 @@ class ClaudeSelectedAccessLeaseService:
                 authority_id=subscription.authority_id,
                 generation=generation,
                 mode=ClaudeAuthorityMode.REFRESHABLE,
+            )
+        setup = claude.setup_token
+        if setup is None:
+            raise ClaudeSelectedAccessError(
+                "The selected Claude authority is unsupported."
+            )
+        if not protected_selection_enabled(ProviderId.CLAUDE):
+            raise ClaudeSelectedAccessError(
+                "Protected Claude selection remains disabled.",
+                SelectionCode.UNSUPPORTED_SESSION_CAPABILITY,
             )
         if setup.health is not CredentialHealth.HEALTHY or (
             setup.expires_at is not None

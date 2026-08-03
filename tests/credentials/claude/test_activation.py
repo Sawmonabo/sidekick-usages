@@ -33,6 +33,9 @@ from sidekick_usages.credentials.claude.activation.models import (
     ClaudeActivationError,
     ClaudeActivationFailure,
 )
+from sidekick_usages.credentials.claude.authority.access_lease import (
+    ClaudeSelectedAccessError,
+)
 from sidekick_usages.daemon.models.worker import WorkerResult
 from sidekick_usages.daemon.types.worker import WorkerOutcome
 from sidekick_usages.persistence.filesystem.service import (
@@ -268,14 +271,20 @@ def _guarded_activation_scenario(
     assert incompatible.script.login_profiles == []
     assert incompatible.journals.load(ProviderId.CLAUDE).active is None
 
-    return claude_activation_scenario(root / "activation")
+    approved = claude_activation_scenario(
+        root / "activation",
+        target_setup_token=True,
+    )
+    assert isinstance(approved.target.authority, ClaudeAccountAuthority)
+    assert approved.target.authority.setup_token is not None
+    return approved
 
 
 def test_native_activation_retains_source_and_commits_verified_target(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Guards fail closed before one approved, provider-proven switch."""
+    """A mixed target uses one approved, provider-proven native switch."""
     use_synthetic_claude(monkeypatch)
     scenario = _guarded_activation_scenario(tmp_path)
     prepared, proof = _execute_selection(scenario)
@@ -496,10 +505,10 @@ def test_selection_commit_refuses_rotated_prevalidated_target(
     native_before = scenario.native_credentials.read_bytes()
     selected_before = scenario.selected.load(ProviderId.CLAUDE)
 
-    with pytest.raises(ClaudeActivationError) as rejected:
+    with pytest.raises(ClaudeSelectedAccessError) as rejected:
         _commit_selection(scenario, prepared)
 
-    assert rejected.value.failure is ClaudeActivationFailure.STATE_CHANGED
+    assert rejected.value.code is SelectionCode.AUTHORITY_PROOF_FAILED
     assert scenario.native_credentials.read_bytes() == native_before
     assert scenario.selected.load(ProviderId.CLAUDE) == selected_before
     assert scenario.script.login_profiles == []
