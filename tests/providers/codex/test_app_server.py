@@ -386,16 +386,18 @@ def _prove_participant_quiescence(
         participant_endpoint,
         FramedTransport,
     )
-    (proof_thread := Thread(
+    proof_thread = Thread(
         target=channel.serve_selection,
         args=(relay, _TARGET_AUTHORITY.epoch),
-    )).start()
+    )
+    proof_thread.start()
     proofs.prepare(operation_id, _TARGET_AUTHORITY.epoch)
     sealed_threads = relay.loaded_threads_snapshot.thread_ids
-    (resumed := Thread(
+    resumed = Thread(
         target=_resume_thread,
         args=(tui, 80, "thread-after-proof"),
-    )).start()
+    )
+    resumed.start()
     resumed.join(timeout=0.1)
     crossed_precommit = not resumed.is_alive()
     proofs.complete(operation_id, _TARGET_AUTHORITY)
@@ -429,9 +431,7 @@ def _prove_participant_quiescence(
     def replace_armed_channel() -> None:
         participant_endpoint.settimeout(_RELAY_WAIT_SECONDS)
         assert participant_endpoint.recv(1)
-        replacement = proofs.stage(
-            participant_id, 2, peer, new_supervisor
-        )
+        replacement = proofs.stage(participant_id, 2, peer, new_supervisor)
         replacement.commit()
         replacement.finalize()
         replacement_channel = CodexParticipantProofChannel(

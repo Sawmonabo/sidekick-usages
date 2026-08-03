@@ -600,6 +600,7 @@ class ParticipantRegistry:
                     or self.requires_finalized_attachment(provider_id)
                 ),
             )
+
         with self._condition:
             if request_id in self._cancelled_subscriptions:
                 self._cancelled_subscriptions.discard(request_id)
@@ -973,7 +974,6 @@ class ParticipantRegistry:
         self._retain_notice(notice)
 
     def _retain_notice(self, notice: ParticipantNotice) -> None:
-        """Append one already-projected notice to the bounded queue."""
         self._notice_sequence += 1
         self._notices.append((self._notice_sequence, notice))
 
