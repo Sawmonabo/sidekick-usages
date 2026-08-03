@@ -574,8 +574,11 @@ across `ParticipantRegistry` and `ClaudeParticipantChannelRegistry`. Both
 registries validate first; then membership and the exact peer-bound channel
 commit together or neither commits. The received descriptor is transaction-
 owned after handoff and closes on every registry, persistence, or commit
-failure. `SupervisorDispatcher` closes it on any strict decode or peer failure
-before handoff. The serialized control request remains credential-free.
+failure. `ControlConnection` or its dedicated attachment reader owns the
+descriptor through peer verification and strict decode, closes it on every
+pre-handoff failure, and transfers it exactly once to `SelectionCoordinator`
+with the verified attachment request. The serialized control request remains
+credential-free.
 
 Disconnect and proved reconnect use the same coordinator-owned transaction.
 They remove or replace the exact live membership and channel together and

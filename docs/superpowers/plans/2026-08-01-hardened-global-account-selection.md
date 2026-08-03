@@ -1640,11 +1640,14 @@ membership commit.
 `SelectionCoordinator.register()` is the single attachment transaction owner.
 It first validates both `ParticipantRegistry` membership and the staged
 `ClaudeParticipantChannelRegistry` endpoint. It then commits both or neither.
-`SupervisorDispatcher` closes the received descriptor on every strict control
-decode or peer failure before handoff. The coordinator transaction owns it
-after handoff and closes it on every registry, persistence, or commit failure.
-The control schema carries only participant ID, connection generation, client
-kind, and capability version; it never carries a credential.
+`ControlConnection` or its dedicated attachment reader owns the received
+descriptor through peer verification and strict control decode. It closes the
+descriptor on every pre-handoff failure and transfers ownership exactly once
+to `SelectionCoordinator` with the verified attachment request. The
+coordinator transaction closes it on every later registry, persistence, or
+commit failure. The control schema carries only participant ID, connection
+generation, client kind, and capability version; it never carries a
+credential.
 
 The serialized attachment remains secret-free. Detach the endpoint from the
 generic control transport immediately. `ClaudeParticipantChannelRegistry`
