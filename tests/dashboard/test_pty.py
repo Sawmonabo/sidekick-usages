@@ -714,7 +714,7 @@ def test_dashboard_pty_interrupt_restores_terminal_and_reaps_lookup(
     assert "lookup_cancel_calls=1" in trace
     assert "lookup_failure=canceled" in trace
     assert "daemon_cancelled=true" in trace
-    assert "closed_clients=2" in trace
+    assert "closed_clients=1" in trace
     assert "action_stream_released=true" in trace
     assert f"selection=claude:{CLAUDE_WARNING_ID}" in trace
 
