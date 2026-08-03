@@ -8,8 +8,8 @@ from pathlib import Path
 from sidekick_usages.errors import InvalidPayloadError
 from sidekick_usages.providers.claude.activation.types import (
     ClaudeActivationGuardFailure,
-    ClaudeForegroundProbe,
-    ClaudeForegroundState,
+    ClaudeRemoteControlProbe,
+    ClaudeRemoteControlState,
 )
 from sidekick_usages.providers.claude.environment import (
     CLAUDE_CONFIG_DIR_ENVIRONMENT_KEY,
@@ -102,11 +102,9 @@ def claude_environment_conflict_keys(
 def claude_native_switch_conflict(
     capabilities: ClaudeCapabilities,
     environment: Mapping[str, str],
-    foreground_probe: ClaudeForegroundProbe,
-    *,
-    allow_remote_control_disconnect: bool,
+    remote_control_probe: ClaudeRemoteControlProbe,
 ) -> ClaudeActivationGuardFailure | None:
-    """Return a settings or foreground conflict before native mutation."""
+    """Return a settings or environment conflict before native mutation."""
     profile = capabilities.profile
     if not isinstance(profile, ClaudeNativeProfile):
         return ClaudeActivationGuardFailure.CONFIGURATION_UNREADABLE
@@ -119,17 +117,8 @@ def claude_native_switch_conflict(
     environment_conflict = claude_environment_conflict(environment)
     if environment_conflict is not None:
         return environment_conflict
-    foreground = foreground_probe(
-        capabilities.executable,
-        capabilities.platform,
-    )
-    if foreground is ClaudeForegroundState.PROOF_UNAVAILABLE:
-        return ClaudeActivationGuardFailure.FOREGROUND_PROOF_UNAVAILABLE
-    if (
-        foreground is ClaudeForegroundState.PRESENT
-        and not allow_remote_control_disconnect
-    ):
-        return ClaudeActivationGuardFailure.REMOTE_CONTROL_DISCONNECT_REQUIRED
+    if remote_control_probe() is ClaudeRemoteControlState.ACTIVE_INCOMPATIBLE:
+        return ClaudeActivationGuardFailure.REMOTE_CONTROL_INCOMPATIBLE
     return None
 
 

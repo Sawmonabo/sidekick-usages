@@ -90,6 +90,8 @@ class ClaudeOfficialLoginExchange:
         capabilities: ClaudeCapabilities,
         expectation: ClaudeAuthorityExpectation,
         refresh_token: str,
+        *,
+        native_absent_before: bool = False,
     ) -> ClaudeExchangeResult:
         """Exchange one leased refresh token and verify the final profile."""
         result = self._run_login(
@@ -108,12 +110,18 @@ class ClaudeOfficialLoginExchange:
         verification = self._verify_login(capabilities, expectation)
         if verification is not None:
             return verification
-        return self._stable_post_login(capabilities, expectation)
+        return self._stable_post_login(
+            capabilities,
+            expectation,
+            native_absent_before=native_absent_before,
+        )
 
     def _stable_post_login(
         self,
         capabilities: ClaudeCapabilities,
         expectation: ClaudeAuthorityExpectation,
+        *,
+        native_absent_before: bool,
     ) -> ClaudeExchangeResult:
         """Require two complete stable proofs after official login."""
         observed = self._read(capabilities, expectation)
@@ -134,6 +142,7 @@ class ClaudeOfficialLoginExchange:
             capabilities,
             expectation.modified_milliseconds,
             confirmed.modified_milliseconds,
+            native_absent_before=native_absent_before,
         ):
             return ClaudeExchangeFailure(
                 ClaudeExchangeFailureKind.RECONCILIATION_REQUIRED
@@ -333,22 +342,29 @@ def claude_native_propagation_proven(
     capabilities: ClaudeCapabilities,
     before: Decimal | None,
     after: Decimal | None,
+    *,
+    native_absent_before: bool = False,
 ) -> bool:
     """Require provider-visible ``mtimeMs`` advance on Linux and WSL."""
     if not isinstance(capabilities.profile, ClaudeNativeProfile):
         return True
     if capabilities.platform not in _NATIVE_FILE_PLATFORMS:
         return True
+    if native_absent_before:
+        return before is None and after is not None
     return before is not None and after is not None and after > before
 
 
 def claude_native_login_baseline_available(
     capabilities: ClaudeCapabilities,
     modified_milliseconds: Decimal | None,
+    *,
+    native_absent_before: bool = False,
 ) -> bool:
     """Return whether native login can prove platform propagation."""
     return (
         not isinstance(capabilities.profile, ClaudeNativeProfile)
         or capabilities.platform not in _NATIVE_FILE_PLATFORMS
+        or native_absent_before
         or modified_milliseconds is not None
     )

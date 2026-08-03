@@ -11,20 +11,40 @@ from sidekick_usages.core.accounts.models import (
     ClaudeManagedLoginAuthority,
 )
 from sidekick_usages.core.selection.models import (
+    AuthorityReadyProof,
     ClaudeAuthObservation,
     DueOperation,
+    FinalizedSelection,
+    OpenSelectionOperation,
+    PreparedSelection,
+    SelectedAccountState,
 )
 from sidekick_usages.core.selection.types import (
+    ActivationOutcome,
     ActivationPhase,
+    OperationKind,
     ProviderAuthState,
     ProviderRuntimeState,
+    SelectionCode,
+    SelectionPhase,
 )
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.credentials.claude.activation.models import (
+    ClaudeActivationError,
     ClaudeActivationFailure,
 )
 from sidekick_usages.daemon.models.worker import WorkerResult
 from sidekick_usages.daemon.types.worker import WorkerOutcome
+from sidekick_usages.daemon.worker.claude.selection import (
+    claude_selection_failure,
+)
+from sidekick_usages.persistence.filesystem.service import (
+    PersistenceFilesystem,
+)
+from sidekick_usages.persistence.models.account import VersionThreeDocument
+from sidekick_usages.persistence.models.selection import SelectedStateDocument
+from sidekick_usages.persistence.schema.account import encode_version_three
+from sidekick_usages.persistence.schema.selection import encode_selected_state
 from sidekick_usages.persistence.supervisor.authority import (
     ProviderMutationLock,
 )
@@ -33,7 +53,7 @@ from sidekick_usages.persistence.supervisor.observation import (
 )
 from sidekick_usages.providers.claude.activation.types import (
     ClaudeActivationGuardFailure,
-    ClaudeForegroundState,
+    ClaudeRemoteControlState,
 )
 from sidekick_usages.providers.claude.auth.generation import (
     claude_access_token_generation,
@@ -50,8 +70,13 @@ from tests.fakes.claude.activation import (
     ClaudeActivationScenario,
     claude_activation_scenario,
 )
-from tests.fakes.claude.managed import use_synthetic_claude
+from tests.fakes.claude.managed import (
+    claude_profile_status,
+    credential_payload,
+    use_synthetic_claude,
+)
 from tests.support.platform import REQUIRES_MANAGED_RUNTIME
+from tests.support.time import FixedClock
 
 pytestmark = REQUIRES_MANAGED_RUNTIME
 
@@ -69,6 +94,155 @@ def _execute_activation(
         return scenario.executor.execute(operation, authority)
 
 
+def _selection_lock(
+    scenario: ClaudeActivationScenario,
+) -> ProviderMutationLock:
+    """Lock the exact synthetic Claude source and target accounts."""
+    return ProviderMutationLock(
+        scenario.paths.durable_operations,
+        ProviderId.CLAUDE,
+        tuple(
+            sorted((scenario.source.account_id, scenario.target.account_id))
+        ),
+        timeout_seconds=1.0,
+    )
+
+
+def _prevalidate_selection(
+    scenario: ClaudeActivationScenario,
+    operation: OpenSelectionOperation,
+    baseline: FinalizedSelection | None,
+) -> PreparedSelection:
+    """Exercise executor prevalidation under synthetic provider locks."""
+    with _selection_lock(scenario).hold() as authority:
+        return scenario.executor.prevalidate_selection(
+            operation,
+            baseline,
+            authority,
+        )
+
+
+def _commit_selection(
+    scenario: ClaudeActivationScenario,
+    prepared: PreparedSelection,
+) -> AuthorityReadyProof:
+    """Exercise executor commit under synthetic provider locks."""
+    with _selection_lock(scenario).hold() as authority:
+        return scenario.executor.commit_selection(prepared, authority)
+
+
+def _observe_selection(
+    scenario: ClaudeActivationScenario,
+    operation: OpenSelectionOperation,
+) -> SelectedAccountState | None:
+    """Exercise neutral executor readback under provider locks."""
+    with _selection_lock(scenario).hold() as authority:
+        return scenario.executor.readback_selection(operation, authority)
+
+
+def _rotate_target_authority(scenario: ClaudeActivationScenario) -> None:
+    """Rotate the saved target private and secret-free generations."""
+    target_authority = scenario.target.authority
+    assert isinstance(target_authority, ClaudeAccountAuthority)
+    subscription = target_authority.subscription
+    assert isinstance(subscription, ClaudeManagedLoginAuthority)
+    generation = claude_access_token_generation("sk-ant-oat01-target-rotated")
+    rotated = replace(
+        scenario.target,
+        authority=replace(
+            target_authority,
+            subscription=replace(subscription, generation=generation),
+        ),
+    )
+    scenario.profiles.write_owned_file(
+        scenario.target_profile,
+        CLAUDE_CREDENTIAL_FILE,
+        credential_payload(
+            None,
+            None,
+            token_suffix="target-rotated",
+            access_expires_at=subscription.access_expires_at,
+        ),
+    )
+    PersistenceFilesystem(scenario.paths.accounts).commit_opaque_private(
+        encode_version_three(VersionThreeDocument((scenario.source, rotated)))
+    )
+
+
+def _clear_claude_selection(scenario: ClaudeActivationScenario) -> None:
+    """Leave only the unrelated synthetic Codex finalized selection."""
+    PersistenceFilesystem(scenario.paths.selected_state).commit_opaque_private(
+        encode_selected_state(SelectedStateDocument((scenario.codex_state,)))
+    )
+
+
+def _set_first_recovery_native(
+    scenario: ClaudeActivationScenario,
+    recovery_state: str,
+) -> None:
+    """Set exact post-interruption native truth for recovery."""
+    if recovery_state == "logged_out":
+        scenario.native_credentials.unlink()
+        return
+    if recovery_state != "unrelated":
+        return
+    external_status, _ = claude_profile_status("external")
+    target_authority = scenario.target.authority
+    assert isinstance(target_authority, ClaudeAccountAuthority)
+    target_subscription = target_authority.subscription
+    assert isinstance(target_subscription, ClaudeManagedLoginAuthority)
+    scenario.script.set_authority(
+        scenario.native.config_directory,
+        credential_payload(
+            None,
+            None,
+            token_suffix="external-first-selection",
+            access_expires_at=target_subscription.access_expires_at,
+        ),
+        external_status,
+    )
+
+
+def _open_selection(
+    scenario: ClaudeActivationScenario,
+) -> OpenSelectionOperation:
+    """Build the coordinator-owned epoch input for one scenario."""
+    baseline = scenario.selected.load(ProviderId.CLAUDE)
+    assert baseline is not None
+    return OpenSelectionOperation(
+        operation_id=scenario.operation.operation_id,
+        provider_id=ProviderId.CLAUDE,
+        baseline_account_id=baseline.account_id,
+        target_account_id=scenario.target.account_id,
+        target_generation=None,
+        baseline_epoch=baseline.epoch,
+        pending_epoch=baseline.epoch.next(),
+        phase=SelectionPhase.PREVALIDATING,
+        required_participant_ids=(),
+        ready_participant_ids=(),
+        lost_after_commit_participant_ids=(),
+        confirmed_dead_before_commit_count=0,
+        confirmed_dead_before_commit_code=None,
+        outcome_code=None,
+        started_at=baseline.finalized_at,
+        updated_at=baseline.finalized_at,
+    )
+
+
+def _execute_selection(
+    scenario: ClaudeActivationScenario,
+) -> tuple[PreparedSelection, AuthorityReadyProof]:
+    """Run one provider-proven epoch adapter transition."""
+    baseline = scenario.selected.load(ProviderId.CLAUDE)
+    assert baseline is not None
+    prepared = _prevalidate_selection(
+        scenario,
+        _open_selection(scenario),
+        baseline,
+    )
+    return prepared, _commit_selection(scenario, prepared)
+
+
 def _guarded_activation_scenario(
     root: Path,
 ) -> ClaudeActivationScenario:
@@ -84,37 +258,49 @@ def _guarded_activation_scenario(
         conflict_root,
         environment=conflict_environment,
     )
-    rejected = _execute_activation(conflict, conflict.operation)
+    conflict_baseline = conflict.selected.load(ProviderId.CLAUDE)
+    assert conflict_baseline is not None
+    with pytest.raises(ClaudeActivationError) as rejected:
+        _prevalidate_selection(
+            conflict,
+            _open_selection(conflict),
+            conflict_baseline,
+        )
 
-    assert rejected.outcome is WorkerOutcome.ACTION_REQUIRED
-    assert rejected.failure_code == (
-        ClaudeActivationGuardFailure.ANTHROPIC_API_KEY.failure_code
+    assert (
+        rejected.value.failure
+        is ClaudeActivationGuardFailure.ANTHROPIC_API_KEY
     )
     assert conflict_environment == original_environment
     assert conflict.runner.calls == []
     assert conflict.script.login_profiles == []
     assert conflict.journals.load(ProviderId.CLAUDE).active is None
 
-    scenario = claude_activation_scenario(
-        root / "foreground",
-        foreground=ClaudeForegroundState.PRESENT,
+    incompatible = claude_activation_scenario(
+        root / "remote-control",
+        remote_control=ClaudeRemoteControlState.ACTIVE_INCOMPATIBLE,
     )
-    native_before = scenario.native_credentials.read_bytes()
-    selected_before = scenario.selected.load(ProviderId.CLAUDE)
-    refused = _execute_activation(scenario, scenario.operation)
+    native_before = incompatible.native_credentials.read_bytes()
+    selected_before = incompatible.selected.load(ProviderId.CLAUDE)
+    incompatible_baseline = incompatible.selected.load(ProviderId.CLAUDE)
+    assert incompatible_baseline is not None
+    with pytest.raises(ClaudeActivationError) as refused:
+        _prevalidate_selection(
+            incompatible,
+            _open_selection(incompatible),
+            incompatible_baseline,
+        )
 
-    assert refused.outcome is WorkerOutcome.ACTION_REQUIRED
     assert (
-        refused.failure_code
-        == (
-            ClaudeActivationGuardFailure.REMOTE_CONTROL_DISCONNECT_REQUIRED
-        ).failure_code
+        refused.value.failure
+        is ClaudeActivationGuardFailure.REMOTE_CONTROL_INCOMPATIBLE
     )
-    assert scenario.native_credentials.read_bytes() == native_before
-    assert scenario.selected.load(ProviderId.CLAUDE) == selected_before
-    assert scenario.script.login_profiles == []
-    assert scenario.journals.load(ProviderId.CLAUDE).active is None
-    return scenario
+    assert incompatible.native_credentials.read_bytes() == native_before
+    assert incompatible.selected.load(ProviderId.CLAUDE) == selected_before
+    assert incompatible.script.login_profiles == []
+    assert incompatible.journals.load(ProviderId.CLAUDE).active is None
+
+    return claude_activation_scenario(root / "activation")
 
 
 def test_native_activation_retains_source_and_commits_verified_target(
@@ -124,15 +310,29 @@ def test_native_activation_retains_source_and_commits_verified_target(
     """Guards fail closed before one approved, provider-proven switch."""
     use_synthetic_claude(monkeypatch)
     scenario = _guarded_activation_scenario(tmp_path)
-    result = _execute_activation(
-        scenario,
-        replace(
-            scenario.operation,
-            allow_remote_control_disconnect=True,
-        ),
-    )
+    prepared, proof = _execute_selection(scenario)
+    readback = _observe_selection(scenario, _open_selection(scenario))
+    assert readback is not None
 
-    assert result.outcome is WorkerOutcome.SUCCEEDED
+    assert (
+        proof.provider_id,
+        proof.account_id,
+        proof.generation != prepared.target_generation,
+        proof.epoch,
+        proof.safe_code,
+        readback.runtime_state,
+        readback.account_id,
+        readback.runtime_generation,
+    ) == (
+        ProviderId.CLAUDE,
+        scenario.target.account_id,
+        True,
+        prepared.pending_epoch,
+        SelectionCode.SELECTION_SUCCEEDED,
+        ProviderRuntimeState.SAVED_ACTIVE,
+        scenario.target.account_id,
+        proof.generation,
+    )
     current_source = scenario.store.read_saved(scenario.source.account_id)
     assert current_source is not None
     current_source_authority = current_source.authority
@@ -224,10 +424,7 @@ def test_native_activation_retains_source_and_commits_verified_target(
     status_only_selected = status_only.selected.load(ProviderId.CLAUDE)
     status_only_result = _execute_activation(
         status_only,
-        replace(
-            status_only.operation,
-            allow_remote_control_disconnect=True,
-        ),
+        status_only.operation,
     )
     status_only_runtime = RuntimeAuthObservationStore(
         status_only.paths.durable_operations
@@ -288,10 +485,7 @@ def test_native_activation_retains_source_and_commits_verified_target(
     unpropagated_selected = unpropagated.selected.load(ProviderId.CLAUDE)
     unpropagated_result = _execute_activation(
         unpropagated,
-        replace(
-            unpropagated.operation,
-            allow_remote_control_disconnect=True,
-        ),
+        unpropagated.operation,
     )
     unpropagated_runtime = RuntimeAuthObservationStore(
         unpropagated.paths.durable_operations
@@ -313,4 +507,283 @@ def test_native_activation_retains_source_and_commits_verified_target(
         unpropagated_selected,
         unpropagated.native_target_payload,
         unpropagated.target.provider_identity,
+    )
+
+
+def test_selection_commit_refuses_rotated_prevalidated_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A target generation change cannot authorize native mutation."""
+    use_synthetic_claude(monkeypatch)
+    scenario = claude_activation_scenario(tmp_path)
+    baseline = scenario.selected.load(ProviderId.CLAUDE)
+    assert baseline is not None
+    prepared = _prevalidate_selection(
+        scenario,
+        _open_selection(scenario),
+        baseline,
+    )
+    _rotate_target_authority(scenario)
+    native_before = scenario.native_credentials.read_bytes()
+    selected_before = scenario.selected.load(ProviderId.CLAUDE)
+
+    with pytest.raises(ClaudeActivationError) as rejected:
+        _commit_selection(scenario, prepared)
+
+    assert rejected.value.failure is ClaudeActivationFailure.STATE_CHANGED
+    assert scenario.native_credentials.read_bytes() == native_before
+    assert scenario.selected.load(ProviderId.CLAUDE) == selected_before
+    assert scenario.script.login_profiles == []
+    assert scenario.journals.load(ProviderId.CLAUDE).active is None
+
+
+def test_selection_prevalidation_does_not_create_missing_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A missing managed profile stays absent during read-only proof."""
+    use_synthetic_claude(monkeypatch)
+    scenario = claude_activation_scenario(tmp_path)
+    baseline = scenario.selected.load(ProviderId.CLAUDE)
+    assert baseline is not None
+    scenario.profiles.destroy_owned_directory(scenario.target_profile)
+
+    with pytest.raises(ClaudeActivationError) as rejected:
+        _prevalidate_selection(
+            scenario,
+            _open_selection(scenario),
+            baseline,
+        )
+
+    assert rejected.value.failure is ClaudeActivationFailure.TARGET_UNAVAILABLE
+    assert not os.path.lexists(scenario.target_profile)
+    assert scenario.script.login_profiles == []
+    assert scenario.journals.load(ProviderId.CLAUDE).active is None
+
+
+@pytest.mark.parametrize(
+    ("native_start", "recovery_state", "expected"),
+    [
+        ("target", None, "target"),
+        ("logged_out", None, "target"),
+        ("unrelated", None, "refused"),
+        ("logged_out", "target", "target"),
+        ("logged_out", "logged_out", "logged_out"),
+        ("logged_out", "unrelated", "reconciliation"),
+    ],
+)
+def test_first_selection_lifecycle_uses_no_manufactured_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    native_start: str,
+    recovery_state: str | None,
+    expected: str,
+) -> None:
+    """First selection commits or recovers only from exact native truth."""
+    use_synthetic_claude(monkeypatch)
+    interruption = (
+        None
+        if recovery_state is None
+        else KeyboardInterrupt("synthetic first-selection interruption")
+    )
+    scenario = claude_activation_scenario(
+        tmp_path,
+        native_logged_out=native_start == "logged_out",
+        interrupt_after_native_login=interruption,
+    )
+    operation = replace(
+        _open_selection(scenario),
+        baseline_account_id=None,
+    )
+    if native_start == "target":
+        target_status, _ = claude_profile_status("target")
+        scenario.script.set_authority(
+            scenario.native.config_directory,
+            scenario.native_target_payload,
+            target_status,
+        )
+    _clear_claude_selection(scenario)
+    assert scenario.selected.load(ProviderId.CLAUDE) is None
+
+    if expected == "refused":
+        with pytest.raises(ClaudeActivationError) as refused:
+            _prevalidate_selection(scenario, operation, None)
+        worker_result = claude_selection_failure(
+            scenario.operation,
+            refused.value,
+            FixedClock(),
+        )
+        assert (
+            refused.value.failure,
+            worker_result.outcome,
+            worker_result.failure_code,
+        ) == (
+            ClaudeActivationFailure.RECONCILIATION_REQUIRED,
+            WorkerOutcome.ACTION_REQUIRED,
+            SelectionCode.UNCOORDINATED_AUTH_MUTATION.value,
+        )
+        assert scenario.script.login_profiles == []
+        assert scenario.journals.load(ProviderId.CLAUDE).active is None
+        return
+
+    prepared = _prevalidate_selection(scenario, operation, None)
+    if recovery_state is None:
+        proof = _commit_selection(scenario, prepared)
+        assert (
+            proof.account_id,
+            proof.epoch,
+            proof.safe_code,
+        ) == (
+            scenario.target.account_id,
+            operation.pending_epoch,
+            SelectionCode.SELECTION_SUCCEEDED,
+        )
+    else:
+        with pytest.raises(KeyboardInterrupt):
+            _commit_selection(scenario, prepared)
+        assert recovery_state is not None
+        _set_first_recovery_native(scenario, recovery_state)
+        recovery = replace(
+            scenario.operation,
+            kind=OperationKind.RECONCILE,
+        )
+        result = _execute_activation(scenario, recovery)
+        assert result.outcome is (
+            WorkerOutcome.ACTION_REQUIRED
+            if expected == "reconciliation"
+            else WorkerOutcome.SUCCEEDED
+        )
+
+    journal = scenario.journals.load(ProviderId.CLAUDE)
+    record = journal.active or (
+        journal.history[-1] if journal.history else None
+    )
+    if native_start == "target":
+        assert record is None
+    else:
+        assert record is not None
+        assert record.selected_baseline is None
+        assert (
+            record.native_auth_baseline.state is ProviderAuthState.LOGGED_OUT
+        )
+
+    observed = _observe_selection(scenario, operation)
+    assert observed is not None
+    assert scenario.selected.load(ProviderId.CLAUDE) is None
+    assert scenario.source_profile not in scenario.script.login_profiles
+    if expected == "target":
+        assert (
+            observed.runtime_state,
+            observed.account_id,
+            None if record is None else record.phase,
+        ) == (
+            ProviderRuntimeState.SAVED_ACTIVE,
+            scenario.target.account_id,
+            None if native_start == "target" else ActivationPhase.COMMITTED,
+        )
+    elif expected == "logged_out":
+        assert record is not None
+        assert (
+            observed.runtime_state,
+            record.phase,
+            record.outcome,
+        ) == (
+            ProviderRuntimeState.LOGGED_OUT,
+            ActivationPhase.ROLLED_BACK,
+            ActivationOutcome.LOGGED_OUT,
+        )
+    else:
+        assert record is not None
+        assert (
+            observed.runtime_state,
+            record.phase,
+            record.failure_code,
+        ) == (
+            ProviderRuntimeState.EXTERNAL_ACTIVE,
+            ActivationPhase.RECONCILIATION_REQUIRED,
+            ClaudeActivationFailure.RECONCILIATION_REQUIRED.failure_code,
+        )
+
+
+def test_selection_readback_observes_baseline_target_or_unrelated_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Readback reports native truth without assigning a pending epoch."""
+    use_synthetic_claude(monkeypatch)
+    scenario = claude_activation_scenario(tmp_path)
+    operation = _open_selection(scenario)
+    selected_before = scenario.selected.load(ProviderId.CLAUDE)
+    assert selected_before is not None
+    journals_before = scenario.journals.load(ProviderId.CLAUDE)
+    observations = RuntimeAuthObservationStore(
+        scenario.paths.durable_operations
+    )
+    observation_before = observations.load_native(ProviderId.CLAUDE)
+
+    baseline = _observe_selection(scenario, operation)
+    assert scenario.selected.load(ProviderId.CLAUDE) == selected_before
+    assert scenario.journals.load(ProviderId.CLAUDE) == journals_before
+    assert observations.load_native(ProviderId.CLAUDE) == observation_before
+    prepared = _prevalidate_selection(
+        scenario,
+        operation,
+        selected_before,
+    )
+    proof = _commit_selection(scenario, prepared)
+    selected_after_commit = scenario.selected.load(ProviderId.CLAUDE)
+    journals_after_commit = scenario.journals.load(ProviderId.CLAUDE)
+    observation_after_commit = observations.load_native(ProviderId.CLAUDE)
+    target = _observe_selection(scenario, operation)
+    assert scenario.selected.load(ProviderId.CLAUDE) == selected_after_commit
+    assert scenario.journals.load(ProviderId.CLAUDE) == journals_after_commit
+    assert (
+        observations.load_native(ProviderId.CLAUDE) == observation_after_commit
+    )
+
+    external_status, _ = claude_profile_status("external")
+    target_authority = scenario.target.authority
+    assert isinstance(target_authority, ClaudeAccountAuthority)
+    target_subscription = target_authority.subscription
+    assert isinstance(target_subscription, ClaudeManagedLoginAuthority)
+    external_payload = credential_payload(
+        None,
+        None,
+        token_suffix="external-native",
+        access_expires_at=target_subscription.access_expires_at,
+    )
+    scenario.script.set_authority(
+        scenario.native.config_directory,
+        external_payload,
+        external_status,
+    )
+    unrelated = _observe_selection(scenario, operation)
+    assert scenario.selected.load(ProviderId.CLAUDE) == selected_after_commit
+    assert scenario.journals.load(ProviderId.CLAUDE) == journals_after_commit
+    assert (
+        observations.load_native(ProviderId.CLAUDE) == observation_after_commit
+    )
+
+    assert baseline is not None
+    assert target is not None
+    assert unrelated is not None
+    assert (
+        baseline.runtime_state,
+        baseline.account_id,
+        baseline.runtime_generation,
+        target.runtime_state,
+        target.account_id,
+        target.runtime_generation,
+        unrelated.runtime_state,
+        unrelated.account_id,
+    ) == (
+        ProviderRuntimeState.SAVED_ACTIVE,
+        scenario.source.account_id,
+        selected_before.generation,
+        ProviderRuntimeState.SAVED_ACTIVE,
+        scenario.target.account_id,
+        proof.generation,
+        ProviderRuntimeState.EXTERNAL_ACTIVE,
+        None,
     )

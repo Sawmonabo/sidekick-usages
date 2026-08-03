@@ -7,6 +7,7 @@ from pathlib import Path
 
 from sidekick_usages.providers.claude.activation.types import (
     ClaudeForegroundState,
+    ClaudeRemoteControlState,
 )
 from sidekick_usages.providers.claude.environment import (
     claude_keychain_environment,
@@ -37,6 +38,11 @@ _MACOS_PLATFORMS = frozenset(
     }
 )
 _PROC_PID_PATH_ERROR = -1
+
+
+def inspect_claude_remote_control() -> ClaudeRemoteControlState:
+    """Return no special guard without structured capability proof."""
+    return ClaudeRemoteControlState.PROOF_UNAVAILABLE
 
 
 def inspect_claude_foreground(

@@ -6,6 +6,7 @@ from sidekick_usages.clock import Clock
 from sidekick_usages.core.accounts.types import (
     AuthorityGeneration,
     ProviderIdentity,
+    SidekickAccountId,
 )
 from sidekick_usages.core.selection.models import (
     FinalizedSelection,
@@ -112,12 +113,38 @@ class ClaudeNativeReconciliationService:
             _related_runtime_authority(candidate),
         )
 
+    def observe_selection(
+        self,
+        account_ids: tuple[SidekickAccountId, ...],
+        authority: ProviderMutationAuthority,
+    ) -> SelectedAccountState | None:
+        """Read stable native truth against exact journal account IDs."""
+        authority.require(ProviderId.CLAUDE)
+        try:
+            capabilities = self._authorities.prepare_native()
+        except ClaudeActivationError as error:
+            if error.failure is not ClaudeActivationFailure.INCOMPATIBLE:
+                raise
+            return self._unsupported_candidate(self._clock.now())
+        observed = self._authorities.observe_native(capabilities)
+        candidate = self._candidate(
+            observed,
+            capabilities,
+            authority,
+            self._clock.now(),
+            selection_account_ids=account_ids,
+        )
+        confirmed = self._authorities.observe_native(capabilities)
+        return candidate if confirmed == observed else None
+
     def _candidate(
         self,
         observed: ClaudeNativeObservation,
         capabilities: ClaudeCapabilities,
         authority: ProviderMutationAuthority,
         observed_at: datetime,
+        *,
+        selection_account_ids: tuple[SidekickAccountId, ...] | None = None,
     ) -> SelectedAccountState:
         if observed.state is ProviderAuthState.ACTIVE:
             snapshot = observed.snapshot
@@ -130,12 +157,17 @@ class ClaudeNativeReconciliationService:
                 capabilities,
                 authority,
                 observed_at,
+                selection_account_ids=selection_account_ids,
             )
-        if observed.state is not ProviderAuthState.LOGGED_OUT:
-            raise ClaudeActivationError(
-                ClaudeActivationFailure.RECONCILIATION_REQUIRED
-            )
-        return self._inactive_candidate(observed_at)
+        if observed.state is ProviderAuthState.LOGGED_OUT:
+            return self._inactive_candidate(observed_at)
+        if observed.state is ProviderAuthState.UNREADABLE:
+            return self._unreadable_candidate(observed_at)
+        if observed.state is ProviderAuthState.UNSUPPORTED:
+            return self._unsupported_candidate(observed_at)
+        raise ClaudeActivationError(
+            ClaudeActivationFailure.RECONCILIATION_REQUIRED
+        )
 
     @staticmethod
     def _proof_incomplete(observed: ClaudeNativeObservation) -> bool:
@@ -150,11 +182,22 @@ class ClaudeNativeReconciliationService:
         capabilities: ClaudeCapabilities,
         authority: ProviderMutationAuthority,
         observed_at: datetime,
+        *,
+        selection_account_ids: tuple[SidekickAccountId, ...] | None = None,
     ) -> SelectedAccountState:
-        account = self._authorities.relate_native_account(
-            snapshot,
-            capabilities,
-            authority,
+        account = (
+            self._authorities.relate_native_account(
+                snapshot,
+                capabilities,
+                authority,
+            )
+            if selection_account_ids is None
+            else self._authorities.relate_native_selection_account(
+                snapshot,
+                capabilities,
+                authority,
+                selection_account_ids,
+            )
         )
         if account is None:
             return self._external_candidate(
@@ -201,6 +244,34 @@ class ClaudeNativeReconciliationService:
             runtime_generation=None,
             verified_at=observed_at,
             outcome=ActivationOutcome.LOGGED_OUT,
+        )
+
+    def _unreadable_candidate(
+        self,
+        observed_at: datetime,
+    ) -> SelectedAccountState:
+        return SelectedAccountState(
+            provider_id=ProviderId.CLAUDE,
+            runtime_state=ProviderRuntimeState.UNREADABLE,
+            account_id=None,
+            provider_identity=None,
+            runtime_generation=None,
+            verified_at=observed_at,
+            outcome=ActivationOutcome.RECONCILIATION_REQUIRED,
+        )
+
+    def _unsupported_candidate(
+        self,
+        observed_at: datetime,
+    ) -> SelectedAccountState:
+        return SelectedAccountState(
+            provider_id=ProviderId.CLAUDE,
+            runtime_state=ProviderRuntimeState.UNSUPPORTED,
+            account_id=None,
+            provider_identity=None,
+            runtime_generation=None,
+            verified_at=observed_at,
+            outcome=ActivationOutcome.UNSUPPORTED,
         )
 
 
