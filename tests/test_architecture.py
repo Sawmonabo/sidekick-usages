@@ -500,6 +500,7 @@ def test_cli_command_surface_is_registered_once_by_focused_owners() -> None:
         "remove",
         "rename",
         "reset",
+        "session",
         "set-plan",
         "update",
         "use",
@@ -516,4 +517,10 @@ def test_cli_command_surface_is_registered_once_by_focused_owners() -> None:
         "heartbeat": {"disable", "enable", "run-label", "status"},
         "migrate": {"managed-auth"},
         "permissions": {"repair"},
+        "session": {"claude", "codex", "shell"},
     }
+    session = root.commands["session"]
+    assert isinstance(session, click.Group)
+    shell = session.commands["shell"]
+    assert isinstance(shell, click.Group)
+    assert set(shell.commands) == {"install", "status", "uninstall"}
