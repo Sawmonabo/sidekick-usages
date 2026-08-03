@@ -126,6 +126,8 @@ class StructuredResponseCase(StrEnum):
     EOF = "eof"
     PROCESS_ERROR = "process_error"
     ERROR_RESPONSE = "error_response"
+    ERROR_OLD_TEXT = "error_old_text"
+    ERROR_UNRELATED = "error_unrelated"
     ERROR_EXTRA_FIELDS = "error_extra_fields"
     EXTRA_FIELDS = "extra_fields"
 
@@ -252,17 +254,30 @@ class ClaudeStructuredEngineFake:
             if self._first_request_id is None:
                 raise AssertionError("Replay requires one prior request.")
             response_id = self._first_request_id
-        is_error = response_case in {
-            StructuredResponseCase.ERROR_RESPONSE,
-            StructuredResponseCase.ERROR_EXTRA_FIELDS,
-        }
+        error_text = {
+            StructuredResponseCase.ERROR_RESPONSE: (
+                "update_environment_variables: variables must be an object "
+                "of string values"
+            ),
+            StructuredResponseCase.ERROR_OLD_TEXT: (
+                "Environment variable values must be strings."
+            ),
+            StructuredResponseCase.ERROR_UNRELATED: (
+                "unrelated bounded failure"
+            ),
+            StructuredResponseCase.ERROR_EXTRA_FIELDS: (
+                "update_environment_variables: variables must be an object "
+                "of string values"
+            ),
+        }.get(response_case)
+        is_error = error_text is not None
         subtype = "error" if is_error else "success"
         response: JsonObject = {
             "request_id": response_id,
             "subtype": subtype,
         }
         if is_error:
-            response["error"] = "Environment variable values must be strings."
+            response["error"] = error_text
         if response_case in {
             StructuredResponseCase.ERROR_EXTRA_FIELDS,
             StructuredResponseCase.EXTRA_FIELDS,
@@ -363,6 +378,8 @@ class StructuredCapabilityMutation(StrEnum):
     MANIFEST = "manifest"
     SCHEMA = "schema"
     NEGATIVE_SCHEMA = "negative_schema"
+    NEGATIVE_OLD_ERROR = "negative_old_error"
+    NEGATIVE_UNRELATED_ERROR = "negative_unrelated_error"
     MACOS = "macos"
 
 
@@ -434,6 +451,24 @@ def structured_capability_fixture(
         launcher.unlink()
         launcher.symlink_to(replacement)
     profile = native_profile(root / "home")
+    negative_responses: dict[
+        StructuredCapabilityMutation | None,
+        StructuredResponseCase,
+    ] = {
+        StructuredCapabilityMutation.NEGATIVE_SCHEMA: (
+            StructuredResponseCase.ERROR_EXTRA_FIELDS
+        ),
+        StructuredCapabilityMutation.NEGATIVE_OLD_ERROR: (
+            StructuredResponseCase.ERROR_OLD_TEXT
+        ),
+        StructuredCapabilityMutation.NEGATIVE_UNRELATED_ERROR: (
+            StructuredResponseCase.ERROR_UNRELATED
+        ),
+    }
+    negative_response = negative_responses.get(
+        mutation,
+        StructuredResponseCase.ERROR_RESPONSE,
+    )
     factory = ClaudeStructuredEngineFactoryFake(
         CLAUDE_STRUCTURED_PROBE_CANARY,
         (
@@ -441,11 +476,7 @@ def structured_capability_fixture(
             if mutation is StructuredCapabilityMutation.SCHEMA
             else StructuredResponseCase.SUCCESS
         ),
-        (
-            StructuredResponseCase.ERROR_EXTRA_FIELDS
-            if mutation is StructuredCapabilityMutation.NEGATIVE_SCHEMA
-            else StructuredResponseCase.ERROR_RESPONSE
-        ),
+        negative_response,
     )
     return StructuredCapabilityFixture(
         executable=executable,

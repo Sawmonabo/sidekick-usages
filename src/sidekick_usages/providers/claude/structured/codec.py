@@ -26,6 +26,10 @@ _RESPONSE_KEYS = frozenset({"response", "type"})
 _SUCCESS_KEYS = frozenset({"request_id", "subtype"})
 _REJECTION_KEYS = frozenset({"error", "request_id", "subtype"})
 _MAXIMUM_REJECTION_ERROR_BYTES = 1024
+_EXPECTED_REJECTION_ERROR = (
+    "update_environment_variables: variables must be an object of string "
+    "values"
+)
 
 
 def encode_oauth_update(request_id: RequestId, oauth: str) -> bytearray:
@@ -93,7 +97,10 @@ def decode_oauth_update_rejection(
     request_id: RequestId,
 ) -> None:
     """Require the exact correlated negative-probe rejection."""
-    subtype, correlated = _decode_control_response(payload)
+    subtype, correlated = _decode_control_response(
+        payload,
+        expected_error=_EXPECTED_REJECTION_ERROR,
+    )
     if subtype != "error" or correlated != request_id:
         _malformed()
 
@@ -111,9 +118,11 @@ def decode_control_response_request_id(
 
 def _decode_control_response(
     payload: bytes,
+    *,
+    expected_error: str | None = None,
 ) -> tuple[str, RequestId]:
     root = _decode_frame(payload)
-    return _decode_control_response_root(root)
+    return _decode_control_response_root(root, expected_error=expected_error)
 
 
 def _decode_frame(payload: bytes) -> JsonObject:
@@ -128,6 +137,8 @@ def _decode_frame(payload: bytes) -> JsonObject:
 
 def _decode_control_response_root(
     root: JsonObject,
+    *,
+    expected_error: str | None = None,
 ) -> tuple[str, RequestId]:
     if set(root) != _RESPONSE_KEYS or root.get("type") != "control_response":
         _malformed()
@@ -142,8 +153,15 @@ def _decode_control_response_root(
         if set(response) != _SUCCESS_KEYS:
             _malformed()
     elif subtype == "error":
-        error = response.get("error")
-        if set(response) != _REJECTION_KEYS or not _valid_error(error):
+        received_error = response.get("error")
+        if (
+            set(response) != _REJECTION_KEYS
+            or not isinstance(received_error, str)
+            or not _valid_error(received_error)
+            or (
+                expected_error is not None and received_error != expected_error
+            )
+        ):
             _malformed()
     else:
         _malformed()
@@ -154,8 +172,8 @@ def _decode_control_response_root(
     return subtype, correlated
 
 
-def _valid_error(error: object) -> bool:
-    if not isinstance(error, str) or not error or "\0" in error:
+def _valid_error(error: str) -> bool:
+    if not error or "\0" in error:
         return False
     try:
         return len(error.encode("utf-8")) <= _MAXIMUM_REJECTION_ERROR_BYTES
