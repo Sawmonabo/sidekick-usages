@@ -7,6 +7,7 @@ import typer
 from sidekick_usages.cli.context import invocation_context
 from sidekick_usages.cli.help import BrandedTyperGroup, branded_command
 from sidekick_usages.cli.session.models import (
+    SessionLaunchError,
     ShellEnrollmentStatus,
     ShellIntegrationError,
     ShellIntegrationResult,
@@ -50,8 +51,16 @@ def codex_cmd(
     ] = None,
 ) -> None:
     """Enter a coordinated Codex session when its relay is qualified."""
-    del codex_arguments
-    _refuse_provider(ctx, "codex")
+    session = invocation_context(ctx).require_session().codex
+    if session is None:
+        _refuse_provider(ctx, "codex")
+    try:
+        status = session.run(tuple(codex_arguments or ()))
+    except SessionLaunchError as error:
+        invocation_context(ctx).err_console.print(f"[red]{error}[/red]")
+        raise typer.Exit(code=ExitCode.MANUAL_ACTION) from None
+    if status != ExitCode.SUCCESS:
+        raise typer.Exit(code=status)
 
 
 def _render_shell_failure(

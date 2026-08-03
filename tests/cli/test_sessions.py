@@ -2,8 +2,11 @@
 
 import errno
 import os
+import signal
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
+from threading import Thread
 from typing import Never
 
 import click
@@ -14,6 +17,7 @@ from typer.testing import CliRunner
 from sidekick_usages.cli.app import create_app
 from sidekick_usages.cli.context import InvocationContext
 from sidekick_usages.cli.contexts.session import SessionContext
+from sidekick_usages.cli.session.codex import CodexCliSession
 from sidekick_usages.cli.session.launcher import ProviderSessionLauncher
 from sidekick_usages.cli.session.models import (
     SessionLaunchError,
@@ -585,19 +589,186 @@ def test_public_shell_dry_run_reports_exact_targets_without_writing(
     assert not integration.parent.exists()
 
 
-@pytest.mark.parametrize("provider", ["claude", "codex"])
-def test_provider_session_commands_refuse_unavailable_capabilities(
-    provider: str,
-) -> None:
+def test_claude_session_command_refuses_unavailable_capability() -> None:
     """Provider entrypoints must not fall through to unmanaged processes."""
     result = CliRunner().invoke(
         create_app(),
-        ["session", provider, "--", "prompt with spaces"],
+        ["session", "claude", "--", "prompt with spaces"],
         terminal_width=160,
     )
 
     assert result.exit_code == ExitCode.MANUAL_ACTION
     output = click.unstyle(result.output)
-    assert f"{provider} session integration is not available" in output
+    assert "claude session integration is not available" in output
     assert "provider process was not" in output
     assert "started." in output
+
+
+@dataclass(slots=True)
+class _FakeCodexRuntime:
+    """Expose one stable synthetic relay and participant lifetime."""
+
+    socket_path: Path
+    ready_marker: Path
+    child_observation: Path
+    signal_fifo: Path
+    events: list[str]
+    downstream_connections: int = 0
+    upstream_connections: int = 0
+    resize: Thread | None = None
+
+    def open(self) -> None:
+        """Open one relay before registration and account-bearing traffic."""
+        if self.downstream_connections or self.upstream_connections:
+            raise AssertionError("Synthetic Codex runtime reopened.")
+        self.socket_path.parent.mkdir(parents=True, mode=0o700)
+        self.events.extend(
+            ("relay_open", "participant_registered", "notice_subscribed")
+        )
+        self.downstream_connections = 1
+        self.upstream_connections = 1
+        self.ready_marker.write_text("ready\n")
+
+        def send_resize_to_relay_owner() -> None:
+            with self.signal_fifo.open() as stream:
+                if not stream.readline().strip():
+                    raise AssertionError(
+                        "Codex child identity was unavailable."
+                    )
+            os.kill(os.getpid(), signal.SIGWINCH)
+
+        self.resize = Thread(target=send_resize_to_relay_owner)
+        self.resize.start()
+
+    def close(self) -> None:
+        """Close only after the one child has exited naturally."""
+        if not self.child_observation.exists():
+            raise AssertionError("Codex runtime closed before its child.")
+        if self.resize is None:
+            raise AssertionError("Codex resize observer was not started.")
+        self.resize.join(timeout=2)
+        if self.resize.is_alive():
+            raise AssertionError("Codex resize observer did not finish.")
+        self.events.append("session_closed")
+        self.ready_marker.unlink()
+
+
+@pytest.mark.skipif(
+    os.name != "posix"
+    or not hasattr(os, "fork")
+    or os.execve not in os.supports_fd,
+    reason="The stock Codex TUI relay requires a POSIX child process.",
+)
+def test_codex_session_runs_one_coordinated_stock_tui(
+    tmp_path: Path,
+) -> None:
+    """A reconnect, unsafe override, or exit rewrite breaks enrollment."""
+    binaries = tmp_path / "bin"
+    working_directory = tmp_path / "working"
+    neutral_home = tmp_path / "neutral-codex-home"
+    participant_socket = tmp_path / "runtime" / "participants" / "cli.sock"
+    child_observation = tmp_path / "child-observation.txt"
+    ready_marker = tmp_path / "relay-ready.txt"
+    signal_fifo = tmp_path / "child-signal.fifo"
+    binaries.mkdir()
+    working_directory.mkdir()
+    neutral_home.mkdir(mode=0o700)
+    os.mkfifo(signal_fifo, mode=0o600)
+    codex = binaries / "codex"
+    sidekick = binaries / "sidekick-real"
+    codex.write_text(
+        "#!/bin/sh\n"
+        'test -f "$SESSION_READY" || exit 91\n'
+        "{\n"
+        "    printf 'arg=%s\\n' \"$@\"\n"
+        "    printf 'home=%s\\n' \"$CODEX_HOME\"\n"
+        "    printf 'cwd=%s\\n' \"$PWD\"\n"
+        '} > "$SESSION_OBSERVATION"\n'
+        f"trap \"printf 'signal=WINCH\\\\n' >> "
+        '"$SESSION_OBSERVATION"; '
+        f'exit {_PROVIDER_EXIT_CODE}" WINCH\n'
+        'printf \'%s\\n\' "$$" > "$SESSION_SIGNAL_FIFO"\n'
+        "/bin/sleep 5\n"
+        "exit 92\n"
+    )
+    codex.chmod(0o700)
+    _executable(sidekick)
+    events: list[str] = []
+    runtime = _FakeCodexRuntime(
+        participant_socket,
+        ready_marker,
+        child_observation,
+        signal_fifo,
+        events,
+    )
+    launcher = ProviderSessionLauncher(
+        {
+            "PATH": str(binaries),
+            "SESSION_OBSERVATION": str(child_observation),
+            "SESSION_READY": str(ready_marker),
+            "SESSION_SIGNAL_FIFO": str(signal_fifo),
+            "TERM": "xterm-256color",
+        },
+        working_directory=working_directory,
+        sidekick_executable=qualify_executable(sidekick),
+    )
+    codex_session = CodexCliSession(
+        launcher,
+        runtime,
+        codex_home=neutral_home,
+    )
+    context = InvocationContext(
+        session_composer=lambda: SessionContext(
+            shell=ShellEnrollment(
+                ShellStartupResolver(
+                    environment={},
+                    platform="linux",
+                    posix_integration=tmp_path / "unneeded",
+                    effective_user_id=os.geteuid(),
+                )
+            ),
+            codex=codex_session,
+        )
+    )
+
+    result = CliRunner().invoke(
+        create_app(),
+        ["session", "codex", "--", "prompt with spaces"],
+        obj=context,
+        terminal_width=160,
+    )
+
+    assert result.exit_code == _PROVIDER_EXIT_CODE
+    assert events == [
+        "relay_open",
+        "participant_registered",
+        "notice_subscribed",
+        "session_closed",
+    ]
+    assert runtime.downstream_connections == 1
+    assert runtime.upstream_connections == 1
+    assert child_observation.read_text().splitlines() == [
+        "arg=--remote",
+        f"arg=unix://{participant_socket}",
+        "arg=prompt with spaces",
+        f"home={neutral_home}",
+        f"cwd={working_directory}",
+        "signal=WINCH",
+    ]
+
+    unsafe = CliRunner().invoke(
+        create_app(),
+        [
+            "session",
+            "codex",
+            "--",
+            "--remote",
+            "unix:///unmanaged.sock",
+        ],
+        obj=context,
+        terminal_width=160,
+    )
+
+    assert unsafe.exit_code == ExitCode.MANUAL_ACTION
+    assert "Codex arguments override protected" in click.unstyle(unsafe.output)
+    assert events.count("relay_open") == 1

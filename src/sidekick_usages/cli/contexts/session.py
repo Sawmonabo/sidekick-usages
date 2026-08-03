@@ -4,6 +4,7 @@ import os
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Protocol
 
 from sidekick_usages.cli.session.shell import (
     ShellEnrollment,
@@ -12,11 +13,19 @@ from sidekick_usages.cli.session.shell import (
 from sidekick_usages.paths import ApplicationPaths, discover_application_paths
 
 
+class CodexSessionRunner(Protocol):
+    """Run one qualified coordinated Codex CLI session."""
+
+    def run(self, arguments: tuple[str, ...]) -> int:
+        """Return the exact stock-TUI process status."""
+
+
 @dataclass(frozen=True, slots=True)
 class SessionContext:
     """Provider-neutral explicit shell enrollment boundary."""
 
     shell: ShellEnrollment
+    codex: CodexSessionRunner | None = None
 
 
 def compose_session_context(
@@ -25,8 +34,9 @@ def compose_session_context(
     environment: Mapping[str, str] | None = None,
     platform: str | None = None,
     effective_user_id: int | None = None,
+    codex: CodexSessionRunner | None = None,
 ) -> SessionContext:
-    """Compose shell enrollment without provider credentials or daemons."""
+    """Compose shell enrollment and an injected qualified Codex owner."""
     resolved_paths = discover_application_paths() if paths is None else paths
     resolved_environment = os.environ if environment is None else environment
     uid = (
@@ -42,5 +52,6 @@ def compose_session_context(
                 posix_integration=resolved_paths.shell_integration,
                 effective_user_id=uid,
             )
-        )
+        ),
+        codex,
     )
