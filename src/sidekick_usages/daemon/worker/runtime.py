@@ -138,7 +138,7 @@ def selection_worker_success(
         outcome=WorkerOutcome.SUCCEEDED,
         finished_at=clock.now(),
         selection=SelectionWorkerMetadata(
-            operation_id=operation.operation_id,
+            operation_id=operation.required_selection_operation_id,
             provider_id=operation.provider_id,
             kind=operation.kind,
             pending_epoch=pending_epoch,

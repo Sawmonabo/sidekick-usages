@@ -77,7 +77,7 @@ class SelectionWorkerBoundary:
             or phases is None
             or operation.priority is not OperationPriority.INTERACTIVE
             or active.phase not in phases
-            or active.operation_id != operation.operation_id
+            or active.operation_id != operation.required_selection_operation_id
             or active.provider_id is not operation.provider_id
             or active.target_account_id != operation.required_account_id
         ):
@@ -165,7 +165,8 @@ class SelectionWorkerBoundary:
         metadata = result.selection
         if (
             metadata is None
-            or metadata.operation_id != operation.operation_id
+            or metadata.operation_id
+            != operation.required_selection_operation_id
             or metadata.provider_id is not operation.provider_id
             or metadata.kind is not operation.kind
             or metadata.pending_epoch != active.pending_epoch
@@ -214,7 +215,8 @@ class SelectionWorkerBoundary:
         record = self._activations.load(operation.provider_id).active
         return (
             record is not None
-            and record.operation_id == operation.operation_id
+            and record.operation_id
+            == operation.required_selection_operation_id
             and (
                 record.phase in _AMBIGUOUS_CLAUDE_PHASES
                 or (

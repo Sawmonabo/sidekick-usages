@@ -174,10 +174,13 @@ class DurableScheduler:
     def collect(self) -> tuple[SchedulerCompletion, ...]:
         """Reap completions and hard timeouts without coupling accounts."""
         monotonic_now = self._monotonic()
-        exits = (
-            *self._workers.reap_completed(monotonic_now),
-            *self._workers.expire(monotonic_now),
-        )
+        expired, retained = self._workers.expire(monotonic_now)
+        exits = (*self._workers.reap_completed(monotonic_now), *expired)
+        for operation in retained:
+            self._events.failed(
+                operation,
+                "selection_recovery_required",
+            )
         completed: list[SchedulerCompletion] = []
         for worker_exit in exits:
             completion = self._finalize_exit(worker_exit)
@@ -204,7 +207,7 @@ class DurableScheduler:
         return min(waits) if waits else None
 
     def shutdown(self) -> tuple[SchedulerCompletion, ...]:
-        """Terminate workers and durably reschedule their operations."""
+        """Stop workers under their policy and finalize released work."""
         completed = list(self.collect())
         try:
             exits = self._workers.shutdown()
@@ -400,7 +403,11 @@ class DurableScheduler:
             state = updated.state
         self._results.delete(operation.operation_id)
         return SchedulerCompletion(
-            operation_id=operation.operation_id,
+            operation_id=(
+                operation.required_selection_operation_id
+                if operation.kind.is_selection_worker
+                else operation.operation_id
+            ),
             operation_kind=operation.kind,
             state=state,
             outcome=result.outcome,

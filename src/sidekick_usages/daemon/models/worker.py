@@ -104,11 +104,6 @@ class WorkerResult:
         if not succeeded and self.selection is not None:
             raise ValueError("Failed worker results cannot carry selection.")
         if (
-            self.selection is not None
-            and self.selection.operation_id != self.operation_id
-        ):
-            raise ValueError("Worker result selection identity changed.")
-        if (
             self.related_runtime_authority is not None
             and self.selection is not None
         ):
@@ -190,6 +185,7 @@ class ActiveWorker[HandleT]:
     operation: DueOperation
     handle: HandleT
     deadline: float
+    timeout_reported: bool = False
 
 
 @dataclass(slots=True)

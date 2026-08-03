@@ -60,7 +60,8 @@ from sidekick_usages.serialization.json import JsonObject, JsonValue
 SELECTED_STATE_SCHEMA_VERSION = 3
 _LEGACY_SELECTED_STATE_SCHEMA_VERSION = 2
 ACTIVATION_SCHEMA_VERSION = 4
-OPERATION_QUEUE_SCHEMA_VERSION = 4
+OPERATION_QUEUE_SCHEMA_VERSION = 5
+_PREVIOUS_OPERATION_QUEUE_SCHEMA_VERSION = 4
 _LEGACY_OPERATION_QUEUE_SCHEMA_VERSION = 3
 RUNTIME_OBSERVATION_SCHEMA_VERSION = 1
 MAX_SELECTED_STATE_BYTES = 256 * 1024
@@ -138,11 +139,15 @@ _OPERATION_KEYS = frozenset(
         "operation_id",
         "priority",
         "provider_id",
+        "selection_operation_id",
         "state",
         "updated_at",
     }
 )
-_LEGACY_OPERATION_KEYS = _OPERATION_KEYS | {"allow_remote_control_disconnect"}
+_PREVIOUS_OPERATION_KEYS = _OPERATION_KEYS - {"selection_operation_id"}
+_LEGACY_OPERATION_KEYS = _PREVIOUS_OPERATION_KEYS | {
+    "allow_remote_control_disconnect"
+}
 
 
 def decode_selected_state(payload: bytes) -> SelectedStateDocument:
@@ -286,12 +291,17 @@ def decode_operation_queue(payload: bytes) -> OperationQueueDocument:
     require_exact_keys(root, {"operations", "schema_version"})
     version = require_integer(root["schema_version"])
     legacy = version == _LEGACY_OPERATION_QUEUE_SCHEMA_VERSION
+    previous = version == _PREVIOUS_OPERATION_QUEUE_SCHEMA_VERSION
     require_schema_version(
         version,
         (
             _LEGACY_OPERATION_QUEUE_SCHEMA_VERSION
             if legacy
-            else OPERATION_QUEUE_SCHEMA_VERSION
+            else (
+                _PREVIOUS_OPERATION_QUEUE_SCHEMA_VERSION
+                if previous
+                else OPERATION_QUEUE_SCHEMA_VERSION
+            )
         ),
     )
     records = require_object(root["operations"])
@@ -303,6 +313,7 @@ def decode_operation_queue(payload: bytes) -> OperationQueueDocument:
             operation = _due_operation(
                 require_object(value),
                 legacy=legacy,
+                previous=previous,
             )
             if slot != operation_slot(
                 operation.provider_id,
@@ -316,7 +327,7 @@ def decode_operation_queue(payload: bytes) -> OperationQueueDocument:
         raise InvalidSchemaError from None
     expected = (
         encode_state_object(root, MAX_OPERATION_QUEUE_BYTES)
-        if legacy
+        if legacy or previous
         else _operation_payload(document)
     )
     if expected != payload:
@@ -735,18 +746,33 @@ def _due_operation(
     record: JsonObject,
     *,
     legacy: bool,
+    previous: bool,
 ) -> DueOperation:
     require_exact_keys(
         record,
-        _LEGACY_OPERATION_KEYS if legacy else _OPERATION_KEYS,
+        (
+            _LEGACY_OPERATION_KEYS
+            if legacy
+            else _PREVIOUS_OPERATION_KEYS
+            if previous
+            else _OPERATION_KEYS
+        ),
     )
     if legacy:
         require_boolean(record["allow_remote_control_disconnect"])
+    operation_id = OperationId(require_string(record["operation_id"]))
+    kind = OperationKind(require_string(record["kind"]))
+    parent_id = (
+        operation_id
+        if (legacy or previous) and kind.is_selection_worker
+        else _optional_operation_id(record["selection_operation_id"])
+    )
     return DueOperation(
-        operation_id=OperationId(require_string(record["operation_id"])),
+        operation_id=operation_id,
+        selection_operation_id=parent_id,
         provider_id=ProviderId(require_string(record["provider_id"])),
         account_id=_optional_account_id(record["account_id"]),
-        kind=OperationKind(require_string(record["kind"])),
+        kind=kind,
         priority=OperationPriority(require_string(record["priority"])),
         state=OperationState(require_string(record["state"])),
         due_at=parse_canonical_timestamp(require_string(record["due_at"])),
@@ -763,6 +789,11 @@ def _optional_account_id(value: JsonValue) -> SidekickAccountId | None:
     return None if account_id is None else SidekickAccountId(account_id)
 
 
+def _optional_operation_id(value: JsonValue) -> OperationId | None:
+    operation_id = require_optional_string(value)
+    return None if operation_id is None else OperationId(operation_id)
+
+
 def _operation_object(operation: DueOperation) -> JsonObject:
     return {
         "account_id": (
@@ -775,6 +806,11 @@ def _operation_object(operation: DueOperation) -> JsonObject:
         "operation_id": str(operation.operation_id),
         "priority": operation.priority.value,
         "provider_id": operation.provider_id.value,
+        "selection_operation_id": (
+            None
+            if operation.selection_operation_id is None
+            else str(operation.selection_operation_id)
+        ),
         "state": operation.state.value,
         "updated_at": canonical_timestamp(operation.updated_at),
     }

@@ -680,17 +680,11 @@ def test_recovery_finalizes_forward_from_target_provider_proof(
         SelectionPhase.PREPARING,
         SelectionPhase.WAITING_OLD_TURNS,
         SelectionPhase.COMMITTING,
-        SelectionPhase.RECOVERING,
     ):
         replacement = replace(
             operation,
             phase=phase,
             prepared_generation=(AuthorityGeneration("generation-source-8")),
-            outcome_code=(
-                SelectionCode.SELECTION_RECOVERY_REQUIRED
-                if phase is SelectionPhase.RECOVERING
-                else None
-            ),
         )
         journal.compare_and_swap(operation, replacement)
         operation = replacement
@@ -707,19 +701,27 @@ def test_recovery_finalizes_forward_from_target_provider_proof(
     )
     assert recovery.restore(PROVIDER_ID)
     (readback,) = recovery.enqueue_restored_readbacks()
+    assert readback.operation_id != operation.operation_id
+    assert readback.selection_operation_id == operation.operation_id
+    assert recovery.enqueue_restored_readbacks() == (readback,)
+    recovery.fail_readback(readback, "selection_recovery_required")
+    active = journal.load(PROVIDER_ID).active
+    assert active is not None
+    assert active.operation_id == operation.operation_id
+    assert active.phase is SelectionPhase.RECOVERING
     queue.remove(
         readback.operation_id,
         expected_state=OperationState.SCHEDULED,
     )
     recovery.complete_readback(
         SchedulerCompletion(
-            operation_id=readback.operation_id,
+            operation_id=operation.operation_id,
             operation_kind=readback.kind,
             state=None,
             outcome=WorkerOutcome.SUCCEEDED,
             failure_code=None,
             selection=SelectionWorkerMetadata(
-                operation_id=readback.operation_id,
+                operation_id=operation.operation_id,
                 provider_id=PROVIDER_ID,
                 kind=readback.kind,
                 pending_epoch=operation.pending_epoch,

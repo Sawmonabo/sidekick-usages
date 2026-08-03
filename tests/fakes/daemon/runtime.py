@@ -3,19 +3,32 @@
 import os
 import socket
 import sys
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from threading import Event, Thread
 
-from sidekick_usages.core.accounts.types import OperationId
-from sidekick_usages.core.selection.types import OperationKind
+from sidekick_usages.core.accounts.types import (
+    AuthorityGeneration,
+    OperationId,
+)
+from sidekick_usages.core.selection.models import (
+    DueOperation,
+    SelectionAuthorityObservation,
+    SelectionEpoch,
+)
+from sidekick_usages.core.selection.types import (
+    OperationKind,
+)
+from sidekick_usages.core.types import ProviderId
+from sidekick_usages.daemon.control.dispatch import OperationEventHub
 from sidekick_usages.daemon.control.server import LocalControlServer
 from sidekick_usages.daemon.models.control import VerifiedControlRequest
 from sidekick_usages.daemon.models.protocol import (
     ControlEvent,
 )
+from sidekick_usages.daemon.models.scheduler import SchedulerCompletion
 from sidekick_usages.daemon.models.service import ServicePreparationReport
 from sidekick_usages.daemon.models.worker import (
     ProviderLaunchers,
@@ -30,13 +43,21 @@ from sidekick_usages.daemon.runtime.supervisor import (
     SupervisorRuntime,
     WakeupChannel,
 )
+from sidekick_usages.daemon.selection.worker import (
+    SelectionSchedulerSink,
+    SelectionWorkerGateway,
+)
 from sidekick_usages.daemon.types.ports import WorkerHandle
 from sidekick_usages.daemon.types.worker import (
     ExitNotifier,
     WorkerOutcome,
 )
-from sidekick_usages.daemon.worker.pool import WorkerLaunchPlanner
+from sidekick_usages.daemon.worker.pool import WorkerLaunchPlanner, WorkerPool
+from sidekick_usages.daemon.worker.runtime import selection_worker_success
 from sidekick_usages.paths import ApplicationPaths
+from sidekick_usages.persistence.supervisor.authority import (
+    ProviderMutationLock,
+)
 from sidekick_usages.persistence.supervisor.queue import OperationQueueStore
 from sidekick_usages.persistence.supervisor.results import WorkerResultStore
 from sidekick_usages.persistence.supervisor.service import ServiceStateStore
@@ -49,6 +70,83 @@ SYNTHETIC_WORKER_EXECUTABLE = (
 SYNTHETIC_CLAUDE_LAUNCHER = Path("/synthetic/bin/claude")
 SYNTHETIC_CODEX_LAUNCHER = Path("/synthetic/bin/codex")
 _MONOTONIC_START = 100.0
+
+
+class GlobalSelectionRecovery:
+    """Record pre-readiness selection recovery without provider work."""
+
+    def __init__(self) -> None:
+        self.restore_calls = 0
+        self.enqueue_calls = 0
+        self.close_calls = 0
+        self.orphan_calls = 0
+
+    def restore_all(self) -> tuple[ProviderId, ...]:
+        self.restore_calls += 1
+        return ()
+
+    def enqueue_restored_readbacks(self) -> tuple[DueOperation, ...]:
+        self.enqueue_calls += 1
+        return ()
+
+    def reconciled(self) -> bool:
+        return True
+
+    def close(self) -> None:
+        self.close_calls += 1
+
+    def complete_readback(self, completion: SchedulerCompletion) -> None:
+        del completion
+        self.orphan_calls += 1
+
+    def fail_readback(self, operation: DueOperation, code: str) -> None:
+        del operation, code
+        self.orphan_calls += 1
+
+    def worker_released(self, completion: SchedulerCompletion) -> None:
+        del completion
+        self.orphan_calls += 1
+
+
+def selection_phase_action(
+    root: Path,
+    queue: OperationQueueStore,
+    results: WorkerResultStore,
+    operation_id: OperationId,
+    entered: Event,
+    release: Event | None = None,
+) -> Callable[[], None]:
+    """Build one phase action serialized by the real provider lock."""
+
+    def execute() -> None:
+        operation = queue.find(operation_id)
+        if operation is None:
+            return
+        lock = ProviderMutationLock(
+            root,
+            operation.provider_id,
+            (operation.required_account_id,),
+            timeout_seconds=2,
+        )
+        with lock.hold() as authority:
+            authority.require(operation.provider_id)
+            entered.set()
+            if release is not None:
+                release.wait(2)
+            results.save(
+                selection_worker_success(
+                    operation,
+                    SelectionEpoch(8),
+                    SelectionAuthorityObservation(
+                        provider_id=operation.provider_id,
+                        account_id=operation.required_account_id,
+                        generation=AuthorityGeneration("generation-target"),
+                    ),
+                    RuntimeClock(),
+                )
+            )
+
+    return execute
 
 
 @dataclass(slots=True)
@@ -81,6 +179,8 @@ class FakeWorkerHandle:
     initial_exit_code: int | None
     requires_kill: bool
     exchange_endpoint: socket.socket | None = None
+    natural_completion: Event | None = None
+    residual_completion: Event | None = None
     terminated: bool = False
     killed: bool = False
 
@@ -91,13 +191,23 @@ class FakeWorkerHandle:
 
     def poll(self) -> int | None:
         """Return the configured immediate exit status."""
+        if (
+            self.natural_completion is not None
+            and self.natural_completion.is_set()
+        ):
+            self._close_exchange()
+            return 0
         if self.initial_exit_code is not None:
             self._close_exchange()
         return self.initial_exit_code
 
     def wait(self, timeout_seconds: float | None) -> int | None:
         """Return the synthetic exit status within the caller's bound."""
-        del timeout_seconds
+        if self.natural_completion is not None:
+            if self.natural_completion.wait(timeout_seconds):
+                self._close_exchange()
+                return 0
+            return None
         if self.initial_exit_code is not None:
             self._close_exchange()
             return self.initial_exit_code
@@ -111,8 +221,18 @@ class FakeWorkerHandle:
 
     def group_alive(self) -> bool:
         """Return whether the synthetic worker group remains alive."""
+        if (
+            self.natural_completion is not None
+            and self.natural_completion.is_set()
+            and self.residual_completion is not None
+        ):
+            return not self.residual_completion.is_set()
         return (
             self.initial_exit_code is None
+            and (
+                self.natural_completion is None
+                or not self.natural_completion.is_set()
+            )
             and not self.killed
             and not (self.terminated and not self.requires_kill)
         )
@@ -143,11 +263,21 @@ class FakeWorkerLauncher:
         clock: RuntimeClock,
         successful: frozenset[OperationId],
         requires_kill: frozenset[OperationId] = frozenset(),
+        natural_completions: Mapping[OperationId, Event] | None = None,
+        residual_completions: Mapping[OperationId, Event] | None = None,
+        worker_actions: Mapping[OperationId, Callable[[], None]] | None = None,
     ) -> None:
         self._results = results
         self._clock = clock
         self._successful = successful
         self._requires_kill = requires_kill
+        self._natural_completions = (
+            {} if natural_completions is None else natural_completions
+        )
+        self._residual_completions = (
+            {} if residual_completions is None else residual_completions
+        )
+        self._worker_actions = {} if worker_actions is None else worker_actions
         self.specs: list[WorkerLaunchSpec] = []
         self.events: list[str] = []
         self.handles: dict[OperationId, FakeWorkerHandle] = {}
@@ -169,6 +299,10 @@ class FakeWorkerLauncher:
                     finished_at=self._clock.now(),
                 )
             )
+        natural_completion = self._natural_completions.get(spec.operation_id)
+        action = self._worker_actions.get(spec.operation_id)
+        if action is not None:
+            natural_completion = Event()
         handle = FakeWorkerHandle(
             spec.operation_id,
             self.events,
@@ -179,8 +313,20 @@ class FakeWorkerLauncher:
                 if spec.exchange_descriptor is None
                 else socket.socket(fileno=os.dup(spec.exchange_descriptor))
             ),
+            natural_completion,
+            self._residual_completions.get(spec.operation_id),
         )
         self.handles[spec.operation_id] = handle
+        if action is not None and natural_completion is not None:
+
+            def execute() -> None:
+                try:
+                    action()
+                finally:
+                    natural_completion.set()
+                    notify_exit()
+
+            Thread(target=execute, daemon=True).start()
         if succeeded:
             notify_exit()
         return handle
@@ -315,6 +461,41 @@ def worker_planner() -> WorkerLaunchPlanner:
             claude=SYNTHETIC_CLAUDE_LAUNCHER,
             codex=SYNTHETIC_CODEX_LAUNCHER,
         ),
+    )
+
+
+def selection_scheduler(
+    queue: OperationQueueStore,
+    results: WorkerResultStore,
+    launcher: FakeWorkerLauncher,
+    gateway: SelectionWorkerGateway,
+    clock: RuntimeClock,
+    *,
+    timeout_seconds: float = 120.0,
+) -> tuple[DurableScheduler, WorkerPool, GlobalSelectionRecovery]:
+    """Build one selection-routed scheduler around existing typed fakes."""
+    recovery = GlobalSelectionRecovery()
+    workers = WorkerPool(
+        launcher,
+        worker_planner(),
+        lambda: None,
+        general_timeout_seconds=timeout_seconds,
+    )
+    return (
+        DurableScheduler(
+            queue,
+            results,
+            workers,
+            clock,
+            events=SelectionSchedulerSink(
+                OperationEventHub(),
+                gateway,
+                recovery,
+            ),
+            monotonic=clock.monotonic,
+        ),
+        workers,
+        recovery,
     )
 
 

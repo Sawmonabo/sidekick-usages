@@ -389,7 +389,9 @@ class SelectionCoordinator:
         try:
             prepared = self._adapter.prevalidate(operation, baseline)
             self._require_prepared(operation, prepared)
-        except SelectionRequestError:
+        except SelectionRequestError as error:
+            if error.code is SelectionCode.SELECTION_RECOVERY_REQUIRED:
+                return self._recovering(operation)
             self._fail_old_epoch(operation)
             raise
         except Exception:

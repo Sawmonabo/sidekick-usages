@@ -168,9 +168,33 @@ class SelectionRecovery:
             active = self._journal.load(operation.provider_id).active
             if (
                 active is not None
-                and active.operation_id == operation.operation_id
+                and active.operation_id
+                == operation.required_selection_operation_id
             ):
                 self._publish_recovery_required(active)
+
+    def worker_released(self, completion: SchedulerCompletion) -> None:
+        """Resume only after an orphan phase releases provider authority."""
+        if completion.operation_kind is OperationKind.SELECTION_READBACK:
+            self.complete_readback(completion)
+            return
+        provider_id = self._completion_provider(completion)
+        if provider_id is None:
+            return
+        with self._provider_locks[provider_id]:
+            operation = self._journal.load(provider_id).active
+            if (
+                operation is None
+                or operation.operation_id != completion.operation_id
+            ):
+                return
+            if (
+                completion.operation_kind
+                is OperationKind.SELECTION_PREVALIDATE
+            ):
+                self._recover_baseline(operation)
+            elif completion.operation_kind is OperationKind.SELECTION_COMMIT:
+                self._workers.enqueue_recovery_readback(operation)
 
     def _recover_committed(
         self,

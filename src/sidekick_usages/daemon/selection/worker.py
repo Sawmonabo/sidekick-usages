@@ -6,6 +6,7 @@ from threading import Condition
 from typing import Protocol
 
 from sidekick_usages.clock import Clock
+from sidekick_usages.core.accounts.identifiers import new_operation_id
 from sidekick_usages.core.accounts.types import (
     OperationId,
     SidekickAccountId,
@@ -53,6 +54,9 @@ class SelectionWorkerRecovery(Protocol):
     def fail_readback(self, operation: DueOperation, code: str) -> None:
         """Retain one failed readback as recovery-required truth."""
 
+    def worker_released(self, completion: SchedulerCompletion) -> None:
+        """Continue recovery after one orphan phase releases authority."""
+
 
 @dataclass(slots=True)
 class _SelectionWaiter:
@@ -68,10 +72,13 @@ class SelectionWorkerGateway:
         queue: OperationQueueStore,
         clock: Clock,
         wake: Callable[[], None],
+        *,
+        operation_id_factory: Callable[[], OperationId] = new_operation_id,
     ) -> None:
         self._queue = queue
         self._clock = clock
         self._wake = wake
+        self._operation_id_factory = operation_id_factory
         self._condition = Condition()
         self._waiters: dict[_WorkerKey, _SelectionWaiter] = {}
         self._closed = False
@@ -180,6 +187,15 @@ class SelectionWorkerGateway:
             operation.target_account_id,
             OperationKind.SELECTION_READBACK,
         )
+        existing = self._queue.get(
+            due.provider_id,
+            due.account_id,
+            due.kind,
+        )
+        if existing is not None:
+            self._require_same_parent(existing, due)
+            self._wake()
+            return existing
         effective = self._queue.enqueue(due)
         self._require_effective(effective, due)
         self._wake()
@@ -198,7 +214,7 @@ class SelectionWorkerGateway:
 
     def fail_waiter(self, operation: DueOperation, code: str) -> bool:
         """Deliver one pre-launch scheduler failure to its live waiter."""
-        key = (operation.operation_id, operation.kind)
+        key = (operation.required_selection_operation_id, operation.kind)
         with self._condition:
             waiter = self._waiters.get(key)
             if waiter is None:
@@ -289,7 +305,8 @@ class SelectionWorkerGateway:
     ) -> DueOperation:
         now = self._clock.now()
         return DueOperation(
-            operation_id=operation_id,
+            operation_id=self._operation_id_factory(),
+            selection_operation_id=operation_id,
             provider_id=provider_id,
             account_id=account_id,
             kind=kind,
@@ -327,6 +344,24 @@ class SelectionWorkerGateway:
     ) -> None:
         if (
             effective.operation_id != requested.operation_id
+            or effective.selection_operation_id
+            != requested.selection_operation_id
+            or effective.provider_id is not requested.provider_id
+            or effective.account_id != requested.account_id
+            or effective.kind is not requested.kind
+        ):
+            raise SelectionRequestError(
+                SelectionCode.SELECTION_RECOVERY_REQUIRED
+            )
+
+    @staticmethod
+    def _require_same_parent(
+        effective: DueOperation,
+        requested: DueOperation,
+    ) -> None:
+        if (
+            effective.selection_operation_id
+            != requested.selection_operation_id
             or effective.provider_id is not requested.provider_id
             or effective.account_id != requested.account_id
             or effective.kind is not requested.kind
@@ -387,7 +422,7 @@ class SelectionSchedulerSink:
             self._downstream.completed(completion)
             return
         if not self._gateway.complete_waiter(completion):
-            self._recovery.complete_readback(completion)
+            self._recovery.worker_released(completion)
 
     def failed(self, operation: DueOperation, code: str) -> None:
         """Route one launch failure without scheduling an automatic retry."""
