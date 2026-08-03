@@ -63,6 +63,10 @@ end
 """
 _PRIVATE_FILE_MODE = 0o600
 _PROVIDER_EXIT_CODE = 17
+_RUNTIME_EVENTS = (
+    "relay_open\nparticipant_registered\nnotice_subscribed\n"
+    "downstream=1\nupstream=1\nsession_closed\n"
+)
 
 
 def _executable(path: Path) -> None:
@@ -642,34 +646,92 @@ class _FakeCodexRuntime:
         self.ready_marker.unlink()
 
 
+def _stopped_restore_patch() -> pytest.MonkeyPatch:
+    patch = pytest.MonkeyPatch()
+    qualified_tcsetpgrp = os.tcsetpgrp
+    terminal_calls = 0
+
+    def fail_stopped_restore(
+        descriptor: int,
+        process_group: int,
+    ) -> None:
+        nonlocal terminal_calls
+        terminal_calls += 1
+        if terminal_calls > 1:
+            patch.undo()
+            raise OSError(
+                errno.EIO,
+                "synthetic stopped-child restoration failure",
+            )
+        qualified_tcsetpgrp(descriptor, process_group)
+
+    patch.setattr(os, "tcsetpgrp", fail_stopped_restore)
+    return patch
+
+
+def _read_pty_event(
+    descriptor: int,
+    outer_process: int,
+    terminal: int,
+    *,
+    failure: str,
+) -> bytes:
+    if select.select([descriptor], [], [], 5)[0]:
+        return os.read(descriptor, 1)
+    os.kill(outer_process, signal.SIGTERM)
+    os.waitpid(outer_process, 0)
+    os.close(descriptor)
+    os.close(terminal)
+    pytest.fail(failure)
+
+
 def _invoke_codex_in_pty(
     context: InvocationContext,
     command_result: Path,
     ready_read: int,
     ready_write: int,
-    setup_read: int,
-    setup_write: int,
+    *,
+    stopped_restore_failure: bool = False,
+    child_observation: Path | None = None,
 ) -> int:
+    setup_read, setup_write = os.pipe()
     outer_process, terminal = pty.fork()
     if outer_process == 0:
         os.close(ready_read)
         os.close(setup_write)
         os.read(setup_read, 1)
         os.close(setup_read)
+        terminal_patch = (
+            _stopped_restore_patch()
+            if stopped_restore_failure
+            else pytest.MonkeyPatch()
+        )
+        argument = (
+            "stop-after-ready"
+            if stopped_restore_failure
+            else "prompt with spaces"
+        )
         result = CliRunner().invoke(
             create_app(),
-            ["session", "codex", "--", "prompt with spaces"],
+            ["session", "codex", "--", argument],
             obj=context,
             terminal_width=160,
         )
+        terminal_patch.undo()
         restored = os.tcgetpgrp(0) == os.getpgrp()
+        reaped = ""
+        if child_observation is not None:
+            process_line = child_observation.read_text().splitlines()[0]
+            provider_process = int(process_line.removeprefix("pid="))
+            with pytest.raises(ChildProcessError):
+                os.waitpid(provider_process, os.WNOHANG)
+            reaped = "reaped=True\n"
         command_result.write_text(
             f"exit={result.exit_code}\nrestored={restored}\n"
-            f"output={click.unstyle(result.output)}"
+            f"{reaped}output={click.unstyle(result.output)}"
         )
         os.close(ready_write)
         os._exit(0)
-    os.close(ready_write)
     os.close(setup_read)
     fcntl.ioctl(
         terminal,
@@ -678,42 +740,56 @@ def _invoke_codex_in_pty(
     )
     os.write(setup_write, b"1")
     os.close(setup_write)
-    readable, _writable, _exceptional = select.select(
-        [ready_read],
-        [],
-        [],
-        5,
-    )
-    if not readable:
-        os.kill(outer_process, signal.SIGTERM)
-        os.waitpid(outer_process, 0)
-        os.close(ready_read)
-        os.close(terminal)
-        pytest.fail("The stock Codex TUI did not reach terminal readiness.")
-    assert os.read(ready_read, 1) == b"1"
-    os.kill(outer_process, signal.SIGWINCH)
-    forwarded, _writable, _exceptional = select.select(
-        [ready_read],
-        [],
-        [],
-        5,
-    )
-    if not forwarded:
-        os.kill(outer_process, signal.SIGTERM)
-        os.waitpid(outer_process, 0)
-        os.close(ready_read)
-        os.close(terminal)
-        pytest.fail("The stock Codex TUI did not receive forwarded resize.")
-    assert os.read(ready_read, 1) == b"2"
-    os.close(ready_read)
-    fcntl.ioctl(
+    ready = _read_pty_event(
+        ready_read,
+        outer_process,
         terminal,
-        termios.TIOCSWINSZ,
-        struct.pack("HHHH", 40, 120, 0, 0),
+        failure="The stock Codex TUI did not reach terminal readiness.",
     )
+    assert ready == b"1"
+    if not stopped_restore_failure:
+        os.kill(outer_process, signal.SIGWINCH)
+    continued = _read_pty_event(
+        ready_read,
+        outer_process,
+        terminal,
+        failure="The stock Codex TUI did not continue after readiness.",
+    )
+    assert continued == b"2"
+    if not stopped_restore_failure:
+        fcntl.ioctl(
+            terminal,
+            termios.TIOCSWINSZ,
+            struct.pack("HHHH", 40, 120, 0, 0),
+        )
     _waited, status = os.waitpid(outer_process, 0)
     os.close(terminal)
     return os.waitstatus_to_exitcode(status)
+
+
+def _prove_stopped_restore_failure(
+    context: InvocationContext,
+    result_path: Path,
+    observation: Path,
+    ready_read: int,
+    ready_write: int,
+) -> None:
+    status = _invoke_codex_in_pty(
+        context,
+        result_path,
+        ready_read,
+        ready_write,
+        stopped_restore_failure=True,
+        child_observation=observation,
+    )
+    assert status == 0
+    result = result_path.read_text().splitlines()
+    assert "\n".join(result[:3]) == "exit=1\nrestored=True\nreaped=True"
+    assert "original terminal could not be restored" in result[3]
+    assert result[4] == "status 23."
+    assert observation.read_text().endswith(
+        "continued=True\nnatural_exit=23\n"
+    )
 
 
 @pytest.mark.skipif(
@@ -741,45 +817,43 @@ def test_codex_session_runs_one_coordinated_stock_tui(
     sidekick = binaries / "sidekick-real"
     codex.write_text(
         f"#!{sys.executable}\n"
-        "import os\n"
-        "import signal\n"
-        "import sys\n"
-        "from pathlib import Path\n"
+        "import os\nimport signal\nimport sys\nfrom pathlib import Path\n"
         "observation = Path(os.environ['SESSION_OBSERVATION'])\n"
-        "ready = int(os.environ['SESSION_READY_FD'])\n"
-        "signal_count = 0\n"
+        "ready = int(os.environ['SESSION_READY_FD'])\nsignal_count = 0\n"
         "def resized(_number, _frame):\n"
-        "    global signal_count\n"
-        "    signal_count += 1\n"
+        "    global signal_count\n    signal_count += 1\n"
         "    size = os.get_terminal_size(0)\n"
         "    with observation.open('a') as stream:\n"
         "        label = 'signal' if signal_count == 1 else 'resize'\n"
         "        stream.write(f'{label}={size.columns}x{size.lines}\\n')\n"
         "    if signal_count == 1:\n"
-        "        os.write(ready, b'2')\n"
-        "        return\n"
+        "        os.write(ready, b'2')\n        return\n"
         "    raise SystemExit(125)\n"
         "signal.signal(signal.SIGWINCH, resized)\n"
         "size = os.get_terminal_size(0)\n"
         "lines = [f'arg={item}' for item in sys.argv[1:]]\n"
         "lines.extend([\n"
         "    f\"home={os.environ['CODEX_HOME']}\",\n"
-        '    f"cwd={os.getcwd()}",\n'
-        "    f'tty={os.isatty(0)}',\n"
+        "    f\"cwd={os.getcwd()}\",\n    f'tty={os.isatty(0)}',\n"
         "    f'foreground={os.tcgetpgrp(0) == os.getpgrp()}',\n"
         "    f'size={size.columns}x{size.lines}',\n"
         "])\n"
+        "if 'stop-after-ready' in sys.argv:\n"
+        "    lines.insert(0, f'pid={os.getpid()}')\n"
         "observation.write_text('\\n'.join(lines) + '\\n')\n"
         "if not Path(os.environ['SESSION_READY']).is_file():\n"
         "    raise SystemExit(91)\n"
         "os.write(ready, b'1')\n"
-        "while True:\n"
-        "    signal.pause()\n"
+        "if 'stop-after-ready' in sys.argv:\n"
+        "    os.kill(os.getpid(), signal.SIGTSTP)\n"
+        "    with observation.open('a') as stream:\n"
+        "        stream.write('continued=True\\nnatural_exit=23\\n')\n"
+        "    os.write(ready, b'2')\n    raise SystemExit(23)\n"
+        "while True:\n    signal.pause()\n"
     )
     codex.chmod(0o700)
     _executable(sidekick)
     ready_read, ready_write = os.pipe()
-    setup_read, setup_write = os.pipe()
     os.set_inheritable(ready_write, True)
     runtime = _FakeCodexRuntime(
         participant_socket,
@@ -798,11 +872,6 @@ def test_codex_session_runs_one_coordinated_stock_tui(
         working_directory=working_directory,
         sidekick_executable=qualify_executable(sidekick),
     )
-    codex_session = CodexCliSession(
-        launcher,
-        runtime,
-        codex_home=neutral_home,
-    )
     context = InvocationContext(
         session_composer=lambda: SessionContext(
             shell=ShellEnrollment(
@@ -813,7 +882,11 @@ def test_codex_session_runs_one_coordinated_stock_tui(
                     effective_user_id=os.geteuid(),
                 )
             ),
-            codex=codex_session,
+            codex=CodexCliSession(
+                launcher,
+                runtime,
+                codex_home=neutral_home,
+            ),
         )
     )
     status = _invoke_codex_in_pty(
@@ -821,24 +894,10 @@ def test_codex_session_runs_one_coordinated_stock_tui(
         command_result,
         ready_read,
         ready_write,
-        setup_read,
-        setup_write,
     )
 
     assert status == 0
-    assert command_result.read_text().splitlines() == [
-        "exit=125",
-        "restored=True",
-        "output=",
-    ]
-    assert event_log.read_text().splitlines() == [
-        "relay_open",
-        "participant_registered",
-        "notice_subscribed",
-        "downstream=1",
-        "upstream=1",
-        "session_closed",
-    ]
+    assert command_result.read_text() == "exit=125\nrestored=True\noutput="
     assert child_observation.read_text().splitlines() == [
         "arg=--remote",
         f"arg=unix://{participant_socket}",
@@ -851,6 +910,16 @@ def test_codex_session_runs_one_coordinated_stock_tui(
         "signal=80x24",
         "resize=120x40",
     ]
+
+    _prove_stopped_restore_failure(
+        context,
+        tmp_path / "stopped-result.txt",
+        child_observation,
+        ready_read,
+        ready_write,
+    )
+    os.close(ready_read)
+    os.close(ready_write)
 
     unsafe = CliRunner().invoke(
         create_app(),
@@ -867,7 +936,7 @@ def test_codex_session_runs_one_coordinated_stock_tui(
 
     assert unsafe.exit_code == ExitCode.MANUAL_ACTION
     assert "Codex arguments override protected" in click.unstyle(unsafe.output)
-    assert event_log.read_text().count("relay_open\n") == 1
+    assert event_log.read_text() == _RUNTIME_EVENTS * 2
 
     replacement = binaries / "replacement-codex"
     _executable(replacement)
@@ -882,17 +951,4 @@ def test_codex_session_runs_one_coordinated_stock_tui(
     assert changed.exit_code == ExitCode.MANUAL_ACTION
     assert "changed after qualification" in click.unstyle(changed.output)
     assert child_observation.read_text().count("foreground=True") == 1
-    assert event_log.read_text().splitlines() == [
-        "relay_open",
-        "participant_registered",
-        "notice_subscribed",
-        "downstream=1",
-        "upstream=1",
-        "session_closed",
-        "relay_open",
-        "participant_registered",
-        "notice_subscribed",
-        "downstream=1",
-        "upstream=1",
-        "session_closed",
-    ]
+    assert event_log.read_text() == _RUNTIME_EVENTS * 3

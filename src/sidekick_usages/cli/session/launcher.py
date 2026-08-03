@@ -450,9 +450,20 @@ class ProviderSessionChild:
                 os.close(self._release_descriptor)
             finally:
                 self._release_descriptor = -1
-            failure = self._read_child_failure()
-            result = _wait_for_child(self._process_id, original_group)
+            launch_failure = self._read_child_failure()
+            result, wait_failure = _wait_for_child(
+                self._process_id,
+                original_group,
+            )
             self._completed = True
+            failure = (
+                launch_failure
+                if wait_failure is None
+                else _preserve_session_failure(
+                    launch_failure,
+                    wait_failure,
+                )
+            )
         except OSError:
             failure = SessionLaunchError(
                 SessionLaunchFailure.EXECUTION_FAILED,
@@ -484,8 +495,10 @@ class ProviderSessionChild:
                 os.close(self._release_descriptor)
             self._release_descriptor = -1
         if not self._completed:
-            _wait_for_child(self._process_id, None)
+            _result, failure = _wait_for_child(self._process_id, None)
             self._completed = True
+            if failure is not None:
+                raise failure
         self._close_failure_descriptor()
 
     def _finish_run(
@@ -501,9 +514,17 @@ class ProviderSessionChild:
             if not released:
                 self._cancel_and_wait()
             elif not self._completed:
-                _wait_for_child(self._process_id, original_group)
+                _result, wait_failure = _wait_for_child(
+                    self._process_id,
+                    original_group,
+                )
                 self._completed = True
                 self._close_failure_descriptor()
+                if wait_failure is not None:
+                    failure = _preserve_session_failure(
+                        failure,
+                        wait_failure,
+                    )
         except BaseException as cleanup_error:
             failure = _preserve_session_failure(failure, cleanup_error)
         if handed_off:
@@ -773,27 +794,45 @@ def _restore_signal_handlers(
 def _wait_for_child(
     process_id: int,
     original_group: int | None,
-) -> int:
+    *,
+    resume_only: bool = False,
+) -> tuple[int, SessionLaunchError | None]:
     while True:
         try:
             _waited, status = os.waitpid(process_id, os.WUNTRACED)
         except InterruptedError:
             continue
         if os.WIFSTOPPED(status):
-            _set_foreground_process_group(
-                original_group,
-                original_group,
-                detail=_TTY_RESTORE_FAILURE,
-            )
-            os.kill(os.getpid(), os.WSTOPSIG(status))
-            _set_foreground_process_group(
-                process_id,
-                original_group,
-                detail=_TTY_HANDOFF_FAILURE,
-            )
+            if resume_only:
+                os.killpg(process_id, signal.SIGCONT)
+                continue
+            try:
+                _set_foreground_process_group(
+                    original_group,
+                    original_group,
+                    detail=_TTY_RESTORE_FAILURE,
+                )
+                os.kill(os.getpid(), os.WSTOPSIG(status))
+                _set_foreground_process_group(
+                    process_id,
+                    original_group,
+                    detail=_TTY_HANDOFF_FAILURE,
+                )
+            except SessionLaunchError as error:
+                os.killpg(process_id, signal.SIGCONT)
+                result, _failure = _wait_for_child(
+                    process_id,
+                    None,
+                    resume_only=True,
+                )
+                return result, SessionLaunchError(
+                    error.code,
+                    f"{error} The continued provider exited with status "
+                    f"{result}.",
+                )
             os.killpg(process_id, signal.SIGCONT)
             continue
         if os.WIFEXITED(status):
-            return os.WEXITSTATUS(status)
+            return os.WEXITSTATUS(status), None
         if os.WIFSIGNALED(status):
-            return 128 + os.WTERMSIG(status)
+            return 128 + os.WTERMSIG(status), None
