@@ -71,6 +71,8 @@ class ClaudeActivationService:
         operation_id: OperationId,
         target_account_id: SidekickAccountId,
         authority: ProviderMutationAuthority,
+        *,
+        expected_target_generation: AuthorityGeneration | None = None,
     ) -> SelectedAccountState:
         """Retain the native source, activate the target, and commit proof."""
         authority.require(ProviderId.CLAUDE)
@@ -112,6 +114,11 @@ class ClaudeActivationService:
             target,
             ClaudeActivationFailure.TARGET_UNAVAILABLE,
         )
+        if (
+            expected_target_generation is not None
+            and target_private.generation != expected_target_generation
+        ):
+            raise ClaudeActivationError(ClaudeActivationFailure.STATE_CHANGED)
         self._authorities.require_usable(
             target_private,
             ClaudeActivationFailure.TARGET_UNAVAILABLE,
@@ -241,7 +248,9 @@ class ClaudeActivationService:
             target_account_id,
             ClaudeActivationFailure.TARGET_UNAVAILABLE,
         )
-        target_capabilities = self._authorities.prepare(target_account_id)
+        target_capabilities = self._authorities.prepare_existing(
+            target_account_id
+        )
         native_capabilities = self._authorities.native_capabilities(
             target_capabilities
         )
@@ -257,75 +266,6 @@ class ClaudeActivationService:
             ClaudeActivationFailure.TARGET_UNAVAILABLE,
         )
         return target_private.generation
-
-    def readback(
-        self,
-        operation_id: OperationId,
-        target_account_id: SidekickAccountId,
-        prepared_generation: AuthorityGeneration,
-        authority: ProviderMutationAuthority,
-    ) -> SelectedAccountState | None:
-        """Return exact committed native proof for one prepared target."""
-        authority.require(ProviderId.CLAUDE)
-        record = next(
-            (
-                candidate
-                for candidate in reversed(
-                    self._journals.load(ProviderId.CLAUDE).history
-                )
-                if candidate.operation_id == operation_id
-            ),
-            None,
-        )
-        if (
-            record is None
-            or record.phase is not ActivationPhase.COMMITTED
-            or record.target_account_id != target_account_id
-            or record.target_authority_generation != prepared_generation
-            or record.verified_runtime_generation is None
-        ):
-            return None
-        authority.account(target_account_id)
-        target, target_authority = self._authorities.managed_account(
-            target_account_id,
-            ClaudeActivationFailure.TARGET_UNAVAILABLE,
-        )
-        if (
-            target_authority.provider_identity
-            != record.expected_target_identity
-        ):
-            return None
-        target_capabilities = self._authorities.prepare(target_account_id)
-        target_private = self._authorities.read_saved_private(
-            target_capabilities,
-            target_authority,
-            target,
-            ClaudeActivationFailure.TARGET_UNAVAILABLE,
-        )
-        if target_private.generation != prepared_generation:
-            return None
-        native_capabilities = self._authorities.native_capabilities(
-            target_capabilities
-        )
-        native = self._authorities.read_native(
-            native_capabilities,
-            expected_identity=record.expected_target_identity,
-        )
-        if native.generation != record.verified_runtime_generation:
-            return None
-        self._authorities.require_usable(
-            native,
-            ClaudeActivationFailure.NATIVE_UNAVAILABLE,
-        )
-        return SelectedAccountState(
-            provider_id=ProviderId.CLAUDE,
-            runtime_state=ProviderRuntimeState.SAVED_ACTIVE,
-            account_id=target_account_id,
-            provider_identity=native.provider_identity,
-            runtime_generation=native.generation,
-            verified_at=self._clock.now(),
-            outcome=ActivationOutcome.VERIFIED,
-        )
 
     def _prove_final_authorities(
         self,

@@ -1,7 +1,5 @@
 """Isolated verified Claude selection execution."""
 
-from typing import Protocol
-
 from sidekick_usages.clock import Clock
 from sidekick_usages.core.accounts.types import AuthorityGeneration
 from sidekick_usages.core.selection.models import (
@@ -10,6 +8,7 @@ from sidekick_usages.core.selection.models import (
     FinalizedSelection,
     OpenSelectionOperation,
     PreparedSelection,
+    SelectedAccountState,
 )
 from sidekick_usages.core.selection.types import (
     OperationKind,
@@ -47,52 +46,6 @@ _CLAUDE_SELECTION_KINDS = frozenset(
         OperationKind.RECONCILE_NATIVE,
     }
 )
-
-
-class ClaudeSelectionWorkerLane(Protocol):
-    """Run Claude phases through Task 4's bounded worker composition."""
-
-    def prevalidate(
-        self,
-        operation: OpenSelectionOperation,
-        baseline: FinalizedSelection | None,
-    ) -> PreparedSelection:
-        """Prove one protected refreshable target."""
-
-    def commit(self, prepared: PreparedSelection) -> AuthorityReadyProof:
-        """Officially select and prove the native target."""
-
-    def readback(
-        self,
-        prepared: PreparedSelection,
-    ) -> AuthorityReadyProof | None:
-        """Read exact provider state without mutation."""
-
-
-class ClaudeSelectionAuthorityAdapter:
-    """Expose qualified Claude worker phases to selection coordination."""
-
-    def __init__(self, worker: ClaudeSelectionWorkerLane) -> None:
-        self._worker = worker
-
-    def prevalidate(
-        self,
-        operation: OpenSelectionOperation,
-        baseline: FinalizedSelection | None,
-    ) -> PreparedSelection:
-        """Prove one target through the bounded Claude worker lane."""
-        return self._worker.prevalidate(operation, baseline)
-
-    def commit(self, prepared: PreparedSelection) -> AuthorityReadyProof:
-        """Commit one target through the bounded Claude worker lane."""
-        return self._worker.commit(prepared)
-
-    def readback(
-        self,
-        prepared: PreparedSelection,
-    ) -> AuthorityReadyProof | None:
-        """Read one target through the bounded Claude worker lane."""
-        return self._worker.readback(prepared)
 
 
 class ClaudeSelectionWorkerExecutor:
@@ -206,6 +159,7 @@ class ClaudeSelectionWorkerExecutor:
             prepared.operation_id,
             prepared.target_account_id,
             authority,
+            expected_target_generation=prepared.target_generation,
         )
         if (
             selected.provider_id is not ProviderId.CLAUDE
@@ -219,39 +173,66 @@ class ClaudeSelectionWorkerExecutor:
 
     def readback_selection(
         self,
-        prepared: PreparedSelection,
+        operation: OpenSelectionOperation,
         authority: ProviderMutationAuthority,
-    ) -> AuthorityReadyProof | None:
-        """Read exact native proof for one committed operation."""
-        self._require_prepared(prepared)
-        selected = self._activation.readback(
-            prepared.operation_id,
-            prepared.target_account_id,
-            prepared.target_generation,
+    ) -> SelectedAccountState | None:
+        """Observe native truth against one open journal context."""
+        self._require_readback_operation(operation)
+        account_ids = (
+            (operation.target_account_id,)
+            if operation.baseline_account_id is None
+            else (
+                operation.baseline_account_id,
+                operation.target_account_id,
+            )
+        )
+        return self._native_reconciliation.observe_selection(
+            account_ids,
             authority,
         )
-        if selected is None or selected.runtime_generation is None:
-            return None
-        return self._proof(prepared, selected.runtime_generation)
 
     @staticmethod
     def _require_open_operation(
         operation: OpenSelectionOperation,
         baseline: FinalizedSelection | None,
     ) -> None:
-        if (
-            operation.provider_id is not ProviderId.CLAUDE
-            or baseline is None
-            or baseline.provider_id is not ProviderId.CLAUDE
-            or operation.baseline_account_id != baseline.account_id
-            or operation.baseline_epoch != baseline.epoch
-            or operation.target_account_id == baseline.account_id
+        valid_unselected = (
+            baseline is None
+            and operation.baseline_account_id is None
+            and operation.baseline_epoch.value == 0
+        )
+        valid_selected = (
+            baseline is not None
+            and baseline.provider_id is ProviderId.CLAUDE
+            and operation.baseline_account_id == baseline.account_id
+            and operation.baseline_epoch == baseline.epoch
+            and operation.target_account_id != baseline.account_id
+        )
+        if operation.provider_id is not ProviderId.CLAUDE or not (
+            valid_unselected or valid_selected
         ):
             raise ClaudeActivationError(ClaudeActivationFailure.STATE_CHANGED)
 
     @staticmethod
     def _require_prepared(prepared: PreparedSelection) -> None:
         if prepared.provider_id is not ProviderId.CLAUDE:
+            raise ClaudeActivationError(ClaudeActivationFailure.STATE_CHANGED)
+
+    @staticmethod
+    def _require_readback_operation(
+        operation: OpenSelectionOperation,
+    ) -> None:
+        valid_baseline = (
+            operation.baseline_account_id is None
+            and operation.baseline_epoch.value == 0
+        ) or (
+            operation.baseline_account_id is not None
+            and operation.baseline_account_id != operation.target_account_id
+        )
+        if (
+            operation.provider_id is not ProviderId.CLAUDE
+            or not valid_baseline
+        ):
             raise ClaudeActivationError(ClaudeActivationFailure.STATE_CHANGED)
 
     @staticmethod

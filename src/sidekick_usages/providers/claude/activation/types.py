@@ -3,11 +3,6 @@
 from enum import StrEnum
 from typing import Protocol
 
-from sidekick_usages.providers.claude.managed.types import (
-    ClaudeManagedPlatform,
-)
-from sidekick_usages.providers.claude.models import ClaudeExecutable
-
 CLAUDE_ACTIVATION_FAILURE_CODE_PREFIX = "claude_activation_"
 
 
@@ -49,17 +44,6 @@ class ClaudeRemoteControlState(StrEnum):
     INACTIVE = "inactive"
     ACTIVE_INCOMPATIBLE = "active_incompatible"
     PROOF_UNAVAILABLE = "proof_unavailable"
-
-
-class ClaudeForegroundProbe(Protocol):
-    """Inspect exact same-user foreground Claude processes without mutation."""
-
-    def __call__(
-        self,
-        executable: ClaudeExecutable,
-        platform: ClaudeManagedPlatform,
-    ) -> ClaudeForegroundState:
-        """Return exact foreground presence for diagnostics."""
 
 
 class ClaudeRemoteControlProbe(Protocol):

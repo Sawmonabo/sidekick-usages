@@ -70,7 +70,6 @@ from sidekick_usages.persistence.supervisor.selection import SelectedStateStore
 from sidekick_usages.persistence.types.artifact import AuthorityExpectation
 from sidekick_usages.platform.types import HostPlatform
 from sidekick_usages.providers.claude.activation.types import (
-    ClaudeForegroundState,
     ClaudeRemoteControlState,
 )
 from sidekick_usages.providers.claude.auth.generation import (
@@ -79,12 +78,8 @@ from sidekick_usages.providers.claude.auth.generation import (
 from sidekick_usages.providers.claude.auth.storage.service import (
     CLAUDE_CREDENTIAL_FILE,
 )
-from sidekick_usages.providers.claude.managed.types import (
-    ClaudeManagedPlatform,
-)
 from sidekick_usages.providers.claude.models import (
     ClaudeCommandResult,
-    ClaudeExecutable,
     ClaudeNativeProfile,
 )
 from tests.fakes.claude.managed import (
@@ -126,22 +121,6 @@ _NATIVE_TARGET_ACCESS_EXPIRY = REFERENCE_TIME + timedelta(hours=4)
 _ROLLBACK_ACCESS_EXPIRY = REFERENCE_TIME + timedelta(hours=5)
 _EXTERNAL_ACCESS_EXPIRY = REFERENCE_TIME + timedelta(hours=6)
 _EXPIRED_REFRESH = REFERENCE_TIME - timedelta(minutes=1)
-
-
-@dataclass(frozen=True, slots=True)
-class FixedClaudeForegroundProbe:
-    """Return one deterministic foreground proof state."""
-
-    state: ClaudeForegroundState
-
-    def __call__(
-        self,
-        executable: ClaudeExecutable,
-        platform: ClaudeManagedPlatform,
-    ) -> ClaudeForegroundState:
-        """Return the injected state without inspecting local processes."""
-        del executable, platform
-        return self.state
 
 
 @dataclass(frozen=True, slots=True)
@@ -255,7 +234,6 @@ def claude_activation_scenario(
     root: Path,
     *,
     environment: dict[str, str] | None = None,
-    foreground: ClaudeForegroundState = ClaudeForegroundState.CLEAR,
     remote_control: ClaudeRemoteControlState = (
         ClaudeRemoteControlState.PROOF_UNAVAILABLE
     ),
@@ -363,7 +341,6 @@ def claude_activation_scenario(
         source,
         script,
         environment=environment,
-        foreground=foreground,
         remote_control=remote_control,
     )
     operation = _selection_operation(
@@ -612,7 +589,6 @@ def _runtime_fixture(
     script: ClaudeCommandScript,
     *,
     environment: Mapping[str, str] | None = None,
-    foreground: ClaudeForegroundState = ClaudeForegroundState.CLEAR,
     remote_control: ClaudeRemoteControlState = (
         ClaudeRemoteControlState.PROOF_UNAVAILABLE
     ),
@@ -662,7 +638,6 @@ def _runtime_fixture(
         environment=source_environment,
         host=HostPlatform.LINUX,
         runner=runner,
-        foreground_probe=FixedClaudeForegroundProbe(foreground),
         remote_control_probe=remote_control_probe,
     )
     capabilities = ClaudeProfileCapabilityFactory(

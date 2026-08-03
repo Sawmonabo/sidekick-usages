@@ -1,7 +1,7 @@
 """Shared protected-authority boundary for Claude activation."""
 
 import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 
 from sidekick_usages.clock import Clock
@@ -133,7 +133,6 @@ class ClaudeActivationAuthorityCoordinator:
         self._clock = clock
         self._environment = resolved_runtime.environment
         self._runner = resolved_runtime.runner
-        self._foreground_probe = resolved_runtime.foreground_probe
         self._remote_control_probe = resolved_runtime.remote_control_probe
         self._capabilities = capabilities
         self._managed_reader = ClaudeManagedAuthorityReader(paths, profiles)
@@ -177,6 +176,18 @@ class ClaudeActivationAuthorityCoordinator:
         """Prove one stable managed profile and exact Claude release."""
         try:
             return self._capabilities.managed(account_id)
+        except ClaudeManagedError:
+            raise ClaudeActivationError(
+                ClaudeActivationFailure.INCOMPATIBLE
+            ) from None
+
+    def prepare_existing(
+        self,
+        account_id: SidekickAccountId,
+    ) -> ClaudeCapabilities:
+        """Prove a managed profile without creating missing state."""
+        try:
+            return self._capabilities.existing_managed(account_id)
         except ClaudeManagedError:
             raise ClaudeActivationError(
                 ClaudeActivationFailure.INCOMPATIBLE
@@ -392,8 +403,47 @@ class ClaudeActivationAuthorityCoordinator:
         authority: ProviderMutationAuthority,
     ) -> SavedAccount | None:
         """Relate one native identity to one verified managed account."""
+        return self._relate_native_account(
+            native,
+            reference_capabilities,
+            authority,
+            self.saved_accounts(),
+            self.prepare,
+        )
+
+    def relate_native_selection_account(
+        self,
+        native: ClaudeAuthoritySnapshot,
+        reference_capabilities: ClaudeCapabilities,
+        authority: ProviderMutationAuthority,
+        account_ids: tuple[SidekickAccountId, ...],
+    ) -> SavedAccount | None:
+        """Relate native truth only to existing journal account profiles."""
+        accounts = tuple(
+            account
+            for account_id in dict.fromkeys(account_ids)
+            if (account := self._store.read_saved(account_id)) is not None
+            and account.provider_id is ProviderId.CLAUDE
+        )
+        return self._relate_native_account(
+            native,
+            reference_capabilities,
+            authority,
+            accounts,
+            self.prepare_existing,
+        )
+
+    def _relate_native_account(
+        self,
+        native: ClaudeAuthoritySnapshot,
+        reference_capabilities: ClaudeCapabilities,
+        authority: ProviderMutationAuthority,
+        accounts: tuple[SavedAccount, ...],
+        prepare: Callable[[SidekickAccountId], ClaudeCapabilities],
+    ) -> SavedAccount | None:
+        """Relate native identity across one exact verified account set."""
         matches: list[tuple[SavedAccount, ClaudeAuthoritySnapshot]] = []
-        for account in self.saved_accounts():
+        for account in accounts:
             if account.provider_id is not ProviderId.CLAUDE:
                 continue
             try:
@@ -404,7 +454,7 @@ class ClaudeActivationAuthorityCoordinator:
             except ClaudeActivationError:
                 continue
             authority.account(account.account_id)
-            capabilities = self.prepare(account.account_id)
+            capabilities = prepare(account.account_id)
             self.require_same_runtime(reference_capabilities, capabilities)
             private = self.read_saved_private(
                 capabilities,

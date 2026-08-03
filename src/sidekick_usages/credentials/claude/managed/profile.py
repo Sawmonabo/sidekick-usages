@@ -95,15 +95,23 @@ class ClaudeProfileCapabilityFactory:
     def managed(self, account_id: SidekickAccountId) -> ClaudeCapabilities:
         """Qualify and bind one stable private account profile."""
         profile = _qualified_managed_profile(self._paths, account_id)
-        runtime = self.runtime()
-        verify_claude_executable(runtime.executable)
+        capabilities = self._bind_managed(profile)
         try:
             self._profiles.ensure_owned_directory(profile.config_directory)
         except PersistenceFilesystemError, ValueError:
             raise ClaudeManagedError(
                 ClaudeManagedFailure.PROFILE_UNSAFE
             ) from None
-        return runtime.bind(profile)
+        return capabilities
+
+    def existing_managed(
+        self,
+        account_id: SidekickAccountId,
+    ) -> ClaudeCapabilities:
+        """Bind one qualified profile without creating persistent state."""
+        return self._bind_managed(
+            _qualified_managed_profile(self._paths, account_id)
+        )
 
     def native(
         self,
@@ -139,6 +147,15 @@ class ClaudeProfileCapabilityFactory:
                     executable_discovery=self._executable_discovery,
                 )
             return self._result
+
+    def _bind_managed(
+        self,
+        profile: ClaudeManagedProfile,
+    ) -> ClaudeCapabilities:
+        """Bind one qualified managed path to the proven runtime."""
+        runtime = self.runtime()
+        verify_claude_executable(runtime.executable)
+        return runtime.bind(profile)
 
 
 def probe_claude_runtime_result(
