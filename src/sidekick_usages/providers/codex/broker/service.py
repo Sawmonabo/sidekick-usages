@@ -253,6 +253,18 @@ class CodexSharedRuntime:
         self._projection_auth_generation = None
         return None
 
+    def require_authority(self, socket_device: int, socket_inode: int) -> None:
+        """Revalidate the exact live socket immediately before mutation."""
+        authority = self._authority
+        if (
+            authority is None
+            or authority.control_socket.device != socket_device
+            or authority.control_socket.inode != socket_inode
+        ):
+            self._drop_session()
+            raise CodexBrokerError(CodexBrokerFailure.RUNTIME_CHANGED)
+        self._revalidate_authority(authority)
+
     def observe_auth(
         self,
         observed_at: datetime,

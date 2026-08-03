@@ -3,12 +3,17 @@
 import os
 import time
 from collections.abc import Callable, Mapping
+from contextlib import suppress
+from dataclasses import replace
 from pathlib import Path
 from threading import Event, Thread
 from types import TracebackType
 from typing import Self
 
 from sidekick_usages.clock import SystemClock
+from sidekick_usages.core.accounts.types import OperationId, SidekickAccountId
+from sidekick_usages.core.selection.models import SelectionEpoch
+from sidekick_usages.core.selection.types import OperationKind
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.control.dispatch import (
     OperationEventHub,
@@ -34,7 +39,10 @@ from sidekick_usages.daemon.selection.worker import (
     SelectionWorkerGateway,
 )
 from sidekick_usages.daemon.types.service import ServicePhase
-from sidekick_usages.daemon.worker.exchange import WorkerExchangeRegistry
+from sidekick_usages.daemon.worker.exchange import (
+    SupervisorWorkerExchange,
+    WorkerExchangeRegistry,
+)
 from sidekick_usages.daemon.worker.pool import (
     SubprocessWorkerLauncher,
     WorkerLaunchPlanner,
@@ -62,12 +70,103 @@ from sidekick_usages.persistence.supervisor.selection import (
 )
 from sidekick_usages.persistence.supervisor.service import ServiceStateStore
 from sidekick_usages.providers.codex.app_server.models import CodexExecutable
+from sidekick_usages.providers.codex.broker.errors import CodexBrokerError
+from sidekick_usages.providers.codex.broker.external_auth.refresh import (
+    decode_codex_callback_instruction,
+    encode_codex_callback_instruction,
+)
+from sidekick_usages.providers.codex.broker.external_auth.selection import (
+    decode_codex_selection_instruction,
+)
 from sidekick_usages.providers.codex.broker.responder import CodexRuntimeBroker
 from sidekick_usages.providers.codex.broker.service import CodexSharedRuntime
 
 _READINESS_TIMEOUT_SECONDS = 10.0
 _SUPERVISOR_JOIN_SECONDS = 10.0
 _WAIT_INTERVAL_SECONDS = 0.01
+
+
+class _JourneyWorkerExchangeRegistry(WorkerExchangeRegistry):
+    """Inject one-shot boundary races into the full broker journey."""
+
+    def __init__(self) -> None:
+        super().__init__(time.monotonic)
+        self._selection_hooks: dict[OperationKind, Callable[[], None]] = {}
+        self._callback_fault: tuple[str, SidekickAccountId | None] | None = (
+            None
+        )
+
+    def schedule_selection_hook(
+        self,
+        kind: OperationKind,
+        hook: Callable[[], None],
+    ) -> None:
+        """Run one callback after the broker binds a selection instruction."""
+        self._selection_hooks[kind] = hook
+
+    def schedule_callback_fault(
+        self,
+        fault: str,
+        account_id: SidekickAccountId | None = None,
+    ) -> None:
+        """Corrupt one callback only after durable broker dispatch."""
+        self._callback_fault = fault, account_id
+
+    def create(
+        self,
+        operation_id: OperationId,
+        instruction: bytes,
+        response_deadline: float,
+        completion_deadline: float,
+    ) -> SupervisorWorkerExchange:
+        """Apply one scheduled journey fault before worker inheritance."""
+        adjusted = instruction
+        with suppress(CodexBrokerError):
+            selection = decode_codex_selection_instruction(instruction)
+            hook = self._selection_hooks.pop(selection.kind, None)
+            if hook is not None:
+                hook()
+        with suppress(CodexBrokerError):
+            callback = decode_codex_callback_instruction(instruction)
+            fault = self._callback_fault
+            if fault is not None:
+                self._callback_fault = None
+                name, account_id = fault
+                if name == "epoch":
+                    callback = replace(
+                        callback,
+                        operation_id=OperationId(
+                            "66666666-6666-4666-8666-666666666666"
+                        ),
+                        selection_epoch=SelectionEpoch(
+                            callback.selection_epoch.value - 1
+                        ),
+                    )
+                elif name == "request":
+                    callback = replace(
+                        callback,
+                        operation_id=OperationId(
+                            "88888888-8888-4888-8888-888888888888"
+                        ),
+                    )
+                elif name == "home":
+                    assert account_id is not None
+                    callback = replace(
+                        callback,
+                        operation_id=OperationId(
+                            "77777777-7777-4777-8777-777777777777"
+                        ),
+                        account_id=account_id,
+                    )
+                else:
+                    raise AssertionError("Unknown callback journey fault.")
+                adjusted = encode_codex_callback_instruction(callback)
+        return super().create(
+            operation_id,
+            adjusted,
+            response_deadline,
+            completion_deadline,
+        )
 
 
 def _runtime_factory(
@@ -234,6 +333,7 @@ class FakeCodexSupervisor:
         self._thread: Thread | None = None
         clock = SystemClock()
         queue = OperationQueueStore(paths.durable_operations)
+        self._queue = queue
         results = WorkerResultStore(paths.durable_operations)
         service_state = ServiceStateStore(paths.service_state)
         journals = ActivationJournalStore(
@@ -243,6 +343,7 @@ class FakeCodexSupervisor:
         observations = RuntimeAuthObservationStore(paths.durable_operations)
         selected = SelectedStateStore(paths.selected_state)
         selection_journals = SelectionOperationStore(paths.selection_journals)
+        self._selection_journals = selection_journals
         participants = ParticipantRegistry(selected)
         selection_workers = SelectionWorkerGateway(
             queue,
@@ -270,7 +371,8 @@ class FakeCodexSupervisor:
             selection_recovery=selection_recovery,
         )
         events = OperationEventHub()
-        exchanges = WorkerExchangeRegistry(time.monotonic)
+        exchanges = _JourneyWorkerExchangeRegistry()
+        self._exchanges = exchanges
         worker_environment = dict(environment)
         worker_environment["PATH"] = os.defpath
         workers = WorkerPool(
@@ -394,6 +496,24 @@ class FakeCodexSupervisor:
                 raise AssertionError("Fake broker did not become available.")
             self._stop.wait(min(_WAIT_INTERVAL_SECONDS, remaining))
 
+    def wait_until_selection_workers_collected(self) -> None:
+        """Drive scheduler collection through the last selection child."""
+        deadline = time.monotonic() + _READINESS_TIMEOUT_SECONDS
+        while True:
+            active = self._selection_journals.load(ProviderId.CODEX).active
+            workers = any(
+                operation.kind.is_selection_worker
+                for operation in self._queue.load()
+            )
+            if not workers and active is None:
+                return
+            self._raise_failure()
+            self._wakeup.notify()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise AssertionError("Selection worker was not collected.")
+            self._stop.wait(min(_WAIT_INTERVAL_SECONDS, remaining))
+
     def wait_until_broker_failure(self, failure_code: str) -> None:
         """Wait for one exact live broker failure observation."""
         deadline = time.monotonic() + _READINESS_TIMEOUT_SECONDS
@@ -417,6 +537,29 @@ class FakeCodexSupervisor:
     def notify(self) -> None:
         """Wake the real selector after a test persists due work."""
         self._wakeup.notify()
+
+    def schedule_selection_hook(
+        self,
+        kind: OperationKind,
+        hook: Callable[[], None],
+    ) -> None:
+        """Schedule one full-journey selection boundary action."""
+        self._exchanges.schedule_selection_hook(kind, hook)
+
+    def schedule_stale_callback_epoch(self) -> None:
+        """Dispatch one callback with an obsolete finalized epoch."""
+        self._exchanges.schedule_callback_fault("epoch")
+
+    def schedule_stale_callback_request(self) -> None:
+        """Dispatch one callback with the wrong daemon request ID."""
+        self._exchanges.schedule_callback_fault("request")
+
+    def schedule_wrong_callback_home(
+        self,
+        account_id: SidekickAccountId,
+    ) -> None:
+        """Dispatch one callback naming a different private home."""
+        self._exchanges.schedule_callback_fault("home", account_id)
 
     def request_stop(self) -> None:
         """Request a non-blocking supervisor shutdown."""

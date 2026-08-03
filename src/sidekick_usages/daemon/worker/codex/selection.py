@@ -138,19 +138,10 @@ class CodexSelectionWorkerExecutor:
         self._require_operation(operation, active, authority)
         try:
             instruction = self._receive_instruction(operation, active)
-            if operation.kind is OperationKind.SELECTION_PREVALIDATE:
-                refreshed = self._coordinator.refresh_with_authority(
-                    active.target_account_id,
-                    authority.account(active.target_account_id),
-                    process_group=CodexProcessGroupPolicy.INHERITED,
-                )
-                if refreshed.outcome is not CodexManagedOutcome.HEALTHY:
-                    raise _ManagedSelectionError(refreshed)
-            target = self._expectation(active.target_account_id, authority)
-            if isinstance(target, CodexManagedAuthorityResult):
-                raise _ManagedSelectionError(target)
+            target = self._target_expectation(operation, active, authority)
             if (
                 operation.kind is OperationKind.SELECTION_COMMIT
+                and target is not None
                 and active.prepared_generation != target.generation
             ):
                 raise CodexBrokerError(CodexBrokerFailure.IDENTITY_MISMATCH)
@@ -159,9 +150,11 @@ class CodexSelectionWorkerExecutor:
                 operation_id=active.operation_id,
                 kind=operation.kind,
                 pending_epoch=active.pending_epoch,
-                account_id=target.account_id,
-                provider_identity=target.provider_identity,
-                generation=target.generation,
+                account_id=active.target_account_id,
+                provider_identity=(
+                    None if target is None else target.provider_identity
+                ),
+                generation=None if target is None else target.generation,
                 socket_device=instruction.socket_device,
                 socket_inode=instruction.socket_inode,
             )
@@ -178,7 +171,8 @@ class CodexSelectionWorkerExecutor:
                 generation=acknowledgement.observed_generation,
             )
             if operation.kind is not OperationKind.SELECTION_READBACK and (
-                observation.account_id != active.target_account_id
+                target is None
+                or observation.account_id != active.target_account_id
                 or observation.generation != target.generation
             ):
                 raise CodexBrokerError(CodexBrokerFailure.IDENTITY_MISMATCH)
@@ -289,6 +283,51 @@ class CodexSelectionWorkerExecutor:
             account_id,
             authority.account(account_id),
         )
+
+    def _target_expectation(
+        self,
+        operation: DueOperation,
+        active: OpenSelectionOperation,
+        authority: ProviderMutationAuthority,
+    ) -> CodexProjectionExpectation | None:
+        """Resolve the phase-owned target proof without blocking readback."""
+        if operation.kind is OperationKind.SELECTION_PREVALIDATE:
+            refreshed = self._coordinator.refresh_with_authority(
+                active.target_account_id,
+                authority.account(active.target_account_id),
+                process_group=CodexProcessGroupPolicy.INHERITED,
+            )
+            if refreshed.outcome is not CodexManagedOutcome.HEALTHY:
+                raise _ManagedSelectionError(refreshed)
+            return self._open_expectation(
+                active.target_account_id,
+                authority,
+            )
+        target = self._expectation(active.target_account_id, authority)
+        if isinstance(target, CodexManagedAuthorityResult):
+            if operation.kind is not OperationKind.SELECTION_READBACK:
+                raise _ManagedSelectionError(target)
+            return None
+        return target
+
+    def _open_expectation(
+        self,
+        account_id: SidekickAccountId,
+        authority: ProviderMutationAuthority,
+    ) -> CodexProjectionExpectation:
+        """Open, validate, and close one bounded protected projection."""
+        opened = self._coordinator.open_projection_with_authority(
+            account_id,
+            authority.account(account_id),
+        )
+        if isinstance(opened, CodexManagedAuthorityResult):
+            raise _ManagedSelectionError(opened)
+        with opened:
+            return CodexProjectionExpectation(
+                opened.account_id,
+                opened.provider_identity,
+                opened.generation,
+            )
 
     def _managed_failure(
         self,

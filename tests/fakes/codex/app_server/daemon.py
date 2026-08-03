@@ -32,7 +32,7 @@ from tests.fakes.codex.auth import managed_auth
 
 _CLIENT_TIMEOUT_SECONDS = 5.0
 _INSTALL_HANDSHAKE_TIMEOUT_SECONDS = 30.0
-_REFRESH_RESPONSE_TIMEOUT_SECONDS = CODEX_CALLBACK_RESPONSE_SECONDS
+_REFRESH_RESPONSE_TIMEOUT_SECONDS = CODEX_CALLBACK_RESPONSE_SECONDS + 2.0
 _EXTERNAL_REFRESH_ERROR_CODE = -32000
 _EXTERNAL_REFRESH_ERROR_MESSAGE = "external auth refresh unavailable"
 _EXTERNAL_REFRESH_METHOD = "account/chatgptAuthTokens/refresh"
@@ -72,6 +72,7 @@ class FakeCodexDaemon:
         self._lock = RLock()
         self._server: Server | None = None
         self._thread: Thread | None = None
+        self._retired_listeners: list[tuple[Server, Thread]] = []
         self._connections: set[ServerConnection] = set()
         self._initialized: set[ServerConnection] = set()
         self._client_names: dict[ServerConnection, str] = {}
@@ -274,6 +275,16 @@ class FakeCodexDaemon:
             self._active_access_token = None
         self._start()
 
+    def replace_socket_listener(self) -> None:
+        """Replace only the pathname while existing peers remain live."""
+        server = self._server
+        thread = self._thread
+        if server is None or thread is None:
+            raise AssertionError("Fake Codex daemon is not running.")
+        self.socket_path.unlink()
+        self._retired_listeners.append((server, thread))
+        self._start_listener()
+
     def __enter__(self) -> Self:
         """Start the Unix-WebSocket fake."""
         self._start()
@@ -299,6 +310,10 @@ class FakeCodexDaemon:
         control_directory = self.socket_path.parent
         control_directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(control_directory, 0o700)
+        self._start_listener()
+
+    def _start_listener(self) -> None:
+        """Start one listener at the official control-socket pathname."""
         server = unix_serve(
             self._handle,
             path=str(self.socket_path),
@@ -321,17 +336,23 @@ class FakeCodexDaemon:
         thread = self._thread
         if server is None:
             return
+        if thread is None:
+            raise AssertionError("Fake Codex listener thread disappeared.")
         with self._lock:
             connections = tuple(self._connections)
         for connection in connections:
             connection.close()
-        server.shutdown()
-        if thread is not None:
-            thread.join(timeout=_CLIENT_TIMEOUT_SECONDS)
-            if thread.is_alive():
+        listeners = [(server, thread)]
+        listeners.extend(self._retired_listeners)
+        for listener, _listener_thread in listeners:
+            listener.shutdown()
+        for _listener, listener_thread in listeners:
+            listener_thread.join(timeout=_CLIENT_TIMEOUT_SECONDS)
+            if listener_thread.is_alive():
                 raise AssertionError("Fake Codex daemon did not stop.")
         self._server = None
         self._thread = None
+        self._retired_listeners.clear()
         with self._lock:
             self._connections.clear()
             self._initialized.clear()

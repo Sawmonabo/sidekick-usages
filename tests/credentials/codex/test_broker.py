@@ -2,6 +2,7 @@
 
 import os
 import time
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from sidekick_usages.core.accounts.types import (
     AuthorityGeneration,
     OperationId,
     ProviderIdentity,
+    SidekickAccountId,
 )
 from sidekick_usages.core.selection.models import (
     ActivationRecord,
@@ -31,6 +33,7 @@ from sidekick_usages.credentials.codex.managed.service import (
     CodexManagedAuthorityCoordinator,
 )
 from sidekick_usages.daemon.control.client import ControlClient
+from sidekick_usages.daemon.models.protocol import ControlEvent
 from sidekick_usages.daemon.types.protocol import EventKind
 from sidekick_usages.paths import ApplicationPaths
 from sidekick_usages.persistence.supervisor.activation import (
@@ -122,6 +125,46 @@ def _finalized_codex_selection(
     finalized = SelectedStateStore(paths.selected_state).load(ProviderId.CODEX)
     assert finalized is not None
     return finalized
+
+
+def _select_codex_account(
+    paths: ApplicationPaths,
+    account_id: SidekickAccountId,
+) -> tuple[ControlEvent, ...]:
+    """Collect one full control-plane selection result."""
+    client = ControlClient.connect(
+        paths.supervisor_socket,
+        action_timeout_seconds=15.0,
+    )
+    try:
+        client.handshake()
+        return tuple(client.select_account(ProviderId.CODEX, account_id))
+    finally:
+        client.close()
+
+
+def _assert_callback_rejection(
+    supervisor: FakeCodexSupervisor,
+    daemon: FakeCodexDaemon,
+    paths: ApplicationPaths,
+    schedule: Callable[[], None],
+) -> None:
+    """Require one real callback rejection before protected mutation."""
+    generation_before = saved_generation(paths, MANAGED_ACCOUNT_ID)
+    schedule()
+    stale = daemon.request_refresh(PROVIDER_IDENTITY)
+    assert (stale.responder, stale.error_code) == (
+        "sidekick_usages",
+        CODEX_REFRESH_ERROR_CODE,
+    )
+    assert daemon.read_current_external_auth() == ProviderIdentity(
+        PROVIDER_IDENTITY
+    )
+    assert daemon.installed_account_ids == (
+        ACCOUNT_A_PROVIDER_IDENTITY,
+        PROVIDER_IDENTITY,
+    )
+    assert saved_generation(paths, MANAGED_ACCOUNT_ID) == generation_before
 
 
 def _finalize_projected_generation(
@@ -598,23 +641,8 @@ def test_selection_worker_binds_codex_broker_journey(
         ) as supervisor:
             supervisor.wait_until_ready()
             observer.wait_for_account_update()
-            client = ControlClient.connect(
-                paths.supervisor_socket,
-                action_timeout_seconds=15.0,
-            )
-            try:
-                client.handshake()
-                try:
-                    events = tuple(
-                        client.select_account(
-                            ProviderId.CODEX,
-                            MANAGED_ACCOUNT_ID,
-                        )
-                    )
-                except TimeoutError:
-                    pytest.fail("Codex selection worker was not dispatched.")
-            finally:
-                client.close()
+
+            events = _select_codex_account(paths, MANAGED_ACCOUNT_ID)
 
             assert tuple(event.kind for event in events) == (
                 EventKind.ACCEPTED,
@@ -654,18 +682,31 @@ def test_selection_worker_binds_codex_broker_journey(
                 ACCOUNT_A_PROVIDER_IDENTITY,
                 PROVIDER_IDENTITY,
             )
-            stale = daemon.request_refresh(ACCOUNT_A_PROVIDER_IDENTITY)
-            assert (stale.responder, stale.error_code) == (
-                "sidekick_usages",
-                CODEX_REFRESH_ERROR_CODE,
+            supervisor.wait_until_selection_workers_collected()
+            _assert_callback_rejection(
+                supervisor,
+                daemon,
+                paths,
+                supervisor.schedule_stale_callback_request,
             )
-            assert daemon.read_current_external_auth() == ProviderIdentity(
-                PROVIDER_IDENTITY
+
+            supervisor.schedule_selection_hook(
+                OperationKind.SELECTION_COMMIT,
+                daemon.replace_socket_listener,
             )
-            assert daemon.installed_account_ids == (
-                ACCOUNT_A_PROVIDER_IDENTITY,
-                PROVIDER_IDENTITY,
+            rejected_events = _select_codex_account(paths, ACCOUNT_A_ID)
+            rejected = rejected_events[-1].payload
+            assert isinstance(rejected, SelectionResult)
+            assert (rejected.outcome, rejected.safe_code) == (
+                SelectionOutcome.RECOVERY_REQUIRED,
+                SelectionCode.SELECTION_RECOVERY_REQUIRED,
             )
+            assert _finalized_codex_selection(paths) == finalized
+            assert (
+                daemon.installed_account_ids.count(ACCOUNT_A_PROVIDER_IDENTITY)
+                == 1
+            )
+            assert daemon.installed_account_ids[-1] == PROVIDER_IDENTITY
 
         observer.close()
     assert fixture.native_auth.read_bytes() == NATIVE_AUTH_SENTINEL

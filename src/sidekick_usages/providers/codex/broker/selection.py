@@ -166,6 +166,10 @@ class CodexSelectionBroker:
                     projection.provider_identity,
                     projection.generation,
                 )
+                runtime.require_authority(
+                    instruction.socket_device,
+                    instruction.socket_inode,
+                )
                 receipt = runtime.install(
                     projection,
                     deadline=(
@@ -305,11 +309,16 @@ class CodexSelectionBroker:
         AuthorityGeneration | None,
     ]:
         observation = runtime.observe_auth(self._wall_time())
-        target = CodexProjectionExpectation(
-            reply.binding.account_id,
-            reply.binding.provider_identity,
-            reply.binding.generation,
-        )
+        target = None
+        if (
+            reply.binding.provider_identity is not None
+            and reply.binding.generation is not None
+        ):
+            target = CodexProjectionExpectation(
+                reply.binding.account_id,
+                reply.binding.provider_identity,
+                reply.binding.generation,
+            )
         matched = self._match_observation(observation, target, reply.baseline)
         if matched is None:
             return None, None
@@ -318,7 +327,7 @@ class CodexSelectionBroker:
     def _match_observation(
         self,
         observation: ProviderAuthObservation,
-        target: CodexProjectionExpectation,
+        target: CodexProjectionExpectation | None,
         baseline: CodexProjectionExpectation | None,
     ) -> CodexProjectionExpectation | None:
         for candidate in (target, baseline):

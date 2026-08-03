@@ -40,6 +40,7 @@ from sidekick_usages.persistence.supervisor.selection import SelectedStateStore
 from sidekick_usages.providers.codex.broker.external_auth.refresh import (
     decode_codex_callback_acknowledgement,
     decode_codex_callback_instruction,
+    encode_codex_callback_rejection,
     encode_codex_refresh_reply,
 )
 from sidekick_usages.providers.codex.broker.models import (
@@ -84,7 +85,10 @@ class CodexCallbackWorkerExecutor:
             raise ValueError("Worker operation is not a Codex callback.")
         try:
             instruction = self._receive_instruction(operation)
-            selected = self._require_selected(instruction)
+            try:
+                selected = self._require_selected(instruction)
+            except ValueError:
+                return self._reject(operation, instruction)
             if instruction.mode is CodexCallbackMode.REFRESH:
                 return self._refresh(
                     operation,
@@ -118,8 +122,36 @@ class CodexCallbackWorkerExecutor:
                 self._monotonic,
             )
         ):
+            self._submit_rejection(instruction)
             raise ValueError("Codex callback instruction is stale.")
         return instruction
+
+    def _reject(
+        self,
+        operation: DueOperation,
+        instruction: CodexCallbackInstruction,
+    ) -> WorkerResult:
+        """Reject a stale binding before any protected authority opens."""
+        self._submit_rejection(instruction)
+        return worker_failure(
+            operation,
+            WorkerOutcome.TRANSIENT_FAILURE,
+            "authority_proof_failed",
+            self._clock,
+        )
+
+    def _submit_rejection(
+        self,
+        instruction: CodexCallbackInstruction,
+    ) -> None:
+        """Keep the exchange live until the resident consumes rejection."""
+        response = encode_codex_callback_rejection(instruction)
+        submission = self._exchange.submit(
+            response,
+            instruction.deadlines.response_deadline_seconds,
+            instruction.deadlines.completion_deadline_seconds,
+        )
+        submission.receive_acknowledgement()
 
     def _refresh(
         self,

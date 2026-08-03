@@ -81,6 +81,19 @@ _REPLY_KEYS = frozenset(
         "source_generation",
     }
 )
+_REJECTION_KEYS = frozenset(
+    {
+        "account_id",
+        "mode",
+        "operation_id",
+        "outcome",
+        "protocol_version",
+        "provider_identity",
+        "request_id",
+        "selection_epoch",
+        "source_generation",
+    }
+)
 _ACKNOWLEDGEMENT_KEYS = frozenset(
     {
         "generation",
@@ -219,11 +232,43 @@ def encode_codex_refresh_reply(
         raise CodexBrokerError(CodexBrokerFailure.PROTOCOL_FAILED) from None
 
 
+def encode_codex_callback_rejection(
+    instruction: CodexCallbackInstruction,
+) -> bytearray:
+    """Encode one credential-free rejection for a stale worker binding."""
+    return bytearray(
+        encode_worker_message(
+            {
+                "account_id": str(instruction.account_id),
+                "mode": instruction.mode.value,
+                "operation_id": str(instruction.operation_id),
+                "outcome": "rejected",
+                "provider_identity": str(instruction.provider_identity),
+                "request_id": instruction.request_id,
+                "selection_epoch": instruction.selection_epoch.value,
+                "source_generation": str(instruction.source_generation),
+            }
+        )
+    )
+
+
 def decode_codex_refresh_reply(
     payload: bytes | bytearray,
     instruction: CodexCallbackInstruction,
 ) -> CodexProjectionReplyLease:
     """Decode and corroborate one isolated-worker credential response."""
+    try:
+        rejected = decode_worker_message(
+            payload,
+            _REJECTION_KEYS,
+            CODEX_CALLBACK_PROTOCOL_VERSION,
+        )
+    except CodexBrokerError:
+        pass
+    else:
+        if rejected.get("outcome") != "rejected":
+            raise CodexBrokerError(CodexBrokerFailure.PROTOCOL_FAILED)
+        raise CodexBrokerError(CodexBrokerFailure.IDENTITY_MISMATCH)
     root = decode_worker_message(
         payload,
         _REPLY_KEYS,

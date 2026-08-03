@@ -107,8 +107,8 @@ class CodexSelectionBinding:
     kind: OperationKind
     pending_epoch: SelectionEpoch
     account_id: SidekickAccountId
-    provider_identity: ProviderIdentity
-    generation: AuthorityGeneration
+    provider_identity: ProviderIdentity | None
+    generation: AuthorityGeneration | None
     socket_device: int
     socket_inode: int
 
@@ -116,6 +116,11 @@ class CodexSelectionBinding:
         """Require a complete selection phase and qualified socket."""
         if not self.kind.is_selection_worker:
             raise ValueError("Codex selection binding kind is invalid.")
+        if (self.provider_identity is None) != (self.generation is None) or (
+            self.kind is not OperationKind.SELECTION_READBACK
+            and self.provider_identity is None
+        ):
+            raise ValueError("Codex selection target authority is incomplete.")
         if (
             type(self.socket_device) is not int
             or type(self.socket_inode) is not int
@@ -235,6 +240,8 @@ def encode_codex_selection_reply(
     if instruction.kind is OperationKind.SELECTION_COMMIT:
         if (
             projection is None
+            or binding.provider_identity is None
+            or binding.generation is None
             or baseline is not None
             or projection.account_id != binding.account_id
             or projection.provider_identity != binding.provider_identity
@@ -348,12 +355,18 @@ def decode_codex_selection_acknowledgement(
 def _binding_values(binding: CodexSelectionBinding) -> JsonObject:
     return {
         "account_id": str(binding.account_id),
-        "generation": str(binding.generation),
+        "generation": (
+            None if binding.generation is None else str(binding.generation)
+        ),
         "kind": binding.kind.value,
         "operation_id": str(binding.operation_id),
         "pending_epoch": binding.pending_epoch.value,
         "protocol_version": CODEX_SELECTION_PROTOCOL_VERSION,
-        "provider_identity": str(binding.provider_identity),
+        "provider_identity": (
+            None
+            if binding.provider_identity is None
+            else str(binding.provider_identity)
+        ),
         "socket_device": binding.socket_device,
         "socket_inode": binding.socket_inode,
         "worker_operation_id": str(binding.worker_operation_id),
@@ -378,6 +391,8 @@ def _baseline_values(
 
 def _decode_binding(root: JsonObject) -> CodexSelectionBinding:
     try:
+        provider_identity = _optional_text(root, "provider_identity")
+        generation = _optional_text(root, "generation")
         return CodexSelectionBinding(
             worker_operation_id=OperationId(
                 worker_message_text(root, "worker_operation_id")
@@ -392,11 +407,13 @@ def _decode_binding(root: JsonObject) -> CodexSelectionBinding:
             account_id=SidekickAccountId(
                 worker_message_text(root, "account_id")
             ),
-            provider_identity=ProviderIdentity(
-                worker_message_text(root, "provider_identity")
+            provider_identity=(
+                None
+                if provider_identity is None
+                else ProviderIdentity(provider_identity)
             ),
-            generation=AuthorityGeneration(
-                worker_message_text(root, "generation")
+            generation=(
+                None if generation is None else AuthorityGeneration(generation)
             ),
             socket_device=worker_message_integer(root, "socket_device"),
             socket_inode=worker_message_integer(root, "socket_inode"),
@@ -411,6 +428,8 @@ def _decode_projection(
 ) -> CodexProjectionReplyLease:
     access_token = worker_message_text(root, "access_token")
     try:
+        if binding.provider_identity is None or binding.generation is None:
+            raise TypeError
         if (
             decode_codex_token_claims(access_token).provider_identity
             != binding.provider_identity
