@@ -18,6 +18,33 @@ PROCESS_GRACE_SECONDS = 0.25
 PROCESS_KILL_SECONDS = 1.0
 _PROCESS_POLL_SECONDS = 0.1
 _READ_CHUNK_BYTES = 8192
+MAX_CLAUDE_CONTROL_FRAME_BYTES = 65_536
+
+
+def launch_piped_claude_command(
+    argv: tuple[str, ...],
+    *,
+    environment: Mapping[str, str],
+    working_directory: Path,
+) -> subprocess.Popen[bytes]:
+    """Launch one qualified Claude child with three owned pipes."""
+    _require_safe_command(argv, 1.0, working_directory)
+    try:
+        return subprocess.Popen(
+            list(argv),
+            close_fds=True,
+            cwd=working_directory,
+            env=dict(environment),
+            shell=False,
+            start_new_session=os.name == "posix",
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except OSError, subprocess.SubprocessError:
+        raise ClaudeProcessError(
+            ClaudeProcessFailure.PROCESS_UNAVAILABLE
+        ) from None
 
 
 def run_bounded_claude_command(
