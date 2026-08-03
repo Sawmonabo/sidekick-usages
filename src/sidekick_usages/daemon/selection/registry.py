@@ -171,8 +171,11 @@ class ParticipantRegistry:
                 else selected.epoch
             )
             gate = self._gates.get(manifest.provider_id)
+            protected = self.requires_attachment(manifest.provider_id)
             attachment_ready_epoch = (
-                registered_epoch
+                gate.pending_epoch
+                if gate and gate.account_id and not protected
+                else registered_epoch
                 if attachment is not None
                 and gate is None
                 and not self.requires_finalized_attachment(
@@ -993,7 +996,5 @@ class ParticipantRegistry:
         connection_generation: int,
     ) -> ParticipantRecord:
         return require_connection(
-            self._participants,
-            participant_id,
-            connection_generation,
+            self._participants, participant_id, connection_generation
         )
