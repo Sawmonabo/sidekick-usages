@@ -22,6 +22,7 @@ from sidekick_usages.providers.codex.app_server.jsonrpc.types import (
 )
 from sidekick_usages.providers.codex.app_server.methods import (
     INITIALIZED_METHOD,
+    MCP_SERVER_STATUS_UPDATED_METHOD,
     THREAD_REALTIME_CLOSED_METHOD,
     THREAD_REALTIME_START_METHOD,
     THREAD_REALTIME_STARTED_METHOD,
@@ -40,7 +41,7 @@ from sidekick_usages.serialization.json import (
 )
 
 MAX_JSON_RPC_INTEGER = (1 << 63) - 1
-MAX_JSON_RPC_MESSAGE_BYTES = 1024 * 1024
+MAX_JSON_RPC_MESSAGE_BYTES = 16 * 1024 * 1024
 _MAX_METHOD_BYTES = 256
 _MAX_ERROR_MESSAGE_BYTES = 1024
 _MAX_SERVER_REQUEST_ID_BYTES = 256
@@ -59,6 +60,7 @@ _BACKPRESSURE_MESSAGE = "The Sidekick Codex relay queue is full."
 _ADMISSION_REFUSAL_MESSAGE = "Sidekick cannot safely admit a new Codex turn."
 _THREAD_ROUTING_METHODS = frozenset(
     {
+        MCP_SERVER_STATUS_UPDATED_METHOD,
         THREAD_REALTIME_CLOSED_METHOD,
         THREAD_REALTIME_START_METHOD,
         THREAD_REALTIME_STARTED_METHOD,
@@ -68,6 +70,7 @@ _THREAD_ROUTING_METHODS = frozenset(
     }
 )
 _TURN_ROUTING_METHODS = frozenset({TURN_COMPLETED_METHOD, TURN_STARTED_METHOD})
+_MCP_STARTUP_STATES = frozenset({"cancelled", "failed", "ready", "starting"})
 _TOP_ROUTING_MEMBERS = frozenset(
     {"emittedAtMs", "error", "id", "method", "params", "result"}
 )
@@ -87,6 +90,8 @@ class JsonRpcRouting:
     method: str | None
     thread_id: str | None
     turn_id: str | None
+    mcp_name: str | None
+    mcp_status: str | None
     error_response: bool
 
 
@@ -500,6 +505,17 @@ def _optional_span_text(
     return _validated_routing_text(_span_text(text, span))
 
 
+def _nullable_span_text(
+    text: str,
+    fields: dict[str, _RoutingSpan],
+    name: str,
+) -> str | None:
+    span = fields.get(name)
+    if span is None or text[span[0] : span[1]] == "null":
+        return None
+    return _validated_routing_text(_span_text(text, span))
+
+
 def _span_integer(text: str, span: _RoutingSpan) -> int:
     if span[1] - span[0] > _MAX_JSON_NUMBER_BYTES:
         return _malformed()
@@ -562,14 +578,16 @@ def _decode_scanned_routing_call(
         params: dict[str, _RoutingSpan] = {}
     else:
         params_span = fields.get("params")
-        if params_span is None:
+        params = {}
+        if params_span is not None and text[params_span[0]] == "{":
+            params_keys, params = _object_fields(
+                text,
+                params_span,
+                frozenset({"name", "status", "threadId", "turn"}),
+            )
+            del params_keys
+        elif method in _THREAD_ROUTING_METHODS:
             return _malformed()
-        params_keys, params = _object_fields(
-            text,
-            params_span,
-            frozenset({"threadId", "turn"}),
-        )
-        del params_keys
     request_id = _scanned_call_request_id(
         text,
         keys,
@@ -577,18 +595,27 @@ def _decode_scanned_routing_call(
         method,
         from_client=from_client,
     )
-    thread_id = _optional_span_text(text, params, "threadId")
+    thread_id = _nullable_span_text(text, params, "threadId")
     if method in _THREAD_ROUTING_METHODS and thread_id is None:
         return _malformed()
     turn_id = None
     if method in _TURN_ROUTING_METHODS:
         turn_id = _required_nested_id(text, params, "turn")
+    mcp_name = None
+    mcp_status = None
+    if method == MCP_SERVER_STATUS_UPDATED_METHOD:
+        mcp_name = _required_span_text(text, params, "name")
+        mcp_status = _required_span_text(text, params, "status")
+        if mcp_status not in _MCP_STARTUP_STATES:
+            return _malformed()
     return JsonRpcRouting(
         raw=raw,
         request_id=request_id,
         method=method,
         thread_id=thread_id,
         turn_id=turn_id,
+        mcp_name=mcp_name,
+        mcp_status=mcp_status,
         error_response=False,
     )
 
@@ -602,16 +629,14 @@ def _scanned_call_request_id(
     from_client: bool,
 ) -> int | str | None:
     if "id" in keys:
-        if keys != {"id", "method", "params"}:
+        if keys not in (
+            {"id", "method"},
+            {"id", "method", "params"},
+        ):
             return _malformed()
         return _span_request_id(text, fields["id"])
     if from_client:
-        expected = (
-            {"method"}
-            if method == INITIALIZED_METHOD
-            else {"method", "params"}
-        )
-        if keys != expected:
+        if keys not in ({"method"}, {"method", "params"}):
             return _malformed()
         return None
     if keys != {"emittedAtMs", "method", "params"}:
@@ -633,13 +658,15 @@ def _decode_scanned_routing_response(
     thread_id = None
     turn_id = None
     if keys == {"id", "result"}:
-        _result_keys, result = _object_fields(
-            text,
-            fields["result"],
-            frozenset({"thread", "turn"}),
-        )
-        thread_id = _optional_nested_id(text, result, "thread")
-        turn_id = _optional_nested_id(text, result, "turn")
+        result_span = fields["result"]
+        if text[result_span[0]] == "{":
+            _result_keys, result = _object_fields(
+                text,
+                result_span,
+                frozenset({"thread", "turn"}),
+            )
+            thread_id = _optional_nested_id(text, result, "thread")
+            turn_id = _optional_nested_id(text, result, "turn")
     elif keys == {"id", "error"}:
         _error_keys, error = _object_fields(
             text,
@@ -662,6 +689,8 @@ def _decode_scanned_routing_response(
         method=None,
         thread_id=thread_id,
         turn_id=turn_id,
+        mcp_name=None,
+        mcp_status=None,
         error_response=error_response,
     )
 

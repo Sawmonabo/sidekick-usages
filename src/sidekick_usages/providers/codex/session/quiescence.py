@@ -26,11 +26,18 @@ from sidekick_usages.serialization.json import (
     encode_compact_json,
 )
 
-_PROTOCOL_VERSION = 1
+_PROTOCOL_VERSION = 2
 _PROOF_TIMEOUT_SECONDS = 8.0
 _MAX_PARTICIPANTS = 16
 _CHALLENGE_KEYS = frozenset(
-    {"challenge", "epoch", "operation_id", "phase", "protocol_version"}
+    {
+        "challenge",
+        "epoch",
+        "operation_id",
+        "phase",
+        "protocol_version",
+        "refresh_required",
+    }
 )
 _RECEIPT_KEYS = _CHALLENGE_KEYS | {
     "loaded_thread_count",
@@ -60,6 +67,7 @@ class _Challenge:
     epoch: SelectionEpoch
     phase: _ProofPhase
     challenge: RequestId
+    refresh_required: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,10 +81,16 @@ class _Receipt:
 class CodexQuiescenceRelay(Protocol):
     """Return secret-free quiescence from one participant-local relay."""
 
-    def arm_quiescence(self) -> tuple[int, int, bool]:
+    def arm_quiescence(
+        self,
+        refresh_required: bool,
+    ) -> tuple[int, int, bool]:
         """Arm and prove the precommit participant barrier."""
 
-    def confirm_quiescence(self) -> tuple[int, int, bool]:
+    def confirm_quiescence(
+        self,
+        refresh_required: bool,
+    ) -> tuple[int, int, bool]:
         """Reprove under the retained participant barrier."""
 
     def release_quiescence(self) -> tuple[int, int, bool]:
@@ -113,6 +127,7 @@ class _PendingProof:
     operation_id: OperationId
     epoch: SelectionEpoch
     channels: tuple[tuple[ParticipantId, _Channel], ...]
+    refresh_required: bool
     receipts: dict[ParticipantId, tuple[int, int]]
     awaiting_terminal: set[ParticipantId]
 
@@ -286,6 +301,7 @@ class CodexParticipantProofSet:
                     operation_id,
                     epoch,
                     channels,
+                    True,
                     {},
                     set(),
                 )
@@ -379,6 +395,7 @@ class CodexParticipantProofSet:
                     operation_id,
                     target.epoch,
                     channels,
+                    False,
                     {},
                     set(),
                 )
@@ -487,6 +504,7 @@ class CodexParticipantProofSet:
                 epoch,
                 phase,
                 new_request_id(),
+                pending.refresh_required,
             )
             channel.endpoint.settimeout(_PROOF_TIMEOUT_SECONDS)
             try:
@@ -533,6 +551,7 @@ class CodexParticipantProofSet:
                 epoch,
                 _ProofPhase.ABORT,
                 new_request_id(),
+                pending.refresh_required,
             )
             try:
                 channel.endpoint.settimeout(_PROOF_TIMEOUT_SECONDS)
@@ -627,7 +646,10 @@ class CodexParticipantProofChannel:
                 epoch,
                 {_ProofPhase.PRECOMMIT},
             )
-            self._respond(first, relay.arm_quiescence())
+            self._respond(
+                first,
+                relay.arm_quiescence(first.refresh_required),
+            )
             armed = True
             terminal = _decode_challenge(self._transport.receive_payload())
             self._require_challenge(
@@ -636,12 +658,24 @@ class CodexParticipantProofChannel:
                 epoch,
                 {_ProofPhase.POSTCOMMIT, _ProofPhase.ABORT},
             )
+            if terminal.refresh_required is not first.refresh_required:
+                raise CodexParticipantProofError(
+                    "The Codex participant challenge does not match."
+                )
             if terminal.phase is _ProofPhase.ABORT:
                 released = relay.release_quiescence()
                 armed = False
                 self._respond(terminal, released)
             else:
-                self._respond(terminal, relay.confirm_quiescence())
+                confirmed = relay.confirm_quiescence(
+                    terminal.refresh_required,
+                )
+                self._respond(
+                    terminal,
+                    confirmed,
+                )
+                if not confirmed[2]:
+                    relay.discard_quiescence()
                 armed = False
         finally:
             if armed:
@@ -697,6 +731,7 @@ def _encode_challenge(challenge: _Challenge) -> bytes:
             "operation_id": str(challenge.operation_id),
             "phase": challenge.phase.value,
             "protocol_version": _PROTOCOL_VERSION,
+            "refresh_required": challenge.refresh_required,
         }
     )
 
@@ -709,6 +744,7 @@ def _decode_challenge(payload: bytes) -> _Challenge:
             SelectionEpoch(_integer(root, "epoch")),
             _ProofPhase(_text(root, "phase")),
             RequestId(_text(root, "challenge")),
+            _boolean(root, "refresh_required"),
         )
     except ValueError:
         raise CodexParticipantProofError(
@@ -727,6 +763,7 @@ def _encode_receipt(receipt: _Receipt) -> bytes:
             "phase": challenge.phase.value,
             "protocol_version": _PROTOCOL_VERSION,
             "quiescent": receipt.quiescent,
+            "refresh_required": challenge.refresh_required,
             "revision": receipt.revision,
         }
     )
@@ -779,6 +816,15 @@ def _text(root: JsonObject, name: str) -> str:
 def _integer(root: JsonObject, name: str) -> int:
     value = root.get(name)
     if type(value) is not int:
+        raise CodexParticipantProofError(
+            "The Codex participant frame is malformed."
+        )
+    return value
+
+
+def _boolean(root: JsonObject, name: str) -> bool:
+    value = root.get(name)
+    if not isinstance(value, bool):
         raise CodexParticipantProofError(
             "The Codex participant frame is malformed."
         )

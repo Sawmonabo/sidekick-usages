@@ -2000,10 +2000,28 @@ cannot install an older lease and another account's home cannot answer it.
 Realtime start is a turn lease; selection sends no stop or close. For plugin,
 skill, and MCP invalidation, qualify an observable completion sequence on exact
 0.146.0 using account update plus the loaded-thread MCP status notifications
-and subsequent strict `mcpServerStatus/list` readback. If no sequence proves
-that every loaded thread has applied its queued refresh, set
-`UNSUPPORTED_SESSION_CAPABILITY` before external-auth mutation. Never replace
-the missing proof with elapsed time.
+and subsequent strict `mcpServerStatus/list` readback. Retain exact per-thread
+server names and status revisions before mutation; after mutation, require
+every configured server to reach a later `ready` revision. A failed or
+cancelled server is terminal for precommit drain but cannot silently finalize
+ordinary READY. Reread the same names before READY and OPEN.
+
+The local proof protocol must distinguish mutation proof from late-participant
+readback binding. A late or reconnected participant has no second provider
+mutation to trigger another MCP refresh; require unchanged threads, names, and
+terminal states instead. If the mutation path cannot prove that every loaded
+thread applied its queued refresh, fail closed before OPEN. The bounded wait is
+only a failure deadline and never evidence of success.
+
+When READY completed but durable finalization enters recovery, retain the proof
+only for the same target epoch, loaded-thread revision, confirmed MCP names,
+and still-proven state. Keep admission closed and reuse that proof for the
+coordinator's later OPEN. Every precommit, unready, changed, or mismatched
+recovery path discards it.
+
+Discard a failed POSTCOMMIT proof before coordinator abort so the previous
+authority can resume. Treat repeated OPEN for an already finalized epoch as
+idempotent, but commit an uncommitted same-epoch newer-generation target first.
 
 - [ ] **Step 7: Start stock Codex once through the stable relay.**
 

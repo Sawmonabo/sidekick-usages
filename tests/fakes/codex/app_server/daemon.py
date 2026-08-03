@@ -1,7 +1,5 @@
 """Real Unix-WebSocket fake for the official shared Codex daemon."""
 
-import base64
-import binascii
 import json
 import os
 import sys
@@ -28,7 +26,7 @@ from sidekick_usages.providers.codex.broker.responder import (
 from sidekick_usages.serialization.json import JsonObject, decode_json_object
 from tests.fakes.codex.app_server.models import FakeCodexRefreshResponse
 from tests.fakes.codex.app_server.session import FakeCodexSession
-from tests.fakes.codex.auth import managed_auth
+from tests.fakes.codex.auth import codex_token_account_id, managed_auth
 
 _CLIENT_TIMEOUT_SECONDS = 5.0
 _INSTALL_HANDSHAKE_TIMEOUT_SECONDS = 30.0
@@ -36,7 +34,6 @@ _REFRESH_RESPONSE_TIMEOUT_SECONDS = CODEX_CALLBACK_RESPONSE_SECONDS + 2.0
 _EXTERNAL_REFRESH_ERROR_CODE = -32000
 _EXTERNAL_REFRESH_ERROR_MESSAGE = "external auth refresh unavailable"
 _EXTERNAL_REFRESH_METHOD = "account/chatgptAuthTokens/refresh"
-_JWT_PARTS = 3
 _CONTROL_DIRECTORY_NAME = "app-server-control"
 _CONTROL_SOCKET_NAME = "app-server-control.sock"
 _DAEMON_WEBSOCKET_URI = "ws://localhost/rpc"
@@ -119,6 +116,24 @@ class FakeCodexDaemon:
         """Return effective native-auth observations."""
         with self._lock:
             return self._auth_status_read_count
+
+    def emit_mcp_status(
+        self,
+        thread_id: str,
+        name: str,
+        status: str,
+    ) -> None:
+        """Broadcast one official-shaped MCP startup status."""
+        self._broadcast(
+            {
+                "method": "mcpServer/startupStatus/updated",
+                "params": {
+                    "threadId": thread_id,
+                    "name": name,
+                    "status": status,
+                },
+            }
+        )
 
     @property
     def model_auth_read_count(self) -> int:
@@ -674,7 +689,7 @@ class FakeCodexDaemon:
             or not isinstance(access_token, str)
             or not isinstance(account_id, str)
             or result.get("chatgptPlanType") != "pro"
-            or _token_account_id(access_token) != account_id
+            or codex_token_account_id(access_token) != account_id
         ):
             raise AssertionError("Fake Codex refresh result is inconsistent.")
         return account_id, access_token
@@ -695,7 +710,7 @@ class FakeCodexDaemon:
             or not isinstance(access_token, str)
             or not isinstance(account_id, str)
             or not isinstance(plan, str)
-            or _token_account_id(access_token) != account_id
+            or codex_token_account_id(access_token) != account_id
         ):
             raise AssertionError("Codex fake projection is inconsistent.")
         self._record_external_auth(account_id, access_token)
@@ -982,19 +997,3 @@ def _auth_access_token(payload: bytes) -> str:
     if not isinstance(access_token, str):
         raise AssertionError("Fake Codex access token is unavailable.")
     return access_token
-
-
-def _token_account_id(token: str) -> str | None:
-    parts = token.split(".")
-    if len(parts) != _JWT_PARTS:
-        return None
-    payload = parts[1] + "=" * (-len(parts[1]) % 4)
-    try:
-        decoded = decode_json_object(base64.urlsafe_b64decode(payload))
-    except binascii.Error, InvalidPayloadError, ValueError:
-        return None
-    auth = decoded.get("https://api.openai.com/auth")
-    if not isinstance(auth, dict):
-        return None
-    account_id = auth.get("chatgpt_account_id")
-    return account_id if isinstance(account_id, str) else None

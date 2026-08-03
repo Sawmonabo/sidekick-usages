@@ -63,10 +63,7 @@ from sidekick_usages.providers.codex.session.quiescence import (
     CodexParticipantProofError,
     CodexParticipantProofSet,
 )
-from sidekick_usages.providers.codex.session.relay import (
-    CodexAdmissionRelay,
-    CodexRelayError,
-)
+from sidekick_usages.providers.codex.session.relay import CodexAdmissionRelay
 from sidekick_usages.serialization.json import JsonObject
 from tests.fakes.codex.app_server.daemon import (
     FakeCodexDaemon,
@@ -122,6 +119,18 @@ _TARGET_AUTHORITY = CodexRelayAuthority(
     generation=AuthorityGeneration("2026-07-24T11:00:00.000000000Z"),
     epoch=SelectionEpoch(2),
 )
+_PARTICIPANT_ID = ParticipantId("55555555-5555-4555-8555-555555555555")
+_PARTICIPANT_PEER = ProcessIdentity(1234, 5678)
+
+
+def _target_ready_proof() -> AuthorityReadyProof:
+    return AuthorityReadyProof(
+        provider_id=ProviderId.CODEX,
+        account_id=_TARGET_AUTHORITY.account_id,
+        generation=_TARGET_AUTHORITY.generation,
+        epoch=_TARGET_AUTHORITY.epoch,
+        safe_code=SelectionCode.SELECTION_SUCCEEDED,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,15 +156,18 @@ class _RelayControl:
         self.ended: list[TurnId] = []
         self.ready_targets: list[CodexRelayAuthority] = []
         self.adoptions: list[tuple[TurnId, CodexRelayAuthority]] = []
-        self.mcp_statuses: list[JsonObject] = []
+        self.mcp_names: tuple[str, ...] = ()
         self.mcp_thread_ids: list[str] = []
 
     def request(self, method: str, params: JsonObject) -> JsonObject:
-        """Return an exact zero-MCP response for one loaded thread."""
+        """Return an exact MCP response for one loaded thread."""
         assert method == "mcpServerStatus/list"
         assert set(params) == {"threadId"}
         self.mcp_thread_ids.append(str(params["threadId"]))
-        return self.mcp_statuses.pop(0) if self.mcp_statuses else {"data": []}
+        return {
+            "data": [{"name": name} for name in self.mcp_names],
+            "nextCursor": None,
+        }
 
     def close_gate(self) -> None:
         with self._condition:
@@ -235,6 +247,57 @@ def _receive_method(tui: FakeCodexTuiObserver, method: str) -> None:
         if tui.receive().get("method") == method:
             return
     raise AssertionError("Fake Codex TUI saw no provider terminal event.")
+
+
+def _emit_mcp_status(
+    daemon: FakeCodexDaemon,
+    tui: FakeCodexTuiObserver,
+    thread_ids: tuple[str, ...],
+    status: str,
+) -> None:
+    for thread_id in thread_ids:
+        daemon.emit_mcp_status(thread_id, "synthetic", status)
+        _receive_method(tui, "mcpServer/startupStatus/updated")
+
+
+def _serve_selection(
+    channel: CodexParticipantProofChannel,
+    relay: CodexAdmissionRelay,
+) -> Thread:
+    target = channel.serve_selection
+    thread = Thread(target=target, args=(relay, _TARGET_AUTHORITY.epoch))
+    thread.start()
+    return thread
+
+
+def _prove_nonempty_mcp_readback(
+    relay: CodexAdmissionRelay,
+    tui: FakeCodexTuiObserver,
+    control: _RelayControl,
+    daemon: FakeCodexDaemon,
+    proofs: CodexParticipantProofSet,
+    channel: CodexParticipantProofChannel,
+    workers: tuple[Thread, ...],
+) -> None:
+    relay.open_epoch(_TARGET_AUTHORITY.epoch)
+    threads = relay.loaded_threads_snapshot.thread_ids
+    _emit_mcp_status(daemon, tui, threads, "ready")
+    readback_start = len(control.mcp_thread_ids)
+    operation_id = OperationId("88888888-8888-4888-8888-888888888888")
+    proof_thread = _serve_selection(channel, relay)
+    proofs.bind_after_readback(operation_id, _TARGET_AUTHORITY)
+    proof_thread.join(timeout=_RELAY_WAIT_SECONDS)
+    assert not proof_thread.is_alive()
+    assert proofs.matches_target(
+        _PARTICIPANT_ID,
+        1,
+        _PARTICIPANT_PEER,
+        operation_id,
+        _target_ready_proof(),
+    )
+    assert control.mcp_thread_ids[readback_start:] == list(threads) * 2
+    assert all(not worker.is_alive() for worker in workers)
+    assert control.adoptions == [(control.begun[-1], _TARGET_AUTHORITY)]
 
 
 def _send_turn(
@@ -318,7 +381,6 @@ def _prove_relay_baseline(
     assert _receive_response(tui, 11).get("result") == {}
     _receive_method(tui, "thread/realtime/closed")
     assert control.wait_count(control.ended, 2)
-
     control.close_gate()
     _send_turn(tui, 20, "thread-baseline")
     control.open_gate(_BASELINE_AUTHORITY)
@@ -328,140 +390,84 @@ def _prove_relay_baseline(
     assert daemon.relay_start_request_ids == (10, 11, 20)
 
 
-def _prove_relay_target(
+def _prove_participant_quiescence(
     relay: CodexAdmissionRelay,
     tui: FakeCodexTuiObserver,
     control: _RelayControl,
     daemon: FakeCodexDaemon,
 ) -> None:
-    """Prove versioned readiness, atomic OPEN, and one adoption."""
-    control.close_gate()
-    _resume_thread(tui, 60, "thread-snapshot-a")
-    stale_snapshot = relay.loaded_threads_snapshot
-    _resume_thread(tui, 61, "thread-snapshot-b")
-    with pytest.raises(CodexRelayError) as stale_ready:
-        relay.mark_ready(_TARGET_AUTHORITY, stale_snapshot)
-    assert stale_ready.value.code is SelectionCode.AUTHORITY_PROOF_FAILED
-
-    control.mcp_statuses.append(
-        {"data": [{"name": "synthetic", "status": "ready"}]}
-    )
-    with pytest.raises(CodexRelayError) as nonempty_mcp:
-        relay.mark_ready(_TARGET_AUTHORITY, relay.loaded_threads_snapshot)
-    assert (
-        nonempty_mcp.value.code is SelectionCode.UNSUPPORTED_SESSION_CAPABILITY
-    )
-    relay.mark_ready(_TARGET_AUTHORITY, relay.loaded_threads_snapshot)
-    _resume_thread(tui, 62, "thread-snapshot-c")
-    with pytest.raises(CodexRelayError) as invalidated_open:
-        relay.open_admission(_TARGET_AUTHORITY)
-    assert (
-        invalidated_open.value.code
-        is SelectionCode.SELECTION_RECOVERY_REQUIRED
-    )
-    relay.mark_ready(_TARGET_AUTHORITY, relay.loaded_threads_snapshot)
-
-    _send_turn(tui, 70, "thread-target")
-    control.open_gate(_TARGET_AUTHORITY)
-    relay.open_admission(_TARGET_AUTHORITY)
-    _receive_response(tui, 70)
-    assert control.wait_count(control.ended, 4)
-    assert daemon.relay_start_request_ids[-1:] == (70,)
-    assert control.adoptions == [(control.begun[-1], _TARGET_AUTHORITY)]
-    assert control.ready_targets == [_TARGET_AUTHORITY, _TARGET_AUTHORITY]
-
-
-def _prove_participant_quiescence(
-    relay: CodexAdmissionRelay,
-    tui: FakeCodexTuiObserver,
-    control: _RelayControl,
-) -> None:
-    """Prove correlated local MCP reads around one provider mutation."""
-    participant_id = ParticipantId("55555555-5555-4555-8555-555555555555")
+    """Prove failed proof release, MCP refresh, OPEN, and adoption."""
+    failed_operation_id = OperationId("77777777-7777-4777-8777-777777777777")
     operation_id = OperationId("66666666-6666-4666-8666-666666666666")
-    peer = ProcessIdentity(1234, 5678)
     supervisor_endpoint, participant_endpoint = socket.socketpair()
     proofs = CodexParticipantProofSet(FramedTransport)
-    proofs.stage(participant_id, 1, peer, supervisor_endpoint).commit()
+    proofs.stage(
+        _PARTICIPANT_ID,
+        1,
+        _PARTICIPANT_PEER,
+        supervisor_endpoint,
+    ).commit()
     channel = CodexParticipantProofChannel(
         participant_endpoint,
         FramedTransport,
     )
-    proof_thread = Thread(
-        target=channel.serve_selection,
-        args=(relay, _TARGET_AUTHORITY.epoch),
-    )
-    proof_thread.start()
-    proofs.prepare(operation_id, _TARGET_AUTHORITY.epoch)
+    control.close_gate()
+    control.mcp_names = ("synthetic",)
+    failed_threads = relay.loaded_threads_snapshot.thread_ids
+    _emit_mcp_status(daemon, tui, failed_threads, "ready")
+    failed_worker = _serve_selection(channel, relay)
+    proofs.prepare(failed_operation_id, _TARGET_AUTHORITY.epoch)
+    _emit_mcp_status(daemon, tui, failed_threads, "ready")
+    daemon.emit_mcp_status("thread-changed", "synthetic", "ready")
+    _receive_method(tui, "mcpServer/startupStatus/updated")
+    with pytest.raises(CodexParticipantProofError):
+        proofs.complete(failed_operation_id, _TARGET_AUTHORITY)
+    proofs.abort(failed_operation_id, _TARGET_AUTHORITY.epoch)
+    failed_worker.join(timeout=_RELAY_WAIT_SECONDS)
+    _resume_thread(tui, 79, "thread-after-failed-proof")
     sealed_threads = relay.loaded_threads_snapshot.thread_ids
+    _emit_mcp_status(daemon, tui, sealed_threads, "ready")
+    proof_worker = _serve_selection(channel, relay)
+    proofs.prepare(operation_id, _TARGET_AUTHORITY.epoch)
+    _emit_mcp_status(daemon, tui, sealed_threads, "failed")
+    completion = Thread(
+        target=proofs.complete,
+        args=(operation_id, _TARGET_AUTHORITY),
+    )
+    completion.start()
+    completion.join(timeout=0.1)
+    assert completion.is_alive()
+    _emit_mcp_status(daemon, tui, sealed_threads, "ready")
     resumed = Thread(
         target=_resume_thread,
         args=(tui, 80, "thread-after-proof"),
     )
     resumed.start()
     resumed.join(timeout=0.1)
-    crossed_precommit = not resumed.is_alive()
-    proofs.complete(operation_id, _TARGET_AUTHORITY)
-    proof_thread.join(timeout=_RELAY_WAIT_SECONDS)
+    assert resumed.is_alive()
+    completion.join(timeout=_RELAY_WAIT_SECONDS)
+    proof_worker.join(timeout=_RELAY_WAIT_SECONDS)
     resumed.join(timeout=0.1)
-    crossed_postcommit = not resumed.is_alive()
-    relay.release_quiescence()
+    assert resumed.is_alive()
+    relay.mark_ready(_TARGET_AUTHORITY, relay.loaded_threads_snapshot)
+    _send_turn(tui, 70, "thread-target")
+    control.open_gate(_TARGET_AUTHORITY)
+    relay.open_epoch(_TARGET_AUTHORITY.epoch)
+    relay.discard_quiescence()
     resumed.join(timeout=_RELAY_WAIT_SECONDS)
-    target_proof = AuthorityReadyProof(
-        provider_id=ProviderId.CODEX,
-        account_id=_TARGET_AUTHORITY.account_id,
-        generation=_TARGET_AUTHORITY.generation,
-        epoch=_TARGET_AUTHORITY.epoch,
-        safe_code=SelectionCode.SELECTION_SUCCEEDED,
+    _receive_response(tui, 70)
+    assert control.wait_count(control.ended, 4)
+    _prove_nonempty_mcp_readback(
+        relay,
+        tui,
+        control,
+        daemon,
+        proofs,
+        channel,
+        (failed_worker, proof_worker, completion, resumed),
     )
-    assert (
-        proof_thread.is_alive(),
-        proofs.matches_target(
-            participant_id, 1, peer, operation_id, target_proof
-        ),
-        control.mcp_thread_ids[-14:],
-        crossed_precommit,
-        crossed_postcommit,
-        resumed.is_alive(),
-        "thread-after-proof" in relay.loaded_threads_snapshot.thread_ids,
-    ) == (False, True, list(sealed_threads) * 2, False, False, False, True)
-
-    reconnect_id = OperationId("88888888-8888-4888-8888-888888888888")
-    new_supervisor, new_participant = socket.socketpair()
-
-    def replace_armed_channel() -> None:
-        participant_endpoint.settimeout(_RELAY_WAIT_SECONDS)
-        assert participant_endpoint.recv(1)
-        replacement = proofs.stage(participant_id, 2, peer, new_supervisor)
-        replacement.commit()
-        replacement.finalize()
-        replacement_channel = CodexParticipantProofChannel(
-            new_participant,
-            FramedTransport,
-        )
-        replacement_channel.serve_selection(relay, _TARGET_AUTHORITY.epoch)
-        replacement_channel.serve_selection(relay, _TARGET_AUTHORITY.epoch)
-        replacement_channel.close()
-
-    (reconnect := Thread(target=replace_armed_channel)).start()
-    with pytest.raises(CodexParticipantProofError):
-        proofs.bind_after_readback(reconnect_id, _TARGET_AUTHORITY)
     channel.close()
-    proofs.bind_after_readback(reconnect_id, _TARGET_AUTHORITY)
-    relay.release_quiescence()
-    proofs.prepare(operation_id, _TARGET_AUTHORITY.epoch)
-    proofs.abort(operation_id, _TARGET_AUTHORITY.epoch)
-    reconnect.join(timeout=_RELAY_WAIT_SECONDS)
-    _resume_thread(tui, 81, "thread-after-abort")
-    replacement_bound = proofs.matches_target(
-        participant_id, 2, peer, reconnect_id, target_proof
-    )
     proofs.close()
-    assert (
-        reconnect.is_alive(),
-        replacement_bound,
-        "thread-after-abort" in relay.loaded_threads_snapshot.thread_ids,
-    ) == (False, True, True)
 
 
 def _prove_versioned_relay_journey(short_socket_root: Path) -> None:
@@ -522,11 +528,13 @@ def _prove_versioned_relay_journey(short_socket_root: Path) -> None:
                             SelectionCode.UNCOORDINATED_AUTH_MUTATION.value
                         )
                     }
-
                 _prove_relay_baseline(relay, tui, control, daemon)
-                _prove_relay_target(relay, tui, control, daemon)
-                _prove_participant_quiescence(relay, tui, control)
-
+                _prove_participant_quiescence(
+                    relay,
+                    tui,
+                    control,
+                    daemon,
+                )
             finally:
                 tui.close()
         finally:
@@ -600,7 +608,6 @@ def test_versioned_codex_app_server_boundary_is_complete(
         "OPENAI_API_KEY": RAW_PROVIDER_SECRET,
         "PATH": os.pathsep.join((str(tmp_path), os.environ["PATH"])),
     }
-
     server = executable.discover_codex_executable(environment)
     support = capabilities.probe_codex_capabilities(server, environment)
     manager = CodexDaemonManager(
@@ -638,7 +645,6 @@ def test_versioned_codex_app_server_boundary_is_complete(
             {"refreshToken": False},
         )
         notification = session.receive()
-
         assert server.provenance.path == executable_path.resolve()
         assert str(server.version) == _NEWER_CODEX_VERSION
         assert len(support.schema_hash) == SCHEMA_HASH_HEX_LENGTH
@@ -646,7 +652,6 @@ def test_versioned_codex_app_server_boundary_is_complete(
         assert result["requiresOpenaiAuth"] is True
         assert isinstance(notification, JsonRpcNotification)
         assert notification.method == "account/updated"
-
         _prove_relay_routing_codec(monkeypatch)
     assert session.closed
 

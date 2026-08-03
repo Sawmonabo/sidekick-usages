@@ -1833,6 +1833,84 @@ The hardened contract is:
 - selection is not called seamless until controlled tests prove subsequent
   tool/MCP use works without reconnect or lost protocol state.
 
+#### 10.6.1 Exact MCP readiness signal
+
+Codex 0.146.0 implements the required signal across several owners. The
+account processor installs external auth, clears plugin and skill caches,
+reloads MCP configuration, and asks the thread manager to invalidate the MCP
+runtime of every loaded thread
+([account processor][codex-account-invalidation],
+[thread manager][codex-thread-manager]). Each dirty thread is refreshed by
+the MCP prewarm worker ([prewarm worker][codex-mcp-prewarm]). The connection
+manager publishes the replacement runtime before its asynchronous startup
+finishes and emits `starting`, followed by `ready`, `failed`, or `cancelled`
+([runtime owner][codex-mcp-runtime],
+[connection manager][codex-mcp-connection]).
+
+The public app-server notification deliberately removes the internal submit
+ID and generation. A relay can observe only the thread ID, server name, and
+public status ([event mapping][codex-mcp-events]). Therefore readiness is a
+correlated barrier, not one notification in isolation:
+
+1. before mutation, read the exact configured server names for every loaded
+   thread and require every observed startup state to be terminal;
+2. retain each name and status revision under the closed participant barrier;
+3. after external-auth installation, require a later status revision for
+   every retained server;
+4. require every configured server to reach a newer `ready` state; a server
+   already failed or cancelled is terminal for precommit drain but cannot
+   produce ordinary READY after mutation;
+5. strictly reread `mcpServerStatus/list`, require the same names, and recheck
+   the later revisions before READY and again before OPEN; and
+6. keep the TUI, app-server, threads, sockets, and conversations resident.
+
+An expected cancellation from the superseded provider-owned runtime can
+arrive after the replacement is ready because the public event has no runtime
+generation. While the refresh-proof barrier is closed, the relay records that
+event but suppresses only its misleading TUI cancellation notification.
+`starting`, `ready`, and `failed` remain visible. A cancellation or failure
+that persists before OPEN invalidates readiness and returns a typed recovery
+result; after the barrier, cancellation is forwarded normally.
+
+Late or reconnected participants are different: exact authority readback has
+already proved the resident target and no second provider mutation occurs.
+Their versioned proof requires unchanged loaded threads, unchanged configured
+MCP names, and current terminal states. It must not wait for a new refresh
+event that Codex has no reason to emit. The local proof protocol carries this
+distinction explicitly; mutation proof and readback binding cannot be
+silently interchanged.
+
+If provider commit and READY succeeded but durable finalization requires
+recovery, the relay retains that proof only for the exact target epoch, loaded-
+thread revision, confirmed MCP names, and still-proven MCP state. It keeps
+admission closed until the coordinator reissues OPEN. A precommit, unready,
+changed, or mismatched recovery discards the proof. This prevents both false
+OPEN and the opposite defect where a valid resident participant becomes
+permanently unusable after a recoverable persistence race.
+
+A negative POSTCOMMIT receipt discards the local proof barrier before the
+coordinator aborts, so the still-resident session remains usable on its last
+proven authority. Repeating OPEN for an already finalized epoch is idempotent.
+When an uncommitted target has that epoch but a newer generation, the relay
+commits that exact target before considering the finalized baseline.
+
+#### 10.6.2 Controlled live result
+
+The exact installed Codex 0.146.0 client completed a two-account round trip in
+one disposable integrated TUI. The original account completed a real turn,
+selection changed to the second saved account, the same TUI completed a real
+post-selection turn, selection restored the original account, and that same
+TUI completed another real turn. Doctor readback proved one participant
+adopted each finalized epoch with zero active or queued turns and no unfinished
+activation.
+
+Both transitions displayed normal MCP startup and cleared it without an
+interruption warning. The TUI then exited normally. The protected Claude
+process, unrelated Codex client, native and neutral app servers, supervisor,
+and native Claude credential metadata remained unchanged. This proves the
+resident HTTP/MCP/account-selection mechanism on the qualified build; it does
+not waive the remaining Claude, realtime, packaging, or release gates.
+
 ### 10.7 Realtime and other long-lived transports
 
 Disabling the Responses model WebSocket solves ordinary Responses-turn auth
@@ -3468,6 +3546,11 @@ the table above and in the reference definitions at the end of this document.
 57. [Detached daemon app-server launch](https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/app-server-daemon/src/backend/pid.rs#L459-L480)
 58. [Daemon managed-install resolution](https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/app-server-daemon/src/managed_install.rs)
 59. [systemd process-kill ownership](https://www.freedesktop.org/software/systemd/man/latest/systemd.kill.html#KillMode=)
+60. [Codex MCP prewarm worker](https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/core/src/session/mcp_prewarm.rs)
+61. [Codex MCP runtime replacement](https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/codex-mcp/src/runtime.rs)
+62. [Codex MCP connection and startup states](https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/codex-mcp/src/connection_manager.rs)
+63. [Codex app-server MCP event mapping](https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/app-server/src/bespoke_event_handling.rs)
+64. [Codex app-server MCP status contract](https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/app-server/README.md)
 
 ## 22. Design Review Checklist
 
@@ -3578,6 +3661,10 @@ authority gates.
 [codex-http-client]: https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/core/src/client.rs#L1395-L1458
 [codex-account-processor]: https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/app-server/src/request_processors/account_processor.rs#L691-L839
 [codex-account-invalidation]: https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/app-server/src/request_processors/account_processor.rs#L211-L265
+[codex-mcp-prewarm]: https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/core/src/session/mcp_prewarm.rs
+[codex-mcp-runtime]: https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/codex-mcp/src/runtime.rs
+[codex-mcp-connection]: https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/codex-mcp/src/connection_manager.rs
+[codex-mcp-events]: https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/app-server/src/bespoke_event_handling.rs
 [codex-realtime]: https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/core/src/realtime_conversation.rs#L448-L518
 [codex-daemon-launch]: https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/app-server-daemon/src/backend/pid.rs#L459-L480
 [codex-daemon-install]: https://github.com/openai/codex/blob/rust-v0.146.0/codex-rs/app-server-daemon/src/managed_install.rs

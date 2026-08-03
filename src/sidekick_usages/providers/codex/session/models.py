@@ -1,6 +1,6 @@
 """Immutable Codex interactive-session capability."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 
 from sidekick_usages.core.accounts.types import (
@@ -102,6 +102,14 @@ class CodexRelayLease:
     kind: CodexRelayLeaseKind
     request_id: int | str
     thread_id: str
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CodexQueuedStart:
+    """One bounded raw start retained behind the admission gate."""
+
+    raw: bytes = field(repr=False)
+    lease: CodexRelayLease
 
 
 class CodexSessionPreparationReport(

@@ -47,6 +47,7 @@ from sidekick_usages.providers.codex.app_server.capabilities import (
 from sidekick_usages.providers.codex.app_server.models import CodexExecutable
 from sidekick_usages.providers.codex.broker.daemon import CodexDaemonManager
 from sidekick_usages.providers.codex.broker.wire import CodexDaemonSession
+from sidekick_usages.providers.codex.session.errors import CodexRelayError
 from sidekick_usages.providers.codex.session.models import (
     CodexRelayAdmission,
     CodexRelayAdmissionState,
@@ -55,10 +56,7 @@ from sidekick_usages.providers.codex.session.models import (
 from sidekick_usages.providers.codex.session.quiescence import (
     CodexParticipantProofChannel,
 )
-from sidekick_usages.providers.codex.session.relay import (
-    CodexAdmissionRelay,
-    CodexRelayError,
-)
+from sidekick_usages.providers.codex.session.relay import CodexAdmissionRelay
 
 _CONNECTION_GENERATION = 1
 _NOTICE_THREAD_JOIN_SECONDS = 1.0
@@ -476,12 +474,12 @@ class CodexSessionRuntime:
             relay.prepare_admission()
             proof_channel.serve_selection(relay, notice.epoch)
         elif notice.kind is ParticipantNoticeKind.STATUS:
-            relay.refuse_admission(
+            relay.enter_recovery(
                 SelectionCode.SELECTION_RECOVERY_REQUIRED
                 if notice.code is None
-                else notice.code
+                else notice.code,
+                notice.epoch,
             )
-            relay.discard_quiescence()
         else:
             raise CodexRelayError(SelectionCode.AUTHORITY_PROOF_FAILED)
 

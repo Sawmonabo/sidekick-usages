@@ -1,10 +1,15 @@
 """Synthetic managed Codex authentication material."""
 
 import base64
+import binascii
 import json
 from collections.abc import Mapping
 
+from sidekick_usages.errors import InvalidPayloadError
+from sidekick_usages.serialization.json import decode_json_object
+
 NEXT_AUTH_FILE = "next-auth.json"
+_JWT_PARTS = 3
 
 
 def codex_jwt(account_id: str, generation: str) -> str:
@@ -40,3 +45,20 @@ def managed_auth(provider_identity: str, generation: str) -> bytes:
             },
         }
     ).encode()
+
+
+def codex_token_account_id(token: str) -> str | None:
+    """Return the synthetic ChatGPT account claim when present."""
+    parts = token.split(".")
+    if len(parts) != _JWT_PARTS:
+        return None
+    payload = parts[1] + "=" * (-len(parts[1]) % 4)
+    try:
+        decoded = decode_json_object(base64.urlsafe_b64decode(payload))
+    except binascii.Error, InvalidPayloadError, ValueError:
+        return None
+    auth = decoded.get("https://api.openai.com/auth")
+    if not isinstance(auth, dict):
+        return None
+    account_id = auth.get("chatgpt_account_id")
+    return account_id if isinstance(account_id, str) else None

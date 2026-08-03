@@ -831,7 +831,7 @@ def test_selection_worker_binds_codex_broker_journey(
                 NEXT_GENERATION,
                 {ACCOUNT_A_PROVIDER_IDENTITY, PROVIDER_IDENTITY},
                 NEXT_GENERATION,
-                ("thread-alpha", "thread-alpha", "thread-alpha"),
+                ("thread-alpha",) * 4,
                 (2,),
             )
 
