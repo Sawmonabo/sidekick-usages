@@ -1,13 +1,13 @@
 # Hardened Global Account Selection and Responsive Dashboard Design
 
-- **Status:** Proposed for user review; implementation is not authorized
-- **Date:** 2026-08-01
+- **Status:** Approved; amended Claude release gates control implementation
+- **Date:** 2026-08-01; Claude evidence amendment 2026-08-03
 - **Repository:** `sidekick-usages`
-- **Branch:** `develop`
+- **Branch:** `feat/hardened-global-account-selection`
 - **Evidence commit:** `04ffd2de7b7503b16e9b59b012d24221115ea8df`
 - **Required providers:** Claude Code and Codex CLI
 - **Required platforms:** Linux, WSL, and macOS
-- **Security class:** Local, same-user, credential-bearing control plane
+- **Security class:** Secret-free control plane; protected provider data plane
 - **Production impact:** None. This document changes no credential, provider
   login, daemon, scheduler, session, or runtime behavior.
 
@@ -29,12 +29,12 @@ This document supersedes the incompatible parts of the
 
 The older design remains historical evidence. Its completion report is not
 proof that the current behavior satisfies this specification. Where the two
-documents conflict, this document controls after user approval.
+documents conflict, this approved document controls.
 
-No implementation plan is included or authorized. The final section records
-dependency order and release gates so a later plan can be written without
-rediscovering architecture, but file-by-file work begins only after this
-design is reviewed.
+The separate tracked implementation plan owns file-by-file execution. This
+design owns behavior, trust boundaries, and release gates. In particular,
+implementation approval for the Claude protected plane does not authorize
+setup/mixed product enablement or controlled provider-live work.
 
 ## Table of Contents
 
@@ -86,18 +86,21 @@ bind its next admitted request to the new epoch; it does not pretend that an
 idle participant has already sent that request. `NEXT_TURN_PROOF` is later
 adoption evidence and never spends quota merely to close selection.
 
-Claude and Codex implement that protocol differently:
+Claude and Codex implement that protocol differently. Claude has three
+separate decisions that must not be collapsed:
 
-- Refreshable Claude accounts use Sidekick's existing official native-login
-  transaction. Ordinary open Claude terminals already observe a changed
-  native authority at their next request. Sidekick will stop blocking that
-  provider-supported path merely because a foreground Claude process exists.
-- Claude setup-token accounts use a Sidekick-owned, exact-version-gated
-  structured host around the official Claude engine. At a safe between-turn
-  boundary, Sidekick sends the installed runtime's correlated environment
-  update for `CLAUDE_CODE_OAUTH_TOKEN`; the engine updates its environment,
-  clears its OAuth memo, and acknowledges the change without process or
-  conversation replacement.
+- Refreshable/native Claude selection is approved. It reuses Sidekick's
+  official native-login transaction and never blocks merely because an
+  ordinary foreground Claude process exists. Open native sessions may observe
+  the changed authority at their normal request boundary, but Sidekick claims
+  convergence only after exact-build, next-real-turn identity proof.
+- The Claude protected lease plane and structured-host prototype are approved
+  for implementation behind a disabled capability. They keep credentials out
+  of generic control IPC, CLI types, persistence, logs, and receipts.
+- Setup-token and mixed-account switching remain release-blocked. They cannot
+  ship until the private update, complete exposed-host parity, account and
+  generation adoption, security, forward recovery, and Anthropic product and
+  legal gates all pass together.
 - Codex keeps one resident shared app-server and the existing external-auth
   installation. Its model provider is configured for direct HTTP Responses
   with current OpenAI auth and WebSockets disabled. This prevents an
@@ -530,10 +533,25 @@ Provider-heavy refresh and usage tasks remain bounded workers or provider
 adapters. The supervisor does not become a credential database, prompt log,
 or model-response proxy.
 
+Claude adds one provider-owned protected data plane beside the secret-free
+control plane. The isolated worker opens one operation-scoped lease, sends it
+through the existing bounded worker exchange, and releases all credential
+locks. A resident Claude relay then delivers a separately encoded mutable copy
+to each exact registered structured participant over its peer-bound capability
+socket. The relay does not resolve, persist, interpret, or log the credential.
+The generic coordinator, control protocol, worker result, and CLI composition
+remain credential-free.
+
 Every Sidekick-integrated interactive client registers through the stable
 same-user boundary. A participant joining during a transition receives the
 pending epoch and begins behind the same admission gate. It cannot sneak a new
 turn through the old epoch.
+
+A Claude structured host creates one AF_UNIX socketpair before registration.
+It transfers the supervisor endpoint as one ancillary descriptor during the
+kernel-proven attachment transaction. The host endpoint stays in the same
+event loop that owns terminal input and structured-engine I/O. There is no
+filesystem listener, provider thread, executor, or polling loop.
 
 ### 5.4 Session enrollment and command resolution
 
@@ -548,7 +566,11 @@ sidekick-usages session shell uninstall
 sidekick-usages session shell status
 ```
 
-The first two commands are always available and require no shell-file change.
+The first two commands are registered and require no shell-file change. An
+unqualified Claude structured host fails closed before provider execution with
+a visible typed capability refusal. It never silently no-ops or launches a
+release-disabled setup/mixed mechanism.
+
 `session shell install` is an explicit, idempotent opt-in that adds a bounded,
 marked source block for the detected supported shell. The sourced Sidekick
 file defines forwarding functions so ordinary `claude` and `codex` invocations
@@ -1056,6 +1078,12 @@ A participant may finish local editing, rendering, or tool-independent work,
 but cannot transmit a newly admitted provider request under N. A late
 participant authenticates, learns about N+1, and starts behind the gate.
 
+Before provider commit, the coordinator seals the final required membership
+snapshot through protected distribution and provider-proof binding. A Claude
+participant that arrives before that seal joins the snapshot or causes an
+old-epoch refusal. One that arrives after target proof binds forward through
+the protected participant-bind operation before it may send READY or a turn.
+
 #### WAIT_OLD_TURNS
 
 Every turn, retry, active tool/hook, and account-scoped MCP operation admitted
@@ -1073,6 +1101,11 @@ The provider adapter performs the narrow provider-specific transition. It
 does not open admission yet. A lease is exposed only at the last responsible
 boundary and remains memory-only.
 
+For a structured Claude target, the isolated worker releases every provider
+and account authority before the resident relay waits for participant install
+receipts. Each receipt proves one correlated local installation only. It does
+not itself advance the provider-neutral readiness gate.
+
 The commit point is not merely “an API call returned success.” It requires the
 applicable provider-specific identity, generation, ordered-notification or
 serialized-operation, and native-propagation evidence defined below.
@@ -1080,9 +1113,12 @@ serialized-operation, and native-propagation evidence defined below.
 #### READY_ACK
 
 Each live integrated participant proves that its next admitted turn will bind
-to N+1. Readiness may be an updated native generation observation, a
-correlated structured-host acknowledgement, or resident Codex shared-auth
-readback plus the HTTP-only transport capability.
+to N+1. Claude structured readiness requires provider proof and an exact
+protected install receipt to agree on participant, connection, operation,
+account, generation, epoch, nonce, and structured request ID. Only then may
+the participant send the separate secret-free READY acknowledgement. A local
+private-control response alone is not readiness. Codex readiness uses resident
+shared-auth readback plus the HTTP-only transport capability.
 
 No synthetic inference request is sent. Idle sessions consume no quota.
 
@@ -1114,7 +1150,9 @@ N+1 work.
 After the gate opens, each participant binds its first real turn to the target
 stable account, target generation, and N+1 before provider transmission. It
 emits a secret-free local adoption receipt. The receipt proves routing metadata
-and correlation, not the token value.
+and correlation, not the token value. A qualified provider-live journey must
+also prove the exact account and generation used by that genuine request
+before Sidekick claims Claude convergence.
 
 Actual adoption remains a separately visible count because idle participants
 may not send a turn for hours. Adoption proof never controls whether the ready
@@ -1140,7 +1178,7 @@ sequenceDiagram
     R-->>P: finish A turn normally
     P-->>C: old turn and operations drained
     C->>A: commit B authority
-    A-->>C: B ready proof
+    A-->>C: B provider proof and required installs complete
     C->>P: ready N+1
     P-->>C: next turn will bind N+1
     C->>C: finalize ready N+1
@@ -1168,11 +1206,15 @@ not launch overlapping activation workers for repeated Enter presses.
 
 Before provider commit, failure simply reopens admission on N.
 
-After a provider mutation but before proof, the adapter first performs
-provider readback. If B is proven, recovery continues forward. If A is still
-proven, admission reopens on N. If state is ambiguous, prompts remain queued
-and the provider shows `SELECTION_RECOVERY_REQUIRED`; Sidekick does not guess,
-kill sessions, or copy older credentials over newer provider state.
+After a provider mutation but before proof, the adapter returns a provider-
+owned composite decision: `baseline_proven`, `target_proven`, or `unresolved`.
+Claude combines reclassified authority mode, isolated native readback, safe
+durable worker proof, and exact secret-free structured binding queries. Native
+A is not baseline proof for a setup-token target because native state is
+deliberately unchanged. Any target native state or target participant binding
+forces forward recovery. Ambiguity keeps prompts gated and displays
+`SELECTION_RECOVERY_REQUIRED`; Sidekick never guesses, kills sessions, or
+copies older credentials over newer provider state.
 
 Rollback changes only the selection pointer and gate. Refresh-token rotation
 or provider credential generations never move backward. A previously issued
@@ -1192,8 +1234,10 @@ If failure occurs before provider commit, the operation aborts and all
 participants reopen on N. If a disconnect occurs during or after commit, the
 coordinator reads the provider and every reachable participant. When any
 provider or participant has observed B, recovery is forward-only toward B;
-credentials are never rolled backward. Only when A is proven and no observer
-has seen B may N reopen. Ambiguity keeps admission gated and exposes
+credentials are never rolled backward. Setup baseline can reopen only when
+every required live binding is proven old epoch, no target acknowledgement or
+safe commit proof exists, and any absent participant reconnects or is kernel-
+proven dead. Ambiguity keeps admission gated and exposes
 `SELECTION_RECOVERY_REQUIRED`.
 
 An unmanaged process never enters the required set and never supplies a
@@ -1285,7 +1329,10 @@ Installed Claude 2.1.220 checks the native credential modification time at
 relevant request boundaries on Linux/WSL and rereads a changed record. This
 matches the observed behavior that already-open sessions use the new native
 account at their next request. An in-flight request retains the authority with
-which it began.
+which it began. The evidence does not establish an atomic different-account
+broadcast across independent sessions. Exact supported builds must prove each
+session's selected identity on its next genuine request before Sidekick claims
+global convergence.
 
 ### 9.3 Remote Control guard correction
 
@@ -1309,46 +1356,70 @@ process to resolve this state.
 
 ### 9.4 Setup-token structured host
 
-The preferred setup-token design launches and retains Anthropic's official
-Claude engine through its structured transport. Sidekick provides the local
-interactive terminal host around that one long-lived process.
+This mechanism is an implementation-approved, release-disabled prototype. It
+launches and retains Anthropic's official Claude engine through its structured
+transport. Sidekick provides the local interactive terminal host around that
+one long-lived process, but does not call that host the stock Claude TUI.
 
 At a safe between-turn boundary, the installed 2.1.220 runtime accepts a
 private, correlated `update_environment_variables` control frame. Its
 allowlist includes `CLAUDE_CODE_OAUTH_TOKEN`. Updating that variable clears
 the runtime's OAuth memo and returns an acknowledgement. This is the only
-inspected in-process mechanism that can change a setup-token authority without
-replacing the Claude engine.
+inspected in-process mechanism that may change a setup-token authority without
+replacing the Claude engine. Its response proves local mutation only. It does
+not prove saved-account identity, provider acceptance, generation, or next-
+turn adoption, and it is not a public SDK contract.
 
 ```mermaid
 sequenceDiagram
     participant C as Coordinator
-    participant H as Sidekick structured host
+    participant W as Isolated Claude worker
+    participant X as Existing worker exchange
+    participant R as Resident Claude relay
+    participant H as Structured host
     participant E as Official Claude engine
     participant U as Upstream Claude service
 
     E->>U: active turn under setup token A
-    C->>H: prepare token B, epoch N+1
+    C->>H: secret-free PREPARE for B and N+1
     H->>H: queue later prompts
     U-->>E: active turn completes
-    E-->>H: idle and turn drained
-    H->>E: correlated environment update
+    H-->>C: idle and exact capability prepared
+    C->>W: commit B using safe binding
+    W->>X: one bounded mutable B lease
+    W->>W: persist safe result and release authorities
+    X->>R: protected projection
+    R->>H: peer-bound one-use protected frame
+    H->>E: correlated private environment update
     E->>E: set OAuth token and clear memo
-    E-->>H: matching acknowledgement
-    H-->>C: participant ready N+1
+    E-->>H: matching local acknowledgement
+    H-->>R: secret-free install receipt
+    H-->>C: separate participant READY for N+1
     C->>H: release admission
     H->>E: next real prompt under B
+    H-->>C: secret-free adoption proof
 ```
 
-The lease is acquired only after the participant is idle and is supplied only
-inside the protected control-message encoder. The encoder, transport,
-diagnostics, exceptions, and representations must redact the value. The
-participant acknowledges the correlation ID, selected stable account ID,
-generation, and epoch through separate secret-free metadata.
+The lease is acquired only after every required participant is idle. It moves
+from the worker through the existing exchange and Claude-only participant
+capability sockets. It never enters generic control JSON, CLI composition,
+persistence, worker results, logs, or diagnostics. The host's provider-owned
+decoder passes a mutable lease directly to the protected child encoder and
+clears every mutable copy after write or failure.
+
+Each install receipt binds the participant and connection generation,
+operation, selected stable account, authority generation, epoch, nonce, and
+structured request ID. That receipt remains distinct from Task 4 READY and
+from later first-real-turn adoption.
 
 The private control cannot be sent to an arbitrary stock TTY's stdin. It is a
 structured-protocol message, not a slash command or terminal escape sequence.
 Sidekick must own the structured transport from process launch.
+
+A newly launched or late structured host cannot read credentials itself. It
+uses the same protected route for a bounded participant-bind operation against
+the finalized or pending target. Until protected bind and normal admission
+agree, the engine cannot receive a real prompt.
 
 ### 9.5 Complete interactive-host parity
 
@@ -1382,6 +1453,12 @@ The structured host is release-blocked unless parity tests show that switching
 does not change the engine PID, session/conversation identity, tool state,
 hook behavior, or child context.
 
+Maintained Agent SDKs provide structured host primitives, not an embeddable
+stock TUI or a documented auth-specific runtime setter. Sidekick does not add
+an SDK merely to create a second wrapper around the same CLI. It adopts one
+only if a bounded qualification proves that it removes existing owned
+machinery while preserving this auth and continuity contract.
+
 ### 9.6 Exact-version capability gate
 
 Because the update control is private, the Claude adapter qualifies an exact
@@ -1396,6 +1473,11 @@ manifest of:
 - OAuth memo invalidation behavior;
 - acknowledgement shape; and
 - full host-parity test result.
+
+Qualification also requires positive and negative private probes, the exact
+install binding, safe handling of an ambiguous response, and genuine next-turn
+account and generation proof. A correlated local response is never promoted
+to provider or adoption proof.
 
 An unknown or mismatched build leaves the running session alive on its current
 account and returns `UNSUPPORTED_PROVIDER_VERSION`. It does not attempt a
@@ -1435,6 +1517,12 @@ When selecting a setup-token account:
 
 This avoids mixed authority where native sessions use B but a lingering
 setup-token override keeps an integrated process on A.
+
+The private update has no qualified unset contract. Empty string, omission,
+or null cannot be assumed to restore native lookup. The prototype therefore
+installs a bounded access lease from the exact committed refreshable authority
+instead of inferring unset. The complete mixed path stays release-disabled
+until that replacement and its next real request prove the exact target.
 
 ### 9.8 Ambient setup-token sessions
 
@@ -1494,9 +1582,11 @@ participant may acknowledge that the next request boundary will perform the
 provider-native reread. Its first real later request supplies adoption proof.
 
 For a structured participant, readiness requires a matching correlated
-environment-update acknowledgement after its old turn drained. Adoption
-requires binding the first later real prompt to the same epoch and generation
-before it enters the engine.
+environment-update install receipt after its old turn drained, agreement with
+the worker's exact provider proof, and a separate secret-free READY message.
+Adoption binds the first later real prompt to the same account, epoch, and
+generation before it enters the engine. Provider-live proof must then establish
+that the genuine request used that exact authority.
 
 No readiness check sends a model request. Usage quota is not spent to prove an
 idle session.
@@ -1852,19 +1942,20 @@ The safe ordering is:
 4. wait for old turn leases to drain;
 5. record provider commit intent;
 6. perform the provider-owned authority transition;
-7. read back and prove exact provider state;
-8. collect required participant readiness acknowledgements;
+7. read back provider state and collect exact protected install receipts;
+8. bind provider proof, install receipts, and required participant readiness;
 9. atomically replace the finalized selection with epoch N+1;
 10. durably close the journal with the typed ready/degraded result;
 11. release admission; and
 12. track actual next-real-turn adoption ephemerally.
 
 The provider transition and filesystem write cannot be one atomic operation.
-Recovery therefore trusts provider readback rather than journal phase alone.
+Recovery therefore trusts the provider-owned composite decision rather than
+journal phase or native account equality alone.
 
 ### 12.3 Recovery decision table
 
-| Durable journal | Provider readback | Recovery |
+| Durable journal | Provider decision | Recovery |
 | --- | --- | --- |
 | No open journal | Matches finalized selection | Start normally |
 | No open journal | Same saved identity, newer generation | Reconcile generation; do not create external row |
@@ -1877,6 +1968,13 @@ Recovery therefore trusts provider readback rather than journal phase alone.
 | Finalized target | Target proven | Rebuild live registry and serve target epoch |
 | Finalized target | Unmatched ambient identity | Show runtime drift; do not change saved rows |
 
+For Claude, `baseline_proven` and `target_proven` are provider-owned composite
+decisions. They combine authority mode, native readback, safe worker proof, and
+secret-free structured binding queries. Native baseline is expected for a
+setup target and cannot by itself prove rollback. Any target participant
+binding forces forward repair. Conflicting or incomplete evidence is
+`unresolved` and keeps admission closed.
+
 On supervisor restart, clients reauthenticate and register against the
 finalized epoch. A client holding an old connection generation cannot submit a
 turn. For an open journal, bounded opaque required-participant IDs tell
@@ -1884,6 +1982,12 @@ recovery which clients must return; authenticated reconnection reconstructs
 their process/capability state. A missing ID is not assumed dead. For a closed
 journal, readiness is reconstructed from live connections, never stale durable
 process records.
+
+Claude hosts reconnect control and capability sockets with a new connection
+generation and re-prove the same live engine binding. This transport
+reattachment does not restart, reconnect, resume, or replace the provider
+engine or conversation. Recovery uses a fresh target-scoped lease and never
+replays an old protected frame.
 
 ### 12.4 Optimistic concurrency and locks
 
@@ -1931,6 +2035,10 @@ flowchart TB
     U[Same OS user]
     UI[Dashboard client]
     CO[Selection coordinator]
+    W[Isolated provider worker]
+    X[Bounded worker exchange]
+    R[Claude protected relay]
+    H[Exact structured host]
     PS[(Protected Sidekick authority)]
     OP[Official provider process]
     UP[Provider HTTPS service]
@@ -1938,8 +2046,13 @@ flowchart TB
 
     U --> UI
     UI -->|owner-authenticated secret-free IPC| CO
-    CO -->|bounded lease request| PS
-    PS -->|memory-only lease| OP
+    CO -->|safe operation binding| W
+    W -->|held mutation authority| PS
+    PS -->|one operation-scoped lease| W
+    W -->|mutable protected projection| X
+    X -->|bounded projection| R
+    R -->|peer-bound capability socket| H
+    H -->|private correlated install| OP
     OP -->|verified TLS| UP
     OP -->|scrubbed environment and scoped protocol| CH
 ```
@@ -1947,6 +2060,10 @@ flowchart TB
 The dashboard is not trusted with credentials. The coordinator identifies a
 target by stable account ID. Only the credential/provider adapter can acquire
 a lease, and only after identity/generation/capability validation.
+
+The relay transiently transports a mutable protected projection but has no
+credential resolver or persistence authority. Generic CLI composition handles
+only opaque provider-owned ports and secret-free receipts.
 
 ### 13.2 Secret lifetime
 
@@ -1967,6 +2084,10 @@ Python and provider runtimes cannot guarantee that every immutable string copy
 is physically overwritten. The design minimizes materialization and lifetime,
 uses existing protected-value boundaries, and never overstates zeroization.
 
+Every worker, relay, participant, and child-encoder copy is mutable and cleared
+at its owning boundary. No protected value is materialized as an immutable
+CLI-owned string.
+
 ### 13.3 IPC security
 
 The local control endpoint is same-user only:
@@ -1985,6 +2106,13 @@ The local control endpoint is same-user only:
 Possession of the socket path alone is not authentication. WSL integration
 does not expose the control endpoint on a public TCP listener or to another
 distribution by default.
+
+Claude participant capability sockets are detached from the generic framed
+control transport after one kernel-proven ancillary attachment. The server
+accepts exactly one non-inheritable socket descriptor for that request, binds
+it to participant and process-start identity plus connection generation, and
+rejects missing, duplicate, truncated, wrong-type, stale, or replayed
+attachments. Protected frames never travel in control JSON.
 
 ### 13.4 Provider transport
 
@@ -2055,6 +2183,8 @@ vocabulary before persistence or display.
 | Stale client submits under old epoch | Connection generation plus epoch check before turn admission |
 | Token leaks through logs/errors | Protected value types, redaction at adapter boundary, secret-pattern tests |
 | Token leaks to child tool | Provider/host environment scrubbing and synthetic canary tests |
+| Token enters control or CLI | Separate protected socket and opaque port |
+| Wrong Claude host gets lease | Bind peer, operation, target, epoch, nonce |
 | Credential file race | Official sole writer, qualified locks, stable double reads |
 | Wrong saved account receives callback | Provider/account/generation/epoch correlation |
 | Mixed-account stream | Turn lease binds entire stream and retries to one epoch |
@@ -2063,14 +2193,16 @@ vocabulary before persistence or display.
 | Relay leaks a queued prompt | Owner-only process, memory-only bounded queue, no body logging, canary tests |
 | Unknown provider update frame | Exact version/hash/schema gate, fail closed |
 | Journal replays commit | Operation ID, baseline epoch compare-and-swap, provider readback |
+| Native masks setup commit | Composite provider recovery decision |
 
 ### 13.8 Provider legal and support boundary
 
 Official Anthropic guidance says third-party developers should use API keys or
 cloud providers and places restrictions on routing consumer subscription
 credentials. The selected structured-host design keeps the official Claude
-engine as the model transport, but the release still requires legal/product
-review of how Sidekick presents and controls saved setup tokens.
+engine as the model transport, but setup/mixed release still requires written
+Anthropic clarification or approval plus product/legal review of how Sidekick
+presents and controls saved setup tokens.
 
 The OAuth boundary also follows [OAuth 2.0 Security Best Current Practice][rfc9700]
 and [OAuth for Native Apps][rfc8252]: Sidekick delegates interactive login,
@@ -2212,7 +2344,9 @@ deletion, or automatic process termination path.
 | Provider-neutral identifiers and phase models | `src/sidekick_usages/core/selection/` | Infrastructure-free IDs, epochs, phases, turn states, typed outcomes, UTC invariants |
 | Resident selection coordination | `src/sidekick_usages/daemon/selection/` | Participant registry, new-turn gates, queued admission, live transaction, reconnection lifecycle |
 | Protected authority transition policy | `src/sidekick_usages/credentials/` | Authority prevalidation, serialized provider commit/restore policy, protected leases |
+| Claude lease | `credentials/claude/authority/` | Exact target lease |
 | Claude schemas and runtime capability | `src/sidekick_usages/providers/claude/` | Native propagation proof, Remote Control evidence, structured protocol and version gate |
+| Claude data | `providers/claude/structured/` | Protected delivery |
 | Codex schemas and runtime capability | `src/sidekick_usages/providers/codex/` | Private homes, app-server auth, HTTP-only provider proof, callbacks and cache behavior |
 | Durable schemas and transactions | `src/sidekick_usages/persistence/` | Selection/journal schemas, atomic writes, recovery, migration, qualified paths |
 | Resident platform service and maintenance | `src/sidekick_usages/daemon.py`, `daemon/`, `maintenance.py` | Same-user endpoint, lifecycle, worker supervision, due work |
@@ -2233,8 +2367,9 @@ deletion, or automatic process termination path.
 - `credentials/` cannot own participant connections, prompt queues, terminal
   lifecycle, or turn admission.
 - Provider-specific protocol and schema remain inside their provider package.
-- CLI renders typed results; it does not acquire credentials or execute
-  provider login.
+- Generic CLI composition renders typed results; it does not acquire or decode
+  credentials or execute provider login. Only the provider-owned structured
+  decoder inside the host consumes its one-use protected lease.
 - Persistence owns files and migrations; provider adapters do not invent
   application paths.
 - HTTP retry policy remains in `http/`; selection does not add ad hoc retries.
@@ -2449,33 +2584,32 @@ each supported switch it proves:
 
 ### 16.7 Claude acceptance
 
-Refreshable cases:
+Claude uses exactly three consolidated load-bearing journeys:
 
-- A to B with no open session;
-- A to B with one and three ordinary open native sessions;
-- switch during a streaming turn;
-- native identity/generation/mtime proof failure;
-- ordinary foreground TTY present without Remote Control;
-- positively proven incompatible Remote Control state; and
-- Linux/WSL plus qualified macOS propagation.
+1. **Native and mixed continuity.** Two already-open native sessions and one
+   structured participant drain old work, preserve queued prompts exactly
+   once, run setup A to setup B to exact committed refreshable C, preserve PID
+   and conversation, prove native-first ordering, and record each exact
+   account/generation on its next genuine turn.
+2. **Security and forward recovery.** One wrong or replayed protected binding
+   and one partial target acknowledgement prove no secret in control,
+   persistence, argv, files, logs, diagnostics, exceptions, or CLI-owned
+   immutable strings; no old credential is sent; and recovery moves forward or
+   remains visibly gated without interrupting any work.
+3. **Exact-build host qualification.** One release harness exercises
+   representative streaming, permission/question, tool/hook/MCP/background
+   state, queued input, resize, restoration, positive and negative private
+   probes, and unqualified-build refusal without changing the engine or
+   conversation.
 
-Setup-token cases:
+The first two extend existing cross-owner journeys. The third is controlled
+release evidence, not a broad unit-test tree. There are no Claude
+test-per-field matrices, helper tests, snapshot suites, duplicate provider
+journeys, process-helper tests, new fake modules, or coverage-padding cases.
 
-- setup A to setup B in one and three structured sessions;
-- setup to refreshable and refreshable to setup;
-- correlated update acknowledgement success, mismatch, timeout, and replay;
-- token invalid/rejected/expired and network transient separation;
-- unknown Claude build fails closed without process replacement;
-- prompts, responses, permissions, tools, hooks, MCP, dialogs, errors, and
-  terminal behavior preserve parity;
-- credential canaries are absent from argv, logs, diagnostics, journal,
-  registry, errors, and child environments; and
-- an unmanaged ambient setup-token TTY stays alive and is reported honestly.
-
-The provider-live proof records that all already-open native refreshable
-sessions use B on their next real request, matching the observed `/login`
-behavior. It also proves that structured setup-token switching retains the
-same official Claude engine and conversation.
+Refreshable/native enablement requires the first journey's exact live next-
+turn identity proof. Setup/mixed enablement requires all three journeys plus
+the security, recovery, and written Anthropic gates in Sections 13 and 17.
 
 ### 16.8 Codex acceptance
 
@@ -2571,7 +2705,7 @@ controlled release artifact and never runs in ordinary CI.
 
 ## 17. Delivery Dependencies and Migration
 
-This is dependency order for later planning, not an implementation plan.
+This is the dependency order that the separate tracked plan must preserve.
 
 ```mermaid
 flowchart TD
@@ -2584,17 +2718,19 @@ flowchart TD
     F --> N[Integrated session launchers and relays]
     N --> G[Claude native adapter correction]
     N --> H[Codex HTTP-only adapter]
-    N --> I[Claude structured-host qualification]
-    G --> J[Mixed Claude transitions]
+    N --> P[Release-disabled Claude protected lease plane]
+    P --> I[Exact-build structured-host qualification]
+    G --> J[Release-disabled mixed Claude prototype]
     I --> J
     H --> R[Codex realtime and config gates]
     R --> K[Cross-terminal continuity]
-    J --> K
+    J --> Q[Claude security recovery legal gates]
+    Q --> K
     L[Independent all-account maintenance] --> K
     K --> M[Platform and provider-live release gates]
 ```
 
-The later plan must preserve these dependency constraints:
+The tracked plan must preserve these dependency constraints:
 
 1. Capture failing public PTY behavior before changing terminal ownership.
 2. Repair the visible dashboard without claiming provider switching works.
@@ -2607,19 +2743,24 @@ The later plan must preserve these dependency constraints:
    Codex participant relay before claiming any ordinary terminal is integrated.
 7. Reuse and narrow Claude native activation before adding the private
    structured path.
-8. Reuse Codex external auth and disable Responses model WebSockets before
+8. Add the protected worker-to-participant route, initial/late binding, sealed
+   membership, and provider-owned composite recovery before host parity work.
+9. Keep the Claude protected plane and mixed host release-disabled until all
+   exact-build, next-turn, parity, security, recovery, and written Anthropic
+   gates pass.
+10. Reuse Codex external auth and disable Responses model WebSockets before
    calling
    the next-turn proof sufficient.
-9. Qualify Codex realtime admission/natural completion before universal
+11. Qualify Codex realtime admission/natural completion before universal
    continuity claims.
-10. Complete each provider's exact-version gate before mixed/provider-live
+12. Complete each provider's exact-version gate before mixed/provider-live
    tests.
-11. Reprove independent maintenance and usage after selection integration.
-12. Migrate current state only after schema, recovery, and rollback fixtures
+13. Reprove independent maintenance and usage after selection integration.
+14. Migrate current state only after schema, recovery, and rollback fixtures
     pass.
-13. Run controlled provider-live tests only with explicit authority and
+15. Run controlled provider-live tests only with explicit authority and
     disposable accounts.
-14. Update operator docs and completion evidence only after every release gate
+16. Update operator docs and completion evidence only after every release gate
     passes.
 
 ### 17.1 Current-machine migration acceptance
@@ -2648,8 +2789,11 @@ The capability gate is per provider and mechanism:
 
 - dashboard repair and saved-only rows can ship independently;
 - Claude refreshable selection enables only after native propagation tests;
-- Claude setup-token selection enables only after structured-host parity and
-  exact-build tests;
+- Claude protected lease and structured-host work remains unavailable behind
+  a disabled capability while it is qualified;
+- Claude setup/mixed selection enables only after the three consolidated
+  journeys prove exact-build auth, parity, genuine-turn identity, security,
+  and forward recovery, and written Anthropic product/legal resolution exists;
 - ordinary-command seamless guarantees enable only for shells/IDEs whose
   explicit enrollment status is proven;
 - Codex selection enables only after HTTP-only model transport, external-auth,
@@ -2658,6 +2802,8 @@ The capability gate is per provider and mechanism:
 
 The UI shows an account's exact selection capability. It does not hide the
 account, add an external stand-in, or let Enter silently do nothing.
+While setup/mixed selection is disabled, Enter returns a visible typed
+unavailable or degraded result and does not mutate native or structured auth.
 
 ## 18. Build-versus-Adopt Decisions
 
@@ -2673,7 +2819,14 @@ account, add an external stand-in, or let Enter silently do nothing.
   JSON-RPC codec/schema owners for the participant relay; do not implement
   WebSocket framing or a second JSON protocol stack.
 - Reuse strict persistence, serialization, HTTP, lock, path, and clock owners.
+- Reuse the existing worker exchange, control peer proof, selector/event loops,
+  and structured-engine fake for the Claude protected route.
 - Reuse cached-first concurrent usage loading and deterministic ordering.
+
+Do not add the Python or TypeScript Agent SDK merely because it is maintained.
+Neither publishes the required auth-specific setter or stock TUI. Adoption
+requires a bounded proof that it removes existing owned machinery without
+creating a second compatibility layer.
 
 ### 18.2 Implement locally
 
@@ -2682,6 +2835,9 @@ account, add an external stand-in, or let Enter silently do nothing.
 - Explicit session commands, reversible shell integration, and the narrow
   Codex participant control relay, because they are the enrollment/admission
   boundary and are not model-routing replacements.
+- One credentials-owned Claude selected-access-lease service and one provider-
+  owned protected participant-data-plane owner. These are distinct existing
+  ownership boundaries, not generic token or transport frameworks.
 - Claude structured interactive hosting and private update qualification,
   because no reviewed dependency meets the exact continuity and security
   contract.
@@ -2815,6 +2971,7 @@ waits visibly or fails before provider commit.
 | Risk or trigger | Consequence | Required response |
 | --- | --- | --- |
 | Claude private control changes | Setup-token update may corrupt protocol or no-op | Exact build gate; disable switching on mismatch |
+| Private response as adoption | False ready | Keep proofs distinct |
 | Structured host lacks interactive parity | Session behavior regresses despite auth switching | Block release; return design for review |
 | Anthropic credential-use terms change or remain incompatible | Setup-token control may not be shippable | Legal/product gate; do not substitute hidden proxy |
 | Claude native reread differs by platform/version | Some open native sessions may lag | Exact platform qualification and honest degraded status |
@@ -2826,6 +2983,8 @@ waits visibly or fails before provider commit.
 | Codex realtime cannot reach a terminal boundary | Selection cannot commit without interruption | Keep A active and show typed pending/degraded status |
 | Access lease outlives selection | Stale callback/update can install old auth | Account/generation/epoch scope and expiry |
 | Participant disconnects mid-commit | Global proof becomes incomplete | Readback plus degraded recovery; never kill/restart |
+| Native masks setup commit | Wrong epoch reopens | Composite recovery |
+| Late host misses lease | Host cannot ready | Seal and bind forward |
 | Shell integration is absent, stale, or bypassed | Some provider processes are unmanaged | Explicit status, reversible enrollment, no false convergence |
 | Coordinator crashes after provider write | Journal and provider may disagree | Provider-first recovery decision table |
 | Terminal becomes extremely small | Content can be unreachable | Compact header, scroll body, fixed typed footer |
@@ -2855,8 +3014,8 @@ requalification and updated evidence before enablement.
 
 ### 21.1 Decision register
 
-This register makes every controlling decision explicit. A later plan may not
-silently reopen or weaken one.
+This register makes every controlling decision explicit. The tracked plan may
+not silently reopen or weaken one.
 
 | ID | Decision | Controlling evidence |
 | --- | --- | --- |
@@ -2871,14 +3030,14 @@ silently reopen or weaken one.
 | D-009 | In-flight work finishes old; later prompts queue for new | Explicit no-interruption requirement and provider request boundaries |
 | D-010 | Refreshable Claude uses official native login and reread | User-observed `/login` convergence, current Sidekick transaction, installed 2.1.220 |
 | D-011 | Ordinary Claude foreground presence is not a conflict | Foreground probe cannot prove Remote Control |
-| D-012 | Claude setup-token switching uses a version-gated structured host | Installed 2.1.220 environment update and memo-clear path |
-| D-013 | Mixed Claude transition updates native and structured authority | Environment-token precedence and inability to reliably unset in-process state |
+| D-012 | Claude structured prototype is release-disabled | Private update |
+| D-013 | Setup/mixed shipping is NO-GO pending all gates | SDK evidence |
 | D-014 | Unmanaged processes stay alive and are reported honestly | OS environment/process boundary and no-restart requirement |
 | D-015 | Codex uses resident external auth plus direct HTTP-only Responses | Official config and exact 0.146 per-attempt auth source |
 | D-016 | Codex active tool/MCP work drains before account update | Exact account-update cache/runtime invalidation source |
 | D-017 | Selection never controls all-account maintenance | Live saved-authority evidence and established per-account ownership |
 | D-018 | Official providers remain sole durable credential writers | Current credential architecture and provider source |
-| D-019 | Recovery trusts provider readback, not journal phase alone | Cross-system atomicity analysis |
+| D-019 | Recovery trusts a provider composite decision | Setup semantics |
 | D-020 | WSL readiness is a separate platform gate | Read-only daemon status failure after independent UI root cause |
 | D-021 | Private/experimental provider mechanisms are exact-version gated | Claude installed private control and experimental Codex external auth |
 | D-022 | No proxy, restart, reconnect, file swap, or silent fallback | Continuity, security, provider-source, and complexity analysis |
@@ -2891,6 +3050,8 @@ silently reopen or weaken one.
 | D-029 | Tests are the smallest load-bearing public/state/security set | Repository test policy and maintenance requirement |
 | D-030 | Existing owners and maintained dependencies precede new abstractions | Repository reuse policy and maintenance requirement |
 | D-031 | Integrated provider login/logout commands cannot bypass global selection | Shared-runtime consistency, saved-only rows, and provider credential ownership |
+| D-032 | Install, READY, and adoption are distinct | Private response |
+| D-033 | Membership stays sealed during distribution | Late bind |
 
 ### 21.2 Current repository evidence
 
@@ -2922,6 +3083,12 @@ silently reopen or weaken one.
 | Claude environment and isolation | [Claude environment variables][claude-env] | Token precedence, `CLAUDE_CONFIG_DIR`, and child credential scrubbing are provider-defined |
 | Claude usage data | [Claude status line][claude-statusline] and [costs/usage][claude-costs] | Provider exposes 5-hour/7-day usage after responses; usage is independent of selection |
 | Claude sessions | [Claude sessions][claude-sessions] | Conversation/session behavior belongs to the official runtime |
+| Agent SDK | [Overview][claude-agent-sdk] | Host primitives; no auth/TUI |
+| SDK input | [Streaming][claude-agent-streaming] | Long-lived engine |
+| Claude 2.1.220 | [Release][claude-2-1-220] | Exact private evidence |
+| TS SDK 0.3.220 | [Release][claude-ts-0-3-220] | Public SDK evidence |
+| Python SDK 0.2.128 | [Release][claude-py-0-2-128] | Public SDK evidence |
+| Continuity | [Changelog][claude-pinned-changelog] | Not broadcast proof |
 | Claude gateway | [Claude gateway guide][claude-gateway] | Stable model routing is technically documented but expands the trust boundary |
 | Claude credential restrictions | [Claude legal guidance][claude-legal] | Third-party consumer-credential routing requires a release/legal gate |
 | Claude installed behavior | Exact local 2.1.220 static inspection | Native mtime reread and private structured update/memo-clear capability |
@@ -2968,11 +3135,62 @@ publisher and current canonical URL.
 7. [Claude Code legal and compliance](https://code.claude.com/docs/en/legal-and-compliance)
 8. [Claude Code LLM gateway configuration](https://code.claude.com/docs/en/llm-gateway)
 9. [Claude Code sessions](https://code.claude.com/docs/en/sessions)
-10. [Claude Code changelog](https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md)
-11. [Claude Code Action security guidance](https://github.com/anthropics/claude-code-action/blob/main/docs/security.md)
-12. [Claude Agent SDK Python types](https://github.com/anthropics/claude-agent-sdk-python/blob/main/src/claude_agent_sdk/types.py)
-13. [Claude Agent SDK Python client](https://github.com/anthropics/claude-agent-sdk-python/blob/main/src/claude_agent_sdk/client.py)
-14. [Claude Code documentation changelog](https://code.claude.com/docs/en/changelog)
+10. [Agent SDK overview](https://code.claude.com/docs/en/agent-sdk)
+11. [Agent SDK overview detail](https://code.claude.com/docs/en/agent-sdk/overview)
+12. [Agent SDK permissions](https://code.claude.com/docs/en/agent-sdk/permissions)
+13. [Agent SDK streaming input](https://code.claude.com/docs/en/agent-sdk/streaming-vs-single-mode)
+14. [Agent SDK streaming output](https://code.claude.com/docs/en/agent-sdk/streaming-output)
+15. [Agent SDK approvals and user input](https://code.claude.com/docs/en/agent-sdk/user-input)
+16. [Agent SDK hooks](https://code.claude.com/docs/en/agent-sdk/hooks)
+17. [Agent SDK MCP](https://code.claude.com/docs/en/agent-sdk/mcp)
+18. [Agent SDK sessions](https://code.claude.com/docs/en/agent-sdk/sessions)
+19. [Agent SDK TypeScript](https://code.claude.com/docs/en/agent-sdk/typescript)
+20. [Agent SDK Python](https://code.claude.com/docs/en/agent-sdk/python)
+21. [Agent SDK slash commands](https://code.claude.com/docs/en/agent-sdk/slash-commands)
+22. [Claude Code quickstart](https://code.claude.com/docs/en/quickstart)
+23. [Claude Code commands](https://code.claude.com/docs/en/commands)
+24. [Claude Code headless mode](https://code.claude.com/docs/en/headless)
+25. [Claude Code MCP](https://code.claude.com/docs/en/mcp)
+26. [Claude Code Remote Control](https://code.claude.com/docs/en/remote-control)
+27. [Claude Code tools reference](https://code.claude.com/docs/en/tools-reference)
+28. [Claude Code 2.1.220 release](https://github.com/anthropics/claude-code/releases/tag/v2.1.220)
+29. [Claude Code 2.1.220 checksums](https://github.com/anthropics/claude-code/releases/download/v2.1.220/SHASUMS256.txt)
+30. [Claude Code pinned commit](https://github.com/anthropics/claude-code/commit/7ef6eec9d9ba84ea6f233f26c45f1df5c5991843)
+31. [Claude Code pinned changelog](https://github.com/anthropics/claude-code/blob/7ef6eec9d9ba84ea6f233f26c45f1df5c5991843/CHANGELOG.md)
+32. [Claude Code continuity fixes](https://github.com/anthropics/claude-code/blob/7ef6eec9d9ba84ea6f233f26c45f1df5c5991843/CHANGELOG.md#L839-L859)
+33. [Claude Code `/login` override clearing](https://github.com/anthropics/claude-code/blob/7ef6eec9d9ba84ea6f233f26c45f1df5c5991843/CHANGELOG.md#L2039-L2044)
+34. [Claude Code concurrent refresh](https://github.com/anthropics/claude-code/blob/7ef6eec9d9ba84ea6f233f26c45f1df5c5991843/CHANGELOG.md#L2809-L2814)
+35. [Claude Code npm metadata](https://registry.npmjs.org/%40anthropic-ai%2Fclaude-code/2.1.220)
+36. [Claude Code npm tarball](https://registry.npmjs.org/@anthropic-ai/claude-code/-/claude-code-2.1.220.tgz)
+37. [TypeScript Agent SDK 0.3.220 release](https://github.com/anthropics/claude-agent-sdk-typescript/releases/tag/v0.3.220)
+38. [TypeScript Agent SDK pinned commit](https://github.com/anthropics/claude-agent-sdk-typescript/commit/71c804dc8f4a61c1dca6fe10d4b95a6b65d1396b)
+39. [TypeScript Agent SDK pinned changelog](https://github.com/anthropics/claude-agent-sdk-typescript/blob/71c804dc8f4a61c1dca6fe10d4b95a6b65d1396b/CHANGELOG.md)
+40. [TypeScript Agent SDK live settings](https://github.com/anthropics/claude-agent-sdk-typescript/blob/71c804dc8f4a61c1dca6fe10d4b95a6b65d1396b/CHANGELOG.md#L299-L303)
+41. [TypeScript Agent SDK usage status](https://github.com/anthropics/claude-agent-sdk-typescript/blob/71c804dc8f4a61c1dca6fe10d4b95a6b65d1396b/CHANGELOG.md#L263-L266)
+42. [TypeScript Agent SDK npm metadata](https://registry.npmjs.org/%40anthropic-ai%2Fclaude-agent-sdk/0.3.220)
+43. [TypeScript Agent SDK npm tarball](https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk/-/claude-agent-sdk-0.3.220.tgz)
+44. [Python Agent SDK 0.2.128 release](https://github.com/anthropics/claude-agent-sdk-python/releases/tag/v0.2.128)
+45. [Python Agent SDK pinned commit](https://github.com/anthropics/claude-agent-sdk-python/commit/f8b9ec923982082a02c485924e0f60367949c3a1)
+46. [Python Agent SDK PyPI metadata](https://pypi.org/pypi/claude-agent-sdk/0.2.128/json)
+47. [Python Agent SDK pinned client](https://github.com/anthropics/claude-agent-sdk-python/blob/f8b9ec923982082a02c485924e0f60367949c3a1/src/claude_agent_sdk/client.py)
+48. [Python Agent SDK pinned types](https://github.com/anthropics/claude-agent-sdk-python/blob/f8b9ec923982082a02c485924e0f60367949c3a1/src/claude_agent_sdk/types.py)
+49. [Python Agent SDK pinned query](https://github.com/anthropics/claude-agent-sdk-python/blob/f8b9ec923982082a02c485924e0f60367949c3a1/src/claude_agent_sdk/_internal/query.py)
+50. [Python Agent SDK subprocess transport](https://github.com/anthropics/claude-agent-sdk-python/blob/f8b9ec923982082a02c485924e0f60367949c3a1/src/claude_agent_sdk/_internal/transport/subprocess_cli.py)
+51. [Claude Code documentation changelog](https://code.claude.com/docs/en/changelog)
+52. [Claude Code Action security guidance](https://github.com/anthropics/claude-code-action/blob/main/docs/security.md)
+53. [Python Agent SDK pinned changelog](https://github.com/anthropics/claude-agent-sdk-python/blob/f8b9ec923982082a02c485924e0f60367949c3a1/CHANGELOG.md)
+54. [Python Agent SDK pinned README](https://github.com/anthropics/claude-agent-sdk-python/blob/f8b9ec923982082a02c485924e0f60367949c3a1/README.md)
+55. [Claude Code release login continuity](https://github.com/anthropics/claude-code/blob/7ef6eec9d9ba84ea6f233f26c45f1df5c5991843/CHANGELOG.md#L173-L179)
+56. [Claude Code release login and token fixes](https://github.com/anthropics/claude-code/blob/7ef6eec9d9ba84ea6f233f26c45f1df5c5991843/CHANGELOG.md#L2020-L2044)
+57. [Claude Code release login behavior](https://github.com/anthropics/claude-code/blob/7ef6eec9d9ba84ea6f233f26c45f1df5c5991843/CHANGELOG.md#L2069-L2077)
+58. [Claude Code concurrent refresh range](https://github.com/anthropics/claude-code/blob/7ef6eec9d9ba84ea6f233f26c45f1df5c5991843/CHANGELOG.md#L2809-L2815)
+59. [Claude Code rotation continuity](https://github.com/anthropics/claude-code/blob/7ef6eec9d9ba84ea6f233f26c45f1df5c5991843/CHANGELOG.md#L3667-L3673)
+60. [Claude Code release provenance](https://github.com/anthropics/claude-code/blob/7ef6eec9d9ba84ea6f233f26c45f1df5c5991843/CHANGELOG.md#L96-L101)
+
+These current primary sources establish that public SDKs provide structured
+host primitives but neither an auth-specific runtime setter nor stock-TUI
+embedding. The private 2.1.220 response remains prototype evidence, and the
+Anthropic product/legal release gate remains unresolved.
 
 #### OpenAI official documentation
 
@@ -3166,8 +3384,8 @@ the table above and in the reference definitions at the end of this document.
 | Preserve Claude setup-token and native accounts | Sections 9 and 11 |
 | Reuse native Claude cross-terminal convergence | Sections 9.2-9.3 |
 | Preserve `/login`-style global saved-account selection | Sections 5.4 and 9.2 |
-| Switch setup-token Claude without process replacement | Sections 9.4-9.8 |
-| Handle mixed Claude account types | Section 9.7 |
+| Prototype setup-token switching without replacement | Sections 9.4-9.8 |
+| Gate mixed Claude shipping explicitly | Sections 9.7, 13.8, 16.7, 17.2 |
 | Preserve all Codex sessions without restart | Section 10 |
 | Prevent stale Codex WebSocket auth | Sections 10.2-10.3 |
 | Keep every account fresh and reportable | Section 11 |
@@ -3181,7 +3399,7 @@ the table above and in the reference definitions at the end of this document.
 | Address independent WSL failure | Sections 3.8 and 14.3 |
 | Include Mermaid architecture and flows | Sections 3, 5, 6, 7, 8, 9, 10, 13, 17 |
 | Provide decisions, risks, alternatives, and gates | Sections 18-21 |
-| Stop before implementation planning | Status, introduction, Section 17 |
+| Separate implementation from release | Status, Sections 9, 16.7, 17.2 |
 
 ### 22.2 Internal consistency checks
 
@@ -3191,10 +3409,14 @@ The design is internally consistent only when all of these remain true:
 - saved-account count never includes ambient/runtime status;
 - Claude native selection is not blocked by ordinary open terminals;
 - setup-token selection never claims refresh or full profile state;
+- the Claude protected lease plane remains distinct from secret-free control;
+- a private install receipt is not READY or next-turn adoption proof;
 - a structured setup-token participant is enrolled from process launch;
 - an ordinary provider process is integrated only through an explicit session
   launcher or proven shell/IDE forwarding path;
 - mixed Claude transitions cannot leave a stale environment override;
+- native baseline alone cannot prove setup-target rollback;
+- membership stays sealed through protected distribution and provider proof;
 - Codex external-auth notification is not sufficient with WebSockets enabled;
 - Codex account readback does not independently prove provider account ID;
 - Codex direct HTTP uses the current shared auth for every attempt;
@@ -3210,22 +3432,17 @@ The design is internally consistent only when all of these remain true:
 - maintenance includes selected and unselected accounts;
 - rollback never copies or restores an older credential generation;
 - unsupported versions fail closed with the session alive; and
-- no implementation or completion claim is made by this document.
+- setup/mixed enablement remains blocked until all release gates pass.
 
 ### 22.3 User review gate
 
-This document is ready for design review only after its source, link,
-structure, security, contradiction, and implementation-readiness audit passes.
-After review corrections are incorporated, the next permitted workflow is:
-
-1. user reviews and approves or requests design changes;
-2. only after approval, write a separate implementation plan;
-3. review that plan before changing runtime source or tests; and
-4. execute only the explicitly approved implementation scope.
-
-Approval of this design will approve its behavior and architecture decisions.
-It will not itself authorize a live credential mutation, provider login,
-daemon change, controlled provider-live test, commit push, or deployment.
+The approved design and separate tracked plan must pass source, link,
+structure, security, contradiction, and implementation-readiness review after
+this amendment. Implementation remains limited to the approved feature branch.
+Neither approval nor a synthetic green test authorizes setup/mixed product
+enablement, live credential mutation, provider login, controlled provider-live
+work, push, or deployment. Those actions retain their explicit release and
+authority gates.
 
 [old-design]: ./2026-07-23-interactive-global-account-selection-design.md
 [old-completion]: ../completion/2026-07-23-interactive-global-account-selection.md
@@ -3234,6 +3451,13 @@ daemon change, controlled provider-live test, commit push, or deployment.
 [claude-statusline]: https://code.claude.com/docs/en/statusline
 [claude-costs]: https://code.claude.com/docs/en/costs
 [claude-sessions]: https://code.claude.com/docs/en/sessions
+[claude-agent-sdk]: https://code.claude.com/docs/en/agent-sdk
+[claude-agent-streaming]: https://code.claude.com/docs/en/agent-sdk/streaming-vs-single-mode
+[claude-agent-input]: https://code.claude.com/docs/en/agent-sdk/user-input
+[claude-2-1-220]: https://github.com/anthropics/claude-code/releases/tag/v2.1.220
+[claude-ts-0-3-220]: https://github.com/anthropics/claude-agent-sdk-typescript/releases/tag/v0.3.220
+[claude-py-0-2-128]: https://github.com/anthropics/claude-agent-sdk-python/releases/tag/v0.2.128
+[claude-pinned-changelog]: https://github.com/anthropics/claude-code/blob/7ef6eec9d9ba84ea6f233f26c45f1df5c5991843/CHANGELOG.md
 [claude-gateway]: https://code.claude.com/docs/en/llm-gateway
 [claude-legal]: https://code.claude.com/docs/en/legal-and-compliance
 [codex-auth]: https://learn.chatgpt.com/docs/auth

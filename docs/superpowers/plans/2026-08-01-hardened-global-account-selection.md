@@ -5,19 +5,21 @@
 > superpowers:executing-plans to implement this plan task-by-task. Steps use
 > checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Deliver a height-responsive, saved-account-only dashboard and make
-Claude and Codex saved-account selection converge across every enrolled open
-session at the next safe request boundary without terminating, restarting,
-reconnecting, cancelling, or crashing provider work.
+**Goal:** Deliver a height-responsive, saved-account-only dashboard; enable
+only qualified provider selection; and keep Claude setup/mixed switching
+visibly unavailable until its protected-plane release gates prove seamless
+next-turn adoption without interrupting provider work.
 
 **Architecture:** Keep one provider-neutral, non-secret selection-epoch
-coordinator in the existing per-user supervisor. Enrolled Claude sessions use
-the official structured engine and an exact-build-gated OAuth cache-clear
-control frame; enrolled Codex TUIs use a narrow admission relay in front of
-the existing resident app server, whose Responses provider is direct HTTP and
-resolves the current external auth for every attempt. Provider-owned processes
-remain the only durable credential writers, while prompt-toolkit becomes the
-only interactive dashboard painter.
+coordinator in the existing per-user supervisor. Refreshable Claude uses the
+official native transaction. A release-disabled Claude prototype carries one
+operation-scoped lease from the isolated worker through the existing exchange
+and a provider-owned capability socket to an unchanged structured engine;
+install receipt, READY, and genuine-turn adoption remain distinct. Enrolled
+Codex TUIs use a narrow admission relay in front of the existing resident app
+server, whose Responses provider is direct HTTP and resolves current external
+auth for every attempt. Provider-owned processes remain the only durable
+credential writers, while prompt-toolkit is the only dashboard painter.
 
 **Tech Stack:** Python 3.14, Typer, prompt-toolkit 3.0.52, Rich semantic
 rendering, Pydantic 2.13.4, websockets 16.1.1, portalocker 3.2.0, strict JSON
@@ -80,9 +82,12 @@ systemd user services, LaunchAgents, Bash, Zsh, and Fish.
 - Claude refreshable selection reuses the official native login transaction
   and native identity, generation, and propagation proof. Ordinary foreground
   Claude presence is not Remote Control proof.
-- Claude setup-token selection uses the installed structured engine only after
-  an exact current-build behavioral capability check. Unknown behavior fails
-  closed with the existing process alive.
+- The Claude protected lease plane and structured-host prototype may be built
+  only behind a disabled capability. Setup/mixed selection remains visibly
+  unavailable until exact-build auth, complete exposed-host parity, genuine-
+  turn identity, security, forward recovery, and written Anthropic gates pass.
+- A private Claude update acknowledgement is an install receipt only. It is
+  never provider identity, READY, or next-turn adoption proof.
 - Codex uses one neutral, token-free interactive `CODEX_HOME`, one resident
   app server, current external auth, and the direct ChatGPT Codex Responses
   provider with model WebSockets disabled. The TUI control connection stays
@@ -94,6 +99,9 @@ systemd user services, LaunchAgents, Bash, Zsh, and Fish.
   filesystem transactions, locks, paths, clocks, provider services, and
   bounded worker machinery. Add no dependency unless a measured, maintained
   library replaces more code and maintenance than it introduces.
+- Do not add a Claude Agent SDK merely because it is maintained. It must remove
+  existing owned machinery while preserving the private auth seam and cannot
+  coexist as a second compatibility layer.
 - Use cohesive classes for participant registries, coordinators, structured
   sessions, and relays. Keep stateless parsing and validation as small typed
   functions. Apply the rule of three before extracting another abstraction.
@@ -104,10 +112,11 @@ systemd user services, LaunchAgents, Bash, Zsh, and Fish.
 - Do not grow a module beyond 1000 lines. Split a module near 800 lines only at
   a real cohesion boundary. In particular, do not add behavior to the current
   905-line dashboard session or 826-line Codex broker responder.
-- Tests are the fewest load-bearing behavioral proofs. No test exists only for
-  coverage, an enum value, a private helper, an implementation detail, or a
-  duplicate permutation. Prefer one coherent state schedule, one protocol
-  journey, and one PTY matrix over test-per-case expansion.
+- Claude Task 8 has exactly three consolidated load-bearing journeys: native
+  and mixed continuity, security and forward recovery, and exact-build host
+  qualification. Extend existing tests/fakes. Add no matrices, helper tests,
+  snapshots, duplicate provider journeys, new fake modules, process-helper
+  tests, or coverage-padding cases.
 - Automated tests use synthetic identities, tokens, homes, executables, and
   sockets. They never require real credentials, public network access, or
   provider-login mutation.
@@ -117,8 +126,8 @@ systemd user services, LaunchAgents, Bash, Zsh, and Fish.
 
 ---
 
-- **Status:** Approved design; implementation not started
-- **Date:** 2026-08-01
+- **Status:** Implementation active; Claude setup/mixed release-disabled
+- **Date:** 2026-08-01; Claude evidence amendment 2026-08-03
 - **Repository:** `/home/sabossedgh/dev/sidekick-usages`
 - **Planning baseline:** `70b70341c8cfc53127f40a2f4c14de6f21beb2f0`
 - **Implementation branch:** `feat/hardened-global-account-selection`
@@ -250,7 +259,9 @@ when its behavior is moved to the named owner in the same commit.
 | `providers/claude/structured/models.py` | Strict stream events, capability, and readiness models |
 | `providers/claude/structured/codec.py` | Bounded JSON-lines input/output and correlated control response |
 | `providers/claude/structured/process.py` | Official structured-engine subprocess and pipe lifecycle |
-| `providers/claude/structured/session.py` | Turn state, token update, and provider-ready proof |
+| `providers/claude/structured/session.py` | Turn state and install receipts |
+| `credentials/claude/authority/access_lease.py` | Target lease |
+| `providers/claude/structured/data_plane.py` | Protected delivery |
 | `providers/codex/session/__init__.py` | Thin package marker only |
 | `providers/codex/session/models.py` | Exact session capability and relay event models |
 | `providers/codex/session/config.py` | Protected HTTP-only provider overlay and effective proof |
@@ -317,6 +328,19 @@ class AuthorityReadyProof:
     safe_code: SelectionCode
 
 
+class SelectionRecoveryRelation(StrEnum):
+    BASELINE_PROVEN = "baseline_proven"
+    TARGET_PROVEN = "target_proven"
+    UNRESOLVED = "unresolved"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SelectionRecoveryDecision:
+    relation: SelectionRecoveryRelation
+    target_generation: AuthorityGeneration | None
+    safe_code: SelectionCode
+
+
 class SelectionAuthorityAdapter(Protocol):
     def prevalidate(
         self,
@@ -332,7 +356,7 @@ class SelectionAuthorityAdapter(Protocol):
     def readback(
         self,
         prepared: PreparedSelection,
-    ) -> AuthorityReadyProof | None: ...
+    ) -> SelectionRecoveryDecision: ...
 ```
 
 `PreparedSelection.operation_id` must equal `operation.operation_id`; the
@@ -340,9 +364,16 @@ adapter validates but never invents coordinator identity or epoch values.
 Provider calls execute through the existing bounded worker/exchange lane.
 They do not run on the supervisor selector or create another executor.
 
-Provider adapters may return subclasses carrying protected in-memory lease
-owners, but persisted forms contain only the base fields. A lease-bearing
-object has a redacted `repr`, a bounded lifetime, and context-manager cleanup.
+Provider adapter results and subclasses remain secret-free. A protected lease
+travels only through the provider-owned worker exchange and capability channel.
+Its context-managed mutable owner has a redacted `repr`, bounded lifetime, and
+immediate cleanup; it never enters result serialization.
+
+Claude computes `SelectionRecoveryDecision` from target authority mode, safe
+worker proof, native readback, and exact secret-free participant binding
+queries. Native baseline cannot prove rollback for a setup target. Any target
+participant binding returns `TARGET_PROVEN`; conflicting or incomplete
+evidence returns `UNRESOLVED` and leaves admission closed.
 
 Participant commands use the same strict supervisor protocol:
 
@@ -1015,9 +1046,11 @@ Write and execute the phases in this exact order:
 3. persist `PREPARING`, close admission, publish prepare, then persist
    `WAITING_OLD_TURNS`;
 4. after every old lease drains, persist `COMMITTING` before submitting the
-   provider mutation through the same bounded path;
-5. validate provider readback, persist `AWAITING_READY`, and collect every
-   required live participant acknowledgement;
+   provider mutation through the same bounded path; seal the final required
+   membership through protected distribution and provider-proof binding;
+5. validate the provider-owned recovery decision, persist `AWAITING_READY`,
+   unseal registration, and collect every required live participant
+   acknowledgement;
 6. compare-and-swap `FinalizedSelection` to N+1, close the journal with the
    ready or degraded result, and only then open admission; and
 7. keep later adoption receipts ephemeral.
@@ -1054,10 +1087,11 @@ policy.
 
 - [ ] **Step 7: Add recovery before supervisor readiness.**
 
-For every active journal, read provider state through the adapter, reconcile
-reachable participants, and follow the normative design's Section 8.5 decision
-table. A missing participant is unreachable until process-start proof says
-dead. Ambiguity keeps admission closed and publishes
+For every active journal, consume the adapter's safe composite recovery
+decision, reconcile reachable participants, and follow the normative design's
+Section 8.5 decision table. A missing participant is unreachable until
+process-start proof says dead. Native account equality is not generic rollback
+proof. Ambiguity keeps admission closed and publishes
 `SELECTION_RECOVERY_REQUIRED`.
 
 - [ ] **Step 8: Run control, state, and architecture gates.**
@@ -1343,8 +1377,9 @@ git commit -m "fix(claude): preserve native next-turn switching"
 
 - Consumes: Task 4 readiness/adoption models and current protected Claude
   access-lease owner.
-- Produces: `ClaudeStructuredSession.update_oauth()` and an exact behavioral
-  `ClaudeStructuredCapability`.
+- Produces: `ClaudeStructuredSession.update_oauth()`, the strictly local
+  `ClaudeStructuredInstallReceipt`, and an exact behavioral
+  `ClaudeStructuredCapability`. It does not produce Task 4 READY or adoption.
 
 - [ ] **Step 1: Add one strict codec and lifecycle proof.**
 
@@ -1357,12 +1392,12 @@ def test_structured_session_updates_oauth_only_between_turns() -> None:
         session.update_oauth(lease_b(), EPOCH_N_PLUS_ONE)
 
     session.end_turn(TURN_ID)
-    proof = session.update_oauth(lease_b(), EPOCH_N_PLUS_ONE)
+    receipt = session.update_oauth(lease_b(), EPOCH_N_PLUS_ONE)
 
     assert engine.requests == [oauth_update_frame(REQUEST_ID)]
-    assert proof.epoch == EPOCH_N_PLUS_ONE
+    assert receipt.request_id == REQUEST_ID
     assert SECRET_CANARY not in repr(session)
-    assert SECRET_CANARY not in repr(proof)
+    assert SECRET_CANARY not in repr(receipt)
 ```
 
 Extend the same test with mismatched, replayed, oversized, malformed, timeout,
@@ -1446,8 +1481,9 @@ without killing an existing session.
 `ClaudeStructuredSession` tracks visible turns, background agents, permission
 and dialog requests, hooks, tools, MCP operations, and terminal children from
 strict events. `update_oauth()` is legal only when all are idle and returns a
-`ParticipantReadyProof` after the exact correlated cache-clear acknowledgement.
-The first subsequent real user turn emits adoption before child transmission.
+`ClaudeStructuredInstallReceipt` after the exact correlated local response.
+The receipt proves neither account identity nor provider acceptance. Task 8
+binds it to provider proof before separate READY and genuine-turn adoption.
 
 - [ ] **Step 7: Run codec, redaction, type, and architecture checks.**
 
@@ -1471,114 +1507,228 @@ git add src/sidekick_usages/providers/claude \
 git commit -m "feat(claude): qualify structured oauth updates"
 ```
 
-### Task 8: Complete the Claude Interactive Host and Mixed Transitions
+### Task 8: Add the Release-Disabled Claude Protected Plane
 
 **Files:**
 
+- Create: `src/sidekick_usages/credentials/claude/authority/access_lease.py`
+- Create: `src/sidekick_usages/providers/claude/structured/data_plane.py`
 - Create: `src/sidekick_usages/cli/session/claude.py`
+- Modify: `src/sidekick_usages/credentials/claude/authority/resolver.py`
+- Modify: `src/sidekick_usages/credentials/claude/activation/service.py`
+- Modify: `src/sidekick_usages/providers/claude/structured/models.py`
+- Modify: `src/sidekick_usages/providers/claude/structured/codec.py`
+- Modify: `src/sidekick_usages/providers/claude/structured/process.py`
+- Modify: `src/sidekick_usages/providers/claude/structured/session.py`
+- Modify: `src/sidekick_usages/core/selection/types.py`
+- Modify: `src/sidekick_usages/core/selection/operation.py`
+- Modify: `src/sidekick_usages/daemon/control/client.py`
+- Modify: `src/sidekick_usages/daemon/control/protocol.py`
+- Modify: `src/sidekick_usages/daemon/control/server.py`
+- Modify: `src/sidekick_usages/daemon/control/dispatch.py`
+- Modify: `src/sidekick_usages/daemon/selection/models.py`
+- Modify: `src/sidekick_usages/daemon/selection/ports.py`
+- Modify: `src/sidekick_usages/daemon/selection/registry.py`
+- Modify: `src/sidekick_usages/daemon/selection/coordinator.py`
+- Modify: `src/sidekick_usages/daemon/selection/recovery.py`
+- Modify: `src/sidekick_usages/daemon/selection/worker.py`
+- Modify: `src/sidekick_usages/daemon/worker/exchange.py`
+- Modify: `src/sidekick_usages/daemon/worker/selection.py`
+- Modify: `src/sidekick_usages/daemon/worker/claude/selection.py`
+- Modify: `src/sidekick_usages/daemon/runtime/scheduler.py`
+- Modify: `src/sidekick_usages/entrypoints/worker.py`
+- Modify: `src/sidekick_usages/entrypoints/supervisor.py`
+- Modify: `src/sidekick_usages/cli/commands/session.py`
 - Modify: `src/sidekick_usages/cli/session/launcher.py`
 - Modify: `src/sidekick_usages/cli/contexts/session.py`
-- Modify: `src/sidekick_usages/providers/claude/structured/models.py`
-- Modify: `src/sidekick_usages/providers/claude/structured/session.py`
-- Modify: `src/sidekick_usages/credentials/claude/activation/service.py`
-- Modify: `tests/cli/test_sessions.py`
+- Modify: `tests/fakes/claude/managed.py`
+- Modify: `tests/credentials/claude/test_activation.py`
 - Modify: `tests/providers/claude/test_managed_boundaries.py`
+- Modify: `tests/daemon/selection/test_coordination.py`
+- Modify: `tests/daemon/test_runtime.py`
+- Modify: `tests/daemon/test_control.py`
+- Modify: `tests/cli/test_sessions.py`
+
+No new test module is permitted. The two new infrastructure owners have
+distinct credential and provider-runtime boundaries; they are not generic
+token, broker, transport, or compatibility frameworks. The Claude session
+host remains the already-approved public command owner.
 
 **Interfaces:**
 
-- Consumes: Task 7 structured session, Task 6 native adapter, and Task 4
-  participant protocol.
-- Produces: a working `session claude` host and one mixed Claude selection
-  adapter used by the coordinator.
+- Consumes: Task 7's `ClaudeStructuredInstallReceipt`, Task 6's official native
+  adapter, Task 4's secret-free participant protocol, and the existing bounded
+  worker exchange.
+- Produces: `ClaudeSelectedAccessLeaseService`, `ClaudePreparedAuthority`,
+  `ClaudeAccessLease`, `ClaudeParticipantChannelRegistry`,
+  `ClaudeProtectedCommitRelay`, and the bounded
+  `CLAUDE_PARTICIPANT_BIND` operation.
+- Preserves: `ParticipantReadyRequest` and adoption as separate secret-free
+  control messages. Neither schema contains a protected value.
+- Release result: the protected plane and host remain disabled. Public
+  selection returns a visible typed unavailable result until every Step 8 gate
+  passes.
 
-- [ ] **Step 1: Extend the session journey with same-process switching.**
+- [ ] **Step 1: Extend the first two consolidated journeys.**
 
-One fake engine journey must cover user prompt streaming, permission response,
-tool output, setup A to setup B, setup B to refreshable C, and the same child
-PID/conversation ID throughout:
+Journey 1, native and mixed continuity, extends the existing same-engine
+structured journey with setup A to setup B and setup B to exact committed
+refreshable C. Its lease arrives through a fake protected frame rather than a
+caller-owned string.
+
+Journey 2, security and forward recovery, extends the existing
+three-participant coordinator schedule. It includes one wrong or replayed
+binding and one partial target acknowledgement. Together the journeys prove:
 
 ```python
-assert journey.child_process_ids == [ENGINE_PID]
+assert journey.engine_process_ids == [ENGINE_PID]
 assert journey.conversation_ids == [CONVERSATION_ID]
-assert journey.turn_accounts == [
-    SETUP_A_ID,
-    SETUP_B_ID,
-    NATIVE_C_ID,
-    SETUP_A_ID,
-]
-assert journey.queued_prompts == ["queued first", "queued second"]
-assert journey.prompt_submission_counts == [1, 1]
+assert journey.setup_native_mutations == 0
+assert journey.refreshable_order == ["native_proof", "protected_install"]
+assert journey.queued_prompt_submission_counts == [1, 1]
+assert journey.install_before_ready is True
+assert journey.next_turn_accounts == [SETUP_B_ID, NATIVE_C_ID]
 assert journey.interruptions == []
-assert SECRET_CANARY not in journey.argv_and_child_environments
-assert SECRET_CANARY not in journey.logs_and_failures
 ```
 
-- [ ] **Step 2: Run the session and provider tests and verify parity is
-  missing.**
+The security/recovery journey also proves every secret canary is absent from
+control, persistence, worker results, argv, files, logs, diagnostics,
+exceptions, representations, child environments, and immutable CLI strings.
+Do not add a matrix, helper test, snapshot, duplicate provider journey, new
+fake module, process-helper test, or coverage-padding case.
+
+- [ ] **Step 2: Run the two journeys and verify the protected seam is absent.**
 
 ```bash
-uv run pytest tests/cli/test_sessions.py \
-  tests/providers/claude/test_managed_boundaries.py -q
+uv run pytest \
+  tests/daemon/selection/test_coordination.py::\
+test_three_participants_switch_without_interrupting_turns \
+  tests/providers/claude/test_managed_boundaries.py::\
+test_structured_session_updates_oauth_only_at_an_idle_turn_boundary -q
 ```
 
-- [ ] **Step 3: Implement the complete interactive terminal host.**
+Expected: fail because no Claude protected channel, initial bind, or mixed
+authority owner exists. Do not add another RED test for the same absence.
 
-Map structured messages to existing Claude terminal behavior for streaming
-assistant output, user input editing, permission choices, dialog responses,
-hooks, tools, MCP events, model and permission changes, errors, resize,
-signals, and final exit status. `ClaudeTerminalHost` owns one prompt-toolkit
-`Application`, reusing the dashboard's input, resize, signal, and restoration
-patterns. The official engine remains a pipe-owned structured child; the host
-renders typed events and sends typed responses without a terminal-emulation
-layer. Raw provider events are memory-only and bounded. Enable and qualify
-`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` so Bash, hooks, MCP stdio processes, and
-other children do not inherit provider credentials.
+- [ ] **Step 3: Implement exact target authority ownership.**
 
-- [ ] **Step 4: Intercept provider-local auth commands.**
+`ClaudeSelectedAccessLeaseService` classifies the saved target under held
+`ProviderMutationAuthority`. Setup prevalidation validates health, expiry, and
+generation, and setup commit performs zero native mutation. Refreshable commit
+completes and proves official native activation before opening a lease from
+that exact committed native generation. The generic durable-selection resolver
+must not choose the old account while the operation is `AWAITING_READY`.
 
-In an integrated session, `/login` displays the saved Claude chooser and sends
-the same typed selection request as the dashboard. `/logout` and unsaved login
-show explicit Sidekick credential guidance. They do not mutate auth outside the
-coordinator. Unmanaged Claude retains its native commands.
+The service returns only safe mode/identity/generation metadata outside its
+context-managed mutable lease. It never synthesizes profile, organization,
+connector, scope, Remote Control, or refresh capability from a setup token.
 
-- [ ] **Step 5: Implement mixed authority commit.**
+- [ ] **Step 4: Add one protected capability socket per participant.**
 
-For refreshable target C, first complete the official native transaction and
-then send a bounded C access lease to every structured participant at the same
-closed epoch. For setup target B, skip native mutation and update every
-structured participant with B's access-only authority. Never represent a setup
-token as a refreshable profile or synthesize email, organization, connector,
-or Remote Control state.
+The Claude host creates one AF_UNIX socketpair. During peer-proven
+registration, `sendmsg`/`recvmsg` transfers exactly one non-inheritable
+supervisor endpoint with `SCM_RIGHTS`. Bind it to participant ID, connection
+generation, and kernel-proven process-start identity. Reject missing,
+duplicate, truncated, wrong-type, stale, or replayed descriptors before
+membership commit.
 
-- [ ] **Step 6: Preserve participant continuity on all failures.**
+The serialized attachment remains secret-free. Detach the endpoint from the
+generic control transport immediately. `ClaudeParticipantChannelRegistry`
+owns at most the existing 16 Claude participants and closes only the exact old
+endpoint on proved disconnect/reconnect. Add no public listener, thread,
+executor, or poller.
 
-Before commit failure reopens N. After any engine acknowledges the target,
-read provider/participant state and recover forward; do not send the prior
-credential as a rollback frame. An unknown or failed participant remains alive
-and yields recovery-required or degraded status. An ambient fixed-token process
-is unmanaged and untouched.
+- [ ] **Step 5: Reuse the worker exchange for one protected projection.**
 
-- [ ] **Step 7: Run Claude session, coordinator, and PTY tests.**
+Enable the existing exchange for Claude selection commit, recovery-forward,
+and participant bind. The worker revalidates the exact target and generation,
+opens one bounded mutable lease, writes one operation/account/generation/
+epoch/nonce-bound projection, persists only safe completion, releases all
+provider/account authorities, and exits. Only then may the resident Claude
+relay fan out separately encoded mutable copies and await install receipts.
+
+Worker results, operation records, journals, control messages, and event state
+remain credential-free. Clear the worker, relay, host, and child-encoder
+buffers at their owning boundaries. Never retry an ambiguous private update.
+
+- [ ] **Step 6: Keep membership sealed and recover by composite evidence.**
+
+Seal the final required membership through protected distribution and provider
+proof. A precommit join is included before mutation or remains behind the old
+epoch. After target proof, a late or restarted host uses
+`CLAUDE_PARTICIPANT_BIND` against the pending/finalized target before READY or
+a real prompt.
+
+Claude recovery returns only `BASELINE_PROVEN`, `TARGET_PROVEN`, or
+`UNRESOLVED`. It combines target authority mode, safe worker proof, native
+readback, and each exact host's secret-free binding query. Native baseline is
+expected for a setup target and is never sufficient rollback proof. Any target
+binding forces fresh-lease forward repair. Never retain/replay a lease or send
+the old credential as rollback.
+
+- [ ] **Step 7: Build the host behind the disabled capability.**
+
+Add typed bounded interactive send/read operations to the existing structured
+process and extend only `ClaudeStructuredEngineFake`. Wire the public Claude
+command through the existing typed session runner. The host owns one event
+loop for terminal input, structured I/O, and protected channel readiness. It
+never imports credential persistence, resolver, private path, or mutation
+authority.
+
+The host must preserve one engine PID and conversation while handling the
+representative release journey: streaming, permission/question,
+tool/hook/MCP/background state, queued input, resize, restoration, positive and
+negative private probes, and unqualified-build refusal. Enable qualified child
+credential scrubbing. Intercept integrated `/login` through the saved-account
+chooser and refuse uncoordinated credential lifecycle commands.
+
+Do not claim a stock TUI, invent provider schemas from the fake, or add an
+Agent SDK unless a separate bounded proof shows that it removes owned code
+without adding a second wrapper.
+
+- [ ] **Step 8: Hold the setup/mixed release gate closed.**
+
+The exact-build host qualification is the third and final Claude journey. It
+is controlled release evidence, not an ordinary test tree. Setup/mixed
+selection remains unavailable until all of these pass together:
+
+1. exact artifact, schema, allowlist, and positive/negative private probes;
+2. no update during any active turn, retry, tool, hook, permission, dialog,
+   MCP operation, task, or terminal operation;
+3. unchanged engine PID and conversation across setup A to B and B to C;
+4. exact account, generation, epoch, install, READY, and genuine-turn proof;
+5. complete parity for every interactive behavior the host exposes;
+6. no secret outside bounded protected buffers;
+7. forward-only recovery after any target acknowledgement;
+8. fail-closed unknown/ambiguous behavior and honest unmanaged status; and
+9. written Anthropic product/legal clarification or approval.
+
+Until then, dashboard Enter and scripted selection return a visible typed
+unavailable or degraded result without native or structured mutation. Usage,
+maintenance, and saved-account visibility remain available.
+
+- [ ] **Step 9: Run the focused static and architecture gates.**
 
 ```bash
-uv run pytest tests/cli/test_sessions.py \
-  tests/providers/claude/test_managed_boundaries.py \
-  tests/credentials/claude/test_activation.py \
-  tests/daemon/test_selection.py tests/dashboard/test_pty.py -q
-uv run ty check src/sidekick_usages/cli/session/claude.py \
-  src/sidekick_usages/providers/claude/structured \
-  src/sidekick_usages/credentials/claude
+uv run ruff check src/sidekick_usages/credentials/claude \
+  src/sidekick_usages/providers/claude \
+  src/sidekick_usages/daemon src/sidekick_usages/cli tests
+uv run ty check src/sidekick_usages/credentials/claude \
+  src/sidekick_usages/providers/claude \
+  src/sidekick_usages/daemon src/sidekick_usages/cli tests
+uv run python packaging/check_architecture.py
 ```
 
-- [ ] **Step 8: Commit the seamless Claude host.**
+- [ ] **Step 10: Commit the release-disabled protected plane.**
 
 ```bash
-git add src/sidekick_usages/cli/session \
-  src/sidekick_usages/providers/claude/structured \
-  src/sidekick_usages/credentials/claude \
-  tests/cli/test_sessions.py tests/providers/claude \
-  tests/credentials/claude
-git commit -m "feat(claude): preserve sessions across account changes"
+git add src/sidekick_usages/credentials/claude \
+  src/sidekick_usages/providers/claude \
+  src/sidekick_usages/core/selection src/sidekick_usages/daemon \
+  src/sidekick_usages/entrypoints src/sidekick_usages/cli \
+  tests/credentials/claude tests/providers/claude tests/daemon \
+  tests/cli/test_sessions.py tests/fakes/claude/managed.py
+git commit -m "feat(claude): add disabled protected selection plane"
 ```
 
 ### Task 9: Pin the Codex Neutral Runtime to Direct HTTP Auth
@@ -2211,7 +2361,7 @@ builds, caches, or live state tracked.
 | 9 Claude design | Tasks 6, 7, and 8 |
 | 10 Codex design | Tasks 9 and 10 |
 | 11 freshness and reconciliation | Task 12 |
-| 12 persistence and recovery | Tasks 3, 4, and 13 |
+| 12 persistence and recovery | Tasks 3, 4, 8, and 13 |
 | 13 security boundaries | Global Constraints and Tasks 3 through 13 |
 | 14 diagnostics/platform | Task 12 |
 | 15 repository ownership | File Map and Task 13 |
@@ -2252,12 +2402,22 @@ cutover. Correct gaps in the feature branch; do not waive them.
   success or credential rollback.
 - [ ] Claude ordinary foreground presence cannot produce a Remote Control
   disconnect requirement.
-- [ ] Claude setup-token updates are exact-build-gated, correlated, idle-only,
-  secret-safe, and same-process.
+- [ ] Claude leases use only worker exchange and peer-bound provider channels;
+  control, CLI, persistence, results, and receipts remain secret-free.
+- [ ] A Claude private response is an install receipt only; provider proof,
+  READY, and genuine-turn adoption remain distinct.
 - [ ] The Claude 2.1.220 success fixture contains only `subtype` and
   `request_id` inside `response`; no invented empty response object remains.
-- [ ] Mixed Claude selection updates official native state where available and
-  structured inference authority for every integrated session.
+- [ ] Setup selection performs no native mutation; refreshable selection proves
+  native target before projecting the exact committed generation.
+- [ ] Claude membership stays sealed through protected distribution; initial
+  and late hosts bind the target before READY or a real prompt.
+- [ ] Claude recovery uses composite native/participant evidence; native
+  baseline alone never proves setup-target rollback.
+- [ ] Setup/mixed selection remains visibly unavailable until all exact-build,
+  parity, genuine-turn, security, recovery, and written Anthropic gates pass.
+- [ ] No Agent SDK, token service, compatibility layer, duplicate transport,
+  executor, broker thread, or polling loop duplicates existing owners.
 - [ ] Codex model Responses WebSockets are disabled while TUI/app-server
   control sockets remain open.
 - [ ] Codex external-auth proof does not overclaim provider identity from
@@ -2270,8 +2430,9 @@ cutover. Correct gaps in the feature branch; do not waive them.
 - [ ] Until the Task 12 repair reaches the final wheel, the process-local WSL
   reporting compatibility command exits zero and the installed SHA is
   unchanged.
-- [ ] Exactly two new test modules or fewer exist, and every new case protects
-  a distinct user-visible, safety, recovery, or protocol contract.
+- [ ] Task 8 uses exactly three consolidated Claude journeys and no new test
+  modules, matrices, helper tests, snapshots, duplicate journeys, new fake
+  modules, process-helper tests, or coverage-padding cases.
 - [ ] No code, comment, or docstring added or changed by implementation exceeds
   79 characters.
 - [ ] No current module exceeds 1000 lines and no cohesion-heavy module is
@@ -2289,10 +2450,17 @@ cutover. Correct gaps in the feature branch; do not waive them.
 
 ## 7. Completion Condition
 
-The feature is complete only when every automated gate passes, both providers'
-exact supported mechanisms pass controlled live qualification, current-machine
-migration preserves saved state and reporting, the dashboard remains correct at
-all five critical terminal sizes, and open integrated provider sessions prove
+Release is capability-specific. The dashboard, refreshable/native Claude, and
+qualified Codex paths may complete independently after their own gates pass.
+Claude setup/mixed switching is complete only after all three consolidated
+journeys, written Anthropic resolution, controlled live genuine-turn identity,
+and every Step 8 gate pass together. Until then, its correct product state is a
+visible typed unavailable result with saved-account reporting and maintenance
+unchanged.
+
+Every released capability also requires all automated gates, current-machine
+migration preserving saved state/reporting, the dashboard correct at all five
+critical terminal sizes, and open integrated supported sessions proving
 same-process next-turn adoption without interruption.
 
 Passing dashboard tests alone is not account selection. Passing provider auth
