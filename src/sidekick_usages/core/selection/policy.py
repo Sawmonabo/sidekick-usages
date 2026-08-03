@@ -7,9 +7,11 @@ from sidekick_usages.core.accounts.types import AuthorityGeneration
 from sidekick_usages.core.selection.models import (
     ActivationRecord,
     DueOperation,
+    FinalizedSelection,
     OpenSelectionOperation,
     ProviderAuthObservation,
     SelectedAccountState,
+    SelectionResult,
 )
 from sidekick_usages.core.selection.types import (
     ActivationOutcome,
@@ -17,6 +19,7 @@ from sidekick_usages.core.selection.types import (
     OperationKind,
     OperationPriority,
     OperationState,
+    SelectionOutcome,
     SelectionPhase,
 )
 from sidekick_usages.core.time import as_utc
@@ -154,6 +157,44 @@ def require_selection_transition(
     ):
         raise ValueError("Illegal global selection transition.")
     return replacement
+
+
+def selection_result_matches_finalized(
+    operation: OpenSelectionOperation,
+    result: SelectionResult,
+    finalized: FinalizedSelection | None,
+) -> bool:
+    """Return whether one terminal result matches durable selection truth."""
+    if (
+        result.operation_id != operation.operation_id
+        or result.provider_id is not operation.provider_id
+        or result.target_account_id != operation.target_account_id
+    ):
+        return False
+    if result.outcome in {
+        SelectionOutcome.READY,
+        SelectionOutcome.PARTICIPANT_LOST_AFTER_COMMIT,
+    }:
+        return (
+            finalized is not None
+            and result.target_generation is not None
+            and finalized.provider_id is operation.provider_id
+            and finalized.account_id == result.target_account_id
+            and finalized.epoch == result.epoch == operation.pending_epoch
+            and finalized.generation == result.target_generation
+        )
+    if result.outcome is not SelectionOutcome.FAILED_OLD_EPOCH:
+        return False
+    if result.epoch != operation.baseline_epoch:
+        return False
+    if operation.baseline_account_id is None:
+        return finalized is None
+    return (
+        finalized is not None
+        and finalized.provider_id is operation.provider_id
+        and finalized.account_id == operation.baseline_account_id
+        and finalized.epoch == operation.baseline_epoch
+    )
 
 
 def _selection_prepared_generation_transition(

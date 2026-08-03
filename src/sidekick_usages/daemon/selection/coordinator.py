@@ -19,6 +19,9 @@ from sidekick_usages.core.selection.models import (
     SelectionEpoch,
     SelectionResult,
 )
+from sidekick_usages.core.selection.policy import (
+    selection_result_matches_finalized,
+)
 from sidekick_usages.core.selection.types import (
     ParticipantId,
     SelectionCode,
@@ -686,42 +689,18 @@ class SelectionCoordinator:
             ),
             None,
         )
-        if (
-            document.active is not None
-            or result is None
-            or result.target_account_id != operation.target_account_id
-        ):
+        if document.active is not None or result is None:
             return None
         finalized = self._selected.load(operation.provider_id)
-        if (
-            result.outcome
-            in {
-                SelectionOutcome.READY,
-                SelectionOutcome.PARTICIPANT_LOST_AFTER_COMMIT,
-            }
-            and finalized is not None
-            and result.target_generation is not None
-            and (
-                finalized.account_id,
-                finalized.epoch,
-                finalized.generation,
+        return (
+            result
+            if selection_result_matches_finalized(
+                operation,
+                result,
+                finalized,
             )
-            == (
-                result.target_account_id,
-                result.epoch,
-                result.target_generation,
-            )
-        ):
-            return result
-        if result.outcome is SelectionOutcome.FAILED_OLD_EPOCH and (
-            finalized is None
-            if operation.baseline_account_id is None
-            else finalized is not None
-            and (finalized.account_id, finalized.epoch)
-            == (operation.baseline_account_id, operation.baseline_epoch)
-        ):
-            return result
-        return None
+            else None
+        )
 
     def _latest(
         self,

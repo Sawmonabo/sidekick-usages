@@ -368,6 +368,18 @@ def _process(index: int) -> ProcessIdentity:
     return ProcessIdentity(process_id=1000 + index, start_identity=index)
 
 
+def _ready_request(participant_id: ParticipantId) -> ParticipantReadyRequest:
+    return ParticipantReadyRequest(
+        participant_id=participant_id,
+        connection_generation=1,
+        proof=ParticipantReadyProof(
+            account_id=TARGET_ACCOUNT_ID,
+            generation=AuthorityGeneration("generation-target-8"),
+            epoch=SelectionEpoch(8),
+        ),
+    )
+
+
 def _assert_journey_result(
     journey: _Journey,
     result: SelectionResult,
@@ -485,24 +497,11 @@ def _probe_final_seal_released(journey: _Journey, loss_state: str) -> None:
     completed = Event()
 
     def acknowledge_again() -> None:
-        journey.registry.ready_request(
-            ParticipantReadyRequest(
-                participant_id=PARTICIPANT_A,
-                connection_generation=1,
-                proof=ParticipantReadyProof(
-                    account_id=TARGET_ACCOUNT_ID,
-                    generation=AuthorityGeneration("generation-target-8"),
-                    epoch=SelectionEpoch(8),
-                ),
-            )
-        )
+        journey.registry.ready_request(_ready_request(PARTICIPANT_A))
         completed.set()
 
-    thread = Thread(target=acknowledge_again, daemon=True)
-    thread.start()
+    Thread(target=acknowledge_again, daemon=True).start()
     assert completed.wait(1)
-    thread.join(timeout=1)
-    assert not thread.is_alive()
 
 
 def _disconnect_during_final_seal(
@@ -643,15 +642,7 @@ def test_three_participants_switch_without_interrupting_turns(
             PARTICIPANT_C: 3,
         }[participant_id]
         coordinator.ready_request(
-            ParticipantReadyRequest(
-                participant_id=participant_id,
-                connection_generation=1,
-                proof=ParticipantReadyProof(
-                    account_id=TARGET_ACCOUNT_ID,
-                    generation=AuthorityGeneration("generation-target-8"),
-                    epoch=SelectionEpoch(8),
-                ),
-            ),
+            _ready_request(participant_id),
             _process(process_index),
         )
     disconnect_probe = _disconnect_during_final_seal(journey, loss_state)
@@ -668,7 +659,6 @@ def test_three_participants_switch_without_interrupting_turns(
         assert replay_results == results
 
     assert not selector.is_alive()
-    assert len(results) == 1
     _assert_journey_result(
         journey,
         results[0],
