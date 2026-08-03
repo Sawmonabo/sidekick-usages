@@ -2,6 +2,7 @@
 
 import errno
 import os
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Never
 
@@ -140,10 +141,15 @@ def test_launcher_executes_exact_descriptor_from_requested_directory(
     )
     claude.chmod(0o700)
     _executable(sidekick)
+
+    def resolve_claude_fixture(_environment: Mapping[str, str]) -> Path:
+        return claude
+
     launcher = ProviderSessionLauncher(
         {"PATH": str(binaries), "SESSION_TEST": "preserved"},
         working_directory=working_directory,
         sidekick_executable=qualify_executable(sidekick),
+        claude_resolver=resolve_claude_fixture,
     )
     spec = launcher.plan(ProviderId.CLAUDE, ("prompt with spaces",))
     original_directory = Path.cwd()
