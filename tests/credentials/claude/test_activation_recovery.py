@@ -615,7 +615,7 @@ def _assert_known_external_login(root: Path) -> None:
         known_controller.state.account_id,
     ) == (
         None,
-        1,
+        None,
         ProviderId.CLAUDE,
         known.source.account_id,
     )
