@@ -381,24 +381,21 @@ def _prove_participant_quiescence(
     peer = ProcessIdentity(1234, 5678)
     supervisor_endpoint, participant_endpoint = socket.socketpair()
     proofs = CodexParticipantProofSet(FramedTransport)
-    attachment = proofs.stage(participant_id, 1, peer, supervisor_endpoint)
-    attachment.commit()
+    proofs.stage(participant_id, 1, peer, supervisor_endpoint).commit()
     channel = CodexParticipantProofChannel(
         participant_endpoint,
         FramedTransport,
     )
-    proof_thread = Thread(
+    (proof_thread := Thread(
         target=channel.serve_selection,
         args=(relay, _TARGET_AUTHORITY.epoch),
-    )
-    proof_thread.start()
+    )).start()
     proofs.prepare(operation_id, _TARGET_AUTHORITY.epoch)
     sealed_threads = relay.loaded_threads_snapshot.thread_ids
-    resumed = Thread(
+    (resumed := Thread(
         target=_resume_thread,
         args=(tui, 80, "thread-after-proof"),
-    )
-    resumed.start()
+    )).start()
     resumed.join(timeout=0.1)
     crossed_precommit = not resumed.is_alive()
     proofs.complete(operation_id, _TARGET_AUTHORITY)
@@ -428,7 +425,6 @@ def _prove_participant_quiescence(
 
     reconnect_id = OperationId("88888888-8888-4888-8888-888888888888")
     new_supervisor, new_participant = socket.socketpair()
-    replacement_aborts: list[bool] = []
 
     def replace_armed_channel() -> None:
         participant_endpoint.settimeout(_RELAY_WAIT_SECONDS)
@@ -438,28 +434,33 @@ def _prove_participant_quiescence(
         )
         replacement.commit()
         replacement.finalize()
-        new_participant.settimeout(0.2)
-        try:
-            replacement_aborts.append(bool(new_participant.recv(1)))
-        except TimeoutError:
-            replacement_aborts.append(False)
+        replacement_channel = CodexParticipantProofChannel(
+            new_participant,
+            FramedTransport,
+        )
+        replacement_channel.serve_selection(relay, _TARGET_AUTHORITY.epoch)
+        replacement_channel.serve_selection(relay, _TARGET_AUTHORITY.epoch)
+        replacement_channel.close()
 
-    reconnect = Thread(target=replace_armed_channel)
-    reconnect.start()
+    (reconnect := Thread(target=replace_armed_channel)).start()
     with pytest.raises(CodexParticipantProofError):
         proofs.bind_after_readback(reconnect_id, _TARGET_AUTHORITY)
+    channel.close()
+    proofs.bind_after_readback(reconnect_id, _TARGET_AUTHORITY)
+    relay.release_quiescence()
+    proofs.prepare(operation_id, _TARGET_AUTHORITY.epoch)
+    proofs.abort(operation_id, _TARGET_AUTHORITY.epoch)
     reconnect.join(timeout=_RELAY_WAIT_SECONDS)
+    _resume_thread(tui, 81, "thread-after-abort")
     replacement_bound = proofs.matches_target(
         participant_id, 2, peer, reconnect_id, target_proof
     )
-    new_participant.close()
-    channel.close()
     proofs.close()
     assert (
         reconnect.is_alive(),
-        replacement_aborts,
         replacement_bound,
-    ) == (False, [False], False)
+        "thread-after-abort" in relay.loaded_threads_snapshot.thread_ids,
+    ) == (False, True, True)
 
 
 def _prove_versioned_relay_journey(short_socket_root: Path) -> None:
