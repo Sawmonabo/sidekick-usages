@@ -16,12 +16,10 @@ from sidekick_usages.core.accounts.types import (
 )
 from sidekick_usages.core.selection.models import SelectionEpoch
 from sidekick_usages.core.selection.types import SelectionCode, TurnId
-from sidekick_usages.providers.codex.app_server import errors
-from sidekick_usages.providers.codex.app_server.capabilities import (
-    probe_codex_capabilities,
-)
-from sidekick_usages.providers.codex.app_server.executable import (
-    discover_codex_executable,
+from sidekick_usages.providers.codex.app_server import (
+    capabilities,
+    errors,
+    executable,
 )
 from sidekick_usages.providers.codex.app_server.jsonrpc.codec import (
     decode_json_rpc_routing,
@@ -79,7 +77,7 @@ _GENERATION = "2026-07-24T10:00:00.000000000Z"
 _NATIVE_AUTH = managed_auth(_PROVIDER_IDENTITY, _GENERATION)
 _SESSION_PROVIDER = "sidekick-chatgpt-http"
 _SESSION_BASE_URL = "https://chatgpt.com/backend-api/codex"
-_SYNTHETIC_MODEL_ATTEMPTS = 2
+_NO_LOADED_THREADS = CodexLoadedThreadSnapshot(revision=0, thread_ids=())
 _SESSION_SCHEMA_MANIFEST = (
     "v2/ConfigReadParams.json",
     "v2/ConfigReadResponse.json",
@@ -561,8 +559,8 @@ def _prove_synthetic_current_auth_http(
     model_attempt.attempt()
     daemon.install_external_auth(accounts[1], "synthetic-generation-b")
     model_attempt.attempt()
-    assert daemon.model_auth_read_count == _SYNTHETIC_MODEL_ATTEMPTS
-    assert model_attempt.auth_resolutions == _SYNTHETIC_MODEL_ATTEMPTS
+    assert daemon.model_auth_read_count == model_attempt.auth_resolutions
+    assert model_attempt.auth_resolutions == len(accounts)
     assert model_attempt.http_accounts == accounts
     assert model_attempt.websocket_opens == 0
 
@@ -578,10 +576,7 @@ def _prepare_shared_runtime(
         native_home,
         environment=environment,
         expected_user_id=expected_user_id,
-        loaded_threads=lambda: CodexLoadedThreadSnapshot(
-            revision=0,
-            thread_ids=(),
-        ),
+        loaded_threads=lambda: _NO_LOADED_THREADS,
     )
     runtime.prepare(
         _ACCOUNT_ID,
@@ -612,10 +607,10 @@ def test_versioned_codex_app_server_boundary_is_complete(
         "PATH": os.pathsep.join((str(tmp_path), os.environ["PATH"])),
     }
 
-    executable = discover_codex_executable(environment)
-    capabilities = probe_codex_capabilities(executable, environment)
+    server = executable.discover_codex_executable(environment)
+    support = capabilities.probe_codex_capabilities(server, environment)
     manager = CodexDaemonManager(
-        capabilities,
+        support,
         codex_home,
         environment=environment,
     )
@@ -640,7 +635,7 @@ def test_versioned_codex_app_server_boundary_is_complete(
         lifecycle.version_count,
     ) == ((), 0, 1)
     with CodexAppServerSession.open(
-        capabilities,
+        support,
         codex_home,
         environment,
     ) as session:
@@ -650,12 +645,10 @@ def test_versioned_codex_app_server_boundary_is_complete(
         )
         notification = session.receive()
 
-        assert executable.provenance.path == executable_path.resolve()
-        assert str(executable.version) == _NEWER_CODEX_VERSION
-        assert len(capabilities.schema_hash) == SCHEMA_HASH_HEX_LENGTH
-        assert capabilities.session_schema_manifest == (
-            _SESSION_SCHEMA_MANIFEST
-        )
+        assert server.provenance.path == executable_path.resolve()
+        assert str(server.version) == _NEWER_CODEX_VERSION
+        assert len(support.schema_hash) == SCHEMA_HASH_HEX_LENGTH
+        assert support.session_schema_manifest == (_SESSION_SCHEMA_MANIFEST)
         assert result["requiresOpenaiAuth"] is True
         assert isinstance(notification, JsonRpcNotification)
         assert notification.method == "account/updated"
@@ -702,15 +695,15 @@ def test_codex_app_server_boundary_fails_closed_and_redacted(
         "OPENAI_API_KEY": RAW_PROVIDER_SECRET,
         "PATH": os.pathsep.join((str(tmp_path), os.environ["PATH"])),
     }
-    executable = discover_codex_executable(environment)
-    capabilities = probe_codex_capabilities(executable, environment)
+    server = executable.discover_codex_executable(environment)
+    support = capabilities.probe_codex_capabilities(server, environment)
     codex_home = tmp_path / "private-codex-home"
     codex_home.mkdir()
     (tmp_path / "mode").write_text("malformed", encoding="utf-8")
 
     with pytest.raises(errors.CodexAppServerError) as malformed:
         CodexAppServerSession.open(
-            capabilities,
+            support,
             codex_home,
             environment,
         )
@@ -806,7 +799,7 @@ def test_neutral_runtime_requires_current_auth_without_model_websockets(
         "HOME": str(tmp_path),
         "PATH": os.pathsep.join((str(tmp_path), os.environ["PATH"])),
     }
-    executable = discover_codex_executable(environment)
+    server = executable.discover_codex_executable(environment)
 
     with FakeCodexDaemon(
         session_home,
@@ -825,13 +818,10 @@ def test_neutral_runtime_requires_current_auth_without_model_websockets(
             app_server_version=case.version,
         )
         runtime = CodexSharedRuntime.create(
-            executable,
+            server,
             session_home,
             environment=environment,
-            loaded_threads=lambda: CodexLoadedThreadSnapshot(
-                revision=0,
-                thread_ids=(),
-            ),
+            loaded_threads=lambda: _NO_LOADED_THREADS,
         )
 
         if case.protocol_unsupported:
@@ -941,7 +931,7 @@ def test_shared_codex_runtime_self_heals_and_rejects_unsafe_authority(
             "HOME": str(root),
             "PATH": os.pathsep.join((str(root), os.environ["PATH"])),
         }
-        executable = discover_codex_executable(environment)
+        server = executable.discover_codex_executable(environment)
 
         with FakeCodexDaemon(
             native_home,
@@ -955,7 +945,7 @@ def test_shared_codex_runtime_self_heals_and_rejects_unsafe_authority(
             )
             with pytest.raises(CodexBrokerError) as rejected:
                 _prepare_shared_runtime(
-                    executable,
+                    server,
                     native_home,
                     environment,
                     expected_user_id,
@@ -981,7 +971,7 @@ def test_shared_codex_runtime_self_heals_and_rejects_unsafe_authority(
         "HOME": str(root),
         "PATH": os.pathsep.join((str(root), os.environ["PATH"])),
     }
-    executable = discover_codex_executable(environment)
+    server = executable.discover_codex_executable(environment)
     with FakeCodexDaemon(
         native_home,
         app_server_version="0.146.0",
@@ -995,7 +985,7 @@ def test_shared_codex_runtime_self_heals_and_rejects_unsafe_authority(
             already_running=True,
         )
         runtime = _prepare_shared_runtime(
-            executable,
+            server,
             native_home,
             environment,
             None,
