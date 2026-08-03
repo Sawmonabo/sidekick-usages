@@ -3509,7 +3509,6 @@ authority gates.
 [claude-sessions]: https://code.claude.com/docs/en/sessions
 [claude-agent-sdk]: https://code.claude.com/docs/en/agent-sdk
 [claude-agent-streaming]: https://code.claude.com/docs/en/agent-sdk/streaming-vs-single-mode
-[claude-agent-input]: https://code.claude.com/docs/en/agent-sdk/user-input
 [claude-2-1-220]: https://github.com/anthropics/claude-code/releases/tag/v2.1.220
 [claude-ts-0-3-220]: https://github.com/anthropics/claude-agent-sdk-typescript/releases/tag/v0.3.220
 [claude-py-0-2-128]: https://github.com/anthropics/claude-agent-sdk-python/releases/tag/v0.2.128
