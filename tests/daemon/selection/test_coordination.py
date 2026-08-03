@@ -82,6 +82,7 @@ from sidekick_usages.providers.claude.structured.data_plane import (
 )
 from sidekick_usages.providers.claude.structured.models import (
     ClaudeStructuredBinding,
+    ClaudeStructuredInstallReceipt,
 )
 from tests.support.persistence import (
     make_application_paths,
@@ -284,7 +285,10 @@ class _SelectionAdapter:
             assert frame.protected_binding == binding
         finally:
             frame.close_protected_frame()
-        host.acknowledge(binding)
+        receipt = ClaudeStructuredInstallReceipt(
+            binding=binding, request_id=new_request_id()
+        )
+        host.acknowledge(receipt)
 
 
 class _ObservedOperationStore(SelectionOperationStore):
@@ -731,7 +735,6 @@ def test_three_participants_switch_without_interrupting_turns(
         journey.coordinator,
     )
     adapter.crash_after_install = loss_state == "live_unreachable"
-
     results: list[SelectionResult] = []
     selector = Thread(
         target=lambda: results.append(

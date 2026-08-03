@@ -60,11 +60,15 @@ from sidekick_usages.providers.claude.models import (
 from sidekick_usages.providers.claude.structured.codec import (
     clear_secret_buffer,
 )
+from sidekick_usages.providers.claude.structured.data_plane import (
+    ClaudeProtectedOAuthFrame,
+)
 from sidekick_usages.providers.claude.structured.models import (
     ClaudeStructuredAdoptionReceipt,
     ClaudeStructuredBinding,
     ClaudeStructuredError,
     ClaudeStructuredFailure,
+    ClaudeStructuredInstallReceipt,
 )
 from sidekick_usages.providers.claude.structured.process import (
     CLAUDE_STRUCTURED_ARTIFACT_SHA256,
@@ -484,13 +488,20 @@ def structured_capability_fixture(
 class StructuredSessionFixture:
     """One session with two exact synthetic authority transitions."""
 
-    session: ClaudeStructuredSession
     engine: ClaudeStructuredEngineFake
+    session: ClaudeStructuredSession
+    initial_frame: ClaudeProtectedOAuthFrame
+    initial_install: ClaudeStructuredInstallReceipt
+    binding_a: ClaudeStructuredBinding
     binding_b: ClaudeStructuredBinding
     binding_c: ClaudeStructuredBinding
+    oauth_a: str
     oauth_b: str
     oauth_c: str
     turn_id: TurnId
+    request_id_a: RequestId
+    request_id_b: RequestId
+    request_id_c: RequestId
 
 
 def structured_session_fixture(
@@ -532,28 +543,42 @@ def structured_session_fixture(
         oauth_c,
         9,
     )
-    request_ids = iter(
-        (
-            RequestId("77777777-7777-4777-8777-777777777777"),
-            RequestId("88888888-8888-4888-8888-888888888888"),
-        )
-    )
+    request_id_a = RequestId("10101010-1010-4010-8010-101010101010")
+    request_id_b = RequestId("77777777-7777-4777-8777-777777777777")
+    request_id_c = RequestId("88888888-8888-4888-8888-888888888888")
     engine = ClaudeStructuredEngineFake(
-        (StructuredResponseCase.SUCCESS, response),
-        (oauth_b, oauth_c),
+        (
+            StructuredResponseCase.SUCCESS,
+            StructuredResponseCase.SUCCESS,
+            response,
+        ),
+        (oauth_a, oauth_b, oauth_c),
+    )
+    request_ids = iter((request_id_a, request_id_b, request_id_c))
+    initial_frame = ClaudeProtectedOAuthFrame(
+        binding_a,
+        bytearray(oauth_a, encoding="utf-8"),
+    )
+    session, initial_install = ClaudeStructuredSession.bootstrap(
+        engine,
+        initial_frame,
+        request_id_factory=lambda: next(request_ids),
     )
     return StructuredSessionFixture(
-        session=ClaudeStructuredSession(
-            engine,
-            binding_a,
-            request_id_factory=lambda: next(request_ids),
-        ),
         engine=engine,
+        session=session,
+        initial_frame=initial_frame,
+        initial_install=initial_install,
+        binding_a=binding_a,
         binding_b=binding_b,
         binding_c=binding_c,
+        oauth_a=oauth_a,
         oauth_b=oauth_b,
         oauth_c=oauth_c,
         turn_id=TurnId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+        request_id_a=request_id_a,
+        request_id_b=request_id_b,
+        request_id_c=request_id_c,
     )
 
 

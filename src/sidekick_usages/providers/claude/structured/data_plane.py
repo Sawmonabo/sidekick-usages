@@ -31,13 +31,14 @@ from sidekick_usages.providers.claude.structured.codec import (
     decode_protected_projection,
     encode_protected_ack,
     encode_protected_exchange_instruction,
+    encode_protected_install_receipt,
     encode_protected_projection,
-    encode_protected_receipt,
     require_protected_ack,
-    require_protected_receipt,
+    require_protected_install_receipt,
 )
 from sidekick_usages.providers.claude.structured.models import (
     ClaudeStructuredBinding,
+    ClaudeStructuredInstallReceipt,
 )
 from sidekick_usages.serialization.framing import (
     BoundedFrameDecoder,
@@ -108,7 +109,14 @@ class _ClaudeParticipantChannel:
     endpoint: socket.socket
     connection_generation: int
     peer: ProcessIdentity
-    binding: ClaudeStructuredBinding | None = None
+    install_receipt: ClaudeStructuredInstallReceipt | None = None
+
+    @property
+    def binding(self) -> ClaudeStructuredBinding | None:
+        """Return the binding proved by the last exact install receipt."""
+        if self.install_receipt is None:
+            return None
+        return self.install_receipt.binding
 
 
 class ClaudeParticipantChannelTransaction:
@@ -370,7 +378,7 @@ class ClaudeParticipantChannelRegistry:
             channel.endpoint.settimeout(CLAUDE_PROTECTED_RESPONSE_SECONDS)
             channel.endpoint.sendall(frame)
             receipt = _receive_socket_frame(channel.endpoint)
-            require_protected_receipt(
+            install_receipt = require_protected_install_receipt(
                 receipt,
                 binding,
                 nonce,
@@ -383,7 +391,7 @@ class ClaudeParticipantChannelRegistry:
                     raise ClaudeProtectedChannelError(
                         "The protected participant reconnected during install."
                     )
-                current.binding = binding
+                current.install_receipt = install_receipt
         except OSError, ValueError:
             raise ClaudeProtectedChannelError(
                 "The protected Claude install was not acknowledged."
@@ -495,21 +503,28 @@ class ClaudeProtectedHostChannel:
             if oauth is not None:
                 clear_mutable_buffer(oauth)
 
-    def acknowledge(self, binding: ClaudeStructuredBinding) -> None:
+    def acknowledge(
+        self,
+        receipt: ClaudeStructuredInstallReceipt,
+    ) -> None:
         """Acknowledge one successfully installed exact binding."""
         pending = self._pending
-        if self._closed or pending is None or pending[0] != binding:
+        if (
+            self._closed
+            or pending is None
+            or pending[0] != receipt.binding
+        ):
             raise ClaudeProtectedChannelError(
                 "The protected host acknowledgement does not match."
             )
-        receipt = encode_protected_receipt(
-            binding,
+        payload = encode_protected_install_receipt(
+            receipt,
             pending[1],
             self._participant_id,
             self._connection_generation,
         )
         frame = encode_bounded_frame(
-            receipt,
+            payload,
             MAX_CLAUDE_PROTECTED_FRAME_BYTES,
         )
         try:

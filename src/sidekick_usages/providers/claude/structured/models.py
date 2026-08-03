@@ -12,6 +12,7 @@ from sidekick_usages.core.accounts.types import (
     RequestId,
     SidekickAccountId,
 )
+from sidekick_usages.core.identifiers import CanonicalUuid
 from sidekick_usages.core.selection.models import SelectionEpoch
 from sidekick_usages.core.selection.types import TurnId
 from sidekick_usages.platform.types import HostPlatform
@@ -24,6 +25,7 @@ class ClaudeStructuredFailure(StrEnum):
     ACTIVITY_ACTIVE = "activity_active"
     ACTIVITY_INVALID = "activity_invalid"
     AUTHORITY_MISMATCH = "authority_mismatch"
+    CONVERSATION_MISMATCH = "conversation_mismatch"
     PROTOCOL_MALFORMED = "protocol_malformed"
     PROTOCOL_TIMEOUT = "protocol_timeout"
     PROTOCOL_EOF = "protocol_eof"
@@ -53,6 +55,29 @@ class ClaudeStructuredActivityKind(StrEnum):
     TERMINAL = "terminal"
 
 
+class ClaudeStructuredActivityState(StrEnum):
+    """Closed activity transitions derived from provider stream events."""
+
+    STARTED = "started"
+    FINISHED = "finished"
+
+
+class ClaudeStructuredConversationId(CanonicalUuid):
+    """Stable conversation identity emitted by one structured engine."""
+
+    _name = "Claude structured conversation ID"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ClaudeStructuredStreamEvent:
+    """One strict provider activity transition for a conversation."""
+
+    conversation_id: ClaudeStructuredConversationId
+    activity_kind: ClaudeStructuredActivityKind
+    activity_id: str
+    activity_state: ClaudeStructuredActivityState
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ClaudeStructuredBinding:
     """Post-commit authority bound to one participant epoch."""
@@ -64,8 +89,8 @@ class ClaudeStructuredBinding:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class ClaudeStructuredReadyReceipt:
-    """Correlated cache-clear acknowledgement for one exact binding."""
+class ClaudeStructuredInstallReceipt:
+    """Correlated local OAuth installation for one exact binding."""
 
     binding: ClaudeStructuredBinding
     request_id: RequestId
@@ -171,6 +196,9 @@ def _failure_message(code: ClaudeStructuredFailure) -> str:
         ),
         ClaudeStructuredFailure.AUTHORITY_MISMATCH: (
             "The structured Claude authority binding does not match."
+        ),
+        ClaudeStructuredFailure.CONVERSATION_MISMATCH: (
+            "The structured Claude conversation identity does not match."
         ),
         ClaudeStructuredFailure.PROTOCOL_MALFORMED: (
             "The structured Claude control response is invalid."

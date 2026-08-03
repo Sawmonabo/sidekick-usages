@@ -20,13 +20,16 @@ from sidekick_usages.providers.claude.structured.codec import (
 )
 from sidekick_usages.providers.claude.structured.models import (
     ClaudeStructuredActivityKind,
+    ClaudeStructuredActivityState,
     ClaudeStructuredAdoptionReceipt,
     ClaudeStructuredBinding,
+    ClaudeStructuredConversationId,
     ClaudeStructuredEngine,
     ClaudeStructuredError,
     ClaudeStructuredFailure,
+    ClaudeStructuredInstallReceipt,
     ClaudeStructuredProtectedFrame,
-    ClaudeStructuredReadyReceipt,
+    ClaudeStructuredStreamEvent,
     ClaudeStructuredTurnTransmitter,
 )
 
@@ -49,12 +52,42 @@ class ClaudeStructuredSession:
     ) -> None:
         self._engine = engine
         self._binding: ClaudeStructuredBinding = binding
+        self._conversation_id: ClaudeStructuredConversationId | None = None
         self._request_id_factory = request_id_factory
         self._pending: ClaudeStructuredBinding | None = None
         self._activities: set[tuple[ClaudeStructuredActivityKind, str]] = set()
         self._turns: dict[TurnId, ClaudeStructuredBinding] = {}
         self._consumed_request_ids: set[RequestId] = set()
         self._issued_request_ids: set[RequestId] = set()
+
+    @classmethod
+    def bootstrap(
+        cls,
+        engine: ClaudeStructuredEngine,
+        frame: ClaudeStructuredProtectedFrame,
+        *,
+        request_id_factory: Callable[[], RequestId] = _new_request_id,
+    ) -> tuple[ClaudeStructuredSession, ClaudeStructuredInstallReceipt]:
+        """Install initial authority before constructing a bound session."""
+        binding = frame.protected_binding
+        consumed_request_ids: set[RequestId] = set()
+        issued_request_ids: set[RequestId] = set()
+        receipt = cls._install_oauth(
+            engine,
+            frame,
+            binding,
+            request_id_factory,
+            consumed_request_ids,
+            issued_request_ids,
+        )
+        session = cls(
+            engine,
+            binding,
+            request_id_factory=request_id_factory,
+        )
+        session._consumed_request_ids = consumed_request_ids
+        session._issued_request_ids = issued_request_ids
+        return session, receipt
 
     @property
     def process_id(self) -> int:
@@ -65,6 +98,11 @@ class ClaudeStructuredSession:
     def binding(self) -> ClaudeStructuredBinding:
         """Return the last exactly acknowledged authority binding."""
         return self._binding
+
+    @property
+    def conversation_id(self) -> ClaudeStructuredConversationId | None:
+        """Return the unchanged provider-emitted conversation identity."""
+        return self._conversation_id
 
     def prepare_target(self, binding: ClaudeStructuredBinding) -> None:
         """Bind one exact post-commit target without changing authority."""
@@ -91,25 +129,21 @@ class ClaudeStructuredSession:
         if self._turns.pop(turn_id, None) is None:
             self._activity_invalid()
 
-    def begin_activity(
-        self,
-        kind: ClaudeStructuredActivityKind,
-        activity_id: str,
-    ) -> None:
-        """Track one provider activity that prevents an OAuth update."""
-        self._require_activity_id(activity_id)
-        activity = (kind, activity_id)
-        if activity in self._activities:
-            self._activity_invalid()
-        self._activities.add(activity)
-
-    def end_activity(
-        self,
-        kind: ClaudeStructuredActivityKind,
-        activity_id: str,
-    ) -> None:
-        """Drain one exact provider activity without underflow."""
-        activity = (kind, activity_id)
+    def observe_event(self, event: ClaudeStructuredStreamEvent) -> None:
+        """Derive one idle-gate transition from a strict stream event."""
+        self._require_activity_id(event.activity_id)
+        if self._conversation_id is None:
+            self._conversation_id = event.conversation_id
+        elif self._conversation_id != event.conversation_id:
+            raise ClaudeStructuredError(
+                ClaudeStructuredFailure.CONVERSATION_MISMATCH
+            )
+        activity = (event.activity_kind, event.activity_id)
+        if event.activity_state is ClaudeStructuredActivityState.STARTED:
+            if activity in self._activities:
+                self._activity_invalid()
+            self._activities.add(activity)
+            return
         if activity not in self._activities:
             self._activity_invalid()
         self._activities.remove(activity)
@@ -117,56 +151,28 @@ class ClaudeStructuredSession:
     def update_oauth(
         self,
         frame: ClaudeStructuredProtectedFrame,
-    ) -> ClaudeStructuredReadyReceipt:
+    ) -> ClaudeStructuredInstallReceipt:
         """Consume one protected OAuth frame at an idle boundary."""
-        oauth_buffer: bytearray | None = None
-        try:
-            pending = self._pending
-            if pending is None:
-                self._authority_mismatch()
-            if self._turns or self._activities:
-                raise ClaudeStructuredError(
-                    ClaudeStructuredFailure.ACTIVITY_ACTIVE
-                )
-            if frame.protected_binding != pending:
-                self._authority_mismatch()
-            oauth_buffer = frame.take_protected_oauth()
-            if (
-                claude_access_token_buffer_generation(oauth_buffer)
-                != pending.generation
-            ):
-                self._authority_mismatch()
-            request_id = self._request_id_factory()
-            if request_id in self._issued_request_ids:
-                raise ClaudeStructuredError(
-                    ClaudeStructuredFailure.PROTOCOL_MALFORMED
-                )
-            self._issued_request_ids.add(request_id)
-            request = encode_oauth_update(request_id, oauth_buffer)
-            try:
-                response = self._engine.exchange(
-                    request,
-                    request_id,
-                    _CONTROL_TIMEOUT_SECONDS,
-                )
-            finally:
-                clear_secret_buffer(request)
-            decode_oauth_update_success(
-                response,
-                request_id,
-                frozenset(self._consumed_request_ids),
-            )
-            self._consumed_request_ids.add(request_id)
-        finally:
-            if oauth_buffer is not None:
-                clear_secret_buffer(oauth_buffer)
+        pending = self._pending
+        if pending is None:
             frame.close_protected_frame()
+            self._authority_mismatch()
+        if self._turns or self._activities:
+            frame.close_protected_frame()
+            raise ClaudeStructuredError(
+                ClaudeStructuredFailure.ACTIVITY_ACTIVE
+            )
+        receipt = self._install_oauth(
+            self._engine,
+            frame,
+            pending,
+            self._request_id_factory,
+            self._consumed_request_ids,
+            self._issued_request_ids,
+        )
         self._binding = pending
         self._pending = None
-        return ClaudeStructuredReadyReceipt(
-            binding=pending,
-            request_id=request_id,
-        )
+        return receipt
 
     def route_turn(
         self,
@@ -197,6 +203,55 @@ class ClaudeStructuredSession:
             )
         except TypeError, ValueError:
             ClaudeStructuredSession._activity_invalid()
+
+    @staticmethod
+    def _install_oauth(
+        engine: ClaudeStructuredEngine,
+        frame: ClaudeStructuredProtectedFrame,
+        binding: ClaudeStructuredBinding,
+        request_id_factory: Callable[[], RequestId],
+        consumed_request_ids: set[RequestId],
+        issued_request_ids: set[RequestId],
+    ) -> ClaudeStructuredInstallReceipt:
+        oauth_buffer: bytearray | None = None
+        try:
+            if frame.protected_binding != binding:
+                ClaudeStructuredSession._authority_mismatch()
+            oauth_buffer = frame.take_protected_oauth()
+            if (
+                claude_access_token_buffer_generation(oauth_buffer)
+                != binding.generation
+            ):
+                ClaudeStructuredSession._authority_mismatch()
+            request_id = request_id_factory()
+            if request_id in issued_request_ids:
+                raise ClaudeStructuredError(
+                    ClaudeStructuredFailure.PROTOCOL_MALFORMED
+                )
+            issued_request_ids.add(request_id)
+            request = encode_oauth_update(request_id, oauth_buffer)
+            try:
+                response = engine.exchange(
+                    request,
+                    request_id,
+                    _CONTROL_TIMEOUT_SECONDS,
+                )
+            finally:
+                clear_secret_buffer(request)
+            decode_oauth_update_success(
+                response,
+                request_id,
+                frozenset(consumed_request_ids),
+            )
+            consumed_request_ids.add(request_id)
+            return ClaudeStructuredInstallReceipt(
+                binding=binding,
+                request_id=request_id,
+            )
+        finally:
+            if oauth_buffer is not None:
+                clear_secret_buffer(oauth_buffer)
+            frame.close_protected_frame()
 
     @staticmethod
     def _activity_invalid() -> NoReturn:

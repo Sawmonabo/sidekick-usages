@@ -23,6 +23,7 @@ from sidekick_usages.providers.claude.structured.models import (
     ClaudeStructuredBinding,
     ClaudeStructuredError,
     ClaudeStructuredFailure,
+    ClaudeStructuredInstallReceipt,
 )
 from sidekick_usages.serialization.json import (
     JsonEncodeError,
@@ -51,6 +52,9 @@ _PROJECTION_KEYS = frozenset(
 _PARTICIPANT_PROJECTION_KEYS = _PROJECTION_KEYS | {
     "participant_id",
     "connection_generation",
+}
+_INSTALL_RECEIPT_KEYS = _PARTICIPANT_PROJECTION_KEYS | {
+    "structured_request_id"
 }
 _WORKER_PROJECTION_KEYS = _PROJECTION_KEYS | {"child_operation_id"}
 _EXCHANGE_KEYS = frozenset(
@@ -230,8 +234,8 @@ def decode_protected_projection(
         _malformed_protected()
 
 
-def encode_protected_receipt(
-    binding: ClaudeStructuredBinding,
+def encode_protected_install_receipt(
+    receipt: ClaudeStructuredInstallReceipt,
     nonce: RequestId,
     participant_id: ParticipantId,
     connection_generation: int,
@@ -239,24 +243,25 @@ def encode_protected_receipt(
     """Encode one secret-free exact participant install receipt."""
     return encode_compact_json(
         {
-            "operation_id": str(binding.operation_id),
-            "account_id": str(binding.account_id),
-            "generation": str(binding.generation),
-            "epoch": binding.epoch.value,
+            "operation_id": str(receipt.binding.operation_id),
+            "account_id": str(receipt.binding.account_id),
+            "generation": str(receipt.binding.generation),
+            "epoch": receipt.binding.epoch.value,
             "nonce": str(nonce),
             "participant_id": str(participant_id),
             "connection_generation": connection_generation,
+            "structured_request_id": str(receipt.request_id),
         }
     )
 
 
-def require_protected_receipt(
+def require_protected_install_receipt(
     payload: bytearray,
     binding: ClaudeStructuredBinding,
     nonce: RequestId,
     participant_id: ParticipantId,
     connection_generation: int,
-) -> None:
+) -> ClaudeStructuredInstallReceipt:
     """Require one exact secret-free participant install receipt."""
     try:
         root = _decode_protected_metadata(payload)
@@ -269,8 +274,20 @@ def require_protected_receipt(
             "participant_id": str(participant_id),
             "connection_generation": connection_generation,
         }
-        if root != expected:
+        if set(root) != _INSTALL_RECEIPT_KEYS or any(
+            root.get(name) != value for name, value in expected.items()
+        ):
             _malformed_protected()
+        try:
+            request_id = RequestId(
+                _protected_string(root, "structured_request_id")
+            )
+        except ValueError:
+            _malformed_protected()
+        return ClaudeStructuredInstallReceipt(
+            binding=binding,
+            request_id=request_id,
+        )
     finally:
         clear_secret_buffer(payload)
 

@@ -82,9 +82,13 @@ from sidekick_usages.providers.claude.structured.data_plane import (
 )
 from sidekick_usages.providers.claude.structured.models import (
     ClaudeStructuredActivityKind,
+    ClaudeStructuredActivityState,
     ClaudeStructuredCapability,
+    ClaudeStructuredConversationId,
     ClaudeStructuredError,
     ClaudeStructuredFailure,
+    ClaudeStructuredInstallReceipt,
+    ClaudeStructuredStreamEvent,
 )
 from sidekick_usages.providers.claude.structured.process import (
     CLAUDE_STRUCTURED_EMBEDDED_BUILD_TIME,
@@ -774,21 +778,32 @@ def test_structured_session_updates_oauth_only_at_an_idle_turn_boundary(
     response_case: StructuredResponseCase,
 ) -> None:
     fixture = structured_session_fixture(response_case)
+    engine, binding_b, binding_c, turn_id = (
+        fixture.engine,
+        fixture.binding_b,
+        fixture.binding_c,
+        fixture.turn_id,
+    )
     session = fixture.session
-    engine = fixture.engine
-    process_id = session.process_id
-    selection_enabled = not protected_selection_enabled(
-        ProviderId.CLAUDE
-    ) and protected_selection_enabled(ProviderId.CODEX)
-    binding_b = fixture.binding_b
-    binding_c = fixture.binding_c
-    turn_id = fixture.turn_id
-    mutable = partial(bytearray, encoding="utf-8")
     protected = ClaudeProtectedOAuthFrame
+    mutable = partial(bytearray, encoding="utf-8")
+    assert fixture.initial_install == ClaudeStructuredInstallReceipt(
+        binding=fixture.binding_a, request_id=fixture.request_id_a
+    )
+    assert fixture.initial_frame.is_cleared
     session.prepare_target(binding_b)
     protected_b = protected(binding_b, mutable(fixture.oauth_b))
-    ready_b = session.update_oauth(protected_b)
-    assert (ready_b.binding, protected_b.is_cleared) == (binding_b, True)
+    install_b = session.update_oauth(protected_b)
+    assert (
+        install_b,
+        protected_b.is_cleared,
+    ) == (
+        ClaudeStructuredInstallReceipt(
+            binding=binding_b,
+            request_id=fixture.request_id_b,
+        ),
+        True,
+    )
     session.route_turn(turn_id, binding_b, engine.transmit_turn)
     session.end_turn(turn_id)
 
@@ -801,20 +816,37 @@ def test_structured_session_updates_oauth_only_at_an_idle_turn_boundary(
     with pytest.raises(ClaudeProtectedChannelError):
         session.update_oauth(rejected)
     assert rejected.is_cleared
+    conversation = ClaudeStructuredConversationId
+    conversation_id = conversation("99999999-9999-4999-8999-999999999999")
     for kind in ClaudeStructuredActivityKind:
-        session.begin_activity(kind, kind.value)
+        session.observe_event(
+            ClaudeStructuredStreamEvent(
+                conversation_id=conversation_id, activity_kind=kind,
+                activity_id=kind.value,
+                activity_state=ClaudeStructuredActivityState.STARTED,
+            )
+        )
         rejected = protected(binding_c, mutable(fixture.oauth_c))
         with pytest.raises(ClaudeStructuredError):
             session.update_oauth(rejected)
-        assert rejected.is_cleared
-        session.end_activity(kind, kind.value)
+        session.observe_event(
+            ClaudeStructuredStreamEvent(
+                conversation_id=conversation_id, activity_kind=kind,
+                activity_id=kind.value,
+                activity_state=ClaudeStructuredActivityState.FINISHED,
+            )
+        )
 
     protected_c = protected(binding_c, mutable(fixture.oauth_c))
     if response_case is StructuredResponseCase.SUCCESS:
-        ready_c = session.update_oauth(protected_c)
+        install_c = session.update_oauth(protected_c)
         adoption = session.route_turn(turn_id, binding_c, engine.transmit_turn)
         session.end_turn(turn_id)
-        assert ready_c.binding == adoption.binding == binding_c
+        assert install_c == ClaudeStructuredInstallReceipt(
+            binding=binding_c,
+            request_id=fixture.request_id_c,
+        )
+        assert install_c.binding == adoption.binding == binding_c
         assert engine.events == [
             ("adoption", "8"),
             ("prompt", "8"),
@@ -835,11 +867,22 @@ def test_structured_session_updates_oauth_only_at_an_idle_turn_boundary(
     )
     assert all(not any(buffer) for buffer in engine.cleared_request_buffers)
     assert all((protected_c.is_cleared, *engine.wiped_before_response))
-    for candidate in (session, ready_b, engine):
+    for candidate in (
+        session,
+        fixture.initial_install,
+        install_b,
+        engine,
+    ):
         representation = repr(candidate)
+        assert fixture.oauth_a not in representation
         assert fixture.oauth_b not in representation
         assert fixture.oauth_c not in representation
-    assert (session.process_id, selection_enabled) == (process_id, True)
+    assert (
+        session.process_id,
+        session.conversation_id,
+        not protected_selection_enabled(ProviderId.CLAUDE)
+        and protected_selection_enabled(ProviderId.CODEX),
+    ) == (engine.process_id, conversation_id, True)
 
 
 @pytest.mark.parametrize("mutation", [None, *StructuredCapabilityMutation])
