@@ -263,6 +263,7 @@ class SelectionStatus:
     reachable_count: int = 0
     required_count: int = 0
     ready_count: int = 0
+    confirmed_dead_count: int = 0
     adopted_count: int = 0
     unreachable_count: int = 0
     active_turn_count: int = 0
@@ -318,6 +319,7 @@ class SelectionStatus:
             if (
                 self.required_count
                 or self.ready_count
+                or self.confirmed_dead_count
                 or self.queued_turn_count
             ):
                 raise ValueError(
@@ -354,7 +356,7 @@ class SelectionStatus:
             raise ValueError("Precommit selection cannot claim readiness.")
         if (
             self.code is SelectionCode.PARTICIPANT_LOST_AFTER_COMMIT
-            and self.ready_count >= self.required_count
+            and not self.confirmed_dead_count
         ):
             raise ValueError("Lost-participant status requires a lost member.")
 
@@ -365,6 +367,7 @@ class SelectionStatus:
             self.reachable_count,
             self.required_count,
             self.ready_count,
+            self.confirmed_dead_count,
             self.adopted_count,
             self.unreachable_count,
             self.active_turn_count,
@@ -372,7 +375,7 @@ class SelectionStatus:
         )
         if any(type(value) is not int or value < 0 for value in counts):
             raise ValueError("Selection status counts are invalid.")
-        participant_counts = counts[:6]
+        participant_counts = counts[:7]
         if (
             any(
                 value > MAX_PARTICIPANTS_PER_PROVIDER
@@ -387,6 +390,9 @@ class SelectionStatus:
             > self.registered_count
             or self.required_count > self.registered_count
             or self.ready_count > self.required_count
+            or self.confirmed_dead_count > self.required_count
+            or self.ready_count + self.confirmed_dead_count
+            > self.required_count
             or self.ready_count > self.reachable_count
             or self.adopted_count > self.registered_count
         ):

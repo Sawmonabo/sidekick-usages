@@ -1,6 +1,8 @@
 """Bounded secret-free supervisor control protocol."""
 
+import os
 import socket
+from array import array
 from collections import deque
 from contextlib import suppress
 from threading import Event
@@ -122,31 +124,92 @@ class FramedTransport:
         self._connection = connection
         self._decoder = FrameDecoder()
         self._pending: deque[bytes] = deque()
+        self._pending_descriptors: deque[int | None] = deque()
+        self._received_descriptor: int | None = None
         self._closed = Event()
 
     def receive_payload(self) -> bytes:
         """Block until one complete payload is available."""
+        payload, descriptor = self.receive_payload_with_descriptor()
+        if descriptor is not None:
+            os.close(descriptor)
+            raise MalformedFrameError
+        return payload
+
+    def receive_payload_with_descriptor(self) -> tuple[bytes, int | None]:
+        """Receive one payload and its exact optional SCM_RIGHTS descriptor."""
         if self._pending:
-            return self._pending.popleft()
+            return self._take_pending()
         while True:
-            try:
-                chunk = self._connection.recv(READ_CHUNK_BYTES)
-            except OSError:
-                if not self._closed.is_set():
-                    raise
-                chunk = b""
+            chunk, descriptor = self._read_chunk()
             if not chunk:
-                self._decoder.finish()
-                raise ConnectionClosedError(
-                    "The local control connection closed."
-                )
-            self._pending.extend(self._decoder.feed(chunk))
+                self._raise_closed(descriptor)
+            self._retain_descriptor(descriptor)
+            self._queue_frames(self._decoder.feed(chunk))
             if self._pending:
-                return self._pending.popleft()
+                return self._take_pending()
+
+    def _take_pending(self) -> tuple[bytes, int | None]:
+        return (
+            self._pending.popleft(),
+            self._pending_descriptors.popleft(),
+        )
+
+    def _read_chunk(self) -> tuple[bytes, int | None]:
+        try:
+            return self._receive_chunk()
+        except OSError:
+            if not self._closed.is_set():
+                raise
+            return b"", None
+
+    def _raise_closed(self, descriptor: int | None) -> None:
+        if descriptor is not None:
+            os.close(descriptor)
+        if self._received_descriptor is not None:
+            os.close(self._received_descriptor)
+            self._received_descriptor = None
+        self._decoder.finish()
+        raise ConnectionClosedError("The local control connection closed.")
+
+    def _retain_descriptor(self, descriptor: int | None) -> None:
+        if descriptor is None:
+            return
+        if self._received_descriptor is not None:
+            os.close(descriptor)
+            os.close(self._received_descriptor)
+            self._received_descriptor = None
+            raise MalformedFrameError
+        self._received_descriptor = descriptor
+
+    def _queue_frames(self, frames: tuple[bytes, ...]) -> None:
+        for index, frame in enumerate(frames):
+            self._pending.append(frame)
+            self._pending_descriptors.append(
+                self._received_descriptor if index == 0 else None
+            )
+            if index == 0:
+                self._received_descriptor = None
 
     def receive_request(self) -> ControlRequest:
         """Receive and strictly decode one client request."""
         return decode_request(self.receive_payload())
+
+    def receive_request_with_attachment(
+        self,
+    ) -> tuple[ControlRequest, socket.socket | None]:
+        """Decode one request and take ownership of its optional endpoint."""
+        payload, descriptor = self.receive_payload_with_descriptor()
+        try:
+            request = decode_request(payload)
+            if descriptor is None:
+                return request, None
+            os.set_inheritable(descriptor, False)
+            return request, socket.socket(fileno=descriptor)
+        except BaseException:
+            if descriptor is not None:
+                os.close(descriptor)
+            raise
 
     def receive_event(self) -> ControlEvent:
         """Receive and strictly decode one supervisor event."""
@@ -156,6 +219,27 @@ class FramedTransport:
         """Encode and send one request frame."""
         self._connection.sendall(encode_request(request))
 
+    def send_request_with_attachment(
+        self,
+        request: ControlRequest,
+        endpoint: socket.socket,
+    ) -> None:
+        """Send one frame carrying exactly one duplicated local descriptor."""
+        if not isinstance(self._connection, socket.socket):
+            raise OSError("The control connection cannot transfer endpoints.")
+        frame = encode_request(request)
+        rights = array("i", (endpoint.fileno(),))
+        sent = self._connection.sendmsg(
+            (frame,),
+            ((socket.SOL_SOCKET, socket.SCM_RIGHTS, rights),),
+        )
+        if sent <= 0:
+            raise ConnectionClosedError(
+                "The local control connection closed."
+            )
+        if sent < len(frame):
+            self._connection.sendall(frame[sent:])
+
     def send_event(self, event: ControlEvent) -> None:
         """Encode and send one event frame."""
         self._connection.sendall(encode_event(event))
@@ -163,9 +247,51 @@ class FramedTransport:
     def close(self) -> None:
         """Wake blocked I/O and close the connected stream."""
         self._closed.set()
+        if self._received_descriptor is not None:
+            os.close(self._received_descriptor)
+            self._received_descriptor = None
+        while self._pending_descriptors:
+            descriptor = self._pending_descriptors.popleft()
+            if descriptor is not None:
+                os.close(descriptor)
         with suppress(OSError):
             self._connection.shutdown(socket.SHUT_RDWR)
         self._connection.close()
+
+    def _receive_chunk(self) -> tuple[bytes, int | None]:
+        if not isinstance(self._connection, socket.socket):
+            return self._connection.recv(READ_CHUNK_BYTES), None
+        item_size = array("i").itemsize
+        receive_flags = getattr(socket, "MSG_CMSG_CLOEXEC", 0)
+        chunk, ancillary, flags, _address = self._connection.recvmsg(
+            READ_CHUNK_BYTES,
+            socket.CMSG_SPACE(item_size),
+            receive_flags,
+        )
+        descriptors: list[int] = []
+        invalid_ancillary = False
+        for level, kind, payload in ancillary:
+            if level != socket.SOL_SOCKET or kind != socket.SCM_RIGHTS:
+                invalid_ancillary = True
+                continue
+            if len(payload) < item_size:
+                invalid_ancillary = True
+                continue
+            values = array("i")
+            aligned_size = len(payload) - len(payload) % item_size
+            values.frombytes(payload[:aligned_size])
+            descriptors.extend(values)
+        if (
+            flags & socket.MSG_CTRUNC
+            or invalid_ancillary
+            or len(descriptors) > 1
+        ):
+            for descriptor in descriptors:
+                os.close(descriptor)
+            raise MalformedFrameError
+        if descriptors and os.get_inheritable(descriptors[0]):
+            os.set_inheritable(descriptors[0], False)
+        return chunk, None if not descriptors else descriptors[0]
 
 
 def encode_frame(payload: bytes) -> bytes:

@@ -10,6 +10,7 @@ from threading import Event, Lock
 
 from sidekick_usages.core.accounts.types import OperationId
 from sidekick_usages.core.selection.models import DueOperation
+from sidekick_usages.core.selection.policy import protected_selection_enabled
 from sidekick_usages.core.selection.types import OperationKind
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.models.worker import (
@@ -38,7 +39,16 @@ _CANCELLATION_POLL_SECONDS = 0.1
 
 def operation_requires_worker_exchange(operation: DueOperation) -> bool:
     """Return whether one exact provider operation requires an exchange."""
-    return operation.kind is OperationKind.CODEX_CALLBACK or (
+    return (
+        protected_selection_enabled(ProviderId.CLAUDE)
+        and
+        operation.provider_id is ProviderId.CLAUDE
+        and operation.kind
+        in {
+            OperationKind.SELECTION_COMMIT,
+            OperationKind.CLAUDE_PARTICIPANT_BIND,
+        }
+    ) or operation.kind is OperationKind.CODEX_CALLBACK or (
         operation.provider_id is ProviderId.CODEX
         and operation.kind
         in {
@@ -56,7 +66,8 @@ def operation_requires_provider_preparation(
 ) -> bool:
     """Return whether resident provider state must precede worker launch."""
     return (
-        operation_requires_worker_exchange(operation)
+        operation.provider_id is ProviderId.CODEX
+        and operation_requires_worker_exchange(operation)
         and operation.kind is not OperationKind.CODEX_CALLBACK
     ) or (
         operation.provider_id is ProviderId.CODEX

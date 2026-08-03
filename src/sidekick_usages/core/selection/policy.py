@@ -23,6 +23,11 @@ from sidekick_usages.core.selection.types import (
     SelectionPhase,
 )
 from sidekick_usages.core.time import as_utc
+from sidekick_usages.core.types import ProviderId
+
+_PROTECTED_SELECTION_PROVIDERS: frozenset[ProviderId] = frozenset(
+    {ProviderId.CODEX}
+)
 
 _ACTIVATION_TRANSITIONS: dict[
     ActivationPhase,
@@ -120,6 +125,11 @@ _SELECTION_TRANSITIONS: dict[
         {SelectionPhase.RECOVERING, SelectionPhase.AWAITING_READY}
     ),
 }
+
+
+def protected_selection_enabled(provider_id: ProviderId) -> bool:
+    """Return whether protected selection is released for one provider."""
+    return provider_id in _PROTECTED_SELECTION_PROVIDERS
 
 
 def require_selection_transition(

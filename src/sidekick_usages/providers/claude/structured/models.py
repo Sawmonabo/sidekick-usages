@@ -106,11 +106,35 @@ class ClaudeStructuredEngine(Protocol):
     ) -> bytes:
         """Exchange one correlated bounded control frame without retry."""
 
+    def send_interactive(
+        self,
+        frame: bytearray,
+        timeout_seconds: float,
+    ) -> None:
+        """Send one bounded typed interactive frame."""
+
+    def receive_event(self, timeout_seconds: float) -> bytes:
+        """Return one bounded typed interactive event frame."""
+
     def close_input(self) -> None:
         """Close the structured input without signalling the child."""
 
     def wait(self, timeout_seconds: float) -> int:
         """Return the official child process's ordinary exit status."""
+
+
+class ClaudeStructuredProtectedFrame(Protocol):
+    """Single-use mutable OAuth projection received on a protected channel."""
+
+    @property
+    def protected_binding(self) -> ClaudeStructuredBinding:
+        """Return the secret-free authority binding on this frame."""
+
+    def take_protected_oauth(self) -> bytearray:
+        """Transfer the protected mutable OAuth buffer exactly once."""
+
+    def close_protected_frame(self) -> None:
+        """Clear every credential reference retained by the frame."""
 
 
 class ClaudeStructuredEngineFactory(Protocol):

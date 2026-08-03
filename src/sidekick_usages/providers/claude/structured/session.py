@@ -11,7 +11,7 @@ from sidekick_usages.core.accounts.validation import (
 )
 from sidekick_usages.core.selection.types import TurnId
 from sidekick_usages.providers.claude.auth.generation import (
-    claude_access_token_generation,
+    claude_access_token_buffer_generation,
 )
 from sidekick_usages.providers.claude.structured.codec import (
     clear_secret_buffer,
@@ -25,6 +25,7 @@ from sidekick_usages.providers.claude.structured.models import (
     ClaudeStructuredEngine,
     ClaudeStructuredError,
     ClaudeStructuredFailure,
+    ClaudeStructuredProtectedFrame,
     ClaudeStructuredReadyReceipt,
     ClaudeStructuredTurnTransmitter,
 )
@@ -113,38 +114,53 @@ class ClaudeStructuredSession:
             self._activity_invalid()
         self._activities.remove(activity)
 
-    def update_oauth(self, oauth: str) -> ClaudeStructuredReadyReceipt:
-        """Update OAuth once at an idle boundary and return readiness."""
-        pending = self._pending
-        if pending is None:
-            self._authority_mismatch()
-        if self._turns or self._activities:
-            raise ClaudeStructuredError(
-                ClaudeStructuredFailure.ACTIVITY_ACTIVE
-            )
-        if claude_access_token_generation(oauth) != pending.generation:
-            self._authority_mismatch()
-        request_id = self._request_id_factory()
-        if request_id in self._issued_request_ids:
-            raise ClaudeStructuredError(
-                ClaudeStructuredFailure.PROTOCOL_MALFORMED
-            )
-        self._issued_request_ids.add(request_id)
-        request = encode_oauth_update(request_id, oauth)
+    def update_oauth(
+        self,
+        frame: ClaudeStructuredProtectedFrame,
+    ) -> ClaudeStructuredReadyReceipt:
+        """Consume one protected OAuth frame at an idle boundary."""
+        oauth_buffer: bytearray | None = None
         try:
-            response = self._engine.exchange(
-                request,
+            pending = self._pending
+            if pending is None:
+                self._authority_mismatch()
+            if self._turns or self._activities:
+                raise ClaudeStructuredError(
+                    ClaudeStructuredFailure.ACTIVITY_ACTIVE
+                )
+            if frame.protected_binding != pending:
+                self._authority_mismatch()
+            oauth_buffer = frame.take_protected_oauth()
+            if (
+                claude_access_token_buffer_generation(oauth_buffer)
+                != pending.generation
+            ):
+                self._authority_mismatch()
+            request_id = self._request_id_factory()
+            if request_id in self._issued_request_ids:
+                raise ClaudeStructuredError(
+                    ClaudeStructuredFailure.PROTOCOL_MALFORMED
+                )
+            self._issued_request_ids.add(request_id)
+            request = encode_oauth_update(request_id, oauth_buffer)
+            try:
+                response = self._engine.exchange(
+                    request,
+                    request_id,
+                    _CONTROL_TIMEOUT_SECONDS,
+                )
+            finally:
+                clear_secret_buffer(request)
+            decode_oauth_update_success(
+                response,
                 request_id,
-                _CONTROL_TIMEOUT_SECONDS,
+                frozenset(self._consumed_request_ids),
             )
+            self._consumed_request_ids.add(request_id)
         finally:
-            clear_secret_buffer(request)
-        decode_oauth_update_success(
-            response,
-            request_id,
-            frozenset(self._consumed_request_ids),
-        )
-        self._consumed_request_ids.add(request_id)
+            if oauth_buffer is not None:
+                clear_secret_buffer(oauth_buffer)
+            frame.close_protected_frame()
         self._binding = pending
         self._pending = None
         return ClaudeStructuredReadyReceipt(

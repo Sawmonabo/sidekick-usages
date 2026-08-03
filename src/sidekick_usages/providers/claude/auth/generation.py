@@ -19,6 +19,16 @@ def claude_access_token_generation(token: str) -> AuthorityGeneration:
     )
 
 
+def claude_access_token_buffer_generation(
+    token: bytearray,
+) -> AuthorityGeneration:
+    """Return the one-way generation without materializing token text."""
+    return hashed_authority_generation(
+        token,
+        prefix=_CLAUDE_GENERATION_PREFIX,
+    )
+
+
 def claude_generation_relation(
     saved: AuthorityGeneration,
     selected: AuthorityGeneration,

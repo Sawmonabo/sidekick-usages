@@ -11,6 +11,7 @@ from sidekick_usages.core.selection.models import (
     SelectedAccountState,
     SelectionAuthorityObservation,
 )
+from sidekick_usages.core.selection.policy import protected_selection_enabled
 from sidekick_usages.core.selection.types import (
     OperationKind,
     OperationPriority,
@@ -31,6 +32,12 @@ from sidekick_usages.credentials.claude.activation.recovery import (
 from sidekick_usages.credentials.claude.activation.service import (
     ClaudeActivationService,
 )
+from sidekick_usages.credentials.claude.authority.access_lease import (
+    ClaudeAccessLease,
+    ClaudeAuthorityMode,
+    ClaudeSelectedAccessError,
+    ClaudeSelectedAccessLeaseService,
+)
 from sidekick_usages.daemon.models.worker import WorkerResult
 from sidekick_usages.daemon.types.worker import WorkerOutcome
 from sidekick_usages.daemon.worker.runtime import (
@@ -45,6 +52,15 @@ from sidekick_usages.persistence.supervisor.authority import (
 from sidekick_usages.providers.claude.activation.types import (
     ClaudeActivationGuardFailure,
 )
+from sidekick_usages.providers.claude.structured.codec import (
+    clear_secret_buffer,
+)
+from sidekick_usages.providers.claude.structured.data_plane import (
+    ClaudeProtectedProjectionWriter,
+)
+from sidekick_usages.providers.claude.structured.models import (
+    ClaudeStructuredBinding,
+)
 
 _CLAUDE_SELECTION_KINDS = frozenset(
     {
@@ -58,6 +74,7 @@ _CLAUDE_SELECTION_WORKER_KINDS = frozenset(
         OperationKind.SELECTION_PREVALIDATE,
         OperationKind.SELECTION_COMMIT,
         OperationKind.SELECTION_READBACK,
+        OperationKind.CLAUDE_PARTICIPANT_BIND,
     }
 )
 
@@ -135,11 +152,15 @@ class ClaudeSelectionWorkerExecutor:
         recovery: ClaudeActivationRecoveryService,
         native_reconciliation: ClaudeNativeReconciliationService,
         clock: Clock,
+        access: ClaudeSelectedAccessLeaseService | None = None,
+        projection: ClaudeProtectedProjectionWriter | None = None,
     ) -> None:
         self._activation = activation
         self._recovery = recovery
         self._native_reconciliation = native_reconciliation
         self._clock = clock
+        self._access = access
+        self._projection = projection
 
     def execute(
         self,
@@ -257,6 +278,22 @@ class ClaudeSelectionWorkerExecutor:
                     account_id=proof.account_id,
                     generation=proof.generation,
                 )
+            elif operation.kind is OperationKind.CLAUDE_PARTICIPANT_BIND:
+                generation = active.target_generation
+                if generation is None:
+                    raise ClaudeSelectedAccessError(
+                        "The protected Claude target is unproven."
+                    )
+                self.bind_selection(
+                    active,
+                    generation,
+                    authority,
+                )
+                observation = SelectionAuthorityObservation(
+                    provider_id=ProviderId.CLAUDE,
+                    account_id=active.target_account_id,
+                    generation=generation,
+                )
             else:
                 observation = self._selection_observation(
                     self.readback_selection(active, authority)
@@ -270,10 +307,65 @@ class ClaudeSelectionWorkerExecutor:
                     operation.kind is OperationKind.SELECTION_READBACK
                 ),
             )
+        except ClaudeSelectedAccessError as error:
+            return WorkerResult(
+                operation_id=operation.operation_id,
+                outcome=WorkerOutcome.ACTION_REQUIRED,
+                finished_at=self._clock.now(),
+                failure_code=error.code.value,
+            )
         return selection_worker_success(
             operation,
             active.pending_epoch,
             observation,
+            self._clock,
+        )
+
+    def execute_finalized_bind(
+        self,
+        operation: DueOperation,
+        finalized: FinalizedSelection,
+        authority: ProviderMutationAuthority,
+    ) -> WorkerResult:
+        """Bind finalized Claude authority without a selection journal."""
+        authority.require(ProviderId.CLAUDE)
+        if (
+            operation.provider_id is not ProviderId.CLAUDE
+            or operation.kind is not OperationKind.CLAUDE_PARTICIPANT_BIND
+            or operation.priority is not OperationPriority.INTERACTIVE
+            or operation.required_selection_operation_id
+            != operation.operation_id
+            or finalized.provider_id is not ProviderId.CLAUDE
+            or operation.required_account_id != finalized.account_id
+        ):
+            raise ValueError(
+                "Worker operation is not a finalized Claude bind."
+            )
+        try:
+            self._bind_target(
+                ClaudeStructuredBinding(
+                    operation_id=operation.operation_id,
+                    account_id=finalized.account_id,
+                    generation=finalized.generation,
+                    epoch=finalized.epoch,
+                ),
+                authority,
+            )
+        except ClaudeSelectedAccessError:
+            return WorkerResult(
+                operation_id=operation.operation_id,
+                outcome=WorkerOutcome.ACTION_REQUIRED,
+                finished_at=self._clock.now(),
+                failure_code=SelectionCode.AUTHORITY_PROOF_FAILED.value,
+            )
+        return selection_worker_success(
+            operation,
+            finalized.epoch,
+            SelectionAuthorityObservation(
+                provider_id=ProviderId.CLAUDE,
+                account_id=finalized.account_id,
+                generation=finalized.generation,
+            ),
             self._clock,
         )
 
@@ -285,10 +377,18 @@ class ClaudeSelectionWorkerExecutor:
     ) -> PreparedSelection:
         """Prove one target before participant admission closes."""
         self._require_open_operation(operation, baseline)
-        generation = self._activation.prevalidate(
-            operation.target_account_id,
-            authority,
-        )
+        access = self._access
+        if access is None:
+            generation = self._activation.prevalidate(
+                operation.target_account_id,
+                authority,
+            )
+        else:
+            target = access.prevalidate(
+                operation.target_account_id,
+                authority,
+            )
+            generation = target.generation
         if baseline is None:
             native = self._native_reconciliation.observe_selection(
                 (operation.target_account_id,),
@@ -321,6 +421,50 @@ class ClaudeSelectionWorkerExecutor:
     ) -> AuthorityReadyProof:
         """Run the official activation and return its runtime generation."""
         self._require_prepared(prepared)
+        if self._access is not None:
+            target = self._access.prevalidate(
+                prepared.target_account_id,
+                authority,
+            )
+            if target.generation != prepared.target_generation:
+                raise ClaudeSelectedAccessError(
+                    "The selected Claude generation changed."
+                )
+            if (
+                target.mode is ClaudeAuthorityMode.REFRESHABLE
+                and not protected_selection_enabled(ProviderId.CLAUDE)
+            ):
+                selected = self._activation.activate(
+                    prepared.operation_id,
+                    prepared.target_account_id,
+                    authority,
+                    expected_target_generation=prepared.target_generation,
+                )
+                if selected.runtime_generation is None:
+                    raise ClaudeSelectedAccessError(
+                        "The selected Claude generation is unavailable."
+                    )
+                return self._proof(prepared, selected.runtime_generation)
+            if not protected_selection_enabled(ProviderId.CLAUDE):
+                raise ClaudeSelectedAccessError(
+                    "Protected Claude selection remains disabled.",
+                    SelectionCode.UNSUPPORTED_SESSION_CAPABILITY,
+                )
+            with self._access.open_committed(
+                prepared.operation_id,
+                target,
+                authority,
+            ) as access:
+                self._project(
+                    ClaudeStructuredBinding(
+                        operation_id=prepared.operation_id,
+                        account_id=prepared.target_account_id,
+                        generation=prepared.target_generation,
+                        epoch=prepared.pending_epoch,
+                    ),
+                    access,
+                )
+            return self._proof(prepared, prepared.target_generation)
         selected = self._activation.activate(
             prepared.operation_id,
             prepared.target_account_id,
@@ -356,6 +500,57 @@ class ClaudeSelectionWorkerExecutor:
             account_ids,
             authority,
         )
+
+    def bind_selection(
+        self,
+        operation: OpenSelectionOperation,
+        generation: AuthorityGeneration,
+        authority: ProviderMutationAuthority,
+    ) -> None:
+        """Project one already-proven target without native mutation."""
+        self._bind_target(
+            ClaudeStructuredBinding(
+                operation_id=operation.operation_id,
+                account_id=operation.target_account_id,
+                generation=generation,
+                epoch=operation.pending_epoch,
+            ),
+            authority,
+        )
+
+    def _bind_target(
+        self,
+        binding: ClaudeStructuredBinding,
+        authority: ProviderMutationAuthority,
+    ) -> None:
+        access = self._access
+        if access is None:
+            raise ClaudeSelectedAccessError(
+                "The protected Claude bind is unavailable."
+            )
+        target = access.prevalidate(binding.account_id, authority)
+        if target.generation != binding.generation:
+            raise ClaudeSelectedAccessError(
+                "The protected Claude bind generation changed."
+            )
+        with access.open_proven(target, authority) as lease:
+            self._project(binding, lease)
+
+    def _project(
+        self,
+        binding: ClaudeStructuredBinding,
+        lease: ClaudeAccessLease,
+    ) -> None:
+        projection = self._projection
+        if projection is None:
+            raise ClaudeSelectedAccessError(
+                "The protected Claude projection is unavailable."
+            )
+        oauth = lease.oauth_buffer()
+        try:
+            projection.submit(binding, oauth)
+        finally:
+            clear_secret_buffer(oauth)
 
     @staticmethod
     def _selection_observation(

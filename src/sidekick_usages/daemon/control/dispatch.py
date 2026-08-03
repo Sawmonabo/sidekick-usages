@@ -393,7 +393,7 @@ class SupervisorDispatcher:
         try:
             if request.kind in _PARTICIPANT_REQUEST_KINDS and peer is not None:
                 yield from self._participant_events(
-                    request,
+                    context,
                     selection,
                     peer,
                 )
@@ -415,16 +415,22 @@ class SupervisorDispatcher:
 
     def _participant_events(
         self,
-        request: ControlRequest,
+        context: VerifiedControlRequest,
         selection: SelectionSupervisorPort,
         peer: ProcessIdentity,
     ) -> Iterator[ControlEvent]:
+        request = context.request
         payload = request.payload
         if isinstance(payload, ParticipantManifest):
+            protected_endpoint = context.take_protected_endpoint()
             yield self._event(
                 request,
                 EventKind.PARTICIPANT_REGISTERED,
-                selection.register(payload, peer),
+                selection.register(
+                    payload,
+                    peer,
+                    protected_endpoint=protected_endpoint,
+                ),
             )
             return
         if isinstance(payload, ParticipantConnectionRequest):

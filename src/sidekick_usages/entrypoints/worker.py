@@ -18,11 +18,13 @@ from sidekick_usages.core.selection.models import (
     ProviderAuthObservation,
     activation_account_ids,
 )
+from sidekick_usages.core.selection.policy import protected_selection_enabled
 from sidekick_usages.core.selection.types import (
     OperationKind,
     OperationPriority,
 )
 from sidekick_usages.core.types import ProviderId
+from sidekick_usages.credentials.authorities import credential_resolver_for
 from sidekick_usages.credentials.claude.activation.authority import (
     ClaudeActivationAuthorityCoordinator,
 )
@@ -37,6 +39,12 @@ from sidekick_usages.credentials.claude.activation.recovery import (
 )
 from sidekick_usages.credentials.claude.activation.service import (
     ClaudeActivationService,
+)
+from sidekick_usages.credentials.claude.authority.access_lease import (
+    ClaudeSelectedAccessLeaseService,
+)
+from sidekick_usages.credentials.claude.authority.resolver import (
+    ClaudeManagedCredentialResolver,
 )
 from sidekick_usages.credentials.claude.managed.maintenance.service import (
     ClaudeManagedAuthorityCoordinator,
@@ -133,6 +141,9 @@ from sidekick_usages.persistence.supervisor.selection import (
 from sidekick_usages.providers.claude.managed.executable import (
     discover_claude_executable_from_launcher,
 )
+from sidekick_usages.providers.claude.structured.data_plane import (
+    ClaudeProtectedProjectionWriter,
+)
 from sidekick_usages.providers.codex.app_server.errors import (
     CodexAppServerError,
 )
@@ -153,6 +164,7 @@ _PROVIDER_OPERATION_KINDS = frozenset(
         OperationKind.SELECTION_PREVALIDATE,
         OperationKind.SELECTION_COMMIT,
         OperationKind.SELECTION_READBACK,
+        OperationKind.CLAUDE_PARTICIPANT_BIND,
     }
 )
 _ACCOUNT_OPERATION_KINDS = frozenset(
@@ -400,6 +412,7 @@ class _ProviderOperationExecutor:
                 self._store,
                 self._selected,
                 self._journals,
+                self._exchange,
                 self._clock,
                 self._provider_launchers.claude,
             )
@@ -413,7 +426,6 @@ class _ProviderOperationExecutor:
     ) -> WorkerResult:
         """Run one journal-bound provider selection phase."""
         self._selection.release_orphans(operation, authority)
-        active, baseline = self._selection.context(operation)
         if operation.provider_id is ProviderId.CLAUDE:
             executor = _claude_selection_executor(
                 operation,
@@ -422,9 +434,27 @@ class _ProviderOperationExecutor:
                 self._store,
                 self._selected,
                 self._journals,
+                self._exchange,
                 self._clock,
                 self._provider_launchers.claude,
             )
+            if (
+                operation.kind is OperationKind.CLAUDE_PARTICIPANT_BIND
+                and operation.required_selection_operation_id
+                == operation.operation_id
+            ):
+                finalized = self._selection.finalized_context(operation)
+                result = executor.execute_finalized_bind(
+                    operation,
+                    finalized,
+                    authority,
+                )
+                return self._selection.finish_finalized_bind(
+                    operation,
+                    finalized,
+                    result,
+                )
+            active, baseline = self._selection.context(operation)
             result = executor.execute_selection(
                 operation,
                 active,
@@ -432,6 +462,7 @@ class _ProviderOperationExecutor:
                 authority,
             )
         elif operation.provider_id is ProviderId.CODEX:
+            active, baseline = self._selection.context(operation)
             try:
                 executor = _codex_selection_executor(
                     self._paths,
@@ -677,6 +708,7 @@ def _claude_selection_executor(
     store: AccountStore,
     selected: SelectedStateStore,
     journals: ActivationJournalStore,
+    exchange: WorkerExchangeChannel | None,
     clock: Clock,
     claude_launcher: Path | None,
 ) -> ClaudeSelectionWorkerExecutor:
@@ -687,6 +719,7 @@ def _claude_selection_executor(
         OperationKind.SELECTION_PREVALIDATE,
         OperationKind.SELECTION_COMMIT,
         OperationKind.SELECTION_READBACK,
+        OperationKind.CLAUDE_PARTICIPANT_BIND,
     }:
         raise ValueError("Claude selection operation is unsupported.")
     runtime = ClaudeActivationRuntime(environment=os.environ)
@@ -714,13 +747,52 @@ def _claude_selection_executor(
         selected,
         clock,
     )
-    return ClaudeSelectionWorkerExecutor(
-        ClaudeActivationService(
-            authorities,
-            journals,
+    activation = ClaudeActivationService(
+        authorities,
+        journals,
+        selected,
+        clock,
+    )
+    maintainer = ClaudeManagedAuthorityCoordinator(
+        paths,
+        store,
+        profiles,
+        selected,
+        authorities,
+        capabilities,
+        clock,
+        environment=os.environ,
+    )
+    access = ClaudeSelectedAccessLeaseService(
+        store,
+        credential_resolver_for(store, persistence.private_credentials),
+        ClaudeManagedCredentialResolver(
+            paths,
+            profiles,
             selected,
+            maintainer,
+            capabilities,
             clock,
+            environment=os.environ,
         ),
+        activation,
+        clock,
+    )
+    projection = None
+    if protected_selection_enabled(ProviderId.CLAUDE) and operation.kind in {
+        OperationKind.SELECTION_COMMIT,
+        OperationKind.CLAUDE_PARTICIPANT_BIND,
+    }:
+        if exchange is None:
+            raise ValueError("Claude selection commit has no exchange.")
+        projection = ClaudeProtectedProjectionWriter(
+            exchange,
+            operation.operation_id,
+            operation.required_selection_operation_id,
+            operation.kind,
+        )
+    return ClaudeSelectionWorkerExecutor(
+        activation,
         recovery,
         ClaudeNativeReconciliationService(
             authorities,
@@ -730,6 +802,8 @@ def _claude_selection_executor(
             clock,
         ),
         clock,
+        access,
+        projection,
     )
 
 

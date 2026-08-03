@@ -318,8 +318,17 @@ class ControlConnection:
 
         transport = FramedTransport(self._connection)
         try:
-            handshake = self._receive_request(transport)
-            if handshake is None:
+            received = self._receive_request(transport)
+            if received is None:
+                return
+            handshake, attachment = received
+            if attachment is not None:
+                attachment.close()
+                self._send_failure(
+                    transport,
+                    handshake.request_id,
+                    ProtocolErrorCode.MALFORMED_FRAME,
+                )
                 return
             if handshake.kind is not RequestKind.HANDSHAKE:
                 self._send_failure(
@@ -371,41 +380,63 @@ class ControlConnection:
     ) -> None:
         request_count = 1
         while True:
-            request = self._receive_request(transport)
-            if request is None:
+            received = self._receive_request(transport)
+            if received is None:
                 return
+            request, attachment = received
             request_count += 1
-            if request_count > MAX_REQUESTS_PER_CONNECTION:
-                self._send_failure(
-                    transport,
-                    request.request_id,
-                    ProtocolErrorCode.TOO_MANY_REQUESTS,
-                )
+            if self._reject_action(
+                transport,
+                request,
+                attachment,
+                request_count,
+            ):
                 return
-            if request.kind is RequestKind.HANDSHAKE:
-                self._send_failure(
-                    transport,
-                    request.request_id,
-                    ProtocolErrorCode.DISPATCH_FAILED,
-                )
+            if not self._dispatch(
+                transport,
+                request,
+                peer,
+                attachment,
+            ):
                 return
-            incompatibility = self._incompatibility(request)
-            if incompatibility is not None:
-                self._send_incompatible(
-                    transport,
-                    request.request_id,
-                    incompatibility,
-                )
-                return
-            if not self._dispatch(transport, request, peer):
-                return
+
+    def _reject_action(
+        self,
+        transport: FramedTransport,
+        request: ControlRequest,
+        attachment: socket.socket | None,
+        request_count: int,
+    ) -> bool:
+        error: ProtocolErrorCode | None = None
+        if attachment is not None and (
+            request.kind is not RequestKind.PARTICIPANT_REGISTER
+        ):
+            error = ProtocolErrorCode.MALFORMED_FRAME
+        elif request_count > MAX_REQUESTS_PER_CONNECTION:
+            error = ProtocolErrorCode.TOO_MANY_REQUESTS
+        elif request.kind is RequestKind.HANDSHAKE:
+            error = ProtocolErrorCode.DISPATCH_FAILED
+        incompatibility = self._incompatibility(request)
+        if error is None and incompatibility is None:
+            return False
+        if attachment is not None:
+            attachment.close()
+        if error is None and incompatibility is not None:
+            self._send_incompatible(
+                transport,
+                request.request_id,
+                incompatibility,
+            )
+        elif error is not None:
+            self._send_failure(transport, request.request_id, error)
+        return True
 
     def _receive_request(
         self,
         transport: FramedTransport,
-    ) -> ControlRequest | None:
+    ) -> tuple[ControlRequest, socket.socket | None] | None:
         try:
-            return transport.receive_request()
+            return transport.receive_request_with_attachment()
         except ProtocolFailureError as error:
             with suppress(OSError):
                 self._send_failure(
@@ -420,8 +451,20 @@ class ControlConnection:
         transport: FramedTransport,
         request: ControlRequest,
         peer: PeerIdentity,
+        protected_endpoint: socket.socket | None,
     ) -> bool:
-        context = VerifiedControlRequest(request, peer)
+        if not self._attachment_matches(
+            transport,
+            request.request_id,
+            peer,
+            protected_endpoint,
+        ):
+            return False
+        context = VerifiedControlRequest(
+            request,
+            peer,
+            protected_endpoint,
+        )
         subscription: ControlSubscription | None = None
         try:
             for event in self._dispatcher.dispatch(context):
@@ -459,11 +502,38 @@ class ControlConnection:
                 )
             return False
         finally:
+            context.close_protected_endpoint()
             if (
                 subscription is not None
                 and self._subscription_monitor is not None
             ):
                 self._subscription_monitor.unregister(subscription)
+
+    def _attachment_matches(
+        self,
+        transport: FramedTransport,
+        request_id: RequestId,
+        peer: PeerIdentity,
+        endpoint: socket.socket | None,
+    ) -> bool:
+        if endpoint is None:
+            return True
+        try:
+            attached_peer = self._peer_verifier.verify(endpoint)
+        except PeerVerificationError:
+            attached_peer = None
+        if attached_peer is not None and (
+            attached_peer.process_identity is not None
+            and attached_peer.process_identity == peer.process_identity
+        ):
+            return True
+        endpoint.close()
+        self._send_failure(
+            transport,
+            request_id,
+            ProtocolErrorCode.DISPATCH_FAILED,
+        )
+        return False
 
     def _send_dispatch_event(
         self,

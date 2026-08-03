@@ -1,5 +1,6 @@
 """Provider-neutral no-interruption selection coordinator."""
 
+import socket
 from collections.abc import Callable, Generator
 from dataclasses import dataclass, field, replace
 from threading import Event, Lock
@@ -36,6 +37,7 @@ from sidekick_usages.daemon.selection.models import (
     ParticipantNotice,
     ParticipantReadyRequest,
     ParticipantRegistration,
+    ParticipantRequestError,
     ParticipantSnapshot,
     SelectionRequestError,
     SelectionStatus,
@@ -47,6 +49,7 @@ from sidekick_usages.daemon.selection.ports import (
     FinalizedSelectionStore,
     SelectionAuthorityAdapter,
     SelectionJournal,
+    SelectionParticipantBinder,
 )
 from sidekick_usages.daemon.selection.registry import ParticipantRegistry
 from sidekick_usages.persistence.errors import PersistenceError
@@ -102,12 +105,15 @@ class SelectionCoordinator:
             else process_inspector
         )
         self._flight_lock = Lock()
+        self._registration_lock = Lock()
         self._flights: dict[ProviderId, _SelectionFlight] = {}
 
     def register(
         self,
         manifest: ParticipantManifest,
         peer: ProcessIdentity,
+        *,
+        protected_endpoint: socket.socket | None = None,
     ) -> ParticipantRegistration:
         """Durably register one exact kernel-proven participant."""
 
@@ -123,14 +129,76 @@ class SelectionCoordinator:
                 updated_at=self._clock.now(),
             )
 
-        registration = self._participants.register(
-            manifest,
-            peer,
-            persist_required=persist_required,
+        requires_endpoint = self._participants.requires_attachment(
+            manifest.provider_id
         )
-        if registration.pending_epoch is not None:
-            self._resume_if_recovered(manifest.provider_id)
+        if not requires_endpoint:
+            if protected_endpoint is not None:
+                protected_endpoint.close()
+                raise ParticipantRequestError(
+                    SelectionCode.AUTHORITY_PROOF_FAILED
+                )
+            registration = self._participants.register(
+                manifest,
+                peer,
+                persist_required=persist_required,
+            )
+        else:
+            if protected_endpoint is None:
+                raise ParticipantRequestError(
+                    SelectionCode.AUTHORITY_PROOF_FAILED
+                )
+            with self._registration_lock:
+                try:
+                    transaction = self._participants.stage_attachment(
+                        manifest,
+                        peer,
+                        protected_endpoint,
+                    )
+                except Exception:
+                    raise ParticipantRequestError(
+                        SelectionCode.AUTHORITY_PROOF_FAILED
+                    ) from None
+                try:
+                    registration = self._participants.register(
+                        manifest,
+                        peer,
+                        persist_required=persist_required,
+                        attachment=transaction,
+                    )
+                except BaseException:
+                    transaction.rollback()
+                    raise
+        self._bind_registered_participant(
+            manifest.provider_id,
+            registration,
+            requires_endpoint=requires_endpoint,
+        )
         return registration
+
+    def _bind_registered_participant(
+        self,
+        provider_id: ProviderId,
+        registration: ParticipantRegistration,
+        *,
+        requires_endpoint: bool,
+    ) -> None:
+        binder = self._adapter
+        if registration.pending_epoch is not None:
+            active = self._journal.load(provider_id).active
+            if (
+                active is not None
+                and active.target_generation is not None
+                and isinstance(binder, SelectionParticipantBinder)
+            ):
+                binder.bind_participant(active)
+            self._resume_if_recovered(provider_id)
+        elif requires_endpoint and isinstance(
+            binder, SelectionParticipantBinder
+        ):
+            finalized = self._selected.load(provider_id)
+            if finalized is not None:
+                binder.bind_finalized(finalized)
 
     def subscribe(
         self,
@@ -242,6 +310,9 @@ class SelectionCoordinator:
             reachable_count=snapshot.reachable_count,
             required_count=len(snapshot.required_participant_ids),
             ready_count=len(snapshot.ready_participant_ids),
+            confirmed_dead_count=len(
+                snapshot.confirmed_dead_participant_ids
+            ),
             adopted_count=snapshot.adopted_count,
             unreachable_count=len(snapshot.unreachable_participant_ids),
             active_turn_count=snapshot.active_turn_count,
@@ -501,8 +572,9 @@ class SelectionCoordinator:
                     updated_at=self._clock.now(),
                 ),
             )
-        finally:
+        except BaseException:
             self._participants.unseal(provider_id)
+            raise
         return operation
 
     def _finalize_ready(

@@ -1,8 +1,9 @@
 """Bounded in-memory participant and turn-admission registry."""
 
+import socket
 import time
 from collections import deque
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Iterable
 from threading import Condition
 
 from sidekick_usages.core.accounts.types import (
@@ -12,6 +13,7 @@ from sidekick_usages.core.accounts.types import (
 )
 from sidekick_usages.core.selection.models import (
     AuthorityReadyProof,
+    FinalizedSelection,
     SelectionEpoch,
 )
 from sidekick_usages.core.selection.types import (
@@ -39,7 +41,11 @@ from sidekick_usages.daemon.selection.models import (
     TurnBeginRequest,
     TurnEndRequest,
 )
-from sidekick_usages.daemon.selection.ports import FinalizedSelectionStore
+from sidekick_usages.daemon.selection.ports import (
+    FinalizedSelectionStore,
+    ParticipantAttachmentRegistry,
+    ParticipantAttachmentTransaction,
+)
 from sidekick_usages.daemon.selection.projection import (
     ParticipantRecord,
     ProviderGate,
@@ -69,6 +75,8 @@ class ParticipantRegistry:
         self,
         selected: FinalizedSelectionStore,
         monotonic: Callable[[], float] = time.monotonic,
+        *,
+        attachments: ParticipantAttachmentRegistry | None = None,
     ) -> None:
         self._selected = selected
         self._condition = Condition()
@@ -81,6 +89,32 @@ class ParticipantRegistry:
             maxlen=MAX_RETAINED_PARTICIPANT_NOTICES
         )
         self._cancelled_subscriptions: set[RequestId] = set()
+        self._attachments = attachments
+
+    def requires_attachment(self, provider_id: ProviderId) -> bool:
+        """Return whether an injected provider attachment is mandatory."""
+        return bool(
+            self._attachments
+            and self._attachments.requires_endpoint(provider_id)
+        )
+
+    def stage_attachment(
+        self,
+        manifest: ParticipantManifest,
+        peer: ProcessIdentity,
+        endpoint: socket.socket,
+    ) -> ParticipantAttachmentTransaction:
+        """Stage one injected attachment for the membership transaction."""
+        attachments = self._attachments
+        if attachments is None:
+            endpoint.close()
+            raise ParticipantRequestError(SelectionCode.AUTHORITY_PROOF_FAILED)
+        return attachments.stage(
+            manifest.participant_id,
+            manifest.connection_generation,
+            peer,
+            endpoint,
+        )
 
     def register(
         self,
@@ -88,11 +122,12 @@ class ParticipantRegistry:
         peer: ProcessIdentity,
         *,
         persist_required: Callable[[SelectionEpoch], None] | None = None,
+        attachment: ParticipantAttachmentTransaction | None = None,
     ) -> ParticipantRegistration:
         """Persist, then register one kernel-proven participant atomically."""
         with self._condition:
-            self._wait_unsealed(manifest.provider_id)
             current = self._participants.get(manifest.participant_id)
+            self._wait_registration_open(manifest, current)
             if current is not None:
                 require_reconnect(current, manifest, peer)
             else:
@@ -128,20 +163,34 @@ class ParticipantRegistry:
                 )
             if gate is not None and persist_required is not None:
                 persist_required(gate.pending_epoch)
-            if current is not None:
-                current.manifest = manifest
-                current.confirmed_dead = False
-                current.ready_epoch = None
-            else:
-                current = ParticipantRecord(manifest, peer, registered_epoch)
-                self._participants[manifest.participant_id] = current
-            if gate is not None and required is not None:
-                gate.required = required
-                self._append_notice(
-                    manifest.participant_id,
-                    ParticipantNoticeKind.PREPARE,
-                    gate.pending_epoch,
-                )
+            if attachment is not None:
+                attachment.commit()
+            try:
+                if current is not None:
+                    current.manifest = manifest
+                    current.confirmed_dead = False
+                    current.attachment_ready_epoch = None
+                    current.ready_epoch = None
+                else:
+                    current = ParticipantRecord(
+                        manifest,
+                        peer,
+                        registered_epoch,
+                    )
+                    self._participants[manifest.participant_id] = current
+                if gate is not None and required is not None:
+                    gate.required = required
+                    self._append_notice(
+                        manifest.participant_id,
+                        ParticipantNoticeKind.PREPARE,
+                        gate.pending_epoch,
+                    )
+            except BaseException:
+                if attachment is not None:
+                    attachment.rollback()
+                raise
+            if attachment is not None:
+                attachment.finalize()
             self._condition.notify_all()
             return registration
 
@@ -187,6 +236,12 @@ class ParticipantRegistry:
                     generation=None,
                 )
             selected = require_selected(self._selected.load(provider_id))
+            if self.requires_attachment(provider_id) and (
+                participant.attachment_ready_epoch != selected.epoch
+            ):
+                raise ParticipantRequestError(
+                    SelectionCode.SELECTION_RECOVERY_REQUIRED
+                )
             if (
                 self._active_turn_count(provider_id)
                 >= MAX_ACTIVE_TURNS_PER_PROVIDER
@@ -303,10 +358,16 @@ class ParticipantRegistry:
 
     def prepare_target(
         self, operation_id: OperationId, proof: AuthorityReadyProof
-    ) -> None:
+    ) -> bool:
         """Bind participant readiness to exact provider commit proof."""
         with self._condition:
             gate = require_gate(self._gates, proof.provider_id)
+            project_ready_notices(
+                operation_id, proof, gate, self._participants
+            )
+            installed = self._prepare_attachments(
+                gate.required, operation_id, proof
+            )
             notices = project_ready_notices(
                 operation_id, proof, gate, self._participants
             )
@@ -315,6 +376,9 @@ class ParticipantRegistry:
             for notice in notices:
                 self._retain_notice(notice)
             self._condition.notify_all()
+            return self.requires_attachment(proof.provider_id) and bool(
+                installed
+            )
 
     def ready(
         self,
@@ -332,6 +396,7 @@ class ParticipantRegistry:
             gate = require_gate(self._gates, participant.manifest.provider_id)
             if (
                 participant_id not in gate.required
+                or participant.attachment_ready_epoch != proof.epoch
                 or gate.account_id != proof.account_id
                 or gate.generation != proof.generation
                 or gate.pending_epoch != proof.epoch
@@ -412,7 +477,14 @@ class ParticipantRegistry:
                 raise ParticipantRequestError(
                     SelectionCode.AUTHORITY_PROOF_FAILED
                 )
+            if self._attachments is not None:
+                self._attachments.remove(
+                    participant_id,
+                    participant.manifest.connection_generation,
+                    peer,
+                )
             participant.connected = False
+            participant.attachment_ready_epoch = None
             participant.confirmed_dead = True
             participant.ready_epoch = None
             self._turns = {
@@ -473,6 +545,18 @@ class ParticipantRegistry:
         request: ParticipantConnectionRequest,
     ) -> Generator[ParticipantNotice]:
         """Yield future bounded participant notices until cancellation."""
+
+        def current_notice() -> ParticipantNotice:
+            participant = self._participants[request.participant_id]
+            provider_id = participant.manifest.provider_id
+            return project_notice(
+                request.participant_id,
+                participant,
+                self._gates.get(provider_id),
+                self._selected.load(provider_id),
+                attachment_required=self.requires_attachment(provider_id),
+            )
+
         with self._condition:
             if request_id in self._cancelled_subscriptions:
                 self._cancelled_subscriptions.discard(request_id)
@@ -487,7 +571,7 @@ class ParticipantRegistry:
                     SelectionCode.PARTICIPANT_UNREACHABLE
                 )
             cursor = self._notice_sequence
-            initial = self._current_notice(request.participant_id)
+            initial = current_notice()
             participant.connected = True
             self._condition.notify_all()
         try:
@@ -499,9 +583,7 @@ class ParticipantRegistry:
                             cursor < self._notices[0][0] - 1
                         ):
                             cursor = self._notice_sequence
-                            notice = self._current_notice(
-                                request.participant_id
-                            )
+                            notice = current_notice()
                             break
                         match = next(
                             (
@@ -611,6 +693,48 @@ class ParticipantRegistry:
         with self._condition:
             return self._all_required_resolved(provider_id)
 
+    def target_prepared(self, provider_id: ProviderId) -> bool:
+        """Return whether every live obligation installed the target."""
+        with self._condition:
+            gate = require_gate(self._gates, provider_id)
+            return all(
+                (participant := self._participants.get(participant_id))
+                is not None
+                and (
+                    participant.confirmed_dead
+                    or participant.attachment_ready_epoch
+                    == gate.pending_epoch
+                )
+                for participant_id in gate.required
+            )
+
+    def prepare_finalized(
+        self,
+        operation_id: OperationId,
+        finalized: FinalizedSelection,
+    ) -> None:
+        """Open only participants that installed exact finalized authority."""
+        with self._condition:
+            if self._selected.load(finalized.provider_id) != finalized:
+                raise ParticipantRequestError(
+                    SelectionCode.AUTHORITY_PROOF_FAILED
+                )
+            if not self.requires_attachment(finalized.provider_id):
+                return
+            installed = self._prepare_attachments(
+                (
+                    participant_id
+                    for participant_id, participant
+                    in self._participants.items()
+                    if participant.manifest.provider_id
+                    is finalized.provider_id
+                ),
+                operation_id,
+                finalized,
+            )
+            self._open_participants(installed, finalized.epoch)
+            self._condition.notify_all()
+
     def seal_ready(self, provider_id: ProviderId) -> ParticipantSnapshot:
         """Freeze resolved membership through the finalization write window."""
         with self._condition:
@@ -633,13 +757,14 @@ class ParticipantRegistry:
                 raise ParticipantRequestError(
                     SelectionCode.PARTICIPANT_UNREACHABLE
                 )
-            gate.sealed = True
+            gate.membership_sealed = True
             return snapshot
 
     def unseal(self, provider_id: ProviderId) -> None:
         """Allow late registration after failed finalization stays gated."""
         with self._condition:
             gate = require_gate(self._gates, provider_id)
+            gate.membership_sealed = False
             gate.sealed = False
             self._condition.notify_all()
 
@@ -665,17 +790,7 @@ class ParticipantRegistry:
                     }
                 )
             )
-            for participant_id in gate.required:
-                participant = self._participants.get(participant_id)
-                if participant is None:
-                    continue
-                if participant.connected:
-                    participant.registered_epoch = epoch
-                    self._append_notice(
-                        participant_id,
-                        ParticipantNoticeKind.OPEN,
-                        epoch,
-                    )
+            self._open_participants(gate.required, epoch)
             self._gates.pop(provider_id)
             self._condition.notify_all()
             return released
@@ -688,20 +803,7 @@ class ParticipantRegistry:
                 return
             selected = self._selected.load(provider_id)
             epoch = SelectionEpoch(0) if selected is None else selected.epoch
-            for participant_id in gate.required:
-                participant = self._participants.get(participant_id)
-                if participant is None:
-                    continue
-                if participant.confirmed_dead:
-                    self._participants.pop(participant_id)
-                    continue
-                if participant.connected:
-                    participant.registered_epoch = epoch
-                    self._append_notice(
-                        participant_id,
-                        ParticipantNoticeKind.OPEN,
-                        epoch,
-                    )
+            self._open_participants(gate.required, epoch)
             self._gates.pop(provider_id)
             self._condition.notify_all()
 
@@ -734,12 +836,79 @@ class ParticipantRegistry:
         ) is not None and gate.sealed:
             self._condition.wait()
 
+    def _wait_registration_open(
+        self,
+        manifest: ParticipantManifest,
+        current: ParticipantRecord | None,
+    ) -> None:
+        while gate := self._gates.get(manifest.provider_id):
+            if gate.sealed:
+                self._condition.wait()
+                continue
+            reconnecting_required = (
+                current is not None
+                and manifest.participant_id in gate.required
+            )
+            if not gate.membership_sealed or reconnecting_required:
+                return
+            self._condition.wait()
+
     def _wait_unsealed_for_participant(
         self,
         participant_id: ParticipantId,
     ) -> None:
         if (participant := self._participants.get(participant_id)) is not None:
             self._wait_unsealed(participant.manifest.provider_id)
+
+    def _prepare_attachments(
+        self,
+        participant_ids: Iterable[ParticipantId],
+        operation_id: OperationId,
+        authority: AuthorityReadyProof | FinalizedSelection,
+    ) -> tuple[ParticipantId, ...]:
+        attachments = self._attachments
+        installed: list[ParticipantId] = []
+        for participant_id in participant_ids:
+            participant = self._participants.get(participant_id)
+            if participant is None:
+                continue
+            protected = attachments is not None and (
+                attachments.requires_endpoint(
+                    participant.manifest.provider_id
+                )
+            )
+            arguments = (
+                participant_id,
+                participant.manifest.connection_generation,
+                participant.process_identity,
+                operation_id,
+            )
+            matched = not protected or (
+                attachments.matches_target(*arguments, authority)
+                if isinstance(authority, AuthorityReadyProof)
+                else attachments.matches_finalized(*arguments, authority)
+            )
+            if matched:
+                participant.attachment_ready_epoch = authority.epoch
+                installed.append(participant_id)
+        return tuple(installed)
+
+    def _open_participants(
+        self,
+        participant_ids: Iterable[ParticipantId],
+        epoch: SelectionEpoch,
+    ) -> None:
+        for participant_id in participant_ids:
+            participant = self._participants.get(participant_id)
+            if participant is None:
+                continue
+            if participant.confirmed_dead:
+                self._participants.pop(participant_id)
+            elif participant.connected:
+                participant.registered_epoch = epoch
+                self._append_notice(
+                    participant_id, ParticipantNoticeKind.OPEN, epoch
+                )
 
     def _append_notice(
         self,
@@ -758,20 +927,6 @@ class ParticipantRegistry:
         """Append one already-projected notice to the bounded queue."""
         self._notice_sequence += 1
         self._notices.append((self._notice_sequence, notice))
-
-    def _current_notice(
-        self,
-        participant_id: ParticipantId,
-    ) -> ParticipantNotice:
-        """Return the current semantic state after connect or overrun."""
-        participant = self._participants[participant_id]
-        provider_id = participant.manifest.provider_id
-        return project_notice(
-            participant_id,
-            participant,
-            self._gates.get(provider_id),
-            self._selected.load(provider_id),
-        )
 
     def _wait_until(
         self,

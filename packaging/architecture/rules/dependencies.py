@@ -40,6 +40,7 @@ _SUPERVISOR_ENTRYPOINT_FILE = "src/sidekick_usages/entrypoints/supervisor.py"
 _SUPERVISOR_PROVIDER_IMPORTS = frozenset(
     {
         "sidekick_usages.providers.claude.auth.storage.service",
+        "sidekick_usages.providers.claude.structured.data_plane",
         "sidekick_usages.providers.codex.app_server.executable",
         "sidekick_usages.providers.codex.auth.home",
         "sidekick_usages.providers.codex.auth.storage",
@@ -71,6 +72,7 @@ _CREDENTIAL_LEASE_CONSUMERS = frozenset(
         "src/sidekick_usages/cli/contexts/composition.py",
         "src/sidekick_usages/credentials/authorities.py",
         "src/sidekick_usages/credentials/claude/authority/resolver.py",
+        "src/sidekick_usages/credentials/claude/authority/access_lease.py",
         (
             "src/sidekick_usages/credentials/claude/managed/"
             "migration/service.py"
@@ -80,6 +82,7 @@ _CREDENTIAL_LEASE_CONSUMERS = frozenset(
         "src/sidekick_usages/credentials/refresh.py",
         "src/sidekick_usages/daemon/worker/account.py",
         "src/sidekick_usages/entrypoints/usage_lookup.py",
+        "src/sidekick_usages/entrypoints/worker.py",
         "src/sidekick_usages/heartbeat/service.py",
         "src/sidekick_usages/usage/activity.py",
         "src/sidekick_usages/usage/lookup/service.py",
@@ -315,7 +318,7 @@ def _check_import(
                     )
                 )
             ),
-            "supervisor entrypoint imports only its lean Codex boundary",
+            "supervisor entrypoint imports only lean provider boundaries",
         ),
         (
             "DEP006",

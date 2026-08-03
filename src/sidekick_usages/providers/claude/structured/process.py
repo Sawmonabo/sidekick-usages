@@ -154,10 +154,11 @@ def _probe_structured_control(
     request_id_factory: Callable[[], RequestId],
 ) -> None:
     positive_id = request_id_factory()
-    positive = encode_oauth_update(
-        positive_id,
-        CLAUDE_STRUCTURED_PROBE_CANARY,
-    )
+    oauth = bytearray(CLAUDE_STRUCTURED_PROBE_CANARY, "utf-8")
+    try:
+        positive = encode_oauth_update(positive_id, oauth)
+    finally:
+        clear_secret_buffer(oauth)
     try:
         response = engine.exchange(
             positive,
@@ -299,6 +300,41 @@ class ClaudeStructuredProcess:
         self._event_frames.clear()
         self._event_bytes = 0
         return events
+
+    def send_interactive(
+        self,
+        frame: bytearray,
+        timeout_seconds: float,
+    ) -> None:
+        """Send one bounded interactive frame on the owned input pipe."""
+        try:
+            if (
+                not frame
+                or len(frame) > MAX_CLAUDE_CONTROL_FRAME_BYTES
+                or timeout_seconds <= 0
+                or self._process.poll() is not None
+            ):
+                self._malformed()
+            deadline = self._monotonic() + timeout_seconds
+            self._prepare_exchange(deadline)
+            self._send(frame, deadline)
+        finally:
+            clear_secret_buffer(frame)
+
+    def receive_event(self, timeout_seconds: float) -> bytes:
+        """Receive one bounded non-control event from the owned output pipe."""
+        if timeout_seconds <= 0 or self._process.poll() is not None:
+            raise ClaudeStructuredError(
+                ClaudeStructuredFailure.PROCESS_EXITED
+            )
+        deadline = self._monotonic() + timeout_seconds
+        while not self._event_frames:
+            self._consume_pending_frames(None)
+            if not self._event_frames:
+                self._read(deadline)
+        frame = self._event_frames.pop(0)
+        self._event_bytes -= len(frame) + 1
+        return frame
 
     def close_input(self) -> None:
         """Close input once and allow the child to exit naturally."""

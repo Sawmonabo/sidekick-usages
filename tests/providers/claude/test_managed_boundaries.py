@@ -24,6 +24,7 @@ from sidekick_usages.core.accounts.types import (
     CredentialAction,
     SidekickAccountId,
 )
+from sidekick_usages.core.selection.policy import protected_selection_enabled
 from sidekick_usages.core.types import AccountLabel, ProviderId
 from sidekick_usages.credentials.capabilities.service import (
     ProviderCapabilityService,
@@ -73,9 +74,14 @@ from sidekick_usages.providers.claude.managed.types import (
 from sidekick_usages.providers.claude.models import (
     ClaudeCommandResult,
 )
+from sidekick_usages.providers.claude.structured.codec import (
+    ClaudeProtectedChannelError,
+)
+from sidekick_usages.providers.claude.structured.data_plane import (
+    ClaudeProtectedOAuthFrame,
+)
 from sidekick_usages.providers.claude.structured.models import (
     ClaudeStructuredActivityKind,
-    ClaudeStructuredAdoptionReceipt,
     ClaudeStructuredCapability,
     ClaudeStructuredError,
     ClaudeStructuredFailure,
@@ -763,10 +769,7 @@ def test_file_profile_readback_is_exact_identity_bound_and_fail_closed(
     )
 
 
-@pytest.mark.parametrize(
-    "response_case",
-    tuple(StructuredResponseCase),
-)
+@pytest.mark.parametrize("response_case", tuple(StructuredResponseCase))
 def test_structured_session_updates_oauth_only_at_an_idle_turn_boundary(
     response_case: StructuredResponseCase,
 ) -> None:
@@ -774,58 +777,68 @@ def test_structured_session_updates_oauth_only_at_an_idle_turn_boundary(
     session = fixture.session
     engine = fixture.engine
     process_id = session.process_id
+    selection_enabled = (
+        not protected_selection_enabled(ProviderId.CLAUDE)
+        and protected_selection_enabled(ProviderId.CODEX)
+    )
     binding_b = fixture.binding_b
     binding_c = fixture.binding_c
-
+    turn_id = fixture.turn_id
+    mutable = partial(bytearray, encoding="utf-8")
+    protected = ClaudeProtectedOAuthFrame
     session.prepare_target(binding_b)
-    ready_b = session.update_oauth(fixture.oauth_b)
-    assert ready_b.binding == binding_b
-    assert session.process_id == process_id
+    protected_b = protected(binding_b, mutable(fixture.oauth_b))
+    ready_b = session.update_oauth(protected_b)
+    assert (ready_b.binding, protected_b.is_cleared) == (binding_b, True)
+    session.route_turn(turn_id, binding_b, engine.transmit_turn)
+    session.end_turn(turn_id)
 
-    session.begin_turn(fixture.turn_id, binding_b)
+    session.begin_turn(turn_id, binding_b)
     session.prepare_target(binding_c)
+    rejected = protected(binding_c, mutable(fixture.oauth_c))
     with pytest.raises(ClaudeStructuredError):
-        session.update_oauth(fixture.oauth_c)
-    session.end_turn(fixture.turn_id)
+        session.update_oauth(rejected)
+    session.end_turn(turn_id)
+    with pytest.raises(ClaudeProtectedChannelError):
+        session.update_oauth(rejected)
+    assert rejected.is_cleared
     for kind in ClaudeStructuredActivityKind:
-        activity_id = f"synthetic-{kind.value}"
-        session.begin_activity(kind, activity_id)
+        session.begin_activity(kind, kind.value)
+        rejected = protected(binding_c, mutable(fixture.oauth_c))
         with pytest.raises(ClaudeStructuredError):
-            session.update_oauth(fixture.oauth_c)
-        session.end_activity(kind, activity_id)
+            session.update_oauth(rejected)
+        assert rejected.is_cleared
+        session.end_activity(kind, kind.value)
 
+    protected_c = protected(binding_c, mutable(fixture.oauth_c))
     if response_case is StructuredResponseCase.SUCCESS:
-        ready_c = session.update_oauth(fixture.oauth_c)
-        observed_receipts: list[ClaudeStructuredAdoptionReceipt] = []
-
-        def transmit(receipt: ClaudeStructuredAdoptionReceipt) -> None:
-            observed_receipts.append(receipt)
-            engine.transmit_turn(ready_c.binding.epoch.value)
-
-        adoption = session.route_turn(fixture.turn_id, binding_c, transmit)
-        session.end_turn(fixture.turn_id)
-        assert ready_c.binding == binding_c
-        assert observed_receipts == [adoption]
-        assert engine.events == [("adoption", "9"), ("prompt", "9")]
+        ready_c = session.update_oauth(protected_c)
+        adoption = session.route_turn(turn_id, binding_c, engine.transmit_turn)
+        session.end_turn(turn_id)
+        assert ready_c.binding == adoption.binding == binding_c
+        assert engine.events == [
+            ("adoption", "8"), ("prompt", "8"), ("adoption", "9"),
+            ("prompt", "9"),
+        ]
     else:
         with pytest.raises(ClaudeStructuredError) as failure:
-            session.update_oauth(fixture.oauth_c)
+            session.update_oauth(protected_c)
         assert session.binding == binding_b
         assert fixture.oauth_c not in repr(failure.value)
 
-    assert all(request.exact_envelope for request in engine.requests)
-    assert all(request.expected_oauth for request in engine.requests)
     assert all(
-        request.variable_names == ("CLAUDE_CODE_OAUTH_TOKEN",)
+        request.exact_envelope
+        and request.expected_oauth
+        and request.variable_names == ("CLAUDE_CODE_OAUTH_TOKEN",)
         for request in engine.requests
     )
     assert all(not any(buffer) for buffer in engine.cleared_request_buffers)
-    assert all(engine.wiped_before_response)
+    assert all((protected_c.is_cleared, *engine.wiped_before_response))
     for candidate in (session, ready_b, engine):
         representation = repr(candidate)
         assert fixture.oauth_b not in representation
         assert fixture.oauth_c not in representation
-    assert session.process_id == process_id
+    assert (session.process_id, selection_enabled) == (process_id, True)
 
 
 @pytest.mark.parametrize("mutation", [None, *StructuredCapabilityMutation])

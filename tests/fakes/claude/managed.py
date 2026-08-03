@@ -61,6 +61,7 @@ from sidekick_usages.providers.claude.structured.codec import (
     clear_secret_buffer,
 )
 from sidekick_usages.providers.claude.structured.models import (
+    ClaudeStructuredAdoptionReceipt,
     ClaudeStructuredBinding,
     ClaudeStructuredError,
     ClaudeStructuredFailure,
@@ -110,6 +111,11 @@ CLAUDE_VERSION_OUTPUT = b"2.1.220 (Claude Code)\n"
 _PRIVATE_DIRECTORY_MODE = 0o700
 _PRIVATE_FILE_MODE = 0o600
 _NANOSECONDS_PER_MILLISECOND = 1_000_000
+_STRUCTURED_FAILURES = {
+    "timeout": ClaudeStructuredFailure.PROTOCOL_TIMEOUT,
+    "eof": ClaudeStructuredFailure.PROTOCOL_EOF,
+    "process_error": ClaudeStructuredFailure.PROCESS_EXITED,
+}
 
 
 class StructuredResponseCase(StrEnum):
@@ -172,10 +178,14 @@ class ClaudeStructuredEngineFake:
         """Return one scripted response without retaining OAuth bytes."""
         del timeout_seconds
         root = decode_json_object(request[:-1])
-        encoded_request_id = self._request_id(root)
+        encoded_request_id = root.get("request_id")
+        if not isinstance(encoded_request_id, str):
+            raise AssertionError("Structured request ID is invalid.")
         if encoded_request_id != str(request_id):
             raise AssertionError("Structured request correlation changed.")
-        variables = self._variables(root)
+        variables = root.get("variables")
+        if not isinstance(variables, dict):
+            raise AssertionError("Structured variables are invalid.")
         oauth = variables.get("CLAUDE_CODE_OAUTH_TOKEN")
         expected_oauth = self._expected_oauth_values.pop(0)
         self.requests.append(
@@ -199,11 +209,21 @@ class ClaudeStructuredEngineFake:
         self.wiped_before_response.append(not any(request))
         return self._response(response_case, encoded_request_id)
 
-    def transmit_turn(self, receipt_epoch: int) -> None:
+    def transmit_turn(self, receipt: ClaudeStructuredAdoptionReceipt) -> None:
         """Record that adoption existed before one real prompt."""
-        self.events.append(("adoption", str(receipt_epoch)))
+        epoch = str(receipt.binding.epoch.value)
+        self.events.extend((("adoption", epoch), ("prompt", epoch)))
         self.user_turn_count += 1
-        self.events.append(("prompt", str(receipt_epoch)))
+
+    def send_interactive(
+        self, frame: bytearray, timeout_seconds: float
+    ) -> None:
+        """Record one bounded fake interactive input frame."""
+        clear_secret_buffer(frame)
+
+    def receive_event(self, timeout_seconds: float) -> bytes:
+        """Return one queued fake interactive event frame."""
+        return b"{}"
 
     def close_input(self) -> None:
         """Close the synthetic probe input without a signal."""
@@ -218,26 +238,12 @@ class ClaudeStructuredEngineFake:
         """Hide every scripted request detail."""
         return "<ClaudeStructuredEngineFake redacted>"
 
-    @staticmethod
-    def _request_id(root: JsonObject) -> str:
-        request_id = root.get("request_id")
-        if not isinstance(request_id, str):
-            raise AssertionError("Structured request ID is invalid.")
-        return request_id
-
-    @staticmethod
-    def _variables(root: JsonObject) -> JsonObject:
-        variables = root.get("variables")
-        if not isinstance(variables, dict):
-            raise AssertionError("Structured variables are invalid.")
-        return variables
-
     def _response(
         self,
         response_case: StructuredResponseCase,
         request_id: str,
     ) -> bytes:
-        failure = _structured_transport_failure(response_case)
+        failure = _STRUCTURED_FAILURES.get(response_case.value)
         if failure is not None:
             raise ClaudeStructuredError(failure)
         fixed = {
@@ -254,28 +260,21 @@ class ClaudeStructuredEngineFake:
             if self._first_request_id is None:
                 raise AssertionError("Replay requires one prior request.")
             response_id = self._first_request_id
+        structured_error = (
+            "update_environment_variables: variables must be an object of "
+            "string values"
+        )
+        old_error = "Environment variable values must be strings."
+        unrelated_error = "unrelated bounded failure"
         error_text = {
-            StructuredResponseCase.ERROR_RESPONSE: (
-                "update_environment_variables: variables must be an object "
-                "of string values"
-            ),
-            StructuredResponseCase.ERROR_OLD_TEXT: (
-                "Environment variable values must be strings."
-            ),
-            StructuredResponseCase.ERROR_UNRELATED: (
-                "unrelated bounded failure"
-            ),
-            StructuredResponseCase.ERROR_EXTRA_FIELDS: (
-                "update_environment_variables: variables must be an object "
-                "of string values"
-            ),
+            StructuredResponseCase.ERROR_RESPONSE: structured_error,
+            StructuredResponseCase.ERROR_OLD_TEXT: old_error,
+            StructuredResponseCase.ERROR_UNRELATED: unrelated_error,
+            StructuredResponseCase.ERROR_EXTRA_FIELDS: structured_error,
         }.get(response_case)
         is_error = error_text is not None
         subtype = "error" if is_error else "success"
-        response: JsonObject = {
-            "request_id": response_id,
-            "subtype": subtype,
-        }
+        response: JsonObject = {"request_id": response_id, "subtype": subtype}
         if is_error:
             response["error"] = error_text
         if response_case in {
@@ -284,10 +283,7 @@ class ClaudeStructuredEngineFake:
         }:
             response["unexpected"] = True
         encoded = encode_compact_json(
-            {
-                "response": response,
-                "type": "control_response",
-            }
+            {"response": response, "type": "control_response"}
         )
         if response_case is StructuredResponseCase.DUPLICATE_RESPONSE:
             return _duplicate_response(encoded, RequestId(request_id))
@@ -309,20 +305,6 @@ def _duplicate_response(encoded: bytes, request_id: RequestId) -> bytes:
         transport._receive(request_id, 1.0)
     assert duplicate.value.code is ClaudeStructuredFailure.PROTOCOL_MALFORMED
     return encoded + b"\n" + encoded
-
-
-def _structured_transport_failure(
-    response: StructuredResponseCase,
-) -> ClaudeStructuredFailure | None:
-    if response is StructuredResponseCase.TIMEOUT:
-        return ClaudeStructuredFailure.PROTOCOL_TIMEOUT
-    if response is StructuredResponseCase.EOF:
-        return ClaudeStructuredFailure.PROTOCOL_EOF
-    if response is StructuredResponseCase.PROCESS_ERROR:
-        return ClaudeStructuredFailure.PROCESS_EXITED
-    return None
-
-
 class ClaudeStructuredEngineFactoryFake:
     """Open isolated structured probe children without provider access."""
 

@@ -40,6 +40,7 @@ class ParticipantRecord:
     registered_epoch: SelectionEpoch
     connected: bool = False
     confirmed_dead: bool = False
+    attachment_ready_epoch: SelectionEpoch | None = None
     ready_epoch: SelectionEpoch | None = None
     adopted_epoch: SelectionEpoch | None = None
 
@@ -54,6 +55,7 @@ class ProviderGate:
     account_id: SidekickAccountId | None = None
     generation: AuthorityGeneration | None = None
     queued: dict[TurnId, TurnBeginRequest] = field(default_factory=dict)
+    membership_sealed: bool = False
     sealed: bool = False
     status_code: SelectionCode | None = None
 
@@ -122,6 +124,7 @@ def project_ready_notices(
         if (participant := participants.get(participant_id)) is not None
         and participant.connected
         and not participant.confirmed_dead
+        and participant.attachment_ready_epoch == proof.epoch
     )
 
 
@@ -306,6 +309,8 @@ def project_notice(
     participant: ParticipantRecord,
     gate: ProviderGate | None,
     finalized: FinalizedSelection | None,
+    *,
+    attachment_required: bool = False,
 ) -> ParticipantNotice:
     """Project the current admission state for one authenticated stream."""
     if gate is None:
@@ -316,7 +321,12 @@ def project_notice(
         return participant_notice(
             participant_id,
             participant,
-            kind=ParticipantNoticeKind.OPEN,
+            kind=(
+                ParticipantNoticeKind.PREPARE
+                if attachment_required
+                and participant.attachment_ready_epoch != finalized.epoch
+                else ParticipantNoticeKind.OPEN
+            ),
             epoch=finalized.epoch,
         )
     target = (gate.account_id, gate.generation)
@@ -334,7 +344,11 @@ def project_notice(
             epoch=gate.pending_epoch,
             code=gate.status_code,
         )
-    if gate.account_id is not None and gate.generation is not None:
+    if (
+        gate.account_id is not None
+        and gate.generation is not None
+        and participant.attachment_ready_epoch == gate.pending_epoch
+    ):
         return participant_notice(
             participant_id,
             participant,

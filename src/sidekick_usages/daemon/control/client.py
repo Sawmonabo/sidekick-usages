@@ -320,9 +320,26 @@ class ControlClient:
     def register_participant(
         self,
         manifest: ParticipantManifest,
+        *,
+        protected_endpoint: socket.socket | None = None,
     ) -> Generator[ControlEvent]:
-        """Register one client using only kernel-owned peer identity."""
-        return self.request(RequestKind.PARTICIPANT_REGISTER, manifest)
+        """Register a peer with one optional protected local endpoint."""
+        if protected_endpoint is None:
+            return self.request(RequestKind.PARTICIPANT_REGISTER, manifest)
+        self.handshake()
+        self._connection.settimeout(self._response_timeout_seconds)
+        request = self._new_request(
+            RequestKind.PARTICIPANT_REGISTER,
+            manifest,
+        )
+        try:
+            self._transport.send_request_with_attachment(
+                request,
+                protected_endpoint,
+            )
+        finally:
+            protected_endpoint.close()
+        return self._event_stream(request)
 
     def subscribe_participant(
         self,

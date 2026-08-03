@@ -11,6 +11,7 @@ from threading import Event
 from types import FrameType
 
 from sidekick_usages.clock import SystemClock
+from sidekick_usages.core.selection.policy import protected_selection_enabled
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.control.dispatch import (
     OperationEventHub,
@@ -75,6 +76,10 @@ from sidekick_usages.persistence.supervisor.selection import (
 from sidekick_usages.persistence.supervisor.service import ServiceStateStore
 from sidekick_usages.providers.claude.auth.storage.service import (
     claude_credential_basename,
+)
+from sidekick_usages.providers.claude.structured.data_plane import (
+    ClaudeParticipantChannelRegistry,
+    ClaudeProtectedCommitRelay,
 )
 from sidekick_usages.providers.codex.app_server.executable import (
     discover_codex_executable_from_launcher,
@@ -169,8 +174,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     ).load()
     selection_journals = SelectionOperationStore(paths.selection_journals)
-    participants = ParticipantRegistry(selected)
-    selection_workers = SelectionWorkerGateway(queue, clock, wakeup.notify)
+    exchanges = WorkerExchangeRegistry(time.monotonic)
+    protected_channels = (
+        ClaudeParticipantChannelRegistry()
+        if protected_selection_enabled(ProviderId.CLAUDE)
+        else None
+    )
+    participants = ParticipantRegistry(
+        selected,
+        attachments=protected_channels,
+    )
+    protected_relay = (
+        ClaudeProtectedCommitRelay(exchanges, protected_channels)
+        if protected_channels is not None
+        else None
+    )
+    selection_workers = SelectionWorkerGateway(
+        queue,
+        clock,
+        wakeup.notify,
+        exchange_owner=protected_relay,
+    )
     selection_recovery = SelectionRecovery(
         selected,
         selection_journals,
@@ -194,7 +218,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     diagnostic_log = SanitizedDiagnosticLog(paths.service_logs)
     control_diagnostics = ControlFailureDiagnosticSink(diagnostic_log, clock)
     events = OperationEventHub(control_diagnostics.failed)
-    exchanges = WorkerExchangeRegistry(time.monotonic)
     workers = WorkerPool(
         SubprocessWorkerLauncher(),
         WorkerLaunchPlanner(
@@ -282,7 +305,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     signal.signal(signal.SIGTERM, partial(_signal_stop, request_stop))
     signal.signal(signal.SIGINT, partial(_signal_stop, request_stop))
-    runtime.run()
+    try:
+        runtime.run()
+    finally:
+        if protected_channels is not None:
+            protected_channels.close()
     return _EXIT_OK
 
 

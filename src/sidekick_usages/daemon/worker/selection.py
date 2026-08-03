@@ -47,6 +47,12 @@ _LEGAL_PHASES = {
             SelectionPhase.RECOVERING,
         }
     ),
+    OperationKind.CLAUDE_PARTICIPANT_BIND: frozenset(
+        {
+            SelectionPhase.AWAITING_READY,
+            SelectionPhase.RECOVERING,
+        }
+    ),
 }
 _AMBIGUOUS_CLAUDE_PHASES = frozenset(
     {
@@ -127,7 +133,11 @@ class SelectionWorkerBoundary:
         current = self._selected.load(operation.provider_id)
         baseline_matches = self._baseline_matches(active, current)
         finalized_target_matches = (
-            operation.kind is OperationKind.SELECTION_READBACK
+            operation.kind
+            in {
+                OperationKind.SELECTION_READBACK,
+                OperationKind.CLAUDE_PARTICIPANT_BIND,
+            }
             and current is not None
             and current.provider_id is active.provider_id
             and current.account_id == active.target_account_id
@@ -139,11 +149,36 @@ class SelectionWorkerBoundary:
             raise ValueError("Selection worker baseline is unavailable.")
         return active, current if baseline_matches else None
 
+    def finalized_context(
+        self,
+        operation: DueOperation,
+    ) -> FinalizedSelection:
+        """Load the exact durable target for a standalone Claude bind."""
+        current = self._selected.load(operation.provider_id)
+        if (
+            operation.provider_id is not ProviderId.CLAUDE
+            or operation.kind is not OperationKind.CLAUDE_PARTICIPANT_BIND
+            or operation.priority is not OperationPriority.INTERACTIVE
+            or operation.required_selection_operation_id
+            != operation.operation_id
+            or current is None
+            or current.provider_id is not operation.provider_id
+            or current.account_id != operation.required_account_id
+        ):
+            raise ValueError("Finalized Claude bind context is unavailable.")
+        return current
+
     def account_ids(
         self,
         operation: DueOperation,
     ) -> tuple[SidekickAccountId, ...]:
         """Resolve one phase-specific provider authority lock set."""
+        if (
+            operation.kind is OperationKind.CLAUDE_PARTICIPANT_BIND
+            and operation.required_selection_operation_id
+            == operation.operation_id
+        ):
+            return (self.finalized_context(operation).account_id,)
         active, _baseline = self.context(operation)
         if operation.kind is OperationKind.SELECTION_PREVALIDATE:
             return (active.target_account_id,)
@@ -174,6 +209,36 @@ class SelectionWorkerBoundary:
             SelectionCode.SELECTION_RECOVERY_REQUIRED.value,
             self._clock,
         )
+
+    def finish_finalized_bind(
+        self,
+        operation: DueOperation,
+        finalized: FinalizedSelection,
+        result: WorkerResult,
+    ) -> WorkerResult:
+        """Return only an exact finalized-target Claude bind result."""
+        if result.outcome not in {
+            WorkerOutcome.SUCCEEDED,
+            WorkerOutcome.NO_CHANGE,
+        }:
+            return result
+        metadata = result.selection
+        if (
+            metadata is None
+            or metadata.operation_id != operation.operation_id
+            or metadata.provider_id is not finalized.provider_id
+            or metadata.kind is not OperationKind.CLAUDE_PARTICIPANT_BIND
+            or metadata.pending_epoch != finalized.epoch
+            or metadata.observed_account_id != finalized.account_id
+            or metadata.observed_generation != finalized.generation
+        ):
+            return worker_failure(
+                operation,
+                WorkerOutcome.TRANSIENT_FAILURE,
+                SelectionCode.AUTHORITY_PROOF_FAILED.value,
+                self._clock,
+            )
+        return result
 
     @staticmethod
     def _baseline_matches(

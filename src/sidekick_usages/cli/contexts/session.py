@@ -20,11 +20,19 @@ class CodexSessionRunner(Protocol):
         """Return the exact stock-TUI process status."""
 
 
+class ClaudeSessionRunner(Protocol):
+    """Run one release-qualified protected Claude session."""
+
+    def run(self, arguments: tuple[str, ...]) -> int:
+        """Return the official engine's natural exit status."""
+
+
 @dataclass(frozen=True, slots=True)
 class SessionContext:
     """Provider-neutral explicit shell enrollment boundary."""
 
     shell: ShellEnrollment
+    claude: ClaudeSessionRunner | None = None
     codex: CodexSessionRunner | None = None
 
 
@@ -34,6 +42,7 @@ def compose_session_context(
     environment: Mapping[str, str] | None = None,
     platform: str | None = None,
     effective_user_id: int | None = None,
+    claude: ClaudeSessionRunner | None = None,
     codex: CodexSessionRunner | None = None,
 ) -> SessionContext:
     """Compose shell enrollment and an injected qualified Codex owner."""
@@ -53,5 +62,6 @@ def compose_session_context(
                 effective_user_id=uid,
             )
         ),
+        claude,
         codex,
     )

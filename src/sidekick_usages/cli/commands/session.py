@@ -36,8 +36,16 @@ def claude_cmd(
     ] = None,
 ) -> None:
     """Enter a coordinated Claude session when its host is qualified."""
-    del claude_arguments
-    _refuse_provider(ctx, "claude")
+    session = invocation_context(ctx).require_session().claude
+    if session is None:
+        _refuse_provider(ctx, "claude")
+    try:
+        status = session.run(tuple(claude_arguments or ()))
+    except SessionLaunchError as error:
+        invocation_context(ctx).err_console.print(f"[red]{error}[/red]")
+        raise typer.Exit(code=ExitCode.MANUAL_ACTION) from None
+    if status != ExitCode.SUCCESS:
+        raise typer.Exit(code=status)
 
 
 def codex_cmd(

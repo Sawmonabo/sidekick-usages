@@ -1,5 +1,6 @@
 """Forward-only active selection recovery before supervisor readiness."""
 
+from contextlib import suppress
 from dataclasses import replace
 from threading import Lock
 
@@ -23,6 +24,7 @@ from sidekick_usages.core.selection.types import (
 )
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.daemon.models.scheduler import SchedulerCompletion
+from sidekick_usages.daemon.selection.models import SelectionRequestError
 from sidekick_usages.daemon.selection.ports import (
     FinalizedSelectionStore,
     SelectionJournal,
@@ -162,9 +164,12 @@ class SelectionRecovery:
 
     def fail_readback(self, operation: DueOperation, code: str) -> None:
         """Retain one failed orphan readback as gated recovery truth."""
-        if operation.kind is not OperationKind.SELECTION_READBACK:
-            return
         del code
+        if operation.kind not in {
+            OperationKind.SELECTION_READBACK,
+            OperationKind.CLAUDE_PARTICIPANT_BIND,
+        }:
+            return
         with self._provider_locks[operation.provider_id]:
             active = self._journal.load(operation.provider_id).active
             if (
@@ -181,6 +186,14 @@ class SelectionRecovery:
             return
         provider_id = completion.provider_id
         with self._provider_locks[provider_id]:
+            if (
+                completion.operation_kind
+                is OperationKind.CLAUDE_PARTICIPANT_BIND
+                and completion.worker_operation_id
+                == completion.operation_id
+            ):
+                self._prepare_finalized_binding(completion)
+                return
             operation = self._journal.load(provider_id).active
             if (
                 operation is None
@@ -194,6 +207,45 @@ class SelectionRecovery:
                 self._recover_baseline(operation)
             elif completion.operation_kind is OperationKind.SELECTION_COMMIT:
                 self._workers.enqueue_recovery_readback(operation)
+            elif (
+                completion.operation_kind
+                is OperationKind.CLAUDE_PARTICIPANT_BIND
+                and completion.outcome in {
+                    WorkerOutcome.SUCCEEDED,
+                    WorkerOutcome.NO_CHANGE,
+                }
+            ):
+                self._resume(provider_id)
+            elif (
+                completion.operation_kind
+                is OperationKind.CLAUDE_PARTICIPANT_BIND
+            ):
+                self._publish_recovery_required(operation)
+
+    def _prepare_finalized_binding(
+        self,
+        completion: SchedulerCompletion,
+    ) -> None:
+        """Open only receipts for the exact current finalized authority."""
+        metadata = completion.selection
+        finalized = self._selected.load(completion.provider_id)
+        if (
+            completion.outcome
+            not in {WorkerOutcome.SUCCEEDED, WorkerOutcome.NO_CHANGE}
+            or completion.worker_operation_id != completion.operation_id
+            or metadata is None
+            or metadata.operation_id != completion.operation_id
+            or metadata.kind is not OperationKind.CLAUDE_PARTICIPANT_BIND
+            or finalized is None
+            or metadata.pending_epoch != finalized.epoch
+            or metadata.observed_account_id != finalized.account_id
+            or metadata.observed_generation != finalized.generation
+        ):
+            return
+        self._participants.prepare_finalized(
+            completion.operation_id,
+            finalized,
+        )
 
     def _recover_committed(
         self,
@@ -204,6 +256,20 @@ class SelectionRecovery:
         if operation.prepared_generation is None:
             return self._recovery_required(operation)
         prepared = self._prepared(operation)
+        protected_proof = self._target_proof(
+            operation,
+            operation.target_generation or operation.prepared_generation,
+        )
+        if self._participants.requires_attachment(
+            operation.provider_id
+        ) and self._participants.prepare_target(
+            operation.operation_id, protected_proof
+        ):
+            return self._recover_target(
+                operation,
+                prepared,
+                protected_proof,
+            )
         if self._target_proven(operation, observation):
             if observation.generation is None:
                 return self._recovery_required(operation)
@@ -269,6 +335,10 @@ class SelectionRecovery:
                 ),
             )
         if operation.phase is not SelectionPhase.AWAITING_READY:
+            return self._recovery_required(operation)
+        if not self._participants.target_prepared(operation.provider_id):
+            with suppress(SelectionRequestError):
+                self._workers.bind_participant(operation)
             return self._recovery_required(operation)
         if not self._participants.ready_resolved(operation.provider_id):
             return self._recovery_required(operation)

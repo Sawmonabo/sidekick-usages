@@ -244,6 +244,7 @@ def encode_selection_event(payload: EventPayload) -> JsonValue:
             "active_turn_count": payload.active_turn_count,
             "adopted_count": payload.adopted_count,
             "code": None if payload.code is None else payload.code.value,
+            "confirmed_dead_count": payload.confirmed_dead_count,
             "finalized_account_id": _optional_account(
                 payload.finalized_account_id
             ),
@@ -415,6 +416,7 @@ def _decode_status(root: JsonObject) -> SelectionStatus:
             "active_turn_count",
             "adopted_count",
             "code",
+            "confirmed_dead_count",
             "finalized_account_id",
             "finalized_epoch",
             "operation_id",
@@ -441,6 +443,7 @@ def _decode_status(root: JsonObject) -> SelectionStatus:
         pending_epoch=_decode_optional_epoch(root["pending_epoch"]),
         phase=_decode_optional_phase(root["phase"]),
         code=_decode_optional_code(root["code"]),
+        confirmed_dead_count=require_integer(root["confirmed_dead_count"]),
         registered_count=require_integer(root["registered_count"]),
         reachable_count=require_integer(root["reachable_count"]),
         required_count=require_integer(root["required_count"]),

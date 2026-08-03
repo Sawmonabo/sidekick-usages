@@ -430,6 +430,11 @@ class DurableScheduler:
             outcome=result.outcome,
             failure_code=result.failure_code,
             selection=result.selection,
+            worker_operation_id=(
+                operation.operation_id
+                if operation.kind.is_selection_worker
+                else None
+            ),
         )
 
     def _discard_stale_activations(

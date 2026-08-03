@@ -1,8 +1,9 @@
 """Structural ports for participant selection coordination."""
 
+import socket
 from collections.abc import Iterator
 from datetime import datetime
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from sidekick_usages.core.accounts.types import (
     OperationId,
@@ -38,6 +39,63 @@ from sidekick_usages.persistence.models.selection import (
 from sidekick_usages.platform.models import ProcessIdentity
 
 
+class ParticipantAttachmentTransaction(Protocol):
+    """One staged participant attachment with exact ownership transfer."""
+
+    def commit(self) -> None:
+        """Commit the staged attachment before membership mutates."""
+
+    def finalize(self) -> None:
+        """Release replaced attachment state after membership commits."""
+
+    def rollback(self) -> None:
+        """Close or remove the exact staged attachment."""
+
+
+class ParticipantAttachmentRegistry(Protocol):
+    """Provider-owned attachment registry used by the coordinator."""
+
+    def requires_endpoint(self, provider_id: ProviderId) -> bool:
+        """Return whether this provider requires a protected endpoint."""
+
+    def stage(
+        self,
+        participant_id: ParticipantId,
+        connection_generation: int,
+        peer: ProcessIdentity,
+        endpoint: socket.socket,
+    ) -> ParticipantAttachmentTransaction:
+        """Validate and stage one exact endpoint."""
+
+    def remove(
+        self,
+        participant_id: ParticipantId,
+        connection_generation: int,
+        peer: ProcessIdentity,
+    ) -> None:
+        """Close the endpoint matching one proved dead process."""
+
+    def matches_target(
+        self,
+        participant_id: ParticipantId,
+        connection_generation: int,
+        peer: ProcessIdentity,
+        operation_id: OperationId,
+        proof: AuthorityReadyProof,
+    ) -> bool:
+        """Return whether one exact attachment has installed the proof."""
+
+    def matches_finalized(
+        self,
+        participant_id: ParticipantId,
+        connection_generation: int,
+        peer: ProcessIdentity,
+        operation_id: OperationId,
+        finalized: FinalizedSelection,
+    ) -> bool:
+        """Return whether one attachment installed the finalized target."""
+
+
 class SelectionAuthorityAdapter(Protocol):
     """Perform provider work through its qualified worker lane."""
 
@@ -56,6 +114,17 @@ class SelectionAuthorityAdapter(Protocol):
         prepared: PreparedSelection,
     ) -> SelectionAuthorityObservation:
         """Read exact provider state without mutating it."""
+
+
+@runtime_checkable
+class SelectionParticipantBinder(Protocol):
+    """Schedule one protected bind for a newly attached participant."""
+
+    def bind_participant(self, operation: OpenSelectionOperation) -> None:
+        """Bind the current target before this participant can be ready."""
+
+    def bind_finalized(self, finalized: FinalizedSelection) -> None:
+        """Bind persisted target authority before a first participant turn."""
 
 
 class FinalizedSelectionStore(Protocol):
@@ -121,6 +190,8 @@ class ParticipantControlPort(Protocol):
         self,
         manifest: ParticipantManifest,
         peer: ProcessIdentity,
+        *,
+        protected_endpoint: socket.socket | None = None,
     ) -> ParticipantRegistration:
         """Register one kernel-proven participant."""
 

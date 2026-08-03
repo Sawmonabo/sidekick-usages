@@ -10,6 +10,7 @@ from sidekick_usages.core.accounts.models import (
     ClaudeManagedLoginAuthority,
     SavedAccount,
 )
+from sidekick_usages.core.accounts.types import AuthorityGeneration
 from sidekick_usages.core.selection.models import FinalizedSelection
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.credentials.authorities import (
@@ -139,13 +140,23 @@ class ClaudeManagedCredentialResolver:
         authority: OperationAuthority,
     ) -> AbstractContextManager[AuthenticatedSavedAccount]:
         """Return one exact authority-bound Claude credential context."""
-        return self._open(account, authority)
+        return self._open(account, authority, None)
+
+    def open_native_authorized(
+        self,
+        account: SavedAccount,
+        expected_generation: AuthorityGeneration,
+        authority: OperationAuthority,
+    ) -> AbstractContextManager[AuthenticatedSavedAccount]:
+        """Open the exact native target before durable finalization."""
+        return self._open(account, authority, expected_generation)
 
     @contextmanager
     def _open(
         self,
         account: SavedAccount,
         authority: OperationAuthority,
+        expected_native_generation: AuthorityGeneration | None,
     ) -> Iterator[AuthenticatedSavedAccount]:
         authority.require(account.account_id)
         maintained = self._maintainer.maintain_with_authority(
@@ -155,11 +166,15 @@ class ClaudeManagedCredentialResolver:
         current = _maintained_account(account, maintained)
         subscription = require_managed_claude_authority(current)
         try:
-            selected = self._selected.load(ProviderId.CLAUDE)
-            reader, capabilities = self._authority_source(
-                current,
-                selected,
-            )
+            selected = None
+            if expected_native_generation is None:
+                selected = self._selected.load(ProviderId.CLAUDE)
+                reader, capabilities = self._authority_source(
+                    current,
+                    selected,
+                )
+            else:
+                reader, capabilities = self._native_authority_source()
             with reader.open_login(
                 capabilities,
                 self._clock.now(),
@@ -167,12 +182,22 @@ class ClaudeManagedCredentialResolver:
                 environment=self._environment,
                 runner=self._runner,
             ) as protected:
-                self._require_projection(
-                    current,
-                    subscription,
-                    selected,
-                    protected.snapshot,
-                )
+                if expected_native_generation is None:
+                    self._require_projection(
+                        current,
+                        subscription,
+                        selected,
+                        protected.snapshot,
+                    )
+                elif (
+                    protected.snapshot.provider_identity
+                    != subscription.provider_identity
+                    or protected.snapshot.generation
+                    != expected_native_generation
+                ):
+                    raise ClaudeManagedCredentialError(
+                        CredentialAuthorityFailureKind.MISMATCH
+                    )
                 lease = CredentialLease(
                     current,
                     current.account_id,
@@ -203,9 +228,12 @@ class ClaudeManagedCredentialResolver:
                 self._managed_reader,
                 self._capabilities.managed(account.account_id),
             )
-        native = self._capabilities.native(
-            environment=self._environment,
-        )
+        return self._native_authority_source()
+
+    def _native_authority_source(
+        self,
+    ) -> tuple[ClaudeAuthorityReader, ClaudeCapabilities]:
+        native = self._capabilities.native(environment=self._environment)
         profile = native.profile
         if not isinstance(profile, ClaudeNativeProfile):
             raise ClaudeManagedCredentialError(

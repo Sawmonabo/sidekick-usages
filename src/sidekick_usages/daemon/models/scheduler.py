@@ -24,6 +24,7 @@ class SchedulerCompletion:
     outcome: WorkerOutcome
     failure_code: str | None
     selection: SelectionWorkerMetadata | None = None
+    worker_operation_id: OperationId | None = None
 
     def __post_init__(self) -> None:
         """Require selection metadata to match its exact phase."""

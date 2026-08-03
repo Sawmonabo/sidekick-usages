@@ -140,6 +140,7 @@ class OperationKind(StrEnum):
     SELECTION_PREVALIDATE = "selection_prevalidate"
     SELECTION_COMMIT = "selection_commit"
     SELECTION_READBACK = "selection_readback"
+    CLAUDE_PARTICIPANT_BIND = "claude_participant_bind"
 
     @property
     def is_selection_worker(self) -> bool:
@@ -148,6 +149,7 @@ class OperationKind(StrEnum):
             OperationKind.SELECTION_PREVALIDATE,
             OperationKind.SELECTION_COMMIT,
             OperationKind.SELECTION_READBACK,
+            OperationKind.CLAUDE_PARTICIPANT_BIND,
         }
 
 

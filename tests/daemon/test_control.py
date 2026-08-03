@@ -80,6 +80,7 @@ from sidekick_usages.daemon.selection.models import (
     ParticipantReadyProof,
     ParticipantReadyRequest,
     ParticipantRegistration,
+    SelectionRequestError,
     SelectionStatus,
     TurnAdmission,
     TurnAdmissionState,
@@ -142,6 +143,7 @@ class _OperatorSelection(SelectionSupervisorPort):
 
     def __init__(self) -> None:
         self.operation_id: OperationId | None = None
+        self.unsupported_target: SidekickAccountId | None = None
 
     def select(
         self,
@@ -150,6 +152,10 @@ class _OperatorSelection(SelectionSupervisorPort):
         target_account_id: SidekickAccountId,
     ) -> SelectionResult:
         """Record and complete one exact synthetic selection."""
+        if target_account_id == self.unsupported_target:
+            raise SelectionRequestError(
+                SelectionCode.UNSUPPORTED_SESSION_CAPABILITY
+            )
         if self.operation_id is not None:
             raise ValueError("synthetic fault")
         self.operation_id = operation_id
@@ -540,6 +546,22 @@ def test_select_accepts_with_the_correlated_operation_id(
     assert isinstance(completed.payload, SelectionResult)
     assert completed.payload.operation_id == operation_id
     assert selection.operation_id == operation_id
+    selection.unsupported_target = SidekickAccountId(
+        "3b094d2e-1075-4c79-b59c-4295111028ab"
+    )
+    setup_request = replace(
+        request,
+        request_id=new_request_id(),
+        payload=AccountPayload(
+            ProviderId.CLAUDE, selection.unsupported_target
+        ),
+    )
+    refused = tuple(dispatcher.dispatch(_verified(setup_request)))[-1]
+    assert isinstance(refused.payload, FailedPayload)
+    assert (
+        refused.payload.code
+        == SelectionCode.UNSUPPORTED_SESSION_CAPABILITY.value
+    )
     failed = tuple(dispatcher.dispatch(_verified(request)))[-1]
     assert isinstance(failed.payload, FailedPayload)
     assert failed.payload.code == ProtocolErrorCode.DISPATCH_FAILED.value
@@ -661,6 +683,7 @@ def test_participant_codec_uses_only_kernel_process_identity(
         reachable_count=2,
         required_count=3,
         ready_count=2,
+        confirmed_dead_count=1,
         adopted_count=1,
         unreachable_count=1,
         active_turn_count=1,
@@ -735,6 +758,7 @@ def test_participant_codec_uses_only_kernel_process_identity(
         (encoded,) = decoder.feed(encode_event(event))
         decoder.finish()
         assert decode_event(encoded) == event
+    assert b'"confirmed_dead_count":1' in encoded
 
     with pytest.raises(ValueError, match="kind and code disagree"):
         ParticipantNotice(
