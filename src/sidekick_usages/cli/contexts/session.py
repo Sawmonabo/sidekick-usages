@@ -35,7 +35,7 @@ def compose_session_context(
         else effective_user_id
     )
     return SessionContext(
-        shell=ShellEnrollment(
+        ShellEnrollment(
             ShellStartupResolver(
                 environment=resolved_environment,
                 platform=sys.platform if platform is None else platform,

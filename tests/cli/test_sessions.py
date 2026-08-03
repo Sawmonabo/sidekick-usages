@@ -1,5 +1,6 @@
 """Public session enrollment and capability-refusal behavior."""
 
+import errno
 import os
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from sidekick_usages.cli.session.launcher import ProviderSessionLauncher
 from sidekick_usages.cli.session.models import (
     SessionLaunchError,
     SessionLaunchFailure,
+    SessionLaunchSpec,
     ShellIntegrationError,
     ShellIntegrationFailure,
     ShellKind,
@@ -47,11 +49,29 @@ function codex
 end
 """
 _PRIVATE_FILE_MODE = 0o600
+_PROVIDER_EXIT_CODE = 17
 
 
 def _executable(path: Path) -> None:
     path.write_text("#!/bin/sh\nexit 0\n")
     path.chmod(0o700)
+
+
+def _run_planned_session_in_child(
+    launcher: ProviderSessionLauncher,
+    spec: SessionLaunchSpec,
+) -> int:
+    if not hasattr(os, "fork"):
+        pytest.skip("Descriptor execution requires a POSIX process.")
+    process_id = os.fork()
+    if process_id == 0:
+        try:
+            launcher.run(spec)
+        except BaseException:
+            os._exit(125)
+        os._exit(126)
+    _waited, process_status = os.waitpid(process_id, 0)
+    return os.waitstatus_to_exitcode(process_status)
 
 
 def test_launcher_freezes_process_contract_and_rejects_unsafe_override(
@@ -94,11 +114,106 @@ def test_launcher_freezes_process_contract_and_rejects_unsafe_override(
     assert nul_failure.value.code is SessionLaunchFailure.INVALID_ARGUMENT
 
     claude.unlink()
-    claude.symlink_to(sidekick)
+    claude.hardlink_to(sidekick)
     with pytest.raises(SessionLaunchError) as recursion:
         launcher.plan(ProviderId.CLAUDE, ())
 
     assert recursion.value.code is SessionLaunchFailure.RECURSIVE_EXECUTABLE
+
+
+def test_launcher_executes_exact_descriptor_from_requested_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Path replacement or pathname exec would break the frozen launch."""
+    binaries = tmp_path / "bin"
+    working_directory = tmp_path / "working"
+    binaries.mkdir()
+    working_directory.mkdir()
+    claude = binaries / "claude"
+    sidekick = binaries / "sidekick-real"
+    claude.write_text(
+        "#!/bin/sh\n"
+        'printf \'%s\\n%s\\n\' "$1" "$SESSION_TEST" > observed.txt\n'
+        f"exit {_PROVIDER_EXIT_CODE}\n"
+    )
+    claude.chmod(0o700)
+    _executable(sidekick)
+    launcher = ProviderSessionLauncher(
+        {"PATH": str(binaries), "SESSION_TEST": "preserved"},
+        working_directory=working_directory,
+        sidekick_executable=qualify_executable(sidekick),
+    )
+    spec = launcher.plan(ProviderId.CLAUDE, ("prompt with spaces",))
+    original_directory = Path.cwd()
+
+    assert _run_planned_session_in_child(launcher, spec) == _PROVIDER_EXIT_CODE
+    assert (working_directory / "observed.txt").read_text() == (
+        "prompt with spaces\npreserved\n"
+    )
+
+    calls: list[
+        tuple[int, os.stat_result, tuple[str, ...], dict[str, str], Path]
+    ] = []
+
+    def reject_after_observation(
+        descriptor: int,
+        arguments: tuple[str, ...],
+        environment: dict[str, str],
+    ) -> int:
+        calls.append(
+            (
+                descriptor,
+                os.fstat(descriptor),
+                arguments,
+                environment,
+                Path.cwd(),
+            )
+        )
+        raise OSError("Synthetic descriptor exec refusal.")
+
+    monkeypatch.setattr(
+        "sidekick_usages.cli.session.launcher.os.execve",
+        reject_after_observation,
+    )
+
+    with pytest.raises(SessionLaunchError) as failure:
+        launcher.run(spec)
+
+    assert failure.value.code is SessionLaunchFailure.EXECUTION_FAILED
+    assert Path.cwd() == original_directory
+    descriptor, metadata, arguments, environment, executed_from = calls[0]
+    assert (metadata.st_dev, metadata.st_ino) == (
+        spec.executable.device,
+        spec.executable.inode,
+    )
+    assert arguments == (str(claude), "prompt with spaces")
+    assert environment["SESSION_TEST"] == "preserved"
+    assert executed_from == working_directory
+    with pytest.raises(OSError, match=os.strerror(errno.EBADF)):
+        os.fstat(descriptor)
+
+    monkeypatch.setattr(
+        "sidekick_usages.cli.session.launcher._DESCRIPTOR_EXEC_SUPPORTED",
+        False,
+    )
+    with pytest.raises(SessionLaunchError) as unsupported:
+        launcher.run(spec)
+
+    assert unsupported.value.code is SessionLaunchFailure.UNSUPPORTED
+
+    monkeypatch.setattr(
+        "sidekick_usages.cli.session.launcher._DESCRIPTOR_EXEC_SUPPORTED",
+        True,
+    )
+    replacement = binaries / "replacement-claude"
+    _executable(replacement)
+    replacement.replace(claude)
+    with pytest.raises(SessionLaunchError) as changed:
+        launcher.run(spec)
+
+    assert changed.value.code is SessionLaunchFailure.EXECUTABLE_CHANGED
+    assert len(calls) == 1
 
 
 @pytest.mark.parametrize(
@@ -197,6 +312,40 @@ def test_shell_enrollment_round_trips_bash_and_fish_without_foreign_edits(
     assert foreign.read_text() == "set -gx EDITOR vim\n"
 
 
+def test_zsh_zdotdir_round_trips_a_file_without_a_final_newline(
+    tmp_path: Path,
+) -> None:
+    """Ignoring ZDOTDIR or an inserted separator would alter user bytes."""
+    home = tmp_path / "home"
+    zdotdir = tmp_path / "zsh-config"
+    home.mkdir()
+    zdotdir.mkdir()
+    zshrc = zdotdir / ".zshrc"
+    original = b"export EDITOR=vim"
+    zshrc.write_bytes(original)
+    integration = home / ".local" / "share" / "sidekick" / "session.sh"
+    shell = ShellEnrollment(
+        ShellStartupResolver(
+            environment={
+                "HOME": str(home),
+                "SHELL": "/bin/zsh",
+                "ZDOTDIR": str(zdotdir),
+            },
+            platform="linux",
+            posix_integration=integration,
+            effective_user_id=os.geteuid(),
+        )
+    )
+
+    installed = shell.install(ShellKind.ZSH, dry_run=False)
+
+    assert installed.paths == (zshrc, integration)
+    assert shell.status(ShellKind.ZSH).state.value == "integrated"
+    assert shell.uninstall(ShellKind.ZSH, dry_run=False).changed is True
+    assert zshrc.read_bytes() == original
+    assert not integration.exists()
+
+
 def test_shell_dry_run_has_no_side_effect_and_changed_markers_fail_closed(
     tmp_path: Path,
 ) -> None:
@@ -247,13 +396,51 @@ def test_shell_dry_run_has_no_side_effect_and_changed_markers_fail_closed(
         shell.uninstall(ShellKind.BASH, dry_run=False)
 
     assert inverted.value.code is ShellIntegrationFailure.SOURCE_CHANGED
-    assert inverted.value.manual_range == (1, 3)
+    assert inverted.value.manual_range is None
+    assert "ambiguous" in str(inverted.value)
+
+    bashrc.write_text(
+        "echo foreign\n# >>> sidekick-usages session >>>\necho unrelated\n"
+    )
+    with pytest.raises(ShellIntegrationError) as orphan:
+        shell.uninstall(ShellKind.BASH, dry_run=False)
+
+    assert orphan.value.code is ShellIntegrationFailure.SOURCE_CHANGED
+    assert orphan.value.manual_range == (2, 2)
 
 
-def test_shell_remove_rejects_injected_namespace_replacement(
+def test_shell_persistence_refuses_an_intermediate_symlink(
     tmp_path: Path,
 ) -> None:
-    """A replacement after stable read must survive failed removal."""
+    """Following one Linux path component could mutate an outside tree."""
+    home = tmp_path / "home"
+    outside = tmp_path / "outside"
+    home.mkdir()
+    outside.mkdir()
+    (home / ".local").symlink_to(outside, target_is_directory=True)
+    integration = (
+        home / ".local" / "share" / "sidekick-usages" / "shell-integration.sh"
+    )
+    shell = ShellEnrollment(
+        ShellStartupResolver(
+            environment={"HOME": str(home), "SHELL": "/bin/bash"},
+            platform="linux",
+            posix_integration=integration,
+            effective_user_id=os.geteuid(),
+        )
+    )
+
+    with pytest.raises(ShellIntegrationError) as failure:
+        shell.install(ShellKind.BASH, dry_run=True)
+
+    assert failure.value.code is ShellIntegrationFailure.UNSAFE_PATH
+    assert not (outside / "share").exists()
+
+
+def test_shell_remove_refuses_replacement_before_native_validation(
+    tmp_path: Path,
+) -> None:
+    """A replacement before native validation must remain untouched."""
     target = tmp_path / "sidekick-usages.fish"
     survivor = tmp_path / "original-survivor.fish"
     replacement = tmp_path / "replacement.fish"
@@ -265,6 +452,7 @@ def test_shell_remove_rejects_injected_namespace_replacement(
     class ReplacingPlatform(PosixPlatform):
         def remove_shell_validated(
             self,
+            root: Path,
             parent: Path,
             basename: str,
             device: int,
@@ -273,6 +461,7 @@ def test_shell_remove_rejects_injected_namespace_replacement(
             (parent / basename).rename(survivor)
             replacement.rename(parent / basename)
             return super().remove_shell_validated(
+                root,
                 parent,
                 basename,
                 device,

@@ -16,6 +16,8 @@ class SessionLaunchFailure(StrEnum):
     RECURSIVE_EXECUTABLE = "recursive_executable"
     UNSAFE_OVERRIDE = "unsafe_override"
     EXECUTABLE_CHANGED = "executable_changed"
+    EXECUTION_FAILED = "execution_failed"
+    UNSUPPORTED = "unsupported"
 
 
 class SessionLaunchError(UsageError):

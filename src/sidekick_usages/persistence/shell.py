@@ -32,6 +32,7 @@ class _ShellNativePlatform(Protocol):
 
     def read_shell_owned(
         self,
+        root: Path,
         parent: Path,
         basename: str,
         limit: int,
@@ -42,6 +43,7 @@ class _ShellNativePlatform(Protocol):
 
     def write_shell_atomic(
         self,
+        root: Path,
         parent: Path,
         basename: str,
         data: bytes,
@@ -53,6 +55,7 @@ class _ShellNativePlatform(Protocol):
 
     def remove_shell_validated(
         self,
+        root: Path,
         parent: Path,
         basename: str,
         device: int,
@@ -98,6 +101,7 @@ class ShellFileStore:
         self._require_target(path)
         try:
             return self._native.read_shell_owned(
+                self._root,
                 path.parent,
                 path.name,
                 _MAXIMUM_SHELL_FILE_BYTES,
@@ -125,6 +129,7 @@ class ShellFileStore:
         )
         try:
             return self._native.write_shell_atomic(
+                self._root,
                 path.parent,
                 path.name,
                 payload,
@@ -145,6 +150,7 @@ class ShellFileStore:
             raise ShellPersistenceError
         try:
             removed = self._native.remove_shell_validated(
+                self._root,
                 path.parent,
                 path.name,
                 expected.device,

@@ -3,7 +3,8 @@
 import os
 import secrets
 import stat
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from sidekick_usages.persistence.platform.errors import NativeFilesystemError
@@ -15,30 +16,54 @@ _TEMPORARY_ATTEMPTS = 16
 _REVALIDATION_MARGIN_BYTES = 1024 * 1024
 
 
-def ensure_parent(parent: Path) -> None:
-    """Create a shell parent through one held safe ancestor chain."""
-    ancestor_path = namespace.existing_ancestor(parent)
-    descriptors = [namespace.open_directory(ancestor_path, private=False)]
-    components = parent.relative_to(ancestor_path).parts
+@contextmanager
+def open_parent_descriptor(
+    root: Path,
+    parent: Path,
+    *,
+    create: bool,
+) -> Iterator[int | None]:
+    """Hold a shell parent reached without following any path component."""
     try:
-        namespace.extend_parent_chain(
-            descriptors,
-            components,
-            leaf_private=False,
-        )
-    except OSError:
-        namespace.close_descriptor_stack(
-            descriptors,
-            NativeFilesystemError(NativeFailureKind.UNSAFE),
-        )
-    except NativeFilesystemError as error:
-        namespace.close_descriptor_stack(descriptors, error)
+        components = parent.relative_to(root).parts
+    except ValueError:
+        raise NativeFilesystemError(NativeFailureKind.UNSAFE) from None
+    descriptors = [namespace.open_absolute_directory(root, private=False)]
+    primary: BaseException | None = None
+    missing = False
+    try:
+        if create:
+            namespace.extend_parent_chain(
+                descriptors,
+                components,
+                leaf_private=False,
+            )
+        else:
+            for component in components:
+                if (
+                    namespace.require_exact_entry(
+                        descriptors[-1],
+                        component,
+                    )
+                    is None
+                ):
+                    missing = True
+                    break
+                descriptors.append(
+                    namespace.open_child_directory(
+                        descriptors[-1],
+                        component,
+                        private=False,
+                    )
+                )
+        yield None if missing else descriptors[-1]
     except BaseException as error:
-        namespace.close_descriptor_stack(descriptors, error)
-    namespace.close_descriptor_stack(descriptors)
+        primary = error
+    namespace.close_descriptor_stack(descriptors, primary)
 
 
 def read_owned(
+    root: Path,
     parent: Path,
     basename: str,
     limit: int,
@@ -46,16 +71,9 @@ def read_owned(
     owner_only: bool,
 ) -> ShellNativeFile | None:
     """Stable-read one shell file through a held public parent."""
-    metadata = namespace.path_metadata(parent)
-    if metadata is None:
-        return None
-    if not stat.S_ISDIR(metadata.st_mode):
-        raise NativeFilesystemError(NativeFailureKind.UNSAFE)
-    descriptor = namespace.open_directory(parent, private=False)
-    with namespace.owned_descriptor(
-        descriptor,
-        NativeFailureKind.UNREADABLE,
-    ):
+    with open_parent_descriptor(root, parent, create=False) as descriptor:
+        if descriptor is None:
+            return None
         return files.read_held_shell_file(
             descriptor,
             basename,
@@ -65,6 +83,7 @@ def read_owned(
 
 
 def write_atomic(
+    root: Path,
     parent: Path,
     basename: str,
     data: bytes,
@@ -74,12 +93,9 @@ def write_atomic(
     synchronize_file: Callable[[int], None],
 ) -> ShellNativeFile:
     """Atomically publish shell bytes after a stable expected read."""
-    ensure_parent(parent)
-    descriptor = namespace.open_directory(parent, private=False)
-    with namespace.owned_descriptor(
-        descriptor,
-        NativeFailureKind.WRITE,
-    ):
+    with open_parent_descriptor(root, parent, create=True) as descriptor:
+        if descriptor is None:
+            raise NativeFilesystemError(NativeFailureKind.CREATE)
         owner_only = expected is None or mode == namespace.PRIVATE_FILE_MODE
         current = files.read_held_shell_file(
             descriptor,

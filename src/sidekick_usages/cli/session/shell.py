@@ -23,6 +23,7 @@ from sidekick_usages.persistence.shell import (
 
 _START_MARKER = "# >>> sidekick-usages session >>>"
 _END_MARKER = "# <<< sidekick-usages session <<<"
+_RESTORE_NO_NEWLINE_TAG = " # sidekick-usages:restore-no-final-newline"
 _POSIX_FUNCTIONS = b"""claude() {
     command sidekick-usages session claude -- "$@"
 }
@@ -452,14 +453,20 @@ class ShellEnrollment:
         generated_file: Path,
     ) -> bytes:
         text = _decode_source(path, payload)
-        expected = _source_block(generated_file)
-        location = _managed_range(path, text, expected)
+        location = _managed_range(path, text, generated_file)
         if location is not None:
             return payload
         prefix = text
-        if prefix and not prefix.endswith("\n"):
+        restore_no_newline = bool(prefix) and not prefix.endswith("\n")
+        if restore_no_newline:
             prefix += "\n"
-        return (prefix + expected).encode()
+        return (
+            prefix
+            + _source_block(
+                generated_file,
+                restore_no_newline=restore_no_newline,
+            )
+        ).encode()
 
     @staticmethod
     def _remove_source_block(
@@ -468,13 +475,15 @@ class ShellEnrollment:
         generated_file: Path,
     ) -> bytes:
         text = _decode_source(path, payload)
-        expected = _source_block(generated_file)
-        location = _managed_range(path, text, expected)
+        location = _managed_range(path, text, generated_file)
         if location is None:
             return payload
-        start, end = location
+        start, end, restore_no_newline = location
         lines = text.splitlines(keepends=True)
-        return "".join((*lines[:start], *lines[end:])).encode()
+        before = "".join(lines[:start])
+        if restore_no_newline:
+            before = before.removesuffix("\n")
+        return "".join((before, *lines[end:])).encode()
 
     @staticmethod
     def _changed_file(path: Path, payload: bytes) -> None:
@@ -488,16 +497,22 @@ class ShellEnrollment:
         )
 
 
-def _source_block(generated_file: Path) -> str:
+def _source_block(
+    generated_file: Path,
+    *,
+    restore_no_newline: bool,
+) -> str:
     source = f". {shlex.quote(str(generated_file))}"
+    if restore_no_newline:
+        source += _RESTORE_NO_NEWLINE_TAG
     return f"{_START_MARKER}\n{source}\n{_END_MARKER}\n"
 
 
 def _managed_range(
     path: Path,
     text: str,
-    expected: str,
-) -> tuple[int, int] | None:
+    generated_file: Path,
+) -> tuple[int, int, bool] | None:
     lines = text.splitlines(keepends=True)
     starts = [
         index
@@ -512,22 +527,43 @@ def _managed_range(
     if not starts and not ends:
         return None
     marker_lines = (*starts, *ends)
-    manual_start = 0 if not starts else min(marker_lines)
-    manual_end = len(lines) - 1 if not ends else max(marker_lines)
-    if (
-        len(starts) != 1
-        or len(ends) != 1
-        or ends[0] < starts[0]
-        or "".join(lines[starts[0] : ends[0] + 1]) != expected
+    structure_valid = (
+        len(starts) == 1 and len(ends) == 1 and starts[0] < ends[0]
+    )
+    if not structure_valid:
+        if len(marker_lines) == 1:
+            marker_line = marker_lines[0] + 1
+            detail = f"remove {path} marker line {marker_line}"
+            manual_range = (marker_line, marker_line)
+        else:
+            detail = (
+                f"marker locations in {path} are ambiguous; inspect the "
+                "actual marker lines"
+            )
+            manual_range = None
+        raise ShellIntegrationError(
+            ShellIntegrationFailure.SOURCE_CHANGED,
+            f"Managed source block changed; {detail} manually after review.",
+            path=path,
+            manual_range=manual_range,
+        )
+    block = "".join(lines[starts[0] : ends[0] + 1])
+    standard = _source_block(generated_file, restore_no_newline=False)
+    restoring = _source_block(generated_file, restore_no_newline=True)
+    restore_no_newline = block == restoring
+    if block not in {standard, restoring} or (
+        restore_no_newline and ends[0] + 1 != len(lines)
     ):
+        manual_start = starts[0] + 1
+        manual_end = ends[0] + 1
         raise ShellIntegrationError(
             ShellIntegrationFailure.SOURCE_CHANGED,
             f"Managed source block changed; remove {path} lines "
-            f"{manual_start + 1}-{manual_end + 1} manually after review.",
+            f"{manual_start}-{manual_end} manually after review.",
             path=path,
-            manual_range=(manual_start + 1, manual_end + 1),
+            manual_range=(manual_start, manual_end),
         )
-    return starts[0], ends[0] + 1
+    return starts[0], ends[0] + 1, restore_no_newline
 
 
 def _decode_source(path: Path, payload: bytes) -> str:
