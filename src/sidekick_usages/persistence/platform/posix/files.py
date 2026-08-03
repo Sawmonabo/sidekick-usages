@@ -6,7 +6,10 @@ import stat
 from collections.abc import Callable
 
 from sidekick_usages.persistence.platform.errors import NativeFilesystemError
-from sidekick_usages.persistence.platform.models import NativeFile
+from sidekick_usages.persistence.platform.models import (
+    NativeFile,
+    ShellNativeFile,
+)
 from sidekick_usages.persistence.platform.posix import namespace
 from sidekick_usages.persistence.platform.types import NativeFailureKind
 
@@ -98,6 +101,79 @@ def read_descriptor(
     )
 
 
+def _validate_shell_file(
+    metadata: os.stat_result,
+    directory_device: int,
+    *,
+    owner_only: bool,
+) -> None:
+    mode = stat.S_IMODE(metadata.st_mode)
+    unsafe_mode = (
+        mode != namespace.PRIVATE_FILE_MODE
+        if owner_only
+        else (bool(mode & 0o022) or not mode & stat.S_IRUSR)
+    )
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_nlink != 1
+        or metadata.st_uid != os.geteuid()
+        or metadata.st_dev != directory_device
+        or unsafe_mode
+    ):
+        raise NativeFilesystemError(NativeFailureKind.UNSAFE)
+
+
+def read_shell_descriptor(
+    descriptor: int,
+    directory_device: int,
+    limit: int,
+    *,
+    owner_only: bool,
+) -> ShellNativeFile:
+    """Stable-read one current-user shell file under its mode policy."""
+    try:
+        before = os.fstat(descriptor)
+    except OSError:
+        raise NativeFilesystemError(NativeFailureKind.UNREADABLE) from None
+    _validate_shell_file(before, directory_device, owner_only=owner_only)
+    if before.st_size > limit:
+        raise NativeFilesystemError(NativeFailureKind.TOO_LARGE)
+    chunks: list[bytes] = []
+    remaining = limit + 1
+    try:
+        while remaining:
+            chunk = os.read(descriptor, min(_READ_CHUNK_BYTES, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+    except OSError:
+        raise NativeFilesystemError(NativeFailureKind.UNREADABLE) from None
+    data = b"".join(chunks)
+    if len(data) > limit:
+        raise NativeFilesystemError(NativeFailureKind.TOO_LARGE)
+    try:
+        after = os.fstat(descriptor)
+    except OSError:
+        raise NativeFilesystemError(NativeFailureKind.UNREADABLE) from None
+    _validate_shell_file(after, directory_device, owner_only=owner_only)
+    if (
+        (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
+        or before.st_size != after.st_size
+        or before.st_mtime_ns != after.st_mtime_ns
+        or before.st_ctime_ns != after.st_ctime_ns
+        or len(data) != after.st_size
+    ):
+        raise NativeFilesystemError(NativeFailureKind.CHANGED)
+    return ShellNativeFile(
+        device=after.st_dev,
+        inode=after.st_ino,
+        data=data,
+        modified_nanoseconds=after.st_mtime_ns,
+        mode=stat.S_IMODE(after.st_mode),
+    )
+
+
 def read_held_file(
     parent_descriptor: int,
     basename: str,
@@ -107,6 +183,51 @@ def read_held_file(
     descriptor_validator: Callable[[int], None] = _accept_descriptor,
 ) -> NativeFile | None:
     """Open and read one exact sibling relative to a held directory."""
+    return _read_held_file(
+        parent_descriptor,
+        basename,
+        limit,
+        descriptor_validator=descriptor_validator,
+        reader=lambda descriptor, device, maximum: read_descriptor(
+            descriptor,
+            device,
+            maximum,
+            allow_interrupted_link=allow_interrupted_link,
+        ),
+    )
+
+
+def read_held_shell_file(
+    parent_descriptor: int,
+    basename: str,
+    limit: int,
+    *,
+    owner_only: bool,
+) -> ShellNativeFile | None:
+    """Open a shell sibling relative to one held qualified directory."""
+    return _read_held_file(
+        parent_descriptor,
+        basename,
+        limit,
+        descriptor_validator=_accept_descriptor,
+        reader=lambda descriptor, device, maximum: read_shell_descriptor(
+            descriptor,
+            device,
+            maximum,
+            owner_only=owner_only,
+        ),
+    )
+
+
+def _read_held_file[T](
+    parent_descriptor: int,
+    basename: str,
+    limit: int,
+    *,
+    descriptor_validator: Callable[[int], None],
+    reader: Callable[[int, int, int], T],
+) -> T | None:
+    """Read one exact sibling through a caller-selected mode policy."""
     expected_identity = namespace.require_exact_entry(
         parent_descriptor,
         basename,
@@ -154,12 +275,7 @@ def read_held_file(
         ):
             raise NativeFilesystemError(NativeFailureKind.CHANGED)
         descriptor_validator(file_descriptor)
-        result = read_descriptor(
-            file_descriptor,
-            directory_device,
-            limit,
-            allow_interrupted_link=allow_interrupted_link,
-        )
+        result = reader(file_descriptor, directory_device, limit)
         descriptor_validator(file_descriptor)
         if (
             namespace.require_exact_entry(

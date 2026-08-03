@@ -17,6 +17,7 @@ from sidekick_usages.cli.commands import (
     maintenance,
     migration,
     permissions,
+    session,
     updates,
     usage,
     use,
@@ -105,6 +106,7 @@ def create_app() -> typer.Typer:
     claude.register(application)
     codex.register(application)
     use.register(application)
+    session.register(application)
     return application
 
 

@@ -53,6 +53,11 @@ def _no_composition_context(calls: list[str]) -> InvocationContext:
         ["claude", "setup-token", "--help"],
         ["codex", "--help"],
         ["codex", "login", "--help"],
+        ["session", "--help"],
+        ["session", "claude", "--help"],
+        ["session", "codex", "--help"],
+        ["session", "shell", "--help"],
+        ["session", "shell", "install", "--help"],
     ],
 )
 def test_help_is_branded_before_usage_without_loading_state(
@@ -82,6 +87,11 @@ def test_help_is_branded_before_usage_without_loading_state(
         ["codex", "login"],
         ["heartbeat"],
         ["daemon", "status"],
+        ["session"],
+        ["session", "claude"],
+        ["session", "codex"],
+        ["session", "shell"],
+        ["session", "shell", "install"],
     ],
 )
 def test_short_help_alias_matches_long_help_at_every_command_level(
@@ -229,7 +239,9 @@ def test_root_help_has_only_canonical_provider_groups() -> None:
 
     assert result.exit_code == 0
     output = click.unstyle(result.stdout)
-    assert all(command in output for command in ("claude", "codex", "use"))
+    assert all(
+        command in output for command in ("claude", "codex", "session", "use")
+    )
     assert "codex-login" not in output
     assert "codex-export" not in output
     assert "(deprecated)" not in output

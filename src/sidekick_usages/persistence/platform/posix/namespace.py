@@ -145,7 +145,8 @@ def open_child_directory(
     parent_descriptor: int,
     basename: str,
     *,
-    private: bool,
+    private: bool | None,
+    same_device: bool = True,
 ) -> int:
     """Open one same-device child directory through its parent handle."""
     flags = os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | no_follow_flag()
@@ -158,16 +159,16 @@ def open_child_directory(
         parent_metadata = os.fstat(parent_descriptor)
         if (
             not stat.S_ISDIR(metadata.st_mode)
-            or metadata.st_dev != parent_metadata.st_dev
+            or (same_device and metadata.st_dev != parent_metadata.st_dev)
             or (
-                not private
+                private is False
                 and (
                     metadata.st_uid not in {0, os.geteuid()}
                     or stat.S_IMODE(metadata.st_mode) & 0o022
                 )
             )
             or (
-                private
+                private is True
                 and (
                     metadata.st_uid != os.geteuid()
                     or stat.S_IMODE(metadata.st_mode) & 0o077
@@ -183,6 +184,35 @@ def open_child_directory(
     except NativeFilesystemError as error:
         close_descriptor(descriptor, error)
     return descriptor
+
+
+def open_absolute_directory(path: Path, *, private: bool) -> int:
+    """Open every absolute path component without following a symlink."""
+    if not path.is_absolute() or any(
+        component in {"", ".", ".."} for component in path.parts[1:]
+    ):
+        raise NativeFilesystemError(NativeFailureKind.UNSAFE)
+    descriptors = [open_directory(Path("/"), private=False)]
+    try:
+        for index, component in enumerate(path.parts[1:]):
+            descriptors.append(
+                open_child_directory(
+                    descriptors[-1],
+                    component,
+                    private=(
+                        private if index == len(path.parts[1:]) - 1 else None
+                    ),
+                    same_device=False,
+                )
+            )
+    except BaseException as error:
+        close_descriptor_stack(descriptors, error)
+    leaf = descriptors.pop()
+    try:
+        close_descriptor_stack(descriptors)
+    except NativeFilesystemError as error:
+        close_descriptor(leaf, error)
+    return leaf
 
 
 def require_exact_entry(
@@ -224,6 +254,8 @@ def require_exact_entry(
 def extend_parent_chain(
     descriptors: list[int],
     components: tuple[str, ...],
+    *,
+    leaf_private: bool = True,
 ) -> None:
     """Create and open the private parent chain beneath one ancestor."""
     for index, component in enumerate(components):
@@ -243,7 +275,7 @@ def extend_parent_chain(
         child = open_child_directory(
             parent_descriptor,
             component,
-            private=index == len(components) - 1,
+            private=leaf_private and index == len(components) - 1,
         )
         descriptors.append(child)
         if created:

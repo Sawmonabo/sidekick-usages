@@ -15,6 +15,7 @@ from architecture.source import (
 
 MAX_CLI_APP_LINES = 200
 PUBLIC_BOOTSTRAP_FILE = "src/sidekick_usages/cli/runtime/bootstrap.py"
+SESSION_LAUNCHER_FILE = "src/sidekick_usages/cli/session/launcher.py"
 PUBLIC_BOOTSTRAP_IMPORTS = (
     "collections.abc",
     "os",
@@ -133,18 +134,23 @@ def _check_public_bootstrap(
         if isinstance(node, ast.Call)
         and dotted_name(node.func) in B606_NO_SHELL_CALLS
     ]
-    if (
-        len(replacements) != 1
-        or str(replacements[0][0].path) != PUBLIC_BOOTSTRAP_FILE
-        or replacements[0][2] != "os.execve"
-    ):
+    replacement_contract = sorted(
+        (
+            (PUBLIC_BOOTSTRAP_FILE, "os.execve"),
+            (SESSION_LAUNCHER_FILE, "os.execve"),
+        )
+    )
+    actual_replacements = sorted(
+        (str(unit.path), name) for unit, _node, name in replacements
+    )
+    if actual_replacements != replacement_contract:
         unit, node = replacements[0][:2] if replacements else (bootstrap, None)
         violations.append(
             finding(
                 unit,
                 node,
                 "CLI001",
-                "one qualified bootstrap execve must be the only B606 call",
+                "only bootstrap and session may own qualified execve calls",
             )
         )
     windows_children = [

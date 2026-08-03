@@ -21,6 +21,10 @@ from sidekick_usages.cli.contexts.models import (
     PersistenceContext,
     UpdateContext,
 )
+from sidekick_usages.cli.contexts.session import (
+    SessionContext,
+    compose_session_context,
+)
 from sidekick_usages.cli.contexts.use import UseContext, compose_use_context
 from sidekick_usages.core.types import ProviderId
 from sidekick_usages.persistence.errors import (
@@ -55,6 +59,9 @@ class InvocationContext:
         console: Console | None = None,
         err_console: Console | None = None,
         composers: InvocationComposers | None = None,
+        session_composer: Callable[[], SessionContext] = (
+            compose_session_context
+        ),
         use_composer: Callable[[], UseContext] = compose_use_context,
     ) -> None:
         resolved_composers = (
@@ -71,6 +78,8 @@ class InvocationContext:
         self._daemon = _LazyComposition(resolved_composers.daemon)
         self._migration = _LazyComposition(resolved_composers.migration)
         self._update = _LazyComposition(resolved_composers.update)
+        self._session_composer = session_composer
+        self._session: SessionContext | None = None
         self._use_composer = use_composer
         self._use: UseContext | None = None
 
@@ -129,6 +138,14 @@ class InvocationContext:
             use = self._use_composer()
             self._use = use
         return use
+
+    def require_session(self) -> SessionContext:
+        """Compose shell enrollment without loading application state."""
+        session = self._session
+        if session is None:
+            session = self._session_composer()
+            self._session = session
+        return session
 
     def _exit_failure(self, failure: PersistenceFailure) -> Never:
         self.err_console.print(f"[red]{failure.message}[/red]")
