@@ -270,7 +270,11 @@ class ShellEnrollment:
         resolved: ResolvedShellStartup,
     ) -> tuple[_PlannedFile, ...]:
         if not resolved.requires_source_block:
-            current = self._read(resolved.startup_root, resolved.startup_file)
+            current = self._read(
+                resolved.startup_root,
+                resolved.startup_file,
+                owner_only=True,
+            )
             if current is not None and current.data != _FISH_FUNCTIONS:
                 self._changed_file(resolved.startup_file, current.data)
             return (
@@ -282,10 +286,15 @@ class ShellEnrollment:
                     True,
                 ),
             )
-        startup = self._read(resolved.startup_root, resolved.startup_file)
+        startup = self._read(
+            resolved.startup_root,
+            resolved.startup_file,
+            owner_only=False,
+        )
         generated = self._read(
             resolved.generated_root,
             resolved.generated_file,
+            owner_only=True,
         )
         if generated is not None and generated.data != _POSIX_FUNCTIONS:
             self._changed_file(resolved.generated_file, generated.data)
@@ -317,7 +326,11 @@ class ShellEnrollment:
         resolved: ResolvedShellStartup,
     ) -> tuple[_PlannedFile, ...]:
         if not resolved.requires_source_block:
-            current = self._read(resolved.startup_root, resolved.startup_file)
+            current = self._read(
+                resolved.startup_root,
+                resolved.startup_file,
+                owner_only=True,
+            )
             if current is not None and current.data != _FISH_FUNCTIONS:
                 self._changed_file(resolved.startup_file, current.data)
             return (
@@ -329,10 +342,15 @@ class ShellEnrollment:
                     True,
                 ),
             )
-        startup = self._read(resolved.startup_root, resolved.startup_file)
+        startup = self._read(
+            resolved.startup_root,
+            resolved.startup_file,
+            owner_only=False,
+        )
         generated = self._read(
             resolved.generated_root,
             resolved.generated_file,
+            owner_only=True,
         )
         if generated is not None and generated.data != _POSIX_FUNCTIONS:
             self._changed_file(resolved.generated_file, generated.data)
@@ -412,9 +430,11 @@ class ShellEnrollment:
         self,
         root: Path,
         path: Path,
+        *,
+        owner_only: bool,
     ) -> ShellFileSnapshot | None:
         try:
-            return self._store(root).read(path)
+            return self._store(root).read(path, owner_only=owner_only)
         except ShellPersistenceError as error:
             raise ShellIntegrationError(
                 ShellIntegrationFailure.UNSAFE_PATH,
@@ -491,8 +511,9 @@ def _managed_range(
     ]
     if not starts and not ends:
         return None
-    manual_start = starts[0] if starts else ends[0]
-    manual_end = ends[-1] if ends else len(lines) - 1
+    marker_lines = (*starts, *ends)
+    manual_start = 0 if not starts else min(marker_lines)
+    manual_end = len(lines) - 1 if not ends else max(marker_lines)
     if (
         len(starts) != 1
         or len(ends) != 1

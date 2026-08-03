@@ -41,6 +41,30 @@ class NativeFile:
 
 
 @dataclass(frozen=True, slots=True)
+class ShellNativeFile:
+    """Stable owner-qualified shell bytes and exact file identity."""
+
+    device: int
+    inode: int
+    data: bytes = field(repr=False)
+    modified_nanoseconds: int
+    mode: int
+
+    def __post_init__(self) -> None:
+        """Reject invalid identity, time, or permission facts."""
+        if (
+            min(
+                self.device,
+                self.inode,
+                self.modified_nanoseconds,
+                self.mode,
+            )
+            < 0
+        ):
+            raise ValueError("Native shell file metadata is invalid.")
+
+
+@dataclass(frozen=True, slots=True)
 class TreeEntry:
     """One identity-qualified private-tree descendant."""
 

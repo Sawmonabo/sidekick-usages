@@ -1,7 +1,6 @@
 """Exact provider executable launch planning."""
 
 import os
-import subprocess
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
@@ -14,8 +13,8 @@ from sidekick_usages.core.types import ProviderId
 from sidekick_usages.platform.errors import ExecutableQualificationError
 from sidekick_usages.platform.executable import (
     qualify_executable,
-    verify_executable_launcher,
 )
+from sidekick_usages.platform.models import ExecutableProvenance
 from sidekick_usages.providers.claude.activation.service import (
     claude_environment_conflict,
 )
@@ -29,10 +28,6 @@ from sidekick_usages.providers.codex.auth.home import (
     CODEX_HOME_ENVIRONMENT_KEY,
 )
 
-type SessionProcessRunner = Callable[
-    [tuple[str, ...], dict[str, str], Path],
-    int,
-]
 type ProviderLauncherResolver = Callable[[Mapping[str, str]], Path]
 
 _CLAUDE_UNSAFE_OPTIONS = frozenset(
@@ -76,31 +71,18 @@ _CODEX_ENVIRONMENT_OVERRIDES = (
     "OPENAI_BASE_URL",
 )
 _CODEX_AUTH_COMMANDS = frozenset({"login", "logout"})
-
-
-def _run_provider(
-    command: tuple[str, ...],
-    environment: dict[str, str],
-    working_directory: Path,
-) -> int:
-    """Run in the current terminal and process group without a shell."""
-    return subprocess.run(
-        command,
-        check=False,
-        cwd=working_directory,
-        env=environment,
-    ).returncode
+_MAXIMUM_CODEX_ARGUMENTS = 4_096
 
 
 class ProviderSessionLauncher:
-    """Validate and freeze one official provider process launch."""
+    """Validate one provider launch candidate for a later host boundary."""
 
     def __init__(
         self,
         environment: Mapping[str, str] | None = None,
         *,
         working_directory: Path | None = None,
-        process_runner: SessionProcessRunner = _run_provider,
+        sidekick_executable: ExecutableProvenance,
         claude_resolver: ProviderLauncherResolver = resolve_claude_launcher,
         codex_resolver: ProviderLauncherResolver = resolve_codex_launcher,
     ) -> None:
@@ -109,7 +91,7 @@ class ProviderSessionLauncher:
         self._working_directory = (
             Path.cwd() if working_directory is None else working_directory
         )
-        self._process_runner = process_runner
+        self._sidekick_executable = sidekick_executable
         self._resolvers = {
             ProviderId.CLAUDE: claude_resolver,
             ProviderId.CODEX: codex_resolver,
@@ -150,7 +132,7 @@ class ProviderSessionLauncher:
                 SessionLaunchFailure.EXECUTABLE_CHANGED,
                 "The official provider executable is unavailable or unsafe.",
             ) from error
-        if executable.path.name == "sidekick-usages":
+        if executable == self._sidekick_executable:
             raise SessionLaunchError(
                 SessionLaunchFailure.RECURSIVE_EXECUTABLE,
                 "The provider launcher resolves back to Sidekick.",
@@ -162,21 +144,6 @@ class ProviderSessionLauncher:
             provider_arguments=provider_arguments,
             environment=tuple(sorted(self._environment.items())),
             working_directory=self._working_directory,
-        )
-
-    def run(self, spec: SessionLaunchSpec) -> int:
-        """Run one unchanged plan in the caller's process group and TTY."""
-        try:
-            verify_executable_launcher(spec.launcher, spec.executable)
-        except ExecutableQualificationError as error:
-            raise SessionLaunchError(
-                SessionLaunchFailure.EXECUTABLE_CHANGED,
-                "The provider executable changed after qualification.",
-            ) from error
-        return self._process_runner(
-            spec.command,
-            dict(spec.environment),
-            spec.working_directory,
         )
 
     @staticmethod
@@ -214,10 +181,7 @@ class ProviderSessionLauncher:
     ) -> None:
         if any(
             self._environment.get(key) for key in _CODEX_ENVIRONMENT_OVERRIDES
-        ) or (
-            provider_arguments
-            and provider_arguments[0] in _CODEX_AUTH_COMMANDS
-        ):
+        ) or _contains_codex_auth_command(provider_arguments):
             raise SessionLaunchError(
                 SessionLaunchFailure.UNSAFE_OVERRIDE,
                 "The environment overrides Codex session authority.",
@@ -259,3 +223,14 @@ def _protected_codex_config(config: str) -> bool:
     return key in _CODEX_PROTECTED_CONFIG_PREFIXES or key.startswith(
         "model_providers."
     )
+
+
+def _contains_codex_auth_command(arguments: tuple[str, ...]) -> bool:
+    if len(arguments) > _MAXIMUM_CODEX_ARGUMENTS:
+        return True
+    for argument in arguments:
+        if argument == "--":
+            return False
+        if argument in _CODEX_AUTH_COMMANDS:
+            return True
+    return False

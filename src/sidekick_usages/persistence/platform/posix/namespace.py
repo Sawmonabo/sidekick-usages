@@ -224,6 +224,8 @@ def require_exact_entry(
 def extend_parent_chain(
     descriptors: list[int],
     components: tuple[str, ...],
+    *,
+    leaf_private: bool = True,
 ) -> None:
     """Create and open the private parent chain beneath one ancestor."""
     for index, component in enumerate(components):
@@ -243,7 +245,7 @@ def extend_parent_chain(
         child = open_child_directory(
             parent_descriptor,
             component,
-            private=index == len(components) - 1,
+            private=leaf_private and index == len(components) - 1,
         )
         descriptors.append(child)
         if created:

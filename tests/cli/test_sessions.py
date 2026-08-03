@@ -24,6 +24,12 @@ from sidekick_usages.cli.session.shell import (
     ShellStartupResolver,
 )
 from sidekick_usages.core.types import ExitCode, ProviderId
+from sidekick_usages.persistence.platform.posix.adapter import PosixPlatform
+from sidekick_usages.persistence.shell import (
+    ShellFileStore,
+    ShellPersistenceError,
+)
+from sidekick_usages.platform.executable import qualify_executable
 
 _ORIGINAL_BASH = "# user alias\nalias ll='ls -l'\n"
 _POSIX_FUNCTIONS = """claude() {
@@ -40,7 +46,6 @@ function codex
     command sidekick-usages session codex -- $argv
 end
 """
-_PROVIDER_EXIT_CODE = 17
 _PRIVATE_FILE_MODE = 0o600
 
 
@@ -57,22 +62,15 @@ def test_launcher_freezes_process_contract_and_rejects_unsafe_override(
     binaries.mkdir()
     claude = binaries / "claude"
     codex = binaries / "codex"
+    sidekick = binaries / "sidekick-real"
     _executable(claude)
     _executable(codex)
-    calls: list[tuple[tuple[str, ...], dict[str, str], Path]] = []
-
-    def run_process(
-        command: tuple[str, ...],
-        environment: dict[str, str],
-        working_directory: Path,
-    ) -> int:
-        calls.append((command, environment, working_directory))
-        return _PROVIDER_EXIT_CODE
+    _executable(sidekick)
 
     launcher = ProviderSessionLauncher(
         {"PATH": str(binaries), "TERM": "xterm-256color"},
         working_directory=tmp_path,
-        process_runner=run_process,
+        sidekick_executable=qualify_executable(sidekick),
     )
     arguments = ("--model", "sonnet", "prompt with spaces")
 
@@ -81,14 +79,6 @@ def test_launcher_freezes_process_contract_and_rejects_unsafe_override(
     assert spec.provider_arguments == arguments
     assert spec.command == (str(claude), *arguments)
     assert spec.working_directory == tmp_path
-    assert launcher.run(spec) == _PROVIDER_EXIT_CODE
-    assert calls == [
-        (
-            (str(claude), *arguments),
-            {"PATH": str(binaries), "TERM": "xterm-256color"},
-            tmp_path,
-        )
-    ]
 
     with pytest.raises(SessionLaunchError) as failure:
         launcher.plan(
@@ -102,6 +92,43 @@ def test_launcher_freezes_process_contract_and_rejects_unsafe_override(
         launcher.plan(ProviderId.CLAUDE, ("prompt\0suffix",))
 
     assert nul_failure.value.code is SessionLaunchFailure.INVALID_ARGUMENT
+
+    claude.unlink()
+    claude.symlink_to(sidekick)
+    with pytest.raises(SessionLaunchError) as recursion:
+        launcher.plan(ProviderId.CLAUDE, ())
+
+    assert recursion.value.code is SessionLaunchFailure.RECURSIVE_EXECUTABLE
+
+
+@pytest.mark.parametrize(
+    "provider_arguments",
+    [
+        ("--model", "gpt-5", "login"),
+        ("-c", "model_reasoning_effort=high", "logout"),
+    ],
+)
+def test_codex_auth_commands_after_global_options_fail_closed(
+    tmp_path: Path,
+    provider_arguments: tuple[str, ...],
+) -> None:
+    """Global options must not hide an effective auth subcommand."""
+    binaries = tmp_path / "bin"
+    binaries.mkdir()
+    sidekick = binaries / "sidekick-real"
+    codex = binaries / "codex"
+    _executable(sidekick)
+    _executable(codex)
+    launcher = ProviderSessionLauncher(
+        {"PATH": str(binaries)},
+        working_directory=tmp_path,
+        sidekick_executable=qualify_executable(sidekick),
+    )
+
+    with pytest.raises(SessionLaunchError) as failure:
+        launcher.plan(ProviderId.CODEX, provider_arguments)
+
+    assert failure.value.code is SessionLaunchFailure.UNSAFE_OVERRIDE
 
 
 def test_shell_enrollment_round_trips_bash_and_fish_without_foreign_edits(
@@ -135,6 +162,14 @@ def test_shell_enrollment_round_trips_bash_and_fish_without_foreign_edits(
     assert second.changed is False
     assert integration.read_text() == _POSIX_FUNCTIONS
     assert integration.stat().st_mode & 0o777 == _PRIVATE_FILE_MODE
+
+    integration.chmod(0o644)
+    assert bash.status(ShellKind.BASH).state.value == "bypassed"
+    with pytest.raises(ShellIntegrationError) as mode_failure:
+        bash.install(ShellKind.BASH, dry_run=False)
+    assert mode_failure.value.code is ShellIntegrationFailure.UNSAFE_PATH
+    integration.chmod(_PRIVATE_FILE_MODE)
+
     assert bash.uninstall(ShellKind.BASH, dry_run=False).changed is True
     assert bashrc.read_text() == _ORIGINAL_BASH
     assert not integration.exists()
@@ -157,6 +192,7 @@ def test_shell_enrollment_round_trips_bash_and_fish_without_foreign_edits(
 
     assert installed.changed is True
     assert fish_path.read_text() == _FISH_FUNCTIONS
+    fish_path.parent.chmod(0o755)
     assert fish.uninstall(ShellKind.FISH, dry_run=False).changed is True
     assert foreign.read_text() == "set -gx EDITOR vim\n"
 
@@ -201,6 +237,61 @@ def test_shell_dry_run_has_no_side_effect_and_changed_markers_fail_closed(
         ". '/changed/location.sh'\n"
         "# <<< sidekick-usages session <<<\n"
     )
+
+    bashrc.write_text(
+        "# <<< sidekick-usages session <<<\n"
+        "echo foreign\n"
+        "# >>> sidekick-usages session >>>\n"
+    )
+    with pytest.raises(ShellIntegrationError) as inverted:
+        shell.uninstall(ShellKind.BASH, dry_run=False)
+
+    assert inverted.value.code is ShellIntegrationFailure.SOURCE_CHANGED
+    assert inverted.value.manual_range == (1, 3)
+
+
+def test_shell_remove_rejects_injected_namespace_replacement(
+    tmp_path: Path,
+) -> None:
+    """A replacement after stable read must survive failed removal."""
+    target = tmp_path / "sidekick-usages.fish"
+    survivor = tmp_path / "original-survivor.fish"
+    replacement = tmp_path / "replacement.fish"
+    target.write_text(_FISH_FUNCTIONS)
+    target.chmod(_PRIVATE_FILE_MODE)
+    replacement.write_text("function replacement\nend\n")
+    replacement.chmod(_PRIVATE_FILE_MODE)
+
+    class ReplacingPlatform(PosixPlatform):
+        def remove_shell_validated(
+            self,
+            parent: Path,
+            basename: str,
+            device: int,
+            inode: int,
+        ) -> bool:
+            (parent / basename).rename(survivor)
+            replacement.rename(parent / basename)
+            return super().remove_shell_validated(
+                parent,
+                basename,
+                device,
+                inode,
+            )
+
+    store = ShellFileStore(
+        tmp_path,
+        os.geteuid(),
+        _native=ReplacingPlatform(),
+    )
+    snapshot = store.read(target, owner_only=True)
+    assert snapshot is not None
+
+    with pytest.raises(ShellPersistenceError):
+        store.remove(target, snapshot)
+
+    assert target.read_text() == "function replacement\nend\n"
+    assert survivor.read_text() == _FISH_FUNCTIONS
 
 
 def test_public_shell_dry_run_reports_exact_targets_without_writing(

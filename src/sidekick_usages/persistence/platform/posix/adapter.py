@@ -8,8 +8,11 @@ from pathlib import Path
 from typing import IO, Never
 
 from sidekick_usages.persistence.platform.errors import NativeFilesystemError
-from sidekick_usages.persistence.platform.models import NativeFile
-from sidekick_usages.persistence.platform.posix import files, namespace
+from sidekick_usages.persistence.platform.models import (
+    NativeFile,
+    ShellNativeFile,
+)
+from sidekick_usages.persistence.platform.posix import files, namespace, shell
 from sidekick_usages.persistence.platform.posix.provider.read import (
     read_provider_owned,
 )
@@ -160,6 +163,32 @@ def _remove_exact_entry(
             raise NativeFilesystemError(NativeFailureKind.CHANGED)
 
 
+def _remove_validated_entry(
+    parent: Path,
+    basename: str,
+    device: int,
+    inode: int,
+    *,
+    private_parent: bool,
+    allow_interrupted_link: bool,
+) -> bool:
+    """Remove one exact validated entry beneath a qualified parent."""
+    descriptor = namespace.open_directory(parent, private=private_parent)
+    with namespace.owned_descriptor(descriptor, NativeFailureKind.REMOVE):
+        identity = namespace.require_exact_entry(descriptor, basename)
+        if identity is None:
+            return False
+        if identity != (device, inode):
+            raise NativeFilesystemError(NativeFailureKind.CHANGED)
+        _remove_exact_entry(
+            descriptor,
+            basename,
+            identity,
+            allow_interrupted_link=allow_interrupted_link,
+        )
+        return True
+
+
 def _fail_lock_open(
     parent_descriptor: int,
     file_descriptor: int | None,
@@ -213,6 +242,10 @@ class PosixPlatform:
         except BaseException as error:
             namespace.close_descriptor_stack(descriptors, error)
         namespace.close_descriptor_stack(descriptors)
+
+    def ensure_shell_parent(self, parent: Path) -> None:
+        """Create a shell parent through one held safe ancestor chain."""
+        shell.ensure_parent(parent)
 
     def repair_parent_permissions(self, parent: Path) -> bool:
         """Harden one owner-owned non-writable released parent to 0700."""
@@ -325,6 +358,41 @@ class PosixPlatform:
             limit,
             qualify_descriptor=self._qualify_provider_descriptor,
             validate_descriptor=self._validate_provider_descriptor,
+        )
+
+    def read_shell_owned(
+        self,
+        parent: Path,
+        basename: str,
+        limit: int,
+        *,
+        owner_only: bool,
+    ) -> ShellNativeFile | None:
+        """Stable-read one shell file through a held public parent."""
+        return shell.read_owned(
+            parent,
+            basename,
+            limit,
+            owner_only=owner_only,
+        )
+
+    def write_shell_atomic(
+        self,
+        parent: Path,
+        basename: str,
+        data: bytes,
+        expected: ShellNativeFile | None,
+        *,
+        mode: int,
+    ) -> ShellNativeFile:
+        """Atomically publish shell bytes after a stable expected read."""
+        return shell.write_atomic(
+            parent,
+            basename,
+            data,
+            expected,
+            mode=mode,
+            synchronize_file=self._synchronize_file,
         )
 
     def _read_file(
@@ -571,20 +639,31 @@ class PosixPlatform:
         inode: int,
     ) -> bool:
         """Remove only the exact previously validated identity."""
-        descriptor = namespace.open_directory(parent, private=True)
-        with namespace.owned_descriptor(descriptor, NativeFailureKind.REMOVE):
-            identity = namespace.require_exact_entry(descriptor, basename)
-            if identity is None:
-                return False
-            if identity != (device, inode):
-                raise NativeFilesystemError(NativeFailureKind.CHANGED)
-            _remove_exact_entry(
-                descriptor,
-                basename,
-                identity,
-                allow_interrupted_link=True,
-            )
-            return True
+        return _remove_validated_entry(
+            parent,
+            basename,
+            device,
+            inode,
+            private_parent=True,
+            allow_interrupted_link=True,
+        )
+
+    def remove_shell_validated(
+        self,
+        parent: Path,
+        basename: str,
+        device: int,
+        inode: int,
+    ) -> bool:
+        """Remove one exact owner-only shell file from a safe public parent."""
+        return _remove_validated_entry(
+            parent,
+            basename,
+            device,
+            inode,
+            private_parent=False,
+            allow_interrupted_link=False,
+        )
 
     def open_lock(self, parent: Path, basename: str) -> IO[bytes]:
         """Create or open and validate the persistent lock sidecar."""
