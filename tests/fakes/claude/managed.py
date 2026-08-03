@@ -101,7 +101,8 @@ type ClaudeProfileResponses = Mapping[
 CLAUDE_LOGIN_HELP_OUTPUT = b"Usage: claude auth login [--claudeai]\n"
 CLAUDE_LOGGED_IN_STATUS = (
     b'{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty",'
-    b'"email":"external@example.test","orgId":"provider-organization-external",'
+    b'"email":"external@example.test","orgId":'
+    b'"provider-organization-external",'
     b'"orgName":"External Organization","subscriptionType":"team"}\n'
 )
 CLAUDE_LOGGED_OUT_STATUS = (
