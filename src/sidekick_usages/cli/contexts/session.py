@@ -27,6 +27,7 @@ from sidekick_usages.platform.executable import (
     qualify_executable,
     resolve_executable_launcher,
 )
+from sidekick_usages.platform.models import ExecutableProvenance
 from sidekick_usages.providers.codex.app_server.executable import (
     discover_codex_executable,
 )
@@ -65,9 +66,11 @@ class _CodexSessionRunner:
         self,
         paths: ApplicationPaths,
         environment: Mapping[str, str],
+        sidekick_executable: ExecutableProvenance,
     ) -> None:
         self._paths = paths
         self._environment = dict(environment)
+        self._sidekick_executable = sidekick_executable
 
     def run(self, arguments: tuple[str, ...]) -> int:
         """Compose and run the provider only for an explicit invocation."""
@@ -86,12 +89,7 @@ class _CodexSessionRunner:
         launcher = ProviderSessionLauncher(
             self._environment,
             working_directory=Path.cwd(),
-            sidekick_executable=qualify_executable(
-                resolve_executable_launcher(
-                    _SIDEKICK_COMMAND,
-                    self._environment,
-                )
-            ),
+            sidekick_executable=self._sidekick_executable,
         )
         runtime = CodexSessionRuntime.create(
             discover_codex_executable(self._environment),
@@ -124,6 +122,12 @@ def compose_session_context(
         if effective_user_id is None
         else effective_user_id
     )
+    sidekick_executable = qualify_executable(
+        resolve_executable_launcher(
+            _SIDEKICK_COMMAND,
+            resolved_environment,
+        )
+    )
     return SessionContext(
         ShellEnrollment(
             ShellStartupResolver(
@@ -131,11 +135,16 @@ def compose_session_context(
                 platform=sys.platform if platform is None else platform,
                 posix_integration=resolved_paths.shell_integration,
                 effective_user_id=uid,
-            )
+            ),
+            sidekick_executable,
         ),
         claude,
         (
-            _CodexSessionRunner(resolved_paths, resolved_environment)
+            _CodexSessionRunner(
+                resolved_paths,
+                resolved_environment,
+                sidekick_executable,
+            )
             if codex is None
             else codex
         ),

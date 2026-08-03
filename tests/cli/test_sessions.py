@@ -56,6 +56,7 @@ from sidekick_usages.persistence.shell import (
 from sidekick_usages.persistence.supervisor import selection
 from sidekick_usages.persistence.supervisor.service import ServiceStateStore
 from sidekick_usages.platform.executable import qualify_executable
+from sidekick_usages.platform.models import ExecutableProvenance
 from sidekick_usages.providers.codex.app_server import executable
 from sidekick_usages.providers.codex.session import quiescence
 from tests.fakes.codex.app_server.daemon import FakeCodexDaemon
@@ -69,18 +70,21 @@ from tests.fakes.daemon.foundation import foundation_state
 from tests.support.time import FixedClock
 
 _ORIGINAL_BASH = "# user alias\nalias ll='ls -l'\n"
+_SIDEKICK_EXECUTABLE = ExecutableProvenance(
+    Path("/opt/sidekick usages/bin/sidekick-usages"), 1, 1, 1, 1
+)
 _POSIX_FUNCTIONS = """claude() {
-    command sidekick-usages session claude -- "$@"
+    command '/opt/sidekick usages/bin/sidekick-usages' session claude -- "$@"
 }
 codex() {
-    command sidekick-usages session codex -- "$@"
+    command '/opt/sidekick usages/bin/sidekick-usages' session codex -- "$@"
 }
 """
 _FISH_FUNCTIONS = """function claude
-    command sidekick-usages session claude -- $argv
+    command '/opt/sidekick usages/bin/sidekick-usages' session claude -- $argv
 end
 function codex
-    command sidekick-usages session codex -- $argv
+    command '/opt/sidekick usages/bin/sidekick-usages' session codex -- $argv
 end
 """
 _PRIVATE_FILE_MODE = 0o600
@@ -293,25 +297,24 @@ def test_codex_auth_commands_after_global_options_fail_closed(
 def test_shell_enrollment_round_trips_bash_and_fish_without_foreign_edits(
     tmp_path: Path,
 ) -> None:
-    """Enrollment must be idempotent, reversible, and owner-bounded."""
+    """Enrollment must pin, upgrade, round-trip, and preserve foreign bytes."""
     home = tmp_path / "home"
     home.mkdir()
     bashrc = home / ".bashrc"
     bashrc.write_text(_ORIGINAL_BASH)
-    integration = (
-        home
-        / ".local"
-        / "share"
-        / "sidekick-usages"
-        / ("shell-integration.sh")
-    )
+    integration = home / ".local/share/sidekick-usages/shell-integration.sh"
+    integration.parent.mkdir(parents=True)
+    previous = _POSIX_FUNCTIONS.replace("sidekick-usages'", "previous'")
+    integration.write_text(previous)
+    integration.chmod(_PRIVATE_FILE_MODE)
     bash = ShellEnrollment(
         ShellStartupResolver(
             environment={"HOME": str(home), "SHELL": "/bin/bash"},
             platform="linux",
             posix_integration=integration,
             effective_user_id=os.geteuid(),
-        )
+        ),
+        _SIDEKICK_EXECUTABLE,
     )
 
     first = bash.install(ShellKind.BASH, dry_run=False)
@@ -343,7 +346,8 @@ def test_shell_enrollment_round_trips_bash_and_fish_without_foreign_edits(
             platform="darwin",
             posix_integration=integration,
             effective_user_id=os.geteuid(),
-        )
+        ),
+        _SIDEKICK_EXECUTABLE,
     )
 
     installed = fish.install(ShellKind.FISH, dry_run=False)
@@ -378,7 +382,8 @@ def test_zsh_zdotdir_round_trips_a_file_without_a_final_newline(
             platform="linux",
             posix_integration=integration,
             effective_user_id=os.geteuid(),
-        )
+        ),
+        _SIDEKICK_EXECUTABLE,
     )
 
     installed = shell.install(ShellKind.ZSH, dry_run=False)
@@ -404,7 +409,8 @@ def test_shell_dry_run_has_no_side_effect_and_changed_markers_fail_closed(
             platform="linux",
             posix_integration=integration,
             effective_user_id=os.geteuid(),
-        )
+        ),
+        _SIDEKICK_EXECUTABLE,
     )
 
     preview = shell.install(ShellKind.BASH, dry_run=True)
@@ -462,16 +468,15 @@ def test_shell_persistence_refuses_an_intermediate_symlink(
     home.mkdir()
     outside.mkdir()
     (home / ".local").symlink_to(outside, target_is_directory=True)
-    integration = (
-        home / ".local" / "share" / "sidekick-usages" / "shell-integration.sh"
-    )
+    integration = home / ".local/share/sidekick-usages/shell-integration.sh"
     shell = ShellEnrollment(
         ShellStartupResolver(
             environment={"HOME": str(home), "SHELL": "/bin/bash"},
             platform="linux",
             posix_integration=integration,
             effective_user_id=os.geteuid(),
-        )
+        ),
+        _SIDEKICK_EXECUTABLE,
     )
 
     with pytest.raises(ShellIntegrationError) as failure:
@@ -579,20 +584,15 @@ def test_public_shell_dry_run_reports_exact_targets_without_writing(
     """The public preview must expose its qualified plan without mutation."""
     home = tmp_path / "home"
     home.mkdir()
-    integration = (
-        home
-        / ".local"
-        / "share"
-        / "sidekick-usages"
-        / ("shell-integration.sh")
-    )
+    integration = home / ".local/share/sidekick-usages/shell-integration.sh"
     shell = ShellEnrollment(
         ShellStartupResolver(
             environment={"HOME": str(home), "SHELL": "/bin/bash"},
             platform="linux",
             posix_integration=integration,
             effective_user_id=os.geteuid(),
-        )
+        ),
+        _SIDEKICK_EXECUTABLE,
     )
     context = InvocationContext(
         console=Console(width=200),
@@ -937,7 +937,8 @@ def test_codex_session_runs_one_coordinated_stock_tui(
                     platform="linux",
                     posix_integration=tmp_path / "unneeded",
                     effective_user_id=os.geteuid(),
-                )
+                ),
+                qualify_executable(sidekick),
             ),
             codex=CodexCliSession(
                 launcher,

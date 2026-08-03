@@ -20,18 +20,19 @@ from sidekick_usages.persistence.shell import (
     ShellFileStore,
     ShellPersistenceError,
 )
+from sidekick_usages.platform.models import ExecutableProvenance
 
 _START_MARKER = "# >>> sidekick-usages session >>>"
 _END_MARKER = "# <<< sidekick-usages session <<<"
 _RESTORE_NO_NEWLINE_TAG = " # sidekick-usages:restore-no-final-newline"
-_POSIX_FUNCTIONS = b"""claude() {
+_LEGACY_POSIX_FUNCTIONS = b"""claude() {
     command sidekick-usages session claude -- "$@"
 }
 codex() {
     command sidekick-usages session codex -- "$@"
 }
 """
-_FISH_FUNCTIONS = b"""function claude
+_LEGACY_FISH_FUNCTIONS = b"""function claude
     command sidekick-usages session claude -- $argv
 end
 function codex
@@ -205,8 +206,13 @@ class ShellStartupResolver:
 class ShellEnrollment:
     """Install, inspect, and remove exact Sidekick shell content."""
 
-    def __init__(self, resolver: ShellStartupResolver) -> None:
+    def __init__(
+        self,
+        resolver: ShellStartupResolver,
+        sidekick_executable: ExecutableProvenance,
+    ) -> None:
         self._resolver = resolver
+        self._sidekick_executable = sidekick_executable
 
     def install(
         self,
@@ -270,20 +276,24 @@ class ShellEnrollment:
         self,
         resolved: ResolvedShellStartup,
     ) -> tuple[_PlannedFile, ...]:
+        functions = self._functions(resolved.kind)
         if not resolved.requires_source_block:
             current = self._read(
                 resolved.startup_root,
                 resolved.startup_file,
                 owner_only=True,
             )
-            if current is not None and current.data != _FISH_FUNCTIONS:
+            if current is not None and not _managed_functions(
+                current.data,
+                resolved.kind,
+            ):
                 self._changed_file(resolved.startup_file, current.data)
             return (
                 _PlannedFile(
                     resolved.startup_file,
                     resolved.startup_root,
                     current,
-                    _FISH_FUNCTIONS,
+                    functions,
                     True,
                 ),
             )
@@ -297,7 +307,10 @@ class ShellEnrollment:
             resolved.generated_file,
             owner_only=True,
         )
-        if generated is not None and generated.data != _POSIX_FUNCTIONS:
+        if generated is not None and not _managed_functions(
+            generated.data,
+            resolved.kind,
+        ):
             self._changed_file(resolved.generated_file, generated.data)
         source_before = b"" if startup is None else startup.data
         source_after = self._install_source_block(
@@ -317,7 +330,7 @@ class ShellEnrollment:
                 resolved.generated_file,
                 resolved.generated_root,
                 generated,
-                _POSIX_FUNCTIONS,
+                functions,
                 True,
             ),
         )
@@ -332,7 +345,10 @@ class ShellEnrollment:
                 resolved.startup_file,
                 owner_only=True,
             )
-            if current is not None and current.data != _FISH_FUNCTIONS:
+            if current is not None and not _managed_functions(
+                current.data,
+                resolved.kind,
+            ):
                 self._changed_file(resolved.startup_file, current.data)
             return (
                 _PlannedFile(
@@ -353,7 +369,10 @@ class ShellEnrollment:
             resolved.generated_file,
             owner_only=True,
         )
-        if generated is not None and generated.data != _POSIX_FUNCTIONS:
+        if generated is not None and not _managed_functions(
+            generated.data,
+            resolved.kind,
+        ):
             self._changed_file(resolved.generated_file, generated.data)
         source_before = b"" if startup is None else startup.data
         source_after = self._remove_source_block(
@@ -446,6 +465,12 @@ class ShellEnrollment:
     def _store(self, root: Path) -> ShellFileStore:
         return ShellFileStore(root, self._resolver.effective_user_id)
 
+    def _functions(self, shell_kind: ShellKind) -> bytes:
+        executable = self._sidekick_executable.path
+        if shell_kind is ShellKind.FISH:
+            return _fish_functions(executable)
+        return _posix_functions(executable)
+
     @staticmethod
     def _install_source_block(
         path: Path,
@@ -506,6 +531,60 @@ def _source_block(
     if restore_no_newline:
         source += _RESTORE_NO_NEWLINE_TAG
     return f"{_START_MARKER}\n{source}\n{_END_MARKER}\n"
+
+
+def _posix_functions(sidekick_executable: Path) -> bytes:
+    command = shlex.quote(str(sidekick_executable))
+    return f"""claude() {{
+    command {command} session claude -- "$@"
+}}
+codex() {{
+    command {command} session codex -- "$@"
+}}
+""".encode()
+
+
+def _fish_functions(sidekick_executable: Path) -> bytes:
+    command = shlex.quote(str(sidekick_executable))
+    return f"""function claude
+    command {command} session claude -- $argv
+end
+function codex
+    command {command} session codex -- $argv
+end
+""".encode()
+
+
+def _managed_functions(payload: bytes, shell_kind: ShellKind) -> bool:
+    legacy = (
+        _LEGACY_FISH_FUNCTIONS
+        if shell_kind is ShellKind.FISH
+        else _LEGACY_POSIX_FUNCTIONS
+    )
+    if payload == legacy:
+        return True
+    try:
+        lines = payload.decode("utf-8").splitlines()
+        commands = (
+            tuple(shlex.split(lines[1].strip())),
+            tuple(shlex.split(lines[4].strip())),
+        )
+        executable = Path(commands[0][1])
+    except IndexError, UnicodeDecodeError, ValueError:
+        return False
+    argument = "$argv" if shell_kind is ShellKind.FISH else "$@"
+    expected = (
+        ("command", str(executable), "session", "claude", "--", argument),
+        ("command", str(executable), "session", "codex", "--", argument),
+    )
+    if not executable.is_absolute() or commands != expected:
+        return False
+    rendered = (
+        _fish_functions(executable)
+        if shell_kind is ShellKind.FISH
+        else _posix_functions(executable)
+    )
+    return payload == rendered
 
 
 def _managed_range(
