@@ -59,6 +59,7 @@ from sidekick_usages.daemon.selection.registry import (
 )
 from sidekick_usages.daemon.selection.worker import SelectionWorkerGateway
 from sidekick_usages.daemon.types.worker import WorkerOutcome
+from sidekick_usages.persistence.errors import ReplaceFailedError
 from sidekick_usages.persistence.models.selection import (
     SelectionOperationDocument,
 )
@@ -158,6 +159,7 @@ class _ObservedOperationStore:
         self.block_complete_once = False
         self.complete_started = Event()
         self.allow_complete = Event()
+        self.reject_final_snapshot_once = False
 
     def begin(
         self,
@@ -182,6 +184,14 @@ class _ObservedOperationStore:
         expected: OpenSelectionOperation,
         replacement: OpenSelectionOperation,
     ) -> OpenSelectionOperation:
+        if (
+            self.reject_final_snapshot_once
+            and expected.phase is SelectionPhase.AWAITING_READY
+            and replacement.phase is SelectionPhase.AWAITING_READY
+            and replacement.ready_participant_ids
+        ):
+            self.reject_final_snapshot_once = False
+            raise ReplaceFailedError
         result = self._store.advance_with_required_additions(
             expected,
             replacement,
@@ -358,12 +368,25 @@ def _process(index: int) -> ProcessIdentity:
     return ProcessIdentity(process_id=1000 + index, start_identity=index)
 
 
+def _ready_request(participant_id: ParticipantId) -> ParticipantReadyRequest:
+    return ParticipantReadyRequest(
+        participant_id=participant_id,
+        connection_generation=1,
+        proof=ParticipantReadyProof(
+            account_id=TARGET_ACCOUNT_ID,
+            generation=AuthorityGeneration("generation-target-8"),
+            epoch=SelectionEpoch(8),
+        ),
+    )
+
+
 def _assert_journey_result(
     journey: _Journey,
     result: SelectionResult,
     expected_outcome: SelectionOutcome,
     opens_target: bool,
     expected_participant_count: int,
+    expected_ready_participants: tuple[ParticipantId, ...],
 ) -> None:
     assert result.outcome is expected_outcome
     journey.registry.disconnect(PARTICIPANT_B, 1)
@@ -402,14 +425,13 @@ def _assert_journey_result(
     else:
         assert next_turn.state is TurnAdmissionState.QUEUED
         assert result.required_count == expected_participant_count
-        assert result.ready_count == INITIAL_PARTICIPANT_COUNT
+        assert result.ready_count == len(expected_ready_participants)
         assert result.lost_count == 0
         active = journey.operations.load(PROVIDER_ID).active
         assert active is not None
-        assert set(active.ready_participant_ids) == {
-            PARTICIPANT_A,
-            PARTICIPANT_B,
-        }
+        assert set(active.ready_participant_ids) == set(
+            expected_ready_participants
+        )
         degraded = journey.coordinator.subscribe(
             new_request_id(),
             ParticipantConnectionRequest(PARTICIPANT_B, 1),
@@ -468,6 +490,20 @@ def _arm_postcommit_loss(journey: _Journey, loss_state: str) -> None:
     journey.process_inspector.dead.add(_process(3))
 
 
+def _probe_final_seal_released(journey: _Journey, loss_state: str) -> None:
+    """Prove a failed final snapshot write cannot strand the barrier."""
+    if loss_state != "final_snapshot_failure":
+        return
+    completed = Event()
+
+    def acknowledge_again() -> None:
+        journey.registry.ready_request(_ready_request(PARTICIPANT_A))
+        completed.set()
+
+    Thread(target=acknowledge_again, daemon=True).start()
+    assert completed.wait(1)
+
+
 def _disconnect_during_final_seal(
     journey: _Journey,
     loss_state: str,
@@ -496,6 +532,7 @@ def _disconnect_during_final_seal(
         "expected_outcome",
         "opens_target",
         "expected_participant_count",
+        "expected_ready_participants",
     ),
     [
         (
@@ -503,18 +540,28 @@ def _disconnect_during_final_seal(
             SelectionOutcome.READY,
             True,
             INITIAL_PARTICIPANT_COUNT,
+            (PARTICIPANT_B, PARTICIPANT_C),
         ),
         (
             "live_unreachable",
             SelectionOutcome.RECOVERY_REQUIRED,
             False,
             3,
+            (PARTICIPANT_A, PARTICIPANT_B),
         ),
         (
             "dead_after_commit",
             SelectionOutcome.PARTICIPANT_LOST_AFTER_COMMIT,
             True,
             INITIAL_PARTICIPANT_COUNT,
+            (PARTICIPANT_A, PARTICIPANT_B),
+        ),
+        (
+            "final_snapshot_failure",
+            SelectionOutcome.RECOVERY_REQUIRED,
+            False,
+            3,
+            (PARTICIPANT_A, PARTICIPANT_B, PARTICIPANT_C),
         ),
     ],
 )
@@ -524,6 +571,7 @@ def test_three_participants_switch_without_interrupting_turns(
     expected_outcome: SelectionOutcome,
     opens_target: bool,
     expected_participant_count: int,
+    expected_ready_participants: tuple[ParticipantId, ...],
 ) -> None:
     """Old work drains and queued work opens once on the target epoch."""
     journey = _build_journey(tmp_path)
@@ -585,31 +633,21 @@ def test_three_participants_switch_without_interrupting_turns(
     if loss_state == "live_unreachable":
         registry.disconnect(PARTICIPANT_C, 1)
     _arm_postcommit_loss(journey, loss_state)
-    ready_participants = (
-        (PARTICIPANT_B, PARTICIPANT_C)
-        if loss_state == "dead_before_commit"
-        else (PARTICIPANT_A, PARTICIPANT_B)
-    )
-    for participant_id in ready_participants:
+    if loss_state == "final_snapshot_failure":
+        operations.reject_final_snapshot_once = True
+    for participant_id in expected_ready_participants:
         process_index = {
             PARTICIPANT_A: 1,
             PARTICIPANT_B: 2,
             PARTICIPANT_C: 3,
         }[participant_id]
         coordinator.ready_request(
-            ParticipantReadyRequest(
-                participant_id=participant_id,
-                connection_generation=1,
-                proof=ParticipantReadyProof(
-                    account_id=TARGET_ACCOUNT_ID,
-                    generation=AuthorityGeneration("generation-target-8"),
-                    epoch=SelectionEpoch(8),
-                ),
-            ),
+            _ready_request(participant_id),
             _process(process_index),
         )
     disconnect_probe = _disconnect_during_final_seal(journey, loss_state)
     selector.join(timeout=2)
+    _probe_final_seal_released(journey, loss_state)
     if disconnect_probe is not None:
         disconnect, disconnected = disconnect_probe
         disconnect.join(timeout=2)
@@ -621,13 +659,13 @@ def test_three_participants_switch_without_interrupting_turns(
         assert replay_results == results
 
     assert not selector.is_alive()
-    assert len(results) == 1
     _assert_journey_result(
         journey,
         results[0],
         expected_outcome,
         opens_target,
         expected_participant_count,
+        expected_ready_participants,
     )
 
 
@@ -711,28 +749,44 @@ def test_recovery_finalizes_forward_from_target_provider_proof(
         readback.operation_id,
         expected_state=OperationState.SCHEDULED,
     )
-    recovery.complete_readback(
-        SchedulerCompletion(
+    completion = SchedulerCompletion(
+        operation_id=readback.operation_id,
+        operation_kind=readback.kind,
+        state=None,
+        outcome=WorkerOutcome.SUCCEEDED,
+        failure_code=None,
+        selection=SelectionWorkerMetadata(
             operation_id=readback.operation_id,
-            operation_kind=readback.kind,
-            state=None,
-            outcome=WorkerOutcome.SUCCEEDED,
-            failure_code=None,
-            selection=SelectionWorkerMetadata(
-                operation_id=readback.operation_id,
-                provider_id=PROVIDER_ID,
-                kind=readback.kind,
-                pending_epoch=operation.pending_epoch,
-                observed_account_id=TARGET_ACCOUNT_ID,
-                observed_generation=AuthorityGeneration("generation-target-8"),
-            ),
-        )
+            provider_id=PROVIDER_ID,
+            kind=readback.kind,
+            pending_epoch=operation.pending_epoch,
+            observed_account_id=TARGET_ACCOUNT_ID,
+            observed_generation=AuthorityGeneration("generation-target-8"),
+        ),
+    )
+    coordinator = SelectionCoordinator(
+        selected,
+        journal,
+        registry,
+        _SelectionAdapter(),
+        FixedClock(),
+        resume_recovery=lambda provider_id: recovery.complete_readback(
+            completion
+        ),
+    )
+    result = coordinator.select(
+        REPLAY_OPERATION_ID,
+        PROVIDER_ID,
+        TARGET_ACCOUNT_ID,
     )
 
     finalized = selected.load(PROVIDER_ID)
     assert finalized is not None
     assert finalized.account_id == TARGET_ACCOUNT_ID
     assert finalized.epoch == baseline_epoch.next()
+    assert result == journal.load(PROVIDER_ID).history[-1]
+    assert result.operation_id == OPERATION_ID
+    assert result.outcome is SelectionOutcome.READY
     assert journal.load(PROVIDER_ID).active is None
     registration = registry.register(_manifest(PARTICIPANT_A), _process(1))
     assert registration.registered_epoch == baseline_epoch.next()
